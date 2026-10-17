@@ -164,7 +164,7 @@ export const Phase = z.enum(PHASES);
 export type Phase = z.infer<typeof Phase>;
 // Feature 003 and feature 004 contract Δ2: these phases carry only these counters. A workbench phase without counters carries none.
 const SYNC_COUNTERS = ["percent", "remoteIndex", "remoteCount"];
-const PHASE_COUNTERS: Readonly<Record<string, readonly string[]>> = {
+export const PHASE_COUNTERS: Readonly<Record<string, readonly string[]>> = {
   ...Object.fromEntries(["sync-fetch", "sync-merge", "sync-rebase", "sync-push", "sync-continue", "clone", "pageant"].map((phase) => [phase, SYNC_COUNTERS])),
   ...Object.fromEntries(["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "ignore"].map((phase) => [phase, []])),
   config: ["keyIndex", "keyCount"],

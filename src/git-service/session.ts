@@ -23,6 +23,7 @@ import type { ProbeRun } from "./history-search";
 import { createHistoryViews } from "./history-view";
 import { createHunkPublisher, hunkApprovals, type HunkPublisherOptions } from "./hunk-publish";
 import { createSessionLog, type DiagnosticCause } from "./log";
+import { createMergeRebase, isMergeRebase } from "./merge-rebase";
 import { createOperationRegistry } from "./operations";
 import { createReadScheduler, type ReadEnd, type RereadTarget } from "./read-scheduler";
 import { createRefsReader, type RefsOutcome } from "./refs";
@@ -172,6 +173,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const updater = createSubmoduleUpdater({ runner, trust, reader, reviews: submoduleReviews, approvals, registry, exclusion, respond, ...(submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint }) });
   const syncReviews = createSyncReviewer({ runner, trust, reader, approvals, listingTuple: reader.listingTuple });
   const syncs = createSyncer({ runner, trust, reader, approvals, registry, exclusion, respond });
+  const mergeRebase = createMergeRebase({ runner, trust, reader, approvals, registry, exclusion, respond, listingTuple: reader.listingTuple });
   const recovery = createRecovery({ runner, registry, trust, reader, publications: publisher.retained, commits: committer.retained, updates: updater.retained });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();
@@ -371,7 +373,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
   // `failed` is the outcome of a `run` that throws.
   const scheduleRead = (
-    request: { requestId: string; operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules" | "readTracking" | "reviewSync"; repositoryId: string },
+    request: { requestId: string; operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules" | "readTracking" | "reviewSync" | "reviewWorkbench"; repositoryId: string },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
     reread: (target: RereadTarget) => Promise<ReadResult | null>,
     failed: ReadResult,
@@ -744,8 +746,30 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     readBranches: undefined,
     readWorktrees: undefined,
     readGitSettings: undefined,
-    reviewWorkbench: undefined,
-    runWorkbench: undefined,
+    // Feature 004 WP8: `merge` and `rebase` only. T027 and T034 add the other actions.
+    reviewWorkbench: (request) => {
+      const payload = request.payload;
+      if (!isMergeRebase(payload)) return reject(request.requestId, "SERVICE_UNAVAILABLE");
+      const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
+      if (request.repositoryGeneration !== workspace.generation) {
+        const { operationId } = registry.start("reviewWorkbench", request.requestId);
+        return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+      }
+      scheduleRead(
+        request,
+        (t) => mergeRebase.review({ ...t, installation, workspace, generation: request.repositoryGeneration }, payload),
+        async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
+        { result: "failed", code: "GIT_FAILED" },
+      );
+    },
+    runWorkbench: (request) => {
+      const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
+      mergeRebase.run(request, workspace, installation);
+    },
     applyFiles: undefined,
     openWorktree: undefined,
     revealPath: undefined,

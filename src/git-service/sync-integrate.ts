@@ -16,6 +16,7 @@ import type { Head, OperationState } from "./snapshot";
 import { abortArgs, aheadBehindArgs, continueArgs, fastForwardArgs, mergeArgs, mergeMessageArgs, rebaseArgs, skipArgs } from "./sync-commands";
 import { decidePull, parseAheadBehind, type FetchUpdate, type ModeSource, type PullDecision } from "./sync-parsers";
 import { gitPathExists, indexState, listRefs, refKey, type IndexState, type SyncBinding } from "./sync-review";
+import { mergeMessageInput } from "./workbench-commands";
 import type { changes, FetchRemote, fetchObserved, FetchStep, fetchVerdict, notStarted, Remedy, StepEnd } from "./sync";
 import type { ConfigEntry } from "./trust";
 
@@ -58,7 +59,7 @@ type Integration =
   | { state: "stopped"; operation: "merging" | "rebasing"; unmerged: number }
   | { state: "refused"; outputTail: string };
 
-interface Observed {
+export interface Observed {
   refs: Refs;
   head: Head;
   index: IndexState;
@@ -69,8 +70,8 @@ interface Observed {
 
 const headFact = (h: Awaited<ReturnType<typeof captureHead>> | Stop | Failure): Fact<Head> => (isStop(h) ? h : "code" in h ? h : "failed" in h ? { code: h.failed } : { value: h });
 
-// Contract Δ3 `sync` step 7: the refs listing, HEAD, the index, the markers, and the unmerged count.
-async function observe(q: ObserveContext, killed: boolean): Promise<Fact<Observed>> {
+// Contract Δ3 `sync` step 7: the refs listing, HEAD, the index, the markers, and the unmerged count. Feature 004 `runWorkbench` reconciles with it too.
+export async function observe(q: ObserveContext, killed: boolean): Promise<Fact<Observed>> {
   const [refs, head, index] = await Promise.all([listRefs(q), settled(q.signal, captureHead(q.runner, q)).then(headFact), indexState(q)]);
   if (!("value" in refs)) return refs;
   if (!("value" in head)) return head;
@@ -84,7 +85,7 @@ async function observe(q: ObserveContext, killed: boolean): Promise<Fact<Observe
 }
 
 // The parents of one commit from `cat-file --batch-command -Z`.
-async function parentsOf(q: ObserveContext, oid: string): Promise<Fact<string[]>> {
+export async function parentsOf(q: ObserveContext, oid: string): Promise<Fact<string[]>> {
   const out = createCollector({ maxBytes: HISTORY_COMMIT_OBJECT_BYTES + HEADER_BYTES + 2 });
   const step = await stepOf(q, batchCommandArgs(), out, new TextEncoder().encode(`contents ${oid}\0`));
   if (!("exit" in step)) return step;
@@ -94,7 +95,7 @@ async function parentsOf(q: ObserveContext, oid: string): Promise<Fact<string[]>
 }
 
 // Plan.md D6 step 3 and D8: `rev-list --left-right --count <a>...<b>` with the 30 s read deadline.
-async function count(ctx: ObserveContext, a: string, b: string): Promise<Fact<{ ahead: number; behind: number }>> {
+export async function count(ctx: ObserveContext, a: string, b: string): Promise<Fact<{ ahead: number; behind: number }>> {
   const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
   const step = await stepOf(ctx, aheadBehindArgs(a, b, ctx.workspace.objectFormat), out);
   if (!("exit" in step)) return step;
@@ -116,20 +117,28 @@ async function integrated(q: ObserveContext, d: Extract<PullDecision, { kind: "f
   return "value" in parents ? { value: parents.value.length > 1 && parents.value.includes(u) } : parents;
 }
 
-// O-3 and feature 004 plan.md D5: the `fmt-merge-msg` preview of the line that `git merge <short name>` builds for a remote-tracking ref (builtin/merge.c `merge_name`).
-// Null: the upstream is no remote-tracking ref, so D5 does not apply and Git writes its own default message.
-async function mergeMessage(ctx: ObserveContext, ref: string, oid: string): Promise<Fact<string | null>> {
-  if (!ref.startsWith(REMOTES)) return { value: null };
-  const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-  const step = await stepOf(ctx, mergeMessageArgs(), out, new TextEncoder().encode(`${oid}\t\tremote-tracking branch '${ref.slice(REMOTES.length)}' of .\n`));
+// O-3 and feature 004 plan.md D5: the `fmt-merge-msg` preview of the line that `git merge <short name>` builds (builtin/merge.c `merge_name`).
+// `limited`: the preview holds more than `maxBytes` bytes.
+export async function mergePreview(ctx: ObserveContext, ref: string, oid: string, maxBytes: number): Promise<Fact<string> | { limited: true }> {
+  const out = createCollector({ maxBytes });
+  const step = await stepOf(ctx, mergeMessageArgs(), out, new TextEncoder().encode(mergeMessageInput(ref, oid, ctx.workspace.objectFormat)));
   if (!("exit" in step)) return step;
-  if (out.limited || step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
+  // More bytes than the bound came, also when the runner then ended Git.
+  if (out.limited) return { limited: true };
+  if (step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
   try {
     const text = exact.decode(out.take());
     return text === "" || text.includes("\0") ? { code: "MALFORMED_GIT_OUTPUT" } : { value: text };
   } catch {
     return { code: "MALFORMED_GIT_OUTPUT" };
   }
+}
+
+// Null: the upstream is no remote-tracking ref, so D5 does not apply and Git writes its own default message.
+async function mergeMessage(ctx: ObserveContext, ref: string, oid: string): Promise<Fact<string | null>> {
+  if (!ref.startsWith(REMOTES)) return { value: null };
+  const preview = await mergePreview(ctx, ref, oid, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+  return "limited" in preview ? { code: "GIT_FAILED" } : preview;
 }
 
 // The integrate step of a decision (plan.md D6 step 5).
@@ -141,7 +150,7 @@ function integrateStep(d: Extract<PullDecision, { kind: "fast-forward" | "merge"
 
 // The contract Δ3 remedy of a step. The options are constants, so only the ref and the merge message are remedy values.
 // The quoting rule refuses the LF of a merge message, so that remedy is text only (contract §4 "Quoting rule").
-function stepRemedy(s: SyncSteps, args: readonly string[], ref?: string): Remedy {
+export function stepRemedy(s: Pick<SyncSteps, "remedyOf">, args: readonly string[], ref?: string): Remedy {
   const at = args.indexOf("-m");
   const words = (ref === undefined ? args.slice(1) : args.slice(1, -1)).map((word, i) => (at > 0 && i === at) ? "{message}" : word);
   const values = { ...(ref === undefined ? {} : { ref }), ...(at > 0 ? { message: args[at + 1]! } : {}) };

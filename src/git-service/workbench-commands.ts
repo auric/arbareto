@@ -80,6 +80,11 @@ export function trackedStatusArgs(): string[] {
   return read("status", "--porcelain=v2", "-z", "--untracked-files=no", "--ignore-submodules=dirty");
 }
 
+// Plan.md D6: builtin/rebase.c calls `require_clean_work_tree` with `ignore_submodules` 1, so a submodule change does not stop a rebase.
+export function rebaseStatusArgs(): string[] {
+  return read("status", "--porcelain=v2", "-z", "--untracked-files=no", "--ignore-submodules=all");
+}
+
 // Contract Δ3 `worktree-remove`: the status of that worktree.
 export function worktreeStatusArgs(path: string): string[] {
   return read("-C", item(path), "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=dirty");

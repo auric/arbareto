@@ -47,7 +47,7 @@ pub(crate) enum AppendResult {
     Appended,
     /// The target differs from `expected`.
     Stale,
-    /// The target or a component on the way is a reparse point, or the target is no regular file.
+    /// The target or a component on the way is a reparse point, or the target is no regular file or has more than one link.
     NotRegular,
     Error(FileAppendErrorCode),
 }
@@ -57,7 +57,7 @@ pub(crate) enum AppendResult {
 pub(crate) struct Request<'a> {
     pub(crate) operation_id: &'a str,
     pub(crate) repository_id: &'a str,
-    /// `.gitignore` of the worktree root, else a file below the common directory.
+    /// `.gitignore` of the worktree root, else `info/exclude` of the common directory.
     pub(crate) gitignore: bool,
     pub(crate) path: PathBuf,
     /// `None` is `absent`.
@@ -191,6 +191,9 @@ pub(crate) fn open(
     }
     let standard =
         query::<StandardInformation>(&target, FileStandardInformation, stop).map_err(failed)?;
+    if standard.number_of_links != 1 {
+        return Err(AppendResult::NotRegular);
+    }
     if u64::try_from(standard.end_of_file) != Ok(size) {
         return Err(AppendResult::Stale);
     }
@@ -409,6 +412,23 @@ mod tests {
             "the outside file"
         );
         assert!(!outside.join(".gitignore").exists());
+    }
+
+    /// Contract Δ6: a target with more than one link gives `not-regular`, so the append never writes another name of the file.
+    #[test]
+    fn a_target_with_a_second_link_is_refused_as_not_regular_and_nothing_changes() {
+        let (fixture, root) = repository();
+        let outside = fixture.path("outside");
+        std::fs::write(&outside, b"/a\n").expect("outside file");
+        if std::fs::hard_link(&outside, root.join(".gitignore")).is_err() {
+            println!("SKIP fileAppend hard link: missing capability hard-link (unverified)");
+            return;
+        }
+        assert_eq!(
+            append(&root, &[".gitignore"], Some(b"/a\n"), b"/b\n"),
+            AppendResult::NotRegular
+        );
+        assert_eq!(std::fs::read(&outside).expect("read"), b"/a\n");
     }
 
     /// The open denies write sharing, so no other writer changes the file between the check and the append.

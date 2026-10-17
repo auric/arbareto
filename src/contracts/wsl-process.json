@@ -497,7 +497,7 @@
     "    } else {",
     "      sysopen(my $in, $name, O_RDONLY | O_NONBLOCK | O_NOCTTY | O_NOFOLLOW) or return $! == ENOENT ? put('stale') : $! == POSIX::ELOOP() ? put('refused') : put('error', $at, code($!));",
     "      my @fs = stat($in) or return put('error', $at, code($!));",
-    "      S_ISREG($fs[2]) or return put('refused');",
+    "      S_ISREG($fs[2]) && $fs[3] == 1 or return put('refused');",
     "      return put('stale') unless $fs[7] == $want && $want <= $bound;",
     "      my @hash = writer($sha, '-') or return put('error', $at, 'other-error');",
     "      my ($n, $err) = pour($in, $bound, $hash[0]);",

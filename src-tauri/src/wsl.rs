@@ -4832,7 +4832,7 @@ mod tests {
     }
 
     /// Feature 004 contract Δ11: mode `append` creates an absent file, appends once after the size and SHA-256 compare,
-    /// and refuses a link at the file or on the way.
+    /// and refuses a link at the file or on the way, and a file with a second link.
     #[test]
     fn the_real_append_mode_compares_then_appends_and_refuses_a_link() {
         let Some(reference) = reference() else {
@@ -4864,7 +4864,7 @@ mod tests {
             );
             host.run(&command).expect("shell").exit_code
         };
-        let made = "rm -rf -- \"$1\" && mkdir -p -- \"$1/repo/.git/info\" \"$1/outside\" && ln -s ../../outside \"$1/repo/.git/linked\" && : > \"$1/outside/x\" && ln -s ../outside/x \"$1/repo/link\"";
+        let made = "rm -rf -- \"$1\" && mkdir -p -- \"$1/repo/.git/info\" \"$1/outside\" && ln -s ../../outside \"$1/repo/.git/linked\" && : > \"$1/outside/x\" && ln -s ../outside/x \"$1/repo/link\" && : > \"$1/outside/h\" && ln \"$1/outside/h\" \"$1/repo/hard\"";
         assert_eq!(shell(made), Some(0));
         let roots = [
             format!("{root}/repo"),
@@ -4938,7 +4938,12 @@ mod tests {
             AppendResult::NotRegular,
             "a folder"
         );
-        let check = "test \"$(cat \"$1/repo/.gitignore\")\" = \"$(printf '/a\n/b')\" && test \"$(cat \"$1/repo/.git/info/exclude\")\" = /d && test ! -s \"$1/outside/x\" && test ! -e \"$1/outside/y\"";
+        assert_eq!(
+            append(0, &["hard"], empty(), b"/e\n"),
+            AppendResult::NotRegular,
+            "a second link"
+        );
+        let check = "test \"$(cat \"$1/repo/.gitignore\")\" = \"$(printf '/a\n/b')\" && test \"$(cat \"$1/repo/.git/info/exclude\")\" = /d && test ! -s \"$1/outside/x\" && test ! -e \"$1/outside/y\" && test ! -s \"$1/outside/h\"";
         assert_eq!(shell(check), Some(0), "the file bytes");
         assert_eq!(shell("rm -rf -- \"$1\""), Some(0));
     }

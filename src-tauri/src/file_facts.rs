@@ -536,7 +536,7 @@ pub(crate) fn open(
 pub(crate) struct StandardInformation {
     allocation_size: i64,
     pub(crate) end_of_file: i64,
-    number_of_links: u32,
+    pub(crate) number_of_links: u32,
     delete_pending: u8,
     directory: u8,
 }

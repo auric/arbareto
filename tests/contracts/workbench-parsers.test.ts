@@ -307,6 +307,21 @@ describe("URL host (plan.md D13, git-fetch(1) GIT URLS)", () => {
     expect(urlHost("hg::https://host.xz/repo", W)).toBeNull();
   });
 
+  // transport.c `transport_get`: another `<scheme>://` runs `git remote-<scheme>`, and `rsync:` stops Git. url.c `is_urlschemechar` allows a leading digit.
+  test("a scheme that Git does not handle itself has no host", () => {
+    for (const url of ["foo://host.xz/repo", "rsync://host.xz/repo", "HTTPS://host.xz/repo", "1x://host.xz/repo", "1x::host.xz", "D://repos/tool"]) expect(urlHost(url, W)).toBeNull();
+    for (const url of ["http://host.xz/r", "ftp://host.xz/r", "ftps://host.xz/r", "git+ssh://host.xz/r", "ssh+git://host.xz/r"]) expect(urlHost(url, W)).toEqual({ host: "host.xz" });
+  });
+
+  // connect.c `parse_connect_url` and `host_end`: an scp host that starts with `[`, also after `user@`, ends at `]`, and the path starts at the next `:`.
+  test("an scp host in brackets ends at ] and needs : next", () => {
+    expect(urlHost("[::1]:a", W)).toEqual({ host: "[::1]" });
+    expect(urlHost("git@[::1]:a", W)).toEqual({ host: "[::1]" });
+    expect(sameHost(urlHost("[::1]:a", W), urlHost("[::2]:b", W))).toBe(false);
+    expect(sameHost(urlHost("[::1]:a", W), urlHost("ssh://[::1]/b", W))).toBe(true);
+    for (const url of ["[::1", "[::1]x:a", "[::1]/a", "user:pw@[::1]:a"]) expect(urlHost(url, W)).toBeNull();
+  });
+
   test("hosts compare without regard to ASCII case (RFC 4343)", () => {
     const same = (a: string, b: string) => sameHost(urlHost(a, W), urlHost(b, W));
     expect(same("https://Host.XZ/a", "ssh://git@host.xz/b")).toBe(true);

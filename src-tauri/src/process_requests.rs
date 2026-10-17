@@ -1065,7 +1065,7 @@ impl ProcessRequests {
         }
     }
 
-    /// Feature 004 contract Δ6 `fileAppend`: one append to `<worktree root>\.gitignore`, or to a file below the common
+    /// Feature 004 contract Δ6 `fileAppend`: one append to `<worktree root>\.gitignore`, or to `info\exclude` of the common
     /// directory, during the `started` action of its target. The check is a walk, and only its finish writes.
     fn file_append(&self, request: &frame::FileAppend, call_id: &str) -> Result<(), Code> {
         let read_at = Instant::now();
@@ -1092,7 +1092,12 @@ impl ProcessRequests {
         ];
         let root = if parsed.gitignore { 0 } else { 2 };
         let names = file_facts::below(&roots[root], &parsed.path).ok_or(INVALID)?;
-        if parsed.gitignore && names != [".gitignore"] {
+        let wanted: &[&str] = if parsed.gitignore {
+            &[".gitignore"]
+        } else {
+            &["info", "exclude"]
+        };
+        if names != wanted {
             return Err(INVALID);
         }
         let installation = match state
@@ -1448,6 +1453,9 @@ impl ProcessRequests {
         }
         // Feature 004 contract Δ6: the fixed arrays of `globalConfig`, each with the policy of its contract Δ3 step.
         if kind == Kind::GlobalConfig && !global_config_fits(&arguments, policy) {
+            return Err(INVALID);
+        }
+        if kind == Kind::Registered && !script && runs_bound_command(&arguments) {
             return Err(INVALID);
         }
         let limits = run_limits(limits, kind, policy)?;
@@ -3663,6 +3671,34 @@ fn global_config_fits(arguments: &[String], policy: EnvironmentPolicy) -> bool {
         }
         _ => false,
     }
+}
+
+/// Git 2.55 `git.c` `handle_options`: the global options that take the next item as their value.
+const VALUE_OPTIONS: [&str; 8] = [
+    "--git-dir",
+    "--namespace",
+    "--work-tree",
+    "-c",
+    "--config-env",
+    "--shallow-file",
+    "-C",
+    "--attr-source",
+];
+
+/// Feature 004 contract Δ6: `worktree add` and `clone` write a folder that only their bound contexts name.
+/// Git 2.55 `git.c` `handle_options` stops at the first item without `-` and at the help and version options.
+fn runs_bound_command(arguments: &[String]) -> bool {
+    let mut rest = arguments;
+    while let [first, tail @ ..] = rest {
+        if !first.starts_with('-') || matches!(first.as_str(), "--help" | "-h" | "--version" | "-v")
+        {
+            break;
+        }
+        let value = usize::from(VALUE_OPTIONS.contains(&first.as_str()));
+        rest = tail.get(value..).unwrap_or_default();
+    }
+    let items: Vec<&str> = rest.iter().map(String::as_str).collect();
+    matches!(items.as_slice(), ["clone", ..] | ["worktree", "add", ..])
 }
 
 /// Feature 004 contract Δ3 and Δ6 `worktreeAdd`: `worktree add [-b <new>] -- <path> <commit>` with the bound path.
@@ -11755,6 +11791,91 @@ pub(crate) mod tests {
             ),
         ];
         expect_refusals(&harness, base, cases, "UNKNOWN_TARGET");
+        // Contract Δ6: a registered run never runs `worktree add` or `clone`. The Git command follows the global options of Git 2.55 `git.c` `handle_options`.
+        let registered = |call: &str| {
+            run_body(
+                call,
+                &operation,
+                &workspace,
+                &["status"],
+                "integrate",
+                network_limits(30_000, 60_000),
+            )
+        };
+        let cases: Vec<(&str, Edit)> = vec![
+            (
+                "a registered worktree add",
+                arguments(json!([
+                    "--no-lazy-fetch",
+                    "worktree",
+                    "add",
+                    "--",
+                    other,
+                    "topic"
+                ])),
+            ),
+            (
+                "a registered worktree add after global options",
+                arguments(json!([
+                    "--no-lazy-fetch",
+                    "--no-optional-locks",
+                    "-c",
+                    "core.x=y",
+                    "-C",
+                    text,
+                    "--git-dir=.git",
+                    "worktree",
+                    "add",
+                    "-b",
+                    "wt",
+                    "--",
+                    other,
+                    oid
+                ])),
+            ),
+            (
+                "a registered clone",
+                arguments(json!([
+                    "--no-lazy-fetch",
+                    "clone",
+                    "--",
+                    "https://example.test/a.git",
+                    other
+                ])),
+            ),
+            (
+                "a registered clone under read",
+                both(
+                    both(
+                        set("environmentPolicy", json!("read")),
+                        set("limits", json!({ "deadlineMs": 30_000 })),
+                    ),
+                    arguments(json!([
+                        "--no-lazy-fetch",
+                        "--literal-pathspecs",
+                        "clone",
+                        "--",
+                        text,
+                        other
+                    ])),
+                ),
+            ),
+        ];
+        expect_refusals(&harness, registered, cases, "INVALID_REQUEST");
+        // The value of `-C` is no command, so this run is `git add` in a folder named `worktree`.
+        for items in [
+            json!(["--no-lazy-fetch", "-C", "worktree", "add", "--", "x"]),
+            json!(["--no-lazy-fetch", "worktree", "list", "--porcelain", "-z"]),
+        ] {
+            let call = uuid();
+            let mut body = registered(&call);
+            body["arguments"] = items.clone();
+            harness.send(body);
+            assert!(
+                harness.exit(&call, WAIT).is_some(),
+                "the shell started {items}"
+            );
+        }
         // A refused run keeps the binding. An admitted run consumes it, so a second run of that binding starts nothing.
         assert!(harness.contexts.get(&bound, Instant::now()).is_ok());
         for arguments in [&existing, &new] {
@@ -11856,10 +11977,10 @@ pub(crate) mod tests {
         })
     }
 
-    /// Feature 004 contract Δ6: `fileAppend` writes `<worktree root>\.gitignore` or a file below the common directory,
+    /// Feature 004 contract Δ6: `fileAppend` writes `<worktree root>\.gitignore` or `info\exclude` of the common directory,
     /// only for the `started` action of its target.
     #[test]
-    fn a_file_append_writes_only_the_root_gitignore_or_a_file_below_the_common_directory() {
+    fn a_file_append_writes_only_the_root_gitignore_or_the_common_info_exclude() {
         let harness = Harness::child();
         let workspace = harness.child_workspace("repo");
         let git = workspace.worktree.join(".git");
@@ -11938,6 +12059,18 @@ pub(crate) mod tests {
                 excluded(json!(workspace.worktree.join("exclude"))),
             ),
             ("the common directory itself", excluded(json!(git))),
+            (
+                "another file below the common directory",
+                excluded(json!(git.join("config"))),
+            ),
+            (
+                "an exclude in another folder",
+                excluded(json!(git.join("hooks").join("exclude"))),
+            ),
+            (
+                "info\\exclude one folder deeper",
+                excluded(json!(git.join("x").join("info").join("exclude"))),
+            ),
             (
                 "an exclude write of the gitignore action",
                 both(set("target", json!("exclude")), set("path", json!(file))),

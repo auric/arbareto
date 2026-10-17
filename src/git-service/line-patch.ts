@@ -6,6 +6,7 @@
 
 import type { LineActionReason } from "../contracts/file-action";
 import type { PatchHunk } from "./diff-parser";
+import { latin1 } from "./read-steps";
 
 // Contract Δ4: `several-hunks` comes only from the renderer.
 export type LineRefusal = Exclude<LineActionReason, "several-hunks">;
@@ -15,7 +16,6 @@ export type SubHunk = { ok: true; hunk: PatchHunk } | { ok: false; code: "INVALI
 const LF = 0x0a;
 const INVALID: SubHunk = { ok: false, code: "INVALID_REQUEST" };
 const refuse = (reason: LineRefusal): SubHunk => ({ ok: false, code: "UNSUPPORTED_COMPARISON", reason });
-const latin1 = (b: Uint8Array) => Buffer.from(b.buffer, b.byteOffset, b.byteLength).toString("latin1");
 
 // The lines of `bytes`, each with its LF. `parsePatch` ends every hunk line with LF.
 function lines(bytes: Uint8Array): Uint8Array[] {

@@ -7,12 +7,11 @@
 import type { FileFact } from "../contracts/channel";
 import { DISCARD_CHECK_PATHS } from "../contracts/limits";
 import { isObjectId, type ObjectFormat } from "./commands";
+import { latin1 } from "./read-steps";
 import { checkIgnoreArgs } from "./workbench-commands";
 
 // Contract Δ5 "In-the-way paths in a result".
 export const IN_THE_WAY_PATHS = 100;
-
-const latin1 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1");
 
 // NUL-ended fields. Null when the output does not end with NUL.
 function fields(stdout: Uint8Array): string[] | null {

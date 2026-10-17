@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { z } from "zod";
+import { BRANCH_NAME_BYTES } from "./branch-name";
 import { DamagedMarker, LinuxPath, SYNC_ACTIONS, SyncAction, TRUST_BOUNDS, UtcTime } from "./channel";
 import {
   DESTINATION_NOT_EMPTY_REASONS,
@@ -234,8 +235,6 @@ const LaunchPuttygen = op("launchPuttygen", {}, empty());
 // ---- Feature 004 operations (contract Δ1 to Δ3, data-model §2 to §13) ----
 
 // Plan D4 name rule: 1 to 255 UTF-8 bytes, well-formed, no NUL. The service refuses `@` and runs `check-ref-format`.
-// Contract Δ5 "Branch name". It is no output bound, so `limits.ts` does not list it.
-const BRANCH_NAME_BYTES = 255;
 const BranchName = Text.min(1)
   .max(BRANCH_NAME_BYTES)
   .refine((name) => new TextEncoder().encode(name).length <= BRANCH_NAME_BYTES);

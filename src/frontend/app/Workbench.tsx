@@ -1405,7 +1405,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 defaultAction={syncSettings.action}
                 settingsReason={syncSettings.reason}
                 count={trackingCount}
+                running={running ? { action: operation.kind === "sync" ? (operation.sync?.action ?? null) : null, cancelRequested: operation.progress?.state === "cancel-requested" } : null}
                 onRun={sync.run}
+                onCancel={() => statusRegion.current?.requestCancel()}
                 onSetDefault={(action) => void setDefaultPullAction(action)}
               />
             </span>

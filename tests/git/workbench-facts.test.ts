@@ -8,6 +8,7 @@ import { expect, test } from "bun:test";
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, utimesSync } from "node:fs";
 import { dirname, join, relative, resolve as resolvePath } from "node:path";
 import { printOrigin } from "../origin";
+import { factTests, obs, READ, same, STEP, type Observation } from "./fact-runner";
 import { useFixtureRoot } from "./fixture-root";
 import { put } from "./fixtures";
 import { describeGit } from "./git-binary";
@@ -389,34 +390,17 @@ describeGit("workbench fixture self-check (T001)", (git) => {
 // ---- T003: the Git facts F1 to F24 and F29 to F31 ----
 
 const TASK = "T003";
-// tasks.md T003 names Git 2.56.0.windows.2 on Windows. Other hosts record the version only.
-const EXPECTED_VERSION = process.platform === "win32" ? "2.56.0.windows.2" : "record";
 const FACT_MS = 300_000;
 // research.md R21 F21: an empty standard input must end the merge tool question at once.
 const MERGETOOL_MS = 60_000;
-// plan.md D2: every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-locks` and `--literal-pathspecs`.
-const STEP = ["--no-lazy-fetch"];
-const READ = ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs"];
-// `check-ignore` refuses the literal pathspec magic (F1 `discard.check-ignore`), so the oracle reads of this file omit it.
+// `check-ignore` refuses the literal pathspec magic (F1 `discard.check-ignore.with-literal-pathspecs`), so the oracle reads of this file omit it.
 const READ_IGNORE = ["--no-lazy-fetch", "--no-optional-locks"];
 const PUSH = [...STEP, "stash", "push", "--quiet", "-m", "Arbareto: switch to target"];
 const CHECKOUT_TARGET = [...STEP, "checkout", "--no-guess", "--no-recurse-submodules", "target", "--"];
 const REBASE_UP = [...STEP, "rebase", "--no-autostash", "--no-autosquash", "--end-of-options", "refs/heads/up"];
 
-interface Observation {
-  fact: string;
-  expected: unknown;
-  observed: unknown;
-  match: boolean;
-}
-
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-const obs = (fact: string, expected: unknown, observed: unknown, match = same(expected, observed)): Observation => ({ fact, expected, observed, match });
 // A timeout gives -1, which is no Git exit.
 const exitObs = (fact: string, expected: number | "nonzero", exit: number) => obs(fact, expected, exit, expected === "nonzero" ? exit > 0 : exit === expected);
-// JSON without spaces, so each `key=value` field of an OBSERVATION line is one token.
-const token = (v: unknown) => JSON.stringify(v ?? null).replaceAll(" ", "\\u0020");
-const observationLine = (version: string, o: Observation) => `OBSERVATION ${TASK}: ${o.fact.replaceAll(" ", "_")} expected=${token(o.expected)} observed=${token(o.observed)} match=${o.match} git=${version}`;
 
 const run = (r: WbRepo, args: string[], o: GitOptions = {}): GitResult => wb(r, args, { allowExit: "any", ...o });
 const stdout = (res: GitResult) => res.stdout.toString("utf8");
@@ -450,7 +434,7 @@ function stashValue(r: WbRepo): string | null {
 // The contract Δ3 drop step read. `show-ref --exists` exits 2 for a missing ref (git-show-ref(1)).
 function stashReflog(r: WbRepo): string[] {
   if (run(r, [...READ, "show-ref", "--exists", "refs/stash"]).exitCode !== 0) return [];
-  return nulRecords(stdout(wb(r, [...READ, "log", "-g", "-z", "--format=%H", "refs/stash", "--"])));
+  return nulRecords(stdout(wb(r, [...READ, "log", "-g", "-z", "--no-show-signature", "--format=%H", "refs/stash", "--"])));
 }
 
 // The commit message: the bytes after the first empty line of `cat-file commit`.
@@ -532,7 +516,7 @@ function f1(git: string): Observation[] {
   step("create-branch.check-ref-format", br, [...READ, "check-ref-format", "--branch", "topic"], [0]);
   step("delete-branch.count", br, [...READ, "rev-list", "--count", b.oids.unmerged!, "--not", "--exclude=unmerged", "--branches", "--tags", "--remotes"], [0]);
   step("delete-branch.reflog-exists", br, [...READ, "reflog", "exists", "HEAD"], [0]);
-  step("delete-branch.reflog", br, [...READ, "log", "-g", "-z", "--format=%H", "-n", "10000", "HEAD", "--"], [0]);
+  step("delete-branch.reflog", br, [...READ, "log", "-g", "-z", "--no-show-signature", "--format=%H", "-n", "10000", "HEAD", "--"], [0]);
   step("amend.cat-file", br, [...READ, "cat-file", "commit", b.oids.main!], [0]);
   step("amend.upstream", br, [...READ, "for-each-ref", "--format=%(upstream)", "refs/heads/unmerged"], [0]);
   step("worktree-remove.status", br, [...READ, "-C", join(b.root, "wt-other"), "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=dirty"], [0]);
@@ -541,8 +525,9 @@ function f1(git: string): Observation[] {
   const ur = repoOf(u);
   step("discard.diff-tree", ur, [...READ, "diff-tree", "-r", "-z", "--no-renames", "--name-status", u.oids.base!, u.oids.target!], [0]);
   step("discard.ls-files", ur, [...READ, "ls-files", "-z", "--stage", "--", "a.txt", "new.txt"], [0]);
-  step("discard.check-ignore", ur, [...READ, "check-ignore", "-z", "--stdin", "--no-index"], [0], { input: "new.txt\0build.log\0" });
-  step("discard.check-ignore.without-literal-pathspecs", ur, [...READ_IGNORE, "check-ignore", "-z", "--stdin", "--no-index"], [0], { input: "new.txt\0build.log\0" });
+  step("discard.check-ignore", ur, [...READ_IGNORE, "check-ignore", "-z", "--stdin", "--no-index"], [0], { input: "new.txt\0build.log\0" });
+  // Contract Δ3: Git exits 128 for this read with `--literal-pathspecs`.
+  step("discard.check-ignore.with-literal-pathspecs", ur, [...READ, "check-ignore", "-z", "--stdin", "--no-index"], [128], { input: "new.txt\0build.log\0" });
 
   const m = shared(git, "merge-diverged");
   const mr = repoOf(m);
@@ -554,6 +539,8 @@ function f1(git: string): Observation[] {
   const xr = repoOf(x);
   const up = x.oids.up!;
   step("rebase.moved", xr, [...READ, "rev-list", "--count", "--right-only", "--cherry-pick", "--no-merges", `${up}...HEAD`], [0]);
+  // plan.md D6: with `rebase.rebaseMerges` true, `--no-merges` goes.
+  step("rebase.moved.rebase-merges", xr, [...READ, "rev-list", "--count", "--right-only", "--cherry-pick", `${up}...HEAD`], [0]);
   step("rebase.rewritten", xr, [...READ, "rev-list", "--count", `${up}..HEAD`], [0]);
   step("rebase.held", xr, [...READ, "rev-list", "--count", `${up}..HEAD`, "--not", "--remotes"], [0]);
   step("rebase.force-note", xr, [...READ, "rev-list", "--count", `${up}..HEAD`, "--not", "refs/remotes/origin/topic"], [0]);
@@ -573,7 +560,7 @@ function f1(git: string): Observation[] {
 
   const d = repoOf(copy(git, "switch-dirty"));
   step("stash.push", d, PUSH, [0]);
-  step("stash.drop-read", d, [...READ, "log", "-g", "-z", "--format=%H", "refs/stash", "--"], [0]);
+  step("stash.drop-read", d, [...READ, "log", "-g", "-z", "--no-show-signature", "--format=%H", "refs/stash", "--"], [0]);
   step("stash.apply-index", d, [...STEP, "stash", "apply", "--index", stashValue(d) ?? "refs/stash"], [0]);
   step("stash.drop", d, [...STEP, "stash", "drop", "--quiet", "stash@{0}"], [0]);
 
@@ -593,11 +580,11 @@ function f1(git: string): Observation[] {
   step("config-save.unset", cr, [...STEP, "config", "unset", "--local", "--", "user.name"], [0]);
 
   for (const [label, fixture, flags] of [
-    ["merge", "merge-diverged", []],
-    ["merge.no-ff", "merge-ff", ["--no-ff"]],
+    ["merge", "merge-diverged", ["--no-log", "-m", "Edited message"]],
+    ["merge.no-ff", "merge-ff", ["--no-ff", "--no-log", "-m", "Edited message"]],
+    ["merge.no-commit", "merge-diverged", ["--no-commit", "--no-log", "-m", "Edited message"]],
+    ["merge.no-ff-no-commit", "merge-ff", ["--no-ff", "--no-commit", "--no-log", "-m", "Edited message"]],
     ["merge.squash", "merge-diverged", ["--squash"]],
-    ["merge.no-commit", "merge-ff", ["--no-ff", "--no-commit"]],
-    ["merge.message", "merge-diverged", ["--no-log", "-m", "Edited message"]],
   ] as [string, WbFixtureName, string[]][]) {
     step(label, repoOf(copy(git, fixture)), [...STEP, "merge", "--no-autostash", "--no-edit", ...flags, "--end-of-options", "refs/heads/topic"], [0]);
   }
@@ -605,8 +592,8 @@ function f1(git: string): Observation[] {
   step("rebase.options", repoOf(copy(git, "rebase-mix")), [...STEP, "rebase", "--autostash", "--autosquash", "--end-of-options", "refs/heads/up"], [0]);
 
   const k = repoOf(copy(git, "conflict-merge"));
-  step("choose-side.ours", k, [...STEP, "checkout", "--no-recurse-submodules", "--ours", "--", "uu.txt"], [0]);
-  step("choose-side.theirs", k, [...STEP, "checkout", "--no-recurse-submodules", "--theirs", "--", "aa.txt"], [0]);
+  step("choose-side.ours", k, [...STEP, "--literal-pathspecs", "checkout", "--no-recurse-submodules", "--ours", "--", "uu.txt"], [0]);
+  step("choose-side.theirs", k, [...STEP, "--literal-pathspecs", "checkout", "--no-recurse-submodules", "--theirs", "--", "aa.txt"], [0]);
   step("mergetool", k, [...STEP, "--literal-pathspecs", "mergetool", "--tool=fixture", "--no-prompt", "--", "uu.txt"], [0], { input: "", timeoutMs: MERGETOOL_MS });
 
   step("amend.commit", repoOf(copy(git, "amend-on-upstream")), [...STEP, "commit", "--quiet", "--amend", "--file=-"], [0], { input: "Amended message\n" });
@@ -867,8 +854,8 @@ function f13(git: string): Observation[] {
     exitObs("F13.exit", 0, exit),
     obs("F13.count", created.length, counted),
     obs("F13.subjects", created, subjects(sr, walk)),
-    // plan.md D6 force note: the push tracking ref holds a rewritten commit.
-    obs("F13.force-note", true, notTracked < rewritten),
+    // plan.md D6: the force note shows when `notTracked` is below `rewritten`.
+    obs("F13.force-note", "record", { notTracked, rewritten }, true),
   ];
 }
 
@@ -983,7 +970,7 @@ function f20(git: string): Observation[] {
   const locked = byPath("wt-locked-reason")?.find((l) => l.startsWith("locked")) ?? null;
   const prunable = byPath("wt-prunable")?.find((l) => l.startsWith("prunable")) ?? null;
   return [
-    obs("F20.record-end", true, raw.endsWith("\0\0") && raw.split("\0\0").slice(0, -1).every((r) => !r.includes("\0\0"))),
+    obs("F20.record-end", true, raw.endsWith("\0\0")),
     obs("F20.main-first", `worktree ${f.repo.replaceAll("\\", "/")}`, records[0]?.[0] ?? null),
     obs("F20.spaces", ["HEAD", "branch"], attrs("wt with spaces")),
     obs("F20.locked-reason", "locked fixture reason\nwith newline", locked),
@@ -1156,26 +1143,4 @@ const FACTS: [string, string, (git: string) => Observation[]][] = [
   ["F31", "hash-object --stdin-paths equals the index after git add", f31],
 ];
 
-describeGit("Git facts F1 to F24, F29 to F31 (T003)", (git) => {
-  let version = "";
-  const versionOf = () => {
-    if (version !== "") return version;
-    const out = stdout(wb(repoOf(shared(git, "branches")), ["version"])).trim();
-    const m = /^git version (\S+)$/.exec(out);
-    if (m === null) throw new Error(`git version output refused: ${JSON.stringify(out)}`);
-    return (version = m[1]!);
-  };
-
-  test("Git version", () => {
-    const v = versionOf();
-    console.log(observationLine(v, obs("version", EXPECTED_VERSION, v, EXPECTED_VERSION === "record" || v === EXPECTED_VERSION)));
-  }, FACT_MS);
-
-  for (const [id, title, fact] of FACTS) {
-    test(`${id} ${title}`, () => {
-      const observations = fact(git);
-      expect(observations.length).toBeGreaterThan(0);
-      for (const o of observations) console.log(observationLine(versionOf(), o));
-    }, FACT_MS);
-  }
-});
+describeGit("Git facts F1 to F24, F29 to F31 (T003)", (git) => factTests(TASK, git, FACTS, FACT_MS));

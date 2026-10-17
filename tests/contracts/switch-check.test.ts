@@ -120,10 +120,17 @@ describe("the index read", () => {
 
 describe("check-ignore (research.md R21 F1)", () => {
   test("the read has no --literal-pathspecs and sends each path with NUL", () => {
-    const read = ignoreRead(["new.txt", utf8("ü")]);
+    const read = ignoreRead(["new.txt", utf8("ü"), "a:b"]);
+    if (read === "path") throw new Error("the read refused a path without a leading colon");
     expect(read.args).toEqual(["--no-lazy-fetch", "--no-optional-locks", "check-ignore", "-z", "--stdin", "--no-index"]);
     expect(read.args).not.toContain("--literal-pathspecs");
-    expect(Buffer.from(read.input).toString("latin1")).toBe(`new.txt\0${utf8("ü")}\0`);
+    expect(Buffer.from(read.input).toString("latin1")).toBe(`new.txt\0${utf8("ü")}\0a:b\0`);
+  });
+
+  // contract Δ3: without `--literal-pathspecs`, a leading `:` can be pathspec magic, so plan.md D3 refuses it until T081.
+  test("a candidate with a leading colon refuses with reason path", () => {
+    expect(ignoreRead(["new.txt", ":(glob)*"])).toBe("path");
+    expect(ignoreRead([":dir"])).toBe("path");
   });
 
   test("ignored candidates drop out", () => {

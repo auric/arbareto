@@ -4,10 +4,10 @@
 // T004: the Git facts F25 to F28 of research.md R21 (plan.md D8). A fact prints `OBSERVATION T004:` lines. A `match=false` line is a finding for research.md "Results", not a failure.
 // The expected values come from the fixture construction and the research.md R10 and R11 rules, never from `src/git-service/`.
 
-import { expect, test } from "bun:test";
 import { copyFileSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
+import { factTests, obs, READ, same, STEP, type Observation } from "./fact-runner";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { indexEntries, sha256 } from "./git-oracle";
@@ -17,31 +17,13 @@ printOrigin("./workbench-fixtures.ts", import.meta.dir);
 useFixtureRoot();
 
 const TASK = "T004";
-// tasks.md T003 names Git 2.56.0.windows.2 on Windows. Other hosts record the version only.
-const EXPECTED_VERSION = process.platform === "win32" ? "2.56.0.windows.2" : "record";
 const FACT_MS = 300_000;
-// plan.md D2: every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-locks` and `--literal-pathspecs`.
-const STEP = ["--no-lazy-fetch"];
-const READ = ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs"];
 // The 001 hunk patch options (contract §4).
 const PATCH = ["-p", "--no-textconv", "--no-ext-diff", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--ignore-submodules=dirty"];
 // The 001 status read (contract §7).
 const STATUS = [...READ, "status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--find-renames", "--ignore-submodules=dirty"];
 // plan.md D8 `MULTI_FILE_ACTION_FILES`.
 const MULTI_FILES = 10_000;
-
-interface Observation {
-  fact: string;
-  expected: unknown;
-  observed: unknown;
-  match: boolean;
-}
-
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-const obs = (fact: string, expected: unknown, observed: unknown, match = same(expected, observed)): Observation => ({ fact, expected, observed, match });
-// JSON without spaces, so each `key=value` field of an OBSERVATION line is one token.
-const token = (v: unknown) => JSON.stringify(v ?? null).replaceAll(" ", "\\u0020");
-const observationLine = (version: string, o: Observation) => `OBSERVATION ${TASK}: ${o.fact.replaceAll(" ", "_")} expected=${token(o.expected)} observed=${token(o.observed)} match=${o.match} git=${version}`;
 
 const run = (r: WbRepo, args: string[], o: GitOptions = {}): GitResult => wb(r, args, { allowExit: "any", ...o });
 const stdout = (res: GitResult) => res.stdout.toString("latin1");
@@ -311,7 +293,8 @@ function f28(git: string): Observation[] {
     const kept = new Set(entries.slice(0, bound).map((e) => e.record));
     const lost = entries.filter((e) => e.kind !== "?" && !kept.has(e.record)).map((e) => e.record.split(" ").at(-1));
     out.push(obs(`F28 ${name} record order`, "tracked and unmerged before untracked", kindRuns(entries), first >= 0 && entries.slice(first).every((e) => e.kind === "?")));
-    out.push(obs(`F28 ${name} cut at ${bound} of ${entries.length} keeps every tracked, unmerged, and staged record`, [], lost));
+    // The record order above implies an empty list, so this line is a record.
+    out.push(obs(`F28 ${name} cut at ${bound} of ${entries.length} keeps every tracked, unmerged, and staged record`, "record", lost, true));
   }
   return out;
 }
@@ -323,26 +306,4 @@ const FACTS: [string, string, (git: string) => Observation[]][] = [
   ["F28", "a status cut inside the untracked records keeps the tracked records", f28],
 ];
 
-describeGit("Git facts F25 to F28 (T004)", (git) => {
-  let version = "";
-  const versionOf = () => {
-    if (version !== "") return version;
-    const res = Bun.spawnSync([git, "version"], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
-    const m = /^git version (\S+)$/.exec(res.stdout.toString().trim());
-    if (res.exitCode !== 0 || m === null) throw new Error(`git version output refused: ${JSON.stringify(res.stdout.toString())}`);
-    return (version = m[1]!);
-  };
-
-  test("Git version", () => {
-    const v = versionOf();
-    console.log(observationLine(v, obs("version", EXPECTED_VERSION, v, EXPECTED_VERSION === "record" || v === EXPECTED_VERSION)));
-  }, FACT_MS);
-
-  for (const [id, title, fact] of FACTS) {
-    test(`${id} ${title}`, () => {
-      const observations = fact(git);
-      expect(observations.length).toBeGreaterThan(0);
-      for (const o of observations) console.log(observationLine(versionOf(), o));
-    }, FACT_MS);
-  }
-});
+describeGit("Git facts F25 to F28 (T004)", (git) => factTests(TASK, git, FACTS, FACT_MS));

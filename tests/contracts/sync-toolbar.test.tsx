@@ -132,6 +132,16 @@ describe("unavailable reasons (FR-017, FR-028)", () => {
     expect(disabled(button("Fetch"))).toBe(false);
   });
 
+  // Contract Δ3 `reviewSync`: pull checks the operation state before the HEAD form, and push checks the HEAD form first.
+  test("a rebase with a detached HEAD gives Pull the Notices band reason and Push the detached reason", async () => {
+    await open({ operationState: "rebasing", head: { state: "detached", oid: oid(1) } });
+    expect(disabled(button("Pull"))).toBe(true);
+    expect(reasonOf(button("Pull"))).toContain(BLOCKED_TEXT.operation);
+    expect(disabled(button("Push"))).toBe(true);
+    expect(reasonOf(button("Push"))).toContain("No branch checked out.");
+    expect(disabled(button("Fetch"))).toBe(false);
+  });
+
   // Feature 003 FR-030: only a merge or a rebase has the conflict row. Every other state keeps the 001 text.
   test("an operation without the conflict row keeps the 001 reason", async () => {
     for (const operationState of ["cherry-picking", "reverting", "sequencer-active", "unknown", "conflicted"] as const) {

@@ -33,10 +33,12 @@ export type SyncReasons = { fetchReason: string | null; pullReason: string | nul
 export function syncReasons(head: Head | null, operationState: OperationState | null, upstream: "none" | "set" | null, blocked: string | null): SyncReasons {
   const block = operationState === null ? null : operationBlock(operationState);
   const operation = block === null ? null : BLOCKED_TEXT[block];
-  const branch =
-    head === null ? BLOCKED_TEXT.loading : head.state === "detached" ? DETACHED : head.state === "unborn" ? UNBORN : operation;
-  const commitPush = head?.state === "unborn" ? operation : branch;
-  return { fetchReason: blocked, pullReason: blocked ?? branch ?? (upstream === "none" ? NO_UPSTREAM : null), pushReason: blocked ?? branch, commitPushReason: blocked ?? commitPush };
+  const form = head === null ? BLOCKED_TEXT.loading : head.state === "detached" ? DETACHED : head.state === "unborn" ? UNBORN : null;
+  // Contract Δ3 `reviewSync`: pull checks the operation state before the HEAD form, because a rebase detaches HEAD. Push checks the HEAD form first.
+  const pull = head === null ? form : (operation ?? form);
+  const push = form ?? operation;
+  const commitPush = head?.state === "unborn" ? operation : push;
+  return { fetchReason: blocked, pullReason: blocked ?? pull ?? (upstream === "none" ? NO_UPSTREAM : null), pushReason: blocked ?? push, commitPushReason: blocked ?? commitPush };
 }
 
 /** The unavailable reason of one pull menu action. Fetch and Fetch all remotes take the Fetch reason. */

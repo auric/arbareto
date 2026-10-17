@@ -101,6 +101,22 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
   chooseSyncPath: { renderer: () => ({ target: "plink" }) },
   clearSyncPath: { renderer: () => ({ target: "remoteKey", worktreeKey: FINGERPRINT, remote: "origin" }) },
   launchPuttygen: { renderer: () => ({}) },
+  // Feature 004 contract Δ1 and Δ3.
+  readBranches: { renderer: () => ({}), service: () => ({}) },
+  readWorktrees: { renderer: () => ({}), service: () => ({}) },
+  readGitSettings: { renderer: () => ({}), service: () => ({}) },
+  reviewWorkbench: {
+    renderer: () => ({ action: "worktree-add", branch: { existing: "refs/heads/topic" }, path: CLONE_DESTINATION }),
+    service: () => ({ action: "worktree-add", branch: { existing: "refs/heads/topic" }, bootstrapId: id() }),
+  },
+  runWorkbench: { renderer: () => ({ workbenchToken: id(), start: true }), service: () => ({ workbenchToken: id(), start: true }) },
+  applyFiles: {
+    renderer: () => ({ snapshotId: id(), entryIds: [id()], direction: "stage", kind: "selected" }),
+    service: () => ({ snapshotId: id(), entryIds: [id()], direction: "stage", kind: "selected" }),
+  },
+  openWorktree: { renderer: () => ({ repositoryId: id(), path: CLONE_DESTINATION }), service: () => ({ repositoryId: id(), bootstrapId: id() }) },
+  revealPath: { renderer: () => ({ repositoryId: id(), entryId: id() }), service: () => ({ repositoryId: id(), entryId: id() }) },
+  setSwitchChoice: { renderer: () => ({ choice: "stash" }) },
 };
 
 const NAMES = Object.keys(PAYLOADS);
@@ -119,6 +135,9 @@ const GENERATION_REQUIRED = [
   "approveTrust",
   "readTracking",
   "reviewSync",
+  "readBranches",
+  "readWorktrees",
+  "reviewWorkbench",
 ];
 const GENERATION_ABSENT = NAMES.filter((n) => !GENERATION_REQUIRED.includes(n) && n !== "readWorkspace");
 
@@ -144,9 +163,15 @@ const REPOSITORY_BOUND = [
   "readTracking",
   "reviewSync",
   "sync",
+  "readBranches",
+  "readWorktrees",
+  "reviewWorkbench",
+  "runWorkbench",
+  "applyFiles",
 ];
 // Feature 003 data-model §11: a sync target names its repository, and a clone target without a workspace names none.
-const REPOSITORY_OPTIONAL = ["connectInTerminal"];
+// Feature 004 contract Δ3 `readGitSettings`: without `repositoryId`, the read runs in the `globalConfig` context.
+const REPOSITORY_OPTIONAL = ["connectInTerminal", "readGitSettings"];
 
 function envelope(operation: string, side: Side = "renderer", payload?: Json): Json {
   const make = PAYLOADS[operation]?.[side];
@@ -182,9 +207,9 @@ const sidesOf = (name: string) =>
 
 describe("operation list", () => {
   // Feature 002 plan.md P7 retires the contract §3 `readHistory`.
-  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, and the 11 feature 003 contract Δ1 operations", () => {
+  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, and the 9 feature 004 contract Δ1 operations", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(41);
+    expect(OPERATIONS.length).toBe(50);
   });
 
   for (const name of NAMES) {
@@ -381,6 +406,7 @@ describe("explicit approval fields", () => {
     ["commit", "confirmFullScope"],
     ["updateSubmodules", "start"],
     ["sync", "start"],
+    ["runWorkbench", "start"],
   ];
   for (const [name, field] of cases) {
     test.each([[false], ["true"], [1], [null]])(`${name} ${field} %j gives INVALID_REQUEST`, (value) => {

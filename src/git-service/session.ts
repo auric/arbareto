@@ -691,6 +691,15 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     // Feature 003 P7 adds these handlers. Until then the service answers SERVICE_UNAVAILABLE.
     clone: undefined,
     connectInTerminal: undefined,
+    // Feature 004 P4 and P6 add these handlers. Until then the service answers SERVICE_UNAVAILABLE.
+    readBranches: undefined,
+    readWorktrees: undefined,
+    readGitSettings: undefined,
+    reviewWorkbench: undefined,
+    runWorkbench: undefined,
+    applyFiles: undefined,
+    openWorktree: undefined,
+    revealPath: undefined,
   };
 
   function receiveHandshake(frame: Fields) {

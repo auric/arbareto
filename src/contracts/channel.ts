@@ -30,7 +30,7 @@ import {
 } from "./limits";
 import { PUTTY_PROGRAMS, PUTTY_UNAVAILABLE_REASONS } from "./errors";
 import { NATIVE } from "./native-path";
-import { ChannelPath, Count, Direction, DistroName, FileDirection, Fingerprint, Identifier, MutationKind, Text } from "./operations";
+import { ChannelPath, ConfigScope, Count, Direction, DistroName, FileDirection, Fingerprint, Identifier, MutationKind, Text } from "./operations";
 
 // Contract §6 "Startup handshake" and "Channel frames". Each union branch has a title, because typify names its types from titles.
 
@@ -168,12 +168,18 @@ const DISCOVERY = { contextKind: z.literal("repositoryDiscovery"), bootstrapId: 
 const REGISTERED = { contextKind: z.literal("registeredOperation"), gitInstallationId: Identifier, repositoryId: Identifier };
 // Feature 003 contract Δ6: the shell binds the destination of one clone. The cwd is the application-owned launch folder, or `/` in WSL.
 const CLONE = { contextKind: z.literal("clone"), cloneId: Identifier, gitInstallationId: Identifier };
+// Feature 004 contract Δ6: `globalConfig` runs the fixed configuration arrays in the application-owned launch folder.
+const GLOBAL_CONFIG = { contextKind: z.literal("globalConfig"), gitInstallationId: Identifier };
+// Feature 004 contract Δ6: the native step of the `worktree-add` review binds the path to `bootstrapId`.
+const WORKTREE_ADD = { contextKind: z.literal("worktreeAdd"), gitInstallationId: Identifier, repositoryId: Identifier, bootstrapId: Identifier };
 // Contract §6 "Channel frames" `run` fields: the context IDs of each context kind.
 export const ProcessContext = z.discriminatedUnion("contextKind", [
   z.strictObject(GIT_PROBE).meta({ title: "GitProbeContext" }),
   z.strictObject(DISCOVERY).meta({ title: "DiscoveryContext" }),
   z.strictObject(REGISTERED).meta({ title: "RegisteredContext" }),
   z.strictObject(CLONE).meta({ title: "CloneContext" }),
+  z.strictObject(GLOBAL_CONFIG).meta({ title: "GlobalConfigContext" }),
+  z.strictObject(WORKTREE_ADD).meta({ title: "WorktreeAddContext" }),
 ]);
 export type ProcessContext = z.infer<typeof ProcessContext>;
 
@@ -186,6 +192,8 @@ export const RegisteredLimits = z
 export const NetworkLimits = z
   .strictObject({ inactivityMs: ms(SUBMODULE_UPDATE_INACTIVITY_MS), ceilingMs: ms(SUBMODULE_UPDATE_CEILING_MS), stallMs: z.literal(STALL_NOTICE_MS) })
   .meta({ title: "NetworkLimits" });
+// Feature 004 contract Δ5 and Δ6: the policy `mergetool` has no inactivity limit and the 4-hour ceiling.
+export const CeilingLimits = z.strictObject({ ceilingMs: ms(SUBMODULE_UPDATE_CEILING_MS) }).meta({ title: "CeilingLimits" });
 
 // Standard base64 with padding.
 export const Base64 = z.string().regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/);
@@ -193,8 +201,8 @@ export const Base64 = z.string().regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2
 export const decodedBytes = (data: string) => Math.floor((data.length * 3) / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
 const InlineInput = Base64.refine((data) => decodedBytes(data) >= 1 && decodedBytes(data) <= INLINE_PROCESS_INPUT_BYTES);
 
-// Feature 003 contract Δ6 and Δ7: `remote` and `integrate` take the network limits.
-const ENVIRONMENT_POLICIES = ["probe", "read", "mutation", "network", "search", "remote", "integrate"] as const;
+// Feature 003 contract Δ6 and Δ7: `remote` and `integrate` take the network limits. Feature 004 contract Δ7: `mergetool` takes the ceiling limits.
+const ENVIRONMENT_POLICIES = ["probe", "read", "mutation", "network", "search", "remote", "integrate", "mergetool"] as const;
 // The `id` gives the shell one generated `EnvironmentPolicy` type for the three `run` context kinds.
 export const EnvironmentPolicy = z.enum(ENVIRONMENT_POLICIES).meta({ id: "EnvironmentPolicy" });
 
@@ -209,7 +217,7 @@ const run = {
   environmentPolicy: EnvironmentPolicy,
   transactionId: Identifier.optional(),
   indexFile: ChannelPath.optional(),
-  limits: z.union([RegisteredLimits, NetworkLimits]),
+  limits: z.union([RegisteredLimits, NetworkLimits, CeilingLimits]),
 };
 const identity = { type: z.literal("identity"), ...call, operationId: Identifier, paths: z.array(ChannelPath).min(1).max(IDENTITY_PATHS) };
 
@@ -378,6 +386,9 @@ export const ProcessRequest = z.xor([
     z.strictObject({ ...run, ...REGISTERED, script: z.literal("matchingProbe").optional() }).meta({ title: "RunRegistered" }),
     // Feature 003 contract Δ6: the shell admits only the fixed clone array with the bound destination as the last item.
     z.strictObject({ ...run, ...CLONE }).meta({ title: "RunClone" }),
+    // Feature 004 contract Δ6: the shell admits only the fixed arrays of each context.
+    z.strictObject({ ...run, ...GLOBAL_CONFIG }).meta({ title: "RunGlobalConfig" }),
+    z.strictObject({ ...run, ...WORKTREE_ADD }).meta({ title: "RunWorktreeAdd" }),
   ]).meta({ title: "RunGroup" }),
   named("Input", z.strictObject({ type: z.literal("input"), ...call, data: InlineInput })),
   named("Cancel", z.strictObject({ type: z.literal("cancel"), ...call })),
@@ -408,14 +419,32 @@ export const ProcessRequest = z.xor([
     z.strictObject({ type: z.literal("release"), gitInstallationId: Identifier }).meta({ title: "ReleaseGitFrame" }),
   ]).meta({ title: "ReleaseGroup" }),
   named("CloseJob", z.strictObject({ type: z.literal("closeJob"), operationId: Identifier })),
-  // Feature 003 contract Δ6.
-  named("DestinationFacts", z.strictObject({ type: z.literal("destinationFacts"), ...call, operationId: Identifier, cloneId: Identifier })),
+  // Feature 003 contract Δ6. Feature 004 contract Δ6: the `worktreeAdd` binding also takes it.
+  z.union([
+    z.strictObject({ type: z.literal("destinationFacts"), ...call, operationId: Identifier, cloneId: Identifier }).meta({ title: "DestinationFactsClone" }),
+    z.strictObject({ type: z.literal("destinationFacts"), ...call, operationId: Identifier, bootstrapId: Identifier }).meta({ title: "DestinationFactsWorktreeAdd" }),
+  ]).meta({ title: "DestinationFactsGroup" }),
   z.union([
     z.strictObject({ type: z.literal("pageant"), ...call, operationId: Identifier, repositoryId: Identifier, remote: Text.min(1) }).meta({ title: "PageantRemote" }),
     z.strictObject({ type: z.literal("pageant"), ...call, operationId: Identifier, cloneId: Identifier }).meta({ title: "PageantClone" }),
   ]).meta({ title: "PageantGroup" }),
   // The shell takes the Git path from `gitInstallationId` and the worktree root from `repositoryId`. A clone target has no repository.
   named("Terminal", z.strictObject({ type: z.literal("terminal"), ...call, operationId: Identifier, gitInstallationId: Identifier, repositoryId: Identifier.optional(), target: Text.min(1) })),
+  // Feature 004 contract Δ6. `expected` is `absent`, or the size and SHA-256 of the target (data-model §7).
+  named(
+    "FileAppend",
+    z.strictObject({
+      type: z.literal("fileAppend"),
+      ...call,
+      operationId: Identifier,
+      repositoryId: Identifier,
+      target: z.enum(["gitignore", "exclude"]),
+      path: ChannelPath,
+      expected: z.union([z.enum(["absent"]), z.strictObject({ size: Count, sha256: Fingerprint }).meta({ title: "FileAppendExpected" })]),
+      bytes: InlineInput,
+    }),
+  ),
+  named("Reveal", z.strictObject({ type: z.literal("reveal"), ...call, operationId: Identifier, repositoryId: Identifier, path: ChannelPath })),
 ]);
 
 // Contract §6 "Process replies": the `refused` codes. The service refuses its own invalid request with INVALID_REQUEST.
@@ -580,6 +609,16 @@ export const TerminalReply = z.union([
   z.strictObject({ type: z.literal("terminal"), ...call, result: z.literal("started") }).meta({ title: "TerminalStarted" }),
   z.strictObject({ type: z.literal("terminal"), ...call, ...puttyFailed }).meta({ title: "TerminalFailed" }),
 ]);
+// ---- Feature 004 contract Δ6 replies ----
+
+// `refused` names a reparse point or a non-regular file. `stale` names a size or SHA-256 other than `expected`.
+export const FileAppendReply = z.union([
+  z.strictObject({ type: z.literal("fileAppend"), ...call, result: z.enum(["appended", "stale"]) }).meta({ title: "FileAppendResult" }),
+  z.strictObject({ type: z.literal("fileAppend"), ...call, result: z.literal("refused"), reason: z.enum(["not-regular"]) }).meta({ title: "FileAppendRefused" }),
+  z.strictObject({ type: z.literal("fileAppend"), ...call, result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "FileAppendError" }),
+]);
+// An error gives the `refused` frame with `UNKNOWN_TARGET` (contract Δ3 `revealPath`).
+export const RevealReply = z.strictObject({ type: z.literal("reveal"), ...call }).meta({ title: "RevealReply" });
 
 export const ProcessReply = z.xor([
   OutputReply,
@@ -597,6 +636,8 @@ export const ProcessReply = z.xor([
   DestinationFactsReply.meta({ title: "DestinationFactsGroup" }),
   PageantReply.meta({ title: "PageantReplyGroup" }),
   TerminalReply.meta({ title: "TerminalGroup" }),
+  FileAppendReply.meta({ title: "FileAppendGroup" }),
+  RevealReply,
 ]);
 
 // ---- `mutation` frames (contract §6 "Recovery markers") ----
@@ -604,22 +645,60 @@ export const ProcessReply = z.xor([
 // Feature 003 contract Δ3 `reviewSync`: the nine actions.
 export const SYNC_ACTIONS = ["fetch", "fetch-all", "pull", "integrate", "push", "force-push", "abort", "continue", "skip"] as const;
 export const SyncAction = z.enum(SYNC_ACTIONS);
+// Feature 004 contract Δ3 `reviewWorkbench`: the thirteen actions.
+export const WORKBENCH_ACTIONS = [
+  "switch",
+  "create-branch",
+  "rename-branch",
+  "delete-branch",
+  "merge",
+  "rebase",
+  "choose-side",
+  "mergetool",
+  "ignore",
+  "worktree-add",
+  "worktree-remove",
+  "worktree-prune",
+  "config-save",
+] as const;
+// Feature 004 contract Δ6: the action of a `started` frame of kind `workbench`. The close prompt names the side and the ignore target, so the action holds them.
+export const WORKBENCH_STARTED_ACTIONS = [
+  "switch",
+  "create-branch",
+  "rename-branch",
+  "delete-branch",
+  "merge",
+  "rebase",
+  "choose-ours",
+  "choose-theirs",
+  "mergetool",
+  "ignore-gitignore",
+  "ignore-exclude",
+  "worktree-add",
+  "worktree-remove",
+  "worktree-prune",
+  "config-save",
+] as const;
 
 const startedFields = {
   operationId: Identifier,
   repositoryId: Identifier,
   kind: MutationKind,
   direction: FileDirection.optional(),
-  action: SyncAction.optional(),
+  action: z.enum([...SYNC_ACTIONS, ...WORKBENCH_STARTED_ACTIONS]).optional(),
   worktreeRoot: ChannelPath,
   commonDirectory: ChannelPath,
 };
+const DIRECTED: readonly string[] = ["applyHunk", "applyFile", "applyFiles"];
+const SYNC: readonly string[] = SYNC_ACTIONS;
+const WORKBENCH: readonly string[] = WORKBENCH_STARTED_ACTIONS;
 // Contract §6 "Mutation frames": a hunk or file action carries its direction, and no other kind carries one.
 // Feature 003 contract Δ3: only a file action takes `resolve`. Contract Δ6: a `sync` frame carries its action, and no other kind carries one.
+// Feature 004 contract Δ6: a `workbench` frame carries its action, and an `applyFiles` frame carries `stage` or `unstage`.
 const directionRule = (frame: { kind: string; direction?: string; action?: string }) =>
-  (frame.kind === "applyHunk" || frame.kind === "applyFile") === (frame.direction !== undefined) &&
-  (frame.kind !== "applyHunk" || Direction.safeParse(frame.direction).success) &&
-  (frame.kind === "sync") === (frame.action !== undefined);
+  DIRECTED.includes(frame.kind) === (frame.direction !== undefined) &&
+  (frame.kind === "applyFile" || !DIRECTED.includes(frame.kind) || Direction.safeParse(frame.direction).success) &&
+  (frame.kind === "sync" ? SYNC.includes(frame.action ?? "") : frame.kind === "workbench" ? WORKBENCH.includes(frame.action ?? "") : frame.action === undefined);
 export const StartedCall = z.strictObject(startedFields).refine(directionRule);
 export type MutationStarted = z.infer<typeof StartedCall>;
 
@@ -695,3 +774,34 @@ export const RevokeReply = z.union([
   z.strictObject({ type: z.literal("revoke"), ...walkDeadline }).meta({ title: "RevokeDeadline" }),
 ]);
 export const TrustReply = z.xor([ConfirmReply.meta({ title: "ConfirmGroup" }), ConfirmRunReply, RevokeReply.meta({ title: "RevokeGroup" }), Refused]);
+
+// ---- Feature 004 `trust` frame `confirm` version 2 (contract Δ6, plan D12 and D14) ----
+// The shell reads the version 1 frame until the plan P7 trust shell change. That change puts this frame and the version 2 record in `TrustRequest`.
+
+// Contract Δ6: the action that the dialog names.
+export const TRUST_ACTIONS = ["commit", "read", "fetch", "pull", "push", "switch", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "submodules"] as const;
+// Contract Δ5 "Trust dialog names per kind". It is no output bound, so `limits.ts` does not list it.
+const TRUST_DIALOG_NAMES = 20;
+// Plan D14: the shell shows a value with a control character as a fixed text, so a name is any text without NUL.
+const DialogName = Text.min(1);
+const dialogNames = <T extends z.ZodRawShape>(item: T) => z.strictObject({ names: z.array(z.strictObject(item)).max(TRUST_DIALOG_NAMES), more: Count });
+export const TrustConfirmV2 = z
+  .strictObject({
+    type: z.literal("confirm"),
+    ...call,
+    worktreeRoot: ChannelPath,
+    adminDirectory: ChannelPath,
+    commonDirectory: ChannelPath,
+    gitSelectedPath: ChannelPath,
+    policyVersion: z.literal(2),
+    action: z.enum(TRUST_ACTIONS),
+    details: z.strictObject({
+      hooks: dialogNames({ event: DialogName, folder: DialogName }),
+      filters: dialogNames({ driver: DialogName, scope: ConfigScope }),
+      monitors: dialogNames({ scope: ConfigScope }),
+      mergeDrivers: dialogNames({ driver: DialogName, scope: ConfigScope }),
+      mergeTools: dialogNames({ tool: DialogName, scope: ConfigScope }),
+      signing: dialogNames({ key: DialogName, scope: ConfigScope }),
+    }),
+  })
+  .meta({ title: "ConfirmV2" });

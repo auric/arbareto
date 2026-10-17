@@ -115,7 +115,10 @@
         "SYNC_UNAVAILABLE",
         "PUSH_REJECTED",
         "PUTTY_UNAVAILABLE",
-        "DESTINATION_NOT_EMPTY"
+        "DESTINATION_NOT_EMPTY",
+        "WORKBENCH_UNAVAILABLE",
+        "UNTRACKED_IN_WAY",
+        "STASH_KEPT"
       ]
     },
     "reason": {
@@ -147,7 +150,9 @@
               "applyFile",
               "commit",
               "updateSubmodules",
-              "sync"
+              "sync",
+              "workbench",
+              "applyFiles"
             ]
           },
           "startedAt": {

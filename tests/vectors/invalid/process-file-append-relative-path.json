@@ -1,0 +1,5 @@
+{
+  "schema": "process-request",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"type\":\"fileAppend\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"repositoryId\":\"0f0f0f0f-0000-4000-8000-000000000005\",\"target\":\"gitignore\",\"path\":\".gitignore\",\"expected\":\"absent\",\"bytes\":\"L2J1aWxkLwo=\"}"
+}

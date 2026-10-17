@@ -22,11 +22,12 @@ const TEST_TIMEOUT_MS = 30_000;
 const MIB = 1024 * 1024;
 const FRAME_KINDS = ["public", "process", "mutation", "trust", "handshake"];
 const TERMINAL = ["succeeded", "limited", "failed", "canceled", "completed-with-effects", "failed-with-effects", "unknown", "rejected"];
-// Contract §9 codes, and the feature 002 and feature 003 contract Δ9 codes.
+// Contract §9 codes, and the feature 002, feature 003, and feature 004 contract Δ9 codes.
 const ERROR_CODES = new Set(
   (
     "HISTORY_CHANGED UNSUPPORTED_FILTER_TEXT SEARCH_UNSUPPORTED " +
     "SYNC_UNAVAILABLE PUSH_REJECTED PUTTY_UNAVAILABLE DESTINATION_NOT_EMPTY " +
+    "WORKBENCH_UNAVAILABLE UNTRACKED_IN_WAY STASH_KEPT " +
     "INVALID_REQUEST PROTOCOL_VERSION UNKNOWN_OPERATION UNKNOWN_TARGET FRAME_LIMIT BUSY WORKSPACE_LIMIT " +
     "GIT_UNAVAILABLE GIT_CHANGED GIT_UNSUPPORTED WEBVIEW_UNAVAILABLE WEBVIEW_UNSUPPORTED WSL_UNAVAILABLE " +
     "REPOSITORY_UNAVAILABLE REPOSITORY_CHANGED UNSUPPORTED_REPOSITORY " +

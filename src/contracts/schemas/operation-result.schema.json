@@ -50,7 +50,16 @@
         "setDefaultPullAction",
         "chooseSyncPath",
         "clearSyncPath",
-        "launchPuttygen"
+        "launchPuttygen",
+        "readBranches",
+        "readWorktrees",
+        "readGitSettings",
+        "reviewWorkbench",
+        "runWorkbench",
+        "applyFiles",
+        "openWorktree",
+        "revealPath",
+        "setSwitchChoice"
       ]
     },
     "state": {
@@ -90,7 +99,20 @@
         "sync-push",
         "sync-continue",
         "clone",
-        "pageant"
+        "pageant",
+        "switch-stash",
+        "switch-checkout",
+        "switch-reapply",
+        "switch-drop",
+        "branch",
+        "merge",
+        "rebase",
+        "resolve",
+        "mergetool",
+        "worktree",
+        "config",
+        "ignore",
+        "stage-files"
       ]
     },
     "code": {
@@ -149,7 +171,10 @@
         "SYNC_UNAVAILABLE",
         "PUSH_REJECTED",
         "PUTTY_UNAVAILABLE",
-        "DESTINATION_NOT_EMPTY"
+        "DESTINATION_NOT_EMPTY",
+        "WORKBENCH_UNAVAILABLE",
+        "UNTRACKED_IN_WAY",
+        "STASH_KEPT"
       ]
     },
     "cause": {

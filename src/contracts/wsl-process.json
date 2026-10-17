@@ -11,6 +11,7 @@
     "read | mutation | remote) ;;",
     "network) export GIT_PROTOCOL_FROM_USER=0 ;;",
     "integrate) export GIT_EDITOR=: ;;",
+    "mergetool) export GIT_EDITOR=: ;;",
     "*) exit 125 ;;",
     "esac",
     "[ -z \"$index\" ] || export GIT_INDEX_FILE=\"$index\"",

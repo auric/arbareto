@@ -68,7 +68,9 @@
               "applyFile",
               "commit",
               "updateSubmodules",
-              "sync"
+              "sync",
+              "workbench",
+              "applyFiles"
             ]
           },
           "startedAt": {

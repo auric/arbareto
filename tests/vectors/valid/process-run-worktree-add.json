@@ -1,0 +1,5 @@
+{
+  "schema": "process-request",
+  "expected": "valid",
+  "text": "{\"type\":\"run\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"contextKind\":\"worktreeAdd\",\"gitInstallationId\":\"0f0f0f0f-0000-4000-8000-000000000009\",\"repositoryId\":\"0f0f0f0f-0000-4000-8000-000000000005\",\"bootstrapId\":\"0f0f0f0f-0000-4000-8000-00000000000b\",\"arguments\":[\"--no-lazy-fetch\",\"worktree\",\"add\",\"-b\",\"wt\",\"--\",\"//host/repo-wt\",\"0123456789abcdef0123456789abcdef01234567\"],\"environmentPolicy\":\"integrate\",\"limits\":{\"inactivityMs\":300000,\"ceilingMs\":14400000,\"stallMs\":15000}}"
+}

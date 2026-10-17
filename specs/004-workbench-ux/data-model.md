@@ -54,6 +54,7 @@ Each section names its source. Field names are contract names. "001 data-model Â
 
 - Merge: `source` (ref and OID), `result` (`merge` or `squash`), `noFastForward`, `noCommit`, `preview` (the `fmt-merge-msg` text, bound by digest), `message` (null for the preview, else the edited text, 1 to 64 KiB, the 001 commit message rule; with `result: merge`, the argv sends the preview or the edited text with `--no-log -m`; with `squash`, the argv sends no `-m`, because Git ignores it (research R21 F30)), `facts` (`ahead`, `behind`, `fastForward`, `mergeFf` with source).
 - Rebase: `onto` (ref and OID), `moved`, `rewritten`, `held`, `forceNote` (`{trackingRef}` or null), `movedBranches` (refs, when `rebase.updateRefs` is true, without the branches that other worktrees check out), `autostash` (value plus `{scope, origin}` or `default`), `autosquash` (false at review; the user sets it).
+- Squash: with `result: squash`, `noFastForward` and `noCommit` are false and `message` is null, else `INVALID_REQUEST`. Git refuses `--squash --no-ff`, a squash never commits, and Git ignores `-m` (plan D5, research R21 F30). The UI shows Don't commit as unavailable with "Squash never commits".
 - Validation: `merge` refuses a detached HEAD, an unborn branch, the current branch as source, and an operation in progress (spec FR-028).
 
 ## 6. File selection and line selection
@@ -80,7 +81,7 @@ Each section names its source. Field names are contract names. "001 data-model Â
 - `prunable`: null, or `{reason}` with untrusted text.
 - `main`: true for the first record. `current`: true when the path identity equals the workspace worktree identity.
 - Record checks: the first line starts with `worktree `; each other line is one of the attribute forms; `HEAD` holds an OID of the object format; at most one of `branch` and `detached`; the record ends with an empty line. A failed check gives `MALFORMED_GIT_OUTPUT`.
-- Bound: 1,000 records (`WORKTREE_RECORDS`) and 4 MiB.
+- Bound: 1,000 records (`WORKTREE_RECORDS`) and 4 MiB (`WORKTREE_LISTING_BYTES`).
 
 ## 9. Configuration value (`readGitSettings` result)
 

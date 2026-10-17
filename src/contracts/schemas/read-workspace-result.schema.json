@@ -206,6 +206,7 @@
                     "DAMAGED_MARKERS_PER_HANDSHAKE",
                     "DAMAGED_MARKER_FILE_NAME_UNITS",
                     "DIAGNOSTIC_RETAINED_BYTES_PER_STREAM",
+                    "DISCARD_CHECK_PATHS",
                     "FILE_FACT_COMPONENT_UNITS",
                     "FILE_FACT_ENTRIES",
                     "FILTER_TEXT_BYTES",
@@ -232,6 +233,8 @@
                     "INLINE_PROCESS_INPUT_BYTES",
                     "JSON_NESTING_LEVELS",
                     "KEY_FILE_ENTRIES",
+                    "MULTI_FILE_ACTION_BYTES",
+                    "MULTI_FILE_ACTION_FILES",
                     "MUTATIONS_PER_COMMON_REPOSITORY",
                     "MUTATION_RAW_INDEX_BYTES",
                     "NATIVE_CHUNK_BYTES",
@@ -247,6 +250,7 @@
                     "RECORDED_REQUEST_IDS",
                     "RECOVERY_MARKERS_PER_HANDSHAKE",
                     "RECOVERY_MARKER_BYTES",
+                    "REFLOG_SCAN_ENTRIES",
                     "REF_LISTING_BYTES",
                     "REF_LISTING_RECORDS",
                     "REGISTERED_DEADLINE_CAP_MS",
@@ -287,6 +291,8 @@
                     "WEBVIEW2_VERSION_BYTES",
                     "WHOLE_FILE_STAGE_INPUT_BYTES",
                     "WINDOWS_COMMAND_LINE_UNITS",
+                    "WORKTREE_LISTING_BYTES",
+                    "WORKTREE_RECORDS",
                     "WSL_ANCHOR_LINE_INTERVAL_MS",
                     "WSL_DISTRO_START_MS",
                     "WSL_POLL_GAP_MS"
@@ -363,7 +369,10 @@
                     "SYNC_UNAVAILABLE",
                     "PUSH_REJECTED",
                     "PUTTY_UNAVAILABLE",
-                    "DESTINATION_NOT_EMPTY"
+                    "DESTINATION_NOT_EMPTY",
+                    "WORKBENCH_UNAVAILABLE",
+                    "UNTRACKED_IN_WAY",
+                    "STASH_KEPT"
                   ]
                 }
               },
@@ -957,6 +966,7 @@
                     "DAMAGED_MARKERS_PER_HANDSHAKE",
                     "DAMAGED_MARKER_FILE_NAME_UNITS",
                     "DIAGNOSTIC_RETAINED_BYTES_PER_STREAM",
+                    "DISCARD_CHECK_PATHS",
                     "FILE_FACT_COMPONENT_UNITS",
                     "FILE_FACT_ENTRIES",
                     "FILTER_TEXT_BYTES",
@@ -983,6 +993,8 @@
                     "INLINE_PROCESS_INPUT_BYTES",
                     "JSON_NESTING_LEVELS",
                     "KEY_FILE_ENTRIES",
+                    "MULTI_FILE_ACTION_BYTES",
+                    "MULTI_FILE_ACTION_FILES",
                     "MUTATIONS_PER_COMMON_REPOSITORY",
                     "MUTATION_RAW_INDEX_BYTES",
                     "NATIVE_CHUNK_BYTES",
@@ -998,6 +1010,7 @@
                     "RECORDED_REQUEST_IDS",
                     "RECOVERY_MARKERS_PER_HANDSHAKE",
                     "RECOVERY_MARKER_BYTES",
+                    "REFLOG_SCAN_ENTRIES",
                     "REF_LISTING_BYTES",
                     "REF_LISTING_RECORDS",
                     "REGISTERED_DEADLINE_CAP_MS",
@@ -1038,6 +1051,8 @@
                     "WEBVIEW2_VERSION_BYTES",
                     "WHOLE_FILE_STAGE_INPUT_BYTES",
                     "WINDOWS_COMMAND_LINE_UNITS",
+                    "WORKTREE_LISTING_BYTES",
+                    "WORKTREE_RECORDS",
                     "WSL_ANCHOR_LINE_INTERVAL_MS",
                     "WSL_DISTRO_START_MS",
                     "WSL_POLL_GAP_MS"
@@ -1114,7 +1129,10 @@
                     "SYNC_UNAVAILABLE",
                     "PUSH_REJECTED",
                     "PUTTY_UNAVAILABLE",
-                    "DESTINATION_NOT_EMPTY"
+                    "DESTINATION_NOT_EMPTY",
+                    "WORKBENCH_UNAVAILABLE",
+                    "UNTRACKED_IN_WAY",
+                    "STASH_KEPT"
                   ]
                 }
               },

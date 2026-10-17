@@ -508,6 +508,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - The ignore actions write a fixed, anchored line, not a pattern that the user types. Git Extensions offers a pattern box. This is a reviewer default.
 - The settings view leaves out signing keys (`commit.gpgSign`, `user.signingKey`). Git Extensions has no settings page for them. `core.longpaths` and `init.defaultBranch` are candidates for later. This is a reviewer default.
 - The settings view adds `pull.ff`, which Git Extensions does not offer, because the "When I pull" control needs it. This is a reviewer default from the mockup.
+- Settings opens from an open repository. Global settings without an open repository come later.
 - `credential.helper` is a text field without a program scan. This is a reviewer default.
 - `push.autoSetupRemote` changes Git's behavior. The 003 push panel (003 FR-016) still decides what Arbareto shows. The plan checks that 003 reads the effective value. This is a reviewer default.
 - English is the first spell check language. More dictionaries come later. The dictionary source and its license are a plan decision.

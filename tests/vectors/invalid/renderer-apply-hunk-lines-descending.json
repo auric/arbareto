@@ -1,0 +1,5 @@
+{
+  "schema": "renderer-envelope",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"version\":1,\"sessionId\":\"0f0f0f0f-0000-4000-8000-0000000000aa\",\"requestId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operation\":\"applyHunk\",\"repositoryId\":\"0f0f0f0f-0000-4000-8000-000000000005\",\"repositoryGeneration\":3,\"payload\":{\"comparisonId\":\"0f0f0f0f-0000-4000-8000-000000000006\",\"hunkId\":\"0f0f0f0f-0000-4000-8000-000000000008\",\"snapshotId\":\"0f0f0f0f-0000-4000-8000-000000000007\",\"direction\":\"stage\",\"lines\":[3,2]}}"
+}

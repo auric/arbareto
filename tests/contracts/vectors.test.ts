@@ -123,6 +123,31 @@ describe("golden vectors", () => {
     expect(texts("valid", "process-reply").filter((t) => t.type === "pageant").map((t) => t.result)).toContain("git");
   });
 
+  // Feature 004 contract Δ10: vectors for the new operations, codes, phases, policy, contexts, private requests, and marker kinds.
+  test("each feature 004 operation, code, phase, policy, context, private request, and marker kind has its vectors", () => {
+    const texts = (kind: string, schema: string) => vectors.filter((v) => v.kind === kind && v.vector.schema === schema).map(({ vector }) => JSON.parse(vector.text) as Record<string, unknown>);
+    const envelopes = ["renderer-envelope", "service-envelope", "native-first-envelope"].flatMap((schema) => texts("valid", schema));
+    expect(envelopes.map((t) => t.operation)).toEqual(
+      expect.arrayContaining(["readBranches", "readWorktrees", "readGitSettings", "reviewWorkbench", "runWorkbench", "applyFiles", "openWorktree", "revealPath", "setSwitchChoice"]),
+    );
+    expect(texts("valid", "native-first-envelope").map((t) => t.operation)).toEqual(expect.arrayContaining(["openWorktree", "reviewWorkbench", "setSwitchChoice"]));
+    expect(texts("invalid", "native-first-envelope").map((t) => t.operation)).toEqual(expect.arrayContaining(["openWorktree", "reviewWorkbench", "setSwitchChoice", "revealPath"]));
+    expect(texts("valid", "service-envelope").map((t) => t.operation)).toContain("revealPath");
+    expect(texts("valid", "response").map((t) => t.code)).toEqual(expect.arrayContaining(["WORKBENCH_UNAVAILABLE", "UNTRACKED_IN_WAY", "STASH_KEPT"]));
+    expect(texts("valid", "progress").map((t) => t.phase)).toEqual(expect.arrayContaining(["stage-files", "config"]));
+    expect(texts("invalid", "progress").map((t) => t.phase)).toEqual(expect.arrayContaining(["stage-files", "merge"]));
+    const requests = texts("valid", "process-request");
+    expect(requests.map((t) => t.environmentPolicy)).toContain("mergetool");
+    expect(requests.map((t) => t.contextKind)).toEqual(expect.arrayContaining(["globalConfig", "worktreeAdd"]));
+    expect(requests.some((t) => t.type === "destinationFacts" && "bootstrapId" in t)).toBe(true);
+    for (const schema of ["process-request", "process-reply"]) expect(texts("valid", schema).map((t) => t.type)).toEqual(expect.arrayContaining(["fileAppend", "reveal"]));
+    const started = (kind: string) => texts(kind, "mutation-request").map((t) => `${String(t.kind)}:${String(t.action ?? t.direction ?? "")}`);
+    expect(started("valid")).toEqual(expect.arrayContaining(["workbench:choose-ours", "applyFiles:unstage"]));
+    expect(started("invalid")).toEqual(expect.arrayContaining(["workbench:", "applyFiles:resolve"]));
+    const markers = texts("valid", "handshake").flatMap((t) => t.markers as { kind: string }[]);
+    expect(markers.map((m) => m.kind)).toEqual(expect.arrayContaining(["workbench", "applyFiles"]));
+  });
+
   const faulted = vectors.filter(({ kind, vector }) => kind === "invalid" && FAULT_SCHEMAS.includes(vector.schema));
   test("each invalid vector of a fault schema carries its repair", () => {
     expect(faulted.filter(({ vector }) => vector.repair === undefined).map(({ name }) => name)).toEqual([]);

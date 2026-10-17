@@ -33,6 +33,35 @@ An integration may not:
 - Which features matter most? Pick the top three from section 4.
 - Do you want only links into the browser, or real data in the app?
 
+### Answers (2026-10-18)
+
+1. Bitbucket: both Cloud and Data Center/Server.
+2. Jira: both Cloud and Data Center.
+3. Network: a VPN. A proxy or an internal CA was not mentioned.
+4. SSO: yes.
+5. Credentials: "credential manager is enough I guess", meaning Git Credential Manager.
+6. Top features: "I don't know".
+7. Browser links first: yes.
+
+### What the answers change
+
+- Four host types: Bitbucket Cloud, Bitbucket Data Center, Jira Cloud, and Jira Data Center. Each has its own URL form and auth form. Browser links (C) cover all four without tokens. C is the first step.
+- VPN: Data Center hosts are probably internal names that the user reaches through the VPN. Their TLS certificates may come from a company CA. That is still unknown. A browser link needs no CA work. Data features later need an answer to the system CA question (section 6).
+- SSO: a browser link uses the user's browser session. SSO adds no work for C. For later data features, check whether the company's SSO setup allows API tokens (Cloud) and personal access tokens (Data Center). This is a question for the user's admin.
+- GCM: the user prefers to reuse Git Credential Manager through `git credential fill` for Bitbucket. Section 6 says where this works and where it does not. The Cloud REST API needs the email, but Git uses the username. GCM OAuth tokens may lack API scopes (unverified). The output of `git credential fill` for Bitbucket OAuth is unverified. A Data Center HTTP access token works for Git and REST.
+- Top features unknown. Proposal, for the user to confirm, as the default first set:
+  - "Open pull request for this branch" (create or view) on Bitbucket.
+  - "Open the branch on Bitbucket".
+  - "Open Jira issue" for a key that the user enters or picks.
+- A data feature waits until the user has used the links.
+
+### Open questions from the answers
+
+- How does the app know the host type and the base URL for a remote? Options: a host record per remote that the user creates, or Git config that the user sets. The app never guesses from the remote URL text, because that is a heuristic.
+- Where does the Jira key for "Open Jira issue" come from? The no-heuristics rule applies. Use the options in section 5: the user enters or picks the key, a local link record, or an exact Git trailer.
+- Does the company SSO allow API tokens and personal access tokens? Ask the admin.
+- Do the Data Center hosts use certificates from a company CA? Ask the admin before data features.
+
 ## 3. Approach options
 
 ### (A) A general third-party plugin system
@@ -76,7 +105,7 @@ Why it is hard here:
 | B. First-party modules | M to L | Medium: tokens and network, but our own code | Good. Same pattern as the Git operations. |
 | C. Browser only | S | Low: no tokens, only URL building | Good. Very thin. |
 
-Proposal: start with C. Add B for the two or three features that need data (PR status on branches, Jira issue pick). Do not build A. Revisit A only when a third concrete integration needs it.
+Proposal: start with C for all four host types. Use user-created host records, with no tokens and no API calls. Add B only after the user has used the links and picked a data feature. B reuses GCM where it works, and needs answers on SSO tokens and the company CA. Do not build A. Revisit A only when a third concrete integration needs it.
 
 ## 4. Feature candidates
 
@@ -179,7 +208,7 @@ Feature 003 (remote sync) is the baseline: 90 tasks in `specs/003-remote-sync/ta
 ## 9. Next steps
 
 1. Finish feature 004.
-2. Answer the questions in section 2.
-3. Pick the approach and the top features.
-4. Run `/speckit-specify` for a new feature with that scope.
-5. In `/speckit-plan`, verify the unverified items: Bun CA and proxy in the compiled service, `NO_PROXY`, the create-PR URL forms, and GCM output for Bitbucket.
+2. The user confirms the proposed first link set (section 2, "What the answers change").
+3. Run `/speckit-specify` for a new feature with scope C. Scope: host records for four host types, and browser links. No tokens.
+4. In that feature, verify the create-PR and branch URL forms for Bitbucket Cloud and Data Center, and the Jira browse URL forms.
+5. After the user has used the links, pick a data feature. Before planning it, ask the admin about SSO tokens and the company CA. Verify GCM output for Bitbucket, Bun CA support in the compiled service, and `NO_PROXY`.

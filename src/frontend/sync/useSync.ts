@@ -73,7 +73,7 @@ export function useSync({ bridge, target, repositoryId, headTarget, onOperation,
     if (t === null) return;
     let op: StatusOperation = { requestId: crypto.randomUUID(), kind: "sync", sync: { action, remotes: plan.remotes }, progress: null, response: null };
     onOperation(op);
-    const response = await bridge.sync(t, { syncReviewToken: token, start: true }, (event) => {
+    const response = await bridge.sync({ repositoryId: t.repositoryId }, { syncReviewToken: token, start: true }, (event) => {
       op = { ...op, progress: event };
       onOperation(op);
     });

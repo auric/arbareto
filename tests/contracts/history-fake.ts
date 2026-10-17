@@ -8,9 +8,12 @@ import type { BridgeResponse, OnProgress } from "../../src/frontend/bridge";
 import { filterText } from "../../src/contracts/filter-text";
 import { FILTER_TEXT_BYTES, HISTORY_LOAD_MARGIN } from "../../src/contracts/limits";
 import type { Head, HistoryBridge, ViewRow } from "../../src/frontend/state/history-view";
+import { contractChecked, fixtureId } from "./bridge-contract";
 
 export const oid = (i: number) => i.toString(16).padStart(40, "0");
 export const indexOf = (o: string) => parseInt(o, 16);
+export const viewIdOf = (n: number) => fixtureId(0x1000 + n);
+export const operationIdOf = (n: number) => fixtureId(0x2000 + n);
 
 type Call = { operation: string; payload: Record<string, unknown> };
 type Held = { resolve(response: BridgeResponse): void; operationId: string; result: () => BridgeResponse; onProgress?: OnProgress };
@@ -173,7 +176,7 @@ export function createFake(options: FakeOptions) {
   const bridge: HistoryBridge = {
     openHistory: (_target, payload) => {
       calls.push({ operation: "openHistory", payload });
-      viewId = `view-${++views}`;
+      viewId = viewIdOf(++views);
       loaded = options.loaded ?? 0;
       searchDone = false;
       liveSearch = null;
@@ -181,7 +184,7 @@ export function createFake(options: FakeOptions) {
     },
     loadHistory: (_target, payload, onProgress?: OnProgress) => {
       calls.push({ operation: "loadHistory", payload });
-      const operationId = `load-${++operations}`;
+      const operationId = operationIdOf(++operations);
       onProgress?.({ requestId: "r", operationId, state: "accepted", counters: { rows: loaded } });
       const custom = options.loadResponse?.(payload.need as Record<string, unknown>);
       if (custom) return later(custom);
@@ -214,7 +217,7 @@ export function createFake(options: FakeOptions) {
     searchHistory: (_target, payload, onProgress?: OnProgress) => {
 
       calls.push({ operation: "searchHistory", payload });
-      const operationId = `search-${++operations}`;
+      const operationId = operationIdOf(++operations);
       liveSearch = null;
       // Contract Δ3 and Δ9: the service refuses the text before any Git process, so the request ends `rejected`.
       const checked = filterText(payload.text, FILTER_TEXT_BYTES);
@@ -255,7 +258,7 @@ export function createFake(options: FakeOptions) {
   };
 
   return {
-    bridge,
+    bridge: contractChecked(bridge),
     calls,
     of: (operation: string) => calls.filter((c) => c.operation === operation).map((c) => c.payload),
     /** Ends the oldest held response with its success. */
@@ -284,7 +287,7 @@ export function createFake(options: FakeOptions) {
   };
 }
 
-export const TARGET = () => ({ repositoryId: "repository-1", repositoryGeneration: 1 });
+export const TARGET = () => ({ repositoryId: fixtureId(1), repositoryGeneration: 1 });
 
 /**
  * happy-dom has no layout. This stubs the viewport of the history list and the references scroller: `clientHeight` and `offsetHeight` give `height`,

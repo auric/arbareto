@@ -9,6 +9,7 @@ import type { SubmoduleRowResult } from "../../src/contracts/submodules";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { NoticeBand } from "../../src/frontend/app/NoticeBand";
+import { contractChecked } from "./bridge-contract";
 
 printOrigin("../../src/frontend/app/NoticeBand.tsx", import.meta.dir);
 
@@ -230,7 +231,7 @@ describe("recovery row lifetime in the workbench", () => {
 
   async function mount() {
     const calls: Call[] = [];
-    const bridge = new Proxy({}, { get: (_, name) => (...args: unknown[]) => new Promise((resolve) => calls.push({ operation: String(name), args, resolve })) });
+    const bridge = contractChecked(new Proxy({}, { get: (_, name) => (...args: unknown[]) => new Promise((resolve) => calls.push({ operation: String(name), args, resolve })) }));
     const host = document.body.appendChild(document.createElement("div"));
     const root = createRoot(host);
     await act(async () =>

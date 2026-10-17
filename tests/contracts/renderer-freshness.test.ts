@@ -7,6 +7,7 @@ import type { ChangeEntry, WorkspaceSnapshot } from "../../src/contracts/envelop
 import { printOrigin } from "../origin";
 import { createHistoryView } from "../../src/frontend/state/history-view";
 import { createRequests } from "../../src/frontend/state/requests";
+import { contractChecked } from "./bridge-contract";
 
 printOrigin("../../src/frontend/state/requests.ts", import.meta.dir);
 
@@ -40,7 +41,7 @@ function bridgeDouble() {
     if (!found) throw new Error(`no ${operation} call`);
     return found;
   };
-  return { bridge, calls, of, last, history, bind };
+  return { bridge: contractChecked(bridge), calls, of, last, history, bind };
 }
 
 function clockDouble() {
@@ -349,7 +350,7 @@ describe("history view opens", () => {
     let generation = 1;
     const ok = (result: unknown) => Promise.resolve({ requestId: "r", state: "succeeded", result } as BridgeResponse);
     const view = createHistoryView(
-      {
+      contractChecked({
         openHistory: (target) => {
           targets.push(target);
           const code = responses.shift();
@@ -361,7 +362,7 @@ describe("history view opens", () => {
         searchHistory: () => ok({ matches: 0, shallow: false }),
         closeHistory: () => ok({}),
         cancel: () => ok({}),
-      },
+      }),
       () => ({ repositoryId: REPOSITORY, repositoryGeneration: generation }),
     );
     return { view, targets, setGeneration: (n: number) => void (generation = n) };

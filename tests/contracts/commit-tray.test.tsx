@@ -6,6 +6,7 @@ import { act } from "react";
 import type { BridgeResponse } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { contractChecked } from "./bridge-contract";
 
 // tasks.md T239. plan.md "Task flow and command placement" (Compose a commit, Commit, Commit outcome) and "Keyboard and focus" (Message, Unavailable control).
 
@@ -23,7 +24,7 @@ function bridgeDouble() {
     {},
     { get: (_, operation) => (target: Record<string, unknown> = {}, payload: Record<string, unknown> = {}) => new Promise<BridgeResponse>((resolve) => calls.push({ operation: String(operation), target, payload, resolve })) },
   );
-  return { bridge: bridge as never, calls };
+  return { bridge: contractChecked(bridge) as never, calls };
 }
 
 const KEY = "a".repeat(64);

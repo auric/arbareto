@@ -6,6 +6,7 @@ import { act, type ReactNode } from "react";
 import type { WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { contractChecked } from "./bridge-contract";
 
 printOrigin("../../src/frontend/app/RepositoryStates.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
@@ -31,7 +32,7 @@ function bridgeDouble() {
     },
   );
   const pending = (operation: string) => calls.find((c) => c.operation === operation)!;
-  return { bridge, calls, pending };
+  return { bridge: contractChecked(bridge), calls, pending };
 }
 
 const DISTRO = "Ubuntu-24.04";

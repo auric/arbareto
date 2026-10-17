@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { act, createRef, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { contractChecked } from "./bridge-contract";
 
 const MODULE = printOrigin("../../src/frontend/status/OperationStatus.tsx", import.meta.dir);
 registerDom();
@@ -52,7 +53,7 @@ function bridgeDouble(stallRemedy: unknown = STALL_REMEDY) {
       Promise.resolve({ requestId: id(), state: "succeeded", result: { operationId: OPERATION_ID, operation: "commit", state: "running", stalled: true, stallRemedy } })
     ),
   };
-  return { bridge: bridge as never, calls };
+  return { bridge: contractChecked(bridge) as never, calls };
 }
 
 const unmounts: (() => Promise<void>)[] = [];

@@ -8,6 +8,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { answer, button, click, createWorld, mountWorkbench, oid, settle, snapshot, succeeded, text, unmountAll } from "./sync-fake";
+import { contractChecked, fixtureId } from "./bridge-contract";
 
 // tasks.md T061 (feature 003). Spec FR-038. Plan D12 "Commit and push".
 
@@ -32,9 +33,9 @@ afterEach(async () => {
 
 type Call = { operation: string; args: unknown[]; resolve(response: BridgeResponse): void };
 const KEY = "a".repeat(64);
-const TARGET = { repositoryId: "repository-1", repositoryGeneration: 1 };
+const TARGET = { repositoryId: fixtureId(1), repositoryGeneration: 1 };
 const HEAD = { state: "branch", target: "refs/heads/main", oid: oid(1) } as const;
-const ok = (result: unknown): BridgeResponse => ({ requestId: "r", operationId: "o", state: "succeeded", result }) as BridgeResponse;
+const ok = (result: unknown): BridgeResponse => ({ requestId: "r", operationId: fixtureId(0x201), state: "succeeded", result }) as BridgeResponse;
 const REPORT = { generation: 1, fingerprint: "f".repeat(64), state: "approved", persistence: "repository", approvalRequired: { reads: false, commit: false, sync: false }, entries: [], hooks: [], trustId: "trust-1" };
 const flush = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 0))));
 const typeInto = (field: HTMLTextAreaElement, value: string) =>
@@ -45,12 +46,12 @@ const typeInto = (field: HTMLTextAreaElement, value: string) =>
 
 async function tray() {
   const calls: Call[] = [];
-  const bridge = new Proxy({}, { get: (_, operation) => (...args: unknown[]) => new Promise<BridgeResponse>((resolve) => calls.push({ operation: String(operation), args, resolve })) });
+  const bridge = contractChecked(new Proxy({}, { get: (_, operation) => (...args: unknown[]) => new Promise<BridgeResponse>((resolve) => calls.push({ operation: String(operation), args, resolve })) }));
   const drafts = createDrafts({ write: async () => "saved", remove: async () => "saved", read: async () => null } as never);
   const pushes: number[] = [];
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
-  const props = { bridge, target: TARGET, snapshotId: "s", worktreeKey: KEY, drafts, head: HEAD, staged: 1, status: null, requestTrust: async () => true, onPush: () => void pushes.push(1) };
+  const props = { bridge, target: TARGET, snapshotId: fixtureId(0x301), worktreeKey: KEY, drafts, head: HEAD, staged: 1, status: null, requestTrust: async () => true, onPush: () => void pushes.push(1) };
   await act(async () => root.render(<CommitTray {...(props as unknown as Parameters<typeof CommitTray>[0])} />));
   await typeInto(host.querySelector("textarea")!, "Fix the parser");
   const reply = async (operation: string, response: BridgeResponse) => {
@@ -75,7 +76,7 @@ describe("Commit and push (FR-038)", () => {
     const t = await tray();
     await click(button("Commit and push", t.host));
     await t.reply("readTrust", ok(REPORT));
-    await t.reply("reviewCommit", ok({ reviewToken: "token" }));
+    await t.reply("reviewCommit", ok({ reviewToken: fixtureId(0x106) }));
     expect(t.pushes).toEqual([]);
     await t.reply("commit", ok({ commitOid: oid(7) }));
     expect(t.pushes).toEqual([1]);
@@ -86,8 +87,8 @@ describe("Commit and push (FR-038)", () => {
       const t = await tray();
       await click(button("Commit and push", t.host));
       await t.reply("readTrust", ok(REPORT));
-      await t.reply("reviewCommit", ok({ reviewToken: "token" }));
-      await t.reply("commit", { requestId: "r", operationId: "o", state, code: state === "unknown" ? "STATE_UNKNOWN" : undefined, result: { commitOid: oid(7) } } as BridgeResponse);
+      await t.reply("reviewCommit", ok({ reviewToken: fixtureId(0x106) }));
+      await t.reply("commit", { requestId: "r", operationId: fixtureId(0x201), state, code: state === "unknown" ? "STATE_UNKNOWN" : undefined, result: { commitOid: oid(7) } } as BridgeResponse);
       expect(t.pushes).toEqual([]);
       });
   }
@@ -96,7 +97,7 @@ describe("Commit and push (FR-038)", () => {
     const t = await tray();
     await click(button("Commit (Ctrl+Enter)", t.host));
     await t.reply("readTrust", ok(REPORT));
-    await t.reply("reviewCommit", ok({ reviewToken: "token" }));
+    await t.reply("reviewCommit", ok({ reviewToken: fixtureId(0x106) }));
     await t.reply("commit", ok({ commitOid: oid(7) }));
     expect(t.pushes).toEqual([]);
   });
@@ -119,7 +120,7 @@ describe("Commit and push (FR-038)", () => {
     await typeInto(document.querySelector("textarea")!, "Fix the parser");
     await click(button("Commit and push"));
     await answer(double.pending("readTrust"), ok(REPORT));
-    await answer(double.pending("reviewCommit"), ok({ reviewToken: "token" }));
+    await answer(double.pending("reviewCommit"), ok({ reviewToken: fixtureId(0x106) }));
     // Contract §8 "Token invalidation": the reconcile read records the new HEAD and advances the generation.
     world.answers.readWorkspace = undefined;
     await answer(double.pending("commit"), ok({ commitOid: oid(7) }));
@@ -128,7 +129,7 @@ describe("Commit and push (FR-038)", () => {
     expect(double.count("reviewSync")).toBe(0);
     delete world.answers.readWorkspace;
     await answer(reconcile, succeeded({ ...snapshot(world), generation: 2 }, { repositoryGeneration: 2 }));
-    expect(double.pending("reviewSync")!.args[0]).toEqual({ repositoryId: "repository-1", repositoryGeneration: 2 });
+    expect(double.pending("reviewSync")!.args[0]).toEqual({ repositoryId: fixtureId(1), repositoryGeneration: 2 });
   });
 
   test("a rejected push after a commit keeps the commit and shows the push-rejected notice", async () => {
@@ -139,14 +140,14 @@ describe("Commit and push (FR-038)", () => {
     await typeInto(field, "Fix the parser");
     await click(button("Commit and push"));
     await answer(double.pending("readTrust"), ok(REPORT));
-    await answer(double.pending("reviewCommit"), ok({ reviewToken: "token" }));
+    await answer(double.pending("reviewCommit"), ok({ reviewToken: fixtureId(0x106) }));
     await answer(double.pending("commit"), ok({ commitOid: oid(7) }));
     expect(double.pending("reviewSync")!.args[1]).toEqual({ action: "push" });
     const destination = { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "u", setUpstream: false, source: "push-default-branch" };
-    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination }, syncReviewToken: "t" }));
+    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination }, syncReviewToken: fixtureId(0x101) }));
     await answer(double.pending("sync"), {
       requestId: "r",
-      operationId: "o2",
+      operationId: fixtureId(0x202),
       state: "failed",
       code: "PUSH_REJECTED",
       result: { action: "push", push: { status: "rejected", oldObjectId: oid(9), newObjectId: oid(9), reasonText: "fetch first", lease: false, upstreamWritten: false, outputTail: "" } },

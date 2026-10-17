@@ -606,6 +606,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     target: requests.target,
     repositoryId: state.repository?.repositoryId ?? null,
     headTarget: state.workspace === null ? undefined : state.workspace.head.state === "detached" ? null : state.workspace.head.target,
+    headOid: state.workspace === null ? undefined : state.workspace.head.state === "unborn" ? null : state.workspace.head.oid,
     onOperation: (op) => {
       setOperation(op);
       const response = op.response;
@@ -1552,6 +1553,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                       operationState={workspace.operationState}
                       conflicted={conflicted}
                       reason={syncBlock}
+                      loading={loading}
                       onAction={sync.conflictAction}
                       bindControl={bindBandControl}
                     />

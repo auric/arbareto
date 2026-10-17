@@ -25,7 +25,12 @@ export type PullModeChoiceProps = {
 export function PullModeChoice({ onChoose, onCancel, reason, bindControl }: PullModeChoiceProps) {
   const reasonId = useId();
   const first = useRef<HTMLButtonElement | null>(null);
-  useEffect(() => first.current?.focus(), []);
+  // plan.md D12: the question takes focus only when no editable field holds it.
+  useEffect(() => {
+    const active = document.activeElement;
+    const editable = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || (active instanceof HTMLElement && active.isContentEditable);
+    if (!editable) first.current?.focus();
+  }, []);
   const bindFirst = useCallback(
     (element: HTMLButtonElement) => {
       first.current = element;

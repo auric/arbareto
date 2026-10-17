@@ -47,12 +47,15 @@ type SectionProps = { settings: SyncSettings; change: Change; bridge: SettingsBr
 
 const Path = ({ value }: { value: string | null }) => (value === null ? <span className="text-muted-text">Not set</span> : <code className="break-all">{value}</code>);
 const ROW = "grid items-center gap-x-3 gap-y-1";
+const ARROWS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
 const COLUMNS = { gridTemplateColumns: "150px minmax(0, 1fr)" };
 
 /** FR-032, FR-033, FR-036, FR-037, O-7: the SSH client, plink, the PuTTY programs, and PuTTYgen. */
 export function SshClientSettings({ settings, change, bridge }: SectionProps) {
-  const ids = { heading: useId(), note: useId(), gen: useId() };
+  const ids = { heading: useId(), note: useId(), gen: useId(), clear: useId() };
   const [generated, setGenerated] = useState<ReactNode>(null);
+  // HTML "radio button state": an arrow key moves the selection and fires `change` during its keydown. Only a click or Space may open the picker.
+  const arrow = useRef(false);
   async function choosePlinkClient() {
     let next: SyncSettings | null = settings;
     // FR-033: the user selects the plink program first.
@@ -66,19 +69,26 @@ export function SshClientSettings({ settings, change, bridge }: SectionProps) {
     setGenerated(next === null ? null : "PuTTYgen started.");
   }
   const genReason = settings.plinkPath === null ? "Choose the plink program first." : null;
+  // FR-033: the shell refuses to clear the plink program while the client is plink.
+  const clearReason = settings.sshClient === "plink" ? "Select Git's own configuration before you clear the plink program." : null;
   return (
     <section aria-labelledby={ids.heading} className="flex flex-col gap-2">
       <h3 id={ids.heading} className="font-semibold">
         SSH client
       </h3>
-      <fieldset aria-describedby={ids.note} className="flex flex-col gap-1">
+      <fieldset
+        aria-describedby={ids.note}
+        className="flex flex-col gap-1"
+        onKeyDown={(event) => void (arrow.current = ARROWS.includes(event.key))}
+        onKeyUp={() => void (arrow.current = false)}
+      >
         <legend className="sr-only">SSH client</legend>
         <label className="flex items-center gap-2">
           <input type="radio" name="sshClient" value="git" checked={settings.sshClient === "git"} onChange={() => void change(() => bridge.setSshClient({ kind: "git" }))} />
           Git's own configuration
         </label>
         <label className="flex items-center gap-2">
-          <input type="radio" name="sshClient" value="plink" checked={settings.sshClient === "plink"} onChange={() => void choosePlinkClient()} />
+          <input type="radio" name="sshClient" value="plink" checked={settings.sshClient === "plink"} onChange={() => void (arrow.current && settings.plinkPath === null ? undefined : choosePlinkClient())} />
           PuTTY (plink)
         </label>
       </fieldset>
@@ -93,9 +103,23 @@ export function SshClientSettings({ settings, change, bridge }: SectionProps) {
             Choose plink…
           </Button>
           {settings.plinkPath === null ? null : (
-            <Button variant="outline" size="sm" onClick={() => void change(() => bridge.clearSyncPath({ target: "plink" }))}>
-              Clear plink
-            </Button>
+            <>
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={clearReason !== null}
+                focusableWhenDisabled
+                aria-describedby={clearReason === null ? undefined : ids.clear}
+                onClick={() => clearReason === null && void change(() => bridge.clearSyncPath({ target: "plink" }))}
+              >
+                Clear plink
+              </Button>
+              {clearReason === null ? null : (
+                <span id={ids.clear} className="text-muted-text">
+                  {clearReason}
+                </span>
+              )}
+            </>
           )}
         </div>
       </div>

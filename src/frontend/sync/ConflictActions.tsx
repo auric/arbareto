@@ -7,6 +7,7 @@ import { useId, useRef, useState } from "react";
 import { blockingText, FINISH_OUTSIDE, WarningIcon } from "../app/NoticeBand";
 import { CommandRemedy } from "../app/RepositoryStates";
 import type { BridgeResponse } from "../bridge";
+import { BLOCKED_TEXT } from "../changes/HunkControls";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
@@ -33,6 +34,8 @@ export type ConflictRowProps = {
   conflicted: number;
   /** The unavailable reason of every action, or null. */
   reason: string | null;
+  /** True while entry pages of the status read are missing, so the unmerged count is not known yet. */
+  loading?: boolean;
   /** Runs the review of the action. Resolves with the refused review response, or null. */
   onAction(action: ConflictAction): Promise<BridgeResponse | null>;
   bindControl?: (element: HTMLButtonElement) => () => void;
@@ -48,7 +51,7 @@ function refusalOf(response: BridgeResponse | null): Refusal | null {
  * The conflict row of a merge or a rebase in progress. A refused review hides the refused actions for this stop.
  * The caller keys the row by the operation state and HEAD, so a new stop shows every action again.
  */
-export function ConflictRow({ operationState, conflicted, reason, onAction, bindControl }: ConflictRowProps) {
+export function ConflictRow({ operationState, conflicted, reason, loading = false, onAction, bindControl }: ConflictRowProps) {
   const reasonId = useId();
   const continueId = useId();
   const [refusals, setRefusals] = useState<Partial<Record<ConflictAction, Refusal>>>({});
@@ -62,7 +65,7 @@ export function ConflictRow({ operationState, conflicted, reason, onAction, bind
     if (refusal !== null) setRefusals((r) => ({ ...r, [action]: refusal }));
   }
 
-  const continueReason = reason ?? (conflicted > 0 ? continueBlocked(conflicted) : null);
+  const continueReason = reason ?? (loading ? BLOCKED_TEXT.loading : conflicted > 0 ? continueBlocked(conflicted) : null);
   const action = (name: ConflictAction, label: string, icon: IconSvgElement, own: string | null, describedBy: string, danger = false) => (
     <Button
       key={name}

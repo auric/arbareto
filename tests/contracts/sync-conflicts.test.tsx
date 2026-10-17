@@ -276,3 +276,23 @@ describe("band rows", () => {
     expect(listHeight()).toBe(two);
   });
 });
+
+describe("Continue while the status read loads", () => {
+  test("Continue is unavailable with the loading reason until every entry page arrives", async () => {
+    const { ConflictRow } = await import("../../src/frontend/sync/ConflictActions");
+    const { BLOCKED_TEXT } = await import("../../src/frontend/changes/HunkControls");
+    const { createRoot } = await import("react-dom/client");
+    const { act } = await import("react");
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    let reviews = 0;
+    await act(async () => root.render(<ConflictRow operationState="rebasing" conflicted={0} reason={null} loading onAction={async () => (reviews++, null)} />));
+    const cont = button("Continue", host);
+    expect(cont.getAttribute("aria-disabled")).toBe("true");
+    expect(document.getElementById(cont.getAttribute("aria-describedby")!)?.textContent).toBe(BLOCKED_TEXT.loading);
+    await act(async () => cont.click());
+    expect(reviews).toBe(0);
+    await act(async () => root.unmount());
+    host.remove();
+  });
+});

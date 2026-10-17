@@ -7,7 +7,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { fixtureId } from "./bridge-contract";
-import { answer, button, buttons, click, createWorld, mountWorkbench, press, settle, succeeded, text, unmountAll } from "./sync-fake";
+import { answer, button, buttons, click, createWorld, mountWorkbench, oid, press, settle, succeeded, text, unmountAll } from "./sync-fake";
 
 // tasks.md T067 (feature 003). Spec FR-027, FR-057. Plan D6, D12. Data-model §6, §7. Contract Δ3 `reviewSync` `integrate`.
 
@@ -34,8 +34,8 @@ const pullResult = (integration: Record<string, unknown>, modeSource: string | n
 const done = (action: string, modeSource: string | null) => succeeded({ action, counts: { ahead: 2, behind: 3 }, integration: { state: "done" }, modeSource });
 
 // Pull (use Git's configuration) on a diverged branch without a configured mode.
-async function modeRequired() {
-  const double = await mountWorkbench(workbench, createWorld());
+async function modeRequired(world = createWorld()) {
+  const double = await mountWorkbench(workbench, world);
   await click(document.querySelector<HTMLElement>('button[data-slot="pull-main"]')!);
   const review = double.pending("reviewSync")!;
   expect(review.args[1]).toEqual({ action: "pull" });
@@ -106,6 +106,51 @@ describe("pull mode choice (FR-027)", () => {
       await answer(double.pending("sync"), done("pull", source));
       expect(status()).toContain(line);
       await unmountAll();
+    }
+  });
+
+  test("another pull that ends done removes the question", async () => {
+    const double = await modeRequired();
+    expect(text(band())).toContain(QUESTION);
+    await click(document.querySelector<HTMLElement>('button[data-slot="pull-main"]')!);
+    await answer(double.pending("reviewSync"), succeeded({ action: "pull", plan: { remotes: ["origin"], mode: null }, syncReviewToken: TOKEN_2 }));
+    await answer(double.pending("sync"), done("pull", "pull"));
+    expect(text(band())).not.toContain(QUESTION);
+  });
+
+  test("a new HEAD commit on the same branch removes the question", async () => {
+    const world = createWorld();
+    await modeRequired(world);
+    expect(text(band())).toContain(QUESTION);
+    world.head = { state: "branch", target: "refs/heads/main", oid: oid(5) };
+    world.branches = world.branches.map((b) => ({ ...b, objectId: oid(5) }));
+    await press(document.body, "F5");
+    await settle();
+    expect(text(band())).not.toContain(QUESTION);
+  });
+
+  // The workbench later moves focus back by its own rules, so this test renders the row alone.
+  test("the question takes no focus from an input, a textarea, or a contenteditable element, and takes it otherwise", async () => {
+    const { PullModeChoice } = await import("../../src/frontend/sync/PullModeChoice");
+    const { createRoot } = await import("react-dom/client");
+    const { act } = await import("react");
+    const editable = () => {
+      const div = document.createElement("div");
+      div.contentEditable = "true";
+      return div;
+    };
+    for (const [make, keeps] of [[() => document.createElement("input"), true], [() => document.createElement("textarea"), true], [editable, true], [() => document.createElement("button"), false]] as const) {
+      const field = document.body.appendChild(make());
+      field.focus();
+      expect(document.activeElement).toBe(field);
+      const host = document.body.appendChild(document.createElement("div"));
+      const root = createRoot(host);
+      await act(async () => root.render(<PullModeChoice onChoose={() => {}} onCancel={() => {}} reason={null} />));
+      expect(document.activeElement === field).toBe(keeps);
+      if (!keeps) expect(document.activeElement).toBe(button("Rebase", host));
+      await act(async () => root.unmount());
+      host.remove();
+      field.remove();
     }
   });
 

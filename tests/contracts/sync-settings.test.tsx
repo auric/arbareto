@@ -98,6 +98,38 @@ describe("SSH client (FR-032, FR-033)", () => {
     expect(radio("PuTTY (plink)").checked).toBe(true);
   });
 
+  // An arrow key moves the radio selection and fires `change` during its keydown (HTML "radio button state"). It must never open a file picker.
+  test("an arrow key onto PuTTY (plink) without a plink program opens no picker; Space then opens it", async () => {
+    const r = await renderSettings();
+    const plink = radio("PuTTY (plink)");
+    await act(async () => {
+      radio("Git's own configuration").dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+      plink.click();
+      plink.dispatchEvent(new KeyboardEvent("keyup", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    });
+    await settle();
+    expect(r.names()).not.toContain("chooseSyncPath");
+    expect(r.names()).not.toContain("setSshClient");
+    expect(radio("Git's own configuration").checked).toBe(true);
+    // Space activates a focused radio with a click on keyup (HTML "activation behavior").
+    await act(async () => {
+      plink.dispatchEvent(new KeyboardEvent("keydown", { key: " ", bubbles: true, cancelable: true }));
+      plink.click();
+      plink.dispatchEvent(new KeyboardEvent("keyup", { key: " ", bubbles: true, cancelable: true }));
+    });
+    await settle();
+    expect(r.pending("chooseSyncPath").args[0]).toEqual({ target: "plink" });
+  });
+
+  test("Clear plink is unavailable with a reason while the client is PuTTY (plink)", async () => {
+    const r = await renderSettings(base({ ...WITH_PLINK, sshClient: "plink" }));
+    const clear = button("Clear plink", panel());
+    expect(clear.getAttribute("aria-disabled")).toBe("true");
+    expect(document.getElementById(clear.getAttribute("aria-describedby")!)?.textContent).toBe("Select Git's own configuration before you clear the plink program.");
+    await click(clear);
+    expect(r.names()).not.toContain("clearSyncPath");
+  });
+
   test("a canceled plink picker keeps Git's own configuration", async () => {
     const r = await renderSettings();
     await click(radio("PuTTY (plink)"));

@@ -6,6 +6,7 @@ import { act, useRef, useState } from "react";
 import type { TrustReport } from "../../src/frontend/trust/TrustDialog";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { contractChecked, fixtureId } from "./bridge-contract";
 
 printOrigin("../../src/frontend/trust/TrustDialog.tsx", import.meta.dir);
 registerDom();
@@ -28,7 +29,7 @@ const SESSION = "Arbareto cannot check these program files for later edits. This
 // The bridge double answers `approveTrust` with the queued responses in order and records each call.
 function bridgeDouble(...responses: unknown[]) {
   const calls: unknown[][] = [];
-  return { calls, bridge: { approveTrust: (...args: unknown[]) => (calls.push(args), Promise.resolve(responses.shift())) } };
+  return { calls, bridge: contractChecked({ approveTrust: (...args: unknown[]) => (calls.push(args), Promise.resolve(responses.shift())) }) };
 }
 
 const unmounts: (() => Promise<void>)[] = [];
@@ -63,7 +64,7 @@ async function mount(report: Report, bridge: ReturnType<typeof bridgeDouble>["br
         <TrustDialog
           open={open}
           report={report}
-          repositoryId="repository-1"
+          repositoryId={fixtureId(1)}
           bridge={bridge as never}
           client={client}
           finalFocus={opener}
@@ -126,7 +127,7 @@ describe("trust dialog (plan.md \"Keyboard and focus\" Trust dialog row)", () =>
     const { approved } = await mount(REPORT, double.bridge);
     await act(async () => button("Approve").click());
     await settle();
-    expect(double.calls).toEqual([[{ repositoryId: "repository-1", repositoryGeneration: 3 }, { fingerprint: REPORT.fingerprint, approve: true }]]);
+    expect(double.calls).toEqual([[{ repositoryId: fixtureId(1), repositoryGeneration: 3 }, { fingerprint: REPORT.fingerprint, approve: true }]]);
     expect(approved).toEqual([]);
     expect(popup()).not.toBeNull();
     expect(document.activeElement).toBe(button("Approve"));

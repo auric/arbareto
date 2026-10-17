@@ -9,7 +9,7 @@ import { act, type ReactNode } from "react";
 import { HISTORY_LOAD_MARGIN } from "../../src/contracts/limits";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
-import { createFake, oid, stubLayout, TARGET, type FakeOptions } from "./history-fake";
+import { createFake, oid, stubLayout, TARGET, viewIdOf, type FakeOptions } from "./history-fake";
 
 printOrigin("../../src/frontend/history/HistoryList.tsx", import.meta.dir);
 registerDom();
@@ -112,7 +112,7 @@ describe("plan.md D6 window arithmetic", () => {
       const { list, host, fake } = await mount({ total: 1_000_000 }, density);
       await act(async () => list.focus());
       await key(list, "End");
-      expect(fake.of("loadHistory").at(-1)).toEqual({ viewId: "view-1", need: { end: true } });
+      expect(fake.of("loadHistory").at(-1)).toEqual({ viewId: viewIdOf(1), need: { end: true } });
       const last = item(host, 1_000_001)!;
       expect(last.getAttribute("aria-selected")).toBe("true");
       expect(viewportTop(list, last) + rowHeight).toBeCloseTo(HEIGHT, 6);
@@ -193,7 +193,7 @@ describe("plan.md D6 load trigger", () => {
   test("the first load asks for the last row of the first window, and a later load starts only when fewer than 1,024 loaded rows lie below", async () => {
     const { list, fake } = await mount({ total: 1_000_000 });
     const fits = Math.floor((HEIGHT - 1) / 26) - 2;
-    expect(fake.of("loadHistory")).toEqual([{ viewId: "view-1", need: { row: fits } }]);
+    expect(fake.of("loadHistory")).toEqual([{ viewId: viewIdOf(1), need: { row: fits } }]);
     const loaded = fake.loaded();
     expect(loaded).toBe(fits + 1 + 2 * HISTORY_LOAD_MARGIN);
     // The last window row n keeps at least 1,024 loaded rows below it: no load.
@@ -202,7 +202,7 @@ describe("plan.md D6 load trigger", () => {
     expect(fake.of("loadHistory")).toHaveLength(1);
     await scrollTo(list, (quiet + 2 + 2) * 26 - HEIGHT);
     expect(fake.of("loadHistory")).toHaveLength(2);
-    expect(fake.of("loadHistory")[1]).toEqual({ viewId: "view-1", need: { row: quiet + 1 } });
+    expect(fake.of("loadHistory")[1]).toEqual({ viewId: viewIdOf(1), need: { row: quiet + 1 } });
   });
 
   test("no load starts while a load runs, and a scrollbar drag to the bottom shows the more-rows row and starts a load", async () => {
@@ -215,7 +215,7 @@ describe("plan.md D6 load trigger", () => {
     await scrollTo(list, maxScrollTop(list));
     expect(host.querySelector("[data-more]")).not.toBeNull();
     expect(fake.of("loadHistory")).toHaveLength(2);
-    expect(fake.of("loadHistory")[1]).toEqual({ viewId: "view-1", need: { row: fake.loaded() } });
+    expect(fake.of("loadHistory")[1]).toEqual({ viewId: viewIdOf(1), need: { row: fake.loaded() } });
   });
 
   test("a Cancel of a held scroll load halts loads until the more-rows row shows again", async () => {
@@ -291,7 +291,7 @@ describe("plan.md D6 load trigger", () => {
     await act(async () => list.focus());
     await key(list, "End");
     expect(fake.calls.map((c) => c.operation).filter((o) => o === "loadHistory" || o === "cancel")).toEqual(["loadHistory", "cancel", "loadHistory"]);
-    expect(fake.of("loadHistory")[1]).toEqual({ viewId: "view-1", need: { end: true } });
+    expect(fake.of("loadHistory")[1]).toEqual({ viewId: viewIdOf(1), need: { end: true } });
   });
 
   test("End shows progress with Cancel, and Cancel keeps the rows and the selection", async () => {

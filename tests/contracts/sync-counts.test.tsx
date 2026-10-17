@@ -7,6 +7,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { answer, button, click, createWorld, mountWorkbench, oid, press, refList, settle, succeeded, text, unmountAll, type World } from "./sync-fake";
+import { fixtureId } from "./bridge-contract";
 
 // tasks.md T058 (feature 003). Spec FR-019 to FR-022. Plan D8. Data-model §1.
 
@@ -106,7 +107,7 @@ describe("toolbar counts (FR-019 to FR-022)", () => {
 
   test("a failed readTracking shows its code and no counts", async () => {
     const world = createWorld();
-    world.answers.readTracking = () => ({ requestId: "r", operationId: "o", state: "failed", code: "GIT_FAILED" });
+    world.answers.readTracking = () => ({ requestId: "r", operationId: fixtureId(0x201), state: "failed", code: "GIT_FAILED" });
     await mountWorkbench(workbench, world);
     expect(text(count()!)).toBe("Counts did not load: GIT_FAILED.");
   });
@@ -128,8 +129,8 @@ describe("toolbar counts (FR-019 to FR-022)", () => {
     await settle();
     expect(double.count("readTracking")).toBe(3);
     await click(button("Fetch"));
-    await answer(double.pending("reviewSync"), succeeded({ action: "fetch", plan: { remotes: ["origin"] }, syncReviewToken: "t" }));
-    await answer(double.pending("sync"), { requestId: "r", operationId: "o", state: "succeeded", result: { action: "fetch", fetch: { remotes: [], observed: [] } } });
+    await answer(double.pending("reviewSync"), succeeded({ action: "fetch", plan: { remotes: ["origin"] }, syncReviewToken: fixtureId(0x101) }));
+    await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x201), state: "succeeded", result: { action: "fetch", fetch: { remotes: [], observed: [] } } });
     expect(double.count("readTracking")).toBe(4);
   });
 });

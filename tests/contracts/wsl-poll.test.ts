@@ -6,6 +6,7 @@ import type { ChangeEntry, WorkspaceSnapshot } from "../../src/contracts/envelop
 import type { BridgeResponse, OnProgress } from "../../src/frontend/bridge";
 import { printOrigin } from "../origin";
 import { createRequests } from "../../src/frontend/state/requests";
+import { contractChecked } from "./bridge-contract";
 
 printOrigin("../../src/frontend/state/requests.ts", import.meta.dir);
 
@@ -39,7 +40,7 @@ function bridgeDouble() {
     if (!found) throw new Error(`no ${operation} call`);
     return found;
   };
-  return { bridge, calls, of, last, history, bind };
+  return { bridge: contractChecked(bridge), calls, of, last, history, bind };
 }
 
 function clockDouble() {

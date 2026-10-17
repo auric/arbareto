@@ -6,6 +6,7 @@ import { act, isValidElement, type ReactElement, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import type { BootProps, Environment } from "../../src/frontend/boot/BootView";
+import { contractChecked, fixtureId } from "./bridge-contract";
 
 printOrigin("../../src/frontend/boot/BootView.tsx", import.meta.dir);
 // tests/dom.ts: Base UI must first evaluate with a DOM, so the modules that load it come after registerDom().
@@ -152,16 +153,16 @@ describe("boot view", () => {
     const calls: unknown[] = [];
     const done = { requestId: null, state: "succeeded" as const };
     const actions = bootActions(
-      {
+      contractChecked({
         chooseGit: async () => (calls.push("chooseGit"), done),
-        dismissRecoveryMarker: async (payload) => (calls.push(payload), done),
-      },
+        dismissRecoveryMarker: async (payload: { markerId: string }) => (calls.push(payload), done),
+      }),
       () => calls.push("reload"),
     );
     actions.onSelectGit();
-    actions.onDismissMarker("m1");
+    actions.onDismissMarker(fixtureId(0x501));
     await Bun.sleep(0);
-    expect(calls).toEqual(["chooseGit", { markerId: "m1" }, "reload", "reload"]);
+    expect(calls).toEqual(["chooseGit", { markerId: fixtureId(0x501) }, "reload", "reload"]);
   });
 
   test("the boot-view mark happens once", () => {

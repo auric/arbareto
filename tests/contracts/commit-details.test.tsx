@@ -8,7 +8,7 @@ import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { useSyncExternalStore } from "react";
-import { createFake, oid as fakeOid, stubLayout, TARGET } from "./history-fake";
+import { createFake, oid as fakeOid, stubLayout, TARGET, viewIdOf } from "./history-fake";
 
 printOrigin("../../src/frontend/history/CommitDetails.tsx", import.meta.dir);
 registerDom();
@@ -186,7 +186,7 @@ describe("Selected commit of a feature 002 view", () => {
     expect(detailReads(fake)).toHaveLength(0);
     const host = await show(<ViewCommitDetails view={view} oid={fakeOid(3)} dateFormat={dateFormat} />);
     await settle();
-    expect(detailReads(fake)).toEqual([{ viewId: "view-1", mode: "full", at: { oid: fakeOid(3) }, count: 1, text: "details" }]);
+    expect(detailReads(fake)).toEqual([{ viewId: viewIdOf(1), mode: "full", at: { oid: fakeOid(3) }, count: 1, text: "details" }]);
     expect(text(host)).toContain("Body of 3");
     expect(text(field(host, "Parents"))).toContain(fakeOid(4));
     expect(text(field(host, "Children"))).toContain(fakeOid(2));

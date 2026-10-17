@@ -26,6 +26,8 @@ export interface GitDaemon {
   pid: number;
   // Lines in the counter file: one per service request.
   accessCount(): number;
+  // True when Bun holds an exit record for the daemon. A PID probe is no proof: the OS can reuse a PID after the process ends.
+  ended(): boolean;
   stop(): Promise<void>;
 }
 
@@ -74,6 +76,7 @@ export async function startGitDaemon(options: GitDaemonOptions): Promise<GitDaem
         port,
         pid: proc.pid,
         accessCount: () => (existsSync(options.counterFile) ? readFileSync(options.counterFile, "utf8").split("\n").filter((l) => l !== "").length : 0),
+        ended: () => proc.exitCode !== null || proc.signalCode !== null,
         async stop() {
           proc.kill();
           await within(proc.exited, STOP_WAIT_MS, `git daemon ${proc.pid}`);

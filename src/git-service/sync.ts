@@ -200,9 +200,10 @@ export function createSyncer(o: SyncerOptions) {
       else registry.apply(operationId, { type: "no-effects", observed: "failed", code: ending.code, ...(ending.code === "OUTPUT_LIMIT" && ending.reason !== undefined ? { reason: ending.reason } : {}) }, ending.result);
       resolved();
     };
-    // The end of a run that started network processes.
+    // The end of a run that started network processes. Data-model §11: `connectTarget` comes from the kept target itself.
     const finish = (event: OperationEvent, result: unknown, known = true, cause?: ErrorCode) => {
-      registry.apply(operationId, event, result, cause);
+      const kept = connectTargets.get(w.repositoryId)?.operationId === operationId;
+      registry.apply(operationId, event, kept ? { ...(result as object), connectTarget: true } : result, cause);
       if (known) resolved();
     };
     const unknown = (f: Failure | Stop, result: unknown) =>

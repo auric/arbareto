@@ -158,6 +158,10 @@
           ],
           "additionalProperties": false,
           "title": "SyncRemedy"
+        },
+        "connectTarget": {
+          "type": "boolean",
+          "const": true
         }
       },
       "required": [
@@ -168,6 +172,20 @@
       ],
       "additionalProperties": false,
       "title": "CloneFailed"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "connectTarget": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "connectTarget"
+      ],
+      "additionalProperties": false,
+      "title": "CloneConnectTarget"
     },
     {
       "type": "object",

@@ -128,8 +128,9 @@ export function CloneDialog({ bridge, separator, onOpened, onClose }: CloneDialo
     setEnded(response);
   }
   const operationId = ended?.operationId;
-  // FR-034 and O-10: every failed clone under plink offers it. Contract Δ2: a clone target carries no `repositoryId`.
-  const connect = plink && ended?.state === "failed" && operationId !== undefined ? () => bridge.connectInTerminal({}, { operationId }) : undefined;
+  const endedResult = ended?.result;
+  // Data-model §11: only a kept connect target offers it. Contract Δ2: a clone target carries no `repositoryId`.
+  const connect = operationId !== undefined && isObject(endedResult) && endedResult.connectTarget === true ? () => bridge.connectInTerminal({}, { operationId }) : undefined;
 
   return (
     <section

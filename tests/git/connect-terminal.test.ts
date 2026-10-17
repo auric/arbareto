@@ -52,6 +52,7 @@ function fixture(tag: string): Fixture {
 }
 
 const terminals = (service: Service) => service.runner.frames.filter((f) => f.type === "terminal");
+const targetOf = (response: { result?: unknown }) => (response.result as { connectTarget?: unknown } | undefined)?.connectTarget;
 
 function connect(service: Service, operationId: string, repositoryId?: string) {
   return service.request("connectInTerminal", { operationId }, repositoryId === undefined ? {} : { repositoryId });
@@ -119,6 +120,59 @@ describeGit("connect in a terminal (T053)", () => {
       const connected = await connect(service, pulled.operationId!, r.repositoryId);
       expect({ ...outcome(connected), result: connected.result }).toEqual({ state: "succeeded", code: undefined, result: undefined });
       expect(terminals(service)).toMatchObject([{ type: "terminal", operationId: connected.operationId, repositoryId: r.repositoryId, target: "origin" }]);
+      service.runner.inject.sshClient = "git";
+    });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "data-model §11: a result holds connectTarget exactly when connectInTerminal then succeeds, for fetch under git and for fetch, pull, push, and clone under plink", WINDOWS, async () => {
+    const f = fixture("t053-fact");
+    gitRun(f.h, f.repo, ["config", "remote.origin.pushurl", PUSH_URL]);
+    await withSync("t053-fact", async (service) => {
+      const r = await register(service, f.repo);
+      const ends: { name: string; connectTarget: unknown; connect: string }[] = [];
+      const check = async (name: string, response: { operationId?: string; result?: unknown }, repositoryId?: string) => {
+        const connected = await connect(service, response.operationId!, repositoryId);
+        ends.push({ name, connectTarget: targetOf(response), connect: connected.state });
+      };
+      await check("fetch under git", await run(service, r, { action: "fetch" }), r.repositoryId);
+      service.runner.inject.sshClient = { plink: f.plink };
+      await check("fetch", await run(service, r, { action: "fetch" }), r.repositoryId);
+      await check("pull", await run(service, r, { action: "pull" }), r.repositoryId);
+      gitRun(f.h, f.repo, ["checkout", "-q", "-b", "feature"]);
+      const review = await reviewed(service, r, { action: "push", destination: { remote: "origin", branch: "feature", setUpstream: false } });
+      await check("push", await service.response(sendSync(service, r, review.syncReviewToken)), r.repositoryId);
+      const url = native(`${f.h.root}/missing-clone.git`);
+      await check("clone", await service.response(service.send("clone", { url, ...service.runner.addClone(native(`${f.h.root}/cloned`), url) }), 120_000));
+      expect(ends).toEqual([
+        { name: "fetch under git", connectTarget: undefined, connect: "rejected" },
+        { name: "fetch", connectTarget: true, connect: "succeeded" },
+        { name: "pull", connectTarget: true, connect: "succeeded" },
+        { name: "push", connectTarget: true, connect: "succeeded" },
+        { name: "clone", connectTarget: true, connect: "succeeded" },
+      ]);
+      service.runner.inject.sshClient = "git";
+    });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "data-model §11: a refusal before the start, DESTINATION_NOT_EMPTY or PUTTY_UNAVAILABLE, holds no connectTarget, and connectInTerminal gives UNKNOWN_TARGET", WINDOWS, async () => {
+    const f = fixture("t053-refused");
+    const full = native(`${f.h.root}/full`);
+    mkdirSync(full);
+    writeFileSync(`${full}/keep.txt`, "keep\n");
+    await withSync("t053-refused", async (service) => {
+      service.runner.inject.sshClient = { plink: f.plink };
+      const r = await register(service, f.repo);
+      const url = native(`${f.h.root}/missing-clone.git`);
+      const cloned = await service.response(service.send("clone", { url, ...service.runner.addClone(full, url) }), 120_000);
+      service.runner.inject.sshClient = { plink: native(`${f.h.root}/putty/absent.exe`) };
+      const fetched = await run(service, r, { action: "fetch" });
+      expect([cloned, fetched].map((x) => ({ ...outcome(x), connectTarget: targetOf(x) }))).toEqual([
+        { state: "failed", code: "DESTINATION_NOT_EMPTY", connectTarget: undefined },
+        { state: "failed", code: "PUTTY_UNAVAILABLE", connectTarget: undefined },
+      ]);
+      const unknown = { state: "rejected", code: "UNKNOWN_TARGET" };
+      expect([outcome(await connect(service, cloned.operationId!)), outcome(await connect(service, fetched.operationId!, r.repositoryId))]).toEqual([unknown, unknown]);
+      expect(terminals(service)).toEqual([]);
       service.runner.inject.sshClient = "git";
     });
   }, TIMEOUT_MS);

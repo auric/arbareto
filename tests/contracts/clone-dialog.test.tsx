@@ -241,15 +241,18 @@ describe("clone run and result (FR-048, FR-050)", () => {
     expect(text(panel())).not.toContain("The folder does not exist.");
   });
 
-  test("a failed clone under plink offers Connect in a terminal for its operation", async () => {
-    const r = await ended(failed("GIT_FAILED"), settingsOf(PLINK));
+  test("data-model §11: a result with connectTarget offers Connect in a terminal for its operation", async () => {
+    const r = await ended(failed("GIT_FAILED", { connectTarget: true }));
     await click(button("Connect in a terminal", panel()));
     expect(r.pending("connectInTerminal").args.slice(0, 2)).toEqual([{}, { operationId: "op-1" }]);
   });
 
-  test("a failed clone under git offers no Connect in a terminal", async () => {
-    await ended(failed("GIT_FAILED"));
-    expect(buttons("Connect in a terminal", panel())).toEqual([]);
+  test("data-model §11: a failed clone without connectTarget offers no Connect in a terminal, also under plink", async () => {
+    await ended(failed("GIT_FAILED"), settingsOf(PLINK));
+    expect(buttons("Connect in a terminal", panel()).length).toBe(0);
+    await unmounts.pop()!();
+    await ended(failed("DESTINATION_NOT_EMPTY", { reason: "not-empty", path: "E:\\clones\\full" }), settingsOf(PLINK));
+    expect(buttons("Connect in a terminal", panel()).length).toBe(0);
   });
 
   test("a succeeded clone goes to the registration flow", async () => {

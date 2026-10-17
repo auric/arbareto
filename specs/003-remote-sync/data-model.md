@@ -149,4 +149,4 @@ No passphrase, no credential, and no key content.
 
 ## 11. Connect target (retained)
 
-`{operationId, kind: "remote" | "url", repositoryId | null, gitInstallationId, target}` for the last failed `sync` or `clone` of each workspace. The service keeps one only when the `pageant` reply of that operation was not `git`. A clone without a workspace keeps one target for the session. The target URL never leaves the service, except in the `terminal` request to the shell.
+`{operationId, kind: "remote" | "url", repositoryId | null, gitInstallationId, target}` for the last failed `sync` or `clone` of each workspace. The service keeps one only when the `pageant` reply of that operation was not `git`. A clone without a workspace keeps one target for the session. The `sync` or `clone` result holds `connectTarget: true` exactly when the service keeps a target for that operation, and the renderer offers Connect in a terminal only then. The target URL never leaves the service, except in the `terminal` request to the shell.

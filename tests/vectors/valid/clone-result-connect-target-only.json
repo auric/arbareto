@@ -1,0 +1,5 @@
+{
+  "schema": "clone-result",
+  "expected": "valid",
+  "text": "{\"connectTarget\":true}"
+}

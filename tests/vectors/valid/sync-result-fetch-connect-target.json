@@ -1,0 +1,5 @@
+{
+  "schema": "sync-result",
+  "expected": "valid",
+  "text": "{\"action\":\"fetch\",\"fetch\":{\"remotes\":[{\"name\":\"origin\",\"state\":\"failed\",\"updates\":[],\"counts\":{\" \":0,\"+\":0,\"-\":0,\"t\":0,\"*\":0,\"!\":0,\"=\":0},\"outputTail\":\"fatal: x\"}],\"observed\":[]},\"remedy\":{\"text\":\"Run it in a terminal.\",\"command\":null},\"connectTarget\":true}"
+}

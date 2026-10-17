@@ -297,7 +297,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - The PuTTY manual §9.3.1 states that this command loads into a running Pageant. So the app reads no window title and no process list.
   - Pageant asks for the passphrase in its own window at first use. Plink then waits on the agent, and the stall notice names a sign-in window.
 - Pageant and PuTTYgen are `pageant.exe` and `puttygen.exe` in the plink folder (O-7). A missing program gives `PUTTY_UNAVAILABLE` with the program and the path (FR-037).
-- Connect in a terminal: every failed `sync` or `clone` under plink offers it (O-10).
+- Connect in a terminal: a failed `sync` or `clone` whose result holds `connectTarget: true` offers it (O-10, data-model §11). The service sets the field from the kept target, so a refusal before the start offers no action.
   - `connectInTerminal` sends the shell a `terminal` request. The shell opens a new console with a constant PowerShell script and the values in environment variables, so no value lands on a command line.
   - The script runs `git ls-remote --heads -- <target>` with `GIT_SSH_COMMAND='<plink>'` without `-batch`. Git parses the URL, host, port, and user, so plink can show the host-key prompt (O-9).
   - The target is the remote name for fetch and pull, the push URL for push, and the URL for clone.
@@ -386,8 +386,8 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - Without a repository: "Open a repository to set its key files."
   - "Default clone folder": the path or "Not set", with "Choose default clone folder…" and "Clear default clone folder".
 - Connect in a terminal (FR-034, O-10):
-  - A `sync` of Fetch, Fetch all remotes, Pull, Push, or Force push with lease that ends `failed` or `failed-with-effects` under plink shows a notice row. It reads "<action name> did not complete with PuTTY (plink)." with "Connect in a terminal" and "Dismiss notice". The row names no cause.
-  - A failed clone under plink shows "Connect in a terminal" in the clone panel.
+  - A `sync` whose result holds `connectTarget: true` shows a notice row. It reads "<action name> did not complete with PuTTY (plink)." with "Connect in a terminal" and "Dismiss notice". The row names no cause.
+  - A failed clone whose result holds `connectTarget: true` shows "Connect in a terminal" in the clone panel.
   - Results: "The terminal opened.", the `PUTTY_UNAVAILABLE` text, or "Connect in a terminal did not complete: <code>".
 - Skills for the implementer: `arbareto-ux`, `vercel-react-best-practices`, `web-design-guidelines`, and `shadcn` with the version that tasks.md pins.
 

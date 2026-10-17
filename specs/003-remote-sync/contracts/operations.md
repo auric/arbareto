@@ -109,7 +109,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
   - pull: the fetch remedy for the fetch step, and the integrate argv for the integrate step.
   - Text: "This command runs the step in a terminal, where Git and SSH can ask for input. Then use the action again."
 - An expired `syncReviewToken` gives `APPROVAL_EXPIRED` (001).
-- A failed `sync` keeps a connect target only when its `pageant` reply was not `git` (data-model §11).
+- A failed `sync` keeps a connect target only when its `pageant` reply was not `git` (data-model §11). The `sync` result then holds `connectTarget: true`. Without a kept target, the result has no `connectTarget`.
 
 ### `applyFile` (001 §3, §4)
 
@@ -135,11 +135,12 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
   6. Otherwise: `destinationFacts` again. The result holds `{exists, empty}`, the redacted `outputTail`, and the remedy `& '<git>' clone -- '<url>' '<destination>'`, or text only when the URL holds user information or the Git is a WSL Git.
      - A second reply `error`, or a failed request, gives the code of the step without `{exists, empty}`.
      - A WSL clone process without an exit status gives the code only, because no process-end fact exists without a registered workspace (plan.md "Open items").
+     - A kept connect target (data-model §11) adds `connectTarget: true` to the result. Without `{exists, empty}`, the result is `{connectTarget: true}`. A refusal before step 4 keeps no target and has no `connectTarget`.
 - Shell finish: store the recent entry and `lastCloneParent`.
 
 ### `connectInTerminal`
 
-- Payload: `{operationId}` of a failed `sync` or `clone` with a retained connect target. A `sync` target needs the `repositoryId` of its workspace. A `clone` target needs no `repositoryId`. Any other combination gives `UNKNOWN_TARGET`.
+- Payload: `{operationId}` of a failed `sync` or `clone` with a retained connect target, which its result names with `connectTarget: true`. A `sync` target needs the `repositoryId` of its workspace. A `clone` target needs no `repositoryId`. Any other combination gives `UNKNOWN_TARGET`.
 - Before `terminal`, the service checks `approvalRequired.sync` and the trust fingerprint. A difference gives `TRUST_REQUIRED` or `TRUST_CHANGED`, and no console starts. A clone target has no repository and needs no trust check.
 - The service sends `terminal` (Δ6). Result: `succeeded` when the console starts. A `failed` reply gives `failed` with `PUTTY_UNAVAILABLE` and the program and the path.
 - The trust check reads a fresh trust listing, so a trust refusal ends `failed`. A `refused` reply ends `failed` with its own code.

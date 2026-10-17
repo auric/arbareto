@@ -150,7 +150,10 @@ export function createCloner(o: ClonerOptions) {
     clone(request: CloneRequest): void {
       const { operationId, signal } = registry.start("clone", request.requestId);
       registry.apply(operationId, { type: "valid-read" });
-      const finish = ({ code, result }: End) => {
+      const finish = (end: End) => {
+        const { code } = end;
+        // Data-model §11: `connectTarget` comes from the kept target itself.
+        const result = kept?.operationId === operationId ? { ...(end.result as object | undefined), connectTarget: true } : end.result;
         if (registry.get(operationId)?.state === "cancel-requested") return void registry.apply(operationId, { type: "processes-stopped" }, result);
         if (code === "CANCELED") {
           registry.apply(operationId, { type: "cancel" });

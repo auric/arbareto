@@ -1103,6 +1103,8 @@ export const SyncResult = z
     reason: z.enum([...PUSH_REJECTED_REASONS, ...PUTTY_UNAVAILABLE_REASONS, ...PULL_REFUSAL_REASONS]).optional(),
     program: z.enum(PUTTY_PROGRAMS).optional(),
     path: ChannelPath.optional(),
+    // Data-model §11: the service holds a connect target for this operation.
+    connectTarget: z.literal(true).optional(),
   })
   .refine(
     (r) =>
@@ -1122,10 +1124,12 @@ export const PuttyRefused = z
   .strictObject({ reason: z.enum(PUTTY_UNAVAILABLE_REASONS), program: z.enum(PUTTY_PROGRAMS), path: ChannelPath })
   .meta({ title: "PuttyRefused" });
 // Contract Δ3 `clone`: the `chooseRepository` result after exit 0, else the destination state of FR-050, or a refusal before the start.
+// `connectTarget` (data-model §11): the service holds a connect target for this operation. Without a destination read, it stands alone.
 export const CloneResult = z
   .union([
     RegistrationResult,
-    z.strictObject({ exists: z.boolean(), empty: z.boolean(), outputTail: OutputTail, remedy: SyncRemedy }).meta({ title: "CloneFailed" }),
+    z.strictObject({ exists: z.boolean(), empty: z.boolean(), outputTail: OutputTail, remedy: SyncRemedy, connectTarget: z.literal(true).optional() }).meta({ title: "CloneFailed" }),
+    z.strictObject({ connectTarget: z.literal(true) }).meta({ title: "CloneConnectTarget" }),
     z.strictObject({ reason: z.enum(DESTINATION_NOT_EMPTY_REASONS), path: ChannelPath }).meta({ title: "DestinationRefused" }),
     PuttyRefused,
   ])

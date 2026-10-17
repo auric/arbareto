@@ -444,6 +444,10 @@
       "type": "string",
       "maxLength": 32767,
       "pattern": "^[^\\u0000]*$"
+    },
+    "connectTarget": {
+      "type": "boolean",
+      "const": true
     }
   },
   "required": [

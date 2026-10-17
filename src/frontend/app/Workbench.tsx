@@ -204,16 +204,11 @@ export const DOCK_HINT = "Select the Working directory row to commit, or a commi
 const NO_REPOSITORY = "No repository open";
 // Feature 003 data-model §10: the Pull main part waits for `readSyncSettings`.
 const SETTINGS_LOADING = "The default pull action is still loading…";
-// `sshClient` is null while it is unknown. Then no row offers Connect in a terminal (O-10).
-type SyncSettingsState = { action: DefaultPullAction | null; reason: string | null; sshClient: "git" | "plink" | null };
+type SyncSettingsState = { action: DefaultPullAction | null; reason: string | null };
 function settingsOf(response: BridgeResponse): SyncSettingsState {
   const action = isObject(response.result) ? response.result.defaultPullAction : undefined;
-  const client = isObject(response.result) ? response.result.sshClient : undefined;
-  const sshClient = response.state === "succeeded" && (client === "git" || client === "plink") ? client : null;
-  return response.state === "succeeded" && typeof action === "string" ? { action: action as DefaultPullAction, reason: null, sshClient } : { action: null, reason: `The default pull action did not load: ${response.code ?? response.state}.`, sshClient };
+  return response.state === "succeeded" && typeof action === "string" ? { action: action as DefaultPullAction, reason: null } : { action: null, reason: `The default pull action did not load: ${response.code ?? response.state}.` };
 }
-// Feature 003 FR-034 and O-10: the network actions of a `sync`. Abort, Continue, and Skip use no remote.
-const NETWORK_ACTIONS: readonly string[] = ["fetch", "fetch-all", "pull", "push", "force-push"];
 // Plan.md D12 "Settings panel": a proposal is the last `remote.<name>.puttykeyfile` entry with a value (git-config(1): the last value wins).
 function keyProposals(report: TrustReport | undefined): KeyProposal[] {
   const proposals = new Map<string, string>();
@@ -601,9 +596,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [submoduleReview, setSubmoduleReview] = useState<{ value: SubmoduleReviewValue; target: { repositoryId: string; repositoryGeneration: number }; snapshotId: string; open: boolean } | null>(null);
   // Feature 003 plan.md D12: the clone panel or the settings panel replaces the main area until it closes.
   const [mainPanel, setMainPanel] = useState<"clone" | "settings" | null>(null);
-  // Feature 003 FR-034: the failed network `sync` under plink that the connect row offers, with its repository.
+  // Feature 003 FR-034 and data-model §11: the `sync` with a kept connect target that the connect row offers, with its repository.
   const [connect, setConnect] = useState<{ repositoryId: string; operationId: string; name: string } | null>(null);
-  const startedSync = useRef<string | null>(null);
   // Feature 003 FR-004, FR-013, FR-040, and contract Δ8: the reads after each `sync` outcome. A new view keeps the selected commit and shows no refs-changed notice.
   const sync = useSync({
     bridge,
@@ -614,13 +608,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       setOperation(op);
       const response = op.response;
       const id = state.repository?.repositoryId;
-      // A refused review reports its response without a start. Only a started `sync` keeps a connect target (data-model §11).
-      if (response === null) {
-        startedSync.current = op.requestId;
-        return setConnect(null);
-      }
-      const failed = response.state === "failed" || response.state === "failed-with-effects";
-      if (failed && startedSync.current === op.requestId && syncSettings.sshClient === "plink" && op.sync !== undefined && NETWORK_ACTIONS.includes(op.sync.action) && response.operationId !== undefined && id !== undefined) {
+      if (response === null) return setConnect(null);
+      if (isObject(response.result) && response.result.connectTarget === true && op.sync !== undefined && response.operationId !== undefined && id !== undefined) {
         setConnect({ repositoryId: id, operationId: response.operationId, name: SYNC_NAMES[op.sync.action] });
       }
     },
@@ -645,7 +634,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // `code` is the response code or state of a failed read, null after a success.
   const [tracking, setTracking] = useState<{ repositoryId: string; entries: TrackingEntry[] | null; code: string | null } | null>(null);
   const trackingSeq = useRef(0);
-  const [syncSettings, setSyncSettings] = useState<SyncSettingsState>({ action: null, reason: SETTINGS_LOADING, sshClient: null });
+  const [syncSettings, setSyncSettings] = useState<SyncSettingsState>({ action: null, reason: SETTINGS_LOADING });
   const [anchor, setAnchor] = useState<Staging["anchor"]>(null);
   const [fileReason, setFileReason] = useState<string | null>(null);
   const [paneReason, setPaneReason] = useState<string | null>(null);

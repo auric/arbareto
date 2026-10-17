@@ -171,19 +171,19 @@ describe("default clone folder (FR-054)", () => {
 
 describe("Connect in a terminal (FR-034, O-10)", () => {
   const band = () => document.querySelector('[data-slot="notice-band"]')!;
-  async function failedFetch(sshClient: "git" | "plink") {
+  async function failedFetch(sshClient: "git" | "plink", result: object) {
     const world = createWorld();
     world.answers.readSyncSettings = () => succeeded({ ...settings("pull"), sshClient, ...(sshClient === "plink" ? WITH_PLINK : {}) });
     const double = await mountWorkbench(workbench, world);
     await click(button("Fetch"));
     await answer(double.pending("reviewSync"), succeeded({ action: "fetch", plan: { remotes: ["origin"] }, syncReviewToken: "t" }));
-    await answer(double.pending("sync"), { requestId: "r", operationId: "op-9", state: "failed", code: "GIT_FAILED", result: { action: "fetch" } });
+    await answer(double.pending("sync"), { requestId: "r", operationId: "op-9", state: "failed", code: "GIT_FAILED", result });
     await settle();
     return double;
   }
 
-  test("a failed network operation under plink offers Connect in a terminal and names no cause", async () => {
-    const double = await failedFetch("plink");
+  test("data-model §11: a result with connectTarget offers Connect in a terminal and names no cause", async () => {
+    const double = await failedFetch("plink", { action: "fetch", connectTarget: true });
     expect(text(band())).toContain("Fetch did not complete with PuTTY (plink).");
     expect(text(band())).not.toMatch(/host key|passphrase|sign-in|SSH/);
     await click(button("Connect in a terminal", band()));
@@ -192,8 +192,8 @@ describe("Connect in a terminal (FR-034, O-10)", () => {
     expect(text(band())).toContain("plink is not available: C:\\PuTTY\\plink.exe (missing)");
   });
 
-  test("a failed network operation under git offers no Connect in a terminal", async () => {
-    await failedFetch("git");
-    expect(buttons("Connect in a terminal")).toEqual([]);
+  test("data-model §11: a failed network operation without connectTarget offers no Connect in a terminal, also under plink", async () => {
+    await failedFetch("plink", { action: "fetch" });
+    expect(buttons("Connect in a terminal").length).toBe(0);
   });
 });

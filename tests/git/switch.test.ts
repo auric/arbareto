@@ -524,3 +524,46 @@ caseTest(TASK, "git-status(1): with status.showStash=true the `# stash` header i
   git(o, ["checkout", "--no-guess", "--no-recurse-submodules", "target", "--"]);
   expect(stateOf(f)).toEqual(stateOf(o));
 }, TIMEOUT_MS);
+
+// T034: one code for a vanished target ref. The exact refs listing decides, as for the merge and rebase source (contract Δ3).
+caseTest("T034", "a missing switch, track, rename, or delete target gives UNKNOWN_TARGET before any token, and a target that vanishes after the review gives STALE_REVIEW and no step", SHELL, async () => {
+  const f = build("switch-clean");
+  await withSync("t034-vanished", async (service) => {
+    const r = await open(service, f.repo);
+    for (const payload of [
+      switchTo("keep", { ref: "refs/heads/missing" }),
+      switchTo("keep", { track: { ref: "refs/remotes/one/missing", name: "missing" } }),
+      { action: "rename-branch", ref: "refs/heads/missing", name: "renamed" },
+      { action: "delete-branch", ref: "refs/heads/missing" },
+    ]) {
+      const response = await review(service, r, payload);
+      expect({ payload, ...outcome(response), result: response.result }).toEqual({ payload, state: "failed", code: "UNKNOWN_TARGET", result: undefined });
+    }
+    const rv = await reviewed(service, r, switchTo("keep"));
+    git(f, ["update-ref", "-d", TARGET]);
+    const from = service.runner.calls.length;
+    expect(outcome(await service.response(sendRun(service, r, rv.workbenchToken)))).toEqual({ state: "failed", code: "STALE_REVIEW" });
+    expect(steps(service, from)).toEqual([]);
+  });
+}, TIMEOUT_MS);
+
+// T034 and plan.md D2: a workbench step takes the 003 stall notice. The remedy names the step command (feature 003 contract Δ3 "Remedies").
+caseTest("T034", "a stalled checkout step reports stalled with the step command as its remedy, and the flag clears when the step ends", SHELL, async () => {
+  const f = build("switch-clean");
+  await withSync("t034-stall", async (service) => {
+    const r = await open(service, f.repo);
+    const rv = await reviewed(service, r, switchTo("keep"));
+    const checkout = (call: { arguments: readonly string[] }) => isStep(call, "checkout");
+    service.runner.inject.stall = checkout;
+    const release = service.runner.holdStart(checkout);
+    const requestId = sendRun(service, r, rv.workbenchToken);
+    const events = () => (service.progress as { requestId?: string; phase?: string; stalled?: boolean }[]).filter((p) => p.requestId === requestId);
+    await until(() => events().some((p) => p.stalled === true), "stalled event");
+    const view = (await service.getOperation(await service.operationId(requestId))).result as { stalled?: boolean; stallRemedy?: { command?: string; text: string } };
+    expect({ stalled: view.stalled, text: view.stallRemedy?.text }).toEqual({ stalled: true, text: "This command runs the step in a terminal, where Git and SSH can ask for input. Then use the action again." });
+    expect(view.stallRemedy?.command).toMatch(/^& '.+' --no-lazy-fetch -C '.+' 'checkout' '--no-guess' '--no-recurse-submodules' 'target' '--'$/);
+    release();
+    expect(outcome(await service.response(requestId))).toEqual(SUCCEEDED);
+    expect(events().filter((p) => p.phase === "switch-checkout").map((p) => p.stalled)).toEqual([false, true, false]);
+  });
+}, TIMEOUT_MS);

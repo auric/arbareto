@@ -1,0 +1,8 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"action\":\"rebase\",\"plan\":{\"onto\":{\"ref\":\"refs/heads/up\",\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\"},\"moved\":2,\"rewritten\":3,\"held\":1,\"forceNote\":{\"trackingRef\":\"refs/remotes/origin/topic\"},\"movedBranches\":{\"refs\":[\"refs/heads/side\"],\"more\":0},\"autostash\":{\"value\":false,\"source\":\"default\"},\"autosquash\":true},\"workbenchToken\":\"6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b\"}",
+  "repair": {
+    "plan.autosquash": false
+  }
+}

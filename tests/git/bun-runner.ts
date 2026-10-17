@@ -5,9 +5,9 @@
 // It does not reproduce the shell console flags or Jobs. T024 and T027 cover them.
 // T206 adds the contract §11 WSL process requests. T212 takes their types from the zod frames of `src/contracts/channel.ts`.
 
-import { lstatSync, mkdirSync, opendirSync, readdirSync, statSync } from "node:fs";
+import { appendFileSync, lstatSync, mkdirSync, opendirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { Subprocess } from "bun";
 import policyFile from "../../src/contracts/git-environment.json";
 import wslProcess from "../../src/contracts/wsl-process.json";
@@ -31,6 +31,7 @@ import {
   type Collector,
   createDiagnosticCounter,
   type DestinationFactsReply,
+  type FileAppendReply,
   type FileFact,
   type FileFactsRequest,
   type IndexedFileFactsRequest,
@@ -125,7 +126,7 @@ const WSL_TEXTS = { wrapper: wslProcess.wrapper.join("\n"), anchor: wslProcess.a
 const WSL_START_CAP_MS = 60_000;
 const WSL_PREFIX = /^\\\\(?:wsl\$|wsl\.localhost)\\([^\\/]+)(?:[\\/](.*))?$/i;
 
-export type WslMode = "probe" | "read" | "mutation" | "network" | "search" | "remote" | "integrate";
+export type WslMode = "probe" | "read" | "mutation" | "network" | "search" | "remote" | "integrate" | "mergetool";
 
 // The approved Linux Git of one distro (data-model §1). The shell takes it from its own parse of the probe output.
 export interface WslInstallation {
@@ -928,12 +929,13 @@ export function createBunRunner(options: BunRunnerOptions) {
     // Contract §6 "Process fields": a `network` request has an inactivity limit and a ceiling, every other request a deadline.
     const limits = call.limits;
     const network = "inactivityMs" in limits ? limits : null;
+    // Feature 004 contract Δ6: a `mergetool` run carries the ceiling alone.
     const timer =
-      "inactivityMs" in limits
+      "ceilingMs" in limits
         ? setTimeout(() => expire("ceiling"), shorter(limits.ceilingMs, inject.limits.ceilingMs))
         : setTimeout(() => expire("deadline"), shorter(limits.deadlineMs, inject.deadlineMs));
     // The exit can reach the loop before a due timer callback. A test-injected deadline then still ends the call.
-    const injectedEnd = "inactivityMs" in limits || inject.deadlineMs == null ? null : performance.now() + shorter(limits.deadlineMs, inject.deadlineMs);
+    const injectedEnd = "ceilingMs" in limits || inject.deadlineMs == null ? null : performance.now() + shorter(limits.deadlineMs, inject.deadlineMs);
     // Contract §6 "Activity and stall notice": only a call with `stallMs` gets activity events, and only at a state change.
     const stallMs = call.limits.stallMs === undefined ? undefined : shorter(call.limits.stallMs, inject.limits.stallMs);
     let inactivity: ReturnType<typeof setTimeout> | undefined;
@@ -1318,6 +1320,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     async destinationFacts(request): Promise<DestinationFactsReply> {
       checkSyncRequest("destinationFacts", request);
       frames.push({ type: "destinationFacts", ...request });
+      // Feature 004 contract Δ6: the double binds no `worktreeAdd` context, so that form names no binding.
+      if (!("cloneId" in request)) throw unknownTarget();
       inject.destinationFacts?.(request);
       const bound = contexts.get(request.cloneId);
       if (inactive.has(request.operationId) || bound?.kind !== "clone") throw unknownTarget();
@@ -1325,6 +1329,44 @@ export function createBunRunner(options: BunRunnerOptions) {
       // The double has no WSL `destination` mode. T075 covers it in the distro.
       if (wslParts(bound.path) !== null) throw new RunnerRefusal("INVALID_REQUEST", "WSL destination");
       return destinationOf(bound.path);
+    },
+
+    // Feature 004 contract Δ6 `fileAppend` on Windows, as `src-tauri/src/file_append.rs` checks it: a `started` marker of the target's action,
+    // the exact target, no link on the way, a regular file with one link, the expected state, and one append. The double has no WSL `append` mode.
+    async fileAppend(request, signal): Promise<FileAppendReply | WalkStop> {
+      checkSyncRequest("fileAppend", request);
+      frames.push({ type: "fileAppend", ...request });
+      if (inactive.has(request.operationId)) throw unknownTarget();
+      const action = request.target === "gitignore" ? "ignore-gitignore" : "ignore-exclude";
+      if (![...markers.values()].some((m) => m.operationId === request.operationId && m.kind === "workbench" && m.action === action)) throw new RunnerRefusal("INVALID_REQUEST", "fileAppend action");
+      const repository = repositories.get(request.repositoryId);
+      if (repository === undefined) throw unknownTarget();
+      if (wslGits.has(repository.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL fileAppend");
+      const root = request.target === "gitignore" ? repository.worktreeRoot : repository.commonDirectory;
+      const names = request.target === "gitignore" ? [".gitignore"] : ["info", "exclude"];
+      if (resolve(request.path) !== resolve(join(root, ...names))) throw new RunnerRefusal("INVALID_REQUEST", "fileAppend path");
+      const bytes = Buffer.from(request.bytes, "base64");
+      // src-tauri `file_append_deadline`: the reply group has no deadline form, so a walk past its deadline gives `error` `other-error`.
+      const deadline = (reply: FileAppendReply | WalkStop): FileAppendReply | WalkStop => ("stop" in reply && reply.stop === "deadline" ? { result: "error", code: "other-error" } : reply);
+      return deadline(await walk(signal, (): FileAppendReply => {
+        let at = root;
+        for (const [i, name] of names.entries()) {
+          at = join(at, name);
+          const st = lstatSync(at, { throwIfNoEntry: false });
+          if (st === undefined) {
+            if (i < names.length - 1) return { result: "error", code: "other-error" };
+            if (request.expected !== "absent") return { result: "stale" };
+            writeFileSync(at, bytes, { flag: "wx" });
+            return { result: "appended" };
+          }
+          if (st.isSymbolicLink() || (i < names.length - 1 && !st.isDirectory())) return { result: "refused", reason: "not-regular" };
+          if (i === names.length - 1 && (!st.isFile() || st.nlink !== 1)) return { result: "refused", reason: "not-regular" };
+        }
+        const old = readFileSync(at);
+        if (request.expected === "absent" || old.length !== request.expected.size || new Bun.CryptoHasher("sha256").update(old).digest("hex") !== request.expected.sha256) return { result: "stale" };
+        appendFileSync(at, bytes);
+        return { result: "appended" };
+      }));
     },
 
     // Feature 003 contract Δ6 `terminal`: a registered Windows Git and, for a `sync` target, a repository of that Git. The double opens no console.

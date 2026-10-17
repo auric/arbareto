@@ -10,6 +10,7 @@ import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Handshake, MutationStarted } from "../../src/contracts/channel";
+import { ReviewWorkbenchResult, RunWorkbenchResult } from "../../src/contracts/envelope";
 import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
 import { isObject } from "../../src/contracts/strict-json";
 import type { HunkCheckpoint } from "../../src/git-service/hunk-publish";
@@ -328,7 +329,7 @@ export interface TrustResult {
   state: "untrusted" | "approved" | "changed" | "revoked";
   persistence: "stored" | "session";
   trustId?: string;
-  approvalRequired: { reads: boolean; commit: boolean; sync: boolean };
+  approvalRequired: { reads: boolean; commit: boolean; sync: boolean; workbench: boolean };
   bound?: "file-count" | "file-bytes" | "total-bytes" | "link" | "name";
   inputLimited?: boolean;
   entries: { key: string; scope: string; origin?: string; value?: string }[];
@@ -391,6 +392,9 @@ export function checkFrame(frame: object): void {
 
 const isResponse =(value: unknown): value is ServiceResponse => isObject(value) && typeof value.state === "string" && (value.requestId === null || typeof value.requestId === "string");
 
+// Feature 004 contract Δ10 (T034): every result of these operations must fit its schema.
+const RESULT_SCHEMAS: Readonly<Record<string, { safeParse(value: unknown): { success: boolean } }>> = { reviewWorkbench: ReviewWorkbenchResult, runWorkbench: RunWorkbenchResult };
+
 export async function openService(options: OpenOptions): Promise<Service> {
   const trustStore = options.trustStore ?? createTrustStore();
   const environment = options.environment ?? serviceEnv();
@@ -401,6 +405,8 @@ export async function openService(options: OpenOptions): Promise<Service> {
   const responseAt = new Map<string, number>();
   const firstResponse = new Map<string, ServiceResponse>();
   const acceptedBy = new Map<string, string>();
+  // The operation of each sent `requestId`.
+  const sentOperations = new Map<string, string>();
   const listeners = new Set<() => void>();
   let handshakeReply: unknown = null;
   let failed = false;
@@ -458,6 +464,10 @@ export async function openService(options: OpenOptions): Promise<Service> {
       const response = frame.kind === "public" ? frame.response : undefined;
       if (isResponse(response)) {
         responses.push(response);
+        // A result that breaks its schema fails every wait and `dispose`, as a frame above the bound does.
+        const operation = typeof response.requestId === "string" ? sentOperations.get(response.requestId) : undefined;
+        const schema = operation === undefined ? undefined : RESULT_SCHEMAS[operation];
+        if (schema !== undefined && response.result !== undefined && !schema.safeParse(response.result).success) frameError ??= new Error(`${operation} result breaks its schema: ${JSON.stringify(response.result)}`);
         if (typeof response.requestId === "string" && !firstResponse.has(response.requestId)) {
           firstResponse.set(response.requestId, response);
           responseAt.set(response.requestId, performance.now());
@@ -534,6 +544,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     log: () => session.log.entries(),
     send(operation, payload, envelope = {}) {
       const requestId = envelope.requestId ?? crypto.randomUUID();
+      sentOperations.set(requestId, operation);
       sendFrame({
         kind: "public",
         request: {

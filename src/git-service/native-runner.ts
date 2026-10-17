@@ -8,6 +8,7 @@ import {
   ConfirmRunReply,
   DestinationFactsReply as DestinationFactsReplySchema,
   ExitReply,
+  FileAppendReply as FileAppendReplySchema,
   FileFactsReply,
   IdentityListReply,
   InputWrittenReply,
@@ -46,6 +47,7 @@ import {
   wslResultsFit,
   RunnerRefusal,
   type DestinationFactsReply,
+  type FileAppendReply,
   type FileFact,
   type FileFactsRequest,
   type GitCall,
@@ -64,6 +66,7 @@ import {
   type TrustReply,
   type WalkDeadline,
   type WalkStop,
+  type WorktreeAddFactsReply,
 } from "./git-runner";
 import type { Frame, FrameKind, FrameWriter } from "./transport";
 
@@ -439,14 +442,31 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
       });
     },
 
+    // Feature 004 contract Δ6: only the reply to the `worktreeAdd` form carries `path`.
     async destinationFacts(request) {
       checkSyncRequest("destinationFacts", request);
-      return ask<DestinationFactsReply>("process", { type: "destinationFacts", ...request }, (r) => {
+      return ask<DestinationFactsReply | WorktreeAddFactsReply>("process", { type: "destinationFacts", ...request }, (r) => {
         const reply = DestinationFactsReplySchema.safeParse(r);
-        if (!reply.success) return undefined;
+        if (!reply.success || "path" in reply.data !== "bootstrapId" in request) return undefined;
         const { type: _type, callId: _callId, ...result } = reply.data;
         return result;
       });
+    },
+
+    // Feature 004 contract Δ6 `fileAppend`: a walk, so an abort sends `cancel`. The reply group has no deadline form.
+    async fileAppend(request, signal) {
+      checkSyncRequest("fileAppend", request);
+      return ask<FileAppendReply | WalkStop>(
+        "process",
+        { type: "fileAppend", ...request },
+        (r) => {
+          const reply = FileAppendReplySchema.safeParse(r);
+          if (!reply.success) return undefined;
+          const { type: _type, callId: _callId, ...result } = reply.data;
+          return result;
+        },
+        { signal, value: CANCELED },
+      );
     },
 
     async terminal(request) {

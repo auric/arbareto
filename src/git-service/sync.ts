@@ -12,7 +12,7 @@ import type { OperationEvent } from "../contracts/outcome";
 import { buildRemedyCommand } from "../contracts/remedy-command";
 import { redactUrlUserInfo, type StallRemedy } from "../contracts/submodules";
 import type { ApprovalKey, Approvals, SyncReview } from "./approvals";
-import type { Entered, Exclusion, NotEntered } from "./exclusion";
+import type { Entered, Exclusion, MutationEntry, NotEntered } from "./exclusion";
 import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit, type GitRunner, type PageantReply, type SyncRunner } from "./git-runner";
 import { captureHead } from "./history";
 import { enterReconciling, isStop, notEntered, settled, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
@@ -168,6 +168,53 @@ export function trackingOf(entries: readonly ConfigEntry[], remote: string, dst:
 const holdsUserInfo = (entries: readonly ConfigEntry[], remote: string, extra: readonly string[] = []) =>
   [...entries.filter((e) => (e.key === `remote.${remote}.url` || e.key === `remote.${remote}.pushurl`) && e.value !== null).map((e) => e.value!), ...extra].some((url) => redactUrlUserInfo(url) !== url);
 
+// A refusal before any step of a marked mutation: no effect, so the outcome is known.
+export type Ending = { code: ErrorCode; reason?: Failure["reason"]; result?: unknown } | Stop;
+
+export interface Marked<C extends ObserveContext> {
+  ctx: C;
+  // Contract §8: a cancel never stops a reconciliation read, so `q` reads with a signal that never aborts.
+  q: C;
+  refuse(ending: Ending): void;
+  // Sends `resolved` for a known outcome. An unknown outcome keeps the marker (contract §8).
+  resolved(): void;
+}
+
+// Contract §6 "Recovery markers" and §8: the lifecycle of one marked mutation of `sync` and feature 004 `runWorkbench`.
+// A throw from `body` leaves the outcome unknown, and the marker stays.
+export async function runMarked<C extends ObserveContext>(o: { registry: OperationRegistry; exclusion: Exclusion; runner: Pick<GitRunner, "resolved"> }, entry: MutationEntry, ctx: C, body: (m: Marked<C>) => Promise<void>): Promise<void> {
+  const { registry } = o;
+  const { operationId } = entry;
+  let entered: Entered | NotEntered;
+  try {
+    entered = await o.exclusion.enter(entry);
+  } catch {
+    return void registry.apply(operationId, { type: "exclusion-unavailable", code: "GIT_FAILED" });
+  }
+  if (!entered.ok) return notEntered(registry, operationId, entered);
+  const marker = entered;
+  const resolved = () => o.runner.resolved(marker.markerId);
+  const refuse = (ending: Ending) => {
+    const canceled = enterReconciling(registry, operationId, isStop(ending) && ending.stop === "deadline", 0);
+    if (canceled) registry.apply(operationId, { type: "no-effects", observed: "canceled" });
+    else if (isStop(ending)) registry.apply(operationId, { type: "no-effects", observed: "failed", ...(ending.stop === "deadline" ? {} : { code: "GIT_FAILED" }) });
+    else registry.apply(operationId, { type: "no-effects", observed: "failed", code: ending.code, ...(ending.code === "OUTPUT_LIMIT" && ending.reason !== undefined ? { reason: ending.reason } : {}) }, ending.result);
+    resolved();
+  };
+  try {
+    registry.apply(operationId, { type: "marker-recorded" });
+    registry.progress(operationId, "preflight");
+    await body({ ctx, q: { ...ctx, signal: new AbortController().signal }, refuse, resolved });
+  } catch {
+    const state = registry.get(operationId)?.state;
+    if (state === "running") registry.apply(operationId, { type: "execution-ended", lingeringDescendants: 0 });
+    if (state === "cancel-requested") registry.apply(operationId, { type: "processes-stopped" });
+    if (registry.get(operationId)?.state === "reconciling") registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, undefined, "GIT_FAILED");
+  } finally {
+    marker.end(false);
+  }
+}
+
 export function createSyncer(o: SyncerOptions) {
   const { registry, approvals } = o;
   // Contract §2: the workspace of each operation that consumed a review token.
@@ -176,30 +223,14 @@ export function createSyncer(o: SyncerOptions) {
 
   async function execute(w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, key: ApprovalKey, approval: SyncReview): Promise<void> {
     const b = approval.binding;
-    let entered: Entered | NotEntered;
-    try {
-      entered = await o.exclusion.enter({ operationId, kind: "sync", action: b.payload.action, workspace: w });
-    } catch {
-      return void registry.apply(operationId, { type: "exclusion-unavailable", code: "GIT_FAILED" });
-    }
-    if (!entered.ok) return notEntered(registry, operationId, entered);
-    const marker = entered;
-    const ctx: ObserveContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
-    // Contract §8: a cancel never stops a reconciliation read.
-    const q: ObserveContext = { ...ctx, signal: new AbortController().signal };
-    const resolved = () => o.runner.resolved(marker.markerId);
+    const context: ObserveContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
+    await runMarked(o, { operationId, kind: "sync", action: b.payload.action, workspace: w }, context, (m) => steps(m, w, installation, operationId, signal, key, b));
+  }
+
+  async function steps({ ctx, q, refuse, resolved }: Marked<ObserveContext>, w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, key: ApprovalKey, b: SyncBinding): Promise<void> {
     let lastDescendants = 0;
     // The `pageant` replies of this operation. A reply other than `git` keeps a connect target for a failure (data-model §11).
     const replies: PageantReply["result"][] = [];
-
-    // A refusal before any network process: no effect, so the outcome is known.
-    const refuse = (ending: { code: ErrorCode; reason?: Failure["reason"]; result?: unknown } | Stop) => {
-      const canceled = enterReconciling(registry, operationId, isStop(ending) && ending.stop === "deadline", 0);
-      if (canceled) registry.apply(operationId, { type: "no-effects", observed: "canceled" });
-      else if (isStop(ending)) registry.apply(operationId, { type: "no-effects", observed: "failed", ...(ending.stop === "deadline" ? {} : { code: "GIT_FAILED" }) });
-      else registry.apply(operationId, { type: "no-effects", observed: "failed", code: ending.code, ...(ending.code === "OUTPUT_LIMIT" && ending.reason !== undefined ? { reason: ending.reason } : {}) }, ending.result);
-      resolved();
-    };
     // The end of a run that started network processes. Data-model §11: `connectTarget` comes from the kept target itself.
     const finish = (event: OperationEvent, result: unknown, known = true, cause?: ErrorCode) => {
       const kept = connectTargets.get(w.repositoryId)?.operationId === operationId;
@@ -465,34 +496,22 @@ export function createSyncer(o: SyncerOptions) {
       return finish({ type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }) }, { ...result, remedy });
     };
 
-    try {
-      registry.apply(operationId, { type: "marker-recorded" });
-      owners.set(operationId, w.repositoryId);
-      registry.progress(operationId, "preflight");
-      // Contract Δ3 `sync` step 2: every bound value again, from an own trust listing.
-      const again = await observeSync(ctx, b.payload, () => o.trust.listTrust({ operationId, signal, workspace: w }));
-      const stale = staleOf(b, again);
-      if (stale !== null) return refuse(stale);
-      // Research R4 step 4: the token is consumed only after validation.
-      if (!approvals.consume(key, operationId)) {
-        const now = approvals.accept(key);
-        return refuse({ code: !now.ok && "code" in now ? now.code : "UNKNOWN_TARGET" });
-      }
-      const entries = (again as Extract<Observation, { binding: unknown }>).entries;
-      if (b.payload.action === "fetch" || b.payload.action === "fetch-all") await runFetch(entries);
-      else if (b.payload.action === "push" || b.payload.action === "force-push") await runPush(entries);
-      else {
-        const enter = (deadline: boolean) => enterReconciling(registry, operationId, deadline, lastDescendants);
-        await runIntegration({ ctx, q, binding: b, entries, refuse, finish, unknown, enter, step: networkStep, remedyOf, processEnded, keepTarget, fetchStep, fetchRemedy, notStarted, fetchVerdict, fetchObserved, changes });
-      }
-    } catch {
-      // A broken step leaves the outcome unknown. The marker stays (contract §8).
-      const state = registry.get(operationId)?.state;
-      if (state === "running") registry.apply(operationId, { type: "execution-ended", lingeringDescendants: 0 });
-      if (state === "cancel-requested") registry.apply(operationId, { type: "processes-stopped" });
-      if (registry.get(operationId)?.state === "reconciling") registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, undefined, "GIT_FAILED");
-    } finally {
-      marker.end(false);
+    owners.set(operationId, w.repositoryId);
+    // Contract Δ3 `sync` step 2: every bound value again, from an own trust listing.
+    const again = await observeSync(ctx, b.payload, () => o.trust.listTrust({ operationId, signal, workspace: w }));
+    const stale = staleOf(b, again);
+    if (stale !== null) return refuse(stale);
+    // Research R4 step 4: the token is consumed only after validation.
+    if (!approvals.consume(key, operationId)) {
+      const now = approvals.accept(key);
+      return refuse({ code: !now.ok && "code" in now ? now.code : "UNKNOWN_TARGET" });
+    }
+    const entries = (again as Extract<Observation, { binding: unknown }>).entries;
+    if (b.payload.action === "fetch" || b.payload.action === "fetch-all") await runFetch(entries);
+    else if (b.payload.action === "push" || b.payload.action === "force-push") await runPush(entries);
+    else {
+      const enter = (deadline: boolean) => enterReconciling(registry, operationId, deadline, lastDescendants);
+      await runIntegration({ ctx, q, binding: b, entries, refuse, finish, unknown, enter, step: networkStep, remedyOf, processEnded, keepTarget, fetchStep, fetchRemedy, notStarted, fetchVerdict, fetchObserved, changes });
     }
   }
 

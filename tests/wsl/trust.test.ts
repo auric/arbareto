@@ -234,7 +234,7 @@ describe("WSL trust listing rules (T212 decisions W3 to W5)", () => {
       ["gpg.program", false],
       ["diff.external", false],
     ]);
-    expect(outcome.listing.approvalRequired).toEqual({ reads: false, commit: false, sync: false });
+    expect(outcome.listing.approvalRequired).toEqual({ reads: false, commit: false, sync: false, workbench: false });
     expect(identityPaths).toContain(unc("/mnt/c/Program Files/GnuPG/bin/gpg.exe"));
     expect(identityPaths).toContain(unc("/tmp/tools/difftool"));
     // A location only: no `fileFacts` entry names either program.

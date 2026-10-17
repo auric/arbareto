@@ -16,7 +16,9 @@ export type RemedyValueKind =
   // Contract §11 "Remedy commands": `<System32 path>\wsl.exe`.
   | "wslExecutable"
   // Feature 003 contract Δ3 `clone` step 6.
-  | "url";
+  | "url"
+  // Feature 004 plan.md D2: one item of a step command in a stall notice.
+  | "argument";
 
 // `windows`: the service removes trailing separators. `linux` and `git-reported` (the §6 `safe.directory` path) keep their form.
 export type RemedyValueForm = "windows" | "linux" | "git-reported";

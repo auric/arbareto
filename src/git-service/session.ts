@@ -751,7 +751,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     },
     clone: (request) => cloner.clone(request),
     connectInTerminal,
-    // Feature 004 P4 and P6 add these handlers. Until then the service answers SERVICE_UNAVAILABLE.
+    // Feature 004: no module of this batch reads branches, worktrees, or Git settings yet. T060 adds `readWorktrees`, `readGitSettings`, and `openWorktree`.
+    // Until then the service answers SERVICE_UNAVAILABLE.
     readBranches: undefined,
     readWorktrees: undefined,
     readGitSettings: undefined,
@@ -793,6 +794,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       fileSets.applyFiles(request, workspace, installation);
     },
     openWorktree: undefined,
+    // Feature 004 contract Δ3: no module of this batch maps an entry to its path or sends the private `reveal` request.
     revealPath: undefined,
   };
 

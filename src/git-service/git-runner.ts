@@ -4,6 +4,8 @@
 import { z } from "zod";
 import {
   BootstrapLimits,
+  CeilingLimits,
+  EnvironmentPolicy as EnvironmentPolicySchema,
   NetworkLimits,
   ProcessContext,
   ProcessRequest,
@@ -52,16 +54,18 @@ import { ChannelPath, Identifier, isIdentifier, Text } from "../contracts/operat
 import wslProcess from "../contracts/wsl-process.json";
 import { wslUnitName } from "../contracts/wsl-route";
 import { configGlobalPathArgs, configSystemPathArgs } from "./commands";
+import type { FileAppendReply, FileAppendRequest } from "./ignore";
 
 export { isChannelPath } from "../contracts/operations";
 export type { FileFact, FileIdentity, IdentityReply, MarkerFailure, MutationStarted, ProcessContext, ResolveGitRequest, TrustBound, TrustRecord, TrustRequest, WslDistrosCall, WslDistrosResult, WslIdentity };
+export type { FileAppendReply, FileAppendRequest };
 
 // Contract §6 "Channel frames" `register`: the Git form, the repository form, or the WSL form (§11).
 export type RegisterRequest = RegisterRequestBase | RegisterWslCall;
 
-// Contract §7 environment policies, `search` of feature 002 contract Δ7, and `remote` and `integrate` of feature 003 contract Δ7.
+// Contract §7 environment policies, `search` of feature 002 contract Δ7, `remote` and `integrate` of feature 003 contract Δ7, and `mergetool` of feature 004 contract Δ7.
 // `mutation-trace2` exists only after a supporting T091 result.
-export type EnvironmentPolicy = "probe" | "read" | "mutation" | "network" | "search" | "remote" | "integrate";
+export type EnvironmentPolicy = z.infer<typeof EnvironmentPolicySchema>;
 
 // Feature 003 contract Δ6: these policies take the network limits, and each process counts its own diagnostic bytes.
 const NETWORK_POLICIES: ReadonlySet<string> = new Set(["network", "remote", "integrate"]);
@@ -69,9 +73,11 @@ const NETWORK_POLICIES: ReadonlySet<string> = new Set(["network", "remote", "int
 // Contract §5: `git` is the 30-second deadline of every other Git process. `network` is a §12 update process.
 export type ProcessKind = "git" | "commit" | "network";
 
+// Feature 004 contract Δ6: a `mergetool` run carries the ceiling only (`CeilingLimits`), so it gets no stall notice.
 export type ProcessLimits =
   | { deadlineMs: number; stallMs?: number }
-  | { inactivityMs: number; ceilingMs: number; stallMs: number };
+  | { inactivityMs: number; ceilingMs: number; stallMs: number }
+  | { ceilingMs: number; stallMs?: undefined };
 
 export const PROCESS_LIMITS: Record<ProcessKind, ProcessLimits> = {
   git: { deadlineMs: GIT_PROCESS_DEADLINE_MS },
@@ -156,6 +162,8 @@ export interface GitRunner {
   resolved(markerId: string): void;
   // Only `revoke` can end with the deadline.
   trust(request: TrustRequest): Promise<TrustReply | WalkDeadline>;
+  // Feature 004 contract Δ6 `fileAppend`: a walk without a deadline form, so the shell gives `error` past its deadline. A `refused` frame throws RunnerRefusal.
+  fileAppend(request: FileAppendRequest, signal: AbortSignal): Promise<FileAppendReply | WalkStop>;
 }
 
 // Contract §6 "Channel frames" `wslProbe`: the frame fields and the output collectors of the streamed probe.
@@ -186,6 +194,9 @@ type PuttyFailed = { result: "failed"; reason: (typeof PUTTY_UNAVAILABLE_REASONS
 export type PageantReply = { result: "git" | "none" | "ready" } | PuttyFailed;
 // Feature 003 contract Δ6 `destinationFacts {cloneId}`. A link or a junction gives `other`.
 export type DestinationFactsReply = { result: "absent" | "empty" | "not-empty" | "file" | "other" } | { result: "error"; code: FileFactError };
+// Feature 004 contract Δ6: the `worktreeAdd` form names the binding by `bootstrapId`, and its reply adds the bound path in Git's form for the route.
+export type WorktreeAddFactsReply = DestinationFactsReply & { path: string };
+export type DestinationFactsRequest = { operationId: string; cloneId: string } | { operationId: string; bootstrapId: string };
 // Feature 003 contract Δ6 `terminal`. `repositoryId` names the worktree of a `sync` target. A `clone` target has none.
 export interface TerminalRequest {
   operationId: string;
@@ -198,7 +209,8 @@ export type TerminalReply = { result: "started" } | PuttyFailed;
 // Feature 003 contract Δ6: the private requests of `sync`, `clone`, and `connectInTerminal`. Only a Windows service sends `pageant` and `terminal`.
 export interface SyncRunner {
   pageant(request: PageantRequest): Promise<PageantReply>;
-  destinationFacts(request: { operationId: string; cloneId: string }): Promise<DestinationFactsReply>;
+  // Only the reply to the `worktreeAdd` form carries `path`.
+  destinationFacts(request: DestinationFactsRequest): Promise<DestinationFactsReply | WorktreeAddFactsReply>;
   terminal(request: TerminalRequest): Promise<TerminalReply>;
 }
 
@@ -270,6 +282,39 @@ export function wslCommandLineUnits(launch: WslLaunch, operationId: string, mode
   return commandLineUnits(launch.wslExecutable, [...head, launch.systemdRun, launch.systemctl, launch.setsid, launch.noexpand ? "1" : "", launch.git, "--no-lazy-fetch", "-C", directory, ...args.slice(1)]);
 }
 
+// The policies of each context kind, as src-tauri/src/process_requests.rs `policy_fits` admits them (feature 004 contract Δ6).
+const CONTEXT_POLICIES: Record<ProcessContext["contextKind"], readonly EnvironmentPolicy[]> = {
+  gitProbe: ["probe"],
+  repositoryDiscovery: ["probe"],
+  registeredOperation: ["read", "mutation", "network", "search", "remote", "integrate", "mergetool"],
+  clone: ["remote"],
+  globalConfig: ["read", "integrate"],
+  worktreeAdd: ["integrate"],
+};
+
+// Feature 004 contract Δ6: the three `globalConfig` arrays, each with the policy of its contract Δ3 step (src-tauri `global_config_fits`).
+function globalConfigFits(args: readonly string[], policy: EnvironmentPolicy): boolean {
+  const list = ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs", "config", "list", "--show-scope", "--show-origin", "-z"];
+  if (args.length === list.length && list.every((arg, i) => args[i] === arg)) return policy === "read";
+  const write = (args.length === 7 && args[2] === "set") || (args.length === 6 && args[2] === "unset");
+  return write && args[0] === "--no-lazy-fetch" && args[1] === "config" && args[3] === "--global" && args[4] === "--" && policy === "integrate";
+}
+
+// Git 2.55 `git.c` `handle_options`: the global options that take the next item as their value (src-tauri `VALUE_OPTIONS`).
+const VALUE_OPTIONS: ReadonlySet<string> = new Set(["--git-dir", "--namespace", "--work-tree", "-c", "--config-env", "--shallow-file", "-C", "--attr-source"]);
+
+// Feature 004 contract Δ6: `worktree add` and `clone` write a folder that only their bound contexts name (src-tauri `runs_bound_command`).
+// `handle_options` stops at the first item without `-` and at the help and version options.
+function runsBoundCommand(args: readonly string[]): boolean {
+  let i = 0;
+  while (i < args.length && args[i]!.startsWith("-") && !["--help", "-h", "--version", "-v"].includes(args[i]!)) i += VALUE_OPTIONS.has(args[i]!) ? 2 : 1;
+  return args[i] === "clone" || (args[i] === "worktree" && args[i + 1] === "add");
+}
+
+// Feature 004 contract Δ3 and Δ6: `worktree add [-b <new>] -- <path> <commit>`. The shell also checks the path against its binding (src-tauri `worktree_add_fits`).
+const worktreeAddForm = (args: readonly string[]): boolean =>
+  args[0] === "--no-lazy-fetch" && args[1] === "worktree" && args[2] === "add" && (args.length === 6 ? args[3] === "--" : args.length === 8 && args[3] === "-b" && args[5] === "--");
+
 // Contract §6 "Process fields" and §7 "Missing objects". A refused call starts no process.
 // The schemas check each field. The rules between fields stay here.
 export function checkCall(call: GitCall): void {
@@ -279,8 +324,9 @@ export function checkCall(call: GitCall): void {
   // The service has no executable path, so the empty program gives the smallest possible command line.
   if (commandLineUnits("", args) > WINDOWS_COMMAND_LINE_UNITS) refuse("command line");
   // Feature 003 contract Δ6: a `clone` context runs only the fixed clone array under `remote`.
-  const clone = context.contextKind === "clone";
-  const bootstrap = context.contextKind !== "registeredOperation" && !clone;
+  const kind = context.contextKind;
+  const clone = kind === "clone";
+  const bootstrap = kind === "gitProbe" || kind === "repositoryDiscovery";
   if (clone && (policy !== "remote" || args.length !== 7 || !CLONE_PREFIX.every((arg, i) => args[i] === arg))) refuse("clone");
   if (call.script !== undefined) {
     checkProbeScript(call);
@@ -292,11 +338,17 @@ export function checkCall(call: GitCall): void {
   } else if (args[0] !== "--no-lazy-fetch") {
     refuse("first argument must be --no-lazy-fetch");
   }
-  if (bootstrap ? policy !== "probe" : !["read", "mutation", "network", "search", "remote", "integrate"].includes(policy)) refuse("environment policy");
+  if (!CONTEXT_POLICIES[kind].includes(policy)) refuse("environment policy");
+  if (kind === "globalConfig" && !globalConfigFits(args, policy)) refuse("globalConfig");
+  if (kind === "worktreeAdd" && !worktreeAddForm(args)) refuse("worktreeAdd");
+  if (kind === "registeredOperation" && call.script === undefined && runsBoundCommand(args)) refuse("bound command");
   if (input !== undefined && (!(input instanceof Uint8Array) || input.length > STREAMED_PROCESS_INPUT_BYTES)) refuse("input");
+  // Feature 004 contract Δ6: the shell gives a `mergetool` child a closed stdin pipe.
+  if (policy === "mergetool" && input !== undefined) refuse("input");
   if (transaction !== undefined && !(policy === "mutation" && fits(Transaction, transaction))) refuse("transaction");
   // Contract §6 "Channel frames" `limits`. The WSL distro start cap waits for §11.
-  if (!fits(NETWORK_POLICIES.has(policy) ? NetworkLimits : bootstrap ? BootstrapLimits : RegisteredLimits, call.limits)) refuse("limits");
+  const limits = NETWORK_POLICIES.has(policy) ? NetworkLimits : policy === "mergetool" ? CeilingLimits : bootstrap ? BootstrapLimits : RegisteredLimits;
+  if (!fits(limits, call.limits)) refuse("limits");
 }
 
 // Feature 002 contract Δ6: the checks of src-tauri/src/wsl.rs `matching_probe_command` and the `run` route of the shell.
@@ -400,8 +452,8 @@ export function checkTrust(request: TrustRequest): void {
   if (!fits(TrustCall, request)) refuse("trust");
 }
 
-// Feature 003 contract Δ6. The `type` literal selects the frame schema. A request that holds `type` or `callId` breaks the field set.
-export function checkSyncRequest(type: "pageant" | "destinationFacts" | "terminal", request: object): void {
+// Feature 003 and feature 004 contract Δ6. The `type` literal selects the frame schema. A request that holds `type` or `callId` breaks the field set.
+export function checkSyncRequest(type: "pageant" | "destinationFacts" | "terminal" | "fileAppend", request: object): void {
   const valid = typeof request === "object" && request !== null && !("type" in request) && !("callId" in request);
   if (!valid || !fits(ProcessRequest, { type, callId: crypto.randomUUID(), ...request })) refuse(type);
 }

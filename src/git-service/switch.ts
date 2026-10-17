@@ -4,7 +4,7 @@
 // Feature 004 contract Δ3 `switch`, plan.md D3, data-model §3, and spec FR-009 to FR-013.
 // Discard never passes `--force`. Each stash step names S by its object ID, and fresh reads decide every outcome.
 
-import { HISTORY_COMMIT_OBJECT_BYTES, REFLOG_SCAN_ENTRIES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES, REFLOG_SCAN_ENTRIES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
 import { nameRefusal, newName, refExists } from "./branch-ops";
 import { isObjectId, isOneLevelRefName, isRefName } from "./commands";
 import { commandLineUnits, createCollector, wslCommandLineUnits } from "./git-runner";
@@ -14,11 +14,12 @@ import type { Head } from "./snapshot";
 import { pathForms } from "./submodule-review";
 import { discardCandidates, ignoreRead, inTheWay, sortFacts, untrackedOf } from "./switch-check";
 import { changes } from "./sync";
-import { indexState, refKey } from "./sync-review";
+import { observe } from "./sync-integrate";
+import { indexState, readOut, refKey } from "./sync-review";
 import { isComponent, requestFacts } from "./trust";
 import { changedPathsArgs, commitObjectArgs, containsArgs, detachArgs, stagesArgs, stashApplyArgs, stashDropArgs, stashPushArgs, stashReflogArgs, stashValueArgs, switchArgs, trackArgs, trackedStatusArgs } from "./workbench-commands";
 import { parseTrackedStatus, trackingRemotes } from "./workbench-parsers";
-import { conclude, heldElsewhere, observeRepository, readOut, readWorktrees, refOid, registerWorkbenchAction, unavailable, type Refused, type StepEnd } from "./workbench-review";
+import { conclude, heldElsewhere, killed, readWorktrees, refTarget, registerWorkbenchAction, unavailable, type Refused, type StepEnd } from "./workbench-review";
 
 export const STASH_REMEDY_TEXT = "The stash keeps the changes. This command applies them again.";
 
@@ -62,7 +63,9 @@ async function stashValue(ctx: ObserveContext): Promise<Fact<string | null>> {
   const exists = await refExists(ctx, STASH);
   if (!("value" in exists)) return exists;
   if (!exists.value) return { value: null };
-  const read = await readOut(ctx, stashValueArgs());
+  // One object ID and LF cannot pass the bound, so more bytes break the grammar.
+  const read = await readOut(ctx, stashValueArgs(), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+  if ("limited" in read) return MALFORMED;
   return "value" in read ? oneOid(ctx, read.value) : read;
 }
 
@@ -81,6 +84,7 @@ async function stashEntries(ctx: ObserveContext): Promise<Fact<{ oids: string[];
 // git-cat-file(1) `commit` prints the raw object. The header line after `tree` names the first parent.
 async function firstParent(ctx: ObserveContext, commit: string): Promise<Fact<string | null>> {
   const read = await readOut(ctx, commitObjectArgs(commit, ctx.workspace.objectFormat), HISTORY_COMMIT_OBJECT_BYTES);
+  if ("limited" in read) return { code: "OUTPUT_LIMIT", reason: "HISTORY_COMMIT_OBJECT_BYTES" };
   if (!("value" in read)) return read;
   const header = latin1(read.value).split("\n", 2);
   if (!header[0]!.startsWith("tree ")) return MALFORMED;
@@ -121,6 +125,7 @@ function batches(paths: readonly string[], ctx: ObserveContext): string[][] {
 async function inTheWayCheck(ctx: ObserveContext, head: string, target: string): Promise<Fact<null> | Refused> {
   const w = ctx.workspace;
   const diff = await readOut(ctx, changedPathsArgs(head, target, w.objectFormat), STATUS_LISTING_BYTES);
+  if ("limited" in diff) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
   if (!("value" in diff)) return diff;
   const c = discardCandidates(diff.value);
   if (c === "malformed") return MALFORMED;
@@ -145,6 +150,7 @@ async function inTheWayCheck(ctx: ObserveContext, head: string, target: string):
   const counted = new Set(sorted.folders);
   for (const batch of batches(sorted.entries, ctx)) {
     const listed = await readOut(ctx, stagesArgs(batch.map((path) => texts.get(path)!)), STATUS_LISTING_BYTES);
+    if ("limited" in listed) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
     if (!("value" in listed)) return listed;
     const left = untrackedOf(batch, listed.value, w.objectFormat);
     if (left === "malformed") return MALFORMED;
@@ -200,12 +206,13 @@ registerWorkbenchAction("switch", {
       const fresh = await newName(ctx, t.track.name);
       if (!("value" in fresh)) return fresh;
     }
-    const target = "detach" in t ? { value: t.detach } : await refOid(ctx, "ref" in t ? t.ref : t.track.ref);
+    const target = "detach" in t ? { value: t.detach } : await refTarget(ctx, "ref" in t ? t.ref : t.track.ref);
     if (!("value" in target)) return target;
     // Plan.md D3: no output means that no ref holds the detached commit.
     let unreachable: string | null = null;
     if (head.state === "detached") {
-      const holders = await readOut(ctx, containsArgs(head.oid, ctx.workspace.objectFormat));
+      const holders = await readOut(ctx, containsArgs(head.oid, ctx.workspace.objectFormat), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+      if ("limited" in holders) return { code: "OUTPUT_LIMIT", reason: "DIAGNOSTIC_RETAINED_BYTES_PER_STREAM" };
       if (!("value" in holders)) return holders;
       if (holders.value.length === 0) unreachable = head.oid;
     }
@@ -283,7 +290,7 @@ registerWorkbenchAction("switch", {
 
     const settled = await r.reconcile(ends);
     if (settled === null) return r.unknown({ code: "GIT_FAILED" }, { action: "switch" });
-    const [observed, status] = await Promise.all([observeRepository(q), trackedStatus(q)]);
+    const [observed, status] = await Promise.all([observe(q, killed(ends)), trackedStatus(q)]);
     if (!("value" in observed)) return r.unknown(observed, { action: "switch" });
     if (!("value" in status)) return r.unknown(status, { action: "switch" });
     const o = observed.value;
@@ -306,8 +313,8 @@ registerWorkbenchAction("switch", {
       r,
       {
         done,
-        intended: Bun.deepEquals(o.head, intendedHead, true) && o.state === "normal" && o.index.unmerged === 0 && changes(expected, o.refs).length === 0 && (stash === null || stash.state === "dropped"),
-        changed: result.refs.length > 0 || !Bun.deepEquals(o.head, head, true) || o.index.fingerprint !== r.before.index.fingerprint || o.state !== r.before.state || status.value.digest !== b.tracked.digest,
+        intended: !o.lock && Bun.deepEquals(o.head, intendedHead, true) && o.state === "normal" && o.index.unmerged === 0 && changes(expected, o.refs).length === 0 && (stash === null || stash.state === "dropped"),
+        changed: o.lock || result.refs.length > 0 || !Bun.deepEquals(o.head, head, true) || o.index.fingerprint !== r.before.index.fingerprint || o.state !== r.before.state || status.value.digest !== b.tracked.digest,
         canceled: settled.canceled,
         failed,
       },

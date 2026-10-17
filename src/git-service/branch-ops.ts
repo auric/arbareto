@@ -12,9 +12,10 @@ import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { latin1 } from "./read-steps";
 import type { Head } from "./snapshot";
 import { changes } from "./sync";
-import { refKey } from "./sync-review";
+import { observe } from "./sync-integrate";
+import { readOut, refKey } from "./sync-review";
 import { branchNameCheckArgs, createArgs, createSwitchArgs, deleteRefArgs, headReflogArgs, headReflogExistsArgs, removeBranchSectionArgs, renameArgs, unmergedCountArgs } from "./workbench-commands";
-import { heldElsewhere, observeRepository, readOut, readWorktrees, refOid, registerWorkbenchAction, unavailable, conclude, type Refused, type StepEnd, type WorkbenchRun } from "./workbench-review";
+import { heldElsewhere, killed, readWorktrees, refTarget, registerWorkbenchAction, unavailable, conclude, type Refused, type StepEnd, type WorkbenchRun } from "./workbench-review";
 
 const HEADS = "refs/heads/";
 const short = (ref: string) => ref.slice(HEADS.length);
@@ -58,8 +59,9 @@ async function headReflogKeeps(ctx: ObserveContext, tip: string): Promise<Fact<b
   if (!("exit" in exists)) return exists;
   if (exists.exit.exitCode === 1) return { value: false };
   if (exists.exit.exitCode !== 0) return { code: "GIT_FAILED" };
-  // `-z` ends each `%H` entry with NUL. `-n` caps the entries at REFLOG_SCAN_ENTRIES.
+  // `-z` ends each `%H` entry with NUL. `-n` caps the entries at REFLOG_SCAN_ENTRIES, so more bytes break the grammar.
   const read = await readOut(ctx, headReflogArgs(), REFLOG_SCAN_ENTRIES * 65);
+  if ("limited" in read) return { code: "MALFORMED_GIT_OUTPUT" };
   if (!("value" in read)) return read;
   const text = latin1(read.value);
   const oids = text === "" ? [] : text.endsWith("\0") ? text.slice(0, -1).split("\0") : null;
@@ -71,17 +73,17 @@ async function headReflogKeeps(ctx: ObserveContext, tip: string): Promise<Fact<b
 async function settle(r: WorkbenchRun, action: string, ends: StepEnd[], expect: { refs: Map<string, string>; head: Head }): Promise<void> {
   const settled = await r.reconcile(ends);
   if (settled === null) return r.unknown({ code: "GIT_FAILED" }, { action });
-  const o = await observeRepository(r.q);
+  const o = await observe(r.q, killed(ends));
   if (!("value" in o)) return r.unknown(o, { action });
-  const { refs, head, state } = o.value;
+  const { refs, head, state, lock } = o.value;
   const result = { action, head, refs: changes(r.before.refs, refs) };
   const sameState = state === r.common.operationState;
   conclude(
     r,
     {
       done: ends.every((end) => end.exit?.exitCode === 0),
-      intended: changes(expect.refs, refs).length === 0 && Bun.deepEquals(head, expect.head, true) && sameState,
-      changed: result.refs.length > 0 || !Bun.deepEquals(head, r.common.head, true) || !sameState,
+      intended: !lock && changes(expect.refs, refs).length === 0 && Bun.deepEquals(head, expect.head, true) && sameState,
+      changed: lock || result.refs.length > 0 || !Bun.deepEquals(head, r.common.head, true) || !sameState,
       canceled: settled.canceled,
       failed: ends.find((end) => end.exit?.exitCode !== 0) ?? null,
     },
@@ -116,7 +118,7 @@ registerWorkbenchAction("rename-branch", {
   // Research.md R21 F29: `branch -m` reads an old name `@` as a branch name, so only the new name takes the rule.
   precheck: (p) => nameRefusal(p.name) ?? (isRefName(p.ref) ? null : { refused: "INVALID_REQUEST" }),
   async observe(ctx, p) {
-    const oid = await refOid(ctx, p.ref);
+    const oid = await refTarget(ctx, p.ref);
     if (!("value" in oid)) return oid;
     const fresh = await newName(ctx, p.name);
     if (!("value" in fresh)) return fresh;
@@ -153,9 +155,10 @@ registerWorkbenchAction("delete-branch", {
     if (!("value" in worktrees)) return worktrees;
     const held = heldElsewhere(worktrees.value.records, p.ref, head);
     if (held !== null) return unavailable("other-worktree", { worktree: held.path });
-    const tip = await refOid(ctx, p.ref);
+    const tip = await refTarget(ctx, p.ref);
     if (!("value" in tip)) return tip;
-    const counted = await readOut(ctx, unmergedCountArgs(tip.value, short(p.ref), ctx.workspace.objectFormat));
+    const counted = await readOut(ctx, unmergedCountArgs(tip.value, short(p.ref), ctx.workspace.objectFormat), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+    if ("limited" in counted) return { code: "MALFORMED_GIT_OUTPUT" };
     if (!("value" in counted)) return counted;
     const count = /^(0|[1-9][0-9]*)\n$/.exec(latin1(counted.value));
     if (count === null) return { code: "MALFORMED_GIT_OUTPUT" };

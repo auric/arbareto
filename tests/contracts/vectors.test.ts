@@ -28,7 +28,8 @@ const PLATFORMS = ["windows", "posix"];
 const HOST_PLATFORM = process.platform === "win32" ? "windows" : "posix";
 
 // Every invalid vector of these schemas carries `repair`. The repaired text must pass, so a second fault cannot mask the named one.
-const FAULT_SCHEMAS = ["registration-result", "open-recent-repository-result", "recent-repositories-result"];
+// Feature 004 T034 adds the workbench result schemas.
+const FAULT_SCHEMAS = ["registration-result", "open-recent-repository-result", "recent-repositories-result", "review-workbench-result", "run-workbench-result"];
 
 function repaired(value: unknown, repair: Record<string, unknown>): unknown {
   const copy = structuredClone(value) as Record<string, unknown>;
@@ -146,6 +147,11 @@ describe("golden vectors", () => {
     expect(started("invalid")).toEqual(expect.arrayContaining(["workbench:", "applyFiles:resolve"]));
     const markers = texts("valid", "handshake").flatMap((t) => t.markers as { kind: string }[]);
     expect(markers.map((m) => m.kind)).toEqual(expect.arrayContaining(["workbench", "applyFiles"]));
+    // T034: the result schemas of the batch 2 actions.
+    const actions = (schema: string) => texts("valid", schema).map((t) => t.action ?? t.reason);
+    expect(actions("review-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "rebase", "ignore", "untracked-in-way"]));
+    expect(actions("run-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "ignore", "rebase"]));
+    for (const schema of ["review-workbench-result", "run-workbench-result"]) expect(texts("invalid", schema).length).toBeGreaterThan(0);
   });
 
   const faulted = vectors.filter(({ kind, vector }) => kind === "invalid" && FAULT_SCHEMAS.includes(vector.schema));

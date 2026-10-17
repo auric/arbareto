@@ -6,7 +6,7 @@
 
 import type { PatchHunk } from "./diff-parser";
 
-export type LineRefusal = "context-only" | "deleted-file" | "eof-newline";
+export type LineRefusal = "context-only" | "deleted-file" | "new-file" | "eof-newline";
 
 export type SubHunk = { ok: true; hunk: PatchHunk } | { ok: false; code: "INVALID_REQUEST" } | { ok: false; code: "UNSUPPORTED_COMPARISON"; reason: LineRefusal };
 
@@ -40,7 +40,8 @@ export function subHunk(header: Uint8Array, hunk: PatchHunk, direction: "stage" 
   if (!Array.isArray(selected) || !selected.every((n, i) => Number.isSafeInteger(n) && n >= 1 && n <= body.length && isChange(n) && (i === 0 || n > selected[i - 1]!))) return INVALID;
   // apply.c `parse_single_patch`: a partial deletion needs a modify header. Unstage applies a staged addition in reverse, as a deletion.
   const modes = latin1(header).split("\n");
-  if (modes.some((l) => /^deleted file mode /.test(l)) || (direction === "unstage" && modes.some((l) => /^new file mode /.test(l)))) return refuse("deleted-file");
+  if (modes.some((l) => /^deleted file mode /.test(l))) return refuse("deleted-file");
+  if (direction === "unstage" && modes.some((l) => /^new file mode /.test(l))) return refuse("new-file");
   if (selected.length === 0) return refuse("context-only");
   const changes = body.filter((_, i) => isChange(i + 1)).length;
   if (selected.length === changes) return { ok: true, hunk };

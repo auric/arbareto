@@ -216,10 +216,11 @@ describe("refusals before any apply", () => {
   });
 
   // apply.c `parse_single_patch`: a new-file patch with old lines fails. Unstage applies the staged addition in reverse, which deletes the file.
-  test("unstaging part of an added file gives deleted-file", () => {
+  test("unstaging lines of a staged new file gives new-file", () => {
     const { header, hunk } = parsed(ADDED, "new.txt");
-    expect(subHunk(header, hunk, "unstage", [2])).toEqual(refusal("deleted-file"));
-    expect(subHunk(header, hunk, "unstage", [1, 2, 3])).toEqual(refusal("deleted-file"));
+    expect(subHunk(header, hunk, "unstage", [2])).toEqual(refusal("new-file"));
+    expect(subHunk(header, hunk, "unstage", [1, 2, 3])).toEqual(refusal("new-file"));
+    expect(subHunk(header, hunk, "unstage", [])).toEqual(refusal("new-file"));
   });
 
   // research.md R21 F25: `apply --cached` joins two lines with exit 0, and `applyToContent` computes the same blob.

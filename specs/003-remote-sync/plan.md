@@ -361,7 +361,34 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - A result without `exists` and `empty`: "The folder state is unknown."
 - Mark resolved shows "Marking resolved" while it runs and "File marked resolved" after `succeeded`. A running `sync` shows the FR-002 step text.
 - The stage bar button of a Conflicted entry with the decision `resolve` reads "Mark resolved (Space)", and Space runs it.
-- Settings dialog: the SSH client, plink, key files per repository and remote, PuTTYgen, and the default clone folder.
+- The 001 repository menu (001 plan.md "Compact token system") gains "Clone…" after "Recent repositories" and "Settings…" after "Select Git".
+- Clone panel (FR-046 to FR-050, FR-054): a non-modal panel in the main area. "Clone…" in the start view and in the repository menu opens it. Escape and "Close clone panel" close it.
+  - Heading "Clone repository". Fields "Remote URL" and "Destination folder". Button "Clone".
+  - Only under plink: the checkbox "Pick a PuTTY key file at the start" with the note "Arbareto does not save this key file."
+  - Unavailable reasons: "Enter the remote URL.", "Enter the destination folder.", and "The clone settings are still loading…".
+  - The separator of `suggestCloneName` is `\`, because the Windows shell checks a destination by the 001 Windows rules or the §11 WSL route (contract Δ3 `clone`). A macOS or Linux shell must state its own separator.
+  - A failed `readSyncSettings` shows "The clone settings did not load: <code>." The suggestion then has no parent, and the panel offers no key file and no Connect in a terminal.
+  - A running clone shows "Cloning into <folder>…" with Cancel and the percentage. `<folder>` is the destination of the start. After Cancel, "Cancel requested" shows.
+  - The end line is "Clone canceled", "Clone did not complete: <code>", "Clone did not start: <code>", or "State unknown", as the 001 status texts.
+  - `DESTINATION_NOT_EMPTY` by reason: `not-empty` "The destination folder is not empty: <path>", `file` "The destination is a file: <path>", `other` "The destination is not a folder: <path>".
+  - `PUTTY_UNAVAILABLE`: "<program> is not available: <path> (<reason>)". The program names are "plink", "Pageant", and "PuTTYgen".
+  - The folder state text follows, except after `DESTINATION_NOT_EMPTY`. Then the output tail and the remedy with Copy command follow.
+  - The URL shows only in its field. No other panel text holds the URL.
+- Settings panel (FR-032 to FR-037): a non-modal panel in the main area. "Settings…" in the repository menu opens it. Escape and "Close settings" close it. Heading "Settings". Feature 004 moves its content into the Settings view (004 O-7).
+  - While `readSyncSettings` runs: "The settings are still loading…". A failed read: "The settings did not load: <code>." A failed change: "The setting did not change: <code>.", or the `PUTTY_UNAVAILABLE` text.
+  - Group "SSH client" with "Git's own configuration" and "PuTTY (plink)". The note reads "PuTTY applies only to Windows repositories. A WSL repository uses the SSH setup of its distro."
+  - "PuTTY (plink)" without a plink program opens the plink picker first. A canceled picker keeps the setting.
+  - "Plink program": the path or "Not set", with "Choose plink…" and "Clear plink". Each `programs` entry shows "<program>: <path>", plus "Not available" when `present` is false.
+  - "Generate or convert a key". Without a plink program, its reason is "Choose the plink program first." After success, "PuTTYgen started." shows.
+  - "Key files for this repository": one row for each remote with a saved key file or a proposal. A row shows the remote, the path or "No key file", "Choose key file for <remote>…", and "Clear key file for <remote>".
+  - A proposal shows "Git Extensions setting: <path>". It comes from the last `readTrust` entry `remote.<name>.puttykeyfile` with a value, because the last value of a single-valued key wins (git-config(1)).
+  - "Add a key file for another remote": the field "Remote" and the button "Choose key file…". An empty field gives the reason "Enter the remote name." The shell checks the remote name.
+  - Without a repository: "Open a repository to set its key files."
+  - "Default clone folder": the path or "Not set", with "Choose default clone folder…" and "Clear default clone folder".
+- Connect in a terminal (FR-034, O-10):
+  - A `sync` of Fetch, Fetch all remotes, Pull, Push, or Force push with lease that ends `failed` or `failed-with-effects` under plink shows a notice row. It reads "<action name> did not complete with PuTTY (plink)." with "Connect in a terminal" and "Dismiss notice". The row names no cause.
+  - A failed clone under plink shows "Connect in a terminal" in the clone panel.
+  - Results: "The terminal opened.", the `PUTTY_UNAVAILABLE` text, or "Connect in a terminal did not complete: <code>".
 - Skills for the implementer: `arbareto-ux`, `vercel-react-best-practices`, `web-design-guidelines`, and `shadcn` with the version that tasks.md pins.
 
 ### D13 WSL
@@ -425,6 +452,7 @@ Further reviewer defaults:
 
 ## Open items
 
+- **Redacted key proposal.** Accepted display limit. `readTrust` redacts each entry key (contract §7 "URL user information"). A remote name that holds `://` and then `@` reaches the settings changed. The proposal then names another remote. The app uses no proposal before the user chooses a key file (O-8), so no key file reaches Pageant from it.
 - **WSL clone process end.** Contract gap. The 001 §12 process-end fact runs in the context of a registered workspace, and a clone has none. So a WSL clone process without an exit status, after Cancel or a limit, gives the code only, without `{exists, empty}` (contract Δ3 `clone` step 6). A fix needs a process-end fact in the `clone` context. T075 records the result.
 - Run the `exec` lines of a rebase todo after a trust question. This feature refuses Continue and Skip with `rebase-exec` and offers the terminal command instead (D7). Later work.
 

@@ -3,7 +3,7 @@
 
 // FR-054 and plan.md D10: the clone destination suggestion. It starts no process, reads no file, and never changes a character.
 
-import { PATH_RULES } from "./native-path";
+import { hasDosDrivePrefix } from "./drive-prefix";
 
 export interface CloneNameInput {
   url: string;
@@ -22,7 +22,7 @@ function pathOf(url: string): string {
   if (authority) return url.slice(authority[0].length);
   const colon = url.indexOf(":");
   const slash = url.indexOf("/");
-  if (colon < 0 || (slash >= 0 && slash < colon) || PATH_RULES.windows.hasDrivePrefix(url)) return url;
+  if (colon < 0 || (slash >= 0 && slash < colon) || hasDosDrivePrefix(url)) return url;
   return url.slice(colon + 1);
 }
 

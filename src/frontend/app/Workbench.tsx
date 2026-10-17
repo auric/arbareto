@@ -61,7 +61,7 @@ import { createRequests, isRegistration, wslDistro, type Clock, type RequestBrid
 import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, storePanes, writePreferences, type DarkPalette, type Panes, type Preferences, type Theme } from "../state/preferences";
 import { createDrafts } from "../state/drafts";
 import { createDraftStore } from "../state/draft-store";
-import { OperationStatus, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
+import { OperationStatus, SYNC_NAMES, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
 import { passedAcceptance, SubmoduleReview, type SubmoduleReviewValue } from "../submodules/SubmoduleReview";
 import { isTrustReport, SaveFailedNotice, TrustDialog, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
@@ -75,6 +75,9 @@ import { ForcePushConfirm } from "../sync/ForcePushConfirm";
 import { pullAction, type DefaultPullAction } from "../sync/PullSplitButton";
 import { PushNoticeRow } from "../sync/PushNoticeRow";
 import { PushPanel } from "../sync/PushPanel";
+import { CloneDialog } from "../clone/CloneDialog";
+import { ConnectNoticeRow } from "../settings/ConnectTerminal";
+import { SettingsDialog, type KeyProposal } from "../settings/SettingsDialog";
 import { actionReason, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
 import { useSync } from "../sync/useSync";
 import { shortRef } from "../refs/ReferencesSidebar";
@@ -107,6 +110,12 @@ export type WorkbenchBridge = RequestBridge &
     | "sync"
     | "readSyncSettings"
     | "setDefaultPullAction"
+    | "clone"
+    | "connectInTerminal"
+    | "setSshClient"
+    | "chooseSyncPath"
+    | "clearSyncPath"
+    | "launchPuttygen"
   >;
 /** The hunk and file staging facts that the workbench gives the changes pane and the comparison view (T145, T202). */
 export type Staging = {
@@ -195,10 +204,25 @@ export const DOCK_HINT = "Select the Working directory row to commit, or a commi
 const NO_REPOSITORY = "No repository open";
 // Feature 003 data-model §10: the Pull main part waits for `readSyncSettings`.
 const SETTINGS_LOADING = "The default pull action is still loading…";
-type SyncSettingsState = { action: DefaultPullAction | null; reason: string | null };
+// `sshClient` is null while it is unknown. Then no row offers Connect in a terminal (O-10).
+type SyncSettingsState = { action: DefaultPullAction | null; reason: string | null; sshClient: "git" | "plink" | null };
 function settingsOf(response: BridgeResponse): SyncSettingsState {
   const action = isObject(response.result) ? response.result.defaultPullAction : undefined;
-  return response.state === "succeeded" && typeof action === "string" ? { action: action as DefaultPullAction, reason: null } : { action: null, reason: `The default pull action did not load: ${response.code ?? response.state}.` };
+  const client = isObject(response.result) ? response.result.sshClient : undefined;
+  const sshClient = response.state === "succeeded" && (client === "git" || client === "plink") ? client : null;
+  return response.state === "succeeded" && typeof action === "string" ? { action: action as DefaultPullAction, reason: null, sshClient } : { action: null, reason: `The default pull action did not load: ${response.code ?? response.state}.`, sshClient };
+}
+// Feature 003 FR-034 and O-10: the network actions of a `sync`. Abort, Continue, and Skip use no remote.
+const NETWORK_ACTIONS: readonly string[] = ["fetch", "fetch-all", "pull", "push", "force-push"];
+// Plan.md D12 "Settings panel": a proposal is the last `remote.<name>.puttykeyfile` entry with a value (git-config(1): the last value wins).
+function keyProposals(report: TrustReport | undefined): KeyProposal[] {
+  const proposals = new Map<string, string>();
+  for (const entry of report?.entries ?? []) {
+    if (entry.value === undefined || !entry.key.startsWith("remote.") || !entry.key.endsWith(".puttykeyfile")) continue;
+    const remote = entry.key.slice("remote.".length, -".puttykeyfile".length);
+    if (remote !== "") proposals.set(remote, entry.value);
+  }
+  return [...proposals].map(([remote, path]) => ({ remote, path }));
 }
 
 // plan.md "Dark palettes".
@@ -575,13 +599,31 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [row, setRow] = useState<{ repository: RequestState["repository"]; id: string | null; epoch: number }>({ repository: state.repository, id: null, epoch: 0 });
   // The submodule review of the T236 dialog, with the target and snapshot of its `reviewSubmodules` request.
   const [submoduleReview, setSubmoduleReview] = useState<{ value: SubmoduleReviewValue; target: { repositoryId: string; repositoryGeneration: number }; snapshotId: string; open: boolean } | null>(null);
+  // Feature 003 plan.md D12: the clone panel or the settings panel replaces the main area until it closes.
+  const [mainPanel, setMainPanel] = useState<"clone" | "settings" | null>(null);
+  // Feature 003 FR-034: the failed network `sync` under plink that the connect row offers, with its repository.
+  const [connect, setConnect] = useState<{ repositoryId: string; operationId: string; name: string } | null>(null);
+  const startedSync = useRef<string | null>(null);
   // Feature 003 FR-004, FR-013, FR-040, and contract Δ8: the reads after each `sync` outcome. A new view keeps the selected commit and shows no refs-changed notice.
   const sync = useSync({
     bridge,
     target: requests.target,
     repositoryId: state.repository?.repositoryId ?? null,
     headTarget: state.workspace === null ? undefined : state.workspace.head.state === "detached" ? null : state.workspace.head.target,
-    onOperation: (op) => setOperation(op),
+    onOperation: (op) => {
+      setOperation(op);
+      const response = op.response;
+      const id = state.repository?.repositoryId;
+      // A refused review reports its response without a start. Only a started `sync` keeps a connect target (data-model §11).
+      if (response === null) {
+        startedSync.current = op.requestId;
+        return setConnect(null);
+      }
+      const failed = response.state === "failed" || response.state === "failed-with-effects";
+      if (failed && startedSync.current === op.requestId && syncSettings.sshClient === "plink" && op.sync !== undefined && NETWORK_ACTIONS.includes(op.sync.action) && response.operationId !== undefined && id !== undefined) {
+        setConnect({ repositoryId: id, operationId: response.operationId, name: SYNC_NAMES[op.sync.action] });
+      }
+    },
     onRefused: (text) => setNotice(text),
     onEnded: (response) => {
       void historyView.refresh();
@@ -603,7 +645,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // `code` is the response code or state of a failed read, null after a success.
   const [tracking, setTracking] = useState<{ repositoryId: string; entries: TrackingEntry[] | null; code: string | null } | null>(null);
   const trackingSeq = useRef(0);
-  const [syncSettings, setSyncSettings] = useState<SyncSettingsState>({ action: null, reason: SETTINGS_LOADING });
+  const [syncSettings, setSyncSettings] = useState<SyncSettingsState>({ action: null, reason: SETTINGS_LOADING, sshClient: null });
   const [anchor, setAnchor] = useState<Staging["anchor"]>(null);
   const [fileReason, setFileReason] = useState<string | null>(null);
   const [paneReason, setPaneReason] = useState<string | null>(null);
@@ -1383,6 +1425,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                   setSwitcherOpen(true);
                 }}
                 onSelectGit={() => void selectGit()}
+                onClone={() => setMainPanel("clone")}
+                onOpenSettings={() => setMainPanel("settings")}
                 onReviewTrust={() => void reviewTrust()}
                 revokeTrust={revokeTrust}
                 onUpdateSubmodules={workspace === null ? undefined : () => void reviewSubmodules("menu")}
@@ -1502,6 +1546,16 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                     <PushNoticeRow notice={sync.notice} {...sync.noticeActions} reason={reasons.pullReason} fetchReason={reasons.fetchReason} bindControl={bindBandControl} />
                   ) : undefined
                 }
+                connectRow={
+                  connect !== null && connect.repositoryId === state.repository?.repositoryId ? (
+                    <ConnectNoticeRow
+                      name={connect.name}
+                      connect={() => bridge.connectInTerminal({ repositoryId: connect.repositoryId }, { operationId: connect.operationId })}
+                      onDismiss={() => setConnect(null)}
+                      bindControl={bindBandControl}
+                    />
+                  ) : undefined
+                }
                 submoduleRow={submodules > 0 ? <SubmoduleNotice count={submodules} onUpdate={() => void reviewSubmodules("notice")} buttonRef={bindNoticeButton} blockedReason={blockedReason} /> : undefined}
                 refsChanged={
                   refsNotice ? (
@@ -1513,19 +1567,41 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               />
             )}
           </div>
-          {refusal === null ? null : <RepositoryRefused code={responseCode(refusal)} result={refusal.result as RegistrationResult | undefined} onOpenRepository={() => void openRepository()} />}
-          {saveFailed ? <SaveFailedNotice /> : null}
-          {state.repository === null ? (
-            restoring ? (
-              <Loading hasContent={false} refreshing={false} />
+          {/* The Windows shell checks a destination by the 001 Windows rules or the §11 WSL route, and both use the backslash separator (contract Δ3 `clone`). */}
+          {mainPanel === "clone" ? (
+            <CloneDialog
+              bridge={bridge}
+              separator={"\\"}
+              onOpened={(response) => {
+                setMainPanel(null);
+                registered(response);
+              }}
+              onClose={() => setMainPanel(null)}
+            />
+          ) : null}
+          {mainPanel === "settings" ? (
+            <SettingsDialog
+              bridge={bridge}
+              repository={worktreeKey === null ? null : { worktreeKey, proposals: keyProposals(trust?.report) }}
+              onSettings={(response) => setSyncSettings(settingsOf(response))}
+              onClose={() => setMainPanel(null)}
+            />
+          ) : null}
+          <div hidden={mainPanel !== null} className="contents">
+            {refusal === null ? null : <RepositoryRefused code={responseCode(refusal)} result={refusal.result as RegistrationResult | undefined} onOpenRepository={() => void openRepository()} />}
+            {saveFailed ? <SaveFailedNotice /> : null}
+            {state.repository === null ? (
+              restoring ? (
+                <Loading hasContent={false} refreshing={false} />
+              ) : (
+                <div className="min-h-0 flex-1 overflow-y-auto">
+                  <StartPage bridge={bridge} busy={false} onOpenFolder={() => void openRepository()} onOpened={registered} onClone={() => setMainPanel("clone")} />
+                </div>
+              )
             ) : (
-              <div className="min-h-0 flex-1 overflow-y-auto">
-                <StartPage bridge={bridge} busy={false} onOpenFolder={() => void openRepository()} onOpened={registered} />
-              </div>
-            )
-          ) : (
-            workbench
-          )}
+              workbench
+            )}
+          </div>
           {/* plan.md "Status area": T138 fills this slot. */}
           <div data-slot="status-area" data-section={starting === null ? undefined : "statusRegion"} className="shrink-0 overflow-y-auto" style={{ maxHeight: statusAreaMax }}>
             {starting === null ? null : <WslStarting name={starting.distro} operationId={starting.operationId} cancel={starting.cancelable ? cancelStart : undefined} />}

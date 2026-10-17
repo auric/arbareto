@@ -147,6 +147,8 @@ describe("contract Δ9 codes", () => {
       "path",
       "message-size",
       "unreadable",
+      "no-tracking-refspec",
+      "several-tracking-remotes",
     ]);
     expect([...(E.UNTRACKED_IN_WAY_REASONS ?? [])]).toEqual(["untracked-in-way"]);
     expect([...(E.STASH_KEPT_REASONS ?? [])]).toEqual(["conflicts", "failed-apply", "failed-checkout", "not-found", "stash-changed"]);

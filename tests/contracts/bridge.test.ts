@@ -73,6 +73,16 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   chooseSyncPath: (b) => b.chooseSyncPath({ target: "remoteKey", worktreeKey: "a".repeat(64), remote: "origin" }),
   clearSyncPath: (b) => b.clearSyncPath({ target: "plink" }),
   launchPuttygen: (b) => b.launchPuttygen(),
+  // Feature 004 contract Δ1.
+  readBranches: (b) => b.readBranches(gen()),
+  readWorktrees: (b) => b.readWorktrees(gen()),
+  readGitSettings: (b) => b.readGitSettings(repo()),
+  reviewWorkbench: (b) => b.reviewWorkbench(gen(), { action: "worktree-prune" }),
+  runWorkbench: (b) => b.runWorkbench(repo(), { workbenchToken: id(), start: true }),
+  applyFiles: (b) => b.applyFiles(repo(), { snapshotId: id(), entryIds: [id()], direction: "stage", kind: "selected" }),
+  openWorktree: (b) => b.openWorktree({ repositoryId: id(), path: "/home/u/repo-wt" }),
+  revealPath: (b) => b.revealPath({ repositoryId: id(), entryId: id() }),
+  setSwitchChoice: (b) => b.setSwitchChoice({ choice: "stash" }),
 };
 
 interface Options {

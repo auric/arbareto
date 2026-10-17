@@ -54,6 +54,25 @@ pub struct Settings {
     pub recent: Vec<RecentEntry>,
     /// Feature 003 data-model §10.
     pub sync: SyncSettings,
+    /// Feature 004 data-model §13.
+    pub switch_choice: SwitchChoice,
+}
+
+/// Feature 004 data-model §13 `switchChoice`: the preselected switch choice. `discard` is no stored choice (spec FR-010).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SwitchChoice {
+    #[default]
+    Keep,
+    Stash,
+}
+
+impl SwitchChoice {
+    pub fn text(self) -> &'static str {
+        match self {
+            SwitchChoice::Keep => "keep",
+            SwitchChoice::Stash => "stash",
+        }
+    }
 }
 
 // ---- Feature 003 shell settings (data-model §10) ----
@@ -486,6 +505,10 @@ pub fn load(path: &Path) -> Settings {
             .map(recent_entries)
             .unwrap_or_default(),
         sync: sync_settings(&file),
+        switch_choice: match file.get("switchChoice").and_then(Value::as_str) {
+            Some("stash") => SwitchChoice::Stash,
+            _ => SwitchChoice::Keep,
+        },
     }
 }
 
@@ -540,6 +563,12 @@ fn save_with(path: &Path, settings: &Settings, fault: Fault) -> io::Result<()> {
     }
     if let Some(repository) = &settings.last_repository {
         file.insert("lastRepository".to_string(), json!(text(repository)?));
+    }
+    if settings.switch_choice != SwitchChoice::Keep {
+        file.insert(
+            "switchChoice".to_string(),
+            json!(settings.switch_choice.text()),
+        );
     }
     if let Some(window) = settings.window {
         file.insert(
@@ -923,20 +952,23 @@ pub const MARKER_BYTES: usize = 4096;
 /// At most 64 markers per handshake (contract §5).
 pub const MARKER_LIMIT: usize = 64;
 
-/// The mutation names of contract §3, as `src/contracts/operations.ts` `MUTATIONS` lists them.
-pub(crate) const MUTATIONS: [&str; 5] = [
+/// The marker kinds of contract §6, as `src/contracts/operations.ts` `MutationKind` lists them.
+/// Feature 004 contract Δ6: a `runWorkbench` marker has kind `workbench`, so the kinds are no longer the `MUTATIONS` names.
+pub(crate) const MUTATIONS: [&str; 7] = [
     "applyHunk",
     "applyFile",
     "commit",
     "updateSubmodules",
     "sync",
+    "workbench",
+    "applyFiles",
 ];
 
 /// One recovery marker. Its file is `<markerId>.json` in the `recovery` folder and holds the handshake form.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Marker {
     pub marker_id: String,
-    /// One mutation name of contract §3.
+    /// One marker kind of `MUTATIONS`.
     pub kind: String,
     /// A UTC time in RFC 3339 form.
     pub started_at: String,
@@ -1898,6 +1930,7 @@ mod tests {
             wsl_gits: Vec::new(),
             recent: Vec::new(),
             sync: Default::default(),
+            switch_choice: Default::default(),
         }
     }
 
@@ -2240,6 +2273,49 @@ mod tests {
         ] {
             std::fs::write(&path, file.to_string()).expect("write");
             assert_eq!(load(&path).sync, expected, "{file}");
+        }
+    }
+
+    /// Feature 004 data-model §13: `switchChoice` is `keep` or `stash`. Any other value reads as `keep`, and `keep` writes nothing.
+    #[test]
+    fn the_switch_choice_round_trips_and_any_other_value_reads_as_keep() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        for choice in [SwitchChoice::Keep, SwitchChoice::Stash] {
+            let settings = Settings {
+                switch_choice: choice,
+                ..Settings::default()
+            };
+            save(&path, &settings).expect("save");
+            assert_eq!(load(&path).switch_choice, choice);
+            let file: Value =
+                serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+            let stored = file.get("switchChoice").cloned();
+            assert_eq!(
+                stored,
+                (choice == SwitchChoice::Stash).then(|| json!("stash")),
+                "{choice:?}"
+            );
+            assert_eq!(
+                choice.text(),
+                if choice == SwitchChoice::Stash {
+                    "stash"
+                } else {
+                    "keep"
+                }
+            );
+        }
+        assert_eq!(Settings::default().switch_choice, SwitchChoice::Keep);
+        for value in [
+            json!("keep"),
+            json!("discard"),
+            json!("Stash"),
+            json!(""),
+            json!(1),
+            json!(null),
+        ] {
+            std::fs::write(&path, json!({ "switchChoice": value }).to_string()).expect("write");
+            assert_eq!(load(&path).switch_choice, SwitchChoice::Keep, "{value}");
         }
     }
 
@@ -3604,18 +3680,19 @@ mod tests {
         );
     }
 
-    /// Feature 003 contract Δ2 and Δ6: the marker kinds equal `MUTATIONS` of `src/contracts/operations.ts`, so a `sync` marker loads.
+    /// Feature 003 contract Δ2 and Δ6: a `sync` marker loads.
+    /// Feature 004 contract Δ6: the marker kinds equal `MutationKind` of `src/contracts/operations.ts`, so `workbench` and `applyFiles` markers load.
     #[test]
-    fn the_marker_kinds_equal_the_contract_mutations_and_a_sync_marker_loads() {
+    fn the_marker_kinds_equal_the_contract_kinds_and_each_new_kind_loads() {
         let contract = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../src/contracts/operations.ts"
         ))
         .expect("operations.ts");
         let (list, _) = contract
-            .split_once("MUTATION_NAMES = [")
+            .split_once("MutationKind = z.enum([")
             .and_then(|(_, rest)| rest.split_once(']'))
-            .expect("MUTATION_NAMES");
+            .expect("MutationKind");
         let names: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
         assert_eq!(names, MUTATIONS);
         let fixture = Fixture::new();
@@ -3623,14 +3700,16 @@ mod tests {
         let recovery = folder(&fixture, "recovery");
         let id = write_marker(&recovery, &repository, 1, 0);
         let path = recovery.join(format!("{id}.json"));
-        let mut marker: Value =
-            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
-        marker["kind"] = json!("sync");
-        std::fs::write(&path, marker.to_string()).expect("write");
-        let scan = Markers::open(&recovery).scan();
-        assert_eq!((scan.markers.len(), scan.damaged.len()), (1, 0));
-        assert_eq!(scan.markers[0].kind, "sync");
-        assert_eq!(scan.markers[0].handshake(), marker);
+        for kind in ["sync", "workbench", "applyFiles"] {
+            let mut marker: Value =
+                serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+            marker["kind"] = json!(kind);
+            std::fs::write(&path, marker.to_string()).expect("write");
+            let scan = Markers::open(&recovery).scan();
+            assert_eq!((scan.markers.len(), scan.damaged.len()), (1, 0), "{kind}");
+            assert_eq!(scan.markers[0].kind, kind);
+            assert_eq!(scan.markers[0].handshake(), marker);
+        }
     }
 
     #[test]

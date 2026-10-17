@@ -170,6 +170,8 @@ pub enum ContextKind {
     RepositoryDiscovery,
     /// Feature 003 contract Δ6: the destination of one clone.
     Clone,
+    /// Feature 004 contract Δ6: the path of one `worktree add`, bound by the native step of its review.
+    WorktreeAdd,
 }
 
 #[derive(Clone, Debug)]
@@ -196,6 +198,8 @@ pub struct Context {
     pub key: Option<PathBuf>,
     /// An owned context of a clone stays live until its operation ends.
     pub held: bool,
+    /// The `repositoryId` of a `worktreeAdd` context.
+    pub repository: Option<String>,
 }
 
 /// The options that a discovery `symbolic-ref` permits besides the one name `HEAD` (contract §6 "Registration bootstrap").
@@ -329,7 +333,9 @@ impl Contexts {
         } else {
             ContextIdentity::Windows(read_identity(path).map_err(|code| match kind {
                 ContextKind::GitProbe => "GIT_UNAVAILABLE",
-                ContextKind::RepositoryDiscovery | ContextKind::Clone => code,
+                ContextKind::RepositoryDiscovery
+                | ContextKind::Clone
+                | ContextKind::WorktreeAdd => code,
             })?)
         };
         Ok(self.bind(kind, path, identity, selected, startup, now))
@@ -361,6 +367,7 @@ impl Contexts {
             url: None,
             key: None,
             held: false,
+            repository: None,
         };
         state.contexts.insert(id.clone(), context);
         id
@@ -391,6 +398,19 @@ impl Contexts {
             discovery.peer = Some(clone_id.clone());
         }
         (clone_id, bootstrap_id)
+    }
+
+    /// Feature 004 contract Δ6: the `worktreeAdd` context of the path and the repository of one `worktree-add` review.
+    /// It reads no identity, because the path is absent or an empty folder. Returns its `bootstrapId`.
+    pub fn create_worktree_add(&self, path: &Path, repository_id: &str, now: Instant) -> String {
+        let identity = ContextIdentity::Pending {
+            wsl: is_wsl_path(path),
+        };
+        let id = self.bind(ContextKind::WorktreeAdd, path, identity, path, false, now);
+        if let Some(context) = self.state().contexts.get_mut(&id) {
+            context.repository = Some(repository_id.to_string());
+        }
+        id
     }
 
     /// Feature 003 contract Δ6: from its first request, the clone operation holds both contexts of its clone until it ends.
@@ -480,8 +500,8 @@ impl Contexts {
                 }
                 _ => false,
             },
-            // Feature 003 contract Δ6: `process_requests.rs` checks the fixed clone array with the destination in Git's form.
-            ContextKind::Clone => false,
+            // Feature 003 and feature 004 contract Δ6: `process_requests.rs` checks the fixed arrays with the bound path in Git's form.
+            ContextKind::Clone | ContextKind::WorktreeAdd => false,
         };
         if permitted {
             Ok(())
@@ -494,8 +514,9 @@ impl Contexts {
     /// The code is `GIT_CHANGED` for `gitProbe` and `UNKNOWN_TARGET` for `repositoryDiscovery`.
     pub fn revalidate(&self, bootstrap_id: &str, now: Instant) -> Result<(), Code> {
         let context = self.get(bootstrap_id, now)?;
-        // Feature 003 contract Δ6: a `clone` context binds the path text that Git creates, so it holds no identity.
-        if context.kind == ContextKind::Clone {
+        // Feature 003 and feature 004 contract Δ6: a `clone` or `worktreeAdd` context binds the path text that Git creates,
+        // so it holds no identity.
+        if matches!(context.kind, ContextKind::Clone | ContextKind::WorktreeAdd) {
             return Ok(());
         }
         // A WSL context revalidates only through the §11 identity probe of `process_requests.rs`.
@@ -506,7 +527,9 @@ impl Contexts {
         self.destroy(bootstrap_id);
         Err(match context.kind {
             ContextKind::GitProbe => Code::GitChanged,
-            ContextKind::RepositoryDiscovery | ContextKind::Clone => Code::UnknownTarget,
+            ContextKind::RepositoryDiscovery | ContextKind::Clone | ContextKind::WorktreeAdd => {
+                Code::UnknownTarget
+            }
         })
     }
 

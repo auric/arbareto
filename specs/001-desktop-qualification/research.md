@@ -1992,6 +1992,25 @@ Earlier attempt at `71a5bb0`, 2026-10-13: the parallel step exited 1. One case f
 
 **T149 locked-session focus failures, 2026-10-13.** In the T149 run on main `f6708df`, the session was locked, and `LockApp.exe` held the foreground. Three `tests/windows/uia.test.ts` cases failed. "focuses the probe field" timed out on `waitFocus` after 2000 ms; it fails without the app too. The installed-app case timed out on `waitFocus` for "Select Git" after 10000 ms. The fixture cleanup then failed with `EBUSY` on `app\profile\webview2\EBWebView\CrashpadMetrics-active.pma`. A read-only probe on 2026-10-13 found the session locked (`WTSSessionInfoEx` `SessionFlags` 0, `WTS_SESSIONSTATE_LOCK`) with `LockApp.exe` in the foreground, but the input desktop was still `Default`. So the focus cases skip with capability `input-desktop` unless the session flags are `WTS_SESSIONSTATE_UNLOCK` and the input desktop is `Default`. `OwnedProcess.stop` now waits until each process of the owned tree is signaled, so the fixture removal follows the release of its files.
 
+**`bun run package` build, 2026-10-17.** The build used main `3e3d615ea4b458d2703e33b85dba77a04742d0ef` in the worktree `C:\Projects\arbareto-l3`. The tree held one uncommitted change: the new `package` script in `package.json`. `bun run package` exited with code 0 in 4 minutes. This build is not the T154 build, and it ticks no task.
+
+| Tool | Source | Value | Minimum | Result |
+| --- | --- | --- | --- | --- |
+| Rust | `rustc --version` | `rustc 1.99.0 (b940084d7 2026-09-28)` | `1.98.0` | pass |
+| Cargo | `cargo --version` | `cargo 1.99.0 (5f94df478 2026-08-27)` | `1.98.0` | pass |
+| Tauri CLI | `cargo tauri --version` | `tauri-cli 2.12.0` | `2.12.0` | pass |
+| Bun | `bun --version` | `1.4.3` | exactly `1.4.3` | pass |
+| MSVC toolset | T001 link probe `Searching` path, `...\2022\Enterprise\VC\Tools\MSVC\14.44.35207\lib\x64\msvcrt.lib`. The `link.exe` banner reads `14.44.35211.0`. | `14.44.35207` | `14.51.36231` | fail |
+| Windows SDK | T001 link probe `Searching` paths, `...\Windows Kits\10\lib\10.0.19041.0\um\x64\kernel32.lib` and `...\ucrt\x64\ucrt.lib` | `10.0.19041.0` | `10.0.26100.0` | fail |
+| NSIS | `makensis.exe /VERSION` in `%LOCALAPPDATA%\tauri\NSIS` after the build | `v3.11` | `3.11` | pass |
+
+- rustc 1.99.0 does not print the linker output of the T001 probe. The probe ran `link.exe` through a wrapper `-C linker=` script that kept the output.
+- The MSVC toolset and the Windows SDK are below the plan.md minimums, as in the T149 record. The build still exited 0.
+- The bundler reused the existing `%LOCALAPPDATA%\tauri\NSIS` folder. The log shows no download.
+- Installer: `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\Arbareto_0.1.0_x64-setup.exe`, 38020360 bytes, SHA-256 `8616ce4f5d83ca35a900b956587acc95cd489ddf1b1cfd08957713ae0efbf1d8`. `package.json` and `src-tauri/Cargo.toml` hold version `0.1.0`.
+- A byte search of the release `arbareto.exe` found `3e3d615ea4b458d2703e33b85dba77a04742d0ef-dirty`, because of the uncommitted script.
+- The package was not installed.
+
 ### Scenario records
 
 This table holds one record for each qualification scenario: SC-001 to SC-019 (spec.md "Success Criteria"), F01 to F33 (plan.md fixture register), and UI-01 to UI-22 (plan.md UI scenarios). Each record holds the data-model §8 fields. A result is only `pass`, `fail`, or `unverified`. A record whose only evidence is source inspection stays `unverified`, and its evidence cell names `source-inspected`. An empty cell means that no fact exists yet. Record results as numbers and observations. Redact secrets before you keep evidence.

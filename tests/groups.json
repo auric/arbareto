@@ -110,6 +110,7 @@
     "tests/contracts/view-context.test.ts",
     "tests/contracts/view-switch.test.tsx",
     "tests/contracts/workbench-commands.test.ts",
+    "tests/contracts/workbench-contract.test.ts",
     "tests/contracts/workbench-mount.test.tsx",
     "tests/contracts/workbench-parsers.test.ts",
     "tests/contracts/wsl-files.test.ts",

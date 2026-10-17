@@ -50,6 +50,8 @@ const NO_BODY = "This commit has no message body.";
 const ROOT_TEXT = "None. This is a root commit.";
 const SHALLOW_TEXT = "Not in this shallow clone.";
 const TEXT_LIMIT = "Arbareto does not show this commit, because its commit object is larger than 256 KiB.";
+// 001 plan.md "History graph design": a short ID is the first 12 hex digits.
+const shortId = (oid: string) => oid.slice(0, 12);
 const LABEL_WORD = { branch: "branch", remote: "remote-tracking branch", tag: "tag", stash: "stash" } as const;
 
 /** Contract Δ3 targets and outcomes other than `found`. Only target `none` says that the list lacks the commit. */
@@ -96,28 +98,35 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead }
   return (
     <section aria-labelledby={headingId} className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-1 border-b border-divider px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
-        <h2 id={headingId} className="mr-auto font-semibold">
+        <h2 id={headingId} className="font-semibold">
           Selected commit
         </h2>
-        <IconButton icon={Copy01Icon} label="Copy commit ID" onClick={() => copy(oid)} />
-        {row?.subject === undefined ? null : <IconButton icon={Copy01Icon} label="Copy message" onClick={() => copy(messageText({ subject: row.subject!, body: row.body ?? "" }))} />}
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto p-2">
+      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto p-2 select-text">
         {row === undefined ? (
           <p className="text-muted-text">Loading…</p>
         ) : row === null ? (
           <p className="text-muted-text">{absentText(details!)}</p>
         ) : row.textLimit ? (
           <>
-            <p className="font-mono break-all">{row.oid}</p>
+            <p className="flex items-start gap-1">
+              <span className="min-w-0 font-mono break-all">{row.oid}</span>
+              <IconButton icon={Copy01Icon} label="Copy commit ID" onClick={() => copy(row.oid)} />
+            </p>
             <p>{TEXT_LIMIT}</p>
           </>
         ) : (
           <>
-            <p className="break-words font-semibold">{row.subject}</p>
+            <p className="flex items-start gap-1">
+              <span className="min-w-0 break-words font-semibold">{row.subject}</span>
+              {row.subject === undefined ? null : <IconButton icon={Copy01Icon} label="Copy message" onClick={() => copy(messageText({ subject: row.subject!, body: row.body ?? "" }))} />}
+            </p>
             <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-1">
               <dt className="text-muted-text">ID</dt>
-              <dd className="font-mono break-all">{row.oid}</dd>
+              <dd className="flex items-start gap-1">
+                <span className="min-w-0 font-mono break-all">{row.oid}</span>
+                <IconButton icon={Copy01Icon} label="Copy commit ID" onClick={() => copy(row.oid)} />
+              </dd>
               <dt className="text-muted-text">Author</dt>
               <Person person={row.author!} seconds={row.date!} dateFormat={dateFormat} />
               <dt className="text-muted-text">Committer</dt>
@@ -126,8 +135,9 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead }
               <dd>
                 <ol className="flex flex-col items-start gap-1">
                   {row.parents.map((parent) => (
-                    <li key={parent}>
+                    <li key={parent} className="flex items-center gap-1">
                       <CommitLink oid={parent} onSelect={(o) => void view.selectOid(o)} />
+                      <IconButton icon={Copy01Icon} label={`Copy parent ID ${shortId(parent)}`} onClick={() => copy(parent)} />
                     </li>
                   ))}
                   {row.cell?.marks.includes("root") ? <li>{ROOT_TEXT}</li> : null}

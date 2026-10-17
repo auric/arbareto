@@ -63,26 +63,50 @@ const field = (host: HTMLElement, label: string) => {
 };
 
 describe("Selected commit", () => {
-  test("the region is named by its visible heading, and the heading holds Copy commit ID and Copy message icon buttons", async () => {
+  test("the region is named by its visible heading, and the heading row holds no button", async () => {
     const host = await details(2);
     const region = host.querySelector("section")!;
     const heading = host.querySelector(`#${CSS.escape(region.getAttribute("aria-labelledby")!)}`)!;
     expect(heading.textContent).toContain("Selected commit");
-    const copies = [...heading.parentElement!.querySelectorAll("button")].map((b) => [b.getAttribute("aria-label"), text(b)]);
-    expect(copies).toEqual([
-      ["Copy commit ID", ""],
-      ["Copy message", ""],
-    ]);
+    expect(heading.parentElement!.querySelectorAll("button")).toHaveLength(0);
   });
 
-  test("Copy commit ID copies the full ID, and Copy message copies the subject, a blank line, and the body", async () => {
+  test("Copy commit ID sits in the ID row and copies the full ID, and Copy message sits after the subject and copies the subject, a blank line, and the body", async () => {
     const written: string[] = [];
     Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => void written.push(value) } });
     const host = await details(2);
-    const button = (label: string) => host.querySelector<HTMLElement>(`button[aria-label="${label}"]`)!;
-    await act(async () => button("Copy commit ID").click());
-    await act(async () => button("Copy message").click());
+    const id = field(host, "ID").querySelector<HTMLElement>('button[aria-label="Copy commit ID"]')!;
+    const message = host.querySelector<HTMLElement>('button[aria-label="Copy message"]')!;
+    expect(host.querySelectorAll('button[aria-label="Copy commit ID"]')).toHaveLength(1);
+    expect(text(message.parentElement!)).toBe("Commit 2");
+    await act(async () => id.click());
+    await act(async () => message.click());
     expect(written).toEqual([fakeOid(2), `Commit 2\n\n${BODY}`]);
+  });
+
+  test("a commit over the text limit keeps Copy commit ID next to its ID", async () => {
+    const written: string[] = [];
+    Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => void written.push(value) } });
+    const host = await details(3, (i) => (i === 3 ? { textLimit: true } : {}));
+    const button = host.querySelector<HTMLElement>('button[aria-label="Copy commit ID"]')!;
+    expect(text(button.parentElement!)).toBe(fakeOid(3));
+    await act(async () => button.click());
+    expect(written).toEqual([fakeOid(3)]);
+  });
+
+  test("each parent has its own Copy parent ID button, and it copies that parent", async () => {
+    const written: string[] = [];
+    Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => void written.push(value) } });
+    // The two parents differ in the first 12 hex digits, so each name names its own parent.
+    const parents = ["a".repeat(40), "b".repeat(40)];
+    const host = await details(2, (i) => (i === 2 ? { parents } : {}));
+    const rows = [...field(host, "Parents").querySelectorAll("li")];
+    expect(rows.map((li) => [...li.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? b.textContent))).toEqual([
+      [parents[0], `Copy parent ID ${"a".repeat(12)}`],
+      [parents[1], `Copy parent ID ${"b".repeat(12)}`],
+    ]);
+    for (const li of rows) await act(async () => li.querySelector<HTMLElement>('button[aria-label^="Copy parent ID"]')!.click());
+    expect(written).toEqual(parents);
   });
 
   test("it shows the subject, the full ID, the author and the committer with their local and ISO 8601 UTC times", async () => {
@@ -98,7 +122,7 @@ describe("Selected commit", () => {
 
   test("the parents keep Git order, and a parent action selects that commit in the history list", async () => {
     const host = await details(2, (i) => (i === 2 ? { parents: [fakeOid(5), fakeOid(3)] } : {}));
-    const buttons = [...field(host, "Parents").querySelectorAll("button")];
+    const buttons = [...field(host, "Parents").querySelectorAll<HTMLElement>("button:not([aria-label])")];
     expect(buttons.map((b) => b.textContent)).toEqual([fakeOid(5), fakeOid(3)]);
     await act(async () => buttons[1]!.click());
     await settle();
@@ -125,13 +149,16 @@ describe("Selected commit", () => {
     expect(message.textContent).toBe(BODY);
     expect(message.querySelector("*")).toBeNull();
     expect(text(host)).not.toContain("Arbareto shows the first 16 KiB of this message.");
+    // T380: the body sets `user-select: none`, so the details values must sit in a `select-text` region. The heading stays chrome.
+    for (const value of [message, field(host, "ID"), field(host, "Author")]) expect(value.closest(".select-text")).not.toBeNull();
+    expect(host.querySelector("h2")!.closest(".select-text")).toBeNull();
   });
 
   test("the static line stays, and the details hold no Git action", async () => {
     const host = await details(4, (i) => (i === 4 ? { children: [] } : {}));
     expect(text(host)).toContain("Changed files are not shown in this version.");
     const labels = [...host.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? text(b));
-    expect(labels).toEqual(["Copy commit ID", "Copy message", fakeOid(5)]);
+    expect(labels).toEqual(["Copy message", "Copy commit ID", fakeOid(5), `Copy parent ID ${fakeOid(5).slice(0, 12)}`]);
   });
 
   test("the declared encoding and the invalid-bytes sentences follow the plan.md text", async () => {

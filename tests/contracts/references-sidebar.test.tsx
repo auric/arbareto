@@ -135,7 +135,7 @@ describe("groups and folders", () => {
     const { host } = await sidebar({ refs: { ...REFS, current: { name: "release/2.0", objectId: C } } });
     expect(item(host, "release, folder").getAttribute("aria-expanded")).toBe("true");
     expect(item(host, "feature, folder").getAttribute("aria-expanded")).toBe("false");
-    expect(text(item(host, "release/2.0,"))).toContain("Current");
+    expect(item(host, "release/2.0,").getAttribute("aria-current")).toBe("true");
   });
 
   test("remote folders come from the name segments only: the first segment is a folder like any other", async () => {
@@ -155,12 +155,23 @@ describe("groups and folders", () => {
     expect(item(host, "origin/HEAD").getAttribute("aria-label")).toBe("origin/HEAD, remote-tracking branch, → origin/main");
   });
 
-  test("the current branch shows the Current mark as text, and an upstream shows → <upstream> or not present", async () => {
+  test("the current branch name is bold with aria-current and no Current text, other rows are not bold, and an upstream shows → <upstream> or not present", async () => {
     const { host } = await sidebar();
-    expect(text(item(host, "main,"))).toContain("Current");
-    expect(text(item(host, "main,"))).toContain("→ origin/main");
+    const main = item(host, "main,");
+    expect(main.getAttribute("aria-current")).toBe("true");
+    expect(main.getAttribute("aria-label")).toContain("Current");
+    expect(text(main)).not.toMatch(/current/i);
+    expect(main.querySelector(".font-semibold")?.textContent).toBe("main");
+    expect(text(main)).toContain("→ origin/main");
     await click(item(host, "feature, folder"));
+    const marked = (h: HTMLElement) => items(h).filter((i) => i.hasAttribute("aria-current") || i.querySelector(".font-semibold") !== null);
+    expect(marked(host)).toEqual([main]);
     expect(text(item(host, "feature/x,"))).toContain("→ origin/feature/x, not present");
+  });
+
+  test("a detached HEAD has no current branch, so no row is bold", async () => {
+    const { host } = await sidebar({ refs: { ...REFS, current: null } });
+    expect(items(host).filter((i) => i.hasAttribute("aria-current") || i.querySelector(".font-semibold") !== null)).toEqual([]);
   });
 
   test("an empty group reads its plan.md text", async () => {

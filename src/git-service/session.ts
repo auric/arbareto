@@ -38,6 +38,9 @@ import { createTrackingReader } from "./tracking";
 import { FrameBoundError, isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
 import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust";
 import { watchWorkspace } from "./watch";
+import { createWorkbench } from "./workbench-review";
+import "./switch";
+import "./branch-ops";
 import { approveWslGit, probeWslGit, routeRegistration, type WslGit } from "./wsl";
 
 export type { Handshake } from "../contracts/channel";
@@ -172,6 +175,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const updater = createSubmoduleUpdater({ runner, trust, reader, reviews: submoduleReviews, approvals, registry, exclusion, respond, ...(submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint }) });
   const syncReviews = createSyncReviewer({ runner, trust, reader, approvals, listingTuple: reader.listingTuple });
   const syncs = createSyncer({ runner, trust, reader, approvals, registry, exclusion, respond });
+  const workbench = createWorkbench({ runner, trust, reader, registry, exclusion, respond, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
   const recovery = createRecovery({ runner, registry, trust, reader, publications: publisher.retained, commits: committer.retained, updates: updater.retained });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();
@@ -371,7 +375,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
   // `failed` is the outcome of a `run` that throws.
   const scheduleRead = (
-    request: { requestId: string; operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules" | "readTracking" | "reviewSync"; repositoryId: string },
+    request: { requestId: string; operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules" | "readTracking" | "reviewSync" | "reviewWorkbench"; repositoryId: string },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
     reread: (target: RereadTarget) => Promise<ReadResult | null>,
     failed: ReadResult,
@@ -744,8 +748,37 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     readBranches: undefined,
     readWorktrees: undefined,
     readGitSettings: undefined,
-    reviewWorkbench: undefined,
-    runWorkbench: undefined,
+    // Feature 004 contract Δ3: one read slot. An action without a registered handler gets SERVICE_UNAVAILABLE.
+    reviewWorkbench: (request) => {
+      const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
+      if (!workbench.handles(request.payload.action)) return reject(request.requestId, "SERVICE_UNAVAILABLE");
+      if (request.repositoryGeneration !== workspace.generation) {
+        const { operationId } = registry.start("reviewWorkbench", request.requestId);
+        return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+      }
+      // Contract Δ3: a name such as `@` refuses before any Git process, so the refusal takes no read slot and no re-read.
+      const refused = workbench.precheck(request.payload, workspace);
+      if (refused !== null) {
+        if (refused.refused === "INVALID_REQUEST") return reject(request.requestId, "INVALID_REQUEST");
+        const { operationId } = registry.start("reviewWorkbench", request.requestId);
+        registry.apply(operationId, { type: "valid-read" });
+        return void registry.apply(operationId, { type: "read-complete", result: "failed", code: refused.refused }, refused.result);
+      }
+      scheduleRead(
+        request,
+        (t) => workbench.review({ ...t, installation, workspace, generation: request.repositoryGeneration }, request.payload),
+        async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
+        { result: "failed", code: "GIT_FAILED" },
+      );
+    },
+    runWorkbench: (request) => {
+      const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
+      workbench.run(request, workspace, installation);
+    },
     applyFiles: undefined,
     openWorktree: undefined,
     revealPath: undefined,

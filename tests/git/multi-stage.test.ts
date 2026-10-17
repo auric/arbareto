@@ -46,8 +46,10 @@ async function allEntries(service: Service, repositoryId: string, read: Workspac
 }
 
 // Contract Δ3 `applyFiles`: `{snapshotId, entryIds, direction, kind, folder?}` without `repositoryGeneration`.
+// A set of thousands of files takes longer than the default response wait of the harness.
 function applyFiles(service: Service, repositoryId: string, read: WorkspaceResult, ids: readonly string[], direction: Direction, kind: Kind, folder?: string) {
-  return service.request("applyFiles", { snapshotId: read.snapshotId, entryIds: ids, direction, kind, ...(folder === undefined ? {} : { folder: Buffer.from(folder).toString("base64") }) }, { repositoryId });
+  const requestId = service.send("applyFiles", { snapshotId: read.snapshotId, entryIds: ids, direction, kind, ...(folder === undefined ? {} : { folder: Buffer.from(folder).toString("base64") }) }, { repositoryId });
+  return service.response(requestId, TIMEOUT_MS);
 }
 
 const callsOf = (service: Service, operationId: string) => service.runner.calls.filter((c) => c.operationId === operationId);
@@ -109,6 +111,48 @@ describe("file sets stage and unstage as Git's own commands (spec FR-034 to FR-0
       git(folder, ["add", "-A"]);
       const under = ["src/a.txt", "src/lib/deep/c.txt", "src/lib/new.txt", "src/new-dir/n1.txt", "src/new-dir/n2.txt"];
       await accepted(service, folder, "unstage", "folder", (entries) => entries.filter((e) => e.category === "staged" && under.includes(e.path)), ["reset", "-q", "--", ...under], "src");
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(TASK, `a set whose step 7 status read needs several processes under the command-line bound stages as git add`, SHELL, () =>
+    withService({ name: "t024-batches" }, async (service) => {
+      const repo = tree();
+      // 3,200 names of 11 units hold more than the 32,767 units of one command line (contract §6). A batch then ends less than one name below the bound,
+      // so a measure with a shorter program path than the shell's gives a refused process. The oracle adds the folder, which holds only these names.
+      const names = Array.from({ length: 3200 }, (_, i) => `s/${String(i).padStart(4, "0")}.txt`);
+      for (const name of names) put(repo, name, `${name}\n`);
+      const operationId = await accepted(service, repo, "stage", "selected", (all) => all.filter((e) => e.category === "untracked" && e.path.startsWith("s/")), ["add", "--", "s"]);
+      const statuses = callsOf(service, operationId).filter((c) => subcommand(c.arguments) === "status");
+      expect(statuses.length).toBeGreaterThan(1);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(TASK, `Cancel during the parallel proofs ends every proof process, publishes nothing, and leaves no candidate (plan.md O-17)`, SHELL, () =>
+    withService({ name: "t024-cancel" }, async (service) => {
+      const repo = tree();
+      const names = Array.from({ length: 200 }, (_, i) => `c/${String(i).padStart(3, "0")}.txt`);
+      for (const name of names) put(repo, name, `${name}\n`);
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const ids = (await allEntries(service, repositoryId, read)).filter((e) => e.category === "untracked" && e.path.startsWith("c/")).map((e) => e.entryId);
+      const before = rawIndexDigest(gitPath(), repo);
+      // The first `stage-files` event comes after one proof. The cancel request goes after the current frame write.
+      let canceled: Promise<unknown> | null = null;
+      const push = service.progress.push.bind(service.progress);
+      service.progress.push = (...events: unknown[]) => {
+        const length = push(...events);
+        for (const e of events as { phase?: string; operationId?: string }[]) if (e.phase === "stage-files" && canceled === null) canceled = Bun.sleep(0).then(() => service.cancel(e.operationId!));
+        return length;
+      };
+      const response = await applyFiles(service, repositoryId, read, ids, "stage", "selected");
+      await canceled;
+      expect(outcome(response)).toEqual({ state: "canceled", code: "CANCELED" });
+      expect(rawIndexDigest(gitPath(), repo)).toBe(before);
+      expect(candidateFiles(repo)).toEqual([]);
+      expect(callsOf(service, response.operationId!).filter((c) => subcommand(c.arguments) === "cat-file" && c.arguments.includes("--filters")).length).toBeLessThan(names.length);
+      expect(service.runner.liveRecorded()).toBe(0);
     }),
     TIMEOUT_MS,
   );

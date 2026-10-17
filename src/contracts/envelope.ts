@@ -279,7 +279,8 @@ const reviewWorkbench = <A extends z.ZodObject>(add: A) =>
     z.strictObject({ action: z.literal("rebase"), ref: BranchRef, autostash: z.boolean(), autosquash: z.boolean() }).meta({ title: "ReviewRebase" }),
     z.strictObject({ action: z.literal("choose-side"), ...shownEntry, side: z.enum(["ours", "theirs"]) }).meta({ title: "ReviewChooseSide" }),
     z.strictObject({ action: z.literal("mergetool"), ...shownEntry }).meta({ title: "ReviewMergetool" }),
-    z.strictObject({ action: z.literal("ignore"), ...shownEntry, target: z.enum(["gitignore", "exclude"]) }).meta({ title: "ReviewIgnore" }),
+    // Data-model §7: `folder` holds the path bytes of an Untracked folder row above the entry, in base64.
+    z.strictObject({ action: z.literal("ignore"), ...shownEntry, target: z.enum(["gitignore", "exclude"]), folder: z.base64().min(1).optional() }).meta({ title: "ReviewIgnore" }),
     add,
     // Contract Δ11: the record path of a WSL repository is a Linux path, so the service matches the text with a fresh list.
     z.strictObject({ action: z.literal("worktree-remove"), worktree: Text.min(1), force: z.boolean(), deleteBranch: z.boolean() }).meta({ title: "ReviewWorktreeRemove" }),

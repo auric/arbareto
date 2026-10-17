@@ -3018,6 +3018,13 @@
                     "gitignore",
                     "exclude"
                   ]
+                },
+                "folder": {
+                  "type": "string",
+                  "minLength": 1,
+                  "format": "base64",
+                  "contentEncoding": "base64",
+                  "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
                 }
               },
               "required": [

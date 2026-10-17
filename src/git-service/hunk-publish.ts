@@ -224,8 +224,8 @@ export interface StateObservation {
 // An abort makes a pending `run` throw. Any other throw is no Git answer.
 export const settled = <T>(signal: AbortSignal, work: Promise<T>): Promise<T | Stop | Failure> => work.catch(() => (signal.aborted ? CANCELED : { code: "GIT_FAILED" }));
 
-export async function stepOf(ctx: ObserveContext, args: string[], out: Collector, input?: Uint8Array): Promise<{ exit: GitExit } | Failure | Stop> {
-  const s = await settled(ctx.signal, runRead(ctx.runner, ctx, args, out, input));
+export async function stepOf(ctx: ObserveContext, args: string[], out: Collector, input?: Uint8Array, deadlineMs?: number): Promise<{ exit: GitExit } | Failure | Stop> {
+  const s = await settled(ctx.signal, runRead(ctx.runner, ctx, args, out, input, deadlineMs));
   if (ctx.signal.aborted) return CANCELED;
   if (!("exit" in s)) return "refused" in s ? failureOf(s.refused) : s;
   if (s.exit.deadline !== undefined) return DEADLINE;

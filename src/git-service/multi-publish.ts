@@ -2,13 +2,24 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // Feature 004 T030: `applyFiles`, contract Δ4 "File staging" and plan.md D8. Spec FR-034 to FR-040.
-// Each file takes the 001 decision and the single-file blob proofs (plan.md O-17). One candidate, one `update-index`, and one publication cover the set.
+// Each file takes the 001 decision and the single-file blob proofs, which run in parallel (plan.md O-17). One candidate, one `update-index`, and one publication cover the set.
 // Only `publish()` of the owned index lock writes the canonical index.
 
 import type { ChangeEntry, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { decideFileAction, type FileActionDecision, type UnstagePath, type WorkingFacts } from "../contracts/file-action";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, FILE_FACT_ENTRIES, MULTI_FILE_ACTION_BYTES, MULTI_FILE_ACTION_FILES, STATUS_LISTING_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
+import {
+  DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
+  FILE_FACT_ENTRIES,
+  GIT_PROCESS_DEADLINE_MS,
+  MULTI_FILE_ACTION_BYTES,
+  MULTI_FILE_ACTION_FILES,
+  MULTI_FILE_ATTRIBUTE_BYTES,
+  MULTI_FILE_PROOF_CONCURRENCY,
+  MULTI_FILE_STEP_MS_PER_FILE,
+  REGISTERED_DEADLINE_CAP_MS,
+  WINDOWS_COMMAND_LINE_UNITS,
+} from "../contracts/limits";
 import { attributeArgs, objectCheckArgs, statusArgs, updateIndexAddArgs, updateIndexInfoArgs } from "./commands";
 import { localFacts, rawRecord, wholeFileRemedy, workingParts } from "./comparison";
 import { createTailCollector } from "./discovery";
@@ -101,6 +112,38 @@ function wholeOf(read: Fact<WorkingVersion | WslWhole> | { changed: true }): Fac
   return { value: typeof v === "string" || !("exists" in v) ? v : !v.exists ? "absent" : v.type === "file" ? { size: v.size, sha256: v.rawDigest } : "other" };
 }
 
+// Plan.md O-17: the deadline of a step for `files` paths. Contract §6 `limits` caps every registered deadline.
+const stepDeadline = (files: number) => Math.min(GIT_PROCESS_DEADLINE_MS + files * MULTI_FILE_STEP_MS_PER_FILE, REGISTERED_DEADLINE_CAP_MS);
+
+// Plan.md O-17: `work` for each index, with at most MULTI_FILE_PROOF_CONCURRENCY calls at once. The first non-null result aborts `stop`, and no later index starts.
+// It returns after every started call ends, so no process of the set outlives it. A throw ends the run the same way and then propagates.
+async function firstOf<T>(count: number, stop: AbortController, work: (i: number) => Promise<T | null>): Promise<T | null> {
+  let next = 0;
+  let first = null as T | null;
+  let failure = null as { error: unknown } | null;
+  const lane = async () => {
+    while (first === null && failure === null && next < count) {
+      const i = next++;
+      try {
+        const result = await work(i);
+        if (result !== null && first === null) {
+          first = result;
+          stop.abort();
+        }
+      } catch (error) {
+        failure ??= { error };
+        stop.abort();
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(MULTI_FILE_PROOF_CONCURRENCY, count) }, lane));
+  if (failure !== null) throw failure.error;
+  return first;
+}
+
+// The context of one pooled run: its signal also ends when the run stops.
+const pooledContext = (ctx: PublishContext, stop: AbortController): PublishContext => ({ ...ctx, signal: AbortSignal.any([ctx.signal, stop.signal]) });
+
 // The git-status(1) porcelain v2 fields of a record, as one comparable key.
 const recordKey = (r: StatusRecord): string =>
   JSON.stringify(!("xy" in r) ? [r.kind, b64(r.path.bytes)] : [r.kind, r.xy, r.submodule, r.modes, r.oids, ...(r.kind === "rename" ? [r.score, b64(r.originalPath.bytes)] : []), b64(r.path.bytes)]);
@@ -151,12 +194,12 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
     return { snapshot: s, entries };
   }
 
-  // One `check-attr` for every path. The paths come from the status listing, so its contract §5 byte bound caps the answer.
+  // One `check-attr` for every path (contract Δ5 `MULTI_FILE_ATTRIBUTE_BYTES`).
   async function attributesOf(ctx: PublishContext, paths: readonly Uint8Array[]): Promise<Fact<Readonly<Record<string, string>>[]>> {
-    const out = createCollector({ maxBytes: STATUS_LISTING_BYTES });
+    const out = createCollector({ maxBytes: MULTI_FILE_ATTRIBUTE_BYTES });
     const step = await stepOf(ctx, attributeArgs(), out, Buffer.concat(paths.flatMap((p) => [p, NUL])));
     if (!("exit" in step)) return step;
-    if (out.limited) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
+    if (out.limited) return { code: "OUTPUT_LIMIT", reason: "MULTI_FILE_ATTRIBUTE_BYTES" };
     const parsed = step.exit.exitCode === 0 ? parseAttributes(out.take(), paths) : null;
     if (parsed === null) return { code: step.exit.exitCode === 0 ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED" };
     return { value: parsed };
@@ -265,8 +308,8 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
     const forms = pathForms(w, installation);
     const launch = forms.launch;
     const args = (batch: string[]) => [...statusArgs(), "--", ...batch];
-    const units = (list: string[]) => (launch === undefined ? commandLineUnits(installation.selectedPath ?? "", args(list)) : wslCommandLineUnits(launch, ctx.operationId, "read", "", forms.gitRoot, args(list)));
-    // Contract §6: each process stays inside the command-line bound.
+    // Contract §6: each process stays inside the command-line bound. The shell starts `executablePath`, the Git file in the `--exec-path` folder.
+    const units = (list: string[]) => (launch === undefined ? commandLineUnits(installation.executablePath, args(list)) : wslCommandLineUnits(launch, ctx.operationId, "read", "", forms.gitRoot, args(list)));
     const batches: string[][] = [];
     for (const group of groups) {
       const texts = group.map((p) => utf8.decode(p));
@@ -292,7 +335,7 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
           return parser.limited;
         },
       };
-      const step = await stepOf(ctx, args(batch), out);
+      const step = await stepOf(ctx, args(batch), out, undefined, stepDeadline(batch.length));
       if (!("exit" in step)) return refusalOrStop(step);
       const parsed = parser.end();
       if (parsed.state === "limited") return { code: "OUTPUT_LIMIT", reason: parsed.reason };
@@ -330,8 +373,11 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
         if (same !== true) return same === false ? STALE : same;
       }
       if (!stage) return null;
-      for (const item of a.items) {
-        const read = wholeOf(await settled(signal, wholeWorking(ctx, item.path)));
+      const stop = new AbortController();
+      const pooled = pooledContext(ctx, stop);
+      const digested = await firstOf(a.items.length, stop, async (i): Promise<Refusal | Stop | null> => {
+        const item = a.items[i]!;
+        const read = wholeOf(await settled(pooled.signal, wholeWorking(pooled, item.path)));
         if ("changed" in read) return STALE;
         if (!("value" in read)) return refusalOrStop(read);
         const v = read.value;
@@ -341,7 +387,9 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
           if (absent ? v !== "absent" : v === "absent" || v === "other" || item.facts.type !== "file" || v.size !== item.facts.size) return STALE;
           item.working = absent ? null : (v as Whole);
         } else if (item.working === null ? v !== "absent" : v === "absent" || v === "other" || v.size !== item.working.size || v.sha256 !== item.working.sha256) return STALE;
-      }
+        return null;
+      });
+      if (digested !== null) return digested;
       bound = true;
       return null;
     };
@@ -358,7 +406,7 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
       const canonical = (await owned.copy()) ?? owned.parse((await owned.readCandidate()).bytes);
       // Contract Δ4 step 5: every path on one stdin, or the HEAD entry of every changed path.
       const input = stage ? Buffer.concat(paths.flatMap((p) => [p, NUL])) : indexInfoInput(a.items.flatMap((item) => item.action.changedPaths as UnstagePath[]));
-      await owned.step("update-index", stage ? updateIndexAddArgs() : updateIndexInfoArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), input, true, tail);
+      await owned.step("update-index", stage ? updateIndexAddArgs() : updateIndexInfoArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), input, true, tail, stepDeadline(a.items.length));
       await o.hunkCheckpoint?.({ step: 5, operationId });
       if (signal.aborted) return owned.fail({ reason: "canceled" });
       const read = await owned.readCandidate();
@@ -394,14 +442,25 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
     run.candidatePath = besideIndex(w, prepared.candidate.path);
     if (stage) {
       const headUnborn = binding.head.state === "unborn";
-      for (const [i, item] of a.items.entries()) {
+      // Each proof reads only its own verified bytes and its staged object, so the proofs run in parallel (plan.md O-17).
+      const proved = a.items.flatMap((item, i) => {
         const oid = staged[i];
-        if (oid === null || oid === undefined || item.working === null) continue;
-        registry.progress(operationId, "stage-files", { fileIndex: i + 1, fileCount: a.items.length });
-        const proof = await blobProof(ctx, item.path, oid, item.working, wholeFileRemedy({ entry: item.entry, workspace: w, installation, headUnborn }, item.path));
-        run.executionLast = rec.execution ?? 0;
-        if (proof !== null) return isStop(proof) ? proof : { ...proof, entryId: item.entry.entryId };
-      }
+        return typeof oid === "string" && item.working !== null ? [{ item, oid, working: item.working }] : [];
+      });
+      const stop = new AbortController();
+      const pooled = pooledContext(ctx, stop);
+      let done = 0;
+      const proof = await firstOf(proved.length, stop, async (k): Promise<Refusal | Stop | null> => {
+        const { item, oid, working } = proved[k]!;
+        const held = await blobProof(pooled, item.path, oid, working, wholeFileRemedy({ entry: item.entry, workspace: w, installation, headUnborn }, item.path));
+        if (held === null) {
+          registry.progress(operationId, "stage-files", { fileIndex: ++done, fileCount: proved.length });
+          return null;
+        }
+        return isStop(held) ? held : { ...held, entryId: item.entry.entryId };
+      });
+      run.executionLast = rec.execution ?? 0;
+      if (proof !== null) return proof;
     }
     // Contract Δ4 step 7.
     const second = await checkpoint(true);

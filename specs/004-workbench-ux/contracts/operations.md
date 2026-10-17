@@ -56,7 +56,7 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
   - `{action: "rebase", ref, autostash: boolean, autosquash: boolean}`;
   - `{action: "choose-side", entryId, side: "ours" | "theirs"}` with the shown `snapshotId`;
   - `{action: "mergetool", entryId}` with the shown `snapshotId`;
-  - `{action: "ignore", entryId, target: "gitignore" | "exclude"}` with the shown `snapshotId`;
+  - `{action: "ignore", entryId, target: "gitignore" | "exclude", folder?}` with the shown `snapshotId`; `folder` holds the path bytes of an Untracked folder row above the entry, in base64 (data-model §7);
   - `{action: "worktree-add", branch: {new: name, start: oid} | {existing: ref}, bootstrapId}`; the shell bound the path (Δ6 `worktreeAdd`);
   - `{action: "worktree-remove", worktree: path, force: boolean, deleteBranch: boolean}`;
   - `{action: "worktree-prune"}`;
@@ -151,7 +151,7 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 - `several-hunks` comes only from the renderer. Its hunk mapping refuses a selection in two hunks and sends no request (plan D15). At the service, an ordinal outside the retained hunk gives `INVALID_REQUEST` (data-model §6).
 - `eof-newline`: a hunk whose body holds a `\ No newline at end of file` line, on either side, refuses every partial selection before the apply. A selection of every `+` and `-` line of the hunk passes as the whole hunk (plan D8, research R21 F25).
 - Steps 4 to 9 of 001 §4 "Hunk eligibility and publication" stay. `applyToContent` takes the sub-hunk.
-- `applyFiles` stage: steps 1 to 9 of 001 §4 "File staging", with these changes. Step 3 digests every working file. Step 5 sends every path on one stdin to `update-index --add --remove -z --stdin`. Step 6 verifies every entry with the 001 single-file proof A, and proof B runs per failed file. No batch proof exists yet (plan O-17, research R21 F26). Step 7 re-reads `status --porcelain=v2 -z` for exactly those paths and digests every file again. One refused file refuses the whole action, names the file, and gives its reason (spec FR-038).
+- `applyFiles` stage: steps 1 to 9 of 001 §4 "File staging", with these changes. Step 3 digests every working file. Step 5 sends every path on one stdin to `update-index --add --remove -z --stdin`. Step 6 verifies every entry with the 001 single-file proof A, and proof B runs per failed file. The proofs run in parallel, at most `MULTI_FILE_PROOF_CONCURRENCY` at once, and the first refusal or error stops the others (plan O-17, research R21 F26). Step 7 re-reads `status --porcelain=v2 -z` for exactly those paths and digests every file again. The step 5 process and each step 7 status process get the deadline of Δ5 `MULTI_FILE_STEP_MS_PER_FILE`. The `stage-files` phase counts the proved files. One refused file refuses the whole action, names the file, and gives its reason (spec FR-038).
 - `applyFiles` unstage: one `update-index -z --index-info` with the HEAD mode and OID of every path, mode 0 for a path without a HEAD entry.
 - The 001 file-action decision of each entry must accept the direction. A refused entry refuses the action before step 1.
 - Status cut: `readWorkspace` gains `cut: "untracked" | "other" | null` in a `limited` result. `untracked` holds when the read reached its bound and the last parsed record is a `?` record. Then the tracked, unmerged, and staged entries are complete, and Commit is not blocked by the limit. `other` keeps the 001 rules.
@@ -162,6 +162,9 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 |---|---|
 | Multi-file action files (`MULTI_FILE_ACTION_FILES`) | 10,000 |
 | Multi-file action working bytes (`MULTI_FILE_ACTION_BYTES`) | 512 MiB (`STREAMED_PROCESS_INPUT_BYTES`) |
+| Multi-file proofs and digests at once (`MULTI_FILE_PROOF_CONCURRENCY`) | 8 (plan O-17) |
+| Multi-file step allowance (`MULTI_FILE_STEP_MS_PER_FILE`) | 15 ms for each file, added to the 30-second Git process deadline of `update-index` and of each step 7 status read; the sum is at most the 001 §6 cap of 120 seconds (plan O-17) |
+| Multi-file `check-attr` output (`MULTI_FILE_ATTRIBUTE_BYTES`) | 64 MiB |
 | Discard check candidates (`DISCARD_CHECK_PATHS`) | 20,000 |
 | In-the-way paths in a result | 100, plus a count |
 | Worktree records (`WORKTREE_RECORDS`) and listing bytes (`WORKTREE_LISTING_BYTES`) | 1,000 and 4 MiB |
@@ -292,3 +295,10 @@ No file decision gives a line refusal, so the `readComparison` `fileAction` neve
 - The shell cannot see a review token that the service invalidates before its lifetime ends (001 §5 "Approval lifetime"). The `worktreeAdd` context of that token stays until the token lifetime ends, and no run of that token starts.
 - `revealPath` checks the path with its `fileFacts` walk, and `SHParseDisplayName` then reads the path again by text. A folder that changes into a link between the two can make Explorer show an entry outside the root.
 - `fileAppend` for `absent` creates the file and then writes. A failed write leaves an empty file. A later check of that file gives `stale`, so no write follows without a new review.
+- Data-model §6 makes an ordinal of a context line `INVALID_REQUEST`, and the `lines` schema needs one ordinal. So the service never gives `context-only`. Only the renderer gives it.
+- The `applyFiles` schema caps `entryIds` at 10,000. A `selected` request with 10,001 IDs gets `INVALID_REQUEST`, not reason `limit`. A derived kind above the bound gets `limit`.
+- A WSL `ignore` review refuses with `WORKBENCH_UNAVAILABLE` reason `unreadable`. No working-file byte crosses from the distro (001 §11), so the line checks have no input. A later WSL read form closes this gap.
+- The `applyFiles` reads before step 1 run in state `accepted`, which has no Cancel row (data-model §7). The 30-second Git step deadline bounds each of them.
+- A file-action refusal in a file set gives the reason and the `entryId`, but no `add` remedy. A failed step without a promisor remote gives the step remedy, because no single object ID names the set.
+- The 001 §6 cap of 120 seconds for a registered deadline also caps the `applyFiles` step deadline. At 15 ms for each file, the cap applies above 6,000 files. A 10,000-file `update-index` then gets 120 seconds. That is 3 times the measured 39.7 seconds, but the allowance for each file falls to 9 ms.
+- A WSL file set starts one `wslFiles` walk per file for each digest and each blob proof. The 001 §11 rule of one `wsl.exe` start per step does not hold for it.

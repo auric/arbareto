@@ -41,6 +41,9 @@ const READS: [string, string[], string[]][] = [
   ["ahead and behind count", sync.aheadBehindArgs("4".repeat(64), U, "sha256"), [...R, "rev-list", "--left-right", "--count", `${"4".repeat(64)}...${U}`]],
   ["skip REBASE_HEAD exists", sync.rebaseHeadExistsArgs(), [...R, "show-ref", "--exists", "REBASE_HEAD"]],
   ["skip REBASE_HEAD object ID", sync.rebaseHeadArgs(), [...R, "show-ref", "--verify", "REBASE_HEAD"]],
+  ["continue index listing", sync.indexStageArgs(), [...R, "ls-files", "--stage", "-z"]],
+  ["Git-resolved path", sync.gitPathArgs("index.lock"), [...R, "rev-parse", "--path-format=absolute", "--git-path", "index.lock"]],
+  ["merge message preview", sync.mergeMessageArgs(), [...R, "fmt-merge-msg"]],
 ];
 
 const WRITES: [string, string[], string[]][] = [
@@ -66,9 +69,15 @@ const WRITES: [string, string[], string[]][] = [
     [L, "push", "--porcelain", "--progress", "--no-recurse-submodules", "--no-follow-tags", `--force-with-lease=refs/heads/trunk:${T}`, "--", "origin", "refs/heads/main:refs/heads/trunk"],
   ],
   ["fast-forward", sync.fastForwardArgs("refs/remotes/origin/main"), [L, "merge", "--ff-only", "--no-autostash", "refs/remotes/origin/main"]],
-  ["merge --ff", sync.mergeArgs("refs/remotes/origin/main", "--ff"), [L, "merge", "--no-edit", "--no-autostash", "--ff", "refs/remotes/origin/main"]],
-  ["merge --no-ff", sync.mergeArgs("refs/remotes/origin/main", "--no-ff"), [L, "merge", "--no-edit", "--no-autostash", "--no-ff", "refs/remotes/origin/main"]],
-  ["merge without ff option", sync.mergeArgs("refs/remotes/origin/main", null), [L, "merge", "--no-edit", "--no-autostash", "refs/remotes/origin/main"]],
+  ["merge --ff", sync.mergeArgs("refs/remotes/origin/main", "--ff", null), [L, "merge", "--no-edit", "--no-autostash", "--ff", "refs/remotes/origin/main"]],
+  ["merge --no-ff", sync.mergeArgs("refs/remotes/origin/main", "--no-ff", null), [L, "merge", "--no-edit", "--no-autostash", "--no-ff", "refs/remotes/origin/main"]],
+  ["merge without ff option", sync.mergeArgs("refs/remotes/origin/main", null, null), [L, "merge", "--no-edit", "--no-autostash", "refs/remotes/origin/main"]],
+  [
+    "merge with the message preview",
+    sync.mergeArgs("refs/remotes/origin/main", "--no-ff", "Merge remote-tracking branch 'origin/main'\n"),
+    [L, "merge", "--no-edit", "--no-autostash", "--no-ff", "--no-log", "-m", "Merge remote-tracking branch 'origin/main'\n", "refs/remotes/origin/main"],
+  ],
+  ["Mark resolved blob", sync.hashWriteArgs("dir/-a b.txt"), [L, "hash-object", "-w", "--", "dir/-a b.txt"]],
   ["rebase", sync.rebaseArgs("refs/remotes/origin/main", false), [L, "rebase", "--no-autostash", "--fork-point", "refs/remotes/origin/main"]],
   ["rebase --rebase-merges", sync.rebaseArgs("refs/remotes/origin/main", true), [L, "rebase", "--no-autostash", "--fork-point", "--rebase-merges", "refs/remotes/origin/main"]],
   ["abort a merge", sync.abortArgs("merging"), [L, "merge", "--abort"]],
@@ -128,6 +137,9 @@ describe("refused inputs", () => {
     throws(() => sync.cloneArgs("", "D:\\x"));
     throws(() => sync.cloneArgs("u", ""));
     throws(() => sync.cloneArgs("u\0", "D:\\x"));
+    throws(() => sync.gitPathArgs(""));
+    throws(() => sync.hashWriteArgs("a\0b"));
+    throws(() => sync.mergeArgs("refs/remotes/origin/main", null, ""));
   });
 
   test("a branch or ref that fails isRefName", () => {
@@ -136,7 +148,7 @@ describe("refused inputs", () => {
     throws(() => sync.pushArgs("origin", "a b", "refs/heads/main", { setUpstream: false, lease: null }, "sha1"));
     throws(() => sync.pushArgs("origin", "main", "main", { setUpstream: false, lease: null }, "sha1"));
     throws(() => sync.fastForwardArgs("origin/main"));
-    throws(() => sync.mergeArgs("refs/remotes/origin/main~1", "--ff"));
+    throws(() => sync.mergeArgs("refs/remotes/origin/main~1", "--ff", null));
     throws(() => sync.rebaseArgs("-x", false));
   });
 
@@ -150,7 +162,7 @@ describe("refused inputs", () => {
   test("an unknown operation kind or ff option", () => {
     throws(() => sync.abortArgs("am" as "merging"));
     throws(() => sync.continueArgs("" as "merging"));
-    throws(() => sync.mergeArgs("refs/remotes/origin/main", "--ff-only" as "--ff"));
+    throws(() => sync.mergeArgs("refs/remotes/origin/main", "--ff-only" as "--ff", null));
   });
 });
 

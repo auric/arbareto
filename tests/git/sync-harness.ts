@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// Shared steps of the feature 003 batch 2 service tests (tasks.md T032 to T037). The oracle shares no code with `src/git-service/`.
-// The modules under test do not exist before T039 and T040. `withSync` prints their ORIGIN lines, or names an absent module.
+// Shared steps of the feature 003 service tests (tasks.md T032 to T037 and T044 to T047). The oracle shares no code with `src/git-service/`.
+// `withSync` prints the ORIGIN line of each module under test once per process, or names an absent module.
 
 import { expect } from "bun:test";
 import { resolve } from "node:path";
 import { printOrigin } from "../origin";
 import { FIXED_IDENTITY } from "./fixture-root";
 import { GIT } from "./git-binary";
-import { gitRun, nativeEnv, nativeHost, type GitHost } from "./remote-fixtures";
+import { gitOut, gitRun, markers, nativeEnv, nativeHost, refMap, stageEntries, type GitHost } from "./remote-fixtures";
 import { openService, type OpenOptions, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 
 export const TIMEOUT_MS = 300_000;
@@ -26,15 +26,19 @@ let hosts = 0;
 // One owned fixture folder per case.
 export const hostFor = (name: string): GitHost => nativeHost(gitExe(), `${name}-${++hosts}`);
 
+const MODULES = ["sync", "sync-review", "sync-integrate", "tracking", "trust", "git-runner", "comparison", "file-publish", "hunk-publish"];
+let printed = false;
+
 // The service gets the environment of the fixture processes: the owned global and system files, and no inherited transport variable.
 export async function withSync(name: string, body: (service: Service) => Promise<void>, options: Partial<Omit<OpenOptions, "git" | "name">> = {}): Promise<void> {
-  for (const module of ["sync", "sync-review", "tracking", "trust", "git-runner"]) {
+  for (const module of printed ? [] : MODULES) {
     try {
       printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
     } catch {
       console.log(`ORIGIN absent src/git-service/${module}.ts`);
     }
   }
+  printed = true;
   const service = await openService({ git: gitExe(), name, environment: nativeEnv(), ...options });
   try {
     await body(service);
@@ -53,6 +57,8 @@ export interface SyncPlan {
   destination?: { remote: string; ref: string; trackingRef: string | null; url: string; setUpstream: boolean; source: string };
   lease?: { trackingRef: string; expect: string; count: number; commits: { objectId: string; subject: string | null }[] };
   operationState?: "merging" | "rebasing";
+  mode?: "merge" | "rebase" | null;
+  skippedCommit?: { objectId: string; subject: string | null };
   needsDestination?: { remotes: string[]; prefill: { remote: string; ref: string } | null; setUpstream: boolean };
 }
 
@@ -74,6 +80,9 @@ export interface SyncResult {
   action: string;
   fetch?: { remotes: FetchRemote[]; observed: { ref: string; oldObjectId: string | null; newObjectId: string | null }[] };
   push?: { status: string; oldObjectId: string | null; newObjectId: string | null; reasonText: string | null; lease: boolean; upstreamWritten: boolean; outputTail: string };
+  counts?: { ahead: number; behind: number };
+  integration?: { state: string; operation?: string; unmerged?: number; outputTail?: string };
+  modeSource?: string | null;
   remedy?: { text: string; command: string | null };
   reason?: string;
   program?: string;
@@ -137,6 +146,50 @@ export function helperGlobal(h: GitHost, user: string, password: string): string
   const global = `${h.root}/helper.gitconfig`;
   h.write(global, `[user]\n\tname = ${FIXED_IDENTITY.name}\n\temail = ${FIXED_IDENTITY.email}\n[credential]\n\thelper = ${script}\n`);
   return native(global);
+}
+
+// Git's own commands of the integrate steps run with the `integrate` policy editor (plan.md D2).
+export const INTEGRATE_ENV = { GIT_EDITOR: ":" };
+export const ANY_EXIT = Array.from({ length: 256 }, (_, i) => i).concat([-1]);
+export const pullFlags = (mode?: "merge" | "rebase"): string[] => (mode === "rebase" ? ["--rebase"] : mode === "merge" ? ["--no-rebase"] : []);
+
+// The SC-001 and SC-012 state: HEAD, commit trees with parent trees, the index, the working-file digests, the markers, and the remote-tracking refs.
+// Commit object IDs differ by message, so trees and parents decide for new commits (plan.md D14).
+export function repoShape(h: GitHost, repo: string) {
+  const born = gitRun(h, repo, ["rev-parse", "--verify", "-q", "HEAD"], { allowExit: [0, 1] }).exitCode === 0;
+  const log = born ? gitOut(h, repo, ["log", "--topo-order", "--format=%H%x00%T%x00%P", "HEAD"]).split("\n").filter((l) => l !== "").map((l) => l.split("\0")) : [];
+  const trees = new Map(log.map(([oid, tree]) => [oid!, tree!]));
+  return {
+    head: gitRun(h, repo, ["symbolic-ref", "-q", "HEAD"], { allowExit: [0, 1] }).stdout.toString("utf8").trim(),
+    shape: log.map(([, tree, parents]) => `${tree}<${(parents ?? "").split(" ").filter((p) => p !== "").map((p) => trees.get(p) ?? p).join(",")}`),
+    index: stageEntries(h, repo),
+    files: h.digests(repo),
+    markers: markers(h, repo),
+    remotes: refMap(h, repo, ["refs/remotes"]),
+  };
+}
+
+// A copied repository keeps the stat data of the source files, so unpack-trees sees each entry as changed. A refresh restores it (git-update-index(1) `--refresh`).
+export const refreshIndex = (h: GitHost, repo: string): string => {
+  gitRun(h, repo, ["update-index", "-q", "--refresh"], { allowExit: ANY_EXIT });
+  return repo;
+};
+
+// The paths with a stage above 0 (git-ls-files(1) `--unmerged`).
+export const unmergedPaths = (h: GitHost, repo: string): string[] => [...new Set(stageEntries(h, repo).filter((e) => e.stage > 0).map((e) => e.path))];
+
+// The parent count of a commit.
+export const parentCount = (h: GitHost, repo: string, rev = "HEAD"): number => gitOut(h, repo, ["rev-list", "--parents", "--max-count=1", rev]).trim().split(" ").length - 1;
+
+// The Git subcommands of one operation, in order.
+export const subcommandsOf = (service: Service, operationId: string): (string | undefined)[] => callsOf(service, operationId).map((c) => subcommandOf(c.arguments));
+
+export async function until(check: () => boolean, what: string, timeoutMs = 10_000): Promise<void> {
+  const end = performance.now() + timeoutMs;
+  while (!check()) {
+    if (performance.now() > end) throw new Error(`${what}: not within ${timeoutMs} ms`);
+    await Bun.sleep(20);
+  }
 }
 
 // Every string in a value at any depth.

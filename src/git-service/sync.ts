@@ -24,6 +24,7 @@ import { trackStall } from "./stall";
 import type { WorkspaceReader } from "./status";
 import { stepStderr } from "./submodule-update";
 import { fetchArgs, pushArgs } from "./sync-commands";
+import { runIntegration, type StepPhase } from "./sync-integrate";
 import { createFetchParser, FETCH_FLAGS, parsePushPorcelain, type FetchFlag, type FetchUpdate, type PushStatus } from "./sync-parsers";
 import { lastValue, listRefs, observeSync, refKey, refText, type Observation, type SyncBinding } from "./sync-review";
 import type { ConfigEntry, Trust } from "./trust";
@@ -41,7 +42,7 @@ const SUCCESS: readonly PushStatus[] = ["pushed", "forced", "created", "up-to-da
 
 type SyncRequest = Extract<ServiceRequest, { operation: "sync" }>;
 type Refs = Map<string, string>;
-type Remedy = { text: string; command: string | null };
+export type Remedy = { text: string; command: string | null };
 
 // Data-model §11: the target of Connect in a terminal for the last failed `sync` of a workspace.
 export interface ConnectTarget {
@@ -63,7 +64,7 @@ export interface SyncerOptions {
 }
 
 // One network step. `exit` is null when the step started no process or the runner refused it after the start request.
-interface StepEnd {
+export interface StepEnd {
   exit: GitExit | null;
   canceled: boolean;
   refused: ErrorCode | null;
@@ -196,8 +197,8 @@ export function createSyncer(o: SyncerOptions) {
     };
     const stallOf = (remedy: Remedy): StallRemedy => (remedy.command === null ? { text: remedy.text } : { command: remedy.command, text: remedy.text });
 
-    // One `remote` policy process with the 001 §12 network limits (contract Δ5).
-    const networkStep = async (args: string[], phase: "sync-fetch" | "sync-push", counters: Record<string, number>, remedy: Remedy, stdout: ReturnType<typeof createCollector>): Promise<StepEnd> => {
+    // One `remote` or `integrate` policy process with the 001 §12 network limits (contract Δ5, plan.md D2).
+    const networkStep = async (args: string[], phase: StepPhase, counters: Record<string, number>, remedy: Remedy, stdout: ReturnType<typeof createCollector>, policy: "remote" | "integrate" = "remote"): Promise<StepEnd> => {
       let percent: number | undefined;
       const report = () => {
         const state = registry.get(operationId)?.state;
@@ -213,7 +214,7 @@ export function createSyncer(o: SyncerOptions) {
       let exit: GitExit | null = null;
       let refused: ErrorCode | null = null;
       try {
-        exit = await o.runner.run({ operationId, context: contextOf(w), arguments: args, environmentPolicy: "remote", limits: PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
+        exit = await o.runner.run({ operationId, context: contextOf(w), arguments: args, environmentPolicy: policy, limits: PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
         lastDescendants = exit.activeDescendants ?? 0;
       } catch (error) {
         if (!signal.aborted && !(error instanceof RunnerRefusal)) throw error;
@@ -412,7 +413,11 @@ export function createSyncer(o: SyncerOptions) {
       }
       const entries = (again as Extract<Observation, { binding: unknown }>).entries;
       if (b.payload.action === "fetch" || b.payload.action === "fetch-all") await runFetch(entries);
-      else await runPush(entries);
+      else if (b.payload.action === "push" || b.payload.action === "force-push") await runPush(entries);
+      else {
+        const enter = (deadline: boolean) => enterReconciling(registry, operationId, deadline, lastDescendants);
+        await runIntegration({ ctx, q, binding: b, entries, refuse, finish, unknown, enter, pageant, step: networkStep, remedyOf, processEnded, keepTarget, holdsUserInfo, fetchLines, changes });
+      }
     } catch {
       // A broken step leaves the outcome unknown. The marker stays (contract §8).
       const state = registry.get(operationId)?.state;
@@ -456,9 +461,11 @@ export function createSyncer(o: SyncerOptions) {
 }
 
 // Contract Δ3 `sync` step 2 and data-model §2: a trust difference gives TRUST_REQUIRED or TRUST_CHANGED, any other difference STALE_REVIEW.
-function staleOf(b: SyncBinding, again: Observation): { code: ErrorCode; reason?: Failure["reason"] } | Stop | null {
+// Plan.md D7: an unmerged entry gives CONFLICTED with the count at `sync` too.
+function staleOf(b: SyncBinding, again: Observation): { code: ErrorCode; reason?: Failure["reason"]; result?: unknown } | Stop | null {
   if (isStop(again)) return again;
   if ("code" in again) return again;
+  if ("refused" in again && again.refused === "CONFLICTED") return { code: "CONFLICTED", result: { unmerged: again.unmerged } };
   if ("refused" in again) return again.refused === "TRUST_REQUIRED" || again.refused === "TRUST_CHANGED" ? { code: again.refused } : { code: "STALE_REVIEW" };
   if ("panel" in again) return { code: "STALE_REVIEW" };
   if (again.binding.trust.fingerprint !== b.trust.fingerprint) return { code: "TRUST_CHANGED" };

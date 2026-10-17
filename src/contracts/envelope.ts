@@ -1026,7 +1026,8 @@ export const ReviewSyncResult = z
           (r.plan?.skippedCommit !== undefined) === (r.action === "skip"),
       )
       .meta({ title: "SyncReviewed" }),
-    z.strictObject({ reason: z.enum([...SYNC_UNAVAILABLE_REASONS, ...SYNC_OUTPUT_LIMIT_REASONS]).optional(), unmerged: Count.optional() }).meta({ title: "SyncRefused" }),
+    // `remedy`: the terminal command of a `rebase-exec` refusal.
+    z.strictObject({ reason: z.enum([...SYNC_UNAVAILABLE_REASONS, ...SYNC_OUTPUT_LIMIT_REASONS]).optional(), unmerged: Count.optional(), remedy: SyncRemedy.optional() }).meta({ title: "SyncRefused" }),
   ])
   .meta({ title: "ReviewSyncResult" });
 
@@ -1086,6 +1087,8 @@ export const SyncResult = z
     integration: Integration.optional(),
     // Data-model §6. Null: no payload and no configuration value decided.
     modeSource: z.enum(["payload", "branch", "pull", "pull-ff"]).nullable().optional(),
+    // Contract Δ9 `SYNC_UNAVAILABLE`: the reason of a pull or integrate refusal after the fetch or the count.
+    reason: z.enum(["ff-only", "interactive-rebase", "upstream-gone"]).optional(),
     remedy: SyncRemedy.optional(),
   })
   .refine(
@@ -1093,7 +1096,7 @@ export const SyncResult = z
       (r.fetch === undefined || FETCHING.includes(r.action)) &&
       (r.push === undefined || PUSHING.includes(r.action)) &&
       (r.integration === undefined || INTEGRATING.includes(r.action)) &&
-      ((r.counts === undefined && r.modeSource === undefined) || r.action === "pull" || r.action === "integrate"),
+      ((r.counts === undefined && r.modeSource === undefined && r.reason === undefined) || r.action === "pull" || r.action === "integrate"),
   )
   .meta({ title: "SyncResult" });
 

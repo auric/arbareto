@@ -10,7 +10,7 @@ import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { buildPush, fc, gitOut, gitRun, importStream, refMap, revParse, type GitHost, type PushFixture } from "./remote-fixtures";
 import { caseTest } from "./service-harness";
-import { copyWithRemotes, hostFor, register, remoteCalls, reviewed, reviewSync, run, subcommandOf, sync, TIMEOUT_MS, withSync, refusalOf } from "./sync-harness";
+import { ANY_EXIT, copyWithRemotes, hostFor, INTEGRATE_ENV, pullFlags, refreshIndex, register, remoteCalls, repoShape, reviewed, reviewSync, run, subcommandOf, sync, TIMEOUT_MS, withSync, refusalOf } from "./sync-harness";
 
 useFixtureRoot();
 
@@ -136,6 +136,28 @@ describeGit("rejected push and force push with lease (T035)", () => {
       expect(refMap(a.h, a.remotes.origin!)).toEqual(refsBefore);
       expect(reachable(a.h, a.remotes.origin!)).toEqual(objectsBefore);
     });
+  }, TIMEOUT_MS);
+
+  // T046 (FR-026, SC-002): the pull choices of the notice.
+  caseTest("T046", "FR-026: after a rejected push, pull with mode rebase and with mode merge each equal Git's own pull --rebase and pull --no-rebase on a copy, and a push then succeeds", SHELL, async () => {
+    for (const mode of ["rebase", "merge"] as const) {
+      const a = diverged(false);
+      refreshIndex(a.h, a.repo);
+      const oracle = `${a.h.root}/oracle-${mode}-${copies}`;
+      a.h.copy(a.repo, oracle);
+      refreshIndex(a.h, oracle);
+      await withSync(`t046-${mode}`, async (service) => {
+        const r = await register(service, a.repo);
+        expect({ mode, ...outcome(await run(service, r, { action: "push" })) }).toEqual({ mode, state: "failed", code: "PUSH_REJECTED" });
+        const pulled = await run(service, r, { action: "pull", mode });
+        expect({ mode, ...outcome(pulled), integration: pulled.result!.integration, modeSource: pulled.result!.modeSource }).toEqual({ mode, ...SUCCEEDED, integration: { state: "done" }, modeSource: "payload" });
+        gitRun(a.h, oracle, ["pull", ...pullFlags(mode)], { allowExit: ANY_EXIT, env: INTEGRATE_ENV });
+        expect({ mode, shape: repoShape(a.h, a.repo) }).toEqual({ mode, shape: repoShape(a.h, oracle) });
+        const pushed = await run(service, r, { action: "push" });
+        expect({ mode, ...outcome(pushed), status: pushed.result!.push!.status }).toEqual({ mode, ...SUCCEEDED, status: "pushed" });
+        expect(refMap(a.h, a.remotes.origin!, ["refs/heads/topic"])).toEqual({ "refs/heads/topic": revParse(a.h, a.repo, "HEAD") });
+      });
+    }
   }, TIMEOUT_MS);
 
   caseTest(TASK, "FR-025: no push process of this file forces without a lease", SHELL, async () => {

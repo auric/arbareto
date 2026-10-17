@@ -212,6 +212,19 @@ export function parseRebaseHead(stdout: Uint8Array, objectFormat: ObjectFormat):
   return isObjectId(oid, objectFormat) ? oid : null;
 }
 
+// Plan.md D7: a line of `rebase-merge/git-rebase-todo` that Git runs with the shell. sequencer.c `todo_list_parse_insn_buffer` ends a line at LF and drops a final CR.
+// `parse_insn_line` drops leading spaces and tabs. `is_command` takes `exec` or its abbreviation `x` before a space, a tab, CR, LF, or the end (`todo_command_info`).
+// `sequencer_parse_todo_command` matches the commands before `comment_line_str`, so `core.commentChar` cannot turn such a line into a comment.
+export function holdsExec(todo: Uint8Array): boolean {
+  return Buffer.from(todo)
+    .toString("latin1")
+    .split("\n")
+    .some((line) => {
+      const word = /^[ \t]*([^ \t\r\0]*)/.exec(line)![1];
+      return word === "exec" || word === "x";
+    });
+}
+
 // git-rev-list(1) `--count`: one decimal line. Plan.md D5 counts the commits that a force push removes.
 export function parseRevListCount(stdout: Uint8Array): number | null {
   const m = /^(0|[1-9][0-9]*)\n$/.exec(utf8.decode(stdout));

@@ -390,6 +390,14 @@
         }
       ]
     },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "ff-only",
+        "interactive-rebase",
+        "upstream-gone"
+      ]
+    },
     "remedy": {
       "type": "object",
       "properties": {

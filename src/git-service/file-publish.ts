@@ -4,13 +4,14 @@
 // T200: `applyFile`, contract §4 "File staging" steps 1 to 9 and "Blob proof", §2, §5, §8, and §9.
 // Only `publish()` of the owned index lock writes the canonical index.
 // T214: a WSL repository takes the working digests and both blob proofs inside the distro (contract §6 "WSL file work").
+// Feature 003 T048: the direction `resolve` (Mark resolved, contract Δ4).
 
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
 import { join } from "node:path";
 import type { ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
-import type { FileActionDecision, UnstagePath } from "../contracts/file-action";
+import type { FileActionDecision, ResolveDecision, UnstagePath } from "../contracts/file-action";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM } from "../contracts/limits";
 import type { ApprovalKey, FileApproval, FileBinding } from "./approvals";
 import { blobFilterProofArgs, blobHashProofArgs, isObjectId, objectCheckArgs, updateIndexAddArgs, updateIndexInfoArgs } from "./commands";
@@ -26,7 +27,6 @@ import {
   checkpointRefusal,
   comparisonBinding,
   differs,
-  directionOf,
   isStop,
   missingObject,
   observePolicy,
@@ -48,6 +48,7 @@ import {
 import { latin1, objectCheckInput, objectCheckOutcome } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { ChangeSnapshot, ReadInstallation } from "./snapshot";
+import { hashWriteArgs } from "./sync-commands";
 import { wslProofA, wslProofB } from "./wsl-files";
 
 // Contract §4 "Blob proof": the `remedy.text` of reason `blob-proof`.
@@ -60,7 +61,7 @@ const NUL = Uint8Array.of(0);
 const CLEAN = { stage: 0, assumeUnchanged: false, skipWorktree: false, intentToAdd: false };
 const utf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
-export type FileAction = Extract<FileActionDecision, { direction: "stage" | "unstage" }>;
+export type FileAction = Extract<FileActionDecision, { direction: "stage" | "unstage" }> | Extract<ResolveDecision, { direction: "resolve" }>;
 type WholeFile = NonNullable<FileBinding["working"]>;
 
 // Data-model §6 "File approval". Null for a refused entry or an incomplete snapshot. The caller issues it only for a succeeded comparison.
@@ -70,7 +71,7 @@ export function fileApproval(c: RetainedComparison, s: ChangeSnapshot, w: Worksp
   if (direction === null || binding === null) return null;
   const { repositoryId, snapshotId, generation, comparisonId } = c;
   // Contract §4 "Binding": `unstage` reads no working file, so it binds no working values.
-  return { kind: "file", repositoryId, snapshotId, generation, comparisonId, entryId: c.entry.entryId, direction, binding: { ...binding, working: direction === "stage" ? c.working : null } };
+  return { kind: "file", repositoryId, snapshotId, generation, comparisonId, entryId: c.entry.entryId, direction, binding: { ...binding, working: direction === "unstage" ? null : c.working } };
 }
 
 // git-update-index(1) `--index-info` with `-z`: `<mode> SP <object ID> TAB <path>` and NUL for each path. Mode 0 removes the path.
@@ -208,16 +209,17 @@ export function createFilePublisher(o: FilePublisherOptions) {
     // A refused entry has no approval, so the refusal decides before `accept`. It carries the contract §4 "Limitation remedies" remedy of the entry.
     const action = c.fileAction;
     if (action.direction === null) return action.code === "UNSUPPORTED_COMPARISON" ? { code: action.code, result: { reason: action.reason, ...(c.remedy === null ? {} : { remedy: c.remedy }) } } : { code: action.code };
-    if (direction !== directionOf(c)) return { code: "INVALID_REQUEST" };
+    if (direction !== action.direction) return { code: "INVALID_REQUEST" };
     if (c.sharedRepository) return SHARED_REPOSITORY;
     const accepted = o.approvals.accept(key);
     if (!accepted.ok) return { code: "code" in accepted ? accepted.code : "UNKNOWN_TARGET" };
     const approval = accepted.approval;
     if (approval.kind !== "file" || approval.generation !== w.generation) return { code: "UNKNOWN_TARGET" };
     // Data-model §7: an unfinished operation refuses at acceptance. `unknown` decides at the checkpoints.
+    // Contract Δ4: `resolve` checks the bound state for equality at the checkpoints instead.
     const state = approval.binding.operationState;
-    if (state === "conflicted") return { code: "CONFLICTED" };
-    if (state !== "normal" && state !== "unknown") return { code: "OPERATION_IN_PROGRESS" };
+    if (action.direction !== "resolve" && state === "conflicted") return { code: "CONFLICTED" };
+    if (action.direction !== "resolve" && state !== "normal" && state !== "unknown") return { code: "OPERATION_IN_PROGRESS" };
     return { approval, comparison: c, action };
   }
 
@@ -225,15 +227,18 @@ export function createFilePublisher(o: FilePublisherOptions) {
   async function prepare({ approval: { binding }, comparison: c, action }: Admitted, { ctx, rec, run, path }: PublicationSession): Promise<Refusal | Stop | null> {
     const { workspace: w, signal, operationId, installation } = ctx;
     const stage = action.direction === "stage";
+    const resolve = action.direction === "resolve";
     // Contract §4 "Limitation remedies": the `add` remedy of the entry.
     const addRemedy = () => wholeFileRemedy({ entry: c.entry, workspace: w, installation, headUnborn: binding.head.state === "unborn" }, path);
+    // FR-053: Mark resolved also binds the working version of the comparison: existence, type, mode, size, and raw digest. A WSL read folds no working version.
+    const version = resolve ? c.workingVersion : null;
 
-    // Contract §4 steps 3 and 7 with the §9 checkpoint order. For `stage`, the whole working file decides last.
+    // Contract §4 steps 3 and 7 with the §9 checkpoint order. For `stage` and `resolve`, the whole working file decides last.
     const checkpoint = async (): Promise<Refusal | Stop | null> => {
       const policy = await observePolicy(ctx, path);
       if ("listing" in policy) run.listing = policy.listing;
-      const refused = checkpointRefusal({ ...binding, working: null }, policy, await observeState(ctx, path, false, canonicalIndex(ctx, binding.index)), w.objectFormat, w.wsl !== undefined);
-      if (refused !== null || !stage) return refused;
+      const refused = checkpointRefusal({ ...binding, working: version }, policy, await observeState(ctx, path, version !== null, canonicalIndex(ctx, binding.index, resolve)), w.objectFormat, w.wsl !== undefined, resolve);
+      if (refused !== null || action.direction === "unstage") return refused;
       const read = differs(binding.working, await settled(signal, wholeWorking(ctx, path)));
       if (!("value" in read)) return refusalOrStop(read);
       return read.value ? STALE : null;
@@ -250,15 +255,31 @@ export function createFilePublisher(o: FilePublisherOptions) {
     let staged = null as string | null;
     const prepared = await owned.settle(async () => {
       const canonical = (await owned.copy()) ?? owned.parse((await owned.readCandidate()).bytes);
-      const input = action.direction === "stage" ? Buffer.concat([path, NUL]) : indexInfoInput(action.changedPaths);
+      let input: Uint8Array;
+      let hashed: string | null = null;
+      if (action.direction === "resolve") {
+        // Contract Δ4 step 5: the blob of the working file, then `<mW> SP <oid> TAB <path>`. `update-index --add` would lose the link and exec modes on Windows (research R16 i).
+        const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+        await owned.step("hash", hashWriteArgs(utf8.decode(path)), out, new Uint8Array(), false, tail);
+        const line = latin1(out.take());
+        const oid = line.slice(0, -1);
+        if (out.limited || !line.endsWith("\n") || !isObjectId(oid, w.objectFormat)) return owned.fail({ reason: "malformed", step: "hash" });
+        hashed = oid;
+        input = indexInfoInput(action.changedPaths.map((p) => ({ path: p.path, mode: p.mode, objectId: oid })));
+      } else input = stage ? Buffer.concat([path, NUL]) : indexInfoInput(action.changedPaths);
       await owned.step("update-index", stage ? updateIndexAddArgs() : updateIndexInfoArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), input, true, tail);
       // T197 races write the working file at this observer point, after the Git step and before the proofs.
       await o.hunkCheckpoint?.({ step: 5, operationId });
       if (signal.aborted) return owned.fail({ reason: "canceled" });
       const read = await owned.readCandidate();
-      const expected = { action, mode: c.entry.category === "untracked" ? null : c.entry.modes![2]!, deletion: stage && binding.working === null, objectFormat: w.objectFormat };
-      const checked = changedEntries(expected, owned.parse(read.bytes), canonical);
+      // Contract Δ4 step 6: one stage-0 entry in mode `mW` and no stage 1 to 3 for the path.
+      const mode = action.direction === "resolve" ? action.changedPaths[0]!.mode.toString(8).padStart(6, "0") : c.entry.category === "untracked" ? null : c.entry.modes![2]!;
+      const entries = owned.parse(read.bytes);
+      const checked = changedEntries({ action, mode, deletion: stage && binding.working === null, objectFormat: w.objectFormat }, entries, canonical);
       if ("detail" in checked) return owned.fail({ reason: "verification", detail: checked.detail });
+      if (resolve && checked.staged !== hashed) return owned.fail({ reason: "verification", detail: "selected-entry" });
+      // wt-status.c `wt_status_get_state`: without a marker, the state is `conflicted` only while a stage above 0 remains.
+      if (resolve && binding.operationState === "conflicted" && !entries.some((e) => e.stage > 0)) run.expectedState = "normal";
       staged = checked.staged;
       if (staged !== null) {
         const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
@@ -273,12 +294,12 @@ export function createFilePublisher(o: FilePublisherOptions) {
       run.candidatePath = prepared.path === null ? null : besideIndex(w, prepared.path);
       const refused = candidateRefusal(prepared.failure);
       if (!("check" in refused)) return refused;
-      // Contract §7 "Missing objects": the index object of `stage`, or the HEAD object IDs that `unstage` names.
-      const oid = action.direction === "unstage" ? action.changedPaths.find((r) => r.mode !== 0)?.objectId : c.entry.oids?.[1];
+      // Contract §7 "Missing objects": the index object of `stage`, or the HEAD object IDs that `unstage` names. `resolve` stages a new blob.
+      const oid = action.direction === "unstage" ? action.changedPaths.find((r) => r.mode !== 0)?.objectId : stage ? c.entry.oids?.[1] : undefined;
       const checked = await missingObject(ctx, run.listing, oid, refused.check);
       const f = prepared.failure;
-      // Contract §9: a failed `stage` Git step carries the `add` remedy and the output tail of its `update-index` process.
-      if (stage && f.reason === "git-failed" && f.step === "update-index" && !isStop(checked) && checked.code === "GIT_FAILED") {
+      // Contract §9: a failed `stage` or `resolve` Git step carries the `add` remedy and the output tail of its process.
+      if (action.direction !== "unstage" && f.reason === "git-failed" && (f.step === "update-index" || f.step === "hash") && !isStop(checked) && checked.code === "GIT_FAILED") {
         return { code: "GIT_FAILED", remedy: addRemedy() ?? checked.remedy!, outputTail: tail.outputTail() };
       }
       return checked;
@@ -300,7 +321,7 @@ export function createFilePublisher(o: FilePublisherOptions) {
 
   // Contract §4 "Blob proof": after publication, a new digest of the working file decides the working-file effect. `unstage` reads no working file.
   async function working({ approval: { binding }, action }: Admitted, ctx: PublishContext, path: Uint8Array): Promise<Fact<boolean>> {
-    return action.direction === "stage" ? differs(binding.working, await wholeWorking(ctx, path)) : { value: false };
+    return action.direction === "unstage" ? { value: false } : differs(binding.working, await wholeWorking(ctx, path));
   }
 
   function applyFile(request: ApplyFileRequest, w: Workspace, installation: ReadInstallation): void {

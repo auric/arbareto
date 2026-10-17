@@ -7,7 +7,7 @@
 
 import { appendFileSync, lstatSync, mkdirSync, opendirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Subprocess } from "bun";
 import policyFile from "../../src/contracts/git-environment.json";
 import wslProcess from "../../src/contracts/wsl-process.json";
@@ -1367,6 +1367,34 @@ export function createBunRunner(options: BunRunnerOptions) {
         appendFileSync(at, bytes);
         return { result: "appended" };
       }));
+    },
+
+    // Feature 004 contract Δ3 `revealPath`, as `src-tauri/src/process_requests.rs` `reveal` checks it: the path lies below the worktree root by text,
+    // the walk meets no link on the way, and the entry is a file, a folder, or a final link. Each failure gives UNKNOWN_TARGET. The double shows nothing.
+    async reveal(request, signal): Promise<"shown" | WalkStop> {
+      checkSyncRequest("reveal", request);
+      frames.push({ type: "reveal", ...request });
+      if (inactive.has(request.operationId)) throw unknownTarget();
+      const repository = repositories.get(request.repositoryId);
+      if (repository === undefined) throw unknownTarget();
+      if (wslGits.has(repository.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL reveal");
+      const rel = relative(repository.worktreeRoot, request.path);
+      if (rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw unknownTarget();
+      const names = rel.split(sep);
+      const reply = await walk(signal, () => {
+        let at = repository.worktreeRoot;
+        for (const [i, name] of names.entries()) {
+          at = join(at, name);
+          const st = lstatSync(at, { throwIfNoEntry: false });
+          if (st === undefined) return false;
+          if (st.isSymbolicLink()) return i === names.length - 1;
+          if (i < names.length - 1 && !st.isDirectory()) return false;
+        }
+        return true;
+      });
+      // src-tauri `reveal_deadline`: the deadline gives UNKNOWN_TARGET too.
+      if (reply === false || (typeof reply === "object" && reply.stop === "deadline")) throw unknownTarget();
+      return reply === true ? "shown" : reply;
     },
 
     // Feature 003 contract Δ6 `terminal`: a registered Windows Git and, for a `sync` target, a repository of that Git. The double opens no console.

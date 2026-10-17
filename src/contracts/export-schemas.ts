@@ -27,6 +27,7 @@ import {
   OpenRecentRepositoryResult,
   OperationResult,
   ProgressEvent,
+  ReadBranchesResult,
   ReadComparisonResult,
   ReadEntriesResult,
   ReadHistoryRowsResult,
@@ -84,6 +85,7 @@ export const EXPORTED = {
   "clone-result": CloneResult,
   "sync-settings-result": SyncSettingsResult,
   // Feature 004 contract Δ3 and Δ10.
+  "read-branches-result": ReadBranchesResult,
   "review-workbench-result": ReviewWorkbenchResult,
   "run-workbench-result": RunWorkbenchResult,
   handshake: Handshake,

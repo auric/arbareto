@@ -133,6 +133,9 @@ export type TrustReply =
 
 export type RegisterReply = { result: "approved" | "declined" } | { result: "another"; bootstrapId: string; executablePath: string };
 
+// Feature 004 contract Δ6 `reveal {repositoryId, path}`: the frame without `type` and `callId`.
+export type RevealRequest = Omit<Extract<z.infer<typeof ProcessRequest>, { type: "reveal" }>, "type" | "callId">;
+
 // Contract §6 "File facts": the `FileFacts` frame without `type` and `callId`. `index` goes through `indexedFileFacts`.
 export type FileFactsRequest = Omit<Extract<z.infer<typeof ProcessRequest>, { type: "fileFacts" }>, "type" | "callId" | "index">;
 // Contract §6 "Index digest in a read": a WSL `fileFacts` request with `index`.
@@ -164,6 +167,8 @@ export interface GitRunner {
   trust(request: TrustRequest): Promise<TrustReply | WalkDeadline>;
   // Feature 004 contract Δ6 `fileAppend`: a walk without a deadline form, so the shell gives `error` past its deadline. A `refused` frame throws RunnerRefusal.
   fileAppend(request: FileAppendRequest, signal: AbortSignal): Promise<FileAppendReply | WalkStop>;
+  // Feature 004 contract Δ3 `revealPath`: a walk. The shell refuses each failure with UNKNOWN_TARGET, so a `refused` frame throws RunnerRefusal.
+  reveal(request: RevealRequest, signal: AbortSignal): Promise<"shown" | WalkStop>;
 }
 
 // Contract §6 "Channel frames" `wslProbe`: the frame fields and the output collectors of the streamed probe.
@@ -453,7 +458,7 @@ export function checkTrust(request: TrustRequest): void {
 }
 
 // Feature 003 and feature 004 contract Δ6. The `type` literal selects the frame schema. A request that holds `type` or `callId` breaks the field set.
-export function checkSyncRequest(type: "pageant" | "destinationFacts" | "terminal" | "fileAppend", request: object): void {
+export function checkSyncRequest(type: "pageant" | "destinationFacts" | "terminal" | "fileAppend" | "reveal", request: object): void {
   const valid = typeof request === "object" && request !== null && !("type" in request) && !("callId" in request);
   if (!valid || !fits(ProcessRequest, { type, callId: crypto.randomUUID(), ...request })) refuse(type);
 }

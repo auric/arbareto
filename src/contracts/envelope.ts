@@ -1396,6 +1396,35 @@ export const ReviewWorkbenchResult = z
   ])
   .meta({ title: "ReviewWorkbenchResult" });
 
+// Data-model §1 `readBranches`. Only a remote entry maps to a local name, and only a local entry is current or holds a tracking entry.
+// `invalidUtf8`: the ref bytes are no valid UTF-8, so `ref` is display text only.
+const BranchEntry = z
+  .strictObject({
+    ref: FullRef,
+    kind: z.enum(["local", "remote"]),
+    name: Text.min(1),
+    invalidUtf8: z.boolean(),
+    oid: ObjectId,
+    upstream: FullRef.nullable(),
+    tracking: TrackingEntry.nullable(),
+    heldBy: Text.min(1).nullable(),
+    current: z.boolean(),
+    localName: Text.min(1).nullable(),
+    hasLocal: z.boolean(),
+  })
+  .refine((e) => (e.kind === "local" ? e.localName === null && !e.hasLocal : !e.current && e.tracking === null) && (e.localName !== null || !e.hasLocal))
+  .meta({ title: "BranchEntry" });
+// Contract Δ3 `readBranches`: the entries, or the `readRefs` refusal form for a bound or a failed read. At most one entry is current.
+export const ReadBranchesResult = z
+  .union([
+    z
+      .strictObject({ entries: z.array(BranchEntry).max(REF_LISTING_RECORDS) })
+      .refine((r) => !Array.isArray(r.entries) || r.entries.filter((e) => e?.current === true).length <= 1)
+      .meta({ title: "BranchList" }),
+    RefsRefusal,
+  ])
+  .meta({ title: "ReadBranchesResult" });
+
 // The refs whose values differ between the listings before and after the steps. Null: the ref is absent on that side.
 const RefChange = z.strictObject({ ref: FullRef, oldObjectId: ObjectId.nullable(), newObjectId: ObjectId.nullable() }).meta({ title: "RefChange" });
 const RefChanges = z.array(RefChange).max(SYNC_REFS_RECORDS);

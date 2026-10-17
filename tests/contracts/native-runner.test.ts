@@ -1174,4 +1174,28 @@ describe("native runner feature 004 requests", () => {
     expect(channel.sent.length).toBe(before);
     expect(await empty).toMatchObject({ code: "INVALID_REQUEST" });
   });
+
+  test("reveal sends its frame and maps the reply to shown; a refused frame throws RunnerRefusal with UNKNOWN_TARGET; an abort sends cancel", async () => {
+    const channel = createChannelDouble();
+    const request = { operationId: id(), repositoryId: id(), path: isWindows ? "C:\\repo\\src\\a.txt" : "/repo/src/a.txt" };
+    const shown = channel.runner.reveal(request, SIGNAL);
+    const body = channel.last("reveal");
+    expect(body).toEqual({ type: "reveal", callId: body.callId, ...request });
+    expect(channel.reply("process", { type: "reveal", callId: body.callId })).toBe(true);
+    expect(await shown).toBe("shown");
+    const refused = channel.runner.reveal(request, SIGNAL);
+    channel.reply("process", { type: "refused", callId: channel.last("reveal").callId, code: "UNKNOWN_TARGET" });
+    const error = await refused.catch((e: unknown) => e);
+    expect({ refusal: error instanceof RunnerRefusal, code: (error as RunnerRefusal).code }).toEqual({ refusal: true, code: "UNKNOWN_TARGET" });
+    const abort = new AbortController();
+    const canceled = channel.runner.reveal(request, abort.signal);
+    const { callId } = channel.last("reveal");
+    abort.abort();
+    expect(await canceled).toEqual({ stop: "canceled" });
+    expect(channel.last("cancel")).toEqual({ type: "cancel", callId });
+    const before = channel.sent.length;
+    const relative = channel.runner.reveal({ ...request, path: "src/a.txt" }, SIGNAL).catch((e: unknown) => e);
+    expect(channel.sent.length).toBe(before);
+    expect(await relative).toMatchObject({ code: "INVALID_REQUEST" });
+  });
 });

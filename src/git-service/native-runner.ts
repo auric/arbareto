@@ -17,6 +17,7 @@ import {
   PageantReply as PageantReplySchema,
   Refused,
   RegisterReply as RegisterReplySchema,
+  RevealReply,
   ResolveGitReply,
   RevokeReply,
   StartedReply as StartedReplySchema,
@@ -429,6 +430,12 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
         // Contract §7 "Trust approval store": with `persist: false`, the shell writes no record.
         return request.persist ? { result: "approved", stored: true, record: reply.data.record } : undefined;
       });
+    },
+
+    // Feature 004 contract Δ3 `revealPath`: a walk, so an abort sends `cancel`. Each failure arrives as a `refused` frame.
+    async reveal(request, signal) {
+      checkSyncRequest("reveal", request);
+      return ask<"shown" | WalkStop>("process", { type: "reveal", ...request }, (r) => (RevealReply.safeParse(r).success ? "shown" : undefined), { signal, value: CANCELED });
     },
 
     // Feature 003 contract Δ6: the shell waits up to 30 s for Pageant, so the call has no cancel.

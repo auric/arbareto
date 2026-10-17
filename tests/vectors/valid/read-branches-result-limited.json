@@ -1,0 +1,5 @@
+{
+  "schema": "read-branches-result",
+  "expected": "valid",
+  "text": "{\"completeness\":{\"state\":\"limited\",\"code\":\"OUTPUT_LIMIT\",\"reason\":\"REF_LISTING_RECORDS\"}}"
+}

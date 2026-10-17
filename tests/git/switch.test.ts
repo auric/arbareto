@@ -567,3 +567,35 @@ caseTest("T034", "a stalled checkout step reports stalled with the step command 
     expect(events().filter((p) => p.phase === "switch-checkout").map((p) => p.stalled)).toEqual([false, true, false]);
   });
 }, TIMEOUT_MS);
+
+// T034: a switch target that names an annotated tag binds its peeled commit (git-for-each-ref(1) `*` fields, gitrevisions(7) `^{commit}`).
+caseTest("T034", "a track target and a detach target that name an annotated tag switch to its peeled commit as Git's own checkout does, and a target that peels to no commit gives UNKNOWN_TARGET", SHELL, async () => {
+  // `git update-ref` refuses a non-commit value under refs/heads/ ("trying to write non-commit object"), so the tag value sits under refs/remotes/.
+  const prepare = (x: WbFixture) => {
+    git(x, ["tag", "-a", "-m", "annotated", "anno", "target"]);
+    git(x, ["update-ref", "refs/remotes/one/anno", "refs/tags/anno"]);
+    git(x, ["update-ref", "refs/remotes/one/tree", "target^{tree}"]);
+  };
+  const f = build("switch-clean");
+  const o = build("switch-clean");
+  prepare(f);
+  prepare(o);
+  const commit = oid(f, "target");
+  const tag = oid(f, "refs/tags/anno");
+  expect(tag).not.toBe(commit);
+  await withSync("t034-peel", async (service) => {
+    const r = await open(service, f.repo);
+    for (const target of [{ track: { ref: "refs/remotes/one/tree", name: "tree" } }, { detach: oid(f, "target^{tree}") }]) {
+      const response = await review(service, r, switchTo("keep", target));
+      expect({ target, ...outcome(response) }).toEqual({ target, state: "failed", code: "UNKNOWN_TARGET" });
+    }
+    const tracked = await run(service, r, switchTo("keep", { track: { ref: "refs/remotes/one/anno", name: "anno" } }));
+    expect({ ...outcome(tracked), head: tracked.result!.head }).toEqual({ ...SUCCEEDED, head: { state: "branch", target: "refs/heads/anno", oid: commit } });
+    const detached = await run(service, r, switchTo("keep", { detach: tag }));
+    expect({ ...outcome(detached), head: detached.result!.head }).toEqual({ ...SUCCEEDED, head: { state: "detached", oid: commit } });
+  });
+  git(o, ["checkout", "-q", "--no-guess", "-b", "anno", "--track=direct", "refs/remotes/one/anno", "--"]);
+  const branch = (x: WbFixture) => ({ anno: oid(x, "refs/heads/anno"), config: git(x, ["config", "--get-regexp", "^branch\\.anno\\."]) });
+  expect(branch(f)).toEqual(branch(o));
+  expect(branch(f).anno).toBe(commit);
+}, TIMEOUT_MS);

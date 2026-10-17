@@ -64,9 +64,10 @@ export function createCloner(o: ClonerOptions) {
     const git = routed.wsl === undefined ? o.windowsGit() : { gitInstallationId: routed.wsl.git.gitInstallationId, selectedPath: null };
     if (typeof git === "string") return { code: git };
 
-    // Step 2, before any Git process. Contract gap: an `error` reply names no destination type, so it refuses as `other`.
+    // Step 2, before any Git process. An `error` reply is no destination type: 001 §12 refuses a failed folder read with REPOSITORY_UNAVAILABLE.
     const facts = await runner.destinationFacts({ operationId, cloneId });
-    if (facts.result !== "absent" && facts.result !== "empty") return { code: "DESTINATION_NOT_EMPTY", result: { reason: facts.result === "error" ? "other" : facts.result, path: destination } };
+    if (facts.result === "error") return { code: "REPOSITORY_UNAVAILABLE", result: { path: destination, remedy: { text: `Arbareto cannot read ${destination}: ${facts.code}.` } } };
+    if (facts.result !== "absent" && facts.result !== "empty") return { code: "DESTINATION_NOT_EMPTY", result: { reason: facts.result, path: destination } };
 
     // Contract §7 "URL user information": such a remedy is text only. A WSL Git has no Windows command form.
     const command =
@@ -141,6 +142,8 @@ export function createCloner(o: ClonerOptions) {
     const canceled = signal.aborted;
     if (!canceled && pageant !== null && pageant.result !== "git") kept = { operationId, kind: "url", repositoryId: null, gitInstallationId: git.gitInstallationId, target: url };
     const code: ErrorCode = canceled ? "CANCELED" : (refused ?? (exit?.deadline !== undefined ? "DEADLINE" : exit?.diagnosticLimit ? "OUTPUT_LIMIT" : "GIT_FAILED"));
+    // Contract gap: after a WSL clone without an exit status, Linux Git can still write. The 001 §12 process-end fact needs a registered workspace.
+    if (routed.wsl !== undefined && (exit === null || exit.exitCode === null)) return { code };
     return ended(code, outputTail);
   }
 

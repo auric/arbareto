@@ -3,9 +3,17 @@
 
 // T052: `clone` (contract Δ3 and Δ6, data-model §11, plan.md D10, FR-046 to FR-051, SC-004, SC-006, SC-011).
 // The oracle is Git's own clone of the same URL into another folder. OS facts decide the destination state, never message text.
+// Limits of the shell double:
+// - It starts no Pageant. A picked key file gives the reply `ready`.
+// - `plink.exe` is an empty file that the test makes. The double checks only that it exists.
+// - FR-049 "saves no key file" is checked as: no result, event, log entry, or frame holds the key path.
+// - FR-050 "opens no file" is checked as: the result equals the OS facts of the destination.
+// - It maps the `errno` name to the `destinationFacts` error code. The shell maps the Win32 error.
+// - It has no WSL clone route. T075 runs the WSL clone in the distro.
 
 import { expect } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { userInfo } from "node:os";
 import { join } from "node:path";
 import { RECONCILIATION_TARGET_MS, STALL_NOTICE_MS, SUBMODULE_UPDATE_CEILING_MS, SUBMODULE_UPDATE_INACTIVITY_MS } from "../../src/contracts/limits";
 import { CloneResult } from "../../src/contracts/envelope";
@@ -25,6 +33,7 @@ const TASK = "T052";
 const SHELL = ["shell-double"] as const;
 const WINDOWS = ["shell-double", "git-for-windows"] as const;
 const JUNCTION = ["shell-double", "ntfs-junction"] as const;
+const UNREADABLE = ["shell-double", "read-denial"] as const;
 const CLONE = (url: string, destination: string) => ["--no-lazy-fetch", "clone", "--progress", "--no-recurse-submodules", "--", url, destination];
 const NETWORK_LIMITS = { inactivityMs: SUBMODULE_UPDATE_INACTIVITY_MS, ceilingMs: SUBMODULE_UPDATE_CEILING_MS, stallMs: STALL_NOTICE_MS };
 const REMEDY_TEXT = "This command runs the step in a terminal, where Git and SSH can ask for input. Then use the action again.";
@@ -37,7 +46,7 @@ interface Cloned {
   exists?: boolean;
   empty?: boolean;
   outputTail?: string;
-  remedy?: { text: string; command: string | null };
+  remedy?: { text: string; command?: string | null };
   reason?: string;
   path?: string;
   program?: string;
@@ -173,6 +182,23 @@ describeGit("clone (T052)", () => {
       expect(callsOf(service, response.operationId)).toEqual([]);
       expect(readdirSync(target)).toEqual([]);
     });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "a destination that the shell cannot read gives REPOSITORY_UNAVAILABLE with the path and the error code before any Git process (001 §12 folder check)", UNREADABLE, async () => {
+    const h = hostFor("t052-unreadable");
+    const { origin } = buildFetchFlags(h);
+    const folder = native(`${h.root}/denied`);
+    mkdirSync(folder);
+    denyList(folder);
+    try {
+      await withSync("t052-unreadable", async (service) => {
+        const response = await clone(service, folder, native(origin));
+        expect({ ...outcome(response), result: response.result }).toEqual({ state: "failed", code: "REPOSITORY_UNAVAILABLE", result: { path: folder, remedy: { text: `Arbareto cannot read ${folder}: access-denied.` } } });
+        expect(callsOf(service, response.operationId)).toEqual([]);
+      });
+    } finally {
+      allowList(folder);
+    }
   }, TIMEOUT_MS);
 
   caseTest(TASK, "a URL that starts with - stays literal after --, so Git takes it as a repository and no option runs", SHELL, async () => {
@@ -336,3 +362,19 @@ describeGit("clone (T052)", () => {
 });
 
 const psQuote = (value: string) => `'${value.replace(/['‘’‚‛]/g, "$&$&")}'`;
+
+// The folder keeps its attributes readable, so `lstat` works and the listing fails. On Windows, `RD` denies the folder listing.
+function denyList(path: string): void {
+  if (process.platform === "win32") icacls([path, "/deny", `${userInfo().username}:(RD)`]);
+  else chmodSync(path, 0o100);
+}
+
+function allowList(path: string): void {
+  if (process.platform === "win32") icacls([path, "/remove:d", userInfo().username]);
+  else chmodSync(path, 0o755);
+}
+
+function icacls(args: string[]): void {
+  const proc = Bun.spawnSync(["icacls", ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  if (proc.exitCode !== 0) throw new Error(`icacls ${args.join(" ")} exited ${proc.exitCode}`);
+}

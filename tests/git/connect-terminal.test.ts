@@ -2,7 +2,11 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // T053: `connectInTerminal` (contract Δ3 and Δ6, data-model §11, plan.md D9, O-9, O-10, FR-009, FR-034, FR-037).
-// The service sends `pageant` only on a Windows Git, so every case needs Git for Windows. The double opens no console.
+// The service sends `pageant` only on a Windows Git, so every case needs Git for Windows.
+// Limits of the shell double:
+// - It opens no console and runs no `ls-remote`. A `started` reply only means that the checks passed.
+// - `plink.exe` is an empty file that the test makes. The double checks only that it exists.
+// - The pull target waits for batch 3 (T066).
 
 import { expect } from "bun:test";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";

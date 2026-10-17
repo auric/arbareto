@@ -114,11 +114,16 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
   - The shell forwards `{url, bootstrapId, cloneId}`. The service payload holds no path, as for `chooseRepository` (001 §3).
 - Service:
   1. `wslDistros {bootstrapId}` (001 §6). The reply `path` is the destination. A WSL path then takes the §11 distro start and the Git-per-distro approval, as `chooseRepository` does. The Git argument is the reply path, or for a WSL path its §11 Linux path.
-  2. `destinationFacts {cloneId}` (Δ6). Not `absent` and not `empty` gives `DESTINATION_NOT_EMPTY` with the reply path, and no Git process starts.
+  2. `destinationFacts {cloneId}` (Δ6). `not-empty`, `file`, or `other` gives `DESTINATION_NOT_EMPTY` with the reply path, and no Git process starts.
+     - An `error` reply gives `REPOSITORY_UNAVAILABLE` with the reply path and a text that names the error code, as the 001 §12 folder read does. No Git process starts.
   3. `pageant {cloneId}` on a Windows Git (Δ6).
   4. `--no-lazy-fetch clone --progress --no-recurse-submodules -- <url> <Git argument>` [`remote`], network limits, phase `clone`.
   5. Exit 0: the 001 `chooseRepository` registration flow with the same `bootstrapId`, from `wslDistros` on. The top level must equal the destination. The result is the `chooseRepository` result.
-  6. Otherwise: `destinationFacts` again. The result holds `{exists, empty}`, the redacted `outputTail`, and the remedy `& '<git>' clone -- '<url>' '<destination>'`, or text only when the URL holds user information.
+     - The identity request of the registration also names the destination. A top level with another identity gives `REPOSITORY_UNAVAILABLE`, and nothing registers.
+     - A refused registration after exit 0 gives its own code with the step 6 result, not the `chooseRepository` refusal result (FR-051).
+  6. Otherwise: `destinationFacts` again. The result holds `{exists, empty}`, the redacted `outputTail`, and the remedy `& '<git>' clone -- '<url>' '<destination>'`, or text only when the URL holds user information or the Git is a WSL Git.
+     - A second reply `error`, or a refused request, gives the code without `{exists, empty}`.
+     - A WSL clone process without an exit status gives the code only, because no process-end fact exists without a registered workspace (plan.md "Open items").
 - Shell finish: store the recent entry and `lastCloneParent`.
 
 ### `connectInTerminal`
@@ -126,6 +131,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - Payload: `{operationId}` of a failed `sync` or `clone` with a retained connect target. A `sync` target needs the `repositoryId` of its workspace. A `clone` target needs no `repositoryId`. Any other combination gives `UNKNOWN_TARGET`.
 - Before `terminal`, the service checks `approvalRequired.sync` and the trust fingerprint. A difference gives `TRUST_REQUIRED` or `TRUST_CHANGED`, and no console starts. A clone target has no repository and needs no trust check.
 - The service sends `terminal` (Δ6). Result: `succeeded` when the console starts. Otherwise `failed` with `PUTTY_UNAVAILABLE`.
+- The trust check reads a fresh trust listing, so a trust refusal ends `failed`. A `refused` reply keeps its own code, and only a `failed` reply gives `PUTTY_UNAVAILABLE`.
 
 ### Shell-only settings operations
 

@@ -399,6 +399,10 @@ Further reviewer defaults:
 - Lease subjects stop at 100.
 - The count display bound is 10,000.
 
+## Open items
+
+- **WSL clone process end.** Contract gap. The 001 §12 process-end fact runs in the context of a registered workspace, and a clone has none. So a WSL clone process without an exit status, after Cancel or a limit, gives the code only, without `{exists, empty}` (contract Δ3 `clone` step 6). A fix needs a process-end fact in the `clone` context. T075 records the result.
+
 ## Phases
 
 ### Batches

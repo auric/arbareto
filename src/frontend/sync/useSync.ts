@@ -9,6 +9,7 @@ import { branchName } from "../history/HistoryView";
 import { shortRef } from "../refs/ReferencesSidebar";
 import { isObject } from "../lib/utils";
 import { SYNC_NAMES, type StatusOperation } from "../status/OperationStatus";
+import type { ConflictPlan } from "./ConflictActions";
 import type { ForcePlan } from "./ForcePushConfirm";
 import type { ReviewPayload } from "./PullSplitButton";
 import type { NeedsDestination, PushChoice } from "./PushPanel";
@@ -25,13 +26,14 @@ type Plan = {
   destination?: { remote: string; ref: string; trackingRef: string | null };
   lease?: ForcePlan["lease"];
   needsDestination?: NeedsDestination;
-};
+} & ConflictPlan;
 type Reviewed = { action: SyncAction; plan: Plan; syncReviewToken?: unknown };
 /** Data-model §5 and §7: the result fields that decide the notice. */
 type Result = { push?: { status: string; lease: boolean }; integration?: { state: string } };
 
 const isReviewed = (value: unknown): value is Reviewed => isObject(value) && isObject(value.plan) && Array.isArray(value.plan.remotes);
 const PUSHING: readonly SyncAction[] = ["push", "force-push"];
+type Confirmed = "abort" | "skip";
 
 export type UseSyncOptions = {
   bridge: Pick<Bridge, "reviewSync" | "sync">;
@@ -55,6 +57,10 @@ export function useSync({ bridge, target, repositoryId, headTarget, onOperation,
   const [confirm, setConfirm] = useState<{ plan: Plan & ForcePlan; token: string } | null>(null);
   // FR-023: the notice and the HEAD target that it belongs to.
   const [notice, setNotice] = useState<(PushNotice & { target: string; remote: string }) | null>(null);
+  // FR-027: a pull that needs a mode, with the HEAD target that it belongs to.
+  const [modeChoice, setModeChoice] = useState<{ target: string | null } | null>(null);
+  // FR-042, FR-044: the reviewed Abort or Skip that waits for its confirmation.
+  const [conflictConfirm, setConflictConfirm] = useState<{ action: Confirmed; plan: Plan & { operationState: "merging" | "rebasing" }; token: string } | null>(null);
   const busy = useRef(false);
   const [shownFor, setShownFor] = useState(repositoryId);
   if (shownFor !== repositoryId) {
@@ -62,11 +68,14 @@ export function useSync({ bridge, target, repositoryId, headTarget, onOperation,
     setPanel(null);
     setConfirm(null);
     setNotice(null);
+    setModeChoice(null);
+    setConflictConfirm(null);
   }
   const head = useRef(headTarget);
   head.current = headTarget;
   // FR-023: a change of the HEAD target removes the notice.
   if (notice !== null && headTarget !== undefined && headTarget !== notice.target) setNotice(null);
+  if (modeChoice !== null && headTarget !== undefined && headTarget !== modeChoice.target) setModeChoice(null);
 
   async function start(action: SyncAction, plan: Plan, token: string, fromNotice: boolean) {
     const t = target();
@@ -90,27 +99,53 @@ export function useSync({ bridge, target, repositoryId, headTarget, onOperation,
     // FR-026: a pull from the notice that integrated offers Push. Data-model §7 `done` and `up-to-date` decide.
     const integrated = result.integration?.state === "done" || result.integration?.state === "up-to-date";
     if (fromNotice && action === "pull" && response.state === "succeeded" && integrated) setNotice((n) => (n === null ? n : { ...n, kind: "pulled" }));
+    // Data-model §7: only `mode-required` asks. Its outcome is `succeeded`, and no integration ran.
+    if (action === "pull" && response.state === "succeeded" && result.integration?.state === "mode-required" && current !== undefined) setModeChoice({ target: current });
     onEnded(response);
   }
 
-  async function run(payload: ReviewPayload, fromNotice = false) {
+  /** Resolves with the review response when the review refused, else with null. */
+  async function run(payload: ReviewPayload, fromNotice = false): Promise<BridgeResponse | null> {
     const t = target();
-    if (t === null || busy.current) return;
+    if (t === null || busy.current) return null;
     busy.current = true;
     try {
       const review = await bridge.reviewSync(t, payload);
       const result = review.result;
       if (review.state !== "succeeded" || !isReviewed(result)) {
         // A refused review starts nothing. The status bar shows its code and reason.
-        return onOperation({ requestId: crypto.randomUUID(), kind: "sync", sync: { action: payload.action, remotes: [] }, progress: null, response: review });
+        onOperation({ requestId: crypto.randomUUID(), kind: "sync", sync: { action: payload.action, remotes: [] }, progress: null, response: review });
+        return review;
       }
-      if (result.plan.needsDestination !== undefined) return setPanel(result.plan.needsDestination);
+      if (result.plan.needsDestination !== undefined) {
+        setPanel(result.plan.needsDestination);
+        return null;
+      }
       const token = result.syncReviewToken;
       // FR-024: a force push starts only from the confirmation, and the confirmation needs the destination and the lease.
       const force = payload.action === "force-push";
-      if (typeof token !== "string" || (force && (result.plan.destination === undefined || result.plan.lease === undefined))) return onRefused(`${SYNC_NAMES[payload.action]} did not start: the review is incomplete.`);
-      if (force) return setConfirm({ plan: result.plan as Plan & ForcePlan, token });
-      await start(payload.action, result.plan, token, fromNotice);
+      // FR-042, FR-044: the confirmations need the operation kind, and Skip also the skipped commit.
+      const confirmed = payload.action === "abort" || payload.action === "skip" ? payload.action : null;
+      const plan = result.plan;
+      const incomplete =
+        typeof token !== "string" ||
+        (force && (plan.destination === undefined || plan.lease === undefined)) ||
+        (confirmed !== null && (plan.operationState === undefined || (confirmed === "skip" && plan.skippedCommit === undefined)));
+      if (incomplete) {
+        onRefused(`${SYNC_NAMES[payload.action]} did not start: the review is incomplete.`);
+        return null;
+      }
+      if (force) {
+        setConfirm({ plan: plan as Plan & ForcePlan, token });
+        return null;
+      }
+      if (confirmed !== null) {
+        setConflictConfirm({ action: confirmed, plan: plan as Plan & { operationState: "merging" | "rebasing" }, token });
+        return null;
+      }
+      if (payload.action === "integrate") setModeChoice(null);
+      await start(payload.action, plan, token, fromNotice);
+      return null;
     } finally {
       busy.current = false;
     }
@@ -118,6 +153,19 @@ export function useSync({ bridge, target, repositoryId, headTarget, onOperation,
 
   return {
     run: (payload: ReviewPayload) => void run(payload),
+    /** Contract Δ3 abort, continue, and skip. Resolves with a refused review response, else null. */
+    conflictAction: (action: "abort" | "continue" | "skip") => run({ action }),
+    modeChoice: modeChoice !== null,
+    chooseMode: (mode: "rebase" | "merge") => void run({ action: "integrate", mode }),
+    cancelMode: () => setModeChoice(null),
+    conflictConfirm,
+    confirmConflict: () => {
+      if (conflictConfirm === null) return;
+      setConflictConfirm(null);
+      busy.current = true;
+      void start(conflictConfirm.action, conflictConfirm.plan, conflictConfirm.token, false).finally(() => void (busy.current = false));
+    },
+    cancelConflict: () => setConflictConfirm(null),
     panel,
     push: (choice: PushChoice) => {
       setPanel(null);

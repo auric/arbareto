@@ -24,7 +24,8 @@ export type StatusOperation = {
   /** A new value starts a new operation: the area and its content clear. */
   requestId: string;
   kind: "commit" | "applyHunk" | "applyFile" | "updateSubmodules" | "sync";
-  direction?: "stage" | "unstage";
+  /** Feature 003 FR-052: `resolve` is Mark resolved. */
+  direction?: "stage" | "unstage" | "resolve";
   /** Feature 003: the action of a `sync` and the remotes of its review plan, in `git remote` order (contract Δ3). */
   sync?: { action: SyncAction; remotes: readonly string[] };
   /** The latest progress event, or null before the first one. */
@@ -100,6 +101,9 @@ type Outcome = {
   remotes?: { name: string; state: string; outputTail: string }[];
   /** Feature 003 data-model §5 `status`, `lease`, and `reasonText`. */
   push?: { status: string; lease: boolean; reasonText: string | null };
+  /** Feature 003 data-model §6 and §7: the integration state and the mode source of a pull or integrate result. */
+  integration?: string;
+  modeSource?: string | null;
 };
 type StallRemedy = { text: string; command?: string };
 type Head = WorkspaceSnapshot["head"];
@@ -113,6 +117,7 @@ const TEXTS: Record<string, [name: string, running: string, heading: string]> = 
   "applyHunk:unstage": ["Hunk unstaging", "Unstaging hunk", "Unstage hunk details"],
   "applyFile:stage": ["File staging", "Staging file", "Stage file details"],
   "applyFile:unstage": ["File unstaging", "Unstaging file", "Unstage file details"],
+  "applyFile:resolve": ["Mark resolved", "Marking resolved", "Mark resolved details"],
   updateSubmodules: ["Update submodules", "Updating submodules", "Update submodules details"],
 };
 // Feature 003 plan.md D12: a `sync` takes the name of its action. A pull step that integrates is also "Pull".
@@ -252,6 +257,8 @@ function outcomeOf(response: BridgeResponse | null | undefined): Outcome {
     remotes: remotes?.map((x) => ({ name: x.name as string, state: x.state as string, outputTail: isText(x.outputTail) ? x.outputTail : "" })),
     push: push === undefined ? undefined : { status: push.status as string, lease: push.lease === true, reasonText: isText(push.reasonText) ? push.reasonText : null },
     reason: isText(r.reason) ? r.reason : undefined,
+    integration: isObject(r.integration) && isText(r.integration.state) ? r.integration.state : undefined,
+    modeSource: isText(r.modeSource) || r.modeSource === null ? r.modeSource : undefined,
     effects: isObject(e) && EFFECT_FIELDS.every((f) => typeof e[f] === "boolean") ? (e as Record<EffectField, boolean>) : undefined,
     commitOid: isText(r.commitOid) ? r.commitOid : undefined,
     outputTail: isText(r.outputTail) ? r.outputTail : push !== undefined && isText(push.outputTail) && push.outputTail !== "" ? push.outputTail : undefined,
@@ -302,7 +309,7 @@ function operationText(op: StatusOperation, worktreeRoot: string, head: Head | n
     return { lead: `${verb} in ${folderName(worktreeRoot)}…`, tail: "" };
   }
   const outcome = outcomeOf(response);
-  const sync = op.kind === "sync" ? syncOutcome(name, response, outcome) : null;
+  const sync = op.kind === "sync" ? syncOutcome(name, response, outcome, head) : null;
   if (sync !== null) return sync;
   // plan.md "Status and fallback texts": the contract §9 code, or the result state without a code.
   const coded = (lead: string): Line => ({ lead, code: response.code ?? response.state, tail: outcome.reason === undefined ? "" : ` ${outcome.reason}` });
@@ -317,7 +324,7 @@ function operationText(op: StatusOperation, worktreeRoot: string, head: Head | n
   else if (response.state === "succeeded") {
     if (op.kind === "commit" && short !== undefined && head !== null) line.lead = head.state === "detached" ? `Committed ${short} on detached HEAD` : `Committed ${short} to ${branchName(head.target)}`;
     else if (op.kind === "applyHunk") line.lead = op.direction === "unstage" ? "Hunk unstaged" : "Hunk staged";
-    else if (op.kind === "applyFile") line.lead = op.direction === "unstage" ? "File unstaged" : "File staged";
+    else if (op.kind === "applyFile") line.lead = op.direction === "unstage" ? "File unstaged" : op.direction === "resolve" ? "File marked resolved" : "File staged";
     else if (op.kind === "updateSubmodules") line.lead = "Submodules updated";
     else if (op.kind === "sync") line.lead = `${name} completed`;
   }
@@ -343,8 +350,21 @@ function syncStepText(op: StatusOperation): string | null {
   return null;
 }
 
+// Feature 003 data-model §6 `modeSource`: the value that selected the pull mode. `branch` names the branch of HEAD.
+const MODE_SOURCE: Record<string, (head: Head | null) => string | null> = {
+  payload: () => "The choice for this pull",
+  branch: (head) => (head?.state === "branch" ? `branch.${branchName(head.target)}.rebase` : null),
+  pull: () => "pull.rebase",
+  "pull-ff": () => "pull.ff",
+};
+export const MODE_REQUIRED_TEXT = "Pull fetched. Choose Rebase or Merge for this pull.";
+
 /** Feature 003: the outcome lines that differ from the 001 texts. */
-function syncOutcome(name: string, response: BridgeResponse, outcome: Outcome): Line | null {
+function syncOutcome(name: string, response: BridgeResponse, outcome: Outcome, head: Head | null): Line | null {
+  // Data-model §8: `mode-required` is a `succeeded` pull that integrated nothing.
+  if (response.state === "succeeded" && outcome.integration === "mode-required") return { lead: MODE_REQUIRED_TEXT, tail: "" };
+  const source = response.state === "succeeded" && typeof outcome.modeSource === "string" ? MODE_SOURCE[outcome.modeSource]?.(head) : null;
+  if (source) return { lead: `${name} completed. ${source} selected the mode.`, tail: "" };
   if (response.state === "canceled" && (name === SYNC_NAMES.push || name === SYNC_NAMES["force-push"])) return { lead: `${name} canceled. ${PUSH_CANCELED}`, tail: "" };
   const push = outcome.push;
   if (response.code === "PUSH_REJECTED" && push?.status === "remote-rejected") return { lead: REMOTE_REJECTED, tail: push.reasonText === null ? "" : `: ${push.reasonText}` };

@@ -20,7 +20,9 @@ const OPERATION: Partial<Record<OperationState, string>> = {
   "sequencer-active": "A cherry-pick or revert sequence is in progress",
   unknown: "Arbareto cannot identify the Git operation in progress",
 };
-const SECOND = "Arbareto blocks changes until you finish it outside Arbareto and select Refresh (F5).";
+/** The 001 second sentence. Feature 003 FR-030 removes it for `merging` and `rebasing`, which get the conflict actions. */
+export const FINISH_OUTSIDE = "Arbareto blocks changes until you finish it outside Arbareto and select Refresh (F5).";
+const ACTIONS_IN_APP: readonly OperationState[] = ["merging", "rebasing"];
 
 const files = (n: number) => (n === 1 ? "1 conflicted file" : `${n} conflicted files`);
 
@@ -115,6 +117,10 @@ export type NoticeBandProps = {
   pushRow?: ReactNode;
   /** Feature 003 FR-034: the Connect in a terminal row. The caller renders it with `connectNoticeText` and its action. */
   connectRow?: ReactNode;
+  /** Feature 003 FR-027: the pull mode question after `integration: mode-required`. */
+  pullModeRow?: ReactNode;
+  /** Feature 003 FR-030: the conflict row of a merge or rebase in progress. It replaces the blocking row. */
+  conflictRow?: ReactNode;
 };
 
 /** Feature 003 FR-023, FR-025, FR-026: the push-rejected notice state. `tracking` names the remote branch. */
@@ -133,12 +139,16 @@ export const connectNoticeText = (name: string) => `${name} did not complete wit
 // Feature 002 spec FR-005, from the approved mockup canvas of plan.md D6.
 const REFS_CHANGED = "References changed. History still shows the references from when it opened.";
 
-/** The notice band: the blocking row, the submodule row, the push-rejected row, the connect row, then the recovery row. It renders nothing without a row, so F6 skips it. */
-export function NoticeBand({ operationState, conflicted, submoduleRow, recovery, refsChanged, pushRow, connectRow }: NoticeBandProps) {
+/**
+ * The notice band: the blocking row, the submodule row, the push-rejected row, the pull mode row, the connect row, the conflict row, then the recovery row.
+ * It renders nothing without a row, so F6 skips it.
+ */
+export function NoticeBand({ operationState, conflicted, submoduleRow, recovery, refsChanged, pushRow, connectRow, pullModeRow, conflictRow }: NoticeBandProps) {
   const headingId = useId();
-  const first = blockingText(operationState, conflicted);
+  const inApp = ACTIONS_IN_APP.includes(operationState);
+  const first = inApp && conflictRow ? null : blockingText(operationState, conflicted);
   const recoveryRow = recovery !== undefined && (recoverySentences(recovery).length > 0 || recovery.foreign !== undefined);
-  if (first === null && !submoduleRow && !recoveryRow && !refsChanged && !pushRow && !connectRow) return null;
+  if (first === null && !submoduleRow && !recoveryRow && !refsChanged && !pushRow && !connectRow && !pullModeRow && !conflictRow) return null;
   return (
     <section aria-labelledby={headingId} className="flex items-start gap-3 border-b border-divider bg-warning-fill px-2">
       <h2 id={headingId} tabIndex={-1} className="shrink-0 font-semibold" style={{ lineHeight: "var(--h-band-row)" }}>
@@ -148,14 +158,14 @@ export function NoticeBand({ operationState, conflicted, submoduleRow, recovery,
         {first === null ? null : (
           <p className="flex items-center gap-2 py-1" style={{ minHeight: "var(--h-band-row)" }}>
             <WarningIcon />
-            <span>
-              {first} {SECOND}
-            </span>
+            <span>{inApp ? first : `${first} ${FINISH_OUTSIDE}`}</span>
           </p>
         )}
         {submoduleRow}
         {pushRow}
+        {pullModeRow}
         {connectRow}
+        {conflictRow}
         {recovery !== undefined && recoveryRow ? <RecoveryRow recovery={recovery} /> : null}
         {!refsChanged ? null : (
           <p className="flex items-center gap-2 py-1" style={{ minHeight: "var(--h-band-row)" }}>

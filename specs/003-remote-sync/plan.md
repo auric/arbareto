@@ -361,6 +361,24 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - A result without `exists` and `empty`: "The folder state is unknown."
 - Mark resolved shows "Marking resolved" while it runs and "File marked resolved" after `succeeded`. A running `sync` shows the FR-002 step text.
 - The stage bar button of a Conflicted entry with the decision `resolve` reads "Mark resolved (Space)", and Space runs it.
+  - The status area heading is "Mark resolved details". The refusal sentence is "Mark resolved is unavailable: <reason text>". The `missing` reason text is "The working file of this conflicted path is missing."
+- Pull mode row (FR-027, FR-057): a notice row after `integration: mode-required`.
+  - Text: "The branch and its upstream have diverged. Choose Rebase or Merge for this pull. Arbareto does not change the Git configuration."
+  - Buttons "Rebase", "Merge", and "Cancel". Rebase gets focus. Escape and Cancel remove the row and send nothing. A choice sends `reviewSync {action: "integrate", mode}`, and no confirmation follows.
+  - The status bar shows "Pull fetched. Choose Rebase or Merge for this pull."
+  - A succeeded pull or integrate with `modeSource` shows "Pull completed. <source> selected the mode." The sources are `payload` "The choice for this pull", `branch` "branch.<branch>.rebase", `pull` "pull.rebase", and `pull-ff` "pull.ff". A null `modeSource` shows "Pull completed".
+- Conflict row (FR-030, FR-042 to FR-045): the row replaces the blocking row for `merging` and `rebasing`. It sits after the Connect in a terminal row (tasks.md exception 2026-10-17).
+  - It shows the 001 first sentence without "finish it outside Arbareto".
+  - Buttons "Abort…", "Continue", and "Skip…" for `rebasing` only. The Skip tooltip reads "Skip leaves the current commit out of the rebased branch."
+  - With unmerged entries, the Continue reason is "Continue is unavailable while 1 file is unmerged. Mark it resolved first." or "Continue is unavailable while <n> files are unmerged. Mark them resolved first."
+  - A refused review hides the refused action until the operation state or HEAD changes.
+  - `rebase-exec` hides Continue and Skip. The row shows the remedy text and the command with Copy command. Without a remedy, the row shows "Continue and Skip are unavailable: rebase-exec".
+  - `no-skip-commit` shows "Skip is unavailable: Git names no commit at this rebase stop."
+  - `unknown-operation` shows the 001 `unknown` row text and no action.
+  - Another reason shows "<action name> is unavailable: <reason>".
+  - Abort confirmation: the title "Abort the merge?" or "Abort the rebase?". The text "Git returns the branch, the index, and the working files to their state before the merge." or "… before the rebase." A merge adds "Git can fail to restore uncommitted changes from before the merge." Buttons "Abort merge" or "Abort rebase", and "Cancel".
+  - Skip confirmation: the title "Skip this commit?". The text "Skip leaves commit <short ID> out of the rebased branch." Then the short ID and the subject, or the ID only for a null subject. Then "Git discards the index and working-file changes of this step." Buttons "Skip commit" and "Cancel".
+  - An abort review without `plan.operationState`, or a skip review without `plan.skippedCommit`, starts nothing. The status bar shows "<action name> did not start: the review is incomplete."
 - The 001 repository menu (001 plan.md "Compact token system") gains "Clone…" after "Recent repositories" and "Settings…" after "Select Git".
 - Clone panel (FR-046 to FR-050, FR-054): a non-modal panel in the main area. "Clone…" in the start view and in the repository menu opens it. Escape and "Close clone panel" close it.
   - Heading "Clone repository". Fields "Remote URL" and "Destination folder". Button "Clone".

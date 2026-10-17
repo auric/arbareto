@@ -71,7 +71,9 @@ import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Load
 import { folderName, RepositorySwitcher } from "./RepositorySwitcher";
 import { hasMarkers, RecoveryMarkers } from "../boot/BootView";
 import { COUNTS_TOOLTIP, isTrackingList, NO_BRANCH, trackingLabels, type TrackingEntry, type TrackLabel } from "../state/tracking";
+import { ConflictConfirm, ConflictRow } from "../sync/ConflictActions";
 import { ForcePushConfirm } from "../sync/ForcePushConfirm";
+import { PullModeChoice } from "../sync/PullModeChoice";
 import { pullAction, type DefaultPullAction } from "../sync/PullSplitButton";
 import { PushNoticeRow } from "../sync/PushNoticeRow";
 import { PushPanel } from "../sync/PushPanel";
@@ -328,7 +330,7 @@ export function ChangesPaneMount({ state, requests, profile, menuOpen, modalOpen
   });
   // The Space key acts only on the shown comparison that the pane names. Without a `Comparison`, no file-action decision exists.
   const onFileAction = async (action: FileAction): Promise<FileActionResult> => {
-    const label = action.direction === "unstage" ? "Unstage file" : "Stage file";
+    const label = action.direction === "unstage" ? "Unstage file" : action.direction === "resolve" ? "Mark resolved" : "Stage file";
     if (staging !== undefined && shown.entry !== null && shown.comparison?.comparisonId === action.comparisonId) return runFileAction(fileProps(staging, shown.comparison, shown.entry.category));
     return { state: "refused", text: `${label} is unavailable: ${noDecisionText(state)}` };
   };
@@ -621,7 +623,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     },
   });
   const pushNoticeShown = sync.notice !== null;
-  const modalOpen = trust?.open === true || submoduleReview?.open === true || sync.confirm !== null;
+  const modalOpen = trust?.open === true || submoduleReview?.open === true || sync.confirm !== null || sync.conflictConfirm !== null;
   const switcher = useRef<HTMLDivElement>(null);
   const menubar = useRef<HTMLDivElement>(null);
   const beforeMenu = useRef<HTMLElement | null>(null);
@@ -1070,7 +1072,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // A read sent before the view opened can be older than the view, so it never shows the notice.
   const openedSeq = historyState.openedSeq;
   const refsNotice = refsChanged(historyState.view, state.refsSeq > openedSeq ? (state.refs?.refsDigest ?? null) : null, state.headRead !== null && state.headRead.seq > openedSeq ? state.headRead.head : null);
-  const bandRows = (blockingRow ? 1 : 0) + (submodules > 0 ? 1 : 0) + (refsNotice ? 1 : 0) + (pushNoticeShown ? 1 : 0);
+  const bandRows = (blockingRow ? 1 : 0) + (submodules > 0 ? 1 : 0) + (refsNotice ? 1 : 0) + (pushNoticeShown ? 1 : 0) + (sync.modeChoice ? 1 : 0);
   // plan.md "Icons": the Commit tooltip holds both counts, and Commit has no key.
   const commitLabel = `Commit: ${plural(working, "working change", "working changes")}, ${staged} staged`;
 
@@ -1119,7 +1121,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const currentHead = workspace?.head ?? null;
   const currentEntry = currentHead !== null && currentHead.state === "branch" ? (entries?.find((e) => e.current && `refs/heads/${e.name}` === currentHead.target && e.objectId === currentHead.oid) ?? null) : null;
   const currentLabel = currentEntry === null ? null : (labels.get(currentEntry.name) ?? null);
-  const reasons = syncReasons(currentHead, workspace?.operationState ?? null, currentEntry === null ? null : currentEntry.upstream === null ? "none" : "set", running ? BLOCKED_TEXT.running : state.blocked ? BLOCKED_TEXT.unknown : null);
+  // The reason that blocks every sync action: a running mutation or an unknown state.
+  const syncBlock = running ? BLOCKED_TEXT.running : state.blocked ? BLOCKED_TEXT.unknown : null;
+  const reasons = syncReasons(currentHead, workspace?.operationState ?? null, currentEntry === null ? null : currentEntry.upstream === null ? "none" : "set", syncBlock);
   const runSync = useRef<(control: "fetch" | "pull" | "push") => void>(() => {});
   runSync.current = (control) => {
     if (state.repository === null) return;
@@ -1535,6 +1539,20 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                     <PushNoticeRow notice={sync.notice} {...sync.noticeActions} reason={reasons.pullReason} fetchReason={reasons.fetchReason} bindControl={bindBandControl} />
                   ) : undefined
                 }
+                pullModeRow={sync.modeChoice ? <PullModeChoice onChoose={sync.chooseMode} onCancel={sync.cancelMode} reason={syncBlock} bindControl={bindBandControl} /> : undefined}
+                conflictRow={
+                  workspace.operationState === "merging" || workspace.operationState === "rebasing" ? (
+                    // A new operation state or HEAD is a new stop, so the row forgets the refusals of the last stop.
+                    <ConflictRow
+                      key={`${workspace.operationState}:${workspace.head.state === "unborn" ? "" : workspace.head.oid}`}
+                      operationState={workspace.operationState}
+                      conflicted={conflicted}
+                      reason={syncBlock}
+                      onAction={sync.conflictAction}
+                      bindControl={bindBandControl}
+                    />
+                  ) : undefined
+                }
                 connectRow={
                   connect !== null && connect.repositoryId === state.repository?.repositoryId ? (
                     <ConnectNoticeRow
@@ -1641,6 +1659,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         )}
         {sync.confirm === null || pushBranch === null ? null : (
           <ForcePushConfirm plan={sync.confirm.plan} branch={pushBranch} onConfirm={sync.confirmForce} onCancel={sync.cancelForce} />
+        )}
+        {sync.conflictConfirm === null ? null : (
+          <ConflictConfirm action={sync.conflictConfirm.action} plan={sync.conflictConfirm.plan} onConfirm={sync.confirmConflict} onCancel={sync.cancelConflict} />
         )}
         {submoduleReview === null ? null : (
           <SubmoduleReview

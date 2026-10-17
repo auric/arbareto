@@ -7,7 +7,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { CFunction, dlopen, FFIType, ptr, read, type Pointer } from "bun:ffi";
-import { readdirSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs";
 import { release } from "node:os";
 import { join } from "node:path";
 import { processCreationTime, terminateRecorded } from "../git/win32";
@@ -137,8 +137,11 @@ const STARTUPINFOEX_BYTES = 112;
 const STARTF_USESTDHANDLES = 0x100;
 const PROCESS_INFORMATION_BYTES = 24;
 const GENERIC_READ_WRITE = 0xc000_0000;
+// Cygwin `dtable::init_std_file_from_handle` gives an inherited handle O_WRONLY only with FILE_WRITE_DATA, so an append-only handle drops the writes of `sh`.
+const FILE_GENERIC_WRITE = 0x0012_0116;
 const FILE_SHARE_READ_WRITE = 0x3;
 const OPEN_EXISTING = 3;
+const CREATE_ALWAYS = 2;
 // x64 SECURITY_ATTRIBUTES: `nLength` at 0, `bInheritHandle` at 16.
 const SECURITY_ATTRIBUTES_BYTES = 24;
 const STILL_ACTIVE = 259;
@@ -229,8 +232,9 @@ function dialogProbe(manifest: string): never {
   process.exit(0);
 }
 
-// One inheritable NUL handle serves as all three standard handles. NUL reads give end of file, so Git gets an empty standard input (plan.md D14).
-function startInJob(job: Pointer, program: string, args: readonly string[], cwd: string): { process: Pointer; pid: number } {
+// An inheritable NUL handle is the standard input. NUL reads give end of file, so Git gets an empty standard input (plan.md D14).
+// Standard output and standard error go to one inheritable handle of the new file `log`. Every Git process shares its file position. Both handles are in the handle list, as in spawn.rs.
+function startInJob(job: Pointer, program: string, args: readonly string[], cwd: string, log: string): { process: Pointer; pid: number } {
   const { kernel32 } = win();
   for (const arg of args) if (!/^[^\s"\\]+$/.test(arg)) throw new Error(`the probe command line takes no quoting: ${arg}`);
   const security = new Uint8Array(SECURITY_ATTRIBUTES_BYTES);
@@ -238,6 +242,11 @@ function startInJob(job: Pointer, program: string, args: readonly string[], cwd:
   view(security).setUint32(16, 1, true);
   const nul = kernel32.CreateFileW(ptr(wide("NUL")), GENERIC_READ_WRITE, FILE_SHARE_READ_WRITE, ptr(security), OPEN_EXISTING, 0, null);
   if (!valid(nul)) fail("CreateFileW NUL");
+  const output = kernel32.CreateFileW(ptr(wide(log)), FILE_GENERIC_WRITE, FILE_SHARE_READ_WRITE, ptr(security), CREATE_ALWAYS, 0, null);
+  if (!valid(output)) {
+    kernel32.CloseHandle(nul);
+    fail("CreateFileW log");
+  }
   const size = new BigUint64Array(1);
   // A size query without a list fails with ERROR_INSUFFICIENT_BUFFER and sets `size`.
   kernel32.InitializeProcThreadAttributeList(null, 2, 0, ptr(size));
@@ -245,15 +254,16 @@ function startInJob(job: Pointer, program: string, args: readonly string[], cwd:
   if (!kernel32.InitializeProcThreadAttributeList(ptr(list), 2, 0, ptr(size))) fail("InitializeProcThreadAttributeList");
   try {
     // Microsoft Learn `UpdateProcThreadAttribute`: each value must persist until the list is deleted.
-    const handles = new Uint8Array(new BigUint64Array([BigInt(nul)]).buffer);
+    const handles = new Uint8Array(new BigUint64Array([BigInt(nul), BigInt(output)]).buffer);
     const jobs = new Uint8Array(new BigUint64Array([BigInt(job)]).buffer);
-    if (!kernel32.UpdateProcThreadAttribute(ptr(list), 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, pinned(handles), 8n, null, null)) fail("UpdateProcThreadAttribute HANDLE_LIST");
+    if (!kernel32.UpdateProcThreadAttribute(ptr(list), 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, pinned(handles), BigInt(handles.byteLength), null, null)) fail("UpdateProcThreadAttribute HANDLE_LIST");
     if (!kernel32.UpdateProcThreadAttribute(ptr(list), 0, PROC_THREAD_ATTRIBUTE_JOB_LIST, pinned(jobs), 8n, null, null)) fail("UpdateProcThreadAttribute JOB_LIST");
     const startup = new Uint8Array(STARTUPINFOEX_BYTES);
     const s = view(startup);
     s.setUint32(0, STARTUPINFOEX_BYTES, true);
     s.setUint32(60, STARTF_USESTDHANDLES, true);
-    for (const at of [80, 88, 96]) s.setBigUint64(at, BigInt(nul), true);
+    s.setBigUint64(80, BigInt(nul), true);
+    for (const at of [88, 96]) s.setBigUint64(at, BigInt(output), true);
     s.setBigUint64(104, address(list), true);
     const info = new Uint8Array(PROCESS_INFORMATION_BYTES);
     const application = wide(program);
@@ -270,6 +280,7 @@ function startInJob(job: Pointer, program: string, args: readonly string[], cwd:
   } finally {
     kernel32.DeleteProcThreadAttributeList(ptr(list));
     kernel32.CloseHandle(nul);
+    kernel32.CloseHandle(output);
   }
 }
 
@@ -288,6 +299,7 @@ interface StartCommand {
   git: string;
   cwd: string;
   args: string[];
+  log: string;
 }
 type ShellCommand = StartCommand | { cmd: "pids" } | { cmd: "cancel" };
 
@@ -311,7 +323,7 @@ async function shellProbe(): Promise<never> {
       const limits = new Uint8Array(JOB_EXTENDED_LIMIT_BYTES);
       view(limits).setUint32(JOB_LIMIT_FLAGS_OFFSET, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, true);
       if (!kernel32.SetInformationJobObject(job, JOB_EXTENDED_LIMIT_CLASS, ptr(limits), JOB_EXTENDED_LIMIT_BYTES)) fail("SetInformationJobObject");
-      run = { job, ...startInJob(job, command.git, command.args, command.cwd) };
+      run = { job, ...startInJob(job, command.git, command.args, command.cwd, command.log) };
       reply({ pid: run.pid, foreground, allowed });
     } else if (command.cmd === "pids") {
       if (run === null) throw new Error("no run is open");
@@ -702,7 +714,8 @@ ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $s
     async () => {
       const tool = join(fixtureDir("native-tool"), TOOL_NAME);
       writeGuiCopy(process.execPath, tool);
-      const shell = spawnProbe("shell", [], fixtureEnv({ GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: ":" }));
+      const trace = join(fixtureDir("native-tool"), "git-trace.log");
+      const shell = spawnProbe("shell", [], fixtureEnv({ GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: ":", GIT_TRACE: trace }));
       const tools: Member[] = [];
       try {
         await shell.reply<{ hwnd: number }>(MAX_WAIT_MS);
@@ -721,25 +734,41 @@ ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $s
           const focused = focusWait === "ok";
           const noForeground = focusWait === "TIMEOUT" ? foregroundSkip(shell.pid) : null;
           const lock = foregroundLock();
-          shell.send({ cmd: "start", allow: variant === "allow", git: GIT!, cwd: fixture.repo, args: MERGETOOL_ARGS });
+          const log = join(fixtureDir("native-tool"), `git-output-${variant}.log`);
+          shell.send({ cmd: "start", allow: variant === "allow", git: GIT!, cwd: fixture.repo, args: MERGETOOL_ARGS, log });
           const started = await shell.reply<{ pid: number; foreground: boolean; allowed: boolean | null }>(MAX_WAIT_MS);
           const facts = await waitReady(ready);
           shell.send({ cmd: "pids" });
           const job = await shell.reply<{ members: { pid: number; created: string | null }[]; gitRunning: boolean; gitExit: number }>(MAX_WAIT_MS);
-          const names = new Map(processRecords().map((r) => [r.pid, r.name]));
-          if (facts === null) throw new Error(`the fixture tool did not start within ${TOOL_READY_MS} ms; Git running ${job.gitRunning}, exit ${job.gitExit}; Job members ${job.members.map((m) => names.get(m.pid) ?? `pid ${m.pid}`).join(", ") || "none"}`);
-          tools.push({ pid: facts.pid, name: TOOL_NAME, created: processCreationTime(facts.pid) });
-          const owner = foregroundPid();
-          const later = owner === null ? null : (names.get(owner) ?? `pid ${owner}`);
-          if (noFocus !== null) unverified(`N6.${variant}`, noFocus);
-          else if (noForeground !== null) unverified(`N6.${variant}`, noForeground);
-          else if (!started.foreground) unverified(`N6.${variant}`, `missing capability foreground: the probe shell was not the foreground window at the start (UIA focus ${focused})`);
-          else observe(`N6.${variant}`, { foreground: true }, { foreground: facts.foreground, foregroundOwnerAtReady: later, allowed: started.allowed, ...lock }, facts.foreground);
+          const records = processRecords();
+          const names = new Map(records.map((r) => [r.pid, r.name]));
           const members = job.members.map((m) => ({ pid: m.pid, name: names.get(m.pid) ?? null, created: m.created === null ? null : BigInt(m.created) }));
+          if (facts === null) {
+            // plan.md O-19: a stalled tool start is a finding. The diagnostics come before the Cancel ends the Job.
+            console.log(`DIAG ${TASK}: ${variant}: Git standard output and error:\n${readFileSync(log, "utf8")}`);
+            console.log(`DIAG ${TASK}: ${variant}: last 40 lines of GIT_TRACE:\n${(existsSync(trace) ? readFileSync(trace, "utf8") : "(no trace file)").split("\n").slice(-41).join("\n")}`);
+            for (const m of members) {
+              // CIM keeps microseconds only. A member that still has its Job-time creation time was alive during the CIM read, so the PID record is that process.
+              const r = m.created !== null && processCreationTime(m.pid) === m.created ? records.find((x) => x.pid === m.pid) : undefined;
+              console.log(`DIAG ${TASK}: ${variant}: Job member ${JSON.stringify({ pid: m.pid, image: r?.name ?? null, parent: r?.parent ?? null, created: m.created?.toString() ?? null, commandLine: r?.commandLine ?? null })}`);
+            }
+            observe("N3.tool-in-job", true, { toolStarted: false, variant, gitRunning: job.gitRunning, gitExit: job.gitExit, members: members.map((m) => m.name) }, false);
+            if (variant === "plain") unverified("N4.cancel-ends-tree", "the tool did not start");
+            unverified(`N6.${variant}`, "the tool did not start");
+          } else {
+            tools.push({ pid: facts.pid, name: TOOL_NAME, created: processCreationTime(facts.pid) });
+            const owner = foregroundPid();
+            const later = owner === null ? null : (names.get(owner) ?? `pid ${owner}`);
+            if (noFocus !== null) unverified(`N6.${variant}`, noFocus);
+            else if (noForeground !== null) unverified(`N6.${variant}`, noForeground);
+            else if (!started.foreground) unverified(`N6.${variant}`, `missing capability foreground: the probe shell was not the foreground window at the start (UIA focus ${focused})`);
+            else observe(`N6.${variant}`, { foreground: true }, { foreground: facts.foreground, foregroundOwnerAtReady: later, allowed: started.allowed, ...lock }, facts.foreground);
+          }
           shell.send({ cmd: "cancel" });
           await shell.reply(MAX_WAIT_MS);
           const left = await waitEnded(members);
-          if (variant === "plain") {
+          if (facts === null) observe("N4.cancel-ends-started-members", { remaining: [] }, { names: members.map((m) => m.name), remaining: left.map((m) => m.name) }, left.length === 0);
+          else if (variant === "plain") {
             observe("N3.tool-in-job", true, members.some((m) => m.pid === facts.pid));
             const listed = [...new Set(members.map((m) => m.name))].sort();
             const required = ["git.exe", "sh.exe", TOOL_NAME];

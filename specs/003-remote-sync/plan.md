@@ -369,6 +369,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - A succeeded pull or integrate with `modeSource` shows "Pull completed. <source> selected the mode." The sources are `payload` "The choice for this pull", `branch` "branch.<branch>.rebase", `pull` "pull.rebase", and `pull-ff` "pull.ff". A null `modeSource` shows "Pull completed".
 - Conflict row (FR-030, FR-042 to FR-045): the row replaces the blocking row for `merging` and `rebasing`. It sits after the Connect in a terminal row (tasks.md exception 2026-10-17).
   - It shows the 001 first sentence without "finish it outside Arbareto".
+  - While `merging` or `rebasing`, the toolbar and the hunk and file controls give the reason "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band." Every other state that is not `normal` keeps the 001 reason "Arbareto blocks changes until the Git operation ends outside Arbareto. Then select Refresh (F5)."
   - Buttons "Abort…", "Continue", and "Skip…" for `rebasing` only. The Skip tooltip reads "Skip leaves the current commit out of the rebased branch."
   - With unmerged entries, the Continue reason is "Continue is unavailable while 1 file is unmerged. Mark it resolved first." or "Continue is unavailable while <n> files are unmerged. Mark them resolved first."
   - A refused review hides the refused action until the operation state or HEAD changes.

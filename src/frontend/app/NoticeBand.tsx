@@ -71,6 +71,9 @@ function recoverySentences({ outcome, attribution, indexMatch, submoduleResults 
   return out;
 }
 
+/** True when the recovery statement gives the band a row. */
+export const hasRecoveryRow = (recovery: RecoveryStatement) => recoverySentences(recovery).length > 0 || recovery.foreign !== undefined;
+
 function RecoveryRow({ recovery }: { recovery: RecoveryStatement }) {
   const foreign = recovery.foreign ?? [];
   const more = recovery.foreignTotal === undefined ? null : recovery.foreignTotal - foreign.length;
@@ -147,7 +150,7 @@ export function NoticeBand({ operationState, conflicted, submoduleRow, recovery,
   const headingId = useId();
   const inApp = ACTIONS_IN_APP.includes(operationState);
   const first = inApp && conflictRow ? null : blockingText(operationState, conflicted);
-  const recoveryRow = recovery !== undefined && (recoverySentences(recovery).length > 0 || recovery.foreign !== undefined);
+  const recoveryRow = recovery !== undefined && hasRecoveryRow(recovery);
   if (first === null && !submoduleRow && !recoveryRow && !refsChanged && !pushRow && !connectRow && !pullModeRow && !conflictRow) return null;
   return (
     <section aria-labelledby={headingId} className="flex items-start gap-3 border-b border-divider bg-warning-fill px-2">

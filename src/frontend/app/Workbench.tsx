@@ -10,7 +10,7 @@ import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
 import { ChangesPane as ChangesList, type FileAction, type FileActionResult } from "../changes/ChangesPane";
 import { ComparisonView as Comparison, resultOf, showsDiff } from "../changes/ComparisonView";
 import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
-import { BLOCKED_TEXT, HunkControls, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
+import { BLOCKED_TEXT, HunkControls, operationBlock, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
 import { CommitTray } from "../commit/CommitTray";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
@@ -65,7 +65,7 @@ import { OperationStatus, SYNC_NAMES, type StatusOperation, type StatusRegionHan
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
 import { passedAcceptance, SubmoduleReview, type SubmoduleReviewValue } from "../submodules/SubmoduleReview";
 import { isTrustReport, SaveFailedNotice, TrustDialog, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
-import { blockingText, NoticeBand } from "./NoticeBand";
+import { blockingText, hasRecoveryRow, NoticeBand } from "./NoticeBand";
 import { MENU_CONTENT, MenuKey, RepositoryMenu } from "./RepositoryMenu";
 import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
 import { folderName, RepositorySwitcher } from "./RepositorySwitcher";
@@ -1072,7 +1072,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // A read sent before the view opened can be older than the view, so it never shows the notice.
   const openedSeq = historyState.openedSeq;
   const refsNotice = refsChanged(historyState.view, state.refsSeq > openedSeq ? (state.refs?.refsDigest ?? null) : null, state.headRead !== null && state.headRead.seq > openedSeq ? state.headRead.head : null);
-  const bandRows = (blockingRow ? 1 : 0) + (submodules > 0 ? 1 : 0) + (refsNotice ? 1 : 0) + (pushNoticeShown ? 1 : 0) + (sync.modeChoice ? 1 : 0);
+  const connectShown = connect !== null && connect.repositoryId === state.repository?.repositoryId;
+  const recoveryShown = recovery !== null && recovery.repositoryId === state.repository?.repositoryId && hasRecoveryRow(recovery.statement);
+  // plan.md "Overflow": the band reserves at most two rows and scrolls inside them. The conflict row replaces the blocking row.
+  const noticeRows = [blockingRow, submodules > 0, refsNotice, pushNoticeShown, sync.modeChoice, connectShown, recoveryShown].filter(Boolean).length;
+  const bandRows = workspace === null ? 0 : Math.min(noticeRows, 2);
   // plan.md "Icons": the Commit tooltip holds both counts, and Commit has no key.
   const commitLabel = `Commit: ${plural(working, "working change", "working changes")}, ${staged} staged`;
 
@@ -1106,7 +1110,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The states that block mutations (plan.md "Required visible states": Busy, State unknown, Conflicted/unfinished operation, Limited output).
   const running = operation !== null && operation.response === null;
   const loading = workspace === null || state.entries.length < workspace.entryCount;
-  const stateBlocked: Blocked = state.blocked ? "unknown" : workspace !== null && workspace.operationState !== "normal" ? "conflicted" : null;
+  const stateBlocked: Blocked = state.blocked ? "unknown" : workspace !== null ? operationBlock(workspace.operationState) : null;
   const blocked: Blocked = running ? (operation.kind === "applyFile" ? "busy" : "running") : stateBlocked;
   const blockedReason = blocked === null ? null : BLOCKED_TEXT[blocked];
   // The own request of the review dialog does not block Start update. A state block still does.
@@ -1554,7 +1558,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                   ) : undefined
                 }
                 connectRow={
-                  connect !== null && connect.repositoryId === state.repository?.repositoryId ? (
+                  connectShown ? (
                     <ConnectNoticeRow
                       name={connect.name}
                       connect={() => bridge.connectInTerminal({ repositoryId: connect.repositoryId }, { operationId: connect.operationId })}

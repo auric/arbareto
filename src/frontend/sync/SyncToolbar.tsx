@@ -6,7 +6,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, type ReactNode } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { MENU_CONTENT } from "../app/RepositoryMenu";
-import { BLOCKED_TEXT } from "../changes/HunkControls";
+import { BLOCKED_TEXT, operationBlock } from "../changes/HunkControls";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
@@ -31,9 +31,11 @@ export type SyncReasons = { fetchReason: string | null; pullReason: string | nul
  * FR-038: Commit and push on an unborn branch stays available. The push review after the commit decides.
  */
 export function syncReasons(head: Head | null, operationState: OperationState | null, upstream: "none" | "set" | null, blocked: string | null): SyncReasons {
+  const block = operationState === null ? null : operationBlock(operationState);
+  const operation = block === null ? null : BLOCKED_TEXT[block];
   const branch =
-    head === null ? BLOCKED_TEXT.loading : head.state === "detached" ? DETACHED : head.state === "unborn" ? UNBORN : operationState !== "normal" ? BLOCKED_TEXT.conflicted : null;
-  const commitPush = head?.state === "unborn" ? (operationState !== "normal" ? BLOCKED_TEXT.conflicted : null) : branch;
+    head === null ? BLOCKED_TEXT.loading : head.state === "detached" ? DETACHED : head.state === "unborn" ? UNBORN : operation;
+  const commitPush = head?.state === "unborn" ? operation : branch;
   return { fetchReason: blocked, pullReason: blocked ?? branch ?? (upstream === "none" ? NO_UPSTREAM : null), pushReason: blocked ?? branch, commitPushReason: blocked ?? commitPush };
 }
 

@@ -127,9 +127,19 @@ describe("unavailable reasons (FR-017, FR-028)", () => {
     await open({ operationState: "merging" });
     for (const label of ["Pull", "Push"]) {
       expect(disabled(button(label))).toBe(true);
-      expect(reasonOf(button(label))).toContain(BLOCKED_TEXT.conflicted);
+      expect(reasonOf(button(label))).toContain(BLOCKED_TEXT.operation);
     }
     expect(disabled(button("Fetch"))).toBe(false);
+  });
+
+  // Feature 003 FR-030: only a merge or a rebase has the conflict row. Every other state keeps the 001 text.
+  test("an operation without the conflict row keeps the 001 reason", async () => {
+    for (const operationState of ["cherry-picking", "reverting", "sequencer-active", "unknown", "conflicted"] as const) {
+      await open({ operationState });
+      expect(reasonOf(button("Pull"))).toContain(BLOCKED_TEXT.conflicted);
+      expect(reasonOf(button("Pull"))).not.toContain(BLOCKED_TEXT.operation);
+      await unmountAll();
+    }
   });
 
   test("a missing remote shows at the review: the toolbar keeps Fetch available and shows the typed refusal", async () => {

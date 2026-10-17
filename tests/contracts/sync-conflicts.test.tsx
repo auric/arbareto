@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
 import type { ReactNode } from "react";
 import type { ChangeEntry } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
@@ -222,5 +222,57 @@ describe("Skip (FR-044)", () => {
     await answer(double.pending("reviewSync"), refused("rebase-exec", { remedy: { text: EXEC_TEXT, command: null } }));
     expect(text(row()!)).toContain(EXEC_TEXT);
     expect(actions()).toEqual(["Abort…"]);
+  });
+});
+
+// plan.md "Overflow": the band reserves one layout row for each shown notice row, at most two. The history list takes the rest.
+describe("band rows", () => {
+  // A wide window gives the history list a computed height (plan.md "Chosen layout, sizes, and DPI").
+  type SizedWindow = { happyDOM: { setInnerWidth(width: number): void; setInnerHeight(height: number): void } };
+  const happy = () => (window as unknown as SizedWindow).happyDOM;
+  let before = { width: 0, height: 0 };
+  beforeEach(() => {
+    before = { width: window.innerWidth, height: window.innerHeight };
+    happy().setInnerWidth(1600);
+    happy().setInnerHeight(1000);
+  });
+  afterEach(() => {
+    happy().setInnerWidth(before.width);
+    happy().setInnerHeight(before.height);
+  });
+  const listHeight = () => Number.parseFloat(document.querySelector<HTMLElement>('[data-section="historyList"]')!.style.height);
+  const connectFailure = (action: string) => ({ requestId: fixtureId(201), operationId: fixtureId(202), state: "failed", code: "GIT_FAILED", result: { action, connectTarget: true } });
+  async function failFetchWithConnect(double: Awaited<ReturnType<typeof mountWorkbench>>) {
+    await click(button("Fetch", document.querySelector("header")!));
+    await answer(double.pending("reviewSync"), succeeded({ action: "fetch", plan: { remotes: ["origin"] }, syncReviewToken: TOKEN }));
+    await answer(double.pending("sync"), connectFailure("fetch"));
+  }
+
+  test("the connect row and the conflict row each take a band row", async () => {
+    const { double } = await open("merging", [conflicted("a.txt")]);
+    const one = listHeight();
+    await failFetchWithConnect(double);
+    expect(buttons("Connect in a terminal", band())).toHaveLength(1);
+    expect(row()).not.toBeNull();
+    const two = listHeight();
+    expect(two).toBeLessThan(one);
+  });
+
+  test("a third row scrolls inside the two reserved rows", async () => {
+    const double = await mountWorkbench(workbench, createWorld());
+    await click(document.querySelector<HTMLElement>('button[data-slot="pull-main"]')!);
+    await answer(double.pending("reviewSync"), succeeded({ action: "pull", plan: { remotes: ["origin"], mode: null }, syncReviewToken: TOKEN }));
+    await answer(double.pending("sync"), succeeded({ action: "pull", counts: { ahead: 2, behind: 3 }, integration: { state: "mode-required" }, modeSource: null }));
+    const one = listHeight();
+    await click(button("Push"));
+    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination: { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "u", setUpstream: false, upstreamRebase: false, source: "push-default-branch" } }, syncReviewToken: TOKEN_2 }));
+    await answer(double.pending("sync"), { requestId: fixtureId(203), operationId: fixtureId(204), state: "failed", code: "PUSH_REJECTED", result: { action: "push", push: { status: "rejected", oldObjectId: oid(9), newObjectId: oid(9), reasonText: "fetch first", lease: false, upstreamWritten: false, upstreamNotSet: false, outputTail: "" } } });
+    const two = listHeight();
+    expect(two).toBeLessThan(one);
+    await failFetchWithConnect(double);
+    expect(text(band())).toContain("Push rejected.");
+    expect(text(band())).toContain("Choose Rebase or Merge for this pull.");
+    expect(buttons("Connect in a terminal", band())).toHaveLength(1);
+    expect(listHeight()).toBe(two);
   });
 });

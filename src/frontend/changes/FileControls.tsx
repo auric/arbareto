@@ -57,7 +57,7 @@ function decide(props: Omit<FileControlsProps, "reasonId">): Decision {
   const direction: Direction = accepted ? action : category === "staged" ? "unstage" : category === "conflicted" && action !== "state" ? "resolve" : "stage";
   const refusal = accepted ? null : REFUSAL_TEXT[action];
   // A merge or a rebase in progress blocks staging, but Mark resolved exists for it. The service checks the bound operation state (plan.md D7).
-  const blocked = direction === "resolve" && props.blocked === "conflicted" ? null : props.blocked;
+  const blocked = direction === "resolve" && (props.blocked === "conflicted" || props.blocked === "operation") ? null : props.blocked;
   return { label: LABEL[direction], direction, reason: refusal ?? stagingReason({ ...props, blocked }) ?? (props.target ? null : BLOCKED_TEXT.stale) };
 }
 

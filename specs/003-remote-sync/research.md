@@ -334,6 +334,25 @@ Run of 2026-10-18 in `C:\Projects\arbareto-l5` on `f003-spec` at 6535d9b. The `t
 
 Ticks: T044 to T051, T052 to T065, T085, T086, and T066 cite this run. Batch 2 ticks T028 and T031 to T042, because their tests are in `tests/groups.json` and pass in this run. T087 and T088 cite this run. T027 and T030 stay open: their Sandbox and PuTTY cases did not run. T043 stays open, although its control mutation passed and the batch 2 review is recorded: its scope includes T027 and T030, whose Sandbox cases wait for T013.
 
+## R20 Batch 5 verification (T074, automated part)
+
+Run of 2026-10-18 in `C:\Projects\arbareto-l2` on `f003-b5-conflicts` at 969a2e8. The `test:all` run used `ARBARETO_WSL_DISTRO=Ubuntu-26.04` and `ARBARETO_TEST_WORKERS=6`. The batch 5 review is recorded ("Batch reviews").
+
+| Step | 969a2e8 |
+|---|---|
+| `bun install --frozen-lockfile` | 0 |
+| `bun run build` | 0 |
+| `bun run typecheck` | 0 |
+| `bun run test:all` | 0. Parallel step: 5,366 pass, 0 fail, 37 skip. Serial step: 395 pass, 0 fail, 9 skip. |
+
+- `ORIGIN`: every line is under `C:\Projects\arbareto-l2`.
+- Skips: the 15 distinct skip reasons are the same as in R19.
+- T074 control mutation: with the Continue condition at `src/frontend/sync/ConflictActions.tsx:68` set to `false`, `tests/contracts/sync-conflicts.test.tsx` failed at "Continue is unavailable while the unmerged count is above 0 and states the count (FR-043)": 17 pass, 1 fail. After the undo, the file passed (18 of 18).
+- Extra run, not part of T074: `bun run test:windows` had 2 UIA focus failures. This branch predates the main harness fix bc51bf6, which adds the `foreground` capability skip.
+- Manual check: the quickstart.md "Manual check in the app" has not run. It needs the user's input.
+
+Ticks: T067 to T073 cite this run and the batch 5 review. T074 stays open until the manual check runs.
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.
@@ -346,3 +365,5 @@ Resolution: 4a63f4e fixes `core.alternateRefsCommand`, the `PUSH_REJECTED` reaso
 **Batch 3, 2026-10-17.** Independent batch 3 review, reviewer agent (Opus), 2026-10-17. Scope: d1c4a00 (T044 to T050) and the merge a9c4b0f. Verdict: no blocking finding and no heuristic. Items and state, all fixed in d25e0d5: fetch and pull now use one fetch path; success needs a normal operation state; the pull mode binding; the reason `unknown-operation`; the text for an unreadable todo; the `index.lock` test. Found during batch 3 and fixed in d1c4a00: the `rebase-exec` rule (R18).
 
 **Batch 4, 2026-10-17.** Independent batch 4 review, reviewer agent (Opus) with `web-design-guidelines`, 2026-10-17. Scope: the service 5a8a3e8..f003-b4-svc (T052 to T055) and the UI 42898d8..623c9e6 (T056 to T065, T085, T086). Verdict: the service is clean. UI items, fixed in 33e0da0: the force push fails closed; Commit and push works on an unborn branch; the push waits for the reconcile read; the accessibility fixes. Service fixes are in 6b7d336. The connect target fact is in dabdf1d.
+
+**Batch 5, 2026-10-18.** Independent batch 5 review, reviewer agent (Opus) with `ponytail-review`, `web-design-guidelines`, and the `arbareto-ux` rules, 2026-10-18. Scope: 943b9e1..3ae1247 (clone and settings UI) and b5fdd4d..f003-b5-conflicts (pull mode choice, conflict actions, Mark resolved). Verdict: no security finding and no heuristic. Fix first, fixed in 969a2e8: three new test files were in no group; a new `tests/groups.ts` check now runs in every contracts run through `tests/contracts/groups.test.ts`. Medium, fixed in 969a2e8: the clone panel could close while a clone ran; the pull mode row could go stale. Low, fixed in 969a2e8: Continue during a loading status read; Cancel before the operation ID; Clear plink while plink is in use; an arrow key opened the plink picker; two D12 contradictions; an unused ref; the mode row took focus from an editable field. Fixed earlier: `connectTarget` replaced the Connect in a terminal inference (dabdf1d). Also in this batch: in 8b010de, the Pull reason checks the operation state before the HEAD form, as contract Δ3 does.

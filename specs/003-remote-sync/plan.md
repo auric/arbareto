@@ -304,6 +304,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 - Argv: `--no-lazy-fetch clone --progress --no-recurse-submodules -- <url> <destination>`. The cwd is the application-owned launch folder, or `/` in WSL.
 - Exit 0, then the 001 `chooseRepository` registration flow with the same `bootstrapId`. It must give the destination as the top level. Then the 001 registration result follows, and the trust gate comes before the first read (FR-051). The shell stores the recent entry and the last clone parent.
 - Other ends: `destinationFacts` again, and the result states `exists` and `empty` (FR-050). No file is deleted or moved.
+- Without a destination fact or a process-end fact, the result holds the code only, and the renderer shows the folder state as unknown ("Open items").
 
 ### D11 Trust
 
@@ -341,6 +342,11 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 - FR-013: after a fetch outcome, the renderer refreshes the 002 view with `{oid}` of the selected commit, without the refs-changed notice.
 - Commit and push: the 001 commit, then a push review only after `succeeded`. The push review waits for the reconcile read of the commit, so it carries the new generation. An unborn branch does not disable Commit and push (FR-038). The push review after the commit decides.
 - Mutation names (001 plan.md "Status and fallback texts"): Mark resolved is "Mark resolved". A `sync` takes the name of its action: "Fetch", "Fetch all remotes", "Pull" (also for `integrate`), "Push", "Force push with lease", "Abort", "Continue", or "Skip". A clone is "Clone". The shell close prompt reads the action from the `started` frame (contract Δ6).
+- A failed or canceled clone names the folder state from `exists` and `empty` (FR-050, data-model §8):
+  - `exists` false: "The folder does not exist."
+  - `exists` true and `empty` true: "The folder is empty."
+  - `exists` true and `empty` false: "The folder is not empty. Arbareto deleted and moved no file." A canceled clone that left files shows this text.
+  - A result without `exists` and `empty`: "The folder state is unknown."
 - Mark resolved shows "Marking resolved" while it runs and "File marked resolved" after `succeeded`. A running `sync` shows the FR-002 step text.
 - The stage bar button of a Conflicted entry with the decision `resolve` reads "Mark resolved (Space)", and Space runs it.
 - Settings dialog: the SSH client, plink, key files per repository and remote, PuTTYgen, and the default clone folder.
@@ -404,6 +410,10 @@ Further reviewer defaults:
 - The clone suggestion splits at `/`, `\`, and `:`.
 - Lease subjects stop at 100.
 - The count display bound is 10,000.
+
+## Open items
+
+- **WSL clone process end.** Contract gap. The 001 §12 process-end fact runs in the context of a registered workspace, and a clone has none. So a WSL clone process without an exit status, after Cancel or a limit, gives the code only, without `{exists, empty}` (contract Δ3 `clone` step 6). A fix needs a process-end fact in the `clone` context. T075 records the result.
 
 ## Phases
 

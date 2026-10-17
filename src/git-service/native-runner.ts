@@ -6,6 +6,7 @@ import {
   Base64,
   ConfirmReply,
   ConfirmRunReply,
+  DestinationFactsReply as DestinationFactsReplySchema,
   ExitReply,
   FileFactsReply,
   IdentityListReply,
@@ -18,6 +19,7 @@ import {
   ResolveGitReply,
   RevokeReply,
   StartedReply as StartedReplySchema,
+  TerminalReply as TerminalReplySchema,
   WslDistrosReply,
   WslFilesReply,
 } from "../contracts/channel";
@@ -34,6 +36,7 @@ import {
   checkRelease,
   checkResolveGit,
   checkStarted,
+  checkSyncRequest,
   checkTrust,
   checkWslDistros,
   checkWslFiles,
@@ -42,6 +45,7 @@ import {
   indexFits,
   wslResultsFit,
   RunnerRefusal,
+  type DestinationFactsReply,
   type FileFact,
   type FileFactsRequest,
   type GitCall,
@@ -49,6 +53,7 @@ import {
   type GitRunner,
   type PageantReply,
   type SyncRunner,
+  type TerminalReply,
   type WslDistrosResult,
   type WslFileResult,
   type WslIndexResult,
@@ -428,6 +433,26 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
       checkPageant(request);
       return ask<PageantReply>("process", { type: "pageant", ...request }, (r) => {
         const reply = PageantReplySchema.safeParse(r);
+        if (!reply.success) return undefined;
+        const { type: _type, callId: _callId, ...result } = reply.data;
+        return result;
+      });
+    },
+
+    async destinationFacts(request) {
+      checkSyncRequest("destinationFacts", request);
+      return ask<DestinationFactsReply>("process", { type: "destinationFacts", ...request }, (r) => {
+        const reply = DestinationFactsReplySchema.safeParse(r);
+        if (!reply.success) return undefined;
+        const { type: _type, callId: _callId, ...result } = reply.data;
+        return result;
+      });
+    },
+
+    async terminal(request) {
+      checkSyncRequest("terminal", request);
+      return ask<TerminalReply>("process", { type: "terminal", ...request }, (r) => {
+        const reply = TerminalReplySchema.safeParse(r);
         if (!reply.success) return undefined;
         const { type: _type, callId: _callId, ...result } = reply.data;
         return result;

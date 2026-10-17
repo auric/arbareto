@@ -8,13 +8,12 @@ import type { Response, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SYNC_REFS_BYTES } from "../contracts/limits";
 import { isWindows } from "../contracts/native-path";
-import { PHASE_COUNTERS, type Phase } from "../contracts/operations";
 import type { OperationEvent } from "../contracts/outcome";
 import { buildRemedyCommand } from "../contracts/remedy-command";
 import { redactUrlUserInfo, type StallRemedy } from "../contracts/submodules";
 import type { ApprovalKey, Approvals, SyncReview } from "./approvals";
 import type { Entered, Exclusion, NotEntered } from "./exclusion";
-import { createCollector, PROCESS_LIMITS, RunnerRefusal, type Collector, type GitExit, type GitRunner, type PageantReply, type SyncRunner } from "./git-runner";
+import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit, type GitRunner, type PageantReply, type SyncRunner } from "./git-runner";
 import { captureHead } from "./history";
 import { enterReconciling, isStop, notEntered, settled, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
 import type { OperationRegistry } from "./operations";
@@ -25,7 +24,7 @@ import { trackStall } from "./stall";
 import type { WorkspaceReader } from "./status";
 import { stepStderr } from "./submodule-update";
 import { fetchArgs, pushArgs, upstreamArgs } from "./sync-commands";
-import { runIntegration } from "./sync-integrate";
+import { runIntegration, type StepPhase } from "./sync-integrate";
 import { createFetchParser, FETCH_FLAGS, parsePushPorcelain, type FetchFlag, type FetchList, type FetchUpdate, type PushStatus } from "./sync-parsers";
 import { lastValue, listRefs, observeSync, refKey, refText, type Observation, type SyncBinding } from "./sync-review";
 import type { ConfigEntry, Trust } from "./trust";
@@ -169,117 +168,6 @@ export function trackingOf(entries: readonly ConfigEntry[], remote: string, dst:
 const holdsUserInfo = (entries: readonly ConfigEntry[], remote: string, extra: readonly string[] = []) =>
   [...entries.filter((e) => (e.key === `remote.${remote}.url` || e.key === `remote.${remote}.pushurl`) && e.value !== null).map((e) => e.value!), ...extra].some((url) => redactUrlUserInfo(url) !== url);
 
-// The step helpers of one mutation that runs `remote` or `integrate` steps: feature 003 `sync` and feature 004 `runWorkbench`.
-export interface StepKit {
-  ctx: ObserveContext;
-  // Contract §8: a cancel never stops a reconciliation read, so `q` reads with a signal that never aborts.
-  q: ObserveContext;
-  // A refusal before any step process: no effect, so the outcome is known.
-  refuse(ending: { code: ErrorCode; reason?: Failure["reason"]; result?: unknown } | Stop): void;
-  finish(event: OperationEvent, result: unknown, known?: boolean, cause?: ErrorCode): void;
-  unknown(f: Failure | Stop, result: unknown): void;
-  // Enters `reconciling`. True: the operation passed `cancel-requested`.
-  enter(deadline: boolean): boolean;
-  step(args: string[], phase: Phase, counters: Record<string, number>, remedy: Remedy, stdout: Collector, policy?: "remote" | "integrate"): Promise<StepEnd>;
-  remedyOf(template: string, values: Record<string, string>, userInfo: boolean): Remedy;
-  processEnded(ends: readonly { exit: GitExit | null }[]): Promise<boolean>;
-  // A process outside `step` gives the lingering descendants of `enter`.
-  ran(exit: GitExit): void;
-}
-
-// `resolved` ends the recovery marker. `decorate` adds fields to each finished result.
-export function createStepKit(
-  o: Pick<SyncerOptions, "runner" | "trust" | "reader" | "registry">,
-  w: Workspace,
-  installation: ReadInstallation,
-  operationId: string,
-  signal: AbortSignal,
-  resolved: () => void,
-  decorate: (result: unknown) => unknown = (result) => result,
-): StepKit {
-  const { registry } = o;
-  const ctx: ObserveContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
-  const q: ObserveContext = { ...ctx, signal: new AbortController().signal };
-  let lastDescendants = 0;
-
-  const refuse = (ending: { code: ErrorCode; reason?: Failure["reason"]; result?: unknown } | Stop) => {
-    const canceled = enterReconciling(registry, operationId, isStop(ending) && ending.stop === "deadline", 0);
-    if (canceled) registry.apply(operationId, { type: "no-effects", observed: "canceled" });
-    else if (isStop(ending)) registry.apply(operationId, { type: "no-effects", observed: "failed", ...(ending.stop === "deadline" ? {} : { code: "GIT_FAILED" }) });
-    else registry.apply(operationId, { type: "no-effects", observed: "failed", code: ending.code, ...(ending.code === "OUTPUT_LIMIT" && ending.reason !== undefined ? { reason: ending.reason } : {}) }, ending.result);
-    resolved();
-  };
-  const finish = (event: OperationEvent, result: unknown, known = true, cause?: ErrorCode) => {
-    registry.apply(operationId, event, decorate(result), cause);
-    if (known) resolved();
-  };
-  const unknown = (f: Failure | Stop, result: unknown) =>
-    finish("code" in f ? { type: "reconciliation-read-failed", code: f.code } : { type: "reconciliation-read-deadline" }, result, false, "code" in f ? f.code : "DEADLINE");
-  const remedyOf = (template: string, values: Record<string, string>, userInfo: boolean): Remedy => {
-    const git = installation.selectedPath;
-    if (userInfo || git === null || w.wsl !== undefined) return { text: STEP_REMEDY_TEXT, command: null };
-    const built = buildRemedyCommand(template, {
-      git: { kind: "gitPath", text: git, form: "windows" },
-      root: { kind: "worktreeRoot", text: w.worktreeRoot, form: "windows" },
-      ...Object.fromEntries(Object.entries(values).map(([name, text]) => [name, { kind: name === "remote" ? ("remoteName" as const) : ("branchName" as const), text }])),
-    });
-    return { text: STEP_REMEDY_TEXT, command: built.command };
-  };
-  const stallOf = (remedy: Remedy): StallRemedy => (remedy.command === null ? { text: remedy.text } : { command: remedy.command, text: remedy.text });
-
-  // One `remote` or `integrate` policy process with the 001 §12 network limits (contract Δ5, plan.md D2).
-  const step = async (args: string[], phase: Phase, counters: Record<string, number>, remedy: Remedy, stdout: Collector, policy: "remote" | "integrate" = "remote"): Promise<StepEnd> => {
-    let percent: number | undefined;
-    // Contract Δ2: a phase with a counter list carries only those counters. A hook can print a percent line in any phase.
-    const percentAllowed = !Object.hasOwn(PHASE_COUNTERS, phase) || PHASE_COUNTERS[phase]!.includes("percent");
-    const report = () => {
-      const state = registry.get(operationId)?.state;
-      if (state === "running" || state === "cancel-requested") registry.progress(operationId, phase, { ...counters, ...(percent === undefined ? {} : { percent }) });
-    };
-    report();
-    const stderr = stepStderr((next) => {
-      if (!percentAllowed || next === percent) return;
-      percent = next;
-      report();
-    });
-    const stall = trackStall(registry, operationId, report, () => stallOf(remedy));
-    let exit: GitExit | null = null;
-    let refused: ErrorCode | null = null;
-    try {
-      exit = await o.runner.run({ operationId, context: contextOf(w), arguments: args, environmentPolicy: policy, limits: PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
-      lastDescendants = exit.activeDescendants ?? 0;
-    } catch (error) {
-      if (!signal.aborted && !(error instanceof RunnerRefusal)) throw error;
-      if (!signal.aborted) refused = (error as RunnerRefusal).code;
-    } finally {
-      stall.end();
-    }
-    return { exit, canceled: signal.aborted && (exit === null || exit.exitCode === null), refused, outputTail: stderr.outputTail() };
-  };
-
-  return {
-    ctx,
-    q,
-    refuse,
-    finish,
-    unknown,
-    enter: (deadline) => enterReconciling(registry, operationId, deadline, lastDescendants),
-    step,
-    remedyOf,
-    // Contract §11 and 001 §12: after a stopped WSL process, Linux Git can still write. No listing decides before the process-end fact.
-    processEnded: async (ends) => w.wsl === undefined || ends.every((e) => e.exit !== null && e.exit.exitCode !== null) || (await processEnd(q)) === "fact",
-    ran: (exit) => void (lastDescendants = exit.activeDescendants ?? 0),
-  };
-}
-
-// A broken step leaves the outcome unknown. The marker stays (contract §8).
-export function endBroken(registry: OperationRegistry, operationId: string): void {
-  const state = registry.get(operationId)?.state;
-  if (state === "running") registry.apply(operationId, { type: "execution-ended", lingeringDescendants: 0 });
-  if (state === "cancel-requested") registry.apply(operationId, { type: "processes-stopped" });
-  if (registry.get(operationId)?.state === "reconciling") registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, undefined, "GIT_FAILED");
-}
-
 export function createSyncer(o: SyncerOptions) {
   const { registry, approvals } = o;
   // Contract §2: the workspace of each operation that consumed a review token.
@@ -296,14 +184,30 @@ export function createSyncer(o: SyncerOptions) {
     }
     if (!entered.ok) return notEntered(registry, operationId, entered);
     const marker = entered;
-    // Data-model §11: `connectTarget` comes from the kept target itself.
-    const kit = createStepKit(o, w, installation, operationId, signal, () => o.runner.resolved(marker.markerId), (result) =>
-      connectTargets.get(w.repositoryId)?.operationId === operationId ? { ...(result as object), connectTarget: true } : result,
-    );
-    const { ctx, q, refuse, finish, unknown, remedyOf, processEnded } = kit;
-    const networkStep = kit.step;
+    const ctx: ObserveContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
+    // Contract §8: a cancel never stops a reconciliation read.
+    const q: ObserveContext = { ...ctx, signal: new AbortController().signal };
+    const resolved = () => o.runner.resolved(marker.markerId);
+    let lastDescendants = 0;
     // The `pageant` replies of this operation. A reply other than `git` keeps a connect target for a failure (data-model §11).
     const replies: PageantReply["result"][] = [];
+
+    // A refusal before any network process: no effect, so the outcome is known.
+    const refuse = (ending: { code: ErrorCode; reason?: Failure["reason"]; result?: unknown } | Stop) => {
+      const canceled = enterReconciling(registry, operationId, isStop(ending) && ending.stop === "deadline", 0);
+      if (canceled) registry.apply(operationId, { type: "no-effects", observed: "canceled" });
+      else if (isStop(ending)) registry.apply(operationId, { type: "no-effects", observed: "failed", ...(ending.stop === "deadline" ? {} : { code: "GIT_FAILED" }) });
+      else registry.apply(operationId, { type: "no-effects", observed: "failed", code: ending.code, ...(ending.code === "OUTPUT_LIMIT" && ending.reason !== undefined ? { reason: ending.reason } : {}) }, ending.result);
+      resolved();
+    };
+    // The end of a run that started network processes. Data-model §11: `connectTarget` comes from the kept target itself.
+    const finish = (event: OperationEvent, result: unknown, known = true, cause?: ErrorCode) => {
+      const kept = connectTargets.get(w.repositoryId)?.operationId === operationId;
+      registry.apply(operationId, event, kept ? { ...(result as object), connectTarget: true } : result, cause);
+      if (known) resolved();
+    };
+    const unknown = (f: Failure | Stop, result: unknown) =>
+      finish("code" in f ? { type: "reconciliation-read-failed", code: f.code } : { type: "reconciliation-read-deadline" }, result, false, "code" in f ? f.code : "DEADLINE");
 
     // Contract Δ3 `sync` step 3. Null: a WSL Git or a non-Windows service sends no `pageant`.
     const pageant = async (remote: string, counters: Record<string, number>): Promise<PageantReply | null> => {
@@ -316,11 +220,50 @@ export function createSyncer(o: SyncerOptions) {
     const keepTarget = (kind: ConnectTarget["kind"], target: string) => {
       if (replies.length > 0 && replies.some((r) => r !== "git")) connectTargets.set(w.repositoryId, { operationId, kind, repositoryId: w.repositoryId, gitInstallationId: installation.gitInstallationId, target });
     };
+    const remedyOf = (template: string, values: Record<string, string>, userInfo: boolean): Remedy => {
+      const git = installation.selectedPath;
+      if (userInfo || git === null || w.wsl !== undefined) return { text: STEP_REMEDY_TEXT, command: null };
+      const built = buildRemedyCommand(template, {
+        git: { kind: "gitPath", text: git, form: "windows" },
+        root: { kind: "worktreeRoot", text: w.worktreeRoot, form: "windows" },
+        ...Object.fromEntries(Object.entries(values).map(([name, text]) => [name, { kind: name === "remote" ? ("remoteName" as const) : ("branchName" as const), text }])),
+      });
+      return { text: STEP_REMEDY_TEXT, command: built.command };
+    };
     // Contract Δ3 "Remedies": one `config --local` command per `upstreamArgs` write, with its key and value.
     const upstreamRemedy = (writes: readonly string[][]): Remedy => {
       const template = writes.map((_, i) => `& {git} --no-lazy-fetch -C {root} config --local -- {key${i}} {value${i}}`).join("; ");
       const values = Object.fromEntries(writes.flatMap((args, i) => [[`key${i}`, args.at(-2)!], [`value${i}`, args.at(-1)!]]));
       return { ...remedyOf(template, values, false), text: UPSTREAM_REMEDY_TEXT };
+    };
+    const stallOf = (remedy: Remedy): StallRemedy => (remedy.command === null ? { text: remedy.text } : { command: remedy.command, text: remedy.text });
+
+    // One `remote` or `integrate` policy process with the 001 §12 network limits (contract Δ5, plan.md D2).
+    const networkStep = async (args: string[], phase: StepPhase, counters: Record<string, number>, remedy: Remedy, stdout: ReturnType<typeof createCollector>, policy: "remote" | "integrate" = "remote"): Promise<StepEnd> => {
+      let percent: number | undefined;
+      const report = () => {
+        const state = registry.get(operationId)?.state;
+        if (state === "running" || state === "cancel-requested") registry.progress(operationId, phase, { ...counters, ...(percent === undefined ? {} : { percent }) });
+      };
+      report();
+      const stderr = stepStderr((next) => {
+        if (next === percent) return;
+        percent = next;
+        report();
+      });
+      const stall = trackStall(registry, operationId, report, () => stallOf(remedy));
+      let exit: GitExit | null = null;
+      let refused: ErrorCode | null = null;
+      try {
+        exit = await o.runner.run({ operationId, context: contextOf(w), arguments: args, environmentPolicy: policy, limits: PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
+        lastDescendants = exit.activeDescendants ?? 0;
+      } catch (error) {
+        if (!signal.aborted && !(error instanceof RunnerRefusal)) throw error;
+        if (!signal.aborted) refused = (error as RunnerRefusal).code;
+      } finally {
+        stall.end();
+      }
+      return { exit, canceled: signal.aborted && (exit === null || exit.exitCode === null), refused, outputTail: stderr.outputTail() };
     };
 
     // Contract Δ3 Set upstream: the `upstreamArgs` writes in order. Only exit 0 of each write means set. A Cancel starts no later write.
@@ -334,7 +277,7 @@ export function createSyncer(o: SyncerOptions) {
           const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
           const stderr = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
           exit = await o.runner.run({ operationId, context: contextOf(w), arguments: args, environmentPolicy: "remote", limits: PROCESS_LIMITS.network, stdout, stderr, signal });
-          kit.ran(exit);
+          lastDescendants = exit.activeDescendants ?? 0;
         } catch (error) {
           if (!signal.aborted && !(error instanceof RunnerRefusal)) throw error;
         }
@@ -343,6 +286,9 @@ export function createSyncer(o: SyncerOptions) {
       }
       return { set: true, ends };
     };
+
+    // Contract §11 and 001 §12: after a stopped WSL process, Linux Git can still write. No listing decides before the process-end fact.
+    const processEnded = async (ends: readonly { exit: GitExit | null }[]) => w.wsl === undefined || ends.every((e) => e.exit !== null && e.exit.exitCode !== null) || (await processEnd(q)) === "fact";
 
     // Contract Δ3 "Remedies": the fetch remedy of one remote.
     const fetchRemedy = (entries: readonly ConfigEntry[], remote: string): Remedy => remedyOf("& {git} --no-lazy-fetch -C {root} fetch -- {remote}", { remote }, holdsUserInfo(entries, remote));
@@ -401,7 +347,7 @@ export function createSyncer(o: SyncerOptions) {
         if (refusedCode !== null) return refuse({ code: refusedCode });
         return refuse({ stop: "canceled" });
       }
-      kit.enter(ends.at(-1)?.exit?.deadline !== undefined);
+      enterReconciling(registry, operationId, ends.at(-1)?.exit?.deadline !== undefined, lastDescendants);
       const fetch = (observed: ReturnType<typeof changes>) => ({ remotes: remotes.map((r) => ({ ...r })), observed });
       const unread = { action: b.payload.action, fetch: fetch([]) };
       if (!(await processEnded(ends))) return unknown({ code: "GIT_FAILED" }, unread);
@@ -461,7 +407,7 @@ export function createSyncer(o: SyncerOptions) {
       const writes = upstreamArgs(branch, d.remote, d.ref, d.upstreamRebase);
       const upstream = succeeded && d.setUpstream ? await writeUpstream(writes) : { set: true, ends: [] };
       const upstreamNotSet = !upstream.set;
-      kit.enter(deadline);
+      enterReconciling(registry, operationId, deadline, lastDescendants);
       const tracking = d.trackingRef ?? trackingOf(entries, d.remote, d.ref);
       const pushResult = (after: Refs | null, upstreamWritten: boolean) => ({
         status,
@@ -535,9 +481,16 @@ export function createSyncer(o: SyncerOptions) {
       const entries = (again as Extract<Observation, { binding: unknown }>).entries;
       if (b.payload.action === "fetch" || b.payload.action === "fetch-all") await runFetch(entries);
       else if (b.payload.action === "push" || b.payload.action === "force-push") await runPush(entries);
-      else await runIntegration({ ctx, q, binding: b, entries, refuse, finish, unknown, enter: kit.enter, step: networkStep, remedyOf, processEnded, keepTarget, fetchStep, fetchRemedy, notStarted, fetchVerdict, fetchObserved, changes });
+      else {
+        const enter = (deadline: boolean) => enterReconciling(registry, operationId, deadline, lastDescendants);
+        await runIntegration({ ctx, q, binding: b, entries, refuse, finish, unknown, enter, step: networkStep, remedyOf, processEnded, keepTarget, fetchStep, fetchRemedy, notStarted, fetchVerdict, fetchObserved, changes });
+      }
     } catch {
-      endBroken(registry, operationId);
+      // A broken step leaves the outcome unknown. The marker stays (contract §8).
+      const state = registry.get(operationId)?.state;
+      if (state === "running") registry.apply(operationId, { type: "execution-ended", lingeringDescendants: 0 });
+      if (state === "cancel-requested") registry.apply(operationId, { type: "processes-stopped" });
+      if (registry.get(operationId)?.state === "reconciling") registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, undefined, "GIT_FAILED");
     } finally {
       marker.end(false);
     }

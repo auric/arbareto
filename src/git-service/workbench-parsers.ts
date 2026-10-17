@@ -223,21 +223,56 @@ interface Refspec {
   pattern: boolean;
 }
 
-const stars = (side: string) => side.split("*").length - 1;
+// refs.c `refname_disposition` for ASCII: 1 ends a component, 2 is `.`, 3 is `{`, 4 is refused, and 5 is `*`. Every other byte is 0.
+function disposition(code: number): number {
+  if (code === 0x2f) return 1;
+  if (code < 0x20 || code === 0x7f || " :?[\\^~".includes(String.fromCharCode(code))) return 4;
+  return code === 0x2e ? 2 : code === 0x7b ? 3 : code === 0x2a ? 5 : 0;
+}
 
-// refspec.c `parse_refspec` for fetch. Null: Git refuses the refspec.
-// shortcut: the refname character rules of `check_refname_format` are not checked; a name from this map still passes the plan.md D4 check.
-function parseFetchRefspec(value: string | null): Refspec | null {
+// refs.c `check_refname_format` with REFNAME_ALLOW_ONELEVEL. `pattern` is REFNAME_REFSPEC_PATTERN: one `*` in the whole name.
+function refnameOk(name: string, pattern: boolean): boolean {
+  if (name === "@") return false;
+  let star = pattern;
+  for (const component of name.split("/")) {
+    if (component === "" || component.startsWith(".") || component.endsWith(".lock")) return false;
+    let last = 0;
+    for (let i = 0; i < component.length; i++) {
+      const code = component.charCodeAt(i);
+      const d = disposition(code);
+      if (d === 4 || (d === 2 && last === 0x2e) || (d === 3 && last === 0x40)) return false;
+      if (d === 5) {
+        if (!star) return false;
+        star = false;
+      }
+      last = code;
+    }
+  }
+  return !name.endsWith(".");
+}
+
+const HEX_LENGTH: Record<ObjectFormat, number> = { sha1: 40, sha256: 64 };
+
+// refspec.c `parse_refspec` for fetch. Null: Git refuses the refspec, so every Git command that reads the remotes stops.
+function parseFetchRefspec(value: string | null, objectFormat: ObjectFormat): Refspec | null {
   if (value === null) return null;
   const negative = value.startsWith("^");
-  const spec = negative || value.startsWith("+") ? value.slice(1) : value;
-  const colon = spec.lastIndexOf(":");
-  const src = colon < 0 ? spec : spec.slice(0, colon);
-  const dst = colon < 0 ? null : spec.slice(colon + 1);
-  if (stars(src) > 1 || (dst !== null && stars(dst) > 1)) return null;
-  const pattern = stars(src) === 1;
-  if (negative) return dst === null ? { negative, src, dst, pattern } : null;
-  if (dst === null ? pattern : pattern !== (stars(dst) === 1)) return null;
+  const lhs = negative || value.startsWith("+") ? value.slice(1) : value;
+  const colon = lhs.lastIndexOf(":");
+  if (negative && colon >= 0) return null;
+  const left = colon < 0 ? lhs : lhs.slice(0, colon);
+  const dst = colon < 0 ? null : lhs.slice(colon + 1);
+  let pattern = dst !== null && dst.includes("*");
+  if (left.includes("*")) {
+    if ((dst !== null && !pattern) || (dst === null && !negative)) return null;
+    pattern = true;
+  } else if (pattern) return null;
+  const src = left === "@" ? "HEAD" : left;
+  // `get_oid_hex` reads upper and lower case.
+  const hex = left.length === HEX_LENGTH[objectFormat] && /^[0-9a-fA-F]+$/.test(left);
+  if (negative) return src !== "" && !hex && refnameOk(src, pattern) ? { negative, src, dst, pattern } : null;
+  if (src !== "" && !hex && !refnameOk(src, pattern)) return null;
+  if (dst !== null && dst !== "" && !refnameOk(dst, pattern)) return null;
   return { negative, src, dst, pattern };
 }
 
@@ -263,22 +298,37 @@ function remoteSources(remoteRef: string, specs: readonly Refspec[]): string[] {
   return positive.flatMap((s) => (s.dst === null ? [] : s.pattern ? (matchPattern(s.dst, remoteRef, s.src) ?? []) : remoteRef === s.dst ? [s.src] : []));
 }
 
-// Exactly one mapping to a `refs/heads/` source gives the local name. Zero or several give null (spec FR-013).
-export function localNameOf(remoteRef: string, config: readonly { key: string; value: string | null }[]): string | null {
-  const remotes = new Map<string, (Refspec | null)[]>();
+type ConfigLines = readonly { key: string; value: string | null }[];
+
+// remote.c `handle_config`: the fetch refspecs of each remote. Null: Git refuses one of them.
+function fetchRefspecs(config: ConfigLines, objectFormat: ObjectFormat): Map<string, Refspec[]> | null {
+  const remotes = new Map<string, Refspec[]>();
   for (const { key, value } of config) {
     if (!key.startsWith("remote.") || !key.endsWith(".fetch") || key.length < "remote..fetch".length) continue;
     const name = key.slice("remote.".length, -".fetch".length);
     // remote.c `handle_config` skips a remote name that starts with `/`.
     if (name.startsWith("/")) continue;
-    remotes.set(name, [...(remotes.get(name) ?? []), parseFetchRefspec(value)]);
+    const spec = parseFetchRefspec(value, objectFormat);
+    if (spec === null) return null;
+    remotes.set(name, [...(remotes.get(name) ?? []), spec]);
   }
-  const sources: string[] = [];
-  for (const specs of remotes.values()) {
-    if (specs.includes(null)) return null;
-    sources.push(...remoteSources(remoteRef, specs as Refspec[]));
-  }
+  return remotes;
+}
+
+// Exactly one mapping to a `refs/heads/` source gives the local name. Zero or several give null (spec FR-013).
+export function localNameOf(remoteRef: string, config: ConfigLines, objectFormat: ObjectFormat): string | null {
+  const remotes = fetchRefspecs(config, objectFormat);
+  if (remotes === null) return null;
+  const sources = [...remotes.values()].flatMap((specs) => remoteSources(remoteRef, specs));
   return sources.length === 1 && sources[0]!.startsWith(HEADS) && sources[0]!.length > HEADS.length ? sources[0]!.slice(HEADS.length) : null;
+}
+
+// branch.c `dwim_branch_start` and `setup_tracking`: `--track` needs exactly one remote whose fetch refspecs map the start point (remote.c `query_refspecs`).
+// Returns those remotes in configuration order. Null: Git refuses a fetch refspec.
+export function trackingRemotes(remoteRef: string, config: ConfigLines, objectFormat: ObjectFormat): string[] | null {
+  const remotes = fetchRefspecs(config, objectFormat);
+  if (remotes === null) return null;
+  return [...remotes].filter(([, specs]) => remoteSources(remoteRef, specs).length > 0).map(([name]) => name);
 }
 
 // ---- URL host (plan.md D13, git-fetch(1) "GIT URLS") ----

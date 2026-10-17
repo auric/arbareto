@@ -126,6 +126,8 @@ export const WORKBENCH_UNAVAILABLE_REASONS = [
   "path",
   "message-size",
   "unreadable",
+  "no-tracking-refspec",
+  "several-tracking-remotes",
   "squash-no-ff",
   "merge-options",
   "invalid-config",

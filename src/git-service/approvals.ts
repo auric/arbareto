@@ -7,7 +7,6 @@
 import type { ChangeEntry } from "../contracts/envelope";
 import { APPROVAL_LIFETIME_MS } from "../contracts/limits";
 import type { PhysicalIdentity } from "./identity";
-import type { MergeRebaseBinding } from "./merge-rebase";
 import type { Head, IndexFingerprint, OperationState, TrustApproval, WorkingVersion } from "./snapshot";
 import type { SyncBinding } from "./sync-review";
 
@@ -75,9 +74,7 @@ export type CommitReview = Issued & { kind: "commit"; reviewToken: string; bindi
 export type SubmoduleReview = Issued & { kind: "submodule"; reviewToken: string; binding: SubmoduleBinding };
 // Feature 003 data-model §2 "Sync review". A sync binds no snapshot.
 export type SyncReview = Omit<Issued, "snapshotId"> & { kind: "sync"; reviewToken: string; binding: SyncBinding };
-// Feature 004 data-model §2 "Workbench review": `reviewToken` holds the `workbenchToken`. A merge or a rebase binds no snapshot.
-export type WorkbenchReview = Omit<Issued, "snapshotId"> & { kind: "workbench"; reviewToken: string; binding: MergeRebaseBinding };
-export type Approval = HunkApproval | FileApproval | CommitReview | SubmoduleReview | SyncReview | WorkbenchReview;
+export type Approval = HunkApproval | FileApproval | CommitReview | SubmoduleReview | SyncReview;
 
 // Contract §2: the repeat key of each approval.
 export type ApprovalKey =
@@ -85,8 +82,7 @@ export type ApprovalKey =
   | Pick<FileApproval, "kind" | "comparisonId" | "direction">
   | Pick<CommitReview, "kind" | "reviewToken">
   | Pick<SubmoduleReview, "kind" | "reviewToken">
-  | Pick<SyncReview, "kind" | "reviewToken">
-  | Pick<WorkbenchReview, "kind" | "reviewToken">;
+  | Pick<SyncReview, "kind" | "reviewToken">;
 
 // A state change advances the generation, so the caller refuses it with REPOSITORY_CHANGED before acceptance (contract §9).
 export type Acceptance =

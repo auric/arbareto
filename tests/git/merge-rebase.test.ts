@@ -15,10 +15,12 @@ import { caseTest, type RegistrationResult, type Service, type ServiceResponse }
 import { ANY_EXIT, gitExe, hostFor, INTEGRATE_ENV, refreshIndex, register, repoShape, reviewed, subcommandOf, sync, TIMEOUT_MS, withSync } from "./sync-harness";
 import { buildWorkbench, type WbFixture, type WbFixtureName } from "./workbench-fixtures";
 
-try {
-  printOrigin("../../src/git-service/merge-rebase.ts", import.meta.dir);
-} catch {
-  console.log("ORIGIN absent src/git-service/merge-rebase.ts");
+for (const module of ["merge-rebase", "workbench-review"]) {
+  try {
+    printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
+  } catch {
+    console.log(`ORIGIN absent src/git-service/${module}.ts`);
+  }
 }
 
 useFixtureRoot();
@@ -545,6 +547,18 @@ describeGit("merge and rebase (T023)", () => {
         expect({ action: payload.action, ...outcome(response) }).toEqual({ action: payload.action, state: "failed", code: "STALE_REVIEW" });
         expect(integrations(service, from)).toEqual([]);
       }
+    });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "contract §8 token invalidation: a refresh read ends the unused workbench token, so runWorkbench gives UNKNOWN_TARGET and no process starts", SHELL, async () => {
+    const [f] = pair("merge-diverged", "invalidated");
+    await withSync("t023-invalidated", async (service) => {
+      const r = await register(service, f.repo);
+      const review = await tokenOf(service, r, MERGE("refs/heads/topic"));
+      expect(outcome(await service.readWorkspace(r.repositoryId, { refresh: true, check: "full" }, r.generation))).toEqual(SUCCEEDED);
+      const from = service.runner.calls.length;
+      expect((await runWb(service, r, review.workbenchToken)).code).toBe("UNKNOWN_TARGET");
+      expect(integrations(service, from)).toEqual([]);
     });
   }, TIMEOUT_MS);
 

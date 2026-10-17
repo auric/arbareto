@@ -40,7 +40,9 @@ Each section names its source. Field names are contract names. "001 data-model �
 - Plan: `target` (`{local: ref}`, `{track: {ref, name}}`, or `{detach: oid}`), `trackedChanges` (count), `unreachable` (the detached commit OID or null), `heldBy`, `choice`, `inTheWay` (up to 100 paths, with `more` count).
 - Result: the 001 outcome state plus:
   - `head`: the observed HEAD target and OID;
-  - `stash`: `null`, or `{oid, state}` with `state` one of `dropped`, `kept-conflicts`, `kept-failed-apply`, `kept-failed-checkout`, `kept-not-found`;
+  - `stash`: `null`, or `{oid, state}` with `state` one of `dropped`, `kept-conflicts`, `kept-failed-apply`, `kept-failed-checkout`, `kept-not-found`, `kept-stash-changed`;
+  - `kept-stash-changed`: the plan D3 stash protocol saw another observation, so no S exists; `oid` is the observed `refs/stash` value or null;
+  - Cancel: S stays with the state of the first step that did not finish: `kept-failed-checkout`, `kept-failed-apply`, or `kept-not-found` for the drop;
   - `conflicted`: the unmerged count from the fresh index read;
   - `remedy`: for a kept stash, `& '<git>' --no-lazy-fetch -C '<worktree>' stash apply '<oid>'`, by the 001 §4 quoting rule.
 - State transitions: `reviewed` → `stashing` → `checking-out` → `reapplying` → `dropping` → `reconciling` → terminal. Discard: `stashing` → `checking-out` → (`dropping` on success | `restoring` on refusal) → `reconciling`.
@@ -49,6 +51,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 - `ref`, `oid`, `onlyHere` (the unmerged count), `reflogKeeps` (true, false), `heldBy` (null, else the action is refused), `current` (false, else refused).
 - Text rules: `onlyHere > 0` gives "<branch> has <n> commits that no other branch has. Deleting the branch loses them." `onlyHere = 0` gives "Deleting <branch> loses no commit." `reflogKeeps` gives the D4 reflog sentence.
+- `reflogKeeps` is false when the tip is not in the first 10,000 HEAD reflog entries (`REFLOG_SCAN_ENTRIES`). False is the cautious direction: the confirmation then states that no reflog keeps the commit.
 
 ## 5. Merge and rebase requests
 

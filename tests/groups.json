@@ -73,6 +73,7 @@
     "tests/contracts/shortcuts.test.ts",
     "tests/contracts/stage-key.test.tsx",
     "tests/contracts/stall-notice.test.tsx",
+    "tests/contracts/static-frame.test.ts",
     "tests/contracts/status-area.test.tsx",
     "tests/contracts/strict-json.test.ts",
     "tests/contracts/submodule-remote.test.ts",

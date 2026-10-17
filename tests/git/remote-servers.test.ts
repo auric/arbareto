@@ -112,4 +112,25 @@ describeGit("local HTTP remote and git daemon (T003)", (git) => {
     expect(daemon.ended()).toBe(true);
     console.log(`GIT_DAEMON access=${daemon.accessCount()} pid=${daemon.pid}`);
   }, CASE_MS);
+
+  // A kill of the `git` root alone left `git-daemon.exe` running without a parent.
+  test.skipIf(process.platform !== "win32")("git daemon: stop after a served fetch leaves no git-daemon.exe of the tree", async () => {
+    const { descendants } = await import("../windows/installed-app");
+    const { processCreationTime } = await import("./win32");
+    const base = `${h().root}/daemon-tree`;
+    mkdirSync(base, { recursive: true });
+    buildCredentialRemote(h(), base);
+    const daemon = await startGitDaemon({ git, basePath: base, hookFile: `${h().root}/daemon-tree-hook.sh`, counterFile: `${h().root}/daemon-tree-count.txt`, env: nativeEnv() });
+    let members: { pid: number; name: string; created: bigint | null }[] = [];
+    try {
+      const fetched = await finish(gitAsync(git, h().root, ["clone", "-q", "--", `${daemon.url}/cred.git`, `${h().root}/daemon-tree-clone`]));
+      expect(fetched.exitCode).toBe(0);
+      members = descendants(daemon.pid).map((r) => ({ pid: r.pid, name: r.name, created: processCreationTime(r.pid) }));
+    } finally {
+      await daemon.stop();
+    }
+    console.log(`GIT_DAEMON_TREE ${members.map((m) => `${m.name}:${m.pid}`).join(" ")}`);
+    expect(members.some((m) => m.name.toLowerCase() === "git-daemon.exe" && m.created !== null)).toBe(true);
+    expect(members.filter((m) => m.created !== null && processCreationTime(m.pid) === m.created)).toEqual([]);
+  }, CASE_MS);
 });

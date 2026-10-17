@@ -7,7 +7,7 @@ import { srcImportHits } from "./src-imports";
 import { withProbe } from "./probe-window";
 import { fixtureDir, useFixtureRoot } from "../git/fixture-root";
 import { appEnv, findInstalledApp, startInstalledApp, waitExit } from "./installed-app";
-import { close, find, findLiveRegions, focus, inputDesktopSkip, invoke, isSelected, MAX_WAIT_MS, readText, select, setValue, UiaError, waitFocus, type Element } from "./uia";
+import { close, find, findLiveRegions, focus, foregroundSkip, inputDesktopSkip, invoke, isSelected, MAX_WAIT_MS, readText, select, setValue, UiaError, waitFocus, type Element } from "./uia";
 
 const UIA = printOrigin("./uia.ts", import.meta.dir);
 const TEST_TIMEOUT_MS = 60_000;
@@ -22,6 +22,18 @@ const code = async (body: () => unknown) => {
   }
   return null;
 };
+
+// A focus wait that times out while another process owns the foreground prints a SKIP line and returns null.
+async function focusedOrSkip(label: string, processId: number, name: string, timeoutMs: number): Promise<bigint | null> {
+  try {
+    return await waitFocus(processId, name, timeoutMs);
+  } catch (error) {
+    const skip = error instanceof UiaError && error.code === "TIMEOUT" ? foregroundSkip(processId) : null;
+    if (skip === null) throw error;
+    console.log(`SKIP ${label}: ${skip}`);
+    return null;
+  }
+}
 
 // Releases each element after the body.
 async function using<T>(element: Element, body: (element: Element) => T | Promise<T>): Promise<T> {
@@ -123,7 +135,8 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
     () =>
       withProbe(FIXTURE, async ({ pid }) => {
         await using(await find(pid, "Probe field", MAX_WAIT_MS), focus);
-        expect(await waitFocus(pid, "Probe field", 2000)).toBeGreaterThan(0n);
+        const qpc = await focusedOrSkip("focuses the probe field", pid, "Probe field", 2000);
+        if (qpc !== null) expect(qpc).toBeGreaterThan(0n);
       }),
     TEST_TIMEOUT_MS,
   );
@@ -141,16 +154,19 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
         const owned = startInstalledApp(live!, appEnv(fixtureDir("app"), false));
         try {
           // A new profile holds no Git selection, so the boot view offers Select Git. Its task dialog names the Git that the host finds.
-          await using(await find(owned.pid, "Select Git", MAX_WAIT_MS), async (button) => {
+          const label = "selects Git, opens and cancels the folder picker";
+          const selected = await using(await find(owned.pid, "Select Git", MAX_WAIT_MS), async (button) => {
             focus(button);
-            await waitFocus(owned.pid, "Select Git", MAX_WAIT_MS);
+            if ((await focusedOrSkip(label, owned.pid, "Select Git", MAX_WAIT_MS)) === null) return false;
             invoke(button);
+            return true;
           });
+          if (!selected) return;
           await using(await find(owned.pid, "Use this Git", MAX_WAIT_MS), invoke);
           // The start page option text, `OPEN_FOLDER` in src/frontend/app/RepositorySwitcher.tsx. `find` matches the whole Name.
           // The combobox holds DOM focus. UIA reports its active descendant as the focused element.
           await using(await find(owned.pid, "Filter recent repositories", MAX_WAIT_MS), focus);
-          await waitFocus(owned.pid, OPEN_FOLDER, MAX_WAIT_MS);
+          if ((await focusedOrSkip(label, owned.pid, OPEN_FOLDER, MAX_WAIT_MS)) === null) return;
           await using(await find(owned.pid, OPEN_FOLDER, MAX_WAIT_MS), invoke);
           await using(await find(owned.pid, "Cancel", MAX_WAIT_MS), invoke);
           console.log(`FOCUS_QPC ${await waitFocus(owned.pid, OPEN_FOLDER, MAX_WAIT_MS)}`);

@@ -4,9 +4,16 @@
 // Test-only `git daemon` on 127.0.0.1 (plan.md P0.1, tasks.md T004). The access hook appends one line per service request to an owned counter file.
 // git-daemon(1) "--access-hook": the daemon runs the hook for each service request, with the service name as its first argument. The hook inherits the daemon environment.
 
+// On Windows, `git daemon` runs `git-daemon.exe` as a child, and a kill of the root ends the root only. The daemon therefore runs in an owned tree.
+// Run as a script, the file is a gate: it waits for one byte on stdin, then runs its arguments. The owner assigns the gate to the tree before that byte, so each later child joins the tree.
+
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { Subprocess } from "bun";
 import { within } from "./http-remote";
+
+// As `HOST_SCRIPT` of tests/git/bun-runner.ts: a static import of the host module would load `kernel32.dll` off Windows.
+const { ownTree } = require(join(import.meta.dir, "..", "git", process.platform === "win32" ? "win32.ts" : "linux.ts")) as typeof import("../git/win32");
 
 export interface GitDaemonOptions {
   git: string;
@@ -23,6 +30,7 @@ export interface GitDaemon {
   // `git://127.0.0.1:<port>`.
   url: string;
   port: number;
+  // The gate process, the root of the owned tree.
   pid: number;
   // Lines in the counter file: one per service request.
   accessCount(): number;
@@ -60,10 +68,26 @@ export async function startGitDaemon(options: GitDaemonOptions): Promise<GitDaem
   const slash = (p: string) => p.replaceAll("\\", "/");
   for (let attempt = 1; attempt <= START_ATTEMPTS; attempt++) {
     const port = await freePort();
-    const proc: Subprocess = Bun.spawn(
-      [options.git, "daemon", "--verbose", `--base-path=${options.basePath}`, "--export-all", `--access-hook=${slash(options.hookFile)}`, "--listen=127.0.0.1", `--port=${port}`],
-      { env: { ...options.env, ARBARETO_DAEMON_COUNTER: slash(options.counterFile) }, stdin: "ignore", stdout: "ignore", stderr: "ignore" },
+    const proc: Subprocess<"pipe", "ignore", "ignore"> = Bun.spawn(
+      [process.execPath, import.meta.path, options.git, "daemon", "--verbose", `--base-path=${options.basePath}`, "--export-all", `--access-hook=${slash(options.hookFile)}`, "--listen=127.0.0.1", `--port=${port}`],
+      { env: { ...options.env, ARBARETO_DAEMON_COUNTER: slash(options.counterFile) }, stdin: "pipe", stdout: "ignore", stderr: "ignore" },
     );
+    let tree: ReturnType<typeof ownTree>;
+    try {
+      tree = ownTree(proc.pid, true);
+    } catch (error) {
+      proc.kill();
+      await within(proc.exited, STOP_WAIT_MS, `git daemon gate ${proc.pid}`);
+      throw error;
+    }
+    // Ends the tree, then waits for the exit record of the gate.
+    const stop = async () => {
+      tree.end();
+      tree.close();
+      await within(proc.exited, STOP_WAIT_MS, `git daemon gate ${proc.pid}`);
+    };
+    proc.stdin.write("go");
+    proc.stdin.end();
     const deadline = Date.now() + READY_MS;
     let ready = false;
     while (!ready && proc.exitCode === null && Date.now() < deadline) {
@@ -77,14 +101,18 @@ export async function startGitDaemon(options: GitDaemonOptions): Promise<GitDaem
         pid: proc.pid,
         accessCount: () => (existsSync(options.counterFile) ? readFileSync(options.counterFile, "utf8").split("\n").filter((l) => l !== "").length : 0),
         ended: () => proc.exitCode !== null || proc.signalCode !== null,
-        async stop() {
-          proc.kill();
-          await within(proc.exited, STOP_WAIT_MS, `git daemon ${proc.pid}`);
-        },
+        stop,
       };
     }
-    proc.kill();
-    await within(proc.exited, STOP_WAIT_MS, `git daemon ${proc.pid}`);
+    await stop();
   }
   throw new Error(`git daemon did not accept a connection after ${START_ATTEMPTS} starts`);
+}
+
+if (import.meta.main) {
+  const { done } = await Bun.stdin.stream().getReader().read();
+  // A closed stdin without a byte means that the owner ended before the assignment.
+  if (done) process.exit(1);
+  const child = Bun.spawn(process.argv.slice(2), { stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+  process.exit(await child.exited);
 }

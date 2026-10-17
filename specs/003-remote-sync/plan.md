@@ -45,7 +45,7 @@ Checked against `.specify/memory/constitution.md` version 3.0.0, before research
 
 | Principle | How the design meets it | Status |
 |---|---|---|
-| I. Preserve user data | Git stays authoritative. Every outcome is reconciled from fresh reads. No stash, discard, or reset (FR-029). Force push needs a lease and a modal confirmation that names the commits. Set upstream is the only configuration write, and the user selects it. Abort states its limits. Skip opens a confirmation that names the commit that leaves the rebased branch and states that Git discards the index and working-file changes of that step; Cancel has the initial focus. A rebase pull is a history rewrite. Constitution I (version 3.0.0) counts a non-interactive rebase pull as confirmed when the user explicitly selects a rebase action, or when the user's own Git configuration selects a rebase for a pull that the user starts. These choices count: the Pull with rebase menu item or notice choice, the Rebase choice of the FR-027 mode question, a default action that the user set to Pull with rebase, or Pull (use Git's configuration) when `pull.rebase` or `branch.<name>.rebase` selects a rebase (FR-057). The app never deletes a clone folder. The selected Git runs every command. | Pass |
+| I. Preserve user data | Git stays authoritative. Every outcome is reconciled from fresh reads. No stash, discard, or reset (FR-029). Force push needs a lease and a modal confirmation that names the commits. Set upstream is the only configuration write, and the user selects it. Abort states its limits. Skip opens a confirmation that names the commit that leaves the rebased branch and states that Git discards the index and working-file changes of that step; Cancel has the initial focus. A rebase pull is a history rewrite. Constitution I (version 3.0.0) counts a non-interactive rebase pull as confirmed when the user explicitly selects a rebase action, or when the user's own Git configuration selects a rebase for a pull that the user starts. These choices count: the Pull with rebase menu item or notice choice, the Rebase choice of the FR-027 mode question, a default action that the user set to Pull with rebase, or Pull (use Git's configuration) when `pull.rebase` or `branch.<name>.rebase` selects a rebase (FR-057). Continue at a stop of the user's own `-i` rebase runs its remaining `pick`, `reword` (message kept, because of `GIT_EDITOR=:`), `drop`, `fixup`, and `squash` lines without a new confirmation: the user wrote that todo, and Abort and the reflog can undo it. Continue and Skip refuse while the todo holds an `exec` line (D7). The app never deletes a clone folder. The selected Git runs every command. | Pass |
 | II. TypeScript/Bun | All Git logic is in TypeScript. Rust adds only platform work: Pageant start outside the Job with `WaitForInputIdle`, the terminal launch with `CREATE_NEW_CONSOLE`, the file version resource, destination facts, pickers, and settings. | Pass |
 | III. Validated boundaries | Typed operations with zod and the strict decoder. Remote names must be in the `git remote` list. A branch name must pass the `check-ref-format` rules. URLs, remotes, and refspecs pass after `--`. Every output has a bound. Each operation has its own Job for Cancel. | Pass |
 | IV. Real Git verification | Local bare remotes, compared with Git's own commands on copies. The tests check refs, the index, working bytes, and operation state. They cover failure, cancel, external changes, the lease safeguard, and stale Mark resolved. | Pass |
@@ -131,7 +131,7 @@ scripts/windows/            # new: putty-tests.wsb, its prepare script, and its 
 | P3 Shell | `src-tauri/src/{git_env,wsl,process_requests,ipc,settings,dialogs,close}.rs`, `src-tauri/build.rs`, new `src-tauri/src/putty.rs`, `src/frontend/bridge.ts` and `tests/contracts/bridge.test.ts` (the new calls). | Policies `remote` and `integrate` take the inactivity limits (`process_requests.rs:2655`). Policy fit (`process_requests.rs:738-745`). The PuTTY pair is added to `remote` runs. The `clone` context. Destination facts. Pageant start and wait. Terminal launch. Settings and pickers. Marker kind `sync`. Close prompt for `sync` and `clone`. | Cargo tests: policy build, mode list, allowlist, limit checks, settings round trip, destination facts on a fixture folder, Pageant wait with a capability skip. | Local only. Rust work stays off cloud sessions. |
 | P4 Service core | new `tracking.ts`, `sync-review.ts`, `sync.ts`; `trust.ts` (class `sync`); `session.ts` (handlers); `git-runner.ts` (`EnvironmentPolicy`) | `readTracking`. `reviewSync` and `sync` for fetch, fetch-all, push, and force-push. Reconciliation. Retained connect targets. | SC-001 (fetch, push), SC-002, SC-003 values, SC-005, SC-006, SC-010 mapping. Cancel and deadline at each step. External ref moves. TRUST_REQUIRED before a pre-push hook. Remote rejection by `pre-receive`. A lease that loses no remote commit. | Parse of porcelain under rare configs. Mitigation: strict grammar, then the observed state decides. |
 | P5 Pull and conflict actions | new `sync-integrate.ts`; `session.ts` (one line) | Pull (fetch, count, decide, integrate), `integrate`, abort, continue, skip. | SC-001 (pull), SC-012, and FR-029 refusal. The mode matrix against Git's own pull. A rebase that stops again. Continue blocked while unmerged entries exist, also with marker-like text. | A Git behavior difference between `pull` and the split steps. P0.2 (e) records it. |
-| P6 Mark resolved | `file-action.ts` (P1), `comparison.ts`, `file-publish.ts`, `hunk-publish.ts` | `applyFile` direction `resolve` for an unmerged path: `hash-object -w` of the working file, then `update-index --index-info` with mode `mW` (D7). | SC-014: index equal to `git add`, also for exec bits on Windows; working bytes unchanged, stale refusals, marker-like text stages. | `hunk-publish.ts:628-635` assumes no stage above 0. Known-hard. |
+| P6 Mark resolved | `file-action.ts` (P1), `comparison.ts`, `file-publish.ts`, `hunk-publish.ts`, `wsl-files.ts` | `applyFile` direction `resolve` for an unmerged path: `hash-object -w` of the working file, then `update-index --index-info` with mode `mW` (D7). | SC-014: index equal to `git add`, also for exec bits on Windows; working bytes unchanged, stale refusals, marker-like text stages. | `hunk-publish.ts:628-635` assumes no stage above 0. Known-hard. |
 | P7 Clone and terminal | new `clone.ts`; `session.ts` (two lines) | `clone` with destination facts, the PuTTY key, and registration. `connectInTerminal`. | SC-011, FR-047 refusals that start no Git, FR-050 folder states after cancel, submodules not cloned, empty remote opens unborn. | Discovery after clone in WSL. |
 | P8 Frontend A | new `state/tracking.ts`, new `sync/*`, `app/Workbench.tsx`, `app/NoticeBand.tsx`, `refs/ReferencesSidebar.tsx`, `commit/CommitTray.tsx`, `history/HistoryView.tsx` (after 002 P6) | Toolbar Fetch, the Pull split button with its default action, Push, and the Fetch all menu. Counts in the toolbar, the sidebar, and history labels. Push panel, push-rejected notice, force confirmation, Commit and push. | Component tests: keyboard, focus, unavailable reasons, text alternatives, notice lifetime, Cancel focus. | The 002 history view must be merged first for the history labels. |
 | P9 Frontend B | `sync/PullModeChoice.tsx`, `sync/ConflictActions.tsx`, `app/NoticeBand.tsx`, `changes/ChangesPane.tsx` | The pull mode choice, conflict actions with the Abort confirmation, and Mark resolved. | Component tests. | None new. |
@@ -204,7 +204,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - `[remote failure]` means an unknown remote result.
   - The reason text in parentheses shows as plain text and decides nothing (FR-015).
 - Set upstream: the panel lists the remotes and the branch name. Set upstream is selected by default only for a branch without an upstream (FR-016). The service checks the name with the `check-ref-format` rules (`isRefName`, `commands.ts`).
-- After a push with a success status, a selected Set upstream writes `branch.<branch>.remote` and `branch.<branch>.merge` with two `config --local` processes (contract Δ3 "Set upstream"). Exit codes alone decide. A failed write gives `upstreamNotSet` and a remedy, and the push stays succeeded.
+- After a push with a success status, a selected Set upstream writes `branch.<branch>.remote` and `branch.<branch>.merge` with two `config --local` processes (contract Δ3 "Set upstream"). With `branch.autoSetupRebase` `remote` or `always`, a third process writes `branch.<branch>.rebase true`, as Git's `push --set-upstream` does. The review binds that fact in `destination.upstreamRebase`. Exit codes alone decide. A failed write gives `upstreamNotSet` and a remedy, and the push stays succeeded.
 
 ### D5 Push rejected and force push with lease
 
@@ -230,22 +230,32 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
    - Otherwise: merge, with the `pull.ff` option that Git's pull passes.
 5. Integrate (policy `integrate`):
    - fast-forward: `merge --ff-only --no-autostash <upstream ref>`;
-   - merge: `merge --no-edit --no-autostash [--ff | --no-ff] <upstream ref>`;
+   - merge: `merge --no-edit --no-autostash [--ff | --no-ff] [--no-log -m <message>] <upstream ref>`. For a `refs/remotes/` upstream, `<message>` is the feature 004 D5 preview: `fmt-merge-msg` with stdin `<U>\t\tremote-tracking branch '<short name>' of .` and LF, where `<short name>` is the upstream without `refs/remotes/`. That is the line of builtin/merge.c `merge_name`, so the message equals Git's own `git merge <short name>`, also with `merge.log` (004 research F12). `--no-log` stops a second shortlog. Another upstream form gets no `-m`, so Git writes its own default message;
    - rebase: `rebase --no-autostash --fork-point [--rebase-merges] <upstream ref>`.
 6. Reconcile. A fast-forward HEAD must equal U. A merge commit must hold U as a parent. After a merge without an ff option, HEAD equals U, or a merge commit holds U as a parent. A rebase result must contain U. Any other observation gives `completed-with-effects`, with the observed values.
 - A merge or rebase in progress after step 5 gives `failed-with-effects` with `integration: stopped`, its kind, and the unmerged count. The notice band then shows the actions.
-- The merge message is Git's default for the remote-tracking ref (O-3).
+- The merge message equals Git's own `git merge <remote>/<branch>` (O-3, step 5).
+- Pull and integrate check `OPERATION_IN_PROGRESS` before `detached`, because a rebase in progress detaches HEAD.
+- The count uses the bound HEAD. A HEAD that another process moved during the fetch gives `STALE_REVIEW` after the fetch effects, and no integrate step starts.
 
 ### D7 Conflict actions and Mark resolved
 
-- The kind comes from the 001 markers (`commands.ts:117`, `status.ts:260` `stateOf`). Only `merging` and `rebasing` get actions. `rebase-apply/applying` (git am) gives `unknown` and no action.
+- The kind comes from the 001 markers (`commands.ts:117`, `status.ts:260` `stateOf`). Only `merging` and `rebasing` get actions. `unknown` gives reason `unknown-operation`: `rebase-apply/applying` (git am), or a marker without a file fact. `normal` and `conflicted` give `no-operation`.
 - Abort: `merge --abort` or `rebase --abort`.
 - Continue:
   - merging: `commit --quiet`. With `GIT_EDITOR=:`, Git takes `MERGE_MSG` and strips the comment lines (research R4).
   - rebasing: `rebase --continue`.
   - The review and `sync` require a fresh index with no unmerged entry. Otherwise the code is `CONFLICTED` with the count.
+- Editor: Continue never opens an editor. The `integrate` policy sets `GIT_EDITOR=:` in the process environment (contract Δ7, `git-environment.json`; the WSL wrapper exports it, Δ11). git-var(1) documents the order `GIT_EDITOR`, then `core.editor`, then `VISUAL`, then `EDITOR`, so the user's `core.editor` does not apply. editor.c `launch_specified_editor` starts no program for the editor `:` and keeps the prepared message file. So `commit` and `rebase --continue` take the message that Git prepared, with Git's own cleanup (research R4, R16 f, R18). No configuration changes.
 - Skip: `rebase --skip`, only while rebasing. Skip opens a confirmation before the start. The confirmation names the commit of `REBASE_HEAD`, which gitrevisions(7) defines as the commit at which the rebase stopped. It states that Git discards the index and working-file changes of that step. Cancel has the initial focus. Without `REBASE_HEAD`, Skip gives reason `no-skip-commit`.
-- A rebase with `rebase-merge/interactive` present offers Abort only. Continue and Skip give reason `interactive-rebase`.
+- Every rebase stop offers Abort, Continue, and Skip, for the merge and the apply backend, as Git and Git Extensions do. builtin/rebase.c `init_basic_state` writes `rebase-merge/interactive` for every merge-backend rebase, also a non-interactive one, so that file is no fact about an interactive rebase and decides nothing (research R18). This also covers the 004 autosquash rebases.
+- Exec lines: repository content is untrusted, and a folder from an archive can hold a todo with `exec` lines, which Git runs with the shell. So the Continue and Skip reviews of a rebase read `rebase-merge/git-rebase-todo` (path from `rev-parse --git-path`, bound `SYNC_REBASE_TODO_BYTES`). A line is an `exec` line when, after its leading spaces and tabs, its first word up to a space, a tab, CR, or the end is `exec` or `x`:
+  - sequencer.c `todo_list_parse_insn_buffer` ends a line at LF and drops a final CR. `parse_insn_line` drops the leading spaces and tabs (`strspn(bol, " \t")`). `is_command` takes the name or its one-letter abbreviation from `todo_command_info` (`[TODO_EXEC] = { 'x', "exec" }`) before a space, a tab, CR, LF, or the end.
+  - `sequencer_parse_todo_command` matches the commands before `comment_line_str`, so a line that starts with `exec` or `x` is an exec line whatever `core.commentChar` holds, and a comment line never is one (research R18).
+  - An exec line, an unreadable file, or a file above the bound gives reason `rebase-exec`. The refusal carries a terminal remedy with `git rebase --continue` or `--skip`. The remedy text of an exec line is "This rebase holds exec lines, and Git runs them as shell commands. Arbareto does not run them. Read the todo list, then continue in a terminal." The remedy text of an unreadable file, a file that is no regular file, or a file above the bound is "Arbareto cannot read the rebase todo list. Continue in a terminal." Abort stays available, because it runs no todo line. A missing file, as for the apply backend, holds no line.
+  - The review binds the SHA-256 of the file. `sync` reads it again, and a change gives `STALE_REVIEW`.
+- Continue at a stop of the user's own `-i` rebase runs the remaining `pick`, `reword`, `drop`, `fixup`, and `squash` lines without a new confirmation. `reword` keeps its message, because `GIT_EDITOR=:` applies. The user wrote that todo, and Abort and the reflog can undo the result.
+- Conflict-action results carry no remedy. The stall notice keeps the step command.
 - Mark resolved: `readComparison` of a conflicted entry gives the decision `{direction: "resolve"}`. `applyFile` then runs the 001 §4 steps:
   - Step 5 runs `hash-object -w -- <path>` on the working file. Git applies the conversion of the path attributes, as `git add` does. A `filter` path is refused (data-model §9), so no filter driver runs.
   - Step 5 then runs `update-index -z --index-info` on the candidate with `<mW> SP <oid> TAB <path>` and NUL. `mW` is the working mode of the bound status `u` record (research R16 i). The stage-0 entry replaces stages 1 to 3 of the path (P0.2 i2).
@@ -254,7 +264,8 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - Symbolic links and gitlinks stay refused (data-model §9).
   - A missing working file gives reason `missing`, and so does DD.
   - Acceptance checks the bound operation state for equality, instead of the 001 `CONFLICTED` and `OPERATION_IN_PROGRESS` refusals (`file-publish.ts:219-220`).
-  - The WSL path cannot assume an index without stages above 0 (`hunk-publish.ts:628-635`).
+  - The WSL path cannot assume an index without stages above 0 (`hunk-publish.ts:628-635`, `wsl-files.ts` `wslIndexOf`). An equal index digest takes the stage fact of the bound index. A stash-apply conflict has stages above 0 and no merge marker.
+  - Hunk staging and Stage file stay refused while a merge or a rebase is in progress (001 FR-016 delta).
 
 ### D8 Ahead and behind counts
 
@@ -286,7 +297,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - The PuTTY manual §9.3.1 states that this command loads into a running Pageant. So the app reads no window title and no process list.
   - Pageant asks for the passphrase in its own window at first use. Plink then waits on the agent, and the stall notice names a sign-in window.
 - Pageant and PuTTYgen are `pageant.exe` and `puttygen.exe` in the plink folder (O-7). A missing program gives `PUTTY_UNAVAILABLE` with the program and the path (FR-037).
-- Connect in a terminal: every failed `sync` or `clone` under plink offers it (O-10).
+- Connect in a terminal: a failed `sync` or `clone` whose result holds `connectTarget: true` offers it (O-10, data-model §11). The service sets the field from the kept target, so a refusal before the start offers no action.
   - `connectInTerminal` sends the shell a `terminal` request. The shell opens a new console with a constant PowerShell script and the values in environment variables, so no value lands on a command line.
   - The script runs `git ls-remote --heads -- <target>` with `GIT_SSH_COMMAND='<plink>'` without `-batch`. Git parses the URL, host, port, and user, so plink can show the host-key prompt (O-9).
   - The target is the remote name for fetch and pull, the push URL for push, and the URL for clone.
@@ -304,6 +315,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 - Argv: `--no-lazy-fetch clone --progress --no-recurse-submodules -- <url> <destination>`. The cwd is the application-owned launch folder, or `/` in WSL.
 - Exit 0, then the 001 `chooseRepository` registration flow with the same `bootstrapId`. It must give the destination as the top level. Then the 001 registration result follows, and the trust gate comes before the first read (FR-051). The shell stores the recent entry and the last clone parent.
 - Other ends: `destinationFacts` again, and the result states `exists` and `empty` (FR-050). No file is deleted or moved.
+- Without a destination fact or a process-end fact, the result holds the code only, and the renderer shows the folder state as unknown ("Open items").
 
 ### D11 Trust
 
@@ -314,6 +326,8 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - a signing program;
   - a transport program: `core.sshCommand`, `core.gitProxy`, `core.askPass`, `credential.helper`, `credential.<url>.helper`, `remote.<name>.uploadpack`, or `remote.<name>.receivepack`;
   - a merge driver: `merge.<driver>.driver`. A pull merge runs it with the shell (ll-merge.c `ll_ext_merge`);
+  - `core.alternateRefsCommand`. A fetch in a repository with an alternate runs it with the shell (fetch-pack.c `for_each_alternate_ref`). A probe saw no 001 read or commit run it;
+  - a remote helper `git remote-<name>`: a `remote.<name>.vcs` value, a `remote.<name>.url` or `pushurl` value of the form `<name>::<address>` or `<scheme>://` with a scheme that Git does not transport itself, and every `url.<base>.insteadOf` or `pushInsteadOf` entry with any base and value. The service does not copy the rewrite of remote.c, because a copy can drift from Git and miss a helper. The cost is one approval more for such a repository. transport.c `transport_get` (Git 2.56) transports `!is_url(url)`, `file://`, `git://`, `ssh://`, `git+ssh://`, and `ssh+git://` itself and gives `rsync:` no helper. Makefile `REMOTE_CURL_NAMES` installs Git's own helpers for `http`, `https`, `ftp`, and `ftps`, so they do not count. `ext::` stays blocked by the `protocol.ext.allow` default `never` (git-config(1)). Accepted over-reports, each entry on its own: a one-letter scheme such as `C://x`, which Git takes as a DOS drive path that can name a bundle file; an uppercase scheme such as `HTTPS://x`, which `starts_with` does not match, while Windows then finds Git's own helper; a `<scheme>://` URL of a remote whose `remote.<name>.vcs` decides the helper; and a remote name that starts with "/", which remote.c `handle_config` skips;
   - a `protocol.allow` or `protocol.<name>.allow` entry;
   - the 001 `hooksPathControlled`, `folderUnlisted`, or `inputLimited` condition.
 - The transport programs already exist in `programKey` for submodules (`trust.ts:311-317`). The main listing now uses them too, so their program files enter the fingerprint. The merge driver enters `programKey` with the shell form. Only repositories with such a repository-controlled program see a new fingerprint once.
@@ -328,16 +342,53 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - Pull is a split button (FR-055, FR-056). The main part runs the default action. The menu lists Pull (use Git's configuration), Pull with merge, Pull with rebase, Fetch, Fetch all remotes, and Set default action. Set default action is a submenu with radio items for the five actions. The shell stores the choice as `defaultPullAction` (data-model §10, contract Δ3 `setDefaultPullAction`), never in Git configuration. The icon and tooltip of the main part name the current default. Ctrl+Down runs the main part.
   - The pull actions map to `reviewSync {action: "pull"}`, `{action: "pull", mode: "merge"}`, and `{action: "pull", mode: "rebase"}`. A rebase action needs no further confirmation (FR-057).
   - Unavailable reasons come from `readWorkspace` (head, operation state) and `readTracking` (upstream). The review gives exact refusals, such as `remote-missing`.
+  - While `readSyncSettings` runs, the Pull main part shows the reason "The default pull action is still loading…".
+  - A failed `readSyncSettings` shows the Pull main part reason "The default pull action did not load: <code>." `<code>` is the response code, or the response state without a code.
+  - A review result without a `syncReviewToken` starts nothing. A `force-push` plan without `destination` or `lease` also starts nothing and opens no confirmation (FR-024). The status bar then shows "<action name> did not start: the review is incomplete."
 - Counts: `state/tracking.ts`, the sidebar entry, and the 002 history label (after 002 P6).
+  - A failed `readTracking` shows "Counts did not load: <code>." in place of the toolbar counts. `<code>` is the response code, or the response state without a code.
 - Notices: the push-rejected row and the conflict row. Destructive actions show an icon and text and never fold into More.
+- Push panel (FR-016): the note under the Set upstream checkbox names the keys. With `needsDestination.upstreamRebase` false: "Writes branch.<branch>.remote and .merge for <remote>/<remote branch>." With it true: "Writes branch.<branch>.remote, .merge, and .rebase for <remote>/<remote branch>." Without a chosen remote, the text ends after the keys.
 - Modals only for Force push with lease, Abort, and Skip (UX direction 2026-10-10; constitution I).
 - The 001 "finish it outside Arbareto" text goes for merging and rebasing.
 - FR-013: after a fetch outcome, the renderer refreshes the 002 view with `{oid}` of the selected commit, without the refs-changed notice.
-- Commit and push: the 001 commit, then a push review only after `succeeded`.
+- Commit and push: the 001 commit, then a push review only after `succeeded`. The push review waits for the reconcile read of the commit, so it carries the new generation. An unborn branch does not disable Commit and push (FR-038). The push review after the commit decides.
 - Mutation names (001 plan.md "Status and fallback texts"): Mark resolved is "Mark resolved". A `sync` takes the name of its action: "Fetch", "Fetch all remotes", "Pull" (also for `integrate`), "Push", "Force push with lease", "Abort", "Continue", or "Skip". A clone is "Clone". The shell close prompt reads the action from the `started` frame (contract Δ6).
+- A failed or canceled clone names the folder state from `exists` and `empty` (FR-050, data-model §8):
+  - `exists` false: "The folder does not exist."
+  - `exists` true and `empty` true: "The folder is empty."
+  - `exists` true and `empty` false: "The folder is not empty. Arbareto deleted and moved no file." A canceled clone that left files shows this text.
+  - A result without `exists` and `empty`: "The folder state is unknown."
 - Mark resolved shows "Marking resolved" while it runs and "File marked resolved" after `succeeded`. A running `sync` shows the FR-002 step text.
 - The stage bar button of a Conflicted entry with the decision `resolve` reads "Mark resolved (Space)", and Space runs it.
-- Settings dialog: the SSH client, plink, key files per repository and remote, PuTTYgen, and the default clone folder.
+- The 001 repository menu (001 plan.md "Compact token system") gains "Clone…" after "Recent repositories" and "Settings…" after "Select Git".
+- Clone panel (FR-046 to FR-050, FR-054): a non-modal panel in the main area. "Clone…" in the start view and in the repository menu opens it. Escape and "Close clone panel" close it.
+  - Heading "Clone repository". Fields "Remote URL" and "Destination folder". Button "Clone".
+  - Only under plink: the checkbox "Pick a PuTTY key file at the start" with the note "Arbareto does not save this key file."
+  - Unavailable reasons: "Enter the remote URL.", "Enter the destination folder.", and "The clone settings are still loading…".
+  - The separator of `suggestCloneName` is `\`, because the Windows shell checks a destination by the 001 Windows rules or the §11 WSL route (contract Δ3 `clone`). A macOS or Linux shell must state its own separator.
+  - A failed `readSyncSettings` shows "The clone settings did not load: <code>." The suggestion then has no parent, and the panel offers no key file and no Connect in a terminal.
+  - A running clone shows "Cloning into <folder>…" with Cancel and the percentage. `<folder>` is the destination of the start. After Cancel, "Cancel requested" shows.
+  - The end line is "Clone canceled", "Clone did not complete: <code>", "Clone did not start: <code>", or "State unknown", as the 001 status texts.
+  - `DESTINATION_NOT_EMPTY` by reason: `not-empty` "The destination folder is not empty: <path>", `file` "The destination is a file: <path>", `other` "The destination is not a folder: <path>".
+  - `PUTTY_UNAVAILABLE`: "<program> is not available: <path> (<reason>)". The program names are "plink", "Pageant", and "PuTTYgen".
+  - The folder state text follows, except after `DESTINATION_NOT_EMPTY`. Then the output tail and the remedy with Copy command follow.
+  - The URL shows only in its field. No other panel text holds the URL.
+- Settings panel (FR-032 to FR-037): a non-modal panel in the main area. "Settings…" in the repository menu opens it. Escape and "Close settings" close it. Heading "Settings". Feature 004 moves its content into the Settings view (004 O-7).
+  - While `readSyncSettings` runs: "The settings are still loading…". A failed read: "The settings did not load: <code>." A failed change: "The setting did not change: <code>.", or the `PUTTY_UNAVAILABLE` text.
+  - Group "SSH client" with "Git's own configuration" and "PuTTY (plink)". The note reads "PuTTY applies only to Windows repositories. A WSL repository uses the SSH setup of its distro."
+  - "PuTTY (plink)" without a plink program opens the plink picker first. A canceled picker keeps the setting.
+  - "Plink program": the path or "Not set", with "Choose plink…" and "Clear plink". Each `programs` entry shows "<program>: <path>", plus "Not available" when `present` is false.
+  - "Generate or convert a key". Without a plink program, its reason is "Choose the plink program first." After success, "PuTTYgen started." shows.
+  - "Key files for this repository": one row for each remote with a saved key file or a proposal. A row shows the remote, the path or "No key file", "Choose key file for <remote>…", and "Clear key file for <remote>".
+  - A proposal shows "Git Extensions setting: <path>". It comes from the last `readTrust` entry `remote.<name>.puttykeyfile` with a value, because the last value of a single-valued key wins (git-config(1)).
+  - "Add a key file for another remote": the field "Remote" and the button "Choose key file…". An empty field gives the reason "Enter the remote name." The shell checks the remote name.
+  - Without a repository: "Open a repository to set its key files."
+  - "Default clone folder": the path or "Not set", with "Choose default clone folder…" and "Clear default clone folder".
+- Connect in a terminal (FR-034, O-10):
+  - A `sync` whose result holds `connectTarget: true` shows a notice row. It reads "<action name> did not complete with PuTTY (plink)." with "Connect in a terminal" and "Dismiss notice". The row names no cause.
+  - A failed clone whose result holds `connectTarget: true` shows "Connect in a terminal" in the clone panel.
+  - Results: "The terminal opened.", the `PUTTY_UNAVAILABLE` text, or "Connect in a terminal did not complete: <code>".
 - Skills for the implementer: `arbareto-ux`, `vercel-react-best-practices`, `web-design-guidelines`, and `shadcn` with the version that tasks.md pins.
 
 ### D13 WSL
@@ -382,13 +433,13 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 
 - **O-1 Count source (FR-019 wording).** Reviewer default: `for-each-ref %(upstream:track,nobracket)`, the untranslated plumbing form, in one process. Alternative: one `rev-list` per branch, about 400 processes for SC-003, about 100 s in WSL. FR-019 and the spec Assumptions record it.
 - **O-2 Only behind with `pull.ff=false`.** Git's pull makes a merge commit, although the branch can fast-forward. Reviewer default: follow Git. FR-027 and the spec Assumptions record it. The same default covers `merge.ff=false` without `pull.ff`: Git's pull runs `merge` with no ff option, and the merge makes a merge commit (research R16 e).
-- **O-3 Merge message.** The app merges the remote-tracking ref, so the message reads "Merge remote-tracking branch 'origin/main'". Git's pull writes "Merge branch 'main' of <url>". Reviewer default: accept, because it binds the merge to the counted commit.
+- **O-3 Merge message.** The app merges the counted remote-tracking ref. The message follows the feature 004 D5 rule: the `fmt-merge-msg` preview for the short remote-tracking name, passed as `--no-log -m`. It equals Git's own `git merge origin/main`, such as "Merge remote-tracking branch 'origin/main'", with the " into <branch>" suffix and the `merge.log` shortlog as Git writes them. The merge argument stays the full ref, so a tag of the same name cannot win. Git's pull writes "Merge branch 'main' of <url>". Reviewer default: accept, because it binds the merge to the counted commit. A conflict marker names the merge argument, so it differs from the label of Git's own pull. Accepted.
 - **O-4 Fetch all and `skipFetchAll`.** Reviewer default: skip the remotes that `git fetch --all` skips. Git skips a remote when the last value of `remote.<name>.skipFetchAll` and `remote.<name>.skipDefaultUpdate`, taken over both names, is true (research R16 k).
 - **O-5 SSH test server.** Reviewer default: test devDependency `ssh2`, if P0.3 shows that it runs under Bun. Else a WSL `sshd` when `openssh-server` is already installed in the distro. Else the SSH cases stay unverified. The project installs nothing; installing `openssh-server` with sudo is the user's step.
 - **O-6 PuTTY 0.75 minimum** for `pageant --encrypted`. Reviewer default: yes. The shell reads the file version resource and refuses an older Pageant.
 - **O-7 Pageant and PuTTYgen paths.** Reviewer default: the plink folder, with no extra picker.
 - **O-8 `remote.<name>.puttykeyfile`.** It is repository-controlled. Reviewer default: the settings show it as a proposal only, and the app uses a key file only after the user saves it in the application settings.
-- **O-9 and O-10 Connect in a terminal.** Reviewer default: `git ls-remote` through plink without `-batch`, because Git parses the URL. It is offered for every failed network operation under plink, because no signal says that Git used SSH. FR-034 and the spec Assumptions record it.
+- **O-9 and O-10 Connect in a terminal.** Reviewer default: `git ls-remote` through plink without `-batch`, because Git parses the URL. It is offered for every operation under plink whose network step failed and whose result carries `connectTarget`, because no signal says that Git used SSH. FR-034 and the spec Assumptions record it.
 - **O-11 Several push URLs.** Reviewer default: refuse with reason `push-urls`.
 
 Further reviewer defaults:
@@ -398,6 +449,12 @@ Further reviewer defaults:
 - The clone suggestion splits at `/`, `\`, and `:`.
 - Lease subjects stop at 100.
 - The count display bound is 10,000.
+
+## Open items
+
+- **Redacted key proposal.** Accepted display limit. `readTrust` redacts each entry key (contract §7 "URL user information"). A remote name that holds `://` and then `@` reaches the settings changed. The proposal then names another remote. The app uses no proposal before the user chooses a key file (O-8), so no key file reaches Pageant from it.
+- **WSL clone process end.** Contract gap. The 001 §12 process-end fact runs in the context of a registered workspace, and a clone has none. So a WSL clone process without an exit status, after Cancel or a limit, gives the code only, without `{exists, empty}` (contract Δ3 `clone` step 6). A fix needs a process-end fact in the `clone` context. T075 records the result.
+- Run the `exec` lines of a rebase todo after a trust question. This feature refuses Continue and Skip with `rebase-exec` and offers the terminal command instead (D7). Later work.
 
 ## Phases
 
@@ -425,7 +482,7 @@ Further reviewer defaults:
 | WP5 | implementer-xhigh | `src-tauri/src/{git_env,wsl,process_requests,ipc,settings,dialogs,close}.rs`, `src-tauri/src/{schema,lib}.rs`, new `src-tauri/src/putty.rs`, `src-tauri/build.rs`, `src-tauri/capabilities/main.json`, `src/frontend/bridge.ts`, `tests/contracts/bridge.test.ts` | P3. Local only. T026 and T029 run in batch 1. T027, T028, T030, and T031 run in batch 2. |
 | WP6 | implementer-xhigh | `src/git-service/{tracking,sync-review,sync,trust,git-runner,session}.ts`, sync tests | P4 |
 | WP7 | implementer-xhigh | `src/git-service/sync-integrate.ts`, one handler line in `session.ts`, tests | P5 |
-| WP8 | implementer-xhigh | `src/git-service/{comparison,file-publish,hunk-publish}.ts`, `tests/git/mark-resolved.test.ts` | P6 |
+| WP8 | implementer-xhigh | `src/git-service/{comparison,file-publish,hunk-publish,wsl-files}.ts`, `tests/git/mark-resolved.test.ts`, `tests/git/wsl-files.test.ts` | P6 |
 | WP9 | implementer | `src/git-service/clone.ts`, two handler lines in `session.ts`, `tests/git/clone.test.ts` | P7 |
 | WP10 | frontend-implementer (loads arbareto-ux, vercel-react-best-practices, web-design-guidelines, shadcn) | `src/frontend/{state/tracking.ts, sync/* (with PullSplitButton.tsx), app/Workbench.tsx, app/NoticeBand.tsx, refs/ReferencesSidebar.tsx, commit/CommitTray.tsx, history/HistoryView.tsx}`, `tests/contracts/sync-*.test.tsx` | P8 |
 | WP11 | frontend-implementer | `src/frontend/{sync/PullModeChoice.tsx, sync/ConflictActions.tsx, app/NoticeBand.tsx, changes/ChangesPane.tsx}`, tests | P9 |

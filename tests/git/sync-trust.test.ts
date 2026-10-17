@@ -68,6 +68,17 @@ describeGit("trust class sync (T036)", () => {
       ["gpg.ssh.defaultKeyCommand", f.canary],
       // ll-merge.c `ll_ext_merge`: a pull merge runs it (plan.md D11).
       ["merge.x.driver", f.canary],
+      // fetch-pack.c `for_each_alternate_ref` runs it in a repository with an alternate (plan.md D11).
+      ["core.alternateRefsCommand", f.canary],
+      // transport.c `transport_get` runs `git remote-<name>` for these (plan.md D11).
+      ["remote.origin.vcs", "canary"],
+      ["remote.origin.url", "canary::address"],
+      ["remote.origin.url", "foo://x/y"],
+      ["remote.origin.pushurl", "canary::address"],
+      // Plan.md D11: every `insteadOf` and `pushInsteadOf` entry counts, also with a plain https base and value, and with an empty value.
+      ["url.https://mirror.invalid/.insteadOf", "https://example.invalid/"],
+      ["url.https://mirror.invalid/.pushInsteadOf", "https://example.invalid/"],
+      ["url.canary::address.insteadOf", ""],
     ];
     const syncRequired = async (service: Service, repositoryId: string) => (await service.readTrust(repositoryId)).result!.approvalRequired.sync;
     await withSync("t036-gate", async (service) => {
@@ -85,6 +96,12 @@ describeGit("trust class sync (T036)", () => {
         }
         expect({ key, calls: remoteCalls(service, from) }).toEqual({ key, calls: [] });
       }
+      // transport.c `transport_get`: Git's own transports and its curl helpers select no remote helper.
+      for (const url of ["https://example.invalid/x", "ssh://example.invalid/x", "git://example.invalid/x", "file:///C:/x", "example.invalid:path/x"]) {
+        f.h.write(configPath, base);
+        gitRun(f.h, f.repo, ["config", "remote.origin.url", url]);
+        expect({ url, sync: await syncRequired(service, r.repositoryId) }).toEqual({ url, sync: false });
+      }
       f.h.write(configPath, base);
       for (const event of SYNC_EVENTS) {
         const hook = `${f.repo}/.git/hooks/${event}`;
@@ -95,6 +112,26 @@ describeGit("trust class sync (T036)", () => {
       }
     });
     expect(existsSync(native(f.log))).toBe(false);
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "core.alternateRefsCommand with an alternate sets approvalRequired.sync; the review refuses and the canary does not run before approval; the approved fetch runs it", SHELL, async () => {
+    const f = fixture("t036-alternate");
+    const alternate = `${f.h.root}/alternate.git`;
+    gitRun(f.h, f.h.root, ["init", "-q", "--bare", "--", alternate]);
+    f.h.write(`${f.repo}/.git/objects/info/alternates`, `${native(alternate).replaceAll("\\", "/")}/objects\n`);
+    gitRun(f.h, f.repo, ["config", "core.alternateRefsCommand", f.canary]);
+    await withSync("t036-alternate", async (service) => {
+      const r = await register(service, f.repo);
+      expect((await service.readTrust(r.repositoryId)).result!.approvalRequired).toEqual({ reads: false, commit: false, sync: true });
+      const from = service.runner.calls.length;
+      for (const action of ["fetch", "fetch-all"]) expect({ action, ...outcome(await reviewSync(service, r, { action })) }).toEqual({ action, state: "failed", code: "TRUST_REQUIRED" });
+      expect(remoteCalls(service, from)).toEqual([]);
+      expect(existsSync(native(f.log))).toBe(false);
+      // The positive control: the fixture reaches the command.
+      await approve(service, r.repositoryId, r.generation);
+      await run(service, r, { action: "fetch" });
+      expect(existsSync(native(f.log))).toBe(true);
+    });
   }, TIMEOUT_MS);
 
   caseTest(TASK, "sync refuses with TRUST_REQUIRED for a program added after the review, and with TRUST_CHANGED for an approved hook that changed, before any process", SHELL, async () => {
@@ -159,6 +196,11 @@ describeGit("trust class sync (T036)", () => {
       ["remote.origin.uploadpack", "git-upload-pack --secret"],
       ["remote.origin.receivepack", "git-receive-pack"],
       ["remote.origin.puttykeyfile", "C:\\keys\\user.ppk"],
+      ["remote.helper.vcs", "cvs"],
+      ["remote.helper.url", "hg::https://user:secret@host.invalid/repo"],
+      ["remote.scheme.url", "foo://user:secret@host.invalid/repo"],
+      ["remote.web.url", "https://user:secret@host.invalid/repo"],
+      ["url.https://mirror.invalid/.insteadOf", "https://user:secret@host.invalid/"],
     ];
     for (const [k, v] of values) gitRun(f.h, f.repo, ["config", k, v]);
     await withSync("t036-display", async (service) => {
@@ -177,8 +219,14 @@ describeGit("trust class sync (T036)", () => {
           ["remote.origin.uploadpack", "git-upload-pack"],
           ["remote.origin.receivepack", "git-receive-pack"],
           ["remote.origin.puttykeyfile", "C:\\keys\\user.ppk"],
+          ["remote.helper.vcs", "cvs"],
+          ["remote.helper.url", "hg"],
+          ["remote.scheme.url", "foo"],
         ].sort(),
       );
+      // Contract Δ7: an `insteadOf` entry shows its key only.
+      const rewrite = (first.result as TrustResult).entries.find((e) => e.key === "url.https://mirror.invalid/.insteadof");
+      expect(rewrite).toEqual({ key: "url.https://mirror.invalid/.insteadof", scope: "local", origin: expect.any(String) });
       expect(JSON.stringify(first.result).includes("secret")).toBe(false);
       expect(JSON.stringify([service.responses, service.progress, service.log()]).includes("secret")).toBe(false);
       const second = await service.readTrust(r.repositoryId);

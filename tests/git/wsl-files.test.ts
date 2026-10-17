@@ -97,6 +97,19 @@ describe("wslIndexOf (contract §4 index recheck, §6 indexDigest)", () => {
     expect(r).toMatchObject({ value: { raw: { link: LINK }, digest: HEX_A, unmerged: false } });
   });
 
+  // Feature 003 contract Δ4: a Mark resolved binding holds stages above 0, also without a merge marker (a stash-apply conflict).
+  test("an equal digest takes the stage fact of the bound index and reads no index bytes", async () => {
+    const f = fake([index({ kind: "digest", size: 10, sha256: HEX_A })]);
+    expect(await wslIndexOf(f.ctx, bound, true)).toMatchObject({ value: { digest: HEX_A, unmerged: true } });
+    const g = fake([index({ kind: "digest", size: 10, sha256: HEX_A })]);
+    expect(await wslIndexOf(g.ctx, bound)).toMatchObject({ value: { digest: HEX_A, unmerged: false } });
+    // A changed digest reads its own stages, whatever the bound fact is.
+    const path = join(DIR, "changed-resolved-index");
+    writeFileSync(path, indexBytes(0));
+    const h = fake([index({ kind: "digest", size: 104, sha256: HEX_B })], [], path);
+    expect(await wslIndexOf(h.ctx, bound, true)).toMatchObject({ value: { digest: HEX_B, unmerged: false } });
+  });
+
   test("a link without a shared file sends no sharedIndex", async () => {
     const f = fake([index({ kind: "digest", size: 10, sha256: HEX_A })]);
     expect(await wslIndexOf(f.ctx, { rawIndexDigest: HEX_A, sharedIndex: { hash: "0".repeat(40), digest: null } })).toMatchObject({ value: { raw: { link: "0".repeat(40) } } });

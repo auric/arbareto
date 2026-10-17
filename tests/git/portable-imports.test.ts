@@ -42,9 +42,10 @@ test("the generic harness holds no static import of a host module or bun:ffi", (
   expect(hits).toEqual([]);
 });
 
-// Shared TypeScript takes native path rules only from `src/contracts/native-path.ts`. The transpiler drops comments and type-only imports.
+// Shared TypeScript takes native path rules only from `src/contracts/native-path.ts`, and the renderer takes the DOS drive rule from `drive-prefix.ts`.
+// The transpiler drops comments and type-only imports.
 const SRC = join(import.meta.dir, "..", "..", "src");
-const PLATFORM_FILES = ["contracts/native-path.ts", "contracts/remedy-command.ts", "contracts/wsl-route.ts"];
+const PLATFORM_FILES = ["contracts/native-path.ts", "contracts/drive-prefix.ts", "contracts/remedy-command.ts", "contracts/wsl-route.ts"];
 const BANNED: [string, RegExp][] = [
   ["win32", /win32/g],
   ["git.exe", /git\\?\.exe(?![A-Za-z0-9_])/gi],
@@ -59,13 +60,18 @@ const FRONTEND_PACKAGES =
   /^(?:@tauri-apps\/|(?:react|react-dom|@base-ui\/react|@pierre\/diffs|shiki|@shikijs\/transformers|@tanstack\/react-virtual|cn|class-variance-authority|@hugeicons\/react|@hugeicons\/core-free-icons)(?:\/|$))/;
 const transpile = (file: string, source: string) =>
   new Bun.Transpiler({ loader: file.endsWith(".tsx") ? "tsx" : "ts" }).transformSync(source);
-// A contracts module with no runtime import and no `process` cannot load `native-path.ts` or fail in WebView2.
-const isLeafContract = (target: string) => {
+// A contracts module without `process`, whose runtime imports are only leaf contracts, cannot load `native-path.ts` or fail in WebView2.
+// `seen` stops an import cycle. Each module of the cycle still passes its own check.
+const isLeafContract = (target: string, seen = new Set<string>()): boolean => {
   if (!/^contracts\/[^/]+$/.test(target)) return false;
-  const path = join(SRC, `${target.replace(/\.ts$/, "")}.ts`);
+  const name = target.replace(/\.ts$/, "");
+  if (seen.has(name)) return true;
+  seen.add(name);
+  const path = join(SRC, `${name}.ts`);
   if (!existsSync(path)) return false;
   const output = transpile(path, readFileSync(path, "utf8"));
-  return [...output.matchAll(SPECIFIER)].length === 0 && !/\bprocess\b/.test(output);
+  if (/\bprocess\b/.test(output)) return false;
+  return [...output.matchAll(SPECIFIER)].every(([, specifier]) => specifier!.startsWith("./") && isLeafContract(posix.join("contracts", specifier!), seen));
 };
 // `tsconfig.json` `paths` and the Vite `alias` map `@/` to `src/frontend/`.
 const leavesFrontend = (file: string, specifier: string) => {
@@ -150,7 +156,8 @@ test("the scan permits type-only imports, the renderer packages, frontend module
     'import { request } from "../bridge";',
     'import { Button } from "@/components/ui/button";',
     'import { GRAPH_LANES } from "../../contracts/limits";',
-    "export const used = [invoke, useState, createRoot, request, Button, GRAPH_LANES];",
+    'import { suggestCloneName } from "../../contracts/clone-name";',
+    "export const used = [invoke, useState, createRoot, request, Button, GRAPH_LANES, suggestCloneName];",
     "export type Shown = Environment;",
   ].join("\n");
   expect(scanHits("frontend/boot/BootView.tsx", source)).toEqual([]);

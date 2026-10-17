@@ -9,6 +9,7 @@ import {
   ERROR_CODES,
   HISTORY_CHANGED_REASONS,
   HISTORY_OUTPUT_LIMIT_REASONS,
+  PUSH_REJECTED_REASONS,
   PUTTY_PROGRAMS,
   PUTTY_UNAVAILABLE_REASONS,
   SEARCH_UNSUPPORTED_REASONS,
@@ -1108,8 +1109,11 @@ export const PushDestination = z
     trackingRef: Text.min(1).nullable(),
     url: z.string(),
     setUpstream: z.boolean(),
+    // Contract Δ3 Set upstream: the write of `branch.<name>.rebase` applies. Only with `setUpstream`.
+    upstreamRebase: z.boolean(),
     source: z.enum(["remote-push-refspec", "push-default-upstream", "push-default-branch", "push-default-triangular", "panel"]),
   })
+  .refine((d) => d.setUpstream || !d.upstreamRebase)
   .meta({ title: "PushDestination" });
 // Plan.md D5: the commits that the force push removes. `count` is exact, and `commits` holds the first of them.
 const Lease = z
@@ -1127,6 +1131,8 @@ const NeedsDestination = z
     remotes: z.array(RemoteName).min(1).max(SYNC_REMOTES),
     prefill: z.strictObject({ remote: RemoteName, ref: Text.min(1) }).meta({ title: "PanelPrefill" }).nullable(),
     setUpstream: z.boolean(),
+    // Contract Δ3 Set upstream: the panel names `branch.<name>.rebase` among the keys when it is true.
+    upstreamRebase: z.boolean(),
   })
   .meta({ title: "NeedsDestination" });
 // Data-model §2: the bound values for display.
@@ -1156,7 +1162,8 @@ export const ReviewSyncResult = z
           (r.plan?.skippedCommit !== undefined) === (r.action === "skip"),
       )
       .meta({ title: "SyncReviewed" }),
-    z.strictObject({ reason: z.enum([...SYNC_UNAVAILABLE_REASONS, ...SYNC_OUTPUT_LIMIT_REASONS]).optional(), unmerged: Count.optional() }).meta({ title: "SyncRefused" }),
+    // `remedy`: the terminal command of a `rebase-exec` refusal.
+    z.strictObject({ reason: z.enum([...SYNC_UNAVAILABLE_REASONS, ...SYNC_OUTPUT_LIMIT_REASONS]).optional(), unmerged: Count.optional(), remedy: SyncRemedy.optional() }).meta({ title: "SyncRefused" }),
   ])
   .meta({ title: "ReviewSyncResult" });
 
@@ -1208,6 +1215,8 @@ export const Integration = z
 const FETCHING: readonly string[] = ["fetch", "fetch-all", "pull"];
 const PUSHING: readonly string[] = ["push", "force-push"];
 const INTEGRATING: readonly string[] = ["pull", "integrate", "abort", "continue", "skip"];
+// Contract Δ3 "Results and states": the `SYNC_UNAVAILABLE` reasons that a pull or integrate result holds after the fetch or the count.
+const PULL_REFUSAL_REASONS = ["ff-only", "interactive-rebase", "upstream-gone"] as const;
 // Data-model §4 to §8: the parts of the action. The response state holds the outcome.
 export const SyncResult = z
   .strictObject({
@@ -1219,13 +1228,24 @@ export const SyncResult = z
     // Data-model §6. Null: no payload and no configuration value decided.
     modeSource: z.enum(["payload", "branch", "pull", "pull-ff"]).nullable().optional(),
     remedy: SyncRemedy.optional(),
+    // Contract Δ9: the `PUSH_REJECTED` reason, the `PUTTY_UNAVAILABLE` reason with the program and its path after a fetched remote,
+    // or the `SYNC_UNAVAILABLE` reason of a pull or integrate refusal after the fetch or the count.
+    reason: z.enum([...PUSH_REJECTED_REASONS, ...PUTTY_UNAVAILABLE_REASONS, ...PULL_REFUSAL_REASONS]).optional(),
+    program: z.enum(PUTTY_PROGRAMS).optional(),
+    path: ChannelPath.optional(),
+    // Data-model §11: the service holds a connect target for this operation.
+    connectTarget: z.literal(true).optional(),
   })
   .refine(
     (r) =>
       (r.fetch === undefined || FETCHING.includes(r.action)) &&
       (r.push === undefined || PUSHING.includes(r.action)) &&
       (r.integration === undefined || INTEGRATING.includes(r.action)) &&
-      ((r.counts === undefined && r.modeSource === undefined) || r.action === "pull" || r.action === "integrate"),
+      ((r.counts === undefined && r.modeSource === undefined) || r.action === "pull" || r.action === "integrate") &&
+      (!(PULL_REFUSAL_REASONS as readonly string[]).includes(r.reason ?? "") || r.action === "pull" || r.action === "integrate") &&
+      (!(PUSH_REJECTED_REASONS as readonly string[]).includes(r.reason ?? "") || PUSHING.includes(r.action)) &&
+      ((r.program !== undefined && r.path !== undefined) === (PUTTY_UNAVAILABLE_REASONS as readonly string[]).includes(r.reason ?? "")) &&
+      ((r.program === undefined) === (r.path === undefined)),
   )
   .meta({ title: "SyncResult" });
 
@@ -1234,10 +1254,12 @@ export const PuttyRefused = z
   .strictObject({ reason: z.enum(PUTTY_UNAVAILABLE_REASONS), program: z.enum(PUTTY_PROGRAMS), path: ChannelPath })
   .meta({ title: "PuttyRefused" });
 // Contract Δ3 `clone`: the `chooseRepository` result after exit 0, else the destination state of FR-050, or a refusal before the start.
+// `connectTarget` (data-model §11): the service holds a connect target for this operation. Without a destination read, it stands alone.
 export const CloneResult = z
   .union([
     RegistrationResult,
-    z.strictObject({ exists: z.boolean(), empty: z.boolean(), outputTail: OutputTail, remedy: SyncRemedy }).meta({ title: "CloneFailed" }),
+    z.strictObject({ exists: z.boolean(), empty: z.boolean(), outputTail: OutputTail, remedy: SyncRemedy, connectTarget: z.literal(true).optional() }).meta({ title: "CloneFailed" }),
+    z.strictObject({ connectTarget: z.literal(true) }).meta({ title: "CloneConnectTarget" }),
     z.strictObject({ reason: z.enum(DESTINATION_NOT_EMPTY_REASONS), path: ChannelPath }).meta({ title: "DestinationRefused" }),
     PuttyRefused,
   ])

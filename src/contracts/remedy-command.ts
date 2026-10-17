@@ -14,7 +14,9 @@ export type RemedyValueKind =
   | "commitId"
   | "distroName"
   // Contract §11 "Remedy commands": `<System32 path>\wsl.exe`.
-  | "wslExecutable";
+  | "wslExecutable"
+  // Feature 003 contract Δ3 `clone` step 6.
+  | "url";
 
 // `windows`: the service removes trailing separators. `linux` and `git-reported` (the §6 `safe.directory` path) keep their form.
 export type RemedyValueForm = "windows" | "linux" | "git-reported";

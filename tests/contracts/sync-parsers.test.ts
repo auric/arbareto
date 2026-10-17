@@ -7,6 +7,7 @@ import {
   createFetchParser,
   FETCH_FLAGS,
   type FetchFlag,
+  holdsExec,
   parseAheadBehind,
   parsePushPorcelain,
   parsePushRecord,
@@ -59,16 +60,14 @@ describe("fetch porcelain", () => {
   });
 
   test("SHA-256 object IDs and a new ref with the zero OID", () => {
-    expect(fetchList(`* ${"0".repeat(64)} ${B2} refs/tags/v1\n+ ${A2} ${B2} refs/remotes/origin/main\n`, "sha256")).toEqual({
-      updates: [
-        { flag: "*", oldObjectId: "0".repeat(64), newObjectId: B2, ref: "refs/tags/v1" },
-        { flag: "+", oldObjectId: A2, newObjectId: B2, ref: "refs/remotes/origin/main" },
-      ],
-      counts: { ...zeroCounts(), "*": 1, "+": 1 },
-    });
+    const updates = [
+      { flag: "*" as const, oldObjectId: "0".repeat(64), newObjectId: B2, ref: "refs/tags/v1" },
+      { flag: "+" as const, oldObjectId: A2, newObjectId: B2, ref: "refs/remotes/origin/main" },
+    ];
+    expect(fetchList(`* ${"0".repeat(64)} ${B2} refs/tags/v1\n+ ${A2} ${B2} refs/remotes/origin/main\n`, "sha256")).toEqual({ updates, counts: { ...zeroCounts(), "*": 1, "+": 1 }, all: updates });
   });
 
-  test("empty output gives no update", () => expect(fetchList("")).toEqual({ updates: [], counts: zeroCounts() }));
+  test("empty output gives no update", () => expect(fetchList("")).toEqual({ updates: [], counts: zeroCounts(), all: [] }));
 
   test("a UTF-8 ref name passes as text", () => {
     expect(fetchList(`* ${Z1} ${B1} refs/remotes/origin/zweig-ä\n`)).toMatchObject({ updates: [{ ref: "refs/remotes/origin/zweig-ä" }] });
@@ -95,6 +94,8 @@ describe("fetch porcelain", () => {
     expect(result.updates.length).toBe(1000);
     expect(result.updates[999]!.ref).toBe("refs/remotes/o/b999");
     expect(result.counts).toEqual({ ...zeroCounts(), " ": 750, "=": 750 });
+    // The reconciliation applies every line, also above the listing bound.
+    expect({ all: result.all.length, last: result.all.at(-1)!.ref, listed: result.all.slice(0, 1000) }).toEqual({ all: 1500, last: "refs/remotes/o/b1499", listed: result.updates });
   });
 
   const broken: [string, string, ("sha1" | "sha256")?][] = [
@@ -344,4 +345,13 @@ describe("lease count (plan.md D5)", () => {
   for (const output of ["", "3", "03\n", "-1\n", "3\n\n", "3 \n", "3\t0\n", "a\n"]) {
     test(`${JSON.stringify(output)} gives MALFORMED_GIT_OUTPUT`, () => expect(parseRevListCount(bytes(output))).toBeNull());
   }
+});
+
+// Plan.md D7 and sequencer.c `parse_insn_line`, `is_command`, `todo_command_info`: the todo lines that Git runs with the shell.
+describe("exec lines of a rebase todo", () => {
+  const exec = (text: string) => holdsExec(new TextEncoder().encode(text));
+  const yes = ["exec make test\n", "x make\n", "  x touch planted\n", "\tx\ttrue\n", "exec\n", "x", "exec\r\n", "pick 1234 a\nexec true\npick 5678 b\n", "x\0tail\n"];
+  const no = ["# exec true\n", "pick 1234 exec\n", "execute true\n", "xx true\n", "  # x true\n", "edit 1234 x\n", "", "\n\n", "break\n", "e 1234 a\n"];
+  for (const text of yes) test(`${JSON.stringify(text)} holds an exec line`, () => expect(exec(text)).toBe(true));
+  for (const text of no) test(`${JSON.stringify(text)} holds no exec line`, () => expect(exec(text)).toBe(false));
 });

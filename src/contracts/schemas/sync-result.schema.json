@@ -414,6 +414,40 @@
       ],
       "additionalProperties": false,
       "title": "SyncRemedy"
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "rejected",
+        "stale-lease",
+        "remote-rejected",
+        "remote-failure",
+        "missing",
+        "unreadable",
+        "version",
+        "exit",
+        "not-ready",
+        "ff-only",
+        "interactive-rebase",
+        "upstream-gone"
+      ]
+    },
+    "program": {
+      "type": "string",
+      "enum": [
+        "plink",
+        "pageant",
+        "puttygen"
+      ]
+    },
+    "path": {
+      "type": "string",
+      "maxLength": 32767,
+      "pattern": "^[^\\u0000]*$"
+    },
+    "connectTarget": {
+      "type": "boolean",
+      "const": true
     }
   },
   "required": [

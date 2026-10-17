@@ -291,8 +291,9 @@ export function differs(bound: { size: number; sha256: string } | null, read: Fa
 }
 
 // Contract §4 "WSL index publication": a WSL repository compares the `indexDigest` result with the bound digest.
-export const canonicalIndex = (ctx: PublishContext, bound: RawIndexPart): Promise<Fact<IndexFacts | WslIndexFacts>> =>
-  ctx.workspace.wsl === undefined ? indexOf(ctx.workspace) : wslIndexOf(ctx, bound);
+// `unmerged`: the bound index holds an entry above stage 0 (feature 003 contract Δ4: only Mark resolved accepts one).
+export const canonicalIndex = (ctx: PublishContext, bound: RawIndexPart, unmerged = false): Promise<Fact<IndexFacts | WslIndexFacts>> =>
+  ctx.workspace.wsl === undefined ? indexOf(ctx.workspace) : wslIndexOf(ctx, bound, unmerged);
 
 // Research R3 steps 5, 11, and 14: HEAD, the canonical index, the operation state, and the bound working version.
 export async function observeState(ctx: ObserveContext, path: Uint8Array, bindsWorking: boolean, index: Promise<Fact<IndexFacts | WslIndexFacts>> = indexOf(ctx.workspace)): Promise<StateObservation> {
@@ -316,7 +317,8 @@ function stateFact(state: Awaited<ReturnType<WorkspaceReader["operationState"]>>
 export type CheckpointBinding = Pick<ComparisonBinding, "head" | "index" | "working" | "attributes" | "policyFingerprint" | "operationState">;
 
 // Contract §4 and §9. The first match wins. A stop wins over every refusal, and a deadline over a cancel.
-export function checkpointRefusal(binding: CheckpointBinding, policy: PolicyObservation, state: StateObservation, objectFormat: ObjectFormat, wsl = false): Refusal | Stop | null {
+// `resolve`: feature 003 contract Δ4 compares the operation state with the bound state instead of the CONFLICTED and OPERATION_IN_PROGRESS refusals.
+export function checkpointRefusal(binding: CheckpointBinding, policy: PolicyObservation, state: StateObservation, objectFormat: ObjectFormat, wsl = false, resolve = false): Refusal | Stop | null {
   const attributes = "listing" in policy ? policy.attributes : null;
   const stops = [policy, attributes, state.head, state.index, state.operationState, state.working].filter(isStop);
   if (stops.length > 0) return stops.some((s) => s.stop === "deadline") ? DEADLINE : CANCELED;
@@ -335,8 +337,8 @@ export function checkpointRefusal(binding: CheckpointBinding, policy: PolicyObse
   // A `conflicted` state also changes the index, so the operation state decides before the index compare.
   if (!("value" in state.operationState)) return refusalOf(state.operationState as Failure);
   const observed = state.operationState.value;
-  if (observed === "conflicted") return { code: "CONFLICTED" };
-  if (observed !== "normal" && observed !== "unknown") return { code: "OPERATION_IN_PROGRESS" };
+  if (!resolve && observed === "conflicted") return { code: "CONFLICTED" };
+  if (!resolve && observed !== "normal" && observed !== "unknown") return { code: "OPERATION_IN_PROGRESS" };
   if (observed === "unknown" || observed !== binding.operationState) return STALE;
   if (!("value" in state.head)) return refusalOf(state.head as Failure);
   if (!Bun.deepEquals(state.head.value, binding.head, true)) return STALE;
@@ -575,6 +577,8 @@ export interface PublicationRun {
   // Data-model §7 `lingeringDescendants`: the count of the last execution process before reconciliation.
   executionLast: number;
   listing: PolicyFacts["listing"] | null;
+  // The operation state after publication when it differs from the bound state: Mark resolved of the last unmerged path ends `conflicted`.
+  expectedState?: OperationState;
 }
 
 // Data-model §7 rows for a `started` reply without a marker ID.
@@ -598,7 +602,7 @@ export interface PublicationReconciliation {
   // Its `runner` is `rec`.
   ctx: PublishContext;
   path: Uint8Array;
-  binding: Pick<CheckpointBinding, "head" | "index" | "operationState">;
+  binding: Pick<CheckpointBinding, "head" | "index" | "operationState"> & { entry: Pick<ComparisonBinding["entry"], "category"> };
   run: PublicationRun;
   ending: Ending;
   unexpected: boolean;
@@ -625,14 +629,15 @@ function unknownOf(failed: Failure | Stop, refusal: Refusal | null): Decision {
 }
 
 // Contract §4 "WSL index publication": after publication, a digest equal to a retained digest reads no index bytes.
-// Neither retained index holds an entry above stage 0: acceptance refused a conflicted index, and step 6 verified the candidate.
-async function wslIndexAfter(ctx: WslContext, bound: RawIndexPart, candidate: string | null): Promise<Fact<IndexFacts | WslIndexFacts>> {
+// `boundUnmerged`: the bound index holds an entry above stage 0, which only Mark resolved accepts (feature 003 contract Δ4). The verified candidate bytes give their own fact.
+async function wslIndexAfter(ctx: WslContext, bound: RawIndexPart, candidate: Candidate | null, boundUnmerged: boolean): Promise<Fact<IndexFacts | WslIndexFacts>> {
   const read = await wslIndexDigest(ctx);
   if (!("value" in read)) return read;
   const part = read.value.index;
   const digest = part.kind === "digest" ? part.sha256 : null;
-  if (part.kind === "error" || part.kind === "bound" || (digest !== bound.rawIndexDigest && digest !== candidate)) return wslIndexOf(ctx, bound);
-  return { value: { raw: { link: digest === bound.rawIndexDigest ? (bound.sharedIndex?.hash ?? null) : null }, digest, unmerged: false, reply: read.value } };
+  if (part.kind === "error" || part.kind === "bound" || (digest !== bound.rawIndexDigest && digest !== candidate?.digest)) return wslIndexOf(ctx, bound, boundUnmerged);
+  const unmerged = digest === bound.rawIndexDigest ? boundUnmerged : rawIndexEntries(candidate!.bytes, ctx.workspace.objectFormat).entries.some((e) => e.stage > 0);
+  return { value: { raw: { link: digest === bound.rawIndexDigest ? (bound.sharedIndex?.hash ?? null) : null }, digest, unmerged, reply: read.value } };
 }
 
 // Contract §4 "Process end": no fact, or a `remove` that leaves ownership unknown, gives `unknown`.
@@ -662,7 +667,7 @@ export async function reconcilePublication(r: PublicationReconciliation): Promis
     // Contract §4 "Process end": a stopped walk can still change files, so nothing decides and nothing is removed before this fact.
     let decides = (await processEnd(quiet)) === "fact";
     if (decides) {
-      [observed, working] = await observe(wslIndexAfter(quiet, binding.index, run.candidate?.digest ?? null));
+      [observed, working] = await observe(wslIndexAfter(quiet, binding.index, run.candidate, binding.entry.category === "conflicted"));
       const index = observed.index;
       // A published candidate replaced the index with the lock, so no owned lock remains.
       if ("value" in index && run.publishStarted && index.value.digest === run.candidate?.digest) run.lock = null;
@@ -699,7 +704,7 @@ function classifyPublication(r: PublicationReconciliation, observed: StateObserv
     head: !Bun.deepEquals(head, binding.head, true),
     index,
     workingFiles,
-    operationState: operationState !== binding.operationState,
+    operationState: operationState !== (run.published || viaDigest ? (run.expectedState ?? binding.operationState) : binding.operationState),
   });
   // Contract §9: the canonical index digest decides publication. A returned publication with another digest is published with an index effect.
   // Contract §4: a refusal before `publish()` prevents publication. An equal digest before that call comes from an external writer.

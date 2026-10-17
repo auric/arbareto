@@ -29,6 +29,8 @@ export interface HttpRemote {
   throttledChunks(): number;
   // The process IDs of all CGI processes, in start order.
   pids(): number[];
+  // True when Bun holds an exit record for every CGI process. A PID probe is no proof: the OS can reuse a PID after the process ends.
+  ended(): boolean;
   // Holds each later response before its first byte, until `resume`.
   pause(): void;
   resume(): void;
@@ -78,7 +80,7 @@ export function startHttpRemote(options: HttpRemoteOptions): HttpRemote {
   let chunks = 0;
   let gate: { promise: Promise<void>; open: () => void } | null = null;
   let throttle: { bytes: number; intervalMs: number } | null = null;
-  const pids: number[] = [];
+  const procs: Subprocess[] = [];
   const running = new Set<Subprocess>();
   const expected = `Basic ${Buffer.from(`${options.user}:${options.password}`).toString("base64")}`;
 
@@ -129,7 +131,7 @@ export function startHttpRemote(options: HttpRemoteOptions): HttpRemote {
         env.HTTP_GIT_PROTOCOL = protocol;
       }
       const proc = Bun.spawn([options.git, "http-backend"], { env, stdin: input.length > 0 ? new Blob([input]) : "ignore", stdout: "pipe", stderr: "ignore" });
-      pids.push(proc.pid);
+      procs.push(proc);
       running.add(proc);
       const [output] = await Promise.all([new Response(proc.stdout).arrayBuffer(), proc.exited]);
       running.delete(proc);
@@ -147,7 +149,8 @@ export function startHttpRemote(options: HttpRemoteOptions): HttpRemote {
     requests: () => requests,
     responsesStarted: () => started,
     throttledChunks: () => chunks,
-    pids: () => [...pids],
+    pids: () => procs.map((p) => p.pid),
+    ended: () => procs.every((p) => p.exitCode !== null || p.signalCode !== null),
     pause() {
       if (gate !== null) return;
       let open = () => {};

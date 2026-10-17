@@ -37,16 +37,6 @@ const finish = (run: { proc: ReturnType<typeof Bun.spawn>; done: Promise<Run> })
     throw e;
   });
 
-// Signal 0 tests for existence only (Node.js `process.kill`).
-function alive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 async function waitFor(check: () => boolean, ms: number, what: string): Promise<void> {
   const deadline = Date.now() + ms;
   while (!check()) {
@@ -101,7 +91,7 @@ describeGit("local HTTP remote and git daemon (T003)", (git) => {
       await server.stop();
     }
     expect(server.pids().length).toBeGreaterThan(0);
-    for (const pid of server.pids()) expect(alive(pid)).toBe(false);
+    expect(server.ended()).toBe(true);
     console.log(`HTTP_REMOTE requests=${server.requests()} cgi=${server.pids().length}`);
   }, CASE_MS);
 
@@ -119,7 +109,7 @@ describeGit("local HTTP remote and git daemon (T003)", (git) => {
     } finally {
       await daemon.stop();
     }
-    expect(alive(daemon.pid)).toBe(false);
+    expect(daemon.ended()).toBe(true);
     console.log(`GIT_DAEMON access=${daemon.accessCount()} pid=${daemon.pid}`);
   }, CASE_MS);
 });

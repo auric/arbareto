@@ -6,7 +6,7 @@
 
 import type { Response, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SYNC_FETCH_LISTED_REFS, SYNC_REFS_BYTES } from "../contracts/limits";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SYNC_REFS_BYTES } from "../contracts/limits";
 import { isWindows } from "../contracts/native-path";
 import type { OperationEvent } from "../contracts/outcome";
 import { buildRemedyCommand } from "../contracts/remedy-command";
@@ -24,7 +24,8 @@ import { trackStall } from "./stall";
 import type { WorkspaceReader } from "./status";
 import { stepStderr } from "./submodule-update";
 import { fetchArgs, pushArgs, upstreamArgs } from "./sync-commands";
-import { createFetchParser, FETCH_FLAGS, parsePushPorcelain, type FetchFlag, type FetchUpdate, type PushStatus } from "./sync-parsers";
+import { runIntegration, type StepPhase } from "./sync-integrate";
+import { createFetchParser, FETCH_FLAGS, parsePushPorcelain, type FetchFlag, type FetchList, type FetchUpdate, type PushStatus } from "./sync-parsers";
 import { lastValue, listRefs, observeSync, refKey, refText, type Observation, type SyncBinding } from "./sync-review";
 import type { ConfigEntry, Trust } from "./trust";
 import { processEnd } from "./wsl-files";
@@ -35,16 +36,14 @@ export const STEP_REMEDY_TEXT = "This command runs the step in a terminal, where
 export const CANCELED_PUSH_TEXT = "The remote can hold this push. Fetch to see the remote state.";
 // Contract Δ3 Set upstream.
 export const UPSTREAM_REMEDY_TEXT = "The push succeeded, but Arbareto could not set the upstream. This command sets it.";
-const UPSTREAM_REMEDY = "& {git} --no-lazy-fetch -C {root} config --local -- {remoteKey} {remote}; & {git} --no-lazy-fetch -C {root} config --local -- {mergeKey} {merge}";
 
-const LF = 0x0a;
 const HEADS = "refs/heads/";
 const ZERO_OID = /^0+$/;
 const SUCCESS: readonly PushStatus[] = ["pushed", "forced", "created", "up-to-date"];
 
 type SyncRequest = Extract<ServiceRequest, { operation: "sync" }>;
 type Refs = Map<string, string>;
-type Remedy = { text: string; command: string | null };
+export type Remedy = { text: string; command: string | null };
 
 // Data-model §11: the target of Connect in a terminal for the last failed `sync` of a workspace.
 export interface ConnectTarget {
@@ -66,14 +65,15 @@ export interface SyncerOptions {
 }
 
 // One network step. `exit` is null when the step started no process or the runner refused it after the start request.
-interface StepEnd {
+export interface StepEnd {
   exit: GitExit | null;
   canceled: boolean;
   refused: ErrorCode | null;
   outputTail: string;
 }
 
-interface FetchRemote {
+// Data-model §4: one remote of a fetch result.
+export interface FetchRemote {
   name: string;
   state: "succeeded" | "failed" | "canceled" | "deadline" | "not-started";
   updates: FetchUpdate[];
@@ -82,30 +82,62 @@ interface FetchRemote {
 }
 
 const noCounts = () => Object.fromEntries(FETCH_FLAGS.map((flag) => [flag, 0])) as Record<FetchFlag, number>;
+export const notStarted = (name: string): FetchRemote => ({ name, state: "not-started", updates: [], counts: noCounts(), outputTail: "" });
 
-// All porcelain lines, and the first SYNC_FETCH_LISTED_REFS with the counts for display. Each window goes through the contract parser. Null: a broken line.
-function fetchLines(bytes: Uint8Array, objectFormat: Workspace["objectFormat"]): { listed: FetchUpdate[]; counts: Record<FetchFlag, number>; all: FetchUpdate[] } | null {
-  const whole = createFetchParser(objectFormat);
-  whole.push(bytes);
-  const list = whole.end();
-  if (list === null) return null;
-  const all: FetchUpdate[] = [];
-  let start = 0;
-  let lines = 0;
-  for (let i = 0; i < bytes.length; i++) {
-    if (bytes[i] !== LF || (++lines % SYNC_FETCH_LISTED_REFS !== 0 && i !== bytes.length - 1)) continue;
-    const window = createFetchParser(objectFormat);
-    window.push(bytes.subarray(start, i + 1));
-    all.push(...window.end()!.updates);
-    start = i + 1;
-  }
-  return { listed: list.updates, counts: list.counts, all };
+// The facts of one remote fetch step of fetch, fetch-all, and pull. `end` is null when no fetch process started.
+// `stop`: contract Δ3 `sync` step 6, so no later step starts.
+export interface FetchStep {
+  end: StepEnd | null;
+  all: FetchUpdate[];
+  malformed: boolean;
+  limit: "deadline" | "output" | null;
+  refused: ErrorCode | null;
+  putty: Extract<PageantReply, { result: "failed" }> | null;
+  stop: boolean;
+}
+
+// The failure facts of the fetch remotes, aggregated over their steps.
+export interface FetchFacts {
+  malformed: ReadonlySet<string>;
+  limit: "deadline" | "output" | null;
+  putty: Extract<PageantReply, { result: "failed" }> | null;
+  refused: ErrorCode | null;
+}
+
+// Data-model §8 for the fetch remotes. `failedRemote` keeps the fetch remedy and the connect target.
+// `code` is the code of a failure without effects. Undefined takes the recorded DEADLINE cause.
+export function fetchVerdict(remotes: readonly FetchRemote[], f: FetchFacts, aborted: boolean): { failedRemote: FetchRemote | undefined; stopped: boolean; failed: boolean; code: ErrorCode | undefined } {
+  // Contract Δ3: a broken porcelain line makes the list MALFORMED_GIT_OUTPUT, not a failed remote.
+  const failedRemote = remotes.find((r) => (r.state === "failed" && !f.malformed.has(r.name)) || r.state === "deadline");
+  const stopped = remotes.some((r) => r.state === "canceled") || (aborted && remotes.some((r) => r.state === "not-started"));
+  const failed = f.putty !== null || f.refused !== null || failedRemote !== undefined || f.malformed.size > 0 || f.limit !== null || stopped;
+  const code: ErrorCode | undefined =
+    f.putty !== null ? "PUTTY_UNAVAILABLE" : (f.refused ?? (f.limit === "deadline" ? undefined : f.limit === "output" ? "OUTPUT_LIMIT" : failedRemote === undefined ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED"));
+  return { failedRemote, stopped, failed, code };
+}
+
+// The contract parser over the whole stdout. Null: a broken line.
+function fetchLines(bytes: Uint8Array, objectFormat: Workspace["objectFormat"]): FetchList | null {
+  const parser = createFetchParser(objectFormat);
+  parser.push(bytes);
+  return parser.end();
 }
 
 // The refs whose values differ between two listings, in byte order of their names.
-function changes(before: Refs, after: Refs): { ref: string; oldObjectId: string | null; newObjectId: string | null }[] {
+export function changes(before: Refs, after: Refs): { ref: string; oldObjectId: string | null; newObjectId: string | null }[] {
   const keys = [...new Set([...before.keys(), ...after.keys()])].filter((k) => before.get(k) !== after.get(k)).sort((a, b) => Buffer.compare(Buffer.from(a, "latin1"), Buffer.from(b, "latin1")));
   return keys.map((k) => ({ ref: refText(k), oldObjectId: before.get(k) ?? null, newObjectId: after.get(k) ?? null }));
+}
+
+// Data-model §4 `observed`: the listing after against the listing before with every porcelain line applied.
+export function fetchObserved(before: Refs, all: readonly FetchUpdate[], after: Refs): ReturnType<typeof changes> {
+  const expected = new Map(before);
+  for (const u of all) {
+    if (u.flag === "=" || u.flag === "!") continue;
+    if (ZERO_OID.test(u.newObjectId)) expected.delete(refKey(u.ref));
+    else expected.set(refKey(u.ref), u.newObjectId);
+  }
+  return changes(expected, after);
 }
 
 // remote.c `query_refspecs` and refspec.c `match_name_with_pattern`: the first fetch refspec of `remote` whose source matches `dst` names the tracking ref.
@@ -168,9 +200,10 @@ export function createSyncer(o: SyncerOptions) {
       else registry.apply(operationId, { type: "no-effects", observed: "failed", code: ending.code, ...(ending.code === "OUTPUT_LIMIT" && ending.reason !== undefined ? { reason: ending.reason } : {}) }, ending.result);
       resolved();
     };
-    // The end of a run that started network processes.
+    // The end of a run that started network processes. Data-model §11: `connectTarget` comes from the kept target itself.
     const finish = (event: OperationEvent, result: unknown, known = true, cause?: ErrorCode) => {
-      registry.apply(operationId, event, result, cause);
+      const kept = connectTargets.get(w.repositoryId)?.operationId === operationId;
+      registry.apply(operationId, event, kept ? { ...(result as object), connectTarget: true } : result, cause);
       if (known) resolved();
     };
     const unknown = (f: Failure | Stop, result: unknown) =>
@@ -197,10 +230,16 @@ export function createSyncer(o: SyncerOptions) {
       });
       return { text: STEP_REMEDY_TEXT, command: built.command };
     };
+    // Contract Δ3 "Remedies": one `config --local` command per `upstreamArgs` write, with its key and value.
+    const upstreamRemedy = (writes: readonly string[][]): Remedy => {
+      const template = writes.map((_, i) => `& {git} --no-lazy-fetch -C {root} config --local -- {key${i}} {value${i}}`).join("; ");
+      const values = Object.fromEntries(writes.flatMap((args, i) => [[`key${i}`, args.at(-2)!], [`value${i}`, args.at(-1)!]]));
+      return { ...remedyOf(template, values, false), text: UPSTREAM_REMEDY_TEXT };
+    };
     const stallOf = (remedy: Remedy): StallRemedy => (remedy.command === null ? { text: remedy.text } : { command: remedy.command, text: remedy.text });
 
-    // One `remote` policy process with the 001 §12 network limits (contract Δ5).
-    const networkStep = async (args: string[], phase: "sync-fetch" | "sync-push", counters: Record<string, number>, remedy: Remedy, stdout: ReturnType<typeof createCollector>): Promise<StepEnd> => {
+    // One `remote` or `integrate` policy process with the 001 §12 network limits (contract Δ5, plan.md D2).
+    const networkStep = async (args: string[], phase: StepPhase, counters: Record<string, number>, remedy: Remedy, stdout: ReturnType<typeof createCollector>, policy: "remote" | "integrate" = "remote"): Promise<StepEnd> => {
       let percent: number | undefined;
       const report = () => {
         const state = registry.get(operationId)?.state;
@@ -216,7 +255,7 @@ export function createSyncer(o: SyncerOptions) {
       let exit: GitExit | null = null;
       let refused: ErrorCode | null = null;
       try {
-        exit = await o.runner.run({ operationId, context: contextOf(w), arguments: args, environmentPolicy: "remote", limits: PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
+        exit = await o.runner.run({ operationId, context: contextOf(w), arguments: args, environmentPolicy: policy, limits: PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
         lastDescendants = exit.activeDescendants ?? 0;
       } catch (error) {
         if (!signal.aborted && !(error instanceof RunnerRefusal)) throw error;
@@ -229,9 +268,9 @@ export function createSyncer(o: SyncerOptions) {
 
     // Contract Δ3 Set upstream: the `upstreamArgs` writes in order. Only exit 0 of each write means set. A Cancel starts no later write.
     // `ends` holds a null exit for a start that the runner refused.
-    const writeUpstream = async (branch: string, remote: string, dst: string): Promise<{ set: boolean; ends: { exit: GitExit | null }[] }> => {
+    const writeUpstream = async (writes: readonly string[][]): Promise<{ set: boolean; ends: { exit: GitExit | null }[] }> => {
       const ends: { exit: GitExit | null }[] = [];
-      for (const args of upstreamArgs(branch, remote, dst)) {
+      for (const args of writes) {
         if (signal.aborted) return { set: false, ends };
         let exit: GitExit | null = null;
         try {
@@ -251,11 +290,40 @@ export function createSyncer(o: SyncerOptions) {
     // Contract §11 and 001 §12: after a stopped WSL process, Linux Git can still write. No listing decides before the process-end fact.
     const processEnded = async (ends: readonly { exit: GitExit | null }[]) => w.wsl === undefined || ends.every((e) => e.exit !== null && e.exit.exitCode !== null) || (await processEnd(q)) === "fact";
 
+    // Contract Δ3 "Remedies": the fetch remedy of one remote.
+    const fetchRemedy = (entries: readonly ConfigEntry[], remote: string): Remedy => remedyOf("& {git} --no-lazy-fetch -C {root} fetch -- {remote}", { remote }, holdsUserInfo(entries, remote));
+
+    // Contract Δ3 `sync` steps 3 and 5 for one remote of fetch, fetch-all, and pull: `pageant`, the fetch process, its porcelain lines, and the remote state.
+    const fetchStep = async (remote: FetchRemote, counters: Record<string, number>, entries: readonly ConfigEntry[]): Promise<FetchStep> => {
+      const none: FetchStep = { end: null, all: [], malformed: false, limit: null, refused: null, putty: null, stop: true };
+      const reply = await pageant(remote.name, counters).catch((error: unknown) => {
+        if (error instanceof RunnerRefusal) return { result: "refused" as const, code: error.code };
+        throw error;
+      });
+      if (reply !== null && reply.result === "refused") return { ...none, refused: reply.code };
+      if (reply !== null && reply.result === "failed") return { ...none, putty: reply };
+      if (signal.aborted) return none;
+      const out = createCollector({ maxBytes: SYNC_REFS_BYTES });
+      const end = await networkStep(fetchArgs(remote.name), "sync-fetch", counters, fetchRemedy(entries, remote.name), out);
+      remote.outputTail = end.outputTail;
+      const lines = end.exit === null || out.limited ? null : fetchLines(out.take(), w.objectFormat);
+      if (lines !== null) {
+        remote.updates = lines.updates;
+        remote.counts = lines.counts;
+      }
+      if (end.canceled) remote.state = "canceled";
+      else if (end.exit?.deadline !== undefined) remote.state = "deadline";
+      else remote.state = end.exit?.exitCode === 0 && lines !== null ? "succeeded" : "failed";
+      const limit = end.exit?.deadline !== undefined ? "deadline" : end.exit?.diagnosticLimit || out.limited ? "output" : null;
+      const malformed = lines === null && end.exit?.exitCode === 0 && !out.limited;
+      return { end, all: lines?.all ?? [], malformed, limit, refused: end.refused, putty: null, stop: end.canceled || limit !== null || end.refused !== null };
+    };
+
     // ---- fetch and fetch-all (data-model §4 and §8) ----
     const runFetch = async (entries: readonly ConfigEntry[]) => {
       const before = await listRefs(ctx);
       if (!("value" in before)) return refuse(before);
-      const remotes: FetchRemote[] = b.remotes.map((name) => ({ name, state: "not-started", updates: [], counts: noCounts(), outputTail: "" }));
+      const remotes = b.remotes.map(notStarted);
       const all: FetchUpdate[] = [];
       const ends: StepEnd[] = [];
       // Contract Δ3: a broken porcelain line makes the list of that remote MALFORMED_GIT_OUTPUT. The listings still decide the effects.
@@ -265,39 +333,14 @@ export function createSyncer(o: SyncerOptions) {
       let refusedCode: ErrorCode | null = null;
       for (const [i, remote] of remotes.entries()) {
         if (signal.aborted) break;
-        const counters = { remoteIndex: i + 1, remoteCount: remotes.length };
-        const reply = await pageant(remote.name, counters).catch((error: unknown) => {
-          if (error instanceof RunnerRefusal) return { result: "refused" as const, code: error.code };
-          throw error;
-        });
-        if (reply !== null && reply.result === "refused") {
-          refusedCode = reply.code;
-          break;
-        }
-        if (reply !== null && reply.result === "failed") {
-          putty = reply;
-          break;
-        }
-        if (signal.aborted) break;
-        const remedy = remedyOf("& {git} --no-lazy-fetch -C {root} fetch -- {remote}", { remote: remote.name }, holdsUserInfo(entries, remote.name));
-        const out = createCollector({ maxBytes: SYNC_REFS_BYTES });
-        const end = await networkStep(fetchArgs(remote.name), "sync-fetch", counters, remedy, out);
-        ends.push(end);
-        remote.outputTail = end.outputTail;
-        const lines = end.exit === null || out.limited ? null : fetchLines(out.take(), w.objectFormat);
-        if (lines !== null) {
-          remote.updates = lines.listed;
-          remote.counts = lines.counts;
-          all.push(...lines.all);
-        } else if (end.exit?.exitCode === 0 && !out.limited) malformed.add(remote.name);
-        if (end.refused !== null) refusedCode ??= end.refused;
-        if (end.canceled) remote.state = "canceled";
-        else if (end.exit?.deadline !== undefined) remote.state = "deadline";
-        else remote.state = end.exit?.exitCode === 0 && lines !== null ? "succeeded" : "failed";
-        if (end.exit?.deadline !== undefined) limit = "deadline";
-        else if (end.exit?.diagnosticLimit || out.limited) limit = "output";
-        // Contract Δ3 `sync` step 6: no later step starts after a Cancel, a limit, or a shell refusal.
-        if (end.canceled || limit !== null || end.refused !== null) break;
+        const step = await fetchStep(remote, { remoteIndex: i + 1, remoteCount: remotes.length }, entries);
+        if (step.end !== null) ends.push(step.end);
+        all.push(...step.all);
+        if (step.malformed) malformed.add(remote.name);
+        refusedCode ??= step.refused;
+        putty ??= step.putty;
+        limit ??= step.limit;
+        if (step.stop) break;
       }
       if (ends.length === 0 && remotes.length > 0) {
         if (putty !== null) return refuse({ code: "PUTTY_UNAVAILABLE", result: { reason: putty.reason, program: putty.program, path: putty.path } });
@@ -315,27 +358,18 @@ export function createSyncer(o: SyncerOptions) {
       if (typeof state === "object") return unknown("refused" in state ? { code: state.refused } : state, unread);
       if (state === "canceled" || state === "deadline") return unknown({ stop: "deadline" }, unread);
 
-      // Data-model §4 `observed`: the listing after against the listing before with every porcelain line applied.
-      const expected = new Map(before.value);
-      for (const u of all) {
-        if (u.flag === "=" || u.flag === "!") continue;
-        if (ZERO_OID.test(u.newObjectId)) expected.delete(refKey(u.ref));
-        else expected.set(refKey(u.ref), u.newObjectId);
-      }
-      const observed = changes(expected, after.value);
+      const observed = fetchObserved(before.value, all, after.value);
       const moved = !Bun.deepEquals(head, b.head, true) || state !== b.operationState;
       const changed = changes(before.value, after.value).length > 0 || moved;
-      const failedRemote = remotes.find((r) => (r.state === "failed" && !malformed.has(r.name)) || r.state === "deadline");
-      const stopped = remotes.some((r) => r.state === "canceled") || (signal.aborted && remotes.some((r) => r.state === "not-started"));
-      const remedy = failedRemote === undefined || stopped ? undefined : remedyOf("& {git} --no-lazy-fetch -C {root} fetch -- {remote}", { remote: failedRemote.name }, holdsUserInfo(entries, failedRemote.name));
-      const result = { action: b.payload.action, fetch: fetch(observed), ...(remedy === undefined ? {} : { remedy }) };
-      if (putty !== null || refusedCode !== null || failedRemote !== undefined || malformed.size > 0 || limit !== null || stopped) {
+      const { failedRemote, stopped, failed, code } = fetchVerdict(remotes, { malformed, limit, putty, refused: refusedCode }, signal.aborted);
+      const remedy = failedRemote === undefined || stopped ? undefined : fetchRemedy(entries, failedRemote.name);
+      // Contract Δ9: `PUTTY_UNAVAILABLE` names the program and its path, also after a fetched remote.
+      const puttyFacts = putty === null ? {} : { reason: putty.reason, program: putty.program, path: putty.path };
+      const result = { action: b.payload.action, fetch: fetch(observed), ...(remedy === undefined ? {} : { remedy }), ...puttyFacts };
+      if (failed) {
         if (failedRemote !== undefined) keepTarget("remote", failedRemote.name);
         if (changed) return finish({ type: "failed-with-effects" }, result);
         if (stopped) return finish({ type: "no-effects", observed: "canceled" }, result);
-        // Without a code, the outcome takes the recorded DEADLINE cause.
-        const code: ErrorCode | undefined =
-          putty !== null ? "PUTTY_UNAVAILABLE" : (refusedCode ?? (limit === "deadline" ? undefined : limit === "output" ? "OUTPUT_LIMIT" : failedRemote === undefined ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED"));
         return finish({ type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }) }, result);
       }
       return finish(observed.length > 0 || moved ? { type: "differing-effects" } : { type: "intended-effects-confirmed" }, result);
@@ -369,8 +403,9 @@ export function createSyncer(o: SyncerOptions) {
       const line = exited ? parsePushPorcelain(out.take(), refspec, end.exit!.exitCode!) : null;
       const status: PushStatus = line?.status ?? "none";
       const succeeded = exited && SUCCESS.includes(status);
-      // Contract Δ3 Set upstream: only after a successful push. A failed write leaves the push succeeded.
-      const upstream = succeeded && d.setUpstream ? await writeUpstream(branch, d.remote, d.ref) : { set: true, ends: [] };
+      // Contract Δ3 Set upstream: only after a successful push, with the bound keys. A failed write leaves the push succeeded.
+      const writes = upstreamArgs(branch, d.remote, d.ref, d.upstreamRebase);
+      const upstream = succeeded && d.setUpstream ? await writeUpstream(writes) : { set: true, ends: [] };
       const upstreamNotSet = !upstream.set;
       enterReconciling(registry, operationId, deadline, lastDescendants);
       const tracking = d.trackingRef ?? trackingOf(entries, d.remote, d.ref);
@@ -400,8 +435,8 @@ export function createSyncer(o: SyncerOptions) {
       if (!("ok" in listed)) return unknown(listed, failed);
       if (!listed.ok) return unknown("stop" in listed ? { stop: listed.stop } : { code: listed.code }, failed);
 
-      // Data-model §5 `upstreamWritten`: the values of `branch.<name>.remote` and `.merge` changed.
-      const upstreamKeys = [`branch.${branch}.remote`, `branch.${branch}.merge`];
+      // Data-model §5 `upstreamWritten`: the values of `branch.<name>.remote`, `.merge`, or `.rebase` changed.
+      const upstreamKeys = [`branch.${branch}.remote`, `branch.${branch}.merge`, `branch.${branch}.rebase`];
       const upstreamOf = (list: readonly ConfigEntry[]) => upstreamKeys.map((k) => list.filter((e) => e.key === k).map((e) => e.value));
       const upstreamWritten = !Bun.deepEquals(upstreamOf(entries), upstreamOf(listed.listing.entries), true);
       // FR-018: Git's push sets the tracking ref of the destination to the pushed commit.
@@ -412,8 +447,7 @@ export function createSyncer(o: SyncerOptions) {
       const result = { action: b.payload.action, push: pushResult(after.value, upstreamWritten) };
       if (succeeded) {
         const unexpected = changes(expected, after.value).length > 0 || stateChanged || (upstreamWritten && !d.setUpstream);
-        const values = { remoteKey: `branch.${branch}.remote`, remote: d.remote, mergeKey: `branch.${branch}.merge`, merge: d.ref };
-        const done = upstreamNotSet ? { ...result, remedy: { ...remedyOf(UPSTREAM_REMEDY, values, false), text: UPSTREAM_REMEDY_TEXT } } : result;
+        const done = upstreamNotSet ? { ...result, remedy: upstreamRemedy(writes) } : result;
         return finish(unexpected ? { type: "differing-effects" } : { type: "intended-effects-confirmed" }, done);
       }
       if (end.canceled) {
@@ -422,7 +456,11 @@ export function createSyncer(o: SyncerOptions) {
       }
       keepTarget("url", d.url);
       if (changed) return finish({ type: "failed-with-effects" }, { ...result, remedy });
-      if (status === "rejected" || status === "remote-rejected" || status === "remote-failure") return finish({ type: "no-effects", observed: "failed", code: "PUSH_REJECTED" }, result);
+      if (status === "rejected" || status === "remote-rejected" || status === "remote-failure") {
+        // Contract Δ3 and Δ9: a `[rejected]` status of a push with a lease means that the remote changed.
+        const reason = status !== "rejected" ? status : lease === null ? "rejected" : "stale-lease";
+        return finish({ type: "no-effects", observed: "failed", code: "PUSH_REJECTED" }, { ...result, reason });
+      }
       const code: ErrorCode | undefined = deadline ? undefined : end.refused ?? (out.limited || end.exit?.diagnosticLimit ? "OUTPUT_LIMIT" : exited && line === null ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED");
       return finish({ type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }) }, { ...result, remedy });
     };
@@ -442,7 +480,11 @@ export function createSyncer(o: SyncerOptions) {
       }
       const entries = (again as Extract<Observation, { binding: unknown }>).entries;
       if (b.payload.action === "fetch" || b.payload.action === "fetch-all") await runFetch(entries);
-      else await runPush(entries);
+      else if (b.payload.action === "push" || b.payload.action === "force-push") await runPush(entries);
+      else {
+        const enter = (deadline: boolean) => enterReconciling(registry, operationId, deadline, lastDescendants);
+        await runIntegration({ ctx, q, binding: b, entries, refuse, finish, unknown, enter, step: networkStep, remedyOf, processEnded, keepTarget, fetchStep, fetchRemedy, notStarted, fetchVerdict, fetchObserved, changes });
+      }
     } catch {
       // A broken step leaves the outcome unknown. The marker stays (contract §8).
       const state = registry.get(operationId)?.state;
@@ -486,12 +528,15 @@ export function createSyncer(o: SyncerOptions) {
 }
 
 // Contract Δ3 `sync` step 2 and data-model §2: a trust difference gives TRUST_REQUIRED or TRUST_CHANGED, any other difference STALE_REVIEW.
-function staleOf(b: SyncBinding, again: Observation): { code: ErrorCode; reason?: Failure["reason"] } | Stop | null {
+// A fingerprint difference is a trust difference only when `approvalRequired.sync` holds on either side, as for 001 reads.
+// Plan.md D7: an unmerged entry gives CONFLICTED with the count at `sync` too.
+function staleOf(b: SyncBinding, again: Observation): { code: ErrorCode; reason?: Failure["reason"]; result?: unknown } | Stop | null {
   if (isStop(again)) return again;
   if ("code" in again) return again;
+  if ("refused" in again && again.refused === "CONFLICTED") return { code: "CONFLICTED", result: { unmerged: again.unmerged } };
   if ("refused" in again) return again.refused === "TRUST_REQUIRED" || again.refused === "TRUST_CHANGED" ? { code: again.refused } : { code: "STALE_REVIEW" };
   if ("panel" in again) return { code: "STALE_REVIEW" };
-  if (again.binding.trust.fingerprint !== b.trust.fingerprint) return { code: "TRUST_CHANGED" };
+  if ((b.trust.sync || again.binding.trust.sync) && again.binding.trust.fingerprint !== b.trust.fingerprint) return { code: "TRUST_CHANGED" };
   const { trust: _bound, ...bound } = b;
   const { trust: _now, ...now } = again.binding;
   return Bun.deepEquals(bound, now, true) ? null : { code: "STALE_REVIEW" };

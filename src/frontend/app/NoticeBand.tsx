@@ -111,17 +111,34 @@ export type NoticeBandProps = {
    * The caller renders it, because this module must load without Base UI (tests/contracts/notice-band.test.tsx).
    */
   refsChanged?: ReactNode;
+  /** Feature 003 FR-023 to FR-026: the push-rejected row. The caller renders it with `pushNoticeText` and its actions. */
+  pushRow?: ReactNode;
+  /** Feature 003 FR-034: the Connect in a terminal row. The caller renders it with `connectNoticeText` and its action. */
+  connectRow?: ReactNode;
 };
+
+/** Feature 003 FR-023, FR-025, FR-026: the push-rejected notice state. `tracking` names the remote branch. */
+export type PushNotice = { kind: "rejected" | "stale" | "pulled"; tracking: string; branch: string };
+
+/** The text of the push-rejected row (FR-023, FR-025, FR-026, and the approved "Push rejected" mockup). */
+export function pushNoticeText(notice: PushNotice): string {
+  if (notice.kind === "stale") return "Force push with lease rejected. The remote branch changed since the last fetch.";
+  if (notice.kind === "pulled") return `Pull completed. Push ${notice.branch} again.`;
+  return `Push rejected. ${notice.tracking} can hold commits that ${notice.branch} does not have, so the push cannot fast-forward.`;
+}
+
+/** Feature 003 FR-034 and O-10: the row after a failed network `sync` under plink. It names no cause (plan.md D12). */
+export const connectNoticeText = (name: string) => `${name} did not complete with PuTTY (plink).`;
 
 // Feature 002 spec FR-005, from the approved mockup canvas of plan.md D6.
 const REFS_CHANGED = "References changed. History still shows the references from when it opened.";
 
-/** The notice band: the blocking row, the submodule row, then the recovery row. It renders nothing without a row, so F6 skips it. */
-export function NoticeBand({ operationState, conflicted, submoduleRow, recovery, refsChanged }: NoticeBandProps) {
+/** The notice band: the blocking row, the submodule row, the push-rejected row, the connect row, then the recovery row. It renders nothing without a row, so F6 skips it. */
+export function NoticeBand({ operationState, conflicted, submoduleRow, recovery, refsChanged, pushRow, connectRow }: NoticeBandProps) {
   const headingId = useId();
   const first = blockingText(operationState, conflicted);
   const recoveryRow = recovery !== undefined && (recoverySentences(recovery).length > 0 || recovery.foreign !== undefined);
-  if (first === null && !submoduleRow && !recoveryRow && !refsChanged) return null;
+  if (first === null && !submoduleRow && !recoveryRow && !refsChanged && !pushRow && !connectRow) return null;
   return (
     <section aria-labelledby={headingId} className="flex items-start gap-3 border-b border-divider bg-warning-fill px-2">
       <h2 id={headingId} tabIndex={-1} className="shrink-0 font-semibold" style={{ lineHeight: "var(--h-band-row)" }}>
@@ -137,6 +154,8 @@ export function NoticeBand({ operationState, conflicted, submoduleRow, recovery,
           </p>
         )}
         {submoduleRow}
+        {pushRow}
+        {connectRow}
         {recovery !== undefined && recoveryRow ? <RecoveryRow recovery={recovery} /> : null}
         {!refsChanged ? null : (
           <p className="flex items-center gap-2 py-1" style={{ minHeight: "var(--h-band-row)" }}>

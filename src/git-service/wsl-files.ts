@@ -78,7 +78,8 @@ export interface WslIndexFacts {
 }
 
 // Contract §4 "WSL index publication": the canonical index against the bound raw index part.
-export async function wslIndexOf(ctx: WslContext, bound: RawIndexPart): Promise<Fact<WslIndexFacts>> {
+// `boundUnmerged`: the stage fact of the bound index. Equal digests mean equal bytes, so an equal digest takes that fact and reads no index bytes (contract §11).
+export async function wslIndexOf(ctx: WslContext, bound: RawIndexPart, boundUnmerged = false): Promise<Fact<WslIndexFacts>> {
   const shared = bound.sharedIndex?.digest == null ? undefined : bound.sharedIndex.hash;
   const read = await wslIndexDigest(ctx, shared);
   if (!("value" in read)) return read;
@@ -87,8 +88,8 @@ export async function wslIndexOf(ctx: WslContext, bound: RawIndexPart): Promise<
   if (parts.some((p) => p.kind === "error")) return { code: "GIT_FAILED" };
   if (parts.some((p) => p.kind === "bound")) return INDEX_LIMIT;
   const digest = reply.index.kind === "digest" ? reply.index.sha256 : null;
-  // Acceptance refused a conflicted index, so the bound index holds no entry above stage 0.
-  if (digest === bound.rawIndexDigest) return { value: { raw: { link: bound.sharedIndex?.hash ?? null }, digest, unmerged: false, reply } };
+  // Hunk and stage acceptance refuse a conflicted index. Mark resolved binds one with stages above 0 (feature 003 contract Δ4).
+  if (digest === bound.rawIndexDigest) return { value: { raw: { link: bound.sharedIndex?.hash ?? null }, digest, unmerged: boundUnmerged, reply } };
   if (digest === null) return { value: { raw: { link: null }, digest, unmerged: false, reply } };
   // Contract §11 "Paths and file access": only a changed digest reads the index bytes through UNC, once.
   const raw = await readRawIndex(ctx.workspace.indexPath);

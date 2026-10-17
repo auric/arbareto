@@ -287,7 +287,7 @@ export function valueShown(p: KeyParts): boolean {
   if (section === "gpg") return variable === "program" || (subsection === "ssh" && variable === "defaultkeycommand");
   // Feature 003 contract Δ7: the transport programs and the PuTTY key proposal (O-8).
   if (section === "credential") return variable === "helper";
-  if (section === "remote") return subsection !== null && ["uploadpack", "receivepack", "puttykeyfile"].includes(variable);
+  if (section === "remote") return subsection !== null && ["uploadpack", "receivepack", "puttykeyfile", "vcs"].includes(variable);
   return false;
 }
 
@@ -301,7 +301,31 @@ function submoduleRegistration(p: KeyParts, value: string | null): boolean {
 // `pathname`: `git_config_pathname`, run directly (gpg-interface.c). `split`: `split_cmdline` (gpg-interface.c).
 // `credential`: credential.c `run_credential_helper` runs each helper with `use_shell`. A `!` value is a shell snippet, an absolute path runs as written, and any other name becomes `git credential-<name>` (gitcredentials(7)).
 // `direct`: `git_config_string`, run without the shell (prompt.c `do_askpass`). `proxy`: connect.c `git_proxy_command_options` takes the text before " for ", and `git_proxy_connect` runs it without the shell.
-type ProgramForm = "shell" | "monitor" | "pathname" | "split" | "credential" | "direct" | "proxy";
+// `helper`: transport-helper.c runs `git remote-<name>` (`git_cmd`), so the program word is `git`, as for a `credential-<name>` helper.
+type ProgramForm = "shell" | "monitor" | "pathname" | "split" | "credential" | "direct" | "proxy" | "helper";
+
+// transport.c `transport_get` (Git 2.56) takes the first match: a `<name>::` prefix (`is_urlschemechar`), `rsync:` (no helper), a local bundle file,
+// then `!is_url(url)` or the prefixes `file://`, `git://`, `ssh://`, `git+ssh://`, and `ssh+git://` (Git's own transport).
+// Any other `<scheme>://` URL runs `git remote-<scheme>` (`external_specification_len`). Makefile `REMOTE_CURL_NAMES` installs Git's own helpers
+// for `http`, `https`, `ftp`, and `ftps`, so they do not count. A one-letter scheme is a DOS drive path that can name a bundle file
+// (url.c `url_is_local_not_ssh`). It counts, because the service reads no such file. `starts_with` compares case-sensitively, so `HTTPS://` counts.
+// Plan.md D11 accepts both over-reports. Null: no helper.
+const SCHEME = /^[A-Za-z0-9][A-Za-z0-9+.-]*/;
+const BUILTIN_TRANSPORTS = ["file://", "git://", "ssh://", "git+ssh://", "ssh+git://"];
+const CURL_HELPERS: ReadonlySet<string> = new Set(["http", "https", "ftp", "ftps"]);
+export function urlHelper(url: string): string | null {
+  const scheme = SCHEME.exec(url)?.[0] ?? "";
+  if (url.startsWith(`${scheme}::`)) return scheme;
+  if (url.startsWith("rsync:") || scheme === "" || !url.startsWith(`${scheme}://`) || BUILTIN_TRANSPORTS.some((prefix) => url.startsWith(prefix))) return null;
+  return CURL_HELPERS.has(scheme) ? null : scheme;
+}
+
+// Feature 003 plan.md D11: true when an entry of the `helper` form counts. A `remote.<name>.vcs` value names the helper. A remote URL counts by
+// `urlHelper`. remote.c rewrites remote URLs with each `url.<base>.insteadOf` and `pushInsteadOf` entry, and the service does not copy that
+// rewrite. So such an entry counts with any base and any value, also an empty one.
+function selectsHelper(p: KeyParts, value: string): boolean {
+  return p.section === "url" || p.variable === "vcs" || urlHelper(value) !== null;
+}
 
 // Contract §7: the read blocking class and the "Mutation trust" `commit` class. A configured hook joins `commit` through its events.
 // Feature 003 plan.md D11: the `sync` class.
@@ -321,6 +345,12 @@ function programKey(p: KeyParts): ProgramKey | null {
   if (section === "core" && subsection === null && variable === "gitproxy") return { form: "proxy", reads: false, commit: false, sync: true };
   if (section === "remote" && subsection !== null && (variable === "uploadpack" || variable === "receivepack")) return { form: "shell", reads: false, commit: false, sync: true };
   if (section === "credential" && variable === "helper") return { form: "credential", reads: false, commit: false, sync: true };
+  // Feature 003 plan.md D11: a remote helper. Only an entry that `selectsHelper` becomes a program.
+  if ((section === "remote" && subsection !== null && (variable === "vcs" || variable === "url" || variable === "pushurl")) || (section === "url" && subsection !== null && (variable === "insteadof" || variable === "pushinsteadof"))) {
+    return { form: "helper", reads: false, commit: false, sync: true };
+  }
+  // Feature 003 plan.md D11: fetch-pack.c `for_each_alternate_ref` runs it with `use_shell` (`fill_alternate_refs_command`). A probe saw no 001 read or commit run it.
+  if (section === "core" && subsection === null && variable === "alternaterefscommand") return { form: "shell", reads: false, commit: false, sync: true };
   // Feature 003 plan.md D11: ll-merge.c `ll_ext_merge` runs a merge driver with `use_shell`, so a pull merge can run it.
   if (section === "merge" && subsection !== null && variable === "driver") return { form: "shell", reads: false, commit: false, sync: true };
   if (section === "filter" && subsection !== null) {
@@ -336,9 +366,12 @@ function programKey(p: KeyParts): ProgramKey | null {
 }
 
 // connect.c `git_proxy_command_options`: the command is the text before the first " for ", and "none" names no proxy.
-function proxyCommand(value: string): string {
+function proxyText(value: string): string {
   const at = value.indexOf(" for ");
-  const command = at < 0 ? value : value.slice(0, at);
+  return at < 0 ? value : value.slice(0, at);
+}
+function proxyCommand(value: string): string {
+  const command = proxyText(value);
   return command === "none" ? "" : command;
 }
 
@@ -351,6 +384,7 @@ function programOf(form: ProgramForm, value: string, home: string | undefined, r
   else if (form === "split") word = splitCmdlineProgram(value);
   else if (form === "direct") word = value;
   else if (form === "proxy") word = proxyCommand(value);
+  else if (form === "helper") word = "git";
   else {
     const path = interpolatePath(value, home);
     word = path === null ? null : form === "monitor" ? shellProgram(path) : path;
@@ -1156,8 +1190,11 @@ async function buildListing(
     const parts = keyParts(entry.key);
     const kind = parts && programKey(parts);
     // Git runs every `credential.helper` value in order (credential.c), so each one counts. The `core.gitProxy` entry that matches the host decides, so each one counts too.
-    if (!kind || (kind.form !== "credential" && kind.form !== "proxy" && last.get(entry.key) !== entry) || entry.value === null || entry.value === "") continue;
+    // Each remote URL, `vcs`, and `insteadOf` entry counts. An empty value of the `helper` form can still count (`selectsHelper`).
+    const each = kind !== null && (kind.form === "credential" || kind.form === "proxy" || kind.form === "helper");
+    if (!kind || (!each && last.get(entry.key) !== entry) || entry.value === null || (entry.value === "" && kind.form !== "helper")) continue;
     if (kind.form === "proxy" && proxyCommand(entry.value) === "") continue;
+    if (kind.form === "helper" && !selectsHelper(parts!, entry.value)) continue;
     // fsmonitor-settings.c: a boolean `core.fsmonitor` names the built-in daemon, not a command (contract §7).
     if (kind.form === "monitor" && parseMaybeBool(entry.value) !== -1) continue;
     const program = entry.exact ? programOf(kind.form, entry.value, layout.home, rules) : ({ kind: "unresolved" } as const);
@@ -1378,10 +1415,7 @@ const SHELL_COMMAND = "<shell command>";
 // `core.gitProxy` keeps the command before " for " (connect.c `git_proxy_command_options`). Git runs it without arguments.
 function displayValue(p: KeyParts, value: string): string {
   const { section, subsection, variable } = p;
-  if (section === "core" && subsection === null && variable === "gitproxy") {
-    const at = value.indexOf(" for ");
-    return at < 0 ? value : value.slice(0, at);
-  }
+  if (section === "core" && subsection === null && variable === "gitproxy") return proxyText(value);
   const helper = section === "credential" && variable === "helper";
   const shell = helper || (section === "core" && subsection === null && variable === "sshcommand") || (section === "remote" && subsection !== null && (variable === "uploadpack" || variable === "receivepack"));
   if (!shell || value === "") return value;
@@ -1390,11 +1424,13 @@ function displayValue(p: KeyParts, value: string): string {
 }
 
 // Contract §3 `readTrust` display: values only for the allowlist, and every text redacted (contract §7).
+// Feature 003 contract Δ7: a remote URL that `urlHelper` classifies shows only the helper name. Other URLs and every `insteadOf` value stay hidden.
 function displayEntries(listing: TrustListing) {
   return listing.entries.map((entry) => {
     const parts = keyParts(entry.key);
-    const shown = parts !== null && valueShown(parts) && entry.value !== null;
-    return { key: redactUrlUserInfo(entry.key), scope: entry.scope, origin: redactUrlUserInfo(entry.origin), ...(shown ? { value: redactUrlUserInfo(displayValue(parts, entry.value!)) } : {}) };
+    const url = parts !== null && parts.section === "remote" && (parts.variable === "url" || parts.variable === "pushurl");
+    const value = entry.value === null ? null : url ? urlHelper(entry.value) : parts !== null && valueShown(parts) ? displayValue(parts, entry.value) : null;
+    return { key: redactUrlUserInfo(entry.key), scope: entry.scope, origin: redactUrlUserInfo(entry.origin), ...(value === null ? {} : { value: redactUrlUserInfo(value) }) };
   });
 }
 

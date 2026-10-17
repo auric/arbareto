@@ -7,7 +7,7 @@ import { isUtf8 } from "node:buffer";
 import type { ConfigScope } from "../contracts/envelope";
 import { isObjectId, type ObjectFormat } from "./commands";
 import { latin1 } from "./read-steps";
-import { parseMaybeBool, type ConfigEntry } from "./trust";
+import { parseMaybeBool, urlHelper, type ConfigEntry } from "./trust";
 
 // Byte strings: `latin1` maps each byte to one code unit, so equal strings mean equal bytes.
 const decoded = (raw: string): { text: string; exact: boolean } => {
@@ -264,21 +264,13 @@ function authorityHost(authority: string): string {
   return lowerAscii(end < 0 ? hostPort : hostPort.slice(0, end));
 }
 
-// transport.c `transport_get`: Git handles `file`, `git`, `ssh`, `git+ssh`, and `ssh+git` URLs itself. Makefile `REMOTE_CURL_NAMES` installs
-// its helpers for `http`, `https`, `ftp`, and `ftps`. Another scheme runs `git remote-<scheme>`. `starts_with` compares case-sensitively.
-// shortcut: the 003 `urlHelper` of trust.ts holds the same set on f003-b5-clone; import it when that branch merges.
-const HOST_SCHEMES: ReadonlySet<string> = new Set(["file", "git", "ssh", "git+ssh", "ssh+git", "http", "https", "ftp", "ftps"]);
-
 // `rules.hasDrivePrefix` is the rule of the Git platform: Git for Windows reads `C:` as a drive, POSIX Git does not.
 // shortcut: Git for Windows also needs `is_valid_path` for a drive path; a path that it refuses reads as local here.
 export function urlHost(url: string, rules: { hasDrivePrefix(path: string): boolean }): UrlHost {
-  // transport.c `transport_get`: `<transport>::<address>` runs a remote helper, and `rsync:` stops Git. url.c `is_urlschemechar` allows a leading digit.
-  if (/^[A-Za-z0-9][A-Za-z0-9+.-]*::/.test(url) || url.startsWith("rsync:")) return null;
-  const scheme = /^([A-Za-z0-9][A-Za-z0-9+.-]*):\/\//.exec(url);
-  if (scheme) {
-    if (!HOST_SCHEMES.has(scheme[1]!)) return null;
-    return scheme[1] === "file" ? { local: true } : { host: authorityHost(/^[^/?#]*/.exec(url.slice(scheme[0].length))![0]) };
-  }
+  // transport.c `transport_get`: a remote helper URL (`urlHelper`) has no host that Git connects to, and `rsync:` stops Git.
+  if (urlHelper(url) !== null || url.startsWith("rsync:")) return null;
+  const scheme = /^[A-Za-z0-9][A-Za-z0-9+.-]*:\/\//.exec(url);
+  if (scheme) return url.startsWith("file://") ? { local: true } : { host: authorityHost(/^[^/?#]*/.exec(url.slice(scheme[0].length))![0]) };
   // connect.c `url_is_local_not_ssh`: the scp form holds only when no slash comes before the first colon.
   const colon = url.indexOf(":");
   const slash = url.indexOf("/");

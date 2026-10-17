@@ -3,10 +3,12 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
-import { decidePull, decidePushDestination, invalidRemoteValue, parsePushRecord, type PullDecision, type PushDecision, type PushDestination, type PushRecord } from "../../src/git-service/sync-parsers";
+import { decidePull, decidePushDestination, invalidRemoteValue, parsePushRecord, upstreamRebase, type PullDecision, type PushDecision, type PushDestination, type PushRecord } from "../../src/git-service/sync-parsers";
+import { urlHelper } from "../../src/git-service/trust";
 import { RECORDED } from "./sync-recorded";
 
 printOrigin("../../src/git-service/sync-parsers.ts", import.meta.dir);
+printOrigin("../../src/git-service/trust.ts", import.meta.dir);
 
 // Plan.md D4 and D6, data-model §3 and §6 (T016).
 
@@ -325,6 +327,12 @@ describe("the remote value check of every review", () => {
     }
   });
 
+  // Recorded on 2.56.0.windows.2: `[branch ""]` made `git remote` and `%(upstream)` exit 128 for `remote` and for an unknown variable. `[remote ""]` did not.
+  test("an empty branch subsection refuses for every variable and value", () => {
+    for (const [key, value] of [["branch..remote", "o"], ["branch..foo", "x"], ["branch..merge", null]] as const) expect(check([[key, value]])).toBe(true);
+    expect(check([["remote..url", "x"], ["remote..foo", "x"]])).toBe(false);
+  });
+
   test("a valueless key that Git reads without a value check, or skips, passes", () => {
     const skipped = ["remote./x.url", "remote.url", "branch.remote", "url.insteadof", "branch.main.rebase", "remote.fork.mirror", "pushremote", "remote.fork.pushremote", "branch.main.pushdefault", "core.sshcommand"];
     for (const key of skipped) expect(check([[key, null]])).toBe(false);
@@ -338,5 +346,55 @@ describe("the remote value check of every review", () => {
   test("the D4 rule refuses on each of the five keys", () => {
     const record: PushRecord = { branch: "topic", upstream: "", upstreamRemote: "", upstreamRemoteRef: "", push: "", pushRemote: "origin", pushRemoteRef: "" };
     for (const key of KEYS) expect(decidePushDestination(record, ["origin", "fork"], cfg([[`remote.fork.${key}`, "maybe"]]))).toEqual({ kind: "refused", reason: "invalid-config" });
+  });
+});
+
+// Contract Δ3 Set upstream. Recorded on 2.56.0.windows.2 with `push --set-upstream`: `remote` and `always` wrote `branch.<name>.rebase true`,
+// `never` and `local` wrote none, and `bogus`, `Always`, or a key without a value made `rev-parse --git-path hooks` exit 128.
+describe("branch.autoSetupRebase for a remote upstream", () => {
+  const rebase = (config: Config) => upstreamRebase(cfg(config));
+
+  test("remote and always add the rebase value; never, local, and unset do not", () => {
+    expect([rebase([]), ...["never", "local", "remote", "always"].map((v) => rebase([["branch.autosetuprebase", v]]))]).toEqual([false, false, false, true, true]);
+  });
+
+  test("the last entry wins", () => {
+    expect(rebase([["branch.autosetuprebase", "always"], ["branch.autosetuprebase", "never"]])).toBe(false);
+    expect(rebase([["branch.autosetuprebase", "never"], ["branch.autosetuprebase", "remote"]])).toBe(true);
+  });
+
+  test("an entry that Git refuses gives null, also before a valid one", () => {
+    for (const value of ["bogus", "Always", "", null]) expect(rebase([["branch.autosetuprebase", value]])).toBeNull();
+    expect(rebase([["branch.autosetuprebase", "bogus"], ["branch.autosetuprebase", "always"]])).toBeNull();
+  });
+
+  test("other keys do not count", () => {
+    expect(rebase([["branch.main.autosetuprebase", "always"], ["branch.autosetupmerge", "always"]])).toBe(false);
+  });
+});
+
+// Plan.md D11 remote helpers. Recorded on 2.56.0.windows.2 with `GIT_TRACE` and `ls-remote`: `foo://x/y` and `foo::x` ran `git remote-foo`;
+// `http`, `https`, `ftp`, and `ftps` ran Git's own curl helpers; the ssh forms, `git://`, `file://`, `host:path`, and `C:/path` ran no helper.
+describe("remote helper URLs (transport.c `transport_get`)", () => {
+  test("a <name>:: prefix and an unknown <scheme>:// select a helper", () => {
+    const cases: [string, string | null][] = [
+      ["foo://x/y", "foo"],
+      ["foo::x", "foo"],
+      ["a.b-c+d://x", "a.b-c+d"],
+      ["::x", ""],
+      ["rsync::x", "rsync"],
+      ["ext::sh -c true", "ext"],
+      // starts_with and the Makefile helper names compare case-sensitively.
+      ["HTTPS://x", "HTTPS"],
+      // A DOS drive path can name a bundle file, which the service does not read.
+      ["C://x", "C"],
+    ];
+    for (const [url, helper] of cases) expect({ url, helper: urlHelper(url) }).toEqual({ url, helper });
+  });
+
+  test("Git's own transports and its curl helpers select none", () => {
+    for (const url of ["https://h/x", "http://h/x", "ftp://h/x", "ftps://h/x", "ssh://h/x", "git+ssh://h/x", "ssh+git://h/x", "git://h/x", "file:///C:/x", "host:path/x", "C:/path", "/srv/x.git", "rsync://h/x", "-x://h", ""]) {
+      expect({ url, helper: urlHelper(url) }).toEqual({ url, helper: null });
+    }
   });
 });

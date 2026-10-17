@@ -66,6 +66,7 @@ describe("contract Δ5 bounds", () => {
     expect(L.TRACKING_COUNT_DISPLAY).toBe(10_000);
     expect(L.SYNC_REFS_RECORDS).toBe(100_000);
     expect(L.SYNC_REFS_BYTES).toBe(32 * MIB);
+    expect(L.SYNC_REBASE_TODO_BYTES).toBe(4 * MIB);
     expect(L.PAGEANT_READY_MS).toBe(30_000);
     expect(L.CLONE_URL_BYTES).toBe(4096);
     expect(L.KEY_FILE_ENTRIES).toBe(256);
@@ -114,8 +115,10 @@ describe("contract Δ9 codes", () => {
       "interactive-rebase",
       "upstream-gone",
       "no-operation",
+      "unknown-operation",
       "not-rebasing",
       "no-skip-commit",
+      "rebase-exec",
     ]);
     expect([...E.PUSH_REJECTED_REASONS]).toEqual(["rejected", "stale-lease", "remote-rejected", "remote-failure"]);
     expect([...E.PUTTY_UNAVAILABLE_REASONS]).toEqual(["missing", "unreadable", "version", "exit", "not-ready"]);
@@ -389,7 +392,7 @@ describe("contract Δ3 results", () => {
     expect(ok(R, { completeness: { state: "failed", code: "MALFORMED_GIT_OUTPUT" } })).toBe(true);
   });
 
-  const destination = { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "https://example.test/r.git", setUpstream: false, source: "push-default-branch" };
+  const destination = { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "https://example.test/r.git", setUpstream: false, upstreamRebase: false, source: "push-default-branch" };
   const plan = (over: Record<string, unknown> = {}) => ({ remotes: ["origin"], ...over });
 
   test("reviewSync gives action, plan, and syncReviewToken", () => {
@@ -398,6 +401,9 @@ describe("contract Δ3 results", () => {
     expect(ok(R, { action: "pull", plan: plan({ upstream: { ref: "refs/remotes/origin/main", objectId: OID }, mode: null }), syncReviewToken: id() })).toBe(true);
     expect(ok(R, { action: "integrate", plan: plan({ upstream: { ref: "refs/remotes/origin/main", objectId: OID }, mode: "rebase" }), syncReviewToken: id() })).toBe(true);
     expect(ok(R, { action: "push", plan: plan({ destination }), syncReviewToken: id() })).toBe(true);
+    // Contract Δ3 Set upstream: the rebase write applies only with Set upstream.
+    expect(ok(R, { action: "push", plan: plan({ destination: { ...destination, setUpstream: true, upstreamRebase: true } }), syncReviewToken: id() })).toBe(true);
+    expect(ok(R, { action: "push", plan: plan({ destination: { ...destination, upstreamRebase: true } }), syncReviewToken: id() })).toBe(false);
     for (const source of ["remote-push-refspec", "push-default-upstream", "push-default-triangular", "panel"]) {
       expect(ok(R, { action: "push", plan: plan({ destination: { ...destination, source, trackingRef: null } }), syncReviewToken: id() })).toBe(true);
     }
@@ -444,12 +450,14 @@ describe("contract Δ3 results", () => {
 
   test("push without a destination lists the remotes and gives no token", () => {
     const R = C.ReviewSyncResult;
-    const panel = { remotes: ["origin", "fork"], prefill: { remote: "origin", ref: "refs/heads/main" }, setUpstream: true };
+    const panel = { remotes: ["origin", "fork"], prefill: { remote: "origin", ref: "refs/heads/main" }, setUpstream: true, upstreamRebase: false };
     expect(ok(R, { action: "push", plan: plan({ needsDestination: panel }) })).toBe(true);
     expect(ok(R, { action: "push", plan: plan({ needsDestination: { ...panel, prefill: null } }) })).toBe(true);
     expect(ok(R, { action: "push", plan: plan({ needsDestination: panel }), syncReviewToken: id() })).toBe(false);
     expect(ok(R, { action: "fetch", plan: plan({ needsDestination: panel }) })).toBe(false);
     expect(ok(R, { action: "push", plan: plan({ needsDestination: { ...panel, remotes: [] } }) })).toBe(false);
+    const { upstreamRebase: _omitted, ...withoutRebase } = panel;
+    expect(ok(R, { action: "push", plan: plan({ needsDestination: withoutRebase }) })).toBe(false);
   });
 
   test("a refused reviewSync names its Δ9 reason or the unmerged count", () => {
@@ -490,6 +498,19 @@ describe("contract Δ3 results", () => {
     expect(ok(R, { action: "push", push: { ...pushed, status: "created", upstreamNotSet: true }, remedy: { text: "t", command: "& 'git' config" } })).toBe(true);
     const { upstreamNotSet: _omitted, ...withoutFact } = pushed;
     expect(ok(R, { action: "push", push: withoutFact })).toBe(false);
+  });
+
+  // Contract Δ9: the PUSH_REJECTED reason, and the PUTTY_UNAVAILABLE facts after a fetched remote.
+  test("the result reason of PUSH_REJECTED and PUTTY_UNAVAILABLE", () => {
+    const R = C.SyncResult;
+    const rejected = { ...pushed, status: "rejected", newObjectId: null };
+    for (const reason of E.PUSH_REJECTED_REASONS) expect(ok(R, { action: "force-push", push: rejected, reason })).toBe(true);
+    expect(ok(R, { action: "fetch", fetch: { remotes: [], observed: [] }, reason: "rejected" })).toBe(false);
+    expect(ok(R, { action: "push", push: rejected, reason: "denied" })).toBe(false);
+    const putty = { reason: "missing", program: "plink", path: PLINK };
+    expect(ok(R, { action: "fetch-all", fetch: { remotes: [remote()], observed: [] }, ...putty })).toBe(true);
+    expect(ok(R, { action: "fetch-all", fetch: { remotes: [remote()], observed: [] }, reason: "missing" })).toBe(false);
+    expect(ok(R, { action: "push", push: rejected, reason: "rejected", program: "plink", path: putty.path })).toBe(false);
   });
 
   test("the integration states of data-model §7", () => {

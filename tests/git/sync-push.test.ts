@@ -112,7 +112,7 @@ describeGit("sync push (T034)", () => {
           expect(typeof response.result!.syncReviewToken).toBe("string");
         } else if (expected.kind === "panel") {
           expect({ ...label, ...outcome(response), token: response.result?.syncReviewToken }).toEqual({ ...label, ...SUCCEEDED, token: undefined });
-          expect({ ...label, needs: response.result!.plan.needsDestination }).toEqual({ ...label, needs: { remotes: ["origin", "second"], prefill: expected.prefill, setUpstream: expected.setUpstream } });
+          expect({ ...label, needs: response.result!.plan.needsDestination }).toEqual({ ...label, needs: { remotes: ["origin", "second"], prefill: expected.prefill, setUpstream: expected.setUpstream, upstreamRebase: false } });
           if (expected.prefill !== null) expect({ ...label, git }).toEqual({ ...label, git: { to: expected.prefill.ref, url: f.origin } });
         } else if (expected.kind === "refused") {
           expect({ ...label, ...refusalOf(response) }).toEqual({ ...label, state: "failed", code: "SYNC_UNAVAILABLE", result: { reason: expected.reason } });
@@ -158,7 +158,7 @@ describeGit("sync push (T034)", () => {
     await withSync("t034-panel", async (service) => {
       const r = await register(service, a.repo);
       const panel = await reviewSync(service, r, { action: "push" });
-      expect({ ...outcome(panel), token: panel.result?.syncReviewToken, needs: panel.result?.plan.needsDestination }).toEqual({ ...SUCCEEDED, token: undefined, needs: { remotes: ["origin", "second"], prefill: null, setUpstream: true } });
+      expect({ ...outcome(panel), token: panel.result?.syncReviewToken, needs: panel.result?.plan.needsDestination }).toEqual({ ...SUCCEEDED, token: undefined, needs: { remotes: ["origin", "second"], prefill: null, setUpstream: true, upstreamRebase: false } });
       for (const destination of [{ remote: "origin", branch: "bad..name", setUpstream: true }, { remote: "nowhere", branch: "noup", setUpstream: true }]) {
         expect((await reviewSync(service, r, { action: "push", destination })).code).toBe("INVALID_REQUEST");
       }
@@ -183,6 +183,31 @@ describeGit("sync push (T034)", () => {
       expect(refMap(b.h, b.remotes.second!, ["refs/heads/noup"])).toEqual({ "refs/heads/noup": revParse(b.h, b.repo, "HEAD") });
       expect(configDigests(b.h, b.repo)).toEqual(digests);
     });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "Δ3 Set upstream with branch.autoSetupRebase=always: the three writes give configuration bytes equal to Git's own push --set-upstream on a copy", SHELL, async () => {
+    const a = own("noup", [["branch.autoSetupRebase", "always"]]);
+    // The copy keeps the remote URLs of `a`, so only Git's own upstream writes can differ.
+    const oracle = `${a.h.root}/oracle-${++copies}`;
+    a.h.copy(a.repo, oracle);
+    await withSync("t034-upstream-rebase", async (service) => {
+      const r = await register(service, a.repo);
+      // FR-016: the panel names the rebase key, and the review binds it.
+      expect((await reviewSync(service, r, { action: "push" })).result!.plan.needsDestination!.upstreamRebase).toBe(true);
+      const review = await reviewed(service, r, { action: "push", destination: { remote: "origin", branch: "noup", setUpstream: true } });
+      expect(review.plan.destination).toMatchObject({ setUpstream: true, upstreamRebase: true });
+      const from = service.runner.calls.length;
+      const response = await sync(service, r, review.syncReviewToken);
+      expect(outcome(response)).toEqual(SUCCEEDED);
+      expect(response.result!.push).toMatchObject({ status: "created", upstreamWritten: true, upstreamNotSet: false });
+      expect(remoteCalls(service, from).slice(1).map((c) => c.arguments)).toEqual([
+        ...UPSTREAM("noup", "origin", "refs/heads/noup"),
+        ["--no-lazy-fetch", "config", "--local", "--", "branch.noup.rebase", "true"],
+      ]);
+    });
+    gitRun(a.h, oracle, ["push", "-q", "--set-upstream", "origin", "noup"]);
+    expect(localConfig(a.h, a.repo).filter((l) => l.startsWith("branch.noup."))).toEqual(["branch.noup.remote=origin", "branch.noup.merge=refs/heads/noup", "branch.noup.rebase=true"]);
+    expect(a.h.read(`${a.repo}/.git/config`)).toEqual(a.h.read(`${oracle}/.git/config`));
   }, TIMEOUT_MS);
 
   caseTest(TASK, "Δ3 Set upstream: a locked configuration after a successful first push gives succeeded with upstreamNotSet and the copyable remedy; the remote branch exists and the configuration stays equal", SHELL, async () => {
@@ -251,6 +276,17 @@ describeGit("sync push (T034)", () => {
         ["push-urls", () => own("topic", [["remote.origin.pushurl", f.origin], ["remote.origin.pushurl", f.second]]), { code: "SYNC_UNAVAILABLE", reason: "push-urls" }],
         ["push-remote-differs", () => own("topic", [["push.default", "upstream"], ["branch.topic.pushRemote", "second"]]), { code: "SYNC_UNAVAILABLE", reason: "push-remote-differs" }],
         ["invalid-config", () => own("topic", [["push.default", "nothing"]]), { code: "SYNC_UNAVAILABLE", reason: "invalid-config" }],
+        // remote.c `handle_config` refuses an empty branch subsection, so `git remote` exits 128 (probe on 2.56.0.windows.2).
+        [
+          "empty branch subsection",
+          () => {
+            const c = own("topic");
+            const path = `${c.repo}/.git/config`;
+            c.h.write(path, `${c.h.read(path)!.toString("utf8")}[branch ""]\n\tremote = o\n`);
+            return c;
+          },
+          { code: "SYNC_UNAVAILABLE", reason: "invalid-config" },
+        ],
         ...["mirror", "skipFetchAll", "skipDefaultUpdate", "prune", "pruneTags"].map((key): [string, () => ReturnType<typeof own>, { code: string; reason?: string }] => [`remote.second.${key}`, () => own("topic", [[`remote.second.${key}`, "maybe"]]), { code: "SYNC_UNAVAILABLE", reason: "invalid-config" }]),
         [
           "merging",
@@ -289,6 +325,7 @@ describeGit("sync push (T034)", () => {
       const r = await register(service, a.repo);
       const refused = await run(service, r, { action: "push", destination: { remote: "refusing", branch: "topic", setUpstream: false } });
       expect(outcome(refused)).toEqual({ state: "failed", code: "PUSH_REJECTED" });
+      expect(refused.result!.reason).toBe("remote-rejected");
       expect(refused.result!.push).toMatchObject({ status: "remote-rejected", lease: false });
       expect(refused.result!.push!.outputTail).toContain("remote message");
       expect(refused.result!.push!.outputTail.includes("\u001b")).toBe(false);
@@ -301,6 +338,35 @@ describeGit("sync push (T034)", () => {
       expect(rejected.result!.push).toMatchObject({ status: "rejected", lease: false });
       expect(refMap(b.h, b.remotes.origin!)).toEqual(remoteTopic);
     });
+  }, TIMEOUT_MS);
+
+  // Contract Δ3 `sync` step 2: a changed fingerprint is a trust difference only when `approvalRequired.sync` holds on either side.
+  caseTest(TASK, "data-model §2: a changed HEAD, remote list, or push URL after the review gives STALE_REVIEW; with an approved sync-class hook, a changed push URL gives TRUST_CHANGED; no remote process starts", SHELL, async () => {
+    const setPushUrl = (c: ReturnType<typeof own>) => gitRun(c.h, c.repo, ["remote", "set-url", "--push", "origin", c.remotes.second!]);
+    const cases: [string, string, (c: ReturnType<typeof own>) => void, string, boolean][] = [
+      ["HEAD", "push", (c) => gitRun(c.h, c.repo, ["commit", "-q", "--allow-empty", "-m", "after the review"]), "STALE_REVIEW", false],
+      ["remote list", "fetch-all", (c) => gitRun(c.h, c.repo, ["remote", "add", "third", c.remotes.origin!]), "STALE_REVIEW", false],
+      ["push URL", "push", setPushUrl, "STALE_REVIEW", false],
+      ["push URL with an approved pre-push hook", "push", setPushUrl, "TRUST_CHANGED", true],
+    ];
+    for (const [i, [name, action, change, code, hooked]] of cases.entries()) {
+      const a = own("topic");
+      if (hooked) a.h.write(`${a.repo}/.git/hooks/pre-push`, "#!/bin/sh\nexit 0\n");
+      await withSync(`t034-stale-${i}`, async (service) => {
+        const r = await register(service, a.repo);
+        if (hooked) {
+          const trust = await service.readTrust(r.repositoryId);
+          expect({ name, sync: trust.result!.approvalRequired.sync }).toEqual({ name, sync: true });
+          expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+        }
+        const review = await reviewed(service, r, { action });
+        change(a);
+        const from = service.runner.calls.length;
+        const response = await sync(service, r, review.syncReviewToken);
+        expect({ name, ...outcome(response) }).toEqual({ name, state: "failed", code });
+        expect({ name, calls: remoteCalls(service, from) }).toEqual({ name, calls: [] });
+      });
+    }
   }, TIMEOUT_MS);
 
   caseTest(TASK, "Δ8: a canceled push says that the remote can hold the push", SHELL, async () => {
@@ -353,7 +419,7 @@ describeGit("sync push (T034)", () => {
       const read = await service.readWorkspace(r.repositoryId);
       const rejected = await run(service, { ...r, generation: read.result!.generation }, { action: "push" });
       expect(outcome(rejected)).toEqual({ state: "failed", code: "PUSH_REJECTED" });
-      expect(rejected.result!.push!.status).toBe("rejected");
+      expect({ status: rejected.result!.push!.status, reason: rejected.result!.reason }).toEqual({ status: "rejected", reason: "rejected" });
       expect(revParse(a.h, a.repo, "HEAD")).toBe(committed);
     });
   }, TIMEOUT_MS);

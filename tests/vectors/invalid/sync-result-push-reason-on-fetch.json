@@ -1,0 +1,5 @@
+{
+  "schema": "sync-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"action\":\"fetch\",\"fetch\":{\"remotes\":[],\"observed\":[]},\"reason\":\"rejected\"}"
+}

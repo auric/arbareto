@@ -29,14 +29,16 @@ Label rule (renderer):
 | `action` | `fetch`, `fetch-all`, `pull`, `integrate`, `push`, `force-push`, `abort`, `continue`, or `skip`. |
 | `binding.head` | The 001 `Head` at review. |
 | `binding.operationState` | The 001 `operationState` at review. |
-| `binding.trust` | Fingerprint and `approvalRequired.sync`. |
+| `binding.trust` | Fingerprint and `approvalRequired.sync`. A changed fingerprint is a trust difference only when `approvalRequired.sync` is true in the review or in the re-read. |
 | `binding.remotes` | Ordered names from `git remote`, or the one remote of the action. |
 | `binding.upstream` | `{ref, objectId}` for `pull` and `integrate`. |
 | `binding.destination` | §3 result for `push` and `force-push`. |
 | `binding.lease` | `{trackingRef, expect, count, commits[≤100]}` for `force-push`. Each commit is `{objectId, subject}`. A commit object above `HISTORY_COMMIT_OBJECT_BYTES` gives `subject` null. |
-| `binding.index` | Index fingerprint and unmerged count for `continue`. |
+| `binding.index` | Index fingerprint and unmerged count for `continue`: the SHA-256 of `ls-files --stage -z` and the number of paths with a stage above 0 (contract Δ3 read 7). |
 | `binding.mode` | For `pull` and `integrate`: the payload mode or null. |
+| `binding.modeConfig` | For `pull` and `integrate`: the last value of each of `pull.ff`, `pull.rebase`, `branch.<branch>.rebase`, and `merge.ff`. A key without an entry is absent, and a key without `=` has null. A changed value gives `STALE_REVIEW` (contract Δ3). |
 | `binding.skippedCommit` | For `skip`: the `REBASE_HEAD` object ID. |
+| `binding.todo` | For `continue` and `skip` while rebasing: the SHA-256 of `rebase-merge/git-rebase-todo`, or null without that file. A todo with an `exec` line, unreadable, or above `SYNC_REBASE_TODO_BYTES` gives `rebase-exec`, and no token goes out (contract Δ3 read 9). The unreadable and oversized cases have their own remedy text (plan.md D7). |
 
 `sync` re-reads each bound value. A difference gives `STALE_REVIEW`. A trust difference gives `TRUST_CHANGED` or `TRUST_REQUIRED`.
 
@@ -49,6 +51,7 @@ Label rule (renderer):
 | `trackingRef` | `%(push)`, or null for a panel destination and a `push-default-triangular` destination. Null gives `no-lease` for Force push with lease. |
 | `url` | The one push URL, redacted for display. |
 | `setUpstream` | Panel choice. Default true only for a branch without an upstream, else false (FR-016). Only the panel sets it. |
+| `upstreamRebase` | True when a selected Set upstream also writes `branch.<branch>.rebase`, because `branch.autoSetupRebase` is `remote` or `always`. False without `setUpstream`. |
 | `source` | `remote-push-refspec` (`remote.<R>.push`), `push-default-upstream` (`upstream`, `tracking`), `push-default-branch` (`current`, and `simple` or unset with the fetch remote), `push-default-triangular` (`simple` or unset with another push remote), or `panel`. `matching` always gives `panel` (plan.md D4 step 4). |
 
 ## 4. Fetch result
@@ -68,7 +71,7 @@ Label rule (renderer):
 | `oldObjectId`, `newObjectId` | From the observed tracking ref, before and after. |
 | `reasonText` | The parenthesized reason as plain text. Display only. |
 | `lease` | True when the push sent a lease. A `rejected` status with a lease means the remote changed. |
-| `upstreamWritten` | True when `branch.<name>.remote` or `.merge` changed. |
+| `upstreamWritten` | True when `branch.<name>.remote`, `.merge`, or `.rebase` changed. |
 | `upstreamNotSet` | True when a selected Set upstream ran after a successful push and a write did not exit 0, or a Cancel came first (contract Δ3). The push outcome stays. The result holds the Set upstream remedy. |
 | `outputTail` | Bounded, redacted stderr of the push, also on success. |
 
@@ -104,6 +107,8 @@ An invalid value gives refusal `invalid-config`. The `sync` result names the sou
 | `stopped` | A merge or rebase is in progress. `operation` and `unmerged` count follow. |
 | `refused` | Git exited non-zero, and the state is normal. `outputTail` follows. |
 
+A killed integrate process has no exit status. When the reconciliation then finds no merge or rebase marker, no value applies, so `integration` is absent, and the outcome comes from the observed changes (§8).
+
 ## 8. Outcome per action
 
 | Action | `succeeded` | `completed-with-effects` | `failed` | `failed-with-effects` | `canceled` |
@@ -112,7 +117,7 @@ An invalid value gives refusal `invalid-config`. The `sync` result names the sou
 | push | Status `pushed`, `forced`, `created`, or `up-to-date`, also with `upstreamNotSet`. | Success, and another local change is observed. | `PUSH_REJECTED` with its reason, or no line and no change. | A limit or Cancel, and a local ref or config changed. | Cancel, and no local change. The remote can hold the push. |
 | pull, integrate | Integration `up-to-date` or `done`, or `mode-required`. | `done`, and an observed value differs from the expected one. | No effect. | The fetch changed refs, and the integration is `stopped`, `refused`, or not started. | Cancel, and no change. |
 | abort, continue, skip | State `normal` after abort; Git exit 0 and state `normal` after continue or skip. | Another observed change. | Git refused, and nothing changed. | `stopped` again, or a partial change. | Cancel, and no change. |
-| clone | Exit 0 and registration. | Not used. | A refusal before the start, or a failure with the destination absent or empty. | The destination exists and is not empty after a failure, a limit, or Cancel. | Cancel, and the destination is absent or empty. |
+| clone | Exit 0 and registration. | Not used. | A refusal before the start, a failure, or a limit. After the start, the result holds `{exists, empty}`, or the code only without a fact (contract Δ3 `clone` step 6). | Not used. Clone is no mutation. | Cancel. The result holds `{exists, empty}`, or the code only without a fact. |
 
 A failed reconciliation read gives `unknown`, and the recovery marker stays (001 §8). Clone has no marker.
 
@@ -123,7 +128,7 @@ A failed reconciliation read gives `unknown`, and the recovery marker stays (001
 | Entry | A `u` status record with stages present. |
 | Accepted | XY in `UU`, `AA`, `AU`, `UA`, `DU`, `UD`, a regular working file, no `120000` or `160000` in any mode, no `filter` attribute, size within 512 MiB, and the 001 path rule. |
 | Refused | `missing` (no working file, includes `DD`), `type`, `symlink`, `submodule`, `path`, `filter`, `LFS`, `size`, `blob-proof`. |
-| Binding | The 001 `FileBinding`, with `entry.stage` null, the three stage modes and OIDs, the working mode `mW` of the `u` record, plus `operationState`. |
+| Binding | The 001 `FileBinding`, with `entry.stage` null, the three stage modes and OIDs, the working mode `mW` of the `u` record, plus `operationState`. Outside WSL also the comparison working version: existence, type, mode, size, and raw digest (contract Δ4). A replacement with identical bytes and mode is accepted. |
 | Staging | `hash-object -w -- <path>` on the working file, then `update-index -z --index-info` with `<mW> SP <oid> TAB <path>` (plan.md D7). `mW` equals the `git add` mode, also on Windows with `core.symlinks=false` and `core.filemode=false` (research R16 i). `update-index --add` is not used: it writes `100644` there. |
 | Verification | One stage-0 entry with mode `mW`, no stages 1 to 3 for the path, and every other entry unchanged. P0.2 (i2) verifies the equality with `git add`. |
 
@@ -144,4 +149,4 @@ No passphrase, no credential, and no key content.
 
 ## 11. Connect target (retained)
 
-`{operationId, kind: "remote" | "url", repositoryId | null, gitInstallationId, target}` for the last failed `sync` or `clone` of each workspace. The service keeps one only when the `pageant` reply of that operation was not `git`. A clone without a workspace keeps one target for the session. The target URL never leaves the service, except in the `terminal` request to the shell.
+`{operationId, kind: "remote" | "url", repositoryId | null, gitInstallationId, target}` for the last failed `sync` or `clone` of each workspace. The service keeps one only when the `pageant` reply of that operation was not `git`. A clone without a workspace keeps one target for the session. The `sync` or `clone` result holds `connectTarget: true` exactly when the service keeps a target for that operation, and the renderer offers Connect in a terminal only then. The target URL never leaves the service, except in the `terminal` request to the shell.

@@ -84,9 +84,9 @@ const removed = (path: string): ChangedEntry => ({ path: hex(bytes(path)), mode:
 const refused = (reason: string): Normalized => ({ direction: null, code: "UNSUPPORTED_COMPARISON", reason });
 
 describe("closed reason list (contract §4 'File staging')", () => {
-  // Feature 003 contract Δ4 adds `missing`. Feature 004 contract Δ9 adds the four line refusals.
+  // Feature 003 contract Δ4 adds `missing`. Feature 004 contract Δ9 adds the five line refusals.
   test("FILE_ACTION_REASONS holds exactly the contract reasons", () => {
-    const lines = ["context-only", "several-hunks", "deleted-file", "eof-newline"];
+    const lines = ["context-only", "several-hunks", "deleted-file", "new-file", "eof-newline"];
     expect<string[]>([...FILE_ACTION_REASONS].sort()).toEqual(["LFS", "blob-proof", "filter", "index-flag", "path", "rename", "size", "submodule", "symlink", "type", "missing", ...lines].sort());
   });
 });

@@ -4,7 +4,8 @@
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import type { FileFact } from "../../src/contracts/channel";
-import { DISCARD_CHECK_PATHS, discardCandidates, ignoreRead, inTheWay, IN_THE_WAY_PATHS, sortFacts, untrackedOf } from "../../src/git-service/switch-check";
+import { DISCARD_CHECK_PATHS } from "../../src/contracts/limits";
+import { discardCandidates, ignoreRead, inTheWay, IN_THE_WAY_PATHS, sortFacts, untrackedOf } from "../../src/git-service/switch-check";
 
 printOrigin("../../src/git-service/switch-check.ts", import.meta.dir);
 

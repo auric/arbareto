@@ -147,3 +147,5 @@ export const WORKTREE_RECORDS = 1000;
 export const WORKTREE_LISTING_BYTES = 4 * MIB;
 // Entries of one stash or HEAD reflog read.
 export const REFLOG_SCAN_ENTRIES = 10_000;
+// The `-m` item of the merge argv. Plan D5: 2 × 8,192 + 3 units leave 16,380 of the 32,767 command-line units.
+export const MERGE_MESSAGE_BYTES = 8 * KIB;

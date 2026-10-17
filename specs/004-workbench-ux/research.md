@@ -50,7 +50,7 @@
 
 - Decision: `rev-list --count <oid> --not --exclude=<name> --branches --tags --remotes`.
 - Rationale: `--exclude` takes a pattern without `refs/heads/` when it applies to `--branches` (doc, git-rev-list(1)). A ref name holds no `*`, `?`, `[`, or `\` (doc, git-check-ref-format(1)), so the pattern matches only that branch.
-- Reflog: Git deletes the branch reflog (R5). Only the HEAD reflog of a worktree can keep the tip. `reflog exists HEAD` exits 0 when it exists (doc). `log -g -z --format=%H HEAD --` lists its entries; the 001 `reflogArgs` already reads this log (code). The read stops at 10,000 entries (`REFLOG_SCAN_ENTRIES`). A tip that the read does not reach gives the "No reflog keeps" text. That text can be too strict, but it never claims a recovery that does not exist.
+- Reflog: Git deletes the branch reflog (R5). Only the HEAD reflog of a worktree can keep the tip. `reflog exists HEAD` exits 0 when it exists (doc). `log -g -z --no-show-signature --format=%H HEAD --` lists its entries; the 001 `reflogArgs` already reads this log (code). The read stops at 10,000 entries (`REFLOG_SCAN_ENTRIES`). A tip that the read does not reach gives the "No reflog keeps" text. That text can be too strict, but it never claims a recovery that does not exist.
 - Alternatives considered: `branch --merged` output as Git Extensions does (it counts only HEAD ancestry, not other refs).
 
 ## R7 Merge

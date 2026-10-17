@@ -5,11 +5,11 @@
 // Paths are byte strings: `latin1` maps each byte to one code unit, so equal strings mean equal bytes.
 
 import type { FileFact } from "../contracts/channel";
+import { DISCARD_CHECK_PATHS } from "../contracts/limits";
 import { isObjectId, type ObjectFormat } from "./commands";
 import { checkIgnoreArgs } from "./workbench-commands";
 
-// Contract Δ5 "Discard check candidates" and "In-the-way paths in a result".
-export const DISCARD_CHECK_PATHS = 20_000;
+// Contract Δ5 "In-the-way paths in a result".
 export const IN_THE_WAY_PATHS = 100;
 
 const latin1 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("latin1");

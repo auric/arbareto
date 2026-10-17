@@ -4,9 +4,11 @@
 // Contract Δ4, data-model §6, plan.md D8, and research.md R11: the sub-hunk of selected lines of one retained hunk.
 // It takes no patch text from the renderer. The 001 hunk steps apply and verify the result.
 
+import type { LineActionReason } from "../contracts/file-action";
 import type { PatchHunk } from "./diff-parser";
 
-export type LineRefusal = "context-only" | "deleted-file" | "new-file" | "eof-newline";
+// Contract Δ4: `several-hunks` comes only from the renderer.
+export type LineRefusal = Exclude<LineActionReason, "several-hunks">;
 
 export type SubHunk = { ok: true; hunk: PatchHunk } | { ok: false; code: "INVALID_REQUEST" } | { ok: false; code: "UNSUPPORTED_COMPARISON"; reason: LineRefusal };
 

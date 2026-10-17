@@ -7,7 +7,7 @@ import { isUtf8 } from "node:buffer";
 import { WHOLE_FILE_STAGE_INPUT_BYTES } from "./limits";
 
 // Feature 004 contract Δ4 and Δ9: the refusals of a line selection. Data-model §6: no file decision gives them.
-export const LINE_ACTION_REASONS = ["context-only", "several-hunks", "deleted-file", "eof-newline"] as const;
+export const LINE_ACTION_REASONS = ["context-only", "several-hunks", "deleted-file", "new-file", "eof-newline"] as const;
 // Feature 003 contract Δ4: only `resolve` gives `missing`.
 export const FILE_ACTION_REASONS = ["type", "symlink", "submodule", "index-flag", "path", "rename", "filter", "LFS", "size", "blob-proof", "missing", ...LINE_ACTION_REASONS] as const;
 export type FileActionReason = (typeof FILE_ACTION_REASONS)[number];

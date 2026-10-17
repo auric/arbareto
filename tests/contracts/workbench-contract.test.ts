@@ -85,6 +85,7 @@ describe("contract Δ5 bounds", () => {
     expect(L.WORKTREE_RECORDS).toBe(1000);
     expect(L.WORKTREE_LISTING_BYTES).toBe(4 * MIB);
     expect(L.REFLOG_SCAN_ENTRIES).toBe(10_000);
+    expect(L.MERGE_MESSAGE_BYTES).toBe(8 * KIB);
   });
 
   test("the reused bounds keep their values", () => {
@@ -144,13 +145,15 @@ describe("contract Δ9 codes", () => {
       "ignore-not-regular",
       "ignore-size",
       "path",
+      "message-size",
+      "unreadable",
     ]);
     expect([...(E.UNTRACKED_IN_WAY_REASONS ?? [])]).toEqual(["untracked-in-way"]);
     expect([...(E.STASH_KEPT_REASONS ?? [])]).toEqual(["conflicts", "failed-apply", "failed-checkout", "not-found", "stash-changed"]);
   });
 
-  test("the file action reasons add the four line refusals, which no readComparison decision gives", () => {
-    for (const reason of ["context-only", "several-hunks", "deleted-file", "eof-newline"]) {
+  test("the file action reasons add the five line refusals, which no readComparison decision gives", () => {
+    for (const reason of ["context-only", "several-hunks", "deleted-file", "new-file", "eof-newline"]) {
       expect(FILE_ACTION_REASONS).toContain(reason as never);
       const comparison = { completeness: { state: "limited", code: "OBJECT_MISSING" }, scope: "index-to-worktree", support: null, remedy: null, objectRemedy: { text: "Fetch." } };
       expect(ok(envelope.ReadComparisonResult, { ...comparison, fileAction: reason })).toBe(false);
@@ -389,10 +392,13 @@ describe("contract Δ3 payloads", () => {
     expect(review({ action: "switch", target: { track: { ref: "refs/remotes/origin/x", name: "x".repeat(256) } }, choice: "keep" })).toBe("INVALID_REQUEST");
   });
 
-  test("a merge message follows the 001 commit message rule within 64 KiB", () => {
+  test("a merge message follows the 001 commit message rule within MERGE_MESSAGE_BYTES (contract Δ5)", () => {
     const merge = (message: string) => review({ action: "merge", ref: "refs/heads/t", result: "merge", noFastForward: false, noCommit: false, message });
-    expect(merge("a".repeat(limits.COMMIT_MESSAGE_BYTES))).toBe("ok");
-    expect(merge("a".repeat(limits.COMMIT_MESSAGE_BYTES + 1))).toBe("INVALID_REQUEST");
+    expect(merge("a".repeat(limits.MERGE_MESSAGE_BYTES))).toBe("ok");
+    expect(merge("a".repeat(limits.MERGE_MESSAGE_BYTES + 1))).toBe("INVALID_REQUEST");
+    // U+20AC is three UTF-8 bytes: 2,730 of them give 8,190 bytes, and 2,731 give 8,193.
+    expect(merge("€".repeat(2730))).toBe("ok");
+    expect(merge("€".repeat(2731))).toBe("INVALID_REQUEST");
     expect(merge("")).toBe("INVALID_REQUEST");
   });
 

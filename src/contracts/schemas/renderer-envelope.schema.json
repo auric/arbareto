@@ -2889,7 +2889,7 @@
                   "anyOf": [
                     {
                       "type": "string",
-                      "maxLength": 65536
+                      "maxLength": 8192
                     },
                     {
                       "type": "null"

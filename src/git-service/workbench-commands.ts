@@ -3,6 +3,7 @@
 
 // Contract Δ3 and plan.md D2 to D11: the argument arrays of the workbench reads and steps.
 
+import { REFLOG_SCAN_ENTRIES } from "../contracts/limits";
 import { isObjectId, isOneLevelRefName, isRefName, type ObjectFormat } from "./commands";
 
 // Contract §7 "Missing objects": every app Git command starts with this option.
@@ -11,8 +12,6 @@ const L = "--no-lazy-fetch";
 const read = (...args: string[]): string[] => [L, "--no-optional-locks", "--literal-pathspecs", ...args];
 // FR-004: a pathspec of a step stays literal. Research.md R21 F1 ran the mergetool step with this option.
 const literal = (...args: string[]): string[] => [L, "--literal-pathspecs", ...args];
-// Contract Δ5 "Stash and HEAD reflog reads" (`REFLOG_SCAN_ENTRIES`).
-const REFLOG_SCAN_ENTRIES = 10_000;
 
 // An argv item cannot hold NUL, and an empty path or key names nothing.
 function item(value: string): string {

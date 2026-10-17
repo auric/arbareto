@@ -30,6 +30,7 @@ import {
   HISTORY_ROWS_PER_REQUEST,
   HISTORY_VIEW_COMMITS,
   KEY_FILE_ENTRIES,
+  MERGE_MESSAGE_BYTES,
   MULTI_FILE_ACTION_FILES,
   PUBLIC_REQUEST_BYTES,
   REF_LISTING_RECORDS,
@@ -89,11 +90,15 @@ function op<N extends OperationName, T extends z.ZodRawShape, P extends z.ZodTyp
 }
 
 // Git 2.55.0 rejects a `commit -F` message that holds only U+0020, U+0009, U+000A, and U+000D. U+000B, U+000C, U+00A0, and U+3000 commit.
-// zod `max` counts code points, which never exceed UTF-8 bytes. The refinement checks the contract §5 byte bound.
-const CommitMessage = z
-  .string()
-  .max(COMMIT_MESSAGE_BYTES)
-  .refine((m) => m.isWellFormed() && !m.includes("\u0000") && !/^[ \t\n\r]*$/.test(m) && new TextEncoder().encode(m).length <= COMMIT_MESSAGE_BYTES);
+// zod `max` counts code points, which never exceed UTF-8 bytes. The refinement checks the byte bound.
+const message = (bytes: number) =>
+  z
+    .string()
+    .max(bytes)
+    .refine((m) => m.isWellFormed() && !m.includes("\u0000") && !/^[ \t\n\r]*$/.test(m) && new TextEncoder().encode(m).length <= bytes);
+// Contract §5 for a commit. Feature 004 contract Δ5 for a merge: the `-m` item must fit the command line (plan D5).
+const CommitMessage = message(COMMIT_MESSAGE_BYTES);
+const MergeMessage = message(MERGE_MESSAGE_BYTES);
 const ReadWorkspacePayload = z
   .strictObject({ refresh: z.boolean(), check: z.enum(["full", "changes"]) })
   .refine((p) => !(p.refresh && p.check !== "full"));
@@ -268,7 +273,7 @@ const reviewWorkbench = <A extends z.ZodObject>(add: A) =>
     z.strictObject({ action: z.literal("delete-branch"), ref: LocalRef }).meta({ title: "ReviewDeleteBranch" }),
     // Data-model §5: Squash disables No fast-forward and Don't commit, and sends no message (plan D5, research R21 F30).
     z
-      .strictObject({ action: z.literal("merge"), ref: BranchRef, result: z.enum(["merge", "squash"]), noFastForward: z.boolean(), noCommit: z.boolean(), message: CommitMessage.nullable() })
+      .strictObject({ action: z.literal("merge"), ref: BranchRef, result: z.enum(["merge", "squash"]), noFastForward: z.boolean(), noCommit: z.boolean(), message: MergeMessage.nullable() })
       .refine((p) => p.result !== "squash" || (p.noFastForward === false && p.noCommit === false && p.message === null))
       .meta({ title: "ReviewMerge" }),
     z.strictObject({ action: z.literal("rebase"), ref: BranchRef, autostash: z.boolean(), autosquash: z.boolean() }).meta({ title: "ReviewRebase" }),

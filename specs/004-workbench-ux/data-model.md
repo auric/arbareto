@@ -52,7 +52,7 @@ Each section names its source. Field names are contract names. "001 data-model Â
 
 ## 5. Merge and rebase requests
 
-- Merge: `source` (ref and OID), `result` (`merge` or `squash`), `noFastForward`, `noCommit`, `preview` (the `fmt-merge-msg` text, bound by digest), `message` (null for the preview, else the edited text, 1 to 64 KiB, the 001 commit message rule; with `result: merge`, the argv sends the preview or the edited text with `--no-log -m`; with `squash`, the argv sends no `-m`, because Git ignores it (research R21 F30)), `facts` (`ahead`, `behind`, `fastForward`, `mergeFf` with source).
+- Merge: `source` (ref and OID), `result` (`merge` or `squash`), `noFastForward`, `noCommit`, `preview` (the `fmt-merge-msg` text, bound by digest), `message` (null for the preview, else the edited text, 1 to 8 KiB (`MERGE_MESSAGE_BYTES`, contract Î”5), so the `-m` item fits the 001 Â§6 command line, and otherwise the 001 commit message rule; a longer preview or message gives `message-size`; with `result: merge`, the argv sends the preview or the edited text with `--no-log -m`; with `squash`, the argv sends no `-m`, because Git ignores it (research R21 F30)), `facts` (`ahead`, `behind`, `fastForward`, `mergeFf` with source).
 - Rebase: `onto` (ref and OID), `moved`, `rewritten`, `held`, `forceNote` (`{trackingRef}` or null), `movedBranches` (refs, when `rebase.updateRefs` is true, without the branches that other worktrees check out), `autostash` (value plus `{scope, origin}` or `default`), `autosquash` (false at review; the user sets it).
 - Squash: with `result: squash`, `noFastForward` and `noCommit` are false and `message` is null, else `INVALID_REQUEST`. Git refuses `--squash --no-ff`, a squash never commits, and Git ignores `-m` (plan D5, research R21 F30). The UI shows Don't commit as unavailable with "Squash never commits".
 - Validation: `merge` refuses a detached HEAD, an unborn branch, the current branch as source, and an operation in progress (spec FR-028).
@@ -61,7 +61,7 @@ Each section names its source. Field names are contract names. "001 data-model Â
 
 - File selection: `snapshotId`, `entryIds` (1 to 10,000, unique, all from one list of that snapshot), `direction` (`stage` or `unstage`), `kind` (`selected`, `folder`, `all-untracked`, `all-changes`, `all-staged`), and for `folder` the folder path bytes.
 - Line selection: the 001 hunk approval key (`comparisonId`, `hunkId`, `direction`) plus `lines`: ascending unique ordinals of `+` or `-` lines in the body of that retained hunk, 1 to the hunk line count.
-- Validation: an ordinal that names a context line, an incomplete-line marker, or a line outside the hunk gives `INVALID_REQUEST`. The refusals of plan D8 give `UNSUPPORTED_COMPARISON` with their reason.
+- Validation: an ordinal that names a context line, an incomplete-line marker, or a line outside the hunk gives `INVALID_REQUEST`. The renderer refuses a selection in two hunks with `several-hunks` and sends no request (contract Î”4). The refusals of plan D8 give `UNSUPPORTED_COMPARISON` with their reason.
 
 ## 7. Ignore line
 

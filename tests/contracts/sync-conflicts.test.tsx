@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from "bun:test";
-import type { ReactNode } from "react";
+import { act, type ReactNode } from "react";
 import type { ChangeEntry } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
@@ -292,6 +292,49 @@ describe("Continue while the status read loads", () => {
     expect(document.getElementById(cont.getAttribute("aria-describedby")!)?.textContent).toBe(BLOCKED_TEXT.loading);
     await act(async () => cont.click());
     expect(reviews).toBe(0);
+    await act(async () => root.unmount());
+    host.remove();
+  });
+});
+
+describe("conflict row while an operation runs (plan D12)", () => {
+  const RUNNING = "A Git operation is running. Its progress and Cancel are in the status bar.";
+  const describedText = (control: Element) => document.getElementById(control.getAttribute("aria-describedby") ?? "")?.textContent ?? null;
+  const visuallyHidden = (control: Element) => document.getElementById(control.getAttribute("aria-describedby")!)!.classList.contains("sr-only");
+
+  test("while a fetch runs, the actions stay disabled and focusable, and the running reason is only in the tooltip and a hidden description", async () => {
+    const { double } = await open("rebasing", [conflicted("a.txt")]);
+    await click(button("Fetch"));
+    await answer(double.pending("reviewSync"), succeeded({ action: "fetch", plan: { remotes: ["origin"] }, syncReviewToken: TOKEN }));
+    const sync = double.pending("sync")!;
+    await act(async () => (sync.args[2] as (e: unknown) => void)({ requestId: "r", operationId: fixtureId(0x211), state: "running", phase: "sync-fetch", counters: {} }));
+    await settle();
+    expect(text(row()!)).not.toContain("A Git operation is running. Wait for its result, or select Cancel.");
+    for (const label of ["Abort…", "Continue", "Skip…"]) {
+      const control = button(label, row()!);
+      expect(control.getAttribute("aria-disabled")).toBe("true");
+      expect(control.tabIndex).toBe(0);
+      expect(describedText(control)).toBe(RUNNING);
+      expect(visuallyHidden(control)).toBe(true);
+      await keyboardFocus(control);
+      expect(tooltipText()).toContain(RUNNING);
+    }
+    await keyboardFocus(button("Skip…", row()!));
+    expect(tooltipText()).toContain(SKIP_TOOLTIP);
+  });
+
+  test("a reason other than a running operation stays visible", async () => {
+    const { ConflictRow } = await import("../../src/frontend/sync/ConflictActions");
+    const { BLOCKED_TEXT } = await import("../../src/frontend/changes/HunkControls");
+    const { createRoot } = await import("react-dom/client");
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    await act(async () => root.render(<ConflictRow operationState="rebasing" conflicted={0} reason={BLOCKED_TEXT.unknown} onAction={async () => null} />));
+    for (const label of ["Abort…", "Continue", "Skip…"]) {
+      const control = button(label, host);
+      expect(describedText(control)).toBe(BLOCKED_TEXT.unknown);
+      expect(visuallyHidden(control)).toBe(false);
+    }
     await act(async () => root.unmount());
     host.remove();
   });

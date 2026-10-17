@@ -13,6 +13,7 @@ import { fixtureId } from "./bridge-contract";
 
 printOrigin("../../src/frontend/app/NoticeBand.tsx", import.meta.dir);
 printOrigin("../../src/frontend/sync/ForcePushConfirm.tsx", import.meta.dir);
+printOrigin("../../src/frontend/sync/PushNoticeRow.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
 mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ children }: { children: ReactNode }) => <>{children}</> }));
 mock.module("../../src/frontend/changes/PatchView", () => ({ default: ({ patch }: { patch: string }) => <pre>{patch}</pre> }));
@@ -163,5 +164,51 @@ describe("force push with lease (FR-024, FR-025)", () => {
     await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination: DESTINATION } }));
     expect(double.count("sync")).toBe(0);
     expect(text(document.querySelector("footer")!)).toContain("Push did not start: the review is incomplete.");
+  });
+});
+
+describe("push-rejected row while an operation runs (plan D12)", () => {
+  const RUNNING = "A Git operation is running. Its progress and Cancel are in the status bar.";
+  const description = (control: Element) => document.getElementById(control.getAttribute("aria-describedby") ?? "");
+
+  test("while its Fetch runs, the actions stay disabled and focusable, and the running reason is only in the tooltip and a hidden description", async () => {
+    const { keyboardFocus, tooltipText } = await import("./sync-fake");
+    const { act } = await import("react");
+    const { double } = await rejected();
+    await click(button("Fetch", band()));
+    await answer(double.pending("reviewSync"), succeeded({ action: "fetch", plan: { remotes: ["origin"] }, syncReviewToken: fixtureId(0x102) }));
+    const sync = double.pending("sync")!;
+    await act(async () => (sync.args[2] as (e: unknown) => void)({ requestId: "r", operationId: fixtureId(0x211), state: "running", phase: "sync-fetch", counters: {} }));
+    await settle();
+    expect(text(band())).toContain(REJECTED);
+    expect(text(band())).not.toContain("A Git operation is running. Wait for its result, or select Cancel.");
+    for (const label of ["Pull with rebase", "Pull with merge", "Fetch", "Force push with lease…"]) {
+      const control = button(label, band());
+      expect(control.getAttribute("aria-disabled")).toBe("true");
+      expect(control.tabIndex).toBe(0);
+      expect(description(control)?.textContent).toBe(RUNNING);
+      expect(description(control)!.classList.contains("sr-only")).toBe(true);
+      await keyboardFocus(control);
+      expect(tooltipText()).toBe(RUNNING);
+    }
+    expect(button("Dismiss notice", band()).hasAttribute("disabled")).toBe(false);
+  });
+
+  test("a reason other than a running operation stays visible", async () => {
+    const { PushNoticeRow } = await import("../../src/frontend/sync/PushNoticeRow");
+    const { BLOCKED_TEXT } = await import("../../src/frontend/changes/HunkControls");
+    const { createRoot } = await import("react-dom/client");
+    const { act } = await import("react");
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    const noop = () => {};
+    await act(async () =>
+      root.render(<PushNoticeRow notice={{ kind: "rejected", tracking: "origin/main", branch: "main" }} onPull={noop} onFetch={noop} onForcePush={noop} onPush={noop} onDismiss={noop} reason={BLOCKED_TEXT.unknown} fetchReason={BLOCKED_TEXT.unknown} />),
+    );
+    const control = button("Pull with rebase", host);
+    expect(description(control)?.textContent).toBe(BLOCKED_TEXT.unknown);
+    expect(description(control)!.classList.contains("sr-only")).toBe(false);
+    await act(async () => root.unmount());
+    host.remove();
   });
 });

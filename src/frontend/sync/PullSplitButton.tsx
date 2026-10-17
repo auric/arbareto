@@ -50,13 +50,15 @@ export type PullSplitButtonProps = {
   reasons: Record<DefaultPullAction, string | null>;
   /** The ID of the element that shows the reason of the main part. */
   mainReasonId?: string;
+  /** A second tooltip line of the main part: a reason without a visible line. */
+  mainNote?: string;
   onRun(action: DefaultPullAction): void;
   /** Sends `setDefaultPullAction`. It starts no Git operation (FR-056). */
   onSetDefault(action: DefaultPullAction): void;
 };
 
 /** The toolbar Pull split button. The page shortcut handler runs the main part on Ctrl+Down. */
-export function PullSplitButton({ defaultAction, settingsReason, reasons, mainReasonId, onRun, onSetDefault }: PullSplitButtonProps) {
+export function PullSplitButton({ defaultAction, settingsReason, reasons, mainReasonId, mainNote, onRun, onSetDefault }: PullSplitButtonProps) {
   const reasonIds = useId();
   const main = defaultAction === null ? null : pullAction(defaultAction);
   const mainReason = settingsReason ?? (defaultAction === null ? null : reasons[defaultAction]);
@@ -83,7 +85,10 @@ export function PullSplitButton({ defaultAction, settingsReason, reasons, mainRe
         >
           <HugeiconsIcon icon={main?.icon ?? Download04Icon} strokeWidth={2} aria-hidden="true" className={ICON} />
         </TooltipTrigger>
-        <TooltipContent>{`${name} (Ctrl+Down)`}</TooltipContent>
+        <TooltipContent>
+          {`${name} (Ctrl+Down)`}
+          {mainNote === undefined ? null : <span className="block">{mainNote}</span>}
+        </TooltipContent>
       </Tooltip>
       <DropdownMenu>
         <Tooltip>

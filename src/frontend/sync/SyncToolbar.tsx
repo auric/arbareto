@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { ArrowDown01Icon, CloudDownloadIcon, Upload04Icon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, CancelCircleIcon, CloudDownloadIcon, Upload04Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, type ReactNode } from "react";
+import type { SYNC_ACTIONS } from "../../contracts/channel";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { MENU_CONTENT } from "../app/RepositoryMenu";
 import { BLOCKED_TEXT, operationBlock } from "../changes/HunkControls";
@@ -11,6 +12,7 @@ import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
+import { SYNC_NAMES } from "../status/OperationStatus";
 import { PULL_ACTIONS, pullAction, PullSplitButton, type DefaultPullAction, type ReviewPayload } from "./PullSplitButton";
 
 // Feature 003 spec FR-017, FR-028, FR-039, FR-055, plan.md D12. The 004 design standard sets the group order: Fetch, Pull, Push.
@@ -21,6 +23,22 @@ type OperationState = WorkspaceSnapshot["operationState"];
 const DETACHED = "No branch checked out.";
 const UNBORN = "The branch has no commits yet.";
 const NO_UPSTREAM = "The branch has no upstream.";
+// Plan D12: the reason while an operation runs. It goes only into the tooltip and the accessible description.
+export const RUNNING_REASON = "A Git operation is running. Its progress and Cancel are in the status bar.";
+
+type SyncAction = (typeof SYNC_ACTIONS)[number];
+type Slot = "fetch" | "pull" | "push";
+// Plan D12: the control that shows a running sync. Abort, Continue, and Skip have none.
+const SLOTS: Partial<Record<SyncAction, Slot>> = { "fetch": "fetch", "fetch-all": "fetch", pull: "pull", integrate: "pull", push: "push", "force-push": "push" };
+const VERBS: Record<Slot, string> = { "fetch": "Fetching…", pull: "Pulling…", push: "Pushing…" };
+
+/** A running mutation: the action of a running sync, or null for every other mutation. */
+export type SyncRunning = { action: SyncAction | null; cancelRequested: boolean };
+
+// Plan D12: the response removes Cancel. If Cancel has focus then, focus moves to the action control of its slot.
+const keepFocus = (element: HTMLButtonElement | null) => () => {
+  if (element !== null && document.activeElement === element) element.closest("[data-sync-slot]")?.querySelector<HTMLElement>("button")?.focus();
+};
 
 export type SyncReasons = { fetchReason: string | null; pullReason: string | null; pushReason: string | null; commitPushReason: string | null };
 
@@ -51,14 +69,32 @@ export type SyncToolbarProps = {
   settingsReason: string | null;
   /** The counts of the current branch (T063). */
   count?: ReactNode;
+  /** Set while `operation !== null && response === null`. Every sync reason is then the running reason. */
+  running?: SyncRunning | null;
   onRun(payload: ReviewPayload): void;
   onSetDefault(action: DefaultPullAction): void;
+  /** The status bar Cancel request of the running operation. */
+  onCancel?(): void;
 };
 
-export function SyncToolbar({ reasons, defaultAction, settingsReason, count, onRun, onSetDefault }: SyncToolbarProps) {
+export function SyncToolbar({ reasons: given, defaultAction, settingsReason, count, running = null, onRun, onSetDefault, onCancel }: SyncToolbarProps) {
   const id = useId();
+  const reasons: SyncReasons = running === null ? given : { fetchReason: RUNNING_REASON, pullReason: RUNNING_REASON, pushReason: RUNNING_REASON, commitPushReason: RUNNING_REASON };
+  const runningId = `${id}-running`;
+  const slot = running?.action == null ? undefined : SLOTS[running.action];
+  const progress = (at: Slot) =>
+    running === null || running.action === null || slot !== at ? null : (
+      <>
+        <span data-slot="sync-running" className="shrink-0 px-1 whitespace-nowrap">
+          {running.cancelRequested ? "Cancel requested" : VERBS[at]}
+        </span>
+        <IconButton ref={keepFocus} icon={CancelCircleIcon} label={`Cancel ${SYNC_NAMES[running.action]}`} onClick={onCancel} />
+      </>
+    );
   const pullReasons = Object.fromEntries(PULL_ACTIONS.map((a) => [a.action, actionReason(reasons, a.action)])) as Record<DefaultPullAction, string | null>;
   const mainReason = settingsReason ?? (defaultAction === null ? null : pullReasons[defaultAction]);
+  // The settings reason of the Pull main part is no running reason, so it keeps its line.
+  const quiet = { Fetch: running !== null, Pull: running !== null && settingsReason === null, Push: running !== null };
   // One inline reason line per distinct text. Each unavailable control names its line.
   const lines = new Map<string, string[]>();
   for (const [control, reason] of [
@@ -66,19 +102,27 @@ export function SyncToolbar({ reasons, defaultAction, settingsReason, count, onR
     ["Pull", mainReason],
     ["Push", reasons.pushReason],
   ] as const) {
-    if (reason !== null) lines.set(reason, [...(lines.get(reason) ?? []), control]);
+    if (reason !== null && !quiet[control]) lines.set(reason, [...(lines.get(reason) ?? []), control]);
   }
   const lineId = (reason: string | null) => (reason === null ? undefined : `${id}-${[...lines.keys()].indexOf(reason)}`);
+  const describedBy = (control: keyof typeof quiet, reason: string | null) => (quiet[control] ? runningId : lineId(reason));
+  const note = (control: keyof typeof quiet) => (quiet[control] ? RUNNING_REASON : undefined);
   return (
     <div role="group" aria-label="Remote sync" className="flex min-w-0 items-center gap-1">
-      <div className="flex items-center">
+      {running === null ? null : (
+        <span id={runningId} className="sr-only">
+          {RUNNING_REASON}
+        </span>
+      )}
+      <div data-sync-slot="fetch" className="flex items-center">
         <IconButton
           icon={CloudDownloadIcon}
           label="Fetch"
           keys={{ aria: "Control+Shift+ArrowDown", text: "Ctrl+Shift+Down" }}
+          note={note("Fetch")}
           disabled={reasons.fetchReason !== null}
           focusableWhenDisabled
-          aria-describedby={lineId(reasons.fetchReason)}
+          aria-describedby={describedBy("Fetch", reasons.fetchReason)}
           onClick={() => reasons.fetchReason === null && onRun({ action: "fetch" })}
         />
         {/* FR-039: a menu beside Fetch offers Fetch all remotes. */}
@@ -99,24 +143,33 @@ export function SyncToolbar({ reasons, defaultAction, settingsReason, count, onR
             {reasons.fetchReason === null ? null : <p className="px-2 pb-1 text-xs whitespace-normal text-muted-text">{reasons.fetchReason}</p>}
           </DropdownMenuContent>
         </DropdownMenu>
+        {progress("fetch")}
       </div>
-      <PullSplitButton
-        defaultAction={defaultAction}
-        settingsReason={settingsReason}
-        reasons={pullReasons}
-        mainReasonId={lineId(mainReason)}
-        onRun={(action) => onRun(pullAction(action).payload)}
-        onSetDefault={onSetDefault}
-      />
-      <IconButton
-        icon={Upload04Icon}
-        label="Push"
-        keys={{ aria: "Control+ArrowUp", text: "Ctrl+Up" }}
-        disabled={reasons.pushReason !== null}
-        focusableWhenDisabled
-        aria-describedby={lineId(reasons.pushReason)}
-        onClick={() => reasons.pushReason === null && onRun({ action: "push" })}
-      />
+      <div data-sync-slot="pull" className="flex items-center">
+        <PullSplitButton
+          defaultAction={defaultAction}
+          settingsReason={settingsReason}
+          reasons={pullReasons}
+          mainReasonId={describedBy("Pull", mainReason)}
+          mainNote={note("Pull")}
+          onRun={(action) => onRun(pullAction(action).payload)}
+          onSetDefault={onSetDefault}
+        />
+        {progress("pull")}
+      </div>
+      <div data-sync-slot="push" className="flex items-center">
+        <IconButton
+          icon={Upload04Icon}
+          label="Push"
+          keys={{ aria: "Control+ArrowUp", text: "Ctrl+Up" }}
+          note={note("Push")}
+          disabled={reasons.pushReason !== null}
+          focusableWhenDisabled
+          aria-describedby={describedBy("Push", reasons.pushReason)}
+          onClick={() => reasons.pushReason === null && onRun({ action: "push" })}
+        />
+        {progress("push")}
+      </div>
       {count}
       {[...lines].map(([reason, controls], i) => (
         <span key={reason} id={`${id}-${i}`} className="min-w-0 truncate text-muted-text" title={`${controls.join(", ")}: ${reason}`}>

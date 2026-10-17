@@ -164,3 +164,54 @@ describe("pull mode choice (FR-027)", () => {
     expect(text(document.body)).not.toContain(QUESTION);
   });
 });
+
+describe("pull mode row while an operation runs (plan D12)", () => {
+  const RUNNING = "A Git operation is running. Its progress and Cancel are in the status bar.";
+  async function render(props: { reason: string | null; running?: boolean }) {
+    const { PullModeChoice } = await import("../../src/frontend/sync/PullModeChoice");
+    const { createRoot } = await import("react-dom/client");
+    const { act } = await import("react");
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    let chosen = 0;
+    await act(async () => root.render(<PullModeChoice onChoose={() => void chosen++} onCancel={() => {}} {...props} />));
+    return {
+      host,
+      chosen: () => chosen,
+      done: async () => {
+        await act(async () => root.unmount());
+        host.remove();
+      },
+    };
+  }
+  const described = (control: Element) => document.getElementById(control.getAttribute("aria-describedby") ?? "");
+
+  test("Rebase and Merge stay disabled and focusable; the running reason is only in the tooltip and a hidden description", async () => {
+    const { BLOCKED_TEXT } = await import("../../src/frontend/changes/HunkControls");
+    const { keyboardFocus, tooltipText } = await import("./sync-fake");
+    const view = await render({ reason: BLOCKED_TEXT.running, running: true });
+    expect(text(view.host)).not.toContain(BLOCKED_TEXT.running);
+    for (const label of ["Rebase", "Merge"]) {
+      const control = button(label, view.host);
+      expect(control.getAttribute("aria-disabled")).toBe("true");
+      expect(control.tabIndex).toBe(0);
+      expect(described(control)?.textContent).toBe(RUNNING);
+      expect(described(control)!.classList.contains("sr-only")).toBe(true);
+      await keyboardFocus(control);
+      expect(tooltipText()).toBe(RUNNING);
+      await click(control);
+    }
+    expect(view.chosen()).toBe(0);
+    await view.done();
+  });
+
+  test("a reason other than a running operation stays visible", async () => {
+    const { BLOCKED_TEXT } = await import("../../src/frontend/changes/HunkControls");
+    const view = await render({ reason: BLOCKED_TEXT.unknown });
+    const control = button("Rebase", view.host);
+    expect(described(control)?.textContent).toBe(BLOCKED_TEXT.unknown);
+    expect(described(control)!.classList.contains("sr-only")).toBe(false);
+    expect(text(view.host)).toContain(BLOCKED_TEXT.unknown);
+    await view.done();
+  });
+});

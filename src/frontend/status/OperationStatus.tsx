@@ -38,6 +38,8 @@ export type StatusRegionHandle = {
   entry(): HTMLElement | null;
   /** Cancel in the status bar, or null while no operation runs. */
   cancel(): HTMLElement | null;
+  /** Sends the Cancel request of the status bar. The toolbar Cancel uses it, so both share one request guard. */
+  requestCancel(): void;
 };
 export type OperationStatusProps = {
   bridge: Pick<ReturnType<typeof createBridge>, "cancel" | "getOperation">;
@@ -509,17 +511,17 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
     headingRef.current.focus();
   });
 
-  // plan.md "Long text": a truncated status text shows the toggle. A shown refusal hides the text from view, so it keeps the last value.
+  // plan.md "Long text": a truncated status text shows the toggle. A refusal hides the text from view after the outcome, so it keeps the last value.
   useLayoutEffect(() => {
     const element = textRef.current;
-    if (element === null || refusal !== null) return;
+    if (element === null || (refusal !== null && !running)) return;
     const measure = () => setTruncated(element.scrollWidth > element.clientWidth);
     measure();
     if (typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(measure);
     observer.observe(element);
     return () => observer.disconnect();
-  }, [liveText, refusal]);
+  }, [liveText, refusal, running]);
 
   useImperativeHandle(ref, () => ({
     entry() {
@@ -533,6 +535,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
       return footerRef.current?.querySelector("button") ?? (liveText === "" ? null : textRef.current);
     },
     cancel: () => cancelRef.current,
+    requestCancel: cancel,
   }));
 
   function toggle() {
@@ -670,7 +673,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
             {workbenchNotice}
           </span>
         )}
-        <span ref={textRef} role="status" tabIndex={-1} className={cn("min-w-0 flex-1 truncate", refusal !== null && "sr-only")}>
+        <span ref={textRef} role="status" tabIndex={-1} className={cn("min-w-0 flex-1 truncate", refusal !== null && !running && "sr-only")}>
           {/* A line with a code is one added element, so the outcome stays one live-node change. */}
           <span>{line === null ? null : line.code === undefined ? plain(line) : <span>{lineNode(line)}</span>}</span>
           {stalled ? <span> {STALL_SENTENCE}</span> : null}

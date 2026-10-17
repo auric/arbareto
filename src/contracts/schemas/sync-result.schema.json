@@ -426,7 +426,10 @@
         "unreadable",
         "version",
         "exit",
-        "not-ready"
+        "not-ready",
+        "ff-only",
+        "interactive-rebase",
+        "upstream-gone"
       ]
     },
     "program": {

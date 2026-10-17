@@ -34,9 +34,10 @@ Label rule (renderer):
 | `binding.upstream` | `{ref, objectId}` for `pull` and `integrate`. |
 | `binding.destination` | §3 result for `push` and `force-push`. |
 | `binding.lease` | `{trackingRef, expect, count, commits[≤100]}` for `force-push`. Each commit is `{objectId, subject}`. A commit object above `HISTORY_COMMIT_OBJECT_BYTES` gives `subject` null. |
-| `binding.index` | Index fingerprint and unmerged count for `continue`. |
+| `binding.index` | Index fingerprint and unmerged count for `continue`: the SHA-256 of `ls-files --stage -z` and the number of paths with a stage above 0 (contract Δ3 read 7). |
 | `binding.mode` | For `pull` and `integrate`: the payload mode or null. |
 | `binding.skippedCommit` | For `skip`: the `REBASE_HEAD` object ID. |
+| `binding.todo` | For `continue` and `skip` while rebasing: the SHA-256 of `rebase-merge/git-rebase-todo`, or null without that file. A todo with an `exec` line, unreadable, or above `SYNC_REBASE_TODO_BYTES` gives `rebase-exec`, and no token goes out (contract Δ3 read 9). |
 
 `sync` re-reads each bound value. A difference gives `STALE_REVIEW`. A trust difference gives `TRUST_CHANGED` or `TRUST_REQUIRED`.
 
@@ -105,6 +106,8 @@ An invalid value gives refusal `invalid-config`. The `sync` result names the sou
 | `stopped` | A merge or rebase is in progress. `operation` and `unmerged` count follow. |
 | `refused` | Git exited non-zero, and the state is normal. `outputTail` follows. |
 
+A killed integrate process has no exit status. When the reconciliation then finds no merge or rebase marker, no value applies, so `integration` is absent, and the outcome comes from the observed changes (§8).
+
 ## 8. Outcome per action
 
 | Action | `succeeded` | `completed-with-effects` | `failed` | `failed-with-effects` | `canceled` |
@@ -124,7 +127,7 @@ A failed reconciliation read gives `unknown`, and the recovery marker stays (001
 | Entry | A `u` status record with stages present. |
 | Accepted | XY in `UU`, `AA`, `AU`, `UA`, `DU`, `UD`, a regular working file, no `120000` or `160000` in any mode, no `filter` attribute, size within 512 MiB, and the 001 path rule. |
 | Refused | `missing` (no working file, includes `DD`), `type`, `symlink`, `submodule`, `path`, `filter`, `LFS`, `size`, `blob-proof`. |
-| Binding | The 001 `FileBinding`, with `entry.stage` null, the three stage modes and OIDs, the working mode `mW` of the `u` record, plus `operationState`. |
+| Binding | The 001 `FileBinding`, with `entry.stage` null, the three stage modes and OIDs, the working mode `mW` of the `u` record, plus `operationState`. Outside WSL also the comparison working version: existence, type, mode, size, and raw digest (contract Δ4). A replacement with identical bytes and mode is accepted. |
 | Staging | `hash-object -w -- <path>` on the working file, then `update-index -z --index-info` with `<mW> SP <oid> TAB <path>` (plan.md D7). `mW` equals the `git add` mode, also on Windows with `core.symlinks=false` and `core.filemode=false` (research R16 i). `update-index --add` is not used: it writes `100644` there. |
 | Verification | One stage-0 entry with mode `mW`, no stages 1 to 3 for the path, and every other entry unchanged. P0.2 (i2) verifies the equality with `git add`. |
 

@@ -300,8 +300,10 @@
             "interactive-rebase",
             "upstream-gone",
             "no-operation",
+            "unknown-operation",
             "not-rebasing",
             "no-skip-commit",
+            "rebase-exec",
             "SYNC_REMOTES"
           ]
         },
@@ -309,6 +311,27 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 9007199254740991
+        },
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            },
+            "command": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "text",
+            "command"
+          ],
+          "additionalProperties": false,
+          "title": "SyncRemedy"
         }
       },
       "additionalProperties": false,

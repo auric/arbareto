@@ -66,6 +66,7 @@ describe("contract Δ5 bounds", () => {
     expect(L.TRACKING_COUNT_DISPLAY).toBe(10_000);
     expect(L.SYNC_REFS_RECORDS).toBe(100_000);
     expect(L.SYNC_REFS_BYTES).toBe(32 * MIB);
+    expect(L.SYNC_REBASE_TODO_BYTES).toBe(4 * MIB);
     expect(L.PAGEANT_READY_MS).toBe(30_000);
     expect(L.CLONE_URL_BYTES).toBe(4096);
     expect(L.KEY_FILE_ENTRIES).toBe(256);
@@ -114,8 +115,10 @@ describe("contract Δ9 codes", () => {
       "interactive-rebase",
       "upstream-gone",
       "no-operation",
+      "unknown-operation",
       "not-rebasing",
       "no-skip-commit",
+      "rebase-exec",
     ]);
     expect([...E.PUSH_REJECTED_REASONS]).toEqual(["rejected", "stale-lease", "remote-rejected", "remote-failure"]);
     expect([...E.PUTTY_UNAVAILABLE_REASONS]).toEqual(["missing", "unreadable", "version", "exit", "not-ready"]);

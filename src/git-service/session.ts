@@ -44,9 +44,6 @@ export type { Handshake } from "../contracts/channel";
 
 type Fields = Record<string, unknown>;
 
-// The `reviewSync` actions of batch 2 (feature 003 tasks.md T040 to T042).
-const REVIEWED_ACTIONS: readonly string[] = ["fetch", "fetch-all", "push", "force-push"];
-
 // Contract §3 without the shell-only operations. The shell forwards `openRecentRepository` as `restoreWorkspace`.
 type ServiceOperation = ServiceRequest["operation"];
 type Handler<K extends ServiceOperation> = (request: Extract<ServiceRequest, { operation: K }>) => void;
@@ -474,12 +471,11 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     );
   };
 
-  // Feature 003 contract Δ3 `reviewSync`: one read slot. Batch 3 adds the actions `pull`, `integrate`, `abort`, `continue`, and `skip`.
+  // Feature 003 contract Δ3 `reviewSync`: one read slot.
   const reviewSync: Handler<"reviewSync"> = (request) => {
     const workspace = workspaceOf(request.repositoryId);
     const installation = installationOf(workspace);
     if (installation === null) return reject(request.requestId, gitCode());
-    if (!REVIEWED_ACTIONS.includes(request.payload.action)) return reject(request.requestId, "SERVICE_UNAVAILABLE");
     if (request.repositoryGeneration !== workspace.generation) {
       const { operationId } = registry.start("reviewSync", request.requestId);
       return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });

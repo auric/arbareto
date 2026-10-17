@@ -105,9 +105,30 @@ export function fastForwardArgs(upstreamRef: string): string[] {
 }
 
 // Plan.md D6: the `pull.ff` option that Git's pull passes, or none.
-export function mergeArgs(upstreamRef: string, ff: "--ff" | "--no-ff" | null): string[] {
+// O-3 and feature 004 plan.md D5: `--no-log -m` passes the `fmt-merge-msg` preview, because `merge.log` appends a shortlog to an explicit message. Null: Git's own default message.
+export function mergeArgs(upstreamRef: string, ff: "--ff" | "--no-ff" | null, message: string | null): string[] {
   if (ff !== null && ff !== "--ff" && ff !== "--no-ff") throw new TypeError("ff option refused");
-  return [L, "merge", "--no-edit", "--no-autostash", ...(ff === null ? [] : [ff]), ref(upstreamRef)];
+  return [L, "merge", "--no-edit", "--no-autostash", ...(ff === null ? [] : [ff]), ...(message === null ? [] : ["--no-log", "-m", item(message)]), ref(upstreamRef)];
+}
+
+// Feature 004 plan.md D5: stdin holds the `merge_name` line of builtin/merge.c for the merged ref.
+export function mergeMessageArgs(): string[] {
+  return read("fmt-merge-msg");
+}
+
+// Contract Δ3 read 7.
+export function indexStageArgs(): string[] {
+  return read("ls-files", "--stage", "-z");
+}
+
+// One Git-resolved path in the Git folder, such as `index.lock`.
+export function gitPathArgs(name: string): string[] {
+  return read("rev-parse", "--path-format=absolute", "--git-path", item(name));
+}
+
+// Contract Δ4 step 5: Git applies the attribute conversion of the path and writes the blob, as `git add` does.
+export function hashWriteArgs(path: string): string[] {
+  return [L, "hash-object", "-w", "--", item(path)];
 }
 
 export function rebaseArgs(upstreamRef: string, rebaseMerges: boolean): string[] {

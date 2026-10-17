@@ -7,6 +7,7 @@ import {
   createFetchParser,
   FETCH_FLAGS,
   type FetchFlag,
+  holdsExec,
   parseAheadBehind,
   parsePushPorcelain,
   parsePushRecord,
@@ -344,4 +345,13 @@ describe("lease count (plan.md D5)", () => {
   for (const output of ["", "3", "03\n", "-1\n", "3\n\n", "3 \n", "3\t0\n", "a\n"]) {
     test(`${JSON.stringify(output)} gives MALFORMED_GIT_OUTPUT`, () => expect(parseRevListCount(bytes(output))).toBeNull());
   }
+});
+
+// Plan.md D7 and sequencer.c `parse_insn_line`, `is_command`, `todo_command_info`: the todo lines that Git runs with the shell.
+describe("exec lines of a rebase todo", () => {
+  const exec = (text: string) => holdsExec(new TextEncoder().encode(text));
+  const yes = ["exec make test\n", "x make\n", "  x touch planted\n", "\tx\ttrue\n", "exec\n", "x", "exec\r\n", "pick 1234 a\nexec true\npick 5678 b\n", "x\0tail\n"];
+  const no = ["# exec true\n", "pick 1234 exec\n", "execute true\n", "xx true\n", "  # x true\n", "edit 1234 x\n", "", "\n\n", "break\n", "e 1234 a\n"];
+  for (const text of yes) test(`${JSON.stringify(text)} holds an exec line`, () => expect(exec(text)).toBe(true));
+  for (const text of no) test(`${JSON.stringify(text)} holds no exec line`, () => expect(exec(text)).toBe(false));
 });

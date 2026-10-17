@@ -129,6 +129,8 @@ export const TRACKING_COUNT_DISPLAY = 10_000;
 // The `sync` refs listing.
 export const SYNC_REFS_RECORDS = 100_000;
 export const SYNC_REFS_BYTES = 32 * MIB;
+// `rebase-merge/git-rebase-todo` of a Continue or Skip review. Above it, the review refuses with `rebase-exec`.
+export const SYNC_REBASE_TODO_BYTES = 4 * MIB;
 export const PAGEANT_READY_MS = 30 * SECOND_MS;
 // UTF-8 bytes of a clone URL.
 export const CLONE_URL_BYTES = 4096;

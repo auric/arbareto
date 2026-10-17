@@ -1032,7 +1032,8 @@ export const ReviewSyncResult = z
           (r.plan?.skippedCommit !== undefined) === (r.action === "skip"),
       )
       .meta({ title: "SyncReviewed" }),
-    z.strictObject({ reason: z.enum([...SYNC_UNAVAILABLE_REASONS, ...SYNC_OUTPUT_LIMIT_REASONS]).optional(), unmerged: Count.optional() }).meta({ title: "SyncRefused" }),
+    // `remedy`: the terminal command of a `rebase-exec` refusal.
+    z.strictObject({ reason: z.enum([...SYNC_UNAVAILABLE_REASONS, ...SYNC_OUTPUT_LIMIT_REASONS]).optional(), unmerged: Count.optional(), remedy: SyncRemedy.optional() }).meta({ title: "SyncRefused" }),
   ])
   .meta({ title: "ReviewSyncResult" });
 
@@ -1084,6 +1085,8 @@ export const Integration = z
 const FETCHING: readonly string[] = ["fetch", "fetch-all", "pull"];
 const PUSHING: readonly string[] = ["push", "force-push"];
 const INTEGRATING: readonly string[] = ["pull", "integrate", "abort", "continue", "skip"];
+// Contract Δ3 "Results and states": the `SYNC_UNAVAILABLE` reasons that a pull or integrate result holds after the fetch or the count.
+const PULL_REFUSAL_REASONS = ["ff-only", "interactive-rebase", "upstream-gone"] as const;
 // Data-model §4 to §8: the parts of the action. The response state holds the outcome.
 export const SyncResult = z
   .strictObject({
@@ -1095,8 +1098,9 @@ export const SyncResult = z
     // Data-model §6. Null: no payload and no configuration value decided.
     modeSource: z.enum(["payload", "branch", "pull", "pull-ff"]).nullable().optional(),
     remedy: SyncRemedy.optional(),
-    // Contract Δ9: the `PUSH_REJECTED` reason, or the `PUTTY_UNAVAILABLE` reason with the program and its path after a fetched remote.
-    reason: z.enum([...PUSH_REJECTED_REASONS, ...PUTTY_UNAVAILABLE_REASONS]).optional(),
+    // Contract Δ9: the `PUSH_REJECTED` reason, the `PUTTY_UNAVAILABLE` reason with the program and its path after a fetched remote,
+    // or the `SYNC_UNAVAILABLE` reason of a pull or integrate refusal after the fetch or the count.
+    reason: z.enum([...PUSH_REJECTED_REASONS, ...PUTTY_UNAVAILABLE_REASONS, ...PULL_REFUSAL_REASONS]).optional(),
     program: z.enum(PUTTY_PROGRAMS).optional(),
     path: ChannelPath.optional(),
   })
@@ -1106,6 +1110,7 @@ export const SyncResult = z
       (r.push === undefined || PUSHING.includes(r.action)) &&
       (r.integration === undefined || INTEGRATING.includes(r.action)) &&
       ((r.counts === undefined && r.modeSource === undefined) || r.action === "pull" || r.action === "integrate") &&
+      (!(PULL_REFUSAL_REASONS as readonly string[]).includes(r.reason ?? "") || r.action === "pull" || r.action === "integrate") &&
       (!(PUSH_REJECTED_REASONS as readonly string[]).includes(r.reason ?? "") || PUSHING.includes(r.action)) &&
       ((r.program !== undefined && r.path !== undefined) === (PUTTY_UNAVAILABLE_REASONS as readonly string[]).includes(r.reason ?? "")) &&
       ((r.program === undefined) === (r.path === undefined)),

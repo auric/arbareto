@@ -756,7 +756,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const wanted = new Set(paths.map(latin1));
       const texts = paths.map((p) => utf8.decode(p));
       const launch = forms.launch;
-      const units = launch === undefined ? (args: string[]) => commandLineUnits(installation.selectedPath ?? "", args) : (args: string[]) => wslCommandLineUnits(launch, t.operationId, "read", "", forms.gitRoot, args);
+      const units = launch === undefined ? (args: string[]) => commandLineUnits(installation.executablePath, args) : (args: string[]) => wslCommandLineUnits(launch, t.operationId, "read", "", forms.gitRoot, args);
       for (const batch of gitlinkBatches(texts, units)) {
         const r = await git(gitlinkPatchArgs(batch), { max: STATUS_LISTING_BYTES });
         if (r.limited) throw failed("OUTPUT_LIMIT");

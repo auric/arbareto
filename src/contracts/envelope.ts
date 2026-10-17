@@ -20,7 +20,7 @@ import {
   WSL_UNAVAILABLE_REASONS,
   type ErrorCode,
 } from "./errors";
-import { FILE_ACTION_REASONS, LINE_ACTION_REASONS } from "./file-action";
+import { FILE_ACTION_REASONS, LINE_ACTION_REASONS, type FileActionReason, type LineActionReason } from "./file-action";
 import * as limits from "./limits";
 import {
   CANONICAL_DIFF_LINES,
@@ -987,7 +987,7 @@ const SupportValue = z.enum(["supported", "binary", "encoding", "size", "rename"
 // Data-model §5 "File-action decision". `state` is the operation-state refusal. Contract §4: `blob-proof` never occurs in `readComparison`.
 // Feature 003 contract Δ3 and Δ4: `resolve` accepts a conflicted entry. Feature 004 data-model §6: a line refusal never occurs here.
 const LINE_REASONS: readonly string[] = LINE_ACTION_REASONS;
-const FileActionValue = z.enum(["stage", "unstage", "resolve", "state", ...FILE_ACTION_REASONS.filter((r) => r !== "blob-proof" && !LINE_REASONS.includes(r))]);
+const FileActionValue = z.enum(["stage", "unstage", "resolve", "state", ...FILE_ACTION_REASONS.filter((r): r is Exclude<FileActionReason, "blob-proof" | LineActionReason> => r !== "blob-proof" && !LINE_REASONS.includes(r))]);
 // Contract §4 "Limitation remedies": a refused file action can carry a copyable command. A null `command` shows the refused value in `text`.
 const FileRemedy = z.strictObject({ text: z.string().min(1), command: z.string().nullable() }).meta({ title: "FileRemedy" }).nullable();
 const ComparisonScope = z.enum(["head-to-index", "index-to-worktree", "empty-to-untracked"]);

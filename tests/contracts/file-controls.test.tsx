@@ -8,6 +8,7 @@ import type { FileActionResult } from "../../src/frontend/changes/ChangesPane";
 import { LIMITATION_TEXT } from "../../src/frontend/changes/limitation-text";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { contractChecked } from "./bridge-contract";
 
 registerDom();
 const { createRoot } = await import("react-dom/client");
@@ -40,7 +41,7 @@ function bridgeDouble() {
         new Promise<BridgeResponse>((resolve) => calls.push({ operation: String(operation), target, payload, resolve })),
     },
   );
-  return { bridge: bridge as never, calls };
+  return { bridge: contractChecked(bridge) as never, calls };
 }
 
 const TARGET = { repositoryId: crypto.randomUUID(), repositoryGeneration: 1 };

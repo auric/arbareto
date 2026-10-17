@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { contractChecked } from "./bridge-contract";
 
 printOrigin("../../src/frontend/app/RepositoryStates.tsx", import.meta.dir);
 // `RepositoryStates.tsx` loads Base UI. Base UI must first evaluate with a DOM, because test files share one module cache (tests/dom.ts).
@@ -171,7 +172,7 @@ describe("repository states", () => {
     function startPage(entries: unknown[]) {
       const calls: string[] = [];
       const reply = (name: string, result: unknown) => async () => (calls.push(name), { requestId: crypto.randomUUID(), state: "succeeded", result });
-      const bridge = { listRecentRepositories: reply("listRecentRepositories", { entries }), openRecentRepository: reply("openRecentRepository", {}), removeRecentRepository: reply("removeRecentRepository", { entries }) };
+      const bridge = contractChecked({ listRecentRepositories: reply("listRecentRepositories", { entries }), openRecentRepository: reply("openRecentRepository", {}), removeRecentRepository: reply("removeRecentRepository", { entries }) });
       const folders: number[] = [];
       return { calls, folders, node: <states.StartPage bridge={bridge as never} busy={false} onOpenFolder={() => void folders.push(1)} onOpened={noop} /> };
     }

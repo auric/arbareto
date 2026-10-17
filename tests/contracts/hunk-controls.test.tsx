@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, isValidElement, type ReactElement, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { contractChecked } from "./bridge-contract";
 
 registerDom();
 const { renderToStaticMarkup } = await import("react-dom/server");
@@ -33,7 +34,7 @@ async function hunkControls(): Promise<HunkModule> {
 function bridgeDouble() {
   const calls: string[] = [];
   const bridge = new Proxy({}, { get: (_, name) => () => (calls.push(String(name)), new Promise(() => {})) });
-  return { bridge: bridge as never, calls };
+  return { bridge: contractChecked(bridge) as never, calls };
 }
 
 // The T331 comparison value: the shipped `src/git-service/comparison.ts` value plus `digest` on each hunk (data-model §5 Hunk).

@@ -14,6 +14,8 @@ export type OnProgress = (event: ProgressEvent) => void;
 // The envelope fields that a caller supplies: the repository target and the payload (contract §2).
 type Target<K extends OperationName> = Omit<RequestOf<K>, "version" | "sessionId" | "requestId" | "operation" | "payload">;
 type Payload<K extends OperationName> = RequestOf<K>["payload"];
+// TypeScript checks excess keys only in object literals. A target key outside the contract becomes `never`, so a variable with that key fails too.
+type Exact<K extends OperationName, T> = T & Record<Exclude<keyof T, keyof Target<K>>, never>;
 
 const encoder = new TextEncoder();
 
@@ -88,26 +90,26 @@ export function createBridge(onSessionChange?: () => void, onTextScale?: (value:
     listRecentRepositories: (onProgress?: OnProgress) => call("listRecentRepositories", {}, {}, onProgress),
     openRecentRepository: (payload: Payload<"openRecentRepository">, onProgress?: OnProgress) => call("openRecentRepository", {}, payload, onProgress),
     removeRecentRepository: (payload: Payload<"removeRecentRepository">, onProgress?: OnProgress) => call("removeRecentRepository", {}, payload, onProgress),
-    readWorkspace: (target: Target<"readWorkspace">, payload: Payload<"readWorkspace">, onProgress?: OnProgress) => call("readWorkspace", target, payload, onProgress),
-    readEntries: (target: Target<"readEntries">, payload: Payload<"readEntries">, onProgress?: OnProgress) => call("readEntries", target, payload, onProgress),
-    openHistory: (target: Target<"openHistory">, payload: Payload<"openHistory">, onProgress?: OnProgress) => call("openHistory", target, payload, onProgress),
-    loadHistory: (target: Target<"loadHistory">, payload: Payload<"loadHistory">, onProgress?: OnProgress) => call("loadHistory", target, payload, onProgress),
-    readHistoryRows: (target: Target<"readHistoryRows">, payload: Payload<"readHistoryRows">, onProgress?: OnProgress) => call("readHistoryRows", target, payload, onProgress),
-    searchHistory: (target: Target<"searchHistory">, payload: Payload<"searchHistory">, onProgress?: OnProgress) => call("searchHistory", target, payload, onProgress),
-    closeHistory: (target: Target<"closeHistory">, payload: Payload<"closeHistory">, onProgress?: OnProgress) => call("closeHistory", target, payload, onProgress),
-    readRefs: (target: Target<"readRefs">, onProgress?: OnProgress) => call("readRefs", target, {}, onProgress),
-    readComparison: (target: Target<"readComparison">, payload: Payload<"readComparison">, onProgress?: OnProgress) =>
+    readWorkspace: <T extends Target<"readWorkspace">>(target: Exact<"readWorkspace", T>, payload: Payload<"readWorkspace">, onProgress?: OnProgress) => call("readWorkspace", target, payload, onProgress),
+    readEntries: <T extends Target<"readEntries">>(target: Exact<"readEntries", T>, payload: Payload<"readEntries">, onProgress?: OnProgress) => call("readEntries", target, payload, onProgress),
+    openHistory: <T extends Target<"openHistory">>(target: Exact<"openHistory", T>, payload: Payload<"openHistory">, onProgress?: OnProgress) => call("openHistory", target, payload, onProgress),
+    loadHistory: <T extends Target<"loadHistory">>(target: Exact<"loadHistory", T>, payload: Payload<"loadHistory">, onProgress?: OnProgress) => call("loadHistory", target, payload, onProgress),
+    readHistoryRows: <T extends Target<"readHistoryRows">>(target: Exact<"readHistoryRows", T>, payload: Payload<"readHistoryRows">, onProgress?: OnProgress) => call("readHistoryRows", target, payload, onProgress),
+    searchHistory: <T extends Target<"searchHistory">>(target: Exact<"searchHistory", T>, payload: Payload<"searchHistory">, onProgress?: OnProgress) => call("searchHistory", target, payload, onProgress),
+    closeHistory: <T extends Target<"closeHistory">>(target: Exact<"closeHistory", T>, payload: Payload<"closeHistory">, onProgress?: OnProgress) => call("closeHistory", target, payload, onProgress),
+    readRefs: <T extends Target<"readRefs">>(target: Exact<"readRefs", T>, onProgress?: OnProgress) => call("readRefs", target, {}, onProgress),
+    readComparison: <T extends Target<"readComparison">>(target: Exact<"readComparison", T>, payload: Payload<"readComparison">, onProgress?: OnProgress) =>
       call("readComparison", target, payload, onProgress),
-    readTrust: (target: Target<"readTrust">, onProgress?: OnProgress) => call("readTrust", target, {}, onProgress),
-    approveTrust: (target: Target<"approveTrust">, payload: Payload<"approveTrust">, onProgress?: OnProgress) => call("approveTrust", target, payload, onProgress),
-    revokeTrust: (target: Target<"revokeTrust">, payload: Payload<"revokeTrust">, onProgress?: OnProgress) => call("revokeTrust", target, payload, onProgress),
-    applyHunk: (target: Target<"applyHunk">, payload: Payload<"applyHunk">, onProgress?: OnProgress) => call("applyHunk", target, payload, onProgress),
-    applyFile: (target: Target<"applyFile">, payload: Payload<"applyFile">, onProgress?: OnProgress) => call("applyFile", target, payload, onProgress),
-    reviewCommit: (target: Target<"reviewCommit">, payload: Payload<"reviewCommit">, onProgress?: OnProgress) => call("reviewCommit", target, payload, onProgress),
-    commit: (target: Target<"commit">, payload: Payload<"commit">, onProgress?: OnProgress) => call("commit", target, payload, onProgress),
-    reviewSubmodules: (target: Target<"reviewSubmodules">, payload: Payload<"reviewSubmodules">, onProgress?: OnProgress) =>
+    readTrust: <T extends Target<"readTrust">>(target: Exact<"readTrust", T>, onProgress?: OnProgress) => call("readTrust", target, {}, onProgress),
+    approveTrust: <T extends Target<"approveTrust">>(target: Exact<"approveTrust", T>, payload: Payload<"approveTrust">, onProgress?: OnProgress) => call("approveTrust", target, payload, onProgress),
+    revokeTrust: <T extends Target<"revokeTrust">>(target: Exact<"revokeTrust", T>, payload: Payload<"revokeTrust">, onProgress?: OnProgress) => call("revokeTrust", target, payload, onProgress),
+    applyHunk: <T extends Target<"applyHunk">>(target: Exact<"applyHunk", T>, payload: Payload<"applyHunk">, onProgress?: OnProgress) => call("applyHunk", target, payload, onProgress),
+    applyFile: <T extends Target<"applyFile">>(target: Exact<"applyFile", T>, payload: Payload<"applyFile">, onProgress?: OnProgress) => call("applyFile", target, payload, onProgress),
+    reviewCommit: <T extends Target<"reviewCommit">>(target: Exact<"reviewCommit", T>, payload: Payload<"reviewCommit">, onProgress?: OnProgress) => call("reviewCommit", target, payload, onProgress),
+    commit: <T extends Target<"commit">>(target: Exact<"commit", T>, payload: Payload<"commit">, onProgress?: OnProgress) => call("commit", target, payload, onProgress),
+    reviewSubmodules: <T extends Target<"reviewSubmodules">>(target: Exact<"reviewSubmodules", T>, payload: Payload<"reviewSubmodules">, onProgress?: OnProgress) =>
       call("reviewSubmodules", target, payload, onProgress),
-    updateSubmodules: (target: Target<"updateSubmodules">, payload: Payload<"updateSubmodules">, onProgress?: OnProgress) =>
+    updateSubmodules: <T extends Target<"updateSubmodules">>(target: Exact<"updateSubmodules", T>, payload: Payload<"updateSubmodules">, onProgress?: OnProgress) =>
       call("updateSubmodules", target, payload, onProgress),
     cancel: (payload: Payload<"cancel">, onProgress?: OnProgress) => call("cancel", {}, payload, onProgress),
     getOperation: (payload: Payload<"getOperation">, onProgress?: OnProgress) => call("getOperation", {}, payload, onProgress),
@@ -116,11 +118,11 @@ export function createBridge(onSessionChange?: () => void, onTextScale?: (value:
     currentSession: (onProgress?: OnProgress) => send("currentSession", { payload: {} }, onProgress),
     dismissRecoveryMarker: (payload: Payload<"dismissRecoveryMarker">, onProgress?: OnProgress) => call("dismissRecoveryMarker", {}, payload, onProgress),
     // Feature 003 contract Δ1.
-    readTracking: (target: Target<"readTracking">, onProgress?: OnProgress) => call("readTracking", target, {}, onProgress),
-    reviewSync: (target: Target<"reviewSync">, payload: Payload<"reviewSync">, onProgress?: OnProgress) => call("reviewSync", target, payload, onProgress),
-    sync: (target: Target<"sync">, payload: Payload<"sync">, onProgress?: OnProgress) => call("sync", target, payload, onProgress),
+    readTracking: <T extends Target<"readTracking">>(target: Exact<"readTracking", T>, onProgress?: OnProgress) => call("readTracking", target, {}, onProgress),
+    reviewSync: <T extends Target<"reviewSync">>(target: Exact<"reviewSync", T>, payload: Payload<"reviewSync">, onProgress?: OnProgress) => call("reviewSync", target, payload, onProgress),
+    sync: <T extends Target<"sync">>(target: Exact<"sync", T>, payload: Payload<"sync">, onProgress?: OnProgress) => call("sync", target, payload, onProgress),
     clone: (payload: Payload<"clone">, onProgress?: OnProgress) => call("clone", {}, payload, onProgress),
-    connectInTerminal: (target: Target<"connectInTerminal">, payload: Payload<"connectInTerminal">, onProgress?: OnProgress) =>
+    connectInTerminal: <T extends Target<"connectInTerminal">>(target: Exact<"connectInTerminal", T>, payload: Payload<"connectInTerminal">, onProgress?: OnProgress) =>
       call("connectInTerminal", target, payload, onProgress),
     readSyncSettings: (onProgress?: OnProgress) => call("readSyncSettings", {}, {}, onProgress),
     setSshClient: (payload: Payload<"setSshClient">, onProgress?: OnProgress) => call("setSshClient", {}, payload, onProgress),

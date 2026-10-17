@@ -6,9 +6,10 @@
 
 import { act } from "react";
 import type { WorkspaceSnapshot } from "../../src/contracts/envelope";
+import { contractChecked, fixtureId } from "./bridge-contract";
 
 export const oid = (n: number) => n.toString(16).padStart(40, "0");
-export const REGISTRATION = { repositoryId: "repository-1", generation: 1, worktreeKey: "a".repeat(64) };
+export const REGISTRATION = { repositoryId: fixtureId(1), generation: 1, worktreeKey: "a".repeat(64) };
 export const succeeded = (result: unknown, fields: Record<string, unknown> = {}) => ({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "succeeded", repositoryGeneration: 1, result, ...fields });
 
 type Head = WorkspaceSnapshot["head"];
@@ -138,7 +139,7 @@ export function createSyncBridge(world: World) {
     readHistoryRows: (args) => history(world, "readHistoryRows", args),
     closeHistory: (args) => history(world, "closeHistory", args),
   };
-  const bridge = new Proxy(
+  const bridge = contractChecked(new Proxy(
     {},
     {
       get: (_, name) =>
@@ -151,7 +152,7 @@ export function createSyncBridge(world: World) {
             if (answer !== undefined) setTimeout(() => call.resolve(answer(args)), 0);
           }),
     },
-  );
+  ));
   return {
     bridge,
     calls,

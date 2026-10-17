@@ -30,6 +30,7 @@ const open = () =>
     AssignProcessToJobObject: { args: [P, P], returns: i32 },
     TerminateJobObject: { args: [P, u32], returns: i32 },
     QueryInformationJobObject: { args: [P, i32, P, u32, P], returns: i32 },
+    SetInformationJobObject: { args: [P, i32, P, u32], returns: i32 },
   }).symbols;
 let symbols: ReturnType<typeof open> | undefined;
 
@@ -178,6 +179,11 @@ const JOB_ACCOUNTING_CLASS = 1;
 const JOB_ACCOUNTING_BYTES = 48;
 const JOB_ACTIVE_OFFSET = 40;
 const JOB_POLL_MS = 10;
+// Microsoft Learn `JOBOBJECT_EXTENDED_LIMIT_INFORMATION`: 144 bytes on x64, `BasicLimitInformation.LimitFlags` at byte 16.
+const JOB_EXTENDED_LIMIT_CLASS = 9;
+const JOB_EXTENDED_LIMIT_BYTES = 144;
+const JOB_LIMIT_FLAGS_OFFSET = 16;
+const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
 
 export interface ProcessTree {
   // Ends every process of the tree and waits a bounded time for their exits.
@@ -186,11 +192,20 @@ export interface ProcessTree {
 }
 
 // The shell Job of contract §6 (src-tauri/src/jobs.rs). A process that the root creates joins the Job, also after the root ends.
-// No `KILL_ON_JOB_CLOSE`: a child that outlives its root lingers until `end`, as a lingering Job does.
+// By default no `KILL_ON_JOB_CLOSE`: a child that outlives its root lingers until `end`, as a lingering Job does. With `killOnClose`, the close of the last Job handle also ends the tree, so an ended test process leaves no member.
 // ponytail: assignment follows the start, so a child created before it escapes. The shell assigns before the process runs; do the same when an escape shows.
-export function ownTree(pid: number): ProcessTree {
+export function ownTree(pid: number, killOnClose = false): ProcessTree {
   const job = kernel32().CreateJobObjectW(null, null);
   if (!valid(job)) throw new Error(`CreateJobObjectW failed: ${kernel32().GetLastError()}`);
+  if (killOnClose) {
+    const limits = new Uint8Array(JOB_EXTENDED_LIMIT_BYTES);
+    new DataView(limits.buffer).setUint32(JOB_LIMIT_FLAGS_OFFSET, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, true);
+    if (!kernel32().SetInformationJobObject(job, JOB_EXTENDED_LIMIT_CLASS, ptr(limits), JOB_EXTENDED_LIMIT_BYTES)) {
+      const error = kernel32().GetLastError();
+      kernel32().CloseHandle(job);
+      throw new Error(`SetInformationJobObject failed: ${error}`);
+    }
+  }
   const handle = openProcess(pid, PROCESS_SET_QUOTA | PROCESS_TERMINATE);
   const assigned = handle !== null && kernel32().AssignProcessToJobObject(job, handle) !== 0;
   const error = kernel32().GetLastError();

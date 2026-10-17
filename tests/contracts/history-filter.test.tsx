@@ -9,7 +9,7 @@ import { act, type ReactNode } from "react";
 import { SearchHistoryResult } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
-import { createFake, oid, stubLayout, TARGET, type FakeOptions } from "./history-fake";
+import { createFake, oid, operationIdOf, stubLayout, TARGET, viewIdOf, type FakeOptions } from "./history-fake";
 
 printOrigin("../../src/frontend/history/HistoryFilter.tsx", import.meta.dir);
 registerDom();
@@ -73,7 +73,7 @@ describe("spec FR-027 to FR-031: the filter text", () => {
     await settle();
     expect(fake.of("searchHistory")).toHaveLength(0);
     await key(input, "Enter");
-    expect(fake.of("searchHistory")).toEqual([{ viewId: "view-1", text: "Commit" }]);
+    expect(fake.of("searchHistory")).toEqual([{ viewId: viewIdOf(1), text: "Commit" }]);
   });
 
   for (const [value, sentence] of [
@@ -107,7 +107,7 @@ describe("spec FR-027 to FR-031: the filter text", () => {
       else if (stop === "escape") await key(input, "Escape");
       else await act(async () => view.close());
       await settle();
-      expect(fake.of("cancel").map((c) => c.operationId)).toEqual(["search-2"]);
+      expect(fake.of("cancel").map((c) => c.operationId)).toEqual([operationIdOf(2)]);
       expect(view.getState().search).toBeNull();
       if (stop !== "close") {
         expect(view.getState().selection?.id).toBe(oid(20));

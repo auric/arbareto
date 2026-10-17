@@ -6,6 +6,7 @@ import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { button, buttons, click, press, settle, text } from "./sync-fake";
+import { contractChecked, fixtureId } from "./bridge-contract";
 
 // tasks.md T070 (feature 003). Spec FR-046 to FR-050, FR-054, SC-011. Plan D10, D12. Contract Δ3 `clone` and `connectInTerminal`. Data-model §8, §10, §11.
 
@@ -36,7 +37,7 @@ function bridgeDouble(answers: Record<string, unknown> = {}) {
     },
   );
   const pending = (operation: string) => calls.findLast((c) => c.operation === operation)!;
-  return { bridge, calls, pending, names: () => calls.map((c) => c.operation) };
+  return { bridge: contractChecked(bridge), calls, pending, names: () => calls.map((c) => c.operation) };
 }
 
 const settingsOf = (fields: Record<string, unknown> = {}) => ({
@@ -99,7 +100,7 @@ async function ended(response: unknown, settings: unknown = settingsOf()) {
   await settle();
   return r;
 }
-const failed = (code: string, result?: unknown, state = "failed") => ({ requestId: "c", operationId: "op-1", state, code, ...(result === undefined ? {} : { result }) });
+const failed = (code: string, result?: unknown, state = "failed") => ({ requestId: "c", operationId: fixtureId(0x211), state, code, ...(result === undefined ? {} : { result }) });
 
 describe("Clone entry points (FR-046)", () => {
   test("the start page shows Clone, and it opens the clone panel", async () => {
@@ -206,11 +207,11 @@ describe("clone run and result (FR-048, FR-050)", () => {
     const r = await started();
     expect(text(panel())).toContain("Cloning into D:\\src\\tool…");
     const onProgress = r.pending("clone").args[1] as (event: unknown) => void;
-    await act(async () => onProgress({ requestId: "c", operationId: "op-1", state: "running", phase: "clone", counters: { percent: 40 }, stalled: false }));
+    await act(async () => onProgress({ requestId: "c", operationId: fixtureId(0x211), state: "running", phase: "clone", counters: { percent: 40 }, stalled: false }));
     await settle();
     expect(text(panel())).toContain("40%");
     await click(button("Cancel", panel()));
-    expect(r.pending("cancel").args[0]).toEqual({ operationId: "op-1" });
+    expect(r.pending("cancel").args[0]).toEqual({ operationId: fixtureId(0x211) });
   });
 
   test("DESTINATION_NOT_EMPTY names the destination", async () => {
@@ -244,7 +245,7 @@ describe("clone run and result (FR-048, FR-050)", () => {
   test("data-model §11: a result with connectTarget offers Connect in a terminal for its operation", async () => {
     const r = await ended(failed("GIT_FAILED", { connectTarget: true }));
     await click(button("Connect in a terminal", panel()));
-    expect(r.pending("connectInTerminal").args.slice(0, 2)).toEqual([{}, { operationId: "op-1" }]);
+    expect(r.pending("connectInTerminal").args.slice(0, 2)).toEqual([{}, { operationId: fixtureId(0x211) }]);
   });
 
   test("data-model §11: a failed clone without connectTarget offers no Connect in a terminal, also under plink", async () => {
@@ -256,7 +257,7 @@ describe("clone run and result (FR-048, FR-050)", () => {
   });
 
   test("a succeeded clone goes to the registration flow", async () => {
-    const response = { requestId: "c", operationId: "op-1", state: "succeeded", repositoryGeneration: 1, result: { repositoryId: "r", generation: 1, worktreeKey: "a".repeat(64) } };
+    const response = { requestId: "c", operationId: fixtureId(0x211), state: "succeeded", repositoryGeneration: 1, result: { repositoryId: "r", generation: 1, worktreeKey: "a".repeat(64) } };
     const r = await ended(response);
     expect(r.opened).toEqual([response]);
   });

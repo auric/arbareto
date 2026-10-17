@@ -7,6 +7,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { answer, button, click, createWorld, itemLabel, keyboardFocus, menuItem, mountWorkbench, oid, press, settings, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
+import { fixtureId } from "./bridge-contract";
 
 // tasks.md T085 (feature 003). Spec FR-039, FR-055 to FR-057. Plan D12. Data-model §10. Contract Δ3 `setDefaultPullAction`.
 
@@ -59,9 +60,9 @@ describe("Pull split button (FR-055)", () => {
     const double = await open();
     await openMenu();
     await click(menuItem("Pull with rebase"));
-    await answer(double.pending("reviewSync"), succeeded({ action: "pull", plan: { remotes: ["origin"], mode: "rebase", upstream: { ref: "refs/remotes/origin/main", objectId: oid(9) } }, syncReviewToken: "t" }));
+    await answer(double.pending("reviewSync"), succeeded({ action: "pull", plan: { remotes: ["origin"], mode: "rebase", upstream: { ref: "refs/remotes/origin/main", objectId: oid(9) } }, syncReviewToken: fixtureId(0x101) }));
     expect(document.querySelector('[role="dialog"], [role="alertdialog"]')).toBeNull();
-    expect(double.pending("sync")!.args[1]).toEqual({ syncReviewToken: "t", start: true });
+    expect(double.pending("sync")!.args[1]).toEqual({ syncReviewToken: fixtureId(0x101), start: true });
   });
 
   test("an unavailable pull item states its reason; the fetch items stay available", async () => {

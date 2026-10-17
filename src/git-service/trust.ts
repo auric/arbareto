@@ -308,7 +308,8 @@ type ProgramForm = "shell" | "monitor" | "pathname" | "split" | "credential" | "
 // then `!is_url(url)` or the prefixes `file://`, `git://`, `ssh://`, `git+ssh://`, and `ssh+git://` (Git's own transport).
 // Any other `<scheme>://` URL runs `git remote-<scheme>` (`external_specification_len`). Makefile `REMOTE_CURL_NAMES` installs Git's own helpers
 // for `http`, `https`, `ftp`, and `ftps`, so they do not count. A one-letter scheme is a DOS drive path that can name a bundle file
-// (url.c `url_is_local_not_ssh`). It counts, because the service reads no such file. Null: no helper.
+// (url.c `url_is_local_not_ssh`). It counts, because the service reads no such file. `starts_with` compares case-sensitively, so `HTTPS://` counts.
+// Plan.md D11 accepts both over-reports. Null: no helper.
 const SCHEME = /^[A-Za-z0-9][A-Za-z0-9+.-]*/;
 const BUILTIN_TRANSPORTS = ["file://", "git://", "ssh://", "git+ssh://", "ssh+git://"];
 const CURL_HELPERS: ReadonlySet<string> = new Set(["http", "https", "ftp", "ftps"]);
@@ -319,62 +320,11 @@ export function urlHelper(url: string): string | null {
   return CURL_HELPERS.has(scheme) ? null : scheme;
 }
 
-type RewriteGroup = { base: string; prefixes: ConfigEntry[] };
-
-// remote.c `alias_url`: the longest `insteadOf` value that starts the URL wins. On equal length, the first group wins (`make_rewrite` groups by base).
-function aliasOf(url: string, groups: readonly RewriteGroup[]): { url: string; entry: ConfigEntry } | null {
-  let best: { base: string; entry: ConfigEntry } | null = null;
-  for (const group of groups) {
-    for (const entry of group.prefixes) if (url.startsWith(entry.value!) && (best === null || best.entry.value!.length < entry.value!.length)) best = { base: group.base, entry };
-  }
-  return best === null ? null : { url: best.base + url.slice(best.entry.value!.length), entry: best.entry };
-}
-
-// Feature 003 plan.md D11: the entries that make Git start `git remote-<name>`, with that name. remote.c `handle_config` reads each URL and
-// skips a remote name that starts with "/". `alias_all_urls` rewrites each push URL and URL with `insteadOf`, and adds a URL with a
-// `pushInsteadOf` match as a push URL when the remote has no push URL. A push uses every push URL, so each URL counts. A rewritten URL counts for
-// its entry and for the `insteadOf` entry. transport.c: a `remote.<name>.vcs` value is the helper unless the URL has a `<name>::` prefix.
-export function helperEntries(entries: readonly ConfigEntry[]): Map<ConfigEntry, string> {
-  const rewrites = (variable: string): RewriteGroup[] => {
-    const groups: RewriteGroup[] = [];
-    for (const entry of entries) {
-      const p = keyParts(entry.key);
-      if (p?.section !== "url" || p.subsection === null || p.variable !== variable || entry.value === null) continue;
-      let group = groups.find((g) => g.base === p.subsection);
-      if (group === undefined) groups.push((group = { base: p.subsection, prefixes: [] }));
-      group.prefixes.push(entry);
-    }
-    return groups;
-  };
-  const [fetchRewrites, pushRewrites] = [rewrites("insteadof"), rewrites("pushinsteadof")];
-  const remotes = new Map<string, { vcs?: ConfigEntry; urls: ConfigEntry[]; pushurls: ConfigEntry[] }>();
-  for (const entry of entries) {
-    const p = keyParts(entry.key);
-    if (p?.section !== "remote" || p.subsection === null || p.subsection.startsWith("/") || entry.value === null) continue;
-    let remote = remotes.get(p.subsection);
-    if (remote === undefined) remotes.set(p.subsection, (remote = { urls: [], pushurls: [] }));
-    if (p.variable === "vcs") remote.vcs = entry;
-    else if (p.variable === "url") remote.urls.push(entry);
-    else if (p.variable === "pushurl") remote.pushurls.push(entry);
-  }
-  const helpers = new Map<ConfigEntry, string>();
-  for (const remote of remotes.values()) {
-    if (remote.vcs !== undefined) helpers.set(remote.vcs, remote.vcs.value!);
-    const effective: { from: ConfigEntry[]; url: string }[] = [];
-    const add = (entry: ConfigEntry, alias: { url: string; entry: ConfigEntry } | null) => effective.push({ from: alias === null ? [entry] : [entry, alias.entry], url: alias?.url ?? entry.value! });
-    for (const entry of remote.pushurls) add(entry, aliasOf(entry.value!, fetchRewrites));
-    for (const entry of remote.urls) {
-      const pushAlias = remote.pushurls.length === 0 ? aliasOf(entry.value!, pushRewrites) : null;
-      if (pushAlias !== null) add(entry, pushAlias);
-      add(entry, aliasOf(entry.value!, fetchRewrites));
-    }
-    for (const { from, url } of effective) {
-      const helper = urlHelper(url);
-      if (helper === null || (remote.vcs !== undefined && !url.startsWith(`${helper}::`))) continue;
-      for (const entry of from) helpers.set(entry, helper);
-    }
-  }
-  return helpers;
+// Feature 003 plan.md D11: true when an entry of the `helper` form counts. A `remote.<name>.vcs` value names the helper. A remote URL counts by
+// `urlHelper`. remote.c rewrites remote URLs with each `url.<base>.insteadOf` and `pushInsteadOf` entry, and the service does not copy that
+// rewrite. So such an entry counts with any base and any value, also an empty one.
+function selectsHelper(p: KeyParts, value: string): boolean {
+  return p.section === "url" || p.variable === "vcs" || urlHelper(value) !== null;
 }
 
 // Contract §7: the read blocking class and the "Mutation trust" `commit` class. A configured hook joins `commit` through its events.
@@ -395,7 +345,7 @@ function programKey(p: KeyParts): ProgramKey | null {
   if (section === "core" && subsection === null && variable === "gitproxy") return { form: "proxy", reads: false, commit: false, sync: true };
   if (section === "remote" && subsection !== null && (variable === "uploadpack" || variable === "receivepack")) return { form: "shell", reads: false, commit: false, sync: true };
   if (section === "credential" && variable === "helper") return { form: "credential", reads: false, commit: false, sync: true };
-  // Feature 003 plan.md D11: a remote helper (`helperEntries`). Only an entry that selects a helper becomes a program.
+  // Feature 003 plan.md D11: a remote helper. Only an entry that `selectsHelper` becomes a program.
   if ((section === "remote" && subsection !== null && (variable === "vcs" || variable === "url" || variable === "pushurl")) || (section === "url" && subsection !== null && (variable === "insteadof" || variable === "pushinsteadof"))) {
     return { form: "helper", reads: false, commit: false, sync: true };
   }
@@ -1235,17 +1185,16 @@ async function buildListing(
   // The last entry of a key wins (Git `config.c` `git_config_get_value`). An empty value names no program.
   const last = new Map<string, ConfigEntry>();
   for (const entry of entries) last.set(entry.key, entry);
-  const helpers = helperEntries(entries);
   const programs: { entry: ConfigEntry; kind: ProgramKey; program: Program; controlled: boolean }[] = [];
   for (const entry of entries) {
     const parts = keyParts(entry.key);
     const kind = parts && programKey(parts);
     // Git runs every `credential.helper` value in order (credential.c), so each one counts. The `core.gitProxy` entry that matches the host decides, so each one counts too.
-    // Every remote URL and `insteadOf` entry counts. An empty `insteadOf` value is a prefix of every URL.
+    // Each remote URL, `vcs`, and `insteadOf` entry counts. An empty value of the `helper` form can still count (`selectsHelper`).
     const each = kind !== null && (kind.form === "credential" || kind.form === "proxy" || kind.form === "helper");
     if (!kind || (!each && last.get(entry.key) !== entry) || entry.value === null || (entry.value === "" && kind.form !== "helper")) continue;
     if (kind.form === "proxy" && proxyCommand(entry.value) === "") continue;
-    if (kind.form === "helper" && !helpers.has(entry)) continue;
+    if (kind.form === "helper" && !selectsHelper(parts!, entry.value)) continue;
     // fsmonitor-settings.c: a boolean `core.fsmonitor` names the built-in daemon, not a command (contract §7).
     if (kind.form === "monitor" && parseMaybeBool(entry.value) !== -1) continue;
     const program = entry.exact ? programOf(kind.form, entry.value, layout.home, rules) : ({ kind: "unresolved" } as const);
@@ -1475,13 +1424,12 @@ function displayValue(p: KeyParts, value: string): string {
 }
 
 // Contract §3 `readTrust` display: values only for the allowlist, and every text redacted (contract §7).
-// Feature 003 contract Δ7: a remote URL that selects a helper shows only the helper name. Other URLs stay hidden.
+// Feature 003 contract Δ7: a remote URL that `urlHelper` classifies shows only the helper name. Other URLs and every `insteadOf` value stay hidden.
 function displayEntries(listing: TrustListing) {
-  const helpers = helperEntries(listing.entries);
   return listing.entries.map((entry) => {
     const parts = keyParts(entry.key);
     const url = parts !== null && parts.section === "remote" && (parts.variable === "url" || parts.variable === "pushurl");
-    const value = url ? (helpers.get(entry) ?? null) : parts !== null && valueShown(parts) && entry.value !== null ? displayValue(parts, entry.value) : null;
+    const value = entry.value === null ? null : url ? urlHelper(entry.value) : parts !== null && valueShown(parts) ? displayValue(parts, entry.value) : null;
     return { key: redactUrlUserInfo(entry.key), scope: entry.scope, origin: redactUrlUserInfo(entry.origin), ...(value === null ? {} : { value: redactUrlUserInfo(value) }) };
   });
 }

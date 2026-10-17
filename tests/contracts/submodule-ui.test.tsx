@@ -21,6 +21,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, useState, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { contractChecked } from "./bridge-contract";
 
 printOrigin("../../src/frontend/status/OperationStatus.tsx", import.meta.dir);
 registerDom();
@@ -183,7 +184,7 @@ function reviewBridge() {
   const call = (name: string) => (target: unknown, payload: unknown, onProgress?: (event: unknown) => void) =>
     new Promise((resolve) => void calls.push({ name, target, payload, onProgress, resolve }));
   const bridge = { reviewSubmodules: call("reviewSubmodules"), updateSubmodules: call("updateSubmodules") };
-  return { bridge, calls, of: (name: string) => calls.filter((c) => c.name === name) };
+  return { bridge: contractChecked(bridge), calls, of: (name: string) => calls.filter((c) => c.name === name) };
 }
 
 async function mountReview(value = review(), props: Props = {}) {
@@ -589,7 +590,7 @@ const result = (fields: Record<string, unknown>) => ({ rowId: id(), oldCommit: n
 function statusBridge() {
   const calls: string[] = [];
   const bridge = { cancel: () => (calls.push("cancel"), new Promise(() => {})), getOperation: () => (calls.push("getOperation"), new Promise(() => {})) };
-  return { bridge: bridge as never, calls };
+  return { bridge: contractChecked(bridge) as never, calls };
 }
 
 async function mountStatus(operation: Operation, modalOpen = false) {

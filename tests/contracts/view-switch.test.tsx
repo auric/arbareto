@@ -5,6 +5,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, useEffect, useState } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { contractChecked } from "./bridge-contract";
 
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
 registerDom();
@@ -17,7 +18,7 @@ const { Workbench } = await import("../../src/frontend/app/Workbench");
 function bridgeDouble(answers: Record<string, unknown> = {}) {
   const calls: string[] = [];
   const bridge = new Proxy({}, { get: (_, name) => () => (calls.push(String(name)), String(name) in answers ? Promise.resolve(answers[String(name)]) : new Promise(() => {})) });
-  return { bridge, calls };
+  return { bridge: contractChecked(bridge), calls };
 }
 const ChangesPaneDouble = () => <div>changes pane double</div>;
 const ComparisonViewDouble = () => <div>comparison view double</div>;

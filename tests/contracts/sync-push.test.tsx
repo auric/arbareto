@@ -7,6 +7,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { answer, button, buttons, click, createWorld, mountWorkbench, oid, press, settle, succeeded, text, unmountAll } from "./sync-fake";
+import { fixtureId } from "./bridge-contract";
 
 // tasks.md T059 (feature 003). Spec FR-014 to FR-016. Plan D4. Data-model §3, §5. Contract Δ3 `reviewSync` (`needsDestination`).
 
@@ -100,8 +101,8 @@ describe("push flow (FR-014 to FR-016)", () => {
     await click(button("Push", panel()!));
     expect(double.pending("reviewSync")!.args[1]).toEqual({ action: "push", destination: { remote: "origin", branch: "feature/x", setUpstream: true } });
     const destination = { remote: "origin", ref: "refs/heads/feature/x", trackingRef: null, url: "u", setUpstream: true, source: "panel" };
-    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination }, syncReviewToken: "t" }));
-    expect(double.pending("sync")!.args[1]).toEqual({ syncReviewToken: "t", start: true });
+    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination }, syncReviewToken: fixtureId(0x101) }));
+    expect(double.pending("sync")!.args[1]).toEqual({ syncReviewToken: fixtureId(0x101), start: true });
     expect(panel()).toBeNull();
   });
 
@@ -123,11 +124,11 @@ describe("push flow (FR-014 to FR-016)", () => {
     const double = await mountWorkbench(workbench, world);
     await click(button("Push"));
     const destination = { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "u", setUpstream: false, source: "push-default-branch" };
-    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination }, syncReviewToken: "t" }));
+    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination }, syncReviewToken: fixtureId(0x101) }));
     const message = "<b>protected branch hook declined</b>";
     await answer(double.pending("sync"), {
       requestId: "r",
-      operationId: "o",
+      operationId: fixtureId(0x201),
       state: "failed",
       code: "PUSH_REJECTED",
       result: { action: "push", push: { status: "remote-rejected", oldObjectId: oid(9), newObjectId: oid(9), reasonText: message, lease: false, upstreamWritten: false, outputTail: "" } },
@@ -143,11 +144,11 @@ describe("push flow (FR-014 to FR-016)", () => {
     const double = await mountWorkbench(workbench, world);
     await click(button("Push"));
     const destination = { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "u", setUpstream: false, source: "push-default-branch" };
-    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination }, syncReviewToken: "t" }));
+    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination }, syncReviewToken: fixtureId(0x101) }));
     world.remotes = [{ name: "origin/main", objectId: oid(1) }];
     world.branches = world.branches.map((b) => ({ ...b, upstreamObjectId: oid(1), track: { state: "counts", ahead: 0, behind: 0 } }));
     world.refsDigest = "e".repeat(64);
-    await answer(double.pending("sync"), { requestId: "r", operationId: "o", state: "succeeded", result: { action: "push", push: { status: "pushed", oldObjectId: oid(9), newObjectId: oid(1), reasonText: null, lease: false, upstreamWritten: false, outputTail: "" } } });
+    await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x201), state: "succeeded", result: { action: "push", push: { status: "pushed", oldObjectId: oid(9), newObjectId: oid(1), reasonText: null, lease: false, upstreamWritten: false, outputTail: "" } } });
     await settle();
     expect(text(document.querySelector('[data-slot="tracking-count"]')!)).toContain("0 ahead, 0 behind");
   });

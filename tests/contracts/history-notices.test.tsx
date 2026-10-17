@@ -8,7 +8,7 @@ import { act, type ReactNode } from "react";
 import type { RefEntry, RefsResult } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
-import { createFake, oid, stubLayout, TARGET, type FakeOptions } from "./history-fake";
+import { createFake, oid, stubLayout, TARGET, viewIdOf, type FakeOptions } from "./history-fake";
 
 printOrigin("../../src/frontend/history/HistoryList.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/NoticeBand.tsx", import.meta.dir);
@@ -89,7 +89,7 @@ describe("contract Δ8: References changed", () => {
     void view.refresh();
     await settle();
     expect(fake.of("openHistory")).toHaveLength(2);
-    expect(fake.of("loadHistory").at(-1)).toEqual({ viewId: "view-2", need: { oid: oid(2) } });
+    expect(fake.of("loadHistory").at(-1)).toEqual({ viewId: viewIdOf(2), need: { oid: oid(2) } });
     expect(text(host)).toContain("Loading commits up to the selected commit…");
     expect(button(host, "Cancel")).toBeDefined();
     await run(() => fake.release());
@@ -101,7 +101,7 @@ describe("contract Δ8: References changed", () => {
     await run(() => view.select(oid(40), 40));
     fake.setTotal(10);
     await run(() => view.refresh());
-    expect(fake.of("loadHistory").at(-1)).toEqual({ viewId: "view-2", need: { oid: oid(40) } });
+    expect(fake.of("loadHistory").at(-1)).toEqual({ viewId: viewIdOf(2), need: { oid: oid(40) } });
     expect(view.getState().selection?.id).toBe(oid(0));
   });
 
@@ -169,7 +169,7 @@ describe("spec FR-049: the branch scope", () => {
     const { view, fake } = await mount({ total: 50, loaded: 50 });
     await run(() => view.select(oid(7), 7));
     await run(() => view.setScope("current"));
-    expect(fake.of("loadHistory").at(-1)).toEqual({ viewId: "view-2", need: { oid: oid(7) } });
+    expect(fake.of("loadHistory").at(-1)).toEqual({ viewId: viewIdOf(2), need: { oid: oid(7) } });
     expect(view.getState().selection).toMatchObject({ id: oid(7), index: 7 });
   });
 
@@ -179,7 +179,7 @@ describe("spec FR-049: the branch scope", () => {
     const loads = fake.of("loadHistory").length;
     await run(() => view.setScope("current"));
     expect(fake.of("loadHistory")).toHaveLength(loads);
-    expect(fake.of("searchHistory").at(-1)).toEqual({ viewId: "view-2", text: "Commit" });
+    expect(fake.of("searchHistory").at(-1)).toEqual({ viewId: viewIdOf(2), text: "Commit" });
     expect(view.getState().search).toMatchObject({ mode: "highlight", state: "finished" });
   });
 

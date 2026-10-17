@@ -7,6 +7,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { answer, button, buttons, click, createWorld, mountWorkbench, press, settle, settings, succeeded, text, unmountAll } from "./sync-fake";
+import { contractChecked, fixtureId } from "./bridge-contract";
 
 // tasks.md T071 (feature 003). Spec FR-032 to FR-037. Plan D9, D12, O-7, O-8, O-10. Contract Δ3 shell-only settings operations and `connectInTerminal`. Data-model §10, §11.
 
@@ -41,7 +42,7 @@ function bridgeDouble(current: Record<string, unknown>) {
     },
   );
   const pending = (operation: string) => calls.findLast((c) => c.operation === operation)!;
-  return { bridge, calls, pending, names: () => calls.map((c) => c.operation) };
+  return { bridge: contractChecked(bridge), calls, pending, names: () => calls.map((c) => c.operation) };
 }
 const KEY = "a".repeat(64);
 const base = (fields: Record<string, unknown> = {}) => ({ ...settings("pull"), ...fields });
@@ -176,8 +177,8 @@ describe("Connect in a terminal (FR-034, O-10)", () => {
     world.answers.readSyncSettings = () => succeeded({ ...settings("pull"), sshClient, ...(sshClient === "plink" ? WITH_PLINK : {}) });
     const double = await mountWorkbench(workbench, world);
     await click(button("Fetch"));
-    await answer(double.pending("reviewSync"), succeeded({ action: "fetch", plan: { remotes: ["origin"] }, syncReviewToken: "t" }));
-    await answer(double.pending("sync"), { requestId: "r", operationId: "op-9", state: "failed", code: "GIT_FAILED", result });
+    await answer(double.pending("reviewSync"), succeeded({ action: "fetch", plan: { remotes: ["origin"] }, syncReviewToken: fixtureId(0x101) }));
+    await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x219), state: "failed", code: "GIT_FAILED", result });
     await settle();
     return double;
   }
@@ -187,7 +188,7 @@ describe("Connect in a terminal (FR-034, O-10)", () => {
     expect(text(band())).toContain("Fetch did not complete with PuTTY (plink).");
     expect(text(band())).not.toMatch(/host key|passphrase|sign-in|SSH/);
     await click(button("Connect in a terminal", band()));
-    expect(double.pending("connectInTerminal")!.args.slice(0, 2)).toEqual([{ repositoryId: "repository-1" }, { operationId: "op-9" }]);
+    expect(double.pending("connectInTerminal")!.args.slice(0, 2)).toEqual([{ repositoryId: fixtureId(1) }, { operationId: fixtureId(0x219) }]);
     await answer(double.pending("connectInTerminal"), { requestId: "x", state: "failed", code: "PUTTY_UNAVAILABLE", result: { reason: "missing", program: "plink", path: "C:\\PuTTY\\plink.exe" } });
     expect(text(band())).toContain("plink is not available: C:\\PuTTY\\plink.exe (missing)");
   });

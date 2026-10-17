@@ -7,6 +7,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { answer, button, buttons, click, createWorld, keyboardFocus, menuItem, mountWorkbench, oid, press, settle, succeeded, text, tooltipText, unmountAll, type Call, type World } from "./sync-fake";
+import { fixtureId } from "./bridge-contract";
 
 // tasks.md T056 (feature 003). Spec FR-001 to FR-004, FR-017, FR-028, FR-039, FR-041. Plan D2, D12. Contract Δ2, Δ3, Δ8.
 
@@ -25,9 +26,9 @@ beforeAll(() => void (restoreLayout = stubLayout(800)));
 afterAll(() => restoreLayout());
 afterEach(unmountAll);
 
-const TOKEN = "token-1";
+const TOKEN = fixtureId(0x105);
 const reviewed = (action: string, plan: Record<string, unknown>) => succeeded({ action, plan: { remotes: ["origin"], ...plan }, syncReviewToken: TOKEN });
-const progress = (call: Call, event: Record<string, unknown>) => act(async () => (call.args[2] as (e: unknown) => void)({ requestId: "r", operationId: "op-1", counters: {}, ...event }));
+const progress = (call: Call, event: Record<string, unknown>) => act(async () => (call.args[2] as (e: unknown) => void)({ requestId: "r", operationId: fixtureId(0x211), counters: {}, ...event }));
 const statusText = () => text(document.querySelector("footer")!);
 const reasonOf = (control: HTMLElement) => {
   const id = control.getAttribute("aria-describedby");
@@ -152,7 +153,7 @@ describe("progress (FR-002, FR-003)", () => {
     await progress(sync, { state: "running", phase: "sync-fetch", counters: { percent: 42 } });
     expect(statusText()).toContain("42%");
     await click(button("Cancel"));
-    expect(double.pending("cancel")!.args[0]).toEqual({ operationId: "op-1" });
+    expect(double.pending("cancel")!.args[0]).toEqual({ operationId: fixtureId(0x211) });
   });
 
   test("pull, merge, rebase, and push steps show their texts", async () => {
@@ -164,7 +165,7 @@ describe("progress (FR-002, FR-003)", () => {
     expect(statusText()).toContain("Rebasing…");
     await progress(pull, { state: "running", phase: "sync-merge" });
     expect(statusText()).toContain("Merging…");
-    await answer(pull, { requestId: "r", operationId: "op-1", state: "succeeded", result: { action: "pull", integration: { state: "done" } } });
+    await answer(pull, { requestId: "r", operationId: fixtureId(0x211), state: "succeeded", result: { action: "pull", integration: { state: "done" } } });
     const push = await started(double, button("Push"), "push", { remotes: ["upstream"], destination: { remote: "upstream", ref: "refs/heads/main", trackingRef: "refs/remotes/upstream/main", url: "https://example.invalid/r.git", setUpstream: false, source: "push-default-branch" } });
     await progress(push, { state: "running", phase: "sync-push" });
     expect(statusText()).toContain("Pushing to upstream…");
@@ -183,7 +184,7 @@ describe("progress (FR-002, FR-003)", () => {
     const sync = await started(double, button("Fetch"), "fetch");
     await progress(sync, { state: "running", phase: "sync-fetch", stalled: true });
     const command = "& 'C:\\Git\\cmd\\git.exe' --no-lazy-fetch -C 'C:\\repo' fetch -- 'origin'";
-    await answer(double.pending("getOperation"), succeeded({ operationId: "op-1", operation: "sync", state: "running", stalled: true, stallRemedy: { text: "Run this command in a terminal.", command } }));
+    await answer(double.pending("getOperation"), succeeded({ operationId: fixtureId(0x211), operation: "sync", state: "running", stalled: true, stallRemedy: { text: "Run this command in a terminal.", command } }));
     const notice = document.querySelector('[data-slot="stall-notice"]')!;
     expect(text(notice)).toContain("prompt");
     expect(text(notice)).toContain("sign-in window");
@@ -195,7 +196,7 @@ describe("progress (FR-002, FR-003)", () => {
   test("the status names a sync by its action, and a canceled push states that the remote can hold it", async () => {
     const { double } = await open();
     const sync = await started(double, button("Push"), "push", { destination: { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "u", setUpstream: false, source: "push-default-branch" } });
-    await answer(sync, { requestId: "r", operationId: "op-1", state: "canceled", result: { action: "push" } });
+    await answer(sync, { requestId: "r", operationId: fixtureId(0x211), state: "canceled", result: { action: "push" } });
     expect(statusText()).toContain("Push canceled");
     expect(statusText()).toContain("The remote can hold this push. Fetch to see the remote state.");
   });
@@ -206,7 +207,7 @@ describe("outcome (FR-004, FR-039)", () => {
     const { double } = await open();
     const sync = await started(double, button("Fetch"), "fetch");
     const before = { workspace: double.count("readWorkspace"), refs: double.count("readRefs"), tracking: double.count("readTracking") };
-    await answer(sync, { requestId: "r", operationId: "op-1", state: "failed", code: "GIT_FAILED", result: { action: "fetch", fetch: { remotes: [{ name: "origin", state: "failed", updates: [], counts: {}, outputTail: "" }], observed: [] } } });
+    await answer(sync, { requestId: "r", operationId: fixtureId(0x211), state: "failed", code: "GIT_FAILED", result: { action: "fetch", fetch: { remotes: [{ name: "origin", state: "failed", updates: [], counts: {}, outputTail: "" }], observed: [] } } });
     await settle();
     expect(double.count("readWorkspace")).toBeGreaterThan(before.workspace);
     expect(double.count("readRefs")).toBeGreaterThan(before.refs);
@@ -218,7 +219,7 @@ describe("outcome (FR-004, FR-039)", () => {
     await click(button("Fetch options"));
     const sync = await started(double, menuItem("Fetch all remotes"), "fetch-all", { remotes: ["origin", "upstream"] });
     const remote = (name: string, state: string) => ({ name, state, updates: [], counts: {}, outputTail: "" });
-    await answer(sync, { requestId: "r", operationId: "op-1", state: "failed", code: "GIT_FAILED", result: { action: "fetch-all", fetch: { remotes: [remote("origin", "succeeded"), remote("upstream", "failed")], observed: [] } } });
+    await answer(sync, { requestId: "r", operationId: fixtureId(0x211), state: "failed", code: "GIT_FAILED", result: { action: "fetch-all", fetch: { remotes: [remote("origin", "succeeded"), remote("upstream", "failed")], observed: [] } } });
     const area = text(document.querySelector('section[data-slot="status-area"]')!);
     expect(area).toContain("origin: Fetched");
     expect(area).toContain("upstream: Failed");

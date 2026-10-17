@@ -8,6 +8,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { act, useState } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { contractChecked } from "./bridge-contract";
 
 printOrigin("../../src/frontend/app/RepositorySwitcher.tsx", import.meta.dir);
 registerDom();
@@ -37,7 +38,7 @@ function bridgeDouble() {
       calls.push({ name, payload, resolve: (response) => resolve(response) });
     });
   const bridge = { listRecentRepositories: call("listRecentRepositories"), openRecentRepository: call("openRecentRepository"), removeRecentRepository: call("removeRecentRepository") };
-  return { bridge: bridge as never, calls, last: (name: string) => calls.filter((c) => c.name === name).at(-1)! };
+  return { bridge: contractChecked(bridge) as never, calls, last: (name: string) => calls.filter((c) => c.name === name).at(-1)! };
 }
 
 const unmounts: (() => Promise<void>)[] = [];

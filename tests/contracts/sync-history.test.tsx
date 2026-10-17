@@ -7,6 +7,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { answer, button, click, createWorld, mountWorkbench, oid, settle, succeeded, text, unmountAll } from "./sync-fake";
+import { fixtureId } from "./bridge-contract";
 
 // tasks.md T057 (feature 003). Spec FR-013, FR-019, FR-020, FR-040. Contract Δ8.
 
@@ -24,11 +25,11 @@ afterEach(unmountAll);
 
 const REFS_CHANGED = "References changed.";
 const option = (id: string) => document.querySelector<HTMLElement>(`section[aria-label="History"] [role="option"][data-row-id="${id}"]`);
-const ended = (action: string, extra: Record<string, unknown> = {}) => ({ requestId: "r", operationId: "op-1", state: "succeeded", result: { action, ...extra } });
+const ended = (action: string, extra: Record<string, unknown> = {}) => ({ requestId: "r", operationId: fixtureId(0x211), state: "succeeded", result: { action, ...extra } });
 
 async function runToEnd(double: Awaited<ReturnType<typeof mountWorkbench>>, control: string, action: string, result: unknown, plan: Record<string, unknown> = {}) {
   await click(button(control));
-  await answer(double.pending("reviewSync"), succeeded({ action, plan: { remotes: ["origin"], ...plan }, syncReviewToken: "t" }));
+  await answer(double.pending("reviewSync"), succeeded({ action, plan: { remotes: ["origin"], ...plan }, syncReviewToken: fixtureId(0x101) }));
   await answer(double.pending("sync"), result);
   await settle();
 }

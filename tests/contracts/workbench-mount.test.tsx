@@ -8,6 +8,7 @@ import type { OnProgress } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
+import { contractChecked, fixtureId } from "./bridge-contract";
 
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
 // Pierre and its worker need the Vite build (T160). The doubles count the pool provider mounts.
@@ -43,7 +44,7 @@ function bridgeDouble() {
     },
   );
   const pending = (operation: string) => calls.find((c) => c.operation === operation)!;
-  return { bridge, calls, pending };
+  return { bridge: contractChecked(bridge), calls, pending };
 }
 
 const REGISTRATION = { repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "a".repeat(64) };
@@ -142,7 +143,7 @@ async function serveHistory(double: { calls: Call[] }, oids: readonly string[] =
       else if (call.operation === "loadHistory") result = { rows: oids.length, complete: true };
       else if (call.operation === "searchHistory") {
         // Contract Δ2: the accepted event carries the `operationId` that is the `searchId`.
-        await act(async () => (call.args[2] as OnProgress)({ requestId: "r", operationId: "search-1", state: "accepted", counters: { matches: 0, settled: 0 } }));
+        await act(async () => (call.args[2] as OnProgress)({ requestId: "r", operationId: fixtureId(0x401), state: "accepted", counters: { matches: 0, settled: 0 } }));
         result = { matches: oids.length, shallow: false };
       }
       else if (call.operation === "readHistoryRows") {
@@ -1616,7 +1617,7 @@ describe("history scope and shortcuts", () => {
     await serveHistory(double);
     // Filter mode lists the matches, so the next match is filter row 0 (contract Δ3 `readHistoryRows`).
     const reads = double.calls.filter((c) => c.operation === "readHistoryRows").map((c) => c.args[1]);
-    expect(reads).toContainEqual({ viewId: expect.any(String), mode: "filter", searchId: "search-1", at: { row: 0 }, count: 1, text: "none" });
+    expect(reads).toContainEqual({ viewId: expect.any(String), mode: "filter", searchId: fixtureId(0x401), at: { row: 0 }, count: 1, text: "none" });
     expect(document.querySelector(`section[aria-label="History"] [data-row-id="${HEAD}"]`)!.getAttribute("aria-selected")).toBe("true");
     await press({ key: "F3", code: "F3", shiftKey: true }, filter);
     expect(text()).toContain("No earlier match. This is the first match.");

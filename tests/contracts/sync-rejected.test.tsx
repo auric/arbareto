@@ -7,6 +7,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { answer, button, buttons, click, createWorld, mountWorkbench, oid, press, settle, succeeded, text, unmountAll } from "./sync-fake";
+import { fixtureId } from "./bridge-contract";
 
 // tasks.md T060 (feature 003). Spec FR-023 to FR-026. Plan D5. Data-model §5. Contract Δ9 `PUSH_REJECTED`.
 
@@ -34,8 +35,8 @@ const LEASE = { trackingRef: "refs/remotes/origin/main", expect: oid(9), count: 
 async function rejected(world = createWorld()) {
   const double = await mountWorkbench(workbench, world);
   await click(button("Push"));
-  await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination: DESTINATION }, syncReviewToken: "t" }));
-  await answer(double.pending("sync"), { requestId: "r", operationId: "o", state: "failed", code: "PUSH_REJECTED", result: { action: "push", push: pushResult("rejected") } });
+  await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination: DESTINATION }, syncReviewToken: fixtureId(0x101) }));
+  await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x201), state: "failed", code: "PUSH_REJECTED", result: { action: "push", push: pushResult("rejected") } });
   await settle();
   return { world, double };
 }
@@ -84,16 +85,16 @@ describe("push-rejected notice (FR-023)", () => {
   test("the notice leaves after a later push succeeds", async () => {
     const { double } = await rejected();
     await click(button("Push"));
-    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination: DESTINATION }, syncReviewToken: "t2" }));
-    await answer(double.pending("sync"), { requestId: "r", operationId: "o2", state: "succeeded", result: { action: "push", push: pushResult("pushed") } });
+    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination: DESTINATION }, syncReviewToken: fixtureId(0x102) }));
+    await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x202), state: "succeeded", result: { action: "push", push: pushResult("pushed") } });
     expect(text(band())).not.toContain(REJECTED);
   });
 
   test("after a successful pull from the notice, it offers Push (FR-026)", async () => {
     const { double } = await rejected();
     await click(button("Pull with rebase", band()));
-    await answer(double.pending("reviewSync"), succeeded({ action: "pull", plan: { remotes: ["origin"], mode: "rebase", upstream: { ref: "refs/remotes/origin/main", objectId: oid(9) } }, syncReviewToken: "t3" }));
-    await answer(double.pending("sync"), { requestId: "r", operationId: "o3", state: "succeeded", result: { action: "pull", integration: { state: "done" } } });
+    await answer(double.pending("reviewSync"), succeeded({ action: "pull", plan: { remotes: ["origin"], mode: "rebase", upstream: { ref: "refs/remotes/origin/main", objectId: oid(9) } }, syncReviewToken: fixtureId(0x107) }));
+    await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x203), state: "succeeded", result: { action: "pull", integration: { state: "done" } } });
     expect(bandButtons().filter((b) => b !== "Dismiss notice")).toEqual(["Push"]);
     await click(button("Push", band()));
     expect(double.pending("reviewSync")!.args[1]).toEqual({ action: "push" });
@@ -104,7 +105,7 @@ describe("force push with lease (FR-024, FR-025)", () => {
   async function confirm() {
     const r = await rejected();
     await click(button("Force push with lease…", band()));
-    await answer(r.double.pending("reviewSync"), succeeded({ action: "force-push", plan: { remotes: ["origin"], destination: DESTINATION, lease: LEASE }, syncReviewToken: "f" }));
+    await answer(r.double.pending("reviewSync"), succeeded({ action: "force-push", plan: { remotes: ["origin"], destination: DESTINATION, lease: LEASE }, syncReviewToken: fixtureId(0x103) }));
     return { ...r, dialog: document.querySelector<HTMLElement>('[role="dialog"]')! };
   }
 
@@ -128,15 +129,15 @@ describe("force push with lease (FR-024, FR-025)", () => {
     expect(document.querySelector('[role="dialog"]')).toBeNull();
     expect(first.double.count("sync")).toBe(1);
     await click(button("Force push with lease…", band()));
-    await answer(first.double.pending("reviewSync"), succeeded({ action: "force-push", plan: { remotes: ["origin"], destination: DESTINATION, lease: LEASE }, syncReviewToken: "f2" }));
+    await answer(first.double.pending("reviewSync"), succeeded({ action: "force-push", plan: { remotes: ["origin"], destination: DESTINATION, lease: LEASE }, syncReviewToken: fixtureId(0x104) }));
     await click(button("Force push with lease", document.querySelector('[role="dialog"]')!));
-    expect(first.double.pending("sync")!.args[1]).toEqual({ syncReviewToken: "f2", start: true });
+    expect(first.double.pending("sync")!.args[1]).toEqual({ syncReviewToken: fixtureId(0x104), start: true });
   });
 
   test("a stale-lease result states that the remote branch changed since the last fetch and offers Fetch", async () => {
     const { double, dialog } = await confirm();
     await click(button("Force push with lease", dialog));
-    await answer(double.pending("sync"), { requestId: "r", operationId: "o4", state: "failed", code: "PUSH_REJECTED", result: { action: "force-push", push: pushResult("rejected", true) } });
+    await answer(double.pending("sync"), { requestId: "r", operationId: fixtureId(0x204), state: "failed", code: "PUSH_REJECTED", result: { action: "force-push", push: pushResult("rejected", true) } });
     expect(text(band())).toContain(STALE);
     expect(bandButtons().filter((b) => b !== "Dismiss notice")).toEqual(["Fetch"]);
     expect(buttons("Force push with lease…", band())).toHaveLength(0);
@@ -149,7 +150,7 @@ describe("force push with lease (FR-024, FR-025)", () => {
     test(`a force-push review with ${label} shows a refusal and starts no push`, async () => {
       const { double } = await rejected();
       await click(button("Force push with lease…", band()));
-      await answer(double.pending("reviewSync"), succeeded({ action: "force-push", plan, syncReviewToken: "f" }));
+      await answer(double.pending("reviewSync"), succeeded({ action: "force-push", plan, syncReviewToken: fixtureId(0x103) }));
       expect(document.querySelector('[role="dialog"]')).toBeNull();
       expect(double.count("sync")).toBe(1);
       expect(text(document.querySelector("footer")!)).toContain("Force push with lease did not start: the review is incomplete.");

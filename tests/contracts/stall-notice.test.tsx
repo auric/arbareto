@@ -10,6 +10,7 @@ import { OperationResult } from "../../src/contracts/envelope";
 import { buildSubmoduleRemedy } from "../../src/contracts/submodules";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
+import { contractChecked } from "./bridge-contract";
 
 printOrigin("../../src/frontend/status/OperationStatus.tsx", import.meta.dir);
 printOrigin("../../src/contracts/envelope.ts", import.meta.dir);
@@ -57,14 +58,14 @@ const tabStops = (from: Element) => [...from.querySelectorAll<HTMLElement>("butt
 async function mount(kind: (typeof KINDS)[number], remedy: Remedy = kind.remedy) {
   Object.defineProperty(globalThis.navigator, "clipboard", { configurable: true, value: { writeText: async (value: string) => void written.push(value) } });
   const calls: unknown[] = [];
-  const bridge = {
+  const bridge = contractChecked({
     cancel: () => new Promise(() => {}),
     getOperation: (payload: unknown) => {
       calls.push(payload);
       const result = OperationResult.parse({ operationId: OPERATION_ID, operation: kind.kind, state: "running", phase: kind.progress.phase, stalled: true, stallRemedy: remedy });
       return Promise.resolve({ requestId: crypto.randomUUID(), state: "succeeded", result });
     },
-  };
+  });
   const op = { requestId: crypto.randomUUID(), kind: kind.kind, progress: null, response: null } as Operation;
   let set!: Dispatch<SetStateAction<Fields>>;
   function Harness() {

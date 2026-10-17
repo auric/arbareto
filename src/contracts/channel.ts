@@ -594,9 +594,16 @@ export const FileFactsReply = z.union([
 // ---- Feature 003 contract Δ6 replies ----
 
 // A link or a junction gives `other`.
+const destinationResult = { type: z.literal("destinationFacts"), ...call, result: z.enum(["absent", "empty", "not-empty", "file", "other"]) };
+const destinationError = { type: z.literal("destinationFacts"), ...call, result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) };
+// Feature 004 contract Δ6: the reply to the `worktreeAdd` form also carries the bound path in Git's form for the route.
+// That is the Windows path for a Windows Git and the Linux path for a WSL Git. The `worktree add` path item must equal it byte for byte.
+const gitPath = { path: Text.min(1) };
 export const DestinationFactsReply = z.union([
-  z.strictObject({ type: z.literal("destinationFacts"), ...call, result: z.enum(["absent", "empty", "not-empty", "file", "other"]) }).meta({ title: "DestinationFactsResult" }),
-  z.strictObject({ type: z.literal("destinationFacts"), ...call, result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "DestinationFactsError" }),
+  z.strictObject(destinationResult).meta({ title: "DestinationFactsResult" }),
+  z.strictObject(destinationError).meta({ title: "DestinationFactsError" }),
+  z.strictObject({ ...destinationResult, ...gitPath }).meta({ title: "DestinationFactsWorktreeAddResult" }),
+  z.strictObject({ ...destinationError, ...gitPath }).meta({ title: "DestinationFactsWorktreeAddError" }),
 ]);
 // Contract Δ9 `PUTTY_UNAVAILABLE`: the reason, the program, and its path.
 const puttyFailed = { result: z.literal("failed"), reason: z.enum(PUTTY_UNAVAILABLE_REASONS), program: z.enum(PUTTY_PROGRAMS), path: ChannelPath };

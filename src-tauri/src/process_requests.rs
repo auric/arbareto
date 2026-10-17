@@ -822,7 +822,7 @@ impl ProcessRequests {
         use frame::DestinationFactsGroup as G;
         let now = Instant::now();
         let mut state = self.state();
-        let (operation_id, context, installation) = match request {
+        let (operation_id, context, installation, git_path) = match request {
             G::Clone {
                 operation_id,
                 clone_id,
@@ -841,7 +841,7 @@ impl ProcessRequests {
                     .as_ref()
                     .and_then(|peer| state.wsl_bound.get(peer))
                     .map(|bound| bound.installation.clone());
-                (operation_id, context, installation)
+                (operation_id, context, installation, None)
             }
             G::WorktreeAdd {
                 operation_id,
@@ -864,11 +864,9 @@ impl ProcessRequests {
                     Some(Git::Wsl(installation)) => Some(installation.clone()),
                     None => return Err(UNKNOWN),
                 };
-                // Contract §11: a WSL Git never reads a Windows path.
-                if installation.is_some() && !file_facts::is_wsl_path(&context.path) {
-                    return Err(INVALID);
-                }
-                (operation_id, context, installation)
+                // Feature 004 contract Δ6: the reply gives the text that the `worktree add` path item must equal.
+                let git_path = git_form(&context.path, installation.as_ref())?;
+                (operation_id, context, installation, Some(git_path))
             }
         };
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
@@ -876,7 +874,10 @@ impl ProcessRequests {
         if !file_facts::is_wsl_path(&context.path) {
             std::thread::spawn(move || {
                 let facts = destination(&context.path);
-                me.send(generation, reply::destination_facts(&call, facts));
+                me.send(
+                    generation,
+                    reply::destination_facts(&call, facts, git_path.as_deref()),
+                );
             });
             return Ok(());
         }
@@ -899,7 +900,10 @@ impl ProcessRequests {
             let host = me.wsl_host(&operation);
             let ended = host.run_until(&command, wsl::DESTINATION_OUTPUT_BYTES + 2, deadline);
             let facts = wsl::destination_reply(ended.output);
-            me.send(generation, reply::destination_facts(&call, facts));
+            me.send(
+                generation,
+                reply::destination_facts(&call, facts, git_path.as_deref()),
+            );
         });
         Ok(())
     }
@@ -1862,16 +1866,8 @@ impl ProcessRequests {
                     Kind::Registered,
                     operation_id,
                 )?;
-                let path = match &target.wsl {
-                    None if !file_facts::is_wsl_path(&context.path) => {
-                        context.path.to_str().ok_or(INVALID)?.to_string()
-                    }
-                    Some((installation, _)) => {
-                        wsl::linux_path(&context.path, &installation.distro).ok_or(INVALID)?
-                    }
-                    None => return Err(INVALID),
-                };
-                target.worktree = Some(path);
+                let installation = target.wsl.as_ref().map(|(installation, _)| installation);
+                target.worktree = Some(git_form(&context.path, installation)?);
                 Ok(target)
             }
             Kind::Registered => {
@@ -3634,6 +3630,16 @@ fn run_limits(limits: Limits, kind: Kind, policy: EnvironmentPolicy) -> Result<R
             })
         }
         _ => Err(INVALID),
+    }
+}
+
+/// Feature 004 contract Δ6: Git's form of a bound `worktreeAdd` path for the route.
+/// That is the Windows path for a Windows Git and the Linux path for a WSL Git. A path of the other route gives `INVALID_REQUEST`.
+fn git_form(path: &Path, installation: Option<&wsl::Installation>) -> Result<String, Code> {
+    match installation {
+        None if !file_facts::is_wsl_path(path) => path.to_str().map(str::to_string).ok_or(INVALID),
+        Some(installation) => wsl::linux_path(path, &installation.distro).ok_or(INVALID),
+        None => Err(INVALID),
     }
 }
 
@@ -12122,5 +12128,114 @@ pub(crate) mod tests {
         wsl.harness.send(reveal_body(&call, &repository, &path));
         assert_eq!(wsl.harness.reply(&call), refused(&call, "UNKNOWN_TARGET"));
         assert_eq!(shown.lock().expect("shown").len(), 1);
+    }
+
+    /// Feature 004 contract Δ6: the `destinationFacts` reply of a `worktreeAdd` binding gives the bound path in Git's form.
+    /// The run that takes that text byte for byte passes the admission check. A clone reply gives no path.
+    #[test]
+    fn the_destination_facts_path_of_a_worktree_add_binding_is_the_path_item_of_its_run() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let path = harness.fixture.path(r"worktrees\it's wt");
+        let bound =
+            harness
+                .contexts
+                .create_worktree_add(&path, &workspace.repository, Instant::now());
+        let call = uuid();
+        harness.send(json!({ "type": "destinationFacts", "callId": call, "operationId": uuid(), "bootstrapId": bound }));
+        let reply = harness.reply(&call);
+        assert_eq!(
+            reply,
+            json!({ "type": "destinationFacts", "callId": call, "result": "absent", "path": path.to_str().expect("path") })
+        );
+        assert!(
+            typed::<schema::process_reply::ProcessReply>(&reply).is_some(),
+            "{reply}"
+        );
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::AddWorktree, &workspace);
+        let run = uuid();
+        harness.send(worktree_add_run(
+            &run,
+            &operation,
+            &workspace,
+            &bound,
+            json!([
+                "--no-lazy-fetch",
+                "worktree",
+                "add",
+                "--",
+                reply["path"],
+                "topic"
+            ]),
+        ));
+        assert!(
+            harness.exit(&run, WAIT).is_some(),
+            "the shell started the run"
+        );
+        assert!(
+            harness.contexts.get(&bound, Instant::now()).is_err(),
+            "the admitted run consumed the binding"
+        );
+        let (clone, _) = harness
+            .contexts
+            .create_clone(&path, CLONE_URL, None, Instant::now());
+        let reply = destination_facts(&harness, &uuid(), &clone);
+        assert_eq!(reply.get("path"), None, "{reply}");
+    }
+
+    /// Feature 004 contract Δ6 and Δ11: for a WSL Git, Git's form of the bound path is its Linux path.
+    #[test]
+    fn a_wsl_worktree_add_binding_replies_its_linux_path_and_its_run_takes_that_path() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        let path = PathBuf::from(format!(r"{WSL_PATH}-wt"));
+        let bound = wsl
+            .harness
+            .contexts
+            .create_worktree_add(&path, &repository, Instant::now());
+        wsl.host.push(0, b"Sabsent\0");
+        let call = uuid();
+        wsl.harness.send(json!({ "type": "destinationFacts", "callId": call, "operationId": uuid(), "bootstrapId": bound }));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            json!({ "type": "destinationFacts", "callId": call, "result": "absent", "path": "/home/u/repo-wt" })
+        );
+        let probe = wsl
+            .host
+            .commands()
+            .last()
+            .expect("destination mode")
+            .clone();
+        assert_eq!(stdin_of(&probe), b"/home/u/repo-wt\0");
+        let operation = uuid();
+        wsl.harness.requests.tag(
+            &operation,
+            Mutation::AddWorktree,
+            PhysicalIdentity::Wsl(wsl::WslIdentity {
+                guid: WSL_GUID.to_string(),
+                file_system_id: "fedc9aa3bd65bc57".to_string(),
+                inode: "4242".to_string(),
+            }),
+        );
+        let run = uuid();
+        wsl.harness.send(json!({
+            "type": "run", "callId": run, "operationId": operation, "contextKind": "worktreeAdd",
+            "gitInstallationId": git, "repositoryId": repository, "bootstrapId": bound,
+            "arguments": ["--no-lazy-fetch", "worktree", "add", "--", "/home/u/repo-wt", "topic"],
+            "environmentPolicy": "integrate", "limits": network_limits(30_000, 60_000),
+        }));
+        let reply = wsl
+            .harness
+            .wait_reply(WAIT, |v| {
+                v["callId"] == run.as_str() && (v["type"] == "exit" || v["type"] == "refused")
+            })
+            .expect("run reply")
+            .1;
+        assert_ne!(reply["code"], "INVALID_REQUEST", "{reply}");
+        assert!(
+            wsl.harness.contexts.get(&bound, Instant::now()).is_err(),
+            "the admission check passed and consumed the binding"
+        );
     }
 }

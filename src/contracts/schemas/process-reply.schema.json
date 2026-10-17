@@ -1372,6 +1372,84 @@
           ],
           "additionalProperties": false,
           "title": "DestinationFactsError"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "destinationFacts"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "result": {
+              "type": "string",
+              "enum": [
+                "absent",
+                "empty",
+                "not-empty",
+                "file",
+                "other"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "result",
+            "path"
+          ],
+          "additionalProperties": false,
+          "title": "DestinationFactsWorktreeAddResult"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "destinationFacts"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "result": {
+              "type": "string",
+              "const": "error"
+            },
+            "code": {
+              "type": "string",
+              "enum": [
+                "access-denied",
+                "sharing-violation",
+                "io-error",
+                "other-error"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "result",
+            "code",
+            "path"
+          ],
+          "additionalProperties": false,
+          "title": "DestinationFactsWorktreeAddError"
         }
       ],
       "title": "DestinationFactsGroup"

@@ -711,33 +711,35 @@ pub mod reply {
     }
 
     /// The reply holds the context path alone for a path without a WSL prefix.
-    /// Feature 003 contract Δ6 `destinationFacts`.
-    pub fn destination_facts(call_id: &str, facts: Destination) -> Value {
+    /// Feature 003 contract Δ6 `destinationFacts`. Feature 004 contract Δ6: the reply to the `worktreeAdd` form adds
+    /// `path`, the bound path in Git's form for the route.
+    pub fn destination_facts(call_id: &str, facts: Destination, path: Option<&str>) -> Value {
         use p::DestinationFactsResultResult as R;
         let result = match facts {
-            Destination::Absent => R::Absent,
-            Destination::Empty => R::Empty,
-            Destination::NotEmpty => R::NotEmpty,
-            Destination::File => R::File,
-            Destination::Other => R::Other,
-            Destination::Error(code) => {
-                return encode(p::ProcessReply::DestinationFactsGroup(
-                    p::DestinationFactsGroup::Error {
-                        call_id: field(call_id),
-                        code: field(code),
-                        result: "error".into(),
-                        type_: "destinationFacts".into(),
-                    },
-                ));
-            }
+            Destination::Absent => Ok(R::Absent),
+            Destination::Empty => Ok(R::Empty),
+            Destination::NotEmpty => Ok(R::NotEmpty),
+            Destination::File => Ok(R::File),
+            Destination::Other => Ok(R::Other),
+            Destination::Error(code) => Err(code),
         };
-        encode(p::ProcessReply::DestinationFactsGroup(
-            p::DestinationFactsGroup::Result {
+        let mut reply = encode(p::ProcessReply::DestinationFactsGroup(match result {
+            Ok(result) => p::DestinationFactsGroup::Result {
                 call_id: field(call_id),
                 result,
                 type_: "destinationFacts".into(),
             },
-        ))
+            Err(code) => p::DestinationFactsGroup::Error {
+                call_id: field(call_id),
+                code: field(code),
+                result: "error".into(),
+                type_: "destinationFacts".into(),
+            },
+        }));
+        if let Some(path) = path {
+            reply["path"] = json!(path);
+        }
+        reply
     }
 
     /// Feature 003 contract Δ6 `pageant`: `git`, `none`, or `ready`.
@@ -1886,6 +1888,37 @@ mod tests {
             (reply::reveal(call), vector("process-reply-reveal.json")),
         ] {
             assert_eq!(built, expected);
+            assert!(
+                typed::<process_reply::ProcessReply>(&built).is_some(),
+                "{built}"
+            );
+        }
+    }
+
+    /// Feature 004 contract Δ6: the `destinationFacts` reply to the `worktreeAdd` form carries `path`, and the clone reply none.
+    #[test]
+    fn the_worktree_add_destination_facts_reply_carries_its_path() {
+        use crate::process_requests::Destination;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/vectors/valid");
+        let text =
+            std::fs::read_to_string(root.join("process-reply-destination-facts-worktree-add.json"))
+                .expect("vector file");
+        let vector: Vector = serde_json::from_str(&text).expect("vector form");
+        let expected: Value = serde_json::from_str(&vector.text).expect("vector text");
+        let call = "0f0f0f0f-0000-4000-8000-000000000001";
+        let built = reply::destination_facts(call, Destination::Absent, Some("/home/u/repo-wt"));
+        assert_eq!(built, expected);
+        let error = reply::destination_facts(call, Destination::Error("io-error"), Some("C:\\wt"));
+        assert_eq!(
+            error,
+            json!({ "type": "destinationFacts", "callId": call, "result": "error", "code": "io-error", "path": "C:\\wt" })
+        );
+        let clone = reply::destination_facts(call, Destination::Empty, None);
+        assert_eq!(
+            clone,
+            json!({ "type": "destinationFacts", "callId": call, "result": "empty" })
+        );
+        for built in [built, error, clone] {
             assert!(
                 typed::<process_reply::ProcessReply>(&built).is_some(),
                 "{built}"

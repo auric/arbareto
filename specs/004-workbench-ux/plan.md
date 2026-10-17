@@ -156,7 +156,7 @@ Each phase writes its tests first. P0.2 to P0.4 are the riskiest proofs and run 
   - Every 004 Git mutation step runs under the 003 policy `integrate`: `mutation` without `GIT_INDEX_FILE`, plus `GIT_EDITOR=:`. The 003 kind fit (003 Δ6) adds the kinds `workbench` and `applyFiles`.
   - The staging steps of `applyFiles` and line staging keep the 001 `mutation` policy with the owned candidate.
   - New policy `mergetool`: the `integrate` environment, no inactivity limit, the 4-hour ceiling, and empty standard input. Only `runWorkbench` with action `mergetool` uses it.
-  - Reads keep the 001 `read` policy. The Git settings view without a repository runs `config list` in the new `globalConfig` context.
+  - Reads keep the 001 `read` policy. Without a repository, `readGitSettings` runs `config list` in the new `globalConfig` context (later work). The 004 Settings view needs an open repository (D15).
 - Limits: `integrate` takes the 003 limits: inactivity 300 s, ceiling 4 h, stall notice 15 s. Review reads keep the 30 s deadline (001 §5).
 - Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-locks` and `--literal-pathspecs` (001 `READ_OPTIONS`). The one exception is `check-ignore --no-index` of D3, which refuses `--literal-pathspecs` (research R21 F1). Checkout steps add `--no-recurse-submodules`, because `git checkout` honors `submodule.recurse` (git-checkout(1)) and the 001 rule keeps Git out of submodules.
 - Mutation exclusion: every `runWorkbench` and `applyFiles` enters the 001 exclusion and records a marker of kind `workbench` with its action (spec FR-001). A second mutation gives `BUSY`.
@@ -495,7 +495,7 @@ User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 a
 | WP28 | implementer; runs by scout | `tests/windows/{workbench-packaged,workbench-perf}.test.ts` | P9 packaged |
 
 Parallel tracks use disjoint files. These packages are not file-disjoint:
-- `src/git-service/session.ts` and `trust.ts`: only WP10 and WP20 edit them in 004 batches 2 and 4. WP17 edits `trust.ts` for the binding before WP20.
+- `src/git-service/session.ts` and `trust.ts`: only WP10 and WP20 edit them in 004 batches 2 and 4. WP17 edits `trust.ts` for the binding before WP20. In batch 1, WP5 added the `undefined` handlers of the new operations to `session.ts` and the `globalConfig` refusal to `tests/git/bun-runner.ts`.
 - `src/frontend/app/Workbench.tsx`: WP11 owns it. WP12 to WP14 and WP21 to WP25 fill the mount points that WP11 creates.
 - `src/frontend/refs/ReferencesSidebar.tsx`: WP12, then WP21 and WP24 add their groups through WP11 mount points.
 - `tests/groups.json`: every WP appends its lines. The orchestrator resolves merge conflicts.

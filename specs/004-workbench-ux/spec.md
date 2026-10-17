@@ -411,7 +411,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 #### Git settings
 
-- **FR-058**: The Git settings view MUST offer the scopes Effective, This repository, Global, and System. Effective and System MUST be read-only. Without an open repository, This repository MUST be unavailable.
+- **FR-058**: The Git settings view MUST offer the scopes Effective, This repository, Global, and System. Effective and System MUST be read-only. Later work: without an open repository, This repository MUST be unavailable. In 004, Settings opens only from an open repository (Assumptions, plan.md D15).
 - **FR-059**: The view MUST read all values with their scope and their source file from one machine-readable Git read. Each value MUST show its source. The header MUST name the file that a save writes to.
 - **FR-060**: The view MUST offer the keys of the Git Extensions Git Config and Advanced pages: `user.name`, `user.email`, `core.editor`, `commit.template`, `credential.helper`, `diff.tool`, `difftool.<tool>.path`, `difftool.<tool>.cmd`, `merge.tool`, `mergetool.<tool>.path`, `mergetool.<tool>.cmd`, `core.autocrlf`, `i18n.filesEncoding`, `pull.rebase`, `fetch.prune`, `merge.autostash`, `rebase.autostash`, `rebase.autosquash`, `rebase.updateRefs`, `rerere.enabled`, and `rerere.autoUpdate`. It MUST also offer `pull.ff`, `push.default`, and `push.autoSetupRemote`. The pages are User, Editor and tools, Line endings, Pull and push, Fetch, Merge and rebase, Credentials, and Advanced.
 - **FR-061**: A boolean key MUST offer three states: Not set, On, and Off. "Not set" MUST state the effective value and its scope. An enumerated key MUST offer Not set and each value that the Git documentation defines.

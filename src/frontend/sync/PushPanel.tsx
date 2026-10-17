@@ -3,15 +3,17 @@
 
 import { Cancel01Icon, Upload04Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useId, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
+import type { z } from "zod";
+import type { SyncPlan } from "../../contracts/envelope";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import { branchName } from "../history/HistoryView";
 
 // Feature 003 spec FR-014 and FR-016, plan.md D4 step 0, contract Δ3 `reviewSync` (`needsDestination`), and the approved "Push panel" mockup.
 
-/** Contract Δ3 `NeedsDestination`. */
-export type NeedsDestination = { remotes: string[]; prefill: { remote: string; ref: string } | null; setUpstream: boolean };
+/** Contract Δ3 `NeedsDestination`. Type-only imports keep zod out of the renderer bundle. */
+export type NeedsDestination = NonNullable<z.infer<typeof SyncPlan>["needsDestination"]>;
 export type PushChoice = { remote: string; branch: string; setUpstream: boolean };
 
 export type PushPanelProps = {
@@ -33,8 +35,19 @@ export function PushPanel({ branch, plan, onPush, onCancel }: PushPanelProps) {
   const [name, setName] = useState(plan.prefill?.ref.startsWith("refs/heads/") ? branchName(plan.prefill.ref) : branch);
   const [upstream, setUpstream] = useState(plan.setUpstream);
   const reason = remote === null ? "Choose a remote." : name.trim() === "" ? "Enter the remote branch name." : null;
+  const section = useRef<HTMLElement>(null);
+  // Focus moves into the panel at open and back to the opener at close.
+  useLayoutEffect(() => {
+    const opener = document.activeElement;
+    const radios = [...(section.current?.querySelectorAll<HTMLInputElement>('input[type="radio"]') ?? [])];
+    (radios.find((r) => r.checked) ?? radios[0])?.focus();
+    return () => {
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
+  }, []);
   return (
     <section
+      ref={section}
       data-slot="push-panel"
       aria-labelledby={ids.heading}
       className="flex h-full min-h-0 flex-col"
@@ -59,7 +72,7 @@ export function PushPanel({ branch, plan, onPush, onCancel }: PushPanelProps) {
         <p className="text-muted-text">{plan.setUpstream ? "This branch has no upstream. Choose where the push goes." : "Git's push configuration names no single destination for this branch. Choose one."}</p>
         <fieldset className="grid items-start gap-x-3 gap-y-1" style={{ gridTemplateColumns: "110px minmax(0, 1fr)" }}>
           <legend className="float-left w-[110px]">Remote</legend>
-          <div role="radiogroup" aria-label="Remote" className="flex flex-col gap-1">
+          <div className="flex flex-col gap-1">
             {plan.remotes.map((r) => (
               <label key={r} className="flex items-center gap-2">
                 <input type="radio" name="remote" value={r} checked={remote === r} onChange={() => setRemote(r)} />
@@ -73,7 +86,9 @@ export function PushPanel({ branch, plan, onPush, onCancel }: PushPanelProps) {
           <div className="flex min-w-0 flex-wrap items-center gap-2">
             <input
               id={ids.branch}
+              name="remoteBranch"
               type="text"
+              autoComplete="off"
               value={name}
               spellCheck={false}
               aria-describedby={ids.full}
@@ -89,7 +104,7 @@ export function PushPanel({ branch, plan, onPush, onCancel }: PushPanelProps) {
             Set upstream
           </label>
           <span id={ids.note} className="text-muted-text" style={{ paddingLeft: 22 }}>
-            {`Writes the upstream of ${branch} into this repository's configuration${remote === null ? "" : `: ${remote}/${name}`}.`}
+            {`Writes ${plan.upstreamRebase ? `branch.${branch}.remote, .merge, and .rebase` : `branch.${branch}.remote and .merge`}${remote === null ? "" : ` for ${remote}/${name}`}.`}
           </span>
         </div>
         <div className="flex items-center gap-2" style={{ paddingLeft: 122 }}>

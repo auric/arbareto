@@ -7,7 +7,7 @@ import type { PushNotice } from "../app/NoticeBand";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { branchName } from "../history/HistoryView";
 import { shortRef } from "../refs/ReferencesSidebar";
-import type { StatusOperation } from "../status/OperationStatus";
+import { isObject, SYNC_NAMES, type StatusOperation } from "../status/OperationStatus";
 import type { ForcePlan } from "./ForcePushConfirm";
 import type { ReviewPayload } from "./PullSplitButton";
 import type { NeedsDestination, PushChoice } from "./PushPanel";
@@ -25,11 +25,10 @@ type Plan = {
   lease?: ForcePlan["lease"];
   needsDestination?: NeedsDestination;
 };
-type Reviewed = { action: SyncAction; plan: Plan; syncReviewToken?: string };
+type Reviewed = { action: SyncAction; plan: Plan; syncReviewToken?: unknown };
 /** Data-model §5 and §7: the result fields that decide the notice. */
 type Result = { push?: { status: string; lease: boolean }; integration?: { state: string } };
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 const isReviewed = (value: unknown): value is Reviewed => isObject(value) && isObject(value.plan) && Array.isArray(value.plan.remotes);
 const PUSHING: readonly SyncAction[] = ["push", "force-push"];
 
@@ -43,12 +42,14 @@ export type UseSyncOptions = {
   headTarget: string | null | undefined;
   /** Each start, progress event, and terminal response, and each refused review, for the status bar. */
   onOperation(op: StatusOperation): void;
+  /** The status bar text of a review that the renderer refuses because it lacks a contract field. */
+  onRefused(text: string): void;
   /** A terminal `sync` response. The caller reads the workspace, the refs, the history, and the tracking again (FR-004, FR-013, FR-040). */
   onEnded(response: BridgeResponse): void;
 };
 
 /** The renderer side of the sync flow: review, then the push panel, the force-push confirmation, or the start. */
-export function useSync({ bridge, target, repositoryId, headTarget, onOperation, onEnded }: UseSyncOptions) {
+export function useSync({ bridge, target, repositoryId, headTarget, onOperation, onRefused, onEnded }: UseSyncOptions) {
   const [panel, setPanel] = useState<NeedsDestination | null>(null);
   const [confirm, setConfirm] = useState<{ plan: Plan & ForcePlan; token: string } | null>(null);
   // FR-023: the notice and the HEAD target that it belongs to.
@@ -103,8 +104,11 @@ export function useSync({ bridge, target, repositoryId, headTarget, onOperation,
         return onOperation({ requestId: crypto.randomUUID(), kind: "sync", sync: { action: payload.action, remotes: [] }, progress: null, response: review });
       }
       if (result.plan.needsDestination !== undefined) return setPanel(result.plan.needsDestination);
-      const token = result.syncReviewToken!;
-      if (payload.action === "force-push" && result.plan.destination !== undefined && result.plan.lease !== undefined) return setConfirm({ plan: result.plan as Plan & ForcePlan, token });
+      const token = result.syncReviewToken;
+      // FR-024: a force push starts only from the confirmation, and the confirmation needs the destination and the lease.
+      const force = payload.action === "force-push";
+      if (typeof token !== "string" || (force && (result.plan.destination === undefined || result.plan.lease === undefined))) return onRefused(`${SYNC_NAMES[payload.action]} did not start: the review is incomplete.`);
+      if (force) return setConfirm({ plan: result.plan as Plan & ForcePlan, token });
       await start(payload.action, result.plan, token, fromNotice);
     } finally {
       busy.current = false;

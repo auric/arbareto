@@ -330,13 +330,16 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - Pull is a split button (FR-055, FR-056). The main part runs the default action. The menu lists Pull (use Git's configuration), Pull with merge, Pull with rebase, Fetch, Fetch all remotes, and Set default action. Set default action is a submenu with radio items for the five actions. The shell stores the choice as `defaultPullAction` (data-model §10, contract Δ3 `setDefaultPullAction`), never in Git configuration. The icon and tooltip of the main part name the current default. Ctrl+Down runs the main part.
   - The pull actions map to `reviewSync {action: "pull"}`, `{action: "pull", mode: "merge"}`, and `{action: "pull", mode: "rebase"}`. A rebase action needs no further confirmation (FR-057).
   - Unavailable reasons come from `readWorkspace` (head, operation state) and `readTracking` (upstream). The review gives exact refusals, such as `remote-missing`.
+  - While `readSyncSettings` runs, the Pull main part shows the reason "The default pull action is still loading…".
+  - A review result without a `syncReviewToken` starts nothing. A `force-push` plan without `destination` or `lease` also starts nothing and opens no confirmation (FR-024). The status bar then shows "<action name> did not start: the review is incomplete."
 - Counts: `state/tracking.ts`, the sidebar entry, and the 002 history label (after 002 P6).
+  - A failed `readTracking` shows "Counts did not load: <code>." in place of the toolbar counts. `<code>` is the response code, or the response state without a code.
 - Notices: the push-rejected row and the conflict row. Destructive actions show an icon and text and never fold into More.
 - Push panel (FR-016): the note under the Set upstream checkbox names the keys. With `needsDestination.upstreamRebase` false: "Writes branch.<branch>.remote and .merge for <remote>/<remote branch>." With it true: "Writes branch.<branch>.remote, .merge, and .rebase for <remote>/<remote branch>." Without a chosen remote, the text ends after the keys.
 - Modals only for Force push with lease, Abort, and Skip (UX direction 2026-10-10; constitution I).
 - The 001 "finish it outside Arbareto" text goes for merging and rebasing.
 - FR-013: after a fetch outcome, the renderer refreshes the 002 view with `{oid}` of the selected commit, without the refs-changed notice.
-- Commit and push: the 001 commit, then a push review only after `succeeded`.
+- Commit and push: the 001 commit, then a push review only after `succeeded`. The push review waits for the reconcile read of the commit, so it carries the new generation. An unborn branch does not disable Commit and push (FR-038). The push review after the commit decides.
 - Mutation names (001 plan.md "Status and fallback texts"): Mark resolved is "Mark resolved". A `sync` takes the name of its action: "Fetch", "Fetch all remotes", "Pull" (also for `integrate`), "Push", "Force push with lease", "Abort", "Continue", or "Skip". A clone is "Clone". The shell close prompt reads the action from the `started` frame (contract Δ6).
 - Mark resolved shows "Marking resolved" while it runs and "File marked resolved" after `succeeded`. A running `sync` shows the FR-002 step text.
 - The stage bar button of a Conflicted entry with the decision `resolve` reads "Mark resolved (Space)", and Space runs it.

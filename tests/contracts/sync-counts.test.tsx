@@ -104,6 +104,13 @@ describe("toolbar counts (FR-019 to FR-022)", () => {
     expect(text(count()!)).not.toMatch(/[↑↓]/);
   });
 
+  test("a failed readTracking shows its code and no counts", async () => {
+    const world = createWorld();
+    world.answers.readTracking = () => ({ requestId: "r", operationId: "o", state: "failed", code: "GIT_FAILED" });
+    await mountWorkbench(workbench, world);
+    expect(text(count()!)).toBe("Counts did not load: GIT_FAILED.");
+  });
+
   test("readTracking runs for each new refsDigest, each outcome, and each focus return", async () => {
     const world = createWorld();
     const double = await mountWorkbench(workbench, world);

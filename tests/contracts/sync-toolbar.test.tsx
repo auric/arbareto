@@ -68,6 +68,16 @@ describe("toolbar controls (FR-039)", () => {
     }
   });
 
+  test("the Fetch options and Pull options triggers are at least 24 px wide", async () => {
+    await open();
+    for (const label of ["Fetch options", "Pull options"]) expect(parseFloat(button(label).style.width)).toBeGreaterThanOrEqual(24);
+  });
+
+  test("the Pull main part states that the default pull action is still loading", async () => {
+    await open({ answers: { readSyncSettings: undefined } });
+    expect(reasonOf(document.querySelector<HTMLElement>('button[data-slot="pull-main"]')!)).toContain("The default pull action is still loading…");
+  });
+
   test("a menu beside Fetch offers Fetch all remotes, and its item sends reviewSync fetch-all", async () => {
     const { double } = await open();
     const trigger = button("Fetch options");

@@ -116,7 +116,7 @@ const TEXTS: Record<string, [name: string, running: string, heading: string]> = 
   updateSubmodules: ["Update submodules", "Updating submodules", "Update submodules details"],
 };
 // Feature 003 plan.md D12: a `sync` takes the name of its action. A pull step that integrates is also "Pull".
-const SYNC_NAMES: Record<SyncAction, string> = {
+export const SYNC_NAMES: Record<SyncAction, string> = {
   "fetch": "Fetch",
   "fetch-all": "Fetch all remotes",
   pull: "Pull",
@@ -162,7 +162,7 @@ const FAILED_READ = "Arbareto could not read this submodule. Use Refresh, then t
 // Data-model §7 and plan.md "Status area": these commit states open the area.
 const OPENING_COMMIT_STATES = ["failed", "failed-with-effects", "completed-with-effects"];
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 const isText = (value: unknown): value is string => typeof value === "string";
 /** plan.md "History graph design": a short ID is the first 12 hex digits. */
 export const shortId = (oid: string | null) => (oid ?? "").slice(0, 12);

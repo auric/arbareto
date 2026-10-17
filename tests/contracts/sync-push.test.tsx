@@ -6,7 +6,7 @@ import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { answer, button, buttons, click, createWorld, mountWorkbench, oid, settle, succeeded, text, unmountAll } from "./sync-fake";
+import { answer, button, buttons, click, createWorld, mountWorkbench, oid, press, settle, succeeded, text, unmountAll } from "./sync-fake";
 
 // tasks.md T059 (feature 003). Spec FR-014 to FR-016. Plan D4. Data-model §3, §5. Contract Δ3 `reviewSync` (`needsDestination`).
 
@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 const NO_UPSTREAM = { name: "feature/x", objectId: oid(1), upstream: null, upstreamObjectId: null, track: { state: "none" as const }, current: true };
-const panelPlan = (fields: Record<string, unknown> = {}) => ({ remotes: ["origin", "backup"], prefill: null, setUpstream: true, ...fields });
+const panelPlan = (fields: Record<string, unknown> = {}) => ({ remotes: ["origin", "backup"], prefill: null, setUpstream: true, upstreamRebase: false, ...fields });
 const panel = () => document.querySelector<HTMLElement>('section[data-slot="push-panel"]');
 const radios = () => [...panel()!.querySelectorAll<HTMLInputElement>('input[type="radio"]')];
 const branchField = () => panel()!.querySelector<HTMLInputElement>('input[type="text"]')!;
@@ -54,9 +54,24 @@ describe("push panel (FR-016)", () => {
     expect(radios().find((r) => r.checked)?.value).toBe("origin");
     expect(branchField().value).toBe("feature/x");
     expect(setUpstream().checked).toBe(true);
-    expect(text(panel()!)).toContain("Writes the upstream of feature/x into this repository's configuration: origin/feature/x.");
+    expect(text(panel()!)).toContain("Writes branch.feature/x.remote and .merge for origin/feature/x.");
     expect(text(panel()!)).toContain("Destination: refs/heads/feature/x on origin");
     expect(p.pushes).toEqual([]);
+  });
+
+  test("the Set upstream note names .rebase when upstreamRebase is true, and ends after the keys without a remote", async () => {
+    await renderPanel(panelPlan({ remotes: ["backup", "second"], upstreamRebase: true }));
+    expect(text(panel()!)).toContain("Writes branch.feature/x.remote, .merge, and .rebase.");
+    await act(async () => radios()[0]!.click());
+    expect(text(panel()!)).toContain("Writes branch.feature/x.remote, .merge, and .rebase for backup/feature/x.");
+  });
+
+  test("the remote branch field has a name and no autocomplete, and only the legend names the remote group", async () => {
+    await renderPanel();
+    expect(branchField().name).not.toBe("");
+    expect(branchField().getAttribute("autocomplete")).toBe("off");
+    expect(panel()!.querySelector('[aria-label="Remote"]')).toBeNull();
+    expect(text(panel()!.querySelector("legend")!)).toBe("Remote");
   });
 
   test("a branch with an upstream shows Set upstream not selected, and the prefill fills the destination", async () => {
@@ -88,6 +103,19 @@ describe("push flow (FR-014 to FR-016)", () => {
     await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination }, syncReviewToken: "t" }));
     expect(double.pending("sync")!.args[1]).toEqual({ syncReviewToken: "t", start: true });
     expect(panel()).toBeNull();
+  });
+
+  test("focus moves into the panel when it opens, and back to the opener when it closes", async () => {
+    const world = createWorld({ branches: [NO_UPSTREAM], head: { state: "branch", target: "refs/heads/feature/x", oid: oid(1) }, remotes: [] });
+    const double = await mountWorkbench(workbench, world);
+    const opener = button("Push");
+    await act(async () => opener.focus());
+    await click(opener);
+    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin", "backup"], needsDestination: panelPlan() } }));
+    expect(panel()!.contains(document.activeElement)).toBe(true);
+    await press(document.activeElement!, "Escape");
+    expect(panel()).toBeNull();
+    expect(document.activeElement).toBe(opener);
   });
 
   test("Rejected by the remote shows the remote message as plain text and offers no pull or force choice", async () => {

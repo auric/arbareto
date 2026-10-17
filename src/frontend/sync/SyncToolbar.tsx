@@ -11,7 +11,7 @@ import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
-import { pullAction, PullSplitButton, type DefaultPullAction, type ReviewPayload } from "./PullSplitButton";
+import { PULL_ACTIONS, pullAction, PullSplitButton, type DefaultPullAction, type ReviewPayload } from "./PullSplitButton";
 
 // Feature 003 spec FR-017, FR-028, FR-039, FR-055, plan.md D12. The 004 design standard sets the group order: Fetch, Pull, Push.
 
@@ -22,18 +22,23 @@ const DETACHED = "No branch checked out.";
 const UNBORN = "The branch has no commits yet.";
 const NO_UPSTREAM = "The branch has no upstream.";
 
-export type SyncReasons = { fetchReason: string | null; pullReason: string | null; pushReason: string | null };
+export type SyncReasons = { fetchReason: string | null; pullReason: string | null; pushReason: string | null; commitPushReason: string | null };
 
 /**
  * The toolbar unavailable reasons. They come from `readWorkspace` (HEAD and the operation state) and `readTracking` (the upstream).
  * `blocked` is a workbench state that blocks every mutation. Fetch stays available during a merge or a rebase (spec, 001 FR-016).
  * `upstream` is null when no paired tracking entry exists; the review then decides.
+ * FR-038: Commit and push on an unborn branch stays available. The push review after the commit decides.
  */
 export function syncReasons(head: Head | null, operationState: OperationState | null, upstream: "none" | "set" | null, blocked: string | null): SyncReasons {
   const branch =
     head === null ? BLOCKED_TEXT.loading : head.state === "detached" ? DETACHED : head.state === "unborn" ? UNBORN : operationState !== "normal" ? BLOCKED_TEXT.conflicted : null;
-  return { fetchReason: blocked, pullReason: blocked ?? branch ?? (upstream === "none" ? NO_UPSTREAM : null), pushReason: blocked ?? branch };
+  const commitPush = head?.state === "unborn" ? (operationState !== "normal" ? BLOCKED_TEXT.conflicted : null) : branch;
+  return { fetchReason: blocked, pullReason: blocked ?? branch ?? (upstream === "none" ? NO_UPSTREAM : null), pushReason: blocked ?? branch, commitPushReason: blocked ?? commitPush };
 }
+
+/** The unavailable reason of one pull menu action. Fetch and Fetch all remotes take the Fetch reason. */
+export const actionReason = (reasons: SyncReasons, action: DefaultPullAction) => (action === "fetch" || action === "fetch-all" ? reasons.fetchReason : reasons.pullReason);
 
 export type SyncToolbarProps = {
   reasons: SyncReasons;
@@ -48,7 +53,7 @@ export type SyncToolbarProps = {
 
 export function SyncToolbar({ reasons, defaultAction, settingsReason, count, onRun, onSetDefault }: SyncToolbarProps) {
   const id = useId();
-  const pullReasons: Record<DefaultPullAction, string | null> = { pull: reasons.pullReason, "pull-merge": reasons.pullReason, "pull-rebase": reasons.pullReason, "fetch": reasons.fetchReason, "fetch-all": reasons.fetchReason };
+  const pullReasons = Object.fromEntries(PULL_ACTIONS.map((a) => [a.action, actionReason(reasons, a.action)])) as Record<DefaultPullAction, string | null>;
   const mainReason = settingsReason ?? (defaultAction === null ? null : pullReasons[defaultAction]);
   // One inline reason line per distinct text. Each unavailable control names its line.
   const lines = new Map<string, string[]>();
@@ -76,7 +81,7 @@ export function SyncToolbar({ reasons, defaultAction, settingsReason, count, onR
         <DropdownMenu>
           <Tooltip>
             <TooltipTrigger
-              render={<DropdownMenuTrigger render={<Button variant="ghost" size="sm" aria-label="Fetch options" style={{ height: "var(--h-row-button)", width: 16 }} className="px-0" />} />}
+              render={<DropdownMenuTrigger render={<Button variant="ghost" size="sm" aria-label="Fetch options" style={{ height: "var(--h-row-button)", width: 24 }} className="px-0" />} />}
             >
               <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={2} aria-hidden="true" className="size-3" />
             </TooltipTrigger>

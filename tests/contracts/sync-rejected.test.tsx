@@ -141,4 +141,26 @@ describe("force push with lease (FR-024, FR-025)", () => {
     expect(bandButtons().filter((b) => b !== "Dismiss notice")).toEqual(["Fetch"]);
     expect(buttons("Force push with lease…", band())).toHaveLength(0);
   });
+
+  for (const [label, plan] of [
+    ["no lease", { remotes: ["origin"], destination: DESTINATION }],
+    ["no destination", { remotes: ["origin"], lease: LEASE }],
+  ] as const) {
+    test(`a force-push review with ${label} shows a refusal and starts no push`, async () => {
+      const { double } = await rejected();
+      await click(button("Force push with lease…", band()));
+      await answer(double.pending("reviewSync"), succeeded({ action: "force-push", plan, syncReviewToken: "f" }));
+      expect(document.querySelector('[role="dialog"]')).toBeNull();
+      expect(double.count("sync")).toBe(1);
+      expect(text(document.querySelector("footer")!)).toContain("Force push with lease did not start: the review is incomplete.");
+    });
+  }
+
+  test("a review without a sync token shows a refusal and starts nothing", async () => {
+    const double = await mountWorkbench(workbench, createWorld());
+    await click(button("Push"));
+    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination: DESTINATION } }));
+    expect(double.count("sync")).toBe(0);
+    expect(text(document.querySelector("footer")!)).toContain("Push did not start: the review is incomplete.");
+  });
 });

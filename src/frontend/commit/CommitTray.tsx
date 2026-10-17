@@ -43,8 +43,8 @@ export type CommitTrayProps = {
   /** Opens the Trust dialog. Resolves true after an approval. */
   requestTrust(report: TrustReport): Promise<boolean>;
   onOperation?(op: StatusOperation): void;
-  /** A terminal `commit` response, or a refused `reviewCommit`. The read after it reconciles the view (contract §3). */
-  onEnded?(response: BridgeResponse): void;
+  /** A terminal `commit` response, or a refused `reviewCommit`. The read after it reconciles the view (contract §3). It can resolve when that read ends. */
+  onEnded?(response: BridgeResponse): void | Promise<void>;
   fieldRef?: Ref<HTMLTextAreaElement>;
   /** Feature 003 FR-038: Commit and push runs this after a `succeeded` commit. Without it, the tray shows no Commit and push. */
   onPush?(): void;
@@ -128,9 +128,13 @@ export function CommitTray(props: CommitTrayProps) {
       const response = await trackOperation("commit", undefined, (onProgress) => bridge.commit(reviewed, { reviewToken: token, message: submission.text, confirmFullScope: true }, onProgress), props.onOperation);
       if (response.code === "STALE_REVIEW") setNotice(STALE_TEXT);
       void drafts.complete(submission, response.state as TerminalState);
-      props.onEnded?.(response);
+      const reconciled = props.onEnded?.(response);
       // Feature 003 FR-038: only a reconciled intended success starts the push.
-      if (push && response.state === "succeeded") live.current.onPush?.();
+      // The reconcile read advances the generation after the new HEAD (contract §8), so the push review waits for it.
+      if (push && response.state === "succeeded") {
+        await reconciled;
+        if (live.current.target?.repositoryId === target.repositoryId) live.current.onPush?.();
+      }
     } finally {
       running.current = false;
       setBusy(false);

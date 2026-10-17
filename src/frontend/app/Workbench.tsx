@@ -60,7 +60,7 @@ import { createRequests, isRegistration, wslDistro, type Clock, type RequestBrid
 import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, storePanes, writePreferences, type DarkPalette, type Panes, type Preferences, type Theme } from "../state/preferences";
 import { createDrafts } from "../state/drafts";
 import { createDraftStore } from "../state/draft-store";
-import { OperationStatus, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
+import { isObject, OperationStatus, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
 import { passedAcceptance, SubmoduleReview, type SubmoduleReviewValue } from "../submodules/SubmoduleReview";
 import { isTrustReport, SaveFailedNotice, TrustDialog, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
@@ -74,7 +74,7 @@ import { ForcePushConfirm } from "../sync/ForcePushConfirm";
 import { pullAction, type DefaultPullAction } from "../sync/PullSplitButton";
 import { PushNoticeRow } from "../sync/PushNoticeRow";
 import { PushPanel } from "../sync/PushPanel";
-import { syncReasons, SyncToolbar } from "../sync/SyncToolbar";
+import { actionReason, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
 import { useSync } from "../sync/useSync";
 import { shortRef } from "../refs/ReferencesSidebar";
 
@@ -193,8 +193,7 @@ export const NO_DECISION_PENDING = "Its comparison is still loading.";
 export const DOCK_HINT = "Select the Working directory row to commit, or a commit to see its details.";
 const NO_REPOSITORY = "No repository open";
 // Feature 003 data-model §10: the Pull main part waits for `readSyncSettings`.
-const SETTINGS_LOADING = "The default pull action is still loading.";
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+const SETTINGS_LOADING = "The default pull action is still loading…";
 type SyncSettingsState = { action: DefaultPullAction | null; reason: string | null };
 function settingsOf(response: BridgeResponse): SyncSettingsState {
   const action = isObject(response.result) ? response.result.defaultPullAction : undefined;
@@ -582,6 +581,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     repositoryId: state.repository?.repositoryId ?? null,
     headTarget: state.workspace === null ? undefined : state.workspace.head.state === "detached" ? null : state.workspace.head.target,
     onOperation: (op) => setOperation(op),
+    onRefused: (text) => setNotice(text),
     onEnded: (response) => {
       void historyView.refresh();
       onEnded("sync", response);
@@ -599,7 +599,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The latest mutation of this repository for the status region (T138). Another repository clears it.
   const [operation, setOperation] = useState<StatusOperation | null>(null);
   // Feature 003 data-model §1: the newest `readTracking` entries of the open repository.
-  const [tracking, setTracking] = useState<{ repositoryId: string; entries: TrackingEntry[] | null } | null>(null);
+  // `code` is the response code or state of a failed read, null after a success.
+  const [tracking, setTracking] = useState<{ repositoryId: string; entries: TrackingEntry[] | null; code: string | null } | null>(null);
   const trackingSeq = useRef(0);
   const [syncSettings, setSyncSettings] = useState<SyncSettingsState>({ action: null, reason: SETTINGS_LOADING });
   const [anchor, setAnchor] = useState<Staging["anchor"]>(null);
@@ -754,7 +755,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     const seq = ++trackingSeq.current;
     void bridge.readTracking(target).then((response) => {
       if (seq !== trackingSeq.current) return;
-      setTracking({ repositoryId: target.repositoryId, entries: response.state === "succeeded" && isTrackingList(response.result) ? response.result.entries : null });
+      const list = response.state === "succeeded" && isTrackingList(response.result) ? response.result : null;
+      setTracking({ repositoryId: target.repositoryId, entries: list?.entries ?? null, code: list === null ? (response.code ?? response.state) : null });
     });
   }
   // Plan.md D8 triggers: each new `readRefs.refsDigest` and each focus return. Each sync outcome runs one too.
@@ -1077,7 +1079,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const reviewBlocked = running && operation.requestId === reviewRequest.current ? stateBlocked : blocked;
   const stagingBlocked: Blocked = blocked ?? (loading ? "loading" : workspace.completeness.state !== "complete" ? "incomplete" : null);
   const onEnded = (kind: "applyHunk" | "applyFile" | "commit" | "updateSubmodules" | "sync", response: BridgeResponse) => requests.mutationEnded(kind, response);
-  const entries = tracking !== null && tracking.repositoryId === repositoryId ? tracking.entries : null;
+  const shownTracking = tracking !== null && tracking.repositoryId === repositoryId ? tracking : null;
+  const entries = shownTracking?.entries ?? null;
+  const trackingCode = shownTracking?.code ?? null;
   const labels = useMemo(() => trackingLabels(entries, state.refs), [entries, state.refs]);
   // Plan.md D8: the toolbar uses the `*` entry of the checked-out branch.
   const currentHead = workspace?.head ?? null;
@@ -1090,12 +1094,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (control === "fetch" && reasons.fetchReason === null) sync.run({ action: "fetch" });
     if (control === "push" && reasons.pushReason === null) sync.run({ action: "push" });
     const main = syncSettings.action;
-    if (control === "pull" && main !== null && (main === "fetch" || main === "fetch-all" ? reasons.fetchReason : reasons.pullReason) === null) sync.run(pullAction(main).payload);
+    if (control === "pull" && main !== null && actionReason(reasons, main) === null) sync.run(pullAction(main).payload);
   };
   const trackingCount =
-    currentHead === null ? null : currentHead.state === "detached" ? (
+    currentHead === null ? null : currentHead.state === "detached" || trackingCode !== null ? (
       <span data-slot="tracking-count" className="shrink-0 text-muted-text">
-        {NO_BRANCH}
+        {currentHead.state === "detached" ? NO_BRANCH : `Counts did not load: ${trackingCode}.`}
       </span>
     ) : (
       <span data-slot="tracking-count" className="num shrink-0" title={currentLabel === null ? undefined : `${currentLabel.label}${currentEntry?.upstream ? `, ${shortRef(currentEntry.upstream)}` : ""}. ${COUNTS_TOOLTIP}`}>
@@ -1232,7 +1236,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             onEnded={(response) => onEnded("commit", response)}
             fieldRef={messageField}
             onPush={() => sync.run({ action: "push" })}
-            pushReason={reasons.pushReason}
+            pushReason={reasons.commitPushReason}
           />
         </div>
       </section>

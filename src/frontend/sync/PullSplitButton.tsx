@@ -88,7 +88,7 @@ export function PullSplitButton({ defaultAction, settingsReason, reasons, mainRe
       <DropdownMenu>
         <Tooltip>
           <TooltipTrigger
-            render={<DropdownMenuTrigger render={<Button variant="ghost" size="sm" aria-label="Pull options" style={{ ...BUTTON_SIZE, width: 16 }} className="rounded-l-none px-0" />} />}
+            render={<DropdownMenuTrigger render={<Button variant="ghost" size="sm" aria-label="Pull options" style={{ ...BUTTON_SIZE, width: 24 }} className="rounded-l-none px-0" />} />}
           >
             <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={2} aria-hidden="true" className="size-3" />
           </TooltipTrigger>

@@ -7,7 +7,7 @@ import type { BridgeResponse } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { answer, button, click, createWorld, mountWorkbench, oid, settle, succeeded, text, unmountAll } from "./sync-fake";
+import { answer, button, click, createWorld, mountWorkbench, oid, settle, snapshot, succeeded, text, unmountAll } from "./sync-fake";
 
 // tasks.md T061 (feature 003). Spec FR-038. Plan D12 "Commit and push".
 
@@ -99,6 +99,36 @@ describe("Commit and push (FR-038)", () => {
     await t.reply("reviewCommit", ok({ reviewToken: "token" }));
     await t.reply("commit", ok({ commitOid: oid(7) }));
     expect(t.pushes).toEqual([]);
+  });
+
+  test("an unborn branch keeps Commit and push available; the push review decides", async () => {
+    const world = createWorld({ head: { state: "unborn", target: "refs/heads/main" }, branches: [], oids: [], entries: [{ entryId: "e1", category: "staged", path: "a.ts", pathBytes: "YS50cw==" }] as never });
+    await mountWorkbench(workbench, world);
+    await click(document.querySelector('[role="option"][data-row-id="working-directory"]')!);
+    await typeInto(document.querySelector("textarea")!, "First commit");
+    const control = button("Commit and push");
+    expect(control.hasAttribute("disabled") || control.getAttribute("aria-disabled") === "true").toBe(false);
+    expect(text()).not.toContain("Commit and push: The branch has no commits yet.");
+    expect(button("Push").getAttribute("aria-disabled")).toBe("true");
+  });
+
+  test("the push review takes the target after the reconcile read of the commit", async () => {
+    const world = createWorld({ entries: [{ entryId: "e1", category: "staged", path: "a.ts", pathBytes: "YS50cw==" }] as never });
+    const double = await mountWorkbench(workbench, world);
+    await click(document.querySelector('[role="option"][data-row-id="working-directory"]')!);
+    await typeInto(document.querySelector("textarea")!, "Fix the parser");
+    await click(button("Commit and push"));
+    await answer(double.pending("readTrust"), ok(REPORT));
+    await answer(double.pending("reviewCommit"), ok({ reviewToken: "token" }));
+    // Contract §8 "Token invalidation": the reconcile read records the new HEAD and advances the generation.
+    world.answers.readWorkspace = undefined;
+    await answer(double.pending("commit"), ok({ commitOid: oid(7) }));
+    const reconcile = double.pending("readWorkspace");
+    expect(reconcile).toBeDefined();
+    expect(double.count("reviewSync")).toBe(0);
+    delete world.answers.readWorkspace;
+    await answer(reconcile, succeeded({ ...snapshot(world), generation: 2 }, { repositoryGeneration: 2 }));
+    expect(double.pending("reviewSync")!.args[0]).toEqual({ repositoryId: "repository-1", repositoryGeneration: 2 });
   });
 
   test("a rejected push after a commit keeps the commit and shows the push-rejected notice", async () => {

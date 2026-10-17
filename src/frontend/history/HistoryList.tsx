@@ -173,13 +173,16 @@ function RowLabels({ labels, tracking }: { labels: ViewRow["labels"]; tracking?:
       ))}
       {hidden > 0 ? <span className="chip shrink-0">+{hidden}</span> : null}
       <span ref={measure} aria-hidden="true" className="invisible absolute flex gap-1">
-        {labels.map((l) => (
-          <span key={`${l.kind}:${l.name}`} className="flex items-center gap-1">
-            <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} className="size-(--icon-size)" />
-            <span className="max-w-[160px] truncate">{l.name}</span>
-            {countOf(l, tracking) === null ? null : <span>{countOf(l, tracking)!.text}</span>}
-          </span>
-        ))}
+        {labels.map((l) => {
+          const count = countOf(l, tracking);
+          return (
+            <span key={`${l.kind}:${l.name}`} className="flex items-center gap-1">
+              <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} className="size-(--icon-size)" />
+              <span className="max-w-[160px] truncate">{l.name}</span>
+              {count === null ? null : <span>{count.text}</span>}
+            </span>
+          );
+        })}
         <span>+{labels.length}</span>
       </span>
     </>

@@ -21,6 +21,13 @@
             "fetch-all"
           ]
         },
+        "switchChoice": {
+          "type": "string",
+          "enum": [
+            "keep",
+            "stash"
+          ]
+        },
         "plinkPath": {
           "anyOf": [
             {
@@ -123,6 +130,7 @@
       "required": [
         "sshClient",
         "defaultPullAction",
+        "switchChoice",
         "plinkPath",
         "programs",
         "remoteKeyFiles",

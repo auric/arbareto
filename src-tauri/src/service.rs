@@ -683,6 +683,7 @@ impl NativeFirst for Service {
             stores,
             &*self.dialogs,
             &self.requests,
+            &self.contexts,
             operation,
             prepared,
             response,
@@ -761,6 +762,7 @@ fn registered_root(operation: &str, response: &Value) -> Option<PathBuf> {
 
 /// The native answer of `listRecentRepositories` and `removeRecentRepository` (contract §3). No folder check and no process.
 /// Feature 003 contract Δ3: the six settings operations. `Ok(None)` is a canceled picker.
+/// Feature 004 contract Δ3: `setSwitchChoice` stores data-model §13 `switchChoice` and answers the same settings result.
 fn answer(
     stores: &Stores,
     native: &dyn Native,
@@ -768,7 +770,6 @@ fn answer(
     operation: &str,
     payload: &Value,
 ) -> Result<Option<Value>, Ended> {
-    // Feature 004 data-model §13: the shell stores the preselected switch choice and answers it.
     if operation == "setSwitchChoice" {
         let choice = match payload["choice"].as_str() {
             Some("keep") => SwitchChoice::Keep,
@@ -778,7 +779,7 @@ fn answer(
         let mut settings = lock(&stores.settings);
         settings.switch_choice = choice;
         let _ = settings::save(&stores.settings_path, &settings);
-        return Ok(Some(json!({ "switchChoice": choice.text() })));
+        return Ok(Some(settings_result(&settings)));
     }
     if !matches!(
         operation,
@@ -795,7 +796,7 @@ fn answer(
             merge(&mut settings.sync, &before, after);
             let _ = settings::save(&stores.settings_path, &settings);
         }
-        return Ok(Some(putty::settings_result(&settings.sync)));
+        return Ok(Some(settings_result(&settings)));
     }
     let mut settings = lock(&stores.settings);
     if operation == "removeRecentRepository" {
@@ -809,6 +810,13 @@ fn answer(
         &settings,
         lock(&stores.current).as_deref(),
     )))
+}
+
+/// The `readSyncSettings` result (feature 003 contract Δ3) with `switchChoice` (feature 004 contract Δ14).
+fn settings_result(settings: &Settings) -> Value {
+    let mut result = putty::settings_result(&settings.sync);
+    result["switchChoice"] = json!(settings.switch_choice.text());
+    result
 }
 
 /// Writes each field that `after` changed from `before` into `current`.
@@ -954,10 +962,21 @@ fn finish(
     stores: &Stores,
     native: &dyn Native,
     requests: &ProcessRequests,
+    contexts: &Contexts,
     operation: &str,
     prepared: &Prepared,
     response: Value,
 ) -> Value {
+    // Feature 004 contract Δ6: the review result binds its `worktreeAdd` context to the `workbenchToken`, or ends it.
+    if operation == "reviewWorkbench"
+        && let Some(bootstrap_id) = prepared.payload["bootstrapId"].as_str()
+    {
+        let token = response["state"] == "succeeded"
+            && response["result"]["workbenchToken"]
+                .as_str()
+                .is_some_and(is_identifier);
+        contexts.bind_review(bootstrap_id, token, Instant::now());
+    }
     if response["state"] != "succeeded" {
         return response;
     }
@@ -1400,6 +1419,7 @@ mod tests {
                 &self.stores,
                 native,
                 &self.requests,
+                &self.contexts,
                 operation,
                 prepared,
                 response,
@@ -2409,7 +2429,7 @@ mod tests {
         assert_eq!(
             read,
             Ok(Some(json!({
-                "sshClient": "git", "defaultPullAction": "pull", "plinkPath": null, "programs": [],
+                "sshClient": "git", "defaultPullAction": "pull", "switchChoice": "keep", "plinkPath": null, "programs": [],
                 "remoteKeyFiles": [], "defaultCloneFolder": null, "lastCloneParent": null,
             })))
         );
@@ -2574,7 +2594,7 @@ mod tests {
             (context.kind, context.path, context.repository.as_deref()),
             (ContextKind::WorktreeAdd, path.clone(), Some(REPOSITORY))
         );
-        assert_eq!(prepared.path, Some(path));
+        assert_eq!(prepared.path, Some(path.clone()));
         assert_eq!(
             shell.prepare(
                 &Fake::default(),
@@ -2584,22 +2604,90 @@ mod tests {
             Err(Ended::Rejected("INVALID_REQUEST")),
             "a relative path"
         );
+        // The review result binds the context to the `workbenchToken`. A result without a token ends it.
+        let review = || {
+            shell
+                .prepare(
+                    &Fake::default(),
+                    "reviewWorkbench",
+                    json!({ "action": "worktree-add", "branch": branch, "path": path, "repositoryId": REPOSITORY }),
+                )
+                .expect("bound")
+                .expect("context")
+        };
+        let id = |prepared: &Prepared| {
+            prepared.payload["bootstrapId"]
+                .as_str()
+                .expect("ID")
+                .to_string()
+        };
+        let first = id(&prepared);
+        let second = review();
+        assert!(
+            shell.contexts.get(&first, Instant::now()).is_err(),
+            "a new review of the repository replaces the binding"
+        );
+        let issued = json!({ "requestId": CALL, "state": "succeeded", "result": { "action": "worktree-add", "plan": {}, "workbenchToken": FIRST } });
+        let reviewed = Instant::now();
+        assert_eq!(
+            shell.finish(&Fake::default(), "reviewWorkbench", &second, issued.clone()),
+            issued
+        );
+        let context = shell
+            .contexts
+            .get(&id(&second), reviewed)
+            .expect("bound to its token");
+        assert!(context.expires_at >= reviewed + crate::bootstrap::REVIEW_TOKEN_LIFETIME);
+        for response in [
+            json!({ "requestId": CALL, "state": "rejected", "code": "WORKBENCH_UNAVAILABLE" }),
+            json!({ "requestId": CALL, "state": "succeeded", "result": { "action": "worktree-add", "plan": {} } }),
+            json!({ "requestId": CALL, "state": "unknown", "code": "STATE_UNKNOWN" }),
+        ] {
+            let prepared = review();
+            assert_eq!(
+                shell.finish(
+                    &Fake::default(),
+                    "reviewWorkbench",
+                    &prepared,
+                    response.clone()
+                ),
+                response
+            );
+            assert!(
+                shell.contexts.get(&id(&prepared), Instant::now()).is_err(),
+                "{response}"
+            );
+        }
     }
 
-    /// Feature 004 data-model §13: `setSwitchChoice` stores `keep` or `stash`, and the answer holds the stored value.
+    /// Feature 004 data-model §13 and contract Δ14: `setSwitchChoice` stores `keep` or `stash`.
+    /// It answers the `readSyncSettings` result, and that result carries the stored choice.
     #[test]
-    fn set_switch_choice_stores_the_choice_and_answers_it() {
+    fn set_switch_choice_stores_the_choice_and_answers_the_settings_result() {
         let shell = Shell::new();
         for choice in ["stash", "keep"] {
+            let set = answer(
+                &shell.stores,
+                &Fake::default(),
+                &[],
+                "setSwitchChoice",
+                &json!({ "choice": choice }),
+            );
+            let read = answer(
+                &shell.stores,
+                &Fake::default(),
+                &[],
+                "readSyncSettings",
+                &json!({}),
+            );
+            assert_eq!(set, read);
+            let read = read.expect("answer").expect("settings");
             assert_eq!(
-                answer(
-                    &shell.stores,
-                    &Fake::default(),
-                    &[],
-                    "setSwitchChoice",
-                    &json!({ "choice": choice })
+                (
+                    read["switchChoice"].clone(),
+                    read["defaultPullAction"].clone()
                 ),
-                Ok(Some(json!({ "switchChoice": choice })))
+                (json!(choice), json!("pull"))
             );
             assert_eq!(
                 settings::load(&shell.stores.settings_path)

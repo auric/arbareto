@@ -543,6 +543,8 @@ describe("contract Δ3 results", () => {
   const settings = {
     sshClient: "plink",
     defaultPullAction: "pull",
+    // Feature 004 contract Δ14: the result also carries data-model §13 `switchChoice`.
+    switchChoice: "keep",
     plinkPath: PLINK,
     programs: [
       { program: "plink", path: PLINK, present: true },

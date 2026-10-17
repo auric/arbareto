@@ -1570,6 +1570,10 @@ impl ProcessRequests {
             None => command_line(&target.program, &full),
         }
         .map_err(|_| INVALID)?;
+        // Feature 004 contract Δ6: the admitted `worktree add` run consumes its binding.
+        if let (Kind::WorktreeAdd, Some(bootstrap_id)) = (kind, ids[0]) {
+            self.contexts.destroy(bootstrap_id);
+        }
 
         // The start is a walk: the identity reads, the Job open, and the image open of the process start can wait (contract §6 "Walks").
         // An `input` chunk that comes before the start waits in the queue of the call.
@@ -3210,6 +3214,7 @@ impl ProcessRequests {
         match request {
             frame::ReleaseGroup::RepositoryFrame { repository_id, .. } => {
                 state.repositories.remove(repository_id.as_str());
+                self.contexts.release_repository(repository_id);
             }
             frame::ReleaseGroup::GitFrame {
                 git_installation_id,
@@ -11626,20 +11631,6 @@ pub(crate) mod tests {
             text,
             oid
         ]);
-        for arguments in [&existing, &new] {
-            let call = uuid();
-            harness.send(worktree_add_run(
-                &call,
-                &operation,
-                &workspace,
-                &bound,
-                arguments.clone(),
-            ));
-            assert!(
-                harness.exit(&call, WAIT).is_some(),
-                "the shell started {arguments}"
-            );
-        }
         let other = harness
             .fixture
             .path("other")
@@ -11758,6 +11749,39 @@ pub(crate) mod tests {
             ),
         ];
         expect_refusals(&harness, base, cases, "UNKNOWN_TARGET");
+        // A refused run keeps the binding. An admitted run consumes it, so a second run of that binding starts nothing.
+        assert!(harness.contexts.get(&bound, Instant::now()).is_ok());
+        for arguments in [&existing, &new] {
+            let bound =
+                harness
+                    .contexts
+                    .create_worktree_add(&path, &workspace.repository, Instant::now());
+            let call = uuid();
+            harness.send(worktree_add_run(
+                &call,
+                &operation,
+                &workspace,
+                &bound,
+                arguments.clone(),
+            ));
+            assert!(
+                harness.exit(&call, WAIT).is_some(),
+                "the shell started {arguments}"
+            );
+            assert!(
+                harness.contexts.get(&bound, Instant::now()).is_err(),
+                "the run consumed its binding"
+            );
+            let again = uuid();
+            harness.send(worktree_add_run(
+                &again,
+                &operation,
+                &workspace,
+                &bound,
+                arguments.clone(),
+            ));
+            assert_eq!(harness.reply(&again), refused(&again, "UNKNOWN_TARGET"));
+        }
     }
 
     /// Feature 004 contract Δ6: `destinationFacts` of a `worktreeAdd` binding reads its path for the review and the run operation.
@@ -11804,6 +11828,10 @@ pub(crate) mod tests {
             facts(&uuid(), &bound)["code"],
             "UNKNOWN_TARGET",
             "a released repository"
+        );
+        assert!(
+            harness.contexts.get(&bound, Instant::now()).is_err(),
+            "the release ends the binding"
         );
     }
 

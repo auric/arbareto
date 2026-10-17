@@ -27,12 +27,14 @@ use crate::process_requests::{
     CHUNK_BYTES, Config, ConfirmedGit, Owned, ProcessRequests, ReplySink, WALK_DEADLINE_MS,
     decode_strict, is_identifier, path, wait,
 };
+use crate::putty;
 use crate::schema::mutation_reply::RefusedCode as MutationCode;
 use crate::schema::mutation_request::MutationRequest;
 use crate::schema::trust_reply::ConfirmRunReplyResult;
 use crate::schema::{self, reply, trust_request::TrustRequest};
 use crate::settings::{
-    self, Confirm, Damaged, Marker, Markers, SavedGit, Settings, Started, StartedReply, Trust,
+    self, Confirm, Damaged, Marker, Markers, SavedGit, Settings, Started, StartedReply,
+    SyncSettings, Trust,
 };
 use crate::spawn::{Input, SpawnRequest, spawn};
 
@@ -195,6 +197,15 @@ impl Service {
                 .map(|stores| lock(&stores.settings).wsl_gits.clone())
                 .unwrap_or_default()
         }));
+        let me = Arc::downgrade(&service);
+        service.requests.set_sync_settings(Box::new(move || {
+            me.upgrade()
+                .as_ref()
+                .and_then(|me| me.stores.get())
+                .map(|stores| lock(&stores.settings).sync.clone())
+                .unwrap_or_default()
+        }));
+        service.requests.set_running(Arc::clone(&service.running));
         let me = Arc::downgrade(&service);
         service.requests.set_startup_git(Box::new(move |git| {
             if let Some(stores) = me.upgrade().as_ref().and_then(|me| me.stores.get()) {
@@ -644,8 +655,15 @@ impl NativeFirst for Service {
         prepare(stores, &*self.dialogs, &self.contexts, operation, payload)
     }
 
-    fn answer(&self, operation: &str, payload: &Value) -> Result<Value, &'static str> {
-        answer(self.stores.get().ok_or(UNAVAILABLE)?, operation, payload)
+    fn answer(&self, operation: &str, payload: &Value) -> Result<Option<Value>, Ended> {
+        let stores = self.stores.get().ok_or(UNAVAILABLE)?;
+        answer(
+            stores,
+            &*self.dialogs,
+            &self.environment,
+            operation,
+            payload,
+        )
     }
 
     fn finish(&self, operation: &str, prepared: &Prepared, response: Value) -> Value {
@@ -722,9 +740,10 @@ fn release_workspaces(stores: Option<&Stores>) -> String {
 
 /// The `worktreeRoot` of a `succeeded` registration (contract §3 "Recent repositories").
 fn registered_root(operation: &str, response: &Value) -> Option<PathBuf> {
+    // Feature 003 contract Δ3 `clone`: a cloned repository ends with the `chooseRepository` result.
     let registers = matches!(
         operation,
-        "chooseRepository" | "restoreWorkspace" | "openRecentRepository"
+        "chooseRepository" | "restoreWorkspace" | "openRecentRepository" | "clone"
     );
     (registers && response["state"] == "succeeded")
         .then(|| path(&response["result"]["worktreeRoot"]).ok())
@@ -732,19 +751,65 @@ fn registered_root(operation: &str, response: &Value) -> Option<PathBuf> {
 }
 
 /// The native answer of `listRecentRepositories` and `removeRecentRepository` (contract §3). No folder check and no process.
-fn answer(stores: &Stores, operation: &str, payload: &Value) -> Result<Value, &'static str> {
+/// Feature 003 contract Δ3: the six settings operations. `Ok(None)` is a canceled picker.
+fn answer(
+    stores: &Stores,
+    native: &dyn Native,
+    environment: &[(OsString, OsString)],
+    operation: &str,
+    payload: &Value,
+) -> Result<Option<Value>, Ended> {
+    if !matches!(
+        operation,
+        "listRecentRepositories" | "removeRecentRepository"
+    ) {
+        // A picker shows without the settings lock, so no `remote` run waits for it. Only the changed fields go back.
+        let before = lock(&stores.settings).sync.clone();
+        let mut after = before.clone();
+        if !putty::settings_operation(&mut after, native, environment, operation, payload)? {
+            return Ok(None);
+        }
+        let mut settings = lock(&stores.settings);
+        if after != before {
+            merge(&mut settings.sync, &before, after);
+            let _ = settings::save(&stores.settings_path, &settings);
+        }
+        return Ok(Some(putty::settings_result(&settings.sync)));
+    }
     let mut settings = lock(&stores.settings);
     if operation == "removeRecentRepository" {
         let entry_id = payload["entryId"].as_str().ok_or(INVALID)?;
         if !settings::forget_recent(&mut settings, entry_id) {
-            return Err("UNKNOWN_TARGET");
+            return Err("UNKNOWN_TARGET".into());
         }
         let _ = settings::save(&stores.settings_path, &settings);
     }
-    Ok(settings::recent_list(
+    Ok(Some(settings::recent_list(
         &settings,
         lock(&stores.current).as_deref(),
-    ))
+    )))
+}
+
+/// Writes each field that `after` changed from `before` into `current`.
+fn merge(current: &mut SyncSettings, before: &SyncSettings, after: SyncSettings) {
+    if after.ssh_client != before.ssh_client {
+        current.ssh_client = after.ssh_client;
+    }
+    if after.default_pull_action != before.default_pull_action {
+        current.default_pull_action = after.default_pull_action;
+    }
+    if after.plink_path != before.plink_path {
+        current.plink_path = after.plink_path;
+    }
+    if after.remote_key_files != before.remote_key_files {
+        current.remote_key_files = after.remote_key_files;
+    }
+    if after.default_clone_folder != before.default_clone_folder {
+        current.default_clone_folder = after.default_clone_folder;
+    }
+    if after.last_clone_parent != before.last_clone_parent {
+        current.last_clone_parent = after.last_clone_parent;
+    }
 }
 
 /// The native step before the forward (contract §3). `Ok(None)` is a canceled dialog.
@@ -788,6 +853,17 @@ fn prepare(
             let root =
                 settings::recent_root(&lock(&stores.settings), entry_id).ok_or("UNKNOWN_TARGET")?;
             dialogs::open_recent(root, contexts, now)
+        }
+        // Feature 003 contract Δ3 `clone`: the service payload holds no path.
+        "clone" => {
+            let Some(cloned) = dialogs::choose_clone(native, contexts, payload, now)? else {
+                return Ok(None);
+            };
+            let payload = json!({ "url": payload["url"], "bootstrapId": cloned.bootstrap_id, "cloneId": cloned.clone_id });
+            return Ok(Some(Prepared {
+                payload,
+                path: Some(cloned.destination),
+            }));
         }
         _ => return Err(UNAVAILABLE.into()),
     };
@@ -836,6 +912,15 @@ fn finish(
     match operation {
         "chooseGit" => {
             save_git(stores, requests, &response["result"]);
+            response
+        }
+        // Feature 003 contract Δ3 `clone` shell finish: the parent of the destination that the user confirmed.
+        "clone" => {
+            if let Some(parent) = prepared.path.as_deref().and_then(Path::parent) {
+                let mut settings = lock(&stores.settings);
+                settings.sync.last_clone_parent = Some(parent.to_path_buf());
+                let _ = settings::save(&stores.settings_path, &settings);
+            }
             response
         }
         // Data-model §1: the settings keep the last explicitly opened repository, from the native context.
@@ -955,12 +1040,14 @@ fn mutation(
             operation_id,
             kind,
             direction,
+            action,
             worktree_root,
             common_directory,
             ..
         } => {
             let call_id = call_id.ok_or(MutationCode::InvalidRequest)?;
-            let mutation = Mutation::of(kind, direction).ok_or(MutationCode::InvalidRequest)?;
+            let mutation =
+                Mutation::of(kind, direction, action).ok_or(MutationCode::InvalidRequest)?;
             let common = PathBuf::from(common_directory.as_str());
             // A service exit after the frame read changes the epoch, and the late finish then takes no mutex.
             let epoch = markers.epoch();
@@ -1058,7 +1145,7 @@ fn started(
     let reply = markers.started_with(started, epoch, &|_| identity.clone());
     // The tag is the identity that named the mutex (contract §6 "Lingering Jobs").
     let marked = if let StartedReply::Marker { identity, .. } = &reply {
-        requests.tag(started.operation_id, identity.clone());
+        requests.tag(started.operation_id, started.kind, identity.clone());
         true
     } else {
         false
@@ -1448,6 +1535,19 @@ mod tests {
 
     // ---- Recent repositories (contract §3 "Recent repositories") ----
 
+    /// The answer of a recent-list operation, as the 001 tests read it.
+    fn recent_answer(
+        stores: &Stores,
+        operation: &str,
+        payload: &Value,
+    ) -> Result<Value, &'static str> {
+        match answer(stores, &Fake::default(), &[], operation, payload) {
+            Ok(Some(result)) => Ok(result),
+            Err(Ended::Rejected(code)) => Err(code),
+            other => panic!("{other:?}"),
+        }
+    }
+
     const KEY: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 
     fn registered(root: &str, key: &str) -> Value {
@@ -1640,7 +1740,7 @@ mod tests {
         shell.remember(&repository, KEY);
         *lock(&shell.stores.current) = Some(KEY.to_string());
         let current = || {
-            answer(&shell.stores, "listRecentRepositories", &json!({})).expect("list")["entries"][0]
+            recent_answer(&shell.stores, "listRecentRepositories", &json!({})).expect("list")["entries"][0]
                 ["current"]
                 .clone()
         };
@@ -1678,7 +1778,8 @@ mod tests {
             registered(&root, KEY),
         );
         let currents = || -> Vec<(String, Value)> {
-            let list = answer(&shell.stores, "listRecentRepositories", &json!({})).expect("list");
+            let list =
+                recent_answer(&shell.stores, "listRecentRepositories", &json!({})).expect("list");
             list["entries"]
                 .as_array()
                 .expect("entries")
@@ -1716,7 +1817,8 @@ mod tests {
         let repository = shell.folder("repo");
         std::fs::write(repository.join("file.txt"), "keep").expect("file");
         shell.remember(&repository, KEY);
-        let list = answer(&shell.stores, "listRecentRepositories", &json!({})).expect("list");
+        let list =
+            recent_answer(&shell.stores, "listRecentRepositories", &json!({})).expect("list");
         assert_eq!(
             list,
             settings::recent_list(&lock(&shell.stores.settings), None)
@@ -1729,11 +1831,11 @@ mod tests {
         );
         let unknown = json!({ "entryId": "0f0f0f0f-0000-4000-8000-0000000000ff" });
         assert_eq!(
-            answer(&shell.stores, "removeRecentRepository", &unknown),
+            recent_answer(&shell.stores, "removeRecentRepository", &unknown),
             Err("UNKNOWN_TARGET")
         );
         let entry_id = shell.entry_id(0);
-        let removed = answer(
+        let removed = recent_answer(
             &shell.stores,
             "removeRecentRepository",
             &json!({ "entryId": entry_id }),
@@ -1751,7 +1853,7 @@ mod tests {
         );
         assert_eq!(settings::load(&shell.stores.settings_path).recent, []);
         assert_eq!(
-            answer(
+            recent_answer(
                 &shell.stores,
                 "removeRecentRepository",
                 &json!({ "entryId": entry_id })
@@ -2181,5 +2283,188 @@ mod tests {
             shell.stores.trust.records().is_empty(),
             "the identity match goes"
         );
+    }
+    // ---- Feature 003: the shell-only settings and the clone native step (T027, T028) ----
+
+    /// Every file below `folder` with its bytes, except `settings.json`.
+    fn files(folder: &Path) -> Vec<(PathBuf, Vec<u8>)> {
+        let mut found = Vec::new();
+        for entry in std::fs::read_dir(folder).expect("folder").flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                found.extend(files(&path));
+            } else if path.file_name() != Some(std::ffi::OsStr::new("settings.json")) {
+                found.push((path.clone(), std::fs::read(&path).expect("bytes")));
+            }
+        }
+        found.sort();
+        found
+    }
+
+    #[test]
+    fn set_default_pull_action_writes_only_the_settings_file_and_no_git_configuration() {
+        let shell = Shell::new();
+        std::fs::write(
+            shell.fixture.path("global.gitconfig"),
+            "[pull]\n\trebase = false\n",
+        )
+        .expect("global");
+        let git = shell.folder(r"repo\.git");
+        std::fs::write(git.join("config"), "[core]\n\tbare = false\n").expect("local");
+        let before = files(&shell.fixture.0);
+        for action in settings::PULL_ACTIONS {
+            let answered = answer(
+                &shell.stores,
+                &Fake::default(),
+                &[],
+                "setDefaultPullAction",
+                &json!({ "action": action }),
+            );
+            assert_eq!(
+                answered.map(|result| result.map(|settings| settings["defaultPullAction"].clone())),
+                Ok(Some(json!(action)))
+            );
+            assert_eq!(
+                settings::load(&shell.stores.settings_path)
+                    .sync
+                    .default_pull_action,
+                action
+            );
+        }
+        assert_eq!(files(&shell.fixture.0), before, "no other file changed");
+    }
+
+    #[test]
+    fn the_settings_operations_answer_natively_and_a_canceled_picker_cancels() {
+        let shell = Shell::new();
+        let read = answer(
+            &shell.stores,
+            &Fake::default(),
+            &[],
+            "readSyncSettings",
+            &json!({}),
+        );
+        assert_eq!(
+            read,
+            Ok(Some(json!({
+                "sshClient": "git", "defaultPullAction": "pull", "plinkPath": null, "programs": [],
+                "remoteKeyFiles": [], "defaultCloneFolder": null, "lastCloneParent": null,
+            })))
+        );
+        assert_eq!(
+            answer(
+                &shell.stores,
+                &Fake::default(),
+                &[],
+                "chooseSyncPath",
+                &json!({ "target": "cloneFolder" })
+            ),
+            Ok(None)
+        );
+        assert!(
+            !shell.stores.settings_path.exists(),
+            "a cancel writes nothing"
+        );
+        let folder = shell.folder("clones");
+        let picked = Fake {
+            folder: Some(folder.clone()),
+            ..Fake::default()
+        };
+        let chosen = answer(
+            &shell.stores,
+            &picked,
+            &[],
+            "chooseSyncPath",
+            &json!({ "target": "cloneFolder" }),
+        );
+        assert_eq!(
+            chosen.map(|result| result.map(|settings| settings["defaultCloneFolder"].clone())),
+            Ok(Some(json!(folder)))
+        );
+        assert_eq!(
+            settings::load(&shell.stores.settings_path)
+                .sync
+                .default_clone_folder,
+            Some(folder)
+        );
+    }
+
+    #[test]
+    fn a_clone_forwards_only_the_url_and_the_context_ids_and_a_success_stores_the_recent_entry_and_the_last_clone_parent()
+     {
+        let shell = Shell::new();
+        let destination = shell.fixture.path(r"clones\repo");
+        let url = "https://example.test/team/repo.git";
+        let prepared = shell
+            .prepare(
+                &Fake::default(),
+                "clone",
+                json!({ "url": url, "destination": destination, "keyFile": "none" }),
+            )
+            .expect("checked")
+            .expect("contexts");
+        let payload = prepared.payload.as_object().expect("payload");
+        let mut keys: Vec<&String> = payload.keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["bootstrapId", "cloneId", "url"], "no path");
+        assert_eq!(payload["url"], url);
+        let now = Instant::now();
+        let id = |key: &str| payload[key].as_str().expect("ID").to_string();
+        let discovery = shell
+            .contexts
+            .get(&id("bootstrapId"), now)
+            .expect("discovery");
+        let clone = shell.contexts.get(&id("cloneId"), now).expect("clone");
+        assert_eq!(
+            (discovery.kind, clone.kind),
+            (
+                crate::bootstrap::ContextKind::RepositoryDiscovery,
+                crate::bootstrap::ContextKind::Clone
+            )
+        );
+        assert_eq!(
+            (discovery.path, clone.path),
+            (destination.clone(), destination.clone())
+        );
+        assert_eq!(prepared.path, Some(destination.clone()));
+        let failed = json!({ "requestId": CALL, "state": "failed", "code": "GIT_FAILED" });
+        assert_eq!(
+            shell.finish(&Fake::default(), "clone", &prepared, failed.clone()),
+            failed
+        );
+        assert_eq!(shell.recent(), []);
+        assert_eq!(lock(&shell.stores.settings).sync.last_clone_parent, None);
+        let root = destination.to_str().expect("path").replace('\\', "/");
+        let response = registered(&root, KEY);
+        assert_eq!(
+            shell.finish(&Fake::default(), "clone", &prepared, response.clone()),
+            response
+        );
+        assert_eq!(shell.recent(), [(PathBuf::from(&root), KEY.to_string())]);
+        let saved = settings::load(&shell.stores.settings_path);
+        assert_eq!(
+            saved.sync.last_clone_parent,
+            Some(shell.fixture.path("clones"))
+        );
+        assert_eq!(saved.recent.len(), 1);
+        assert_eq!(
+            saved.last_repository, None,
+            "a clone is no open of a chosen folder"
+        );
+    }
+
+    #[test]
+    fn a_clone_with_a_destination_outside_the_path_rules_is_rejected_before_any_dialog() {
+        let shell = Shell::new();
+        let native = Fake::default();
+        assert_eq!(
+            shell.prepare(
+                &native,
+                "clone",
+                json!({ "url": "https://example.test/a.git", "destination": r"\\?\C:\src\a", "keyFile": "picked" }),
+            ),
+            Err(Ended::Rejected("INVALID_REQUEST"))
+        );
+        assert!(native.calls().is_empty());
     }
 }

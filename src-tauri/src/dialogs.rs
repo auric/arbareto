@@ -3,7 +3,7 @@
 
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Instant;
 
@@ -29,17 +29,21 @@ use windows::Win32::UI::WindowsAndMessaging::{IDCANCEL, PostMessageW};
 use windows::core::{HRESULT, HSTRING, PCWSTR, w};
 
 use crate::bootstrap::{ContextKind, Contexts, is_absent};
+use crate::file_facts::is_wsl_path;
 use crate::ipc::MAIN_WINDOW;
-use crate::process_requests::PATH_UNITS;
+use crate::process_requests::{PATH_UNITS, native_path};
 use crate::schema::process_reply::RegisterResultResult;
 use crate::schema::reply;
 use crate::settings::{Confirm, Damaged, Marker, SavedGit, Settings};
+use crate::wsl;
 
 /// Escape, Alt+F4, and the close button return `IDCANCEL`, so the Cancel button carries that ID.
 const CANCEL: i32 = IDCANCEL.0;
 /// Custom button IDs stay clear of the common button IDs 1 to 11.
 const ACCEPT: i32 = 100;
 const ANOTHER: i32 = 101;
+
+const INVALID: &str = "INVALID_REQUEST";
 
 /// Contract §7 "Program file digests": the text of an approval over a digest bound.
 const SESSION_APPROVAL: &str = "Arbareto cannot check these program files for later edits. This approval lasts until Arbareto closes or its Git service restarts.";
@@ -79,12 +83,31 @@ fn confirmation(text: String, accept: &'static str, extra: Option<Button>) -> Co
     }
 }
 
+/// Feature 003 contract Δ3: the files of `chooseSyncPath` and of the clone key picker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileKind {
+    Plink,
+    Key,
+}
+
+impl FileKind {
+    /// The name and the pattern of the file type filter.
+    fn filter(self) -> (PCWSTR, PCWSTR) {
+        match self {
+            FileKind::Plink => (w!("plink"), w!("*.exe")),
+            FileKind::Key => (w!("PuTTY key"), w!("*.ppk")),
+        }
+    }
+}
+
 /// The native pickers and confirmations. T183 injects them, so the tests run without a window.
 pub trait Native {
     /// The executable picker. `Ok(None)` is Cancel. `Err` is a picker call failure.
     fn pick_executable(&self) -> Result<Option<PathBuf>, &'static str>;
     /// The folder picker. `Ok(None)` is Cancel. `Err` is a picker call failure.
     fn pick_folder(&self) -> Result<Option<PathBuf>, &'static str>;
+    /// The file picker of one `FileKind`. `Ok(None)` is Cancel. `Err` is a picker call failure.
+    fn pick_file(&self, kind: FileKind) -> Result<Option<PathBuf>, &'static str>;
     /// The button ID that `TaskDialogIndirect` returns. `None` is a call failure.
     fn confirm(&self, confirmation: &Confirmation) -> Option<i32>;
     /// `SearchPathW` for `git.exe` with the shell `PATH` value as `lpPath`.
@@ -193,6 +216,67 @@ pub fn open_recent(path: PathBuf, contexts: &Contexts, now: Instant) -> Chosen {
         Chosen::Refused(_) if is_absent(&path) => Chosen::Absent(path),
         chosen => chosen,
     }
+}
+
+/// The two contexts of one clone (feature 003 contract Δ3 `clone`).
+#[derive(Debug, PartialEq, Eq)]
+pub struct Cloned {
+    pub clone_id: String,
+    pub bootstrap_id: String,
+    pub destination: PathBuf,
+}
+
+/// Feature 003 contract Δ3 `clone` native step: the path text by the 001 Windows rules or the §11 route,
+/// then the `.ppk` picker for `keyFile: "picked"`, then one `clone` and one `repositoryDiscovery` context.
+/// `Ok(None)` is a canceled picker.
+pub fn choose_clone(
+    native: &dyn Native,
+    contexts: &Contexts,
+    payload: &Value,
+    now: Instant,
+) -> Result<Option<Cloned>, &'static str> {
+    let (Some(url), Some(destination), Some(key_file)) = (
+        payload["url"].as_str(),
+        payload["destination"].as_str(),
+        payload["keyFile"].as_str(),
+    ) else {
+        return Err(INVALID);
+    };
+    let destination = native_path(destination).map_err(|_| INVALID)?;
+    if !routed(&destination) {
+        return Err(INVALID);
+    }
+    let key = match key_file {
+        "none" => None,
+        "picked" => match native.pick_file(FileKind::Key)? {
+            None => return Ok(None),
+            Some(key) if key.to_str().is_some() => Some(key),
+            Some(_) => return Err(INVALID),
+        },
+        _ => return Err(INVALID),
+    };
+    let (clone_id, bootstrap_id) = contexts.create_clone(&destination, url, key, now);
+    Ok(Some(Cloned {
+        clone_id,
+        bootstrap_id,
+        destination,
+    }))
+}
+
+/// Contract §11 "Route": a WSL path names a distro, and each segment has a Linux form (reason `wsl-path`).
+fn routed(path: &Path) -> bool {
+    if !is_wsl_path(path) {
+        return true;
+    }
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return false;
+    };
+    let Prefix::UNC(_, distro) = prefix.kind() else {
+        return false;
+    };
+    distro
+        .to_str()
+        .is_some_and(|distro| !distro.is_empty() && wsl::linux_path(path, distro).is_some())
 }
 
 /// The probed candidate of a `register` request with `confirm: true`.
@@ -526,15 +610,23 @@ unsafe extern "system" fn track(
 /// The `rejected` code of a picker call that failed (contract §3).
 pub const PICKER_FAILED: &str = "PICKER_FAILED";
 
+/// What one picker shows. `Git` is the executable picker of `chooseGit`.
+#[derive(Clone, Copy)]
+enum Picker {
+    Folder,
+    Git,
+    File(FileKind),
+}
+
 /// Shows an `IFileOpenDialog` on a new STA thread. `owner` is the raw `HWND`, because `HWND` is not `Send`.
-fn pick(owner: isize, folders: bool) -> Result<Option<PathBuf>, &'static str> {
+fn pick(owner: isize, picker: Picker) -> Result<Option<PathBuf>, &'static str> {
     std::thread::spawn(move || {
         // SAFETY: this new thread has no COM apartment yet. The dialog object needs an STA.
         unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) }
             .ok()
             .map_err(|error| failed("CoInitializeEx", error.code()))?;
         let picked =
-            show(HWND(owner as _), folders).map_err(|(step, error)| failed(step, error.code()));
+            show(HWND(owner as _), picker).map_err(|(step, error)| failed(step, error.code()));
         // SAFETY: `show` released every COM object, and the initialize call above succeeded.
         unsafe { CoUninitialize() };
         picked
@@ -558,26 +650,26 @@ fn at(step: &'static str) -> impl Fn(windows::core::Error) -> (&'static str, win
 /// `FOS_FORCEFILESYSTEM` keeps the dialog open for an item without `SFGAO_FILESYSTEM`, such as Search Results.
 fn show(
     owner: HWND,
-    folders: bool,
+    picker: Picker,
 ) -> Result<Option<PathBuf>, (&'static str, windows::core::Error)> {
     // SAFETY: the calling thread is in an STA, and `FileOpenDialog` is an in-process class.
     let dialog: IFileOpenDialog =
         unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) }
             .map_err(at("CoCreateInstance"))?;
-    let picks = if folders {
-        FOS_PICKFOLDERS
-    } else {
-        FILEOPENDIALOGOPTIONS(0)
+    let (picks, filter) = match picker {
+        Picker::Folder => (FOS_PICKFOLDERS, None),
+        Picker::Git => (FILEOPENDIALOGOPTIONS(0), Some((w!("Git"), w!("*.exe")))),
+        Picker::File(kind) => (FILEOPENDIALOGOPTIONS(0), Some(kind.filter())),
     };
     // SAFETY: `dialog` is a live interface on this thread.
     let options = unsafe { dialog.GetOptions() }.map_err(at("GetOptions"))?;
     // SAFETY: `dialog` is a live interface on this thread.
     unsafe { dialog.SetOptions(options | FOS_FORCEFILESYSTEM | picks) }
         .map_err(at("SetOptions"))?;
-    if !folders {
+    if let Some((name, spec)) = filter {
         let filter = [COMDLG_FILTERSPEC {
-            pszName: w!("Git"),
-            pszSpec: w!("*.exe"),
+            pszName: name,
+            pszSpec: spec,
         }];
         // SAFETY: the dialog copies the filter strings, which are static.
         unsafe { dialog.SetFileTypes(&filter) }.map_err(at("SetFileTypes"))?;
@@ -603,11 +695,15 @@ fn show(
 
 impl Native for Dialogs {
     fn pick_executable(&self) -> Result<Option<PathBuf>, &'static str> {
-        pick(self.owner_hwnd(), false)
+        pick(self.owner_hwnd(), Picker::Git)
     }
 
     fn pick_folder(&self) -> Result<Option<PathBuf>, &'static str> {
-        pick(self.owner_hwnd(), true)
+        pick(self.owner_hwnd(), Picker::Folder)
+    }
+
+    fn pick_file(&self, kind: FileKind) -> Result<Option<PathBuf>, &'static str> {
+        pick(self.owner_hwnd(), Picker::File(kind))
     }
 
     fn confirm(&self, confirmation: &Confirmation) -> Option<i32> {
@@ -724,7 +820,9 @@ pub(crate) mod tests {
         pub(crate) folder: Option<PathBuf>,
         pub(crate) search: Option<PathBuf>,
         pub(crate) program_files: Option<PathBuf>,
-        /// A picker call failure code. It overrides `executable` and `folder`.
+        /// The answer of `pick_file` for each `FileKind`.
+        pub(crate) file: Option<PathBuf>,
+        /// A picker call failure code. It overrides `executable`, `folder`, and `file`.
         pub(crate) pick_failure: Option<&'static str>,
         pub(crate) presses: RefCell<Vec<Press>>,
         pub(crate) calls: RefCell<Vec<&'static str>>,
@@ -738,7 +836,7 @@ pub(crate) mod tests {
             }
         }
 
-        fn calls(&self) -> Vec<&'static str> {
+        pub(crate) fn calls(&self) -> Vec<&'static str> {
             self.calls.borrow().clone()
         }
     }
@@ -752,6 +850,14 @@ pub(crate) mod tests {
         fn pick_folder(&self) -> Result<Option<PathBuf>, &'static str> {
             self.calls.borrow_mut().push("pick_folder");
             self.pick_failure.map_or(Ok(self.folder.clone()), Err)
+        }
+
+        fn pick_file(&self, kind: FileKind) -> Result<Option<PathBuf>, &'static str> {
+            self.calls.borrow_mut().push(match kind {
+                FileKind::Plink => "pick_file plink",
+                FileKind::Key => "pick_file key",
+            });
+            self.pick_failure.map_or(Ok(self.file.clone()), Err)
         }
 
         fn confirm(&self, confirmation: &Confirmation) -> Option<i32> {
@@ -1456,6 +1562,7 @@ pub(crate) mod tests {
             window: None,
             wsl_gits: Vec::new(),
             recent: Vec::new(),
+            sync: Default::default(),
         };
         assert_eq!(
             restore_workspace(&settings, &contexts, Instant::now()),
@@ -1485,6 +1592,7 @@ pub(crate) mod tests {
             window: None,
             wsl_gits: Vec::new(),
             recent: Vec::new(),
+            sync: Default::default(),
         };
         let saved_git = startup_context(&settings, &contexts, Instant::now()).expect("savedGit");
         let bootstrap_id = saved_git["bootstrapId"].as_str().expect("bootstrapId");
@@ -1513,6 +1621,7 @@ pub(crate) mod tests {
             window: None,
             wsl_gits: Vec::new(),
             recent: Vec::new(),
+            sync: Default::default(),
         };
         let saved_git = startup_context(&settings, &contexts, Instant::now()).expect("savedGit");
         let bootstrap_id = saved_git["bootstrapId"].as_str().expect("bootstrapId");
@@ -1542,6 +1651,7 @@ pub(crate) mod tests {
             window: None,
             wsl_gits: Vec::new(),
             recent: Vec::new(),
+            sync: Default::default(),
         };
         assert_eq!(
             startup_context(&settings, &contexts, Instant::now()),
@@ -1561,6 +1671,7 @@ pub(crate) mod tests {
             window: None,
             wsl_gits: Vec::new(),
             recent: Vec::new(),
+            sync: Default::default(),
         };
         assert_eq!(startup_context(&settings, &contexts, Instant::now()), None);
     }
@@ -1576,6 +1687,7 @@ pub(crate) mod tests {
             window: None,
             wsl_gits: Vec::new(),
             recent: Vec::new(),
+            sync: Default::default(),
         };
         let chosen = restore_workspace(&settings, &contexts, Instant::now());
         assert_eq!(
@@ -1635,6 +1747,130 @@ pub(crate) mod tests {
                 root,
                 crate::bootstrap::ContextIdentity::Wsl
             )
+        );
+    }
+    // ---- Feature 003 contract Δ3 `clone` native step (T028) ----
+
+    fn clone_payload(destination: &str, key_file: &str) -> Value {
+        json!({ "url": "ssh://git@example.test/team/repo.git", "destination": destination, "keyFile": key_file })
+    }
+
+    #[test]
+    fn a_clone_binds_a_clone_and_a_discovery_context_for_the_checked_path_and_an_absent_destination_binds()
+     {
+        let fixture = Fixture::new();
+        let contexts = Contexts::new(SESSION);
+        let native = Fake::default();
+        let destination = fixture.path(r"absent\repo");
+        let text = destination.to_str().expect("path");
+        let cloned = choose_clone(
+            &native,
+            &contexts,
+            &clone_payload(text, "none"),
+            Instant::now(),
+        )
+        .expect("checked")
+        .expect("contexts");
+        assert!(native.calls().is_empty(), "no picker without a key file");
+        assert_eq!(cloned.destination, destination);
+        let now = Instant::now();
+        let clone = contexts.get(&cloned.clone_id, now).expect("clone context");
+        let discovery = contexts
+            .get(&cloned.bootstrap_id, now)
+            .expect("discovery context");
+        let pending = crate::bootstrap::ContextIdentity::Pending { wsl: false };
+        assert_eq!(
+            (clone.kind, clone.path.clone(), clone.identity),
+            (ContextKind::Clone, destination.clone(), pending)
+        );
+        assert_eq!(
+            (discovery.kind, discovery.path.clone(), discovery.identity),
+            (ContextKind::RepositoryDiscovery, destination, pending)
+        );
+        assert_eq!(clone.peer.as_deref(), Some(cloned.bootstrap_id.as_str()));
+        assert_eq!(discovery.peer.as_deref(), Some(cloned.clone_id.as_str()));
+        assert_eq!(
+            clone.url.as_deref(),
+            Some("ssh://git@example.test/team/repo.git")
+        );
+        assert_eq!(clone.key, None);
+        let wsl = choose_clone(
+            &native,
+            &contexts,
+            &clone_payload(r"\\wsl$\Ubuntu-24.04\home\u\new", "none"),
+            now,
+        )
+        .expect("a WSL route")
+        .expect("contexts");
+        assert_eq!(
+            contexts
+                .get(&wsl.bootstrap_id, now)
+                .expect("context")
+                .identity,
+            crate::bootstrap::ContextIdentity::Pending { wsl: true }
+        );
+    }
+
+    #[test]
+    fn a_clone_path_outside_the_windows_rules_or_the_wsl_route_is_refused_before_any_picker() {
+        let contexts = Contexts::new(SESSION);
+        let native = Fake::default();
+        for destination in [
+            "repo",
+            r"C:repo",
+            r"\\?\C:\src\repo",
+            r"\\.\pipe\repo",
+            "\\\\wsl$\\Ubuntu-24.04\\home\\a\u{f05c}b",
+            r"\\wsl.localhost\",
+        ] {
+            assert_eq!(
+                choose_clone(
+                    &native,
+                    &contexts,
+                    &clone_payload(destination, "picked"),
+                    Instant::now()
+                ),
+                Err("INVALID_REQUEST"),
+                "{destination}"
+            );
+        }
+        assert!(native.calls().is_empty(), "no picker");
+    }
+
+    #[test]
+    fn with_a_picked_key_file_a_canceled_picker_cancels_and_binds_nothing() {
+        let fixture = Fixture::new();
+        let contexts = Contexts::new(SESSION);
+        let destination = fixture.path("repo");
+        let payload = clone_payload(destination.to_str().expect("path"), "picked");
+        let canceled = Fake::default();
+        assert_eq!(
+            choose_clone(&canceled, &contexts, &payload, Instant::now()),
+            Ok(None)
+        );
+        assert_eq!(canceled.calls(), ["pick_file key"]);
+        let failed = Fake {
+            pick_failure: Some(PICKER_FAILED),
+            ..Fake::default()
+        };
+        assert_eq!(
+            choose_clone(&failed, &contexts, &payload, Instant::now()),
+            Err(PICKER_FAILED)
+        );
+        let key = fixture.path("id.ppk");
+        let picked = Fake {
+            file: Some(key.clone()),
+            ..Fake::default()
+        };
+        let cloned = choose_clone(&picked, &contexts, &payload, Instant::now())
+            .expect("checked")
+            .expect("contexts");
+        assert_eq!(
+            contexts
+                .get(&cloned.clone_id, Instant::now())
+                .expect("context")
+                .key,
+            Some(key)
         );
     }
 }

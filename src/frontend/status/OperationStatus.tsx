@@ -4,6 +4,7 @@
 import { CancelCircleIcon, PlusSignCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useId, useImperativeHandle, useLayoutEffect, useRef, useState, type ReactNode, type Ref, type RefObject } from "react";
+import type { SYNC_ACTIONS } from "../../contracts/channel";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import type { SubmoduleRowResult } from "../../contracts/submodules";
 import { WarningIcon } from "../app/NoticeBand";
@@ -13,15 +14,19 @@ import type { BridgeResponse, createBridge, ProgressEvent } from "../bridge";
 import { Button } from "../components/ui/button";
 import { branchName } from "../history/HistoryView";
 import { isEditable, type Panel } from "../keyboard/shortcuts";
-import { cn } from "../lib/utils";
+import { cn, isObject } from "../lib/utils";
+
+type SyncAction = (typeof SYNC_ACTIONS)[number];
 
 // plan.md "Status area", "Status and fallback texts", "Required visible states" (Succeeded, Busy, Cancel requested, Canceled, Completed with effects, State unknown), "Keyboard and focus" (Status area row), and the Commit outcome row of "Task flow and command placement".
 
 export type StatusOperation = {
   /** A new value starts a new operation: the area and its content clear. */
   requestId: string;
-  kind: "commit" | "applyHunk" | "applyFile" | "updateSubmodules";
+  kind: "commit" | "applyHunk" | "applyFile" | "updateSubmodules" | "sync";
   direction?: "stage" | "unstage";
+  /** Feature 003: the action of a `sync` and the remotes of its review plan, in `git remote` order (contract Δ3). */
+  sync?: { action: SyncAction; remotes: readonly string[] };
   /** The latest progress event, or null before the first one. */
   progress: ProgressEvent | null;
   /** The terminal response, or null while the operation runs. */
@@ -91,6 +96,10 @@ type Outcome = {
   path?: string;
   reason?: string;
   effects?: Record<EffectField, boolean>;
+  /** Feature 003 data-model §4: each fetched remote with its state. */
+  remotes?: { name: string; state: string; outputTail: string }[];
+  /** Feature 003 data-model §5 `status`, `lease`, and `reasonText`. */
+  push?: { status: string; lease: boolean; reasonText: string | null };
 };
 type StallRemedy = { text: string; command?: string };
 type Head = WorkspaceSnapshot["head"];
@@ -106,7 +115,31 @@ const TEXTS: Record<string, [name: string, running: string, heading: string]> = 
   "applyFile:unstage": ["File unstaging", "Unstaging file", "Unstage file details"],
   updateSubmodules: ["Update submodules", "Updating submodules", "Update submodules details"],
 };
-const textsOf = (op: StatusOperation) => TEXTS[op.kind === "applyHunk" || op.kind === "applyFile" ? `${op.kind}:${op.direction ?? "stage"}` : op.kind]!;
+// Feature 003 plan.md D12: a `sync` takes the name of its action. A pull step that integrates is also "Pull".
+export const SYNC_NAMES: Record<SyncAction, string> = {
+  "fetch": "Fetch",
+  "fetch-all": "Fetch all remotes",
+  pull: "Pull",
+  integrate: "Pull",
+  push: "Push",
+  "force-push": "Force push with lease",
+  abort: "Abort",
+  continue: "Continue",
+  skip: "Skip",
+};
+function textsOf(op: StatusOperation): [name: string, running: string, heading: string] {
+  if (op.kind === "sync") {
+    const name = SYNC_NAMES[op.sync?.action ?? "fetch"];
+    return [name, name, `${name} details`];
+  }
+  return TEXTS[op.kind === "applyHunk" || op.kind === "applyFile" ? `${op.kind}:${op.direction ?? "stage"}` : op.kind]!;
+}
+// Feature 003 data-model §4 remote states.
+const REMOTE_STATES: Record<string, string> = { succeeded: "Fetched", failed: "Failed", canceled: "Canceled", deadline: "Stopped by a time limit", "not-started": "Not started" };
+// Feature 003 contract Δ8.
+const PUSH_CANCELED = "The remote can hold this push. Fetch to see the remote state.";
+// Feature 003 spec FR-015.
+const REMOTE_REJECTED = "Rejected by the remote";
 // Data-model `effects`: the field order of the sentences.
 const EFFECT_FIELDS = ["head", "index", "workingFiles", "operationState"] as const;
 type EffectField = (typeof EFFECT_FIELDS)[number];
@@ -129,7 +162,6 @@ const FAILED_READ = "Arbareto could not read this submodule. Use Refresh, then t
 // Data-model §7 and plan.md "Status area": these commit states open the area.
 const OPENING_COMMIT_STATES = ["failed", "failed-with-effects", "completed-with-effects"];
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 const isText = (value: unknown): value is string => typeof value === "string";
 /** plan.md "History graph design": a short ID is the first 12 hex digits. */
 export const shortId = (oid: string | null) => (oid ?? "").slice(0, 12);
@@ -213,11 +245,16 @@ function outcomeOf(response: BridgeResponse | null | undefined): Outcome {
   if (!isObject(r)) return {};
   const remedy = isObject(r.remedy) ? { text: isText(r.remedy.text) ? r.remedy.text : undefined, command: isText(r.remedy.command) ? r.remedy.command : null } : undefined;
   const e = r.effects;
+  const { "fetch": fetched } = r;
+  const remotes = isObject(fetched) && Array.isArray(fetched.remotes) ? fetched.remotes.filter((x): x is Record<string, unknown> => isObject(x) && isText(x.name) && isText(x.state)) : undefined;
+  const push = isObject(r.push) && isText(r.push.status) ? r.push : undefined;
   return {
+    remotes: remotes?.map((x) => ({ name: x.name as string, state: x.state as string, outputTail: isText(x.outputTail) ? x.outputTail : "" })),
+    push: push === undefined ? undefined : { status: push.status as string, lease: push.lease === true, reasonText: isText(push.reasonText) ? push.reasonText : null },
     reason: isText(r.reason) ? r.reason : undefined,
     effects: isObject(e) && EFFECT_FIELDS.every((f) => typeof e[f] === "boolean") ? (e as Record<EffectField, boolean>) : undefined,
     commitOid: isText(r.commitOid) ? r.commitOid : undefined,
-    outputTail: isText(r.outputTail) ? r.outputTail : undefined,
+    outputTail: isText(r.outputTail) ? r.outputTail : push !== undefined && isText(push.outputTail) && push.outputTail !== "" ? push.outputTail : undefined,
     remedy,
     foreign: Array.isArray(r.foreign) ? r.foreign.filter(isText) : undefined,
     lingeringDescendants: typeof r.lingeringDescendants === "number" ? r.lingeringDescendants : undefined,
@@ -260,9 +297,13 @@ function operationText(op: StatusOperation, worktreeRoot: string, head: Head | n
     const step = op.kind === "updateSubmodules" && progress?.phase !== undefined ? SUBMODULE_STEPS[progress.phase] : undefined;
     const { rowIndex, rowCount } = progress?.counters ?? {};
     if (step !== undefined && progress?.path !== undefined && rowIndex !== undefined && rowCount !== undefined) return { lead: `${step} ${progress.path} (${rowIndex} of ${rowCount})…`, tail: "" };
+    const syncStep = op.kind === "sync" ? syncStepText(op) : null;
+    if (syncStep !== null) return { lead: syncStep, tail: "" };
     return { lead: `${verb} in ${folderName(worktreeRoot)}…`, tail: "" };
   }
   const outcome = outcomeOf(response);
+  const sync = op.kind === "sync" ? syncOutcome(name, response, outcome) : null;
+  if (sync !== null) return sync;
   // plan.md "Status and fallback texts": the contract §9 code, or the result state without a code.
   const coded = (lead: string): Line => ({ lead, code: response.code ?? response.state, tail: outcome.reason === undefined ? "" : ` ${outcome.reason}` });
   const short = outcome.commitOid === undefined ? undefined : shortId(outcome.commitOid);
@@ -278,11 +319,38 @@ function operationText(op: StatusOperation, worktreeRoot: string, head: Head | n
     else if (op.kind === "applyHunk") line.lead = op.direction === "unstage" ? "Hunk unstaged" : "Hunk staged";
     else if (op.kind === "applyFile") line.lead = op.direction === "unstage" ? "File unstaged" : "File staged";
     else if (op.kind === "updateSubmodules") line.lead = "Submodules updated";
+    else if (op.kind === "sync") line.lead = `${name} completed`;
   }
   const count = outcome.lingeringDescendants ?? 0;
   if (count === 0) return line;
   // plan.md "Required visible states", Succeeded: "<outcome>. <lingering sentence>".
   return plain(line) === "" ? { lead: lingeringSentence(count, trusted), tail: "" } : { ...line, tail: `${line.tail}. ${lingeringSentence(count, trusted)}` };
+}
+
+/** Feature 003 spec FR-002: the step text of a running `sync`. The remote name comes from the review plan, because progress events carry none (contract Δ2). */
+function syncStepText(op: StatusOperation): string | null {
+  const { action, remotes } = op.sync ?? { action: "fetch", remotes: [] };
+  const phase = op.progress?.phase;
+  if (phase === "sync-merge") return "Merging…";
+  if (phase === "sync-rebase") return "Rebasing…";
+  // Contract Δ3: fetch-all runs the remotes of the plan in order. `remoteIndex` counts from 1.
+  const index = op.progress?.counters.remoteIndex;
+  const remote = action === "fetch-all" && index !== undefined ? remotes[index - 1] : remotes[0];
+  if (remote === undefined) return null;
+  if (action === "fetch" || action === "fetch-all") return `Fetching from ${remote}…`;
+  if (action === "pull") return `Pulling from ${remote}…`;
+  if (action === "push" || action === "force-push") return `Pushing to ${remote}…`;
+  return null;
+}
+
+/** Feature 003: the outcome lines that differ from the 001 texts. */
+function syncOutcome(name: string, response: BridgeResponse, outcome: Outcome): Line | null {
+  if (response.state === "canceled" && (name === SYNC_NAMES.push || name === SYNC_NAMES["force-push"])) return { lead: `${name} canceled. ${PUSH_CANCELED}`, tail: "" };
+  const push = outcome.push;
+  if (response.code === "PUSH_REJECTED" && push?.status === "remote-rejected") return { lead: REMOTE_REJECTED, tail: push.reasonText === null ? "" : `: ${push.reasonText}` };
+  // Data-model §5: a `rejected` status with a lease is `stale-lease` (contract Δ9).
+  if (response.code === "PUSH_REJECTED" && push !== undefined) return { lead: `${name} did not complete: `, code: "PUSH_REJECTED", tail: ` ${push.status === "rejected" && push.lease ? "stale-lease" : push.status}` };
+  return null;
 }
 
 function readStallRemedy(response: BridgeResponse): StallRemedy | null {
@@ -325,7 +393,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
   const liveText = line === null ? "" : plain(line);
   const running = op !== null && response === null;
   const stalled = running && op.progress?.stalled === true;
-  const percent = running && op.kind === "updateSubmodules" ? op.progress?.counters.percent : undefined;
+  const percent = running && (op.kind === "updateSubmodules" || op.kind === "sync") ? op.progress?.counters.percent : undefined;
   const current = area !== null && area.requestId === requestId ? area : null;
   const notice = stall !== null && stall.requestId === requestId ? stall : null;
   const suggested = op?.kind === "commit" && response?.state === "completed-with-effects" && outcome.commitOid !== undefined;
@@ -346,6 +414,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
     outcome.failure !== undefined ||
     outcome.path !== undefined ||
     submoduleRows.length > 0 ||
+    (outcome.remotes?.length ?? 0) > 0 ||
     inactivity ||
     suggested;
   const hasArea = heading !== undefined && (details || truncated || current !== null);
@@ -406,7 +475,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
     const target = commit ? outcomeFocus(panel, modalOpen, focusFrom.current) : op.kind === "updateSubmodules" ? submoduleFocus() : "stay";
     const count = outcome.lingeringDescendants ?? 0;
     // plan.md "Status area", Opening: every commit outcome opens the area while the commit details are docked.
-    const opens = (commit && (panel === "details" || OPENING_COMMIT_STATES.includes(response.state))) || count > 0 || op.kind === "updateSubmodules";
+    const opens = (commit && (panel === "details" || OPENING_COMMIT_STATES.includes(response.state))) || count > 0 || op.kind === "updateSubmodules" || op.sync?.action === "fetch-all";
     if (heading !== undefined && opens) openArea(false);
     if (target === "message-field") onFocusMessageField();
     else if (target === "area-heading" && heading !== undefined) focusHeading.current = true;
@@ -532,6 +601,16 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
               </code>
             ))}
             {inactivity ? <p>{INACTIVITY}</p> : null}
+            {outcome.remotes === undefined || outcome.remotes.length === 0 ? null : (
+              <ul>
+                {outcome.remotes.map((remote) => (
+                  <li key={remote.name} className="py-1">
+                    <p>{`${remote.name}: ${REMOTE_STATES[remote.state] ?? remote.state}`}</p>
+                    {remote.outputTail === "" ? null : <pre className="font-mono whitespace-pre-wrap">{remote.outputTail}</pre>}
+                  </li>
+                ))}
+              </ul>
+            )}
             {submoduleRows.length === 0 ? null : (
               <ul>
                 {submoduleRows.map((row) => (

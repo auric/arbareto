@@ -67,7 +67,8 @@
               "applyHunk",
               "applyFile",
               "commit",
-              "updateSubmodules"
+              "updateSubmodules",
+              "sync"
             ]
           },
           "startedAt": {

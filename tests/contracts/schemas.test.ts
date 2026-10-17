@@ -74,18 +74,26 @@ const commit = (message: string) => ({
 });
 
 describe("envelope schemas", () => {
-  test("the renderer envelope is a union of the 25 operations, and the service envelope of 20", () => {
+  test("the renderer envelope is a union of every operation, and the service envelope of the operations that the shell forwards", () => {
     const names = (schema: { options: readonly { shape: { operation: { value: string } } }[] }) => schema.options.map((o) => o.shape.operation.value);
     expect(names(RendererEnvelope)).toEqual([...OPERATIONS]);
     expect(names(ServiceEnvelope)).toEqual(OPERATIONS.filter((name) => !(SHELL_ONLY as readonly string[]).includes(name)));
+    // Feature 003 contract Δ1: `clone` is native-first, and the shell answers the six settings operations.
     expect(names(NativeFirstEnvelope).toSorted()).toEqual([
       "chooseGit",
       "chooseRepository",
+      "chooseSyncPath",
+      "clearSyncPath",
+      "clone",
       "dismissRecoveryMarker",
+      "launchPuttygen",
       "listRecentRepositories",
       "openRecentRepository",
+      "readSyncSettings",
       "removeRecentRepository",
       "restoreWorkspace",
+      "setDefaultPullAction",
+      "setSshClient",
     ]);
     // Contract §3 "Recent repositories": the shell answers the list and the removal, and forwards an open as `restoreWorkspace`.
     expect(SHELL_ONLY).toEqual(expect.arrayContaining(["listRecentRepositories", "openRecentRepository", "removeRecentRepository"]));
@@ -230,9 +238,13 @@ describe("channel schemas", () => {
       expect(MutationRequest.safeParse({ ...started, kind }).success).toBe(false);
       expect(MutationRequest.safeParse({ ...started, kind, direction: "both" }).success).toBe(false);
     }
-    for (const kind of ["commit", "updateSubmodules"]) {
-      expect(MutationRequest.safeParse({ ...started, kind }).success).toBe(true);
-      expect(MutationRequest.safeParse({ ...started, kind, direction: "stage" }).success).toBe(false);
+    // Feature 003 contract Δ3 `applyFile`: only a file action takes `resolve`.
+    expect(MutationRequest.safeParse({ ...started, kind: "applyFile", direction: "resolve" }).success).toBe(true);
+    expect(MutationRequest.safeParse({ ...started, kind: "applyHunk", direction: "resolve" }).success).toBe(false);
+    // Feature 003 contract Δ6: a `sync` frame carries its action.
+    for (const [kind, fields] of [["commit", {}], ["updateSubmodules", {}], ["sync", { action: "pull" }]] as const) {
+      expect(MutationRequest.safeParse({ ...started, kind, ...fields }).success).toBe(true);
+      expect(MutationRequest.safeParse({ ...started, kind, ...fields, direction: "stage" }).success).toBe(false);
     }
   });
 });
@@ -243,7 +255,7 @@ describe("trust report rows (contract §5 \"Trust report rows\", T372)", () => {
     fingerprint: "a".repeat(64),
     state: "untrusted",
     persistence: "stored",
-    approvalRequired: { reads: true, commit: true },
+    approvalRequired: { reads: true, commit: true, sync: true },
     entries: Array.from({ length: entries }, () => ({ key: "a", scope: "local", origin: "file:" })),
     hooks: Array.from({ length: hooks }, () => ({ event: "x", path: "h", repositoryControlled: true })),
   });

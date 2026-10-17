@@ -63,7 +63,7 @@ export function codeText(text: string, code: string): ReactNode {
   );
 }
 
-function CommandRemedy({ remedy }: { remedy: Remedy | undefined }) {
+export function CommandRemedy({ remedy }: { remedy: Remedy | undefined }) {
   if (!remedy) return null;
   return (
     <>
@@ -78,7 +78,7 @@ function CommandRemedy({ remedy }: { remedy: Remedy | undefined }) {
   );
 }
 
-function OutputTail({ text }: { text: string }) {
+export function OutputTail({ text }: { text: string }) {
   return (
     <pre tabIndex={0} className="max-h-48 overflow-auto rounded-sm border border-divider p-2 whitespace-pre-wrap select-text">
       {text}
@@ -126,11 +126,19 @@ export function RepositoryRefused({ code, result, onOpenRepository }: { code: Er
 export const SCOPE_LINE =
   "This test build covers opening repositories, recent repositories, status, diffs, hunk and file staging, local commits, submodule updates, one history page, and a read-only reference list.";
 
-/** plan.md "Required visible states", No repository: the recent list with its filter, Open folder, and the static line. No branch per entry. */
-export function StartPage(props: Omit<RecentListProps, "onClose" | "popup">) {
+/**
+ * plan.md "Required visible states", No repository: the recent list with its filter, Open folder, and the static line. No branch per entry.
+ * Feature 003 FR-046: `onClone` opens the clone panel.
+ */
+export function StartPage({ onClone, ...props }: Omit<RecentListProps, "onClose" | "popup"> & { onClone?(): void }) {
   return (
     <section aria-label="Start page" className="flex min-h-0 max-w-[480px] flex-col gap-4 p-4">
       <RecentList {...props} />
+      {onClone === undefined ? null : (
+        <Button variant="outline" className="self-start" onClick={onClone}>
+          Clone…
+        </Button>
+      )}
       <p className="text-muted-text">{SCOPE_LINE}</p>
     </section>
   );

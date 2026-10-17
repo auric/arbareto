@@ -9,7 +9,7 @@ use windows::Win32::UI::WindowsAndMessaging::IDCANCEL;
 
 use crate::dialogs::{Button, Confirmation, Native};
 use crate::process_requests::is_identifier;
-use crate::schema::mutation_request::{StartedDirection, StartedKind};
+use crate::schema::mutation_request::{StartedAction, StartedDirection, StartedKind};
 
 /// Escape, Alt+F4, the close button, and Enter on the default return `IDCANCEL`, so Stay open carries that ID.
 const STAY_OPEN: i32 = IDCANCEL.0;
@@ -78,27 +78,57 @@ pub enum Decision {
 }
 
 /// One running mutation by its plan.md "Status and fallback texts" mutation name.
+/// Feature 003 plan.md D12: a `sync` takes the name of its action, and `integrate` is "Pull".
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Mutation {
     HunkStaging,
     HunkUnstaging,
     FileStaging,
     FileUnstaging,
+    MarkResolved,
     Commit,
     UpdateSubmodules,
+    Fetch,
+    FetchAll,
+    Pull,
+    Push,
+    ForcePush,
+    Abort,
+    Continue,
+    Skip,
+    /// Feature 003 plan.md D12: a clone has no `started` frame. The shell names it from its own clone contexts.
+    Clone,
 }
 
 impl Mutation {
-    /// The mutation of a `started` frame. `None`: a hunk or file action without a direction, or another kind with one (contract §6 "Mutation frames").
-    pub fn of(kind: StartedKind, direction: Option<StartedDirection>) -> Option<Mutation> {
-        use StartedDirection::{Stage, Unstage};
-        Some(match (kind, direction) {
-            (StartedKind::ApplyHunk, Some(Stage)) => Mutation::HunkStaging,
-            (StartedKind::ApplyHunk, Some(Unstage)) => Mutation::HunkUnstaging,
-            (StartedKind::ApplyFile, Some(Stage)) => Mutation::FileStaging,
-            (StartedKind::ApplyFile, Some(Unstage)) => Mutation::FileUnstaging,
-            (StartedKind::Commit, None) => Mutation::Commit,
-            (StartedKind::UpdateSubmodules, None) => Mutation::UpdateSubmodules,
+    /// The mutation of a `started` frame (contract §6 "Mutation frames", feature 003 contract Δ6).
+    /// `None`: a hunk or file action without a direction, another kind with one, `resolve` outside a file action,
+    /// or `action` without kind `sync` or kind `sync` without `action`.
+    pub fn of(
+        kind: StartedKind,
+        direction: Option<StartedDirection>,
+        action: Option<StartedAction>,
+    ) -> Option<Mutation> {
+        use StartedAction as A;
+        use StartedDirection::{Resolve, Stage, Unstage};
+        Some(match (kind, direction, action) {
+            (StartedKind::ApplyHunk, Some(Stage), None) => Mutation::HunkStaging,
+            (StartedKind::ApplyHunk, Some(Unstage), None) => Mutation::HunkUnstaging,
+            (StartedKind::ApplyFile, Some(Stage), None) => Mutation::FileStaging,
+            (StartedKind::ApplyFile, Some(Unstage), None) => Mutation::FileUnstaging,
+            (StartedKind::ApplyFile, Some(Resolve), None) => Mutation::MarkResolved,
+            (StartedKind::Commit, None, None) => Mutation::Commit,
+            (StartedKind::UpdateSubmodules, None, None) => Mutation::UpdateSubmodules,
+            (StartedKind::Sync, None, Some(action)) => match action {
+                A::Fetch => Mutation::Fetch,
+                A::FetchAll => Mutation::FetchAll,
+                A::Pull | A::Integrate => Mutation::Pull,
+                A::Push => Mutation::Push,
+                A::ForcePush => Mutation::ForcePush,
+                A::Abort => Mutation::Abort,
+                A::Continue => Mutation::Continue,
+                A::Skip => Mutation::Skip,
+            },
             _ => return None,
         })
     }
@@ -109,13 +139,24 @@ impl Mutation {
             Mutation::HunkUnstaging => "Hunk unstaging",
             Mutation::FileStaging => "File staging",
             Mutation::FileUnstaging => "File unstaging",
+            Mutation::MarkResolved => "Mark resolved",
             Mutation::Commit => "Commit",
             Mutation::UpdateSubmodules => "Update submodules",
+            Mutation::Fetch => "Fetch",
+            Mutation::FetchAll => "Fetch all remotes",
+            Mutation::Pull => "Pull",
+            Mutation::Push => "Push",
+            Mutation::ForcePush => "Force push with lease",
+            Mutation::Abort => "Abort",
+            Mutation::Continue => "Continue",
+            Mutation::Skip => "Skip",
+            Mutation::Clone => "Clone",
         }
     }
 }
 
 /// The mutations from their `started` reply with a marker ID to `ended` (contract §6 "Recovery markers").
+/// A clone counts from the first request that owns its contexts to its `closeJob` (feature 003 contract Δ6).
 /// Lingering Jobs never enter it.
 #[derive(Default)]
 pub struct Running(Mutex<HashMap<String, Mutation>>);
@@ -395,19 +436,55 @@ mod tests {
         assert_ne!(prompt.accept_button, IDCANCEL.0);
     }
 
-    /// plan.md "Status and fallback texts": the mutation names.
+    /// plan.md "Status and fallback texts" and feature 003 plan.md D12: the mutation names.
     #[test]
     fn the_prompt_names_the_operation_and_its_direction_and_the_rollback_limit() {
-        use StartedDirection::{Stage, Unstage};
-        for (kind, direction, name) in [
-            (StartedKind::Commit, None, "Commit"),
-            (StartedKind::ApplyHunk, Some(Stage), "Hunk staging"),
-            (StartedKind::ApplyHunk, Some(Unstage), "Hunk unstaging"),
-            (StartedKind::ApplyFile, Some(Stage), "File staging"),
-            (StartedKind::ApplyFile, Some(Unstage), "File unstaging"),
-            (StartedKind::UpdateSubmodules, None, "Update submodules"),
+        use StartedAction as A;
+        use StartedDirection::{Resolve, Stage, Unstage};
+        for (kind, direction, action, name) in [
+            (StartedKind::Commit, None, None, "Commit"),
+            (StartedKind::ApplyHunk, Some(Stage), None, "Hunk staging"),
+            (
+                StartedKind::ApplyHunk,
+                Some(Unstage),
+                None,
+                "Hunk unstaging",
+            ),
+            (StartedKind::ApplyFile, Some(Stage), None, "File staging"),
+            (
+                StartedKind::ApplyFile,
+                Some(Unstage),
+                None,
+                "File unstaging",
+            ),
+            (StartedKind::ApplyFile, Some(Resolve), None, "Mark resolved"),
+            (
+                StartedKind::UpdateSubmodules,
+                None,
+                None,
+                "Update submodules",
+            ),
+            (StartedKind::Sync, None, Some(A::Fetch), "Fetch"),
+            (
+                StartedKind::Sync,
+                None,
+                Some(A::FetchAll),
+                "Fetch all remotes",
+            ),
+            (StartedKind::Sync, None, Some(A::Pull), "Pull"),
+            (StartedKind::Sync, None, Some(A::Integrate), "Pull"),
+            (StartedKind::Sync, None, Some(A::Push), "Push"),
+            (
+                StartedKind::Sync,
+                None,
+                Some(A::ForcePush),
+                "Force push with lease",
+            ),
+            (StartedKind::Sync, None, Some(A::Abort), "Abort"),
+            (StartedKind::Sync, None, Some(A::Continue), "Continue"),
+            (StartedKind::Sync, None, Some(A::Skip), "Skip"),
         ] {
-            let mutation = Mutation::of(kind, direction).expect("a valid pair");
+            let mutation = Mutation::of(kind, direction, action).expect("a valid frame");
             let text = prompt(&[mutation]).text;
             assert_eq!(
                 text,
@@ -421,22 +498,63 @@ mod tests {
             both,
             "Commit and Update submodules are running. Arbareto cannot guarantee a rollback if you interrupt them. The repository can keep a part of the change."
         );
+        let pulls = running(&[
+            (
+                OPERATION,
+                Mutation::of(StartedKind::Sync, None, Some(StartedAction::Pull)).expect("pull"),
+            ),
+            (
+                OTHER,
+                Mutation::of(StartedKind::Sync, None, Some(StartedAction::Integrate))
+                    .expect("integrate"),
+            ),
+        ]);
+        assert_eq!(
+            prompt(&pulls.mutations()).text,
+            "Pull is running. Arbareto cannot guarantee a rollback if you interrupt it. The repository can keep a part of the change."
+        );
     }
 
-    /// Contract §6 "Mutation frames": only a hunk or file action carries a direction.
+    /// Feature 003 plan.md D12: a running clone is "Clone", and a running clone with a sync names both.
+    #[test]
+    fn a_running_clone_is_named_clone() {
+        assert_eq!(
+            prompt(&running(&[(OPERATION, Mutation::Clone)]).mutations()).text,
+            "Clone is running. Arbareto cannot guarantee a rollback if you interrupt it. The repository can keep a part of the change."
+        );
+        let fetch =
+            Mutation::of(StartedKind::Sync, None, Some(StartedAction::Fetch)).expect("fetch");
+        assert_eq!(
+            prompt(&running(&[(OPERATION, Mutation::Clone), (OTHER, fetch)]).mutations()).text,
+            "Fetch and Clone are running. Arbareto cannot guarantee a rollback if you interrupt them. The repository can keep a part of the change."
+        );
+    }
+
+    /// Contract §6 "Mutation frames": only a hunk or file action carries a direction, and only a file action takes `resolve`.
+    /// Feature 003 contract Δ6: only and always a `sync` frame carries `action`.
     #[test]
     fn a_kind_and_a_direction_that_do_not_match_name_no_mutation() {
-        use StartedDirection::{Stage, Unstage};
-        for (kind, direction) in [
-            (StartedKind::ApplyHunk, None),
-            (StartedKind::ApplyFile, None),
-            (StartedKind::Commit, Some(Stage)),
-            (StartedKind::UpdateSubmodules, Some(Unstage)),
+        use StartedDirection::{Resolve, Stage, Unstage};
+        let fetch = Some(StartedAction::Fetch);
+        for (kind, direction, action) in [
+            (StartedKind::ApplyHunk, None, None),
+            (StartedKind::ApplyFile, None, None),
+            (StartedKind::Commit, Some(Stage), None),
+            (StartedKind::UpdateSubmodules, Some(Unstage), None),
+            (StartedKind::ApplyHunk, Some(Resolve), None),
+            (StartedKind::Commit, Some(Resolve), None),
+            (StartedKind::Sync, None, None),
+            (StartedKind::Sync, Some(Stage), fetch),
+            (StartedKind::Sync, Some(Resolve), None),
+            (StartedKind::Commit, None, fetch),
+            (StartedKind::UpdateSubmodules, None, fetch),
+            (StartedKind::ApplyFile, Some(Resolve), fetch),
+            (StartedKind::ApplyHunk, Some(Stage), fetch),
         ] {
             assert_eq!(
-                Mutation::of(kind, direction),
+                Mutation::of(kind, direction, action),
                 None,
-                "{kind:?} {direction:?}"
+                "{kind:?} {direction:?} {action:?}"
             );
         }
     }

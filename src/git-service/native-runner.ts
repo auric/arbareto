@@ -6,17 +6,20 @@ import {
   Base64,
   ConfirmReply,
   ConfirmRunReply,
+  DestinationFactsReply as DestinationFactsReplySchema,
   ExitReply,
   FileFactsReply,
   IdentityListReply,
   InputWrittenReply,
   LingeringCountReply,
   OutputReply,
+  PageantReply as PageantReplySchema,
   Refused,
   RegisterReply as RegisterReplySchema,
   ResolveGitReply,
   RevokeReply,
   StartedReply as StartedReplySchema,
+  TerminalReply as TerminalReplySchema,
   WslDistrosReply,
   WslFilesReply,
 } from "../contracts/channel";
@@ -28,10 +31,12 @@ import {
   checkContext,
   checkFileFacts,
   checkIdentityPaths,
+  checkPageant,
   checkRegister,
   checkRelease,
   checkResolveGit,
   checkStarted,
+  checkSyncRequest,
   checkTrust,
   checkWslDistros,
   checkWslFiles,
@@ -40,11 +45,15 @@ import {
   indexFits,
   wslResultsFit,
   RunnerRefusal,
+  type DestinationFactsReply,
   type FileFact,
   type FileFactsRequest,
   type GitCall,
   type GitExit,
   type GitRunner,
+  type PageantReply,
+  type SyncRunner,
+  type TerminalReply,
   type WslDistrosResult,
   type WslFileResult,
   type WslIndexResult,
@@ -98,7 +107,7 @@ interface Pending {
   handle(kind: FrameKind, reply: Body): boolean;
 }
 
-export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner & { receive(frame: Frame): boolean } {
+export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner & SyncRunner & { receive(frame: Frame): boolean } {
   const pending = new Map<string, Pending>();
   const diagnostics = createDiagnosticCounter();
 
@@ -416,6 +425,37 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
         if (!reply.data.stored) return { result: "approved", stored: false };
         // Contract §7 "Trust approval store": with `persist: false`, the shell writes no record.
         return request.persist ? { result: "approved", stored: true, record: reply.data.record } : undefined;
+      });
+    },
+
+    // Feature 003 contract Δ6: the shell waits up to 30 s for Pageant, so the call has no cancel.
+    async pageant(request) {
+      checkPageant(request);
+      return ask<PageantReply>("process", { type: "pageant", ...request }, (r) => {
+        const reply = PageantReplySchema.safeParse(r);
+        if (!reply.success) return undefined;
+        const { type: _type, callId: _callId, ...result } = reply.data;
+        return result;
+      });
+    },
+
+    async destinationFacts(request) {
+      checkSyncRequest("destinationFacts", request);
+      return ask<DestinationFactsReply>("process", { type: "destinationFacts", ...request }, (r) => {
+        const reply = DestinationFactsReplySchema.safeParse(r);
+        if (!reply.success) return undefined;
+        const { type: _type, callId: _callId, ...result } = reply.data;
+        return result;
+      });
+    },
+
+    async terminal(request) {
+      checkSyncRequest("terminal", request);
+      return ask<TerminalReply>("process", { type: "terminal", ...request }, (r) => {
+        const reply = TerminalReplySchema.safeParse(r);
+        if (!reply.success) return undefined;
+        const { type: _type, callId: _callId, ...result } = reply.data;
+        return result;
       });
     },
 

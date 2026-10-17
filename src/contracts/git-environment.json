@@ -107,6 +107,48 @@
       "set": { "GIT_TERMINAL_PROMPT": "0", "GIT_PROTOCOL_FROM_USER": "0" },
       "indexFileVariable": null,
       "preserve": ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"]
+    },
+    "remote": {
+      "remove": [
+        "GIT_INDEX_FILE",
+        "GIT_INDEX_VERSION",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_COMMON_DIR",
+        "GIT_DEFAULT_HASH",
+        "GIT_DEFAULT_REF_FORMAT",
+        "GIT_REFERENCE_BACKEND"
+      ],
+      "removePrefixes": ["GIT_TEST_"],
+      "set": { "GIT_TERMINAL_PROMPT": "0" },
+      "indexFileVariable": null,
+      "preserve": ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"]
+    },
+    "integrate": {
+      "remove": [
+        "GIT_INDEX_FILE",
+        "GIT_INDEX_VERSION",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_DIR",
+        "GIT_WORK_TREE",
+        "GIT_NAMESPACE",
+        "GIT_CEILING_DIRECTORIES",
+        "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        "GIT_COMMON_DIR",
+        "GIT_DEFAULT_HASH",
+        "GIT_DEFAULT_REF_FORMAT",
+        "GIT_REFERENCE_BACKEND"
+      ],
+      "removePrefixes": ["GIT_TEST_"],
+      "set": { "GIT_TERMINAL_PROMPT": "0", "GIT_EDITOR": ":" },
+      "indexFileVariable": null,
+      "preserve": ["GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"]
     }
   }
 }

@@ -20,6 +20,7 @@ const MIB = 1024 * 1024;
 const id = () => crypto.randomUUID();
 const FINGERPRINT = "a".repeat(64);
 const GIT_PATH = isWindows ? "C:\\Program Files\\Git\\cmd\\git.exe" : "/usr/bin/git";
+const CLONE_DESTINATION = isWindows ? "D:\\src\\tool" : "/src/tool";
 
 // Contract §3 names the payload values. Field names that the contract does not fix are test choices.
 const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> = {
@@ -85,6 +86,21 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
   listRecentRepositories: { renderer: () => ({}) },
   openRecentRepository: { renderer: () => ({ entryId: id() }) },
   removeRecentRepository: { renderer: () => ({ entryId: id() }) },
+  // Feature 003 contract Δ1 and Δ3.
+  readTracking: { renderer: () => ({}), service: () => ({}) },
+  reviewSync: { renderer: () => ({ action: "fetch" }), service: () => ({ action: "fetch" }) },
+  sync: { renderer: () => ({ syncReviewToken: id(), start: true }), service: () => ({ syncReviewToken: id(), start: true }) },
+  clone: {
+    renderer: () => ({ url: "https://example.test/team/tool.git", destination: CLONE_DESTINATION, keyFile: "none" }),
+    service: () => ({ url: "https://example.test/team/tool.git", bootstrapId: id(), cloneId: id() }),
+  },
+  connectInTerminal: { renderer: () => ({ operationId: id() }), service: () => ({ operationId: id() }) },
+  readSyncSettings: { renderer: () => ({}) },
+  setSshClient: { renderer: () => ({ kind: "plink" }) },
+  setDefaultPullAction: { renderer: () => ({ action: "pull-rebase" }) },
+  chooseSyncPath: { renderer: () => ({ target: "plink" }) },
+  clearSyncPath: { renderer: () => ({ target: "remoteKey", worktreeKey: FINGERPRINT, remote: "origin" }) },
+  launchPuttygen: { renderer: () => ({}) },
 };
 
 const NAMES = Object.keys(PAYLOADS);
@@ -101,6 +117,8 @@ const GENERATION_REQUIRED = [
   "reviewSubmodules",
   "updateSubmodules",
   "approveTrust",
+  "readTracking",
+  "reviewSync",
 ];
 const GENERATION_ABSENT = NAMES.filter((n) => !GENERATION_REQUIRED.includes(n) && n !== "readWorkspace");
 
@@ -123,7 +141,12 @@ const REPOSITORY_BOUND = [
   "commit",
   "reviewSubmodules",
   "updateSubmodules",
+  "readTracking",
+  "reviewSync",
+  "sync",
 ];
+// Feature 003 data-model §11: a sync target names its repository, and a clone target without a workspace names none.
+const REPOSITORY_OPTIONAL = ["connectInTerminal"];
 
 function envelope(operation: string, side: Side = "renderer", payload?: Json): Json {
   const make = PAYLOADS[operation]?.[side];
@@ -159,9 +182,9 @@ const sidesOf = (name: string) =>
 
 describe("operation list", () => {
   // Feature 002 plan.md P7 retires the contract §3 `readHistory`.
-  test("holds exactly the 25 remaining contract §3 operations and the 5 feature 002 contract Δ3 operations", () => {
+  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, and the 11 feature 003 contract Δ1 operations", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(30);
+    expect(OPERATIONS.length).toBe(41);
   });
 
   for (const name of NAMES) {
@@ -319,10 +342,20 @@ describe("repositoryId", () => {
     });
   }
 
-  for (const name of NAMES.filter((n) => !REPOSITORY_BOUND.includes(n))) {
+  for (const name of NAMES.filter((n) => !REPOSITORY_BOUND.includes(n) && !REPOSITORY_OPTIONAL.includes(n))) {
     for (const side of sidesOf(name)) {
       test(`${name} with repositoryId gives INVALID_REQUEST on the ${side} side`, () =>
         expectCode({ ...envelope(name, side), repositoryId: id() }, "INVALID_REQUEST", side));
+    }
+  }
+
+  for (const name of REPOSITORY_OPTIONAL) {
+    for (const side of sidesOf(name)) {
+      test(`${name} decodes with and without repositoryId on the ${side} side`, () => {
+        expectAccepted(envelope(name, side), side);
+        expectAccepted({ ...envelope(name, side), repositoryId: id() }, side);
+        expectCode({ ...envelope(name, side), repositoryId: "x" }, "INVALID_REQUEST", side);
+      });
     }
   }
 
@@ -347,6 +380,7 @@ describe("explicit approval fields", () => {
     ["approveTrust", "approve"],
     ["commit", "confirmFullScope"],
     ["updateSubmodules", "start"],
+    ["sync", "start"],
   ];
   for (const [name, field] of cases) {
     test.each([[false], ["true"], [1], [null]])(`${name} ${field} %j gives INVALID_REQUEST`, (value) => {
@@ -546,6 +580,16 @@ describe("stage directions", () => {
       expectCode({ ...request, payload: { ...(request.payload as Json), direction } }, "INVALID_REQUEST");
     });
   }
+
+  // Feature 003 contract Δ3 `applyFile`: Mark resolved.
+  test("applyFile direction resolve decodes, and applyHunk direction resolve gives INVALID_REQUEST", () => {
+    for (const side of ["renderer", "service"] as const) {
+      const file = envelope("applyFile", side);
+      expectAccepted({ ...file, payload: { ...(file.payload as Json), direction: "resolve" } }, side);
+      const hunk = envelope("applyHunk", side);
+      expectCode({ ...hunk, payload: { ...(hunk.payload as Json), direction: "resolve" } }, "INVALID_REQUEST", side);
+    }
+  });
 
   test("applyFile with a path field gives INVALID_REQUEST", () => {
     const request = envelope("applyFile");

@@ -92,6 +92,10 @@ pub enum ContextIdentity {
     Windows(Identity),
     /// The shell binds the §11 identity at `wslProbe` and reads it again before `register`.
     Wsl,
+    /// Feature 003 contract Δ6: a clone destination binds no identity before its clone process exits with status 0.
+    Pending {
+        wsl: bool,
+    },
 }
 
 /// Opens `path` with `FILE_READ_ATTRIBUTES`, full sharing, and `FILE_FLAG_BACKUP_SEMANTICS`.
@@ -164,6 +168,8 @@ fn file_identity(file: &std::fs::File) -> Result<Identity, &'static str> {
 pub enum ContextKind {
     GitProbe,
     RepositoryDiscovery,
+    /// Feature 003 contract Δ6: the destination of one clone.
+    Clone,
 }
 
 #[derive(Clone, Debug)]
@@ -182,6 +188,14 @@ pub struct Context {
     /// A startup `gitProbe` context registers without Use this Git (contract §6 "Startup contexts").
     /// The service admits only a resolved file inside the installation root of the selected path.
     pub startup: bool,
+    /// Feature 003 contract Δ6: the other context of one clone.
+    pub peer: Option<String>,
+    /// The URL of a `clone` context.
+    pub url: Option<String>,
+    /// The `.ppk` file of a `clone` context. The shell never saves it (FR-049).
+    pub key: Option<PathBuf>,
+    /// An owned context of a clone stays live until its operation ends.
+    pub held: bool,
 }
 
 /// The options that a discovery `symbolic-ref` permits besides the one name `HEAD` (contract §6 "Registration bootstrap").
@@ -244,7 +258,7 @@ impl State {
     fn live(&self, bootstrap_id: &str, now: Instant) -> Result<&Context, Code> {
         self.contexts
             .get(bootstrap_id)
-            .filter(|context| now < context.expires_at)
+            .filter(|context| context.held || now < context.expires_at)
             .ok_or(Code::UnknownTarget)
     }
 }
@@ -315,7 +329,7 @@ impl Contexts {
         } else {
             ContextIdentity::Windows(read_identity(path).map_err(|code| match kind {
                 ContextKind::GitProbe => "GIT_UNAVAILABLE",
-                ContextKind::RepositoryDiscovery => code,
+                ContextKind::RepositoryDiscovery | ContextKind::Clone => code,
             })?)
         };
         Ok(self.bind(kind, path, identity, selected, startup, now))
@@ -331,7 +345,9 @@ impl Contexts {
         now: Instant,
     ) -> String {
         let mut state = self.state();
-        state.contexts.retain(|_, context| now < context.expires_at);
+        state
+            .contexts
+            .retain(|_, context| context.held || now < context.expires_at);
         let id = state.next_id();
         let context = Context {
             kind,
@@ -341,9 +357,77 @@ impl Contexts {
             expires_at: now + CONTEXT_LIFETIME,
             selected: selected.to_path_buf(),
             startup,
+            peer: None,
+            url: None,
+            key: None,
+            held: false,
         };
         state.contexts.insert(id.clone(), context);
         id
+    }
+
+    /// Feature 003 contract Δ6: one `clone` and one `repositoryDiscovery` context for the destination.
+    /// Neither reads an identity, so an absent destination binds. Returns the `cloneId` and the `bootstrapId`.
+    pub fn create_clone(
+        &self,
+        destination: &Path,
+        url: &str,
+        key: Option<PathBuf>,
+        now: Instant,
+    ) -> (String, String) {
+        let identity = ContextIdentity::Pending {
+            wsl: is_wsl_path(destination),
+        };
+        let kinds = [ContextKind::RepositoryDiscovery, ContextKind::Clone];
+        let [bootstrap_id, clone_id] =
+            kinds.map(|kind| self.bind(kind, destination, identity, destination, false, now));
+        let mut state = self.state();
+        if let Some(clone) = state.contexts.get_mut(&clone_id) {
+            clone.peer = Some(bootstrap_id.clone());
+            clone.url = Some(url.to_string());
+            clone.key = key;
+        }
+        if let Some(discovery) = state.contexts.get_mut(&bootstrap_id) {
+            discovery.peer = Some(clone_id.clone());
+        }
+        (clone_id, bootstrap_id)
+    }
+
+    /// Feature 003 contract Δ6: from its first request, the clone operation holds both contexts of its clone until it ends.
+    pub fn hold(&self, id: &str) {
+        let mut state = self.state();
+        let peer = state
+            .contexts
+            .get(id)
+            .and_then(|context| context.peer.clone());
+        for id in std::iter::once(id.to_string()).chain(peer) {
+            if let Some(context) = state.contexts.get_mut(&id) {
+                context.held = true;
+            }
+        }
+    }
+
+    /// Feature 003 contract Δ6: after the clone process exits with status 0, the discovery context binds the destination identity.
+    /// A Windows destination binds the `FileIdInfo` identity, and a failed read binds nothing. A WSL destination binds at `wslProbe`.
+    pub fn bind_clone(&self, bootstrap_id: &str) {
+        let pending =
+            self.state()
+                .contexts
+                .get(bootstrap_id)
+                .and_then(|context| match context.identity {
+                    ContextIdentity::Pending { wsl } => Some((wsl, context.path.clone())),
+                    _ => None,
+                });
+        let identity = match pending {
+            Some((true, _)) => Some(ContextIdentity::Wsl),
+            Some((false, path)) => read_identity(&path).ok().map(ContextIdentity::Windows),
+            None => None,
+        };
+        if let (Some(identity), Some(context)) =
+            (identity, self.state().contexts.get_mut(bootstrap_id))
+        {
+            context.identity = identity;
+        }
     }
 
     /// A live context. An unknown, destroyed, or expired ID gives `UNKNOWN_TARGET`.
@@ -396,6 +480,8 @@ impl Contexts {
                 }
                 _ => false,
             },
+            // Feature 003 contract Δ6: `process_requests.rs` checks the fixed clone array with the destination in Git's form.
+            ContextKind::Clone => false,
         };
         if permitted {
             Ok(())
@@ -408,6 +494,10 @@ impl Contexts {
     /// The code is `GIT_CHANGED` for `gitProbe` and `UNKNOWN_TARGET` for `repositoryDiscovery`.
     pub fn revalidate(&self, bootstrap_id: &str, now: Instant) -> Result<(), Code> {
         let context = self.get(bootstrap_id, now)?;
+        // Feature 003 contract Δ6: a `clone` context binds the path text that Git creates, so it holds no identity.
+        if context.kind == ContextKind::Clone {
+            return Ok(());
+        }
         // A WSL context revalidates only through the §11 identity probe of `process_requests.rs`.
         if matches!(context.identity, ContextIdentity::Windows(identity) if read_identity(&context.path) == Ok(identity))
         {
@@ -416,7 +506,7 @@ impl Contexts {
         self.destroy(bootstrap_id);
         Err(match context.kind {
             ContextKind::GitProbe => Code::GitChanged,
-            ContextKind::RepositoryDiscovery => Code::UnknownTarget,
+            ContextKind::RepositoryDiscovery | ContextKind::Clone => Code::UnknownTarget,
         })
     }
 

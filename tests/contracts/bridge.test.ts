@@ -62,6 +62,17 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   requestClose: (b) => b.requestClose({ choice: "stay" }),
   currentSession: (b) => b.currentSession(),
   dismissRecoveryMarker: (b) => b.dismissRecoveryMarker({ markerId: id() }),
+  readTracking: (b) => b.readTracking(gen()),
+  reviewSync: (b) => b.reviewSync(gen(), { action: "push", destination: { remote: "origin", branch: "main", setUpstream: true } }),
+  sync: (b) => b.sync(repo(), { syncReviewToken: id(), start: true }),
+  clone: (b) => b.clone({ url: "https://example.test/team/tool.git", destination: "//host/src/tool", keyFile: "none" }),
+  connectInTerminal: (b) => b.connectInTerminal(repo(), { operationId: id() }),
+  readSyncSettings: (b) => b.readSyncSettings(),
+  setSshClient: (b) => b.setSshClient({ kind: "plink" }),
+  setDefaultPullAction: (b) => b.setDefaultPullAction({ action: "pull-rebase" }),
+  chooseSyncPath: (b) => b.chooseSyncPath({ target: "remoteKey", worktreeKey: "a".repeat(64), remote: "origin" }),
+  clearSyncPath: (b) => b.clearSyncPath({ target: "plink" }),
+  launchPuttygen: (b) => b.launchPuttygen(),
 };
 
 interface Options {

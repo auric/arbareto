@@ -16,8 +16,11 @@ import {
   type WslDistroFacts,
 } from "../../src/contracts/wsl-route";
 
+import { routeRegistration } from "../../src/git-service/wsl";
+
 printOrigin("../../src/contracts/errors.ts", import.meta.dir);
 printOrigin("../../src/contracts/wsl-route.ts", import.meta.dir);
+printOrigin("../../src/git-service/wsl.ts", import.meta.dir);
 
 const BS = "\\";
 const GUID = "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}";
@@ -306,5 +309,19 @@ describe("WSL Git version rule (T204, contract §11 Git per distro)", () => {
     expect(isWindowsProgram("/usr/bin/systemctl", false)).toBe(false);
     expect(isWindowsProgram("/mnt", false)).toBe(false);
     expect(isWindowsProgram("/mntx/bin/setsid", false)).toBe(false);
+  });
+});
+
+// Feature 003 contract Δ3 `clone` step 5: the registration compares the identity of the destination with the identity of the top level.
+// The destination takes the identity path of the route, which is the discovery form of the Git-resolved top level.
+describe("clone destination identity form (feature 003 T054)", () => {
+  test("each prefix form of one folder gives the discovery form of its Linux path", () => {
+    const linux = "/home/user/new";
+    const discovery = wslIdentityPath("Ubuntu-24.04", linux);
+    expect(discovery).toBe(unc("wsl.localhost", "Ubuntu-24.04", "home", "user", "new"));
+    for (const path of [unc("wsl$", "Ubuntu-24.04", "home", "user", "new"), unc("WSL.LOCALHOST", "ubuntu-24.04", "home", "user", "new"), "//wsl$/Ubuntu-24.04/home/user/new/"]) {
+      const route = routeRegistration({ path, wslExecutable: ["C:", "Windows", "System32", "wsl.exe"].join(BS), listed: [...FACTS.listed], running: [...FACTS.listed], keys: [...FACTS.registry], saved: [] });
+      expect({ path, route }).toMatchObject({ path, route: { kind: "wsl", distro: "Ubuntu-24.04", linuxPath: linux, identityPath: discovery } });
+    }
   });
 });

@@ -36,6 +36,17 @@ const COMMANDS: &[&str] = &[
     "request_close",
     "current_session",
     "dismiss_recovery_marker",
+    "read_tracking",
+    "review_sync",
+    "sync",
+    "clone",
+    "connect_in_terminal",
+    "read_sync_settings",
+    "set_ssh_client",
+    "set_default_pull_action",
+    "choose_sync_path",
+    "clear_sync_path",
+    "launch_puttygen",
 ];
 
 /// The exported JSON Schema files of the values that the shell reads (contract §1 "Schemas").

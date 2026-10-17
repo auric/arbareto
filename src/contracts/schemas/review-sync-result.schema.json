@@ -1,0 +1,342 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "fetch",
+            "fetch-all",
+            "pull",
+            "integrate",
+            "push",
+            "force-push",
+            "abort",
+            "continue",
+            "skip"
+          ]
+        },
+        "plan": {
+          "type": "object",
+          "properties": {
+            "remotes": {
+              "maxItems": 256,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "upstream": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "objectId": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "ref",
+                "objectId"
+              ],
+              "additionalProperties": false,
+              "title": "PlanUpstream"
+            },
+            "destination": {
+              "type": "object",
+              "properties": {
+                "remote": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "trackingRef": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "url": {
+                  "type": "string"
+                },
+                "setUpstream": {
+                  "type": "boolean"
+                },
+                "upstreamRebase": {
+                  "type": "boolean"
+                },
+                "source": {
+                  "type": "string",
+                  "enum": [
+                    "remote-push-refspec",
+                    "push-default-upstream",
+                    "push-default-branch",
+                    "push-default-triangular",
+                    "panel"
+                  ]
+                }
+              },
+              "required": [
+                "remote",
+                "ref",
+                "trackingRef",
+                "url",
+                "setUpstream",
+                "upstreamRebase",
+                "source"
+              ],
+              "additionalProperties": false,
+              "title": "PushDestination"
+            },
+            "lease": {
+              "type": "object",
+              "properties": {
+                "trackingRef": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "expect": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "commits": {
+                  "maxItems": 100,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "objectId": {
+                        "type": "string",
+                        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                      },
+                      "subject": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "objectId",
+                      "subject"
+                    ],
+                    "additionalProperties": false,
+                    "title": "LeaseCommit"
+                  }
+                }
+              },
+              "required": [
+                "trackingRef",
+                "expect",
+                "count",
+                "commits"
+              ],
+              "additionalProperties": false,
+              "title": "Lease"
+            },
+            "mode": {
+              "anyOf": [
+                {
+                  "type": "string",
+                  "enum": [
+                    "rebase",
+                    "merge"
+                  ]
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "operationState": {
+              "type": "string",
+              "enum": [
+                "merging",
+                "rebasing"
+              ]
+            },
+            "skippedCommit": {
+              "type": "object",
+              "properties": {
+                "objectId": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "subject": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "required": [
+                "objectId",
+                "subject"
+              ],
+              "additionalProperties": false,
+              "title": "SkippedCommit"
+            },
+            "needsDestination": {
+              "type": "object",
+              "properties": {
+                "remotes": {
+                  "minItems": 1,
+                  "maxItems": 256,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000]*$"
+                  }
+                },
+                "prefill": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "remote": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000]*$"
+                        }
+                      },
+                      "required": [
+                        "remote",
+                        "ref"
+                      ],
+                      "additionalProperties": false,
+                      "title": "PanelPrefill"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "setUpstream": {
+                  "type": "boolean"
+                },
+                "upstreamRebase": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "remotes",
+                "prefill",
+                "setUpstream",
+                "upstreamRebase"
+              ],
+              "additionalProperties": false,
+              "title": "NeedsDestination"
+            }
+          },
+          "required": [
+            "remotes"
+          ],
+          "additionalProperties": false,
+          "title": "SyncPlan"
+        },
+        "syncReviewToken": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        }
+      },
+      "required": [
+        "action",
+        "plan"
+      ],
+      "additionalProperties": false,
+      "title": "SyncReviewed"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "detached",
+            "unborn",
+            "no-upstream",
+            "remote-missing",
+            "no-remotes",
+            "local-upstream",
+            "several-merge-refs",
+            "push-urls",
+            "mirror",
+            "push-remote-differs",
+            "invalid-config",
+            "no-lease",
+            "ff-only",
+            "interactive-rebase",
+            "upstream-gone",
+            "no-operation",
+            "unknown-operation",
+            "not-rebasing",
+            "no-skip-commit",
+            "rebase-exec",
+            "SYNC_REMOTES"
+          ]
+        },
+        "unmerged": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            },
+            "command": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "text",
+            "command"
+          ],
+          "additionalProperties": false,
+          "title": "SyncRemedy"
+        }
+      },
+      "additionalProperties": false,
+      "title": "SyncRefused"
+    }
+  ],
+  "title": "ReviewSyncResult"
+}

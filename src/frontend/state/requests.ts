@@ -3,6 +3,7 @@
 
 import type { ChangeEntry, ReadEntriesResult, RefsResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { BridgeResponse, OnProgress } from "../bridge";
+import { isObject } from "../lib/utils";
 import { nextRequestSeq, sameHead } from "./history-view";
 
 // Contract §2, §5 "Pending reads", §8, and §11 "Change polling". plan.md "Freshness and reconciliation". Feature 002 contract Δ3 and Δ8.
@@ -94,7 +95,6 @@ const INITIAL: RequestState = {
   headRead: null,
 };
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 // Contract §3: a `WorkspaceSnapshot` has `snapshotId`, and a `WorkspaceRefusal` has none.
 const isSnapshot = (value: unknown): value is WorkspaceSnapshot => isObject(value) && typeof value.snapshotId === "string";
 // Contract §3: a `RefList` has `refs`, and a `RefsRefusal` has none.
@@ -469,14 +469,16 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
       if (hunkId === null || hunks.some((h) => h.hunkId === hunkId)) set({ selectedHunk: hunkId });
     },
 
-    /** Records the completion notice, then reads the workspace in full to reconcile (contract §3). */
-    mutationEnded(operation: string, response: BridgeResponse) {
+    /** Records the completion notice, then reads the workspace in full to reconcile (contract §3). Resolves when the reconcile read ends. */
+    mutationEnded(operation: string, response: BridgeResponse): Promise<void> {
       set({ outcomes: [...state.outcomes, response] });
       if (APPROVAL_OPERATIONS.has(operation) && response.code !== undefined && APPROVAL_ENDED.has(response.code) && state.selection) requestComparison(state.selection.entryId);
       // Contract §9: an expired submodule token starts no Git process. The review dialog answers it with a new `reviewSubmodules`, which a read would race.
-      if (operation === "updateSubmodules" && response.state === "rejected" && response.code === "APPROVAL_EXPIRED") return update({});
-      reconciling = readWorkspace(false, "full") ?? null;
-      update({});
+      if (operation === "updateSubmodules" && response.state === "rejected" && response.code === "APPROVAL_EXPIRED") return Promise.resolve(update({}));
+      return new Promise((resolve) => {
+        reconciling = readWorkspace(false, "full", false, resolve) ?? null;
+        update({});
+      });
     },
 
     /** The read after a trust approval is a full read (contract §3). */

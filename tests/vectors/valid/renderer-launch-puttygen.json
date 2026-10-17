@@ -1,0 +1,5 @@
+{
+  "schema": "renderer-envelope",
+  "expected": "valid",
+  "text": "{\"version\":1,\"sessionId\":\"0f0f0f0f-0000-4000-8000-0000000000aa\",\"requestId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operation\":\"launchPuttygen\",\"payload\":{}}"
+}

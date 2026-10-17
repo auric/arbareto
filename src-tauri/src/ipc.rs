@@ -20,7 +20,7 @@ use crate::text_scale::{self, Current};
 pub const MAIN_WINDOW: &str = "main";
 
 /// Contract §3: the closed allowlist of public operations, as `src/contracts/operations.ts` lists them.
-pub const OPERATIONS: [&str; 30] = [
+pub const OPERATIONS: [&str; 41] = [
     "getEnvironment",
     "chooseGit",
     "chooseRepository",
@@ -51,10 +51,22 @@ pub const OPERATIONS: [&str; 30] = [
     "requestClose",
     "currentSession",
     "dismissRecoveryMarker",
+    // Feature 003 contract Δ1.
+    "readTracking",
+    "reviewSync",
+    "sync",
+    "clone",
+    "connectInTerminal",
+    "readSyncSettings",
+    "setSshClient",
+    "setDefaultPullAction",
+    "chooseSyncPath",
+    "clearSyncPath",
+    "launchPuttygen",
 ];
 
 /// Contract §3: the shell runs these first. The shell answers `requestClose` itself and never forwards it.
-const NATIVE_FIRST: [&str; 8] = [
+const NATIVE_FIRST: [&str; 15] = [
     "requestClose",
     "chooseGit",
     "chooseRepository",
@@ -63,10 +75,27 @@ const NATIVE_FIRST: [&str; 8] = [
     "listRecentRepositories",
     "openRecentRepository",
     "removeRecentRepository",
+    // Feature 003 contract Δ1.
+    "clone",
+    "readSyncSettings",
+    "setSshClient",
+    "setDefaultPullAction",
+    "chooseSyncPath",
+    "clearSyncPath",
+    "launchPuttygen",
 ];
 
-/// Contract §3 "Recent repositories": the shell answers these itself and never forwards them.
-const RECENT_ANSWERS: [&str; 2] = ["listRecentRepositories", "removeRecentRepository"];
+/// Contract §3 "Recent repositories" and feature 003 contract Δ1: the shell answers these itself and never forwards them.
+const NATIVE_ANSWERS: [&str; 8] = [
+    "listRecentRepositories",
+    "removeRecentRepository",
+    "readSyncSettings",
+    "setSshClient",
+    "setDefaultPullAction",
+    "chooseSyncPath",
+    "clearSyncPath",
+    "launchPuttygen",
+];
 
 /// Pinned Tauri serves the bundled frontend on Windows at this host (manager/mod.rs:335-338, webview/mod.rs:1966-1974).
 const LOCAL_HOST: &str = "tauri.localhost";
@@ -126,8 +155,8 @@ impl From<&'static str> for Ended {
 pub trait NativeFirst: Send + Sync {
     /// Runs before the forward. `Ok(None)` is a canceled dialog.
     fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Prepared>, Ended>;
-    /// Answers a `RECENT_ANSWERS` operation with its result. It reads no folder and starts no process.
-    fn answer(&self, operation: &str, payload: &Value) -> Result<Value, &'static str>;
+    /// Answers a `NATIVE_ANSWERS` operation with its result. `Ok(None)` is a canceled picker.
+    fn answer(&self, operation: &str, payload: &Value) -> Result<Option<Value>, Ended>;
     /// Runs after the service response of a forwarded request. It returns the response for the renderer.
     fn finish(&self, operation: &str, prepared: &Prepared, response: Value) -> Value;
     /// Decides `requestClose` without a service session. A close decision ends the application.
@@ -310,17 +339,25 @@ impl Ipc {
             if let Err(code) = schema::native_first(&strict) {
                 return reject(code);
             }
-            // Contract §3: the list and the removal need no service session.
-            if RECENT_ANSWERS.contains(&operation) {
+            // Contract §3: the list, the removal, and the settings operations need no service session.
+            if NATIVE_ANSWERS.contains(&operation) {
                 let Some(native) = self.native() else {
                     return reject("SERVICE_UNAVAILABLE");
                 };
-                return match native.answer(operation, &strict["payload"]) {
-                    Ok(result) => Submitted::Answer(
-                        json!({ "requestId": request_id, "state": "succeeded", "result": result }),
-                    ),
-                    Err(code) => reject(code),
-                };
+                return Submitted::Answer(match native.answer(operation, &strict["payload"]) {
+                    Ok(Some(result)) => {
+                        json!({ "requestId": request_id, "state": "succeeded", "result": result })
+                    }
+                    Ok(None) => {
+                        json!({ "requestId": request_id, "state": "canceled", "code": "CANCELED" })
+                    }
+                    Err(Ended::Rejected(code)) => {
+                        json!({ "requestId": request_id, "state": "rejected", "code": code })
+                    }
+                    Err(Ended::Failed(code, result)) => {
+                        json!({ "requestId": request_id, "state": "failed", "code": code, "result": result })
+                    }
+                });
             }
             envelope = strict;
         }
@@ -754,6 +791,111 @@ pub async fn dismiss_recovery_marker(
     .await
 }
 
+#[tauri::command]
+pub async fn read_tracking(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readTracking", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn review_sync(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "reviewSync", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn sync(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "sync", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn clone(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "clone", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn connect_in_terminal(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "connectInTerminal", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_sync_settings(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readSyncSettings", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn set_ssh_client(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "setSshClient", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn set_default_pull_action(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(
+        webview,
+        &ipc,
+        "setDefaultPullAction",
+        request.body().clone(),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn choose_sync_path(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "chooseSyncPath", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn clear_sync_path(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "clearSyncPath", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn launch_puttygen(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "launchPuttygen", request.body().clone()).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -786,6 +928,10 @@ mod tests {
 
     type Prepare = Box<dyn Fn() -> Result<Option<Prepared>, Ended> + Send + Sync>;
 
+    fn putty_result() -> Value {
+        json!({ "reason": "missing", "program": "puttygen", "path": "C:\\PuTTY\\puttygen.exe" })
+    }
+
     /// Counts each native step. `prepare` answers as the test sets it. Each close request gets Stay open.
     struct FakeNative {
         prepare: Prepare,
@@ -799,11 +945,14 @@ mod tests {
             (self.prepare)()
         }
 
-        fn answer(&self, operation: &str, payload: &Value) -> Result<Value, &'static str> {
+        /// `chooseSyncPath` cancels, and `launchPuttygen` fails with `PUTTY_UNAVAILABLE`.
+        fn answer(&self, operation: &str, payload: &Value) -> Result<Option<Value>, Ended> {
             *self.prepares.lock().expect("prepares") += 1;
-            match payload.get("entryId") {
-                Some(_) => Err("UNKNOWN_TARGET"),
-                None => Ok(json!({ "operation": operation, "entries": [] })),
+            match (operation, payload.get("entryId")) {
+                (_, Some(_)) => Err(Ended::Rejected("UNKNOWN_TARGET")),
+                ("chooseSyncPath", _) => Ok(None),
+                ("launchPuttygen", _) => Err(Ended::Failed("PUTTY_UNAVAILABLE", putty_result())),
+                _ => Ok(Some(json!({ "operation": operation, "entries": [] }))),
             }
         }
 
@@ -1068,7 +1217,153 @@ mod tests {
             );
             let grant = format!("allow-{}", command.replace('_', "-"));
             assert!(grants.contains(&json!(grant)), "grant of {operation}");
+            let permission = format!("permissions/autogenerated/{command}.toml");
+            assert!(
+                read(&permission).contains(&format!("identifier = \"{grant}\"")),
+                "{permission}"
+            );
         }
+    }
+
+    /// Feature 003 contract Δ1. The four service operations reach the service byte for byte.
+    #[test]
+    fn the_four_feature_003_service_requests_are_forwarded_byte_for_byte() {
+        let four = [
+            ("readTracking", json!({})),
+            ("reviewSync", json!({ "action": "fetch-all" })),
+            (
+                "sync",
+                json!({ "syncReviewToken": OPERATION_ID, "start": true }),
+            ),
+            ("connectInTerminal", json!({ "operationId": OPERATION_ID })),
+        ];
+        for (operation, payload) in four {
+            assert!(OPERATIONS.contains(&operation), "{operation}");
+            assert!(!NATIVE_FIRST.contains(&operation), "{operation}");
+            let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+            let body = request(operation, payload).to_string();
+            assert_eq!(
+                ipc.handle(MAIN_WINDOW, LOCAL, &raw(&body), operation),
+                Outcome::Forwarded,
+                "{operation}"
+            );
+            assert_eq!(
+                *frames.lock().expect("frames"),
+                vec![frame_of(&body)],
+                "{operation}"
+            );
+            assert_eq!(*native.prepares.lock().expect("prepares"), 0, "{operation}");
+        }
+    }
+
+    /// Feature 003 contract Δ1: `clone` is native-first, so the service gets the payload of the native step.
+    #[test]
+    fn a_clone_runs_its_native_step_and_forwards_the_native_payload() {
+        assert!(NATIVE_FIRST.contains(&"clone"));
+        let native_payload = json!({ "url": "https://example.test/a.git", "bootstrapId": OPERATION_ID, "cloneId": SESSION_ID });
+        let forwarded = native_payload.clone();
+        let (ipc, frames, native) = connected(Box::new(move || {
+            Ok(Some(Prepared {
+                payload: forwarded.clone(),
+                path: None,
+            }))
+        }));
+        let clone = request(
+            "clone",
+            json!({ "url": "https://example.test/a.git", "destination": "C:\\src\\a", "keyFile": "none" }),
+        );
+        assert_eq!(send(&ipc, &clone), Outcome::Forwarded);
+        assert_eq!(*native.prepares.lock().expect("prepares"), 1);
+        let frames = frames.lock().expect("frames");
+        let frame: Value = serde_json::from_str(&frames[0]).expect("frame");
+        assert_eq!(
+            frame,
+            json!({ "kind": "public", "request": request("clone", native_payload) })
+        );
+    }
+
+    /// Feature 003 contract Δ1 and Δ3: the shell answers the six settings operations itself, also without a service session.
+    /// The native answer gives `succeeded`, `canceled` for a canceled picker, or `failed` with its result.
+    #[test]
+    fn the_six_settings_operations_are_answered_natively_and_never_forwarded() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        ipc.set_session(None);
+        for (operation, payload) in [
+            ("readSyncSettings", json!({})),
+            ("setSshClient", json!({ "kind": "plink" })),
+            ("setDefaultPullAction", json!({ "action": "fetch" })),
+            ("clearSyncPath", json!({ "target": "cloneFolder" })),
+        ] {
+            assert!(NATIVE_FIRST.contains(&operation), "{operation}");
+            assert_eq!(
+                send(&ipc, &request(operation, payload)),
+                Outcome::Answer(
+                    json!({ "requestId": REQUEST_ID, "state": "succeeded", "result": { "operation": operation, "entries": [] } })
+                ),
+                "{operation}"
+            );
+        }
+        assert_eq!(
+            send(
+                &ipc,
+                &request("chooseSyncPath", json!({ "target": "plink" }))
+            ),
+            Outcome::Answer(
+                json!({ "requestId": REQUEST_ID, "state": "canceled", "code": "CANCELED" })
+            )
+        );
+        assert_eq!(
+            send(&ipc, &request("launchPuttygen", json!({}))),
+            Outcome::Answer(
+                json!({ "requestId": REQUEST_ID, "state": "failed", "code": "PUTTY_UNAVAILABLE", "result": putty_result() })
+            )
+        );
+        assert_eq!(*native.prepares.lock().expect("prepares"), 6);
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0);
+    }
+
+    /// Feature 003 contract Δ1: the Rust checks of the clone URL and the `chooseSyncPath` target fields run on the live path.
+    #[test]
+    fn the_feature_003_rust_checks_refuse_before_any_dialog() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        let destination = "C:\\src\\a";
+        let key = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        for envelope in [
+            // 2,049 two-byte characters: 4,098 UTF-8 bytes in 2,049 UTF-16 units.
+            request(
+                "clone",
+                json!({ "url": "\u{e9}".repeat(2049), "destination": destination, "keyFile": "none" }),
+            ),
+            request(
+                "clone",
+                json!({ "url": "https://example.test/a\n.git", "destination": destination, "keyFile": "none" }),
+            ),
+            request(
+                "clone",
+                json!({ "url": "https://example.test/a.git", "destination": "\\\\?\\C:\\src\\a", "keyFile": "none" }),
+            ),
+            request(
+                "chooseSyncPath",
+                json!({ "target": "remoteKey", "worktreeKey": key }),
+            ),
+            request(
+                "chooseSyncPath",
+                json!({ "target": "plink", "worktreeKey": key, "remote": "origin" }),
+            ),
+            request(
+                "clearSyncPath",
+                json!({ "target": "cloneFolder", "remote": "origin" }),
+            ),
+        ] {
+            assert_eq!(
+                send(&ipc, &envelope),
+                rejected("INVALID_REQUEST"),
+                "{envelope}"
+            );
+        }
+        assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
+        assert!(frames.lock().expect("frames").is_empty());
     }
 
     /// Feature 002 plan.md P7 and contract Δ3 "readHistory": no allowlist entry, command, handler, or grant remains.

@@ -1,0 +1,5 @@
+{
+  "schema": "sync-result",
+  "expected": "valid",
+  "text": "{\"action\":\"pull\",\"fetch\":{\"remotes\":[{\"name\":\"origin\",\"state\":\"succeeded\",\"updates\":[],\"counts\":{\" \":0,\"+\":0,\"-\":0,\"t\":0,\"*\":0,\"!\":0,\"=\":0},\"outputTail\":\"\"}],\"observed\":[]},\"counts\":{\"ahead\":1,\"behind\":2},\"integration\":{\"state\":\"none\"},\"reason\":\"ff-only\"}"
+}

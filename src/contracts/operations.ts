@@ -38,6 +38,18 @@ export const OPERATION_NAMES = [
   "requestClose",
   "currentSession",
   "dismissRecoveryMarker",
+  // Feature 003 contract Δ1.
+  "readTracking",
+  "reviewSync",
+  "sync",
+  "clone",
+  "connectInTerminal",
+  "readSyncSettings",
+  "setSshClient",
+  "setDefaultPullAction",
+  "chooseSyncPath",
+  "clearSyncPath",
+  "launchPuttygen",
 ] as const;
 
 export type OperationName = (typeof OPERATION_NAMES)[number];
@@ -48,13 +60,27 @@ export function isOperationName(value: unknown): value is OperationName {
 }
 
 // Contract §2: these operations carry a one-use approval as their repeat key.
-const MUTATION_NAMES = ["applyHunk", "applyFile", "commit", "updateSubmodules"] as const;
+// Feature 003 contract Δ2: `sync` carries its `syncReviewToken`.
+const MUTATION_NAMES = ["applyHunk", "applyFile", "commit", "updateSubmodules", "sync"] as const;
 export const MUTATIONS: readonly OperationName[] = MUTATION_NAMES;
 export const MutationKind = z.enum(MUTATION_NAMES);
 
 // Contract §3: the shell answers these natively and never forwards them to the service.
 // The shell forwards `openRecentRepository` as `restoreWorkspace`, so the service never gets that name.
-export const SHELL_ONLY: readonly OperationName[] = ["requestClose", "currentSession", "listRecentRepositories", "openRecentRepository", "removeRecentRepository"];
+export const SHELL_ONLY: readonly OperationName[] = [
+  "requestClose",
+  "currentSession",
+  "listRecentRepositories",
+  "openRecentRepository",
+  "removeRecentRepository",
+  // Feature 003 contract Δ1.
+  "readSyncSettings",
+  "setSshClient",
+  "setDefaultPullAction",
+  "chooseSyncPath",
+  "clearSyncPath",
+  "launchPuttygen",
+];
 
 // Contract §2: UUID-shaped ASCII identifiers.
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -97,15 +123,28 @@ export const PHASES = [
   // Feature 002 contract Δ3 `loadHistory` and `searchHistory`.
   "history-load",
   "history-search",
+  // Feature 003 contract Δ2 `sync` and `clone`.
+  "sync-fetch",
+  "sync-merge",
+  "sync-rebase",
+  "sync-push",
+  "sync-continue",
+  "clone",
+  "pageant",
 ] as const;
 export const Phase = z.enum(PHASES);
 export type Phase = z.infer<typeof Phase>;
+// Feature 003 contract Δ2: these phases carry only these counters.
+const SYNC_PHASES: readonly string[] = ["sync-fetch", "sync-merge", "sync-rebase", "sync-push", "sync-continue", "clone", "pageant"];
+const SYNC_COUNTERS: readonly string[] = ["percent", "remoteIndex", "remoteCount"];
 
 // Contract §11 "Distro checks": a name that `wsl.exe --list --quiet` prints holds no control character.
 export const DistroName = z.string().min(1).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/);
 
 // Contract §3 `applyHunk` and `applyFile`.
 export const Direction = z.enum(["stage", "unstage"]);
+// Feature 003 contract Δ3 `applyFile`: only a file action takes `resolve` (Mark resolved).
+export const FileDirection = z.enum(["stage", "unstage", "resolve"]);
 
 // Contract §2: exactly these fields. A progress event holds no command, configuration, environment, patch content, Git text, or credential.
 // The fields without `distro`. Only phase `wsl-starting` carries `distro`.
@@ -123,7 +162,9 @@ export const ProgressFields = z.strictObject({
 // Contract §2: only phases `fetch` and `update` carry `path`, and they always carry it.
 export const ProgressEvent = ProgressFields.extend({ distro: DistroName.optional() })
   .refine((e) => (e.phase === "wsl-starting") === (e.distro !== undefined))
-  .refine((e) => (e.phase === "fetch" || e.phase === "update") === (e.path !== undefined));
+  .refine((e) => (e.phase === "fetch" || e.phase === "update") === (e.path !== undefined))
+  // zod can run a refinement on a value whose fields failed.
+  .refine((e) => !SYNC_PHASES.includes(e.phase ?? "") || (typeof e.counters === "object" && e.counters !== null && Object.keys(e.counters).every((k) => SYNC_COUNTERS.includes(k))));
 export type ProgressEvent = z.infer<typeof ProgressEvent>;
 
 // Contract §9 "Commit failure output": an output tail stays within 16 KiB and 100 lines.

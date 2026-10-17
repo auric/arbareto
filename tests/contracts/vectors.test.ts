@@ -96,6 +96,33 @@ describe("golden vectors", () => {
     }
   });
 
+  // Feature 003 contract Δ10: vectors for the new operations, codes, policies, and private requests.
+  test("each feature 003 operation, code, policy, and private request has a valid vector", () => {
+    const texts = (schema: string) => vectors.filter(({ kind, vector }) => kind === "valid" && vector.schema === schema).map(({ vector }) => JSON.parse(vector.text) as Record<string, unknown>);
+    const operations = [...texts("renderer-envelope"), ...texts("service-envelope")].map((t) => t.operation);
+    const added = ["readTracking", "reviewSync", "sync", "clone", "connectInTerminal", "readSyncSettings", "setSshClient", "setDefaultPullAction", "chooseSyncPath", "clearSyncPath", "launchPuttygen"];
+    expect(operations).toEqual(expect.arrayContaining(added));
+    expect(texts("response").map((t) => t.code)).toEqual(expect.arrayContaining(["SYNC_UNAVAILABLE", "PUSH_REJECTED", "PUTTY_UNAVAILABLE", "DESTINATION_NOT_EMPTY"]));
+    expect(texts("process-request").map((t) => t.environmentPolicy)).toEqual(expect.arrayContaining(["remote", "integrate"]));
+    expect(texts("process-request").map((t) => t.contextKind)).toContain("clone");
+    for (const schema of ["process-request", "process-reply"]) expect(texts(schema).map((t) => t.type)).toEqual(expect.arrayContaining(["destinationFacts", "pageant", "terminal"]));
+  });
+
+  // Feature 003 contract Δ10: the shell reads these vectors in `src-tauri/src/schema.rs`.
+  test("each feature 003 shell-read schema has its valid and invalid vectors", () => {
+    const texts = (kind: string, schema: string) => vectors.filter((v) => v.kind === kind && v.vector.schema === schema).map(({ vector }) => JSON.parse(vector.text) as Record<string, unknown>);
+    const operations = texts("valid", "native-first-envelope").map((t) => t.operation);
+    expect(operations).toEqual(expect.arrayContaining(["clone", "readSyncSettings", "setSshClient", "setDefaultPullAction", "chooseSyncPath", "clearSyncPath", "launchPuttygen"]));
+    expect(texts("invalid", "native-first-envelope").map((t) => t.operation)).toEqual(expect.arrayContaining(["clone", "chooseSyncPath"]));
+    const started = (kind: string) => texts(kind, "mutation-request").map((t) => `${String(t.kind)}:${String(t.action ?? t.direction ?? "")}`);
+    expect(started("valid")).toEqual(expect.arrayContaining(["sync:pull", "applyFile:resolve"]));
+    expect(started("invalid")).toEqual(expect.arrayContaining(["sync:", "applyHunk:resolve"]));
+    for (const kind of ["valid", "invalid"]) expect(texts(kind, "progress").map((t) => t.phase)).toContain("sync-fetch");
+    const markers = texts("valid", "handshake").flatMap((t) => t.markers as { kind: string }[]);
+    expect(markers.map((m) => m.kind)).toContain("sync");
+    expect(texts("valid", "process-reply").filter((t) => t.type === "pageant").map((t) => t.result)).toContain("git");
+  });
+
   const faulted = vectors.filter(({ kind, vector }) => kind === "invalid" && FAULT_SCHEMAS.includes(vector.schema));
   test("each invalid vector of a fault schema carries its repair", () => {
     expect(faulted.filter(({ vector }) => vector.repair === undefined).map(({ name }) => name)).toEqual([]);

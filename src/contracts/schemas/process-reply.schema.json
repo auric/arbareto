@@ -1304,6 +1304,243 @@
         }
       ],
       "title": "WslFilesReplyGroup"
+    },
+    {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "destinationFacts"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "result": {
+              "type": "string",
+              "enum": [
+                "absent",
+                "empty",
+                "not-empty",
+                "file",
+                "other"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "result"
+          ],
+          "additionalProperties": false,
+          "title": "DestinationFactsResult"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "destinationFacts"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "result": {
+              "type": "string",
+              "const": "error"
+            },
+            "code": {
+              "type": "string",
+              "enum": [
+                "access-denied",
+                "sharing-violation",
+                "io-error",
+                "other-error"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "result",
+            "code"
+          ],
+          "additionalProperties": false,
+          "title": "DestinationFactsError"
+        }
+      ],
+      "title": "DestinationFactsGroup"
+    },
+    {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pageant"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "result": {
+              "type": "string",
+              "enum": [
+                "git",
+                "none",
+                "ready"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "result"
+          ],
+          "additionalProperties": false,
+          "title": "PageantResult"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pageant"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "result": {
+              "type": "string",
+              "const": "failed"
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "missing",
+                "unreadable",
+                "version",
+                "exit",
+                "not-ready"
+              ]
+            },
+            "program": {
+              "type": "string",
+              "enum": [
+                "plink",
+                "pageant",
+                "puttygen"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "result",
+            "reason",
+            "program",
+            "path"
+          ],
+          "additionalProperties": false,
+          "title": "PageantFailed"
+        }
+      ],
+      "title": "PageantReplyGroup"
+    },
+    {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "terminal"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "result": {
+              "type": "string",
+              "const": "started"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "result"
+          ],
+          "additionalProperties": false,
+          "title": "TerminalStarted"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "terminal"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "result": {
+              "type": "string",
+              "const": "failed"
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "missing",
+                "unreadable",
+                "version",
+                "exit",
+                "not-ready"
+              ]
+            },
+            "program": {
+              "type": "string",
+              "enum": [
+                "plink",
+                "pageant",
+                "puttygen"
+              ]
+            },
+            "path": {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "result",
+            "reason",
+            "program",
+            "path"
+          ],
+          "additionalProperties": false,
+          "title": "TerminalFailed"
+        }
+      ],
+      "title": "TerminalGroup"
     }
   ],
   "definitions": {

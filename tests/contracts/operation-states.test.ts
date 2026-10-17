@@ -170,7 +170,8 @@ describe("running", () => {
     );
   });
 
-  test.each([[COMMIT], [SUBMODULES]])("%s stays running and sets stalled after 15 seconds without activity", (operation) => {
+  // Feature 003 contract Δ2: `sync` and `clone` events carry `stalled`.
+  test.each([[COMMIT], [SUBMODULES], ["sync"], ["clone"]])("%s stays running and sets stalled after 15 seconds without activity", (operation) => {
     const stalled = expectStep({ operation, state: "running" }, { type: "stall" }, { state: "running", stalled: true }, [
       "show-stall-notice",
     ]);

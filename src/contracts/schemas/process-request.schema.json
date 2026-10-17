@@ -372,6 +372,130 @@
           ],
           "additionalProperties": false,
           "title": "RunRegistered"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "run"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "arguments": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "input": {
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            },
+            "inputBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 536870912
+            },
+            "environmentPolicy": {
+              "$ref": "#/definitions/EnvironmentPolicy"
+            },
+            "transactionId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "indexFile": {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "limits": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "deadlineMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 120000
+                    },
+                    "stallMs": {
+                      "type": "number",
+                      "const": 15000
+                    }
+                  },
+                  "required": [
+                    "deadlineMs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "DeadlineLimits"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "inactivityMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 300000
+                    },
+                    "ceilingMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 14400000
+                    },
+                    "stallMs": {
+                      "type": "number",
+                      "const": 15000
+                    }
+                  },
+                  "required": [
+                    "inactivityMs",
+                    "ceilingMs",
+                    "stallMs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "NetworkLimits"
+                }
+              ]
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "clone"
+            },
+            "cloneId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "arguments",
+            "environmentPolicy",
+            "limits",
+            "contextKind",
+            "cloneId",
+            "gitInstallationId"
+          ],
+          "additionalProperties": false,
+          "title": "RunClone"
         }
       ],
       "title": "RunGroup"
@@ -1463,6 +1587,87 @@
     },
     {
       "$ref": "#/definitions/CloseJob"
+    },
+    {
+      "$ref": "#/definitions/DestinationFacts"
+    },
+    {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pageant"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "remote": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "repositoryId",
+            "remote"
+          ],
+          "additionalProperties": false,
+          "title": "PageantRemote"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "pageant"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "cloneId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "cloneId"
+          ],
+          "additionalProperties": false,
+          "title": "PageantClone"
+        }
+      ],
+      "title": "PageantGroup"
+    },
+    {
+      "$ref": "#/definitions/Terminal"
     }
   ],
   "definitions": {
@@ -1473,7 +1678,9 @@
         "read",
         "mutation",
         "network",
-        "search"
+        "search",
+        "remote",
+        "integrate"
       ]
     },
     "Input": {
@@ -1700,6 +1907,81 @@
       ],
       "additionalProperties": false,
       "title": "CloseJob"
+    },
+    "DestinationFacts": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "destinationFacts"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "cloneId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        }
+      },
+      "required": [
+        "type",
+        "callId",
+        "operationId",
+        "cloneId"
+      ],
+      "additionalProperties": false,
+      "title": "DestinationFacts"
+    },
+    "Terminal": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "terminal"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "gitInstallationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "repositoryId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "target": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "type",
+        "callId",
+        "operationId",
+        "gitInstallationId",
+        "target"
+      ],
+      "additionalProperties": false,
+      "title": "Terminal"
     }
   },
   "title": "ProcessRequest"

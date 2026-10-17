@@ -2,12 +2,18 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { z } from "zod";
-import { DamagedMarker, LinuxPath, TRUST_BOUNDS, UtcTime } from "./channel";
+import { DamagedMarker, LinuxPath, SYNC_ACTIONS, SyncAction, TRUST_BOUNDS, UtcTime } from "./channel";
 import {
+  DESTINATION_NOT_EMPTY_REASONS,
   ERROR_CODES,
   HISTORY_CHANGED_REASONS,
   HISTORY_OUTPUT_LIMIT_REASONS,
+  PUSH_REJECTED_REASONS,
+  PUTTY_PROGRAMS,
+  PUTTY_UNAVAILABLE_REASONS,
   SEARCH_UNSUPPORTED_REASONS,
+  SYNC_OUTPUT_LIMIT_REASONS,
+  SYNC_UNAVAILABLE_REASONS,
   TERMINAL_STATES,
   UNSUPPORTED_FILTER_TEXT_REASONS,
   WSL_UNAVAILABLE_REASONS,
@@ -16,21 +22,28 @@ import {
 import { FILE_ACTION_REASONS } from "./file-action";
 import * as limits from "./limits";
 import {
+  CLONE_URL_BYTES,
   COMMIT_MESSAGE_BYTES,
   GRAPH_LANES,
   HISTORY_PAGE_BYTES,
   HISTORY_PARENTS_PER_COMMIT,
   HISTORY_ROWS_PER_REQUEST,
   HISTORY_VIEW_COMMITS,
+  KEY_FILE_ENTRIES,
   PUBLIC_REQUEST_BYTES,
   REF_LISTING_RECORDS,
   REGISTERED_WORKSPACES,
+  SYNC_FETCH_LISTED_REFS,
+  SYNC_LEASE_COMMITS,
+  SYNC_REFS_RECORDS,
+  SYNC_REMOTES,
 } from "./limits";
 import {
   ChannelPath,
   Count,
   Direction,
   DistroName,
+  FileDirection,
   Fingerprint,
   Identifier,
   isOperationName,
@@ -131,7 +144,7 @@ const ApplyHunk = op(
   snapshot,
   z.strictObject({ comparisonId: Identifier, hunkId: Identifier, snapshotId: Identifier, direction: Direction }),
 );
-const ApplyFile = op("applyFile", snapshot, z.strictObject({ comparisonId: Identifier, snapshotId: Identifier, direction: Direction }));
+const ApplyFile = op("applyFile", snapshot, z.strictObject({ comparisonId: Identifier, snapshotId: Identifier, direction: FileDirection }));
 const ReviewCommit = op("reviewCommit", snapshot, z.strictObject({ snapshotId: Identifier }));
 const Commit = op("commit", snapshot, z.strictObject({ reviewToken: Identifier, message: CommitMessage, confirmFullScope: z.literal(true) }));
 const ReviewSubmodules = op("reviewSubmodules", snapshot, z.strictObject({ snapshotId: Identifier }));
@@ -151,6 +164,51 @@ const DismissRecoveryMarker = op("dismissRecoveryMarker", {}, z.strictObject({ m
 const ListRecentRepositories = op("listRecentRepositories", {}, empty());
 const OpenRecentRepository = op("openRecentRepository", {}, z.strictObject({ entryId: Identifier }));
 const RemoveRecentRepository = op("removeRecentRepository", {}, z.strictObject({ entryId: Identifier }));
+
+// ---- Feature 003 operations (contract Δ1 to Δ3) ----
+
+// A name from `git remote`. The service checks membership and refuses another name with INVALID_REQUEST.
+const RemoteName = Text.min(1);
+const SyncMode = z.enum(["rebase", "merge"]);
+// The service checks `refs/heads/<branch>` with `isRefName`.
+const PushDestinationChoice = z.strictObject({ remote: RemoteName, branch: Text.min(1), setUpstream: z.boolean() }).meta({ title: "PushDestinationChoice" });
+const ReviewSyncPayload = z.discriminatedUnion("action", [
+  z.strictObject({ action: z.literal("fetch"), remote: RemoteName.optional() }).meta({ title: "ReviewFetch" }),
+  z.strictObject({ action: z.literal("fetch-all") }).meta({ title: "ReviewFetchAll" }),
+  z.strictObject({ action: z.literal("pull"), mode: SyncMode.optional() }).meta({ title: "ReviewPull" }),
+  z.strictObject({ action: z.literal("integrate"), mode: SyncMode }).meta({ title: "ReviewIntegrate" }),
+  z.strictObject({ action: z.literal("push"), destination: PushDestinationChoice.optional() }).meta({ title: "ReviewPush" }),
+  z.strictObject({ action: z.literal("force-push") }).meta({ title: "ReviewForcePush" }),
+  z.strictObject({ action: z.literal("abort") }).meta({ title: "ReviewAbort" }),
+  z.strictObject({ action: z.literal("continue") }).meta({ title: "ReviewContinue" }),
+  z.strictObject({ action: z.literal("skip") }).meta({ title: "ReviewSkip" }),
+]);
+// Contract Δ3 `clone`: 1 to 4,096 UTF-8 bytes and no control character (Unicode category Cc).
+const CloneUrl = z
+  .string()
+  .min(1)
+  .max(CLONE_URL_BYTES)
+  .regex(/^[^\u0000-\u001f\u007f-\u009f]+$/)
+  .refine((url) => url.isWellFormed() && new TextEncoder().encode(url).length <= CLONE_URL_BYTES);
+// Data-model §10.
+export const DEFAULT_PULL_ACTIONS = ["pull", "pull-merge", "pull-rebase", "fetch", "fetch-all"] as const;
+// Data-model §10: a key file belongs to one worktree and remote. The other targets name neither.
+const SyncPathTarget = z
+  .strictObject({ target: z.enum(["plink", "remoteKey", "cloneFolder"]), worktreeKey: Fingerprint.optional(), remote: RemoteName.optional() })
+  .refine((p) => (p.target === "remoteKey") === (p.worktreeKey !== undefined) && (p.target === "remoteKey") === (p.remote !== undefined));
+
+const ReadTracking = op("readTracking", snapshot, empty());
+const ReviewSync = op("reviewSync", snapshot, ReviewSyncPayload);
+const Sync = op("sync", repository, z.strictObject({ syncReviewToken: Identifier, start: z.literal(true) }));
+const Clone = op("clone", {}, z.strictObject({ url: CloneUrl, destination: ChannelPath, keyFile: z.enum(["none", "picked"]) }));
+// Data-model §11: a clone target without a workspace has no repository.
+const ConnectInTerminal = op("connectInTerminal", { repositoryId: Identifier.optional() }, z.strictObject({ operationId: Identifier }));
+const ReadSyncSettings = op("readSyncSettings", {}, empty());
+const SetSshClient = op("setSshClient", {}, z.strictObject({ kind: z.enum(["git", "plink"]) }));
+const SetDefaultPullAction = op("setDefaultPullAction", {}, z.strictObject({ action: z.enum(DEFAULT_PULL_ACTIONS) }));
+const ChooseSyncPath = op("chooseSyncPath", {}, SyncPathTarget);
+const ClearSyncPath = op("clearSyncPath", {}, SyncPathTarget);
+const LaunchPuttygen = op("launchPuttygen", {}, empty());
 
 export const RendererEnvelope = z.discriminatedUnion("operation", [
   GetEnvironment,
@@ -183,6 +241,17 @@ export const RendererEnvelope = z.discriminatedUnion("operation", [
   RequestClose,
   CurrentSession,
   DismissRecoveryMarker,
+  ReadTracking,
+  ReviewSync,
+  Sync,
+  Clone,
+  ConnectInTerminal,
+  ReadSyncSettings,
+  SetSshClient,
+  SetDefaultPullAction,
+  ChooseSyncPath,
+  ClearSyncPath,
+  LaunchPuttygen,
 ]);
 export type RendererRequest = z.infer<typeof RendererEnvelope>;
 export type RequestOf<K extends OperationName> = Extract<RendererRequest, { operation: K }>;
@@ -196,6 +265,14 @@ export const NativeFirstEnvelope = z.discriminatedUnion("operation", [
   ListRecentRepositories,
   OpenRecentRepository,
   RemoveRecentRepository,
+  // Feature 003 contract Δ1.
+  Clone,
+  ReadSyncSettings,
+  SetSshClient,
+  SetDefaultPullAction,
+  ChooseSyncPath,
+  ClearSyncPath,
+  LaunchPuttygen,
 ]);
 
 // Contract §6 "Dismissal": without `bootstrapId`, the stored worktree path does not exist.
@@ -225,6 +302,12 @@ export const ServiceEnvelope = z.discriminatedUnion("operation", [
   Cancel,
   GetOperation,
   op("dismissRecoveryMarker", {}, z.strictObject({ markerId: Identifier, bootstrapId: Identifier.optional() })),
+  ReadTracking,
+  ReviewSync,
+  Sync,
+  // Feature 003 contract Δ3 `clone`: the shell binds the destination and forwards its IDs.
+  op("clone", {}, z.strictObject({ url: CloneUrl, bootstrapId: Identifier, cloneId: Identifier })),
+  ConnectInTerminal,
 ]);
 export type ServiceRequest = z.infer<typeof ServiceEnvelope>;
 
@@ -413,7 +496,7 @@ export const ReadTrustResult = z
         state: z.enum(["untrusted", "approved", "changed", "revoked"]),
         persistence: TrustPersistence,
         trustId: Identifier.optional(),
-        approvalRequired: z.strictObject({ reads: z.boolean(), commit: z.boolean() }),
+        approvalRequired: z.strictObject({ reads: z.boolean(), commit: z.boolean(), sync: z.boolean() }),
         bound: z.enum(TRUST_BOUNDS).optional(),
         inputLimited: z.literal(true).optional(),
         entries: z.array(TrustEntry).max(limits.TRUST_REPORT_ENTRIES),
@@ -773,7 +856,8 @@ export const SearchHistoryResult = z
 // Data-model §5 "Support decision". `src/git-service/support.ts` `SUPPORT_REASONS` holds the same list.
 const SupportValue = z.enum(["supported", "binary", "encoding", "size", "rename", "mode", "type", "symlink", "submodule", "LFS", "filter", "state", "line-endings", "index-flag", "path"]);
 // Data-model §5 "File-action decision". `state` is the operation-state refusal. Contract §4: `blob-proof` never occurs in `readComparison`.
-const FileActionValue = z.enum(["stage", "unstage", "state", ...FILE_ACTION_REASONS.filter((r) => r !== "blob-proof")]);
+// Feature 003 contract Δ3 and Δ4: `resolve` accepts a conflicted entry.
+const FileActionValue = z.enum(["stage", "unstage", "resolve", "state", ...FILE_ACTION_REASONS.filter((r) => r !== "blob-proof")]);
 // Contract §4 "Limitation remedies": a refused file action can carry a copyable command. A null `command` shows the refused value in `text`.
 const FileRemedy = z.strictObject({ text: z.string().min(1), command: z.string().nullable() }).meta({ title: "FileRemedy" }).nullable();
 const ComparisonScope = z.enum(["head-to-index", "index-to-worktree", "empty-to-untracked"]);
@@ -852,3 +936,218 @@ export const OperationResult = z
 
 // Contract §3 `currentSession`: plan.md "Windows text size" gives the factor range.
 export const SessionResult = z.strictObject({ sessionId: Identifier, textScale: z.number().min(1).max(2.25) });
+
+// ---- Feature 003 results (contract Δ3, data-model §1 to §10) ----
+
+// Data-model §1. `upstream` is null without an upstream, and only then the track is `none`.
+export const TrackingEntry = z
+  .strictObject({
+    name: z.string(),
+    invalidUtf8: z.boolean(),
+    objectId: ObjectId,
+    upstream: z.string().nullable(),
+    upstreamObjectId: ObjectId.nullable(),
+    track: z.discriminatedUnion("state", [
+      z.strictObject({ state: z.literal("none") }).meta({ title: "TrackNone" }),
+      z.strictObject({ state: z.literal("gone") }).meta({ title: "TrackGone" }),
+      z.strictObject({ state: z.literal("counts"), ahead: Count, behind: Count }).meta({ title: "TrackCounts" }),
+    ]),
+    current: z.boolean(),
+  })
+  .refine((e) => (e.upstream === null) === (e.track?.state === "none") && (e.upstream !== null || e.upstreamObjectId === null))
+  .meta({ title: "TrackingEntry" });
+// Contract Δ3 `readTracking`: the entries, or the `readRefs` refusal form for a bound or a failed read. At most one entry is current.
+export const ReadTrackingResult = z
+  .union([
+    z
+      .strictObject({ entries: z.array(TrackingEntry).max(REF_LISTING_RECORDS) })
+      .refine((r) => !Array.isArray(r.entries) || r.entries.filter((e) => e?.current === true).length <= 1)
+      .meta({ title: "TrackingList" }),
+    RefsRefusal,
+  ])
+  .meta({ title: "ReadTrackingResult" });
+
+export { SYNC_ACTIONS };
+// A display remedy: a copyable command, or null when the URL holds user information (contract Δ3 "Remedies").
+const SyncRemedy = z.strictObject({ text: z.string().min(1), command: z.string().nullable() }).meta({ title: "SyncRemedy" });
+
+// Data-model §3. `url` is the one push URL, redacted for display. `matching` always gives `panel`.
+export const PushDestination = z
+  .strictObject({
+    remote: RemoteName,
+    ref: Text.min(1),
+    trackingRef: Text.min(1).nullable(),
+    url: z.string(),
+    setUpstream: z.boolean(),
+    // Contract Δ3 Set upstream: the write of `branch.<name>.rebase` applies. Only with `setUpstream`.
+    upstreamRebase: z.boolean(),
+    source: z.enum(["remote-push-refspec", "push-default-upstream", "push-default-branch", "push-default-triangular", "panel"]),
+  })
+  .refine((d) => d.setUpstream || !d.upstreamRebase)
+  .meta({ title: "PushDestination" });
+// Plan.md D5: the commits that the force push removes. `count` is exact, and `commits` holds the first of them.
+const Lease = z
+  .strictObject({
+    trackingRef: Text.min(1),
+    expect: ObjectId,
+    count: Count,
+    commits: z.array(z.strictObject({ objectId: ObjectId, subject: z.string().nullable() }).meta({ title: "LeaseCommit" })).max(SYNC_LEASE_COMMITS),
+  })
+  .refine((l) => Array.isArray(l.commits) && l.commits.length === Math.min(l.count, SYNC_LEASE_COMMITS))
+  .meta({ title: "Lease" });
+// Plan.md D4 step 0 and FR-016: the panel lists the remotes, pre-fills a destination when Git gives one, and states the Set upstream default.
+const NeedsDestination = z
+  .strictObject({
+    remotes: z.array(RemoteName).min(1).max(SYNC_REMOTES),
+    prefill: z.strictObject({ remote: RemoteName, ref: Text.min(1) }).meta({ title: "PanelPrefill" }).nullable(),
+    setUpstream: z.boolean(),
+    // Contract Δ3 Set upstream: the panel names `branch.<name>.rebase` among the keys when it is true.
+    upstreamRebase: z.boolean(),
+  })
+  .meta({ title: "NeedsDestination" });
+// Data-model §2: the bound values for display.
+export const SyncPlan = z
+  .strictObject({
+    remotes: z.array(RemoteName).max(SYNC_REMOTES),
+    upstream: z.strictObject({ ref: Text.min(1), objectId: ObjectId }).meta({ title: "PlanUpstream" }).optional(),
+    destination: PushDestination.optional(),
+    lease: Lease.optional(),
+    mode: SyncMode.nullable().optional(),
+    operationState: z.enum(["merging", "rebasing"]).optional(),
+    // Contract Δ3 read 8. `subject` is null for a commit object above `HISTORY_COMMIT_OBJECT_BYTES`.
+    skippedCommit: z.strictObject({ objectId: ObjectId, subject: z.string().nullable() }).meta({ title: "SkippedCommit" }).optional(),
+    needsDestination: NeedsDestination.optional(),
+  })
+  .meta({ title: "SyncPlan" });
+// Contract Δ3 `reviewSync`: a push without a destination gives `needsDestination` and no token.
+// A refusal names its `SYNC_UNAVAILABLE` or `OUTPUT_LIMIT` reason, or the unmerged count of `CONFLICTED`.
+export const ReviewSyncResult = z
+  .union([
+    z
+      .strictObject({ action: SyncAction, plan: SyncPlan, syncReviewToken: Identifier.optional() })
+      .refine(
+        (r) =>
+          (r.syncReviewToken === undefined) === (r.plan?.needsDestination !== undefined) &&
+          (r.plan?.needsDestination === undefined || r.action === "push") &&
+          (r.plan?.skippedCommit !== undefined) === (r.action === "skip"),
+      )
+      .meta({ title: "SyncReviewed" }),
+    // `remedy`: the terminal command of a `rebase-exec` refusal.
+    z.strictObject({ reason: z.enum([...SYNC_UNAVAILABLE_REASONS, ...SYNC_OUTPUT_LIMIT_REASONS]).optional(), unmerged: Count.optional(), remedy: SyncRemedy.optional() }).meta({ title: "SyncRefused" }),
+  ])
+  .meta({ title: "ReviewSyncResult" });
+
+// git-fetch(1) OUTPUT: the flags of a `--porcelain` line.
+export const FETCH_FLAGS = [" ", "+", "-", "t", "*", "!", "="] as const;
+const FetchFlag = z.enum(FETCH_FLAGS);
+// Data-model §4. `updates` lists the first lines of each remote. `counts` covers all its lines.
+const FetchRemote = z
+  .strictObject({
+    name: RemoteName,
+    state: z.enum(["succeeded", "failed", "canceled", "deadline", "not-started"]),
+    updates: z.array(z.strictObject({ flag: FetchFlag, oldObjectId: ObjectId, newObjectId: ObjectId, ref: Text.min(1) }).meta({ title: "FetchUpdate" })).max(SYNC_FETCH_LISTED_REFS),
+    counts: z.record(FetchFlag, Count),
+    outputTail: OutputTail,
+  })
+  .meta({ title: "FetchRemote" });
+// `observed`: the ref changes of the before and after listings that no line names. Null: the ref is absent on that side.
+export const FetchResult = z
+  .strictObject({
+    remotes: z.array(FetchRemote).max(SYNC_REMOTES),
+    observed: z.array(z.strictObject({ ref: Text.min(1), oldObjectId: ObjectId.nullable(), newObjectId: ObjectId.nullable() }).meta({ title: "ObservedRef" })).max(SYNC_REFS_RECORDS),
+  })
+  .meta({ title: "FetchResult" });
+// Data-model §5. `reasonText` is display text only (FR-015).
+export const PushResult = z
+  .strictObject({
+    status: z.enum(["pushed", "forced", "created", "up-to-date", "rejected", "remote-rejected", "remote-failure", "none"]),
+    oldObjectId: ObjectId.nullable(),
+    newObjectId: ObjectId.nullable(),
+    reasonText: z.string().nullable(),
+    lease: z.boolean(),
+    upstreamWritten: z.boolean(),
+    // Contract Δ3 Set upstream: a write after a successful push did not exit 0.
+    upstreamNotSet: z.boolean(),
+    outputTail: OutputTail,
+  })
+  .meta({ title: "PushResult" });
+// Data-model §7.
+export const Integration = z
+  .discriminatedUnion("state", [
+    z.strictObject({ state: z.literal("none") }).meta({ title: "IntegrationNone" }),
+    z.strictObject({ state: z.literal("up-to-date") }).meta({ title: "IntegrationUpToDate" }),
+    z.strictObject({ state: z.literal("mode-required") }).meta({ title: "IntegrationModeRequired" }),
+    z.strictObject({ state: z.literal("done") }).meta({ title: "IntegrationDone" }),
+    z.strictObject({ state: z.literal("stopped"), operation: z.enum(["merging", "rebasing"]), unmerged: Count }).meta({ title: "IntegrationStopped" }),
+    z.strictObject({ state: z.literal("refused"), outputTail: OutputTail }).meta({ title: "IntegrationRefused" }),
+  ])
+  .meta({ title: "Integration" });
+const FETCHING: readonly string[] = ["fetch", "fetch-all", "pull"];
+const PUSHING: readonly string[] = ["push", "force-push"];
+const INTEGRATING: readonly string[] = ["pull", "integrate", "abort", "continue", "skip"];
+// Contract Δ3 "Results and states": the `SYNC_UNAVAILABLE` reasons that a pull or integrate result holds after the fetch or the count.
+const PULL_REFUSAL_REASONS = ["ff-only", "interactive-rebase", "upstream-gone"] as const;
+// Data-model §4 to §8: the parts of the action. The response state holds the outcome.
+export const SyncResult = z
+  .strictObject({
+    action: SyncAction,
+    fetch: FetchResult.optional(),
+    push: PushResult.optional(),
+    counts: z.strictObject({ ahead: Count, behind: Count }).meta({ title: "SyncCounts" }).optional(),
+    integration: Integration.optional(),
+    // Data-model §6. Null: no payload and no configuration value decided.
+    modeSource: z.enum(["payload", "branch", "pull", "pull-ff"]).nullable().optional(),
+    remedy: SyncRemedy.optional(),
+    // Contract Δ9: the `PUSH_REJECTED` reason, the `PUTTY_UNAVAILABLE` reason with the program and its path after a fetched remote,
+    // or the `SYNC_UNAVAILABLE` reason of a pull or integrate refusal after the fetch or the count.
+    reason: z.enum([...PUSH_REJECTED_REASONS, ...PUTTY_UNAVAILABLE_REASONS, ...PULL_REFUSAL_REASONS]).optional(),
+    program: z.enum(PUTTY_PROGRAMS).optional(),
+    path: ChannelPath.optional(),
+    // Data-model §11: the service holds a connect target for this operation.
+    connectTarget: z.literal(true).optional(),
+  })
+  .refine(
+    (r) =>
+      (r.fetch === undefined || FETCHING.includes(r.action)) &&
+      (r.push === undefined || PUSHING.includes(r.action)) &&
+      (r.integration === undefined || INTEGRATING.includes(r.action)) &&
+      ((r.counts === undefined && r.modeSource === undefined) || r.action === "pull" || r.action === "integrate") &&
+      (!(PULL_REFUSAL_REASONS as readonly string[]).includes(r.reason ?? "") || r.action === "pull" || r.action === "integrate") &&
+      (!(PUSH_REJECTED_REASONS as readonly string[]).includes(r.reason ?? "") || PUSHING.includes(r.action)) &&
+      ((r.program !== undefined && r.path !== undefined) === (PUTTY_UNAVAILABLE_REASONS as readonly string[]).includes(r.reason ?? "")) &&
+      ((r.program === undefined) === (r.path === undefined)),
+  )
+  .meta({ title: "SyncResult" });
+
+// Contract Δ9 `PUTTY_UNAVAILABLE`: the program and its path.
+export const PuttyRefused = z
+  .strictObject({ reason: z.enum(PUTTY_UNAVAILABLE_REASONS), program: z.enum(PUTTY_PROGRAMS), path: ChannelPath })
+  .meta({ title: "PuttyRefused" });
+// Contract Δ3 `clone`: the `chooseRepository` result after exit 0, else the destination state of FR-050, or a refusal before the start.
+// `connectTarget` (data-model §11): the service holds a connect target for this operation. Without a destination read, it stands alone.
+export const CloneResult = z
+  .union([
+    RegistrationResult,
+    z.strictObject({ exists: z.boolean(), empty: z.boolean(), outputTail: OutputTail, remedy: SyncRemedy, connectTarget: z.literal(true).optional() }).meta({ title: "CloneFailed" }),
+    z.strictObject({ connectTarget: z.literal(true) }).meta({ title: "CloneConnectTarget" }),
+    z.strictObject({ reason: z.enum(DESTINATION_NOT_EMPTY_REASONS), path: ChannelPath }).meta({ title: "DestinationRefused" }),
+    PuttyRefused,
+  ])
+  .meta({ title: "CloneResult" });
+
+// Data-model §10 and contract Δ3 `readSyncSettings`. No passphrase, credential, key content, or repository value.
+// `programs`: one entry for each PuTTY program in the plink folder with a set `plinkPath`, else none.
+export const SyncSettings = z
+  .strictObject({
+    sshClient: z.enum(["git", "plink"]),
+    defaultPullAction: z.enum(DEFAULT_PULL_ACTIONS),
+    plinkPath: ChannelPath.nullable(),
+    programs: z.array(z.strictObject({ program: z.enum(PUTTY_PROGRAMS), path: ChannelPath, present: z.boolean() }).meta({ title: "SyncProgram" })).max(PUTTY_PROGRAMS.length),
+    remoteKeyFiles: z.array(z.strictObject({ worktreeKey: Fingerprint, remote: RemoteName, path: ChannelPath }).meta({ title: "KeyFile" })).max(KEY_FILE_ENTRIES),
+    defaultCloneFolder: ChannelPath.nullable(),
+    lastCloneParent: ChannelPath.nullable(),
+  })
+  .refine((s) => Array.isArray(s.programs) && new Set(s.programs.map((p) => p?.program)).size === s.programs.length && s.programs.length === (s.plinkPath === null ? 0 : PUTTY_PROGRAMS.length))
+  .meta({ title: "SyncSettings" });
+// The six settings operations give the settings, or a PuTTY refusal of `chooseSyncPath` and `launchPuttygen`.
+export const SyncSettingsResult = z.union([SyncSettings, PuttyRefused]).meta({ title: "SyncSettingsResult" });

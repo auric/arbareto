@@ -28,8 +28,9 @@ import {
   WHOLE_FILE_STAGE_INPUT_BYTES,
   WSL_DISTRO_START_MS,
 } from "./limits";
+import { PUTTY_PROGRAMS, PUTTY_UNAVAILABLE_REASONS } from "./errors";
 import { NATIVE } from "./native-path";
-import { ChannelPath, Count, Direction, DistroName, Fingerprint, Identifier, MutationKind, Text } from "./operations";
+import { ChannelPath, Count, Direction, DistroName, FileDirection, Fingerprint, Identifier, MutationKind, Text } from "./operations";
 
 // Contract §6 "Startup handshake" and "Channel frames". Each union branch has a title, because typify names its types from titles.
 
@@ -165,11 +166,14 @@ export const HandshakeReply = z.union([
 const GIT_PROBE = { contextKind: z.literal("gitProbe"), bootstrapId: Identifier };
 const DISCOVERY = { contextKind: z.literal("repositoryDiscovery"), bootstrapId: Identifier, gitInstallationId: Identifier };
 const REGISTERED = { contextKind: z.literal("registeredOperation"), gitInstallationId: Identifier, repositoryId: Identifier };
+// Feature 003 contract Δ6: the shell binds the destination of one clone. The cwd is the application-owned launch folder, or `/` in WSL.
+const CLONE = { contextKind: z.literal("clone"), cloneId: Identifier, gitInstallationId: Identifier };
 // Contract §6 "Channel frames" `run` fields: the context IDs of each context kind.
 export const ProcessContext = z.discriminatedUnion("contextKind", [
   z.strictObject(GIT_PROBE).meta({ title: "GitProbeContext" }),
   z.strictObject(DISCOVERY).meta({ title: "DiscoveryContext" }),
   z.strictObject(REGISTERED).meta({ title: "RegisteredContext" }),
+  z.strictObject(CLONE).meta({ title: "CloneContext" }),
 ]);
 export type ProcessContext = z.infer<typeof ProcessContext>;
 
@@ -189,7 +193,8 @@ export const Base64 = z.string().regex(/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2
 export const decodedBytes = (data: string) => Math.floor((data.length * 3) / 4) - (data.endsWith("==") ? 2 : data.endsWith("=") ? 1 : 0);
 const InlineInput = Base64.refine((data) => decodedBytes(data) >= 1 && decodedBytes(data) <= INLINE_PROCESS_INPUT_BYTES);
 
-const ENVIRONMENT_POLICIES = ["probe", "read", "mutation", "network", "search"] as const;
+// Feature 003 contract Δ6 and Δ7: `remote` and `integrate` take the network limits.
+const ENVIRONMENT_POLICIES = ["probe", "read", "mutation", "network", "search", "remote", "integrate"] as const;
 // The `id` gives the shell one generated `EnvironmentPolicy` type for the three `run` context kinds.
 export const EnvironmentPolicy = z.enum(ENVIRONMENT_POLICIES).meta({ id: "EnvironmentPolicy" });
 
@@ -371,6 +376,8 @@ export const ProcessRequest = z.xor([
     z.strictObject({ ...run, ...DISCOVERY }).meta({ title: "RunDiscovery" }),
     // Feature 002 contract Δ6: only a registered run takes `script`.
     z.strictObject({ ...run, ...REGISTERED, script: z.literal("matchingProbe").optional() }).meta({ title: "RunRegistered" }),
+    // Feature 003 contract Δ6: the shell admits only the fixed clone array with the bound destination as the last item.
+    z.strictObject({ ...run, ...CLONE }).meta({ title: "RunClone" }),
   ]).meta({ title: "RunGroup" }),
   named("Input", z.strictObject({ type: z.literal("input"), ...call, data: InlineInput })),
   named("Cancel", z.strictObject({ type: z.literal("cancel"), ...call })),
@@ -401,6 +408,14 @@ export const ProcessRequest = z.xor([
     z.strictObject({ type: z.literal("release"), gitInstallationId: Identifier }).meta({ title: "ReleaseGitFrame" }),
   ]).meta({ title: "ReleaseGroup" }),
   named("CloseJob", z.strictObject({ type: z.literal("closeJob"), operationId: Identifier })),
+  // Feature 003 contract Δ6.
+  named("DestinationFacts", z.strictObject({ type: z.literal("destinationFacts"), ...call, operationId: Identifier, cloneId: Identifier })),
+  z.union([
+    z.strictObject({ type: z.literal("pageant"), ...call, operationId: Identifier, repositoryId: Identifier, remote: Text.min(1) }).meta({ title: "PageantRemote" }),
+    z.strictObject({ type: z.literal("pageant"), ...call, operationId: Identifier, cloneId: Identifier }).meta({ title: "PageantClone" }),
+  ]).meta({ title: "PageantGroup" }),
+  // The shell takes the Git path from `gitInstallationId` and the worktree root from `repositoryId`. A clone target has no repository.
+  named("Terminal", z.strictObject({ type: z.literal("terminal"), ...call, operationId: Identifier, gitInstallationId: Identifier, repositoryId: Identifier.optional(), target: Text.min(1) })),
 ]);
 
 // Contract §6 "Process replies": the `refused` codes. The service refuses its own invalid request with INVALID_REQUEST.
@@ -547,6 +562,25 @@ export const FileFactsReply = z.union([
     .meta({ title: "FileFactsReply" }),
   z.strictObject({ type: z.literal("fileFacts"), ...walkDeadline }).meta({ title: "FileFactsDeadline" }),
 ]);
+// ---- Feature 003 contract Δ6 replies ----
+
+// A link or a junction gives `other`.
+export const DestinationFactsReply = z.union([
+  z.strictObject({ type: z.literal("destinationFacts"), ...call, result: z.enum(["absent", "empty", "not-empty", "file", "other"]) }).meta({ title: "DestinationFactsResult" }),
+  z.strictObject({ type: z.literal("destinationFacts"), ...call, result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "DestinationFactsError" }),
+]);
+// Contract Δ9 `PUTTY_UNAVAILABLE`: the reason, the program, and its path.
+const puttyFailed = { result: z.literal("failed"), reason: z.enum(PUTTY_UNAVAILABLE_REASONS), program: z.enum(PUTTY_PROGRAMS), path: ChannelPath };
+export const PageantReply = z.union([
+  // `git`: `sshClient` is `git`, so the shell starts no process.
+  z.strictObject({ type: z.literal("pageant"), ...call, result: z.enum(["git", "none", "ready"]) }).meta({ title: "PageantResult" }),
+  z.strictObject({ type: z.literal("pageant"), ...call, ...puttyFailed }).meta({ title: "PageantFailed" }),
+]);
+export const TerminalReply = z.union([
+  z.strictObject({ type: z.literal("terminal"), ...call, result: z.literal("started") }).meta({ title: "TerminalStarted" }),
+  z.strictObject({ type: z.literal("terminal"), ...call, ...puttyFailed }).meta({ title: "TerminalFailed" }),
+]);
+
 export const ProcessReply = z.xor([
   OutputReply,
   ActivityReply,
@@ -560,20 +594,32 @@ export const ProcessReply = z.xor([
   FileFactsReply.meta({ title: "FileFactsGroup" }),
   WslDistrosReply.meta({ title: "WslDistrosGroup" }),
   WslFilesReply.meta({ title: "WslFilesReplyGroup" }),
+  DestinationFactsReply.meta({ title: "DestinationFactsGroup" }),
+  PageantReply.meta({ title: "PageantReplyGroup" }),
+  TerminalReply.meta({ title: "TerminalGroup" }),
 ]);
 
 // ---- `mutation` frames (contract §6 "Recovery markers") ----
+
+// Feature 003 contract Δ3 `reviewSync`: the nine actions.
+export const SYNC_ACTIONS = ["fetch", "fetch-all", "pull", "integrate", "push", "force-push", "abort", "continue", "skip"] as const;
+export const SyncAction = z.enum(SYNC_ACTIONS);
 
 const startedFields = {
   operationId: Identifier,
   repositoryId: Identifier,
   kind: MutationKind,
-  direction: Direction.optional(),
+  direction: FileDirection.optional(),
+  action: SyncAction.optional(),
   worktreeRoot: ChannelPath,
   commonDirectory: ChannelPath,
 };
 // Contract §6 "Mutation frames": a hunk or file action carries its direction, and no other kind carries one.
-const directionRule = (frame: { kind: string; direction?: string }) => (frame.kind === "applyHunk" || frame.kind === "applyFile") === (frame.direction !== undefined);
+// Feature 003 contract Δ3: only a file action takes `resolve`. Contract Δ6: a `sync` frame carries its action, and no other kind carries one.
+const directionRule = (frame: { kind: string; direction?: string; action?: string }) =>
+  (frame.kind === "applyHunk" || frame.kind === "applyFile") === (frame.direction !== undefined) &&
+  (frame.kind !== "applyHunk" || Direction.safeParse(frame.direction).success) &&
+  (frame.kind === "sync") === (frame.action !== undefined);
 export const StartedCall = z.strictObject(startedFields).refine(directionRule);
 export type MutationStarted = z.infer<typeof StartedCall>;
 

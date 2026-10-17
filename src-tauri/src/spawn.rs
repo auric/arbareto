@@ -124,7 +124,7 @@ pub fn creation_flags(wsl: bool) -> PROCESS_CREATION_FLAGS {
     CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT | EXTENDED_STARTUPINFO_PRESENT | console
 }
 
-fn null_terminated(value: &OsStr) -> Result<Vec<u16>, SpawnError> {
+pub(crate) fn null_terminated(value: &OsStr) -> Result<Vec<u16>, SpawnError> {
     let units: Vec<u16> = value.encode_wide().chain(Some(0)).collect();
     if units[..units.len() - 1].contains(&0) {
         return Err(SpawnError::InvalidArgument);
@@ -133,7 +133,9 @@ fn null_terminated(value: &OsStr) -> Result<Vec<u16>, SpawnError> {
 }
 
 /// The block is sorted by name without case, in Unicode order (Microsoft Learn "Changing Environment Variables").
-fn environment_block(environment: &[(OsString, OsString)]) -> Result<Vec<u16>, SpawnError> {
+pub(crate) fn environment_block(
+    environment: &[(OsString, OsString)],
+) -> Result<Vec<u16>, SpawnError> {
     let mut entries = Vec::with_capacity(environment.len());
     for (name, value) in environment {
         let name: Vec<u16> = name.encode_wide().collect();

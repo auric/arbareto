@@ -145,7 +145,15 @@ mod tests {
         ("GCM_CREDENTIAL_STORE", "wincredman"),
     ];
 
-    const FIXED: [&str; 4] = ["probe", "read", "mutation", "search"];
+    const FIXED: [&str; 7] = [
+        "probe",
+        "read",
+        "mutation",
+        "network",
+        "search",
+        "remote",
+        "integrate",
+    ];
 
     fn policy_ids() -> Vec<String> {
         let json: serde_json::Value = serde_json::from_str(POLICIES).expect("git-environment.json");
@@ -358,6 +366,56 @@ mod tests {
             read.retain(|(name, _)| !name.eq_ignore_ascii_case("LC_ALL"));
             read.push(("LC_ALL".into(), "C.UTF-8".into()));
             assert_eq!(search, read);
+        }
+    }
+
+    /// Feature 003 contract Δ7: `remote` is `network` without `GIT_PROTOCOL_FROM_USER=0`, and `integrate` adds `GIT_EDITOR=:`.
+    /// `GIT_PROTOCOL_FROM_USER` stays as the service environment holds it.
+    #[test]
+    fn remote_is_network_without_the_protocol_value_and_integrate_adds_a_no_op_editor() {
+        use crate::schema::process_request::EnvironmentPolicy;
+        let named = |name: &str| -> String {
+            let policy: EnvironmentPolicy = serde_json::from_value(serde_json::json!(name))
+                .expect("the generated type holds the policy");
+            policy.to_string()
+        };
+        assert_eq!(named("remote"), "remote");
+        assert_eq!(named("integrate"), "integrate");
+        // Sorted, because the set order of the JSON file is no contract.
+        let sorted = |mut environment: Vec<(OsString, OsString)>| {
+            environment.sort();
+            environment
+        };
+        let without = |mut environment: Vec<(OsString, OsString)>, name: &str| {
+            environment.retain(|(key, _)| !key.eq_ignore_ascii_case(name));
+            environment
+        };
+        for input in [
+            base(&[]),
+            base(&[("GIT_DIR", r"C:\x"), ("GIT_EDITOR", "code --wait")]),
+            base(&[("git_editor", "vim")]),
+        ] {
+            let remote = build(&named("remote"), &input);
+            assert!(values(&remote, "GIT_PROTOCOL_FROM_USER").is_empty());
+            assert_eq!(
+                sorted(remote.clone()),
+                sorted(without(build("network", &input), "GIT_PROTOCOL_FROM_USER"))
+            );
+            let integrate = build(&named("integrate"), &input);
+            assert_eq!(values(&integrate, "GIT_EDITOR"), vec![":"]);
+            let mut expected = without(remote, "GIT_EDITOR");
+            expected.push(("GIT_EDITOR".into(), ":".into()));
+            assert_eq!(sorted(integrate), sorted(expected));
+        }
+        for id in ["remote", "integrate"] {
+            let held = build(id, &base(&[("GIT_PROTOCOL_FROM_USER", "1")]));
+            assert_eq!(values(&held, "GIT_PROTOCOL_FROM_USER"), vec!["1"], "{id}");
+            let owned = PathBuf::from(r"C:\repo\.git\arbareto-candidate-4567");
+            assert_eq!(
+                child_environment(id, &base(&[]), Some(&owned)),
+                Err("INVALID_REQUEST"),
+                "{id} refuses an index file"
+            );
         }
     }
 

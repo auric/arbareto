@@ -1,0 +1,251 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "repositoryId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "generation": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "worktreeKey": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "worktreeRoot": {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "repositoryId",
+            "generation",
+            "worktreeKey",
+            "worktreeRoot"
+          ],
+          "additionalProperties": false,
+          "title": "Registered"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "remedy": {
+              "type": "object",
+              "properties": {
+                "text": {
+                  "type": "string"
+                },
+                "command": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            },
+            "outputTail": {
+              "type": "string",
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "additionalProperties": false,
+          "title": "RegistrationRefused"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "limit": {
+              "type": "number",
+              "const": 8
+            }
+          },
+          "required": [
+            "limit"
+          ],
+          "additionalProperties": false,
+          "title": "WorkspaceLimit"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "enum": [
+                "wsl-missing",
+                "distro-missing",
+                "not-wsl2",
+                "no-user-manager",
+                "scope-arguments",
+                "no-setsid",
+                "no-coreutils",
+                "no-perl",
+                "start-failed",
+                "version",
+                "windows-git",
+                "no-fs-uuid",
+                "wsl-path",
+                "mixed-location"
+              ]
+            },
+            "text": {
+              "type": "string"
+            },
+            "detectedVersion": {
+              "type": "string"
+            },
+            "minimumVersion": {
+              "type": "string"
+            },
+            "detail": {
+              "type": "string",
+              "pattern": "^[^\\u0000]*$"
+            },
+            "command": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false,
+          "title": "WslRefused"
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "exists": {
+          "type": "boolean"
+        },
+        "empty": {
+          "type": "boolean"
+        },
+        "outputTail": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        },
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            },
+            "command": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "text",
+            "command"
+          ],
+          "additionalProperties": false,
+          "title": "SyncRemedy"
+        },
+        "connectTarget": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "exists",
+        "empty",
+        "outputTail",
+        "remedy"
+      ],
+      "additionalProperties": false,
+      "title": "CloneFailed"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "connectTarget": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "connectTarget"
+      ],
+      "additionalProperties": false,
+      "title": "CloneConnectTarget"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "not-empty",
+            "file",
+            "other"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 32767,
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "reason",
+        "path"
+      ],
+      "additionalProperties": false,
+      "title": "DestinationRefused"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "missing",
+            "unreadable",
+            "version",
+            "exit",
+            "not-ready"
+          ]
+        },
+        "program": {
+          "type": "string",
+          "enum": [
+            "plink",
+            "pageant",
+            "puttygen"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 32767,
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "reason",
+        "program",
+        "path"
+      ],
+      "additionalProperties": false,
+      "title": "PuttyRefused"
+    }
+  ],
+  "title": "CloneResult"
+}

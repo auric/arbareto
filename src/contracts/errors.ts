@@ -38,6 +38,8 @@ export const ERROR_CODES_BY_CATEGORY = {
   recovery: ["COMPLETED_WITH_EFFECTS", "FAILED_WITH_EFFECTS", "STATE_UNKNOWN", "SERVICE_UNAVAILABLE", "RECOVERY_MARKER_FAILED"],
   // Feature 002 contract Δ9. The contract gives these codes no 001 category.
   history: ["HISTORY_CHANGED", "UNSUPPORTED_FILTER_TEXT", "SEARCH_UNSUPPORTED"],
+  // Feature 003 contract Δ9. The contract gives these codes no 001 category.
+  sync: ["SYNC_UNAVAILABLE", "PUSH_REJECTED", "PUTTY_UNAVAILABLE", "DESTINATION_NOT_EMPTY"],
 } as const;
 
 export type ErrorCategory = keyof typeof ERROR_CODES_BY_CATEGORY;
@@ -58,6 +60,38 @@ export const SEARCH_UNSUPPORTED_REASONS = ["matching"] as const;
 // Contract Δ9: the new `OUTPUT_LIMIT` reasons. Each is the export name of its `limits.ts` bound.
 export const HISTORY_OUTPUT_LIMIT_REASONS = ["HISTORY_PARENTS_PER_COMMIT", "HISTORY_VIEW_COMMITS"] as const;
 export type HistoryOutputLimitReason = (typeof HISTORY_OUTPUT_LIMIT_REASONS)[number];
+
+// Feature 003 contract Δ9: the reasons of the new codes.
+export const SYNC_UNAVAILABLE_REASONS = [
+  "detached",
+  "unborn",
+  "no-upstream",
+  "remote-missing",
+  "no-remotes",
+  "local-upstream",
+  "several-merge-refs",
+  "push-urls",
+  "mirror",
+  "push-remote-differs",
+  "invalid-config",
+  "no-lease",
+  "ff-only",
+  "interactive-rebase",
+  "upstream-gone",
+  "no-operation",
+  "unknown-operation",
+  "not-rebasing",
+  "no-skip-commit",
+  "rebase-exec",
+] as const;
+export type SyncUnavailableReason = (typeof SYNC_UNAVAILABLE_REASONS)[number];
+export const PUSH_REJECTED_REASONS = ["rejected", "stale-lease", "remote-rejected", "remote-failure"] as const;
+export const PUTTY_UNAVAILABLE_REASONS = ["missing", "unreadable", "version", "exit", "not-ready"] as const;
+export const DESTINATION_NOT_EMPTY_REASONS = ["not-empty", "file", "other"] as const;
+// Contract Δ5: the new `OUTPUT_LIMIT` reason. It is the export name of its `limits.ts` bound.
+export const SYNC_OUTPUT_LIMIT_REASONS = ["SYNC_REMOTES"] as const;
+// Contract Δ9: `PUTTY_UNAVAILABLE` names the program. O-7: Pageant and PuTTYgen sit in the plink folder.
+export const PUTTY_PROGRAMS = ["plink", "pageant", "puttygen"] as const;
 
 export function isErrorCode(value: unknown): value is ErrorCode {
   return typeof value === "string" && (ERROR_CODES as readonly string[]).includes(value);

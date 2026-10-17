@@ -293,6 +293,363 @@
       ],
       "additionalProperties": false,
       "title": "RemoveRecentRepositoryRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "clone"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "url": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\u0000-\\u001f\\u007f-\\u009f]+$"
+            },
+            "destination": {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "keyFile": {
+              "type": "string",
+              "enum": [
+                "none",
+                "picked"
+              ]
+            }
+          },
+          "required": [
+            "url",
+            "destination",
+            "keyFile"
+          ],
+          "additionalProperties": false,
+          "title": "ClonePayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "CloneRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "readSyncSettings"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false,
+          "title": "ReadSyncSettingsPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "ReadSyncSettingsRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "setSshClient"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "kind": {
+              "type": "string",
+              "enum": [
+                "git",
+                "plink"
+              ]
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "additionalProperties": false,
+          "title": "SetSshClientPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "SetSshClientRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "setDefaultPullAction"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "enum": [
+                "pull",
+                "pull-merge",
+                "pull-rebase",
+                "fetch",
+                "fetch-all"
+              ]
+            }
+          },
+          "required": [
+            "action"
+          ],
+          "additionalProperties": false,
+          "title": "SetDefaultPullActionPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "SetDefaultPullActionRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "chooseSyncPath"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "target": {
+              "type": "string",
+              "enum": [
+                "plink",
+                "remoteKey",
+                "cloneFolder"
+              ]
+            },
+            "worktreeKey": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "remote": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "additionalProperties": false,
+          "title": "ChooseSyncPathPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "ChooseSyncPathRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "clearSyncPath"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "target": {
+              "type": "string",
+              "enum": [
+                "plink",
+                "remoteKey",
+                "cloneFolder"
+              ]
+            },
+            "worktreeKey": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            },
+            "remote": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "target"
+          ],
+          "additionalProperties": false,
+          "title": "ClearSyncPathPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "ClearSyncPathRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "launchPuttygen"
+        },
+        "payload": {
+          "type": "object",
+          "properties": {},
+          "additionalProperties": false,
+          "title": "LaunchPuttygenPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "LaunchPuttygenRequest"
     }
   ],
   "title": "NativeFirstEnvelope"

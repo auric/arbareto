@@ -1,0 +1,6 @@
+{
+  "schema": "sync-result",
+  "expected": "valid",
+  "platform": "windows",
+  "text": "{\"action\":\"fetch-all\",\"fetch\":{\"remotes\":[{\"name\":\"r1\",\"state\":\"succeeded\",\"updates\":[{\"flag\":\"+\",\"oldObjectId\":\"1111111111111111111111111111111111111111\",\"newObjectId\":\"2222222222222222222222222222222222222222\",\"ref\":\"refs/remotes/r1/main\"}],\"counts\":{\" \":0,\"+\":1,\"-\":0,\"t\":0,\"*\":0,\"!\":0,\"=\":0},\"outputTail\":\"\"},{\"name\":\"r5\",\"state\":\"not-started\",\"updates\":[],\"counts\":{\" \":0,\"+\":0,\"-\":0,\"t\":0,\"*\":0,\"!\":0,\"=\":0},\"outputTail\":\"\"}],\"observed\":[]},\"reason\":\"missing\",\"program\":\"plink\",\"path\":\"C:\\\\PuTTY\\\\plink.exe\"}"
+}

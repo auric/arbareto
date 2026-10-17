@@ -6,7 +6,7 @@
 import { lstat, opendir } from "node:fs/promises";
 import type { ChangeEntry } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
-import { decideFileAction, type FileActionDecision, type WorkingFacts } from "../contracts/file-action";
+import { decideFileAction, decideResolve, type FileActionDecision, type ResolveDecision, type WorkingFacts } from "../contracts/file-action";
 import {
   DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
   CANONICAL_DIFF_BYTES,
@@ -62,8 +62,9 @@ export interface RetainedComparison {
   patch: Uint8Array;
   hunks: (PatchHunk & { hunkId: string })[];
   support: SupportDecision | null;
-  fileAction: FileActionDecision;
-  // Contract §4 "Binding": the whole working file of a `stage` decision.
+  // Feature 003 contract Δ4: a conflicted entry gets the `resolve` decision.
+  fileAction: FileActionDecision | ResolveDecision;
+  // Contract §4 "Binding": the whole working file of a `stage` or `resolve` decision.
   working: { size: number; sha256: string } | null;
   // The `check-attr` values of the path that the support decision used.
   attributes: Readonly<Record<string, string>>;
@@ -126,10 +127,10 @@ function statusRecord(e: ChangeEntry, path: Uint8Array): StatusRecord {
   return { kind: "rename", ...fields, modes, oids, score: e.score, originalPath: { bytes: Buffer.from(e.sourcePathBytes!, "base64"), display: e.sourcePath! } };
 }
 
-// The same record as raw `status --porcelain=v2 -z` bytes without the final NUL, for `decideFileAction`.
+// The same record as raw `status --porcelain=v2 -z` bytes without the final NUL, for `decideFileAction` and `decideResolve`.
 function rawRecord(e: ChangeEntry, path: Uint8Array): Uint8Array {
   if (e.category === "untracked") return Buffer.concat([Buffer.from("? "), path]);
-  if (e.category === "conflicted") return Buffer.from("u ");
+  if (e.category === "conflicted") return Buffer.concat([Buffer.from(`u ${[e.xy, e.submodule, ...e.modes!, ...e.oids!].join(" ")} `), path]);
   const head = [e.score === undefined ? "1" : "2", e.xy, e.submodule, ...e.modes!, ...e.oids!, ...(e.score === undefined ? [] : [e.score])].join(" ");
   const tail = e.score === undefined ? [] : [Uint8Array.of(NUL), Buffer.from(e.sourcePathBytes!, "base64")];
   return Buffer.concat([Buffer.from(`${head} `), path, ...tail]);
@@ -315,7 +316,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
   }
 
   // The contract §4 remedy of a refused file action, or null.
-  function remedyOf(t: ComparisonTarget, path: Uint8Array, decision: FileActionDecision): WholeFileRemedy | null {
+  function remedyOf(t: ComparisonTarget, path: Uint8Array, decision: FileActionDecision | ResolveDecision): WholeFileRemedy | null {
     if (decision.direction !== null || decision.code !== "UNSUPPORTED_COMPARISON" || !REMEDY_REASONS.has(decision.reason)) return null;
     return wholeFileRemedy({ entry: t.entry, workspace: t.workspace, installation: t.installation, headUnborn: t.snapshot.head.state === "unborn" }, path);
   }
@@ -352,7 +353,9 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
     const longPaths = longPathsEntry !== undefined && parseMaybeBool(longPathsEntry.value) === 1;
     const limit = w.wsl === undefined ? NATIVE.gitPathUnitLimit : null;
     const tooLong = limit !== null && !longPaths && parts !== null && NATIVE.path.join(w.worktreeRoot, ...parts).length >= limit;
-    const readable = text !== null && (e.sourcePathBytes === undefined || source !== null) && e.category !== "conflicted";
+    // Feature 003 contract Δ4: a conflicted entry reads the working facts and the attributes for `decideResolve`, and no diff.
+    const conflicted = e.category === "conflicted";
+    const readable = text !== null && (e.sourcePathBytes === undefined || source !== null);
 
     const headUnborn = t.snapshot.head.state === "unborn";
     // The blobs of the compared sides. A gitlink names a commit of another repository.
@@ -414,8 +417,9 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
           if (exit.exitCode !== 0 || raw[raw.length - 1] !== NEWLINE || !isObjectId(oid, w.objectFormat)) throw fail("GIT_FAILED");
           tree = oid;
         };
-        await Promise.all([facts(), attrs(), eol(), blobsRead(), emptyTree()]);
+        await Promise.all(conflicted ? [facts(), attrs()] : [facts(), attrs(), eol(), blobsRead(), emptyTree()]);
       }
+      const decide = () => (conflicted ? decideResolve({ record: rawRecord(e, path), attributes, working }) : decideFileAction({ category: e.category, record: rawRecord(e, path), headUnborn, indexFlags, attributes, working }));
 
       const support = (numstat: NumstatResult, patch: PatchResult, eolListing: ReturnType<typeof parseEolListing>) =>
         decideSupport({
@@ -434,7 +438,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
         });
       // Every refusal before the numstat step needs no diff. A `filter` attribute must refuse before any diff runs a clean filter (contract §4).
       const early = support({ ok: false, completeness: { state: "failed", code: "MALFORMED_GIT_OUTPUT" } }, NO_PATCH, null);
-      const skip = !readable || (early.supported === false && early.code === "UNSUPPORTED_COMPARISON");
+      const skip = !readable || conflicted || (early.supported === false && early.code === "UNSUPPORTED_COMPARISON");
 
       let rawPatch: Uint8Array = new Uint8Array();
       let patch: PatchResult = NO_PATCH;
@@ -465,7 +469,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
         if (t.signal.aborted) return { result: "canceled" };
         if (promisor === "canceled" || promisor === "deadline") return { result: promisor };
         if (promisor !== true || sizes !== "missing") return { result: "failed", code: "GIT_FAILED" };
-        const fileAction = decideFileAction({ category: e.category, record: rawRecord(e, path), headUnborn, indexFlags, attributes, working });
+        const fileAction = decide();
         if (fileAction.direction === null && fileAction.code === "MALFORMED_GIT_OUTPUT") return { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
         const completeness: Completeness = { state: "limited", code: "OBJECT_MISSING" };
         return { result: "limited", code: "OBJECT_MISSING", value: { completeness, scope, support: null, fileAction: actionValue(fileAction), remedy: remedyOf(t, path, fileAction), objectRemedy: { text: OBJECT_MISSING_REMEDY } } };
@@ -475,12 +479,12 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
       if (readable && eolOut !== null && eolListing === null) return { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
       const decision = skip ? early : eolLimit !== null ? null : support(numstat, patch, eolListing);
       if (decision !== null && decision.supported === false && decision.code === "MALFORMED_GIT_OUTPUT") return { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
-      const fileAction = decideFileAction({ category: e.category, record: rawRecord(e, path), headUnborn, indexFlags, attributes, working });
+      const fileAction = decide();
       if (fileAction.direction === null && fileAction.code === "MALFORMED_GIT_OUTPUT") return { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
 
-      // Contract §4 "Binding": a `stage` decision binds the size and SHA-256 of the whole working file.
+      // Contract §4 "Binding": a `stage` or `resolve` decision binds the size and SHA-256 of the whole working file.
       let binding: RetainedComparison["working"] = null;
-      if (fileAction.direction === "stage" && working.type === "file") {
+      if ((fileAction.direction === "stage" || fileAction.direction === "resolve") && working.type === "file") {
         if (w.wsl !== undefined) {
           if (wslDigest === null) throw fail("REPOSITORY_CHANGED");
           binding = { size: working.size, sha256: wslDigest };
@@ -563,7 +567,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
 }
 
 // Data-model §5 "File-action decision": the direction, or the refusal reason. Operation state keeps its own reason `state`.
-function actionValue(d: FileActionDecision): string {
+function actionValue(d: FileActionDecision | ResolveDecision): string {
   if (d.direction !== null) return d.direction;
   return d.code === "UNSUPPORTED_COMPARISON" ? d.reason : "state";
 }

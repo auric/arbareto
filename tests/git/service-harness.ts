@@ -328,7 +328,7 @@ export interface TrustResult {
   state: "untrusted" | "approved" | "changed" | "revoked";
   persistence: "stored" | "session";
   trustId?: string;
-  approvalRequired: { reads: boolean; commit: boolean };
+  approvalRequired: { reads: boolean; commit: boolean; sync: boolean };
   bound?: "file-count" | "file-bytes" | "total-bytes" | "link" | "name";
   inputLimited?: boolean;
   entries: { key: string; scope: string; origin?: string; value?: string }[];

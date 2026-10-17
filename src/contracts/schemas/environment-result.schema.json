@@ -111,7 +111,11 @@
         "RECOVERY_MARKER_FAILED",
         "HISTORY_CHANGED",
         "UNSUPPORTED_FILTER_TEXT",
-        "SEARCH_UNSUPPORTED"
+        "SEARCH_UNSUPPORTED",
+        "SYNC_UNAVAILABLE",
+        "PUSH_REJECTED",
+        "PUTTY_UNAVAILABLE",
+        "DESTINATION_NOT_EMPTY"
       ]
     },
     "reason": {
@@ -142,7 +146,8 @@
               "applyHunk",
               "applyFile",
               "commit",
-              "updateSubmodules"
+              "updateSubmodules",
+              "sync"
             ]
           },
           "startedAt": {

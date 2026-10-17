@@ -19,6 +19,10 @@ const INVALID: Code = Code::InvalidRequest;
 const SUBMODULE_PATHS: usize = 256;
 /// Contract §6 "Channel frames" `limits.deadlineMs`: a WSL distro start probe has at most 60 seconds.
 pub const WSL_START_DEADLINE_MS: u64 = 60_000;
+/// Feature 003 contract Δ3 `clone`: `src/contracts/limits.ts` `CLONE_URL_BYTES`.
+const CLONE_URL_BYTES: usize = 4096;
+/// Feature 003 contract Δ2: the counters of the `sync` and `clone` phases.
+const SYNC_COUNTERS: [&str; 3] = ["percent", "remoteIndex", "remoteCount"];
 
 macro_rules! generated {
     ($($module:ident),*) => {
@@ -81,24 +85,47 @@ fn paths(value: &Value, keys: &[&str]) -> Result<(), Code> {
 pub fn native_first(
     value: &Value,
 ) -> Result<native_first_envelope::NativeFirstEnvelope, &'static str> {
-    match value.get("version") {
-        None => Err("INVALID_REQUEST"),
-        Some(version) if version.as_u64() != Some(1) => Err("PROTOCOL_VERSION"),
-        Some(_) => typed(value).ok_or("INVALID_REQUEST"),
+    let envelope = match value.get("version") {
+        None => return Err("INVALID_REQUEST"),
+        Some(version) if version.as_u64() != Some(1) => return Err("PROTOCOL_VERSION"),
+        Some(_) => typed(value).ok_or("INVALID_REQUEST")?,
+    };
+    let payload = &value["payload"];
+    let fits = match value["operation"].as_str() {
+        // Feature 003 contract Δ3 `clone`. typify counts the characters of the URL, not its bytes.
+        Some("clone") => {
+            payload["url"].as_str().is_some_and(|url| {
+                (1..=CLONE_URL_BYTES).contains(&url.len()) && !url.chars().any(char::is_control)
+            }) && paths(payload, &["destination"]).is_ok()
+        }
+        // Data-model §10: a key file belongs to one worktree and remote. The other targets name neither.
+        Some("chooseSyncPath" | "clearSyncPath") => {
+            let key = payload["target"] == "remoteKey";
+            key == payload.get("worktreeKey").is_some() && key == payload.get("remote").is_some()
+        }
+        _ => true,
+    };
+    if fits {
+        Ok(envelope)
+    } else {
+        Err("INVALID_REQUEST")
     }
 }
 
-/// A `mutation` frame body (contract §6 "Mutation frames"). JSON Schema has no rule that ties `direction` to `kind`.
+/// A `mutation` frame body (contract §6 "Mutation frames"). JSON Schema has no rule that ties `direction` or `action` to `kind`.
 pub fn mutation_request(
     value: &Value,
 ) -> Result<mutation_request::MutationRequest, mutation_reply::RefusedCode> {
     let request = typed(value).ok_or(INVALID)?;
     paths(value, &["worktreeRoot", "commonDirectory"])?;
     if let mutation_request::MutationRequest::Started {
-        kind, direction, ..
+        kind,
+        direction,
+        action,
+        ..
     } = &request
     {
-        Mutation::of(*kind, *direction).ok_or(INVALID)?;
+        Mutation::of(*kind, *direction, *action).ok_or(INVALID)?;
     }
     Ok(request)
 }
@@ -203,12 +230,30 @@ pub fn handshake(value: &Value) -> Result<handshake::Handshake, Code> {
 /// A progress event with exactly the contract §2 fields and nonnegative counters.
 /// Only phase `wsl-starting` carries `distro` (contract §11 "Distro start").
 /// Only phases `fetch` and `update` carry `path`, and they always carry it (contract §2).
+/// A phase of feature 003 contract Δ2 carries only the counters `percent`, `remoteIndex`, and `remoteCount`.
 pub fn progress(value: &Value) -> bool {
-    use progress::ProgressPhase::{Fetch, Update, WslStarting};
+    use progress::ProgressPhase as P;
     typed::<progress::Progress>(value).is_some_and(|event| {
+        let sync = matches!(
+            event.phase,
+            Some(
+                P::SyncFetch
+                    | P::SyncMerge
+                    | P::SyncRebase
+                    | P::SyncPush
+                    | P::SyncContinue
+                    | P::Clone
+                    | P::Pageant
+            )
+        );
         event.counters.values().all(|count| *count >= 0)
-            && (event.phase == Some(WslStarting)) == event.distro.is_some()
-            && matches!(event.phase, Some(Fetch | Update)) == event.path.is_some()
+            && (event.phase == Some(P::WslStarting)) == event.distro.is_some()
+            && matches!(event.phase, Some(P::Fetch | P::Update)) == event.path.is_some()
+            && (!sync
+                || event
+                    .counters
+                    .keys()
+                    .all(|key| SYNC_COUNTERS.contains(&key.as_str())))
     })
 }
 
@@ -248,7 +293,8 @@ pub mod reply {
 
     use super::{mutation_reply as m, process_reply as p, trust_reply as t, typed};
     use crate::bootstrap::PhysicalIdentity;
-    use crate::process_requests::encode_base64;
+    use crate::process_requests::{Destination, encode_base64};
+    use crate::putty::Unavailable;
     use crate::settings::{hex, sha256};
 
     const DEADLINE: &str = "deadline";
@@ -629,6 +675,79 @@ pub mod reply {
     }
 
     /// The reply holds the context path alone for a path without a WSL prefix.
+    /// Feature 003 contract Δ6 `destinationFacts`.
+    pub fn destination_facts(call_id: &str, facts: Destination) -> Value {
+        use p::DestinationFactsResultResult as R;
+        let result = match facts {
+            Destination::Absent => R::Absent,
+            Destination::Empty => R::Empty,
+            Destination::NotEmpty => R::NotEmpty,
+            Destination::File => R::File,
+            Destination::Other => R::Other,
+            Destination::Error(code) => {
+                return encode(p::ProcessReply::DestinationFactsGroup(
+                    p::DestinationFactsGroup::Error {
+                        call_id: field(call_id),
+                        code: field(code),
+                        result: "error".into(),
+                        type_: "destinationFacts".into(),
+                    },
+                ));
+            }
+        };
+        encode(p::ProcessReply::DestinationFactsGroup(
+            p::DestinationFactsGroup::Result {
+                call_id: field(call_id),
+                result,
+                type_: "destinationFacts".into(),
+            },
+        ))
+    }
+
+    /// Feature 003 contract Δ6 `pageant`: `git`, `none`, or `ready`.
+    pub fn pageant(call_id: &str, result: p::PageantResultResult) -> Value {
+        encode(p::ProcessReply::PageantReplyGroup(
+            p::PageantReplyGroup::Result {
+                call_id: field(call_id),
+                result,
+                type_: "pageant".into(),
+            },
+        ))
+    }
+
+    /// Feature 003 contract Δ6 `pageant` with contract Δ9 `PUTTY_UNAVAILABLE`.
+    pub fn pageant_failed(call_id: &str, failed: &Unavailable) -> Value {
+        encode(p::ProcessReply::PageantReplyGroup(
+            p::PageantReplyGroup::Failed {
+                call_id: field(call_id),
+                path: field(&failed.path.to_string_lossy()),
+                program: field(failed.program.name()),
+                reason: field(failed.reason.name()),
+                result: "failed".into(),
+                type_: "pageant".into(),
+            },
+        ))
+    }
+
+    /// Feature 003 contract Δ6 `terminal`: the console started.
+    pub fn terminal_started(call_id: &str) -> Value {
+        encode(p::ProcessReply::TerminalGroup(p::TerminalGroup::Started {
+            call_id: field(call_id),
+            type_: "terminal".into(),
+        }))
+    }
+
+    /// Feature 003 contract Δ6 `terminal` with contract Δ9 `PUTTY_UNAVAILABLE`. typify tags this group by `result`.
+    pub fn terminal_failed(call_id: &str, failed: &Unavailable) -> Value {
+        encode(p::ProcessReply::TerminalGroup(p::TerminalGroup::Failed {
+            call_id: field(call_id),
+            path: field(&failed.path.to_string_lossy()),
+            program: field(failed.program.name()),
+            reason: field(failed.reason.name()),
+            type_: "terminal".into(),
+        }))
+    }
+
     pub fn wsl_distros_path(call_id: &str, path: &str) -> Value {
         encode(p::ProcessReply::WslDistrosGroup(p::WslDistrosGroup::Path {
             call_id: field(call_id),
@@ -841,8 +960,8 @@ mod tests {
 
     /// The vector schemas that the shell reads into no generated type. The renderer and the service check them.
     /// The shell writes process, mutation, and trust replies and never reads them. It reads only the `requestId` of a response.
-    /// The shell forwards the registration, trust, workspace, entries, history, reference, and operation results in `Response.result` and reads no field of them.
-    const NOT_READ: [&str; 21] = [
+    /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, sync review, sync, and clone results in `Response.result` and reads no field of them.
+    const NOT_READ: [&str; 24] = [
         "service-envelope",
         "open-recent-repository-result",
         "recent-repositories-result",
@@ -864,6 +983,9 @@ mod tests {
         "read-refs-result",
         "read-comparison-result",
         "operation-result",
+        "review-sync-result",
+        "sync-result",
+        "clone-result",
     ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
@@ -903,8 +1025,17 @@ mod tests {
             "wsl-request" => strict(text)
                 .and_then(|value| wsl_request(&value).map(drop).map_err(|code| text_of(&code))),
             // `ProcessRequests::dispatch` reads the `type` value, then its generated type (contract §6 "Channel frames").
-            // Only `fileFacts` and `wslFiles` vectors exist.
+            // Feature 003 contract Δ10: the `run`, `pageant`, `destinationFacts`, and `terminal` vectors check the generated type.
+            // T030 and T031 add the handlers of the `clone` context and the new requests.
             "process-request" => match strict(text) {
+                Ok(value)
+                    if matches!(
+                        value["type"].as_str(),
+                        Some("run" | "pageant" | "destinationFacts" | "terminal")
+                    ) =>
+                {
+                    valid(typed::<process_request::ProcessRequest>(&value).is_some())
+                }
                 Ok(value) if value["type"] == "fileFacts" => typed(&value)
                     .ok_or(INVALID)
                     .and_then(|request| crate::file_facts::parse(&request).map(drop))
@@ -958,7 +1089,7 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         assert_eq!(
             checked,
-            if cfg!(windows) { 111 } else { 106 },
+            if cfg!(windows) { 138 } else { 133 },
             "shell-read vectors"
         );
     }
@@ -1303,6 +1434,165 @@ mod tests {
     fn a_reply_group_reads_through_its_generated_type() {
         let deadline = json!({ "type": "identity", "callId": "0f0f0f0f-0000-4000-8000-000000000001", "deadline": "deadline" });
         assert!(typed::<process_reply::IdentityGroup>(&deadline).is_some());
+        // Feature 003 contract Δ6: the `pageant` reply `git`. T030 builds it and checks the builder against this vector.
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/vectors/valid/process-reply-pageant-git.json");
+        let vector: Vector =
+            serde_json::from_str(&std::fs::read_to_string(path).expect("vector file"))
+                .expect("vector form");
+        let git: Value = serde_json::from_str(&vector.text).expect("vector text");
+        assert!(
+            typed::<process_reply::ProcessReply>(&git).is_some(),
+            "{git}"
+        );
+        let mut other = git.clone();
+        other["result"] = json!("plink");
+        assert!(typed::<process_reply::ProcessReply>(&other).is_none());
+    }
+
+    /// Feature 003 contract Δ2, Δ3, and Δ6: the rules that the JSON Schema files cannot hold (001 §1).
+    #[test]
+    fn the_feature_003_rules_outside_json_schema_are_checked_in_rust() {
+        let envelope = |operation: &str, payload: Value| json!({ "version": 1, "sessionId": "0f0f0f0f-0000-4000-8000-0000000000aa", "requestId": "0f0f0f0f-0000-4000-8000-000000000001", "operation": operation, "payload": payload });
+        let fits =
+            |operation: &str, payload: Value| native_first(&envelope(operation, payload)).is_ok();
+
+        // `clone`: 1 to 4,096 UTF-8 bytes, no control character (Unicode category Cc), and a channel path.
+        let url = |bytes: usize| {
+            let head = "https://example.test/";
+            let wide = (bytes - head.len()) / 2;
+            format!(
+                "{head}{}{}",
+                "\u{e9}".repeat(wide),
+                "a".repeat(bytes - head.len() - 2 * wide)
+            )
+        };
+        assert_eq!(url(4096).len(), 4096);
+        assert!(
+            url(4097).chars().count() < 4096,
+            "within the character count of typify"
+        );
+        let clone = |url: &str, destination: &str| json!({ "url": url, "destination": destination, "keyFile": "picked" });
+        assert!(fits("clone", clone(&url(4096), "//host/src/tool")));
+        for (name, payload) in [
+            ("4,097 bytes", clone(&url(4097), "//host/src/tool")),
+            ("empty", clone("", "//host/src/tool")),
+            ("LF", clone("https://example.test/a\nb", "//host/src/tool")),
+            (
+                "DEL",
+                clone("https://example.test/a\u{7f}", "//host/src/tool"),
+            ),
+            (
+                "NEL",
+                clone("https://example.test/a\u{85}", "//host/src/tool"),
+            ),
+            (
+                "a relative destination",
+                clone("https://example.test/a", "src\\tool"),
+            ),
+        ] {
+            assert!(!fits("clone", payload), "{name}");
+        }
+
+        // `chooseSyncPath` and `clearSyncPath`: `worktreeKey` and `remote` exactly when `target` is `remoteKey`.
+        let key = "a".repeat(64);
+        for operation in ["chooseSyncPath", "clearSyncPath"] {
+            for payload in [
+                json!({ "target": "plink" }),
+                json!({ "target": "cloneFolder" }),
+                json!({ "target": "remoteKey", "worktreeKey": key, "remote": "origin" }),
+            ] {
+                assert!(fits(operation, payload.clone()), "{operation} {payload}");
+            }
+            for payload in [
+                json!({ "target": "remoteKey" }),
+                json!({ "target": "remoteKey", "worktreeKey": key }),
+                json!({ "target": "remoteKey", "remote": "origin" }),
+                json!({ "target": "plink", "worktreeKey": key }),
+                json!({ "target": "cloneFolder", "remote": "origin" }),
+                json!({ "target": "plink", "worktreeKey": key, "remote": "origin" }),
+            ] {
+                assert!(!fits(operation, payload.clone()), "{operation} {payload}");
+            }
+        }
+
+        // A progress event of a sync phase holds no counter other than `percent`, `remoteIndex`, and `remoteCount`.
+        let event = |phase: &str, counters: Value| json!({ "requestId": "0f0f0f0f-0000-4000-8000-000000000001", "operationId": "0f0f0f0f-0000-4000-8000-000000000004", "state": "running", "phase": phase, "counters": counters, "stalled": false });
+        for phase in [
+            "sync-fetch",
+            "sync-merge",
+            "sync-rebase",
+            "sync-push",
+            "sync-continue",
+            "clone",
+            "pageant",
+        ] {
+            assert!(progress(&event(phase, json!({}))), "{phase}");
+            assert!(
+                progress(&event(
+                    phase,
+                    json!({ "percent": 40, "remoteIndex": 1, "remoteCount": 2 })
+                )),
+                "{phase}"
+            );
+            for other in ["objects", "index", "Percent"] {
+                assert!(
+                    !progress(&event(phase, json!({ other: 1 }))),
+                    "{phase} {other}"
+                );
+            }
+        }
+        assert!(progress(&event("history-load", json!({ "objects": 1 }))));
+
+        // `direction` `resolve` only with kind `applyFile`. `action` only and always with kind `sync`.
+        let started = |fields: Value| {
+            let mut frame = json!({ "type": "started", "callId": "0f0f0f0f-0000-4000-8000-000000000003", "operationId": "0f0f0f0f-0000-4000-8000-000000000004", "repositoryId": "0f0f0f0f-0000-4000-8000-000000000005", "worktreeRoot": "//host/repo", "commonDirectory": "//host/repo/.git" });
+            frame
+                .as_object_mut()
+                .expect("object")
+                .extend(fields.as_object().expect("fields").clone());
+            mutation_request(&frame).is_ok()
+        };
+        for action in [
+            "fetch",
+            "fetch-all",
+            "pull",
+            "integrate",
+            "push",
+            "force-push",
+            "abort",
+            "continue",
+            "skip",
+        ] {
+            assert!(
+                started(json!({ "kind": "sync", "action": action })),
+                "{action}"
+            );
+            assert!(
+                !started(json!({ "kind": "sync", "action": action, "direction": "stage" })),
+                "{action}"
+            );
+            assert!(
+                !started(json!({ "kind": "commit", "action": action })),
+                "{action}"
+            );
+            assert!(
+                !started(json!({ "kind": "applyFile", "direction": "resolve", "action": action })),
+                "{action}"
+            );
+        }
+        assert!(started(
+            json!({ "kind": "applyFile", "direction": "resolve" })
+        ));
+        for fields in [
+            json!({ "kind": "sync" }),
+            json!({ "kind": "sync", "direction": "resolve" }),
+            json!({ "kind": "applyHunk", "direction": "resolve" }),
+            json!({ "kind": "updateSubmodules", "direction": "resolve" }),
+            json!({ "kind": "updateSubmodules", "action": "fetch" }),
+        ] {
+            assert!(!started(fields.clone()), "{fields}");
+        }
     }
 
     #[test]

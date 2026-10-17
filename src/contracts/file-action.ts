@@ -6,7 +6,8 @@
 import { isUtf8 } from "node:buffer";
 import { WHOLE_FILE_STAGE_INPUT_BYTES } from "./limits";
 
-export const FILE_ACTION_REASONS = ["type", "symlink", "submodule", "index-flag", "path", "rename", "filter", "LFS", "size", "blob-proof"] as const;
+// Feature 003 contract Δ4: only `resolve` gives `missing`.
+export const FILE_ACTION_REASONS = ["type", "symlink", "submodule", "index-flag", "path", "rename", "filter", "LFS", "size", "blob-proof", "missing"] as const;
 export type FileActionReason = (typeof FILE_ACTION_REASONS)[number];
 
 export type FileActionCategory = "staged" | "unstaged" | "untracked" | "conflicted";
@@ -80,7 +81,7 @@ const XY = /^[.MTADRCU]{2}$/;
 const SCORE = /^[RC]\d{1,3}$/;
 
 const refuse = (reason: FileActionReason): FileActionDecision => ({ direction: null, code: "UNSUPPORTED_COMPARISON", reason });
-const MALFORMED: FileActionDecision = { direction: null, code: "MALFORMED_GIT_OUTPUT" };
+const MALFORMED = { direction: null, code: "MALFORMED_GIT_OUTPUT" } as const;
 
 // Splits off `count` space-separated fields. The rest is the path, which can hold spaces.
 function fields(record: Uint8Array, count: number): { fields: string[]; rest: Uint8Array } | null {
@@ -180,4 +181,49 @@ export function decideFileAction(input: FileActionInput): FileActionDecision {
   if (filter) return refuse(filter);
   if (working.type === "file" && working.size > WHOLE_FILE_STAGE_INPUT_BYTES) return refuse("size");
   return { direction: "stage", changedPaths: [{ path: record.path }] };
+}
+
+// Contract Δ4 and data-model §9: Mark resolved.
+export type ResolveReason = Exclude<FileActionReason, "index-flag" | "rename" | "blob-proof">;
+
+// `mode` is the `mW` of the `u` record: the `update-index --index-info` mode of the stage-0 entry (research R16 i).
+export interface ResolvePath {
+  path: Uint8Array;
+  mode: number;
+}
+
+export type ResolveDecision =
+  | { direction: "resolve"; changedPaths: ResolvePath[] }
+  | { direction: null; code: "UNSUPPORTED_COMPARISON"; reason: ResolveReason }
+  | { direction: null; code: "MALFORMED_GIT_OUTPUT" };
+
+// git-status(1) "Unmerged entries": the seven XY values.
+const UNMERGED_XY = new Set(["DD", "AU", "UD", "UA", "DU", "AA", "UU"]);
+// Git `canon_mode`: the index modes of a regular file.
+const REGULAR_MODES = new Set(["100644", "100755"]);
+
+// `u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>`. The decision reads no file text.
+export function decideResolve(input: Pick<FileActionInput, "record" | "attributes" | "working">): ResolveDecision {
+  const split = latin1.decode(input.record.subarray(0, 2)) === "u " ? fields(input.record.subarray(2), 9) : null;
+  if (!split) return MALFORMED;
+  const [xy, sub, m1, m2, m3, mW, h1, h2, h3] = split.fields as [string, string, string, string, string, string, string, string, string];
+  const modes = [m1, m2, m3, mW];
+  const path = split.rest;
+  if (!UNMERGED_XY.has(xy) || !SUBMODULE_STATE.test(sub) || !modes.every((m) => MODE.test(m))) return MALFORMED;
+  if (![h1, h2, h3].every((h) => OBJECT_ID.test(h) && h.length === h1.length) || path.length === 0 || path.includes(NUL)) return MALFORMED;
+
+  const refuse = (reason: ResolveReason): ResolveDecision => ({ direction: null, code: "UNSUPPORTED_COMPARISON", reason });
+  if (xy === "DD") return refuse("missing");
+  if (!isUtf8(path)) return refuse("path");
+  if (sub[0] === "S" || modes.includes(GITLINK)) return refuse("submodule");
+  const working = input.working;
+  if (working.type === "unreadable") return refuse("path");
+  if (working.type !== "absent" && Buffer.compare(working.diskPath, path) !== 0) return refuse("path");
+  if (working.type === "symlink" || modes.includes(SYMLINK)) return refuse("symlink");
+  if (working.type === "absent" || mW === ABSENT_MODE) return refuse("missing");
+  if (working.type !== "file" || !REGULAR_MODES.has(mW)) return refuse("type");
+  const filter = filterReason(input.attributes);
+  if (filter) return refuse(filter);
+  if (working.size > WHOLE_FILE_STAGE_INPUT_BYTES) return refuse("size");
+  return { direction: "resolve", changedPaths: [{ path, mode: Number.parseInt(mW, 8) }] };
 }

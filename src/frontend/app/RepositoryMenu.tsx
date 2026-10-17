@@ -37,6 +37,10 @@ export type RepositoryMenuProps = {
   /** Recent repositories (Ctrl+R): opens the switcher. The item stays disabled without it. */
   onOpenRecent?(): void;
   onSelectGit(): void;
+  /** Feature 003 FR-046: opens the clone panel. The item stays disabled without it. */
+  onClone?(): void;
+  /** Feature 003 plan.md D12: opens the settings panel. The item stays disabled without it. */
+  onOpenSettings?(): void;
   onReviewTrust(): void;
   revokeTrust(trustId: string): Promise<BridgeResponse>;
   /** Update submodules: opens the submodule review (contract §12). The item stays disabled without it. */
@@ -49,7 +53,7 @@ export type RepositoryMenuProps = {
 };
 
 /** The repository menu of the header menu bar. Render it inside `Menubar`. */
-export function RepositoryMenu({ repositoryOpen, trustId, onOpenRepository, onOpenRecent, onSelectGit, onReviewTrust, revokeTrust, onUpdateSubmodules, updateSubmodulesReason = null, onOpenChange, triggerRef, finalFocus }: RepositoryMenuProps) {
+export function RepositoryMenu({ repositoryOpen, trustId, onOpenRepository, onOpenRecent, onSelectGit, onClone, onOpenSettings, onReviewTrust, revokeTrust, onUpdateSubmodules, updateSubmodulesReason = null, onOpenChange, triggerRef, finalFocus }: RepositoryMenuProps) {
   const updateReasonId = useId();
   const [revoked, setRevoked] = useState<ReactNode>(null);
   const [revoking, setRevoking] = useState(false);
@@ -72,10 +76,16 @@ export function RepositoryMenu({ repositoryOpen, trustId, onOpenRepository, onOp
           <MenubarItem aria-keyshortcuts="Control+R" disabled={onOpenRecent === undefined} onClick={onOpenRecent}>
             Recent repositories<MenuKey>Ctrl+R</MenuKey>
           </MenubarItem>
+          <MenubarItem disabled={onClone === undefined} onClick={onClone}>
+            Clone…
+          </MenubarItem>
         </MenubarGroup>
         <MenubarSeparator />
         <MenubarGroup>
           <MenubarItem onClick={onSelectGit}>Select Git</MenubarItem>
+          <MenubarItem disabled={onOpenSettings === undefined} onClick={onOpenSettings}>
+            Settings…
+          </MenubarItem>
         </MenubarGroup>
         <MenubarSeparator />
         <MenubarGroup>

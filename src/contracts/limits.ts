@@ -116,3 +116,23 @@ export const HISTORY_PROGRESS_EVENTS_PER_SECOND = 4;
 export const HISTORY_CHECKPOINT_ROWS = 256;
 export const HISTORY_RENDERER_CACHE_BYTES = 8 * MIB;
 export const HISTORY_PROCESSES_PER_VIEW = 3;
+
+// Feature 003 contract Δ5 "Finite bounds". The 001 network limits, the read deadline, and the output tail stay in force.
+// Listed fetch updates per remote. The counts by flag cover all lines.
+export const SYNC_FETCH_LISTED_REFS = 1_000;
+// Lines of `git remote`.
+export const SYNC_REMOTES = 256;
+// Lease subjects. The count stays exact.
+export const SYNC_LEASE_COMMITS = 100;
+// Above this count, the label shows "10000+".
+export const TRACKING_COUNT_DISPLAY = 10_000;
+// The `sync` refs listing.
+export const SYNC_REFS_RECORDS = 100_000;
+export const SYNC_REFS_BYTES = 32 * MIB;
+// `rebase-merge/git-rebase-todo` of a Continue or Skip review. Above it, the review refuses with `rebase-exec`.
+export const SYNC_REBASE_TODO_BYTES = 4 * MIB;
+export const PAGEANT_READY_MS = 30 * SECOND_MS;
+// UTF-8 bytes of a clone URL.
+export const CLONE_URL_BYTES = 4096;
+// Key file entries in the shell settings.
+export const KEY_FILE_ENTRIES = 256;

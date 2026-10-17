@@ -1366,6 +1366,68 @@ pub(crate) mod tests {
                 std::thread::sleep(Duration::from_millis(args[0].parse().expect("ms")));
                 print_line("LATE");
             }
+            // env <names...>: the value of each name, or null.
+            "env" => {
+                let values: serde_json::Map<String, serde_json::Value> = args
+                    .iter()
+                    .map(|name| {
+                        let value = std::env::var_os(name)
+                            .map(|value| value.to_string_lossy().into_owned());
+                        (name.clone(), serde_json::json!(value))
+                    })
+                    .collect();
+                print_line(&format!("ENV {}", serde_json::Value::Object(values)));
+            }
+            // clone <options...> <url> <destination>: the feature 003 clone array. Creates `<destination>\.git` and reports the
+            // arguments, the working folder, and the PuTTY pair. A URL that ends with `/fail.git` exits 128 and creates nothing.
+            "clone" => {
+                let destination = PathBuf::from(args.last().expect("destination"));
+                let url = &args[args.len() - 2];
+                let report = serde_json::json!({
+                    "args": args,
+                    "cwd": std::env::current_dir().expect("cwd"),
+                    "sshCommand": std::env::var("GIT_SSH_COMMAND").ok(),
+                    "sshVariant": std::env::var("GIT_SSH_VARIANT").ok(),
+                });
+                print_line(&format!("CLONE {report}"));
+                if url.ends_with("/fail.git") {
+                    std::process::exit(128);
+                }
+                std::fs::create_dir_all(destination.join(".git")).expect("clone folder");
+            }
+            // gui <ms>: a message-only window and a message loop, so `WaitForInputIdle` returns 0. Exits after the delay.
+            "gui" => {
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    CreateWindowExW, DispatchMessageW, GetMessageW, HWND_MESSAGE, MSG, SetTimer,
+                    WINDOW_EX_STYLE, WINDOW_STYLE, WM_TIMER,
+                };
+                let window = unsafe {
+                    CreateWindowExW(
+                        WINDOW_EX_STYLE(0),
+                        windows::core::w!("STATIC"),
+                        windows::core::w!(""),
+                        WINDOW_STYLE(0),
+                        0,
+                        0,
+                        0,
+                        0,
+                        Some(HWND_MESSAGE),
+                        None,
+                        None,
+                        None,
+                    )
+                }
+                .expect("message-only window");
+                let ms: u32 = args[0].parse().expect("ms");
+                unsafe { SetTimer(Some(window), 1, ms, None) };
+                let mut message = MSG::default();
+                while unsafe { GetMessageW(&mut message, None, 0, 0) }.as_bool() {
+                    if message.message == WM_TIMER {
+                        break;
+                    }
+                    unsafe { DispatchMessageW(&message) };
+                }
+            }
             // slow-stdin <ms>: reads stdin only after the delay.
             "slow-stdin" => {
                 print_line(&format!("PID {pid}"));

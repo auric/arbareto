@@ -34,7 +34,14 @@
         "update",
         "reconciliation",
         "history-load",
-        "history-search"
+        "history-search",
+        "sync-fetch",
+        "sync-merge",
+        "sync-rebase",
+        "sync-push",
+        "sync-continue",
+        "clone",
+        "pageant"
       ]
     },
     "counters": {

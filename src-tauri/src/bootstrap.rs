@@ -24,6 +24,8 @@ use windows::Win32::Storage::FileSystem::{
 
 /// A bootstrap context lasts at most 60 seconds (contract §6 "Registration bootstrap").
 pub const CONTEXT_LIFETIME: Duration = Duration::from_secs(60);
+/// Feature 004 data-model §2: a `workbenchToken` lives 60 seconds (001 §5 "Approval lifetime"). Its `worktreeAdd` context lives as long.
+pub const REVIEW_TOKEN_LIFETIME: Duration = Duration::from_secs(60);
 
 /// A native physical identity: the 64-bit volume serial number and the 128-bit file ID of `FILE_ID_INFO` (contract §6).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -170,6 +172,8 @@ pub enum ContextKind {
     RepositoryDiscovery,
     /// Feature 003 contract Δ6: the destination of one clone.
     Clone,
+    /// Feature 004 contract Δ6: the path of one `worktree add`, bound by the native step of its review.
+    WorktreeAdd,
 }
 
 #[derive(Clone, Debug)]
@@ -196,6 +200,8 @@ pub struct Context {
     pub key: Option<PathBuf>,
     /// An owned context of a clone stays live until its operation ends.
     pub held: bool,
+    /// The `repositoryId` of a `worktreeAdd` context.
+    pub repository: Option<String>,
 }
 
 /// The options that a discovery `symbolic-ref` permits besides the one name `HEAD` (contract §6 "Registration bootstrap").
@@ -329,7 +335,9 @@ impl Contexts {
         } else {
             ContextIdentity::Windows(read_identity(path).map_err(|code| match kind {
                 ContextKind::GitProbe => "GIT_UNAVAILABLE",
-                ContextKind::RepositoryDiscovery | ContextKind::Clone => code,
+                ContextKind::RepositoryDiscovery
+                | ContextKind::Clone
+                | ContextKind::WorktreeAdd => code,
             })?)
         };
         Ok(self.bind(kind, path, identity, selected, startup, now))
@@ -361,6 +369,7 @@ impl Contexts {
             url: None,
             key: None,
             held: false,
+            repository: None,
         };
         state.contexts.insert(id.clone(), context);
         id
@@ -391,6 +400,47 @@ impl Contexts {
             discovery.peer = Some(clone_id.clone());
         }
         (clone_id, bootstrap_id)
+    }
+
+    /// Feature 004 contract Δ6: the `worktreeAdd` context of the path and the repository of one `worktree-add` review.
+    /// It reads no identity, because the path is absent or an empty folder. It replaces each earlier one of the repository.
+    /// Until its review result, it lasts at most `CONTEXT_LIFETIME`. Returns its `bootstrapId`.
+    pub fn create_worktree_add(&self, path: &Path, repository_id: &str, now: Instant) -> String {
+        self.release_repository(repository_id);
+        let identity = ContextIdentity::Pending {
+            wsl: is_wsl_path(path),
+        };
+        let id = self.bind(ContextKind::WorktreeAdd, path, identity, path, false, now);
+        if let Some(context) = self.state().contexts.get_mut(&id) {
+            context.repository = Some(repository_id.to_string());
+        }
+        id
+    }
+
+    /// Feature 004 contract Δ6: the review result binds a live `worktreeAdd` context to its review token.
+    /// With a token, the context lives `REVIEW_TOKEN_LIFETIME` from `now`. Without one, the context ends.
+    pub fn bind_review(&self, bootstrap_id: &str, token: bool, now: Instant) {
+        let mut state = self.state();
+        if state.contexts.get(bootstrap_id).map(|context| context.kind)
+            != Some(ContextKind::WorktreeAdd)
+        {
+            return;
+        }
+        let live = state.live(bootstrap_id, now).is_ok();
+        match state.contexts.get_mut(bootstrap_id) {
+            Some(context) if live && token => context.expires_at = now + REVIEW_TOKEN_LIFETIME,
+            _ => {
+                state.contexts.remove(bootstrap_id);
+            }
+        }
+    }
+
+    /// Feature 004 contract Δ6: the release of a repository ends its `worktreeAdd` contexts.
+    pub fn release_repository(&self, repository_id: &str) {
+        self.state().contexts.retain(|_, context| {
+            context.kind != ContextKind::WorktreeAdd
+                || context.repository.as_deref() != Some(repository_id)
+        });
     }
 
     /// Feature 003 contract Δ6: from its first request, the clone operation holds both contexts of its clone until it ends.
@@ -480,8 +530,8 @@ impl Contexts {
                 }
                 _ => false,
             },
-            // Feature 003 contract Δ6: `process_requests.rs` checks the fixed clone array with the destination in Git's form.
-            ContextKind::Clone => false,
+            // Feature 003 and feature 004 contract Δ6: `process_requests.rs` checks the fixed arrays with the bound path in Git's form.
+            ContextKind::Clone | ContextKind::WorktreeAdd => false,
         };
         if permitted {
             Ok(())
@@ -494,8 +544,9 @@ impl Contexts {
     /// The code is `GIT_CHANGED` for `gitProbe` and `UNKNOWN_TARGET` for `repositoryDiscovery`.
     pub fn revalidate(&self, bootstrap_id: &str, now: Instant) -> Result<(), Code> {
         let context = self.get(bootstrap_id, now)?;
-        // Feature 003 contract Δ6: a `clone` context binds the path text that Git creates, so it holds no identity.
-        if context.kind == ContextKind::Clone {
+        // Feature 003 and feature 004 contract Δ6: a `clone` or `worktreeAdd` context binds the path text that Git creates,
+        // so it holds no identity.
+        if matches!(context.kind, ContextKind::Clone | ContextKind::WorktreeAdd) {
             return Ok(());
         }
         // A WSL context revalidates only through the §11 identity probe of `process_requests.rs`.
@@ -506,7 +557,9 @@ impl Contexts {
         self.destroy(bootstrap_id);
         Err(match context.kind {
             ContextKind::GitProbe => Code::GitChanged,
-            ContextKind::RepositoryDiscovery | ContextKind::Clone => Code::UnknownTarget,
+            ContextKind::RepositoryDiscovery | ContextKind::Clone | ContextKind::WorktreeAdd => {
+                Code::UnknownTarget
+            }
         })
     }
 
@@ -803,6 +856,67 @@ pub(crate) mod tests {
         );
         let unknown = "33333333-3333-4333-8333-333333333333";
         assert_eq!(contexts.get(unknown, now).err(), Some(Code::UnknownTarget));
+    }
+
+    /// Feature 004 contract Δ6: a `worktreeAdd` context lives until its review result, then as long as the review token.
+    /// A new review of the repository, the release of the repository, and a review without a token end it.
+    #[test]
+    fn a_worktree_add_context_lives_with_the_token_of_its_review() {
+        const REPOSITORY: &str = "44444444-4444-4444-8444-444444444444";
+        const OTHER: &str = "55555555-5555-4555-8555-555555555555";
+        let fixture = Fixture::new();
+        let path = fixture.path("wt");
+        let contexts = Contexts::new(SESSION);
+        let now = Instant::now();
+        let early = now
+            .checked_sub(Duration::from_secs(59))
+            .expect("an uptime above 59 s");
+        let id = contexts.create_worktree_add(&path, REPOSITORY, early);
+        let context = contexts
+            .get(&id, now)
+            .expect("live before the review result");
+        assert_eq!(
+            (context.kind, context.path, context.repository.as_deref()),
+            (ContextKind::WorktreeAdd, path.clone(), Some(REPOSITORY))
+        );
+        assert_eq!(context.expires_at, early + CONTEXT_LIFETIME);
+        contexts.bind_review(&id, true, now);
+        assert!(
+            contexts.get(&id, now + Duration::from_secs(59)).is_ok(),
+            "the token lifetime counts from the review result"
+        );
+        assert_eq!(
+            contexts.get(&id, now + REVIEW_TOKEN_LIFETIME).err(),
+            Some(Code::UnknownTarget),
+            "the token expired"
+        );
+        let other = contexts.create_worktree_add(&path, OTHER, now);
+        let next = contexts.create_worktree_add(&path, REPOSITORY, now);
+        assert!(contexts.get(&id, now).is_err(), "a new review replaced it");
+        assert!(contexts.get(&other, now).is_ok(), "another repository");
+        contexts.release_repository(REPOSITORY);
+        assert!(contexts.get(&next, now).is_err(), "the repository closed");
+        assert!(contexts.get(&other, now).is_ok(), "another repository");
+        contexts.bind_review(&other, false, now);
+        assert!(
+            contexts.get(&other, now).is_err(),
+            "a review without a token"
+        );
+        let expired = contexts.create_worktree_add(&path, REPOSITORY, early);
+        contexts.bind_review(&expired, true, now + Duration::from_secs(1));
+        assert!(
+            contexts.get(&expired, now).is_err(),
+            "a review result after the context lifetime binds nothing"
+        );
+        let discovery = contexts
+            .create(ContextKind::RepositoryDiscovery, &fixture.path(""), now)
+            .expect("discovery context");
+        contexts.bind_review(&discovery, false, now);
+        contexts.release_repository(REPOSITORY);
+        assert!(
+            contexts.get(&discovery, now).is_ok(),
+            "only worktreeAdd contexts"
+        );
     }
 
     #[test]

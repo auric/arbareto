@@ -116,7 +116,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 ## 13. Shell settings additions
 
-- `switchChoice`: `keep` (default) or `stash`. Any other value reads as `keep`.
+- `switchChoice`: `keep` (default) or `stash`. Any other value reads as `keep`. The 003 `readSyncSettings` result and the `setSwitchChoice` result carry it (contract Δ3, Δ14).
 - The 003 `defaultPullAction` stays.
 - Trust records: version 2 (§10). The 256-record bound and 4 KiB per record stay (001 §5).
 

@@ -128,6 +128,17 @@ export function createBridge(onSessionChange?: () => void, onTextScale?: (value:
     chooseSyncPath: (payload: Payload<"chooseSyncPath">, onProgress?: OnProgress) => call("chooseSyncPath", {}, payload, onProgress),
     clearSyncPath: (payload: Payload<"clearSyncPath">, onProgress?: OnProgress) => call("clearSyncPath", {}, payload, onProgress),
     launchPuttygen: (onProgress?: OnProgress) => call("launchPuttygen", {}, {}, onProgress),
+    // Feature 004 contract Δ1.
+    readBranches: (target: Target<"readBranches">, onProgress?: OnProgress) => call("readBranches", target, {}, onProgress),
+    readWorktrees: (target: Target<"readWorktrees">, onProgress?: OnProgress) => call("readWorktrees", target, {}, onProgress),
+    readGitSettings: (target: Target<"readGitSettings">, onProgress?: OnProgress) => call("readGitSettings", target, {}, onProgress),
+    reviewWorkbench: (target: Target<"reviewWorkbench">, payload: Payload<"reviewWorkbench">, onProgress?: OnProgress) =>
+      call("reviewWorkbench", target, payload, onProgress),
+    runWorkbench: (target: Target<"runWorkbench">, payload: Payload<"runWorkbench">, onProgress?: OnProgress) => call("runWorkbench", target, payload, onProgress),
+    applyFiles: (target: Target<"applyFiles">, payload: Payload<"applyFiles">, onProgress?: OnProgress) => call("applyFiles", target, payload, onProgress),
+    openWorktree: (payload: Payload<"openWorktree">, onProgress?: OnProgress) => call("openWorktree", {}, payload, onProgress),
+    revealPath: (payload: Payload<"revealPath">, onProgress?: OnProgress) => call("revealPath", {}, payload, onProgress),
+    setSwitchChoice: (payload: Payload<"setSwitchChoice">, onProgress?: OnProgress) => call("setSwitchChoice", {}, payload, onProgress),
   };
 }
 

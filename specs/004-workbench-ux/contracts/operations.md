@@ -137,10 +137,11 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 
 - Payload: `{repositoryId, entryId}`. The shell forwards it to the service. `repositoryId` sits in the payload, as for `openWorktree`.
 - The service maps `entryId` of its current read to the worktree root and the path. It sends the private `reveal` request (Δ6). The shell checks by `fileFacts` that the path lies inside the root. Then it calls `SHOpenFolderAndSelectItems`. A WSL path uses its UNC form. Errors give `UNKNOWN_TARGET`.
+- Shell rules: the path lies below the worktree root by text (001 §7 "Inside and outside"), and ASCII letters fold only for a Windows root. The `fileFacts` walk of its components meets no reparse point on the way. The entry is a file, a folder, or a link as the last component. The root itself, an absent entry, a failed show, and the walk deadline give `UNKNOWN_TARGET`. A path that breaks the channel path rule gives `INVALID_REQUEST`. Only the walk finish calls `SHOpenFolderAndSelectItems`.
 
 ### Shell-only operations
 
-- `setSwitchChoice {choice: "keep" | "stash"}`: stores data-model §13 `switchChoice`.
+- `setSwitchChoice {choice: "keep" | "stash"}`: stores data-model §13 `switchChoice`. It answers the 003 `readSyncSettings` result, which carries `switchChoice` (Δ14).
 
 ## Δ4 File staging (001 §4)
 
@@ -182,9 +183,13 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 - Policy `mergetool` takes no inactivity limit and the 4-hour ceiling. Its stdin is empty: the shell gives the child a closed pipe.
 - A `mergetool` run carries the limits `{ceilingMs}` only (`CeilingLimits`), so it gets no stall notice.
 - New context `globalConfig`: cwd is the application-owned launch folder. Accepted arrays: `--no-lazy-fetch --no-optional-locks --literal-pathspecs config list --show-scope --show-origin -z`, and `--no-lazy-fetch config set --global -- <key> <value>` and `--no-lazy-fetch config unset --global -- <key>`. Any other array gives `INVALID_REQUEST`.
+- `globalConfig` policies: the listing runs only under `read`, and `config set` and `config unset` only under `integrate`. A write takes the `integrate` kind fit, so it needs a `started` marker of kind `sync`, `workbench`, or `applyFiles`. Without an open repository, no marker exists, so no write runs. A WSL Git gets `INVALID_REQUEST` (contract gap).
 - New context `worktreeAdd`: bound by the native step of `reviewWorkbench` `worktree-add`. It serves `destinationFacts` (003 Δ6) and the `worktree add` array, whose path item must equal the bound path in Git's form.
 - The `worktreeAdd` context IDs are `gitInstallationId`, `repositoryId`, and `bootstrapId`. Its `destinationFacts` request names the binding by `bootstrapId` in place of `cloneId`.
-- New request `fileAppend {repositoryId, target: "gitignore" | "exclude", path, expected, bytes}`. The shell resolves `path` against the worktree root or checks that it lies inside the Git common directory, by identity (001 §7 "Inside and outside"). Windows: `CreateFileW` with `FILE_FLAG_OPEN_REPARSE_POINT` and `OPEN_EXISTING` (or `CREATE_NEW` for `absent`), `FILE_APPEND_DATA` access; a reparse tag or a non-regular file gives `refused` reason `not-regular`; a size or SHA-256 other than `expected` gives `stale`; then one `WriteFile` and `FlushFileBuffers`. WSL: `wslFiles` mode `append` (Δ11). Reply: `appended`, `stale`, `refused {reason}`, or `error {code}`.
+- `worktreeAdd` lifetime: until its review result, the context lives at most the 001 60-second context lifetime. A result with a `workbenchToken` binds it to that token, for the token lifetime of 60 seconds from the result (Δ5, data-model §2). It ends earlier when the shell admits its `worktree add` run, when a new `worktree-add` review of the same repository replaces it, or when the service releases the repository. A result without a token ends it. No operation owns it, because the review and the run are two operations. This changes the 001 §6 "Context rules" owner rule for this kind only.
+- New request `fileAppend {repositoryId, target: "gitignore" | "exclude", path, expected, bytes}`. The shell resolves `path` against the worktree root or checks that it lies inside the Git common directory, by identity (001 §7 "Inside and outside"). Windows: `NtCreateFile` opens each component relative to its parent handle with `OBJ_DONT_REPARSE`. The target open takes `FILE_OPEN_REPARSE_POINT`, `FILE_NON_DIRECTORY_FILE`, `FILE_OPEN` (or `FILE_CREATE` for `absent`), and `FILE_READ_DATA` with `FILE_APPEND_DATA` access, and it shares only reads. A reparse point on the way, a reparse tag, or a folder gives `refused` reason `not-regular`; a size or SHA-256 other than `expected` gives `stale`; then one `WriteFile` at the end of the file and `FlushFileBuffers`. WSL: `wslFiles` mode `append` (Δ11). Reply: `appended`, `stale`, `refused {reason}`, or `error {code}`.
+- Why `NtCreateFile`: `CreateFileW` takes a full path and follows a reparse point on the way, and `FILE_FLAG_OPEN_REPARSE_POINT` covers only the last component. The relative opens keep the target below the root by identity. `FILE_READ_DATA` serves the SHA-256 compare. Read sharing keeps other writers out from the check to the append.
+- `fileAppend` rules: the operation holds a `started` marker of kind `workbench` with action `ignore-gitignore` or `ignore-exclude` that matches `target`. Another operation gets `INVALID_REQUEST`. `expected.size` is at most 1 MiB (Δ5 "Ignore target file"), and `bytes` holds 1 to 64 KiB. A missing folder on the way gives `error` `other-error`. The reply has no deadline form, so a check past its walk deadline gives `error` `other-error`. Only the walk finish writes, so a deadline leaves the target unchanged.
 - The `fileAppend` `path` is an absolute path for both targets. For `gitignore`, the shell requires `<worktree root>/.gitignore`. For `exclude`, it requires a path inside the common directory by identity.
 - New request `reveal {repositoryId, path}`: Δ3 `revealPath`.
 - `trust` frame `confirm` version 2: `{worktreeRoot, adminDirectory, commonDirectory, gitSelectedPath, policyVersion: 2, action, details}`. `action` is one of `commit`, `read`, `fetch`, `pull`, `push`, `switch`, `branch`, `merge`, `rebase`, `resolve`, `mergetool`, `worktree`, `submodules`. `details` holds `hooks` (event and folder), `filters` (driver and scope), `monitors` (scope), `mergeDrivers` (driver and scope), `mergeTools` (tool and scope), and `signing` (key and scope), at most 20 names per kind with a `more` count. `fingerprint`, `persist`, and `bound` go.
@@ -238,7 +243,8 @@ No file decision gives a line refusal, so the `readComparison` `fileAction` neve
 ## Δ11 WSL repositories (001 §11)
 
 - New wrapper mode `mergetool` in `wsl-process.json`: `export GIT_EDITOR=:`. The 003 mode `integrate` serves the other 004 steps.
-- New `wslFiles` mode `append`: `lstat` of the target, a regular-file check, the size and SHA-256 compare, then an append with `O_WRONLY|O_APPEND|O_NOFOLLOW` and `fsync`. `absent` uses `O_CREAT|O_EXCL`.
+- New `wslFiles` mode `append`: `lstat` of each folder on the way, an open of the target with `O_RDONLY|O_NOFOLLOW`, a regular-file check by `fstat`, the size and SHA-256 compare, then an append with `O_WRONLY|O_APPEND|O_NOFOLLOW` and `fsync`. `absent` uses `O_CREAT|O_EXCL`.
+- A link on the way or at the target gives `refused` reason `not-regular`. Before the write, the text checks that the write handle has the device, the inode, and the size of the compared file. POSIX has no share mode that keeps other writers out, so a writer between that check and the append can still change the file (contract gap).
 - Worktree paths in `readWorktrees` are Linux paths. `openWorktree` maps them by the §11 route.
 - `revealPath` takes the UNC form of the path (§11 "Paths and file access").
 
@@ -264,6 +270,7 @@ No file decision gives a line refusal, so the `readComparison` `fileAction` neve
 - 003 D11 trust: `SYNC_EVENTS` stays for `sync`. The version 2 binding of Δ7 applies to every class, `sync` included.
 - 003 D12 keys stay: Fetch Ctrl+Shift+Down, Pull Ctrl+Down, Push Ctrl+Up. They act in the window but not in an editable field.
 - 003 `settings/SettingsDialog.tsx`: its pages move into the Settings view (plan O-7). The shell-only operations of 003 Δ3 stay.
+- 003 Δ3 `readSyncSettings`: the result gains data-model §13 `switchChoice`, so the renderer reads it as it reads `defaultPullAction`. `setSwitchChoice` answers the same result.
 
 ## Contract gaps
 
@@ -277,3 +284,6 @@ No file decision gives a line refusal, so the `readComparison` `fileAction` neve
 - `git merge -F -` reads a file named `-`, not standard input (builtin/merge.c `option_read_message`). Git 2.56.0.windows.2 exits 129 with "could not read file '-'" when no such file exists. So the merge message goes in the `-m` item, and `MERGE_MESSAGE_BYTES` keeps that item inside the 001 §6 command-line bound.
 - A merge tool that hands the file to an earlier instance outside the operation Job keeps its window after Cancel.
 - A configuration write races with another writer between the listing and `config set`. Git takes `config.lock` only for the write itself.
+- The `globalConfig` context has no WSL form. A WSL Git gets `INVALID_REQUEST`.
+- POSIX has no share mode that keeps other writers out. A writer between the check and the append of the `wslFiles` mode `append` can change the file.
+- The shell cannot see a review token that the service invalidates before its lifetime ends (001 §5 "Approval lifetime"). The `worktreeAdd` context of that token stays until the token lifetime ends, and no run of that token starts.

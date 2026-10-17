@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-run-workbench"
+description = "Enables the run_workbench command without any pre-configured scope."
+commands.allow = ["run_workbench"]
+
+[[permission]]
+identifier = "deny-run-workbench"
+description = "Denies the run_workbench command without any pre-configured scope."
+commands.deny = ["run_workbench"]

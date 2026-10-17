@@ -1563,6 +1563,7 @@ pub(crate) mod tests {
             wsl_gits: Vec::new(),
             recent: Vec::new(),
             sync: Default::default(),
+            switch_choice: Default::default(),
         };
         assert_eq!(
             restore_workspace(&settings, &contexts, Instant::now()),
@@ -1593,6 +1594,7 @@ pub(crate) mod tests {
             wsl_gits: Vec::new(),
             recent: Vec::new(),
             sync: Default::default(),
+            switch_choice: Default::default(),
         };
         let saved_git = startup_context(&settings, &contexts, Instant::now()).expect("savedGit");
         let bootstrap_id = saved_git["bootstrapId"].as_str().expect("bootstrapId");
@@ -1622,6 +1624,7 @@ pub(crate) mod tests {
             wsl_gits: Vec::new(),
             recent: Vec::new(),
             sync: Default::default(),
+            switch_choice: Default::default(),
         };
         let saved_git = startup_context(&settings, &contexts, Instant::now()).expect("savedGit");
         let bootstrap_id = saved_git["bootstrapId"].as_str().expect("bootstrapId");
@@ -1652,6 +1655,7 @@ pub(crate) mod tests {
             wsl_gits: Vec::new(),
             recent: Vec::new(),
             sync: Default::default(),
+            switch_choice: Default::default(),
         };
         assert_eq!(
             startup_context(&settings, &contexts, Instant::now()),
@@ -1672,6 +1676,7 @@ pub(crate) mod tests {
             wsl_gits: Vec::new(),
             recent: Vec::new(),
             sync: Default::default(),
+            switch_choice: Default::default(),
         };
         assert_eq!(startup_context(&settings, &contexts, Instant::now()), None);
     }
@@ -1688,6 +1693,7 @@ pub(crate) mod tests {
             wsl_gits: Vec::new(),
             recent: Vec::new(),
             sync: Default::default(),
+            switch_choice: Default::default(),
         };
         let chosen = restore_workspace(&settings, &contexts, Instant::now());
         assert_eq!(

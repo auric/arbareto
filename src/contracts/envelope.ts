@@ -315,7 +315,8 @@ const OpenWorktree = op("openWorktree", {}, z.strictObject({ repositoryId: Ident
 // Contract Δ3: the service maps the entry of its current read to a path and sends the private `reveal` request.
 const RevealPath = op("revealPath", {}, z.strictObject({ repositoryId: Identifier, entryId: Identifier }));
 // Data-model §13: `discard` is no stored choice (spec FR-010).
-const SetSwitchChoice = op("setSwitchChoice", {}, z.strictObject({ choice: z.enum(["keep", "stash"]) }));
+const SwitchChoice = z.enum(["keep", "stash"]);
+const SetSwitchChoice = op("setSwitchChoice", {}, z.strictObject({ choice: SwitchChoice }));
 
 export const RendererEnvelope = z.discriminatedUnion("operation", [
   GetEnvironment,
@@ -1243,11 +1244,13 @@ export const CloneResult = z
   .meta({ title: "CloneResult" });
 
 // Data-model §10 and contract Δ3 `readSyncSettings`. No passphrase, credential, key content, or repository value.
+// Feature 004 data-model §13 and contract Δ14: the shell setting `switchChoice` reaches the renderer here, as `defaultPullAction` does.
 // `programs`: one entry for each PuTTY program in the plink folder with a set `plinkPath`, else none.
 export const SyncSettings = z
   .strictObject({
     sshClient: z.enum(["git", "plink"]),
     defaultPullAction: z.enum(DEFAULT_PULL_ACTIONS),
+    switchChoice: SwitchChoice,
     plinkPath: ChannelPath.nullable(),
     programs: z.array(z.strictObject({ program: z.enum(PUTTY_PROGRAMS), path: ChannelPath, present: z.boolean() }).meta({ title: "SyncProgram" })).max(PUTTY_PROGRAMS.length),
     remoteKeyFiles: z.array(z.strictObject({ worktreeKey: Fingerprint, remote: RemoteName, path: ChannelPath }).meta({ title: "KeyFile" })).max(KEY_FILE_ENTRIES),
@@ -1256,5 +1259,5 @@ export const SyncSettings = z
   })
   .refine((s) => Array.isArray(s.programs) && new Set(s.programs.map((p) => p?.program)).size === s.programs.length && s.programs.length === (s.plinkPath === null ? 0 : PUTTY_PROGRAMS.length))
   .meta({ title: "SyncSettings" });
-// The six settings operations give the settings, or a PuTTY refusal of `chooseSyncPath` and `launchPuttygen`.
+// The six settings operations and feature 004 `setSwitchChoice` give the settings, or a PuTTY refusal of `chooseSyncPath` and `launchPuttygen`.
 export const SyncSettingsResult = z.union([SyncSettings, PuttyRefused]).meta({ title: "SyncSettingsResult" });

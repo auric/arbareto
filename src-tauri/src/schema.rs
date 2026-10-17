@@ -23,6 +23,10 @@ pub const WSL_START_DEADLINE_MS: u64 = 60_000;
 const CLONE_URL_BYTES: usize = 4096;
 /// Feature 003 contract Δ2: the counters of the `sync` and `clone` phases.
 const SYNC_COUNTERS: [&str; 3] = ["percent", "remoteIndex", "remoteCount"];
+/// Feature 004 contract Δ5 "Branch name": 255 UTF-8 bytes.
+const BRANCH_NAME_BYTES: usize = 255;
+/// Feature 004 data-model §1: a local branch lies under this prefix.
+const LOCAL_BRANCH_PREFIX: &str = "refs/heads/";
 
 macro_rules! generated {
     ($($module:ident),*) => {
@@ -102,6 +106,19 @@ pub fn native_first(
         Some("chooseSyncPath" | "clearSyncPath") => {
             let key = payload["target"] == "remoteKey";
             key == payload.get("worktreeKey").is_some() && key == payload.get("remote").is_some()
+        }
+        // Feature 004 contract Δ1 and Δ3: typify drops the `action` const, the byte bound of a new name, and the
+        // `refs/heads/` prefix of an existing branch.
+        Some("reviewWorkbench") => {
+            let branch = &payload["branch"];
+            let named = match (branch["new"].as_str(), branch["existing"].as_str()) {
+                (Some(name), None) => (1..=BRANCH_NAME_BYTES).contains(&name.len()),
+                (None, Some(name)) => name
+                    .strip_prefix(LOCAL_BRANCH_PREFIX)
+                    .is_some_and(|short| !short.is_empty()),
+                _ => false,
+            };
+            payload["action"] == "worktree-add" && named && paths(payload, &["path"]).is_ok()
         }
         _ => true,
     };
@@ -231,29 +248,47 @@ pub fn handshake(value: &Value) -> Result<handshake::Handshake, Code> {
 /// Only phase `wsl-starting` carries `distro` (contract §11 "Distro start").
 /// Only phases `fetch` and `update` carry `path`, and they always carry it (contract §2).
 /// A phase of feature 003 contract Δ2 carries only the counters `percent`, `remoteIndex`, and `remoteCount`.
+/// Feature 004 contract Δ2: `stage-files` carries only `fileIndex` and `fileCount`, `config` only `keyIndex` and `keyCount`,
+/// and each other feature 004 phase no counter.
 pub fn progress(value: &Value) -> bool {
     use progress::ProgressPhase as P;
     typed::<progress::Progress>(value).is_some_and(|event| {
-        let sync = matches!(
-            event.phase,
+        let allowed: Option<&[&str]> = match event.phase {
             Some(
                 P::SyncFetch
-                    | P::SyncMerge
-                    | P::SyncRebase
-                    | P::SyncPush
-                    | P::SyncContinue
-                    | P::Clone
-                    | P::Pageant
-            )
-        );
+                | P::SyncMerge
+                | P::SyncRebase
+                | P::SyncPush
+                | P::SyncContinue
+                | P::Clone
+                | P::Pageant,
+            ) => Some(&SYNC_COUNTERS),
+            Some(P::StageFiles) => Some(&["fileIndex", "fileCount"]),
+            Some(P::Config) => Some(&["keyIndex", "keyCount"]),
+            Some(
+                P::SwitchStash
+                | P::SwitchCheckout
+                | P::SwitchReapply
+                | P::SwitchDrop
+                | P::Branch
+                | P::Merge
+                | P::Rebase
+                | P::Resolve
+                | P::Mergetool
+                | P::Worktree
+                | P::Ignore,
+            ) => Some(&[]),
+            _ => None,
+        };
         event.counters.values().all(|count| *count >= 0)
             && (event.phase == Some(P::WslStarting)) == event.distro.is_some()
             && matches!(event.phase, Some(P::Fetch | P::Update)) == event.path.is_some()
-            && (!sync
-                || event
+            && allowed.is_none_or(|allowed| {
+                event
                     .counters
                     .keys()
-                    .all(|key| SYNC_COUNTERS.contains(&key.as_str())))
+                    .all(|key| allowed.contains(&key.as_str()))
+            })
     })
 }
 
@@ -293,6 +328,7 @@ pub mod reply {
 
     use super::{mutation_reply as m, process_reply as p, trust_reply as t, typed};
     use crate::bootstrap::PhysicalIdentity;
+    use crate::file_append::AppendResult;
     use crate::process_requests::{Destination, encode_base64};
     use crate::putty::Unavailable;
     use crate::settings::{hex, sha256};
@@ -729,6 +765,43 @@ pub mod reply {
         ))
     }
 
+    /// Feature 004 contract Δ6 `fileAppend`: `appended`, `stale`, `refused` with `not-regular`, or `error` with a file fact code.
+    pub fn file_append(call_id: &str, appended: AppendResult) -> Value {
+        use p::FileAppendGroup as G;
+        let type_ = "fileAppend".to_string();
+        encode(p::ProcessReply::FileAppendGroup(match appended {
+            AppendResult::Appended | AppendResult::Stale => G::Result {
+                call_id: field(call_id),
+                result: if appended == AppendResult::Appended {
+                    p::FileAppendResultResult::Appended
+                } else {
+                    p::FileAppendResultResult::Stale
+                },
+                type_,
+            },
+            AppendResult::NotRegular => G::Refused {
+                call_id: field(call_id),
+                reason: p::FileAppendRefusedReason::NotRegular,
+                result: "refused".into(),
+                type_,
+            },
+            AppendResult::Error(code) => G::Error {
+                call_id: field(call_id),
+                code,
+                result: "error".into(),
+                type_,
+            },
+        }))
+    }
+
+    /// Feature 004 contract Δ3 `revealPath`: Explorer shows the path.
+    pub fn reveal(call_id: &str) -> Value {
+        encode(p::ProcessReply::RevealReply {
+            call_id: field(call_id),
+            type_: "reveal".into(),
+        })
+    }
+
     /// Feature 003 contract Δ6 `terminal`: the console started.
     pub fn terminal_started(call_id: &str) -> Value {
         encode(p::ProcessReply::TerminalGroup(p::TerminalGroup::Started {
@@ -961,7 +1034,8 @@ mod tests {
     /// The vector schemas that the shell reads into no generated type. The renderer and the service check them.
     /// The shell writes process, mutation, and trust replies and never reads them. It reads only the `requestId` of a response.
     /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, and sync review results in `Response.result` and reads no field of them.
-    const NOT_READ: [&str; 22] = [
+    /// The shell writes the settings result of the shell-only settings operations and never reads it.
+    const NOT_READ: [&str; 23] = [
         "service-envelope",
         "open-recent-repository-result",
         "recent-repositories-result",
@@ -984,6 +1058,7 @@ mod tests {
         "read-comparison-result",
         "operation-result",
         "review-sync-result",
+        "sync-settings-result",
     ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
@@ -1044,6 +1119,15 @@ mod tests {
                         crate::file_facts::wsl_files_request(&value, &request).map(drop)
                     })
                     .map_err(|code| text_of(&code)),
+                // Feature 004 contract Δ6: the field rules of `ProcessRequests::dispatch` for `fileAppend` and `reveal`.
+                Ok(value) if value["type"] == "fileAppend" => typed(&value)
+                    .ok_or(INVALID)
+                    .and_then(|request| crate::file_append::parse(&request).map(drop))
+                    .map_err(|code| text_of(&code)),
+                Ok(value) if value["type"] == "reveal" => typed::<process_request::Reveal>(&value)
+                    .ok_or(INVALID)
+                    .and_then(|request| path(&json!(request.path.as_str())).map(drop))
+                    .map_err(|code| text_of(&code)),
                 _ => return None,
             },
             other if NOT_READ.contains(&other) => return None,
@@ -1085,9 +1169,10 @@ mod tests {
             }
         }
         assert!(wrong.is_empty(), "{wrong:#?}");
+        // Feature 004 T017 adds 25 vectors, and `fileAppend` and `reveal` add 3 (contract Δ10).
         assert_eq!(
             checked,
-            if cfg!(windows) { 138 } else { 133 },
+            if cfg!(windows) { 166 } else { 161 },
             "shell-read vectors"
         );
     }
@@ -1590,6 +1675,221 @@ mod tests {
             json!({ "kind": "updateSubmodules", "action": "fetch" }),
         ] {
             assert!(!started(fields.clone()), "{fields}");
+        }
+    }
+
+    /// Feature 004 contract Δ1, Δ2, and Δ6: the rules that the JSON Schema files cannot hold (001 §1).
+    #[test]
+    fn the_feature_004_rules_outside_json_schema_are_checked_in_rust() {
+        let envelope = |operation: &str, payload: Value| json!({ "version": 1, "sessionId": "0f0f0f0f-0000-4000-8000-0000000000aa", "requestId": "0f0f0f0f-0000-4000-8000-000000000001", "operation": operation, "repositoryId": "0f0f0f0f-0000-4000-8000-000000000005", "repositoryGeneration": 3, "payload": payload });
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        let add = |branch: Value, path: &str| {
+            native_first(&envelope(
+                "reviewWorkbench",
+                json!({ "action": "worktree-add", "branch": branch, "path": path }),
+            ))
+            .is_ok()
+        };
+        // The `worktree-add` path takes the path rule, a new branch 1 to 255 UTF-8 bytes, and an existing branch a name under `refs/heads/`.
+        assert!(add(
+            json!({ "existing": "refs/heads/topic" }),
+            "C:\\src\\wt"
+        ));
+        assert!(add(
+            json!({ "existing": "refs/heads/a/b" }),
+            "//host/src/wt"
+        ));
+        assert!(add(
+            json!({ "new": "a".repeat(255), "start": oid }),
+            "C:\\src\\wt"
+        ));
+        assert!(add(
+            json!({ "new": "\u{e9}".repeat(127), "start": oid }),
+            "C:\\src\\wt"
+        ));
+        for (name, branch, path) in [
+            (
+                "a relative path",
+                json!({ "existing": "refs/heads/topic" }),
+                "src\\wt",
+            ),
+            (
+                "a device path",
+                json!({ "existing": "refs/heads/topic" }),
+                "\\\\.\\pipe\\x",
+            ),
+            (
+                "an empty path",
+                json!({ "existing": "refs/heads/topic" }),
+                "",
+            ),
+            (
+                "256 bytes",
+                json!({ "new": "\u{e9}".repeat(128), "start": oid }),
+                "C:\\src\\wt",
+            ),
+            (
+                "an empty name",
+                json!({ "new": "", "start": oid }),
+                "C:\\src\\wt",
+            ),
+            (
+                "a tag",
+                json!({ "existing": "refs/tags/v1" }),
+                "C:\\src\\wt",
+            ),
+            (
+                "the prefix alone",
+                json!({ "existing": "refs/heads/" }),
+                "C:\\src\\wt",
+            ),
+            (
+                "a short name",
+                json!({ "existing": "topic" }),
+                "C:\\src\\wt",
+            ),
+        ] {
+            assert!(!add(branch, path), "{name}");
+        }
+        // typify drops the `action` const of the native-first review.
+        let other = envelope(
+            "reviewWorkbench",
+            json!({ "action": "worktree-remove", "branch": { "existing": "refs/heads/topic" }, "path": "C:\\src\\wt" }),
+        );
+        assert_eq!(native_first(&other).map(drop), Err("INVALID_REQUEST"));
+
+        // Each feature 004 phase carries only its own counters.
+        let event = |phase: &str, counters: Value| json!({ "requestId": "0f0f0f0f-0000-4000-8000-000000000001", "operationId": "0f0f0f0f-0000-4000-8000-000000000004", "state": "running", "phase": phase, "counters": counters, "stalled": false });
+        let bare = [
+            "switch-stash",
+            "switch-checkout",
+            "switch-reapply",
+            "switch-drop",
+            "branch",
+            "merge",
+            "rebase",
+            "resolve",
+            "mergetool",
+            "worktree",
+            "ignore",
+        ];
+        for phase in bare {
+            assert!(progress(&event(phase, json!({}))), "{phase}");
+            for counter in ["percent", "fileIndex", "keyIndex", "objects"] {
+                assert!(
+                    !progress(&event(phase, json!({ counter: 1 }))),
+                    "{phase} {counter}"
+                );
+            }
+        }
+        for (phase, own, foreign) in [
+            ("stage-files", ["fileIndex", "fileCount"], "keyIndex"),
+            ("config", ["keyIndex", "keyCount"], "fileIndex"),
+        ] {
+            assert!(progress(&event(phase, json!({}))), "{phase}");
+            assert!(
+                progress(&event(phase, json!({ own[0]: 1, own[1]: 2 }))),
+                "{phase}"
+            );
+            for counter in [foreign, "percent", "objects"] {
+                assert!(
+                    !progress(&event(phase, json!({ counter: 1 }))),
+                    "{phase} {counter}"
+                );
+            }
+        }
+
+        // Kind `workbench` carries one workbench action, and kind `applyFiles` carries `stage` or `unstage`.
+        let started = |fields: Value| {
+            let mut frame = json!({ "type": "started", "callId": "0f0f0f0f-0000-4000-8000-000000000003", "operationId": "0f0f0f0f-0000-4000-8000-000000000004", "repositoryId": "0f0f0f0f-0000-4000-8000-000000000005", "worktreeRoot": "//host/repo", "commonDirectory": "//host/repo/.git" });
+            frame
+                .as_object_mut()
+                .expect("object")
+                .extend(fields.as_object().expect("fields").clone());
+            mutation_request(&frame).is_ok()
+        };
+        for action in [
+            "switch",
+            "create-branch",
+            "rename-branch",
+            "delete-branch",
+            "merge",
+            "rebase",
+            "choose-ours",
+            "choose-theirs",
+            "mergetool",
+            "ignore-gitignore",
+            "ignore-exclude",
+            "worktree-add",
+            "worktree-remove",
+            "worktree-prune",
+            "config-save",
+        ] {
+            assert!(
+                started(json!({ "kind": "workbench", "action": action })),
+                "{action}"
+            );
+            assert!(
+                !started(json!({ "kind": "sync", "action": action })),
+                "{action}"
+            );
+            assert!(
+                !started(json!({ "kind": "applyFiles", "direction": "stage", "action": action })),
+                "{action}"
+            );
+        }
+        for direction in ["stage", "unstage"] {
+            assert!(started(
+                json!({ "kind": "applyFiles", "direction": direction })
+            ));
+        }
+        for fields in [
+            json!({ "kind": "workbench" }),
+            json!({ "kind": "workbench", "action": "fetch" }),
+            json!({ "kind": "workbench", "action": "switch", "direction": "stage" }),
+            json!({ "kind": "applyFiles" }),
+            json!({ "kind": "applyFiles", "direction": "resolve" }),
+        ] {
+            assert!(!started(fields.clone()), "{fields}");
+        }
+    }
+
+    /// Feature 004 contract Δ6: the `fileAppend` and `reveal` replies in their wire form.
+    #[test]
+    fn the_file_append_and_reveal_replies_have_their_wire_form() {
+        use crate::file_append::AppendResult;
+        use process_reply::FileAppendErrorCode as E;
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/vectors/valid");
+        let vector = |name: &str| -> Value {
+            let text = std::fs::read_to_string(root.join(name)).expect("vector file");
+            let vector: Vector = serde_json::from_str(&text).expect("vector form");
+            serde_json::from_str(&vector.text).expect("vector text")
+        };
+        let call = "0f0f0f0f-0000-4000-8000-000000000001";
+        for (built, expected) in [
+            (
+                reply::file_append(call, AppendResult::Appended),
+                vector("process-reply-file-append-appended.json"),
+            ),
+            (
+                reply::file_append(call, AppendResult::NotRegular),
+                vector("process-reply-file-append-refused.json"),
+            ),
+            (
+                reply::file_append(call, AppendResult::Stale),
+                json!({ "type": "fileAppend", "callId": call, "result": "stale" }),
+            ),
+            (
+                reply::file_append(call, AppendResult::Error(E::SharingViolation)),
+                json!({ "type": "fileAppend", "callId": call, "result": "error", "code": "sharing-violation" }),
+            ),
+            (reply::reveal(call), vector("process-reply-reveal.json")),
+        ] {
+            assert_eq!(built, expected);
+            assert!(
+                typed::<process_reply::ProcessReply>(&built).is_some(),
+                "{built}"
+            );
         }
     }
 

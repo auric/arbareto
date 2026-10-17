@@ -145,7 +145,7 @@ mod tests {
         ("GCM_CREDENTIAL_STORE", "wincredman"),
     ];
 
-    const FIXED: [&str; 7] = [
+    const FIXED: [&str; 8] = [
         "probe",
         "read",
         "mutation",
@@ -153,6 +153,7 @@ mod tests {
         "search",
         "remote",
         "integrate",
+        "mergetool",
     ];
 
     fn policy_ids() -> Vec<String> {
@@ -417,6 +418,34 @@ mod tests {
                 "{id} refuses an index file"
             );
         }
+    }
+
+    /// Feature 004 contract Δ7: `mergetool` builds the `integrate` environment, `GIT_EDITOR=:` included, and takes no index file.
+    #[test]
+    fn mergetool_builds_the_integrate_environment_without_an_index_file() {
+        use crate::schema::process_request::EnvironmentPolicy;
+        let policy: EnvironmentPolicy = serde_json::from_value(serde_json::json!("mergetool"))
+            .expect("the generated type holds the policy");
+        assert_eq!(policy.to_string(), "mergetool");
+        let sorted = |mut environment: Vec<(OsString, OsString)>| {
+            environment.sort();
+            environment
+        };
+        for input in [
+            base(&[]),
+            base(&[("GIT_DIR", r"C:\x"), ("GIT_EDITOR", "code --wait")]),
+            base(&[("GIT_TERMINAL_PROMPT", "1"), ("GIT_TEST_X", "1")]),
+        ] {
+            let mergetool = build("mergetool", &input);
+            assert_eq!(values(&mergetool, "GIT_EDITOR"), vec![":"]);
+            assert_eq!(values(&mergetool, "GIT_TERMINAL_PROMPT"), vec!["0"]);
+            assert_eq!(sorted(mergetool), sorted(build("integrate", &input)));
+        }
+        let owned = PathBuf::from(r"C:\repo\.git\arbareto-candidate-4567");
+        assert_eq!(
+            child_environment("mergetool", &base(&[]), Some(&owned)),
+            Err("INVALID_REQUEST")
+        );
     }
 
     #[test]

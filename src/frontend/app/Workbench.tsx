@@ -35,6 +35,7 @@ import { ViewCommitDetails } from "../history/CommitDetails";
 import { HistoryList } from "../history/HistoryList";
 import { branchName, INDEX_ROW, WORKING_ROW } from "../history/HistoryView";
 import { createShortcutHandler, nextSection, type Panel, type Section } from "../keyboard/shortcuts";
+import { isObject } from "../lib/utils";
 import {
   chooseProfile,
   clampPanes,
@@ -60,7 +61,7 @@ import { createRequests, isRegistration, wslDistro, type Clock, type RequestBrid
 import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, storePanes, writePreferences, type DarkPalette, type Panes, type Preferences, type Theme } from "../state/preferences";
 import { createDrafts } from "../state/drafts";
 import { createDraftStore } from "../state/draft-store";
-import { isObject, OperationStatus, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
+import { OperationStatus, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
 import { passedAcceptance, SubmoduleReview, type SubmoduleReviewValue } from "../submodules/SubmoduleReview";
 import { isTrustReport, SaveFailedNotice, TrustDialog, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
@@ -197,7 +198,7 @@ const SETTINGS_LOADING = "The default pull action is still loading…";
 type SyncSettingsState = { action: DefaultPullAction | null; reason: string | null };
 function settingsOf(response: BridgeResponse): SyncSettingsState {
   const action = isObject(response.result) ? response.result.defaultPullAction : undefined;
-  return response.state === "succeeded" && typeof action === "string" ? { action: action as DefaultPullAction, reason: null } : { action: null, reason: `The default pull action did not load: ${response.code ?? response.state}` };
+  return response.state === "succeeded" && typeof action === "string" ? { action: action as DefaultPullAction, reason: null } : { action: null, reason: `The default pull action did not load: ${response.code ?? response.state}.` };
 }
 
 // plan.md "Dark palettes".

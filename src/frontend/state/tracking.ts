@@ -5,6 +5,7 @@ import type { z } from "zod";
 // Type-only imports keep zod out of the renderer bundle.
 import type { RefsResult, TrackingEntry as TrackingEntrySchema } from "../../contracts/envelope";
 import { TRACKING_COUNT_DISPLAY } from "../../contracts/limits";
+import { isObject } from "../lib/utils";
 
 // Feature 003 data-model §1 label rule, plan.md D8, spec FR-019 to FR-022.
 
@@ -20,7 +21,6 @@ const NO_UPSTREAM = "No upstream";
 const UPSTREAM_GONE = "Upstream gone";
 const KINDS = { branch: "refs/heads/", remote: "refs/remotes/" } as const;
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 /** Contract Δ3 `readTracking`: a `TrackingList` has `entries`, and a refusal has none. */
 export const isTrackingList = (value: unknown): value is { entries: TrackingEntry[] } => isObject(value) && Array.isArray(value.entries);
 

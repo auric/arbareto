@@ -14,7 +14,7 @@ import type { BridgeResponse, createBridge, ProgressEvent } from "../bridge";
 import { Button } from "../components/ui/button";
 import { branchName } from "../history/HistoryView";
 import { isEditable, type Panel } from "../keyboard/shortcuts";
-import { cn } from "../lib/utils";
+import { cn, isObject } from "../lib/utils";
 
 type SyncAction = (typeof SYNC_ACTIONS)[number];
 
@@ -162,7 +162,6 @@ const FAILED_READ = "Arbareto could not read this submodule. Use Refresh, then t
 // Data-model §7 and plan.md "Status area": these commit states open the area.
 const OPENING_COMMIT_STATES = ["failed", "failed-with-effects", "completed-with-effects"];
 
-export const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 const isText = (value: unknown): value is string => typeof value === "string";
 /** plan.md "History graph design": a short ID is the first 12 hex digits. */
 export const shortId = (oid: string | null) => (oid ?? "").slice(0, 12);

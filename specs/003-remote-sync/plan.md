@@ -332,6 +332,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - The pull actions map to `reviewSync {action: "pull"}`, `{action: "pull", mode: "merge"}`, and `{action: "pull", mode: "rebase"}`. A rebase action needs no further confirmation (FR-057).
   - Unavailable reasons come from `readWorkspace` (head, operation state) and `readTracking` (upstream). The review gives exact refusals, such as `remote-missing`.
   - While `readSyncSettings` runs, the Pull main part shows the reason "The default pull action is still loading…".
+  - A failed `readSyncSettings` shows the Pull main part reason "The default pull action did not load: <code>." `<code>` is the response code, or the response state without a code.
   - A review result without a `syncReviewToken` starts nothing. A `force-push` plan without `destination` or `lease` also starts nothing and opens no confirmation (FR-024). The status bar then shows "<action name> did not start: the review is incomplete."
 - Counts: `state/tracking.ts`, the sidebar entry, and the 002 history label (after 002 P6).
   - A failed `readTracking` shows "Counts did not load: <code>." in place of the toolbar counts. `<code>` is the response code, or the response state without a code.

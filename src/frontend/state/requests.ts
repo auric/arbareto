@@ -3,6 +3,7 @@
 
 import type { ChangeEntry, ReadEntriesResult, RefsResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { BridgeResponse, OnProgress } from "../bridge";
+import { isObject } from "../lib/utils";
 import { nextRequestSeq, sameHead } from "./history-view";
 
 // Contract §2, §5 "Pending reads", §8, and §11 "Change polling". plan.md "Freshness and reconciliation". Feature 002 contract Δ3 and Δ8.
@@ -94,7 +95,6 @@ const INITIAL: RequestState = {
   headRead: null,
 };
 
-const isObject = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 // Contract §3: a `WorkspaceSnapshot` has `snapshotId`, and a `WorkspaceRefusal` has none.
 const isSnapshot = (value: unknown): value is WorkspaceSnapshot => isObject(value) && typeof value.snapshotId === "string";
 // Contract §3: a `RefList` has `refs`, and a `RefsRefusal` has none.

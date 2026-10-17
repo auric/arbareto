@@ -11,7 +11,7 @@ import { readdirSync, readFileSync, renameSync, writeFileSync, writeSync } from 
 import { release } from "node:os";
 import { join } from "node:path";
 import { processCreationTime, terminateRecorded } from "../git/win32";
-import { close, find, focus, inputDesktopSkip, invoke, MAX_WAIT_MS, UiaError, waitFocus, type Element } from "./uia";
+import { close, find, focus, foregroundPid, foregroundSkip, inputDesktopSkip, invoke, MAX_WAIT_MS, UiaError, waitFocus, type Element } from "./uia";
 
 const PROBE_VARIABLE = "ARBARETO_NATIVE_PROBE";
 
@@ -481,15 +481,6 @@ function spawnProbe(mode: string, args: string[], env: Record<string, string | u
   };
 }
 
-function foregroundPid(): number | null {
-  const { user32 } = win();
-  const hwnd = user32.GetForegroundWindow();
-  if (!valid(hwnd)) return null;
-  const pid = new Uint32Array(1);
-  user32.GetWindowThreadProcessId(hwnd, ptr(pid));
-  return pid[0]!;
-}
-
 // Microsoft Learn `SetForegroundWindow`: the foreground lock ends when no input came for the lock time-out. x64 LASTINPUTINFO is `cbSize` and `dwTime`.
 const SPI_GETFOREGROUNDLOCKTIMEOUT = 0x2000;
 function foregroundLock(): { idleMs: number; lockTimeoutMs: number } {
@@ -725,19 +716,23 @@ ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $s
           const ready = fixtureDir(`native-ready-${variant}`);
           wb(repoOf(fixture), ["config", "mergetool.window.cmd", `${PROBE_VARIABLE}=tool '${slash(tool)}' '${slash(import.meta.path)}' '${slash(ready)}' "$MERGED"`]);
           // plan.md D14: the user starts the tool from the Arbareto window, so the starting process holds the foreground.
-          const focused = noFocus === null && (await uiaCode(() => use(find(shell.pid, SHELL_BUTTON, MAX_WAIT_MS), focus))) === "ok" && (await uiaCode(() => waitFocus(shell.pid, SHELL_BUTTON, MAX_WAIT_MS))) === "ok";
+          const focusCall = noFocus === null ? await uiaCode(() => use(find(shell.pid, SHELL_BUTTON, MAX_WAIT_MS), focus)) : null;
+          const focusWait = focusCall === "ok" ? await uiaCode(() => waitFocus(shell.pid, SHELL_BUTTON, MAX_WAIT_MS)) : null;
+          const focused = focusWait === "ok";
+          const noForeground = focusWait === "TIMEOUT" ? foregroundSkip(shell.pid) : null;
           const lock = foregroundLock();
           shell.send({ cmd: "start", allow: variant === "allow", git: GIT!, cwd: fixture.repo, args: MERGETOOL_ARGS });
           const started = await shell.reply<{ pid: number; foreground: boolean; allowed: boolean | null }>(MAX_WAIT_MS);
           const facts = await waitReady(ready);
           shell.send({ cmd: "pids" });
           const job = await shell.reply<{ members: { pid: number; created: string | null }[]; gitRunning: boolean; gitExit: number }>(MAX_WAIT_MS);
-          if (facts === null) throw new Error(`the fixture tool did not start within ${TOOL_READY_MS} ms; Git running ${job.gitRunning}, exit ${job.gitExit}`);
+          const names = new Map(processRecords().map((r) => [r.pid, r.name]));
+          if (facts === null) throw new Error(`the fixture tool did not start within ${TOOL_READY_MS} ms; Git running ${job.gitRunning}, exit ${job.gitExit}; Job members ${job.members.map((m) => names.get(m.pid) ?? `pid ${m.pid}`).join(", ") || "none"}`);
           tools.push({ pid: facts.pid, name: TOOL_NAME, created: processCreationTime(facts.pid) });
           const owner = foregroundPid();
-          const names = new Map(processRecords().map((r) => [r.pid, r.name]));
           const later = owner === null ? null : (names.get(owner) ?? `pid ${owner}`);
           if (noFocus !== null) unverified(`N6.${variant}`, noFocus);
+          else if (noForeground !== null) unverified(`N6.${variant}`, noForeground);
           else if (!started.foreground) unverified(`N6.${variant}`, `missing capability foreground: the probe shell was not the foreground window at the start (UIA focus ${focused})`);
           else observe(`N6.${variant}`, { foreground: true }, { foreground: facts.foreground, foregroundOwnerAtReady: later, allowed: started.allowed, ...lock }, facts.foreground);
           const members = job.members.map((m) => ({ pid: m.pid, name: names.get(m.pid) ?? null, created: m.created === null ? null : BigInt(m.created) }));
@@ -781,11 +776,22 @@ ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $s
         const owned = startInstalledApp(app!, appEnv(fixtureDir("native-app"), false));
         try {
           // As in uia.test.ts: the focus brings the app to the foreground, so its task dialog opens active.
-          await use(find(owned.pid, "Select Git", MAX_WAIT_MS), async (button) => {
+          const noForeground = await use(find(owned.pid, "Select Git", MAX_WAIT_MS), async (button) => {
             focus(button);
-            await waitFocus(owned.pid, "Select Git", MAX_WAIT_MS);
+            try {
+              await waitFocus(owned.pid, "Select Git", MAX_WAIT_MS);
+            } catch (error) {
+              const skip = error instanceof UiaError && error.code === "TIMEOUT" ? foregroundSkip(owned.pid) : null;
+              if (skip === null) throw error;
+              return skip;
+            }
             invoke(button);
+            return null;
           });
+          if (noForeground !== null) {
+            unverified("N2.app-menu-by-uia-show-context-menu", noForeground);
+            return;
+          }
           await use(find(owned.pid, "Use this Git", MAX_WAIT_MS), invoke);
           await use(find(owned.pid, OPEN_FOLDER, MAX_WAIT_MS), invoke);
           // The OK button of the Windows folder picker. The first element named "Folder:" is not the Edit box, so a window message sets the box text.

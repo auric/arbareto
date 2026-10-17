@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { posix, win32 } from "node:path";
+import { hasDosDrivePrefix } from "./drive-prefix";
 import { foldAscii } from "./fold-ascii";
 
 // Contract §6 "Channel frames": the native path rules. Shared code takes every platform path rule from this module.
@@ -13,8 +14,7 @@ export const PATH_RULES = {
     isAbsolute: (path: string) => /^(?:[A-Za-z]:[\\/]|[\\/]{2}(?![.?][\\/])[^\\/]+[\\/][^\\/])/.test(path),
     // Contract §7 "Inside and outside". The same page: a UNC path and the `\\.\` and `\\?\` device paths start with two separators.
     isUncOrDevice: (path: string) => /^[\\/]{2}/.test(path),
-    // Git for Windows compat/win32/path-utils.h `has_dos_drive_prefix`: an ASCII letter and a colon.
-    hasDrivePrefix: (path: string) => /^[A-Za-z]:/.test(path),
+    hasDrivePrefix: hasDosDrivePrefix,
     isGitExecutable: (path: string) => /[\\/]git\.exe$/i.test(path),
     // Contract §6 "File facts". Microsoft Learn "Naming Files, Paths, and Namespaces", "Naming Conventions": no character of `<>:"/\|?*`,
     // no U+0000 to U+001F, and no trailing space or period. So `.` and `..` fail too.

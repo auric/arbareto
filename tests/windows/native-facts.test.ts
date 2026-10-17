@@ -10,7 +10,7 @@ import { CFunction, dlopen, FFIType, ptr, read, type Pointer } from "bun:ffi";
 import { readdirSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs";
 import { release } from "node:os";
 import { join } from "node:path";
-import { processCreationTime } from "../git/win32";
+import { processCreationTime, terminateRecorded } from "../git/win32";
 import { close, find, focus, inputDesktopSkip, invoke, MAX_WAIT_MS, UiaError, waitFocus, type Element } from "./uia";
 
 const PROBE_VARIABLE = "ARBARETO_NATIVE_PROBE";
@@ -317,7 +317,9 @@ async function shellProbe(): Promise<never> {
       if (run === null) throw new Error("no run is open");
       const code = new Uint32Array(1);
       if (!kernel32.GetExitCodeProcess(run.process, ptr(code))) fail("GetExitCodeProcess");
-      reply({ pids: jobPids(run.job), gitRunning: code[0] === STILL_ACTIVE, gitExit: code[0] });
+      // The creation time at the Job query binds each PID to its process. A PID that Windows reuses later gets a newer time.
+      const members = jobPids(run.job).map((pid) => ({ pid, created: processCreationTime(pid)?.toString() ?? null }));
+      reply({ members, gitRunning: code[0] === STILL_ACTIVE, gitExit: code[0] });
     } else {
       // The close of the last Job handle ends every process in the Job (kill-on-close), as the shell Cancel does.
       if (run !== null) {
@@ -380,6 +382,7 @@ const { printOrigin } = await import("../origin");
 const { GIT } = await import("../git/git-binary");
 const { fixtureDir, fixtureEnv, useFixtureRoot } = await import("../git/fixture-root");
 const { buildWorkbench, repoOf, wb } = await import("../git/workbench-fixtures");
+const { obs, observationLine } = await import("../git/fact-runner");
 const { appEnv, findInstalledApp, processRecords, startInstalledApp, WAIT_MS, waitExit } = await import("./installed-app");
 
 for (const helper of ["./uia.ts", "./installed-app.ts", "../git/win32.ts", "../git/workbench-fixtures.ts"]) printOrigin(helper, import.meta.dir);
@@ -390,12 +393,7 @@ const TOOL_READY_MS = 60_000;
 const POLL_MS = 20;
 const OS = release();
 
-const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
-// JSON without spaces, so each `key=value` field of an OBSERVATION line is one token.
-const token = (v: unknown) => JSON.stringify(v ?? null).replaceAll(" ", "\\u0020");
-function observe(fact: string, expected: unknown, observed: unknown, match = same(expected, observed)): void {
-  console.log(`OBSERVATION ${TASK}: ${fact} expected=${token(expected)} observed=${token(observed)} match=${match} os=${OS}`);
-}
+const observe = (fact: string, expected: unknown, observed: unknown, match?: boolean) => console.log(observationLine(TASK, obs(fact, expected, observed, match), `os=${OS}`));
 const unverified = (fact: string, reason: string) => console.log(`OBSERVATION ${TASK}: unverified ${fact}: ${reason}`);
 
 async function use<T>(element: Promise<Element>, body: (element: Element) => T | Promise<T>): Promise<T> {
@@ -706,6 +704,8 @@ ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $s
     TEST_TIMEOUT_MS,
   );
 
+  if (GIT === null) for (const fact of ["N3.tool-in-job", "N4.cancel-ends-tree", "N6.plain", "N6.allow"]) unverified(fact, "missing capability git: Git executable absent");
+
   test.skipIf(GIT === null)(
     "N3, N4, N6: the fixture merge tool runs in the operation Job, Cancel ends the tree, and the tool window foreground",
     async () => {
@@ -731,7 +731,7 @@ ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $s
           const started = await shell.reply<{ pid: number; foreground: boolean; allowed: boolean | null }>(MAX_WAIT_MS);
           const facts = await waitReady(ready);
           shell.send({ cmd: "pids" });
-          const job = await shell.reply<{ pids: number[]; gitRunning: boolean; gitExit: number }>(MAX_WAIT_MS);
+          const job = await shell.reply<{ members: { pid: number; created: string | null }[]; gitRunning: boolean; gitExit: number }>(MAX_WAIT_MS);
           if (facts === null) throw new Error(`the fixture tool did not start within ${TOOL_READY_MS} ms; Git running ${job.gitRunning}, exit ${job.gitExit}`);
           tools.push({ pid: facts.pid, name: TOOL_NAME, created: processCreationTime(facts.pid) });
           const owner = foregroundPid();
@@ -740,12 +740,12 @@ ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $s
           if (noFocus !== null) unverified(`N6.${variant}`, noFocus);
           else if (!started.foreground) unverified(`N6.${variant}`, `missing capability foreground: the probe shell was not the foreground window at the start (UIA focus ${focused})`);
           else observe(`N6.${variant}`, { foreground: true }, { foreground: facts.foreground, foregroundOwnerAtReady: later, allowed: started.allowed, ...lock }, facts.foreground);
-          const members = job.pids.map((pid) => ({ pid, name: names.get(pid) ?? null, created: processCreationTime(pid) }));
+          const members = job.members.map((m) => ({ pid: m.pid, name: names.get(m.pid) ?? null, created: m.created === null ? null : BigInt(m.created) }));
           shell.send({ cmd: "cancel" });
           await shell.reply(MAX_WAIT_MS);
           const left = await waitEnded(members);
           if (variant === "plain") {
-            observe("N3.tool-in-job", true, job.pids.includes(facts.pid));
+            observe("N3.tool-in-job", true, members.some((m) => m.pid === facts.pid));
             const listed = [...new Set(members.map((m) => m.name))].sort();
             const required = ["git.exe", "sh.exe", TOOL_NAME];
             observe("N4.cancel-ends-tree", { contains: required, remaining: [] }, { names: listed, remaining: left.map((m) => m.name) }, left.length === 0 && required.every((n) => listed.includes(n)));
@@ -754,7 +754,11 @@ ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $s
       } finally {
         await shell.stop();
         // The fixture root holds the tool image, so its removal needs every tool process gone.
-        for (const m of await waitEnded(tools)) console.log(`LEFT ${TASK}: fixture tool PID ${m.pid} still runs`);
+        for (const m of await waitEnded(tools)) {
+          console.log(`LEFT ${TASK}: fixture tool PID ${m.pid} still runs`);
+          terminateRecorded(m.pid, m.created!);
+        }
+        expect(running(tools)).toEqual([]);
       }
     },
     TEST_TIMEOUT_MS * 2,
@@ -764,7 +768,10 @@ ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $s
     const found = findInstalledApp();
     const app = "app" in found ? found.app : null;
     const reason = app === null ? (found as { skip: string }).skip : GIT === null ? "Git executable absent" : noFocus;
-    if (reason !== null) console.log(`SKIP installed app: ${reason}`);
+    if (reason !== null) {
+      console.log(`SKIP installed app: ${reason}`);
+      unverified("N2.app-menu-by-uia-show-context-menu", reason);
+    }
     unverified("N2.right-click-and-shift-f10", "missing capability live-input: a right-click and Shift+F10 need pointer and keyboard input");
 
     test.skipIf(reason !== null)(

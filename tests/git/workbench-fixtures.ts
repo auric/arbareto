@@ -6,7 +6,7 @@
 
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { acquireLock, builderDigest, PERF_CACHE_ROOT } from "../windows/perf-fixtures";
+import { acquireLock, builderDigest, PERF_CACHE_ROOT, perfReuseState, type PerfReuseState } from "../windows/perf-fixtures";
 import { FIXED_TIMESTAMPS, FIXTURE_GLOBAL_CONFIG, FIXTURE_HOME, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedPath, removeTree } from "./fixture-root";
 import { fiCommit, put } from "./fixtures";
 import { sha256 } from "./git-oracle";
@@ -388,7 +388,18 @@ export function untrackedFixture(git: string): WbFixture {
   const lock = ownedPath(PERF_CACHE_ROOT, `${id}.lock`);
   const temp = ownedPath(PERF_CACHE_ROOT, `${id}.tmp`);
   const manifestPath = join(folder, "manifest.json");
-  const current = () => existsSync(manifestPath) && (JSON.parse(readFileSync(manifestPath, "utf8")) as { key: string }).key === key;
+  const repo = join(folder, "repo");
+  // As `ensurePerfFixture`: reuse needs the key and the recorded reuse state. A changed cache file gives a new build.
+  const current = () => {
+    if (!existsSync(manifestPath)) return false;
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { key: string; reuse?: PerfReuseState };
+    if (manifest.key !== key || manifest.reuse === undefined || !existsSync(repo)) return false;
+    try {
+      return JSON.stringify(perfReuseState(git, repo)) === JSON.stringify(manifest.reuse);
+    } catch {
+      return false;
+    }
+  };
   acquireLock(lock);
   try {
     writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, start: new Date().toISOString() }));
@@ -404,12 +415,11 @@ export function untrackedFixture(git: string): WbFixture {
         for (let i = 0; i < per; i++) writeFileSync(join(dir, `f${String(i).padStart(4, "0")}.txt`), "x\n");
       }
       const config = join(r.dir, ".git", "config");
-      writeFileSync(join(temp, "manifest.json"), JSON.stringify({ key, oids: h.oids, refs: h.refs, local: sha256(readFileSync(config)) }));
+      writeFileSync(join(temp, "manifest.json"), JSON.stringify({ key, oids: h.oids, refs: h.refs, local: sha256(readFileSync(config)), reuse: perfReuseState(git, r.dir) }));
       if (existsSync(folder)) removeTree(folder);
       renameSync(temp, folder);
     }
     const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { oids: Record<string, string>; refs: Record<string, string>; local: string };
-    const repo = join(folder, "repo");
     return { name: "untracked-100k", git, root: folder, repo, env: {}, oids: manifest.oids, refs: manifest.refs, configs: { local: join(repo, ".git", "config") }, digests: { local: manifest.local } };
   } finally {
     removeTree(lock);

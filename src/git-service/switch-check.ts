@@ -79,7 +79,9 @@ export function untrackedOf(entries: readonly string[], stdout: Uint8Array, obje
 }
 
 // Research.md R21 F1: the read has no `--literal-pathspecs`. Each path goes on stdin with NUL.
-export function ignoreRead(counted: readonly string[]): { args: string[]; input: Uint8Array } {
+// Without that flag, Git can read a leading `:` as pathspec magic. Plan D3 refuses such a path with reason `path` until T081 shows a literal read.
+export function ignoreRead(counted: readonly string[]): { args: string[]; input: Uint8Array } | "path" {
+  if (counted.some((path) => path.startsWith(":"))) return "path";
   return { args: checkIgnoreArgs(), input: Buffer.from(counted.map((path) => `${path}\0`).join(""), "latin1") };
 }
 

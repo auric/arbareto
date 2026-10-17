@@ -13,7 +13,8 @@ type Category = ChangeEntry["category"];
 export const HELP_LINE = "Arrow keys show a file. Space stages or unstages it.";
 export const BUSY_REASON = "A file action is running. Wait for its result.";
 
-export type FileDirection = "stage" | "unstage";
+/** Feature 003 FR-052: `resolve` is Mark resolved of a Conflicted entry. */
+export type FileDirection = "stage" | "unstage" | "resolve";
 export type FileAction = { direction: FileDirection; comparisonId: string; entryId: string };
 /** The T202 `runFileAction` result. `text` of a refusal is the full status bar sentence. */
 export type FileActionResult = { state: "succeeded" } | { state: "failed" } | { state: "refused"; text: string };
@@ -120,7 +121,7 @@ export function ChangesPane(props: ChangesPaneProps) {
     running.current = true;
     let result: FileActionResult;
     try {
-      result = await live.current.onFileAction({ direction: entry.category === "staged" ? "unstage" : "stage", comparisonId, entryId: entry.entryId });
+      result = await live.current.onFileAction({ direction: entry.category === "staged" ? "unstage" : entry.category === "conflicted" ? "resolve" : "stage", comparisonId, entryId: entry.entryId });
     } finally {
       running.current = false;
     }

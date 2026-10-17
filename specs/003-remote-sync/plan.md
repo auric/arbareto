@@ -361,24 +361,47 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - A result without `exists` and `empty`: "The folder state is unknown."
 - Mark resolved shows "Marking resolved" while it runs and "File marked resolved" after `succeeded`. A running `sync` shows the FR-002 step text.
 - The stage bar button of a Conflicted entry with the decision `resolve` reads "Mark resolved (Space)", and Space runs it.
+  - The status area heading is "Mark resolved details". The refusal sentence is "Mark resolved is unavailable: <reason text>". The `missing` reason text is "The working file of this conflicted path is missing."
+- Pull mode row (FR-027, FR-057): a notice row after `integration: mode-required`.
+  - Text: "The branch and its upstream have diverged. Choose Rebase or Merge for this pull. Arbareto does not change the Git configuration."
+  - Buttons "Rebase", "Merge", and "Cancel". Rebase gets focus only when the focused element is no input, textarea, or contenteditable element. Escape and Cancel remove the row and send nothing. A choice sends `reviewSync {action: "integrate", mode}`, and no confirmation follows.
+  - The status bar shows "Pull fetched. Choose Rebase or Merge for this pull."
+  - A succeeded pull or integrate with `modeSource` shows "Pull completed. <source> selected the mode." The sources are `payload` "The choice for this pull", `branch` "branch.<branch>.rebase", `pull` "pull.rebase", and `pull-ff` "pull.ff". A null `modeSource` shows "Pull completed".
+- Conflict row (FR-030, FR-042 to FR-045): the row replaces the blocking row for `merging` and `rebasing`. It sits after the Connect in a terminal row (tasks.md exception 2026-10-17).
+  - It shows the 001 first sentence without "finish it outside Arbareto".
+  - While `merging` or `rebasing`, the toolbar and the hunk and file controls give the reason "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band." Every other state that is not `normal` keeps the 001 reason "Arbareto blocks changes until the Git operation ends outside Arbareto. Then select Refresh (F5)."
+  - Buttons "Abort…", "Continue", and "Skip…" for `rebasing` only. The Skip tooltip reads "Skip leaves the current commit out of the rebased branch."
+  - With unmerged entries, the Continue reason is "Continue is unavailable while 1 file is unmerged. Mark it resolved first." or "Continue is unavailable while <n> files are unmerged. Mark them resolved first."
+  - A refused review hides the refused action until the operation state or HEAD changes.
+  - `rebase-exec` hides Continue and Skip. The row shows the remedy text and the command with Copy command. Without a remedy, the row shows "Continue and Skip are unavailable: rebase-exec".
+  - `no-skip-commit` shows "Skip is unavailable: Git names no commit at this rebase stop."
+  - `unknown-operation` shows the 001 `unknown` row text and no action.
+  - Another reason shows "<action name> is unavailable: <reason>".
+  - Abort confirmation: the title "Abort the merge?" or "Abort the rebase?". The text "Git returns the branch, the index, and the working files to their state before the merge." or "… before the rebase." A merge adds "Git can fail to restore uncommitted changes from before the merge." Buttons "Abort merge" or "Abort rebase", and "Cancel".
+  - Skip confirmation: the title "Skip this commit?". The text "Skip leaves commit <short ID> out of the rebased branch." Then the short ID and the subject, or the ID only for a null subject. Then "Git discards the index and working-file changes of this step." Buttons "Skip commit" and "Cancel".
+  - An abort review without `plan.operationState`, or a skip review without `plan.skippedCommit`, starts nothing. The status bar shows "<action name> did not start: the review is incomplete."
 - The 001 repository menu (001 plan.md "Compact token system") gains "Clone…" after "Recent repositories" and "Settings…" after "Select Git".
 - Clone panel (FR-046 to FR-050, FR-054): a non-modal panel in the main area. "Clone…" in the start view and in the repository menu opens it. Escape and "Close clone panel" close it.
   - Heading "Clone repository". Fields "Remote URL" and "Destination folder". Button "Clone".
   - Only under plink: the checkbox "Pick a PuTTY key file at the start" with the note "Arbareto does not save this key file."
   - Unavailable reasons: "Enter the remote URL.", "Enter the destination folder.", and "The clone settings are still loading…".
   - The separator of `suggestCloneName` is `\`, because the Windows shell checks a destination by the 001 Windows rules or the §11 WSL route (contract Δ3 `clone`). A macOS or Linux shell must state its own separator.
-  - A failed `readSyncSettings` shows "The clone settings did not load: <code>." The suggestion then has no parent, and the panel offers no key file and no Connect in a terminal.
+  - A failed `readSyncSettings` shows "The clone settings did not load: <code>." The suggestion then has no parent, and the panel offers no key file. Connect in a terminal follows only the `connectTarget` field of the clone result (data-model §11).
   - A running clone shows "Cloning into <folder>…" with Cancel and the percentage. `<folder>` is the destination of the start. After Cancel, "Cancel requested" shows.
+  - Until the first progress event gives the operation ID, Cancel is unavailable with the reason "Cancel is available after the clone starts."
+  - While a clone runs, Escape and "Close clone panel" do not close the panel. The line "The clone is running. Select Cancel to stop it, then close the panel." shows.
   - The end line is "Clone canceled", "Clone did not complete: <code>", "Clone did not start: <code>", or "State unknown", as the 001 status texts.
   - `DESTINATION_NOT_EMPTY` by reason: `not-empty` "The destination folder is not empty: <path>", `file` "The destination is a file: <path>", `other` "The destination is not a folder: <path>".
   - `PUTTY_UNAVAILABLE`: "<program> is not available: <path> (<reason>)". The program names are "plink", "Pageant", and "PuTTYgen".
   - The folder state text follows, except after `DESTINATION_NOT_EMPTY`. Then the output tail and the remedy with Copy command follow.
-  - The URL shows only in its field. No other panel text holds the URL.
+  - The URL shows in its field. User information of the URL never shows. The remedy and the output tail can name the URL without its user information (contract Δ3 "Remedies").
 - Settings panel (FR-032 to FR-037): a non-modal panel in the main area. "Settings…" in the repository menu opens it. Escape and "Close settings" close it. Heading "Settings". Feature 004 moves its content into the Settings view (004 O-7).
   - While `readSyncSettings` runs: "The settings are still loading…". A failed read: "The settings did not load: <code>." A failed change: "The setting did not change: <code>.", or the `PUTTY_UNAVAILABLE` text.
   - Group "SSH client" with "Git's own configuration" and "PuTTY (plink)". The note reads "PuTTY applies only to Windows repositories. A WSL repository uses the SSH setup of its distro."
   - "PuTTY (plink)" without a plink program opens the plink picker first. A canceled picker keeps the setting.
-  - "Plink program": the path or "Not set", with "Choose plink…" and "Clear plink". Each `programs` entry shows "<program>: <path>", plus "Not available" when `present` is false.
+  - "Plink program": the path or "Not set", with "Choose plink…" and "Clear plink". While the client is "PuTTY (plink)", "Clear plink" is unavailable with the reason "Select Git's own configuration before you clear the plink program." (FR-033).
+  - An arrow key in the SSH client group never opens the plink picker. Only a click or Space on "PuTTY (plink)", or "Choose plink…", opens it.
+  - Each `programs` entry shows "<program>: <path>", plus "Not available" when `present` is false.
   - "Generate or convert a key". Without a plink program, its reason is "Choose the plink program first." After success, "PuTTYgen started." shows.
   - "Key files for this repository": one row for each remote with a saved key file or a proposal. A row shows the remote, the path or "No key file", "Choose key file for <remote>…", and "Clear key file for <remote>".
   - A proposal shows "Git Extensions setting: <path>". It comes from the last `readTrust` entry `remote.<name>.puttykeyfile` with a value, because the last value of a single-valued key wins (git-config(1)).

@@ -94,7 +94,7 @@ describe("file row path", () => {
 // plan.md "Keyboard and focus", Stage key row. The harness owns the selection, as the workbench does.
 // `onSelect` selects an entry and starts its comparison read, as Enter does. The harness then holds `comparisonId: null` until the test delivers the comparison.
 // `onReason` feeds the T145 reason line. `onStatus` feeds the second live element of the status bar. `toolbarSuccess` takes a new object after each T202 button success.
-type Direction = "stage" | "unstage";
+type Direction = "stage" | "unstage" | "resolve";
 type FileAction = { direction: Direction; comparisonId: string };
 type FileActionResult = { state: "succeeded" } | { state: "failed" } | { state: "refused"; text: string };
 type Selection = { entryId: string; comparisonId: string | null } | null;
@@ -354,9 +354,10 @@ describe("Stage key", () => {
     expect(document.activeElement).toBe(option(unstagedA));
   });
 
-  test("a Conflicted entry gives a refusal", async () => {
+  test("a Conflicted entry sends direction resolve and shows the refusal", async () => {
     const pane = await spaceWith(conflicted, { state: "refused", text: REFUSAL });
     expect(pane.actions).toHaveLength(1);
+    expect(pane.actions[0]).toMatchObject({ direction: "resolve" });
     expect(pane.statuses).toContain(REFUSAL);
     expect(pane.reads).toEqual([]);
     expect(document.activeElement).toBe(option(conflicted));

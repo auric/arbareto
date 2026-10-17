@@ -10,7 +10,7 @@ import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
 import { ChangesPane as ChangesList, type FileAction, type FileActionResult } from "../changes/ChangesPane";
 import { ComparisonView as Comparison, resultOf, showsDiff } from "../changes/ComparisonView";
 import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
-import { BLOCKED_TEXT, HunkControls, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
+import { BLOCKED_TEXT, HunkControls, operationBlock, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
 import { CommitTray } from "../commit/CommitTray";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
@@ -65,13 +65,15 @@ import { OperationStatus, SYNC_NAMES, type StatusOperation, type StatusRegionHan
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
 import { passedAcceptance, SubmoduleReview, type SubmoduleReviewValue } from "../submodules/SubmoduleReview";
 import { isTrustReport, SaveFailedNotice, TrustDialog, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
-import { blockingText, NoticeBand } from "./NoticeBand";
+import { blockingText, hasRecoveryRow, NoticeBand } from "./NoticeBand";
 import { MENU_CONTENT, MenuKey, RepositoryMenu } from "./RepositoryMenu";
 import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
 import { folderName, RepositorySwitcher } from "./RepositorySwitcher";
 import { hasMarkers, RecoveryMarkers } from "../boot/BootView";
 import { COUNTS_TOOLTIP, isTrackingList, NO_BRANCH, trackingLabels, type TrackingEntry, type TrackLabel } from "../state/tracking";
+import { ConflictConfirm, ConflictRow } from "../sync/ConflictActions";
 import { ForcePushConfirm } from "../sync/ForcePushConfirm";
+import { PullModeChoice } from "../sync/PullModeChoice";
 import { pullAction, type DefaultPullAction } from "../sync/PullSplitButton";
 import { PushNoticeRow } from "../sync/PushNoticeRow";
 import { PushPanel } from "../sync/PushPanel";
@@ -328,7 +330,7 @@ export function ChangesPaneMount({ state, requests, profile, menuOpen, modalOpen
   });
   // The Space key acts only on the shown comparison that the pane names. Without a `Comparison`, no file-action decision exists.
   const onFileAction = async (action: FileAction): Promise<FileActionResult> => {
-    const label = action.direction === "unstage" ? "Unstage file" : "Stage file";
+    const label = action.direction === "unstage" ? "Unstage file" : action.direction === "resolve" ? "Mark resolved" : "Stage file";
     if (staging !== undefined && shown.entry !== null && shown.comparison?.comparisonId === action.comparisonId) return runFileAction(fileProps(staging, shown.comparison, shown.entry.category));
     return { state: "refused", text: `${label} is unavailable: ${noDecisionText(state)}` };
   };
@@ -604,6 +606,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     target: requests.target,
     repositoryId: state.repository?.repositoryId ?? null,
     headTarget: state.workspace === null ? undefined : state.workspace.head.state === "detached" ? null : state.workspace.head.target,
+    headOid: state.workspace === null ? undefined : state.workspace.head.state === "unborn" ? null : state.workspace.head.oid,
     onOperation: (op) => {
       setOperation(op);
       const response = op.response;
@@ -621,7 +624,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     },
   });
   const pushNoticeShown = sync.notice !== null;
-  const modalOpen = trust?.open === true || submoduleReview?.open === true || sync.confirm !== null;
+  const modalOpen = trust?.open === true || submoduleReview?.open === true || sync.confirm !== null || sync.conflictConfirm !== null;
   const switcher = useRef<HTMLDivElement>(null);
   const menubar = useRef<HTMLDivElement>(null);
   const beforeMenu = useRef<HTMLElement | null>(null);
@@ -1070,7 +1073,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // A read sent before the view opened can be older than the view, so it never shows the notice.
   const openedSeq = historyState.openedSeq;
   const refsNotice = refsChanged(historyState.view, state.refsSeq > openedSeq ? (state.refs?.refsDigest ?? null) : null, state.headRead !== null && state.headRead.seq > openedSeq ? state.headRead.head : null);
-  const bandRows = (blockingRow ? 1 : 0) + (submodules > 0 ? 1 : 0) + (refsNotice ? 1 : 0) + (pushNoticeShown ? 1 : 0);
+  const connectShown = connect !== null && connect.repositoryId === state.repository?.repositoryId;
+  const recoveryShown = recovery !== null && recovery.repositoryId === state.repository?.repositoryId && hasRecoveryRow(recovery.statement);
+  // plan.md "Overflow": the band reserves at most two rows and scrolls inside them. The conflict row replaces the blocking row.
+  const noticeRows = [blockingRow, submodules > 0, refsNotice, pushNoticeShown, sync.modeChoice, connectShown, recoveryShown].filter(Boolean).length;
+  const bandRows = workspace === null ? 0 : Math.min(noticeRows, 2);
   // plan.md "Icons": the Commit tooltip holds both counts, and Commit has no key.
   const commitLabel = `Commit: ${plural(working, "working change", "working changes")}, ${staged} staged`;
 
@@ -1104,7 +1111,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The states that block mutations (plan.md "Required visible states": Busy, State unknown, Conflicted/unfinished operation, Limited output).
   const running = operation !== null && operation.response === null;
   const loading = workspace === null || state.entries.length < workspace.entryCount;
-  const stateBlocked: Blocked = state.blocked ? "unknown" : workspace !== null && workspace.operationState !== "normal" ? "conflicted" : null;
+  const stateBlocked: Blocked = state.blocked ? "unknown" : workspace !== null ? operationBlock(workspace.operationState) : null;
   const blocked: Blocked = running ? (operation.kind === "applyFile" ? "busy" : "running") : stateBlocked;
   const blockedReason = blocked === null ? null : BLOCKED_TEXT[blocked];
   // The own request of the review dialog does not block Start update. A state block still does.
@@ -1119,7 +1126,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const currentHead = workspace?.head ?? null;
   const currentEntry = currentHead !== null && currentHead.state === "branch" ? (entries?.find((e) => e.current && `refs/heads/${e.name}` === currentHead.target && e.objectId === currentHead.oid) ?? null) : null;
   const currentLabel = currentEntry === null ? null : (labels.get(currentEntry.name) ?? null);
-  const reasons = syncReasons(currentHead, workspace?.operationState ?? null, currentEntry === null ? null : currentEntry.upstream === null ? "none" : "set", running ? BLOCKED_TEXT.running : state.blocked ? BLOCKED_TEXT.unknown : null);
+  // The reason that blocks every sync action: a running mutation or an unknown state.
+  const syncBlock = running ? BLOCKED_TEXT.running : state.blocked ? BLOCKED_TEXT.unknown : null;
+  const reasons = syncReasons(currentHead, workspace?.operationState ?? null, currentEntry === null ? null : currentEntry.upstream === null ? "none" : "set", syncBlock);
   const runSync = useRef<(control: "fetch" | "pull" | "push") => void>(() => {});
   runSync.current = (control) => {
     if (state.repository === null) return;
@@ -1535,8 +1544,23 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                     <PushNoticeRow notice={sync.notice} {...sync.noticeActions} reason={reasons.pullReason} fetchReason={reasons.fetchReason} bindControl={bindBandControl} />
                   ) : undefined
                 }
+                pullModeRow={sync.modeChoice ? <PullModeChoice onChoose={sync.chooseMode} onCancel={sync.cancelMode} reason={syncBlock} bindControl={bindBandControl} /> : undefined}
+                conflictRow={
+                  workspace.operationState === "merging" || workspace.operationState === "rebasing" ? (
+                    // A new operation state or HEAD is a new stop, so the row forgets the refusals of the last stop.
+                    <ConflictRow
+                      key={`${workspace.operationState}:${workspace.head.state === "unborn" ? "" : workspace.head.oid}`}
+                      operationState={workspace.operationState}
+                      conflicted={conflicted}
+                      reason={syncBlock}
+                      loading={loading}
+                      onAction={sync.conflictAction}
+                      bindControl={bindBandControl}
+                    />
+                  ) : undefined
+                }
                 connectRow={
-                  connect !== null && connect.repositoryId === state.repository?.repositoryId ? (
+                  connectShown ? (
                     <ConnectNoticeRow
                       name={connect.name}
                       connect={() => bridge.connectInTerminal({ repositoryId: connect.repositoryId }, { operationId: connect.operationId })}
@@ -1641,6 +1665,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         )}
         {sync.confirm === null || pushBranch === null ? null : (
           <ForcePushConfirm plan={sync.confirm.plan} branch={pushBranch} onConfirm={sync.confirmForce} onCancel={sync.cancelForce} />
+        )}
+        {sync.conflictConfirm === null ? null : (
+          <ConflictConfirm action={sync.conflictConfirm.action} plan={sync.conflictConfirm.plan} onConfirm={sync.confirmConflict} onCancel={sync.cancelConflict} />
         )}
         {submoduleReview === null ? null : (
           <SubmoduleReview

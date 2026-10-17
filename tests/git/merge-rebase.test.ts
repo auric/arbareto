@@ -4,13 +4,13 @@
 // T023: `reviewWorkbench` and `runWorkbench` with `merge` and `rebase` (contract Δ3, data-model §2 and §5, plan.md D5 and D6, FR-021 to FR-028, SC-005).
 // The oracle is Git's own command on a second build or a copy. The fixed fixture dates make the commit object IDs of both sides equal.
 
-import { expect, test } from "bun:test";
+import { expect } from "bun:test";
 import { MERGE_MESSAGE_BYTES } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { commit, compare, outcome, reviewOk, SUCCEEDED } from "./hunk-harness";
-import { fc, gitOut, gitPaths, gitRun, importStream, refMap, type GitHost } from "./remote-fixtures";
+import { fc, gitOut, gitPaths, gitRun, importStream, markers, refMap, type GitHost } from "./remote-fixtures";
 import { caseTest, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 import { ANY_EXIT, gitExe, hostFor, INTEGRATE_ENV, refreshIndex, register, repoShape, reviewed, subcommandOf, sync, TIMEOUT_MS, withSync } from "./sync-harness";
 import { buildWorkbench, type WbFixture, type WbFixtureName } from "./workbench-fixtures";
@@ -605,34 +605,98 @@ describeGit("merge and rebase (T023)", () => {
     }
   }, TIMEOUT_MS);
 
-  test("plan.md D6: the rebase status read counts porcelain v2 records, skips headers, a rename record takes two fields, and another field is malformed", async () => {
-    const { trackedRecords } = await import("../../src/git-service/merge-rebase");
-    const bytes = (text: string) => new TextEncoder().encode(text);
-    const one = `1 .M N... 100644 100644 100644 ${"a".repeat(40)} ${"a".repeat(40)} f.txt`;
-    const two = `2 R. N... 100644 100644 100644 ${"a".repeat(40)} ${"a".repeat(40)} R100 new.txt`;
-    const unmerged = `u UU N... 100644 100644 100644 100644 ${"a".repeat(40)} ${"b".repeat(40)} ${"c".repeat(40)} u.txt`;
-    expect([
-      trackedRecords(bytes("")),
-      trackedRecords(bytes(`${one}\0`)),
-      trackedRecords(bytes(`${two}\0old.txt\0${unmerged}\0`)),
-      // `status.showStash` adds this header to porcelain v2 (git-status(1) "Stash Information").
-      trackedRecords(bytes(`# stash 1\0`)),
-      trackedRecords(bytes(`# stash 1\0${one}\0`)),
-      trackedRecords(bytes(`${two}\0`)),
-      trackedRecords(bytes(`? untracked.txt\0`)),
-      trackedRecords(bytes(one)),
-    ]).toEqual([0, 1, 2, 0, 1, null, null, null]);
-  });
+  // ---- Configuration that the review cannot bind, and trust ----
 
-  // Blocked: the trust class `workbench` with the merge driver discovery comes with T033 and T034 (contract Δ7).
-  test.todo("plan.md D12: the merge driver canary runs only after approval (needs T033 and T034)", async () => {
-    const h = hostFor("t023-driver");
-    const [f] = pair("merge-driver", "driver");
-    await withSync("t023-driver", async (service) => {
-      const r = await register(service, f.repo);
-      const response = await reviewWb(service, r, MERGE("refs/heads/topic"));
-      expect(outcome(response)).toEqual({ state: "failed", code: "TRUST_REQUIRED" });
-      expect(h.read(`${f.root}/canaries/merge-driver.log`)).toBeNull();
+  caseTest(TASK, "plan.md D5: branch.<current>.mergeoptions with any value makes Merge and Squash unavailable with merge-options; Rebase stays available", SHELL, async () => {
+    const h = hostFor("t023-merge-options");
+    for (const value of ["--no-ff", ""]) {
+      const [f] = pair("merge-diverged", "merge-options", (w) => void gitRun(h, w.repo, ["config", "branch.main.mergeOptions", value]));
+      await withSync(`t023-merge-options-${builds}`, async (service) => {
+        const r = await register(service, f.repo);
+        for (const result of ["merge", "squash"] as const) {
+          const response = await reviewWb(service, r, MERGE("refs/heads/topic", { result }));
+          expect({ value, result, ...refusal(response), token: response.result?.workbenchToken }).toEqual({ value, result, ...unavailable("merge-options"), token: undefined });
+        }
+        expect(integrations(service)).toEqual([]);
+        expect((await tokenOf(service, r, REBASE("refs/heads/topic"))).workbenchToken).toBeDefined();
+      });
+    }
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "plan.md D5: Squash with merge.ff=false gives squash-no-ff before any process, because Git's own merge --squash refuses it with exit 128", SHELL, async () => {
+    const h = hostFor("t023-squash-no-ff");
+    const [app, git] = pair("merge-diverged", "squash-no-ff", (f) => void gitRun(h, f.repo, ["config", "merge.ff", "false"]));
+    await withSync("t023-squash-no-ff", async (service) => {
+      const r = await register(service, app.repo);
+      const response = await reviewWb(service, r, MERGE("refs/heads/topic", { result: "squash" }));
+      expect({ ...refusal(response), token: response.result?.workbenchToken }).toEqual({ ...unavailable("squash-no-ff"), token: undefined });
+      expect(integrations(service)).toEqual([]);
     });
-  });
+    expect(own(h, git.repo, ["merge", "--squash", "topic"], ANY_EXIT).exitCode).toBe(128);
+    expect(stateOf(h, app.repo)).toEqual(stateOf(h, git.repo));
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "plan.md D6: a rebase.autoStash, rebase.updateRefs, or rebase.rebaseMerges value that Git's own rebase stops on gives invalid-config before any process", SHELL, async () => {
+    const h = hostFor("t023-invalid-config");
+    for (const key of ["rebase.autoStash", "rebase.updateRefs", "rebase.rebaseMerges"]) {
+      const [app, git] = pair("rebase-mix", "invalid-config", (f) => void gitRun(h, f.repo, ["config", key, "maybe"]));
+      await withSync(`t023-invalid-config-${builds}`, async (service) => {
+        const r = await register(service, app.repo);
+        const response = await reviewWb(service, r, REBASE("refs/heads/up"));
+        expect({ key, ...refusal(response), token: response.result?.workbenchToken }).toEqual({ key, ...unavailable("invalid-config"), token: undefined });
+        expect(integrations(service)).toEqual([]);
+      });
+      expect({ key, exit: own(h, git.repo, ["rebase", "up"], ANY_EXIT).exitCode }).toEqual({ key, exit: 128 });
+      expect({ key, state: stateOf(h, app.repo) }).toEqual({ key, state: stateOf(h, git.repo) });
+    }
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "feature 003 plan.md D7: a git am stop (rebase-apply/applying) is no known operation, so merge and rebase give unknown-operation", SHELL, async () => {
+    const h = hostFor("t023-unknown");
+    const repo = conflictRepo(h, "am");
+    gitRun(h, repo, ["am", "--3way"], { input: Buffer.from(gitOut(h, repo, ["format-patch", "-1", "--stdout", "up"])), allowExit: ANY_EXIT });
+    expect(markers(h, repo)).toEqual(["rebase-apply", "rebase-apply/applying"]);
+    await withSync("t023-unknown", async (service) => {
+      const r = await register(service, repo);
+      for (const payload of [MERGE("refs/heads/up"), REBASE("refs/heads/up")]) {
+        const response = await reviewWb(service, r, payload);
+        expect({ action: payload.action, ...refusal(response), token: response.result?.workbenchToken }).toEqual({ action: payload.action, ...unavailable("unknown-operation"), token: undefined });
+      }
+      expect(integrations(service)).toEqual([]);
+    });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "git-status(1): with status.showStash=true the `# stash` header is no tracked change, so a clean tree rebases and a changed tree gives dirty-tree", SHELL, async () => {
+    const h = hostFor("t023-show-stash");
+    const [f] = pair("rebase-mix", "show-stash", (w) => {
+      gitRun(h, w.repo, ["config", "status.showStash", "true"]);
+      h.write(`${w.repo}/f.txt`, "stashed\n");
+      gitRun(h, w.repo, ["stash", "push", "-q"]);
+    });
+    expect(gitRun(h, f.repo, ["status", "--porcelain=v2", "-z", "--untracked-files=no", "--ignore-submodules=all"]).stdout.toString("latin1")).toBe("# stash 1\0");
+    await withSync("t023-show-stash", async (service) => {
+      const r = await register(service, f.repo);
+      expect((await tokenOf(service, r, REBASE("refs/heads/up"))).workbenchToken).toBeDefined();
+      h.write(`${f.repo}/f.txt`, "changed\n");
+      expect(refusal(await reviewWb(service, r, REBASE("refs/heads/up")))).toEqual(unavailable("dirty-tree"));
+    });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "plan.md D12 and contract Δ7: a repository merge driver needs approval before the review, and after approval it runs as in Git's own merge", SHELL, async () => {
+    const h = hostFor("t023-driver");
+    const [app, git] = pair("merge-driver", "driver");
+    const log = `${app.root}/canaries/merge-driver.log`;
+    await withSync("t023-driver", async (service) => {
+      const r = await register(service, app.repo);
+      const refused = await reviewWb(service, r, MERGE("refs/heads/topic"));
+      expect({ ...outcome(refused), token: refused.result?.workbenchToken }).toEqual({ state: "failed", code: "TRUST_REQUIRED", token: undefined });
+      expect({ calls: integrations(service), log: h.read(log) }).toEqual({ calls: [], log: null });
+      const trust = await service.readTrust(r.repositoryId);
+      expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+      expect(outcome(await reviewAndRun(service, r, MERGE("refs/heads/topic")))).toEqual(SUCCEEDED);
+    });
+    own(h, git.repo, ["merge", "--no-edit", "topic"]);
+    const runs = (h.read(log)?.toString("utf8") ?? "").split("\n").filter((l) => l !== "").length;
+    expect({ runs, state: stateOf(h, app.repo) }).toEqual({ runs: 1, state: stateOf(h, git.repo) });
+  }, TIMEOUT_MS);
 });

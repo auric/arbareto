@@ -117,6 +117,9 @@ async function integrated(q: ObserveContext, d: Extract<PullDecision, { kind: "f
   return "value" in parents ? { value: parents.value.length > 1 && parents.value.includes(u) } : parents;
 }
 
+// The `-m` item of a preview. Git's own merge writes the `fmt-merge-msg` text without its final LF into MERGE_MSG, and `-m` keeps a final LF.
+export const previewItem = (preview: string): string => (preview.endsWith("\n") ? preview.slice(0, -1) : preview);
+
 // O-3 and feature 004 plan.md D5: the `fmt-merge-msg` preview of the line that `git merge <short name>` builds (builtin/merge.c `merge_name`).
 // `limited`: the preview holds more than `maxBytes` bytes.
 export async function mergePreview(ctx: ObserveContext, ref: string, oid: string, maxBytes: number): Promise<Fact<string> | { limited: true }> {
@@ -128,17 +131,18 @@ export async function mergePreview(ctx: ObserveContext, ref: string, oid: string
   if (step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
   try {
     const text = exact.decode(out.take());
-    return text === "" || text.includes("\0") ? { code: "MALFORMED_GIT_OUTPUT" } : { value: text };
+    return previewItem(text) === "" || text.includes("\0") ? { code: "MALFORMED_GIT_OUTPUT" } : { value: text };
   } catch {
     return { code: "MALFORMED_GIT_OUTPUT" };
   }
 }
 
-// Null: the upstream is no remote-tracking ref, so D5 does not apply and Git writes its own default message.
+// The `-m` item. Null: the upstream is no remote-tracking ref, so D5 does not apply and Git writes its own default message.
 async function mergeMessage(ctx: ObserveContext, ref: string, oid: string): Promise<Fact<string | null>> {
   if (!ref.startsWith(REMOTES)) return { value: null };
   const preview = await mergePreview(ctx, ref, oid, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
-  return "limited" in preview ? { code: "GIT_FAILED" } : preview;
+  if ("limited" in preview) return { code: "GIT_FAILED" };
+  return "value" in preview ? { value: previewItem(preview.value) } : preview;
 }
 
 // The integrate step of a decision (plan.md D6 step 5).

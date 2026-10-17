@@ -68,8 +68,14 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
   - `create-branch`: the name `@` gives reason `reserved-name` before any Git process (plan D4); `check-ref-format --branch <name>`; `show-ref --exists refs/heads/<name>`.
   - `rename-branch`: the same for `<new>`. An old name `@` passes (F29).
   - `delete-branch`: `readWorktrees`; `rev-list --count <oid> --not --exclude=<name> --branches --tags --remotes`; `reflog exists HEAD`, then `log -g -z --no-show-signature --format=%H -n 10000 HEAD --`. `--no-show-signature` stops `log.showSignature` from running the signing program in a read (git-config(1)), as in the 001 §8 "Commit attribution read".
-  - `merge`: `rev-list --left-right --count HEAD...<oid>`; `merge-base --is-ancestor HEAD <oid>` (exit 0 or 1; another exit gives `GIT_FAILED`); the effective `merge.ff`; the message preview `fmt-merge-msg` with one stdin line that holds the short display name (plan D5). A non-zero `fmt-merge-msg` exit gives `GIT_FAILED`. For `result: "merge"`, a preview or a `message` above `MERGE_MESSAGE_BYTES` gives reason `message-size`. So does a merge command line above the 001 §6 bound, measured with the bound message by the 001 §6 measure (`git.exe` or `wsl.exe` line).
+  - `merge`: `rev-list --left-right --count HEAD...<oid>`; `merge-base --is-ancestor HEAD <oid>` (exit 0 or 1; another exit gives `GIT_FAILED`); the effective `merge.ff`; the message preview `fmt-merge-msg` with one stdin line that holds the short display name (plan D5). A non-zero `fmt-merge-msg` exit gives `GIT_FAILED`. For `result: "merge"`, a preview above `MERGE_MESSAGE_BYTES` gives reason `message-size`. So does a merge command line above the 001 §6 bound, measured with the bound message by the 001 §6 measure (`git.exe` or `wsl.exe` line). A longer `message` fails the request schema with `INVALID_REQUEST`, so it never reaches these reads.
+    - Before these reads, a `branch.<current>.mergeoptions` entry with any value gives reason `merge-options`. Git parses it as merge options (builtin/merge.c `git_merge_config`), and the review cannot bind them. The service never overrides it with `-c`.
+    - `result: "squash"` with the effective `merge.ff` false gives reason `squash-no-ff`. That value sets the `--no-ff` mode, and Git refuses it with `--squash` (exit 128).
+    - A missing source ref gives `UNKNOWN_TARGET`.
   - `rebase`: the plan D6 counts; the 003 D4 destination for the force note; when `rebase.updateRefs` is true, `for-each-ref --merged=HEAD --no-merged=<oid> --format=%(refname) refs/heads` and `readWorktrees`, then the moved list without each ref that the `branch` attribute of another worktree record names; the effective `rebase.autoStash` and `rebase.rebaseMerges`. `rebase.autoSquash` is not read, because Autosquash starts unchecked (plan D6).
+    - A `rebase.autoStash`, `rebase.updateRefs`, or `rebase.rebaseMerges` value that Git's rebase stops on gives reason `invalid-config`. So does a remote value that stops the 003 D4 destination read (003 research R16 m).
+    - Without `autostash`: `status --porcelain=v2 -z --untracked-files=no --ignore-submodules=all`. A record gives reason `dirty-tree`. builtin/rebase.c `require_clean_work_tree` ignores submodules, and the parse skips the `# ` header lines (git-status(1)).
+  - `merge`, `rebase`: an `unknown` operation state (an unreadable marker, or `rebase-apply/applying`) gives reason `unknown-operation`, as in 003 D7.
   - `choose-side`, `mergetool`: `ls-files -z --stage -- <path>`; the working file facts and SHA-256 (001 §4 "Binding"); for `mergetool`, the effective `merge.tool` and its tool keys.
   - `ignore`: `rev-parse --path-format=absolute --git-path info/exclude` for `exclude`; `fileFacts` with `digest: true` of the target (1 MiB bound). The line of `src/contracts/ignore-line.ts` gives reason `path` for a control character or invalid UTF-8, and reason `limit` above 4,096 UTF-8 bytes.
   - `worktree-add`: `{existing: "refs/heads/@"}` gives reason `reserved-name` before any Git process (plan D4); `readWorktrees`; `destinationFacts` (003 Δ6) of the bound path: `absent` or `empty` passes, other replies give `DESTINATION_NOT_EMPTY`; for `new`, the `create-branch` checks.
@@ -77,6 +83,7 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
   - `worktree-prune`: `readWorktrees`. No prunable record gives reason `nothing-to-prune`.
   - `config-save`: the configuration listing. A key with several entries in the scope gives reason `multi-value`.
 - Result: `{action, plan, workbenchToken}`. `plan` holds the data-model §3 to §11 fields for display.
+- A `merge` or `rebase` refusal after the counts (`ff-only`, `squash-no-ff`, `message-size`, `dirty-tree`) carries `{reason, plan}`, so the panel still states the facts.
 
 ### `runWorkbench`
 
@@ -214,6 +221,7 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 - "Protected programs that change trust" changes: a program that installs hooks during a read changes `approvalRequired`, not an approval. The next action that needs approval asks once.
 - "Trust approval store": a record is data-model §10. Matching uses the identities and the selected Git path; the fingerprint compare goes. A version 1 record gives `changed`. `revoke` stays.
 - Mutation trust: `runWorkbench` checks the class of its action before any process. `mergetool` uses class `mergetool`. `ignore` and `config-save` use no class, because they run no repository program. Every other action uses class `workbench`. A class flag that is true without approval gives `TRUST_REQUIRED`. State `changed` gives `TRUST_CHANGED`. `applyFiles` and line staging keep the 001 `applyHunk` and `applyFile` rule: approval only when their reads need it.
+- Until T034 adds the class `workbench`, `merge` and `rebase` use the 003 class `sync`. It lists every merge and rebase hook event and `merge.<driver>.driver` (ll-merge.c `ll_ext_merge`), so a repository merge driver runs only after approval (T023).
 - An action that runs Git in another worktree (`worktree-remove`) checks the trust state of that worktree.
 - Logs: kinds, IDs, codes, reasons, and counts only. No ref name, path, or message.
 
@@ -227,7 +235,7 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 
 | Code | Reasons | Meaning |
 |---|---|---|
-| `WORKBENCH_UNAVAILABLE` | `detached`, `unborn`, `current-branch`, `other-worktree`, `name-exists`, `invalid-name`, `reserved-name`, `same-branch`, `ff-only`, `dirty-tree`, `interactive`, `no-merge-tool`, `side-missing`, `side-not-regular`, `stages-missing`, `main-worktree`, `current-worktree`, `locked`, `nothing-to-prune`, `multi-value`, `limit`, `push-current-only`, `ignore-exists`, `ignore-not-text`, `ignore-not-regular`, `ignore-size`, `path`, `message-size`, `unreadable` | The action cannot run. No process starts. |
+| `WORKBENCH_UNAVAILABLE` | `detached`, `unborn`, `current-branch`, `other-worktree`, `name-exists`, `invalid-name`, `reserved-name`, `same-branch`, `ff-only`, `dirty-tree`, `interactive`, `no-merge-tool`, `side-missing`, `side-not-regular`, `stages-missing`, `main-worktree`, `current-worktree`, `locked`, `nothing-to-prune`, `multi-value`, `limit`, `push-current-only`, `ignore-exists`, `ignore-not-text`, `ignore-not-regular`, `ignore-size`, `path`, `message-size`, `unreadable`, `squash-no-ff`, `merge-options`, `invalid-config`, `unknown-operation` | The action cannot run. No process starts. |
 | `UNTRACKED_IN_WAY` | `untracked-in-way` | Discard would overwrite these untracked files. The result lists up to 100 paths. |
 | `STASH_KEPT` | `conflicts`, `failed-apply`, `failed-checkout`, `not-found`, `stash-changed` | The switch kept the stash. The result names its commit ID and the remedy. |
 
@@ -285,6 +293,9 @@ No file decision gives a line refusal, so the `readComparison` `fileAction` neve
 - The documentation of `git mergetool` defines no exit status (spec FR-096).
 - `git stash push` names no created stash in machine form. The service reads `refs/stash` and its reflog instead.
 - `git merge -F -` reads a file named `-`, not standard input (builtin/merge.c `option_read_message`). Git 2.56.0.windows.2 exits 129 with "could not read file '-'" when no such file exists. So the merge message goes in the `-m` item, and `MERGE_MESSAGE_BYTES` keeps that item inside the 001 §6 command-line bound.
+- The full-ref merge argv labels the conflict side `refs/heads/<branch>`, where Git's own `git merge <branch>` writes `<branch>`. Every other byte of a stopped merge equals Git's own merge (T023).
+- The moved-branch list of `rebase` leaves out only the `branch` attributes of other worktree records. Git's branch.c `prepare_checked_out_branches` also leaves out a branch that another worktree rebases (`rebase-merge/head-name`, `rebase-apply/head-name`), bisects (`BISECT_LOG` with `BISECT_START`), or holds in `rebase-merge/update-refs`. An exact read of these files needs each worktree administration folder through the trust boundary, so the list can name such a branch, and Git does not move it.
+- A squash that stops with conflicts leaves unmerged entries without `MERGE_HEAD`. The 003 Abort then refuses with `no-operation`, so only Mark resolved and the 001 commit finish it.
 - A merge tool that hands the file to an earlier instance outside the operation Job keeps its window after Cancel.
 - A configuration write races with another writer between the listing and `config set`. Git takes `config.lock` only for the write itself.
 - The `globalConfig` context has no WSL form. A WSL Git gets `INVALID_REQUEST`.

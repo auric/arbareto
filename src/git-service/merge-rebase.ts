@@ -19,12 +19,12 @@ import type { Head, OperationState, ReadInstallation } from "./snapshot";
 import { pathForms } from "./submodule-review";
 import { changes, createStepKit, endBroken, type StepKit, type SyncerOptions } from "./sync";
 import { pushRecordArgs } from "./sync-commands";
-import { count, mergePreview, observe, parentsOf, stepRemedy, type Observed } from "./sync-integrate";
+import { count, mergePreview, observe, parentsOf, previewItem, stepRemedy, type Observed } from "./sync-integrate";
 import { decidePushDestination, invalidRemoteValue, parseAheadBehind, parsePushRecord, parseRevListCount } from "./sync-parsers";
 import { indexState, listRefs, readOut, refKey, refText, remoteList, type ReviewOutcome } from "./sync-review";
 import { parseMaybeBool, type ConfigEntry, type ListingOutcome } from "./trust";
 import { forceNoteCountArgs, headIsAncestorArgs, heldCountArgs, mergeArgs, mergeCountsArgs, movedCountArgs, rebaseOntoArgs, rebaseStatusArgs, rewrittenCountArgs, updateRefsArgs, worktreeListArgs } from "./workbench-commands";
-import { parseWorktrees } from "./workbench-parsers";
+import { parseTrackedStatus, parseWorktrees } from "./workbench-parsers";
 
 type ReviewPayload = Extract<ServiceRequest, { operation: "reviewWorkbench" }>["payload"];
 export type MergeRebasePayload = Extract<ReviewPayload, { action: "merge" | "rebase" }>;
@@ -35,7 +35,7 @@ type Branch = Extract<Head, { state: "branch" }>;
 
 export const isMergeRebase = (payload: ReviewPayload): payload is MergeRebasePayload => payload.action === "merge" || payload.action === "rebase";
 
-// shortcut: the 003 class `sync` covers every hook that a merge or a rebase runs, but no merge driver. T034 replaces it with the class `workbench`.
+// shortcut: the 003 class `sync` covers every hook of a merge or a rebase and `merge.<driver>.driver`. T034 replaces it with the class `workbench`.
 const TRUST_CLASS = "sync";
 // Contract Δ5 "Moved branches listed in the rebase panel". It is no output bound, so `limits.ts` does not list it.
 const MOVED_BRANCHES_LISTED = 100;
@@ -85,8 +85,7 @@ type Bind = (plan: MergePlan | RebasePlan, moved?: string[] | null) => Observati
 
 const unavailable = (reason: WorkbenchUnavailableReason, plan?: MergePlan | RebasePlan): Refusal => ({ refused: "WORKBENCH_UNAVAILABLE", reason, ...(plan === undefined ? {} : { plan }) });
 const utf8Bytes = (text: string) => Buffer.byteLength(text, "utf8");
-// Git's own merge writes the `fmt-merge-msg` text without its final LF, and `-m` keeps a final LF. T023 compares the MERGE_MSG bytes.
-const messageItem = (p: MergePayload, preview: string | null) => p.message ?? (preview?.endsWith("\n") ? preview.slice(0, -1) : preview);
+const messageItem = (p: MergePayload, preview: string) => p.message ?? previewItem(preview);
 
 // ---- Configuration (Git's own readers) ----
 
@@ -143,37 +142,19 @@ function commandUnits(ctx: ObserveContext, args: readonly string[]): number {
   return forms.launch === undefined ? commandLineUnits(ctx.installation.selectedPath ?? "", args) : wslCommandLineUnits(forms.launch, ctx.operationId, "integrate", "", forms.gitRoot, args);
 }
 
-// git-status(1) porcelain v2: a `1` or `u` record is one NUL field, and a `2` record is two. Parsers ignore `#` headers,
-// such as the `# stash` header of `status.showStash`. Null: another field.
-export function trackedRecords(stdout: Uint8Array): number | null {
-  const raw = Buffer.from(stdout).toString("latin1");
-  if (raw === "") return 0;
-  if (!raw.endsWith("\0")) return null;
-  const fields = raw.slice(0, -1).split("\0");
-  let records = 0;
-  for (let i = 0; i < fields.length; i++) {
-    const kind = fields[i]!.slice(0, 2);
-    if (kind === "# ") continue;
-    if (kind === "2 " && i + 1 < fields.length) i++;
-    else if (kind !== "1 " && kind !== "u ") return null;
-    records++;
-  }
-  return records;
-}
-
 // Plan.md D6 and research.md R21 F14: Git refuses a rebase with a tracked change unless `--autostash`.
 async function trackedChanges(ctx: ObserveContext): Promise<Fact<boolean>> {
   const out = await readOut(ctx, rebaseStatusArgs(), STATUS_LISTING_BYTES);
   if ("limited" in out) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
   if (!("value" in out)) return out;
-  const records = trackedRecords(out.value);
-  return records === null ? { code: "MALFORMED_GIT_OUTPUT" } : { value: records > 0 };
+  const parsed = parseTrackedStatus(out.value, ctx.workspace.objectFormat);
+  return parsed === null ? { code: "MALFORMED_GIT_OUTPUT" } : { value: parsed.records > 0 };
 }
 
 // FR-024 and plan.md D6: the tracking ref of the 003 push destination (003 D4). The note shows when it holds a rewritten commit.
 async function forceNoteOf(ctx: ObserveContext, head: Branch, onto: string, rewritten: number, entries: readonly ConfigEntry[]): Promise<Fact<RebasePlan["forceNote"]> | Refusal> {
   // Feature 003 research R16 m: Git stops every `%(push)` read on such a value, so no destination exists to check.
-  if (invalidRemoteValue(entries)) return unavailable("unreadable");
+  if (invalidRemoteValue(entries)) return unavailable("invalid-config");
   const branch = head.target.slice(HEADS.length);
   const remotes = await remoteList(ctx);
   if (!("value" in remotes)) return "refused" in remotes ? { code: remotes.refused, ...(remotes.reason === undefined ? {} : { reason: remotes.reason }) } : remotes;
@@ -196,8 +177,8 @@ async function forceNoteOf(ctx: ObserveContext, head: Branch, onto: string, rewr
 }
 
 // Research.md R21 F16: Git does not move a branch that another worktree checks out. The current branch moves with the rebase itself.
-// The result holds listing keys (`refKey`). A worktree branch without valid UTF-8 has no exact key, so the list is `unreadable`.
-async function updatedRefs(ctx: ObserveContext, head: Branch, onto: string): Promise<Fact<string[]> | Refusal> {
+// The result holds listing keys (`refKey`), so the compare uses the raw bytes of each `branch` attribute.
+async function updatedRefs(ctx: ObserveContext, head: Branch, onto: string): Promise<Fact<string[]>> {
   const objectFormat = ctx.workspace.objectFormat;
   const out = createCollector({ maxBytes: SYNC_REFS_BYTES, maxRecords: SYNC_REFS_RECORDS, separator: 0x0a });
   const step = await stepOf(ctx, updateRefsArgs(onto, objectFormat), out);
@@ -213,15 +194,18 @@ async function updatedRefs(ctx: ObserveContext, head: Branch, onto: string): Pro
   const records = parseWorktrees(worktrees.value, objectFormat);
   if (records === null) return { code: "MALFORMED_GIT_OUTPUT" };
   if (records.length > WORKTREE_RECORDS) return { code: "OUTPUT_LIMIT", reason: "WORKTREE_RECORDS" };
-  if (records.some((r) => r.branch !== null && r.invalidUtf8)) return unavailable("unreadable");
+  // `parseWorktrees` accepted the grammar, so each field that starts with `branch ` is a `branch` attribute line.
   const current = refKey(head.target);
-  const held = new Set(records.flatMap((r) => (r.branch === null || refKey(r.branch) === current ? [] : [refKey(r.branch)])));
+  const held = new Set(Buffer.from(worktrees.value).toString("latin1").split("\0").flatMap((line) => (line.startsWith("branch ") && line.slice(7) !== current ? [line.slice(7)] : [])));
   return { value: listed.filter((key) => !held.has(key)) };
 }
 
 // Contract Δ3 `merge` reads and plan.md D5.
-async function reviewMerge(ctx: ObserveContext, p: MergePayload, source: MergePlan["source"], entries: readonly ConfigEntry[], bind: Bind): Promise<Observation> {
+async function reviewMerge(ctx: ObserveContext, p: MergePayload, head: Branch, source: MergePlan["source"], entries: readonly ConfigEntry[], bind: Bind): Promise<Observation> {
   const objectFormat = ctx.workspace.objectFormat;
+  // builtin/merge.c `git_merge_config` parses `branch.<current>.mergeoptions` as merge options, which the review cannot bind (plan.md D5).
+  const mergeOptions = `branch.${head.target.slice(HEADS.length)}.mergeoptions`;
+  if (entries.some((e) => e.key === mergeOptions)) return unavailable("merge-options");
   const counted = await readOut(ctx, mergeCountsArgs(source.oid, objectFormat), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
   if ("limited" in counted) return { code: "MALFORMED_GIT_OUTPUT" };
   if (!("value" in counted)) return counted;
@@ -237,12 +221,14 @@ async function reviewMerge(ctx: ObserveContext, p: MergePayload, source: MergePl
   const plan: MergePlan = { source, result: p.result, noFastForward: p.noFastForward, noCommit: p.noCommit, preview: "value" in preview ? preview.value : null, message: p.message, facts };
   // Git's `--no-ff` replaces `merge.ff=only`. A source without new commits ends "Already up to date" (builtin/merge.c).
   if (facts.mergeFf.value === "only" && !p.noFastForward && counts.behind > 0 && !facts.fastForward) return unavailable("ff-only", plan);
+  // builtin/merge.c `cmd_merge`: `merge.ff=false` sets the `--no-ff` mode, and Git refuses it with `--squash` (exit 128).
+  if (p.result === "squash" && facts.mergeFf.value === "false") return unavailable("squash-no-ff", plan);
   // git-merge(1): Git fast-forwards also with `--no-commit`, so Don't commit needs No fast-forward.
   if (p.noCommit && !p.noFastForward && counts.behind > 0 && facts.fastForward && facts.mergeFf.value !== "false") return { refused: "INVALID_REQUEST" };
   if (p.result === "merge") {
     const text = p.message ?? plan.preview;
     if (text === null || utf8Bytes(text) > MERGE_MESSAGE_BYTES) return unavailable("message-size", plan);
-    if (commandUnits(ctx, mergeArgs(source.ref, { result: "merge", noFastForward: p.noFastForward, noCommit: p.noCommit, message: messageItem(p, text)! })) > WINDOWS_COMMAND_LINE_UNITS) return unavailable("message-size", plan);
+    if (commandUnits(ctx, mergeArgs(source.ref, { result: "merge", noFastForward: p.noFastForward, noCommit: p.noCommit, message: messageItem(p, text) })) > WINDOWS_COMMAND_LINE_UNITS) return unavailable("message-size", plan);
   }
   return bind(plan);
 }
@@ -253,7 +239,7 @@ async function reviewRebase(ctx: ObserveContext, p: RebasePayload, head: Branch,
   const autostash = rebaseBool(entries, "rebase.autostash");
   const updateRefs = rebaseBool(entries, "rebase.updaterefs");
   const rebaseMerges = rebaseMergesOf(entries);
-  if (autostash === null || updateRefs === null || rebaseMerges === null) return unavailable("unreadable");
+  if (autostash === null || updateRefs === null || rebaseMerges === null) return unavailable("invalid-config");
   const moved = await revCount(ctx, movedCountArgs(onto.oid, rebaseMerges, objectFormat));
   if (!("value" in moved)) return moved;
   const rewritten = await revCount(ctx, rewrittenCountArgs(onto.oid, objectFormat));
@@ -295,6 +281,8 @@ export async function observeMergeRebase(ctx: ObserveContext, payload: MergeReba
   if (state === "canceled" || state === "deadline") return { stop: state };
   // FR-028. The markers decide first, because a stopped rebase also detaches HEAD.
   if (state === "conflicted") return { refused: "CONFLICTED", unmerged: index.value.unmerged };
+  // Feature 003 plan.md D7: `unknown` is an unreadable marker or `rebase-apply/applying`, so no operation kind is known.
+  if (state === "unknown") return unavailable("unknown-operation");
   if (state !== "normal") return { refused: "OPERATION_IN_PROGRESS" };
   if (head.state === "unborn") return unavailable("unborn");
   if (head.state === "detached") return unavailable("detached");
@@ -306,7 +294,7 @@ export async function observeMergeRebase(ctx: ObserveContext, payload: MergeReba
 
   const bind: Bind = (plan, moved = null) => ({ binding: { payload, head, operationState: state, trust: { fingerprint: listing.fingerprint, required: listing.approvalRequired[TRUST_CLASS] }, plan, moved } });
   const source = { ref: payload.ref, oid };
-  return payload.action === "merge" ? reviewMerge(ctx, payload, source, listing.entries, bind) : reviewRebase(ctx, payload, head, source, listing.entries, bind);
+  return payload.action === "merge" ? reviewMerge(ctx, payload, head, source, listing.entries, bind) : reviewRebase(ctx, payload, head, source, listing.entries, bind);
 }
 
 // ---- Run (contract Δ3 `runWorkbench` steps 3 and 4) ----
@@ -315,7 +303,7 @@ function stepArgs(b: MergeRebaseBinding): string[] {
   const p = b.payload;
   if (p.action === "rebase") return rebaseOntoArgs(p.ref, p.autostash, p.autosquash);
   if (p.result === "squash") return mergeArgs(p.ref, { result: "squash" });
-  return mergeArgs(p.ref, { result: "merge", noFastForward: p.noFastForward, noCommit: p.noCommit, message: messageItem(p, (b.plan as MergePlan).preview)! });
+  return mergeArgs(p.ref, { result: "merge", noFastForward: p.noFastForward, noCommit: p.noCommit, message: messageItem(p, (b.plan as MergePlan).preview!) });
 }
 
 // Data-model §5: the effect of the reviewed options. True: Git gave that effect, and no other ref changed.

@@ -52,10 +52,13 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 ## 5. Merge and rebase requests
 
-- Merge: `source` (ref and OID), `result` (`merge` or `squash`), `noFastForward`, `noCommit`, `preview` (the `fmt-merge-msg` text, bound by digest), `message` (null for the preview, else the edited text, 1 to 8 KiB (`MERGE_MESSAGE_BYTES`, contract Δ5), so the `-m` item fits the 001 §6 command line, and otherwise the 001 commit message rule; a longer preview or message gives `message-size`; with `result: merge`, the argv sends the preview or the edited text with `--no-log -m`; with `squash`, the argv sends no `-m`, because Git ignores it (research R21 F30)), `facts` (`ahead`, `behind`, `fastForward`, `mergeFf` with source).
+- Merge: `source` (ref and OID), `result` (`merge` or `squash`), `noFastForward`, `noCommit`, `preview` (the `fmt-merge-msg` text, bound by digest), `message` (null for the preview, else the edited text, 1 to 8 KiB (`MERGE_MESSAGE_BYTES`, contract Δ5), so the `-m` item fits the 001 §6 command line, and otherwise the 001 commit message rule; a longer preview gives `message-size`; with `result: merge`, the argv sends the preview without its final LF or the edited text with `--no-log -m`; with `squash`, the argv sends no `-m`, because Git ignores it (research R21 F30)), `facts` (`ahead`, `behind`, `fastForward`, `mergeFf` with source).
+- A longer edited `message` fails the request schema with `INVALID_REQUEST`, so only a longer preview gives `message-size`.
 - Rebase: `onto` (ref and OID), `moved`, `rewritten`, `held`, `forceNote` (`{trackingRef}` or null), `movedBranches` (refs, when `rebase.updateRefs` is true, without the branches that other worktrees check out), `autostash` (value plus `{scope, origin}` or `default`), `autosquash` (false at review; the user sets it).
 - Squash: with `result: squash`, `noFastForward` and `noCommit` are false and `message` is null, else `INVALID_REQUEST`. Git refuses `--squash --no-ff`, a squash never commits, and Git ignores `-m` (plan D5, research R21 F30). The UI shows Don't commit as unavailable with "Squash never commits".
 - Validation: `merge` refuses a detached HEAD, an unborn branch, the current branch as source, and an operation in progress (spec FR-028).
+- Don't commit without No fast-forward, when a fast-forward is possible and the effective `merge.ff` is not false, gives `INVALID_REQUEST`, because the panel locks No fast-forward (plan D5). A missing source ref gives `UNKNOWN_TARGET`.
+- Outcome: a stop with conflicts gives `failed-with-effects`. A rebase whose autostash Git cannot reapply exits 0 with unmerged entries and a new `refs/stash` entry, so it gives `completed-with-effects` and names that stash commit.
 
 ## 6. File selection and line selection
 

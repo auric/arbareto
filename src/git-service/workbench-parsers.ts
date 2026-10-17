@@ -131,6 +131,38 @@ export function parseWorktrees(stdout: Uint8Array, objectFormat: ObjectFormat): 
   return lines.length === 0 ? records : null;
 }
 
+// ---- Tracked status (`trackedStatusArgs` and `rebaseStatusArgs`, plan.md D3 and D6) ----
+
+const statusRecord = (kind: string, modes: number, oids: number, score: string, hex: number) => new RegExp(`^${kind} \\S\\S \\S{4}( [0-7]{6}){${modes}}( [0-9a-f]{${hex}}){${oids}}${score} [^]+$`);
+const STATUS_RECORDS = new Map(
+  (["sha1", "sha256"] as const).map((format) => {
+    const hex = format === "sha1" ? 40 : 64;
+    return [format, { ordinary: statusRecord("1", 3, 2, "", hex), renamed: statusRecord("2", 3, 2, " [RC][0-9]{1,3}", hex), unmerged: statusRecord("u", 4, 3, "", hex) }];
+  }),
+);
+
+// git-status(1) "Porcelain Format Version 2" with `-z` and without untracked entries. A `2` record has one more NUL field, the original path.
+// Header lines start with `# ` and come before the entries. Parsers ignore headers they do not know, such as `# stash <n>` of `status.showStash`.
+export function parseTrackedStatus(stdout: Uint8Array, objectFormat: ObjectFormat): { records: number; unmerged: number } | null {
+  const raw = latin1(stdout);
+  if (raw === "") return { records: 0, unmerged: 0 };
+  if (!raw.endsWith("\0")) return null;
+  const { ordinary, renamed, unmerged: conflict } = STATUS_RECORDS.get(objectFormat)!;
+  const fields = raw.slice(0, -1).split("\0");
+  let records = 0;
+  let unmerged = 0;
+  for (let i = 0; i < fields.length; i++) {
+    const field = fields[i]!;
+    if (/^# [^ ]/.test(field) && records === 0) continue;
+    if (renamed.test(field)) {
+      if (++i >= fields.length) return null;
+    } else if (conflict.test(field)) unmerged++;
+    else if (!ordinary.test(field)) return null;
+    records++;
+  }
+  return { records, unmerged };
+}
+
 // ---- Configuration value view (data-model §9, plan.md D11) ----
 
 export type ConfigType = { kind: "bool" } | { kind: "enum"; values: readonly string[] } | { kind: "text" };

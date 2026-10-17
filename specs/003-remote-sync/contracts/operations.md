@@ -130,8 +130,8 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 - Payload: `{operationId}` of a failed `sync` or `clone` with a retained connect target. A `sync` target needs the `repositoryId` of its workspace. A `clone` target needs no `repositoryId`. Any other combination gives `UNKNOWN_TARGET`.
 - Before `terminal`, the service checks `approvalRequired.sync` and the trust fingerprint. A difference gives `TRUST_REQUIRED` or `TRUST_CHANGED`, and no console starts. A clone target has no repository and needs no trust check.
-- The service sends `terminal` (Δ6). Result: `succeeded` when the console starts. Otherwise `failed` with `PUTTY_UNAVAILABLE`.
-- The trust check reads a fresh trust listing, so a trust refusal ends `failed`. A `refused` reply keeps its own code, and only a `failed` reply gives `PUTTY_UNAVAILABLE`.
+- The service sends `terminal` (Δ6). Result: `succeeded` when the console starts. A `failed` reply gives `failed` with `PUTTY_UNAVAILABLE` and the program and the path.
+- The trust check reads a fresh trust listing, so a trust refusal ends `failed`. A `refused` reply ends `failed` with its own code.
 
 ### Shell-only settings operations
 
@@ -222,7 +222,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 | `PUTTY_UNAVAILABLE` | `missing`, `unreadable`, `version`, `exit`, `not-ready` | With `program` and `path`. |
 | `DESTINATION_NOT_EMPTY` | `not-empty`, `file`, `other` | With the destination path. No Git process starts. |
 
-Reused: `OPERATION_IN_PROGRESS`, `CONFLICTED`, `APPROVAL_EXPIRED`, `STALE_REVIEW`, `STALE_SELECTION`, `TRUST_REQUIRED`, `TRUST_CHANGED`, `MALFORMED_GIT_OUTPUT`, `OUTPUT_LIMIT`, `GIT_FAILED`, `DEADLINE`, `CANCELED`, `COMPLETED_WITH_EFFECTS`, `FAILED_WITH_EFFECTS`, `STATE_UNKNOWN`, `UNKNOWN_TARGET`, `BUSY`. File action reason adds `missing`.
+Reused: `REPOSITORY_UNAVAILABLE` (`clone` steps 2 and 5), `OPERATION_IN_PROGRESS`, `CONFLICTED`, `APPROVAL_EXPIRED`, `STALE_REVIEW`, `STALE_SELECTION`, `TRUST_REQUIRED`, `TRUST_CHANGED`, `MALFORMED_GIT_OUTPUT`, `OUTPUT_LIMIT`, `GIT_FAILED`, `DEADLINE`, `CANCELED`, `COMPLETED_WITH_EFFECTS`, `FAILED_WITH_EFFECTS`, `STATE_UNKNOWN`, `UNKNOWN_TARGET`, `BUSY`. File action reason adds `missing`.
 
 ## Δ10 Required contract checks (001 §10)
 

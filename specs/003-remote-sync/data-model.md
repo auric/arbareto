@@ -112,7 +112,7 @@ An invalid value gives refusal `invalid-config`. The `sync` result names the sou
 | push | Status `pushed`, `forced`, `created`, or `up-to-date`, also with `upstreamNotSet`. | Success, and another local change is observed. | `PUSH_REJECTED` with its reason, or no line and no change. | A limit or Cancel, and a local ref or config changed. | Cancel, and no local change. The remote can hold the push. |
 | pull, integrate | Integration `up-to-date` or `done`, or `mode-required`. | `done`, and an observed value differs from the expected one. | No effect. | The fetch changed refs, and the integration is `stopped`, `refused`, or not started. | Cancel, and no change. |
 | abort, continue, skip | State `normal` after abort; Git exit 0 and state `normal` after continue or skip. | Another observed change. | Git refused, and nothing changed. | `stopped` again, or a partial change. | Cancel, and no change. |
-| clone | Exit 0 and registration. | Not used. | A refusal before the start, or a failure with the destination absent or empty. | The destination exists and is not empty after a failure, a limit, or Cancel. | Cancel, and the destination is absent or empty. |
+| clone | Exit 0 and registration. | Not used. | A refusal before the start, a failure, or a limit. After the start, the result holds `{exists, empty}`, or the code only without a fact (contract Δ3 `clone` step 6). | Not used. Clone is no mutation. | Cancel. The result holds `{exists, empty}`, or the code only without a fact. |
 
 A failed reconciliation read gives `unknown`, and the recovery marker stays (001 §8). Clone has no marker.
 

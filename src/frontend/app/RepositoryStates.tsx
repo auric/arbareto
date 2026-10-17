@@ -80,7 +80,7 @@ function CommandRemedy({ remedy }: { remedy: Remedy | undefined }) {
 
 function OutputTail({ text }: { text: string }) {
   return (
-    <pre tabIndex={0} className="max-h-48 overflow-auto rounded-sm border border-divider p-2 whitespace-pre-wrap">
+    <pre tabIndex={0} className="max-h-48 overflow-auto rounded-sm border border-divider p-2 whitespace-pre-wrap select-text">
       {text}
     </pre>
   );

@@ -227,7 +227,7 @@ function SubmoduleRow({ row }: { row: SubmoduleRowResult }) {
       {rowSentences(row).map((sentence) => (
         <p key={sentence}>{sentence}</p>
       ))}
-      {row.outputTail === undefined ? null : <pre className="font-mono whitespace-pre-wrap">{row.outputTail}</pre>}
+      {row.outputTail === undefined ? null : <pre className="font-mono whitespace-pre-wrap select-text">{row.outputTail}</pre>}
       {row.remedy?.text === undefined ? null : <p>{row.remedy.text}</p>}
       {isText(command) ? <code className="block break-all">{command}</code> : null}
       {isText(command) || row.folderPath !== undefined ? (
@@ -592,7 +592,7 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
             ) : (
               <code className="block break-all">{outcome.path}</code>
             )}
-            {outcome.outputTail === undefined ? null : <pre className="font-mono whitespace-pre-wrap">{outcome.outputTail}</pre>}
+            {outcome.outputTail === undefined ? null : <pre className="font-mono whitespace-pre-wrap select-text">{outcome.outputTail}</pre>}
             {outcome.remedy?.text === undefined ? null : <p>{outcome.remedy.text}</p>}
             {isText(outcome.remedy?.command) ? <code className="block break-all">{outcome.remedy.command}</code> : null}
             {(outcome.foreign ?? []).map((path) => (

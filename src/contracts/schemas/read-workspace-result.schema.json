@@ -388,6 +388,20 @@
           ],
           "title": "Completeness"
         },
+        "cut": {
+          "anyOf": [
+            {
+              "type": "string",
+              "enum": [
+                "untracked",
+                "other"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "hunkEligibility": {
           "anyOf": [
             {

@@ -760,6 +760,8 @@ export const WorkspaceSnapshot = z
     operationState: WorkspaceOperationState,
     recoveryState: RecoveryState,
     completeness: Completeness,
+    // Feature 004 contract Δ4 "Status cut": `untracked` keeps every tracked, unmerged, and staged entry. Null for a complete read.
+    cut: z.enum(["untracked", "other"]).nullable().optional(),
     hunkEligibility: HunkEligibility,
     location: WorkspaceLocation,
     // Contract §12 "Discovery notice": `count` has no bound. `paths` holds the first display paths in index order, within the §5 submodule review bound.
@@ -772,6 +774,7 @@ export const WorkspaceSnapshot = z
     readKind: z.enum(["full", "retained"]),
   })
   .refine((r) => r.completeness.state !== "failed" && (r.cursor === null ? r.entries.length === r.entryCount : r.entries.length > 0 && r.entries.length < r.entryCount))
+  .refine((r) => r.cut === undefined || r.cut === null || r.completeness.state === "limited")
   .meta({ title: "WorkspaceSnapshot" });
 
 // Contract §3 `readWorkspace` without a snapshot: a failed read, or a missing object (contract §7 "Missing objects"). It holds no entry, so it never reports a clean working tree.

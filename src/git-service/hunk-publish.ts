@@ -4,6 +4,7 @@
 // T110: `applyHunk`, research R3 steps 1 to 5 and 11 to 14, contract §2, §4 "Hunk eligibility and publication", §5, §8, and §9.
 // Only `publish()` of the owned index lock writes the canonical index.
 // T214: a WSL repository locks, publishes, and removes owned files inside the distro (contract §4 "WSL index publication").
+// Feature 004 T031: `applyHunk` with `lines` applies the sub-hunk of `line-patch.ts` (contract Δ4). T030: `applyFiles` shares `publish()`.
 
 import { lstat, unlink } from "node:fs/promises";
 import { basename } from "node:path";
@@ -14,12 +15,14 @@ import { wslIdentityPath } from "../contracts/wsl-route";
 import type { ApprovalKey, Approvals, ComparisonBinding, HunkApproval } from "./approvals";
 import { attributeArgs, isRefName, objectCheckArgs, refPathArgs } from "./commands";
 import type { ComparisonReader, RetainedComparison } from "./comparison";
+import { parsePatch, type PatchHunk } from "./diff-parser";
 import { hunkEligibility, IndexFormatError, rawIndexEntries, type HunkRefusalReason, type ObjectFormat } from "./eligibility";
 import type { Entered, Exclusion, NotEntered } from "./exclusion";
 import { createCollector, isChannelPath, type Collector, type GitExit, type GitRunner, type WslRunner } from "./git-runner";
 import { captureHead } from "./history";
 import { prepareCandidate, type Candidate, type CandidateFailure } from "./hunk-candidate";
 import { createIndexLock, type LockResult, type PublishResult } from "./index-lock";
+import { subHunk } from "./line-patch";
 import { STEP_CAUSES, type DiagnosticCause } from "./log";
 import type { OperationRegistry } from "./operations";
 import { contextOf, isMissing, objectCheckInput, objectCheckOutcome, runRead } from "./read-steps";
@@ -94,6 +97,8 @@ export interface Refusal {
   outputTail?: string;
   cause?: DiagnosticCause;
   foreign?: string[];
+  // Feature 004 spec FR-038: the entry of a file set that refused the action.
+  entryId?: string;
 }
 
 const STALE: Refusal = { code: "STALE_SELECTION" };
@@ -101,7 +106,7 @@ const stepFailed = (cause?: DiagnosticCause): Refusal => ({ code: "GIT_FAILED", 
 // Contract §9 "Total unexpected diagnostic output": the diagnostic names OUTPUT_LIMIT as the cause. A failed observation gets the step remedy.
 export const refusalOf = (f: Failure): Refusal =>
   f.reason === DIAGNOSTIC_LIMIT.reason ? { ...f, cause: "OUTPUT_LIMIT" } : f.reason === "file-id" ? { ...f, remedy: { text: WORKING_FILE_ID_TEXT } } : f.code === "GIT_FAILED" ? stepFailed() : f;
-const profileRefusal = (reason: HunkRefusalReason): Refusal => ({ code: "UNSUPPORTED_HUNK_PROFILE", reason, remedy: { text: PROFILE_TEXTS[reason] } });
+export const profileRefusal = (reason: HunkRefusalReason): Refusal => ({ code: "UNSUPPORTED_HUNK_PROFILE", reason, remedy: { text: PROFILE_TEXTS[reason] } });
 // Contract §4 "WSL index publication": acceptance refuses from the listing of the comparison, so no Git process starts.
 export const SHARED_REPOSITORY = { code: "UNSUPPORTED_HUNK_PROFILE", result: { reason: "shared-repository", remedy: { text: PROFILE_TEXTS["shared-repository"] } } } as const;
 
@@ -343,10 +348,12 @@ export function checkpointRefusal(binding: CheckpointBinding, policy: PolicyObse
   if (!("value" in state.head)) return refusalOf(state.head as Failure);
   if (!Bun.deepEquals(state.head.value, binding.head, true)) return STALE;
   if (state.index.value.digest !== binding.index.rawIndexDigest) return STALE;
-  // `observePolicy` reads the attributes whenever the gate passes.
-  const read = attributes!;
-  if (!("value" in read)) return refusalOf(read as Failure);
-  if (!Bun.deepEquals(read.value, binding.attributes, true)) return STALE;
+  // `observePolicy` reads the attributes whenever the gate passes and a path was given. A file set compares its own attributes.
+  const read = attributes;
+  if (read !== null) {
+    if (!("value" in read)) return refusalOf(read as Failure);
+    if (!Bun.deepEquals(read.value, binding.attributes, true)) return STALE;
+  }
   if (binding.working !== null) {
     const w = state.working;
     if (w === null || "changed" in w) return STALE;
@@ -766,7 +773,21 @@ export interface PublicationSteps<A extends Admission> {
   working(a: A, ctx: PublishContext, path: Uint8Array): Promise<Fact<boolean>>;
 }
 
-type PublicationRequest = Extract<ServiceRequest, { operation: "applyHunk" | "applyFile" }>;
+type PublicationRequest = Extract<ServiceRequest, { operation: "applyHunk" | "applyFile" | "applyFiles" }>;
+
+// The one use of an admitted publication. `consume` false: `refusal` gives the code. `applyFiles` has no issued approval (contract Δ4).
+export interface PublicationClaim {
+  consume(operationId: string): boolean;
+  refusal(): ErrorCode;
+}
+
+const approvalClaim = (approvals: Approvals, key: ApprovalKey): PublicationClaim => ({
+  consume: (operationId) => approvals.consume(key, operationId),
+  refusal: () => {
+    const now = approvals.accept(key);
+    return !now.ok && "code" in now ? now.code : "UNKNOWN_TARGET";
+  },
+});
 
 // The `applyHunk` and `applyFile` skeleton: the repeat answer, acceptance, the exclusion, the owned lock, `publish()`, and reconciliation.
 export function startPublication<A extends Admission>(o: HunkPublisherOptions & PublicationStores, request: PublicationRequest, w: Workspace, installation: ReadInstallation, key: ApprovalKey, p: PublicationSteps<A>): void {
@@ -779,10 +800,11 @@ export function startPublication<A extends Admission>(o: HunkPublisherOptions & 
   const { operationId, signal } = registry.start(request.operation, request.requestId);
   const admitted = p.admit();
   if ("code" in admitted) return void registry.apply(operationId, { type: "invalid-approval", code: admitted.code }, admitted.result);
-  void publish(o, request, w, installation, operationId, signal, key, admitted, p);
+  void publish(o, request, w, installation, operationId, signal, approvalClaim(o.approvals, key), admitted, p);
 }
 
-async function publish<A extends Admission>(o: HunkPublisherOptions & PublicationStores, request: PublicationRequest, w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, key: ApprovalKey, a: A, p: PublicationSteps<A>): Promise<void> {
+// Research R3 steps 1 to 14 for an admitted request. The caller started `operationId` in the registry.
+export async function publish<A extends Admission>(o: HunkPublisherOptions & PublicationStores, request: PublicationRequest, w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, claim: PublicationClaim, a: A, p: Omit<PublicationSteps<A>, "admit">): Promise<void> {
   const { registry, retained } = o;
   const binding = a.approval.binding;
   const path = new Uint8Array(Buffer.from(binding.entry.pathBytes, "base64"));
@@ -817,10 +839,7 @@ async function publish<A extends Admission>(o: HunkPublisherOptions & Publicatio
     retained.set(operationId, kept);
 
     const steps = async (): Promise<Ending> => {
-      if (!o.approvals.consume(key, operationId)) {
-        const now = o.approvals.accept(key);
-        return { code: !now.ok && "code" in now ? now.code : "UNKNOWN_TARGET" };
-      }
+      if (!claim.consume(operationId)) return { code: claim.refusal() };
       // Research R3 step 4 and contract §4 "File staging" step 2.
       if (signal.aborted) return CANCELED;
       const refuse = async (locked: Exclude<LockResult | WslLockResult, { ok: true }>) => {
@@ -915,7 +934,8 @@ async function publish<A extends Admission>(o: HunkPublisherOptions & Publicatio
 }
 
 type ApplyHunkRequest = Extract<ServiceRequest, { operation: "applyHunk" }>;
-type Admitted = { approval: HunkApproval; comparison: RetainedComparison; hunk: RetainedComparison["hunks"][number] };
+// `hunk`: the retained hunk, or the sub-hunk of the selected lines.
+type Admitted = { approval: HunkApproval; comparison: RetainedComparison; hunk: PatchHunk };
 
 export function createHunkPublisher(o: HunkPublisherOptions) {
   const stores: PublicationStores = { retained: new Map(), owners: new Map() };
@@ -929,9 +949,19 @@ export function createHunkPublisher(o: HunkPublisherOptions) {
     const c = o.comparisons.get(comparisonId);
     if (c === undefined || c.repositoryId !== request.repositoryId || c.snapshotId !== snapshotId) return { code: "UNKNOWN_TARGET" };
     if (c.support?.supported === false && c.support.code === "UNSUPPORTED_COMPARISON") return { code: "UNSUPPORTED_COMPARISON", result: { reason: c.support.reason } };
-    const hunk = c.hunks.find((h) => h.hunkId === hunkId);
-    if (hunk === undefined) return { code: "UNKNOWN_TARGET" };
+    const retainedHunk = c.hunks.find((h) => h.hunkId === hunkId);
+    if (retainedHunk === undefined) return { code: "UNKNOWN_TARGET" };
     if (direction !== directionOf(c)) return { code: "INVALID_REQUEST" };
+    let hunk: PatchHunk = retainedHunk;
+    // Feature 004 contract Δ4 and data-model §6: the service builds the sub-hunk from the retained patch. A line refusal starts no process.
+    const { lines } = request.payload;
+    if (lines !== undefined) {
+      const parsed = parsePatch(c.patch, new Uint8Array(Buffer.from(c.entry.pathBytes, "base64")));
+      if (!parsed.ok) return { code: "MALFORMED_GIT_OUTPUT" };
+      const sub = subHunk(parsed.patch.header, retainedHunk, direction, lines);
+      if (!sub.ok) return sub.code === "INVALID_REQUEST" ? { code: sub.code } : { code: sub.code, result: { reason: sub.reason } };
+      hunk = sub.hunk;
+    }
     if (c.sharedRepository) return SHARED_REPOSITORY;
     const accepted = o.approvals.accept(key);
     if (!accepted.ok) return { code: "code" in accepted ? accepted.code : "UNKNOWN_TARGET" };

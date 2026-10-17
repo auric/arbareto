@@ -5,6 +5,7 @@
 // Only `publish()` of the owned index lock writes the canonical index.
 // T214: a WSL repository takes the working digests and both blob proofs inside the distro (contract §6 "WSL file work").
 // Feature 003 T048: the direction `resolve` (Mark resolved, contract Δ4).
+// Feature 004 T030: `multi-publish.ts` takes the step 6 checks and the blob proof for a file set.
 
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
@@ -91,22 +92,43 @@ export interface ExpectedChange {
 // Contract §4 step 6: only the changed paths differ. Gives the staged object ID, or null when no blob was staged.
 // `update-index --index-info` skips an invalid path with exit 0 (research R3), so only these entry compares decide.
 export function changedEntries(t: ExpectedChange, candidate: readonly RawIndexEntry[], canonical: readonly RawIndexEntry[]): { staged: string | null } | { detail: "selected-entry" | "unrelated-entries" } {
-  const paths = t.action.changedPaths.map((p: { path: Uint8Array }) => p.path);
-  const changed = (e: RawIndexEntry) => paths.some((p) => Buffer.compare(p, e.path) === 0);
+  const checked = changedSet([t], candidate, canonical);
+  return "detail" in checked ? { detail: checked.detail } : { staged: checked.staged[0]! };
+}
+
+// Feature 004 contract Δ4 step 6: `changedEntries` for a file set. `index` names the first refused action.
+export function changedSet(ts: readonly ExpectedChange[], candidate: readonly RawIndexEntry[], canonical: readonly RawIndexEntry[]): { staged: (string | null)[] } | { detail: "selected-entry" | "unrelated-entries"; index?: number } {
+  const changedKeys = new Set(ts.flatMap((t) => t.action.changedPaths.map((p: { path: Uint8Array }) => latin1(p.path))));
+  const changed = (e: RawIndexEntry) => changedKeys.has(latin1(e.path));
   if (!Bun.deepEquals(candidate.filter((e) => !changed(e)), canonical.filter((e) => !changed(e)), true)) return { detail: "unrelated-entries" };
-  const at = (path: Uint8Array) => candidate.filter((e) => Buffer.compare(e.path, path) === 0).map(({ path: _path, ...rest }) => rest);
-  const selected = { detail: "selected-entry" as const };
-  if (t.action.direction === "unstage") {
-    const each = t.action.changedPaths.every((r) => Bun.deepEquals(at(r.path), r.mode === 0 ? [] : [{ mode: r.mode.toString(8).padStart(6, "0"), oid: r.objectId, ...CLEAN }], true));
-    return each ? { staged: null } : selected;
+  const byPath = new Map<string, Omit<RawIndexEntry, "path">[]>();
+  for (const { path, ...rest } of candidate) {
+    const key = latin1(path);
+    if (changedKeys.has(key)) byPath.set(key, [...(byPath.get(key) ?? []), rest]);
   }
-  const found = at(t.action.changedPaths[0]!.path);
-  if (t.deletion) return found.length === 0 ? { staged: null } : selected;
-  // Contract §4 step 6: an untracked entry gets a regular-file mode.
-  const modes = t.mode === null ? ["100644", "100755"] : [t.mode];
-  const [e] = found;
-  if (found.length !== 1 || !modes.includes(e!.mode) || !isObjectId(e!.oid, t.objectFormat) || !Bun.deepEquals({ ...e, mode: "", oid: "" }, { mode: "", oid: "", ...CLEAN }, true)) return selected;
-  return { staged: e!.oid };
+  const at = (path: Uint8Array) => byPath.get(latin1(path)) ?? [];
+  const staged: (string | null)[] = [];
+  for (const [index, t] of ts.entries()) {
+    const selected = { detail: "selected-entry" as const, index };
+    if (t.action.direction === "unstage") {
+      const each = t.action.changedPaths.every((r) => Bun.deepEquals(at(r.path), r.mode === 0 ? [] : [{ mode: r.mode.toString(8).padStart(6, "0"), oid: r.objectId, ...CLEAN }], true));
+      if (!each) return selected;
+      staged.push(null);
+      continue;
+    }
+    const found = at(t.action.changedPaths[0]!.path);
+    if (t.deletion) {
+      if (found.length !== 0) return selected;
+      staged.push(null);
+      continue;
+    }
+    // Contract §4 step 6: an untracked entry gets a regular-file mode.
+    const modes = t.mode === null ? ["100644", "100755"] : [t.mode];
+    const [e] = found;
+    if (found.length !== 1 || !modes.includes(e!.mode) || !isObjectId(e!.oid, t.objectFormat) || !Bun.deepEquals({ ...e, mode: "", oid: "" }, { mode: "", oid: "", ...CLEAN }, true)) return selected;
+    staged.push(e!.oid);
+  }
+  return { staged };
 }
 
 // Proof A output: the SHA-256 of the first `size` bytes. Above `size`, `limited` makes the runner cancel the process (contract §6 "Byte caps").
@@ -161,7 +183,7 @@ async function verifiedBytes(file: string, bound: WholeFile): Promise<Uint8Array
 }
 
 // Contract §4 "Blob proof": proof A, then proof B only after proof A fails. Without a proof, a new digest decides. Null: a proof held.
-async function blobProof(ctx: PublishContext, path: Uint8Array, oid: string, bound: WholeFile, remedy: WholeFileRemedy | null): Promise<Refusal | Stop | null> {
+export async function blobProof(ctx: PublishContext, path: Uint8Array, oid: string, bound: WholeFile, remedy: WholeFileRemedy | null): Promise<Refusal | Stop | null> {
   const text = utf8.decode(path);
   const w = ctx.workspace;
   if (w.wsl !== undefined) {

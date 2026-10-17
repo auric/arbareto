@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import { PATH_RULES } from "../../src/contracts/native-path";
 import type { ConfigEntry } from "../../src/git-service/trust";
-import { configView, localNameOf, parseBranches, parseWorktrees, sameHost, trackingRemotes, urlHost } from "../../src/git-service/workbench-parsers";
+import { configView, localNameOf, parseBranches, parseTrackedStatus, parseWorktrees, sameHost, trackingRemotes, urlHost } from "../../src/git-service/workbench-parsers";
 
 printOrigin("../../src/git-service/workbench-parsers.ts", import.meta.dir);
 
@@ -142,6 +142,36 @@ describe("worktree records (data-model §8)", () => {
     ["an empty prunable reason", `worktree /w/a\0HEAD ${A}\0prunable \0\0`],
     ["an unknown attribute", `worktree /w/a\0HEAD ${A}\0stale\0\0`],
     ["a second worktree line", `worktree /w/a\0worktree /w/b\0HEAD ${A}\0\0`],
+  ];
+  for (const [name, output] of refused) {
+    test(`${name} gives MALFORMED_GIT_OUTPUT`, () => expect(parse(output, name.includes("SHA-256") ? "sha256" : "sha1")).toBeNull());
+  }
+});
+
+describe("tracked status records (plan.md D3 and D6)", () => {
+  const parse = (text: string, format: "sha1" | "sha256" = "sha1") => parseTrackedStatus(bytes(text), format);
+  const ordinary = `1 .M N... 100644 100644 100644 ${A} ${A} f.txt`;
+  const renamed = `2 R. N... 100644 100644 100644 ${A} ${A} R100 new name.txt`;
+  const unmerged = `u UU N... 100644 100644 100644 100644 ${A} ${B} ${A} u.txt`;
+
+  test("records, a rename with its original path, and an unmerged record", () => {
+    expect(parse(`${ordinary}\0${renamed}\0old name.txt\0${unmerged}\0`)).toEqual({ records: 3, unmerged: 1 });
+  });
+  test("empty output gives no record", () => expect(parse("")).toEqual({ records: 0, unmerged: 0 }));
+  // git-status(1): `status.showStash` adds `# stash <n>`, and `--branch` adds `# branch.*`. Parsers ignore headers they do not know.
+  test("headers before the entries count as no record", () => {
+    expect(parse(`# stash 1\0`)).toEqual({ records: 0, unmerged: 0 });
+    expect(parse(`# branch.oid ${A}\0# branch.head main\0# stash 2\0${ordinary}\0`)).toEqual({ records: 1, unmerged: 0 });
+  });
+  test("SHA-256 object IDs", () => expect(parse(`1 .M N... 100644 100644 100644 ${A2} ${A2} f.txt\0`, "sha256")).toEqual({ records: 1, unmerged: 0 }));
+
+  const refused: [string, string][] = [
+    ["no NUL at the end", ordinary],
+    ["a rename without its original path", `${renamed}\0`],
+    ["an untracked record", "? new.txt\0"],
+    ["a header after an entry", `${ordinary}\0# stash 1\0`],
+    ["a header without a key", "# \0"],
+    ["a SHA-1 OID in a SHA-256 repository", `${ordinary}\0`],
   ];
   for (const [name, output] of refused) {
     test(`${name} gives MALFORMED_GIT_OUTPUT`, () => expect(parse(output, name.includes("SHA-256") ? "sha256" : "sha1")).toBeNull());

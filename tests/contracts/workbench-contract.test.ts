@@ -149,6 +149,10 @@ describe("contract Δ9 codes", () => {
       "unreadable",
       "no-tracking-refspec",
       "several-tracking-remotes",
+      "squash-no-ff",
+      "merge-options",
+      "invalid-config",
+      "unknown-operation",
     ]);
     expect([...(E.UNTRACKED_IN_WAY_REASONS ?? [])]).toEqual(["untracked-in-way"]);
     expect([...(E.STASH_KEPT_REASONS ?? [])]).toEqual(["conflicts", "failed-apply", "failed-checkout", "not-found", "stash-changed"]);

@@ -22,6 +22,7 @@ const READS: [string, string[], string[]][] = [
   ["readWorktrees", wb.worktreeListArgs(), [...R, "worktree", "list", "--porcelain", "-z"]],
   ["readGitSettings", commands.configListArgs(), [...R, "config", "list", "--show-scope", "--show-origin", "-z"]],
   ["switch tracked status", wb.trackedStatusArgs(), [...R, "status", "--porcelain=v2", "-z", "--untracked-files=no", "--ignore-submodules=dirty"]],
+  ["rebase tracked status", wb.rebaseStatusArgs(), [...R, "status", "--porcelain=v2", "-z", "--untracked-files=no", "--ignore-submodules=all"]],
   ["switch target commit", wb.refCommitArgs("refs/heads/topic"), [...R, "rev-parse", "--verify", "-q", "refs/heads/topic^{commit}"]],
   ["switch unreachable detached commit", wb.containsArgs(A, "sha1"), [...R, "for-each-ref", `--contains=${A}`, "--count=1", "--format=%(refname)"]],
   ["stash exists", commands.headRefExistsArgs("refs/stash"), [...R, "show-ref", "--exists", "refs/stash"]],

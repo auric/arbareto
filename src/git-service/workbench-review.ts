@@ -214,6 +214,8 @@ export function createWorkbench(o: WorkbenchOptions) {
     const state = await settled(ctx.signal, ctx.reader.operationState(ctx, false));
     if (typeof state === "object") return "refused" in state ? { code: state.refused } : state;
     if (state === "canceled" || state === "deadline") return { stop: state };
+    // Feature 003 plan.md D7: `unknown` is an unreadable marker or `rebase-apply/applying`, so no operation kind is known.
+    if (state === "unknown" && !IN_PROGRESS_ALLOWED.has(payload.action)) return unavailable("unknown-operation");
     if (state !== "normal" && !IN_PROGRESS_ALLOWED.has(payload.action)) return { refused: "OPERATION_IN_PROGRESS" };
     const common: Common = { head, operationState: state, listing: listed.listing };
     const observed = await handler.observe(ctx, payload, common);
@@ -326,6 +328,11 @@ export function createWorkbench(o: WorkbenchOptions) {
 
   return {
     handles: (action: string): boolean => handlers.has(action),
+
+    // Contract §8 "Token invalidation": a refresh read and a workspace release end every unused token of the repository.
+    invalidate(repositoryId: string): void {
+      for (const [key, e] of tokens) if (e.consumed === null && e.repositoryId === repositoryId) tokens.delete(key);
+    },
 
     // Contract Δ3 refusals from the payload alone. The caller answers them before it schedules any Git process.
     precheck: (payload: WorkbenchPayload, w: Workspace): Refused | null => handlers.get(payload.action)?.precheck?.(payload, w) ?? null,

@@ -505,3 +505,22 @@ caseTest(TASK, "contract Δ8: Cancel at each step of Stash and reapply starts no
     });
   }
 }, TIMEOUT_MS);
+
+caseTest(TASK, "git-status(1): with status.showStash=true the `# stash` header is no tracked change, so a clean Keep switch reviews and runs as Git's own checkout", SHELL, async () => {
+  const f = build("switch-clean");
+  const o = build("switch-clean");
+  for (const x of [f, o]) {
+    git(x, ["config", "status.showStash", "true"]);
+    put(x, "b.txt", "b stashed\n");
+    git(x, ["stash", "push", "-q"]);
+  }
+  expect(git(f, ["status", "--porcelain=v2", "-z", "--untracked-files=no", "--ignore-submodules=dirty"])).toBe("# stash 1\0");
+  await withSync("t021-show-stash", async (service) => {
+    const r = await open(service, f.repo);
+    const rv = await reviewed(service, r, switchTo("keep"));
+    expect(rv.plan.trackedChanges).toBe(0);
+    expect(outcome(await service.response<SwitchResult>(sendRun(service, r, rv.workbenchToken)))).toEqual(SUCCEEDED);
+  });
+  git(o, ["checkout", "--no-guess", "--no-recurse-submodules", "target", "--"]);
+  expect(stateOf(f)).toEqual(stateOf(o));
+}, TIMEOUT_MS);

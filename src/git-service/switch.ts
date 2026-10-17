@@ -17,7 +17,7 @@ import { changes } from "./sync";
 import { indexState, refKey } from "./sync-review";
 import { isComponent, requestFacts } from "./trust";
 import { changedPathsArgs, commitObjectArgs, containsArgs, detachArgs, stagesArgs, stashApplyArgs, stashDropArgs, stashPushArgs, stashReflogArgs, stashValueArgs, switchArgs, trackArgs, trackedStatusArgs } from "./workbench-commands";
-import { trackingRemotes } from "./workbench-parsers";
+import { parseTrackedStatus, trackingRemotes } from "./workbench-parsers";
 import { conclude, heldElsewhere, observeRepository, readOut, readWorktrees, refOid, registerWorkbenchAction, unavailable, type Refused, type StepEnd } from "./workbench-review";
 
 export const STASH_REMEDY_TEXT = "The stash keeps the changes. This command applies them again.";
@@ -39,11 +39,7 @@ interface SwitchBound {
 // Data-model §3 `stash.state` is `kept-<reason>` with the contract Δ9 STASH_KEPT reason, or `dropped`.
 type Kept = "conflicts" | "failed-apply" | "failed-checkout" | "not-found";
 
-// git-status(1) "Porcelain Format Version 2" with `-z`. A `2` record has one more NUL-ended field, the original path.
-const ORDINARY = /^1 \S\S \S{4} [0-7]{6} [0-7]{6} [0-7]{6} [0-9a-f]+ [0-9a-f]+ [^]+$/;
-const RENAMED = /^2 \S\S \S{4} [0-7]{6} [0-7]{6} [0-7]{6} [0-9a-f]+ [0-9a-f]+ [RC][0-9]{1,3} [^]+$/;
-const UNMERGED = /^u \S\S \S{4} [0-7]{6} [0-7]{6} [0-7]{6} [0-7]{6} [0-9a-f]+ [0-9a-f]+ [0-9a-f]+ [^]+$/;
-
+// `parseTrackedStatus` skips the `# ` header lines, such as `# stash <n>` of `status.showStash` (git-status(1)).
 async function trackedStatus(ctx: ObserveContext): Promise<Fact<{ digest: string; count: number; unmerged: number }>> {
   const out = createCollector({ maxBytes: STATUS_LISTING_BYTES, maxRecords: STATUS_LISTING_RECORDS, separator: 0 });
   const step = await stepOf(ctx, trackedStatusArgs(), out);
@@ -51,19 +47,9 @@ async function trackedStatus(ctx: ObserveContext): Promise<Fact<{ digest: string
   if (out.limited) return { code: "OUTPUT_LIMIT" };
   if (step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
   const bytes = out.take();
-  const text = latin1(bytes);
-  if (text !== "" && !text.endsWith("\0")) return MALFORMED;
-  const fields = text === "" ? [] : text.slice(0, -1).split("\0");
-  let count = 0;
-  let unmerged = 0;
-  for (let i = 0; i < fields.length; i++, count++) {
-    const field = fields[i]!;
-    if (RENAMED.test(field)) {
-      if (++i >= fields.length) return MALFORMED;
-    } else if (UNMERGED.test(field)) unmerged++;
-    else if (!ORDINARY.test(field)) return MALFORMED;
-  }
-  return { value: { digest: sha256(bytes), count, unmerged } };
+  const parsed = parseTrackedStatus(bytes, ctx.workspace.objectFormat);
+  if (parsed === null) return MALFORMED;
+  return { value: { digest: sha256(bytes), count: parsed.records, unmerged: parsed.unmerged } };
 }
 
 const oneOid = (ctx: ObserveContext, bytes: Uint8Array): Fact<string> => {

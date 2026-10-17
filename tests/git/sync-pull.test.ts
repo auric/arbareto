@@ -315,6 +315,7 @@ describeGit("sync pull and integrate (T044)", () => {
       gitRun(h, repo, ["add", "--", "remote.txt"]);
       gitRun(h, repo, ["commit", "-q", "-m", "local remote.txt"]);
       const oracle = copyOf(repo);
+      const mergeOracle = copyOf(repo);
       await withSync(`t044-conflict-${mode}`, async (service) => {
         const r = await register(service, repo);
         const response = await run(service, r, { action: "pull", mode });
@@ -322,6 +323,13 @@ describeGit("sync pull and integrate (T044)", () => {
         expect({ mode, integration: response.result!.integration }).toEqual({ mode, integration: { state: "stopped", operation: mode === "merge" ? "merging" : "rebasing", unmerged: 1 } });
       });
       gitRun(h, oracle, ["pull", ...pullFlags(mode)], { allowExit: ANY_EXIT, env: INTEGRATE_ENV });
+      if (mode === "merge") {
+        // O-3: the message is Git's own `git merge origin/<branch>` message, so MERGE_MSG equals that merge byte for byte, with its conflict lines.
+        gitRun(h, mergeOracle, ["fetch", "-q", "origin"]);
+        gitRun(h, mergeOracle, ["merge", "--no-edit", "origin/p-diverged"], { allowExit: [1], env: INTEGRATE_ENV });
+        const msg = (at: string) => h.read(gitPaths(h, at, ["MERGE_MSG"])[0]!)?.toString("utf8") ?? null;
+        expect(msg(repo)).toBe(msg(mergeOracle));
+      }
       expect({ mode, unmerged: unmergedPaths(h, repo) }).toEqual({ mode, unmerged: ["remote.txt"] });
       const [app, git] = [repoShape(h, repo), repoShape(h, oracle)];
       // O-3: a merge conflict marker names the merged ref, which is the remote-tracking ref here and FETCH_HEAD in Git's own pull. Every other byte is equal.
@@ -359,9 +367,9 @@ describeGit("sync pull and integrate (T044)", () => {
       const from = service.runner.calls.length;
       const response = await run(service, r, { action: "pull", mode: "merge" });
       expect(outcome(response)).toEqual(SUCCEEDED);
-      // Feature 004 plan.md D5: `--no-log -m <preview>` with the full ref, so a tag of the same name cannot win.
+      // Feature 004 plan.md D5: `--no-log -m <preview>` with the full ref, so a tag of the same name cannot win. The item holds no final LF.
       const merge = service.runner.calls.slice(from).find((c) => subcommandOf(c.arguments) === "merge")!;
-      expect(merge.arguments.slice(-4)).toEqual(["--no-log", "-m", message(oracle), "refs/remotes/origin/p-diverged"]);
+      expect(merge.arguments.slice(-4)).toEqual(["--no-log", "-m", message(oracle).replace(/\n$/, ""), "refs/remotes/origin/p-diverged"]);
     });
     expect({ pre: existsSync(native(marks.pre)), post: existsSync(native(marks.post)), sign: existsSync(native(marks.sign)) }).toEqual({ pre: true, post: true, sign: true });
     const commit = gitOut(h, repo, ["cat-file", "commit", "HEAD"]);

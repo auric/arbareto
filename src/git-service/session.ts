@@ -41,6 +41,7 @@ import { watchWorkspace } from "./watch";
 import { createWorkbench } from "./workbench-review";
 import "./switch";
 import "./branch-ops";
+import "./merge-rebase";
 import { approveWslGit, probeWslGit, routeRegistration, type WslGit } from "./wsl";
 
 export type { Handshake } from "../contracts/channel";
@@ -198,6 +199,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       submoduleReviews.release(workspace.repositoryId);
       syncs.release(workspace.repositoryId);
       approvals.invalidate((a) => a.repositoryId === workspace.repositoryId);
+      workbench.invalidate(workspace.repositoryId);
       trust.release(workspace);
       recovery.release(workspace);
     },
@@ -402,7 +404,10 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     const installation = installationOf(workspace);
     if (installation === null) return reject(request.requestId, gitCode());
     // Contract §8 "Token invalidation": a refresh invalidates every dependent token before its result arrives.
-    if (request.payload.refresh) approvals.invalidate((a) => a.repositoryId === request.repositoryId);
+    if (request.payload.refresh) {
+      approvals.invalidate((a) => a.repositoryId === request.repositoryId);
+      workbench.invalidate(request.repositoryId);
+    }
     scheduleRead(
       request,
       async (t) => {

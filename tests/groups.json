@@ -168,6 +168,7 @@
     "tests/git/identity.test.ts",
     "tests/git/index-lock.test.ts",
     "tests/git/mark-resolved.test.ts",
+    "tests/git/merge-rebase.test.ts",
     "tests/git/numstat.test.ts",
     "tests/git/portable-imports.test.ts",
     "tests/git/refs.test.ts",

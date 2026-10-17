@@ -148,7 +148,7 @@ export async function listRefs(ctx: ObserveContext, pattern?: string): Promise<F
 }
 
 // One read with bounded output. A nonzero exit gives GIT_FAILED.
-async function readOut(ctx: ObserveContext, args: string[], maxBytes: number, input?: Uint8Array): Promise<Fact<Uint8Array> | { limited: true }> {
+export async function readOut(ctx: ObserveContext, args: string[], maxBytes: number, input?: Uint8Array): Promise<Fact<Uint8Array> | { limited: true }> {
   const out = createCollector({ maxBytes });
   const step = await stepOf(ctx, args, out, input);
   if (!("exit" in step)) return step;
@@ -157,7 +157,7 @@ async function readOut(ctx: ObserveContext, args: string[], maxBytes: number, in
 }
 
 // Contract Δ3 read 3 and Δ5 `SYNC_REMOTES`.
-async function remoteList(ctx: ObserveContext): Promise<Fact<string[]> | { refused: ErrorCode; reason?: "SYNC_REMOTES" }> {
+export async function remoteList(ctx: ObserveContext): Promise<Fact<string[]> | { refused: ErrorCode; reason?: "SYNC_REMOTES" }> {
   const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, separator: LF });
   const step = await stepOf(ctx, remoteListArgs(), out);
   if (!("exit" in step)) return step;

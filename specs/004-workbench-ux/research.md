@@ -230,6 +230,8 @@ Each fact runs on Windows Git 2.56 and WSL Ubuntu-26.04 Git 2.55, compared with 
 ### Results
 
 Run of 2026-10-17: Windows Git 2.56.0.windows.2, Windows 10.0.26300, l7 commit a220d42. T003 (`tests/git/workbench-facts.test.ts`) passed 53 tests, and T004 (`tests/git/staging-facts.test.ts`) passed 5 tests. N1 to N6 come from three clean T005 runs (`tests/windows/native-facts.test.ts`) of the same day in the installed package. A `mismatch` below is a `match=false` line. The design already handles each of them. The WSL run of F1 to F31 waits for T081.
+
+Rerun of 2026-10-18 for T006 and T020 on f004-impl at 1cab2ad in `C:\Projects\arbareto-l4`: Windows Git 2.56.0.windows.2, Windows 10.0.26300. Source: `C:\Users\user\AppData\Local\Temp\claude\C--Projects-arbareto\8bd0e319-3a63-441e-a5a8-cff2008c0012\scratchpad\verify-004\observations-r2.txt`, 342 `OBSERVATION` lines. T003 has 215 lines, T004 has 92, and T005 has 35. Of these, 193, 83, and 15 are F and N lines; the other lines come from earlier feature tests with the same task IDs. T003 has 7 `match=false` lines (F11, five F12 lines, F16). T004 has 6 (two F25, four F26). T005 has none, and 2 `unverified` lines (N1 Enter and Escape, N2 right-click and Shift+F10, both `live-input`). Each line below has the same mark and line counts in this rerun, except N6, which now matches.
 - F1, match (62 of 62 lines, rerun of 2026-10-17 on f004-b0-fixes): every argv of contract Δ3 exits as expected. The rerun adds `--no-show-signature` to both reflog reads, the global `--literal-pathspecs` to `choose-side`, `--no-log -m` to each merge form with `--no-ff` and `--no-commit`, and the D6 moved count without `--no-merges`. `check-ignore -z --stdin --no-index` with `--literal-pathspecs` exits 128, as contract Δ3 states, and the contract form without the flag exits 0. Design change from the first run: that one read drops `--literal-pathspecs` (plan D3, contract Δ3). Without the flag, a stdin path that starts with `:` can be read as pathspec magic, so plan D3 refuses such a candidate with reason `path`. NTFS cannot hold `:`, so T081 checks the literal read on WSL.
 - F2, match: `checkout -b` with a refused switch exits 1, `show-ref --exists` then exits 2, and no file changes, for the track and the start-point forms.
 - F3, match: Keep changes with a conflicting change exits 1 and changes nothing.
@@ -267,5 +269,27 @@ Run of 2026-10-17: Windows Git 2.56.0.windows.2, Windows 10.0.26300, l7 commit a
   - Open: under concurrent load, the tool start stalled in 2 of about 150 runs (plan O-19).
 - N4, match: Cancel ends `git.exe`, `sh.exe`, `conhost.exe`, and the tool. No process remains (plan D14).
 - N5, match: `SHOpenFolderAndSelectItems` returns hr 0 and selects the path.
-- N6, open: the tool window came to the front in 5 of 6 runs, without and with `AllowSetForegroundWindow(ASFW_ANY)`. In one run, both variants gave `foreground:false`. That run did not reproduce, and its cause is not recorded. No evidence shows that `ASFW_ANY` is needed or helps. Design change: plan D14 drops the conditional `AllowSetForegroundWindow` call. O-8 stays open until the T082 live-input check.
+- N6, match (2 of 2 lines, rerun of 2026-10-18 at 1cab2ad): `N6.plain` and `N6.allow` observe `foreground: true` and `idleMs: 0`, and `native-merge-tool.exe` holds the foreground at ready. So both variants came to the front with the desktop in use. The runs of 2026-10-17 gave 5 of 6. The failed run gave `foreground:false` for both variants on an idle desktop, while another process held the foreground. No evidence shows that `ASFW_ANY` is needed or helps. Design change: plan D14 drops the conditional `AllowSetForegroundWindow` call. O-8 stays open until the T082 live-input check.
 - Not covered yet: every F and N fact has a test. These parts have no result: the WSL run of F1 to F31 (T081), the stdin `:` path of F1 and the LF, CR, and tab names of F31 on WSL (T081), Enter and Escape of N1, and the right-click and Shift+F10 of N2 (T082 live input).
+
+## R22 Batch 0 and 1 verification (T006, T020)
+
+Run of 2026-10-18 in `C:\Projects\arbareto-l4` on f004-impl at 1cab2ad. One run serves T006 and T020. The batch 0 and batch 1 reviews are recorded ("Batch reviews").
+- `bun install --frozen-lockfile`, `bun run export:schemas --check`, `cargo check --locked --manifest-path src-tauri/Cargo.toml`, and `bun run build:service`: exit 0.
+- `cargo test --locked --manifest-path src-tauri/Cargo.toml`: exit 0, 540 passed, 0 failed, 4 ignored.
+- `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0. Parallel group: 5,813 pass, 0 fail, 37 skip. Serial group: 453 pass, 0 fail, 9 skip. Every `ORIGIN` line is under `C:\Projects\arbareto-l4`. The 15 distinct skip reasons are capabilities.
+- `bun run test:windows`: exit 0, 113 pass, 0 fail, 4 skip (`live-input` twice, `history-fixture-h1m` twice). Its `ORIGIN` lines name the installed package.
+- `bun run typecheck`: exit 1 on 1cab2ad, TS2740 in `src/frontend/changes/FileControls.tsx`. Cause: after main merged into f004-impl, the `FileActionValue` filter in `src/contracts/envelope.ts` did not narrow its type. c2e803d fixes it with a type-only change. On c2e803d, `bun run typecheck` exits 0, and `bun test tests/contracts` with `portable-imports` gives 4,167 pass, 30 skip, 0 fail. The full run's typecheck was red. Only typecheck and the contract tests check the fix; no full run ran on c2e803d.
+- T006 control mutation: the unmerged branch fixture with 1 commit made the T001 self-check fail (`branches`: 52 pass, 1 fail). After the undo, 53 of 53 passed.
+- T020 control mutation: without the `[` escape in `src/contracts/ignore-line.ts`, `tests/contracts/ignore-line.test.ts` failed (8 pass, 1 fail). After the undo, 9 of 9 passed.
+- Facts: "Results" holds each `OBSERVATION` line of this run with its mark (R21).
+
+## Batch reviews
+
+Each batch verification task passes only after one independent review of its batch is recorded here.
+
+**Batch 0, 2026-10-18.** Independent batch 0 review, reviewer agent, 2026-10-18. Scope: the fact tests and the fixture builder (T001 to T005). Verdict: fix first. Items: F1 did not run every contract argv; some T005 skips printed `SKIP`, not `unverified`; some checks could not fail; one Git process ran outside the isolated environment; a leftover tool was only logged; the fixture cache was reused by key alone. Suspicions: the WSL `:` candidate path, an N4 PID reuse, and the 001 `acquireLock`. Resolution: fe8f75f fixes all items and suspicions, and 6262511 merges it. The `:` rule refuses with reason `path`.
+
+**Batch 1, 2026-10-18.** Independent batch 1 review, reviewer agent, 2026-10-18. Scope: WP4 to WP6 (T007 to T019). Verdict: no blocking finding and no heuristic. Medium: a registered run could do `worktree add`, and also `clone`. Low: the `exclude` target must be exactly `info/exclude`; the IPv6 scp host; `urlHost` for custom schemes; hard links on append targets. Lean: one `latin1`. Resolution: e357520 fixes all items.
+
+Open: the merge tool start stall (plan O-19, R21 N3). bd077e1 adds its diagnostics: the N3 test records each stall as a `match=false` finding with Git output, `GIT_TRACE`, and the Job members.

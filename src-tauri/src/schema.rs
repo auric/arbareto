@@ -960,8 +960,8 @@ mod tests {
 
     /// The vector schemas that the shell reads into no generated type. The renderer and the service check them.
     /// The shell writes process, mutation, and trust replies and never reads them. It reads only the `requestId` of a response.
-    /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, and sync review results in `Response.result` and reads no field of them.
-    const NOT_READ: [&str; 22] = [
+    /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, sync review, sync, and clone results in `Response.result` and reads no field of them.
+    const NOT_READ: [&str; 24] = [
         "service-envelope",
         "open-recent-repository-result",
         "recent-repositories-result",
@@ -984,6 +984,8 @@ mod tests {
         "read-comparison-result",
         "operation-result",
         "review-sync-result",
+        "sync-result",
+        "clone-result",
     ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.

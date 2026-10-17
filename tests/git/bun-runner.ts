@@ -5,7 +5,7 @@
 // It does not reproduce the shell console flags or Jobs. T024 and T027 cover them.
 // T206 adds the contract §11 WSL process requests. T212 takes their types from the zod frames of `src/contracts/channel.ts`.
 
-import { mkdirSync, readdirSync, statSync } from "node:fs";
+import { lstatSync, mkdirSync, opendirSync, readdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Subprocess } from "bun";
@@ -24,11 +24,13 @@ import {
   checkRelease,
   checkResolveGit,
   checkStarted,
+  checkSyncRequest,
   checkTrust,
   checkWslFiles,
   commandLineUnits,
   type Collector,
   createDiagnosticCounter,
+  type DestinationFactsReply,
   type FileFact,
   type FileFactsRequest,
   type IndexedFileFactsRequest,
@@ -45,6 +47,7 @@ import {
   type RefusedCode,
   type RegisterReply,
   type SyncRunner,
+  type TerminalReply,
   type TrustRecord,
   type TrustRequest,
   type WalkStop,
@@ -366,6 +369,36 @@ const text = (value: unknown) => (typeof value === "string" ? value : "");
 const unknownTarget = () => new RunnerRefusal("UNKNOWN_TARGET");
 const sameIdentity = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
+// Mirrors `CLONE_ARGUMENTS` of `src-tauri/src/process_requests.rs`: the fixed items before the URL and the destination.
+const CLONE_ARGUMENTS = ["--no-lazy-fetch", "clone", "--progress", "--no-recurse-submodules", "--"];
+
+// Mirrors `destination` and `destination_error` of `src-tauri/src/process_requests.rs`. A link or a junction gives `other`.
+function destinationOf(path: string): DestinationFactsReply {
+  const failed = (error: unknown): DestinationFactsReply => {
+    const code = (error as NodeJS.ErrnoException).code;
+    return { result: "error", code: code === "EACCES" || code === "EPERM" ? "access-denied" : code === "EBUSY" ? "sharing-violation" : code === "EIO" ? "io-error" : "other-error" };
+  };
+  let stat;
+  try {
+    stat = lstatSync(path);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? { result: "absent" } : failed(error);
+  }
+  if (stat.isSymbolicLink()) return { result: "other" };
+  if (stat.isFile()) return { result: "file" };
+  if (!stat.isDirectory()) return { result: "other" };
+  try {
+    const dir = opendirSync(path);
+    try {
+      return dir.readSync() === null ? { result: "empty" } : { result: "not-empty" };
+    } finally {
+      dir.closeSync();
+    }
+  } catch (error) {
+    return failed(error);
+  }
+}
+
 export function createBunRunner(options: BunRunnerOptions) {
   const launchDirectory = join(options.directory, "launch");
   // Each `wsl.exe` starts here, as the shell starts it in its own launch folder (src-tauri/src/process_requests.rs).
@@ -377,7 +410,9 @@ export function createBunRunner(options: BunRunnerOptions) {
   for (const dir of [launchDirectory, recordsDirectory, recoveryFolder]) mkdirSync(dir, { recursive: true });
 
   const trustStore = options.trustStore ?? createTrustStore();
-  const contexts = new Map<string, { kind: "gitProbe" | "repositoryDiscovery"; path: string; owner?: string; identity?: IdentityReply }>();
+  // Feature 003 contract Δ6: a `clone` context and its `repositoryDiscovery` peer. The peer binds its identity only after the clone exits with status 0.
+  type Context = { kind: "gitProbe" | "repositoryDiscovery" | "clone"; path: string; owner?: string; identity?: IdentityReply; peer?: string; url?: string; key?: string; pending?: true };
+  const contexts = new Map<string, Context>();
   const gits = new Map<string, string>();
   const repositories = new Map<string, { worktreeRoot: string; gitDirectory: string; commonDirectory: string; gitInstallationId: string }>();
   const issued = new Set<string>();
@@ -515,8 +550,20 @@ export function createBunRunner(options: BunRunnerOptions) {
   }
 
   // Contract §6 "Context rules": the first `operationId` of a `bootstrapId` owns it.
+  // Mirrors `own` of `src-tauri/src/process_requests.rs`: a clone context and its peer have one owner.
+  function own(id: string, operationId: string): void {
+    const peer = contexts.get(id)?.peer;
+    const ids = peer === undefined ? [id] : [id, peer];
+    if (ids.some((i) => (contexts.get(i)?.owner ?? operationId) !== operationId)) throw unknownTarget();
+    for (const i of ids) {
+      const context = contexts.get(i);
+      if (context) context.owner = operationId;
+    }
+  }
+
   // A WSL Git target carries its installation. Its `cwd` is the UNC directory that becomes the Linux `-C` directory.
-  function resolveTarget(operationId: string, context: ProcessContext): { program: string; cwd: string; wsl?: WslInstallation } {
+  // `args`: a `clone` context admits only its fixed array (feature 003 contract Δ6), and only a `run` names it.
+  function resolveTarget(operationId: string, context: ProcessContext, args?: readonly string[]): { program: string; cwd: string; wsl?: WslInstallation } {
     if (inactive.has(operationId)) throw unknownTarget();
     if (context.contextKind === "registeredOperation") {
       const program = gits.get(context.gitInstallationId);
@@ -527,11 +574,21 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (!wsl && wslParts(repository.worktreeRoot) !== null) throw new RunnerRefusal("INVALID_REQUEST", "Windows Git in a WSL repository");
       return { program, cwd: repository.worktreeRoot, wsl };
     }
-    // Feature 003 P3 and P7 bind the `clone` context. Until then this runner refuses it, as the shell does.
-    if (context.contextKind === "clone") throw unknownTarget();
+    if (context.contextKind === "clone") {
+      const bound = contexts.get(context.cloneId);
+      const program = gits.get(context.gitInstallationId);
+      if (bound?.kind !== "clone" || program === undefined) throw unknownTarget();
+      own(context.cloneId, operationId);
+      // The double has no WSL clone route. T075 covers it in the distro.
+      if (wslGits.has(context.gitInstallationId) || wslParts(bound.path) !== null) throw new RunnerRefusal("INVALID_REQUEST", "WSL clone");
+      const fixed = [...CLONE_ARGUMENTS, bound.url!, bound.path];
+      if (args === undefined || args.length !== fixed.length || args.some((arg, i) => arg !== fixed[i])) throw new RunnerRefusal("INVALID_REQUEST", "clone arguments");
+      return { program, cwd: launchDirectory };
+    }
     const bound = contexts.get(context.bootstrapId);
-    if (!bound || bound.kind !== context.contextKind || (bound.owner ?? operationId) !== operationId) throw unknownTarget();
-    bound.owner = operationId;
+    // Feature 003 contract Δ6: before its clone exits with status 0, a clone destination has no identity.
+    if (!bound || bound.kind !== context.contextKind || bound.pending) throw unknownTarget();
+    own(context.bootstrapId, operationId);
     if (context.contextKind === "gitProbe") return { program: bound.path, cwd: launchDirectory };
     const program = gits.get(context.gitInstallationId);
     if (!program) throw unknownTarget();
@@ -996,7 +1053,7 @@ export function createBunRunner(options: BunRunnerOptions) {
 
   async function start(call: GitCall, recorded: RecordedCall): Promise<GitExit> {
     checkCall(call);
-    const target = resolveTarget(call.operationId, call.context);
+    const target = resolveTarget(call.operationId, call.context, call.arguments);
     if (!target.wsl) {
       if (call.script) throw new RunnerRefusal("INVALID_REQUEST", "script needs a WSL Git");
       const env = environment(call);
@@ -1052,6 +1109,16 @@ export function createBunRunner(options: BunRunnerOptions) {
       try {
         recorded.exit = await start(call, recorded);
         recorded.durationMs = performance.now() - recorded.at;
+        // Mirrors `watch` of `src-tauri/src/process_requests.rs`: the destination identity binds only after exit status 0. A failed read binds nothing.
+        const peer = call.context.contextKind === "clone" ? contexts.get(call.context.cloneId)?.peer : undefined;
+        const discovery = peer === undefined ? undefined : contexts.get(peer);
+        if (discovery?.pending && recorded.exit.exitCode === 0 && recorded.exit.deadline === undefined) {
+          const identity = readIdentity(discovery.path);
+          if (!("code" in identity)) {
+            discovery.identity = identity;
+            delete discovery.pending;
+          }
+        }
         return recorded.exit;
       } catch (error) {
         recorded.refused = error instanceof RunnerRefusal ? error.code : error instanceof Error ? error.name : "unknown";
@@ -1182,6 +1249,8 @@ export function createBunRunner(options: BunRunnerOptions) {
       end((r) => r.operationId === operationId);
       inactive.add(operationId);
       diagnostics.clear(operationId);
+      // Mirrors `close_job` of `src-tauri/src/process_requests.rs`: the end of a clone operation destroys its contexts.
+      for (const [id, context] of contexts) if (context.peer !== undefined && context.owner === operationId) contexts.delete(id);
     },
 
     async started(frame) {
@@ -1215,17 +1284,51 @@ export function createBunRunner(options: BunRunnerOptions) {
     },
 
     // Feature 003 contract Δ6 `pageant`, as T027 states the shell side: `git` starts no process, a missing `plink.exe` gives `failed` with `missing`,
-    // and no key file gives `none`. A WSL target is refused. The double starts no Pageant.
+    // and no key file gives `none`. A WSL target is refused. The double starts no Pageant, so the picked key file of a clone gives `ready`.
     async pageant(request): Promise<PageantReply> {
       checkPageant(request);
       frames.push({ type: "pageant", ...request });
-      const repository = repositories.get(request.repositoryId);
-      if (inactive.has(request.operationId) || repository === undefined) throw unknownTarget();
-      if (wslGits.has(repository.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL pageant");
+      if (inactive.has(request.operationId)) throw unknownTarget();
+      let key: string | undefined;
+      if ("cloneId" in request) {
+        const bound = contexts.get(request.cloneId);
+        if (bound?.kind !== "clone") throw unknownTarget();
+        own(request.cloneId, request.operationId);
+        if (wslParts(bound.path) !== null) throw new RunnerRefusal("INVALID_REQUEST", "WSL pageant");
+        key = bound.key;
+      } else {
+        const repository = repositories.get(request.repositoryId);
+        if (repository === undefined) throw unknownTarget();
+        if (wslGits.has(repository.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL pageant");
+      }
       const client = inject.sshClient;
       if (client === "git") return { result: "git" };
       if (!statSync(client.plink, { throwIfNoEntry: false })?.isFile()) return { result: "failed", reason: "missing", program: "plink", path: client.plink };
-      return { result: "none" };
+      return { result: key === undefined ? "none" : "ready" };
+    },
+
+    // Feature 003 contract Δ6 `destinationFacts`: the OS facts of the bound destination. The request carries no path.
+    async destinationFacts(request): Promise<DestinationFactsReply> {
+      checkSyncRequest("destinationFacts", request);
+      frames.push({ type: "destinationFacts", ...request });
+      const bound = contexts.get(request.cloneId);
+      if (inactive.has(request.operationId) || bound?.kind !== "clone") throw unknownTarget();
+      own(request.cloneId, request.operationId);
+      // The double has no WSL `destination` mode. T075 covers it in the distro.
+      if (wslParts(bound.path) !== null) throw new RunnerRefusal("INVALID_REQUEST", "WSL destination");
+      return destinationOf(bound.path);
+    },
+
+    // Feature 003 contract Δ6 `terminal`: a registered Windows Git and, for a `sync` target, a repository of that Git. The double opens no console.
+    async terminal(request): Promise<TerminalReply> {
+      checkSyncRequest("terminal", request);
+      frames.push({ type: "terminal", ...request });
+      if (inactive.has(request.operationId) || !gits.has(request.gitInstallationId) || wslGits.has(request.gitInstallationId)) throw unknownTarget();
+      if (request.repositoryId !== undefined && repositories.get(request.repositoryId)?.gitInstallationId !== request.gitInstallationId) throw unknownTarget();
+      const client = inject.sshClient;
+      if (client === "git") throw new RunnerRefusal("INVALID_REQUEST", "terminal needs plink");
+      if (!statSync(client.plink, { throwIfNoEntry: false })?.isFile()) return { result: "failed", reason: "missing", program: "plink", path: client.plink };
+      return { result: "started" };
     },
 
     async trust(request) {
@@ -1306,8 +1409,8 @@ export function createBunRunner(options: BunRunnerOptions) {
   async function wslDistros({ operationId, bootstrapId }: WslDistrosCall): Promise<WslDistrosResult> {
     const bound = contexts.get(bootstrapId);
     if (!isIdentifier(operationId) || !isIdentifier(bootstrapId)) throw new RunnerRefusal("INVALID_REQUEST", "wslDistros");
-    if (inactive.has(operationId) || bound?.kind !== "repositoryDiscovery" || (bound.owner ?? operationId) !== operationId) throw unknownTarget();
-    bound.owner = operationId;
+    if (inactive.has(operationId) || bound?.kind !== "repositoryDiscovery") throw unknownTarget();
+    own(bootstrapId, operationId);
     const path = bound.path;
     if (!WSL_PREFIX.test(path)) return { path };
     const listed = listDistros(false);
@@ -1415,6 +1518,14 @@ export function createBunRunner(options: BunRunnerOptions) {
       // gaps.md W1: a WSL path binds no identity and starts no process at creation.
       contexts.set(bootstrapId, { kind, path, ...(kind === "repositoryDiscovery" && !WSL_PREFIX.test(path) ? { identity: readIdentity(path) } : {}) });
       return bootstrapId;
+    },
+    // Feature 003 contract Δ3 `clone` native step: one `clone` and one `repositoryDiscovery` context for the checked path. Neither holds an identity.
+    // `key` is the picked `.ppk` path. The shell keeps it only in the context (FR-049).
+    addClone(path: string, url: string, key?: string): { cloneId: string; bootstrapId: string } {
+      const [cloneId, bootstrapId] = [crypto.randomUUID(), crypto.randomUUID()];
+      contexts.set(bootstrapId, { kind: "repositoryDiscovery", path, peer: cloneId, pending: true });
+      contexts.set(cloneId, { kind: "clone", path, peer: bootstrapId, url, ...(key === undefined ? {} : { key }) });
+      return { cloneId, bootstrapId };
     },
     // The path of a live native context, or `undefined` after its end.
     contextPath(bootstrapId: string): string | undefined {

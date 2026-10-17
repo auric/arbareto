@@ -213,7 +213,7 @@ export function checkWslProbe(distro: string, probe: WslProbeFacts, wslExecutabl
 
 export type WslRoute =
   | { kind: "windows" }
-  | { kind: "wsl"; distro: string; guid: string; running: boolean; saved?: { git: string; identity: string }; wslExecutable: string }
+  | { kind: "wsl"; distro: string; guid: string; linuxPath: string; running: boolean; saved?: { git: string; identity: string }; wslExecutable: string }
   | WslRefusal;
 
 // Contract §11 "Route" and "Distro checks". The shell names the context path, because the service holds only the bootstrap ID.
@@ -228,6 +228,7 @@ export function routeRegistration(reply: WslDistrosResult): WslRoute {
     kind: "wsl",
     distro: route.distro,
     guid: route.guid,
+    linuxPath: route.linuxPath,
     running: reply.running.includes(route.distro),
     ...(saved ? { saved: { git: saved.git, identity: saved.gitIdentity } } : {}),
     wslExecutable: reply.wslExecutable,

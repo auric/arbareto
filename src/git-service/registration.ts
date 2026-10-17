@@ -30,6 +30,8 @@ export interface RegistrationTarget {
   bootstrapId: string;
   installation: Pick<GitInstallation, "gitInstallationId" | "selectedPath">;
   signal: AbortSignal;
+  // Feature 003 contract Δ3 `clone` step 5: the top level must have the identity of this path.
+  destination?: string;
 }
 
 export type RegistrationOutcome = { ok: true; result: RegistrationResult } | { ok: false; code: ErrorCode; result?: RegistrationResult };
@@ -59,6 +61,11 @@ const runnerRefused = (error: unknown): RegistrationOutcome => {
 // Contract §6 "Registration bootstrap": a failed identity refuses registration.
 const identityRefused: RegistrationOutcome = { ok: false, code: "UNSUPPORTED_REPOSITORY", result: { remedy: { text: IDENTITY_REMEDY } } };
 const canceled: RegistrationOutcome = { ok: false, code: "CANCELED" };
+// Feature 003 contract Δ3 `clone` step 5. The contract names no code for a top level other than the destination.
+const notDestination: RegistrationOutcome = { ok: false, code: "REPOSITORY_UNAVAILABLE" };
+// The Git-resolved roots, then the clone destination when the target names one.
+const rootsOf = (r: DiscoveredRepository, destination: string | undefined) => [r.worktreeRoot, r.gitDirectory, r.commonDirectory, ...(destination === undefined ? [] : [destination])];
+const topLevelDiffers = (identities: readonly PhysicalIdentity[]) => identities.length === 4 && !sameIdentity(identities[0]!, identities[3]!);
 // Contract §5 "Deadline outcomes": a walk deadline of a registration gives DEADLINE.
 const deadline: RegistrationOutcome = { ok: false, code: "DEADLINE" };
 
@@ -217,14 +224,14 @@ export function createRegistrations({ runner, unfinishedMutation, onRelease, onR
         return runnerRefused(error);
       }
       if (!discovered.ok) return refused(discovered.refusal);
-      const { worktreeRoot, gitDirectory, commonDirectory } = discovered.repository;
       let identities;
       try {
-        identities = await requestIdentities(runner, operationId, context, [worktreeRoot, gitDirectory, commonDirectory], signal);
+        identities = await requestIdentities(runner, operationId, context, rootsOf(discovered.repository, target.destination), signal);
       } catch (error) {
         return runnerRefused(error);
       }
       if (!identities.ok) return "stop" in identities ? (identities.stop === "deadline" ? deadline : canceled) : identityRefused;
+      if (topLevelDiffers(identities.identities)) return notDestination;
       return exclusive(() => commit(target, discovered.repository, identities.identities));
     },
     // Contract §11: a WSL registration with the WSL Git of the route distro.
@@ -236,9 +243,9 @@ export function createRegistrations({ runner, unfinishedMutation, onRelease, onR
       try {
         const discovered = await discoverRepository(runner, { operationId, bootstrapId, gitInstallationId, gitSelectedPath: git.path, signal, wsl: { distro: git.distro } });
         if (!discovered.ok) return refused(discovered.refusal);
-        const { worktreeRoot, gitDirectory, commonDirectory } = discovered.repository;
-        const found = await requestWslIdentities(runner, operationId, context, [worktreeRoot, gitDirectory, commonDirectory], git, signal);
+        const found = await requestWslIdentities(runner, operationId, context, rootsOf(discovered.repository, target.destination), git, signal);
         if (!found.ok) return "stop" in found ? (found.stop === "deadline" ? deadline : canceled) : found;
+        if (topLevelDiffers(found.identities)) return notDestination;
         const installation = { gitInstallationId, selectedPath: git.path };
         return exclusive(() => commit({ ...target, installation }, discovered.repository, found.identities, git));
       } catch (error) {

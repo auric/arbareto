@@ -17,6 +17,7 @@ import {
   TrustCall,
   WslDistrosCall,
   WslProbeCall,
+  type FILE_FACT_ERRORS,
   type FileFact,
   type FileIdentity,
   type IdentityReply,
@@ -176,18 +177,29 @@ export interface WslRunner {
   indexedFileFacts(request: IndexedFileFactsRequest, signal: AbortSignal): Promise<{ facts: FileFact[]; index: WslIndexResult } | WalkStop>;
 }
 
-// Feature 003 contract Δ6 `pageant {repositoryId, remote}`: the frame fields without `type` and `callId`.
-export interface PageantRequest {
-  operationId: string;
-  repositoryId: string;
-  remote: string;
-}
-// The reply without `type` and `callId`. `git`: `sshClient` is `git`, and the shell started no process.
-export type PageantReply = { result: "git" | "none" | "ready" } | { result: "failed"; reason: (typeof PUTTY_UNAVAILABLE_REASONS)[number]; program: (typeof PUTTY_PROGRAMS)[number]; path: string };
+type FileFactError = (typeof FILE_FACT_ERRORS)[number];
 
-// Feature 003 contract Δ6: the private requests of `sync`. Only a Windows service sends them.
+// Feature 003 contract Δ6 `pageant {repositoryId, remote}` or `{cloneId}`: the frame fields without `type` and `callId`.
+export type PageantRequest = { operationId: string; repositoryId: string; remote: string } | { operationId: string; cloneId: string };
+type PuttyFailed = { result: "failed"; reason: (typeof PUTTY_UNAVAILABLE_REASONS)[number]; program: (typeof PUTTY_PROGRAMS)[number]; path: string };
+// The reply without `type` and `callId`. `git`: `sshClient` is `git`, and the shell started no process.
+export type PageantReply = { result: "git" | "none" | "ready" } | PuttyFailed;
+// Feature 003 contract Δ6 `destinationFacts {cloneId}`. A link or a junction gives `other`.
+export type DestinationFactsReply = { result: "absent" | "empty" | "not-empty" | "file" | "other" } | { result: "error"; code: FileFactError };
+// Feature 003 contract Δ6 `terminal`. `repositoryId` names the worktree of a `sync` target. A `clone` target has none.
+export interface TerminalRequest {
+  operationId: string;
+  gitInstallationId: string;
+  repositoryId?: string;
+  target: string;
+}
+export type TerminalReply = { result: "started" } | PuttyFailed;
+
+// Feature 003 contract Δ6: the private requests of `sync`, `clone`, and `connectInTerminal`. Only a Windows service sends `pageant` and `terminal`.
 export interface SyncRunner {
   pageant(request: PageantRequest): Promise<PageantReply>;
+  destinationFacts(request: { operationId: string; cloneId: string }): Promise<DestinationFactsReply>;
+  terminal(request: TerminalRequest): Promise<TerminalReply>;
 }
 
 export { REFUSED_CODES } from "../contracts/channel";
@@ -205,6 +217,9 @@ export class RunnerRefusal extends Error {
 const refuse = (detail: string): never => {
   throw new RunnerRefusal("INVALID_REQUEST", detail);
 };
+
+// Feature 003 contract Δ3 `clone` step 4: the items before the URL and the destination.
+const CLONE_PREFIX = ["--no-lazy-fetch", "clone", "--progress", "--no-recurse-submodules", "--"];
 
 const fits = (schema: z.ZodType, value: unknown) => schema.safeParse(value).success;
 
@@ -263,7 +278,10 @@ export function checkCall(call: GitCall): void {
   if (!Array.isArray(args) || !args.every((arg) => fits(Text, arg))) refuse("argument");
   // The service has no executable path, so the empty program gives the smallest possible command line.
   if (commandLineUnits("", args) > WINDOWS_COMMAND_LINE_UNITS) refuse("command line");
-  const bootstrap = context.contextKind !== "registeredOperation";
+  // Feature 003 contract Δ6: a `clone` context runs only the fixed clone array under `remote`.
+  const clone = context.contextKind === "clone";
+  const bootstrap = context.contextKind !== "registeredOperation" && !clone;
+  if (clone && (policy !== "remote" || args.length !== 7 || !CLONE_PREFIX.every((arg, i) => args[i] === arg))) refuse("clone");
   if (call.script !== undefined) {
     checkProbeScript(call);
   } else if (context.contextKind === "gitProbe") {
@@ -382,11 +400,12 @@ export function checkTrust(request: TrustRequest): void {
   if (!fits(TrustCall, request)) refuse("trust");
 }
 
-// The `type` literal selects the `PageantRemote` frame schema. A request that holds `type` or `callId` breaks the field set.
-export function checkPageant(request: PageantRequest): void {
+// Feature 003 contract Δ6. The `type` literal selects the frame schema. A request that holds `type` or `callId` breaks the field set.
+export function checkSyncRequest(type: "pageant" | "destinationFacts" | "terminal", request: object): void {
   const valid = typeof request === "object" && request !== null && !("type" in request) && !("callId" in request);
-  if (!valid || !fits(ProcessRequest, { type: "pageant", callId: crypto.randomUUID(), ...request })) refuse("pageant");
+  if (!valid || !fits(ProcessRequest, { type, callId: crypto.randomUUID(), ...request })) refuse(type);
 }
+export const checkPageant = (request: PageantRequest): void => checkSyncRequest("pageant", request);
 
 // Retains at most `maxBytes` bytes and `maxRecords` records that end at `separator`. A byte that it cannot retain sets `limited`.
 export function createCollector(options: { maxBytes: number; maxRecords?: number; separator?: number }) {

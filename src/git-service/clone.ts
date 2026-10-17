@@ -26,8 +26,8 @@ export interface RouteTarget {
   signal: AbortSignal;
 }
 
-// Step 1: the reply path, and for a WSL path the approved WSL Git and the §11 Linux path.
-export type Routed = { ok: true; path: string; wsl?: { git: { gitInstallationId: string }; linuxPath: string } } | { ok: false; code: ErrorCode; result?: RegistrationResult };
+// Step 1: the reply path, and for a WSL path the approved WSL Git, the §11 Linux path, and the 001 §11 normalized UNC identity path.
+export type Routed = { ok: true; path: string; wsl?: { git: { gitInstallationId: string }; linuxPath: string; identityPath: string } } | { ok: false; code: ErrorCode; result?: RegistrationResult };
 
 export interface ClonerOptions {
   runner: GitRunner & WslRunner & SyncRunner;
@@ -77,11 +77,8 @@ export function createCloner(o: ClonerOptions) {
     const remedy = { text: STEP_REMEDY_TEXT, command };
     // Step 6: the destination from OS facts. The service deletes, moves, and opens no file (FR-050).
     const ended = async (code: ErrorCode, outputTail: string): Promise<End> => {
-      const after = await runner.destinationFacts({ operationId, cloneId }).catch((error: unknown) => {
-        if (error instanceof RunnerRefusal) return null;
-        throw error;
-      });
-      // Contract gap: an `error` reply gives no `exists` and no `empty` value.
+      // A failed read keeps the code of the step. Contract gap: it gives no `exists` and no `empty` value.
+      const after = await runner.destinationFacts({ operationId, cloneId }).catch(() => null);
       if (after === null || after.result === "error") return { code };
       return { code, result: { exists: after.result !== "absent", empty: after.result === "empty", outputTail, remedy } };
     };
@@ -136,7 +133,8 @@ export function createCloner(o: ClonerOptions) {
     const outputTail = stderr.outputTail();
     // Step 5: only exit status 0 means a clone (git-clone(1)).
     if (exit?.exitCode === 0 && exit.deadline === undefined) {
-      const registered = await o.register({ operationId, bootstrapId, signal, destination });
+      // A WSL destination takes the discovery form of a Git-resolved path (001 §11 "Route").
+      const registered = await o.register({ operationId, bootstrapId, signal, destination: routed.wsl?.identityPath ?? destination });
       return registered.ok ? { code: null, result: registered.result } : ended(registered.code, outputTail);
     }
     const canceled = signal.aborted;

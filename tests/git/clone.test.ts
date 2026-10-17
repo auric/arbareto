@@ -229,6 +229,49 @@ describeGit("clone (T052)", () => {
     });
   }, TIMEOUT_MS);
 
+  caseTest(TASK, "001 §3 \"Cancel preserves the current workspace\": Cancel while step 5 registers releases the new workspace before the canceled response", SHELL, async () => {
+    const h = hostFor("t052-cancel-register");
+    const { origin } = buildFetchFlags(h);
+    const destination = native(`${h.root}/registering`);
+    await withSync("t052-cancel-register", async (service) => {
+      let held: string | null = null;
+      let open = () => {};
+      const gate = new Promise<void>((resolve) => (open = resolve));
+      service.runner.inject.holdRegister = (request) => {
+        held = request.repositoryId;
+        return gate;
+      };
+      const { requestId } = sendClone(service, destination, native(origin));
+      const operationId = await service.operationId(requestId);
+      await until(() => held !== null, "held register");
+      await service.cancel(operationId);
+      open();
+      const response = await service.response<Cloned>(requestId);
+      expect(outcome(response)).toEqual({ state: "canceled", code: "CANCELED" });
+      expect(service.runner.frames).toContainEqual({ type: "release", repositoryId: held });
+      expect({ exists: response.result!.exists, empty: response.result!.empty }).toEqual(onDisk(destination));
+      service.runner.inject.holdRegister = null;
+    });
+  }, TIMEOUT_MS);
+
+  caseTest(TASK, "a broken second destinationFacts read keeps the code of the step and gives the code-only result", SHELL, async () => {
+    const h = hostFor("t052-broken-facts");
+    const { origin } = buildFetchFlags(h);
+    const destination = native(`${h.root}/broken`);
+    await withSync("t052-broken-facts", async (service) => {
+      let reads = 0;
+      service.runner.inject.destinationFacts = () => {
+        if (++reads === 2) throw new TypeError("broken channel");
+      };
+      // The ceiling ends the clone process, so the step code is DEADLINE.
+      service.runner.inject.limits = { ceilingMs: 1 };
+      const response = await clone(service, destination, native(origin));
+      expect({ ...outcome(response), result: response.result, reads }).toEqual({ state: "failed", code: "DEADLINE", result: undefined, reads: 2 });
+      service.runner.inject.limits = {};
+      service.runner.inject.destinationFacts = null;
+    });
+  }, TIMEOUT_MS);
+
   caseTest(TASK, "an empty remote opens with an unborn branch, as Git's own clone has it", SHELL, async () => {
     const h = hostFor("t052-empty-remote");
     const url = native(buildEmptyRemote(h));

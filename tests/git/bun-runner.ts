@@ -481,6 +481,10 @@ export function createBunRunner(options: BunRunnerOptions) {
     limits: {} as { inactivityMs?: number; ceilingMs?: number; stallMs?: number },
     // The shell setting `sshClient` (feature 003 data-model §10). The double holds no key file, so `plink` replies `none` or `failed`.
     sshClient: "git" as "git" | { plink: string },
+    // Runs before each `destinationFacts` reply. A throw replaces the reply, as a broken channel does.
+    destinationFacts: null as ((request: { operationId: string; cloneId: string }) => void) | null,
+    // A repository `register` waits for this promise before its reply.
+    holdRegister: null as ((request: { repositoryId: string }) => Promise<void>) | null,
   };
   // Each WSL identity reply with its UNC path, in order.
   const wslIdentityLog: { path: string; reply: WslIdentityReply }[] = [];
@@ -1192,6 +1196,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       }
       if (bound.kind !== "repositoryDiscovery" || !gits.has(request.gitInstallationId)) throw unknownTarget();
       if (issued.has(request.repositoryId)) throw new RunnerRefusal("INVALID_REQUEST", "issued ID");
+      await inject.holdRegister?.(request);
       const { worktreeRoot, gitDirectory, commonDirectory, gitInstallationId } = request;
       const parts = wslParts(bound.path);
       if (parts) {
@@ -1311,6 +1316,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     async destinationFacts(request): Promise<DestinationFactsReply> {
       checkSyncRequest("destinationFacts", request);
       frames.push({ type: "destinationFacts", ...request });
+      inject.destinationFacts?.(request);
       const bound = contexts.get(request.cloneId);
       if (inactive.has(request.operationId) || bound?.kind !== "clone") throw unknownTarget();
       own(request.cloneId, request.operationId);

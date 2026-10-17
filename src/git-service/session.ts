@@ -252,7 +252,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
 
   // Contract §11 "Route". The service holds only the bootstrap ID, so the shell names the context path. A WSL path needs no Windows Git.
   // The reply path, and for a WSL path the approved WSL Git of the distro. The caller handles a runner refusal.
-  async function routeGit(target: RouteTarget): Promise<{ ok: true; path: string; wsl?: { git: WslGit; linuxPath: string } } | Exclude<RegistrationOutcome, { ok: true }>> {
+  async function routeGit(target: RouteTarget): Promise<{ ok: true; path: string; wsl?: { git: WslGit; linuxPath: string; identityPath: string } } | Exclude<RegistrationOutcome, { ok: true }>> {
     const { operationId, bootstrapId, signal } = target;
     const reply = await runner.wslDistros({ operationId, bootstrapId });
     const route = routeRegistration(reply);
@@ -273,7 +273,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       wslGits.set(route.guid, approved.git);
     }
     if (approved.changed) return { ok: false, code: "GIT_CHANGED" };
-    return { ok: true, path: reply.path, wsl: { git: approved.git, linuxPath: route.linuxPath } };
+    return { ok: true, path: reply.path, wsl: { git: approved.git, linuxPath: route.linuxPath, identityPath: route.identityPath } };
   }
 
   const refusedRoute = (error: unknown, signal: AbortSignal): { ok: false; code: ErrorCode } => {

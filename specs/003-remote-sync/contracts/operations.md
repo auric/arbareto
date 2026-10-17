@@ -119,10 +119,10 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
   3. `pageant {cloneId}` on a Windows Git (Δ6).
   4. `--no-lazy-fetch clone --progress --no-recurse-submodules -- <url> <Git argument>` [`remote`], network limits, phase `clone`.
   5. Exit 0: the 001 `chooseRepository` registration flow with the same `bootstrapId`, from `wslDistros` on. The top level must equal the destination. The result is the `chooseRepository` result.
-     - The identity request of the registration also names the destination. A top level with another identity gives `REPOSITORY_UNAVAILABLE`, and nothing registers.
+     - The identity request of the registration also names the destination, for a WSL path in its 001 §11 identity form. A top level with another identity gives `REPOSITORY_UNAVAILABLE`, and nothing registers.
      - A refused registration after exit 0 gives its own code with the step 6 result, not the `chooseRepository` refusal result (FR-051).
   6. Otherwise: `destinationFacts` again. The result holds `{exists, empty}`, the redacted `outputTail`, and the remedy `& '<git>' clone -- '<url>' '<destination>'`, or text only when the URL holds user information or the Git is a WSL Git.
-     - A second reply `error`, or a refused request, gives the code without `{exists, empty}`.
+     - A second reply `error`, or a failed request, gives the code of the step without `{exists, empty}`.
      - A WSL clone process without an exit status gives the code only, because no process-end fact exists without a registered workspace (plan.md "Open items").
 - Shell finish: store the recent entry and `lastCloneParent`.
 

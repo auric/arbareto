@@ -1543,7 +1543,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 recovery={recovery !== null && recovery.repositoryId === state.repository?.repositoryId ? recovery.statement : undefined}
                 pushRow={
                   sync.notice !== null ? (
-                    <PushNoticeRow notice={sync.notice} {...sync.noticeActions} reason={reasons.pullReason} fetchReason={reasons.fetchReason} bindControl={bindBandControl} />
+                    <PushNoticeRow notice={sync.notice} {...sync.noticeActions} reason={reasons.pullReason} fetchReason={reasons.fetchReason} running={running} bindControl={bindBandControl} />
                   ) : undefined
                 }
                 pullModeRow={sync.modeChoice ? <PullModeChoice onChoose={sync.chooseMode} onCancel={sync.cancelMode} reason={syncBlock} running={running} bindControl={bindBandControl} /> : undefined}

@@ -346,7 +346,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
     - The rule applies while `operation !== null && response === null`, for a sync and for every other mutation, such as a commit, a stage, or a submodule update.
     - The reason text is "A Git operation is running. Its progress and Cancel are in the status bar." A visually hidden element holds it for `aria-describedby`. The toolbar shows no inline reason line for it.
     - Fetch, Pull, and Push stay disabled and focusable. Every other unavailable reason keeps its visible inline line.
-    - The same rule applies to the actions of the Pull mode row and the conflict row. The Skip tooltip shows the Skip text, then the reason.
+    - The same rule applies to the actions of the push-rejected row, the Pull mode row, and the conflict row. The Skip tooltip shows the Skip text, then the reason.
     - While an operation runs, a Space refusal does not hide the status bar progress text.
   - Running sync action: the control of the running action shows its progress text, and a Cancel icon button follows it.
     - Fetch and Fetch all remotes show "Fetching…" at Fetch. Pull in every mode, and `integrate`, show "Pulling…" at Pull. Push and Force push with lease show "Pushing…" at Push.

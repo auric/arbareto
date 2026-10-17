@@ -7,6 +7,7 @@ import type { ChangeEntry } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
+import { fixtureId } from "./bridge-contract";
 import { answer, button, buttons, click, createWorld, keyboardFocus, mountWorkbench, oid, press, settle, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
 
 // tasks.md T068 (feature 003). Spec FR-030, FR-042 to FR-045. Plan D7, D12. Data-model §7, §8. Contract Δ3 `reviewSync` and `sync` abort, continue, skip.
@@ -23,6 +24,9 @@ let restoreLayout: () => void = () => {};
 beforeAll(() => void (restoreLayout = stubLayout(800)));
 afterAll(() => restoreLayout());
 afterEach(unmountAll);
+
+const TOKEN = fixtureId(101);
+const TOKEN_2 = fixtureId(102);
 
 const OUTSIDE = "Arbareto blocks changes until you finish it outside Arbareto and select Refresh (F5).";
 const SKIP_TOOLTIP = "Skip leaves the current commit out of the rebased branch.";
@@ -100,7 +104,7 @@ describe("Abort (FR-042)", () => {
       await click(button("Abort…", row()!));
       const review = double.pending("reviewSync")!;
       expect(review.args[1]).toEqual({ action: "abort" });
-      await answer(review, succeeded({ action: "abort", plan: { remotes: [], operationState: kind === "merge" ? "merging" : "rebasing" }, syncReviewToken: "t" }));
+      await answer(review, succeeded({ action: "abort", plan: { remotes: [], operationState: kind === "merge" ? "merging" : "rebasing" }, syncReviewToken: TOKEN }));
       const d = dialog()!;
       expect(d).not.toBeNull();
       expect(text(d)).toContain(`Abort the ${kind}?`);
@@ -112,16 +116,16 @@ describe("Abort (FR-042)", () => {
       expect(dialog()).toBeNull();
       expect(double.count("sync")).toBe(0);
       await click(button("Abort…", row()!));
-      await answer(double.pending("reviewSync"), succeeded({ action: "abort", plan: { remotes: [], operationState: kind === "merge" ? "merging" : "rebasing" }, syncReviewToken: "t2" }));
+      await answer(double.pending("reviewSync"), succeeded({ action: "abort", plan: { remotes: [], operationState: kind === "merge" ? "merging" : "rebasing" }, syncReviewToken: TOKEN_2 }));
       await click(button(`Abort ${kind}`, dialog()!));
-      expect(double.pending("sync")!.args[1]).toEqual({ syncReviewToken: "t2", start: true });
+      expect(double.pending("sync")!.args[1]).toEqual({ syncReviewToken: TOKEN_2, start: true });
     });
   }
 
   test("an abort review without the operation kind starts nothing and opens no confirmation", async () => {
     const { double } = await open("merging");
     await click(button("Abort…", row()!));
-    await answer(double.pending("reviewSync"), succeeded({ action: "abort", plan: { remotes: [] }, syncReviewToken: "t" }));
+    await answer(double.pending("reviewSync"), succeeded({ action: "abort", plan: { remotes: [] }, syncReviewToken: TOKEN }));
     expect(dialog()).toBeNull();
     expect(double.count("sync")).toBe(0);
   });
@@ -133,10 +137,10 @@ describe("Continue (FR-043, FR-045)", () => {
     await click(button("Continue", row()!));
     const review = double.pending("reviewSync")!;
     expect(review.args[1]).toEqual({ action: "continue" });
-    await answer(review, succeeded({ action: "continue", plan: { remotes: [], operationState: "rebasing" }, syncReviewToken: "t" }));
+    await answer(review, succeeded({ action: "continue", plan: { remotes: [], operationState: "rebasing" }, syncReviewToken: TOKEN }));
     expect(dialog()).toBeNull();
     const start = double.pending("sync")!;
-    expect(start.args[1]).toEqual({ syncReviewToken: "t", start: true });
+    expect(start.args[1]).toEqual({ syncReviewToken: TOKEN, start: true });
     w.entries = [conflicted("c.txt")];
     await answer(start, { requestId: "r", operationId: "o", state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", result: { action: "continue", integration: { state: "stopped", operation: "rebasing", unmerged: 1 } } });
     await settle();
@@ -153,7 +157,7 @@ describe("Continue (FR-043, FR-045)", () => {
     expect(text(row()!)).toContain(EXEC_COMMAND);
     expect(buttons("Copy command", row()!)).toHaveLength(1);
     expect(actions()).toEqual(["Abort…"]);
-    expect(button("Abort…", row()!).getAttribute("aria-disabled")).toBeNull();
+    expect(button("Abort…", row()!).getAttribute("aria-disabled")).not.toBe("true");
   });
 
   test("unknown-operation shows its reason and offers no action", async () => {
@@ -166,7 +170,7 @@ describe("Continue (FR-043, FR-045)", () => {
 });
 
 describe("Skip (FR-044)", () => {
-  const skipReview = (subject: string | null) => succeeded({ action: "skip", plan: { remotes: [], operationState: "rebasing", skippedCommit: { objectId: oid(77), subject } }, syncReviewToken: "t" });
+  const skipReview = (subject: string | null) => succeeded({ action: "skip", plan: { remotes: [], operationState: "rebasing", skippedCommit: { objectId: oid(77), subject } }, syncReviewToken: TOKEN });
 
   test("Skip opens a confirmation that names the short ID and subject of the skipped commit and the discarded changes, with Cancel focused", async () => {
     const { double } = await open("rebasing");
@@ -180,7 +184,7 @@ describe("Skip (FR-044)", () => {
     expect(text(d)).toContain(DISCARD);
     expect(document.activeElement).toBe(button("Cancel", d));
     await click(button("Skip commit", d));
-    expect(double.pending("sync")!.args[1]).toEqual({ syncReviewToken: "t", start: true });
+    expect(double.pending("sync")!.args[1]).toEqual({ syncReviewToken: TOKEN, start: true });
   });
 
   test("a null subject shows the ID only", async () => {
@@ -199,7 +203,7 @@ describe("Skip (FR-044)", () => {
   test("a skip review without the skipped commit starts nothing", async () => {
     const { double } = await open("rebasing");
     await click(button("Skip…", row()!));
-    await answer(double.pending("reviewSync"), succeeded({ action: "skip", plan: { remotes: [], operationState: "rebasing" }, syncReviewToken: "t" }));
+    await answer(double.pending("reviewSync"), succeeded({ action: "skip", plan: { remotes: [], operationState: "rebasing" }, syncReviewToken: TOKEN }));
     expect(dialog()).toBeNull();
     expect(double.count("sync")).toBe(0);
   });

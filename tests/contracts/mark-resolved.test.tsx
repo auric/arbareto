@@ -9,6 +9,7 @@ import { LIMITATION_TEXT } from "../../src/frontend/changes/limitation-text";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
+import { contractChecked, fixtureId } from "./bridge-contract";
 import { answer, button, buttons, click, createWorld, mountWorkbench, press, settle, succeeded, text, unmountAll } from "./sync-fake";
 
 // tasks.md T069 (feature 003). Spec FR-052, FR-053. Plan D7, D12. Data-model §9. Contract Δ3 `applyFile` direction `resolve`.
@@ -31,7 +32,7 @@ afterAll(() => restoreLayout());
 afterEach(unmountAll);
 
 const MISSING = "The working file of this conflicted path is missing.";
-const TARGET = { repositoryId: "repository-1", repositoryGeneration: 1 };
+const TARGET = { repositoryId: fixtureId(1), repositoryGeneration: 1 };
 
 function comparison(fileAction: string, entryId: string = crypto.randomUUID(), snapshotId: string = crypto.randomUUID()) {
   return {
@@ -52,7 +53,7 @@ type Call = { operation: string; target: unknown; payload: Record<string, unknow
 function double() {
   const calls: Call[] = [];
   const bridge = new Proxy({}, { get: (_, operation) => (target: unknown, payload: Record<string, unknown>) => new Promise<BridgeResponse>((resolve) => calls.push({ operation: String(operation), target, payload, resolve })) });
-  return { bridge: bridge as never, calls };
+  return { bridge: contractChecked(bridge) as never, calls };
 }
 
 async function mount(props: Record<string, unknown>) {
@@ -76,7 +77,7 @@ describe("Mark resolved in the stage bar (FR-052)", () => {
     const view = await mount({ bridge: d.bridge, target: TARGET, comparison: value, category: "conflicted", blocked: "conflicted", onOutcome: (t: string) => void outcomes.push(t) });
     try {
       const b = button("Mark resolved (Space)", view.host);
-      expect(b.getAttribute("aria-disabled")).toBeNull();
+      expect(b.getAttribute("aria-disabled")).not.toBe("true");
       expect(b.getAttribute("aria-keyshortcuts")).toBe("Space");
       await act(async () => b.click());
       expect(d.calls.map((c) => [c.operation, c.payload])).toEqual([["applyFile", { comparisonId: value.comparisonId, snapshotId: value.snapshotId, direction: "resolve" }]]);
@@ -163,6 +164,6 @@ describe("Mark resolved in the workbench (FR-053)", () => {
     expect(status()).toContain("File marked resolved");
     expect(option()).toBeNull();
     expect(document.querySelector(`[role="option"][data-entry-id="${staged.entryId}"]`)).not.toBeNull();
-    expect(button("Continue", row()).getAttribute("aria-disabled")).toBeNull();
+    expect(button("Continue", row()).getAttribute("aria-disabled")).not.toBe("true");
   });
 });

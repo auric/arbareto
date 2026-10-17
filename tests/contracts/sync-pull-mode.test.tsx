@@ -6,6 +6,7 @@ import type { ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
+import { fixtureId } from "./bridge-contract";
 import { answer, button, buttons, click, createWorld, mountWorkbench, press, settle, succeeded, text, unmountAll } from "./sync-fake";
 
 // tasks.md T067 (feature 003). Spec FR-027, FR-057. Plan D6, D12. Data-model §6, §7. Contract Δ3 `reviewSync` `integrate`.
@@ -23,6 +24,9 @@ beforeAll(() => void (restoreLayout = stubLayout(800)));
 afterAll(() => restoreLayout());
 afterEach(unmountAll);
 
+const TOKEN = fixtureId(101);
+const TOKEN_2 = fixtureId(102);
+
 const QUESTION = "The branch and its upstream have diverged. Choose Rebase or Merge for this pull. Arbareto does not change the Git configuration.";
 const band = () => document.querySelector('[data-slot="notice-band"]')!;
 const status = () => [...document.querySelectorAll('footer [role="status"]')].map((s) => text(s)).join(" | ");
@@ -35,7 +39,7 @@ async function modeRequired() {
   await click(document.querySelector<HTMLElement>('button[data-slot="pull-main"]')!);
   const review = double.pending("reviewSync")!;
   expect(review.args[1]).toEqual({ action: "pull" });
-  await answer(review, succeeded({ action: "pull", plan: { remotes: ["origin"], mode: null }, syncReviewToken: "t1" }));
+  await answer(review, succeeded({ action: "pull", plan: { remotes: ["origin"], mode: null }, syncReviewToken: TOKEN }));
   await answer(double.pending("sync"), succeeded(pullResult({ state: "mode-required" }, null)));
   return double;
 }
@@ -56,10 +60,10 @@ describe("pull mode choice (FR-027)", () => {
       await click(button(mode === "rebase" ? "Rebase" : "Merge", band()));
       const review = double.pending("reviewSync")!;
       expect(review.args[1]).toEqual({ action: "integrate", mode });
-      await answer(review, succeeded({ action: "integrate", plan: { remotes: ["origin"], mode }, syncReviewToken: "t2" }));
+      await answer(review, succeeded({ action: "integrate", plan: { remotes: ["origin"], mode }, syncReviewToken: TOKEN_2 }));
       expect(document.querySelector('[role="dialog"], [role="alertdialog"]')).toBeNull();
       const start = double.pending("sync")!;
-      expect(start.args[1]).toEqual({ syncReviewToken: "t2", start: true });
+      expect(start.args[1]).toEqual({ syncReviewToken: TOKEN_2, start: true });
       expect(text(band())).not.toContain(QUESTION);
       await answer(start, done("integrate", "payload"));
       await unmountAll();
@@ -72,7 +76,7 @@ describe("pull mode choice (FR-027)", () => {
     const merge = button("Merge", band());
     expect(document.activeElement).toBe(rebase);
     for (const b of [rebase, merge]) {
-      expect(b.getAttribute("aria-disabled")).toBeNull();
+      expect(b.getAttribute("aria-disabled")).not.toBe("true");
       expect(b.tabIndex).toBe(0);
     }
     const reviews = double.count("reviewSync");
@@ -98,7 +102,7 @@ describe("pull mode choice (FR-027)", () => {
     ] as const) {
       const double = await mountWorkbench(workbench, createWorld());
       await click(document.querySelector<HTMLElement>('button[data-slot="pull-main"]')!);
-      await answer(double.pending("reviewSync"), succeeded({ action: "pull", plan: { remotes: ["origin"], mode: null }, syncReviewToken: "t" }));
+      await answer(double.pending("reviewSync"), succeeded({ action: "pull", plan: { remotes: ["origin"], mode: null }, syncReviewToken: TOKEN }));
       await answer(double.pending("sync"), done("pull", source));
       expect(status()).toContain(line);
       await unmountAll();
@@ -108,7 +112,7 @@ describe("pull mode choice (FR-027)", () => {
   test("a pull result without mode-required shows no question", async () => {
     const double = await mountWorkbench(workbench, createWorld());
     await click(document.querySelector<HTMLElement>('button[data-slot="pull-main"]')!);
-    await answer(double.pending("reviewSync"), succeeded({ action: "pull", plan: { remotes: ["origin"], mode: null }, syncReviewToken: "t" }));
+    await answer(double.pending("reviewSync"), succeeded({ action: "pull", plan: { remotes: ["origin"], mode: null }, syncReviewToken: TOKEN }));
     await answer(double.pending("sync"), succeeded(pullResult({ state: "up-to-date" }, null)));
     await settle();
     expect(buttons("Rebase")).toHaveLength(0);

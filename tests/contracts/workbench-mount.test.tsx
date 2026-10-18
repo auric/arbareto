@@ -411,6 +411,22 @@ describe("submodule update mount", () => {
     expect(double.calls.filter((c) => c.operation === "reviewSubmodules")).toHaveLength(reviews);
   });
 
+  test("feature 003 plan D12: while a submodule update runs, Fetch, Pull, and Push are disabled with the tooltip-only running reason, and the toolbar shows no inline line", async () => {
+    await started();
+    const SYNC_RUNNING = "A Git operation is running. Its progress and Cancel are in the status bar.";
+    const group = document.querySelector<HTMLElement>('[role="group"][aria-label="Remote sync"]')!;
+    expect(group.textContent).not.toContain(RUNNING_TEXT);
+    expect(group.querySelector('[data-slot="sync-running"]')).toBeNull();
+    for (const label of ["Fetch", "Push"]) {
+      const control = group.querySelector<HTMLElement>(`button[aria-label="${label}"]`)!;
+      expect(control.getAttribute("aria-disabled")).toBe("true");
+      expect(describedBy(control)).toBe(SYNC_RUNNING);
+      expect(document.getElementById(control.getAttribute("aria-describedby")!)!.classList.contains("sr-only")).toBe(true);
+    }
+    // The default pull action never loads in this world. That reason is not the running reason, so it keeps its inline line.
+    expect(describedBy(group.querySelector('button[data-slot="pull-main"]')!)).toBe("Pull: The default pull action is still loading…");
+  });
+
   test("the band shows the service count and Update submodules with its icon, and the row leaves after a read without such submodules", async () => {
     const double = await mount(succeeded(REGISTRATION));
     await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));

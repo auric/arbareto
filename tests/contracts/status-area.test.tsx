@@ -17,7 +17,7 @@ const { createRoot } = await import("react-dom/client");
 const { OperationStatus, outcomeFocus } = await import("../../src/frontend/status/OperationStatus");
 type Props = Parameters<typeof OperationStatus>[0];
 type Operation = NonNullable<Props["operation"]>;
-type Handle = { entry(): HTMLElement | null; cancel(): HTMLElement | null };
+type Handle = { entry(): HTMLElement | null; cancel(): HTMLElement | null; requestCancel(): void };
 
 // plan.md "Status area", "Long text", and "Required visible states" (Succeeded, Busy); contract §6 "Activity and stall notice"; contract §9; research.md R4.
 const COMMITTED = "Committed 0123456789ab to main";
@@ -448,6 +448,14 @@ describe("live-node counts", () => {
     expect(text(second)).toBe(REFUSAL);
     expect(changes(refused, outcome)).toEqual([0, 0]);
     expect(visible(outcome).querySelector('[role="status"]')!.getAttribute("class")?.split(/\s+/)).not.toContain("sr-only");
+  });
+
+  test("feature 003 plan D12: while an operation runs, a Space refusal does not hide the progress text", () => {
+    const op = running();
+    const [first, second] = [...visible(html({ operation: op, refusal: REFUSAL })).querySelectorAll('[role="status"]')];
+    expect(text(first)).toBe(`Committing in ${NAME}…`);
+    expect(first!.getAttribute("class")?.split(/\s+/)).not.toContain("sr-only");
+    expect(text(second)).toBe(REFUSAL);
   });
 
   test("the hunk and file outcomes read Hunk staged, Hunk unstaged, File staged, and File unstaged", () => {

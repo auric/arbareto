@@ -12,10 +12,12 @@ export type IconButtonProps = Omit<ComponentProps<typeof Button>, "children" | "
   label: string;
   /** The key: `aria` is the `aria-keyshortcuts` value, `text` is the tooltip text, as in "Alt+ArrowUp" and "Alt+Up". */
   keys?: { aria: string; text: string };
+  /** A second tooltip line, such as an unavailable reason without a visible line. */
+  note?: string;
 };
 
 /** plan.md "Icons": an icon-only row button. The tooltip names the action and the key, and opens on hover and on keyboard focus. */
-export function IconButton({ icon, label, keys, style, ...props }: IconButtonProps) {
+export function IconButton({ icon, label, keys, note, style, ...props }: IconButtonProps) {
   return (
     <Tooltip>
       <TooltipTrigger
@@ -33,7 +35,10 @@ export function IconButton({ icon, label, keys, style, ...props }: IconButtonPro
         {/* The icon keeps 16 DIPs at every text size. */}
         <HugeiconsIcon icon={icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
       </TooltipTrigger>
-      <TooltipContent>{keys === undefined ? label : `${label} (${keys.text})`}</TooltipContent>
+      <TooltipContent>
+        {keys === undefined ? label : `${label} (${keys.text})`}
+        {note === undefined ? null : <span className="block">{note}</span>}
+      </TooltipContent>
     </Tooltip>
   );
 }

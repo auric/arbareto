@@ -300,3 +300,102 @@ describe("keys (plan D12)", () => {
     expect(handle(event("ArrowDown", { ctrl: true }, [{ tagName: "TEXTAREA" }]) as never, context)).toBeNull();
   });
 });
+
+describe("running state on the toolbar (plan D12)", () => {
+  const RUNNING = "A Git operation is running. Its progress and Cancel are in the status bar.";
+  const group = () => document.querySelector<HTMLElement>('[role="group"][aria-label="Remote sync"]')!;
+  const running = () => document.querySelector<HTMLElement>('[data-slot="sync-running"]');
+  const slotOf = (element: Element) => element.closest("[data-sync-slot]")?.getAttribute("data-sync-slot") ?? null;
+  const hidden = (element: Element) => element.getAttribute("class")?.split(/\s+/).includes("sr-only") === true;
+
+  test("a running pull shows Pulling… and Cancel Pull at Pull; that Cancel sends the status bar cancel once, shows Cancel requested, and returns focus", async () => {
+    const { double } = await open();
+    const pull = await started(double, button("Pull"), "pull");
+    await progress(pull, { state: "running", phase: "sync-fetch" });
+    expect(text(running()!)).toBe("Pulling…");
+    expect(slotOf(running()!)).toBe("pull");
+    const cancel = button("Cancel Pull");
+    expect(slotOf(cancel)).toBe("pull");
+    expect(disabled(cancel)).toBe(false);
+    expect(cancel.tabIndex).toBe(0);
+    await keyboardFocus(cancel);
+    expect(tooltipText()).toBe("Cancel Pull");
+    // Cancel needs an explicit action. Escape sends nothing.
+    await press(cancel, "Escape");
+    expect(double.count("cancel")).toBe(0);
+    await click(cancel);
+    expect(double.pending("cancel")!.args[0]).toEqual({ operationId: fixtureId(0x211) });
+    // The status bar Cancel and the toolbar Cancel share one request guard.
+    await click(button("Cancel"));
+    expect(double.count("cancel")).toBe(1);
+    await progress(pull, { state: "cancel-requested", phase: "sync-fetch" });
+    expect(text(running()!)).toBe("Cancel requested");
+    expect(statusText()).toContain("Cancel requested");
+    await act(async () => cancel.focus());
+    await answer(pull, { requestId: "r", operationId: fixtureId(0x211), state: "canceled", result: { action: "pull" } });
+    expect(running()).toBeNull();
+    expect(buttons("Cancel Pull")).toHaveLength(0);
+    expect(document.activeElement).toBe(document.querySelector('button[data-slot="pull-main"]'));
+  });
+
+  test("each sync action shows its verb and Cancel <action name> at its own control", async () => {
+    const cases = [
+      { start: () => button("Fetch"), action: "fetch", verb: "Fetching…", cancel: "Cancel Fetch", slot: "fetch", plan: {} },
+      { menu: "Fetch options", start: () => menuItem("Fetch all remotes"), action: "fetch-all", verb: "Fetching…", cancel: "Cancel Fetch all remotes", slot: "fetch", plan: { remotes: ["origin", "upstream"] } },
+      { menu: "Pull options", start: () => menuItem("Pull with merge"), action: "pull", verb: "Pulling…", cancel: "Cancel Pull", slot: "pull", plan: {} },
+      { menu: "Pull options", start: () => menuItem("Pull with rebase"), action: "pull", verb: "Pulling…", cancel: "Cancel Pull", slot: "pull", plan: {} },
+      {
+        start: () => button("Push"),
+        action: "push",
+        verb: "Pushing…",
+        cancel: "Cancel Push",
+        slot: "push",
+        plan: { destination: { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "u", setUpstream: false, source: "push-default-branch" } },
+      },
+    ];
+    for (const c of cases) {
+      const { double } = await open();
+      if (c.menu !== undefined) await click(button(c.menu));
+      const sync = await started(double, c.start(), c.action, c.plan);
+      await progress(sync, { state: "running" });
+      expect(text(running()!)).toBe(c.verb);
+      expect(slotOf(running()!)).toBe(c.slot);
+      expect(slotOf(button(c.cancel))).toBe(c.slot);
+      await unmountAll();
+    }
+  });
+
+  test("while a sync runs, Fetch, Pull, and Push are disabled and focusable, and the running reason is only in the tooltip and a visually hidden description", async () => {
+    const { double } = await open();
+    const fetch = await started(double, button("Fetch"), "fetch");
+    await progress(fetch, { state: "running", phase: "sync-fetch" });
+    expect(text(group())).not.toContain(BLOCKED_TEXT.running);
+    for (const element of group().querySelectorAll("*")) if (element.children.length === 0 && text(element).includes(RUNNING)) expect(hidden(element)).toBe(true);
+    for (const [label, tip] of [
+      ["Fetch", "Fetch (Ctrl+Shift+Down)"],
+      ["Pull", "Pull (Ctrl+Down)"],
+      ["Push", "Push (Ctrl+Up)"],
+    ] as const) {
+      const control = button(label);
+      expect(disabled(control)).toBe(true);
+      expect(control.tabIndex).toBe(0);
+      expect(reasonOf(control)).toBe(RUNNING);
+      expect(hidden(document.getElementById(control.getAttribute("aria-describedby")!)!)).toBe(true);
+      await keyboardFocus(control);
+      expect(tooltipText()).toBe(`${tip}${RUNNING}`);
+    }
+    // The status bar progress text stays visible.
+    const status = document.querySelector('footer [role="status"][tabindex="-1"]')!;
+    expect(text(status)).toContain("Fetching from origin…");
+    expect(hidden(status)).toBe(false);
+  });
+
+  test("a reason other than a running operation keeps its visible inline line", async () => {
+    await open({ head: { state: "detached", oid: oid(1) }, branches: [] });
+    const reason = document.getElementById(button("Pull").getAttribute("aria-describedby")!)!;
+    expect(group().contains(reason)).toBe(true);
+    expect(hidden(reason)).toBe(false);
+    expect(text(reason)).toContain("No branch checked out.");
+    expect(running()).toBeNull();
+  });
+});

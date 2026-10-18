@@ -7,7 +7,7 @@
 import { describe, expect, spyOn } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
-import { APPROVAL_LIFETIME_MS, SUBMODULE_REVIEW_SUBMODULES } from "../../src/contracts/limits";
+import { APPROVAL_LIFETIME_MS, SUBMODULE_REVIEW_SUBMODULES, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
 import { redactUrlUserInfo, type SubmoduleAction } from "../../src/contracts/submodules";
 import * as approvalsModule from "../../src/git-service/approvals";
 import { printOrigin } from "../origin";
@@ -100,6 +100,32 @@ function passReviewBound(b: Built, dir: string): void {
   fixtureGit(b, dir, ["update-index", "--add", "--", ".gitmodules"]);
   const input = extra.map((p) => `160000 ${oid} 0\t${p}\0`).join("");
   ownedGit(gitPath(), FIXTURE_ROOT, dir, ["update-index", "-z", "--index-info"], { input: Buffer.from(input) });
+}
+
+// Contract §6 "Process fields": the UTF-16 units of the shell command line with its null. The program is quoted. The arguments hold no space, tab, or quote.
+function unitsOf(program: string, args: readonly string[]): number {
+  if (args.some((a) => a === "" || /[ \t"]/.test(a))) throw new Error("an argument needs quoting");
+  return args.reduce((n, a) => n + 1 + a.length, program.length + 3);
+}
+
+// Contract §12 "Review reads": the top-level `diff-files -p` read of the initialized gitlinks.
+const PATCH_ARGS = ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs", "diff-files", "-p", "--ignore-submodules=dirty", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--"];
+
+// Adds gitlinks with an empty `.git` folder, so that one `diff-files` batch of every initialized gitlink has exactly the command-line bound under `program`.
+// Each `<dir>\<path>\.git` stays under the 260-unit MAX_PATH of Git for Windows without `core.longpaths`.
+function fillPatchBatch(b: Built, dir: string, program: string): void {
+  const links = gitlinks(b, dir);
+  const initialized = Object.keys(links).filter((p) => existsSync(join(dir, p, ".git")));
+  const budget = WINDOWS_COMMAND_LINE_UNITS - unitsOf(program, [...PATCH_ARGS, ...initialized]);
+  const longest = 259 - join(dir, ".git").length - 1;
+  const count = Math.ceil(budget / (longest + 1));
+  if (count + Object.keys(links).length > SUBMODULE_REVIEW_SUBMODULES) throw new Error(`${count} gitlinks pass the review bound`);
+  const base = Math.floor(budget / count) - 1;
+  const extra = budget - count * (base + 1);
+  const paths = Array.from({ length: count }, (_, i) => `${i}`.padEnd(base + (i < extra ? 1 : 0), "x"));
+  for (const p of paths) mkdirSync(join(dir, p, ".git"), { recursive: true });
+  const oid = Object.values(links)[0]!;
+  ownedGit(gitPath(), FIXTURE_ROOT, dir, ["update-index", "-z", "--index-info"], { input: Buffer.from(paths.map((p) => `160000 ${oid} 0\t${p}\0`).join("")) });
 }
 
 describe("notice (contract §12 \"Discovery notice\")", () => {
@@ -542,6 +568,29 @@ describe("refusals (contract §12 \"Refusals\")", () => {
       const { r } = await reviewed(service, b);
       const limit = r.refusals.filter((x) => x.reason === "limit");
       expect(limit.map((x) => ({ text: x.text, command: x.remedy?.command ?? null, remedyText: x.remedy?.text }))).toEqual([{ text: TEXTS.limit, command: updateCommand(superOf(b)), remedyText: UPDATE_TEXT }]);
+    });
+  });
+
+  // Contract §6 "Process fields": the shell starts `executablePath`, and the command-line bound counts that program.
+  // The added gitlinks fill one `diff-files` batch to the bound under `selectedPath`. Under `executablePath`, that batch is too long.
+  reviewCase(`a diff-files batch that fits only under the selected Git path splits under the executable path, and the shell refuses no call`, () => {
+    const b = buildF27(gitPath(), "t222-batch-units", "base");
+    const sup = superOf(b);
+    return withFixture(b, "t222-batch-units", async (service) => {
+      const env = await service.request<{ selectedPath: string; executablePath: string }>("getEnvironment", {});
+      const { selectedPath, executablePath } = env.result!;
+      expect(executablePath.length).toBeGreaterThan(selectedPath.length);
+      fillPatchBatch(b, sup, selectedPath);
+      const from = callsSince(service).length;
+      const { r } = await reviewed(service, b);
+      const calls = callsSince(service, from);
+      expect(calls.filter((c) => c.refused !== undefined).map((c) => c.refused)).toEqual([]);
+      expect(r.response.code).not.toBe("INVALID_REQUEST");
+      const batches = calls.filter((c) => commandOf(c.arguments)[0] === "diff-files").map((c) => c.arguments);
+      const fixed = batches[0]!.slice(0, batches[0]!.indexOf("--") + 1);
+      const paths = batches.flatMap((args) => args.slice(args.indexOf("--") + 1));
+      expect(unitsOf(selectedPath, [...fixed, ...paths])).toBe(WINDOWS_COMMAND_LINE_UNITS);
+      expect(batches.map((args) => unitsOf(executablePath, args) <= WINDOWS_COMMAND_LINE_UNITS)).toEqual([true, true]);
     });
   });
 

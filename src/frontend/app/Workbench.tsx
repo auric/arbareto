@@ -1405,7 +1405,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 defaultAction={syncSettings.action}
                 settingsReason={syncSettings.reason}
                 count={trackingCount}
+                running={running ? { action: operation.kind === "sync" ? (operation.sync?.action ?? null) : null, cancelRequested: operation.progress?.state === "cancel-requested" } : null}
                 onRun={sync.run}
+                onCancel={() => statusRegion.current?.requestCancel()}
                 onSetDefault={(action) => void setDefaultPullAction(action)}
               />
             </span>
@@ -1541,10 +1543,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 recovery={recovery !== null && recovery.repositoryId === state.repository?.repositoryId ? recovery.statement : undefined}
                 pushRow={
                   sync.notice !== null ? (
-                    <PushNoticeRow notice={sync.notice} {...sync.noticeActions} reason={reasons.pullReason} fetchReason={reasons.fetchReason} bindControl={bindBandControl} />
+                    <PushNoticeRow notice={sync.notice} {...sync.noticeActions} reason={reasons.pullReason} fetchReason={reasons.fetchReason} running={running} bindControl={bindBandControl} />
                   ) : undefined
                 }
-                pullModeRow={sync.modeChoice ? <PullModeChoice onChoose={sync.chooseMode} onCancel={sync.cancelMode} reason={syncBlock} bindControl={bindBandControl} /> : undefined}
+                pullModeRow={sync.modeChoice ? <PullModeChoice onChoose={sync.chooseMode} onCancel={sync.cancelMode} reason={syncBlock} running={running} bindControl={bindBandControl} /> : undefined}
                 conflictRow={
                   workspace.operationState === "merging" || workspace.operationState === "rebasing" ? (
                     // A new operation state or HEAD is a new stop, so the row forgets the refusals of the last stop.
@@ -1553,6 +1555,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                       operationState={workspace.operationState}
                       conflicted={conflicted}
                       reason={syncBlock}
+                      running={running}
                       loading={loading}
                       onAction={sync.conflictAction}
                       bindControl={bindBandControl}

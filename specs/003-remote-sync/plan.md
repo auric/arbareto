@@ -342,6 +342,18 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
   - Pull is a split button (FR-055, FR-056). The main part runs the default action. The menu lists Pull (use Git's configuration), Pull with merge, Pull with rebase, Fetch, Fetch all remotes, and Set default action. Set default action is a submenu with radio items for the five actions. The shell stores the choice as `defaultPullAction` (data-model §10, contract Δ3 `setDefaultPullAction`), never in Git configuration. The icon and tooltip of the main part name the current default. Ctrl+Down runs the main part.
   - The pull actions map to `reviewSync {action: "pull"}`, `{action: "pull", mode: "merge"}`, and `{action: "pull", mode: "rebase"}`. A rebase action needs no further confirmation (FR-057).
   - Unavailable reasons come from `readWorkspace` (head, operation state) and `readTracking` (upstream). The review gives exact refusals, such as `remote-missing`.
+  - Unavailable because an operation runs: the reason goes into the tooltip and the accessible description; the status bar shows the progress and Cancel. This is the only exception to the 001 rule "Every disabled mutation control keeps its visible reason text".
+    - The rule applies while `operation !== null && response === null`, for a sync and for every other mutation, such as a commit, a stage, or a submodule update.
+    - The reason text is "A Git operation is running. Its progress and Cancel are in the status bar." A visually hidden element holds it for `aria-describedby`. The toolbar shows no inline reason line for it.
+    - Fetch, Pull, and Push stay disabled and focusable. Every other unavailable reason keeps its visible inline line.
+    - The same rule applies to the actions of the push-rejected row, the Pull mode row, and the conflict row. The Skip tooltip shows the Skip text, then the reason.
+    - While an operation runs, a Space refusal does not hide the status bar progress text.
+  - Running sync action: the control of the running action shows its progress text, and a Cancel icon button follows it.
+    - Fetch and Fetch all remotes show "Fetching…" at Fetch. Pull in every mode, and `integrate`, show "Pulling…" at Pull. Push and Force push with lease show "Pushing…" at Push.
+    - After Cancel, the text is "Cancel requested" until the response comes.
+    - The accessible name and the tooltip of Cancel are "Cancel <action name>", with the mutation names below. It sends the status bar Cancel request for the same operation ID.
+    - Escape does not cancel. When the response removes Cancel while it has focus, focus moves to the action control.
+    - Abort, Continue, and Skip show no progress in the toolbar. The status bar shows it.
   - While `readSyncSettings` runs, the Pull main part shows the reason "The default pull action is still loading…".
   - A failed `readSyncSettings` shows the Pull main part reason "The default pull action did not load: <code>." `<code>` is the response code, or the response state without a code.
   - A review result without a `syncReviewToken` starts nothing. A `force-push` plan without `destination` or `lease` also starts nothing and opens no confirmation (FR-024). The status bar then shows "<action name> did not start: the review is incomplete."

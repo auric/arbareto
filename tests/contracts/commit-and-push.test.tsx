@@ -105,7 +105,8 @@ describe("Commit and push (FR-038)", () => {
   test("an unborn branch keeps Commit and push available; the push review decides", async () => {
     const world = createWorld({ head: { state: "unborn", target: "refs/heads/main" }, branches: [], oids: [], entries: [{ entryId: "e1", category: "staged", path: "a.ts", pathBytes: "YS50cw==" }] as never });
     await mountWorkbench(workbench, world);
-    await click(document.querySelector('[role="option"][data-row-id="working-directory"]')!);
+    // Feature 004 T042 (plan.md P5 risk): the Commit view replaces the docked commit panel.
+    await click(button("Commit", document.querySelector('header nav[aria-label="Views"]')!));
     await typeInto(document.querySelector("textarea")!, "First commit");
     const control = button("Commit and push");
     expect(control.hasAttribute("disabled") || control.getAttribute("aria-disabled") === "true").toBe(false);
@@ -116,7 +117,8 @@ describe("Commit and push (FR-038)", () => {
   test("the push review takes the target after the reconcile read of the commit", async () => {
     const world = createWorld({ entries: [{ entryId: "e1", category: "staged", path: "a.ts", pathBytes: "YS50cw==" }] as never });
     const double = await mountWorkbench(workbench, world);
-    await click(document.querySelector('[role="option"][data-row-id="working-directory"]')!);
+    // Feature 004 T042 (plan.md P5 risk): the Commit view replaces the docked commit panel.
+    await click(button("Commit", document.querySelector('header nav[aria-label="Views"]')!));
     await typeInto(document.querySelector("textarea")!, "Fix the parser");
     await click(button("Commit and push"));
     await answer(double.pending("readTrust"), ok(REPORT));
@@ -135,7 +137,8 @@ describe("Commit and push (FR-038)", () => {
   test("a rejected push after a commit keeps the commit and shows the push-rejected notice", async () => {
     const world = createWorld({ entries: [{ entryId: "e1", category: "staged", path: "a.ts", pathBytes: "YS50cw==" }] as never });
     const double = await mountWorkbench(workbench, world);
-    await click(document.querySelector('[role="option"][data-row-id="working-directory"]')!);
+    // Feature 004 T042 (plan.md P5 risk): the Commit view replaces the docked commit panel.
+    await click(button("Commit", document.querySelector('header nav[aria-label="Views"]')!));
     const field = document.querySelector("textarea")!;
     await typeInto(field, "Fix the parser");
     await click(button("Commit and push"));

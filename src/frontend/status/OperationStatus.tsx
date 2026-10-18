@@ -23,7 +23,9 @@ type SyncAction = (typeof SYNC_ACTIONS)[number];
 export type StatusOperation = {
   /** A new value starts a new operation: the area and its content clear. */
   requestId: string;
-  kind: "commit" | "applyHunk" | "applyFile" | "updateSubmodules" | "sync";
+  kind: "commit" | "applyHunk" | "applyFile" | "updateSubmodules" | "sync" | "applyFiles" | "runWorkbench";
+  /** Feature 004: the name, the running text, and the area heading of an `applyFiles` or `runWorkbench` operation (plan.md D15). */
+  texts?: [name: string, running: string, heading: string];
   /** Feature 003 FR-052: `resolve` is Mark resolved. */
   direction?: "stage" | "unstage" | "resolve";
   /** Feature 003: the action of a `sync` and the remotes of its review plan, in `git remote` order (contract Δ3). */
@@ -135,6 +137,7 @@ export const SYNC_NAMES: Record<SyncAction, string> = {
   skip: "Skip",
 };
 function textsOf(op: StatusOperation): [name: string, running: string, heading: string] {
+  if (op.texts !== undefined) return op.texts;
   if (op.kind === "sync") {
     const name = SYNC_NAMES[op.sync?.action ?? "fetch"];
     return [name, name, `${name} details`];
@@ -306,6 +309,9 @@ function operationText(op: StatusOperation, worktreeRoot: string, head: Head | n
     const step = op.kind === "updateSubmodules" && progress?.phase !== undefined ? SUBMODULE_STEPS[progress.phase] : undefined;
     const { rowIndex, rowCount } = progress?.counters ?? {};
     if (step !== undefined && progress?.path !== undefined && rowIndex !== undefined && rowCount !== undefined) return { lead: `${step} ${progress.path} (${rowIndex} of ${rowCount})…`, tail: "" };
+    // Feature 004 contract Δ2: the `stage-files` phase counts the proved files.
+    const { fileIndex, fileCount } = progress?.phase === "stage-files" ? progress.counters : {};
+    if (fileIndex !== undefined && fileCount !== undefined) return { lead: `${verb} (${fileIndex} of ${fileCount})…`, tail: "" };
     const syncStep = op.kind === "sync" ? syncStepText(op) : null;
     if (syncStep !== null) return { lead: syncStep, tail: "" };
     return { lead: `${verb} in ${folderName(worktreeRoot)}…`, tail: "" };
@@ -328,7 +334,8 @@ function operationText(op: StatusOperation, worktreeRoot: string, head: Head | n
     else if (op.kind === "applyHunk") line.lead = op.direction === "unstage" ? "Hunk unstaged" : "Hunk staged";
     else if (op.kind === "applyFile") line.lead = op.direction === "unstage" ? "File unstaged" : op.direction === "resolve" ? "File marked resolved" : "File staged";
     else if (op.kind === "updateSubmodules") line.lead = "Submodules updated";
-    else if (op.kind === "sync") line.lead = `${name} completed`;
+    else if (op.kind === "sync" || op.kind === "runWorkbench") line.lead = `${name} completed`;
+    else if (op.kind === "applyFiles") line.lead = op.direction === "unstage" ? "Files unstaged" : "Files staged";
   }
   const count = outcome.lingeringDescendants ?? 0;
   if (count === 0) return line;

@@ -166,6 +166,16 @@ async function selectRow(id: string) {
   await act(async () => option!.click());
   await settle();
 }
+// Feature 004 T042 (plan.md P5 risk): the 001 commit panel tests run in the Commit view, which replaces the docked commit panel.
+async function switchView(name: "Commit" | "History") {
+  const nav = document.querySelector<HTMLElement>('header nav[aria-label="Views"]')!;
+  await act(async () => [...nav.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === name)!.click());
+  await settle();
+}
+const openCommitView = () => switchView("Commit");
+const COMMIT_VIEW = 'section[aria-label="Commit view"]';
+// The commit view grid: the lane, the comparison, and the tray cells.
+const commitGrid = () => document.querySelector<HTMLElement>(`${COMMIT_VIEW} [data-section="workingChanges"]`)!.parentElement!;
 
 describe("start", () => {
   test("a canceled restoreWorkspace, which means no stored repository, shows the start page, No repository open, and no refusal", async () => {
@@ -245,7 +255,8 @@ describe("History", () => {
     await selectRow(HEAD);
     const dock = document.querySelector('section[aria-label="Dock"]')!;
     expect(dock.textContent).toContain("Selected commit");
-    expect(dock.querySelector('section[aria-label="Commit panel"]')!.closest("[hidden]")).not.toBeNull();
+    expect(dock.querySelector('section[aria-label="Working directory summary"]')).toBeNull();
+    expect(document.querySelector(COMMIT_VIEW)).toBeNull();
   });
 });
 
@@ -255,8 +266,8 @@ describe("mounted controls", () => {
     const double = await mount(succeeded(REGISTRATION));
     await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
-    await selectRow("working-directory");
-    const panel = document.querySelector('section[aria-label="Commit panel"]')!;
+    await openCommitView();
+    const panel = document.querySelector(COMMIT_VIEW)!;
     expect(panel.querySelectorAll("textarea")).toHaveLength(1);
     const commit = [...panel.querySelectorAll("button")].find((b) => b.textContent === "Commit (Ctrl+Enter)")!;
     expect(commit.getAttribute("aria-disabled")).toBe("true");
@@ -551,22 +562,22 @@ describe("submodule update mount", () => {
   });
 
   for (const [width, height, profile] of [[1600, 900, "wide"], [960, 900, "narrow"], [720, 480, "constrained"]] as const) {
-    test(`at ${width}x${height} (${profile}), F6 visits the header, the band, the references, the history list, the commit panel sections, and wraps`, async () => {
+    test(`at ${width}x${height} (${profile}), F6 in the Commit view visits the header, the band, Changes, Staged, the diff, the message, and wraps (plan D15)`, async () => {
       await sized(width, height, async () => {
         const double = await mount(succeeded(REGISTRATION));
         expect(document.querySelector("[data-profile]")!.getAttribute("data-profile")).toBe(profile);
         await serveHistory(double);
         await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
-        await selectRow("working-directory");
+        await openCommitView();
         const sectionOf = () => document.activeElement!.closest("[data-section]")?.getAttribute("data-section");
         await act(async () => document.querySelector<HTMLElement>('header button[aria-keyshortcuts="Control+R"]')!.focus());
         const seen: (string | null | undefined)[] = [];
-        for (let i = 0; i < 8; i++) {
+        for (let i = 0; i < 6; i++) {
           await act(async () => void document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "F6", code: "F6", bubbles: true, cancelable: true })));
           await settle();
           seen.push(sectionOf());
         }
-        expect(seen).toEqual(["noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "header"]);
+        expect(seen).toEqual(["noticeHeading", "workingChanges", "staged", "comparison", "composer", "header"]);
         expect(document.activeElement === document.querySelector('header button[aria-keyshortcuts="Control+R"]')).toBe(true);
       });
     });
@@ -651,8 +662,8 @@ describe("help line", () => {
     const double = await mount(succeeded(REGISTRATION));
     await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
-    await selectRow("working-directory");
-    const changes = document.querySelector('section[aria-label="Commit panel"]')!.textContent ?? "";
+    await openCommitView();
+    const changes = document.querySelector(COMMIT_VIEW)!.textContent ?? "";
     expect(changes).toContain(HELP_LINE);
     expect(changes).not.toContain("available after batch 3");
   });
@@ -869,7 +880,7 @@ describe("file lane splitter", () => {
       const double = await mount(succeeded(REGISTRATION));
       await serveHistory(double);
       await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
-      await selectRow("working-directory");
+      await openCommitView();
       const splitter = document.querySelector<HTMLElement>('[role="separator"][aria-label="Resize file lane"]')!;
       expect(splitter).not.toBeNull();
       const start = Number(splitter.getAttribute("aria-valuenow"));
@@ -923,8 +934,8 @@ describe("selection follows focus", () => {
     const double = await mount(succeeded(REGISTRATION));
     await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot({ entries, entryCount: entries.length })));
-    await selectRow("working-directory");
-    const first = document.querySelector<HTMLElement>('section[aria-label="Commit panel"] [role="option"]')!;
+    await openCommitView();
+    const first = document.querySelector<HTMLElement>(`${COMMIT_VIEW} [role="treeitem"]`)!;
     await act(async () => {
       first.focus();
       first.click();
@@ -982,21 +993,22 @@ describe("pane scrolling", () => {
         // The references sidebar scrolls inside its own region.
         const tree = document.querySelector('[data-section="references"]')!;
         expect(tree !== null).toBe(true);
-        await selectRow("working-directory");
-        const changes = document.querySelector<HTMLElement>('section[aria-label="Commit panel"]')!;
-        const listboxes = [...changes.querySelectorAll('[role="listbox"]')];
+        await openCommitView();
+        const changes = commitGrid();
+        const listboxes = [...changes.querySelectorAll('[role="tree"]')];
         expect(listboxes).toHaveLength(2);
         for (const box of listboxes) expect(own(box)).toBe(true);
         const cells = [...changes.children].filter((c) => ["lane", "comparison", "tray"].includes((c as HTMLElement).style.gridArea.split(" ")[0]!));
         expect(cells).toHaveLength(3);
         for (const cell of cells) expect(own(cell)).toBe(true);
-        // Working changes and Staged each scroll inside their own section.
-        const sections = [...changes.querySelectorAll('[role="listbox"]')].map((box) => box.closest("section:not([aria-label])"));
+        // Changes and Staged each scroll inside their own section.
+        const sections = [...changes.querySelectorAll('[role="tree"]')].map((box) => box.closest("section:not([aria-label])"));
         expect(new Set(sections).size).toBe(2);
         for (const section of sections) expect(scrolls(section!)).toBe(true);
         // The narrow and constrained file band holds both sections side by side ("Chosen layout, sizes, and DPI").
         expect(sections[0]!.parentElement!.className.split(/\s+/)).toContain(profile === "wide" ? "flex-col" : "flex-row");
 
+        await switchView("History");
         const history = document.querySelector('section[aria-label="History"]')!;
         const list = history.querySelector('[role="listbox"]')!;
         expect(own(list)).toBe(true);
@@ -1014,8 +1026,8 @@ describe("pane scrolling", () => {
       const double = await mount(succeeded(REGISTRATION));
       await serveHistory(double);
       await resolve(double.pending("readWorkspace"), succeeded(snapshot({ entries: [changeEntry("a.txt")], entryCount: 1, submoduleNotice: { count: 1, paths: ["s"], filter: "applied" } })));
-      await selectRow("working-directory");
-      const rows = document.querySelector<HTMLElement>('section[aria-label="Commit panel"]')!.style.gridTemplateRows.split(/\s+(?![^(]*\))/);
+      await openCommitView();
+      const rows = commitGrid().style.gridTemplateRows.split(/\s+(?![^(]*\))/);
       expect(rows).toEqual(["58px", "0", "minmax(0px, 1fr)", "0", "58px"]);
     });
   });
@@ -1057,7 +1069,7 @@ describe("single view", () => {
     await act(async () => commit.click());
     await settle();
     expect(document.querySelector('[data-row-id="working-directory"]')!.getAttribute("aria-selected")).toBe("true");
-    expect(document.querySelector('section[aria-label="Commit panel"]')!.closest("[hidden]")).toBeNull();
+    expect(document.querySelector('section[aria-label="Working directory summary"]')!.closest("[hidden]")).toBeNull();
   });
 
   test("one notice band spans the width above the sidebar and the history list", async () => {
@@ -1084,7 +1096,7 @@ describe("single view", () => {
     const double = await opened();
     const before = double.calls.length;
     await selectRow("working-directory");
-    expect(document.querySelector('section[aria-label="Commit panel"]')!.closest("[hidden]")).toBeNull();
+    expect(document.querySelector('section[aria-label="Working directory summary"]')!.closest("[hidden]")).toBeNull();
     await selectRow("index");
     expect(double.calls.slice(before).map((c) => c.operation)).toEqual([]);
     await selectRow(HEAD);
@@ -1157,7 +1169,7 @@ describe("single view", () => {
   // Feature 003 FR-038 and FR-039 add Fetch, Pull, Push, and Commit and push. Stash, Clone, and settings stay absent.
   test("no Stash, Clone, or settings control renders anywhere (FR-056)", async () => {
     await opened();
-    await selectRow("working-directory");
+    await openCommitView();
     const names = [...document.querySelectorAll('button, [role="menuitem"], [role="tab"], a')].map((e) => `${e.getAttribute("aria-label") ?? ""} ${e.textContent ?? ""}`);
     for (const name of names) expect(name).not.toMatch(/\b(stash|clone|settings)\b/i);
   });
@@ -1245,6 +1257,7 @@ describe("drafts across a switch", () => {
     });
     await render(0);
     await settle();
+    await openCommitView();
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "Unsent draft");
@@ -1266,6 +1279,7 @@ describe("drafts across a switch", () => {
 
   test("an unsent message draft stays in the draft store after a switch through the repository switcher, and returns with its worktree", async () => {
     const double = await mount(succeeded(REGISTRATION));
+    await openCommitView();
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "Unsent draft");
@@ -1277,16 +1291,16 @@ describe("drafts across a switch", () => {
     await act(async () => switcherOptions()[1]!.click());
     await resolve(latest(double, "openRecentRepository"), succeeded({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "b".repeat(64), worktreeRoot: "C:\other" }));
     expect(double.calls.some((c) => c.operation === "removeDraft")).toBe(false);
-    // The other worktree has no draft. Its field shows no text.
-    expect(document.querySelector("textarea")).toBe(field);
-    expect(field.value).toBe("");
+    // The other worktree has no draft. Its field shows no text. Data-model §14: each worktree keeps its own view, so the other one opens in History.
+    await openCommitView();
+    expect(document.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
     // A switch back restores the draft of the first worktree.
     await act(async () => document.querySelector<HTMLElement>('header button[aria-keyshortcuts="Control+R"]')!.click());
     await settle();
     await resolve(latest(double, "listRecentRepositories"), succeeded({ entries: [{ entryId: crypto.randomUUID(), path: "C:\\repo", location: { kind: "native" }, openedAt: "2026-10-10T08:00:00Z", current: false }] }));
     await act(async () => switcherOptions()[1]!.click());
     await resolve(latest(double, "openRecentRepository"), succeeded(REGISTRATION));
-    expect(field.value).toBe("Unsent draft");
+    expect(document.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("Unsent draft");
   });
 });
 
@@ -1368,7 +1382,7 @@ describe("mounted staging and commit", () => {
     const entry = stagedEntry();
     const shown = snapshot({ entries: [entry], entryCount: 1 });
     await resolve(latest(double, "readWorkspace"), succeeded(shown));
-    await selectRow("working-directory");
+    await openCommitView();
     await typeMessage("Fix the parser");
     return { double, entry, shown };
   }
@@ -1493,8 +1507,8 @@ describe("mounted staging and commit", () => {
     const first = snapshot({ entries: [entry], entryCount: 1 });
     await resolve(latest(double, "readWorkspace"), succeeded(first));
     await resolve(latest(double, "readTrust"), succeeded(trustReport(false)));
-    await selectRow("working-directory");
-    await act(async () => document.querySelector<HTMLElement>(`[role="option"][data-entry-id="${entry.entryId}"]`)!.click());
+    await openCommitView();
+    await act(async () => document.querySelector<HTMLElement>(`[role="treeitem"][data-entry-id="${entry.entryId}"]`)!.click());
     await settle();
     const shown = shownComparison(entry.entryId, DIFF);
     await resolve(latest(double, "readComparison"), { ...shown, result: { ...(shown.result as object), snapshotId: first.snapshotId } });

@@ -5,6 +5,7 @@
 import type { z } from "zod";
 import type { ReadBranchesResult } from "../../contracts/envelope";
 import type { BridgeResponse, createBridge } from "../bridge";
+import type { Layout } from "../changes/file-tree";
 
 // Feature 004 plan.md D15 "State" and "Views", data-model §1 and §14, contract Δ8.
 
@@ -14,10 +15,16 @@ export type BranchEntry = BranchList["entries"][number];
 type Target = { repositoryId: string; repositoryGeneration: number };
 /** The newest `readBranches` result of one repository generation. `code` is the response code or state of a failed read. */
 export type Branches = { repositoryId: string; repositoryGeneration: number; entries: BranchEntry[] | null; code: string | null };
+/** Contract Δ3 `reviewCommit` with `amend`: the HEAD commit and its message at the check, and the text that the editor shows while the box is checked. */
+export type Amend = { headOid: string; message: string; text: string; upstream: string | null; rewritesUpstream: boolean };
+/** Data-model §14: the Commit view state of one worktree for the window session. */
+export type CommitViewState = { layout: Layout; untrackedOpen: boolean; amend: Amend | null };
+const COMMIT_VIEW: CommitViewState = { layout: "tree", untrackedOpen: false, amend: null };
 export type WorkbenchState = {
   /** Per worktree key: the shown view, and the view that Settings returns to. */
   views: Readonly<Record<string, { view: View; before: View }>>;
   branches: Branches | null;
+  commit: Readonly<Record<string, CommitViewState>>;
 };
 
 export type WorkbenchDeps = {
@@ -32,7 +39,7 @@ export type WorkbenchDeps = {
 
 /** One store per window. It holds the renderer state of feature 004 by the 001 latest-wins and generation rules. */
 export function createWorkbench({ bridge, target, mutationEnded, refreshHistory }: WorkbenchDeps) {
-  let state: WorkbenchState = { views: {}, branches: null };
+  let state: WorkbenchState = { views: {}, branches: null, commit: {} };
   const listeners = new Set<() => void>();
   const set = (next: Partial<WorkbenchState>) => {
     state = { ...state, ...next };
@@ -74,6 +81,10 @@ export function createWorkbench({ bridge, target, mutationEnded, refreshHistory 
       if (shown(key).view === "settings") setView(key, shown(key).before);
     },
     readBranches,
+    commitView: (key: string): CommitViewState => state.commit[key] ?? COMMIT_VIEW,
+    setCommitView(key: string, patch: Partial<CommitViewState>) {
+      set({ commit: { ...state.commit, [key]: { ...(state.commit[key] ?? COMMIT_VIEW), ...patch } } });
+    },
     /** Contract Δ8: the reads after a `runWorkbench` or `applyFiles` outcome. The new view shows no refs-changed notice (002 FR-005 change). */
     ended(operation: "runWorkbench" | "applyFiles", response: BridgeResponse) {
       refreshHistory();

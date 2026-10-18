@@ -9,7 +9,8 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
 import type { IntegratePanelProps } from "../../src/frontend/integrate/IntegratePanel";
-import { answer, button, click, oid, press, settle, text, type Call } from "./sync-fake";
+import type { StatusOperation } from "../../src/frontend/status/OperationStatus";
+import { answer, button, click, keyboardFocus, oid, press, settle, text, tooltipText, type Call } from "./sync-fake";
 
 // tasks.md T041 (feature 004, WP13). Story US3. Spec FR-021 to FR-028. Plan D5, D6, D15, D16. Contract Δ3, Δ5, Δ9.
 
@@ -82,11 +83,12 @@ async function render(node: ReactNode) {
   await settle();
   return host;
 }
-type Mount = { double: Double; ended: unknown[]; closed: number[]; opener: HTMLButtonElement };
-async function mount(action: "merge" | "rebase", fields: { blockedReason?: string | null } = {}): Promise<Mount> {
+type Mount = { double: Double; ended: unknown[]; closed: number[]; opener: HTMLButtonElement; ops: StatusOperation[] };
+async function mount(action: "merge" | "rebase", fields: { blockedReason?: string | null; operationRunning?: boolean } = {}): Promise<Mount> {
   const double = createDouble();
   const ended: unknown[] = [];
   const closed: number[] = [];
+  const ops: StatusOperation[] = [];
   const opener = document.body.appendChild(document.createElement("button"));
   opener.textContent = "opener";
   opener.focus();
@@ -98,11 +100,13 @@ async function mount(action: "merge" | "rebase", fields: { blockedReason?: strin
       bridge={double.bridge}
       target={TARGET}
       blockedReason={fields.blockedReason ?? null}
+      operationRunning={fields.operationRunning ?? false}
+      onOperation={(op) => ops.push(op)}
       onEnded={(response) => ended.push(response)}
       onClose={() => closed.push(1)}
     />,
   );
-  return { double, ended, closed, opener };
+  return { double, ended, closed, opener, ops };
 }
 const panel = () => document.querySelector("section[aria-labelledby]")!;
 const input = (label: string) => {
@@ -219,13 +223,20 @@ describe("Refusal texts (plan D15)", () => {
     ["rebase", "WORKBENCH_UNAVAILABLE", "invalid-config", "A Git setting has a value that Git cannot read, so Git stops the rebase. Correct the setting first."],
     ["merge", "TRUST_REQUIRED", undefined, "This action runs programs of this repository. Trust the repository first with the trust chip in the status bar."],
     ["rebase", "TRUST_REQUIRED", undefined, "This action runs programs of this repository. Trust the repository first with the trust chip in the status bar."],
-    ["merge", "OPERATION_IN_PROGRESS", undefined, "Merge is unavailable: OPERATION_IN_PROGRESS"],
-    ["rebase", "WORKBENCH_UNAVAILABLE", "detached", "Rebase is unavailable: detached"],
+    ["merge", "OPERATION_IN_PROGRESS", undefined, "A Git operation is in progress. Finish it first."],
+    ["rebase", "WORKBENCH_UNAVAILABLE", "detached", "HEAD is detached. Switch to a branch first."],
+    ["merge", "WORKBENCH_UNAVAILABLE", "unborn", "The current branch has no commit yet."],
+    ["merge", "WORKBENCH_UNAVAILABLE", "same-branch", "feature/login is the current branch. Select another branch to merge into it."],
+    ["rebase", "WORKBENCH_UNAVAILABLE", "same-branch", "feature/login is the current branch. Select another branch to rebase onto."],
+    ["merge", "CONFLICTED", "1", "Resolve the 1 conflicted file first."],
+    ["rebase", "CONFLICTED", "3", "Resolve the 3 conflicted files first."],
   ];
   for (const [action, code, reason, expected] of cases) {
     test(`${action} ${reason ?? code}`, async () => {
       const { double } = await mount(action);
-      await answer(double.pending("reviewWorkbench"), refused(code, reason === undefined ? undefined : { reason }));
+      // A CONFLICTED case carries the unmerged count in `reason`.
+      const result = code === "CONFLICTED" ? { unmerged: Number(reason) } : reason === undefined ? undefined : { reason };
+      await answer(double.pending("reviewWorkbench"), refused(code, result));
       expect(text(panel())).toContain(expected);
       expect(primary(action === "merge" ? "Merge" : "Rebase").getAttribute("aria-describedby")).not.toBeNull();
     });
@@ -253,6 +264,17 @@ describe("Refusal texts (plan D15)", () => {
     expect(text(panel())).toContain("Unavailable while another operation runs.");
     await press(primary("Merge"), "Enter", { ctrlKey: true });
     expect(double.of("runWorkbench").length).toBe(0);
+  });
+
+  test("while an operation runs, the running reason is only in the hidden description and the tooltip (plan D15 running rule)", async () => {
+    const RUNNING = "A Git operation is running. Its progress and Cancel are in the status bar.";
+    const { double } = await mount("merge", { blockedReason: RUNNING, operationRunning: true });
+    await answer(double.pending("reviewWorkbench"), reviewed("merge", mergePlan()));
+    const described = document.getElementById(primary("Merge").getAttribute("aria-describedby")!)!;
+    expect(described.textContent).toBe(RUNNING);
+    expect(described.classList.contains("sr-only")).toBe(true);
+    await keyboardFocus(primary("Merge"));
+    expect(tooltipText()).toBe(RUNNING);
   });
 });
 
@@ -301,15 +323,34 @@ describe("Run, conflicts, and keys (FR-023, FR-027, plan D15)", () => {
     await press(input("No fast-forward"), "Enter", { ctrlKey: true });
     expect(double.of("runWorkbench").length).toBe(0);
     await answer(double.pending("reviewWorkbench"), reviewed("merge", mergePlan()));
-    expect(double.of("runWorkbench")[0]!.args).toEqual([{ repositoryId: TARGET.repositoryId }, { workbenchToken: TOKEN, start: true }]);
+    expect(double.of("runWorkbench")[0]!.args.slice(0, 2)).toEqual([{ repositoryId: TARGET.repositoryId }, { workbenchToken: TOKEN, start: true }]);
     expect(text(panel())).toContain("The merge runs.");
     const response = ran("failed-with-effects", "FAILED_WITH_EFFECTS", "merging", 2);
     await answer(double.pending("runWorkbench"), response);
     expect(ended).toEqual([response]);
     expect(closed.length).toBe(1);
     // The panel holds no conflict action of its own.
-    expect([...document.querySelectorAll("button")].some((b) => ["Abort…", "Continue", "Skip"].includes(text(b)))).toBe(false);
+    expect([...document.querySelectorAll("button")].some((b) => ["Abort…", "Abort merge…", "Abort rebase…", "Continue", "Skip"].includes(text(b)))).toBe(false);
   });
+
+  for (const action of ["merge", "rebase"] as const) {
+    test(`a ${action} run reports its start, progress, and outcome as one runWorkbench status operation, so the status bar shows progress and Cancel`, async () => {
+      const names: [string, string, string] = action === "merge" ? ["Merge", "Merging", "Merge details"] : ["Rebase", "Rebasing", "Rebase details"];
+      const { double, ops } = await mount(action);
+      await answer(double.pending("reviewWorkbench"), reviewed(action, action === "merge" ? mergePlan() : rebasePlan({ autostash: { value: false, source: "default" } })));
+      await press(primary(names[0]!), "Enter", { ctrlKey: true });
+      await answer(double.pending("reviewWorkbench"), reviewed(action, action === "merge" ? mergePlan() : rebasePlan({ autostash: { value: false, source: "default" } })));
+      const run = double.pending("runWorkbench")!;
+      expect(ops.map((o) => [o.kind, o.texts, o.response])).toEqual([["runWorkbench", names, null]]);
+      const event = { requestId: "r", operationId: fixtureId(0x530), state: "running", phase: action, counters: {} };
+      await act(async () => (run.args[2] as (e: unknown) => void)(event));
+      expect(ops.at(-1)!.progress).toEqual(event as never);
+      const response = ran("succeeded", undefined, "normal", 0);
+      await answer(run, response);
+      expect(ops.at(-1)!.response).toEqual(response as never);
+      expect(new Set(ops.map((o) => o.requestId)).size).toBe(1);
+    });
+  }
 
   test("a run that fails without a stop stays open with the code", async () => {
     const { double, ended, closed } = await mount("merge");

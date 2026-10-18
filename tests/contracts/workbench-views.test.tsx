@@ -450,7 +450,7 @@ describe("refresh after a 004 outcome (contract Δ8, 002 FR-005 change)", () => 
   const REFS_CHANGED = "References changed.";
   const outcome = (operation: string) => ({ requestId: "r", operationId: fixtureId(0x311), state: "succeeded", repositoryGeneration: 1, result: { operation } });
   for (const operation of ["runWorkbench", "applyFiles"] as const) {
-    test(`after a ${operation} outcome, the store reads the workspace, the refs, and the branches, reopens the view with the selected commit, and shows no refs-changed notice`, async () => {
+    test(`after a ${operation} outcome, the store reads the workspace, the refs, and the branches for the outcome and the new refs digest, reopens the view with the selected commit, and shows no refs-changed notice`, async () => {
       const world = createWorld();
       world.answers.readBranches = () => succeeded({ entries: [] });
       const OutcomeHistory = (props: Parameters<typeof workbench.HistoryViewMount>[0]) => (
@@ -472,7 +472,8 @@ describe("refresh after a 004 outcome (contract Δ8, 002 FR-005 change)", () => 
       await settle();
       expect(double.count("readWorkspace")).toBe(before.readWorkspace + 1);
       expect(double.count("readRefs")).toBe(before.readRefs + 1);
-      expect(double.count("readBranches")).toBe(before.readBranches + 1);
+      // One read from the outcome, and one from the new refs digest of the reconcile read. The store keeps only the newest response.
+      expect(double.count("readBranches")).toBe(before.readBranches + 2);
       expect(double.count("openHistory")).toBe(before.openHistory + 1);
       const loads = double.calls.filter((c) => c.operation === "loadHistory").map((c) => (c.args[1] as { need: unknown }).need);
       expect(loads.at(-1)).toEqual({ oid: selected });

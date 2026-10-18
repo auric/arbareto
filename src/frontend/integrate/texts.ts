@@ -61,6 +61,15 @@ export const TEXTS = {
   applyBackend: "rebase.backend is apply, so Git ignores rebase.updateRefs. Select Autosquash to use the merge backend, or rebase in a terminal.",
   dirtyTree: "Commit or stash your changes, or select Autostash.",
   trust: "This action runs programs of this repository. Trust the repository first with the trust chip in the status bar.",
+  detached: "HEAD is detached. Switch to a branch first.",
+  unborn: "The current branch has no commit yet.",
+  sameMerge: (branch: string) => `${branch} is the current branch. Select another branch to merge into it.`,
+  sameRebase: (branch: string) => `${branch} is the current branch. Select another branch to rebase onto.`,
+  conflicted: (n: number) => (n === 1 ? "Resolve the 1 conflicted file first." : `Resolve the ${n.toLocaleString("en-US")} conflicted files first.`),
+  operationInProgress: "A Git operation is in progress. Finish it first.",
+  // Plan D15: the status bar names of a run.
+  runMerge: ["Merge", "Merging", "Merge details"] as [string, string, string],
+  runRebase: ["Rebase", "Rebasing", "Rebase details"] as [string, string, string],
   unavailable: (action: "Merge" | "Rebase") => `${action} is unavailable: `,
   failed: (action: "Merge" | "Rebase") => `${action} did not complete: `,
 };

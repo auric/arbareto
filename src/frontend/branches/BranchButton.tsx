@@ -75,6 +75,7 @@ export function BranchButton({ head, operationState, counts, tracking, actions, 
       itemKey={(e) => e.ref}
       itemText={(e) => e.name}
       itemLabel={label}
+      itemGroup={(e) => (e.kind === "local" ? T.localGroup : T.remoteGroup)}
       renderItem={(e) => {
         const n = note(e);
         return (

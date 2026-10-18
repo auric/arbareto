@@ -9,12 +9,19 @@ import { codeText } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { BLOCKED_TEXT, STALE_TEXT, type Blocked, type StagingTarget } from "../changes/HunkControls";
 import { Button } from "../components/ui/button";
+import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { branchName } from "../history/HistoryView";
+import { shortRef } from "../refs/ReferencesSidebar";
 import type { createDrafts } from "../state/drafts";
-import { trackOperation, type StatusOperation } from "../status/OperationStatus";
+import type { Amend } from "../state/workbench";
+import { shortId, trackOperation, type StatusOperation } from "../status/OperationStatus";
+import { RUNNING_REASON } from "../sync/SyncToolbar";
+import { GuideLines, guideStyle, SummaryCounter } from "./MessageGuide";
 import { isTrustReport, trustBeforeReview, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
 
 // plan.md "Task flow and command placement" (Compose a commit, Commit, Commit outcome) and "Keyboard and focus" (Message, Unavailable control).
+// Feature 004 spec FR-047 (message guide), FR-098 to FR-100 (Amend last commit), plan.md D8 "Amend last commit", and D15 (running rule, texts).
 
 type Head = WorkspaceSnapshot["head"];
 type Drafts = ReturnType<typeof createDrafts>;
@@ -50,7 +57,31 @@ export type CommitTrayProps = {
   onPush?(): void;
   /** Why Push cannot run, or null (feature 003 FR-017). */
   pushReason?: string | null;
+  operationState?: WorkspaceSnapshot["operationState"];
+  /** Feature 004 FR-098: the Amend last commit state of the window session. Without it, the tray shows no check box. */
+  amend?: { value: Amend | null; onChange(next: Amend | null): void };
 };
+
+// Feature 004 plan.md D15 "Commit view texts".
+export const AMEND_LABEL = "Amend last commit";
+const AMEND_UNBORN = "The branch has no commits yet.";
+const AMEND_OPERATION = "A merge or a rebase is in progress.";
+const AMEND_NO_MESSAGE = "The review result holds no HEAD message.";
+export const amendStatement = (oid: string) => `Commit replaces commit ${shortId(oid)}.`;
+export const rewriteText = (oid: string, upstream: string) => `Amend rewrites commit ${shortId(oid)}, which ${shortRef(upstream)} already has. The next push needs Force push with lease.`;
+// Contract Δ3 `reviewCommit` with `amend`: the result adds `amend`.
+type AmendReview = { headOid: string; message: string; upstream: string | null; rewritesUpstream: boolean };
+function amendOf(result: unknown): AmendReview | null {
+  const a = (result as { amend?: Partial<AmendReview> } | undefined)?.amend;
+  return typeof a?.headOid === "string" && typeof a.message === "string" && (a.upstream === null || typeof a.upstream === "string") && typeof a.rewritesUpstream === "boolean"
+    ? { headOid: a.headOid, message: a.message, upstream: a.upstream, rewritesUpstream: a.rewritesUpstream }
+    : null;
+}
+/** FR-098: the box is unavailable for an unborn branch and while a merge or a rebase is in progress. */
+export function amendReason(head: Head | null, operationState: WorkspaceSnapshot["operationState"] | undefined): string | null {
+  if (head?.state === "unborn") return AMEND_UNBORN;
+  return operationState === "merging" || operationState === "rebasing" ? AMEND_OPERATION : null;
+}
 
 
 /** plan.md "Compose a commit": the summary line. A count of 1 takes the singular ("Long text"). */
@@ -58,15 +89,20 @@ export function summaryLine(head: Head, staged: number): string {
   return `${head.state === "detached" ? "Detached HEAD" : branchName(head.target)}, ${staged} staged ${staged === 1 ? "file" : "files"}`;
 }
 
-/** plan.md Commit row: the visible reason that disables Commit, or null. */
+/** The message that Commit sends: the amend text while the box is checked, else the draft. */
+const messageOf = (props: CommitTrayProps) => props.amend?.value?.text ?? (props.worktreeKey === null ? null : props.drafts.draft(props.worktreeKey)?.text) ?? "";
+/** Feature 004 plan.md D15: a mutation runs. Its reason goes only into the tooltip and the accessible description. */
+const runningBlock = (blocked: Blocked | undefined) => blocked === "running" || blocked === "busy";
+
+/** plan.md Commit row: the visible reason that disables Commit, or null. An amend without staged changes changes only the message (FR-099). */
 function disableReason(props: CommitTrayProps, composing: boolean): string | null {
-  const { blocked = null, status, snapshotId, target, staged, worktreeKey, drafts } = props;
-  const text = (worktreeKey === null ? null : drafts.draft(worktreeKey)?.text) ?? "";
+  const { blocked = null, status, snapshotId, target, staged } = props;
+  const text = messageOf(props);
   return (
-    (blocked ? BLOCKED_TEXT[blocked] : null) ??
+    (runningBlock(blocked) ? RUNNING_REASON : blocked ? BLOCKED_TEXT[blocked] : null) ??
     (status === "incomplete" ? BLOCKED_TEXT.incomplete : null) ??
     (status === "loading" || snapshotId === null || target === null ? BLOCKED_TEXT.loading : null) ??
-    (staged === 0 ? "The Staged list is empty." : null) ??
+    (staged === 0 && props.amend?.value == null ? "The Staged list is empty." : null) ??
     (BLANK.test(text) ? "The commit message is empty." : null) ??
     (text.includes("\u0000") || encoder.encode(text).length > COMMIT_MESSAGE_BYTES ? "The commit message is longer than 64 KiB or holds a NUL character." : null) ??
     (composing ? "Text input is still composing." : null)
@@ -87,7 +123,12 @@ export function CommitTray(props: CommitTrayProps) {
   const [notice, setNotice] = useState<ReactNode>(null);
   const draft = useSyncExternalStore(drafts.subscribe, () => (worktreeKey === null ? null : drafts.draft(worktreeKey)));
   const failure = useSyncExternalStore(drafts.subscribe, () => (worktreeKey === null ? null : drafts.failure(worktreeKey)));
-  const text = draft?.text ?? "";
+  const amending = props.amend?.value ?? null;
+  // FR-098: the check box keeps the earlier draft. The field shows the amend text while the box is checked.
+  const text = amending?.text ?? draft?.text ?? "";
+  // FR-100: the open rewrite confirmation, with the facts of the review that asks for it.
+  const [rewrite, setRewrite] = useState<{ oid: string; upstream: string; resolve(confirmed: boolean): void } | null>(null);
+  const cancelRewrite = useRef<HTMLButtonElement>(null);
 
   const composingRef = useRef(composing);
   composingRef.current = composing;
@@ -116,7 +157,8 @@ export function CommitTray(props: CommitTrayProps) {
         return focusField();
       }
       const reviewed = now.target;
-      const review = await bridge.reviewCommit(reviewed, { snapshotId: now.snapshotId });
+      const amend = now.amend?.value ?? null;
+      const review = await bridge.reviewCommit(reviewed, amend === null ? { snapshotId: now.snapshotId } : { snapshotId: now.snapshotId, amend: true });
       const token = review.state === "succeeded" ? (review.result as { reviewToken?: unknown } | undefined)?.reviewToken : undefined;
       if (typeof token !== "string") {
         // Contract §3 `reviewCommit`: a result without `reviewToken` reviewed an empty staged scope, so the shown Staged list is stale.
@@ -124,10 +166,30 @@ export function CommitTray(props: CommitTrayProps) {
         props.onEnded?.(review);
         return focusField();
       }
-      const submission = drafts.submit(worktreeKey)!;
-      const response = await trackOperation("commit", undefined, (onProgress) => bridge.commit(reviewed, { reviewToken: token, message: submission.text, confirmFullScope: true }, onProgress), props.onOperation);
-      if (response.code === "STALE_REVIEW") setNotice(STALE_TEXT);
-      void drafts.complete(submission, response.state as TerminalState);
+      let response: BridgeResponse;
+      if (amend !== null) {
+        // FR-099: the amend binds to the HEAD commit whose message the box loaded. A moved HEAD refuses and asks for a refresh.
+        const reviewedAmend = amendOf(review.result);
+        // Contract Δ3: `rewritesUpstream` is true only with an upstream. Another form is no amend review.
+        if (reviewedAmend === null || reviewedAmend.headOid !== amend.headOid || (reviewedAmend.rewritesUpstream && reviewedAmend.upstream === null)) {
+          setNotice(STALE_TEXT);
+          props.onEnded?.(review);
+          return focusField();
+        }
+        // FR-100: a commit that the upstream holds needs the destructive confirmation first. Cancel has the first focus.
+        const upstream = reviewedAmend.upstream;
+        if (reviewedAmend.rewritesUpstream && upstream !== null && !(await new Promise<boolean>((resolve) => setRewrite({ oid: reviewedAmend.headOid, upstream, resolve })))) return focusField();
+        const message = amend.text;
+        const payload = { reviewToken: token, message, confirmFullScope: true as const, amend: true as const, ...(reviewedAmend.rewritesUpstream ? { confirmRewrite: true as const } : {}) };
+        response = await trackOperation("commit", undefined, (onProgress) => bridge.commit(reviewed, payload, onProgress), props.onOperation);
+        if (response.code === "STALE_REVIEW") setNotice(STALE_TEXT);
+        if (response.state === "succeeded") live.current.amend?.onChange(null);
+      } else {
+        const submission = drafts.submit(worktreeKey)!;
+        response = await trackOperation("commit", undefined, (onProgress) => bridge.commit(reviewed, { reviewToken: token, message: submission.text, confirmFullScope: true }, onProgress), props.onOperation);
+        if (response.code === "STALE_REVIEW") setNotice(STALE_TEXT);
+        void drafts.complete(submission, response.state as TerminalState);
+      }
       const reconciled = props.onEnded?.(response);
       // Feature 003 FR-038: only a reconciled intended success starts the push.
       // The reconcile read advances the generation after the new HEAD (contract §8), so the push review waits for it.
@@ -141,6 +203,26 @@ export function CommitTray(props: CommitTrayProps) {
     }
   }
 
+  // FR-098: checking loads the HEAD message through `reviewCommit` with `amend` (contract Δ3). Clearing shows the draft again.
+  const checking = useRef(false);
+  const amendBlock = amendReason(head, props.operationState);
+  async function toggleAmend(checked: boolean) {
+    const box = props.amend;
+    if (box === undefined || checking.current) return;
+    if (!checked) return box.onChange(null);
+    if (amendBlock !== null || target === null || snapshotId === null) return;
+    checking.current = true;
+    setNotice(null);
+    try {
+      const review = await bridge.reviewCommit(target, { snapshotId, amend: true });
+      const loaded = review.state === "succeeded" ? amendOf(review.result) : null;
+      if (loaded === null) return setNotice(review.state === "succeeded" ? `${AMEND_LABEL} did not start: ${AMEND_NO_MESSAGE}` : codeText(`${AMEND_LABEL} did not start: `, review.code ?? review.state));
+      live.current.amend?.onChange({ ...loaded, text: loaded.message });
+    } finally {
+      checking.current = false;
+    }
+  }
+
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || !event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) return;
     event.preventDefault();
@@ -151,8 +233,21 @@ export function CommitTray(props: CommitTrayProps) {
 
   const shownReason = busy ? null : reason;
   const pushReason = busy ? null : (reason ?? props.pushReason ?? null);
+  // Plan.md D15: a reason because an operation runs shows only in the tooltip and the accessible description.
+  const hideReason = runningBlock(props.blocked);
+  const commitButton = (
+    <Button aria-keyshortcuts="Control+Enter" disabled={disabled} focusableWhenDisabled aria-describedby={shownReason === null ? undefined : reasonId} onClick={() => void activate()}>
+      Commit (Ctrl+Enter)
+    </Button>
+  );
   return (
-    <div className="grid h-full min-h-0 gap-x-2 gap-y-1" style={{ gridTemplateColumns: "minmax(0, 1fr) auto", gridTemplateRows: "minmax(0, 1fr) auto" }}>
+    <div className="grid h-full min-h-0 gap-x-2 gap-y-1" style={{ gridTemplateColumns: "minmax(0, 1fr) auto", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
+      <div className="col-span-2 flex items-center gap-2">
+        <span className="font-semibold">Commit message</span>
+        <span className="ml-auto">
+          <SummaryCounter id={`${reasonId}-counter`} text={text} />
+        </span>
+      </div>
       <textarea
         ref={(element) => {
           field.current = element;
@@ -161,21 +256,36 @@ export function CommitTray(props: CommitTrayProps) {
           else if (r) r.current = element;
         }}
         aria-label="Commit message"
-        aria-describedby={failure === null ? undefined : `${reasonId}-save`}
+        aria-describedby={[`${reasonId}-counter`, `${reasonId}-guide`, failure === null ? null : `${reasonId}-save`].filter(Boolean).join(" ")}
         value={text}
         spellCheck={false}
         disabled={worktreeKey === null}
+        data-guide-column="72"
         className="min-h-0 resize-none rounded-md border border-control-border bg-surface px-2 py-1 font-mono outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
-        onChange={(event) => worktreeKey !== null && void drafts.change(worktreeKey, event.target.value)}
+        style={guideStyle(8)}
+        onChange={(event) => {
+          const value = event.target.value;
+          if (amending !== null) props.amend?.onChange({ ...amending, text: value });
+          else if (worktreeKey !== null) void drafts.change(worktreeKey, value);
+        }}
         onKeyDown={onKeyDown}
         onCompositionStart={() => setComposing(true)}
         onCompositionEnd={() => setComposing(false)}
       />
       <div className="flex max-w-64 flex-col items-start gap-1">
+        {props.amend === undefined ? null : (
+          <AmendBox checked={amending !== null} reason={amendBlock} onChange={(checked) => void toggleAmend(checked)} />
+        )}
+        {amending === null ? null : <p data-slot="amend-statement">{amendStatement(amending.headOid)}</p>}
         <div className="flex flex-wrap gap-2">
-          <Button aria-keyshortcuts="Control+Enter" disabled={disabled} focusableWhenDisabled aria-describedby={shownReason === null ? undefined : reasonId} onClick={() => void activate()}>
-            Commit (Ctrl+Enter)
-          </Button>
+          {hideReason && shownReason !== null ? (
+            <Tooltip>
+              <TooltipTrigger render={commitButton} />
+              <TooltipContent>{shownReason}</TooltipContent>
+            </Tooltip>
+          ) : (
+            commitButton
+          )}
           {props.onPush === undefined ? null : (
             <Button
               variant="outline"
@@ -191,8 +301,9 @@ export function CommitTray(props: CommitTrayProps) {
         <p className="text-muted-text">{HOOK_DISCLOSURE}</p>
       </div>
       <div className="col-span-2 flex min-w-0 flex-col">
+        <GuideLines id={`${reasonId}-guide`} text={text} />
         {head === null ? null : <p className="truncate">{summaryLine(head, staged)}</p>}
-        <p id={reasonId} className="truncate text-muted-text">
+        <p id={reasonId} hidden={hideReason} className="truncate text-muted-text">
           {shownReason}
         </p>
         {pushReason === null || pushReason === shownReason ? null : (
@@ -204,6 +315,49 @@ export function CommitTray(props: CommitTrayProps) {
         <p role="status">{notice}</p>
         {failure === null ? null : <p id={`${reasonId}-save`}>{failure}</p>}
       </div>
+      {rewrite === null ? null : (
+        <Dialog open onOpenChange={(open) => void (open || (rewrite.resolve(false), setRewrite(null)))}>
+          <DialogContent showCloseButton={false} initialFocus={cancelRewrite} finalFocus={field} className="flex flex-col gap-2 sm:max-w-lg">
+            <DialogTitle>{`${AMEND_LABEL}?`}</DialogTitle>
+            <p>{rewriteText(rewrite.oid, rewrite.upstream)}</p>
+            <div className="flex justify-end gap-2">
+              <Button ref={cancelRewrite} variant="outline" onClick={() => (rewrite.resolve(false), setRewrite(null))}>
+                Cancel
+              </Button>
+              <Button className="danger-button" onClick={() => (rewrite.resolve(true), setRewrite(null))}>
+                Amend
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+    </div>
+  );
+}
+
+/** FR-098: the check box beside the message editor. An unavailable box states its reason. */
+function AmendBox({ checked, reason, onChange }: { checked: boolean; reason: string | null; onChange(checked: boolean): void }) {
+  const reasonId = useId();
+  return (
+    <div className="flex flex-col gap-1">
+      <label className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          checked={checked}
+          aria-disabled={reason !== null && !checked}
+          aria-describedby={reason === null ? undefined : reasonId}
+          onChange={(event) => {
+            if (reason !== null && event.target.checked) return;
+            onChange(event.target.checked);
+          }}
+        />
+        {AMEND_LABEL}
+      </label>
+      {reason === null ? null : (
+        <p id={reasonId} className="text-muted-text">
+          {`${AMEND_LABEL} is unavailable: ${reason}`}
+        </p>
+      )}
     </div>
   );
 }

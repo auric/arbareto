@@ -6,7 +6,7 @@ import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { button, click, createWorld, itemLabel, mountWorkbench, oid, press, settings, settle, succeeded, text, unmountAll, type World } from "./sync-fake";
+import { answer, button, click, createWorld, itemLabel, mountWorkbench, oid, press, settings, settle, succeeded, text, unmountAll, type World } from "./sync-fake";
 import { fixtureId } from "./bridge-contract";
 
 // tasks.md T040 (feature 004, WP12). Stories US1 and US2. Spec FR-007 to FR-020, SC-003, SC-014. Plan D3, D4, D15, D16. Data-model §1, §3, §4. Contract Δ3, Δ9, Δ14.
@@ -394,5 +394,89 @@ describe("refusal texts (contract Δ9, plan D3, D4, D15)", () => {
     const dialog = document.querySelector('[role="dialog"]')!;
     expect(text(dialog)).toContain("An included configuration file sets branch.login-form.");
     expect(buttons("Delete")).toHaveLength(0);
+  });
+});
+
+describe("integration with the status bar and the panels (plan D15)", () => {
+  const RUNNING = "A Git operation is running. Its progress and Cancel are in the status bar.";
+  const footer = () => document.querySelector("footer")!;
+
+  test("a switch run shows its progress and Cancel in the status bar, blocks the other mutations, and ends with its outcome", async () => {
+    const world = branchWorld();
+    world.answers.runWorkbench = undefined;
+    const double = await mountWorkbench(workbench, world);
+    await openList();
+    await type(filterField(), "login-form");
+    await press(filterField(), "Enter");
+    await settle();
+    const run = double.pending("runWorkbench")!;
+    await act(async () => (run.args[2] as (e: unknown) => void)({ requestId: "r", operationId: fixtureId(0x511), state: "running", phase: "switch-checkout", counters: {} }));
+    await settle();
+    expect(text(footer())).toContain("Switching in");
+    expect(buttons("Cancel").filter((b) => footer().contains(b))).toHaveLength(1);
+    expect(button("Fetch").getAttribute("aria-disabled")).toBe("true");
+    await openList();
+    expect(text(popup()!)).toContain(RUNNING);
+    expect(options()).toHaveLength(0);
+    await press(filterField(), "Escape");
+    await click(buttons("Cancel").find((b) => footer().contains(b))!);
+    expect(double.calls.find((c) => c.operation === "cancel")?.args[0]).toEqual({ operationId: fixtureId(0x511) });
+    await answer(run, switched);
+    expect(text(footer())).toContain("Switch completed");
+    expect(text(footer())).toContain("Switched to login-form.");
+    expect(buttons("Cancel").filter((b) => footer().contains(b))).toHaveLength(0);
+    expect(button("Fetch").getAttribute("aria-disabled")).not.toBe("true");
+  });
+
+  test("Merge into current and Rebase current onto open the docked panels", async () => {
+    const double = await mountWorkbench(workbench, branchWorld());
+    await contextMenu(await sidebarRow("login-form"));
+    await click(openMenuItems().find((i) => itemLabel(i) === "Merge into current branch (main)…")!);
+    expect(text(document.querySelector('[data-slot="integrate-panel"]')!.closest("section")!)).toContain("Merge login-form into main");
+    expect(reviews(double).at(-1)).toMatchObject({ action: "merge", ref: "refs/heads/login-form" });
+    await press(document.activeElement!, "Escape");
+    await contextMenu(await sidebarRow("login-form"));
+    await click(openMenuItems().find((i) => itemLabel(i) === "Rebase current branch (main) onto login-form…")!);
+    expect(text(document.querySelector('[data-slot="integrate-panel"]')!.closest("section")!)).toContain("Rebase main onto login-form");
+    expect(reviews(double).at(-1)).toMatchObject({ action: "rebase", ref: "refs/heads/login-form" });
+  });
+
+  test("name-exists offers a switch to the existing branch (plan D3)", async () => {
+    const double = await mountWorkbench(
+      workbench,
+      branchWorld((p) => ("track" in (p.target as object) ? { requestId: "r", state: "failed", code: "WORKBENCH_UNAVAILABLE", result: { reason: "name-exists", ref: "refs/heads/login-form" } } : reviewed("switch", switchPlan({ target: p.target, choice: p.choice })))),
+    );
+    await openList();
+    await click(options()[3]!);
+    await click(button("Create and switch"));
+    expect(text(popup()!)).toContain("The branch login-form exists. Use another name.");
+    await click(button("Switch to login-form"));
+    expect(reviews(double).at(-1)).toEqual({ action: "switch", target: { ref: "refs/heads/login-form" }, choice: "keep" });
+    expect(double.count("runWorkbench")).toBe(1);
+  });
+
+  test("the list shows the headings Local branches and Remote branches", async () => {
+    await mountWorkbench(workbench, branchWorld());
+    await openList();
+    const headings = () => [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Branches"] [data-slot="list-heading"]')];
+    expect(headings().map((h) => text(h))).toEqual(["Local branches", "Remote branches"]);
+    expect(headings()[0]!.nextElementSibling?.getAttribute("aria-label")?.split(",")[0]).toBe("login-form");
+    expect(headings()[1]!.nextElementSibling?.getAttribute("aria-label")?.split(",")[0]).toBe("origin/login-page");
+    for (const h of headings()) expect(h.getAttribute("role")).not.toBe("option");
+    await type(filterField(), "origin");
+    expect(headings().map((h) => text(h))).toEqual(["Remote branches"]);
+  });
+
+  test("each new refs digest reads the branches again, and an unchanged digest does not", async () => {
+    const world = branchWorld();
+    const double = await mountWorkbench(workbench, world);
+    const start = double.count("readBranches");
+    await click(button("Refresh"));
+    await settle();
+    expect(double.count("readBranches")).toBe(start);
+    world.refsDigest = "e".repeat(64);
+    await click(button("Refresh"));
+    await settle();
+    expect(double.count("readBranches")).toBe(start + 1);
   });
 });

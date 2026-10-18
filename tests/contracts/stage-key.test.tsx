@@ -14,6 +14,8 @@ const { createRoot } = await import("react-dom/client");
 const { ChangesPane } = await import("../../src/frontend/changes/ChangesPane");
 
 // plan.md "Task flow and command placement" (Stage or unstage), "Long text", and "Keyboard and focus" (Stage key row).
+// Feature 004 T042 moves these 001 tests to the Commit view lists (plan.md P5 risk). The Changes list holds the conflicted, unstaged, and untracked
+// entries in one tree, and the Staged list the staged entries (spec FR-029, FR-030). The flat layout with an open Untracked section shows every entry as a row.
 const HELP = "Arrow keys show a file. Space stages or unstages it.";
 
 const entry = (category: ChangeEntry["category"], path: string): ChangeEntry => ({
@@ -23,7 +25,7 @@ const entry = (category: ChangeEntry["category"], path: string): ChangeEntry => 
   pathBytes: Buffer.from(path).toString("base64"),
 });
 const entries = [entry("unstaged", "src/a.ts"), entry("unstaged", "src/b.ts"), entry("untracked", "notes.txt"), entry("staged", "src/a.ts")];
-const render = () => renderToStaticMarkup(<ChangesPane entries={entries} selection={null} onSelect={() => {}} onFileAction={() => new Promise(() => {})} />);
+const render = () => renderToStaticMarkup(<ChangesPane entries={entries} selection={null} onSelect={() => {}} onFileAction={() => new Promise(() => {})} layout="flat" untrackedOpen />);
 
 const attr = (attrs: string, name: string) => new RegExp(`\\s${name}="([^"]*)"`).exec(attrs)?.[1];
 function textById(html: string, id: string): string {
@@ -34,7 +36,7 @@ function textById(html: string, id: string): string {
 // The accessible name of an element: its `aria-label`, or the text of its `aria-labelledby` targets.
 const nameOf = (html: string, attrs: string) => attr(attrs, "aria-label") ?? (attr(attrs, "aria-labelledby") ?? "").split(/\s+/).filter(Boolean).map((id) => textById(html, id)).join(" ");
 
-describe("Unstaged help line", () => {
+describe("Changes help line", () => {
   test("the help line shows the plan.md text on one line with an end ellipsis", () => {
     const html = render();
     const line = [...html.matchAll(/<(\w+)\b([^>]*)>([^<]*)<\/\1>/g)].filter((m) => m[3] === HELP);
@@ -44,25 +46,25 @@ describe("Unstaged help line", () => {
     expect(line[0]![2]).toContain("--h-help-line");
   });
 
-  test("the Unstaged listbox carries the help text as its accessible description, and no other listbox does", () => {
+  test("the Changes tree carries the help text as its accessible description, and the Staged tree does not", () => {
     const html = render();
-    const listboxes = [...html.matchAll(/<\w+\b([^>]*\srole="listbox"[^>]*)>/g)].map((m) => m[1]!);
-    for (const name of ["Unstaged", "Untracked", "Staged"]) expect(listboxes.some((attrs) => nameOf(html, attrs).includes(name))).toBe(true);
+    const listboxes = [...html.matchAll(/<\w+\b([^>]*\srole="tree"[^>]*)>/g)].map((m) => m[1]!);
+    for (const name of ["Changes", "Staged"]) expect(listboxes.some((attrs) => nameOf(html, attrs).includes(name))).toBe(true);
     const described = listboxes.filter((attrs) => (attr(attrs, "aria-describedby") ?? "").split(/\s+/).filter(Boolean).some((id) => textById(html, id).includes(HELP)));
     expect(described).toHaveLength(1);
-    expect(nameOf(html, described[0]!)).toContain("Unstaged");
+    expect(nameOf(html, described[0]!)).toContain("Changes");
   });
 });
 
 describe("stage bar slot", () => {
   const STAGE_BAR = <button type="button">stage bar double</button>;
   const renderWith = (sideBySide: boolean) =>
-    renderToStaticMarkup(<ChangesPane entries={entries} selection={null} onSelect={() => {}} onFileAction={never} stageBar={STAGE_BAR} sideBySide={sideBySide} />);
+    renderToStaticMarkup(<ChangesPane entries={entries} selection={null} onSelect={() => {}} onFileAction={never} stageBar={STAGE_BAR} sideBySide={sideBySide} layout="flat" untrackedOpen />);
 
-  test("the slot sits between Working changes and Staged in the lane and in the file band", () => {
+  test("the slot sits between Changes and Staged in the lane and in the file band", () => {
     for (const sideBySide of [false, true]) {
       const html = renderWith(sideBySide);
-      const order = [html.indexOf("Working changes"), html.indexOf(">Untracked<"), html.indexOf("stage bar double"), html.indexOf(">Staged<")];
+      const order = [html.indexOf(">Changes<"), html.indexOf(">Untracked<"), html.indexOf("stage bar double"), html.indexOf(">Staged<")];
       expect(order.every((i) => i >= 0)).toBe(true);
       expect(order).toEqual(order.toSorted((a, b) => a - b));
     }
@@ -85,8 +87,8 @@ describe("stage bar slot", () => {
 describe("file row path", () => {
   test("a Git path splits at the last slash only, so a backslash stays in the file name", () => {
     const path = "dir/a\\b.txt";
-    const html = renderToStaticMarkup(<ChangesPane entries={[entry("unstaged", path)]} selection={null} onSelect={() => {}} onFileAction={never} />);
-    const row = /<div\b[^>]*role="option"[^>]*>([\s\S]*?)<\/div>/.exec(html)![1]!;
+    const html = renderToStaticMarkup(<ChangesPane entries={[entry("unstaged", path)]} selection={null} onSelect={() => {}} onFileAction={never} layout="flat" />);
+    const row = /<div\b[^>]*role="treeitem"[^>]*>([\s\S]*?)<\/div>/.exec(html)![1]!;
     expect([...row.matchAll(/<span class="[^"]*truncate[^"]*">([^<]*)<\/span>/g)].map((m) => m[1])).toEqual(["dir/", "a\\b.txt"]);
   });
 });
@@ -102,7 +104,7 @@ type Flags = { fileActionRunning: boolean; operationRunning: boolean; modalOpen:
 
 const BUSY = "A file action is running. Wait for its result.";
 const REFUSAL = "Stage file is unavailable: the file has a conflict";
-const LABEL: Record<ChangeEntry["category"], string> = { conflicted: "Conflicted", unstaged: "Unstaged", untracked: "Untracked", staged: "Staged" };
+const LABEL: Record<ChangeEntry["category"], string> = { conflicted: "Changes", unstaged: "Changes", untracked: "Changes", staged: "Staged" };
 
 const [unstagedA, unstagedB, untracked, stagedA] = entries as [ChangeEntry, ChangeEntry, ChangeEntry, ChangeEntry];
 const conflicted = entry("conflicted", "src/c.ts");
@@ -138,6 +140,8 @@ async function mount(initial: Selection) {
         onFileAction={(action: FileAction) => (actions.push(action), respond(action))}
         onReason={(text: string | null) => void reasons.push(text)}
         onStatus={(text: string | null) => void statuses.push(text)}
+        layout="flat"
+        untrackedOpen
         {...flags}
       />
     );
@@ -171,9 +175,9 @@ function accessibleName(element: Element): string {
   return ids.length > 0 ? ids.map((ref) => document.getElementById(ref)?.textContent ?? "").join(" ") : (element.textContent ?? "");
 }
 function option(e: ChangeEntry): HTMLElement {
-  const boxes = [...document.querySelectorAll('[role="listbox"]')].filter((box) => accessibleName(box).includes(LABEL[e.category]));
+  const boxes = [...document.querySelectorAll('[role="tree"]')].filter((box) => accessibleName(box).includes(LABEL[e.category]));
   expect(boxes).toHaveLength(1);
-  const found = [...boxes[0]!.querySelectorAll('[role="option"]')].filter((o) => accessibleName(o).includes(e.path));
+  const found = [...boxes[0]!.querySelectorAll('[role="treeitem"]')].filter((o) => accessibleName(o).includes(e.path));
   expect(found).toHaveLength(1);
   return found[0] as HTMLElement;
 }
@@ -302,15 +306,16 @@ describe("Stage key", () => {
     expect(pane.reasons.at(-1)).toBeNull();
   });
 
-  test("after succeeded, focus and selection move to the next entry, else the previous entry, else the category heading, and the new entry requests its comparison", async () => {
+  test("after succeeded, focus and selection move to the next entry, else the previous entry, else the list heading, and the new entry requests its comparison", async () => {
     const next = await spaceWith(unstagedA, { state: "succeeded" });
     expect(next.reads).toEqual([unstagedB.entryId]);
     expect(document.activeElement).toBe(option(unstagedB));
     await unmounts.pop()!();
 
-    const previous = await spaceWith(unstagedB, { state: "succeeded" });
-    expect(previous.reads).toEqual([unstagedA.entryId]);
-    expect(document.activeElement).toBe(option(unstagedA));
+    // notes.txt is the last row of the Changes list, so the previous row takes focus.
+    const previous = await spaceWith(untracked, { state: "succeeded" });
+    expect(previous.reads).toEqual([unstagedB.entryId]);
+    expect(document.activeElement).toBe(option(unstagedB));
     await unmounts.pop()!();
 
     const empty = await spaceWith(stagedA, { state: "succeeded" });
@@ -419,7 +424,8 @@ describe("selection follows focus", () => {
     expect(pane.reads).toEqual([unstagedB.entryId]);
     expect(document.activeElement).toBe(option(unstagedB));
     expect(option(unstagedB).getAttribute("aria-selected")).toBe("true");
-    for (const [key, to] of [["ArrowUp", unstagedA], ["End", unstagedB], ["Home", unstagedA], ["PageDown", unstagedB], ["PageUp", unstagedA]] as const) {
+    // The Changes list starts with the conflicted entry and ends with the untracked entry. Without a layout, one page is one row.
+    for (const [key, to] of [["ArrowUp", unstagedA], ["End", untracked], ["Home", conflicted], ["PageDown", unstagedA], ["PageUp", conflicted]] as const) {
       await press(document.activeElement!, key);
       expect(document.activeElement).toBe(option(to));
       expect(pane.reads.at(-1)).toBe(to.entryId);
@@ -429,10 +435,10 @@ describe("selection follows focus", () => {
   });
 
   test("a navigation key that keeps the selected entry starts no read", async () => {
-    const pane = await mount({ entryId: unstagedA.entryId, comparisonId: id() });
-    await focus(option(unstagedA));
-    await press(option(unstagedA), "Home");
-    await press(option(unstagedA), "ArrowUp");
+    const pane = await mount({ entryId: conflicted.entryId, comparisonId: id() });
+    await focus(option(conflicted));
+    await press(option(conflicted), "Home");
+    await press(option(conflicted), "ArrowUp");
     expect(pane.reads).toEqual([]);
   });
 
@@ -443,7 +449,7 @@ describe("selection follows focus", () => {
     expect(pane.reads).toEqual([unstagedB.entryId, unstagedA.entryId, unstagedB.entryId]);
     // A late comparison of an earlier entry changes nothing.
     await pane.arrive(unstagedA.entryId, id());
-    const selected = [...document.querySelectorAll('[role="option"][aria-selected="true"]')];
+    const selected = [...document.querySelectorAll('[role="treeitem"][aria-selected="true"]')];
     expect(selected.length === 1 && selected[0] === option(unstagedB)).toBe(true);
   });
 });

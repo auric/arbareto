@@ -10,6 +10,7 @@ import { codeText } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { DockedPanel } from "../components/docked-panel";
 import { isObject } from "../lib/utils";
+import { trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { TEXTS, type ConfigSource } from "./texts";
 
 // Feature 004 spec FR-021 to FR-028, plan.md D5, D6, D15 "Docked panel", contract Δ3 `reviewWorkbench` and `runWorkbench` merge and rebase.
@@ -19,7 +20,7 @@ export type IntegrateRequest = { action: "merge" | "rebase"; ref: string; name: 
 type Reviewed = Extract<z.infer<typeof ReviewWorkbenchResult>, { workbenchToken: string }>;
 type MergePlan = Extract<Reviewed, { action: "merge" }>["plan"];
 type RebasePlan = Extract<Reviewed, { action: "rebase" }>["plan"];
-type Review = { response: BridgeResponse | null; token: string | null; plan: MergePlan | RebasePlan | null; reason: string | null; code: string | null };
+type Review = { response: BridgeResponse | null; token: string | null; plan: MergePlan | RebasePlan | null; reason: string | null; code: string | null; unmerged: number | null };
 
 export type IntegratePanelProps = {
   request: IntegrateRequest;
@@ -29,6 +30,10 @@ export type IntegratePanelProps = {
   target: { repositoryId: string; repositoryGeneration: number } | null;
   /** The workbench reason that blocks every mutation, or null. */
   blockedReason: string | null;
+  /** True while a mutation runs. Plan D15 running rule: the reason then shows only in the tooltip and the accessible description. */
+  operationRunning: boolean;
+  /** Reports the run to the status bar (`StatusOperation` kind `runWorkbench`). */
+  onOperation(op: StatusOperation): void;
   /** The store's `ended("runWorkbench", response)`. */
   onEnded(response: BridgeResponse): void;
   onClose(): void;
@@ -41,15 +46,21 @@ function reviewOf(response: BridgeResponse): Review {
   const result = isObject(response.result) ? response.result : {};
   const token = response.state === "succeeded" && typeof result.workbenchToken === "string" ? result.workbenchToken : null;
   const plan = isObject(result.plan) ? (result.plan as MergePlan | RebasePlan) : null;
-  return { response, token, plan, reason: typeof result.reason === "string" ? result.reason : null, code: token === null ? (response.code ?? response.state) : null };
+  const unmerged = typeof result.unmerged === "number" ? result.unmerged : null;
+  return { response, token, plan, reason: typeof result.reason === "string" ? result.reason : null, code: token === null ? (response.code ?? response.state) : null, unmerged };
 }
 
-/** The D15 text of a refused review. Unmapped codes and reasons show the code. */
-function refusalText(review: Review, action: "Merge" | "Rebase", current: string, plan: MergePlan | RebasePlan | null): string {
+/** The D15 text of a refused review. `source` is the short name of the source or onto branch. Unmapped codes and reasons show the code. */
+function refusalText(review: Review, action: "Merge" | "Rebase", current: string, source: string, plan: MergePlan | RebasePlan | null): string {
   const ff = plan !== null && "facts" in plan ? plan.facts.mergeFf.source : "default";
   if (review.code === "TRUST_REQUIRED" || review.code === "TRUST_CHANGED") return TEXTS.trust;
+  if (review.code === "CONFLICTED" && review.unmerged !== null) return TEXTS.conflicted(review.unmerged);
+  if (review.code === "OPERATION_IN_PROGRESS") return TEXTS.operationInProgress;
   if (review.code !== "WORKBENCH_UNAVAILABLE" || review.reason === null) return TEXTS.unavailable(action) + (review.code ?? "unknown");
   const texts: Record<string, string> = {
+    detached: TEXTS.detached,
+    unborn: TEXTS.unborn,
+    "same-branch": action === "Merge" ? TEXTS.sameMerge(source) : TEXTS.sameRebase(source),
     "ff-only": TEXTS.ffOnly(ff as ConfigSource),
     "message-size": TEXTS.messageSize,
     "squash-no-ff": TEXTS.squashNoFf(ff as ConfigSource),
@@ -97,7 +108,7 @@ function Option({ label, note, reason, ...input }: { label: string; note?: strin
 
 /** The docked Merge or Rebase panel. A stop with conflicts closes it, and the 003 conflict row takes over (FR-023, FR-027). */
 export function IntegratePanel(props: IntegratePanelProps) {
-  const { request, current, bridge, target, blockedReason, onEnded, onClose } = props;
+  const { request, current, bridge, target, blockedReason, operationRunning, onOperation, onEnded, onClose } = props;
   const merge = request.action === "merge";
   const action = merge ? "Merge" : "Rebase";
   // Merge options.
@@ -140,8 +151,12 @@ export function IntegratePanel(props: IntegratePanelProps) {
   const messageBytes = text === null ? 0 : utf8Bytes(text);
   const messageReason = !merge || squash || text === null ? null : messageBytes > MERGE_MESSAGE_BYTES ? TEXTS.messageSize : /^[ \t\n\r]*$/.test(text) ? TEXTS.messageEmpty : null;
   const shown = review?.key === key ? review.value : null;
-  const reason: string | null =
-    blockedReason ?? (running ? (merge ? TEXTS.mergeRuns : TEXTS.rebaseRuns) : shown === null ? TEXTS.pending : shown.token === null ? refusalText(shown, action, current, shownPlan) : messageReason);
+  // The own run comes first: while it runs, the workbench reason is the running reason too.
+  const reason: string | null = running
+    ? merge
+      ? TEXTS.mergeRuns
+      : TEXTS.rebaseRuns
+    : (blockedReason ?? (shown === null ? TEXTS.pending : shown.token === null ? refusalText(shown, action, current, request.name, shownPlan) : messageReason));
 
   async function run() {
     if (target === null) return;
@@ -151,10 +166,12 @@ export function IntegratePanel(props: IntegratePanelProps) {
     const again = reviewOf(await bridge.reviewWorkbench(target, sent));
     if (again.token === null) {
       setRunning(false);
-      setFailure(refusalText(again, action, current, again.plan ?? shownPlan));
+      setFailure(refusalText(again, action, current, request.name, again.plan ?? shownPlan));
       return;
     }
-    const response = await bridge.runWorkbench({ repositoryId: target.repositoryId }, { workbenchToken: again.token, start: true });
+    const token = again.token;
+    const texts = merge ? TEXTS.runMerge : TEXTS.runRebase;
+    const response = await trackOperation("runWorkbench", undefined, (onProgress) => bridge.runWorkbench({ repositoryId: target.repositoryId }, { workbenchToken: token, start: true }, onProgress), (op) => onOperation({ ...op, texts }));
     onEnded(response);
     setRunning(false);
     const state = isObject(response.result) ? response.result.operationState : undefined;
@@ -170,7 +187,7 @@ export function IntegratePanel(props: IntegratePanelProps) {
     <DockedPanel
       title={merge ? TEXTS.mergeTitle(request.name, current) : TEXTS.rebaseTitle(current, request.name)}
       closeLabel={merge ? TEXTS.closeMerge : TEXTS.closeRebase}
-      primary={{ label: action, reason, onRun: () => void run() }}
+      primary={{ label: action, reason, quiet: running || operationRunning, onRun: () => void run() }}
       onClose={onClose}
     >
       <div ref={body} data-slot="integrate-panel" className="flex flex-col gap-2">

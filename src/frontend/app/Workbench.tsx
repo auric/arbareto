@@ -3,15 +3,18 @@
 
 import { GitCommitIcon, RefreshIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Component, lazy, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type ReactNode, type RefObject } from "react";
+import { Component, lazy, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react";
 import type { ChangeEntry, Comparison as ComparisonResult, Environment, RecoveryStatement, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
 import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
 import { ChangesPane as ChangesList, type FileAction, type FileActionResult } from "../changes/ChangesPane";
-import { ComparisonView as Comparison, resultOf, showsDiff } from "../changes/ComparisonView";
+import { ComparisonView as Comparison, resultOf, showsDiff, type LineState } from "../changes/ComparisonView";
+import { fileActions } from "../changes/file-actions";
+import { countsText } from "../changes/file-tree";
 import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
-import { BLOCKED_TEXT, HunkControls, operationBlock, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
+import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
 import { CommitTray } from "../commit/CommitTray";
+import { WorkingSummary } from "../commit/WorkingSummary";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
@@ -34,7 +37,7 @@ import {
 import { ViewCommitDetails } from "../history/CommitDetails";
 import { HistoryList } from "../history/HistoryList";
 import { branchName, INDEX_ROW, WORKING_ROW } from "../history/HistoryView";
-import { createShortcutHandler, nextSection, type Panel, type Section } from "../keyboard/shortcuts";
+import { createShortcutHandler, isEditable, nextSection, type Panel, type Section } from "../keyboard/shortcuts";
 import { isObject } from "../lib/utils";
 import {
   chooseProfile,
@@ -57,6 +60,7 @@ import { Splitter } from "../layout/Splitter";
 import { ReferencesSidebar } from "../refs/ReferencesSidebar";
 import { createHistoryView, refsChanged, type HistoryBridge, type HistoryView as HistoryStore } from "../state/history-view";
 import { createRequests, isRegistration, wslDistro, type Clock, type RequestBridge, type Requests, type RequestState } from "../state/requests";
+import { metrics as densityMetrics } from "../layout/profiles";
 import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, storePanes, writePreferences, type DarkPalette, type Panes, type Preferences, type Theme } from "../state/preferences";
 import { createDrafts } from "../state/drafts";
 import { createDraftStore } from "../state/draft-store";
@@ -79,7 +83,7 @@ import { PushPanel } from "../sync/PushPanel";
 import { CloneDialog } from "../clone/CloneDialog";
 import { ConnectNoticeRow } from "../settings/ConnectTerminal";
 import { SettingsDialog, type KeyProposal } from "../settings/SettingsDialog";
-import { actionReason, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
+import { actionReason, RUNNING_REASON, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
 import { useSync } from "../sync/useSync";
 import { suppressPageMenu } from "../components/action-menu";
 import { DockRegion } from "../components/docked-panel";
@@ -128,13 +132,15 @@ export type WorkbenchBridge = RequestBridge &
     | "clearSyncPath"
     | "launchPuttygen"
     | "readBranches"
+    | "applyFiles"
     | "reviewWorkbench"
     | "runWorkbench"
     | "openWorktree"
+    | "revealPath"
   >;
 /** The hunk and file staging facts that the workbench gives the changes pane and the comparison view (T145, T202). */
 export type Staging = {
-  bridge: Pick<Bridge, "applyHunk" | "applyFile">;
+  bridge: Pick<Bridge, "applyHunk" | "applyFile" | "applyFiles" | "reviewWorkbench" | "runWorkbench" | "revealPath">;
   /** The repository and the generation of the current capability, or null. */
   target: StagingTarget | null;
   blocked: Blocked;
@@ -327,8 +333,13 @@ function noDecisionText(state: RequestState): string {
 }
 
 /** The T133 changes pane on the T132 request state, with the T202 file controls in its stage bar. */
-export function ChangesPaneMount({ state, requests, profile, menuOpen, modalOpen, onStatus, staging }: WorkbenchPaneProps) {
+export function ChangesPaneMount({ state, requests, profile, density, textScale, menuOpen, modalOpen, onStatus, staging, workbench }: WorkbenchPaneProps) {
   const workspace = state.workspace;
+  const key = state.repository?.worktreeKey ?? "";
+  const view = useSyncExternalStore(
+    (listener) => workbench?.subscribe(listener) ?? (() => {}),
+    () => workbench?.commitView(key) ?? null,
+  );
   const failure = state.readFailure === null ? null : <ErrorState code={responseCode(state.readFailure)} result={state.readFailure.result} onRefresh={requests.refresh} />;
   if (workspace === null) return failure ?? <Loading hasContent={false} refreshing={false} />;
   const selection = state.selection === null ? null : { entryId: state.selection.entryId, comparisonId: state.capability?.comparisonId ?? null };
@@ -352,6 +363,25 @@ export function ChangesPaneMount({ state, requests, profile, menuOpen, modalOpen
     return { state: "refused", text: `${label} is unavailable: ${noDecisionText(state)}` };
   };
   const controls = staging !== undefined && shown.entry !== null && shown.comparison !== null ? fileProps(staging, shown.comparison, shown.entry.category) : null;
+  // Feature 004 plan.md D8 and D15: the multi-file, ignore, and reveal actions bind the shown read.
+  const running = staging?.blocked === "busy" || staging?.blocked === "running";
+  const files =
+    staging === undefined || workbench === undefined || workbench === null
+      ? undefined
+      : {
+          actions: fileActions({
+            bridge: staging.bridge,
+            target: state.repository === null ? null : { repositoryId: state.repository.repositoryId, repositoryGeneration: workspace.generation },
+            snapshotId: workspace.snapshotId,
+            entries: state.entries,
+            onOperation: staging.onOperation,
+            ended: workbench.ended,
+            onStatus,
+          }),
+          reason: running ? RUNNING_REASON : staging.blocked !== null ? BLOCKED_TEXT[staging.blocked] : null,
+          running,
+          cut: workspace.cut === "untracked",
+        };
   return (
     <div className="flex h-full min-h-0 flex-col">
       {failure}
@@ -370,6 +400,12 @@ export function ChangesPaneMount({ state, requests, profile, menuOpen, modalOpen
         toolbarSuccess={staging?.toolbarSuccess ?? null}
         complete={workspace.completeness.state === "complete"}
         sideBySide={profile !== "wide"}
+        rowHeight={densityMetrics(density, textScale).row}
+        layout={view?.layout}
+        onLayout={view === null ? undefined : (layout) => workbench.setCommitView(key, { layout })}
+        untrackedOpen={view?.untrackedOpen}
+        onUntrackedOpen={view === null ? undefined : (untrackedOpen) => workbench.setCommitView(key, { untrackedOpen })}
+        files={files}
         stageBar={
           staging === undefined ? undefined : controls === null ? null : (
             <FileControls
@@ -400,7 +436,7 @@ export function ComparisonViewMount({ state, requests, staging }: WorkbenchPaneP
   const controls =
     staging === undefined || entry === null
       ? undefined
-      : (comparison: ComparisonResult, displayFailed: boolean) => (
+      : (comparison: ComparisonResult, displayFailed: boolean, lines?: LineState) => (
           <HunkControls
             key={comparison.comparisonId}
             bridge={staging.bridge}
@@ -422,6 +458,32 @@ export function ComparisonViewMount({ state, requests, staging }: WorkbenchPaneP
               staging.onEnded("applyHunk", response);
             }}
             stepRef={staging.stepRef}
+            lines={lines}
+          />
+        );
+  // Spec FR-037: the Stage hunk or Unstage hunk button on each hunk.
+  const hunkAction =
+    staging === undefined || entry === null
+      ? undefined
+      : (comparison: ComparisonResult, displayFailed: boolean, index: number) => (
+          <HunkButton
+            bridge={staging.bridge}
+            target={target}
+            comparison={comparison}
+            category={entry.category}
+            selectedHunk={state.selectedHunk}
+            anchoredHunk={null}
+            onSelectHunk={requests.selectHunk}
+            blocked={staging.blocked}
+            trust={staging.trust}
+            eligibility={staging.eligibility}
+            displayFailed={displayFailed}
+            onOperation={staging.onOperation}
+            onEnded={(response, ordinal) => {
+              if (response.state === "succeeded") staging.onHunkSucceeded(file!, ordinal, comparison.patch);
+              staging.onEnded("applyHunk", response);
+            }}
+            index={index}
           />
         );
   const failed = staging?.fileFailure?.file === file ? staging.fileFailure.response : null;
@@ -432,6 +494,7 @@ export function ComparisonViewMount({ state, requests, staging }: WorkbenchPaneP
       selectedHunk={state.selectedHunk}
       onRefresh={requests.refresh}
       controls={controls}
+      hunkAction={hunkAction}
       anchor={anchor}
       notice={failed === null ? undefined : <FileFailure response={failed} />}
     />
@@ -600,6 +663,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // Data-model §14: the view of each worktree for the window session. Without a repository, the empty key holds the view.
   const viewKey = state.repository?.worktreeKey ?? "";
   const view: View = useSyncExternalStore(store.subscribe, () => store.view(viewKey), () => store.view(viewKey));
+  const commitState = useSyncExternalStore(store.subscribe, () => store.commitView(viewKey), () => store.commitView(viewKey));
   const filterRef = useRef<HTMLInputElement>(null);
   const [preferences, setPreferences] = useState(storedPreferences);
   const client = useClientSize();
@@ -1131,20 +1195,18 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const fit = { client, textScale, density: preferences.density, bandRows, statusArea: 0 };
   const remembered = { ...fit, fileBand: panes.fileBand ?? band.default, tray: panes.tray ?? tray.default };
   const clamped = clampPanes({ ...remembered, dock: panes.commitDock ?? undefined });
-  // The smallest commit dock that the layout keeps beside the remembered file band and tray.
-  const commitDockMin = clampPanes({ ...remembered, dock: 0 }).dock ?? 0;
   const history = historyFit(fit);
   const content = workArea - bandRows * m.bandRow;
   const detailsBounds = dockBounds("details", { width: client.width, available: content, density: preferences.density, textScale });
   const resizable = profile !== "constrained";
-  // The dock height of the shown panel. Without a selection, the hint takes the details height.
-  const dockHeight = panel === "commit" ? (clamped.dock ?? 0) : Math.min(Math.max(panes.detailsDock ?? detailsBounds.default, detailsBounds.min), detailsBounds.max);
+  // Feature 004 plan.md D15: the commit workspace lives in the Commit view, so every History dock content takes the details height.
+  const dockHeight = Math.min(Math.max(panes.detailsDock ?? detailsBounds.default, detailsBounds.min), detailsBounds.max);
   const listHeight = content - m.splitter - dockHeight;
   const sideBounds = profile === "constrained" ? null : sidebarBounds(profile, client.width);
   const sideWidth = sideBounds === null ? 0 : Math.min(Math.max(panes.sidebar, sideBounds.min), sideBounds.max);
   const markers = environment !== null && hasMarkers(environment);
   // The work area scrolls only when the reduced pane minima do not fit, or below the recovery markers, which no floor reserves.
-  const scrolls = markers || (panel === "commit" ? clamped.scrolls === true : history.scrolls);
+  const scrolls = markers || (view === "commit" ? clamped.scrolls === true : history.scrolls);
   // The flexible row keeps its computed height only while the work area scrolls. Otherwise it absorbs a shortfall, so the fixed panes stay in view.
   const flexible = `minmax(${scrolls ? clamped.comparison : 0}px, 1fr)`;
   const statusAreaMax = statusAreaHeight({ content: Number.POSITIVE_INFINITY, client, textScale, density: preferences.density, bandRows });
@@ -1178,14 +1240,20 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     const main = syncSettings.action;
     if (control === "pull" && main !== null && actionReason(reasons, main) === null) sync.run(pullAction(main).payload);
   };
+  // Plan D15 running rule: a running mutation blocks the 004 actions with the 003 running reason.
+  const mutationReason = running ? RUNNING_REASON : blockedReason;
   const branches = useBranchActions({
     bridge,
     target: requests.target,
     repositoryId,
+    refsDigest,
+    onOperation: setOperation,
     workbench: store,
     head: currentHead,
-    blockedReason,
+    blockedReason: mutationReason,
     onNotice: setNotice,
+    onMerge: (entry) => openIntegrate({ action: "merge", ref: entry.ref, name: entry.name }),
+    onRebase: (entry) => openIntegrate({ action: "rebase", ref: entry.ref, name: entry.name }),
     onOpenWorktree: (path) => void (repositoryId === null ? undefined : bridge.openWorktree({ repositoryId, path }).then(registered)),
     push: { reason: reasons.pushReason, run: () => runSync.current("push") },
     onShowBranchHistory: () => void historyView.setScope("current"),
@@ -1245,7 +1313,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     menuOpen: menuOpen !== null,
     modalOpen,
     onStatus: setPaneStatus,
-    historyListMin: panel === "details" || panel === null ? history.listMin : undefined,
+    historyListMin: history.listMin,
     selected: kept,
     onSelectRow,
     staging,
@@ -1264,7 +1332,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       ? {
           gridTemplateColumns: `${lane}px ${m.splitter}px minmax(0, 1fr)`,
           gridTemplateRows: `${flexible} ${m.splitter}px ${trayHeight}px`,
-          gridTemplateAreas: '"lane laneSplit comparison" "traySplit traySplit traySplit" "tray tray tray"',
+          gridTemplateAreas: '"lane laneSplit comparison" "lane laneSplit traySplit" "lane laneSplit tray"',
         }
       : profile === "narrow"
         ? {
@@ -1279,17 +1347,17 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           };
 
   // plan.md "Status area": the status bar text is the live region, so a start shows there too.
-  const statusText = starting !== null ? wslStartingText(starting.distro) : state.refreshing ? "Refreshing…" : state.blocked ? "State unknown" : (notice ?? (state.repository === null && !restoring ? NO_REPOSITORY : null));
+  // Spec FR-048: the Commit view states the counts of a fully loaded status read.
+  const counts = view === "commit" && workspace !== null && !loading ? countsText(state.entries, workspace.cut === "untracked") : null;
+  const statusText = starting !== null ? wslStartingText(starting.distro) : state.refreshing ? "Refreshing…" : state.blocked ? "State unknown" : (notice ?? (state.repository === null && !restoring ? NO_REPOSITORY : counts));
   const gitVersion = wslGit?.version ?? environment?.detectedVersion ?? null;
 
   const pushBranch = currentHead !== null && currentHead.state !== "detached" ? branchName(currentHead.target) : null;
   const pushPanel = sync.panel !== null && pushBranch !== null ? <PushPanel branch={pushBranch} plan={sync.panel} onPush={sync.push} onCancel={sync.closePanel} /> : null;
+  // Feature 004 spec FR-029 and plan.md D15 "Commit view layout": the lists on the left, the diff on the right, and the message editor below the diff.
   const commitPanel = (
-    <div ref={commitPanelRef} hidden={(view !== "commit" && panel !== "commit") || pushPanel !== null} className="flex h-full min-h-0 flex-col">
-      <h2 className="flex shrink-0 items-center px-2 font-semibold" style={{ minHeight: "var(--h-pane-heading)" }}>
-        Commit
-      </h2>
-      <section aria-label="Commit panel" className="grid min-h-0 flex-1" style={grid}>
+    <div ref={commitPanelRef} hidden={pushPanel !== null} className="flex h-full min-h-0 flex-col">
+      <div className="grid min-h-0 flex-1" style={grid}>
         <div data-section="workingChanges" className="min-h-0 overflow-auto" style={{ gridArea: "lane" }}>
           <ChangesPane {...pane} />
         </div>
@@ -1318,7 +1386,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             drafts={drafts}
             head={workspace?.head ?? null}
             staged={staged}
-            status={loading ? "loading" : workspace.completeness.state !== "complete" ? "incomplete" : null}
+            // Plan.md D15 "Limited status": a cut inside the untracked records keeps Commit available, because its review reads the staged scope.
+            status={loading ? "loading" : workspace.completeness.state !== "complete" && workspace.cut !== "untracked" ? "incomplete" : null}
             blocked={blocked}
             requestTrust={(report) =>
               new Promise<boolean>((resolve) => {
@@ -1333,14 +1402,29 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             fieldRef={messageField}
             onPush={() => sync.run({ action: "push" })}
             pushReason={reasons.commitPushReason}
+            operationState={workspace?.operationState}
+            amend={{ value: commitState.amend, onChange: (amend) => store.setCommitView(viewKey, { amend }) }}
           />
         </div>
-      </section>
+      </div>
     </div>
   );
 
   // The Commit view shows the push panel and the commit workspace. The dock of the hidden History view then holds neither.
   const inCommitView = view === "commit";
+  // Plan.md D15 and O-11: the Working directory and Index rows dock a summary. Enter or a double-click on the row opens the Commit view.
+  const openCommitView = () => store.setView(viewKey, "commit");
+  const onHistoryKey = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key !== "Enter" || event.ctrlKey || event.shiftKey || event.altKey || event.metaKey || isEditable(event.target as HTMLElement)) return;
+    const list = (event.target as HTMLElement).closest<HTMLElement>("[data-history-list]");
+    const active = list === null ? null : document.getElementById(list.getAttribute("aria-activedescendant") ?? "");
+    const id = active?.dataset.rowId;
+    if (id === WORKING_ROW || id === INDEX_ROW) openCommitView();
+  };
+  const onHistoryDoubleClick = (event: ReactMouseEvent<HTMLElement>) => {
+    const id = (event.target as HTMLElement).closest<HTMLElement>("[data-row-id]")?.dataset.rowId;
+    if (id === WORKING_ROW || id === INDEX_ROW) openCommitView();
+  };
   const dock = (
     <DockRegion
       panel={
@@ -1349,8 +1433,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             request={integrate.request}
             current={pushBranch}
             bridge={bridge}
-            target={staging.target}
-            blockedReason={blockedReason}
+            target={state.repository !== null && workspace !== null ? { repositoryId: state.repository.repositoryId, repositoryGeneration: workspace.generation } : null}
+            blockedReason={mutationReason}
+            operationRunning={running}
+            onOperation={setOperation}
             onEnded={(response) => store.ended("runWorkbench", response)}
             onClose={() => setIntegrate(null)}
           />
@@ -1358,7 +1444,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       }
     >
       {inCommitView ? null : pushPanel}
-      {inCommitView ? null : commitPanel}
+      {inCommitView || panel !== "commit" || pushPanel !== null ? null : <WorkingSummary working={working} staged={staged} onOpen={openCommitView} />}
       {panel === "details" && kept !== null && pushPanel === null ? (
         <div data-section="commitDetails" className="h-full min-h-0">
           <ViewCommitDetails view={historyView} oid={kept} onRead={() => setDetailsRead(row.epoch)} />
@@ -1390,10 +1476,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         <div data-section="references" className="shrink-0 border-b border-divider" style={{ height: "auto", maxHeight: m.reducedPaneMin }}>
           {refsSidebar}
         </div>
-        <section aria-label="History" data-section="historyList" className="flex min-h-0 flex-col" style={panel === "commit" ? { flex: "0 0 auto", height: m.historyListMin + m.row } : { flex: "1 1 0" }}>
+        <section aria-label="History" data-section="historyList" className="flex min-h-0 flex-col" style={{ flex: "1 1 0" }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
           <HistoryView {...pane} />
         </section>
-        <section aria-label="Dock" className="flex min-h-0 flex-col border-t border-divider" style={panel === "commit" ? { flex: "1 1 0" } : { flex: "0 0 auto", minHeight: m.reducedPaneMin }}>
+        <section aria-label="Dock" className="flex min-h-0 flex-col border-t border-divider" style={{ flex: "0 0 auto", minHeight: m.reducedPaneMin }}>
           {dock}
         </section>
       </div>
@@ -1404,18 +1490,18 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         </div>
         <Splitter label="Resize references sidebar" orientation="vertical" value={sideWidth} min={sideBounds!.min} max={sideBounds!.max} onChange={resize("sidebar")} onCommit={keepPane("sidebar")} />
         <div className="flex min-h-0 flex-col">
-          <section aria-label="History" data-section="historyList" className="flex min-h-0 flex-col" style={{ flex: "0 0 auto", height: Math.max(listHeight, m.historyListMin) }}>
+          <section aria-label="History" data-section="historyList" className="flex min-h-0 flex-col" style={{ flex: "0 0 auto", height: Math.max(listHeight, m.historyListMin) }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
             <HistoryView {...pane} />
           </section>
           <Splitter
             label="Resize dock"
             orientation="horizontal"
             value={dockHeight}
-            min={panel === "commit" ? commitDockMin : detailsBounds.min}
-            max={panel === "commit" ? content - m.splitter - m.historyListMin : detailsBounds.max}
+            min={detailsBounds.min}
+            max={detailsBounds.max}
             reverse
-            onChange={resize(panel === "commit" ? "commitDock" : "detailsDock")}
-            onCommit={keepPane(panel === "commit" ? "commitDock" : "detailsDock")}
+            onChange={resize("detailsDock")}
+            onCommit={keepPane("detailsDock")}
           />
           <section aria-label="Dock" className="flex min-h-0 flex-1 flex-col">
             {dock}
@@ -1455,7 +1541,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           )}
           {workspace === null ? null : (
             // plan.md "Header layout": the branch button takes only the width that the other items leave, so it never moves them to another row.
-            <BranchButton head={workspace.head} operationState={workspace.operationState} counts={currentLabel} tracking={labels} actions={branches} blockedReason={blockedReason} rowHeight={m.row} />
+            <BranchButton head={workspace.head} operationState={workspace.operationState} counts={currentLabel} tracking={labels} actions={branches} blockedReason={mutationReason} rowHeight={m.row} />
           )}
           {state.repository === null ? null : (
             // The 004 design standard: the Fetch, Pull, and Push group follows the branch. Feature 004 adds its branch and worktree buttons before it.
@@ -1583,14 +1669,13 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           </div>
           <span className="flex items-center gap-1" style={{ order: 7 }}>
             <IconButton icon={RefreshIcon} label="Refresh" keys={{ aria: "F5", text: "F5" }} disabled={!state.repository} onClick={refresh} />
-            {/* plan.md "Change the docked panel": Commit selects the Working directory row and focuses Working changes. */}
+            {/* Feature 004 plan.md D15 top bar: the Commit icon opens the Commit view and focuses Working changes. */}
             <IconButton
               icon={GitCommitIcon}
               label={commitLabel}
               disabled={!state.repository}
               onClick={() => {
-                historyView.select(WORKING_ROW, null);
-                onSelectRow(WORKING_ROW);
+                openCommitView();
                 requestAnimationFrame(() => sections.current?.querySelector<HTMLElement>('[data-section="workingChanges"] [role="option"][tabindex="0"], [data-section="workingChanges"] h2')?.focus());
               }}
             />

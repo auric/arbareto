@@ -34,6 +34,8 @@ export type SwitcherPopoverProps<T> = {
   itemText(item: T): string;
   /** The accessible name of an option. The default is `itemText`. */
   itemLabel?(item: T): string;
+  /** The heading of the item's group. A heading row shows before the first shown item of each group. The option names must state the group too, because the heading is no option. */
+  itemGroup?(item: T): string;
   renderItem(item: T): ReactNode;
   onPick(item: T): void;
   /** The last option, such as "New branch… (Ctrl+B)". The filter never hides it. */
@@ -60,7 +62,7 @@ export function SwitcherPopover<T>({ open, onOpenChange, trigger, children, tool
   );
 }
 
-function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, itemKey, itemText, itemLabel = itemText, renderItem, onPick, footer, emptyText, noMatchText }: Omit<SwitcherPopoverProps<T>, "open" | "onOpenChange" | "trigger" | "children" | "tooltip">) {
+function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, itemKey, itemText, itemLabel = itemText, itemGroup, renderItem, onPick, footer, emptyText, noMatchText }: Omit<SwitcherPopoverProps<T>, "open" | "onOpenChange" | "trigger" | "children" | "tooltip">) {
   const ids = { list: useId(), option: useId() };
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -69,9 +71,21 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
   const count = shown.length + (footer === undefined ? 0 : 1);
   const active = Math.min(activeIndex, Math.max(0, count - 1));
   const optionId = (index: number) => `${ids.option}-${index}`;
-  const virtual = count > VIRTUAL_MIN;
+  // The rows: an option index, or a group heading.
+  const rows: (number | { heading: string })[] = [];
+  const rowAt: number[] = [];
+  let group: string | undefined;
+  for (let index = 0; index < count; index++) {
+    const next = index < shown.length ? itemGroup?.(shown[index]!) : undefined;
+    if (next !== undefined && next !== group) rows.push({ heading: next });
+    group = next;
+    rowAt.push(rows.length);
+    rows.push(index);
+  }
+  const rowOf = (index: number) => rowAt[index] ?? -1;
+  const virtual = rows.length > VIRTUAL_MIN;
   const virtualizer = useVirtualizer({
-    count,
+    count: rows.length,
     enabled: virtual,
     getScrollElement: () => scroller.current,
     estimateSize: () => rowHeight,
@@ -80,7 +94,8 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
     // The active option stays mounted, so `aria-activedescendant` names an element.
     rangeExtractor: (range) => {
       const indexes = defaultRangeExtractor(range);
-      return indexes.includes(active) ? indexes : [...indexes, active].sort((a, b) => a - b);
+      const at = rowOf(active);
+      return at < 0 || indexes.includes(at) ? indexes : [...indexes, at].sort((a, b) => a - b);
     },
   });
 
@@ -93,13 +108,23 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
       event.preventDefault();
       const next = Math.max(0, Math.min(count - 1, active + (event.key === "ArrowDown" ? 1 : -1)));
       setActiveIndex(next);
-      if (virtual) virtualizer.scrollToIndex(next);
+      if (virtual) virtualizer.scrollToIndex(rowOf(next));
     } else if (event.key === "Enter" && count > 0) {
       event.preventDefault();
       pick(active);
     }
   }
 
+  const row = (at: number, style?: CSSProperties) => {
+    const r = rows[at]!;
+    if (typeof r === "number") return option(r, style);
+    // The option names state the group, so the heading stays out of the accessibility tree.
+    return (
+      <div key={`heading:${r.heading}`} data-slot="list-heading" role="presentation" aria-hidden="true" className="flex items-center px-2 font-semibold text-muted-text" style={{ minHeight: rowHeight, ...style }}>
+        {r.heading}
+      </div>
+    );
+  };
   const option = (index: number, style?: CSSProperties) => {
     const item = index < shown.length ? shown[index]! : null;
     return (
@@ -145,10 +170,10 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
           <div ref={scroller} id={ids.list} role="listbox" aria-label={listLabel} className="min-h-0 overflow-y-auto">
             {virtual ? (
               <div role="presentation" className="relative" style={{ height: virtualizer.getTotalSize() }}>
-                {virtualizer.getVirtualItems().map((v) => option(v.index, { position: "absolute", top: 0, left: 0, right: 0, transform: `translateY(${v.start}px)` }))}
+                {virtualizer.getVirtualItems().map((v) => row(v.index, { position: "absolute", top: 0, left: 0, right: 0, transform: `translateY(${v.start}px)` }))}
               </div>
             ) : (
-              Array.from({ length: count }, (_, index) => option(index))
+              rows.map((_, at) => row(at))
             )}
           </div>
           {items === null ? <p className="text-muted-text">{LOADING_TEXT}</p> : items.length === 0 ? <p className="text-muted-text">{emptyText}</p> : shown.length === 0 ? <p className="text-muted-text">{noMatchText}</p> : null}

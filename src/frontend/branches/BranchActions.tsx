@@ -11,9 +11,10 @@ import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { branchName } from "../history/HistoryView";
 import { KEYS, type ScopedAction } from "../keyboard/shortcuts";
-import { SHOW_BRANCH_HISTORY } from "../refs/ReferencesSidebar";
+import { SHOW_BRANCH_HISTORY, shortRef } from "../refs/ReferencesSidebar";
 import { isObject } from "../lib/utils";
 import type { BranchEntry, Workbench } from "../state/workbench";
+import { trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { OUTCOME, refusalText, STASH, T } from "./texts";
 
 // Feature 004 spec FR-009 to FR-020, plan.md D3, D4, D15, D16, data-model §3 and §4, contract Δ3 and Δ14.
@@ -29,7 +30,7 @@ type DeletePlan = { oid: string; onlyHere: number; reflogKeeps: boolean };
 
 type Overlay =
   | { kind: "switch"; anchor: Element | null; display: string; target: SwitchTarget; heldBy: string | null; preset: Choice; choice: Choice; plan: SwitchPlan | null; token: string | null; error: string | null }
-  | { kind: "remote"; anchor: Element | null; entry: BranchEntry; mode: "track" | "detach"; name: string; error: string | null }
+  | { kind: "remote"; anchor: Element | null; entry: BranchEntry; mode: "track" | "detach"; name: string; error: string | null; existing?: string }
   | { kind: "create"; anchor: Element | null; start: string; name: string; switchTo: boolean; error: string | null }
   | { kind: "rename"; anchor: Element | null; entry: BranchEntry; name: string; error: string | null }
   | { kind: "delete"; entry: BranchEntry; plan: DeletePlan | null; token: string | null; error: string | null };
@@ -39,11 +40,15 @@ export type BranchActionsOptions = {
   target(): Target | null;
   /** The open repository. A new one reads the branches. */
   repositoryId: string | null;
+  /** The newest `readRefs.refsDigest`. Each new value reads the branches again. */
+  refsDigest: string | null;
+  /** Reports a run to the status bar (`StatusOperation` kind `runWorkbench`). */
+  onOperation(op: StatusOperation): void;
   workbench: Workbench;
   head: WorkspaceSnapshot["head"] | null;
   /** The reason that blocks every branch action: an operation in progress, a running mutation, or an unknown state. */
   blockedReason: string | null;
-  /** Shows a text in the status bar. */
+  /** Shows a text in the status bar. Null clears it. */
   onNotice(text: ReactNode): void;
   onOpenWorktree(path: string): void;
   /** The 003 push of the current branch and its unavailable reason. */
@@ -57,10 +62,17 @@ export type BranchActionsOptions = {
 const isRefused = (response: BridgeResponse) => response.state !== "succeeded";
 const reviewedOf = (response: BridgeResponse) => (isObject(response.result) && typeof response.result.workbenchToken === "string" && isObject(response.result.plan) ? { token: response.result.workbenchToken, plan: response.result.plan } : null);
 const ACTION_NAMES: Record<string, string> = { switch: "Switch", "create-branch": "Create branch", "rename-branch": "Rename", "delete-branch": "Delete" };
+// Plan D15: the status bar name, running text, and area heading of each run.
+const RUN_TEXTS: Record<string, [string, string, string]> = {
+  switch: ["Switch", "Switching", "Switch details"],
+  "create-branch": ["Create branch", "Creating branch", "Create branch details"],
+  "rename-branch": ["Rename", "Renaming", "Rename details"],
+  "delete-branch": ["Delete", "Deleting", "Delete details"],
+};
 
 /** The branch actions of the toolbar list, the references sidebar, and the history labels. It returns the actions and their overlays. */
 export function useBranchActions(options: BranchActionsOptions) {
-  const { bridge, target, repositoryId, workbench, head, blockedReason, onNotice, onOpenWorktree, push, onShowBranchHistory, onMerge, onRebase } = options;
+  const { bridge, target, repositoryId, refsDigest, onOperation, workbench, head, blockedReason, onNotice, onOpenWorktree, push, onShowBranchHistory, onMerge, onRebase } = options;
   const snapshot = () => workbench.getState().branches;
   const branches = useSyncExternalStore(workbench.subscribe, snapshot, snapshot);
   const [overlay, setOverlay] = useState<Overlay | null>(null);
@@ -68,10 +80,11 @@ export function useBranchActions(options: BranchActionsOptions) {
   const busy = useRef(false);
   const field = useRef<HTMLInputElement>(null);
 
-  // A new repository reads the branches. The list and the menu read them again when they open, and the store after each 004 outcome.
+  // A new repository and each new refs digest read the branches. The list and the menu read them again when they open, and the store after each 004 outcome.
+  // The store keeps only the newest response of the current repository generation.
   useEffect(() => {
     if (repositoryId !== null) workbench.readBranches();
-  }, [workbench, repositoryId]);
+  }, [workbench, repositoryId, refsDigest]);
   const openMenu = (entry: BranchEntry, anchor: Element) => {
     setMenu({ ref: entry.ref, entry, anchor });
     workbench.readBranches();
@@ -102,7 +115,9 @@ export function useBranchActions(options: BranchActionsOptions) {
   async function run(token: string, action: string, display: string) {
     const t = target();
     if (t === null) return;
-    const response = await bridge.runWorkbench({ repositoryId: t.repositoryId }, { workbenchToken: token, start: true });
+    onNotice(null);
+    const texts = RUN_TEXTS[action]!;
+    const response = await trackOperation("runWorkbench", undefined, (onProgress) => bridge.runWorkbench({ repositoryId: t.repositoryId }, { workbenchToken: token, start: true }, onProgress), (op) => onOperation({ ...op, texts }));
     workbench.ended("runWorkbench", response);
     onNotice(outcomeText(action, display, response));
   }
@@ -176,13 +191,24 @@ export function useBranchActions(options: BranchActionsOptions) {
       const response = await review({ action: "switch", target: switchTarget, choice: await preset() });
       if (response === null) return;
       const reviewed = reviewedOf(response);
-      if (isRefused(response) || reviewed === null) return setOverlay({ ...o, error: refusalText(response, display) });
+      if (isRefused(response) || reviewed === null) {
+        // Plan D3: a taken track name offers a switch to that branch.
+        const r = isObject(response.result) ? response.result : {};
+        const existing = r.reason === "name-exists" && typeof r.ref === "string" ? r.ref : undefined;
+        return setOverlay({ ...o, error: refusalText(response, display), existing });
+      }
       setOverlay(null);
       // The plan decides: with tracked changes or an unreachable commit, the confirmation follows.
       const plan = reviewed.plan as SwitchPlan;
       if (plan.trackedChanges === 0 && plan.unreachable === null) return run(reviewed.token, "switch", display);
       setOverlay({ kind: "switch", anchor: o.anchor, display, target: switchTarget, heldBy: null, preset: plan.choice, choice: plan.choice, plan, token: reviewed.token, error: null });
     });
+  }
+
+  /** Switches to the branch that a `name-exists` refusal names. The review decides, so a stale branch list cannot pick the target. */
+  function switchExisting(o: Extract<Overlay, { kind: "remote" }>, ref: string) {
+    setOverlay(null);
+    void once(async () => reviewSwitch({ ref }, shortRef(ref), o.anchor, false, await preset()));
   }
 
   /** `start` is null on an unborn branch, which has no commit to start from. */
@@ -293,7 +319,7 @@ export function useBranchActions(options: BranchActionsOptions) {
           <fieldset className="flex flex-col gap-2">
             <legend className="sr-only">{T.switchTitle(overlay.entry.name)}</legend>
             <label className="flex items-center gap-2">
-              <input type="radio" name="remote-mode" checked={overlay.mode === "track"} onChange={() => setOverlay({ ...overlay, mode: "track", error: null })} />
+              <input type="radio" name="remote-mode" checked={overlay.mode === "track"} onChange={() => setOverlay({ ...overlay, mode: "track", error: null, existing: undefined })} />
               {T.createLocal}
             </label>
             {overlay.mode === "track" ? (
@@ -302,18 +328,23 @@ export function useBranchActions(options: BranchActionsOptions) {
                   aria-label={T.branchName}
                   className="h-(--h-button) rounded-sm border border-control-border bg-surface px-2"
                   value={overlay.name}
-                  onChange={(event) => setOverlay({ ...overlay, name: event.target.value, error: null })}
+                  onChange={(event) => setOverlay({ ...overlay, name: event.target.value, error: null, existing: undefined })}
                 />
                 <p className="text-muted-text">{T.tracks(overlay.entry.name)}</p>
               </div>
             ) : null}
             <label className="flex items-center gap-2">
-              <input type="radio" name="remote-mode" checked={overlay.mode === "detach"} onChange={() => setOverlay({ ...overlay, mode: "detach", error: null })} />
+              <input type="radio" name="remote-mode" checked={overlay.mode === "detach"} onChange={() => setOverlay({ ...overlay, mode: "detach", error: null, existing: undefined })} />
               {T.detach}
             </label>
             {overlay.mode === "detach" ? <p className="ml-6 text-muted-text">{T.detachNote}</p> : null}
           </fieldset>
           {overlay.error === null ? null : <p role="alert">{overlay.error}</p>}
+          {overlay.existing === undefined ? null : (
+            <Button variant="outline" className="self-start" onClick={() => switchExisting(overlay, overlay.existing!)}>
+              {T.switchExisting(shortRef(overlay.existing))}
+            </Button>
+          )}
         </ConfirmPopover>
       ) : null}
       {overlay?.kind === "create" || overlay?.kind === "rename" ? (

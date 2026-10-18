@@ -147,9 +147,9 @@ describe("Mark resolved in the workbench (FR-053)", () => {
     const d = await mountWorkbench(workbench, world);
     const row = () => document.querySelector('[data-slot="conflict-row"]')!;
     expect(button("Continue", row()).getAttribute("aria-disabled")).toBe("true");
-    const working = document.querySelector<HTMLElement>('section[aria-label="History"] [role="option"][data-row-id="working-directory"]')!;
-    await click(working);
-    const option = () => document.querySelector<HTMLElement>(`[role="option"][data-entry-id="${file.entryId}"]`);
+    // Feature 004 T042 (plan.md P5 risk): the Commit view replaces the docked commit panel.
+    await click(button("Commit", document.querySelector('header nav[aria-label="Views"]')!));
+    const option = () => document.querySelector<HTMLElement>(`[role="treeitem"][data-entry-id="${file.entryId}"]`);
     await click(option()!);
     await settle();
     expect(buttons("Mark resolved (Space)")).toHaveLength(1);
@@ -163,7 +163,7 @@ describe("Mark resolved in the workbench (FR-053)", () => {
     await settle();
     expect(status()).toContain("File marked resolved");
     expect(option()).toBeNull();
-    expect(document.querySelector(`[role="option"][data-entry-id="${staged.entryId}"]`)).not.toBeNull();
+    expect(document.querySelector(`[role="treeitem"][data-entry-id="${staged.entryId}"]`)).not.toBeNull();
     expect(button("Continue", row()).getAttribute("aria-disabled")).not.toBe("true");
   });
 });

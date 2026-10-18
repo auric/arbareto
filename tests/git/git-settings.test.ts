@@ -5,8 +5,8 @@
 // The oracle is a second build of the same fixture with Git's own `config set` and `config unset`.
 
 import { expect } from "bun:test";
-import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { sha256 } from "./git-oracle";
@@ -142,18 +142,22 @@ caseTest(TASK, "FR-058, FR-059, and plan.md D11: with a repository, each FR-060 
     // The local `core.editor` comes from the include, and its origin names the included file.
     const editor = value(s, "core.editor");
     expect(editor.effective).toEqual({ scope: "local", origin: "file:.git/included.gitconfig", value: "included-editor", reading: "included-editor" });
+    // Plan.md D11: a write of .git/config cannot change an entry of the included file, so the local scope is read-only.
+    expect(editor.readOnly).toEqual({ local: "included", global: null });
     // FR-063: two local `credential.helper` values make that scope read-only.
     const helper = value(s, "credential.helper");
     expect(helper.scopes.local.map((e) => e.value)).toEqual(["local-helper-1", "local-helper-2"]);
-    expect(helper.readOnly).toEqual({ local: true, global: false });
+    expect(helper.readOnly).toEqual({ local: "multi-value", global: null });
     expect(value(s, "fetch.prune").type).toEqual({ kind: "bool" });
     expect(value(s, "fetch.prune").scopes.global.map((e) => e.reading)).toEqual(["false"]);
     expect(value(s, "pull.rebase").effective?.reading).toBe("false");
     expect(value(s, "difftool.local-diff.cmd").entries).toEqual([]);
     expect({ local: slashed(s.files.local!), global: slashed(s.files.global!), system: slashed(s.files.system!) }).toEqual({ local: slashed(f.configs.local!), global: slashed(f.configs.global!), system: slashed(f.configs.system!) });
-    // The read runs the listing and the two git-var(1) reads, and no write.
+    // The read runs the listing, the two scope file listings, and the two git-var(1) reads, and no write.
     expect(service.runner.calls.slice(from).map((c) => [c.contextKind, c.environmentPolicy, ...c.arguments])).toEqual([
       ["registeredOperation", "read", ...LIST],
+      ["registeredOperation", "read", ...LIST.slice(0, 5), "--local", "--no-includes", ...LIST.slice(5)],
+      ["registeredOperation", "read", ...LIST.slice(0, 5), "--global", "--no-includes", ...LIST.slice(5)],
       ["registeredOperation", "read", L, "var", "GIT_CONFIG_SYSTEM"],
       ["registeredOperation", "read", L, "var", "GIT_CONFIG_GLOBAL"],
     ]);
@@ -179,7 +183,10 @@ caseTest(TASK, "plan.md D11: an XDG global file is the header and the save targe
     expect(existsSync(home)).toBe(false);
     // git-config(1) `--global`: an existing ~/.gitconfig wins over the XDG file.
     writeFileSync(home, "");
-    expect(slashed((await settings(service, gitInstallationId, f, r.repositoryId)).files.global!)).toBe(slashed(home));
+    const again = await settings(service, gitInstallationId, f, r.repositoryId);
+    expect(slashed(again.files.global!)).toBe(slashed(home));
+    // Git reads the XDG file before ~/.gitconfig, so a write there takes effect: the XDG entry leaves the scope writable.
+    expect(value(again, "user.name").readOnly).toEqual({ local: null, global: null });
     rmSync(home);
   });
 }, TIMEOUT_MS);
@@ -209,18 +216,17 @@ for (const scope of ["local", "global"] as const) {
       for (const key of ["difftool.local-diff.path", "difftool.local-diff.cmd", "mergetool.local-merge.path", "mergetool.local-merge.cmd", ...FR060]) {
         const current = scopeValues(f, scope, key);
         const before = digests(f);
-        if (current.length > 1) {
-          // FR-063 and contract Δ3: several entries in the scope.
-          expect(refusal(await review(service, r, save(scope, [{ key, value: "x" }])))).toEqual({ state: "failed", code: "WORKBENCH_UNAVAILABLE", result: { reason: "multi-value" } });
+        // FR-063 and contract Δ3: several entries in the scope. Plan.md D11: the local `core.editor` comes from the include.
+        const reason = current.length > 1 ? "multi-value" : scope === "local" && key === "core.editor" ? "included" : null;
+        if (reason !== null) {
+          expect({ key, ...refusal(await review(service, r, save(scope, [{ key, value: "x" }]))) }).toEqual({ key, state: "failed", code: "WORKBENCH_UNAVAILABLE", result: { reason } });
           expect(digests(f)).toEqual(before);
           continue;
         }
         const next = newValue(key, current[0] ?? null);
         const from = service.runner.calls.length;
         const response = await run(service, r, save(scope, [{ key, value: next }]));
-        // The included local `core.editor` stays the last local entry, so the saved value is not the effective one.
-        const differing = scope === "local" && key === "core.editor";
-        expect({ key, ...outcome(response) }).toEqual({ key, ...(differing ? { state: "completed-with-effects", code: "COMPLETED_WITH_EFFECTS" } : { state: "succeeded", code: undefined }) });
+        expect({ key, ...outcome(response) }).toEqual({ key, state: "succeeded", code: undefined });
         expect(response.result).toEqual({ action: "config-save", scope, written: [key] });
         expect(writes(service, from)).toEqual([{ contextKind: scope === "global" ? "globalConfig" : "registeredOperation", arguments: [L, "config", "set", `--${scope}`, "--", key, next] }]);
         wb(repoOf(o), ["config", "set", `--${scope}`, "--", key, next]);
@@ -251,6 +257,27 @@ caseTest(TASK, "FR-064 and contract Δ2: an unset removes only that key, the cou
     const counters = (service.progress as { phase?: string; counters?: Record<string, number> }[]).filter((p) => p.phase === "config").map((p) => p.counters);
     expect(counters).toEqual(expect.arrayContaining([{ keyIndex: 1, keyCount: 2 }, { keyIndex: 2, keyCount: 2 }]));
   });
+}, TIMEOUT_MS);
+
+caseTest(TASK, "plan.md D11 and data-model §9: a global key from an included file and a boolean that Git cannot read are read-only in the view, and a save of either gets that reason and writes nothing", SHELL, async () => {
+  const f = build("config-xdg");
+  git(f, ["config", "set", "--local", "fetch.prune", "maybe"]);
+  appendFileSync(f.configs.xdg!, "[include]\n\tpath = included.gitconfig\n");
+  writeFileSync(join(dirname(f.configs.xdg!), "included.gitconfig"), "[core]\n\teditor = included-editor\n");
+  const before = digests(f);
+  await withConfig("t050-read-only", f, async (service) => {
+    const { r, gitInstallationId } = await open(service, f.repo);
+    const s = await settings(service, gitInstallationId, f, r.repositoryId);
+    expect(value(s, "fetch.prune").readOnly).toEqual({ local: "unreadable-value", global: null });
+    expect(value(s, "core.editor").readOnly).toEqual({ local: null, global: "included" });
+    expect(slashed(value(s, "core.editor").effective!.origin)).toBe(`file:${slashed(join(dirname(f.configs.xdg!), "included.gitconfig"))}`);
+    const from = service.runner.calls.length;
+    for (const [scope, key, reason] of [["local", "fetch.prune", "unreadable-value"], ["global", "core.editor", "included"]] as const) {
+      expect({ key, ...refusal(await review(service, r, save(scope, [{ key, value: key === "fetch.prune" ? "true" : "vi" }]))) }).toEqual({ key, state: "failed", code: "WORKBENCH_UNAVAILABLE", result: { reason } });
+    }
+    expect(writes(service, from)).toEqual([]);
+  });
+  expect(digests(f)).toEqual(before);
 }, TIMEOUT_MS);
 
 caseTest(TASK, "data-model §2: an entry set that changed after the review gives STALE_REVIEW and writes nothing", SHELL, async () => {

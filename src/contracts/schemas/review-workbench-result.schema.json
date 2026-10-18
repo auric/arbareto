@@ -862,6 +862,8 @@
             "unknown-operation",
             "apply-backend",
             "config-in-include",
+            "included",
+            "unreadable-value",
             "untracked-in-way"
           ]
         },

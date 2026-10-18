@@ -187,7 +187,12 @@ export function rebaseWalkArgs(onto: string, rebaseMerges: boolean, objectFormat
 
 // Plan.md D4: the entries of the local configuration file alone. git-config(1) `--no-includes` leaves out the files that it includes.
 export function localConfigArgs(): string[] {
-  return read("config", "list", "--local", "--no-includes", "--show-scope", "--show-origin", "-z");
+  return configFileArgs("local");
+}
+
+// Plan.md D11: the scope file alone, so the view can tell its entries from the entries of included files.
+export function configFileArgs(target: ConfigWriteScope): string[] {
+  return read("config", "list", scope(target), "--no-includes", "--show-scope", "--show-origin", "-z");
 }
 
 export function excludePathArgs(): string[] {

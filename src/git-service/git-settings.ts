@@ -16,7 +16,7 @@ import type { Fact, Failure, Stop } from "./hunk-publish";
 import { latin1 } from "./read-steps";
 import type { Workspace } from "./registration";
 import { environmentValue, keyParts, parseConfigListing, redactUrlUserInfo, type ConfigEntry, type ServiceEnvironment } from "./trust";
-import { configSetArgs, configUnsetArgs } from "./workbench-commands";
+import { configFileArgs, configSetArgs, configUnsetArgs } from "./workbench-commands";
 import { configReading, configView, type ConfigView, type ConfigViewEntry } from "./workbench-parsers";
 import { conclude, registerWorkbenchAction, unavailable, type StepEnd } from "./workbench-review";
 
@@ -115,8 +115,8 @@ async function read(c: Runs, context: ProcessContext, args: string[], maxBytes: 
 }
 
 // The 001 configuration listing with the 001 trust input bound.
-async function listing(c: Runs, context: ProcessContext): Promise<Fact<ConfigEntry[]>> {
-  const out = await read(c, context, configListArgs(), TRUST_INPUT_BYTES);
+async function listing(c: Runs, context: ProcessContext, args = configListArgs()): Promise<Fact<ConfigEntry[]>> {
+  const out = await read(c, context, args, TRUST_INPUT_BYTES);
   if (!("value" in out)) return out;
   if (out.value.exit.exitCode !== 0) return { code: "GIT_FAILED" };
   const entries = parseConfigListing(out.value.bytes, false);
@@ -158,6 +158,18 @@ async function saveFiles(t: SettingsTarget, w: Repository): Promise<Fact<GitSett
   return { value: { local: `${w.commonDirectory}${w.wsl === undefined ? "/" : "\\"}config`, global: file, system: system.value.length === 1 ? system.value[0]! : null } };
 }
 
+// Plan.md D11 "Included": the entries of each scope file alone. Git exits 128 for an absent `--global` file, so a scope without entries runs no read.
+async function scopeFiles(c: Runs, w: Repository, entries: readonly ConfigEntry[], scopes: readonly Scope[]): Promise<Fact<Partial<Record<Scope, ConfigEntry[]>>>> {
+  const files: Partial<Record<Scope, ConfigEntry[]>> = {};
+  for (const scope of scopes) {
+    if (!entries.some((e) => e.scope === scope)) continue;
+    const file = await listing(c, registered(w), configFileArgs(scope));
+    if (!("value" in file)) return file;
+    files[scope] = file.value;
+  }
+  return { value: files };
+}
+
 const shown = (text: string | null): string | null => (text === null ? null : redactUrlUserInfo(text));
 const shownEntry = (e: ConfigViewEntry): ConfigViewEntry => ({ scope: e.scope, origin: redactUrlUserInfo(e.origin), value: shown(e.value), reading: shown(e.reading) });
 
@@ -173,10 +185,13 @@ export async function readGitSettings(t: SettingsTarget): Promise<Fact<GitSettin
   const listed = await listing(t, w === null ? { contextKind: "globalConfig", gitInstallationId: t.gitInstallationId } : registered(w));
   if (!("value" in listed)) return listed;
   // Contract Δ6: the `globalConfig` context admits the listing only, so no git-var(1) read runs there.
+  // Without a repository, no scope file listing runs, so no entry counts as included. No save exists then (plan.md D15).
+  const own = w === null ? { value: {} } : await scopeFiles(t, w, listed.value, ["local", "global"]);
+  if (!("value" in own)) return own;
   const files = w === null ? { value: { local: null, global: null, system: null } } : await saveFiles(t, w);
   if (!("value" in files)) return files;
   const keys = [...SETTINGS_KEYS, ...toolKeys(listed.value)];
-  return { value: { values: keys.map((key) => shownView(configView(listed.value, key))), files: files.value } };
+  return { value: { values: keys.map((key) => shownView(configView(listed.value, key, own.value))), files: files.value } };
 }
 
 // ---- config-save (contract Δ3, data-model §2) ----
@@ -212,14 +227,17 @@ registerWorkbenchAction<"config-save", { changes: BoundChange[] }>("config-save"
     const listed = await listing(ctx, registered(ctx.workspace));
     if (!("value" in listed)) return listed;
     const allowed = new Set([...SETTINGS_KEYS, ...toolKeys(listed.value)]);
+    const own = await scopeFiles(ctx, ctx.workspace, listed.value, [p.scope]);
+    if (!("value" in own)) return own;
     const changes: (BoundChange & { shown: ConfigEntry | undefined })[] = [];
     for (const c of p.changes) {
       const key = canonicalKey(c.key)!;
       if (!allowed.has(key)) return { refused: "INVALID_REQUEST" };
-      const own = ownEntries(listed.value, key, p.scope);
-      // Spec FR-063: `config set` without `--all` refuses several lines with exit 5.
-      if (own.length > 1) return unavailable("multi-value");
-      changes.push({ key, value: c.value, earlier: own.map(exactOf), shown: own[0] });
+      // The view rule: `multi-value` (Git's exit 5 without `--all`), `included` (a write of the scope file is not the effective entry), `unreadable-value`.
+      const readOnly = configView(listed.value, key, own.value).readOnly[p.scope];
+      if (readOnly !== null) return unavailable(readOnly);
+      const earlier = ownEntries(listed.value, key, p.scope);
+      changes.push({ key, value: c.value, earlier: earlier.map(exactOf), shown: earlier[0] });
     }
     return {
       bound: { changes: changes.map(({ key, value, earlier }) => ({ key, value, earlier })) },

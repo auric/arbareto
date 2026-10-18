@@ -246,8 +246,15 @@ export interface ConfigView {
   // Listing order.
   entries: ConfigViewEntry[];
   effective: ConfigViewEntry | null;
-  readOnly: { local: boolean; global: boolean };
+  // Data-model §9 `scopes`: the entries of each scope, in listing order.
+  scopes: Record<(typeof VIEW_SCOPES)[number], ConfigViewEntry[]>;
+  // Data-model §9 `readOnly`: the contract Δ9 reason that makes a writable scope read-only, or null.
+  readOnly: { local: ConfigReadOnly; global: ConfigReadOnly };
 }
+
+export type ConfigReadOnly = "multi-value" | "included" | "unreadable-value" | null;
+
+const VIEW_SCOPES = ["system", "global", "local", "worktree", "command"] as const;
 
 // FR-060 boolean keys, as Git prints them: section and variable in lowercase.
 const BOOL_KEYS: ReadonlySet<string> = new Set(["fetch.prune", "merge.autostash", "rebase.autostash", "rebase.autosquash", "rebase.updaterefs", "rerere.enabled", "rerere.autoupdate", "push.autosetupremote"]);
@@ -264,18 +271,39 @@ const ENUMS: ReadonlyMap<string, { values: readonly string[]; read: (value: stri
   ["push.default", { values: PUSH_DEFAULTS, read: (v) => (v !== null && PUSH_DEFAULTS.includes(v) ? v : null) }],
 ]);
 
+// The value as Git reads it for the type of `key`. Null: Git cannot read it, or a text key has no value.
+export function configReading(key: string, value: string | null): string | null {
+  return BOOL_KEYS.has(key) ? boolReading(value) : (ENUMS.get(key)?.read ?? ((v: string | null) => v))(value);
+}
+
+const sameBytes = (a: Uint8Array, b: Uint8Array) => Buffer.from(a.buffer, a.byteOffset, a.byteLength).equals(b);
+
+// The one entry of a scope comes from a file that the scope file includes: it is no entry of the `--no-includes` listing, and it comes after the first one.
+// git-config(1) reads the XDG file before `~/.gitconfig`, so an XDG entry comes before every entry of `~/.gitconfig`, and a write there takes effect.
+function fromInclude(listing: readonly ConfigEntry[], entry: ConfigEntry, file: readonly ConfigEntry[]): boolean {
+  const own = file[0];
+  if (own === undefined || sameBytes(entry.originBytes, own.originBytes)) return false;
+  const first = listing.findIndex((e) => e.scope === own.scope && sameBytes(e.originBytes, own.originBytes));
+  return first >= 0 && listing.indexOf(entry) > first;
+}
+
 // `key` is the canonical key as Git prints it. The effective value is the last entry (git-config(1)).
-export function configView(listing: readonly ConfigEntry[], key: string): ConfigView {
+// `files` holds the `config list --<scope> --no-includes` entries of each scope that has entries. Without them, no entry counts as included.
+export function configView(listing: readonly ConfigEntry[], key: string, files: Partial<Record<"local" | "global", readonly ConfigEntry[]>> = {}): ConfigView {
   const kind = ENUMS.get(key);
   const type: ConfigType = BOOL_KEYS.has(key) ? { kind: "bool" } : kind ? { kind: "enum", values: kind.values } : { kind: "text" };
-  const read = BOOL_KEYS.has(key) ? boolReading : (kind?.read ?? ((v: string | null) => v));
-  const entries = listing.filter((e) => e.key === key).map(({ scope, origin, value }) => ({ scope, origin, value, reading: read(value) }));
-  // FR-063: several entries in one scope. Plan.md D11: a boolean that Git cannot read.
-  const readOnly = (scope: ConfigScope) => {
-    const own = entries.filter((e) => e.scope === scope);
-    return own.length > 1 || (type.kind === "bool" && own.length === 1 && own[0]!.reading === null);
+  const own = listing.filter((e) => e.key === key);
+  const entries = own.map(({ scope, origin, value }) => ({ scope, origin, value, reading: configReading(key, value) }));
+  // Spec FR-063: several entries in one scope. Plan.md D11: an entry from an included file, or a boolean that Git cannot read.
+  const readOnly = (scope: "local" | "global"): ConfigReadOnly => {
+    const inScope = own.filter((e) => e.scope === scope);
+    if (inScope.length > 1) return "multi-value";
+    if (inScope.length === 0) return null;
+    if (fromInclude(listing, inScope[0]!, files[scope] ?? [])) return "included";
+    return type.kind === "bool" && configReading(key, inScope[0]!.value) === null ? "unreadable-value" : null;
   };
-  return { key, type, entries, effective: entries.at(-1) ?? null, readOnly: { local: readOnly("local"), global: readOnly("global") } };
+  const scopes = Object.fromEntries(VIEW_SCOPES.map((scope) => [scope, entries.filter((e) => e.scope === scope)])) as ConfigView["scopes"];
+  return { key, type, entries, effective: entries.at(-1) ?? null, scopes, readOnly: { local: readOnly("local"), global: readOnly("global") } };
 }
 
 // ---- Refspec map (research.md R2, remote.c `query_refspecs`) ----

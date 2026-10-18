@@ -46,6 +46,7 @@ const READS: [string, string[], string[]][] = [
   ["rebase walk of the moved branches", wb.rebaseWalkArgs(A, false, "sha1"), [...R, "rev-list", "--right-only", "--cherry-mark", "--no-merges", "--parents", `${A}...HEAD`]],
   ["rebase walk with rebase.rebaseMerges", wb.rebaseWalkArgs(S, true, "sha256"), [...R, "rev-list", "--right-only", "--cherry-mark", "--parents", `${S}...HEAD`]],
   ["delete local configuration keys", wb.localConfigArgs(), [...R, "config", "list", "--local", "--no-includes", "--show-scope", "--show-origin", "-z"]],
+  ["readGitSettings global file entries", wb.configFileArgs("global"), [...R, "config", "list", "--global", "--no-includes", "--show-scope", "--show-origin", "-z"]],
   ["choose-side and mergetool stages", wb.stagesArgs(["uu.txt"]), [...R, "ls-files", "-z", "--stage", "--", "uu.txt"]],
   ["ignore exclude path", wb.excludePathArgs(), [...R, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"]],
   ["worktree-remove status", wb.worktreeStatusArgs("D:\\src\\wt"), [...R, "-C", "D:\\src\\wt", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=dirty"]],

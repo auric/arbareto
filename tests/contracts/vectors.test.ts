@@ -149,8 +149,8 @@ describe("golden vectors", () => {
     expect(markers.map((m) => m.kind)).toEqual(expect.arrayContaining(["workbench", "applyFiles"]));
     // T034: the result schemas of the batch 2 actions.
     const actions = (schema: string) => texts("valid", schema).map((t) => t.action ?? t.reason);
-    expect(actions("review-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "rebase", "ignore", "untracked-in-way"]));
-    expect(actions("run-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "ignore", "rebase"]));
+    expect(actions("review-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "rebase", "ignore", "config-save", "untracked-in-way"]));
+    expect(actions("run-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "ignore", "rebase", "config-save"]));
     for (const schema of ["review-workbench-result", "run-workbench-result", "read-branches-result"]) for (const kind of ["valid", "invalid"]) expect({ schema, kind, count: texts(kind, schema).length > 0 }).toEqual({ schema, kind, count: true });
   });
 

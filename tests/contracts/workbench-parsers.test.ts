@@ -246,19 +246,19 @@ describe("configuration value view (data-model §9, plan.md D11)", () => {
     expect(view.type).toEqual({ kind: "text" });
     expect(view.entries.map((e) => [e.scope, e.value])).toEqual([["system", "S"], ["global", "G"], ["local", "L"]]);
     expect(view.effective).toEqual({ scope: "local", origin: "file:local.cfg", value: "L", reading: "L" });
-    expect(view.readOnly).toEqual({ local: false, global: false });
+    expect(view.readOnly).toEqual({ local: null, global: null });
   });
 
   test("a key without an entry", () => {
     const view = configView([entry("global", "user.email", "e")], "user.name");
     expect(view.entries).toEqual([]);
     expect(view.effective).toBeNull();
-    expect(view.readOnly).toEqual({ local: false, global: false });
+    expect(view.readOnly).toEqual({ local: null, global: null });
   });
 
   test("several entries in one scope make that scope read-only (FR-063)", () => {
     const view = configView([entry("global", "credential.helper", "a"), entry("global", "credential.helper", "b"), entry("local", "credential.helper", "c")], "credential.helper");
-    expect(view.readOnly).toEqual({ local: false, global: true });
+    expect(view.readOnly).toEqual({ local: null, global: "multi-value" });
     expect(view.effective?.value).toBe("c");
   });
 
@@ -271,8 +271,21 @@ describe("configuration value view (data-model §9, plan.md D11)", () => {
   });
 
   test("a boolean that Git cannot read makes its scope read-only", () => {
-    expect(configView([entry("global", "rebase.autosquash", "maybe")], "rebase.autosquash").readOnly).toEqual({ local: false, global: true });
-    expect(configView([entry("global", "rebase.autosquash", "yes")], "rebase.autosquash").readOnly).toEqual({ local: false, global: false });
+    expect(configView([entry("global", "rebase.autosquash", "maybe")], "rebase.autosquash").readOnly).toEqual({ local: null, global: "unreadable-value" });
+    expect(configView([entry("global", "rebase.autosquash", "yes")], "rebase.autosquash").readOnly).toEqual({ local: null, global: null });
+  });
+
+  test("an entry from a file that the scope file includes makes its scope read-only; an XDG entry before ~/.gitconfig does not", () => {
+    const at = (scope: ConfigEntry["scope"], file: string, key: string, value: string): ConfigEntry => ({ ...entry(scope, key, value), origin: `file:${file}`, originBytes: new TextEncoder().encode(`file:${file}`) });
+    const local = at("local", ".git/config", "include.path", "inc.cfg");
+    const included = at("local", ".git/inc.cfg", "core.editor", "vi");
+    const xdg = at("global", "xdg/git/config", "user.name", "x");
+    const user = at("global", "home/.gitconfig", "user.email", "e");
+    const listing = [xdg, user, local, included];
+    expect(configView(listing, "core.editor", { local: [local] }).readOnly).toEqual({ local: "included", global: null });
+    expect(configView(listing, "core.editor").readOnly).toEqual({ local: null, global: null });
+    expect(configView(listing, "user.name", { local: [local], global: [user] }).readOnly).toEqual({ local: null, global: null });
+    expect(configView(listing, "user.email", { local: [local], global: [user] }).readOnly).toEqual({ local: null, global: null });
   });
 
   test("the boolean keys of FR-060 in Git's canonical form", () => {
@@ -298,7 +311,7 @@ describe("configuration value view (data-model §9, plan.md D11)", () => {
   });
 
   test("an enumeration value that Git cannot read leaves the scope editable", () => {
-    expect(configView([entry("local", "push.default", "bogus")], "push.default").readOnly).toEqual({ local: false, global: false });
+    expect(configView([entry("local", "push.default", "bogus")], "push.default").readOnly).toEqual({ local: null, global: null });
   });
 
   test("a tool key is text and keeps its subsection case", () => {

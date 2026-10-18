@@ -4,7 +4,7 @@
 // Feature 004 contract Δ3 `reviewWorkbench` and `runWorkbench`, data-model §2, and plan.md D2.
 // Each action module registers its reads and steps with `registerWorkbenchAction`. A token is one use, and `runWorkbench` consumes it only after validation.
 
-import type { MutationStarted } from "../contracts/channel";
+import type { MutationStarted, ProcessContext } from "../contracts/channel";
 import type { Phase, Response, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors";
 import { APPROVAL_LIFETIME_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_UPDATE_CEILING_MS, WORKTREE_LISTING_BYTES, WORKTREE_RECORDS } from "../contracts/limits";
@@ -12,7 +12,7 @@ import type { OperationEvent } from "../contracts/outcome";
 import { buildRemedyCommand, type RemedyValue } from "../contracts/remedy-command";
 import type { StallRemedy } from "../contracts/submodules";
 import type { Exclusion } from "./exclusion";
-import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit, type ProcessContext } from "./git-runner";
+import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit } from "./git-runner";
 import { captureHead, sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
 import { enterReconciling, isStop, settled, type Fact, type Failure, type ObserveContext, type PublishContext, type Stop } from "./hunk-publish";
 import { reviewIgnore, runIgnore, type IgnorePlan } from "./ignore";
@@ -63,6 +63,7 @@ export interface StepEnd {
 
 export interface StepOptions {
   context?: ProcessContext;
+  counters?: Record<string, number>;
 }
 
 // The step helpers of one `runWorkbench` operation. `q` reads with a signal that never aborts (contract §8).
@@ -72,7 +73,7 @@ export interface WorkbenchRun {
   common: Common;
   // The refs, HEAD, index, and markers right before the first step.
   before: Observed;
-  // A step after a Cancel starts no process and ends `canceled`. `context` defaults to the registered workspace; contract Δ6 `worktreeAdd` passes its binding.
+  // A step after a Cancel starts no process and ends `canceled`. `context` defaults to the registered workspace; contract Δ6 `worktreeAdd` and `globalConfig` pass their binding.
   step(args: string[], phase: Phase, options?: StepOptions): Promise<StepEnd>;
   // A progress event for a step without a Git process.
   progress(phase: Phase): void;
@@ -301,12 +302,12 @@ export function createWorkbench(o: WorkbenchOptions) {
         before,
         // Plan.md D2: each step runs under the policy `integrate` with the 003 limits and the 15 s stall notice.
         // Contract Δ6: only the `mergetool` action has the phase `mergetool`. Its step runs under the policy `mergetool` with the ceiling alone, so it gets no stall notice.
-        async step(args, phase, { context = contextOf(w) } = {}) {
+        async step(args, phase, options = {}) {
           if (signal.aborted) return { exit: null, canceled: true, refused: null, outputTail: "" };
           const tool = phase === "mergetool";
           const report = () => {
             const state = registry.get(operationId)?.state;
-            if (state === "running" || state === "cancel-requested") registry.progress(operationId, phase);
+            if (state === "running" || state === "cancel-requested") registry.progress(operationId, phase, options.counters);
           };
           report();
           const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
@@ -315,7 +316,7 @@ export function createWorkbench(o: WorkbenchOptions) {
           let exit: GitExit | null = null;
           let refused: ErrorCode | null = null;
           try {
-            exit = await o.runner.run({ operationId, context, arguments: args, environmentPolicy: tool ? "mergetool" : "integrate", limits: tool ? { ceilingMs: SUBMODULE_UPDATE_CEILING_MS } : PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
+            exit = await o.runner.run({ operationId, context: options.context ?? contextOf(w), arguments: args, environmentPolicy: tool ? "mergetool" : "integrate", limits: tool ? { ceilingMs: SUBMODULE_UPDATE_CEILING_MS } : PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
             lastDescendants = exit.activeDescendants ?? 0;
           } catch (error) {
             if (!signal.aborted && !(error instanceof RunnerRefusal)) throw error;

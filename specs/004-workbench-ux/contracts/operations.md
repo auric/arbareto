@@ -43,9 +43,15 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 ### `readGitSettings`
 
 - Payload: `{}`. With `repositoryId`, the read runs the 001 configuration listing of that workspace. The 001 §7 read gate does not apply, because the listing runs no program. Without `repositoryId`, the shell runs the same command in the `globalConfig` context.
-- Command: `config list --show-scope --show-origin -z` [`read`].
+- Commands [`read`], in this order: `config list --show-scope --show-origin -z`; with `repositoryId`, `config list --local --no-includes --show-scope --show-origin -z` when the listing holds a local entry, and the same with `--global` when it holds a global entry; then `var GIT_CONFIG_SYSTEM` and `var GIT_CONFIG_GLOBAL`. Git exits 128 for an absent `--global` file, so a scope without entries runs no scope file listing.
 - Result: data-model §9 for the keys of spec FR-060, plus `difftool.<t>.path`, `difftool.<t>.cmd`, `mergetool.<t>.path`, and `mergetool.<t>.cmd` for the effective `diff.tool` and `merge.tool` values `<t>`.
 - Values pass the 001 §7 URL redaction before display.
+- The service runs its own two `git var` reads, because the kept 001 lines of the installation join the system and global lines, and two lines can be either form.
+- The global header follows git-config(1) `--global`. The service checks each candidate with `access(R_OK)`, the check of Git's `git_global_config`, because `fileFacts` names no file outside the repository roots.
+- One `var GIT_CONFIG_GLOBAL` line is the user file when the service environment sets `GIT_CONFIG_GLOBAL`. Otherwise it is the XDG file alone, and Git then has no `--global` file, so `files.global` is null.
+- Without `repositoryId`, the `globalConfig` context admits only the listing, so `files` holds null values, no entry counts as included, and no save exists (plan D15).
+- A WSL workspace gives `files.global` null, because the service cannot check a Linux path.
+- `appSettings` of data-model §9 are shell settings. The service cannot read them, so the renderer takes them from `readSyncSettings` (Δ14).
 
 ### `reviewWorkbench`
 
@@ -89,7 +95,8 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
   - `worktree-add`: `{existing: "refs/heads/@"}` gives reason `reserved-name` before any Git process (plan D4); `readWorktrees`; `destinationFacts` (003 Δ6) of the bound path: `absent` or `empty` passes; an `error` reply gives `REPOSITORY_UNAVAILABLE` with `path`, the `path` of the reply, as the 003 `clone` step 2 does; other replies give `DESTINATION_NOT_EMPTY` with the reply result as `reason`; for `new`, the `create-branch` checks.
   - `worktree-remove`: `readWorktrees`; a record that the list marks `prunable` gives reason `prunable` before the status read, because its folder is missing and `-C <path>` fails; in that worktree, `-C <path> status --porcelain=v2 -z --untracked-files=all --ignore-submodules=dirty` under the trust state of that worktree; for `deleteBranch`, the `delete-branch` reads.
   - `worktree-prune`: `readWorktrees`. No prunable record gives reason `nothing-to-prune`. Hidden prune targets: Git's `worktree prune` also removes an administration entry that `worktree list` never shows, such as one without a `gitdir` file (Git 2.56.0.windows.2, 2026-10-18), so such an entry alone gives `nothing-to-prune`, and a run with a prunable record removes it too.
-  - `config-save`: the configuration listing. A key with several entries in the scope gives reason `multi-value`.
+  - `config-save`: the configuration listing, then the scope file listing of `readGitSettings` for the selected scope. The data-model §9 `readOnly` reason of the key in that scope refuses the save: `multi-value`, `included`, or `unreadable-value`. A key outside the FR-060 list and the effective tool keys, a key twice after Git's case folding, a new value that Git cannot read for the key type, and a `global` save of a WSL workspace give `INVALID_REQUEST`.
+    - The payload binds no read of `readGitSettings`. A change between that read and the review shows in the plan `earlier` entry, and a change after the review gives `STALE_REVIEW`.
 - Result: `{action, plan, workbenchToken}`. `plan` holds the data-model §3 to §11 fields for display.
 - A `merge` or `rebase` refusal after the counts (`ff-only`, `squash-no-ff`, `message-size`, `dirty-tree`) carries `{reason, plan}`, so the panel still states the facts.
 
@@ -249,7 +256,7 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 
 | Code | Reasons | Meaning |
 |---|---|---|
-| `WORKBENCH_UNAVAILABLE` | `detached`, `unborn`, `current-branch`, `other-worktree`, `name-exists`, `invalid-name`, `reserved-name`, `same-branch`, `ff-only`, `dirty-tree`, `interactive`, `no-merge-tool`, `merge-tool-name`, `side-missing`, `side-not-regular`, `stages-missing`, `main-worktree`, `current-worktree`, `locked`, `prunable`, `nothing-to-prune`, `multi-value`, `limit`, `push-current-only`, `ignore-exists`, `ignore-not-text`, `ignore-not-regular`, `ignore-size`, `path`, `message-size`, `unreadable`, `no-tracking-refspec`, `several-tracking-remotes`, `squash-no-ff`, `merge-options`, `invalid-config`, `unknown-operation`, `apply-backend`, `config-in-include` | The action cannot run. No process starts. |
+| `WORKBENCH_UNAVAILABLE` | `detached`, `unborn`, `current-branch`, `other-worktree`, `name-exists`, `invalid-name`, `reserved-name`, `same-branch`, `ff-only`, `dirty-tree`, `interactive`, `no-merge-tool`, `merge-tool-name`, `side-missing`, `side-not-regular`, `stages-missing`, `main-worktree`, `current-worktree`, `locked`, `prunable`, `nothing-to-prune`, `multi-value`, `limit`, `push-current-only`, `ignore-exists`, `ignore-not-text`, `ignore-not-regular`, `ignore-size`, `path`, `message-size`, `unreadable`, `no-tracking-refspec`, `several-tracking-remotes`, `squash-no-ff`, `merge-options`, `invalid-config`, `unknown-operation`, `apply-backend`, `config-in-include`, `included`, `unreadable-value` | The action cannot run. No process starts. |
 | `UNTRACKED_IN_WAY` | `untracked-in-way` | Discard would overwrite these untracked files. The result lists up to 100 paths. |
 | `STASH_KEPT` | `conflicts`, `failed-apply`, `failed-checkout`, `not-found`, `stash-changed` | The switch kept the stash. The result names its commit ID and the remedy. |
 
@@ -257,6 +264,8 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 - `same-branch` (switch): the target is the current branch. `unborn` (switch): Stash and reapply or Discard changes on an unborn HEAD. `no-tracking-refspec` and `several-tracking-remotes` (switch `track`): plan D3 Track rule.
 - `apply-backend` (rebase): without Autosquash, the effective `rebase.backend` is `apply` (plan D6). `config-in-include` (delete-branch): a local `branch.<name>` key comes from an included file (plan D4).
 - `prunable` (worktree-remove): the list marks the record `prunable`, so its folder is missing. Prune removes the record (plan D10, spec FR-057).
+- `included` (config-save): the one entry of the key in the scope comes from a file that the scope file includes, so a write of the scope file cannot change the effective value (plan D11). `unreadable-value` (config-save): the one entry of a boolean key holds a value that Git cannot read as on or off (plan D11).
+- git-config(1) exits 3 and 4 are not reachable with Git 2.56: Git reads every configuration file before `config set` and exits 128 for a bad file, and a held `config.lock` gives the undocumented 255. The T050 cases for 3 and 4 replace the process in the test double.
 
 Reused: `OPERATION_IN_PROGRESS`, `CONFLICTED`, `APPROVAL_EXPIRED`, `STALE_REVIEW`, `STALE_SELECTION`, `TRUST_REQUIRED`, `TRUST_CHANGED`, `MALFORMED_GIT_OUTPUT`, `OUTPUT_LIMIT`, `GIT_FAILED`, `DEADLINE`, `CANCELED`, `COMPLETED_WITH_EFFECTS`, `FAILED_WITH_EFFECTS`, `STATE_UNKNOWN`, `UNKNOWN_TARGET`, `BUSY`, `DESTINATION_NOT_EMPTY`, `REPOSITORY_UNAVAILABLE` (`worktree-add`), `UNSUPPORTED_REPOSITORY` (`readWorktrees`), `UNSUPPORTED_COMPARISON`. File action reasons add `context-only`, `several-hunks` (renderer only, Δ4), `deleted-file`, `new-file`, `eof-newline`.
 

@@ -274,7 +274,7 @@ A developer checks "Amend last commit" in the commit workspace. The message of t
 - A worktree folder lies on a removable drive that is absent. Git reports it as prunable. Remove is unavailable, and Prune covers it.
 - A worktree is locked. Remove and Prune skip it, and the row states the lock and its reason text as untrusted text.
 - A configuration key has several values in one scope. Its control is read-only and lists the values.
-- A configuration value comes from an included file. The view names that file, and a save writes only into the scope file itself.
+- A configuration value comes from an included file. The view names that file. The key is read-only in that scope, and Save refuses it.
 - The repository folder or the Git selection changes. Trust asks again before the next repository program runs.
 - A WSL repository has hooks. The same trust rules apply through the distro's Git, as feature 001 FR-046 states.
 - A submodule update is cancelled. Each row shows its observed state from a fresh read, as feature 001 FR-023 requires.
@@ -420,7 +420,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-060**: The view MUST offer the keys of the Git Extensions Git Config and Advanced pages: `user.name`, `user.email`, `core.editor`, `commit.template`, `credential.helper`, `diff.tool`, `difftool.<tool>.path`, `difftool.<tool>.cmd`, `merge.tool`, `mergetool.<tool>.path`, `mergetool.<tool>.cmd`, `core.autocrlf`, `i18n.filesEncoding`, `pull.rebase`, `fetch.prune`, `merge.autostash`, `rebase.autostash`, `rebase.autosquash`, `rebase.updateRefs`, `rerere.enabled`, and `rerere.autoUpdate`. It MUST also offer `pull.ff`, `push.default`, and `push.autoSetupRemote`. The pages are User, Editor and tools, Line endings, Pull and push, Fetch, Merge and rebase, Credentials, and Advanced.
 - **FR-061**: A boolean key MUST offer three states: Not set, On, and Off. "Not set" MUST state the effective value and its scope. An enumerated key MUST offer Not set and each value that the Git documentation defines.
 - **FR-062**: The editor and the diff and merge tool keys MUST offer presets from a contract-defined list, plus Custom. A preset MUST show the exact value that it writes.
-- **FR-063**: A key with several values in one scope MUST be read-only and list the values with the reason.
+- **FR-063**: A key with several values in one scope MUST be read-only and list the values with the reason. A key whose one value in a scope comes from an included file, and a boolean key whose value Git cannot read as on or off, MUST also be read-only in that scope with the reason. Save MUST refuse a read-only key.
 - **FR-064**: A changed control MUST show "Changed" and the earlier value. Save MUST write only the changed keys into only the selected scope, through Git's own configuration command. Cancel MUST write nothing.
 - **FR-065**: After Save, the view MUST read the values again and show them. A failed write MUST name the key and show the bounded end of Git's output.
 - **FR-066**: The page Pull and push MUST show the Pull button default action of 003 FR-056 with its five choices. It MUST state that it is an Arbareto setting for all repositories and not stored in Git configuration.

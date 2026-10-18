@@ -714,6 +714,86 @@
       "properties": {
         "action": {
           "type": "string",
+          "const": "config-save"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "local",
+            "global"
+          ]
+        },
+        "written": {
+          "maxItems": 32,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000]*$"
+          }
+        },
+        "failed": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "exitCode": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "invalid-key",
+                "no-section-or-name",
+                "invalid-file",
+                "cannot-write",
+                "nothing-set",
+                "invalid-pattern"
+              ]
+            }
+          },
+          "required": [
+            "key",
+            "exitCode"
+          ],
+          "additionalProperties": false,
+          "title": "ConfigSaveFailed"
+        },
+        "stale": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "outputTail": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "action",
+        "scope",
+        "written"
+      ],
+      "additionalProperties": false,
+      "title": "ConfigSaveRun"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
           "enum": [
             "switch",
             "create-branch",
@@ -726,7 +806,8 @@
             "worktree-remove",
             "worktree-prune",
             "choose-side",
-            "mergetool"
+            "mergetool",
+            "config-save"
           ]
         }
       },

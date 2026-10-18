@@ -98,7 +98,7 @@ Each section names its source. Field names are contract names. "001 data-model Â
 - `scopes`: per scope (`system`, `global`, `local`, `worktree`, `command`) the entries of that scope.
 - `effective`: the last entry, or null.
 - `type`: `bool`, `enum` with the values of plan D11, or `text`.
-- `readOnly`: true for several entries in the selected scope, or a bool value that Git cannot read.
+- `readOnly`: for `local` and `global`, the contract Î”9 reason that makes the scope read-only, or null: `multi-value` for several entries in the scope, `included` when the one entry comes from a file that the scope file includes, and `unreadable-value` for a bool value that Git cannot read. A `config-save` of a read-only key gets that reason.
 - `files`: `local` (the common-directory `config` path), `global` (the plan D11 file), `system` (the `git var GIT_CONFIG_SYSTEM` result or null).
 - `appSettings`: the 003 `defaultPullAction` and the `switchChoice`, marked "Arbareto setting, not in Git configuration" (spec FR-066, FR-068).
 

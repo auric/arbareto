@@ -1001,6 +1001,11 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       return entry === undefined ? { ok: false, code: "UNKNOWN_TARGET" } : { ok: true, snapshot: found.snapshot, entry };
     },
 
+    // Feature 004 contract Δ3 `revealPath`: an entry of the retained read, which the store holds for the current generation. No Git process starts.
+    currentEntry(repositoryId: string, entryId: string): ChangeEntry | null {
+      return snapshots.retained(repositoryId)?.entries.find((e) => e.entryId === entryId) ?? null;
+    },
+
     // Contract §3 `reviewCommit`: the generation, then the snapshot. No Git process starts.
     snapshot(repositoryId: string, generation: number, snapshotId: string): { ok: true; snapshot: ChangeSnapshot } | { ok: false; code: "REPOSITORY_CHANGED" | "UNKNOWN_TARGET" } {
       snapshots.register(repositoryId);

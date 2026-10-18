@@ -10,20 +10,24 @@ import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors"
 import { APPROVAL_LIFETIME_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, WORKTREE_LISTING_BYTES, WORKTREE_RECORDS } from "../contracts/limits";
 import type { OperationEvent } from "../contracts/outcome";
 import { buildRemedyCommand, type RemedyValue } from "../contracts/remedy-command";
-import { isObjectId } from "./commands";
+import type { StallRemedy } from "../contracts/submodules";
 import type { Exclusion } from "./exclusion";
 import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit, type GitRunner } from "./git-runner";
 import { captureHead, sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
-import { enterReconciling, isStop, notEntered, settled, stepOf, type Fact, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
+import { enterReconciling, isStop, settled, type Fact, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
+import { reviewIgnore, runIgnore, type IgnorePlan } from "./ignore";
 import type { OperationRegistry } from "./operations";
-import { contextOf, latin1 } from "./read-steps";
+import { contextOf } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { Head, OperationState, ReadInstallation } from "./snapshot";
+import { trackStall } from "./stall";
 import type { WorkspaceReader } from "./status";
 import { stepStderr } from "./submodule-update";
-import { indexState, listRefs, type IndexState, type ReviewOutcome } from "./sync-review";
+import { runMarked, STEP_REMEDY_TEXT } from "./sync";
+import { observe, type Observed } from "./sync-integrate";
+import { listRefs, readOut, refKey, type ReviewOutcome } from "./sync-review";
 import type { ListingOutcome, Trust, TrustListing } from "./trust";
-import { refCommitArgs, worktreeListArgs } from "./workbench-commands";
+import { worktreeListArgs } from "./workbench-commands";
 import { parseWorktrees, type WorktreeRecord } from "./workbench-parsers";
 import { processEnd } from "./wsl-files";
 
@@ -31,6 +35,9 @@ export type WorkbenchPayload = Extract<ServiceRequest, { operation: "reviewWorkb
 export type WorkbenchAction = WorkbenchPayload["action"];
 export type PayloadOf<A extends WorkbenchAction> = Extract<WorkbenchPayload, { action: A }>;
 type RunRequest = Extract<ServiceRequest, { operation: "runWorkbench" }>;
+
+// The context of a handler. Its reader also maps an entry of a shown snapshot and reads the workspace.
+export type WorkbenchContext = ObserveContext & { reader: Pick<WorkspaceReader, "operationState" | "entry" | "readWorkspace"> };
 
 // Contract Δ3 "Every review reads": the HEAD capture, the operation markers, and the trust listing.
 export interface Common {
@@ -55,13 +62,15 @@ export interface StepEnd {
 
 // The step helpers of one `runWorkbench` operation. `q` reads with a signal that never aborts (contract §8).
 export interface WorkbenchRun {
-  ctx: ObserveContext;
-  q: ObserveContext;
+  ctx: WorkbenchContext;
+  q: WorkbenchContext;
   common: Common;
   // The refs, HEAD, index, and markers right before the first step.
   before: Observed;
   // A step after a Cancel starts no process and ends `canceled`.
   step(args: string[], phase: Phase): Promise<StepEnd>;
+  // A progress event for a step without a Git process.
+  progress(phase: Phase): void;
   // Enters `reconciling` after the steps. Null: a WSL step gave no process-end fact, so the outcome stays unknown.
   reconcile(ends: readonly StepEnd[]): Promise<{ canceled: boolean } | null>;
   finish(event: OperationEvent, result: unknown): void;
@@ -73,7 +82,7 @@ export interface WorkbenchRun {
 export interface WorkbenchHandler<A extends WorkbenchAction, B> {
   // Contract Δ3 refusals from the payload alone. They come before any Git process.
   precheck?(payload: PayloadOf<A>, w: Workspace): Refused | null;
-  observe(ctx: ObserveContext, payload: PayloadOf<A>, common: Common): Promise<Observation<B>>;
+  observe(ctx: WorkbenchContext, payload: PayloadOf<A>, common: Common): Promise<Observation<B>>;
   // Contract Δ6: the `action` of the `started` frame.
   started(payload: PayloadOf<A>): NonNullable<MutationStarted["action"]>;
   run(r: WorkbenchRun, payload: PayloadOf<A>, bound: B): Promise<void>;
@@ -89,32 +98,29 @@ export function registerWorkbenchAction<A extends WorkbenchAction, B>(action: A,
 // Contract Δ3 "Common refusals": these actions also run while an operation is in progress. `worktree-remove` checks its own worktree.
 const IN_PROGRESS_ALLOWED: ReadonlySet<string> = new Set(["choose-side", "mergetool", "ignore", "config-save", "worktree-prune", "worktree-remove"]);
 
+// Contract Δ7 "Mutation trust": `ignore` and `config-save` run no repository program, so they need no class. Every other action takes the class `workbench`.
+// shortcut: `mergetool` takes `workbench` until T060 adds the class `mergetool` and its handler.
+const CLASSLESS: ReadonlySet<string> = new Set(["ignore", "config-save"]);
+const classOf = (action: string): "workbench" | null => (CLASSLESS.has(action) ? null : "workbench");
+
 // ---- Shared reads ----
 
-// One read with bounded output. A nonzero exit gives GIT_FAILED.
-export async function readOut(ctx: ObserveContext, args: string[], maxBytes = DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, input?: Uint8Array): Promise<Fact<Uint8Array>> {
-  const out = createCollector({ maxBytes });
-  const step = await stepOf(ctx, args, out, input);
-  if (!("exit" in step)) return step;
-  if (out.limited) return { code: "OUTPUT_LIMIT" };
-  return step.exit.exitCode === 0 ? { value: out.take() } : { code: "GIT_FAILED" };
-}
-
-// `rev-parse --verify -q <ref>^{commit}`: one object ID and LF.
-export async function refOid(ctx: ObserveContext, ref: string): Promise<Fact<string>> {
-  const read = await readOut(ctx, refCommitArgs(ref));
-  if (!("value" in read)) return read;
-  const text = latin1(read.value);
-  return text.endsWith("\n") && isObjectId(text.slice(0, -1), ctx.workspace.objectFormat) ? { value: text.slice(0, -1) } : { code: "MALFORMED_GIT_OUTPUT" };
+// The exact listing lookup of one ref, as `merge` and `rebase` read their source. A missing ref gives UNKNOWN_TARGET (contract Δ3).
+export async function refTarget(ctx: ObserveContext, ref: string): Promise<Fact<string> | Refused> {
+  const refs = await listRefs(ctx, ref);
+  if (!("value" in refs)) return refs;
+  const oid = refs.value.get(refKey(ref));
+  return oid === undefined ? { refused: "UNKNOWN_TARGET" } : { value: oid };
 }
 
 // Contract Δ3 `readWorktrees` with its Δ5 bounds. `digest` binds the listing bytes.
 export async function readWorktrees(ctx: ObserveContext): Promise<Fact<{ records: WorktreeRecord[]; digest: string }>> {
   const read = await readOut(ctx, worktreeListArgs(), WORKTREE_LISTING_BYTES);
+  if ("limited" in read) return { code: "OUTPUT_LIMIT", reason: "WORKTREE_LISTING_BYTES" };
   if (!("value" in read)) return read;
   const records = parseWorktrees(read.value, ctx.workspace.objectFormat);
   if (records === null) return { code: "MALFORMED_GIT_OUTPUT" };
-  if (records.length > WORKTREE_RECORDS) return { code: "OUTPUT_LIMIT" };
+  if (records.length > WORKTREE_RECORDS) return { code: "OUTPUT_LIMIT", reason: "WORKTREE_RECORDS" };
   return { value: { records, digest: new Bun.CryptoHasher("sha256").update(read.value).digest("hex") } };
 }
 
@@ -124,25 +130,8 @@ export function heldElsewhere(records: readonly WorktreeRecord[], ref: string, h
   return records.find((r) => r.branch === ref) ?? null;
 }
 
-// Contract Δ3 `runWorkbench` step 4: the refs listing, HEAD, the index, and the markers.
-export interface Observed {
-  refs: Map<string, string>;
-  head: Head;
-  index: IndexState;
-  state: OperationState;
-}
-
-export async function observeRepository(q: ObserveContext): Promise<Fact<Observed>> {
-  const [refs, head, index] = await Promise.all([listRefs(q), settled(q.signal, captureHead(q.runner, q)), indexState(q)]);
-  if (!("value" in refs)) return refs;
-  if (isStop(head) || "code" in head) return head;
-  if ("failed" in head) return { code: head.failed };
-  if (!("value" in index)) return index;
-  const state = await settled(q.signal, q.reader.operationState(q, index.value.unmerged > 0));
-  if (typeof state === "object") return "refused" in state ? { code: state.refused } : state;
-  if (state === "canceled" || state === "deadline") return { stop: state };
-  return { value: { refs: refs.value, head, index: index.value, state } };
-}
+// Contract §8: a step whose process was ended can leave `index.lock`, so the reconciliation read checks it.
+export const killed = (ends: readonly StepEnd[]): boolean => ends.some((end) => end.exit === null || end.exit.exitCode === null);
 
 // Data-model §7 rows after the steps. `done`: every step ran and exited 0. `failed`: the step that stopped the action.
 export function conclude(r: WorkbenchRun, f: { done: boolean; intended: boolean; changed: boolean; canceled: boolean; failed: StepEnd | null }, result: Record<string, unknown>): void {
@@ -155,6 +144,37 @@ export function conclude(r: WorkbenchRun, f: { done: boolean; intended: boolean;
   const code: ErrorCode | undefined = end?.refused ?? (end?.exit?.deadline !== undefined ? undefined : end?.exit?.diagnosticLimit ? "OUTPUT_LIMIT" : "GIT_FAILED");
   r.finish({ type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }) }, { ...result, ...tail });
 }
+
+// ---- Ignore lines (contract Δ3 `ignore`, Δ6 `fileAppend`, plan.md D9) ----
+
+// The token binds the whole plan. Its other fields follow from `expected`, `line`, the target, and the path that Git names (data-model §2).
+registerWorkbenchAction<"ignore", IgnorePlan>("ignore", {
+  async observe(ctx, p) {
+    const w = ctx.workspace;
+    const found = ctx.reader.entry(w.repositoryId, w.generation, p.snapshotId, p.entryId);
+    if (!found.ok) return { refused: found.code };
+    const review = await reviewIgnore(ctx, found.entry, p.target, p.folder === undefined ? null : new Uint8Array(Buffer.from(p.folder, "base64")));
+    if (isStop(review)) return review;
+    if ("code" in review) return review.reason !== undefined ? { refused: review.code, result: { reason: review.reason } } : review.code === "INVALID_REQUEST" ? { refused: review.code } : { code: review.code };
+    const plan = review.plan;
+    return { bound: plan, plan: { target: plan.target, path: Buffer.from(plan.path).toString("base64"), folder: plan.folder, line: plan.line, prefixNewline: plan.prefixNewline, expected: plan.expected } };
+  },
+  started: (p) => (p.target === "gitignore" ? "ignore-gitignore" : "ignore-exclude"),
+  async run(r, _p, plan) {
+    const { ctx, q } = r;
+    r.progress("ignore");
+    // Spec FR-046: the status read follows the append.
+    const outcome = await runIgnore({ runner: ctx.runner, operationId: ctx.operationId, signal: ctx.signal, workspace: ctx.workspace, appender: ctx.runner }, plan, () =>
+      q.reader.readWorkspace({ operationId: q.operationId, signal: q.signal, installation: q.installation, workspace: q.workspace, refresh: false }),
+    );
+    const settledRun = await r.reconcile([]);
+    const result = { action: "ignore", ...(outcome.type === "no-effects" && outcome.reason !== undefined ? { reason: outcome.reason } : {}) };
+    if (settledRun === null) return r.unknown({ code: "GIT_FAILED" }, result);
+    if (outcome.type === "reconciliation-read-failed") return r.unknown({ code: outcome.code }, result);
+    if (outcome.type === "no-effects") return r.finish({ type: "no-effects", observed: outcome.observed, ...(outcome.code === undefined ? {} : { code: outcome.code }) }, result);
+    r.finish({ type: outcome.type }, result);
+  },
+});
 
 // ---- Tokens (data-model §2) ----
 
@@ -177,7 +197,7 @@ type Full = { common: Common; bound: unknown; plan: Record<string, unknown> };
 export interface WorkbenchOptions extends Pick<HistoryReaderOptions, "listingTuple"> {
   runner: GitRunner;
   trust: Trust;
-  reader: Pick<WorkspaceReader, "operationState">;
+  reader: WorkbenchContext["reader"];
   registry: OperationRegistry;
   exclusion: Exclusion;
   respond: (response: Response) => unknown;
@@ -199,14 +219,20 @@ export function createWorkbench(o: WorkbenchOptions) {
     return { ok: true, entry: e };
   }
 
+  // The class flag of an action in a listing. An action without a class needs no approval.
+  const required = (action: string, listing: Pick<TrustListing, "approvalRequired">): boolean => {
+    const cls = classOf(action);
+    return cls !== null && listing.approvalRequired[cls];
+  };
+
   // Contract Δ3 reads. `list` gives the trust listing: shared or own for a review, own for `runWorkbench`.
-  async function observe(ctx: ObserveContext, payload: WorkbenchPayload, list: () => Promise<ListingOutcome>): Promise<Full | Refused | Failure | Stop> {
+  async function observeAll(ctx: WorkbenchContext, payload: WorkbenchPayload, list: () => Promise<ListingOutcome>): Promise<Full | Refused | Failure | Stop> {
     const handler = handlers.get(payload.action)!;
     const listed = await settled(ctx.signal, list());
     if (!("ok" in listed)) return listed;
     if (!listed.ok) return "stop" in listed ? { stop: listed.stop } : { code: listed.code };
-    // shortcut: the class `sync` covers every hook and filter of these steps until T034 adds the class `workbench` to trust.ts.
-    const gate = ctx.trust.gate(ctx.workspace, listed.listing, ctx.installation, "sync");
+    const cls = classOf(payload.action);
+    const gate = cls === null ? null : ctx.trust.gate(ctx.workspace, listed.listing, ctx.installation, cls);
     if (gate !== null) return { refused: gate };
     const head = await settled(ctx.signal, captureHead(ctx.runner, ctx));
     if (isStop(head) || "code" in head) return head;
@@ -229,101 +255,88 @@ export function createWorkbench(o: WorkbenchOptions) {
       if (again.refused === "TRUST_REQUIRED" || again.refused === "TRUST_CHANGED") return { code: again.refused };
       return again.refused === "CONFLICTED" ? { code: "CONFLICTED", result: again.result } : { code: "STALE_REVIEW" };
     }
-    const required = again.common.listing.approvalRequired.sync;
-    if ((e.trust.required || required) && again.common.listing.fingerprint !== e.trust.fingerprint) return { code: "TRUST_CHANGED" };
+    if ((e.trust.required || required(e.payload.action, again.common.listing)) && again.common.listing.fingerprint !== e.trust.fingerprint) return { code: "TRUST_CHANGED" };
     const same = generation === e.generation && Bun.deepEquals({ head: e.head, state: e.operationState, bound: e.bound }, { head: again.common.head, state: again.common.operationState, bound: again.bound }, true);
     return same ? null : { code: "STALE_REVIEW" };
   }
 
   async function execute(w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, token: string, e: Issued): Promise<void> {
     const handler = handlers.get(e.payload.action)!;
-    let entered;
-    try {
-      entered = await o.exclusion.enter({ operationId, kind: "workbench", action: handler.started(e.payload), workspace: w });
-    } catch {
-      return void registry.apply(operationId, { type: "exclusion-unavailable", code: "GIT_FAILED" });
-    }
-    if (!entered.ok) return notEntered(registry, operationId, entered);
-    const marker = entered;
-    const ctx: ObserveContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
-    // Contract §8: a cancel never stops a reconciliation read.
-    const q: ObserveContext = { ...ctx, signal: new AbortController().signal };
-    const resolved = () => o.runner.resolved(marker.markerId);
-    let lastDescendants = 0;
-
-    // A refusal before any step: no effect, so the outcome is known.
-    const refuse = (ending: { code: ErrorCode; result?: unknown } | Stop) => {
-      const canceled = enterReconciling(registry, operationId, isStop(ending) && ending.stop === "deadline", 0);
-      if (canceled) registry.apply(operationId, { type: "no-effects", observed: "canceled" });
-      else if (isStop(ending)) registry.apply(operationId, { type: "no-effects", observed: "failed", ...(ending.stop === "deadline" ? {} : { code: "GIT_FAILED" }) });
-      else registry.apply(operationId, { type: "no-effects", observed: "failed", code: ending.code }, ending.result);
-      resolved();
-    };
-
-    const runOf = (common: Common, before: Observed): WorkbenchRun => ({
-      ctx,
-      q,
-      common,
-      before,
-      async step(args, phase) {
-        if (signal.aborted) return { exit: null, canceled: true, refused: null, outputTail: "" };
-        registry.progress(operationId, phase);
-        const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-        const stderr = stepStderr(() => {});
-        let exit: GitExit | null = null;
-        let refused: ErrorCode | null = null;
-        try {
-          exit = await o.runner.run({ operationId, context: contextOf(w), arguments: args, environmentPolicy: "integrate", limits: PROCESS_LIMITS.network, stdout, stderr, signal });
-          lastDescendants = exit.activeDescendants ?? 0;
-        } catch (error) {
-          if (!signal.aborted && !(error instanceof RunnerRefusal)) throw error;
-          if (!signal.aborted) refused = (error as RunnerRefusal).code;
-        }
-        return { exit, canceled: signal.aborted && (exit === null || exit.exitCode === null), refused, outputTail: stderr.outputTail() };
-      },
-      async reconcile(ends) {
-        const canceled = enterReconciling(registry, operationId, ends.some((end) => end.exit?.deadline !== undefined), lastDescendants);
-        // Contract §11 and 001 §12: after a stopped WSL process, Linux Git can still write. No read decides before the process-end fact.
-        const ended = w.wsl === undefined || ends.every((end) => end.exit !== null && end.exit.exitCode !== null) || (await processEnd(q)) === "fact";
-        return ended ? { canceled } : null;
-      },
-      finish(event, result) {
-        registry.apply(operationId, event, result);
-        resolved();
-      },
-      unknown(f, result) {
-        registry.apply(operationId, "code" in f ? { type: "reconciliation-read-failed", code: f.code } : { type: "reconciliation-read-deadline" }, result, "code" in f ? f.code : "DEADLINE");
-      },
-      remedy(template, values) {
+    const context: WorkbenchContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
+    await runMarked(o, { operationId, kind: "workbench", action: handler.started(e.payload), workspace: w }, context, async ({ ctx, q, refuse, resolved }) => {
+      let lastDescendants = 0;
+      const remedy = (template: string, values: Record<string, RemedyValue>): string | null => {
         const git = installation.selectedPath;
         if (git === null || w.wsl !== undefined) return null;
         return buildRemedyCommand(template, { git: { kind: "gitPath", text: git, form: "windows" }, root: { kind: "worktreeRoot", text: w.worktreeRoot, form: "windows" }, ...values }).command;
-      },
-    });
+      };
+      // Feature 003 contract Δ3 "Remedies": the stall notice keeps the step command. Each item after `--no-lazy-fetch` is one quoted value.
+      const stallRemedy = (args: readonly string[]): StallRemedy => {
+        const words = args.slice(1);
+        const command = remedy(`& {git} --no-lazy-fetch -C {root} ${words.map((_, i) => `{a${i}}`).join(" ")}`, Object.fromEntries(words.map((text, i) => [`a${i}`, { kind: "argument", text }])));
+        return command === null ? { text: STEP_REMEDY_TEXT } : { command, text: STEP_REMEDY_TEXT };
+      };
 
-    try {
-      registry.apply(operationId, { type: "marker-recorded" });
-      registry.progress(operationId, "preflight");
+      const runOf = (common: Common, before: Observed): WorkbenchRun => ({
+        ctx,
+        q,
+        common,
+        before,
+        // Plan.md D2: each step runs under the policy `integrate` with the 003 limits and the 15 s stall notice.
+        async step(args, phase) {
+          if (signal.aborted) return { exit: null, canceled: true, refused: null, outputTail: "" };
+          const report = () => {
+            const state = registry.get(operationId)?.state;
+            if (state === "running" || state === "cancel-requested") registry.progress(operationId, phase);
+          };
+          report();
+          const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+          const stderr = stepStderr(() => {});
+          const stall = trackStall(registry, operationId, report, () => stallRemedy(args));
+          let exit: GitExit | null = null;
+          let refused: ErrorCode | null = null;
+          try {
+            exit = await o.runner.run({ operationId, context: contextOf(w), arguments: args, environmentPolicy: "integrate", limits: PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
+            lastDescendants = exit.activeDescendants ?? 0;
+          } catch (error) {
+            if (!signal.aborted && !(error instanceof RunnerRefusal)) throw error;
+            if (!signal.aborted) refused = (error as RunnerRefusal).code;
+          } finally {
+            stall.end();
+          }
+          return { exit, canceled: signal.aborted && (exit === null || exit.exitCode === null), refused, outputTail: stderr.outputTail() };
+        },
+        progress(phase) {
+          registry.progress(operationId, phase);
+        },
+        async reconcile(ends) {
+          const canceled = enterReconciling(registry, operationId, ends.some((end) => end.exit?.deadline !== undefined), lastDescendants);
+          // Contract §11 and 001 §12: after a stopped WSL process, Linux Git can still write. No read decides before the process-end fact.
+          const ended = w.wsl === undefined || ends.every((end) => end.exit !== null && end.exit.exitCode !== null) || (await processEnd(q)) === "fact";
+          return ended ? { canceled } : null;
+        },
+        finish(event, result) {
+          registry.apply(operationId, event, result);
+          resolved();
+        },
+        unknown(f, result) {
+          registry.apply(operationId, "code" in f ? { type: "reconciliation-read-failed", code: f.code } : { type: "reconciliation-read-deadline" }, result, "code" in f ? f.code : "DEADLINE");
+        },
+        remedy,
+      });
+
       // Contract Δ3 `runWorkbench` step 2: every bound value again, from an own trust listing.
-      const again = await observe(ctx, e.payload, () => o.trust.listTrust({ operationId, signal, workspace: w }));
+      const again = await observeAll(ctx, e.payload, () => o.trust.listTrust({ operationId, signal, workspace: w }));
       const stale = staleOf(e, again, w.generation);
       if (stale !== null) return refuse(stale);
       const later = accept(token);
       if (!later.ok) return refuse({ code: "code" in later ? later.code : "UNKNOWN_TARGET" });
       e.consumed = operationId;
       const full = again as Full;
-      const before = await observeRepository(ctx);
-      if (!("value" in before)) return refuse(isStop(before) ? before : { code: before.code });
+      const before = await observe(ctx, false);
+      if (!("value" in before)) return refuse(before);
       await handler.run(runOf(full.common, before.value), e.payload, full.bound);
-    } catch {
-      // A broken step leaves the outcome unknown. The marker stays (contract §8).
-      const state = registry.get(operationId)?.state;
-      if (state === "running") registry.apply(operationId, { type: "execution-ended", lingeringDescendants: 0 });
-      if (state === "cancel-requested") registry.apply(operationId, { type: "processes-stopped" });
-      if (registry.get(operationId)?.state === "reconciling") registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, undefined, "GIT_FAILED");
-    } finally {
-      marker.end(false);
-    }
+    });
   }
 
   return {
@@ -339,8 +352,8 @@ export function createWorkbench(o: WorkbenchOptions) {
 
     // Contract Δ3 `reviewWorkbench`. A refusal issues no token.
     async review(t: ReadHistoryTarget, payload: WorkbenchPayload): Promise<ReviewOutcome> {
-      const ctx: ObserveContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId: t.operationId, signal: t.signal, workspace: t.workspace, installation: t.installation };
-      const observed = await observe(ctx, payload, () => sharedListing({ trust: o.trust, listingTuple: o.listingTuple }, t));
+      const ctx: WorkbenchContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId: t.operationId, signal: t.signal, workspace: t.workspace, installation: t.installation };
+      const observed = await observeAll(ctx, payload, () => sharedListing({ trust: o.trust, listingTuple: o.listingTuple }, t));
       if (isStop(observed)) return { result: observed.stop };
       if ("code" in observed) return { result: "failed", code: observed.code };
       if ("refused" in observed) return { result: "failed", code: observed.refused, ...(observed.result === undefined ? {} : { value: observed.result }) };
@@ -354,7 +367,7 @@ export function createWorkbench(o: WorkbenchOptions) {
         payload,
         head,
         operationState,
-        trust: { fingerprint: listing.fingerprint, required: listing.approvalRequired.sync },
+        trust: { fingerprint: listing.fingerprint, required: required(payload.action, listing) },
         bound: observed.bound,
         issuedAt: at,
         consumed: null,
@@ -376,7 +389,8 @@ export function createWorkbench(o: WorkbenchOptions) {
       const e = accepted.entry;
       if (e.repositoryId !== request.repositoryId) return void registry.apply(operationId, { type: "invalid-approval", code: "UNKNOWN_TARGET" });
       // Contract Δ7 "Mutation trust": the reviewed listing decides before any process.
-      const gate = o.trust.gate(w, { approvalRequired: { sync: e.trust.required }, fingerprint: e.trust.fingerprint, inputLimited: false }, installation, "sync");
+      const cls = classOf(e.payload.action);
+      const gate = cls === null ? null : o.trust.gate(w, { approvalRequired: { [cls]: e.trust.required }, fingerprint: e.trust.fingerprint, inputLimited: false }, installation, cls);
       if (gate !== null) return void registry.apply(operationId, { type: "invalid-approval", code: gate });
       void execute(w, installation, operationId, signal, token, e);
     },

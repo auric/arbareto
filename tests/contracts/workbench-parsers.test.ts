@@ -19,7 +19,8 @@ const A2 = "a".repeat(64);
 const Z = "0".repeat(40);
 
 describe("readBranches records (contract Δ3)", () => {
-  const rec = (refname: string, oid: string, upstream: string, head: string, symref: string) => `${refname}\0${oid}\0${upstream}\0${head}\0${symref}\n`;
+  const rec = (refname: string, oid: string, upstream: string, head: string, symref: string, type = "commit", peeled = "", peeledType = "") =>
+    `${refname}\0${oid}\0${upstream}\0${head}\0${symref}\0${type}\0${peeled}\0${peeledType}\n`;
   const parse = (...records: string[]) => parseBranches(bytes(records.join("")), "sha1");
 
   test("local and remote entries in Git's order", () => {
@@ -32,10 +33,10 @@ describe("readBranches records (contract Δ3)", () => {
         rec("refs/remotes/origin/main", B, "", " ", ""),
       ),
     ).toEqual([
-      { ref: "refs/heads/feature/x", kind: "local", name: "feature/x", invalidUtf8: false, oid: A, upstream: "refs/remotes/origin/feature/x", current: false },
-      { ref: "refs/heads/main", kind: "local", name: "main", invalidUtf8: false, oid: B, upstream: "refs/remotes/origin/main", current: true },
-      { ref: "refs/heads/no-up", kind: "local", name: "no-up", invalidUtf8: false, oid: A, upstream: null, current: false },
-      { ref: "refs/remotes/origin/main", kind: "remote", name: "origin/main", invalidUtf8: false, oid: B, upstream: null, current: false },
+      { ref: "refs/heads/feature/x", kind: "local", name: "feature/x", invalidUtf8: false, oid: A, object: A, upstream: "refs/remotes/origin/feature/x", current: false },
+      { ref: "refs/heads/main", kind: "local", name: "main", invalidUtf8: false, oid: B, object: B, upstream: "refs/remotes/origin/main", current: true },
+      { ref: "refs/heads/no-up", kind: "local", name: "no-up", invalidUtf8: false, oid: A, object: A, upstream: null, current: false },
+      { ref: "refs/remotes/origin/main", kind: "remote", name: "origin/main", invalidUtf8: false, oid: B, object: B, upstream: null, current: false },
     ]);
   });
 
@@ -45,6 +46,12 @@ describe("readBranches records (contract Δ3)", () => {
   });
 
   test("empty output gives no entry", () => expect(parse()).toEqual([]));
+
+  // Data-model §1 `oid`: the commit of the ref. git-for-each-ref(1): a `*` field holds the value of the peeled object.
+  test("a ref to an annotated tag gives its peeled commit, and a ref whose object peels to no commit is skipped", () => {
+    expect(parse(rec("refs/remotes/origin/v1", B, "", " ", "", "tag", A, "commit"))).toMatchObject([{ ref: "refs/remotes/origin/v1", oid: A, object: B }]);
+    expect(parse(rec("refs/remotes/origin/tree", A, "", " ", "", "tree"), rec("refs/remotes/origin/tree-tag", B, "", " ", "", "tag", A, "tree"))).toEqual([]);
+  });
 
   test("UTF-8 and invalid UTF-8 names", () => {
     expect(parse(rec(utf8("refs/heads/zweig-ä"), A, "", " ", ""))).toMatchObject([{ ref: "refs/heads/zweig-ä", name: "zweig-ä", invalidUtf8: false }]);
@@ -57,11 +64,15 @@ describe("readBranches records (contract Δ3)", () => {
   });
 
   const refused: [string, string][] = [
-    ["four fields", `refs/heads/a\0${A}\0\0 \n`],
-    ["six fields", `refs/heads/a\0${A}\0\0 \0\0\n`],
+    ["seven fields", `refs/heads/a\0${A}\0\0 \0\0commit\0\n`],
+    ["nine fields", `refs/heads/a\0${A}\0\0 \0\0commit\0\0\0\n`],
     ["no final LF", rec("refs/heads/a", A, "", " ", "").slice(0, -1)],
     ["an empty record", "\n"],
-    ["a CR before the LF", `refs/heads/a\0${A}\0\0 \0\r\n`],
+    ["a CR before the LF", `refs/heads/a\0${A}\0\0 \0\0commit\0\0\r\n`],
+    ["an unknown object type", rec("refs/heads/a", A, "", " ", "", "note")],
+    ["a tag without its peeled object", rec("refs/remotes/o/v1", A, "", " ", "", "tag")],
+    ["a peeled type tag", rec("refs/remotes/o/v1", A, "", " ", "", "tag", B, "tag")],
+    ["a commit with a peeled object", rec("refs/heads/a", A, "", " ", "", "commit", B, "commit")],
     ["a tag refname", rec("refs/tags/v1", A, "", " ", "")],
     ["a refname without a name", rec("refs/heads/", A, "", " ", "")],
     ["a bad OID", rec("refs/heads/a", "x".repeat(40), "", " ", "")],

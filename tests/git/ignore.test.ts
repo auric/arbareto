@@ -5,15 +5,15 @@
 // `git check-ignore` and the file bytes are the oracle. `fileAppend` runs in the shell test double below, by the contract Δ6 Windows rules.
 
 import { describe, expect } from "bun:test";
-import { appendFileSync, lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import type { ChangeEntry } from "../../src/contracts/envelope";
+import type { WalkStop } from "../../src/git-service/git-runner";
 import type { FileAppender, FileAppendReply, FileAppendRequest, IgnorePlan } from "../../src/git-service/ignore";
 import type { Workspace } from "../../src/git-service/registration";
 import { printOrigin } from "../origin";
 import { fixtureDir, fixtureEnv, useFixtureRoot } from "./fixture-root";
 import { put } from "./fixtures";
-import { sha256 } from "./git-oracle";
 import { git, gitPath, readOk, withService } from "./hunk-harness";
 import { caseTest, type Capability, type Service, type WorkspaceResult } from "./service-harness";
 import { buildWorkbench } from "./workbench-fixtures";
@@ -60,35 +60,22 @@ const entryOf = (read: WorkspaceResult, path: string) => read.entries.find((e) =
 // An untracked entry for a name that NTFS cannot hold, such as `*`, `?`, or a trailing space. The review reads no file of the entry.
 const nameEntry = (path: string): ChangeEntry => ({ entryId: crypto.randomUUID(), category: "untracked", path, pathBytes: Buffer.from(path).toString("base64"), flags: { intentToAdd: false, assumeUnchanged: false, skipWorktree: false } });
 
-// Contract Δ6 `fileAppend` on Windows, as `src-tauri/src/file_append.rs` checks it: the exact target, no link on the way, a regular file with one link, the expected state, one append.
+// Contract Δ6 `fileAppend` through the shell double of `bun-runner.ts`. The shell admits it only under a `started` marker of the target's action.
 function appendDouble(o: Opened, order: string[]): FileAppender & { calls: FileAppendRequest[] } {
   const calls: FileAppendRequest[] = [];
+  const runner = o.service.runner;
   return {
     calls,
-    async fileAppend(request): Promise<FileAppendReply> {
+    async fileAppend(request, signal): Promise<FileAppendReply | WalkStop> {
       calls.push(request);
       order.push("fileAppend");
-      const root = request.target === "gitignore" ? o.workspace.worktreeRoot : o.workspace.commonDirectory;
-      const names = request.target === "gitignore" ? [".gitignore"] : ["info", "exclude"];
-      expect(resolve(request.path)).toBe(resolve(join(root, ...names)));
-      const bytes = Buffer.from(request.bytes, "base64");
-      let at = root;
-      for (const [i, name] of names.entries()) {
-        at = join(at, name);
-        const st = lstatSync(at, { throwIfNoEntry: false });
-        if (st === undefined) {
-          if (i < names.length - 1) return { result: "error", code: "other-error" };
-          if (request.expected !== "absent") return { result: "stale" };
-          writeFileSync(at, bytes, { flag: "wx" });
-          return { result: "appended" };
-        }
-        if (st.isSymbolicLink() || (i < names.length - 1 && !st.isDirectory())) return { result: "refused", reason: "not-regular" };
-        if (i === names.length - 1 && (!st.isFile() || st.nlink !== 1)) return { result: "refused", reason: "not-regular" };
+      const action = request.target === "gitignore" ? "ignore-gitignore" : "ignore-exclude";
+      const marked = await runner.started({ operationId: request.operationId, repositoryId: request.repositoryId, kind: "workbench", action, worktreeRoot: o.workspace.worktreeRoot, commonDirectory: o.workspace.commonDirectory });
+      try {
+        return await runner.fileAppend(request, signal);
+      } finally {
+        if ("markerId" in marked) runner.resolved(marked.markerId);
       }
-      const old = readFileSync(at);
-      if (request.expected === "absent" || old.length !== request.expected.size || sha256(old) !== request.expected.sha256) return { result: "stale" };
-      appendFileSync(at, bytes);
-      return { result: "appended" };
     },
   };
 }
@@ -263,4 +250,36 @@ describe("refusals change no byte (spec FR-046, contract Δ9)", () => {
     }),
     TIMEOUT_MS,
   );
+});
+
+describe("a canceled fileAppend reply (contract Δ6, T034)", () => {
+  // The reply after a cancel is `stopped`, `interrupted`, or no reply within the walk deadline (`canceled`). The fresh target read cross-checks each one.
+  // A `stopped` reply with changed bytes is a contract mismatch, so it also gives failed-with-effects.
+  for (const [name, final] of [["stopped", { result: "stopped" }], ["interrupted", { result: "interrupted" }], ["canceled", { stop: "canceled" }]] as const) {
+    for (const append of [true, false]) {
+      caseTest("T034", `the target ${append ? "changed" : "stayed"} and the reply is ${name}: the fresh target read gives ${append ? "failed-with-effects" : "no-effects canceled"}`, SHELL, () =>
+        withService({ name: `t034-${name}-${append}` }, async (service) => {
+          const repo = tree();
+          const o = await open(service, repo);
+          const { reviewIgnore, runIgnore } = await underTest();
+          const review = await reviewIgnore(context(o), entryOf(o.read, "top-new.txt")!, "gitignore");
+          if (!("plan" in review)) throw new Error(JSON.stringify(review));
+          const order: string[] = [];
+          const shell = appendDouble(o, order);
+          const canceled: FileAppender = {
+            async fileAppend(request, signal) {
+              if (append) expect(await shell.fileAppend(request, signal)).toEqual({ result: "appended" });
+              else if (name === "stopped") expect(await shell.fileAppend(request, AbortSignal.abort())).toEqual(final);
+              return final;
+            },
+          };
+          const outcome = await runIgnore({ ...context(o), appender: canceled }, review.plan, async () => null);
+          expect({ type: outcome.type, observed: "observed" in outcome ? outcome.observed : undefined, bytes: bytesOf(join(repo, ".gitignore")) }).toEqual(
+            append ? { type: "failed-with-effects", observed: undefined, bytes: "/top-new.txt\n" } : { type: "no-effects", observed: "canceled", bytes: null },
+          );
+        }),
+        TIMEOUT_MS,
+      );
+    }
+  }
 });

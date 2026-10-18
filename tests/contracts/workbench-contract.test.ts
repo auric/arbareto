@@ -613,9 +613,9 @@ describe("contract Δ6 private requests", () => {
     expect(frame(withoutRepository)).toBe(false);
   });
 
-  test("fileAppend replies appended, stale, refused not-regular, or error with a file fact code", () => {
+  test("fileAppend replies appended, stale, stopped, interrupted, refused not-regular, or error with a file fact code", () => {
     const callId = call.callId;
-    for (const result of ["appended", "stale"]) expect(reply({ type: "fileAppend", callId, result })).toBe(true);
+    for (const result of ["appended", "stale", "stopped", "interrupted"]) expect(reply({ type: "fileAppend", callId, result })).toBe(true);
     expect(reply({ type: "fileAppend", callId, result: "refused", reason: "not-regular" })).toBe(true);
     for (const code of channel.FILE_FACT_ERRORS) expect(reply({ type: "fileAppend", callId, result: "error", code })).toBe(true);
     expect(reply({ type: "fileAppend", callId, result: "refused" })).toBe(false);

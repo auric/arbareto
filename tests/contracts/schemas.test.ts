@@ -259,7 +259,7 @@ describe("trust report rows (contract §5 \"Trust report rows\", T372)", () => {
     fingerprint: "a".repeat(64),
     state: "untrusted",
     persistence: "stored",
-    approvalRequired: { reads: true, commit: true, sync: true },
+    approvalRequired: { reads: true, commit: true, sync: true, workbench: true },
     entries: Array.from({ length: entries }, () => ({ key: "a", scope: "local", origin: "file:" })),
     hooks: Array.from({ length: hooks }, () => ({ event: "x", path: "h", repositoryControlled: true })),
   });

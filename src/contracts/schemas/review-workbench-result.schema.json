@@ -1,0 +1,1106 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "oneOf": [
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "switch"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "local": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000]*$"
+                        }
+                      },
+                      "required": [
+                        "local"
+                      ],
+                      "additionalProperties": false,
+                      "title": "SwitchPlanLocal"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "track": {
+                          "type": "object",
+                          "properties": {
+                            "ref": {
+                              "type": "string",
+                              "minLength": 1,
+                              "pattern": "^[^\\u0000]*$"
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "pattern": "^[^\\u0000]*$"
+                            }
+                          },
+                          "required": [
+                            "ref",
+                            "name"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "track"
+                      ],
+                      "additionalProperties": false,
+                      "title": "SwitchPlanTrack"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "detach": {
+                          "type": "string",
+                          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                        }
+                      },
+                      "required": [
+                        "detach"
+                      ],
+                      "additionalProperties": false,
+                      "title": "SwitchPlanDetach"
+                    }
+                  ]
+                },
+                "trackedChanges": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "unreachable": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "heldBy": {
+                  "type": "null"
+                },
+                "choice": {
+                  "type": "string",
+                  "enum": [
+                    "keep",
+                    "stash",
+                    "discard"
+                  ]
+                },
+                "inTheWay": {
+                  "type": "null"
+                }
+              },
+              "required": [
+                "target",
+                "trackedChanges",
+                "unreachable",
+                "heldBy",
+                "choice",
+                "inTheWay"
+              ],
+              "additionalProperties": false,
+              "title": "SwitchPlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "SwitchReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "create-branch"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "start": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "switchTo": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "name",
+                "start",
+                "switchTo"
+              ],
+              "additionalProperties": false,
+              "title": "CreateBranchPlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "CreateBranchReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "rename-branch"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "name": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                }
+              },
+              "required": [
+                "ref",
+                "oid",
+                "name"
+              ],
+              "additionalProperties": false,
+              "title": "RenameBranchPlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "RenameBranchReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "delete-branch"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "ref": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                },
+                "onlyHere": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "reflogKeeps": {
+                  "type": "boolean"
+                },
+                "heldBy": {
+                  "type": "null"
+                },
+                "current": {
+                  "type": "boolean",
+                  "const": false
+                }
+              },
+              "required": [
+                "ref",
+                "oid",
+                "onlyHere",
+                "reflogKeeps",
+                "heldBy",
+                "current"
+              ],
+              "additionalProperties": false,
+              "title": "DeleteBranchPlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "DeleteBranchReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "merge"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "object",
+                  "properties": {
+                    "ref": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    "oid": {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    }
+                  },
+                  "required": [
+                    "ref",
+                    "oid"
+                  ],
+                  "additionalProperties": false,
+                  "title": "RefObject"
+                },
+                "result": {
+                  "type": "string",
+                  "enum": [
+                    "merge",
+                    "squash"
+                  ]
+                },
+                "noFastForward": {
+                  "type": "boolean"
+                },
+                "noCommit": {
+                  "type": "boolean"
+                },
+                "preview": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "message": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "facts": {
+                  "type": "object",
+                  "properties": {
+                    "ahead": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "behind": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "fastForward": {
+                      "type": "boolean"
+                    },
+                    "mergeFf": {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": "string",
+                          "enum": [
+                            "true",
+                            "false",
+                            "only"
+                          ]
+                        },
+                        "source": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "default"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "scope": {
+                                  "type": "string",
+                                  "enum": [
+                                    "system",
+                                    "global",
+                                    "local",
+                                    "worktree",
+                                    "command",
+                                    "submodule",
+                                    "unknown"
+                                  ]
+                                },
+                                "origin": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "scope",
+                                "origin"
+                              ],
+                              "additionalProperties": false,
+                              "title": "ConfigOrigin"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "value",
+                        "source"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "ahead",
+                    "behind",
+                    "fastForward",
+                    "mergeFf"
+                  ],
+                  "additionalProperties": false,
+                  "title": "MergeFacts"
+                }
+              },
+              "required": [
+                "source",
+                "result",
+                "noFastForward",
+                "noCommit",
+                "preview",
+                "message",
+                "facts"
+              ],
+              "additionalProperties": false,
+              "title": "MergePlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "MergeReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "rebase"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "onto": {
+                  "type": "object",
+                  "properties": {
+                    "ref": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    "oid": {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    }
+                  },
+                  "required": [
+                    "ref",
+                    "oid"
+                  ],
+                  "additionalProperties": false,
+                  "title": "RefObject"
+                },
+                "moved": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "rewritten": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "held": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "forceNote": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "trackingRef": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000]*$"
+                        }
+                      },
+                      "required": [
+                        "trackingRef"
+                      ],
+                      "additionalProperties": false,
+                      "title": "ForceNote"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "movedBranches": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "refs": {
+                          "maxItems": 100,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "^[^\\u0000]*$"
+                          }
+                        },
+                        "more": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "refs",
+                        "more"
+                      ],
+                      "additionalProperties": false,
+                      "title": "MovedBranches"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "autostash": {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "boolean"
+                    },
+                    "source": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "default"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "scope": {
+                              "type": "string",
+                              "enum": [
+                                "system",
+                                "global",
+                                "local",
+                                "worktree",
+                                "command",
+                                "submodule",
+                                "unknown"
+                              ]
+                            },
+                            "origin": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "scope",
+                            "origin"
+                          ],
+                          "additionalProperties": false,
+                          "title": "ConfigOrigin"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "source"
+                  ],
+                  "additionalProperties": false
+                },
+                "autosquash": {
+                  "type": "boolean",
+                  "const": false
+                }
+              },
+              "required": [
+                "onto",
+                "moved",
+                "rewritten",
+                "held",
+                "forceNote",
+                "movedBranches",
+                "autostash",
+                "autosquash"
+              ],
+              "additionalProperties": false,
+              "title": "RebasePlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "RebaseReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "ignore"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "target": {
+                  "type": "string",
+                  "enum": [
+                    "gitignore",
+                    "exclude"
+                  ]
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "format": "base64",
+                  "contentEncoding": "base64",
+                  "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+                },
+                "folder": {
+                  "type": "boolean"
+                },
+                "line": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "prefixNewline": {
+                  "type": "boolean"
+                },
+                "expected": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "const": "absent"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "size": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "sha256": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{64}$"
+                        }
+                      },
+                      "required": [
+                        "size",
+                        "sha256"
+                      ],
+                      "additionalProperties": false,
+                      "title": "IgnoreExpected"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "target",
+                "path",
+                "folder",
+                "line",
+                "prefixNewline",
+                "expected"
+              ],
+              "additionalProperties": false,
+              "title": "IgnorePlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "IgnoreReviewed"
+        }
+      ]
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "detached",
+            "unborn",
+            "current-branch",
+            "other-worktree",
+            "name-exists",
+            "invalid-name",
+            "reserved-name",
+            "same-branch",
+            "ff-only",
+            "dirty-tree",
+            "interactive",
+            "no-merge-tool",
+            "side-missing",
+            "side-not-regular",
+            "stages-missing",
+            "main-worktree",
+            "current-worktree",
+            "locked",
+            "nothing-to-prune",
+            "multi-value",
+            "limit",
+            "push-current-only",
+            "ignore-exists",
+            "ignore-not-text",
+            "ignore-not-regular",
+            "ignore-size",
+            "path",
+            "message-size",
+            "unreadable",
+            "no-tracking-refspec",
+            "several-tracking-remotes",
+            "squash-no-ff",
+            "merge-options",
+            "invalid-config",
+            "unknown-operation",
+            "untracked-in-way"
+          ]
+        },
+        "worktree": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "remotes": {
+          "minItems": 2,
+          "maxItems": 256,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000]*$"
+          }
+        },
+        "plan": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "source": {
+                  "type": "object",
+                  "properties": {
+                    "ref": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    "oid": {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    }
+                  },
+                  "required": [
+                    "ref",
+                    "oid"
+                  ],
+                  "additionalProperties": false,
+                  "title": "RefObject"
+                },
+                "result": {
+                  "type": "string",
+                  "enum": [
+                    "merge",
+                    "squash"
+                  ]
+                },
+                "noFastForward": {
+                  "type": "boolean"
+                },
+                "noCommit": {
+                  "type": "boolean"
+                },
+                "preview": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "message": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "facts": {
+                  "type": "object",
+                  "properties": {
+                    "ahead": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "behind": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 9007199254740991
+                    },
+                    "fastForward": {
+                      "type": "boolean"
+                    },
+                    "mergeFf": {
+                      "type": "object",
+                      "properties": {
+                        "value": {
+                          "type": "string",
+                          "enum": [
+                            "true",
+                            "false",
+                            "only"
+                          ]
+                        },
+                        "source": {
+                          "anyOf": [
+                            {
+                              "type": "string",
+                              "const": "default"
+                            },
+                            {
+                              "type": "object",
+                              "properties": {
+                                "scope": {
+                                  "type": "string",
+                                  "enum": [
+                                    "system",
+                                    "global",
+                                    "local",
+                                    "worktree",
+                                    "command",
+                                    "submodule",
+                                    "unknown"
+                                  ]
+                                },
+                                "origin": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "scope",
+                                "origin"
+                              ],
+                              "additionalProperties": false,
+                              "title": "ConfigOrigin"
+                            }
+                          ]
+                        }
+                      },
+                      "required": [
+                        "value",
+                        "source"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "ahead",
+                    "behind",
+                    "fastForward",
+                    "mergeFf"
+                  ],
+                  "additionalProperties": false,
+                  "title": "MergeFacts"
+                }
+              },
+              "required": [
+                "source",
+                "result",
+                "noFastForward",
+                "noCommit",
+                "preview",
+                "message",
+                "facts"
+              ],
+              "additionalProperties": false,
+              "title": "MergePlan"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "onto": {
+                  "type": "object",
+                  "properties": {
+                    "ref": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    "oid": {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    }
+                  },
+                  "required": [
+                    "ref",
+                    "oid"
+                  ],
+                  "additionalProperties": false,
+                  "title": "RefObject"
+                },
+                "moved": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "rewritten": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "held": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "forceNote": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "trackingRef": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000]*$"
+                        }
+                      },
+                      "required": [
+                        "trackingRef"
+                      ],
+                      "additionalProperties": false,
+                      "title": "ForceNote"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "movedBranches": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "refs": {
+                          "maxItems": 100,
+                          "type": "array",
+                          "items": {
+                            "type": "string",
+                            "minLength": 1,
+                            "pattern": "^[^\\u0000]*$"
+                          }
+                        },
+                        "more": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        }
+                      },
+                      "required": [
+                        "refs",
+                        "more"
+                      ],
+                      "additionalProperties": false,
+                      "title": "MovedBranches"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "autostash": {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "boolean"
+                    },
+                    "source": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "const": "default"
+                        },
+                        {
+                          "type": "object",
+                          "properties": {
+                            "scope": {
+                              "type": "string",
+                              "enum": [
+                                "system",
+                                "global",
+                                "local",
+                                "worktree",
+                                "command",
+                                "submodule",
+                                "unknown"
+                              ]
+                            },
+                            "origin": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "scope",
+                            "origin"
+                          ],
+                          "additionalProperties": false,
+                          "title": "ConfigOrigin"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "value",
+                    "source"
+                  ],
+                  "additionalProperties": false
+                },
+                "autosquash": {
+                  "type": "boolean",
+                  "const": false
+                }
+              },
+              "required": [
+                "onto",
+                "moved",
+                "rewritten",
+                "held",
+                "forceNote",
+                "movedBranches",
+                "autostash",
+                "autosquash"
+              ],
+              "additionalProperties": false,
+              "title": "RebasePlan"
+            }
+          ]
+        },
+        "paths": {
+          "minItems": 1,
+          "maxItems": 100,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000]*$"
+          }
+        },
+        "more": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "unmerged": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "additionalProperties": false,
+      "title": "WorkbenchRefused"
+    }
+  ],
+  "title": "ReviewWorkbenchResult"
+}

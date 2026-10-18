@@ -2,15 +2,16 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { Handshake } from "../contracts/channel";
-import { validateRequest, type Response, type ServiceRequest } from "../contracts/envelope";
+import { validateRequest, type ChangeEntry, type Response, type ServiceRequest } from "../contracts/envelope";
 import { codeFitsState, type ErrorCode } from "../contracts/errors";
 import { GIT_PROCESS_DEADLINE_MS, HISTORY_VIEW_COMMITS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, RECORDED_REQUEST_IDS } from "../contracts/limits";
 import { isIdentifier } from "../contracts/operations";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "../contracts/strict-json";
-import { isWindows } from "../contracts/native-path";
+import { isWindows, NATIVE } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import { RunnerRefusal, type GitRunner, type SyncRunner, type WslRunner } from "./git-runner";
 import { createApprovals } from "./approvals";
+import { createBranchesReader } from "./branches";
 import { createCloner, type RouteTarget } from "./clone";
 import { createCommitter } from "./commit";
 import { createCommitReviewer } from "./commit-review";
@@ -88,6 +89,20 @@ type ReadResult =
   | { result: "canceled" }
   | { result: "deadline" };
 
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+// Feature 004 contract Δ3 `revealPath`: the native path of an entry below the worktree root. A WSL root is its UNC form. Null: the path bytes are no valid UTF-8.
+function revealTarget(w: Workspace, entry: ChangeEntry): string | null {
+  let text: string;
+  try {
+    text = strictUtf8.decode(Buffer.from(entry.pathBytes, "base64"));
+  } catch {
+    return null;
+  }
+  // git-status(1): a folder record ends with `/`.
+  return NATIVE.path.join(w.worktreeRoot, ...(text.endsWith("/") ? text.slice(0, -1) : text).split("/"));
+}
+
 export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
@@ -158,6 +173,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   });
   const refs = createRefsReader({ runner, trust, listingTuple: reader.listingTuple });
   const tracking = createTrackingReader({ runner, trust, listingTuple: reader.listingTuple });
+  const branches = createBranchesReader({ runner, trust, reader, listingTuple: reader.listingTuple });
   const views = createHistoryViews({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable, registry, viewCommits: historyViewCommits, ...(historyProbeRuns === undefined ? {} : { probeRuns: historyProbeRuns }), reject: (requestId, code) => reject(requestId, code) });
   const approvals = createApprovals(approvalClock);
   // Contract §5: comparison eviction invalidates its approvals.
@@ -379,7 +395,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
   // `failed` is the outcome of a `run` that throws.
   const scheduleRead = (
-    request: { requestId: string; operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules" | "readTracking" | "reviewSync" | "reviewWorkbench"; repositoryId: string },
+    request: { requestId: string; operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules" | "readTracking" | "reviewSync" | "reviewWorkbench" | "readBranches"; repositoryId: string },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
     reread: (target: RereadTarget) => Promise<ReadResult | null>,
     failed: ReadResult,
@@ -479,6 +495,44 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       (t) => tracking.readTracking({ ...t, installation, workspace, generation: request.repositoryGeneration }),
       async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" } } }),
       { result: "failed", code: "GIT_FAILED", value: { completeness: { state: "failed", code: "GIT_FAILED" } } },
+    );
+  };
+
+  // Feature 004 contract Δ3 `readBranches`: one read slot, and the generation decides at acceptance as for `readRefs`.
+  const readBranches: Handler<"readBranches"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    if (request.repositoryGeneration !== workspace.generation) {
+      const { operationId } = registry.start("readBranches", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+    }
+    scheduleRead(
+      request,
+      (t) => branches.readBranches({ ...t, installation, workspace, generation: request.repositoryGeneration }),
+      async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" } } }),
+      { result: "failed", code: "GIT_FAILED", value: { completeness: { state: "failed", code: "GIT_FAILED" } } },
+    );
+  };
+
+  // Feature 004 contract Δ3 `revealPath`: the entry of the current read, then the private `reveal` request. It takes no read slot and starts no Git process.
+  // `repositoryId` sits in the payload. An unknown repository or entry, and path bytes that are no valid UTF-8, give UNKNOWN_TARGET before any request.
+  const revealPath: Handler<"revealPath"> = (request) => {
+    const { repositoryId, entryId } = request.payload;
+    if (!registrations.has(repositoryId)) return reject(request.requestId, "UNKNOWN_TARGET");
+    const workspace = workspaceOf(repositoryId);
+    const { operationId, signal } = registry.start("revealPath", request.requestId);
+    const entry = reader.currentEntry(repositoryId, entryId);
+    const path = entry === null ? null : revealTarget(workspace, entry);
+    if (path === null) return void registry.apply(operationId, { type: "invalid-approval", code: "UNKNOWN_TARGET" });
+    registry.apply(operationId, { type: "valid-read" });
+    const finish = (code: ErrorCode | null) => {
+      if (registry.get(operationId)?.state === "cancel-requested") return registry.apply(operationId, { type: "processes-stopped" });
+      registry.apply(operationId, code === null ? { type: "read-complete", result: "succeeded" } : { type: "read-complete", result: "failed", code });
+    };
+    runner.reveal({ operationId, repositoryId, path }, signal).then(
+      (reply) => finish(reply === "shown" ? null : reply.stop === "deadline" ? "DEADLINE" : "CANCELED"),
+      (error: unknown) => finish(error instanceof RunnerRefusal ? error.code : "GIT_FAILED"),
     );
   };
 
@@ -751,8 +805,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     },
     clone: (request) => cloner.clone(request),
     connectInTerminal,
-    // Feature 004 P4 and P6 add these handlers. Until then the service answers SERVICE_UNAVAILABLE.
-    readBranches: undefined,
+    // Feature 004 T060 adds `readWorktrees`, `readGitSettings`, and `openWorktree`. Until then the service answers SERVICE_UNAVAILABLE.
+    readBranches,
     readWorktrees: undefined,
     readGitSettings: undefined,
     // Feature 004 contract Δ3: one read slot. An action without a registered handler gets SERVICE_UNAVAILABLE.
@@ -793,7 +847,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       fileSets.applyFiles(request, workspace, installation);
     },
     openWorktree: undefined,
-    revealPath: undefined,
+    revealPath,
   };
 
   function receiveHandshake(frame: Fields) {

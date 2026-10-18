@@ -619,8 +619,10 @@ export const TerminalReply = z.union([
 // ---- Feature 004 contract Δ6 replies ----
 
 // `refused` names a reparse point or a non-regular file. `stale` names a size or SHA-256 other than `expected`.
+// Every request gets one reply, also after `cancel` or `closeJob`. `stopped`: the stop came before the write, so nothing was written.
+// `interrupted`: the stop came while a WSL `append` process could write, so the shell does not know whether it wrote.
 export const FileAppendReply = z.union([
-  z.strictObject({ type: z.literal("fileAppend"), ...call, result: z.enum(["appended", "stale"]) }).meta({ title: "FileAppendResult" }),
+  z.strictObject({ type: z.literal("fileAppend"), ...call, result: z.enum(["appended", "stale", "stopped", "interrupted"]) }).meta({ title: "FileAppendResult" }),
   z.strictObject({ type: z.literal("fileAppend"), ...call, result: z.literal("refused"), reason: z.enum(["not-regular"]) }).meta({ title: "FileAppendRefused" }),
   z.strictObject({ type: z.literal("fileAppend"), ...call, result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "FileAppendError" }),
 ]);

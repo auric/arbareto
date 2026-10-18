@@ -192,7 +192,7 @@ describe("checkpoints (contract §4, §9)", () => {
       await underTest("hunk-publish");
       const { repositoryId } = await service.register(repo);
       const trust = await service.readTrust(repositoryId);
-      expect(trust.result!.approvalRequired).toEqual({ reads: false, commit: false, sync: false });
+      expect(trust.result!.approvalRequired).toEqual({ reads: false, commit: false, sync: false, workbench: false });
       const old = await selectHunks(service, repositoryId, "multi.txt", "unstaged");
       git(repo, ["config", "diff.external", program("diff-b")]);
       expect(code(await refused(service, repo, () => applyHunk(service, repositoryId, old, old.hunkIds[0]!, "stage")))).toBe("TRUST_CHANGED");

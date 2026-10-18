@@ -1,0 +1,5 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "valid",
+  "text": "{\"action\":\"merge\",\"plan\":{\"source\":{\"ref\":\"refs/heads/topic\",\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\"},\"result\":\"merge\",\"noFastForward\":false,\"noCommit\":false,\"preview\":\"Merge branch 'topic'\\n\",\"message\":null,\"facts\":{\"ahead\":1,\"behind\":2,\"fastForward\":false,\"mergeFf\":{\"value\":\"only\",\"source\":{\"scope\":\"local\",\"origin\":\"file:.git/config\"}}}},\"workbenchToken\":\"6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b\"}"
+}

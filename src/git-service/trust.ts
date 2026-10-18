@@ -288,6 +288,8 @@ export function valueShown(p: KeyParts): boolean {
   // Feature 003 contract Δ7: the transport programs and the PuTTY key proposal (O-8).
   if (section === "credential") return variable === "helper";
   if (section === "remote") return subsection !== null && ["uploadpack", "receivepack", "puttykeyfile", "vcs"].includes(variable);
+  // Feature 004 contract Δ7: the merge driver keys.
+  if (section === "merge") return subsection !== null && (variable === "driver" || variable === "recursive");
   return false;
 }
 
@@ -328,40 +330,44 @@ function selectsHelper(p: KeyParts, value: string): boolean {
 }
 
 // Contract §7: the read blocking class and the "Mutation trust" `commit` class. A configured hook joins `commit` through its events.
-// Feature 003 plan.md D11: the `sync` class.
+// Feature 003 plan.md D11: the `sync` class. Feature 004 plan.md D12: the `workbench` class.
 interface ProgramKey {
   form: ProgramForm;
   reads: boolean;
   commit: boolean;
   sync: boolean;
+  workbench: boolean;
 }
+
+// The classes of a transport program: only `sync` (feature 003 plan.md D11).
+const TRANSPORT = { reads: false, commit: false, sync: true, workbench: false } as const;
 
 // Contract §12 "Trust" and feature 003 plan.md D11: the transport programs that a fetch or a push can run (probe S6).
 // git-config(1): Git runs `core.sshCommand` and `remote.<name>.uploadpack` through the shell.
 function programKey(p: KeyParts): ProgramKey | null {
   const { section, subsection, variable } = p;
-  if (section === "core" && subsection === null && variable === "sshcommand") return { form: "shell", reads: false, commit: false, sync: true };
-  if (section === "core" && subsection === null && variable === "askpass") return { form: "direct", reads: false, commit: false, sync: true };
-  if (section === "core" && subsection === null && variable === "gitproxy") return { form: "proxy", reads: false, commit: false, sync: true };
-  if (section === "remote" && subsection !== null && (variable === "uploadpack" || variable === "receivepack")) return { form: "shell", reads: false, commit: false, sync: true };
-  if (section === "credential" && variable === "helper") return { form: "credential", reads: false, commit: false, sync: true };
+  if (section === "core" && subsection === null && variable === "sshcommand") return { form: "shell", ...TRANSPORT };
+  if (section === "core" && subsection === null && variable === "askpass") return { form: "direct", ...TRANSPORT };
+  if (section === "core" && subsection === null && variable === "gitproxy") return { form: "proxy", ...TRANSPORT };
+  if (section === "remote" && subsection !== null && (variable === "uploadpack" || variable === "receivepack")) return { form: "shell", ...TRANSPORT };
+  if (section === "credential" && variable === "helper") return { form: "credential", ...TRANSPORT };
   // Feature 003 plan.md D11: a remote helper. Only an entry that `selectsHelper` becomes a program.
   if ((section === "remote" && subsection !== null && (variable === "vcs" || variable === "url" || variable === "pushurl")) || (section === "url" && subsection !== null && (variable === "insteadof" || variable === "pushinsteadof"))) {
-    return { form: "helper", reads: false, commit: false, sync: true };
+    return { form: "helper", ...TRANSPORT };
   }
   // Feature 003 plan.md D11: fetch-pack.c `for_each_alternate_ref` runs it with `use_shell` (`fill_alternate_refs_command`). A probe saw no 001 read or commit run it.
-  if (section === "core" && subsection === null && variable === "alternaterefscommand") return { form: "shell", reads: false, commit: false, sync: true };
-  // Feature 003 plan.md D11: ll-merge.c `ll_ext_merge` runs a merge driver with `use_shell`, so a pull merge can run it.
-  if (section === "merge" && subsection !== null && variable === "driver") return { form: "shell", reads: false, commit: false, sync: true };
+  if (section === "core" && subsection === null && variable === "alternaterefscommand") return { form: "shell", ...TRANSPORT };
+  // Feature 003 plan.md D11 and feature 004 plan.md D12: ll-merge.c `ll_ext_merge` runs a merge driver with `use_shell`, so a merge or a rebase can run it.
+  if (section === "merge" && subsection !== null && variable === "driver") return { form: "shell", reads: false, commit: false, sync: true, workbench: true };
   if (section === "filter" && subsection !== null) {
-    if (variable === "clean" || variable === "process") return { form: "shell", reads: true, commit: true, sync: true };
-    if (variable === "smudge") return { form: "shell", reads: false, commit: false, sync: true };
+    if (variable === "clean" || variable === "process") return { form: "shell", reads: true, commit: true, sync: true, workbench: true };
+    if (variable === "smudge") return { form: "shell", reads: false, commit: false, sync: true, workbench: true };
   }
-  if (section === "core" && subsection === null && variable === "fsmonitor") return { form: "monitor", reads: true, commit: true, sync: true };
-  if (section === "hook" && subsection !== null && variable === "command") return { form: "shell", reads: false, commit: false, sync: false };
-  if (section === "diff" && (subsection === null ? variable === "external" : variable === "textconv" || variable === "command")) return { form: "shell", reads: false, commit: false, sync: false };
-  if (section === "gpg" && variable === "program") return { form: "pathname", reads: false, commit: true, sync: true };
-  if (section === "gpg" && subsection === "ssh" && variable === "defaultkeycommand") return { form: "split", reads: false, commit: true, sync: true };
+  if (section === "core" && subsection === null && variable === "fsmonitor") return { form: "monitor", reads: true, commit: true, sync: true, workbench: true };
+  if (section === "hook" && subsection !== null && variable === "command") return { form: "shell", reads: false, commit: false, sync: false, workbench: false };
+  if (section === "diff" && (subsection === null ? variable === "external" : variable === "textconv" || variable === "command")) return { form: "shell", reads: false, commit: false, sync: false, workbench: false };
+  if (section === "gpg" && variable === "program") return { form: "pathname", reads: false, commit: true, sync: true, workbench: true };
+  if (section === "gpg" && subsection === "ssh" && variable === "defaultkeycommand") return { form: "split", reads: false, commit: true, sync: true, workbench: true };
   return null;
 }
 
@@ -627,6 +633,20 @@ function createPlaces(runner: GitRunner, target: ListingTarget, roots: Roots, id
 const COMMIT_EVENTS: ReadonlySet<string> = new Set(["pre-commit", "prepare-commit-msg", "commit-msg", "post-commit", "post-index-change", "reference-transaction", "pre-auto-gc"]);
 // Feature 003 plan.md D11: the hook events that fetch, push, merge, rebase, and Continue can run.
 const SYNC_EVENTS: ReadonlySet<string> = new Set([...COMMIT_EVENTS, "pre-push", "pre-merge-commit", "post-merge", "post-checkout", "pre-rebase", "post-rewrite"]);
+// Feature 004 plan.md D12 `workbench`: the hook events that switch, the branch actions, merge, and rebase can run.
+const WORKBENCH_EVENTS: ReadonlySet<string> = new Set([
+  "post-checkout",
+  "post-merge",
+  "pre-merge-commit",
+  "prepare-commit-msg",
+  "commit-msg",
+  "post-commit",
+  "pre-rebase",
+  "post-rewrite",
+  "reference-transaction",
+  "post-index-change",
+  "pre-auto-gc",
+]);
 const KNOWN_EVENTS: ReadonlySet<string> = new Set(HOOK_EVENTS);
 
 export interface ConfiguredHook {
@@ -1040,6 +1060,7 @@ export interface ProgramIntegration {
   reads: boolean;
   commit: boolean;
   sync: boolean;
+  workbench: boolean;
 }
 
 export interface HookView {
@@ -1059,7 +1080,7 @@ export interface TrustListing {
   bound?: TrustBound;
   // Contract §5 "Effective configuration/trust input": overflow blocks approval, so reads and `commit` need an approval that cannot come.
   inputLimited: boolean;
-  approvalRequired: { reads: boolean; commit: boolean; sync: boolean };
+  approvalRequired: { reads: boolean; commit: boolean; sync: boolean; workbench: boolean };
   changeFiles: ChangeFiles;
   // The file state of each integration and each folder hook, in list order. Null: the file lies outside the roots, or the integration is not repository-controlled.
   files: { integrations: (FileState | null)[]; folder: (FileState | null)[] };
@@ -1222,6 +1243,7 @@ async function buildListing(
     reads: kind.reads,
     commit: kind.commit,
     sync: kind.sync,
+    workbench: kind.workbench,
   }));
   const programPlace = (i: number, at: string) => placeFor(at, programs[i]!.controlled);
 
@@ -1387,6 +1409,7 @@ async function buildListing(
     reads: inputLimited || integrations.some((i) => i.reads && i.repositoryControlled),
     commit: inputLimited || hooksPathControlled || folderUnlisted || commitHooks || integrations.some((i) => i.commit && i.repositoryControlled),
     sync: inputLimited || hooksPathControlled || folderUnlisted || protocolControlled || activeHooks.some((h) => SYNC_EVENTS.has(h.event) && h.repositoryControlled) || integrations.some((i) => i.sync && i.repositoryControlled),
+    workbench: inputLimited || hooksPathControlled || folderUnlisted || activeHooks.some((h) => WORKBENCH_EVENTS.has(h.event) && h.repositoryControlled) || integrations.some((i) => i.workbench && i.repositoryControlled),
   };
   const config = configPaths(entries, roots, layout, configFiles);
   return {
@@ -1607,12 +1630,12 @@ export function createTrust({ runner, environment, configFiles = () => undefined
     };
   }
 
-  // Contract §7: the gate of reads, of `commit`, and of feature 003 `sync`. Null: the operation may run. An input-limited listing can never pass.
+  // Contract §7: the gate of reads, of `commit`, of feature 003 `sync`, and of feature 004 `workbench`. Null: the operation may run. An input-limited listing can never pass.
   function gate(
     w: Workspace,
     listing: Pick<TrustListing, "fingerprint" | "inputLimited"> & { approvalRequired: Readonly<Partial<TrustListing["approvalRequired"]>> },
     installation: ReadInstallation,
-    kind: "reads" | "commit" | "sync",
+    kind: keyof TrustListing["approvalRequired"],
   ): "TRUST_REQUIRED" | "TRUST_CHANGED" | null {
     if (listing.approvalRequired[kind] !== true) return null;
     const { state } = stateOf(w, listing.fingerprint, installation.selectedPath);

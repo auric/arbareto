@@ -45,12 +45,16 @@
             },
             "sync": {
               "type": "boolean"
+            },
+            "workbench": {
+              "type": "boolean"
             }
           },
           "required": [
             "reads",
             "commit",
-            "sync"
+            "sync",
+            "workbench"
           ],
           "additionalProperties": false
         },

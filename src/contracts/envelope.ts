@@ -13,10 +13,13 @@ import {
   PUTTY_PROGRAMS,
   PUTTY_UNAVAILABLE_REASONS,
   SEARCH_UNSUPPORTED_REASONS,
+  STASH_KEPT_REASONS,
   SYNC_OUTPUT_LIMIT_REASONS,
   SYNC_UNAVAILABLE_REASONS,
   TERMINAL_STATES,
   UNSUPPORTED_FILTER_TEXT_REASONS,
+  UNTRACKED_IN_WAY_REASONS,
+  WORKBENCH_UNAVAILABLE_REASONS,
   WSL_UNAVAILABLE_REASONS,
   type ErrorCode,
 } from "./errors";
@@ -626,7 +629,8 @@ export const ReadTrustResult = z
         state: z.enum(["untrusted", "approved", "changed", "revoked"]),
         persistence: TrustPersistence,
         trustId: Identifier.optional(),
-        approvalRequired: z.strictObject({ reads: z.boolean(), commit: z.boolean(), sync: z.boolean() }),
+        // Feature 003 contract Δ7 adds `sync`. Feature 004 contract Δ7 (T033) adds `workbench`.
+        approvalRequired: z.strictObject({ reads: z.boolean(), commit: z.boolean(), sync: z.boolean(), workbench: z.boolean() }),
         bound: z.enum(TRUST_BOUNDS).optional(),
         inputLimited: z.literal(true).optional(),
         entries: z.array(TrustEntry).max(limits.TRUST_REPORT_ENTRIES),
@@ -1287,3 +1291,178 @@ export const SyncSettings = z
   .meta({ title: "SyncSettings" });
 // The six settings operations and feature 004 `setSwitchChoice` give the settings, or a PuTTY refusal of `chooseSyncPath` and `launchPuttygen`.
 export const SyncSettingsResult = z.union([SyncSettings, PuttyRefused]).meta({ title: "SyncSettingsResult" });
+
+// ---- Feature 004 results (contract Δ3 and Δ10, data-model §2 to §7) ----
+// T034 adds the actions of batch 2: switch, the branch actions, merge, rebase, and ignore. Later tasks add the plans of their actions.
+
+// Contract Δ5: 100 paths in a result, plus a count.
+const IN_THE_WAY_PATHS = 100;
+// Contract Δ5 "Moved branches listed in the rebase panel".
+const MOVED_BRANCHES_LISTED = 100;
+const FullRef = Text.min(1);
+const RefObject = z.strictObject({ ref: FullRef, oid: ObjectId }).meta({ title: "RefObject" });
+// Data-model §5: the configuration entry that gives a value, or Git's default.
+const ConfigSource = z.union([z.literal("default"), z.strictObject({ scope: ConfigScope, origin: z.string() }).meta({ title: "ConfigOrigin" })]);
+
+// Data-model §3. A branch that another worktree holds and a path in the way refuse the review, so the plan holds neither.
+const SwitchPlan = z
+  .strictObject({
+    target: z.union([
+      z.strictObject({ local: FullRef }).meta({ title: "SwitchPlanLocal" }),
+      z.strictObject({ track: z.strictObject({ ref: FullRef, name: Text.min(1) }) }).meta({ title: "SwitchPlanTrack" }),
+      z.strictObject({ detach: ObjectId }).meta({ title: "SwitchPlanDetach" }),
+    ]),
+    trackedChanges: Count,
+    unreachable: ObjectId.nullable(),
+    heldBy: z.null(),
+    choice: z.enum(["keep", "stash", "discard"]),
+    inTheWay: z.null(),
+  })
+  .meta({ title: "SwitchPlan" });
+const CreateBranchPlan = z.strictObject({ name: Text.min(1), start: ObjectId, switchTo: z.boolean() }).meta({ title: "CreateBranchPlan" });
+const RenameBranchPlan = z.strictObject({ ref: FullRef, oid: ObjectId, name: Text.min(1) }).meta({ title: "RenameBranchPlan" });
+// Data-model §4. The current branch and a branch that another worktree holds refuse the review.
+const DeleteBranchPlan = z.strictObject({ ref: FullRef, oid: ObjectId, onlyHere: Count, reflogKeeps: z.boolean(), heldBy: z.null(), current: z.literal(false) }).meta({ title: "DeleteBranchPlan" });
+// Data-model §5. `preview` is null when the preview holds more than MERGE_MESSAGE_BYTES bytes.
+const MergePlan = z
+  .strictObject({
+    source: RefObject,
+    result: z.enum(["merge", "squash"]),
+    noFastForward: z.boolean(),
+    noCommit: z.boolean(),
+    preview: z.string().nullable(),
+    message: z.string().nullable(),
+    facts: z.strictObject({ ahead: Count, behind: Count, fastForward: z.boolean(), mergeFf: z.strictObject({ value: z.enum(["true", "false", "only"]), source: ConfigSource }) }).meta({ title: "MergeFacts" }),
+  })
+  .meta({ title: "MergePlan" });
+const RebasePlan = z
+  .strictObject({
+    onto: RefObject,
+    moved: Count,
+    rewritten: Count,
+    held: Count,
+    forceNote: z.strictObject({ trackingRef: FullRef }).meta({ title: "ForceNote" }).nullable(),
+    movedBranches: z.strictObject({ refs: z.array(FullRef).max(MOVED_BRANCHES_LISTED), more: Count }).meta({ title: "MovedBranches" }).nullable(),
+    autostash: z.strictObject({ value: z.boolean(), source: ConfigSource }),
+    autosquash: z.literal(false),
+  })
+  .meta({ title: "RebasePlan" });
+// Data-model §7. `path` holds the path bytes in base64.
+const IgnorePlan = z
+  .strictObject({
+    target: z.enum(["gitignore", "exclude"]),
+    path: z.base64().min(1),
+    folder: z.boolean(),
+    line: Text.min(1),
+    prefixNewline: z.boolean(),
+    expected: z.union([z.literal("absent"), z.strictObject({ size: Count, sha256: Fingerprint }).meta({ title: "IgnoreExpected" })]),
+  })
+  .meta({ title: "IgnorePlan" });
+const reviewed = <A extends string, P extends z.ZodType>(action: A, plan: P, title: string) => z.strictObject({ action: z.literal(action), plan, workbenchToken: Identifier }).meta({ title });
+// Contract Δ3 "Result": `{action, plan, workbenchToken}`, or a refusal value: the Δ9 reason with its facts, the in-the-way paths, or the CONFLICTED count.
+// A `merge` or `rebase` refusal after the counts carries the plan (contract Δ3).
+export const ReviewWorkbenchResult = z
+  .union([
+    z.discriminatedUnion("action", [
+      reviewed("switch", SwitchPlan, "SwitchReviewed"),
+      reviewed("create-branch", CreateBranchPlan, "CreateBranchReviewed"),
+      reviewed("rename-branch", RenameBranchPlan, "RenameBranchReviewed"),
+      reviewed("delete-branch", DeleteBranchPlan, "DeleteBranchReviewed"),
+      reviewed("merge", MergePlan, "MergeReviewed"),
+      reviewed("rebase", RebasePlan, "RebaseReviewed"),
+      reviewed("ignore", IgnorePlan, "IgnoreReviewed"),
+    ]),
+    z
+      .strictObject({
+        reason: z.enum([...WORKBENCH_UNAVAILABLE_REASONS, ...UNTRACKED_IN_WAY_REASONS]).optional(),
+        worktree: Text.min(1).optional(),
+        ref: FullRef.optional(),
+        remotes: z.array(RemoteName).min(2).max(SYNC_REMOTES).optional(),
+        plan: z.union([MergePlan, RebasePlan]).optional(),
+        paths: z.array(Text.min(1)).min(1).max(IN_THE_WAY_PATHS).optional(),
+        more: Count.optional(),
+        unmerged: Count.optional(),
+      })
+      .refine(
+        (r) =>
+          (r.worktree === undefined || r.reason === "other-worktree") &&
+          (r.ref === undefined || r.reason === "name-exists") &&
+          (r.remotes === undefined || r.reason === "several-tracking-remotes") &&
+          (r.paths !== undefined) === (r.reason === "untracked-in-way") &&
+          (r.paths !== undefined) === (r.more !== undefined) &&
+          (r.unmerged === undefined || r.reason === undefined),
+      )
+      .meta({ title: "WorkbenchRefused" }),
+  ])
+  .meta({ title: "ReviewWorkbenchResult" });
+
+// Data-model §1 `readBranches`. Only a remote entry maps to a local name, and only a local entry is current or holds a tracking entry.
+// `invalidUtf8`: the ref bytes are no valid UTF-8, so `ref` is display text only.
+// `oid` is a commit, peeled for a ref that names an annotated tag. `tracking` keeps the 003 ref values, so its upstream OID can be the tag object.
+const BranchEntry = z
+  .strictObject({
+    ref: FullRef,
+    kind: z.enum(["local", "remote"]),
+    name: Text.min(1),
+    invalidUtf8: z.boolean(),
+    oid: ObjectId,
+    upstream: FullRef.nullable(),
+    tracking: TrackingEntry.nullable(),
+    heldBy: Text.min(1).nullable(),
+    current: z.boolean(),
+    localName: Text.min(1).nullable(),
+    hasLocal: z.boolean(),
+  })
+  .refine((e) => (e.kind === "local" ? e.localName === null && !e.hasLocal : !e.current && e.tracking === null) && (e.localName !== null || !e.hasLocal))
+  .meta({ title: "BranchEntry" });
+// Contract Δ3 `readBranches`: the entries, or the `readRefs` refusal form for a bound or a failed read. At most one entry is current.
+export const ReadBranchesResult = z
+  .union([
+    z
+      .strictObject({ entries: z.array(BranchEntry).max(REF_LISTING_RECORDS) })
+      .refine((r) => !Array.isArray(r.entries) || r.entries.filter((e) => e?.current === true).length <= 1)
+      .meta({ title: "BranchList" }),
+    RefsRefusal,
+  ])
+  .meta({ title: "ReadBranchesResult" });
+
+// The refs whose values differ between the listings before and after the steps. Null: the ref is absent on that side.
+const RefChange = z.strictObject({ ref: FullRef, oldObjectId: ObjectId.nullable(), newObjectId: ObjectId.nullable() }).meta({ title: "RefChange" });
+const RefChanges = z.array(RefChange).max(SYNC_REFS_RECORDS);
+// Data-model §3 `stash.state`: `dropped`, or `kept-` with the contract Δ9 STASH_KEPT reason.
+const STASH_STATES = ["dropped", ...STASH_KEPT_REASONS.map((reason) => `kept-${reason}` as const)] as const;
+const BRANCH_ACTIONS = ["create-branch", "rename-branch", "delete-branch"] as const;
+const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", "ignore"] as const;
+// Contract Δ3 `runWorkbench` "Results": the observed effects. A failed step adds its `outputTail`. An unknown outcome names the action only.
+// A refusal before any step can carry the CONFLICTED count. A repeated request gets the `getOperation` result of its operation (contract §2).
+export const RunWorkbenchResult = z
+  .union([
+    z
+      .strictObject({
+        action: z.literal("switch"),
+        head: Head,
+        refs: RefChanges,
+        stash: z.strictObject({ oid: ObjectId.nullable(), state: z.enum(STASH_STATES) }).meta({ title: "SwitchStash" }).nullable(),
+        conflicted: Count,
+        remedy: SyncRemedy.optional(),
+        outputTail: OutputTail.optional(),
+      })
+      .meta({ title: "SwitchRun" }),
+    z.strictObject({ action: z.enum(BRANCH_ACTIONS), head: Head, refs: RefChanges, outputTail: OutputTail.optional() }).meta({ title: "BranchRun" }),
+    z
+      .strictObject({
+        action: z.enum(["merge", "rebase"]),
+        head: Head,
+        refs: RefChanges,
+        operationState: WorkspaceOperationState,
+        unmerged: Count,
+        stash: z.strictObject({ oid: ObjectId }).meta({ title: "AutostashKept" }).nullable(),
+        outputTail: OutputTail.optional(),
+      })
+      .meta({ title: "MergeRebaseRun" }),
+    z.strictObject({ action: z.literal("ignore"), reason: z.literal("ignore-not-regular").optional() }).meta({ title: "IgnoreRun" }),
+    z.strictObject({ action: z.enum(RUN_ACTIONS) }).meta({ title: "WorkbenchUnread" }),
+    z.strictObject({ unmerged: Count }).meta({ title: "WorkbenchConflicted" }),
+    OperationResult.meta({ title: "WorkbenchRepeat" }),
+  ])
+  .meta({ title: "RunWorkbenchResult" });

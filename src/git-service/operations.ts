@@ -26,7 +26,8 @@ interface Entry {
 }
 
 const isTerminal = (state: string) => (TERMINAL_STATES as readonly string[]).includes(state);
-const STALL_FLAGGED: readonly string[] = ["updateSubmodules", "sync", "clone"];
+// Feature 004 plan.md D2: the `integrate` steps of `runWorkbench` take the 003 stall notice.
+const STALL_FLAGGED: readonly string[] = ["updateSubmodules", "sync", "clone", "runWorkbench"];
 
 export function createOperationRegistry(
   // Returns the response that it sent, when that differs from its argument (contract §2 frame bound).

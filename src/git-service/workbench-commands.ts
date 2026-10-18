@@ -68,7 +68,7 @@ function scope(value: ConfigWriteScope): string {
 // ---- Reads ----
 
 export function branchListArgs(): string[] {
-  return read("for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00%(HEAD)%00%(symref)", "refs/heads", "refs/remotes");
+  return read("for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00%(HEAD)%00%(symref)%00%(objecttype)%00%(*objectname)%00%(*objecttype)", "refs/heads", "refs/remotes");
 }
 
 export function worktreeListArgs(): string[] {
@@ -90,8 +90,9 @@ export function worktreeStatusArgs(path: string): string[] {
   return read("-C", item(path), "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=dirty");
 }
 
-export function refCommitArgs(name: string): string[] {
-  return read("rev-parse", "--verify", "-q", `${ref(name)}^{commit}`);
+// Contract Δ3 `switch`: the records at and below a branch ref, with the type and the peeled object (git-for-each-ref(1) `*` fields).
+export function refPeelArgs(name: string): string[] {
+  return read("for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)", localOrRemote(name));
 }
 
 // Plan.md D3: exit 0 without output means that no ref holds the commit.

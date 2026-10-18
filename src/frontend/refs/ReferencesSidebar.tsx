@@ -255,7 +255,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>, index: number) {
     const row = rows[index]!;
     // Feature 004 plan.md D15 keyboard map: the branch keys act only on the focused branch row.
-    const scoped = actionable(row) ? scopedAction(event, row.kind === "branch" ? "localBranchRow" : "remoteBranchRow") : null;
+    const scoped = actionable(row) ? scopedAction(event.nativeEvent, row.kind === "branch" ? "localBranchRow" : "remoteBranchRow") : null;
     if (scoped !== null) {
       event.preventDefault();
       return branchAction(row, scoped);

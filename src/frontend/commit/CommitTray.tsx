@@ -10,13 +10,12 @@ import type { BridgeResponse, createBridge } from "../bridge";
 import { BLOCKED_TEXT, STALE_TEXT, type Blocked, type StagingTarget } from "../changes/HunkControls";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
+import { RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
 import { branchName } from "../history/HistoryView";
 import { shortRef } from "../refs/ReferencesSidebar";
 import type { createDrafts } from "../state/drafts";
 import type { Amend } from "../state/workbench";
 import { shortId, trackOperation, type StatusOperation } from "../status/OperationStatus";
-import { RUNNING_REASON } from "../sync/SyncToolbar";
 import { GuideLines, guideStyle, SummaryCounter } from "./MessageGuide";
 import { isTrustReport, trustBeforeReview, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
 
@@ -278,14 +277,7 @@ export function CommitTray(props: CommitTrayProps) {
         )}
         {amending === null ? null : <p data-slot="amend-statement">{amendStatement(amending.headOid)}</p>}
         <div className="flex flex-wrap gap-2">
-          {hideReason && shownReason !== null ? (
-            <Tooltip>
-              <TooltipTrigger render={commitButton} />
-              <TooltipContent>{shownReason}</TooltipContent>
-            </Tooltip>
-          ) : (
-            commitButton
-          )}
+          <RunningTooltip reason={hideReason ? shownReason : null}>{commitButton}</RunningTooltip>
           {props.onPush === undefined ? null : (
             <Button
               variant="outline"

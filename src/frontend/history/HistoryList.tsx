@@ -383,9 +383,19 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
     const selection = state.selection;
     const selectedOid = selection?.mode === listMode && selection.index !== null ? selection.id : undefined;
-    if (onCreateBranch !== undefined && selectedOid !== undefined && scopedAction(event, "historyRow") === "createBranch") {
+    if (onCreateBranch !== undefined && selectedOid !== undefined && scopedAction(event.nativeEvent, "historyRow") === "createBranch") {
       event.preventDefault();
       return onCreateBranch(selectedOid, event.currentTarget);
+    }
+    // Feature 004 spec FR-014: Shift+F10 and the Menu key open the branch menu of the first branch or remote-tracking label of the selected row.
+    const menuKey = (event.key === "F10" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) || (event.key === "ContextMenu" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey);
+    if (menuKey && onLabelMenu !== undefined && selectedOid !== undefined && !event.nativeEvent.isComposing) {
+      const label = view.row(selection!.index!)?.labels.find((l) => l.kind === "branch" || l.kind === "remote");
+      if (label === undefined) return;
+      event.preventDefault();
+      const option = document.getElementById(optionId(selection!.index! + SPECIAL_ROWS));
+      const chip = [...(option?.querySelectorAll<HTMLElement>(".chip[data-kind]") ?? [])].find((c) => c.dataset.kind === label.kind && c.querySelector("[data-chip-name]")?.textContent === label.name);
+      return onLabelMenu(label, chip ?? option ?? event.currentTarget);
     }
     if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
     const page = Math.max(1, Math.floor(height / rowHeight));

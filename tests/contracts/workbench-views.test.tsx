@@ -7,7 +7,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { button, click, createWorld, mountWorkbench, oid, press, settle, succeeded, text, unmountAll } from "./sync-fake";
-import { fixtureId } from "./bridge-contract";
+import { contractChecked, fixtureId } from "./bridge-contract";
 
 // tasks.md T037 (feature 004, WP11). Stories US1 to US4. Spec FR-033, FR-068, FR-085, FR-086. Plan D15, D16. Data-model §14. Contract Δ8.
 
@@ -88,7 +88,7 @@ async function closeMenus() {
 
 describe("views (FR-033, FR-068, data-model §14)", () => {
   test("the store keeps one view per worktree, and Settings returns to the earlier view", () => {
-    const store = createWorkbench({ bridge: { readBranches: () => new Promise(() => {}) }, target: () => null, mutationEnded: async () => {}, refreshHistory: () => {} });
+    const store = createWorkbench({ bridge: contractChecked({ readBranches: () => new Promise(() => {}) }), target: () => null, mutationEnded: async () => {}, refreshHistory: () => {} });
     expect(store.view("a")).toBe("history");
     store.setView("a", "commit");
     expect(store.view("a")).toBe("commit");
@@ -164,6 +164,8 @@ describe("views (FR-033, FR-068, data-model §14)", () => {
     // The flex `order` of the top bar items never moves an item before an earlier one.
     const orders = [...bar.children].map((child) => Number((child as HTMLElement).style.order || 0));
     expect(orders).toEqual([...orders].sort((a, b) => a - b));
+    // Plan D16: the segmented parts are standard buttons, 28 px in the compact density.
+    for (const part of bar.querySelectorAll<HTMLElement>('nav[aria-label="Views"] button')) expect(part.style.height).toBe("var(--h-button)");
   });
 });
 
@@ -444,11 +446,19 @@ describe("docked panel (plan.md D15)", () => {
     await press(document.querySelector('input[aria-label="Message"]')!, "Enter", { ctrlKey: true });
     expect(log).toEqual(["mount 1"]);
   });
+
+  test("Ctrl+Enter during an IME composition runs nothing: React gets the browser KeyboardEvent with isComposing", async () => {
+    const log: string[] = [];
+    await render(<Dock log={log} />);
+    await click(button("Merge…"));
+    await press(document.querySelector('input[aria-label="Message"]')!, "Enter", { ctrlKey: true, isComposing: true });
+    expect(log).toEqual(["mount 1"]);
+  });
 });
 
 describe("refresh after a 004 outcome (contract Δ8, 002 FR-005 change)", () => {
   const REFS_CHANGED = "References changed.";
-  const outcome = (operation: string) => ({ requestId: "r", operationId: fixtureId(0x311), state: "succeeded", repositoryGeneration: 1, result: { operation } });
+  const outcome = (operation: string) => ({ requestId: fixtureId(0x5ff), operationId: fixtureId(0x311), state: "succeeded", repositoryGeneration: 1, result: { operation } });
   for (const operation of ["runWorkbench", "applyFiles"] as const) {
     test(`after a ${operation} outcome, the store reads the workspace, the refs, and the branches for the outcome and the new refs digest, reopens the view with the selected commit, and shows no refs-changed notice`, async () => {
       const world = createWorld();
@@ -486,7 +496,7 @@ describe("refresh after a 004 outcome (contract Δ8, 002 FR-005 change)", () => 
     const pending: ((response: unknown) => void)[] = [];
     let target = { repositoryId: fixtureId(1), repositoryGeneration: 1 };
     const store = createWorkbench({
-      bridge: { readBranches: () => new Promise((resolve) => pending.push(resolve as never)) as never },
+      bridge: contractChecked({ readBranches: () => new Promise((resolve) => pending.push(resolve as never)) as never }),
       target: () => target,
       mutationEnded: async () => {},
       refreshHistory: () => {},
@@ -505,7 +515,7 @@ describe("refresh after a 004 outcome (contract Δ8, 002 FR-005 change)", () => 
     await settle();
     expect(store.getState().branches?.entries?.map((e) => e.name)).toEqual(["new"]);
     store.readBranches();
-    pending[3]!({ requestId: "r", state: "failed", code: "GIT_FAILED" });
+    pending[3]!({ requestId: fixtureId(0x5ff), state: "failed", code: "GIT_FAILED" });
     await settle();
     expect(store.getState().branches).toEqual({ repositoryId: fixtureId(1), repositoryGeneration: 2, entries: null, code: "GIT_FAILED" });
   });

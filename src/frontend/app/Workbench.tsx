@@ -12,7 +12,7 @@ import { ComparisonView as Comparison, resultOf, showsDiff, type LineState } fro
 import { fileActions } from "../changes/file-actions";
 import { countsText } from "../changes/file-tree";
 import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
-import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
+import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
 import { CommitTray } from "../commit/CommitTray";
 import { WorkingSummary } from "../commit/WorkingSummary";
 import { IconButton } from "../components/icon-button";
@@ -433,6 +433,9 @@ export function ComparisonViewMount({ state, requests, staging }: WorkbenchPaneP
   if (!pool && showsDiff(resultOf(response))) setPool(true);
   const file = entry === null ? null : `${entry.category}:${entry.pathBytes}`;
   const anchor = staging?.anchor?.file === file ? staging.anchor : null;
+  // A refusal of a hunk's own button shows in the reason line of the hunk controls until the comparison changes.
+  const [hunkNotice, setHunkNotice] = useState<{ comparisonId: string; text: string } | null>(null);
+  const hunkNoticeId = useId();
   const controls =
     staging === undefined || entry === null
       ? undefined
@@ -451,7 +454,7 @@ export function ComparisonViewMount({ state, requests, staging }: WorkbenchPaneP
             trust={staging.trust}
             eligibility={staging.eligibility}
             displayFailed={displayFailed}
-            reasons={staging.reasons}
+            reasons={[...staging.reasons, { id: hunkNoticeId, text: hunkNotice?.comparisonId === comparison.comparisonId ? hunkNotice.text : null }]}
             onOperation={staging.onOperation}
             onEnded={(response, ordinal) => {
               if (response.state === "succeeded") staging.onHunkSucceeded(file!, ordinal, comparison.patch);
@@ -481,6 +484,7 @@ export function ComparisonViewMount({ state, requests, staging }: WorkbenchPaneP
             onOperation={staging.onOperation}
             onEnded={(response, ordinal) => {
               if (response.state === "succeeded") staging.onHunkSucceeded(file!, ordinal, comparison.patch);
+              setHunkNotice(response.code === "STALE_SELECTION" ? { comparisonId: comparison.comparisonId, text: STALE_TEXT } : null);
               staging.onEnded("applyHunk", response);
             }}
             index={index}
@@ -691,8 +695,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // Feature 003 plan.md D12: the clone panel replaces the main area until it closes. The settings panel is the 004 Settings view (plan.md D15, O-7).
   const [mainPanel, setMainPanel] = useState<"clone" | null>(null);
   // Feature 004 plan.md D15 "Docked panel": the Merge or Rebase panel of one worktree. The WP12 branch menu calls `openIntegrate`.
-  const [integrate, setIntegrate] = useState<{ key: string; request: IntegrateRequest } | null>(null);
-  const openIntegrate = (request: IntegrateRequest) => setIntegrate({ key: viewKey, request });
+  const [integrate, setIntegrate] = useState<{ key: string; request: IntegrateRequest; opener: Element | null } | null>(null);
+  const openIntegrate = (request: IntegrateRequest, opener: Element | null) => setIntegrate({ key: viewKey, request, opener });
   const openSettings = () => {
     setMainPanel(null);
     store.setView(viewKey, "settings");
@@ -1252,8 +1256,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     head: currentHead,
     blockedReason: mutationReason,
     onNotice: setNotice,
-    onMerge: (entry) => openIntegrate({ action: "merge", ref: entry.ref, name: entry.name }),
-    onRebase: (entry) => openIntegrate({ action: "rebase", ref: entry.ref, name: entry.name }),
+    onMerge: (entry, opener) => openIntegrate({ action: "merge", ref: entry.ref, name: entry.name }, opener),
+    onRebase: (entry, opener) => openIntegrate({ action: "rebase", ref: entry.ref, name: entry.name }, opener),
     onOpenWorktree: (path) => void (repositoryId === null ? undefined : bridge.openWorktree({ repositoryId, path }).then(registered)),
     push: { reason: reasons.pushReason, run: () => runSync.current("push") },
     onShowBranchHistory: () => void historyView.setScope("current"),
@@ -1348,7 +1352,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
 
   // plan.md "Status area": the status bar text is the live region, so a start shows there too.
   // Spec FR-048: the Commit view states the counts of a fully loaded status read.
-  const counts = view === "commit" && workspace !== null && !loading ? countsText(state.entries, workspace.cut === "untracked") : null;
+  const showCounts = view === "commit" && workspace !== null && !loading;
+  const cut = workspace?.cut === "untracked";
+  // One pass over the entries per snapshot. A progress event re-renders the workbench with the same entries.
+  const counts = useMemo(() => (showCounts ? countsText(state.entries, cut) : null), [showCounts, state.entries, cut]);
   const statusText = starting !== null ? wslStartingText(starting.distro) : state.refreshing ? "Refreshing…" : state.blocked ? "State unknown" : (notice ?? (state.repository === null && !restoring ? NO_REPOSITORY : counts));
   const gitVersion = wslGit?.version ?? environment?.detectedVersion ?? null;
 
@@ -1438,6 +1445,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             operationRunning={running}
             onOperation={setOperation}
             onEnded={(response) => store.ended("runWorkbench", response)}
+            opener={integrate.opener}
             onClose={() => setIntegrate(null)}
           />
         )

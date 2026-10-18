@@ -95,12 +95,13 @@ export function changeRows(patch: Patch, range: LineRange): LineRow[] | null {
 
 /**
  * Contract Δ4 and plan.md D8: the ordinals of the selected `+` and `-` lines of one hunk, or the refusal reason.
+ * Null when a point names no row: the display disagrees with the canonical patch (contract §4 `DISPLAY_MAPPING_FAILED`).
  * The checks follow the service order (src/git-service/line-patch.ts). Only the renderer gives `several-hunks` and `context-only`.
  */
-export function pickLines(patch: Patch, range: LineRange, direction: "stage" | "unstage"): LinePick {
+export function pickLines(patch: Patch, range: LineRange, direction: "stage" | "unstage"): LinePick | null {
   const a = rowOf(patch.rows, range.start, range.side);
   const b = rowOf(patch.rows, range.end, range.endSide ?? range.side);
-  if (a < 0 || b < 0) return { ok: false, reason: "context-only" };
+  if (a < 0 || b < 0) return null;
   const picked = patch.rows.slice(Math.min(a, b), Math.max(a, b) + 1);
   const hunk = picked[0]!.hunk;
   if (picked.some((r) => r.hunk !== hunk)) return { ok: false, reason: "several-hunks" };

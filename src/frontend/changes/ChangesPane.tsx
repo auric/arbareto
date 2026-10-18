@@ -4,15 +4,15 @@
 import { ArrowDown01Icon, ArrowRight01Icon, Folder01Icon, ListIcon, ListTreeIcon, MinusSignIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
-import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import type { ChangeEntry } from "../../contracts/envelope";
 import { useCopy } from "../app/RepositoryStates";
 import { ActionMenu, type ActionItem } from "../components/action-menu";
 import { ConfirmPopover } from "../components/confirm-popover";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
-import { KEYS, scopedAction } from "../keyboard/shortcuts";
+import { RunningTooltip } from "../components/running-tooltip";
+import { KEYS } from "../keyboard/shortcuts";
 import { Splitter } from "../layout/Splitter";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
 import { CUT_REASON, IGNORE_LABEL, LIMIT_TEXT, TARGET_TEXT, type FileActions, type IgnoreReview, type IgnoreTarget } from "./file-actions";
@@ -514,29 +514,21 @@ function FilesButton({ label, keys, request, reasonOf, running, onRun }: FilesBu
   // An empty set has nothing to act on, so the action does not show.
   if (request.entryIds.length === 0) return null;
   const reason = reasonOf(request);
-  const button = (
-    <Button
-      variant="outline"
-      size="sm"
-      aria-keyshortcuts={keys?.aria}
-      disabled={reason !== null}
-      focusableWhenDisabled
-      aria-describedby={reason === null ? undefined : reasonId}
-      onClick={() => reason === null && onRun(request, label)}
-    >
-      {label}
-    </Button>
-  );
   return (
     <>
-      {running && reason !== null ? (
-        <Tooltip>
-          <TooltipTrigger render={button} />
-          <TooltipContent>{reason}</TooltipContent>
-        </Tooltip>
-      ) : (
-        button
-      )}
+      <RunningTooltip reason={running ? reason : null}>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-keyshortcuts={keys?.aria}
+          disabled={reason !== null}
+          focusableWhenDisabled
+          aria-describedby={reason === null ? undefined : reasonId}
+          onClick={() => reason === null && onRun(request, label)}
+        >
+          {label}
+        </Button>
+      </RunningTooltip>
       {reason === null ? null : (
         <span id={reasonId} data-slot="files-reason" hidden={running} className="basis-full text-muted-text">
           {`${label} is unavailable: ${reason}`}
@@ -678,6 +670,20 @@ function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedI
     onSelect(row.entry);
   }
 
+  // The rows get stable handlers that read the newest render, so an unchanged row skips its render (`memo`).
+  const latest = useRef({ onClick, onMenu, onRowAction });
+  latest.current = { onClick, onMenu, onRowAction };
+  const [events] = useState<RowEvents>(() => ({
+    ref: (key, element) => void (element ? elements.current.set(key, element) : elements.current.delete(key)),
+    focus: (row) => setActiveKey(row.key),
+    click: (row, event) => latest.current.onClick(row, event),
+    menu: (row, event) => {
+      event.preventDefault();
+      setActiveKey(row.key);
+      latest.current.onMenu(row, event.currentTarget);
+    },
+    action: (row) => latest.current.onRowAction(row),
+  }));
   const items = virtual ? virtualizer.getVirtualItems() : rows.map((_, index) => ({ index, start: index * rowHeight }));
   return (
     <div
@@ -700,23 +706,17 @@ function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedI
                 row={row}
                 list={list}
                 layout={layout}
-                section={section}
+                sectionReason={section?.reason ?? null}
+                sectionReasonId={section?.reasonId}
                 folderReason={folderReason}
                 selected={row.kind === "file" && (marks !== null && marks.size > 0 ? marks.has(row.entry.entryId) : row.entry.entryId === selectedId)}
                 tabStop={item.index === activeIndex}
                 cut={cut}
                 untrackedCount={untrackedCount}
-                files={files}
-                style={{ position: "absolute", top: 0, left: 0, right: 0, height: rowHeight, transform: `translateY(${item.start}px)` }}
-                rowRef={(element) => void (element ? elements.current.set(row.key, element) : elements.current.delete(row.key))}
-                onFocus={() => setActiveKey(row.key)}
-                onClick={(event) => onClick(row, event)}
-                onContextMenu={(event) => {
-                  event.preventDefault();
-                  setActiveKey(row.key);
-                  onMenu(row, event.currentTarget);
-                }}
-                onRowAction={() => onRowAction(row)}
+                hasFiles={files !== undefined}
+                top={item.start}
+                height={rowHeight}
+                events={events}
               />
             );
           })}
@@ -726,23 +726,31 @@ function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedI
   );
 }
 
+/** The row handlers of one list. The object stays the same for the life of the list. */
+type RowEvents = {
+  ref(key: string, element: HTMLElement | null): void;
+  focus(row: TreeRow): void;
+  click(row: TreeRow, event: ReactMouseEvent<HTMLElement>): void;
+  menu(row: TreeRow, event: ReactMouseEvent<HTMLElement>): void;
+  action(row: TreeRow): void;
+};
+
 type RowProps = {
   row: TreeRow;
   list: ListName;
   layout: Layout;
-  section: TreeListProps["section"];
+  /** The Stage all untracked reason and the ID of its line. */
+  sectionReason: string | null;
+  sectionReasonId?: string;
   folderReason: string | null;
   selected: boolean;
   tabStop: boolean;
   cut: boolean;
   untrackedCount: number;
-  files?: FilesProps;
-  style: CSSProperties;
-  rowRef(element: HTMLElement | null): void;
-  onFocus(): void;
-  onClick(event: ReactMouseEvent<HTMLElement>): void;
-  onContextMenu(event: ReactMouseEvent<HTMLElement>): void;
-  onRowAction(): void;
+  hasFiles: boolean;
+  top: number;
+  height: number;
+  events: RowEvents;
 };
 
 // The status letter of the list from the porcelain v2 `XY` field (git-status(1)).
@@ -754,19 +762,22 @@ function letter(entry: ChangeEntry): string {
 }
 
 /** One row. The row button shows on pointer hover and on focus (spec FR-032). The path keeps the file name whole (plan.md "Long text"). */
-function Row({ row, list, layout, section, folderReason, selected, tabStop, cut, untrackedCount, files, style, rowRef, onFocus, onClick, onContextMenu, onRowAction }: RowProps) {
-  const indent = { paddingLeft: 8 + 16 * row.depth };
+const Row = memo(function Row({ row, list, layout, sectionReason, sectionReasonId, folderReason, selected, tabStop, cut, untrackedCount, hasFiles, top, height, events }: RowProps) {
+  const style: CSSProperties = { position: "absolute", top: 0, left: 0, right: 0, height, transform: `translateY(${top}px)`, paddingLeft: 8 + 16 * row.depth };
+  const onRowAction = () => events.action(row);
   const common = {
-    ref: rowRef,
+    ref: (element: HTMLElement | null) => events.ref(row.key, element),
     role: "treeitem",
     "data-key": row.key,
     tabIndex: tabStop ? 0 : -1,
     "aria-level": row.depth + 1,
+    "aria-posinset": row.pos,
+    "aria-setsize": row.size,
     className: "group list-row flex items-center gap-1 pr-1",
-    style: { ...style, ...indent },
-    onFocus,
-    onClick,
-    onContextMenu,
+    style,
+    onFocus: () => events.focus(row),
+    onClick: (event: ReactMouseEvent<HTMLElement>) => events.click(row, event),
+    onContextMenu: (event: ReactMouseEvent<HTMLElement>) => events.menu(row, event),
   } as const;
   const chevron = (expanded: boolean) => <HugeiconsIcon icon={expanded ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />;
   const rowButton = (label: string, icon: typeof PlusSignIcon, reason: string | null) => (
@@ -791,14 +802,14 @@ function Row({ row, list, layout, section, folderReason, selected, tabStop, cut,
         {chevron(row.expanded)}
         <span className="min-w-0 truncate font-semibold">{cut ? cutHeading(untrackedCount) : "Untracked"}</span>
         {cut ? null : <span className="num ml-auto text-muted-text">{formatCount(row.count)}</span>}
-        {files === undefined ? null : (
+        {hasFiles ? (
           <Button
             variant="outline"
             size="sm"
             tabIndex={-1}
-            disabled={section?.reason != null}
+            disabled={sectionReason !== null}
             focusableWhenDisabled
-            aria-describedby={section?.reason == null ? undefined : section.reasonId}
+            aria-describedby={sectionReason === null ? undefined : sectionReasonId}
             className={cut ? "ml-auto" : undefined}
             onClick={(event) => {
               event.stopPropagation();
@@ -807,7 +818,7 @@ function Row({ row, list, layout, section, folderReason, selected, tabStop, cut,
           >
             Stage all untracked
           </Button>
-        )}
+        ) : null}
       </div>
     );
   }
@@ -823,7 +834,7 @@ function Row({ row, list, layout, section, folderReason, selected, tabStop, cut,
         <span aria-hidden="true" className="num ml-auto text-muted-text">
           {formatCount(row.count)}
         </span>
-        {files === undefined ? null : rowButton(label, list === "staged" ? MinusSignIcon : PlusSignIcon, folderReason)}
+        {hasFiles ? rowButton(label, list === "staged" ? MinusSignIcon : PlusSignIcon, folderReason) : null}
       </div>
     );
   }
@@ -842,4 +853,4 @@ function Row({ row, list, layout, section, folderReason, selected, tabStop, cut,
       {rowButton(`${ROW_LABEL[direction]} ${name}`, direction === "unstage" ? MinusSignIcon : PlusSignIcon, null)}
     </div>
   );
-}
+});

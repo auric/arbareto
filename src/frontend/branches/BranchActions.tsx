@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { useCopy } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
@@ -28,8 +28,11 @@ type SwitchPlan = { trackedChanges: number; unreachable: string | null; choice: 
 /** Data-model §4. */
 type DeletePlan = { oid: string; onlyHere: number; reflogKeeps: boolean };
 
+/** The preselected choice. `known` is false when `readSyncSettings` failed, so no choice shows the Default tag. */
+type Preset = { choice: Choice; known: boolean };
+
 type Overlay =
-  | { kind: "switch"; anchor: Element | null; display: string; target: SwitchTarget; heldBy: string | null; preset: Choice; choice: Choice; plan: SwitchPlan | null; token: string | null; error: string | null }
+  | { kind: "switch"; anchor: Element | null; display: string; target: SwitchTarget; heldBy: string | null; preset: Choice | null; choice: Choice; plan: SwitchPlan | null; token: string | null; error: string | null }
   | { kind: "remote"; anchor: Element | null; entry: BranchEntry; mode: "track" | "detach"; name: string; error: string | null; existing?: string }
   | { kind: "create"; anchor: Element | null; start: string; name: string; switchTo: boolean; error: string | null }
   | { kind: "rename"; anchor: Element | null; entry: BranchEntry; name: string; error: string | null }
@@ -54,9 +57,9 @@ export type BranchActionsOptions = {
   /** The 003 push of the current branch and its unavailable reason. */
   push: { reason: string | null; run(): void };
   onShowBranchHistory(): void;
-  /** The WP13 Merge and Rebase panels. Without one, its item states that it cannot start here. */
-  onMerge?(entry: BranchEntry): void;
-  onRebase?(entry: BranchEntry): void;
+  /** The WP13 Merge and Rebase panels. Without one, its item states that it cannot start here. `opener` is the row or label that started the action. */
+  onMerge?(entry: BranchEntry, opener: Element | null): void;
+  onRebase?(entry: BranchEntry, opener: Element | null): void;
 };
 
 const isRefused = (response: BridgeResponse) => response.state !== "succeeded";
@@ -79,6 +82,8 @@ export function useBranchActions(options: BranchActionsOptions) {
   const [menu, setMenu] = useState<{ ref: string; entry: BranchEntry; anchor: Element } | null>(null);
   const busy = useRef(false);
   const field = useRef<HTMLInputElement>(null);
+  // True when the selected menu item opens a panel or a popover that takes the focus. The menu then returns no focus to its row.
+  const handoff = useRef(false);
 
   // A new repository and each new refs digest read the branches. The list and the menu read them again when they open, and the store after each 004 outcome.
   // The store keeps only the newest response of the current repository generation.
@@ -86,6 +91,7 @@ export function useBranchActions(options: BranchActionsOptions) {
     if (repositoryId !== null) workbench.readBranches();
   }, [workbench, repositoryId, refsDigest]);
   const openMenu = (entry: BranchEntry, anchor: Element) => {
+    handoff.current = false;
     setMenu({ ref: entry.ref, entry, anchor });
     workbench.readBranches();
   };
@@ -101,10 +107,11 @@ export function useBranchActions(options: BranchActionsOptions) {
   const entryOf = (ref: string) => entries?.find((e) => e.ref === ref) ?? null;
 
   /** Data-model §13: `switchChoice` preselects. An unborn HEAD takes Keep changes, because Git can stash only after the first commit. */
-  async function preset(): Promise<Choice> {
-    if (head?.state === "unborn") return "keep";
+  async function preset(): Promise<Preset> {
+    if (head?.state === "unborn") return { choice: "keep", known: false };
     const response = await bridge.readSyncSettings();
-    return response.state === "succeeded" && isObject(response.result) && response.result.switchChoice === "stash" ? "stash" : "keep";
+    if (response.state !== "succeeded" || !isObject(response.result)) return { choice: "keep", known: false };
+    return { choice: response.result.switchChoice === "stash" ? "stash" : "keep", known: true };
   }
 
   async function review(payload: Parameters<Bridge["reviewWorkbench"]>[1]): Promise<BridgeResponse | null> {
@@ -137,7 +144,7 @@ export function useBranchActions(options: BranchActionsOptions) {
   function startSwitch(entry: BranchEntry, anchor: Element | null, confirm: boolean) {
     if (blockedReason !== null) return onNotice(blockedReason);
     if (entry.kind === "remote") return setOverlay({ kind: "remote", anchor, entry, mode: "track", name: entry.localName ?? "", error: null });
-    const base = { kind: "switch" as const, anchor, display: entry.name, target: { ref: entry.ref }, heldBy: null, preset: "keep" as Choice, choice: "keep" as Choice, plan: null, token: null };
+    const base = { kind: "switch" as const, anchor, display: entry.name, target: { ref: entry.ref }, heldBy: null, preset: null, choice: "keep" as Choice, plan: null, token: null };
     if (entry.current) return confirm ? setOverlay({ ...base, error: T.sameBranch(entry.name) }) : onNotice(T.sameBranch(entry.name));
     // Spec FR-013: a branch that another worktree holds offers Open instead of a switch.
     if (entry.heldBy !== null) return confirm ? setOverlay({ ...base, heldBy: entry.heldBy, error: null }) : onOpenWorktree(entry.heldBy);
@@ -147,7 +154,7 @@ export function useBranchActions(options: BranchActionsOptions) {
     });
   }
 
-  async function reviewSwitch(switchTarget: SwitchTarget, display: string, anchor: Element | null, confirm: boolean, choice: Choice) {
+  async function reviewSwitch(switchTarget: SwitchTarget, display: string, anchor: Element | null, confirm: boolean, { choice, known }: Preset) {
     const response = await review({ action: "switch", target: switchTarget, choice });
     if (response === null) return;
     const reviewed = reviewedOf(response);
@@ -159,7 +166,7 @@ export function useBranchActions(options: BranchActionsOptions) {
     }
     const plan = reviewed.plan as SwitchPlan;
     if (!confirm && plan.trackedChanges === 0 && plan.unreachable === null) return run(reviewed.token, "switch", display);
-    const shown: Overlay = { kind: "switch", anchor, display, target: switchTarget, heldBy: null, preset: choice, choice, plan, token: reviewed.token, error: null };
+    const shown: Overlay = { kind: "switch", anchor, display, target: switchTarget, heldBy: null, preset: known ? choice : null, choice, plan, token: reviewed.token, error: null };
     // A confirmation that the user closed during the review stays closed.
     setOverlay((o) => (!confirm || (o?.kind === "switch" && o.display === display) ? shown : o));
   }
@@ -177,6 +184,9 @@ export function useBranchActions(options: BranchActionsOptions) {
         if (response === null) return;
         const reviewed = reviewedOf(response);
         if (isRefused(response) || reviewed === null) return setOverlay({ ...o, error: refusalText(response, o.display) });
+        // The run needs the facts that the confirmation showed. Other facts show first, and the next confirm runs that plan.
+        const plan = reviewed.plan as SwitchPlan;
+        if (o.plan === null || plan.trackedChanges !== o.plan.trackedChanges || plan.unreachable !== o.plan.unreachable) return setOverlay({ ...o, plan, token: reviewed.token, error: null });
         token = reviewed.token;
       }
       setOverlay(null);
@@ -188,7 +198,8 @@ export function useBranchActions(options: BranchActionsOptions) {
     const display = o.mode === "track" ? o.name : o.entry.name;
     const switchTarget: SwitchTarget = o.mode === "track" ? { track: { ref: o.entry.ref, name: o.name } } : { detach: o.entry.oid };
     void once(async () => {
-      const response = await review({ action: "switch", target: switchTarget, choice: await preset() });
+      const chosen = await preset();
+      const response = await review({ action: "switch", target: switchTarget, choice: chosen.choice });
       if (response === null) return;
       const reviewed = reviewedOf(response);
       if (isRefused(response) || reviewed === null) {
@@ -201,7 +212,7 @@ export function useBranchActions(options: BranchActionsOptions) {
       // The plan decides: with tracked changes or an unreachable commit, the confirmation follows.
       const plan = reviewed.plan as SwitchPlan;
       if (plan.trackedChanges === 0 && plan.unreachable === null) return run(reviewed.token, "switch", display);
-      setOverlay({ kind: "switch", anchor: o.anchor, display, target: switchTarget, heldBy: null, preset: plan.choice, choice: plan.choice, plan, token: reviewed.token, error: null });
+      setOverlay({ kind: "switch", anchor: o.anchor, display, target: switchTarget, heldBy: null, preset: chosen.known ? plan.choice : null, choice: plan.choice, plan, token: reviewed.token, error: null });
     });
   }
 
@@ -272,8 +283,8 @@ export function useBranchActions(options: BranchActionsOptions) {
     const reason = reasons(entry)[action];
     if (reason !== null) return onNotice(reason);
     if (action === "switch") startSwitch(entry, anchor, false);
-    else if (action === "merge") onMerge?.(entry);
-    else if (action === "rebase") onRebase?.(entry);
+    else if (action === "merge") onMerge?.(entry, anchor);
+    else if (action === "rebase") onRebase?.(entry, anchor);
     else if (action === "createBranch") startCreate(entry.oid, anchor);
     else if (action === "rename" && entry.kind === "local") setOverlay({ kind: "rename", anchor, entry, name: entry.name, error: null });
     else if (action === "delete" && entry.kind === "local") startDelete(entry);
@@ -288,6 +299,8 @@ export function useBranchActions(options: BranchActionsOptions) {
       reason: r[action],
       danger,
       onSelect: () => {
+        // Base UI returns the menu focus after the new panel or popover took it, so these items keep the focus where they put it.
+        handoff.current = r[action] === null && (action === "merge" || action === "rebase" || action === "createBranch" || action === "rename" || (action === "switch" && entry.kind === "remote"));
         setMenu(null);
         act(entry, action, menu?.anchor ?? null);
       },
@@ -304,7 +317,7 @@ export function useBranchActions(options: BranchActionsOptions) {
   const overlays = (
     <>
       {menu === null ? null : (
-        <BranchMenu label={T.menu(menu.entry.name)} groups={(copy) => menuGroups(entryOf(menu.ref) ?? menu.entry, copy)} anchor={menu.anchor} onClose={() => setMenu(null)} />
+        <BranchMenu label={T.menu(menu.entry.name)} groups={(copy) => menuGroups(entryOf(menu.ref) ?? menu.entry, copy)} anchor={menu.anchor} handoff={handoff} onClose={() => setMenu(null)} />
       )}
       {overlay?.kind === "switch" ? <SwitchConfirm overlay={overlay} unborn={head?.state === "unborn"} onChange={setOverlay} onConfirm={() => confirmSwitch(overlay)} onCancel={() => setOverlay(null)} /> : null}
       {overlay?.kind === "remote" ? (
@@ -326,6 +339,8 @@ export function useBranchActions(options: BranchActionsOptions) {
               <div className="ml-6 flex flex-col gap-1">
                 <input
                   aria-label={T.branchName}
+                  spellCheck={false}
+                  autoComplete="off"
                   className="h-(--h-button) rounded-sm border border-control-border bg-surface px-2"
                   value={overlay.name}
                   onChange={(event) => setOverlay({ ...overlay, name: event.target.value, error: null, existing: undefined })}
@@ -361,6 +376,8 @@ export function useBranchActions(options: BranchActionsOptions) {
             ref={field}
             aria-label={overlay.kind === "create" ? T.branchName : T.newName}
             aria-invalid={overlay.error !== null}
+            spellCheck={false}
+            autoComplete="off"
             className="h-(--h-button) rounded-sm border border-control-border bg-surface px-2"
             value={overlay.name}
             onChange={(event) => setOverlay({ ...overlay, name: event.target.value, error: null })}
@@ -422,9 +439,9 @@ export function useBranchActions(options: BranchActionsOptions) {
 }
 
 /** The menu reads the copy helper inside the `CopyFailed` provider of the window. */
-function BranchMenu({ label, groups, anchor, onClose }: { label: string; groups(copy: (text: string) => void): ActionItem[][]; anchor: Element; onClose(): void }) {
+function BranchMenu({ label, groups, anchor, handoff, onClose }: { label: string; groups(copy: (text: string) => void): ActionItem[][]; anchor: Element; handoff: RefObject<boolean>; onClose(): void }) {
   const copy = useCopy();
-  return <ActionMenu label={label} groups={groups(copy)} open anchor={anchor} finalFocus={{ current: anchor as HTMLElement }} onOpenChange={(next) => void (next || onClose())} />;
+  return <ActionMenu label={label} groups={groups(copy)} open anchor={anchor} finalFocus={() => (handoff.current ? false : (anchor as HTMLElement))} onOpenChange={(next) => void (next || onClose())} />;
 }
 
 function outcomeText(action: string, display: string, response: BridgeResponse): ReactNode {

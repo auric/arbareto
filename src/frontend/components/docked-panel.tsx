@@ -2,12 +2,12 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
-import { useId, useState, type ReactNode } from "react";
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { KEYS, scopedAction } from "../keyboard/shortcuts";
 import { IconButton } from "./icon-button";
+import { RunningTooltip } from "./running-tooltip";
 import { Button } from "./ui/button";
-import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 // Feature 004 plan.md D15 "Docked panel": a panel takes the dock region below the history list in place of the commit details.
 
@@ -29,27 +29,37 @@ export type DockedPanelProps = {
   closeLabel: string;
   /** The primary action. A reason makes it unavailable and shows inline. A `quiet` reason (plan D15 running rule) shows only in the tooltip and the accessible description. */
   primary: { label: string; reason: string | null; quiet?: boolean; onRun(): void };
-  /** Removes the panel. Focus then returns to the control that had it before the panel opened. */
+  /** The control that opened the panel, such as the branch row of a menu. Without it, the panel takes the element that has focus when it mounts. */
+  opener?: Element | null;
+  /** Removes the panel. Focus then returns to the opener. */
   onClose(): void;
   children: ReactNode;
 };
 
-export function DockedPanel({ title, closeLabel, primary, onClose, children }: DockedPanelProps) {
+export function DockedPanel({ title, closeLabel, primary, opener: given, onClose, children }: DockedPanelProps) {
   const ids = { heading: useId(), reason: useId() };
-  const [opener] = useState(() => (typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null)));
+  const [opener] = useState(() => given ?? (typeof document === "undefined" ? null : document.activeElement));
+  const section = useRef<HTMLElement>(null);
+  const restore = () => {
+    if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+  };
+  // A panel that unmounts with the focus inside it, or after its focused control left, returns the focus to the opener.
+  useLayoutEffect(() => {
+    const node = section.current;
+    return () => {
+      const active = document.activeElement;
+      if (active === null || active === document.body || node?.contains(active)) restore();
+    };
+  }, []);
   const close = () => {
     flushSync(onClose);
-    if (opener?.isConnected) opener.focus();
+    restore();
   };
   const run = () => primary.reason === null && primary.onRun();
   const quiet = primary.quiet === true && primary.reason !== null;
-  const button = (
-    <Button disabled={primary.reason !== null} focusableWhenDisabled aria-keyshortcuts={KEYS.primary.aria} aria-describedby={primary.reason === null ? undefined : ids.reason} onClick={run}>
-      {`${primary.label} (${KEYS.primary.text})`}
-    </Button>
-  );
   return (
     <section
+      ref={section}
       aria-labelledby={ids.heading}
       className="flex h-full min-h-0 flex-col"
       onKeyDown={(event) => {
@@ -57,7 +67,7 @@ export function DockedPanel({ title, closeLabel, primary, onClose, children }: D
         if (event.key === "Escape" && !event.ctrlKey && !event.altKey && !event.shiftKey && !event.metaKey) {
           event.preventDefault();
           close();
-        } else if (scopedAction(event, "panel") === "primary") {
+        } else if (scopedAction(event.nativeEvent, "panel") === "primary") {
           event.preventDefault();
           run();
         }
@@ -71,14 +81,11 @@ export function DockedPanel({ title, closeLabel, primary, onClose, children }: D
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-2 overflow-auto p-3">{children}</div>
       <div className="flex shrink-0 items-center gap-2 border-t border-divider p-2">
-        {quiet ? (
-          <Tooltip>
-            <TooltipTrigger render={button} />
-            <TooltipContent>{primary.reason}</TooltipContent>
-          </Tooltip>
-        ) : (
-          button
-        )}
+        <RunningTooltip reason={quiet ? primary.reason : null}>
+          <Button disabled={primary.reason !== null} focusableWhenDisabled aria-keyshortcuts={KEYS.primary.aria} aria-describedby={primary.reason === null ? undefined : ids.reason} onClick={run}>
+            {`${primary.label} (${KEYS.primary.text})`}
+          </Button>
+        </RunningTooltip>
         <Button variant="outline" onClick={close}>
           Cancel
         </Button>

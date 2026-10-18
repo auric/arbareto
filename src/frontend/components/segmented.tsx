@@ -20,7 +20,7 @@ export function Segmented<T extends string>({ label, options, value, onChange }:
                 variant="ghost"
                 aria-current={option.value === value ? "page" : undefined}
                 className="rounded-none px-3 aria-[current=page]:bg-selected-row aria-[current=page]:font-semibold"
-                style={{ height: "var(--h-row-button)" }}
+                style={{ height: "var(--h-button)" }}
                 onClick={() => option.value !== value && onChange(option.value)}
               />
             }

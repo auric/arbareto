@@ -41,9 +41,13 @@ import { FrameBoundError, isFrameKind, type Frame, type FrameWriter, type Incomi
 import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust";
 import { watchWorkspace } from "./watch";
 import { createWorkbench } from "./workbench-review";
+import type { Fact } from "./hunk-publish";
 import "./switch";
 import "./branch-ops";
 import "./merge-rebase";
+import "./resolve";
+import { readGitSettings as readSettings } from "./git-settings";
+import { openWorktreeTarget, readWorktreeList } from "./worktrees";
 import { approveWslGit, probeWslGit, routeRegistration, type WslGit } from "./wsl";
 
 export type { Handshake } from "../contracts/channel";
@@ -314,21 +318,23 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     }
   }
 
+  const registrationEnd = (operationId: string) => (outcome: RegistrationOutcome) => {
+    if (registry.get(operationId)?.state === "cancel-requested") return registry.apply(operationId, { type: "processes-stopped" });
+    // Cancel in the WSL Git confirmation: the registration ends `canceled` (contract §11 "Git per distro").
+    if (!outcome.ok && outcome.code === "CANCELED") {
+      registry.apply(operationId, { type: "cancel" });
+      return registry.apply(operationId, { type: "processes-stopped" });
+    }
+    if (outcome.ok) return registry.apply(operationId, { type: "read-complete", result: "succeeded" }, outcome.result);
+    registry.apply(operationId, { type: "read-complete", result: "failed", code: outcome.code }, outcome.result);
+  };
+
   const register = (request: Extract<ServiceRequest, { operation: "chooseRepository" | "restoreWorkspace" }>) => {
     // Contract §11 "Route": only a Windows service routes WSL paths.
     if (!isWindows && !git?.ok) return reject(request.requestId, gitCode());
     const { operationId, signal } = registry.start(request.operation, request.requestId);
     registry.apply(operationId, { type: "valid-read" });
-    const finish = (outcome: RegistrationOutcome) => {
-      if (registry.get(operationId)?.state === "cancel-requested") return registry.apply(operationId, { type: "processes-stopped" });
-      // Cancel in the WSL Git confirmation: the registration ends `canceled` (contract §11 "Git per distro").
-      if (!outcome.ok && outcome.code === "CANCELED") {
-        registry.apply(operationId, { type: "cancel" });
-        return registry.apply(operationId, { type: "processes-stopped" });
-      }
-      if (outcome.ok) return registry.apply(operationId, { type: "read-complete", result: "succeeded" }, outcome.result);
-      registry.apply(operationId, { type: "read-complete", result: "failed", code: outcome.code }, outcome.result);
-    };
+    const finish = registrationEnd(operationId);
     const target = { operationId, bootstrapId: request.payload.bootstrapId, signal };
     (isWindows ? registerRouted(target, windowsRegistration(target)) : windowsRegistration(target)()).then(finish, () => finish({ ok: false, code: "GIT_FAILED" }));
   };
@@ -395,7 +401,11 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
   // `failed` is the outcome of a `run` that throws.
   const scheduleRead = (
-    request: { requestId: string; operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules" | "readTracking" | "reviewSync" | "reviewWorkbench" | "readBranches"; repositoryId: string },
+    request: {
+      requestId: string;
+      operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules" | "readTracking" | "reviewSync" | "reviewWorkbench" | "readBranches" | "readWorktrees" | "readGitSettings";
+      repositoryId: string;
+    },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
     reread: (target: RereadTarget) => Promise<ReadResult | null>,
     failed: ReadResult,
@@ -515,6 +525,83 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     );
   };
 
+  // The read outcome of a service fact. `value` maps the fact to the response result.
+  const factResult = <T>(fact: Fact<T>, value: (v: T) => unknown): ReadResult =>
+    "value" in fact ? { result: "succeeded", value: value(fact.value) } : "stop" in fact ? { result: fact.stop } : { result: "failed", code: fact.code, ...(fact.reason === undefined ? {} : { value: { reason: fact.reason } }) };
+  // The end of a read that takes no read slot. A Cancel that the registry holds ends it as the scheduler does.
+  const settleRead = (operationId: string, outcome: ReadResult) =>
+    endRead(operationId, registry.get(operationId)?.state === "cancel-requested" ? (outcome.result === "deadline" ? { kind: "deadline" } : { kind: "canceled" }) : { kind: "outcome", outcome, reread: null });
+
+  // Feature 004 contract Δ3 `readWorktrees`: one read slot, and the generation decides at acceptance as for `readRefs`. `worktree list` loads no index and runs no program.
+  const readWorktrees: Handler<"readWorktrees"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    if (request.repositoryGeneration !== workspace.generation) {
+      const { operationId } = registry.start("readWorktrees", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+    }
+    scheduleRead(
+      request,
+      async (t) => factResult(await readWorktreeList({ runner, trust, reader, ...t, workspace, installation }), (v) => ({ entries: v.entries })),
+      async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
+      { result: "failed", code: "GIT_FAILED" },
+    );
+  };
+
+  // Feature 004 contract Δ3 `readGitSettings`. The listing runs no program, so the 001 read gate does not apply. With `repositoryId`, it takes one read slot.
+  // Without it, the listing runs in the `globalConfig` context of the selected Git (contract Δ6), and no workspace holds a read slot.
+  const readGitSettings: Handler<"readGitSettings"> = (request) => {
+    const { repositoryId } = request;
+    if (repositoryId !== undefined) {
+      const workspace = workspaceOf(repositoryId);
+      if (installationOf(workspace) === null) return reject(request.requestId, gitCode());
+      return scheduleRead(
+        { requestId: request.requestId, operation: "readGitSettings", repositoryId },
+        async (t) => factResult(await readSettings({ runner, ...t, gitInstallationId: workspace.gitInstallationId, environment, workspace }), (v) => v),
+        async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
+        { result: "failed", code: "GIT_FAILED" },
+      );
+    }
+    if (!git?.ok) return reject(request.requestId, gitCode());
+    const { gitInstallationId } = git.installation;
+    const { operationId, signal } = registry.start("readGitSettings", request.requestId);
+    registry.apply(operationId, { type: "valid-read" });
+    readSettings({ runner, operationId, signal, gitInstallationId, environment, workspace: null }).then(
+      (fact) => settleRead(operationId, factResult(fact, (v) => v)),
+      () => settleRead(operationId, { result: "failed", code: "GIT_FAILED" }),
+    );
+  };
+
+  // Feature 004 contract Δ3 `openWorktree`: the shell bound the path in a `repositoryDiscovery` context. Its identity must equal a record of a fresh list of
+  // `repositoryId`, else UNKNOWN_TARGET. Then the 001 registration flow runs with the same `bootstrapId`. Only `wslDistros` names the bound path (contract §6).
+  const openWorktree: Handler<"openWorktree"> = (request) => {
+    const { repositoryId, bootstrapId } = request.payload;
+    if (!registrations.has(repositoryId)) return reject(request.requestId, "UNKNOWN_TARGET");
+    const workspace = workspaceOf(repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const { operationId, signal } = registry.start("openWorktree", request.requestId);
+    registry.apply(operationId, { type: "valid-read" });
+    const finish = registrationEnd(operationId);
+    const target = { operationId, bootstrapId, signal };
+    const open = async (): Promise<RegistrationOutcome> => {
+      const routed = await routeGit(target);
+      if (!routed.ok) return routed;
+      const windows = routed.wsl === undefined ? (git?.ok ? git.installation : null) : null;
+      if (routed.wsl === undefined && windows === null) return { ok: false, code: gitCode() };
+      const gitInstallationId = routed.wsl?.git.gitInstallationId ?? windows!.gitInstallationId;
+      const bound = { context: { contextKind: "repositoryDiscovery" as const, bootstrapId, gitInstallationId }, path: routed.wsl?.identityPath ?? routed.path };
+      const found = await openWorktreeTarget({ runner, trust, reader, operationId, signal, workspace, installation }, bound);
+      if ("stop" in found) return { ok: false, code: found.stop === "deadline" ? "DEADLINE" : "CANCELED" };
+      if (!("value" in found)) return { ok: false, code: "refused" in found ? found.refused : found.code };
+      return routed.wsl === undefined ? registrations.register({ ...target, installation: windows! }) : registrations.registerWsl(target, routed.wsl.git);
+    };
+    open()
+      .catch((error: unknown) => refusedRoute(error, signal))
+      .then(finish, () => finish({ ok: false, code: "GIT_FAILED" }));
+  };
+
   // Feature 004 contract Δ3 `revealPath`: the entry of the current read, then the private `reveal` request. It takes no read slot and starts no Git process.
   // `repositoryId` sits in the payload. An unknown repository or entry, and path bytes that are no valid UTF-8, give UNKNOWN_TARGET before any request.
   const revealPath: Handler<"revealPath"> = (request) => {
@@ -616,7 +703,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     }
     scheduleRead(
       request,
-      (t) => reviews.reviewCommit({ ...t, installation, workspace, snapshot: found.snapshot }),
+      (t) => reviews.reviewCommit({ ...t, installation, workspace, snapshot: found.snapshot }, request.payload.amend === true),
       async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
       { result: "failed", code: "GIT_FAILED" },
     );
@@ -798,10 +885,9 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     },
     clone: (request) => cloner.clone(request),
     connectInTerminal,
-    // Feature 004 T060 adds `readWorktrees`, `readGitSettings`, and `openWorktree`. Until then the service answers SERVICE_UNAVAILABLE.
     readBranches,
-    readWorktrees: undefined,
-    readGitSettings: undefined,
+    readWorktrees,
+    readGitSettings,
     // Feature 004 contract Δ3: one read slot. An action without a registered handler gets SERVICE_UNAVAILABLE.
     reviewWorkbench: (request) => {
       const workspace = workspaceOf(request.repositoryId);
@@ -839,7 +925,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       if (installation === null) return reject(request.requestId, gitCode());
       fileSets.applyFiles(request, workspace, installation);
     },
-    openWorktree: undefined,
+    openWorktree,
     revealPath,
   };
 

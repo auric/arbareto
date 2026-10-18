@@ -5,7 +5,7 @@
 // Plan.md D10, data-model §2 and §8, and spec FR-049 to FR-057. Git's own refusal stays the second guard of each step.
 
 import { IdentityReply } from "../contracts/channel";
-import { IDENTITY_PATHS, STATUS_LISTING_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, IDENTITY_PATHS, STATUS_LISTING_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import { deleteFacts, deleteSteps, nameRefusal, newName, type DeleteFacts } from "./branch-ops";
 import { isObjectId, isRefName, type ObjectFormat } from "./commands";
@@ -13,10 +13,11 @@ import { RunnerRefusal, stepUnits, type EnvironmentPolicy, type GitRunner, type 
 import type { Fact, ObserveContext } from "./hunk-publish";
 import { NO_FILE, sameIdentity, type PhysicalIdentity } from "./identity";
 import { contextOf } from "./read-steps";
+import type { Workspace } from "./registration";
 import { changes } from "./sync";
 import { observe } from "./sync-integrate";
 import { readOut, refKey } from "./sync-review";
-import { worktreeAddExistingArgs, worktreeAddNewArgs, worktreePruneArgs, worktreeRemoveArgs, worktreeStatusArgs } from "./workbench-commands";
+import { worktreeAddExistingArgs, worktreeAddNewArgs, worktreeLayoutArgs, worktreePruneArgs, worktreeRemoveArgs, worktreeStatusArgs } from "./workbench-commands";
 import { parseWorktreeStatus, type WorktreeRecord } from "./workbench-parsers";
 import { conclude, killed, readWorktrees, refTarget, registerWorkbenchAction, unavailable, type PayloadOf, type Refused, type StepEnd, type WorkbenchRun } from "./workbench-review";
 
@@ -219,6 +220,42 @@ interface RemoveBound {
   status: string;
   force: boolean;
   branch: DeleteFacts | null;
+  // Plan.md O-20: the class flag and the fingerprint of the listing of that worktree.
+  trust: { required: boolean; fingerprint: string };
+}
+
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+// Plan.md O-20 and D12 "Other worktrees": Git runs the clean filter and `core.fsmonitor` of that worktree for `-C <path> status` and `worktree remove`
+// (research.md R21 F18). So both take the class `workbench` of its own listing and its own trust state. Git names its folders.
+// A top level or a common folder with another identity is no worktree of this repository. The contract names no reason, so it gives UNKNOWN_TARGET.
+async function targetTrust(ctx: ObserveContext, record: WorktreeRecord, root: Located): Promise<Fact<{ required: boolean; fingerprint: string }> | Refused> {
+  const w = ctx.workspace;
+  if (root === "absent") return { refused: "UNKNOWN_TARGET" };
+  const read = await readOut(ctx, worktreeLayoutArgs(record.path), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+  if ("limited" in read) return { code: "MALFORMED_GIT_OUTPUT" };
+  if (!("value" in read)) return read;
+  let lines: string[];
+  try {
+    lines = strictUtf8.decode(read.value).split("\n");
+  } catch {
+    return { code: "UNSUPPORTED_REPOSITORY" };
+  }
+  if (lines.length !== 4 || lines[3] !== "" || lines.slice(0, 3).some((line) => line === "")) return { code: "MALFORMED_GIT_OUTPUT" };
+  // Contract §11: Linux Git prints Linux paths, and the workspace roots are their UNC identity forms.
+  const forms = lines.slice(0, 3).map((path) => (w.wsl === undefined ? path : path.startsWith("/") ? wslIdentityPath(w.wsl.distro, path) : null));
+  if (forms.some((path) => path === null)) return { code: "UNSUPPORTED_REPOSITORY" };
+  const [top, admin, common] = forms as [string, string, string];
+  const ids = await identities(ctx, contextOf(w), [top, admin, common]);
+  if (!("value" in ids)) return ids;
+  const [topId, adminId, commonId] = ids.value as [Located, Located, Located];
+  if (topId === "absent" || adminId === "absent" || commonId === "absent" || !sameIdentity(topId, root) || !sameIdentity(commonId, w.commonIdentity)) return { refused: "UNKNOWN_TARGET" };
+  const target: Workspace = { ...w, worktreeRoot: top, gitDirectory: admin, worktreeIdentity: [topId, adminId] };
+  const listed = await ctx.trust.listTrust({ operationId: ctx.operationId, signal: ctx.signal, workspace: target, at: record.path });
+  if (!listed.ok) return "stop" in listed ? { stop: listed.stop } : { code: listed.code };
+  const gate = ctx.trust.gate(target, listed.listing, ctx.installation, "workbench");
+  if (gate !== null) return { refused: gate };
+  return { value: { required: listed.listing.approvalRequired.workbench, fingerprint: listed.listing.fingerprint } };
 }
 
 // Plan.md D10: the status of that worktree with `-C <path>`.
@@ -247,7 +284,9 @@ registerWorkbenchAction<"worktree-remove", RemoveBound>("worktree-remove", {
     // The list marks a record prunable when its folder is missing, so no read can run in it. Prune removes the record.
     if (record.prunable !== null) return unavailable("prunable");
     const statusArgs = worktreeStatusArgs(record.path);
-    if (!fits(ctx, "read", statusArgs) || !fits(ctx, "integrate", worktreeRemoveArgs(record.path, true))) return unavailable("limit");
+    // Plan.md O-20: the layout read is the longest read of the trust listing in that worktree.
+    const fitting = [statusArgs, worktreeLayoutArgs(record.path)].every((args) => fits(ctx, "read", args)) && fits(ctx, "integrate", worktreeRemoveArgs(record.path, true));
+    if (!fitting) return unavailable("limit");
     let branch: DeleteFacts | null = null;
     if (p.deleteBranch) {
       const ref = record.branch;
@@ -261,6 +300,8 @@ registerWorkbenchAction<"worktree-remove", RemoveBound>("worktree-remove", {
       if (!("value" in facts)) return facts;
       branch = facts.value;
     }
+    const trust = await targetTrust(ctx, record, id.value[0]!);
+    if (!("value" in trust)) return trust;
     const status = await statusOf(ctx, statusArgs);
     if (!("value" in status)) return status;
     const { tracked, untracked } = status.value;
@@ -270,7 +311,7 @@ registerWorkbenchAction<"worktree-remove", RemoveBound>("worktree-remove", {
     const deleteBranch = branch === null ? null : { ref: record.branch, oid: branch.oid, onlyHere: branch.onlyHere, reflogKeeps: branch.reflogKeeps };
     const plan = { worktree: record.path, branch: record.branch, head: record.head, tracked, untracked, force, deleteBranch };
     if (dirty && !p.force) return unavailable("dirty-tree", { plan });
-    return { bound: { record, status: status.value.digest, force, branch }, plan };
+    return { bound: { record, status: status.value.digest, force, branch, trust: trust.value }, plan };
   },
   started: () => "worktree-remove",
   async run(r, _p, b) {

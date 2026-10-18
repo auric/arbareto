@@ -798,7 +798,7 @@ describe("approval required for reads and for commit (contract §7 \"Mutation tr
         const hook = outsideProgram(built, "pre-commit");
         chmodSync(put(repo, ".git/hooks/pre-commit", `#!/bin/sh\nexec ${hook.command}\n`), 0o755);
         const { repositoryId, generation } = await service.register(repo);
-        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false });
+        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false, mergetool: false });
         const { workspace, history } = await readBoth(service, repositoryId, generation);
         expect({ workspace: outcome(workspace), history: outcome(history) }).toEqual({ workspace: SUCCEEDED, history: SUCCEEDED });
         expect(ran([hook.log])).toEqual([]);
@@ -822,7 +822,7 @@ describe("approval required for reads and for commit (contract §7 \"Mutation tr
         const { repositoryId } = await service.register(repo);
         const trust = await trustOf(service, repositoryId);
         // Feature 004 plan.md D12: a signing program joins the class `workbench`.
-        expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: true });
+        expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: true, mergetool: false });
         expect(trust.entries.filter((e) => e.key === "gpg.ssh.defaultkeycommand").map((e) => e.value)).toEqual([program.command]);
         expect(ran([program.log])).toEqual([]);
       }),
@@ -843,7 +843,7 @@ describe("approval required for reads and for commit (contract §7 \"Mutation tr
       const { environment } = ownGlobal(built, [["core.hooksPath", ".githooks"]]);
       await withService({ name: "t071-global-hooks-path", environment }, async (service) => {
         const { repositoryId, generation } = await service.register(repo);
-        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false });
+        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false, mergetool: false });
         const { workspace } = await readBoth(service, repositoryId, generation);
         expect(outcome(workspace)).toEqual(SUCCEEDED);
         expect(ran([canary.log])).toEqual([]);
@@ -866,7 +866,7 @@ describe("approval required for reads and for commit (contract §7 \"Mutation tr
       ]);
       await withService({ name: "t071-global-hook-command", environment }, async (service) => {
         const { repositoryId, generation } = await service.register(repo);
-        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false });
+        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false, mergetool: false });
         const { workspace } = await readBoth(service, repositoryId, generation);
         expect(outcome(workspace)).toEqual(SUCCEEDED);
         expect(ran([program.log])).toEqual([]);
@@ -949,11 +949,11 @@ describe("trust state (data-model §3)", () => {
         config(repo, "diff.external", outsideProgram(built, "diff-external-a").command);
         const { repositoryId, generation } = await service.register(repo);
         const first = await trustOf(service, repositoryId);
-        expect(first.approvalRequired).toEqual({ reads: false, commit: false, sync: false, workbench: false });
+        expect(first.approvalRequired).toEqual({ reads: false, commit: false, sync: false, workbench: false, mergetool: false });
         await approve(service, repositoryId);
         config(repo, "diff.external", outsideProgram(built, "diff-external-b").command);
         const changed = await trustOf(service, repositoryId);
-        expect({ state: changed.state, approvalRequired: changed.approvalRequired }).toEqual({ state: "approved", approvalRequired: { reads: false, commit: false, sync: false, workbench: false } });
+        expect({ state: changed.state, approvalRequired: changed.approvalRequired }).toEqual({ state: "approved", approvalRequired: { reads: false, commit: false, sync: false, workbench: false, mergetool: false } });
         const { workspace, history } = await readBoth(service, repositoryId, generation);
         expect({ workspace: outcome(workspace), history: outcome(history) }).toEqual({ workspace: SUCCEEDED, history: SUCCEEDED });
         expect(service.trustStore.records.length).toBe(1);
@@ -1873,7 +1873,7 @@ describe("stale record (contract §7 \"Mutation trust\")", () => {
         await approve(service, repositoryId);
         removeIntegrations(repo);
         const trust = await trustOf(service, repositoryId);
-        expect({ state: trust.state, approvalRequired: trust.approvalRequired }).toEqual({ state: "approved", approvalRequired: { reads: false, commit: false, sync: false, workbench: false } });
+        expect({ state: trust.state, approvalRequired: trust.approvalRequired }).toEqual({ state: "approved", approvalRequired: { reads: false, commit: false, sync: false, workbench: false, mergetool: false } });
         expect(service.trustStore.records.length).toBe(1);
         const { workspace, history } = await readBoth(service, repositoryId, generation);
         expect({ workspace: outcome(workspace), history: outcome(history) }).toEqual({ workspace: SUCCEEDED, history: SUCCEEDED });
@@ -1926,7 +1926,7 @@ describe("hook classification (contract §7 \"Hook registrations\")", () => {
         expect(hooks.map((h) => ({ name: h.name, scope: h.scope, commandScope: h.commandScope, repositoryControlled: h.repositoryControlled }))).toEqual([
           { name: "t080", scope: "global", commandScope: "local", repositoryControlled: true },
         ]);
-        expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false });
+        expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false, mergetool: false });
       });
       expect(ran([canary.log])).toEqual([]);
     },
@@ -2135,7 +2135,7 @@ describe("inside and outside (contract §7 \"Inside and outside\")", () => {
       expect(service.runner.calls.slice(from).map((c) => c.arguments.join(" ")).sort()).toEqual([configListArgs().join(" "), hooksPathArgs().join(" ")].sort());
       const hooks = (trust.hooks as ClassifiedHook[]).filter((h) => h.event === "pre-commit");
       expect(hooks.map((h) => ({ folder: h.path !== undefined, repositoryControlled: h.repositoryControlled }))).toEqual([{ folder: true, repositoryControlled: true }]);
-      expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false });
+      expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false, mergetool: false });
       // A hooks-folder hook blocks no read (contract §7 "Mutation trust").
       expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
     });
@@ -3256,7 +3256,7 @@ describe("trust class workbench (T033)", () => {
         const base = readFileSync(configFile);
         const { repositoryId, generation } = await service.register(f.repo);
         const flags = async () => (await trustOf(service, repositoryId)).approvalRequired;
-        expect(await flags()).toEqual({ reads: false, commit: false, sync: false, workbench: false });
+        expect(await flags()).toEqual({ reads: false, commit: false, sync: false, workbench: false, mergetool: false });
         const reviewed = async (label: string) => ({ label, ...refusal(await review(service, repositoryId, generation, SWITCH)) });
         const from = service.runner.calls.length;
         const programs: [string, string][] = [
@@ -3350,7 +3350,7 @@ describe("trust class workbench (T033)", () => {
         const run = wbCanary(f.root, "t033-classless");
         hookAt(f, "post-checkout", run.command);
         const { repositoryId } = await service.register(f.repo);
-        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: false, sync: true, workbench: true });
+        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: false, sync: true, workbench: true, mergetool: false });
         // Contract Δ7: `ignore` runs no repository program.
         let read = await readOk(service, repositoryId);
         const ignored = await review(service, repositoryId, read.generation, { action: "ignore", snapshotId: read.snapshotId, entryId: entryOf(read, "top-new.txt", "untracked").entryId, target: "gitignore" });

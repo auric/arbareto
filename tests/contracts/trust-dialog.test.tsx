@@ -20,7 +20,7 @@ const REPORT: Report = {
   generation: 3,
   state: "untrusted",
   persistence: "stored",
-  approvalRequired: { reads: true, commit: true, sync: true, workbench: true },
+  approvalRequired: { reads: true, commit: true, sync: true, workbench: true, mergetool: false },
   entries: [{ key: "core.hooksPath", scope: "local", origin: "file:.git/config", value: ".githooks" }],
   hooks: [{ event: "pre-commit", path: ".githooks/pre-commit", repositoryControlled: true }],
   // Feature 004 data-model §10.
@@ -186,9 +186,9 @@ describe("trust dialog (plan.md \"Keyboard and focus\" Trust dialog row)", () =>
   });
 
   test("commit review shows the dialog first only when approval is required for commit and not approved", () => {
-    expect(trustBeforeReview({ ...REPORT, approvalRequired: { reads: false, commit: true, sync: true, workbench: true } })).toBe(true);
+    expect(trustBeforeReview({ ...REPORT, approvalRequired: { reads: false, commit: true, sync: true, workbench: true, mergetool: false } })).toBe(true);
     expect(trustBeforeReview({ ...REPORT, state: "changed", trustId: "t" })).toBe(true);
-    expect(trustBeforeReview({ ...REPORT, approvalRequired: { reads: true, commit: false, sync: true, workbench: true } })).toBe(false);
+    expect(trustBeforeReview({ ...REPORT, approvalRequired: { reads: true, commit: false, sync: true, workbench: true, mergetool: false } })).toBe(false);
     expect(trustBeforeReview({ ...REPORT, state: "approved", trustId: "t" })).toBe(false);
   });
 

@@ -631,8 +631,8 @@ export const ReadTrustResult = z
         state: z.enum(["untrusted", "approved", "changed", "revoked"]),
         persistence: TrustPersistence,
         trustId: Identifier.optional(),
-        // Feature 003 contract Δ7 adds `sync`. Feature 004 contract Δ7 (T033) adds `workbench`.
-        approvalRequired: z.strictObject({ reads: z.boolean(), commit: z.boolean(), sync: z.boolean(), workbench: z.boolean() }),
+        // Feature 003 contract Δ7 adds `sync`. Feature 004 contract Δ7 adds `workbench` (T033) and `mergetool` (T060).
+        approvalRequired: z.strictObject({ reads: z.boolean(), commit: z.boolean(), sync: z.boolean(), workbench: z.boolean(), mergetool: z.boolean() }),
         inputLimited: z.literal(true).optional(),
         entries: z.array(TrustEntry).max(limits.TRUST_REPORT_ENTRIES),
         hooks: z.array(TrustHook).max(limits.TRUST_REPORT_HOOKS),
@@ -1495,6 +1495,63 @@ export const ReadBranchesResult = z
     RefsRefusal,
   ])
   .meta({ title: "ReadBranchesResult" });
+
+// Data-model §8 `readWorktrees`. `invalidUtf8`: the path or the branch bytes are no valid UTF-8, so they are display text only. Reasons are Git's untrusted text.
+const WorktreeEntry = z
+  .strictObject({
+    path: Text.min(1),
+    invalidUtf8: z.boolean(),
+    head: ObjectId.nullable(),
+    branch: FullRef.nullable(),
+    bare: z.boolean(),
+    detached: z.boolean(),
+    locked: z.strictObject({ reason: z.string().nullable() }).meta({ title: "WorktreeLock" }).nullable(),
+    prunable: z.strictObject({ reason: z.string().nullable() }).meta({ title: "WorktreePrunable" }).nullable(),
+    main: z.boolean(),
+    current: z.boolean(),
+  })
+  .refine((e) => !e.detached || e.branch === null)
+  .meta({ title: "WorktreeEntry" });
+// Contract Δ3 `readWorktrees`: the records in Git's order, so only the first is main, and at most one is current. A bound gives OUTPUT_LIMIT with its reason.
+export const ReadWorktreesResult = z
+  .union([
+    z
+      .strictObject({ entries: z.array(WorktreeEntry).max(WORKTREE_RECORDS) })
+      .refine((r) => !Array.isArray(r.entries) || (r.entries.every((e, i) => e?.main === (i === 0)) && r.entries.filter((e) => e?.current === true).length <= 1))
+      .meta({ title: "WorktreeList" }),
+    z.strictObject({ reason: z.enum(["WORKTREE_RECORDS", "WORKTREE_LISTING_BYTES", "UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION"]) }).meta({ title: "WorktreeListLimited" }),
+  ])
+  .meta({ title: "ReadWorktreesResult" });
+
+// Data-model §9 "Configuration value". `reading` is the value as Git reads it for the key type, or null. Every text passed the URL redaction.
+const ConfigValueEntry = z.strictObject({ scope: ConfigScope, origin: Text, value: Text.nullable(), reading: Text.nullable() }).meta({ title: "ConfigValueEntry" });
+const CONFIG_READ_ONLY = ["multi-value", "included", "unreadable-value"] as const;
+const ConfigValue = z
+  .strictObject({
+    key: Text.min(1),
+    type: z
+      .discriminatedUnion("kind", [
+        z.strictObject({ kind: z.literal("bool") }).meta({ title: "ConfigBool" }),
+        z.strictObject({ kind: z.literal("enum"), values: z.array(Text.min(1)).min(1) }).meta({ title: "ConfigEnum" }),
+        z.strictObject({ kind: z.literal("text") }).meta({ title: "ConfigText" }),
+      ])
+      .meta({ title: "ConfigType" }),
+    entries: z.array(ConfigValueEntry),
+    effective: ConfigValueEntry.nullable(),
+    scopes: z
+      .strictObject({ system: z.array(ConfigValueEntry), global: z.array(ConfigValueEntry), local: z.array(ConfigValueEntry), worktree: z.array(ConfigValueEntry), command: z.array(ConfigValueEntry) })
+      .meta({ title: "ConfigScopes" }),
+    readOnly: z.strictObject({ local: z.enum(CONFIG_READ_ONLY).nullable(), global: z.enum(CONFIG_READ_ONLY).nullable() }).meta({ title: "ConfigReadOnly" }),
+  })
+  .meta({ title: "ConfigValue" });
+// Contract Δ3 `readGitSettings`: the FR-060 keys and the tool keys of the effective tools, and the file that a save of each scope writes, or null.
+// `appSettings` of data-model §9 come from `readSyncSettings` (contract Δ3). The 20 FR-060 keys and at most 4 tool keys.
+export const ReadGitSettingsResult = z
+  .strictObject({
+    values: z.array(ConfigValue).min(1).max(24),
+    files: z.strictObject({ local: Text.min(1).nullable(), global: Text.min(1).nullable(), system: Text.min(1).nullable() }).meta({ title: "ConfigFiles" }),
+  })
+  .meta({ title: "ReadGitSettingsResult" });
 
 // The refs whose values differ between the listings before and after the steps. Null: the ref is absent on that side.
 const RefChange = z.strictObject({ ref: FullRef, oldObjectId: ObjectId.nullable(), newObjectId: ObjectId.nullable() }).meta({ title: "RefChange" });

@@ -130,6 +130,7 @@
     "tests/git/approvals.test.ts",
     "tests/git/attribution.test.ts",
     "tests/git/branch-ops.test.ts",
+    "tests/git/commit-amend.test.ts",
     "tests/git/commit-preflight.test.ts",
     "tests/git/commit-review.test.ts",
     "tests/git/commit-races.test.ts",

@@ -1,0 +1,146 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "entries": {
+          "maxItems": 1000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$"
+              },
+              "invalidUtf8": {
+                "type": "boolean"
+              },
+              "head": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "branch": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "bare": {
+                "type": "boolean"
+              },
+              "detached": {
+                "type": "boolean"
+              },
+              "locked": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "reason": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "reason"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WorktreeLock"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "prunable": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "reason": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "reason"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WorktreePrunable"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "main": {
+                "type": "boolean"
+              },
+              "current": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "path",
+              "invalidUtf8",
+              "head",
+              "branch",
+              "bare",
+              "detached",
+              "locked",
+              "prunable",
+              "main",
+              "current"
+            ],
+            "additionalProperties": false,
+            "title": "WorktreeEntry"
+          }
+        }
+      },
+      "required": [
+        "entries"
+      ],
+      "additionalProperties": false,
+      "title": "WorktreeList"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "WORKTREE_RECORDS",
+            "WORKTREE_LISTING_BYTES",
+            "UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION"
+          ]
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "additionalProperties": false,
+      "title": "WorktreeListLimited"
+    }
+  ],
+  "title": "ReadWorktreesResult"
+}

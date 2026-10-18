@@ -59,7 +59,7 @@ export interface CommitReconciliation {
   markerId: string;
   ctx: PublishContext;
   review: RetainedReview;
-  binding: Pick<CommitBinding, "head" | "reviewedIndex" | "operationState">;
+  binding: Pick<CommitBinding, "head" | "reviewedIndex" | "operationState" | "amend">;
   // The preflight tip (contract §8 "Attribution window").
   tip: ReflogRecord | null;
   // Null: the commit process gave no exit reply.
@@ -215,7 +215,7 @@ async function decide(q: ObserveContext, r: CommitReconciliation, observed: Obse
     candidate === null ? null : listingOf(q, commitTreeArgs(candidate, objectFormat), (bytes) => parseTree(bytes, objectFormat)),
   ]);
   if (parents !== null && !("value" in parents)) return unknownOf(parents);
-  const attribution = early ?? attribute(window, h0, h1, parents!.value);
+  const attribution = early ?? attribute(window, h0, h1, parents!.value, r.binding.amend?.parents ?? null);
   if ("unknown" in attribution) return undetermined(attribution.unknown);
   if (!("value" in index)) return unknownOf(index);
   if (tree !== null && !("value" in tree)) return unknownOf(tree);

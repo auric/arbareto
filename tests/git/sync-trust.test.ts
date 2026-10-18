@@ -84,7 +84,7 @@ describeGit("trust class sync (T036)", () => {
     await withSync("t036-gate", async (service) => {
       const r = await register(service, f.repo);
       expect(outcome(await reviewSync(service, r, { action: "fetch" }))).toEqual({ state: "succeeded", code: undefined });
-      expect((await service.readTrust(r.repositoryId)).result!.approvalRequired).toEqual({ reads: false, commit: false, sync: false, workbench: false });
+      expect((await service.readTrust(r.repositoryId)).result!.approvalRequired).toEqual({ reads: false, commit: false, sync: false, workbench: false, mergetool: false });
       for (const [key, value] of programs) {
         f.h.write(configPath, base);
         gitRun(f.h, f.repo, ["config", key, value]);
@@ -122,7 +122,7 @@ describeGit("trust class sync (T036)", () => {
     gitRun(f.h, f.repo, ["config", "core.alternateRefsCommand", f.canary]);
     await withSync("t036-alternate", async (service) => {
       const r = await register(service, f.repo);
-      expect((await service.readTrust(r.repositoryId)).result!.approvalRequired).toEqual({ reads: false, commit: false, sync: true, workbench: false });
+      expect((await service.readTrust(r.repositoryId)).result!.approvalRequired).toEqual({ reads: false, commit: false, sync: true, workbench: false, mergetool: false });
       const from = service.runner.calls.length;
       for (const action of ["fetch", "fetch-all"]) expect({ action, ...outcome(await reviewSync(service, r, { action })) }).toEqual({ action, state: "failed", code: "TRUST_REQUIRED" });
       expect(remoteCalls(service, from)).toEqual([]);

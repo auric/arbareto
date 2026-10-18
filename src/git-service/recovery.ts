@@ -102,7 +102,7 @@ export function createRecovery({ runner, registry, trust, reader, publications, 
       if (!("value" in read)) return read;
       parents = read.value;
     }
-    const a = attribute(window.value, kept.binding.head, h1, parents);
+    const a = attribute(window.value, kept.binding.head, h1, parents, kept.binding.amend?.parents ?? null);
     return { outcome: "unknown", attribution: "identified" in a ? { result: "identified", commitOid: a.identified } : "none" in a ? { result: "none" } : { result: "unknown", reason: a.unknown } };
   }
 

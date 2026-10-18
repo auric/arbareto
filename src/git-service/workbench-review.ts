@@ -104,10 +104,10 @@ export function registerWorkbenchAction<A extends WorkbenchAction, B>(action: A,
 // Contract Δ3 "Common refusals": these actions also run while an operation is in progress. `worktree-remove` checks its own worktree.
 const IN_PROGRESS_ALLOWED: ReadonlySet<string> = new Set(["choose-side", "mergetool", "ignore", "config-save", "worktree-prune", "worktree-remove"]);
 
-// Contract Δ7 "Mutation trust": `ignore` and `config-save` run no repository program, so they need no class. Every other action takes the class `workbench`.
-// shortcut: `mergetool` takes `workbench` until T060 adds the class `mergetool`.
+// Contract Δ7 "Mutation trust": `ignore` and `config-save` run no repository program, so they need no class. `mergetool` takes the class `mergetool`.
+// Every other action takes the class `workbench`.
 const CLASSLESS: ReadonlySet<string> = new Set(["ignore", "config-save"]);
-const classOf = (action: string): "workbench" | null => (CLASSLESS.has(action) ? null : "workbench");
+const classOf = (action: string): "workbench" | "mergetool" | null => (CLASSLESS.has(action) ? null : action === "mergetool" ? "mergetool" : "workbench");
 
 // ---- Shared reads ----
 
@@ -411,7 +411,7 @@ export function createWorkbench(o: WorkbenchOptions) {
       if (e.repositoryId !== request.repositoryId) return void registry.apply(operationId, { type: "invalid-approval", code: "UNKNOWN_TARGET" });
       // Contract Δ7 "Mutation trust": the reviewed listing decides before any process.
       const cls = classOf(e.payload.action);
-      const gate = cls === null ? null : o.trust.gate(w, { approvalRequired: { [cls]: e.trust.required }, fingerprint: e.trust.fingerprint, inputLimited: false }, installation, cls);
+      const gate = cls === null ? null : o.trust.gate(w, { approvalRequired: { [cls]: e.trust.required }, inputLimited: false }, installation, cls);
       if (gate !== null) return void registry.apply(operationId, { type: "invalid-approval", code: gate });
       // Contract §2: the token is in use before the first await. A run that ends before the consumption leaves it to a later run (data-model §2).
       e.running = operationId;

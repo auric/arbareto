@@ -23,6 +23,7 @@ import { NATIVE, PATH_RULES } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import { gitPathText } from "./wsl";
 import { configListArgs, HOOK_EVENTS, hooksPathArgs } from "./commands";
+import { worktreeConfigListArgs, worktreeHooksPathArgs } from "./workbench-commands";
 import type { ReadInstallation } from "./snapshot";
 import { createCollector, RunnerRefusal, type FileFactsRequest, type GitRunner, type WalkStop, type WslIndexResult, type WslRunner } from "./git-runner";
 import { sameIdentity, type PhysicalIdentity } from "./identity";
@@ -103,10 +104,18 @@ const SHELL_WORDS = new Set([
 ]);
 const NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+// XCU 2.6.2: a `$NAME` or `${NAME}` parameter expansion. It runs no program. -1: any other expansion.
+const PARAMETER = /^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*\})/;
+const parameterEnd = (line: string, at: number): number => {
+  const match = PARAMETER.exec(line.slice(at));
+  return match === null ? -1 : at + match[0].length;
+};
+
 // The program word of a shell command line (POSIX XCU 2.2 quoting and 2.3 token recognition), after quote removal.
 // Git runs these values through `sh -c` when they hold a shell metacharacter (run-command.c `prepare_shell_cmd`), and runs a plain word directly.
 // Null: an expansion, an operator, a pattern, or a compound command can start a program that the service cannot name.
-export function shellProgram(line: string): string | null {
+// `parameters`: after the program word, a parameter expansion of `parameterEnd` passes.
+export function shellProgram(line: string, parameters = false): string | null {
   let i = 0;
   while (line[i] === " " || line[i] === "\t") i++;
   let word = "";
@@ -147,20 +156,31 @@ export function shellProgram(line: string): string | null {
       i = line.indexOf("'", i + 1);
       if (i < 0) return null;
     } else if (c === '"') {
-      const quoted = doubleQuoted(line, i);
+      const quoted = doubleQuoted(line, i, parameters);
       if (quoted === null) return null;
       i = quoted.end;
+    } else if (c === "$" && parameters) {
+      i = parameterEnd(line, i) - 1;
+      if (i < 0) return null;
     } else if ("|&;<>()$`\n".includes(c)) return null;
   }
   return word;
 }
 
 // XCU 2.2.3: inside double quotes, `\` escapes only `$`, `` ` ``, `"`, `\`, and newline. `$` and `` ` `` expand, so they give null.
-function doubleQuoted(line: string, open: number): { text: string; end: number } | null {
+// `parameters`: a parameter expansion of `parameterEnd` passes, and the text holds it as written.
+function doubleQuoted(line: string, open: number, parameters = false): { text: string; end: number } | null {
   let text = "";
   for (let i = open + 1; i < line.length; i++) {
     const c = line[i]!;
     if (c === '"') return { text, end: i };
+    if (c === "$" && parameters) {
+      const end = parameterEnd(line, i);
+      if (end < 0) return null;
+      text += line.slice(i, end);
+      i = end - 1;
+      continue;
+    }
     if (c === "$" || c === "`") return null;
     if (c === "\\" && i + 1 < line.length && '$`"\\\n'.includes(line[i + 1]!)) {
       if (line[i + 1] === "\n") return null;
@@ -288,8 +308,9 @@ export function valueShown(p: KeyParts): boolean {
   // Feature 003 contract Δ7: the transport programs and the PuTTY key proposal (O-8).
   if (section === "credential") return variable === "helper";
   if (section === "remote") return subsection !== null && ["uploadpack", "receivepack", "puttykeyfile", "vcs"].includes(variable);
-  // Feature 004 contract Δ7: the merge driver keys.
-  if (section === "merge") return subsection !== null && (variable === "driver" || variable === "recursive");
+  // Feature 004 contract Δ7: the merge driver keys and the merge tool keys.
+  if (section === "merge") return subsection === null ? variable === "tool" : variable === "driver" || variable === "recursive";
+  if (section === "mergetool") return subsection !== null && (variable === "cmd" || variable === "path");
   return false;
 }
 
@@ -304,7 +325,16 @@ function submoduleRegistration(p: KeyParts, value: string | null): boolean {
 // `credential`: credential.c `run_credential_helper` runs each helper with `use_shell`. A `!` value is a shell snippet, an absolute path runs as written, and any other name becomes `git credential-<name>` (gitcredentials(7)).
 // `direct`: `git_config_string`, run without the shell (prompt.c `do_askpass`). `proxy`: connect.c `git_proxy_command_options` takes the text before " for ", and `git_proxy_connect` runs it without the shell.
 // `helper`: transport-helper.c runs `git remote-<name>` (`git_cmd`), so the program word is `git`, as for a `credential-<name>` helper.
-type ProgramForm = "shell" | "monitor" | "pathname" | "split" | "credential" | "direct" | "proxy" | "helper";
+// `toolcmd`: git-mergetool--lib `setup_user_tool` runs `( eval $merge_tool_cmd )` (`toolCommandProgram`).
+type ProgramForm = "shell" | "monitor" | "pathname" | "split" | "credential" | "direct" | "proxy" | "helper" | "toolcmd";
+
+// The unquoted expansion splits the value into fields at IFS and expands each pattern (XCU 2.6.5, 2.6.6). So a `*`, `?`, or `[` can bring
+// repository file names into the text that `eval` reads, and a set IFS gives fields that the service cannot know. Without either, `eval` reads
+// the fields joined by spaces. Git sets `$BASE`, `$LOCAL`, `$REMOTE`, and `$MERGED` for the command (git-mergetool(1)), so parameters pass.
+function toolCommandProgram(value: string, defaultIfs: boolean): string | null {
+  const fields = value.split(/[ \t\n]+/).filter((field) => field !== "");
+  return defaultIfs && !fields.some((field) => /[*?[]/.test(field)) ? shellProgram(fields.join(" "), true) : null;
+}
 
 // transport.c `transport_get` (Git 2.56) takes the first match: a `<name>::` prefix (`is_urlschemechar`), `rsync:` (no helper), a local bundle file,
 // then `!is_url(url)` or the prefixes `file://`, `git://`, `ssh://`, `git+ssh://`, and `ssh+git://` (Git's own transport).
@@ -337,10 +367,13 @@ interface ProgramKey {
   commit: boolean;
   sync: boolean;
   workbench: boolean;
+  mergetool: boolean;
 }
 
 // The classes of a transport program: only `sync` (feature 003 plan.md D11).
-const TRANSPORT = { reads: false, commit: false, sync: true, workbench: false } as const;
+const TRANSPORT = { reads: false, commit: false, sync: true, workbench: false, mergetool: false } as const;
+// Feature 004 plan.md D12: a merge tool key takes only the class `mergetool`.
+const MERGE_TOOL = { reads: false, commit: false, sync: false, workbench: false, mergetool: true } as const;
 
 // Contract §12 "Trust" and feature 003 plan.md D11: the transport programs that a fetch or a push can run (probe S6).
 // git-config(1): Git runs `core.sshCommand` and `remote.<name>.uploadpack` through the shell.
@@ -358,16 +391,22 @@ function programKey(p: KeyParts): ProgramKey | null {
   // Feature 003 plan.md D11: fetch-pack.c `for_each_alternate_ref` runs it with `use_shell` (`fill_alternate_refs_command`). A probe saw no 001 read or commit run it.
   if (section === "core" && subsection === null && variable === "alternaterefscommand") return { form: "shell", ...TRANSPORT };
   // Feature 003 plan.md D11 and feature 004 plan.md D12: ll-merge.c `ll_ext_merge` runs a merge driver with `use_shell`, so a merge or a rebase can run it.
-  if (section === "merge" && subsection !== null && variable === "driver") return { form: "shell", reads: false, commit: false, sync: true, workbench: true };
+  if (section === "merge" && subsection !== null && variable === "driver") return { form: "shell", reads: false, commit: false, sync: true, workbench: true, mergetool: false };
+  // Feature 004 plan.md D12: git-mergetool--lib runs a built-in tool program by a bare name, so the 001 §7 PATH rule takes the `merge.tool` value.
+  // The script runs `mergetool.<tool>.cmd` with `eval`, and `mergetool.<tool>.path` as one quoted word (git-mergetool--lib, mergetools/*).
+  if (section === "merge" && subsection === null && variable === "tool") return { form: "direct", ...MERGE_TOOL };
+  if (section === "mergetool" && subsection !== null && variable === "cmd") return { form: "toolcmd", ...MERGE_TOOL };
+  if (section === "mergetool" && subsection !== null && variable === "path") return { form: "direct", ...MERGE_TOOL };
+  // Research.md R9: the mergetool script runs `checkout-index` and `git add`, so each filter and the monitor can run there.
   if (section === "filter" && subsection !== null) {
-    if (variable === "clean" || variable === "process") return { form: "shell", reads: true, commit: true, sync: true, workbench: true };
-    if (variable === "smudge") return { form: "shell", reads: false, commit: false, sync: true, workbench: true };
+    if (variable === "clean" || variable === "process") return { form: "shell", reads: true, commit: true, sync: true, workbench: true, mergetool: true };
+    if (variable === "smudge") return { form: "shell", reads: false, commit: false, sync: true, workbench: true, mergetool: true };
   }
-  if (section === "core" && subsection === null && variable === "fsmonitor") return { form: "monitor", reads: true, commit: true, sync: true, workbench: true };
-  if (section === "hook" && subsection !== null && variable === "command") return { form: "shell", reads: false, commit: false, sync: false, workbench: false };
-  if (section === "diff" && (subsection === null ? variable === "external" : variable === "textconv" || variable === "command")) return { form: "shell", reads: false, commit: false, sync: false, workbench: false };
-  if (section === "gpg" && variable === "program") return { form: "pathname", reads: false, commit: true, sync: true, workbench: true };
-  if (section === "gpg" && subsection === "ssh" && variable === "defaultkeycommand") return { form: "split", reads: false, commit: true, sync: true, workbench: true };
+  if (section === "core" && subsection === null && variable === "fsmonitor") return { form: "monitor", reads: true, commit: true, sync: true, workbench: true, mergetool: true };
+  if (section === "hook" && subsection !== null && variable === "command") return { form: "shell", reads: false, commit: false, sync: false, workbench: false, mergetool: false };
+  if (section === "diff" && (subsection === null ? variable === "external" : variable === "textconv" || variable === "command")) return { form: "shell", reads: false, commit: false, sync: false, workbench: false, mergetool: false };
+  if (section === "gpg" && variable === "program") return { form: "pathname", reads: false, commit: true, sync: true, workbench: true, mergetool: false };
+  if (section === "gpg" && subsection === "ssh" && variable === "defaultkeycommand") return { form: "split", reads: false, commit: true, sync: true, workbench: true, mergetool: false };
   return null;
 }
 
@@ -383,9 +422,10 @@ function proxyCommand(value: string): string {
 
 export type Program = { kind: "path"; text: string } | { kind: "bare"; name: string } | { kind: "unresolved" };
 
-function programOf(form: ProgramForm, value: string, home: string | undefined, rules: Rules): Program {
+function programOf(form: ProgramForm, value: string, home: string | undefined, rules: Rules, defaultIfs: boolean): Program {
   let word: string | null;
   if (form === "shell") word = shellProgram(value);
+  else if (form === "toolcmd") word = toolCommandProgram(value, defaultIfs);
   else if (form === "credential") word = value.startsWith("!") ? shellProgram(value.slice(1)) : rules.isAbsolute(value) ? shellProgram(value) : "git";
   else if (form === "split") word = splitCmdlineProgram(value);
   else if (form === "direct") word = value;
@@ -411,6 +451,8 @@ interface Layout {
   pathEntries: string[];
   relativeEntries: string[];
   home: string | undefined;
+  // The Git child gets no IFS, so its shell splits fields at space, TAB, and LF (XCU 2.5.3).
+  defaultIfs: boolean;
 }
 
 const resolveIn = (layout: Layout, path: string) => layout.rules.path.resolve(layout.root, path);
@@ -475,6 +517,7 @@ interface View {
   roots: Record<RootName, string>;
   path: string | undefined;
   home: string | undefined;
+  defaultIfs: boolean;
   // Contract §6 "Process fields": an identity request names a Windows path. Null: the path has no such form.
   identityPath: (path: string) => string | null;
 }
@@ -482,9 +525,12 @@ interface View {
 // Contract §11 "Trust and environment": a WSL workspace lists with the POSIX rules on the Linux paths of its distro, because Linux Git prints those.
 // Its roots hold the `wslIdentityPath` form `\\wsl.localhost\<distro>\<name>…`, so the Linux path is `/` and the names after the distro.
 // The bare-name rule takes the `PATH` of the Git probe. The probe reads no `HOME`, so a `~/` value stays unresolved.
+// The probe reads no IFS either, so the IFS of a WSL Git child stays unknown.
 function viewOf(w: Workspace, environment: ServiceEnvironment): View {
   const roots = { worktreeRoot: w.worktreeRoot, gitDirectory: w.gitDirectory, commonDirectory: w.commonDirectory };
-  if (w.wsl === undefined) return { rules: NATIVE, roots, path: environmentValue(environment, "PATH"), home: environmentValue(environment, "HOME"), identityPath: (path) => path };
+  if (w.wsl === undefined) {
+    return { rules: NATIVE, roots, path: environmentValue(environment, "PATH"), home: environmentValue(environment, "HOME"), defaultIfs: environmentValue(environment, "IFS") === undefined, identityPath: (path) => path };
+  }
   const { distro, pathEnv } = w.wsl;
   const linux = (unc: string) => `/${unc.split("\\").slice(4).join("/")}`;
   return {
@@ -492,6 +538,7 @@ function viewOf(w: Workspace, environment: ServiceEnvironment): View {
     roots: { worktreeRoot: linux(roots.worktreeRoot), gitDirectory: linux(roots.gitDirectory), commonDirectory: linux(roots.commonDirectory) },
     path: pathEnv,
     home: undefined,
+    defaultIfs: false,
     identityPath: (path) => wslIdentityPath(distro, path),
   };
 }
@@ -726,7 +773,7 @@ export function configuredHooks(entries: readonly ConfigEntry[]): { hooks: Confi
 // ---- Program file facts (contract §6 "File facts", §7 "Program file digests") ----
 
 // Contract §7 "Program file digests" and §12 "Trust": only a submodule listing still reads digests (feature 004 contract Δ7 and Δ12).
-type TrustBound = "file-count" | "file-bytes" | "total-bytes" | "link" | "name";
+type TrustBound = "file-count" | "file-bytes" | "total-bytes" | "link" | "name" | "worktree";
 export type FileState = { kind: "digest"; digest: string } | { kind: "absent" } | { kind: "unchecked"; bound: TrustBound };
 
 // Contract §8 "Change check": one phase-1 `fileFacts` entry of a trust listing, with its fact.
@@ -745,7 +792,7 @@ type Hop = string | null;
 type Walked =
   | { kind: "fact"; at: Inside; fact: FinalFact; hops: Hop[] }
   | { kind: "outside"; location: string; hops: Hop[] }
-  | { kind: "unresolved"; bound: "link" | "name"; hops: Hop[] };
+  | { kind: "unresolved"; bound: "link" | "name" | "worktree"; hops: Hop[] };
 
 type ListingFailure = Exclude<ListingOutcome, { ok: true }>;
 
@@ -898,8 +945,12 @@ function createFactReader(runner: ListingRunner, target: ListingTarget, roots: R
 
     // Phase 1. Each link adds one request round, at most 8 hops (contract §5). The result maps the `keyOf` key of each start.
     async walk(starts: readonly Inside[]): Promise<Map<string, Walked> | ListingFailure> {
+      // Plan.md O-20: the `fileFacts` roots name the registered worktree, so a listing `at` another worktree reads only below the common directory.
+      // A place below the own roots of that worktree stays unresolved, so it counts as listed and found.
+      const place = (at: Inside, hops: Hop[]): Walked | null =>
+        target.at === undefined || at.root === "commonDirectory" || at.below.length === 0 ? settled(at, hops) : { kind: "unresolved", bound: "worktree", hops };
       const states = new Map<string, { at: Inside; hops: Hop[]; done: Walked | null }>();
-      for (const at of starts) if (!states.has(keyOf(at, roots.rules))) states.set(keyOf(at, roots.rules), { at, hops: [], done: settled(at, []) });
+      for (const at of starts) if (!states.has(keyOf(at, roots.rules))) states.set(keyOf(at, roots.rules), { at, hops: [], done: place(at, []) });
       for (let round = 0; round <= TRUST_LINK_HOPS; round++) {
         const open = [...states.values()].filter((s) => s.done === null);
         if (open.length === 0) break;
@@ -918,7 +969,7 @@ function createFactReader(runner: ListingRunner, target: ListingTarget, roots: R
           else if (!next.inside) s.done = { kind: "outside", location: next.location, hops: s.hops };
           else {
             s.at = next;
-            s.done = settled(next, s.hops);
+            s.done = place(next, s.hops);
           }
         }
       }
@@ -1065,6 +1116,7 @@ export interface ProgramIntegration {
   commit: boolean;
   sync: boolean;
   workbench: boolean;
+  mergetool: boolean;
 }
 
 export interface HookView {
@@ -1084,7 +1136,7 @@ export interface TrustListing {
   fingerprint: string;
   // Contract §5 "Effective configuration/trust input": overflow blocks approval, so reads and `commit` need an approval that cannot come.
   inputLimited: boolean;
-  approvalRequired: { reads: boolean; commit: boolean; sync: boolean; workbench: boolean };
+  approvalRequired: { reads: boolean; commit: boolean; sync: boolean; workbench: boolean; mergetool: boolean };
   // Feature 004 data-model §10 `programs` and contract Δ6 `details`.
   programs: TrustDetails;
   changeFiles: ChangeFiles;
@@ -1103,6 +1155,9 @@ export interface ListingTarget {
   workspace: Workspace;
   // Contract §6 "Index digest in a read": only a WSL `readWorkspace` sets it.
   index?: { sharedIndex?: string };
+  // Plan.md O-20: another worktree of the registered repository, as its record path names it. Git lists there with `-C`.
+  // `workspace` then holds the roots and identities of that worktree. The shell serves `fileFacts` only below the registered roots.
+  at?: string;
 }
 
 // `text` names the path and the reason of a file failure.
@@ -1126,7 +1181,8 @@ export async function listTrust(runner: ListingRunner, target: ListingTarget, en
     throw reason;
   };
   // A refusal of one call still waits for the other, so no listing process outlives the listing.
-  const [configCall, hooksCall] = await Promise.allSettled([call(configListArgs()), call(hooksPathArgs())]);
+  const at = target.at;
+  const [configCall, hooksCall] = await Promise.allSettled([call(at === undefined ? configListArgs() : worktreeConfigListArgs(at)), call(at === undefined ? hooksPathArgs() : worktreeHooksPathArgs(at))]);
   if (configCall.status === "rejected") return refused(configCall.reason);
   if (hooksCall.status === "rejected") return refused(hooksCall.reason);
   const [config, hooks] = [configCall.value, hooksCall.value];
@@ -1181,6 +1237,7 @@ async function buildListing(
     pathEntries: path === undefined || path === "" ? [] : path.split(rules.path.delimiter),
     relativeEntries: relativePathEntries(path, rules),
     home: view.home,
+    defaultIfs: view.defaultIfs,
   };
   // Contract §7: resolve the printed directory against the directory where Git ran.
   const hooksDirectory = hooksText === null ? null : resolveIn(layout, hooksText);
@@ -1225,7 +1282,7 @@ async function buildListing(
     if (kind.form === "helper" && !selectsHelper(parts!, entry.value)) continue;
     // fsmonitor-settings.c: a boolean `core.fsmonitor` names the built-in daemon, not a command (contract §7).
     if (kind.form === "monitor" && parseMaybeBool(entry.value) !== -1) continue;
-    const program = entry.exact ? programOf(kind.form, entry.value, layout.home, rules) : ({ kind: "unresolved" } as const);
+    const program = entry.exact ? programOf(kind.form, entry.value, layout.home, rules, layout.defaultIfs) : ({ kind: "unresolved" } as const);
     programs.push({ entry, kind, program, controlled: entryControlled(entry) });
   }
   const hooksPath = last.get("core.hookspath");
@@ -1251,6 +1308,7 @@ async function buildListing(
     commit: kind.commit,
     sync: kind.sync,
     workbench: kind.workbench,
+    mergetool: kind.mergetool,
   }));
   const programPlace = (i: number, at: string) => placeFor(at, programs[i]!.controlled);
 
@@ -1419,6 +1477,8 @@ async function buildListing(
     commit: inputLimited || hooksPathControlled || folderUnlisted || commitHooks || integrations.some((i) => i.commit && i.repositoryControlled),
     sync: inputLimited || hooksPathControlled || folderUnlisted || protocolControlled || activeHooks.some((h) => SYNC_EVENTS.has(h.event) && h.repositoryControlled) || integrations.some((i) => i.sync && i.repositoryControlled),
     workbench: inputLimited || hooksPathControlled || folderUnlisted || activeHooks.some((h) => WORKBENCH_EVENTS.has(h.event) && h.repositoryControlled) || integrations.some((i) => i.workbench && i.repositoryControlled),
+    // Feature 004 plan.md D12: the script runs `git add`, which can run `post-index-change` (research.md R9).
+    mergetool: inputLimited || hooksPathControlled || folderUnlisted || activeHooks.some((h) => h.event === "post-index-change" && h.repositoryControlled) || integrations.some((i) => i.mergetool && i.repositoryControlled),
   };
   const config = configPaths(entries, roots, layout, configFiles);
   return {
@@ -1440,6 +1500,12 @@ async function buildListing(
   };
 }
 
+// githooks(5) `post-rewrite`: `git commit --amend` runs it. The 001 class `commit` lists no such event, so an amend also needs approval for it.
+export function rewriteHooks(listing: Pick<TrustListing, "hooks">): boolean {
+  const { configured, folder } = listing.hooks;
+  return [...configured.filter((h) => !h.disabled && !h.eventDisabled), ...folder].some((h) => h.event === "post-rewrite" && h.repositoryControlled);
+}
+
 // Plan.md D14: a name that is empty, that holds invalid UTF-8, or that holds a character of the Unicode general category Cc, Cf, Zl, or Zp
 // shows as this text. Such a character, such as U+202E RIGHT-TO-LEFT OVERRIDE, can make a name read differently from its bytes.
 export const UNSHOWN_NAME = "a name that Arbareto cannot show";
@@ -1456,7 +1522,15 @@ function programNames(
   integrations: readonly ProgramIntegration[],
   keys: readonly ConfigEntry[],
 ): TrustDetails {
-  const kinds = { hooks: [] as TrustDetails["hooks"]["names"], filters: [] as TrustDetails["filters"]["names"], monitors: [] as TrustDetails["monitors"]["names"], mergeDrivers: [] as TrustDetails["mergeDrivers"]["names"], signing: [] as TrustDetails["signing"]["names"], other: [] as TrustDetails["other"]["names"] };
+  const kinds = {
+    hooks: [] as TrustDetails["hooks"]["names"],
+    filters: [] as TrustDetails["filters"]["names"],
+    monitors: [] as TrustDetails["monitors"]["names"],
+    mergeDrivers: [] as TrustDetails["mergeDrivers"]["names"],
+    mergeTools: [] as TrustDetails["mergeTools"]["names"],
+    signing: [] as TrustDetails["signing"]["names"],
+    other: [] as TrustDetails["other"]["names"],
+  };
   const seen = new Set<string>();
   // Two names that both show as UNSHOWN_NAME stay two names, so `add` compares the texts before `shownName`.
   const add = <K extends keyof typeof kinds>(kind: K, item: (typeof kinds)[K][number], exact: boolean) => {
@@ -1479,14 +1553,16 @@ function programNames(
     if (section === "filter") add("filters", { driver: redactUrlUserInfo(subsection!), scope }, exact);
     else if (section === "core" && variable === "fsmonitor") add("monitors", { scope }, exact);
     else if (section === "merge" && variable === "driver") add("mergeDrivers", { driver: redactUrlUserInfo(subsection!), scope }, exact);
+    // The tool name is the value of `merge.tool` and the subsection of `mergetool.<tool>.*`.
+    else if (section === "merge" && variable === "tool") add("mergeTools", { tool: redactUrlUserInfo(entry.value ?? ""), scope }, exact);
+    else if (section === "mergetool") add("mergeTools", { tool: redactUrlUserInfo(subsection!), scope }, exact);
     else if (section === "gpg") add("signing", { key: redactUrlUserInfo(key), scope }, exact);
     // A `hook.<name>.command` program shows as its hooks. A program of no class needs no approval, such as `diff.<driver>.textconv`.
     else if (section !== "hook" && (reads || commit || sync || workbench)) add("other", { key: redactUrlUserInfo(key), scope }, exact);
   }
   for (const entry of keys) add("other", { key: redactUrlUserInfo(entry.key), scope: entry.scope }, entry.exact);
   const capped = <T>(items: T[]) => ({ names: items.slice(0, TRUST_DIALOG_NAMES), more: Math.max(0, items.length - TRUST_DIALOG_NAMES) });
-  // T060 adds the class `mergetool` and its tool discovery (plan.md D12). Until then, `mergeTools` names nothing.
-  return { hooks: capped(kinds.hooks), filters: capped(kinds.filters), monitors: capped(kinds.monitors), mergeDrivers: capped(kinds.mergeDrivers), mergeTools: capped([]), signing: capped(kinds.signing), other: capped(kinds.other) };
+  return { hooks: capped(kinds.hooks), filters: capped(kinds.filters), monitors: capped(kinds.monitors), mergeDrivers: capped(kinds.mergeDrivers), mergeTools: capped(kinds.mergeTools), signing: capped(kinds.signing), other: capped(kinds.other) };
 }
 
 const SHELL_COMMAND = "<shell command>";
@@ -1698,7 +1774,7 @@ export function createTrust({ runner, environment, configFiles = () => undefined
   // Feature 004 plan.md D12: the state comes from the records alone, so the fingerprint takes no part in it.
   function gate(
     w: Workspace,
-    listing: Pick<TrustListing, "fingerprint" | "inputLimited"> & { approvalRequired: Readonly<Partial<TrustListing["approvalRequired"]>> },
+    listing: Pick<TrustListing, "inputLimited"> & { approvalRequired: Readonly<Partial<TrustListing["approvalRequired"]>> },
     installation: ReadInstallation,
     kind: keyof TrustListing["approvalRequired"],
   ): "TRUST_REQUIRED" | "TRUST_CHANGED" | null {

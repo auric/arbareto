@@ -16,7 +16,7 @@ import { put } from "./fixtures";
 import { sha256, workingFileDigests } from "./git-oracle";
 import { caseTest, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 import { gitExe, native, TIMEOUT_MS, until, withSync } from "./sync-harness";
-import { buildWorkbench, repoOf, wb, type WbFixture } from "./workbench-fixtures";
+import { buildWorkbench, canary, repoOf, wb, type WbFixture } from "./workbench-fixtures";
 
 for (const module of ["worktrees", "workbench-review", "branch-ops", "session"]) {
   try {
@@ -25,7 +25,7 @@ for (const module of ["worktrees", "workbench-review", "branch-ops", "session"])
     console.log(`ORIGIN absent src/git-service/${module}.ts`);
   }
 }
-// Until T060 imports `worktrees.ts` in `session.ts`, this import registers the worktree actions in the dispatcher of `workbench-review.ts`.
+// The module-level cases call `worktrees.ts` directly. `session.ts` imports it too, so the session cases reach the same actions.
 const worktrees = await import("../../src/git-service/worktrees");
 
 useFixtureRoot();
@@ -438,5 +438,74 @@ caseTest(TASK, "FR-051 and contract Δ3 openWorktree: the bound path must have t
     git(f, ["worktree", "remove", "--", recordPath(f, "wt with spaces")]);
     mkdirSync(folder(f, "wt with spaces"));
     expect(await worktrees.openWorktreeTarget(fresh(ctx), late)).toEqual({ refused: "UNKNOWN_TARGET" });
+  });
+}, TIMEOUT_MS);
+
+// ---- T060: the session handlers and the per-worktree trust of plan.md O-20 ----
+
+caseTest("T060", "FR-049 and contract Δ3 readWorktrees through the session: the result equals Git's own list, and a stale generation gives REPOSITORY_CHANGED before any Git process", SHELL, async () => {
+  const f = build();
+  await withSync("t060-read", async (service) => {
+    const r = await open(service, f.repo);
+    const read = await service.request<{ entries: unknown[] }>("readWorktrees", {}, { repositoryId: r.repositoryId, repositoryGeneration: r.generation });
+    expect(outcome(read)).toEqual(SUCCEEDED);
+    expect(read.result!.entries).toEqual(oracleEntries(f, recordsOf(f).map((x) => valueOf(x, "worktree")!)[0]!));
+    const from = service.runner.calls.length;
+    expect(outcome(await service.request("readWorktrees", {}, { repositoryId: r.repositoryId, repositoryGeneration: r.generation + 1 }))).toEqual({ state: "rejected", code: "REPOSITORY_CHANGED" });
+    expect(service.runner.calls.length).toBe(from);
+  });
+}, TIMEOUT_MS);
+
+caseTest("T060", "FR-051 and contract Δ3 openWorktree through the session: a bound worktree folder registers through the 001 flow; a folder that no record names gives UNKNOWN_TARGET, and an unknown repository is rejected", SHELL, async () => {
+  const f = build();
+  mkdirSync(folder(f, "elsewhere"));
+  await withSync("t060-open", async (service) => {
+    const r = await open(service, f.repo);
+    const send = (path: string, repositoryId = r.repositoryId) => service.request<RegistrationResult>("openWorktree", { repositoryId, bootstrapId: service.runner.addContext("repositoryDiscovery", native(path)) });
+    const opened = await send(folder(f, "wt with spaces"));
+    expect(outcome(opened)).toEqual(SUCCEEDED);
+    expect(slash(opened.result!.worktreeRoot).toLowerCase()).toBe(slash(recordPath(f, "wt with spaces")).toLowerCase());
+    const list = await service.request<{ entries: { path: string; current: boolean }[] }>("readWorktrees", {}, { repositoryId: opened.result!.repositoryId, repositoryGeneration: opened.result!.generation });
+    expect(list.result!.entries.filter((e) => e.current).map((e) => e.path)).toEqual([recordPath(f, "wt with spaces")]);
+    expect(outcome(await send(folder(f, "elsewhere")))).toEqual({ state: "failed", code: "UNKNOWN_TARGET" });
+    expect(outcome(await send(folder(f, "wt-dirty"), crypto.randomUUID()))).toEqual({ state: "rejected", code: "UNKNOWN_TARGET" });
+  });
+}, TIMEOUT_MS);
+
+// Research.md R21 F18: Git runs `core.fsmonitor` of the target worktree for its `-C <path> status` read and for `worktree remove`.
+// The monitor sits in the `config.worktree` file of that worktree, so the listing of the opened worktree does not name it.
+caseTest("T060", "plan.md O-20: worktree-remove takes the trust listing of the target worktree; a monitor in that worktree's own configuration gives TRUST_REQUIRED before its status read, and its canary runs only after that worktree's approval", SHELL, async () => {
+  const plant = (x: WbFixture) => {
+    const log = canary(x.root, "o20-monitor");
+    git(x, ["config", "extensions.worktreeConfig", "true"]);
+    git(x, ["config", "--worktree", "core.fsmonitor", log.command], [0], folder(x, "wt with spaces"));
+    return log.log;
+  };
+  const f = build();
+  const o = build();
+  const log = plant(f);
+  // Git's own status in that worktree of the copy runs the monitor, so the canary is live.
+  const live = plant(o);
+  git(o, ["-C", folder(o, "wt with spaces"), "status", "--porcelain"]);
+  expect(existsSync(live)).toBe(true);
+  const target = recordPath(f, "wt with spaces");
+  await withSync("t060-o20", async (service) => {
+    const r = await open(service, f.repo);
+    expect((await service.readTrust(r.repositoryId)).result!.approvalRequired.workbench).toBe(false);
+    const from = service.runner.calls.length;
+    expect(outcome(await review(service, r, removePayload(target, false, false)))).toEqual({ state: "failed", code: "TRUST_REQUIRED" });
+    expect(service.runner.calls.slice(from).some((c) => c.arguments.includes("status"))).toBe(false);
+    expect(existsSync(log)).toBe(false);
+    // That worktree as its own workspace: its listing names the monitor, and its approval binds its own folders.
+    const own = await service.register(native(folder(f, "wt with spaces")));
+    expect((await service.readTrust(own.repositoryId)).result!.approvalRequired.workbench).toBe(true);
+    expect((await service.approveTrust(own.repositoryId, "worktree")).state).toBe("succeeded");
+    expect(existsSync(log)).toBe(false);
+    const rv = await reviewed(service, r, removePayload(target, false, false));
+    expect(rv.plan).toMatchObject({ worktree: target, tracked: 0, untracked: 0, force: false });
+    expect(existsSync(log)).toBe(true);
+    const response = await service.response<WorktreeRun>(sendRun(service, r, rv.workbenchToken));
+    expect(outcome(response)).toEqual(SUCCEEDED);
+    expect(response.result!.worktrees).not.toContain(target);
   });
 }, TIMEOUT_MS);

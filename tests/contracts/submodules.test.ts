@@ -69,7 +69,7 @@ describe("closed lists (data-model §9, contract §9 and §12)", () => {
   });
 
   test("UNSUPPORTED_SUBMODULE reasons, and the two run-only reasons", () => {
-    expect([...SUBMODULE_REFUSAL_REASONS]).toEqual(["unsaved-commits", "update-mode", "clone-interrupted", "folder-not-empty", "no-url", "path", "active-value", "remote-name", "gitdir-config", "limit"]);
+    expect([...SUBMODULE_REFUSAL_REASONS]).toEqual(["unsaved-commits", "update-mode", "clone-interrupted", "folder-not-empty", "no-url", "path", "active-value", "remote-name", "parent-not-initialized", "inactive", "gitdir-config", "limit"]);
     expect([...SUBMODULE_RUN_REFUSAL_REASONS]).toEqual(["programs", "changed-after-review"]);
   });
 

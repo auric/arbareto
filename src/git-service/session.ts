@@ -634,7 +634,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     }
     scheduleRead(
       request,
-      (t) => submoduleReviews.reviewSubmodules({ ...t, installation, workspace, snapshot: found.snapshot }),
+      (t) => submoduleReviews.reviewSubmodules({ ...t, installation, workspace, snapshot: found.snapshot, ...(request.payload.scope === undefined ? {} : { scope: request.payload.scope }) }),
       async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
       { result: "failed", code: "GIT_FAILED" },
     );

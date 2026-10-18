@@ -22,8 +22,13 @@ import {
 import { NATIVE } from "../contracts/native-path";
 import {
   buildRefusalRemedy,
+  buildSubmoduleRemedy,
   redactUrlUserInfo,
+  sameSubmoduleHost,
+  submoduleUrlHost,
   type SubmoduleAction,
+  type SubmoduleHost,
+  type SubmoduleHostLine,
   type SubmodulePlanRow,
   type SubmoduleProgram,
   type SubmoduleRefusalReason,
@@ -58,7 +63,7 @@ import {
   type SubmoduleLocation,
 } from "./commands";
 import { unquote } from "./diff-parser";
-import { commandLineUnits, createCollector, wslCommandLineUnits, type GitRunner, type WalkStop, type WslLaunch } from "./git-runner";
+import { createCollector, stepUnits, type GitRunner, type WalkStop } from "./git-runner";
 import { isMissing, runRead } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { ChangeSnapshot, Completeness, Head, IndexEntry, ReadInstallation } from "./snapshot";
@@ -122,16 +127,14 @@ export interface PathForms {
   // The Git path of the remedy commands.
   gitPath: string | null;
   wsl: SubmoduleWslTarget | undefined;
-  // Contract §6 "Process fields": the measured `wsl.exe` command line of a WSL Git.
-  launch: WslLaunch | undefined;
 }
 
 export function pathForms(w: Pick<Workspace, "worktreeRoot" | "wsl">, installation: Pick<ReadInstallation, "selectedPath">): PathForms {
   if (w.wsl === undefined) {
     const key = (path: string) => NATIVE.fold(resolve(path));
-    return { gitRoot: w.worktreeRoot, root: resolve(w.worktreeRoot), join, resolve, key, native: (path) => path, platform: "windows", gitPath: installation.selectedPath, wsl: undefined, launch: undefined };
+    return { gitRoot: w.worktreeRoot, root: resolve(w.worktreeRoot), join, resolve, key, native: (path) => path, platform: "windows", gitPath: installation.selectedPath, wsl: undefined };
   }
-  const { distro, guid, wslExecutable, path, systemdRun, systemctl, setsid, noexpand } = w.wsl;
+  const { distro, guid, wslExecutable, path } = w.wsl;
   const route = routeWslPath(w.worktreeRoot, { listed: [distro], registry: [{ name: distro, guid, version: 2 }] });
   if (route.kind !== "wsl") throw new TypeError("a WSL workspace needs a Linux worktree root");
   return {
@@ -144,7 +147,6 @@ export function pathForms(w: Pick<Workspace, "worktreeRoot" | "wsl">, installati
     platform: "posix",
     gitPath: path,
     wsl: { wslExecutable, distro },
-    launch: { wslExecutable, distro, git: path, systemdRun, systemctl, setsid, noexpand },
   };
 }
 
@@ -174,6 +176,9 @@ export const REFUSAL_TEXTS = {
   remoteName: (path: string, name: string) => `Submodule ${path} has a remote named ${name}, which Git can read as an option. Rename that remote in a terminal, then use Refresh.`,
   gitdirConfig: "This repository sets custom locations for submodule Git folders. Arbareto reads only the default location. Update the submodules in a terminal.",
   limit: "This repository has more than 256 submodules or more than 8 nesting levels. Update them in a terminal.",
+  // Feature 004 contract Δ12.
+  parentNotInitialized: (parent: string, path: string) => `Submodule ${parent} is not initialized. Update ${parent} first, then update submodule ${path}.`,
+  inactive: (path: string) => `Submodule ${path} is not active, and Arbareto does not activate submodules. Activate it with the command, then update it again.`,
 };
 const NOTES = {
   relative: "Git resolves this URL against the remote of the parent repository.",
@@ -203,6 +208,8 @@ export interface SubmoduleReviewValue {
   rows: SubmodulePlanRow[];
   programs: SubmoduleProgram[];
   refusals: SubmoduleRefusal[];
+  // Feature 004 contract Δ12: `updateSubmodules` needs `confirmHosts` when this list is not empty.
+  hosts: SubmoduleHostLine[];
   submoduleReviewToken: string;
 }
 
@@ -222,6 +229,8 @@ export interface ObserveTarget {
 
 export interface SubmoduleReviewTarget extends ObserveTarget {
   snapshot: ChangeSnapshot;
+  // Feature 004 contract Δ12: the review covers this row and its nested rows.
+  scope?: { path: string };
 }
 
 // The superproject facts of an observation: a snapshot for the review, or `captureHead` and `ls-files -z --stage` for the update.
@@ -238,6 +247,8 @@ export interface RetainedSubmoduleReview {
   fingerprint: string;
   review: unknown;
   programs: unknown;
+  // The UTF-8 bytes of the scope path, or null for every row. The update observes with the same scope.
+  scope: Uint8Array | null;
 }
 
 // `path`: the folder of a failed folder read (contract §12 "Update protocol", read failures).
@@ -425,6 +436,8 @@ interface Level {
   parentPath: string | null;
   // The active pathspec matches of the parent. Null: `submodule.active` is unset. Undefined: a nested review level computes no active set.
   active?: ReadonlySet<string> | null;
+  // Feature 004 contract Δ12: the parent of this level holds the scope row below it, so the level reads only the rows on the way to that row.
+  above: boolean;
 }
 
 // One plan row with its read facts. `worktree` and `parentWorktree` are `PathForms.root` paths for reads and remedies.
@@ -453,6 +466,8 @@ export interface ObservedRow {
   register: boolean;
   // The `.gitmodules` URL after Git's `resolve_relative_url`, for the fallback remote. `url` null: `.gitmodules` names no URL. Null: Git dies on it.
   fallbackUrl: { url: string | null } | null;
+  // Feature 004 contract Δ12: the scope row lies below this row. The scoped update reads its nested level and changes nothing in it.
+  above: boolean;
 }
 
 // The program owner key of a row. A row ID is random, so the key holds the path bytes.
@@ -484,6 +499,8 @@ export interface Observed {
   byRow: ReadonlyMap<string, SubmoduleRefusal>;
   // The refusals that no row holds: a kept Git directory without a row, a parent setting, or the bound.
   unattached: SubmoduleRefusal[];
+  // `top` only: the contract Δ12 host lines.
+  hosts: SubmoduleHostLine[];
 }
 
 export interface SubmoduleReviewerOptions {
@@ -507,10 +524,13 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const c = s.completeness;
       return c.state === "limited" ? { result: "limited", code: c.code, value: { completeness: c } } : { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
     }
-    const o = observe(t);
+    const scope = t.scope === undefined ? null : new TextEncoder().encode(t.scope.path);
+    const o = observe(t, undefined, scope);
     const read = await o.top({ head: s.head, indexEntries: s.indexEntries });
     if ("stop" in read) return { result: read.stop };
     if (!("value" in read)) return { result: "failed", code: read.code, ...(read.path === undefined ? {} : { value: { path: read.path } }) };
+    // Contract Δ12: the scope names one row. A refusal on the way to it explains a missing row.
+    if (scope !== null && read.value.refusals.length === 0 && !read.value.rows.some((p) => Buffer.from(p.pathBytes).equals(scope))) return { result: "failed", code: "UNKNOWN_TARGET" };
     const { binding, fingerprint, review, programs } = o.binding()!;
     const submoduleReviewToken = crypto.randomUUID();
     approvals.issue({ kind: "submodule", reviewToken: submoduleReviewToken, repositoryId: w.repositoryId, snapshotId: s.snapshotId, generation: s.generation, binding });
@@ -520,14 +540,16 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       rows: read.value.rows.map((p) => p.row),
       programs: read.value.programs.map((e) => e.program),
       refusals: read.value.refusals,
+      hosts: read.value.hosts,
       submoduleReviewToken,
     };
-    retained.set(submoduleReviewToken, { repositoryId: w.repositoryId, issuedAt: now(), value, fingerprint, review, programs });
+    retained.set(submoduleReviewToken, { repositoryId: w.repositoryId, issuedAt: now(), value, fingerprint, review, programs, scope });
     return { result: "succeeded", value };
   }
 
   // One run of the review reads. `rowIds` maps base64 path bytes to retained row IDs. A row without one gets a new ID and `found`.
-  function observe(t: ObserveTarget, rowIds?: ReadonlyMap<string, string>) {
+  // `scope`: the UTF-8 path bytes of the contract Δ12 scope row, or null for every row.
+  function observe(t: ObserveTarget, rowIds?: ReadonlyMap<string, string>, scope: Uint8Array | null = null) {
     const { workspace: w, installation } = t;
     const objectFormat = w.objectFormat;
     const forms = pathForms(w, installation);
@@ -755,8 +777,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const heads = new Map<string, string>();
       const wanted = new Set(paths.map(latin1));
       const texts = paths.map((p) => utf8.decode(p));
-      const launch = forms.launch;
-      const units = launch === undefined ? (args: string[]) => commandLineUnits(installation.executablePath, args) : (args: string[]) => wslCommandLineUnits(launch, t.operationId, "read", "", forms.gitRoot, args);
+      const units = (args: string[]) => stepUnits({ operationId: t.operationId, workspace: w, installation }, "read", args);
       for (const batch of gitlinkBatches(texts, units)) {
         const r = await git(gitlinkPatchArgs(batch), { max: STATUS_LISTING_BYTES });
         if (r.limited) throw failed("OUTPUT_LIMIT");
@@ -787,9 +808,18 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     // ---- Rows ----
 
     const writing: ReadonlySet<SubmoduleAction> = new Set(["clone", "reuse", "checkout", "fetch-checkout"]);
+    const pathOf = (lv: Level, path: Uint8Array): Uint8Array => (lv.depth === 0 ? path : Buffer.concat([lv.prefix, Buffer.from("/"), path]));
+    // True for the scope row and for each row that holds it below. Path bytes compare exactly.
+    const onWay = (bytes: Uint8Array) => {
+      const s = scope!;
+      if (bytes.length >= s.length) return Buffer.from(bytes).equals(s);
+      return s[bytes.length] === 0x2f && Buffer.from(s.subarray(0, bytes.length)).equals(bytes);
+    };
 
     // `recurse`: the review reads every nested level. The update reads one level at a time (contract §12 "Update protocol" step 6).
-    async function readRows(lv: Level, links: { path: Uint8Array; oid: string | null }[], modules: Gitmodules, recurse: boolean): Promise<void> {
+    async function readRows(lv: Level, all: { path: Uint8Array; oid: string | null }[], modules: Gitmodules, recurse: boolean): Promise<void> {
+      // Contract Δ12: a level above the scope row reads only the row on the way to it.
+      const links = lv.above ? all.filter((link) => onWay(pathOf(lv, link.path))) : all;
       recordUrls(lv, links, modules);
       if (lv.depth >= SUBMODULE_REVIEW_NESTING_LEVELS) {
         if (links.length > 0) refuseLimit();
@@ -807,11 +837,18 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       const nested: [ObservedRow, Repo][] = [];
 
       for (const [i, { link, components }] of entries.entries()) {
-        const pathBytes = lv.depth === 0 ? link.path : Buffer.concat([lv.prefix, Buffer.from("/"), link.path]);
+        const pathBytes = pathOf(lv, link.path);
         const key = Buffer.from(pathBytes).toString("base64");
         // The index bounds the top-level rows, so each of them gets its refusals. Nested levels stop at the bound.
         if (!count(`row ${key}`) && lv.depth > 0) return;
         const display = displayPath(pathBytes);
+        // Contract Δ12: the update reads the nested level of a row above the scope row, so that row needs its `.git` entry.
+        const above = lv.above && !Buffer.from(pathBytes).equals(scope!);
+        if (above && components !== null && !initialized[i]) {
+          const path = displayPath(scope!);
+          refuse("parent-not-initialized", path, REFUSAL_TEXTS.parentNotInitialized(display, path), null);
+          continue;
+        }
         const name = modules.nameOf.get(latin1(link.path)) ?? null;
         const module = name === null ? undefined : modules.byName.get(name);
         const nameText = name === null ? null : (() => {
@@ -868,6 +905,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           fetches: false,
           register: false,
           fallbackUrl,
+          above,
         };
         rows.push(pending);
         if (components === null || nameText === null && name !== null) {
@@ -877,6 +915,19 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         // Contract §11 "Paths and file access": the folder reads need an exact UNC form of the worktree and of the kept Git directory.
         if (forms.native(worktree) === null || (nameText !== null && forms.native(forms.join(lv.modules, ...nameText.split("/"))) === null)) {
           refuse("path", display, REFUSAL_TEXTS.uncPath(display), null, row);
+          continue;
+        }
+        // Contract Δ12: the refusals and steps of this row do not apply. A HEAD without a commit gives no nested level.
+        if (above) {
+          const repo = await readRepo({ worktree });
+          pending.repo = repo;
+          if (repo.head === null) {
+            refuse("clone-interrupted", display, REFUSAL_TEXTS.cloneInterrupted(display), null, row);
+            continue;
+          }
+          row.head = topHeads?.get(latin1(link.path)) ?? (lv.depth === 0 ? link.oid : repo.head);
+          row.action = "none";
+          nested.push([pending, repo]);
           continue;
         }
         if (nameText === null || url === null) {
@@ -908,6 +959,11 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           row.action = "skip";
           // Reconciliation compares the HEAD of a skipped checked-out row with this commit.
           if (initialized[i]) row.head = topHeads === null ? (await readHead({ worktree })).head : (topHeads.get(latin1(link.path)) ?? link.oid);
+          // Contract Δ12: Git's `--init` with this path would activate the row and write its settings, so the scoped update refuses it.
+          if (scope !== null && Buffer.from(pathBytes).equals(scope)) {
+            const remedy = gitPath === null ? null : buildSubmoduleRemedy({ step: "register", gitPath, parentWorktree: lv.worktree, path: link.path, nested: lv.depth > 0, wsl });
+            refuse("inactive", display, REFUSAL_TEXTS.inactive(display), remedy, row);
+          }
           continue;
         }
 
@@ -979,16 +1035,17 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         if (setsGitdir(repo.entries)) refuseGitdir(pending.row.path, pending.parentWorktree, pending.localPath, pending.row.depth > 0);
         if (pending.row.action === "skip") continue;
         const target = pending.row.target;
-        const local = target !== null && (await present(repo.location, target));
+        // Contract Δ12: the scoped update keeps the HEAD of a row above the scope row, so its nested rows come from that HEAD.
+        const local = !pending.above && target !== null && (await present(repo.location, target));
         const commit = local ? target : repo.head;
-        if (!local) pending.unknownNested = true;
+        if (!local && !pending.above) pending.unknownNested = true;
         if (!recurse || commit === null) continue;
         const tree = await treeOf(repo.location, commit);
         if (tree === null || tree.gitlinks.length === 0) continue;
         // Git's checkout update mode detaches HEAD (git-submodule(1) `update`), so only a `none` row keeps its branch.
         await readRows(
           childLevel(pending, { ...repo, headRef: pending.row.action === "none" ? repo.headRef : null }, undefined),
-          tree.gitlinks.map((g) => ({ path: g.path, oid: local ? g.oid : null })),
+          tree.gitlinks.map((g) => ({ path: g.path, oid: local || pending.above ? g.oid : null })),
           tree.modules,
           true,
         );
@@ -1007,6 +1064,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       parentRowId: parent.row.rowId,
       parentPath: parent.row.path,
       ...(active === undefined ? {} : { active }),
+      above: parent.above,
     });
 
     // The gitlinks and the `.gitmodules` of a submodule commit. Null: the `.gitmodules` listing passed its bound.
@@ -1349,14 +1407,40 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           parentRowId: null,
           parentPath: null,
           active,
+          above: scope !== null,
         };
         await readRows(topLevel, gitlinks.map((e) => ({ path: e.path, oid: e.oid })), superModules, true);
-        const kept = await keptBelow([modules, ...rows.flatMap((p) => (p.repo === null ? [] : [forms.join(p.repo.gitDir, "modules")]))], true);
+        // Contract Δ12: a scoped walk covers only the `modules` folders of the rows in the scope.
+        const below = rows.flatMap((p) => (p.repo === null || p.above ? [] : [forms.join(p.repo.gitDir, "modules")]));
+        const kept = await keptBelow(scope === null ? [modules, ...below] : below, true);
         const rowless = await rowlessOf(kept, knownOf(rows));
         const programs = await programsOfAll(superListing, rows, rowless, true);
-        return { rows: [...rows], refusals: ordered(0), rowless, programs, config: superListing.entries, activeRefused: false, ...attachment(0) };
+        hosts = hostsOf(rows);
+        return { rows: [...rows], refusals: ordered(0), rowless, programs, config: superListing.entries, activeRefused: false, ...attachment(0), hosts };
       });
     }
+
+    // Contract Δ12 and plan.md D13: a row that fetches inside its submodule names the host of each remote URL that differs from the host of its effective URL.
+    // A `reuse` row without a HEAD commit fetches in its kept Git directory after its clone step (contract §12 "Plan").
+    const hostsOf = (list: readonly ObservedRow[]): SubmoduleHostLine[] => {
+      const lines: SubmoduleHostLine[] = [];
+      for (const p of list) {
+        if (p.repo === null || !(p.fetches || (p.row.action === "reuse" && p.row.head === null))) continue;
+        const effective = rawUrl(p);
+        const settings: SubmoduleHost = effective === null ? { kind: "unknown" } : submoduleUrlHost(effective, forms.platform);
+        const named: SubmoduleHost[] = [];
+        for (const entry of p.repo.entries) {
+          const k = keyParts(entry.key);
+          if (k === null || k.section !== "remote" || k.subsection === null || k.variable !== "url" || entry.value === null) continue;
+          const fetch = submoduleUrlHost(entry.value, forms.platform);
+          if (sameSubmoduleHost(fetch, settings) || named.some((h) => Bun.deepEquals(h, fetch) || sameSubmoduleHost(h, fetch))) continue;
+          named.push(fetch);
+          lines.push({ path: p.row.path, fetch, settings });
+        }
+      }
+      return lines;
+    };
+    let hosts: SubmoduleHostLine[] = [];
 
     // Contract §12 "Plan", active set: the `submodule.active` pathspecs. Null: the key is unset.
     const pathspecsOf = (entries: readonly ConfigEntry[]): string[] | null =>
@@ -1407,9 +1491,10 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         }
         if (tree !== null) await readRows(childLevel(parent, { ...config, headRef }, active), tree.gitlinks, tree.modules, false);
         const list = rows.slice(firstRow);
-        const rowless = await rowlessOf(await keptBelow([forms.join(config.gitDir, "modules")], false), knownOf(list));
+        // Contract Δ12: the level of a row above the scope row holds no row of the scope, so its walk covers nothing.
+        const rowless = await rowlessOf(await keptBelow(parent.above ? [] : [forms.join(config.gitDir, "modules")], false), knownOf(list));
         const programs = await programsOfAll(superListing, list, rowless, false);
-        return { rows: list, refusals: ordered(firstRefusal), rowless, programs, config: config.entries, activeRefused, ...attachment(firstRefusal) };
+        return { rows: list, refusals: ordered(firstRefusal), rowless, programs, config: config.entries, activeRefused, ...attachment(firstRefusal), hosts: [] };
       });
       return { read, links };
     }
@@ -1432,6 +1517,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
         rows: rows.map((p) => ({ ...p.row, rowId: undefined, parentRowId: undefined })),
         refusals: ordered(0),
         urls: [...urlsByPath].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)),
+        hosts,
       };
       const bound: SubmoduleBinding = { review: sha256(review), programs: sha256(programInputs), trust: { state: view.state, trustId: view.trustId ?? null } };
       return { binding: bound, fingerprint: cachedListing.fingerprint, review, programs: programInputs };

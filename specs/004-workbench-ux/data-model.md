@@ -120,7 +120,7 @@ Each section names its source. Field names are contract names. "001 data-model Â
 ## 12. Submodule row state (renderer)
 
 - `path`, `depth`, `state` (`waiting`, `fetching`, `updating`, `done`, `failed`, `refused`, `skipped`), `percent` (from the 001 progress counter, or null), `observed` (the 001 row result), `exitCode` and `outputTail` for a failure.
-- Host line: `{rows: [path], hosts: [{fetch, settings}]}` from the review, with Update anyway.
+- Host line: `{rows: [path], hosts: [{fetch, settings}]}` from the review, with Update anyway. Each host has the contract Î”12 form: `{kind: "host", name}`, `{kind: "local"}`, or `{kind: "unknown"}`.
 
 ## 13. Shell settings additions
 

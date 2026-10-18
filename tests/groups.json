@@ -196,6 +196,7 @@
     "tests/git/submodule-reconcile.test.ts",
     "tests/git/submodule-remote.test.ts",
     "tests/git/submodule-review.test.ts",
+    "tests/git/submodule-scope.test.ts",
     "tests/git/submodule-update.test.ts",
     "tests/git/switch.test.ts",
     "tests/git/sync-conflicts.test.ts",

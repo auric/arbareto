@@ -45,7 +45,7 @@ describeGit("Mark resolved (T047)", () => {
   async function registered(service: Service, repo: string): Promise<string> {
     const r = await register(service, repo);
     const trust = await service.readTrust(r.repositoryId);
-    expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+    expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
     return r.repositoryId;
   }
   const decision = (c: Comparison) => (c.response.result as { fileAction?: string } | undefined)?.fileAction;

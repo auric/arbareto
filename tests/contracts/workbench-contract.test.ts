@@ -645,9 +645,11 @@ describe("contract Δ6 private requests", () => {
       mergeDrivers: names({ driver: "union", scope: "local" }, 1),
       mergeTools: names({ tool: "fixture", scope: "global" }, 0),
       signing: names({ key: "gpg.program", scope: "local" }, 0),
+      other: names({ key: "core.sshcommand", scope: "local" }, 1),
     };
     const v2 = { type: "confirm", callId: id(), worktreeRoot: REPO, adminDirectory: GIT_DIR, commonDirectory: GIT_DIR, gitSelectedPath: GIT_PATH, policyVersion: 2, action: "commit", details };
-    const confirm = (value: unknown) => ok(P.TrustConfirmV2, value);
+    // T057 puts the version 2 frame in `TrustRequest` (contract Δ6).
+    const confirm = (value: unknown) => ok(channel.TrustRequest, value);
 
     test("the frame names the folders, the Git, the action, and the details", () => {
       expect(confirm(v2)).toBe(true);
@@ -672,8 +674,12 @@ describe("contract Δ6 private requests", () => {
       expect(confirm({ ...v2, details: { ...details, filters: { names: [], more: -1 } } })).toBe(false);
       const { signing: _s, ...withoutSigning } = details;
       expect(confirm({ ...v2, details: withoutSigning })).toBe(false);
-      // Plan D14: the shell shows a value with a control character as a fixed text, so the frame carries it.
+      // Plan D14: the shell shows an empty value or a value with a control character as a fixed text, so the frame carries it.
       expect(confirm({ ...v2, details: { ...details, hooks: names({ event: "pre\u0001commit", folder: GIT_DIR }, 1) } })).toBe(true);
+      expect(confirm({ ...v2, details: { ...details, filters: names({ driver: "", scope: "local" }, 1) } })).toBe(true);
+      // A `hook.<name>.event` hook names the scope of its command in place of a folder.
+      expect(confirm({ ...v2, details: { ...details, hooks: names({ event: "pre-push", scope: "global" }, 1) } })).toBe(true);
+      expect(confirm({ ...v2, details: { ...details, hooks: names({ event: "pre-push", scope: "global", folder: GIT_DIR }, 1) } })).toBe(false);
     });
   });
 

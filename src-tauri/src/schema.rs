@@ -23,6 +23,8 @@ pub const WSL_START_DEADLINE_MS: u64 = 60_000;
 const CLONE_URL_BYTES: usize = 4096;
 /// Feature 003 contract Δ2: the counters of the `sync` and `clone` phases.
 const SYNC_COUNTERS: [&str; 3] = ["percent", "remoteIndex", "remoteCount"];
+/// Feature 004 contract Δ5 "Trust dialog names per kind": `src/contracts/channel.ts` `TRUST_DIALOG_NAMES`.
+const TRUST_DIALOG_NAMES: usize = 20;
 /// Feature 004 contract Δ5 "Branch name": 255 UTF-8 bytes.
 const BRANCH_NAME_BYTES: usize = 255;
 /// Feature 004 data-model §1: a local branch lies under this prefix.
@@ -158,14 +160,26 @@ pub fn trust_request(
         value,
         &[
             "worktreeRoot",
-            "gitDirectory",
+            "adminDirectory",
             "commonDirectory",
             "gitSelectedPath",
         ],
     )?;
     match &request {
-        // `bound` comes only with `persist: false`.
-        TrustRequest::Confirm { persist, bound, .. } if *persist == bound.is_some() => Err(invalid),
+        // typify drops the `policyVersion: 2` constant, the 20-name bound of each `details` kind, and the `more` range (feature 004 contract Δ5 and Δ6).
+        TrustRequest::Confirm { .. }
+            if value["policyVersion"].as_u64() != Some(2)
+                || !value["details"].as_object().is_some_and(|kinds| {
+                    kinds.values().all(|kind| {
+                        kind["names"]
+                            .as_array()
+                            .is_some_and(|names| names.len() <= TRUST_DIALOG_NAMES)
+                            && kind["more"].as_u64().is_some()
+                    })
+                }) =>
+        {
+            Err(invalid)
+        }
         TrustRequest::ConfirmRun {
             program_count,
             unchecked_count,
@@ -218,8 +232,12 @@ fn one_identity_form(record: &Value) -> bool {
 }
 
 /// A stored trust record in the handshake form (contract §7 "Trust approval store"), within 4 KiB of JSON (contract §5).
+/// Version 1 has no `policyVersion`. typify drops the `policyVersion: 2` constant of version 2 (feature 004 data-model §10).
 pub fn trust_record(value: &Value) -> bool {
     typed::<trust_record::TrustRecord>(value).is_some()
+        && value
+            .get("policyVersion")
+            .is_none_or(|version| version.as_u64() == Some(2))
         && one_identity_form(value)
         && paths(
             value,
@@ -227,6 +245,7 @@ pub fn trust_record(value: &Value) -> bool {
                 "commonDirectory",
                 "worktreeRoot",
                 "gitDirectory",
+                "adminDirectory",
                 "gitSelectedPath",
             ],
         )
@@ -958,14 +977,17 @@ pub mod reply {
     }
 
     /// `record` passed `schema::trust_record` before the store wrote it.
+    /// The reply carries the stored form, because typify encodes the `policyVersion` constant as a float.
     pub fn confirm_stored(call_id: &str, record: &Value) -> Value {
-        encode(t::TrustReply::ConfirmGroup(t::ConfirmGroup::Stored {
+        let mut built = encode(t::TrustReply::ConfirmGroup(t::ConfirmGroup::Stored {
             call_id: field(call_id),
             record: typed(record).expect("a stored trust record passed its schema check"),
             result: APPROVED.into(),
             stored: true,
             type_: "confirm".into(),
-        }))
+        }));
+        built["record"] = record.clone();
+        built
     }
 
     pub fn confirm_run(call_id: &str, result: t::ConfirmRunReplyResult) -> Value {
@@ -1179,9 +1201,10 @@ mod tests {
         }
         assert!(wrong.is_empty(), "{wrong:#?}");
         // Feature 004 T017 adds 25 vectors, and `fileAppend` and `reveal` add 3 (contract Δ10).
+        // T057 replaces 5 `confirm` vectors with 8 version 2 vectors and adds 4 version 2 record vectors (contract Δ6).
         assert_eq!(
             checked,
-            if cfg!(windows) { 166 } else { 161 },
+            if cfg!(windows) { 173 } else { 168 },
             "shell-read vectors"
         );
     }
@@ -1217,14 +1240,14 @@ mod tests {
             inode: "43750".to_string(),
         });
         let record = json!({
+            "policyVersion": 2,
             "commonDirectory": "C:\\repo\\.git",
             "commonIdentity": windows.reply(),
             "worktreeRoot": "C:\\repo",
-            "gitDirectory": "C:\\repo\\.git",
+            "adminDirectory": "C:\\repo\\.git",
             "worktreeIdentity": [windows.reply(), windows.reply()],
-            "configurationFingerprint": "a".repeat(64),
-            "approvedAt": "2026-10-07T10:00:00Z",
             "gitSelectedPath": "C:\\Git\\cmd\\git.exe",
+            "approvedAt": "2026-10-07T10:00:00Z",
         });
         assert!(trust_record(&record), "{record}");
         let facts = vec![

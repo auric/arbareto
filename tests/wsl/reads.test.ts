@@ -56,8 +56,8 @@ async function compareEntry(s: WslSession, w: Workspace, snapshot: { snapshotId:
 
 async function approve(s: WslSession, w: Workspace): Promise<void> {
   const trust = await read(s, w, "readTrust");
-  const fingerprint = (trust.result as { fingerprint: string }).fingerprint;
-  expect(await read(s, w, "approveTrust", { fingerprint, approve: true }, true)).toMatchObject({ state: "succeeded" });
+  expect(trust).toMatchObject({ state: "succeeded" });
+  expect(await read(s, w, "approveTrust", { action: "read" })).toMatchObject({ state: "succeeded" });
 }
 
 const sortedLines = (text: string) => text.split("\n").filter((l) => l !== "").sort();

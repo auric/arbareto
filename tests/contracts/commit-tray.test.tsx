@@ -33,7 +33,7 @@ const SNAPSHOT = crypto.randomUUID();
 const TOKEN = crypto.randomUUID();
 const HEAD = { state: "branch", target: "refs/heads/main", oid: "1".repeat(40) } as const;
 const ok = (result: unknown): BridgeResponse => ({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "succeeded", result }) as BridgeResponse;
-const report = (commit: boolean, state = "untrusted") => ({ generation: 1, fingerprint: "f".repeat(64), state, persistence: "repository", approvalRequired: { reads: false, commit }, entries: [], hooks: [] });
+const report = (commit: boolean, state = "untrusted") => ({ generation: 1, programs: {}, state, persistence: "repository", approvalRequired: { reads: false, commit }, entries: [], hooks: [] });
 const flush = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 0))));
 
 const unmounts: (() => Promise<void>)[] = [];

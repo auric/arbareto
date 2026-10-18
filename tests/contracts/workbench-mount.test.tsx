@@ -587,7 +587,7 @@ describe("submodule update mount", () => {
 describe("trust", () => {
   const report = (state: string, reads: boolean) => ({
     generation: 1,
-    fingerprint: "f".repeat(64),
+    programs: {},
     state,
     persistence: "stored",
     approvalRequired: { reads, commit: false },
@@ -784,7 +784,7 @@ describe("history selection", () => {
 describe("repository menu", () => {
   test("the revoke result text leaves when another repository opens", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    const report = { generation: 1, fingerprint: "f".repeat(64), trustId: crypto.randomUUID(), state: "approved", persistence: "stored", approvalRequired: { reads: false, commit: false }, entries: [], hooks: [] };
+    const report = { generation: 1, programs: {}, trustId: crypto.randomUUID(), state: "approved", persistence: "stored", approvalRequired: { reads: false, commit: false }, entries: [], hooks: [] };
     await resolve(latest(double, "readTrust"), succeeded(report));
     const openMenu = async () => {
       const trigger = [...document.querySelectorAll<HTMLElement>('[role="menubar"] [role="menuitem"]')].find((e) => e.textContent === "Repository")!;
@@ -1387,7 +1387,7 @@ describe("toolbar branch text", () => {
 
 // T148 review fixes: the commit trust gate, the status bar notice, and the failed file action output.
 describe("mounted staging and commit", () => {
-  const trustReport = (commit: boolean) => ({ generation: 1, fingerprint: "f".repeat(64), state: "untrusted", persistence: "stored", approvalRequired: { reads: false, commit }, entries: [], hooks: [] });
+  const trustReport = (commit: boolean) => ({ generation: 1, programs: {}, state: "untrusted", persistence: "stored", approvalRequired: { reads: false, commit }, entries: [], hooks: [] });
   const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === label)!;
   const typeMessage = async (text: string) => {
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;

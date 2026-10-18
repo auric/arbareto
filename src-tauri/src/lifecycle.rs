@@ -103,7 +103,9 @@ pub fn confirmation(dialog: Dialog) -> Confirmation {
         Dialog::BrowserExited => ("The window browser process stopped.", "Restart Arbareto"),
     };
     Confirmation {
+        instruction: None,
         text: text.to_string(),
+        details: None,
         buttons: vec![
             Button {
                 id: ACTION,

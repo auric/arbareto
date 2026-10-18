@@ -257,7 +257,7 @@ describe("inert repository text (contract §1, §9 \"Commit failure output\")", 
       try {
         const { repositoryId } = await service.register(repo);
         const trust = await service.readTrust(repositoryId);
-        const approved = await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation);
+        const approved = await service.approveTrust(repositoryId);
         expect(approved.state).toBe("succeeded");
         const read = await service.readWorkspace(repositoryId);
         expect(read.state).toBe("succeeded");

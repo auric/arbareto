@@ -794,7 +794,7 @@ describe("programs (contract §12 \"Trust\")", () => {
       const { repositoryId } = await service.register(superOf(b));
       const trust = await service.readTrust(repositoryId);
       expect(trust.result!.approvalRequired.reads).toBe(true);
-      await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation);
+      await service.approveTrust(repositoryId);
       const read = await readOk(service, repositoryId);
       const trustId = (await service.readTrust(repositoryId)).result!.trustId!;
       expect((await service.revokeTrust(repositoryId, trustId)).state).toBe("succeeded");

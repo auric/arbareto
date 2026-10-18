@@ -306,7 +306,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
       await update();
       const { repositoryId } = await service.register(sup);
       const trust = await service.readTrust(repositoryId);
-      const approved = await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation);
+      const approved = await service.approveTrust(repositoryId);
       expect(approved.result!.persistence).toBe("stored");
       const r = await reviewSubmodules(service, repositoryId);
       expect(outcome(await updateSubmodules(service, repositoryId, r))).toEqual({ state: "succeeded", code: undefined });

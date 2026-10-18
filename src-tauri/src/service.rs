@@ -406,25 +406,23 @@ impl Service {
         let Some(call_id) = call_id(request) else {
             return;
         };
+        let fields = request;
         let handled = schema::trust_request(request).map(|request| match request {
             TrustRequest::Confirm {
                 worktree_root,
-                git_directory,
+                admin_directory,
                 common_directory,
                 git_selected_path,
-                fingerprint,
-                persist,
-                bound,
                 ..
             } => self.confirm_trust(
                 Confirm {
                     worktree_root: PathBuf::from(worktree_root.as_str()),
-                    git_directory: PathBuf::from(git_directory.as_str()),
+                    admin_directory: PathBuf::from(admin_directory.as_str()),
                     common_directory: PathBuf::from(common_directory.as_str()),
                     git_selected_path: PathBuf::from(git_selected_path.as_str()),
-                    fingerprint: fingerprint.to_string(),
-                    persist,
-                    bound: bound.map(|bound| bound.to_string()),
+                    // `trust_request` checked both values against the frame schema.
+                    action: fields["action"].as_str().unwrap_or_default().to_string(),
+                    details: fields["details"].clone(),
                 },
                 call_id,
             ),
@@ -443,15 +441,17 @@ impl Service {
                 }
             }
             TrustRequest::ConfirmRun {
+                worktree_root,
                 submodule_paths,
                 program_count,
                 unchecked_count,
                 ..
             } => {
+                let root = PathBuf::from(worktree_root.as_str());
                 let paths = submodule_paths.into_iter().map(String::from).collect();
                 // `trust_request` refused a negative count.
                 let unchecked = u64::try_from(unchecked_count).unwrap_or(0);
-                self.confirm_run(paths, program_count.get(), unchecked, call_id);
+                self.confirm_run(root, paths, program_count.get(), unchecked, call_id);
             }
         });
         if let Err(code) = handled {
@@ -485,6 +485,7 @@ impl Service {
     /// A service exit closes the dialog as Cancel, and its result goes nowhere.
     fn confirm_run(
         self: &Arc<Self>,
+        root: PathBuf,
         paths: Vec<String>,
         program_count: u64,
         unchecked_count: u64,
@@ -496,7 +497,7 @@ impl Service {
         std::thread::spawn(move || {
             let current = || me.exits.load(Ordering::SeqCst) == exits;
             let approved =
-                dialogs::confirm_run(&*me.dialogs, &paths, program_count, unchecked_count);
+                dialogs::confirm_run(&*me.dialogs, &root, &paths, program_count, unchecked_count);
             let result = if approved && current() {
                 ConfirmRunReplyResult::Approved
             } else {
@@ -2284,16 +2285,15 @@ mod tests {
     }
 
     /// Writes a stored trust record of the worktree with that common directory.
-    fn approve(shell: &Shell, worktree: &Path, git_directory: &Path, common: &Path) {
+    fn approve(shell: &Shell, worktree: &Path, admin_directory: &Path, common: &Path) {
         let confirmed = shell.stores.trust.confirm_with(
             &Confirm {
                 worktree_root: worktree.to_path_buf(),
-                git_directory: git_directory.to_path_buf(),
+                admin_directory: admin_directory.to_path_buf(),
                 common_directory: common.to_path_buf(),
                 git_selected_path: shell.fixture.path("git.exe"),
-                fingerprint: "a".repeat(64),
-                persist: true,
-                bound: None,
+                action: "commit".to_string(),
+                details: json!({}),
             },
             &crate::bootstrap::native_identity,
             |_| true,

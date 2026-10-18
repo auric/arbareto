@@ -130,8 +130,8 @@ async function readWs(s: WslSession, repositoryId: string): Promise<Read> {
 
 async function approve(s: WslSession, repositoryId: string): Promise<void> {
   const trust = await s.response(s.request("readTrust", {}, { repositoryId }));
-  const { fingerprint, generation } = trust.result as { fingerprint: string; generation: number };
-  expect(await s.response(s.request("approveTrust", { fingerprint, approve: true }, { repositoryId, repositoryGeneration: generation }))).toMatchObject({ state: "succeeded" });
+  expect(trust).toMatchObject({ state: "succeeded" });
+  expect(await s.response(s.request("approveTrust", { action: "commit" }, { repositoryId }))).toMatchObject({ state: "succeeded" });
 }
 
 interface Compared {

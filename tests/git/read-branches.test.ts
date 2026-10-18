@@ -147,7 +147,7 @@ describe("readBranches (contract Δ3, data-model §1)", () => {
       expect(service.runner.calls.slice(from).some((c) => c.arguments.includes("worktree"))).toBe(false);
       expect(existsSync(run.log)).toBe(false);
       const trust = await service.readTrust(r.repositoryId);
-      expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+      expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
       expect(outcome(await readBranches(service, r))).toEqual({ state: "succeeded", code: undefined });
     }),
     TIMEOUT_MS,

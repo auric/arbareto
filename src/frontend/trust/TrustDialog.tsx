@@ -3,6 +3,7 @@
 
 import { useId, useRef, useState, type RefObject } from "react";
 import type { z } from "zod";
+import type { TrustAction } from "../../contracts/channel";
 import type { ReadTrustResult } from "../../contracts/envelope";
 import type { createBridge } from "../bridge";
 import { Button } from "../components/ui/button";
@@ -16,19 +17,9 @@ export type TrustReport = Exclude<z.infer<typeof ReadTrustResult>, { remedy: unk
 type TrustApproved = { trustId: string; persistence: "stored" | "session"; saveFailed: boolean };
 type Bridge = Pick<ReturnType<typeof createBridge>, "approveTrust">;
 
-// The native trust confirmation text (src-tauri/src/dialogs.rs `trust_confirmation`).
 const CODE_EXECUTION = "Approval lets Git run the programs that this repository's configuration names.";
-// Contract §7 "Program file digests": the bound names of the native confirmation (src-tauri/src/dialogs.rs `bound_text`).
-const BOUND_TEXT: Record<NonNullable<TrustReport["bound"]>, string> = {
-  "file-count": "64 files",
-  "file-bytes": "1 MiB per file",
-  "total-bytes": "8 MiB total",
-  link: "a link that Arbareto cannot follow",
-  name: "a file name that Arbareto cannot check",
-};
-const SESSION_ONLY = "Arbareto cannot check these program files for later edits. This approval lasts until Arbareto closes or its Git service restarts.";
-// Contract §7 "Trust approval store".
-const PERSISTS = "Arbareto keeps this approval across launches until you revoke trust, or until the named programs or the Git selection change.";
+// Feature 004 spec FR-071: the approval binds the folders and the Git selection, not the programs.
+const PERSISTS = "Arbareto keeps this approval across launches until you revoke trust, or until the repository folder or the Git selection changes.";
 export const SAVE_FAILED_TEXT = "Arbareto could not save this approval. This approval lasts until Arbareto closes or its Git service restarts.";
 
 /** The notice after an `approveTrust` result with `saveFailed: true`. The mount places it, because the dialog closes on approval. */
@@ -36,8 +27,8 @@ export function SaveFailedNotice() {
   return <p role="status">{SAVE_FAILED_TEXT}</p>;
 }
 
-// Contract §3 `readTrust`: only a `TrustReport` has `fingerprint`.
-export const isTrustReport = (value: unknown): value is TrustReport => typeof value === "object" && value !== null && typeof (value as { fingerprint?: unknown }).fingerprint === "string";
+// Contract §3 `readTrust`: only a `TrustReport` has `programs` (feature 004 data-model §10).
+export const isTrustReport = (value: unknown): value is TrustReport => typeof value === "object" && value !== null && typeof (value as { programs?: unknown }).programs === "object";
 
 /** The code of a failed `readTrust`. Contract §5 "Trust report rows": an `OUTPUT_LIMIT` refusal adds its bound name. */
 export function trustFailureCode(response: { state: string; code?: string; result?: unknown }): string {
@@ -57,6 +48,8 @@ const hookLine = (h: TrustReport["hooks"][number]) => ("path" in h ? `${h.event}
 export type TrustDialogProps = {
   open: boolean;
   report: TrustReport;
+  /** Feature 004 contract Δ7: the action that the native dialog names. */
+  action: TrustAction;
   repositoryId: string;
   bridge: Bridge;
   /** The main window client size in DIPs. */
@@ -69,7 +62,7 @@ export type TrustDialogProps = {
   onFailed?(response: Awaited<ReturnType<Bridge["approveTrust"]>>): void;
 };
 
-export function TrustDialog({ open, report, repositoryId, bridge, client, finalFocus, onCancel, onApproved, onFailed }: TrustDialogProps) {
+export function TrustDialog({ open, report, action, repositoryId, bridge, client, finalFocus, onCancel, onApproved, onFailed }: TrustDialogProps) {
   const headingId = useId();
   const heading = useRef<HTMLHeadingElement>(null);
   const approveButton = useRef<HTMLButtonElement>(null);
@@ -79,7 +72,7 @@ export function TrustDialog({ open, report, repositoryId, bridge, client, finalF
   async function approve() {
     if (busy) return;
     setBusy(true);
-    const response = await bridge.approveTrust({ repositoryId, repositoryGeneration: report.generation }, { fingerprint: report.fingerprint, approve: true });
+    const response = await bridge.approveTrust({ repositoryId }, { action });
     setBusy(false);
     // A declined native confirmation stores nothing and keeps the dialog.
     if (response.state === "canceled") approveButton.current?.focus();
@@ -101,13 +94,7 @@ export function TrustDialog({ open, report, repositoryId, bridge, client, finalF
         </DialogTitle>
         <div role="region" aria-labelledby={headingId} tabIndex={0} className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-4 py-2">
           <p>{CODE_EXECUTION}</p>
-          {report.bound === undefined ? (
-            <p>{PERSISTS}</p>
-          ) : (
-            <p>
-              Reached bound: {BOUND_TEXT[report.bound]}. {SESSION_ONLY}
-            </p>
-          )}
+          <p>{PERSISTS}</p>
           <ul className="font-mono select-text">
             {report.entries.map((e, i) => (
               <li key={`e${i}`} className="break-all whitespace-pre-wrap">

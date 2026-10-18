@@ -38,16 +38,19 @@ const REPO = isWindows ? "C:\\repo" : "/repo";
 const GIT_DIR = isWindows ? "C:\\repo\\.git" : "/repo/.git";
 const GIT_PATH = isWindows ? "C:\\Program Files\\Git\\cmd\\git.exe" : "/usr/bin/git";
 const IDENTITY = { volumeSerial: "0123456789abcdef", fileId: "0123456789abcdef0123456789abcdef" };
+// Feature 004 data-model §10: the version 2 record of a stored approval.
 const RECORD: TrustRecord = {
+  policyVersion: 2,
   commonDirectory: GIT_DIR,
   commonIdentity: IDENTITY,
   worktreeRoot: REPO,
-  gitDirectory: GIT_DIR,
+  adminDirectory: GIT_DIR,
   worktreeIdentity: [IDENTITY, IDENTITY],
-  configurationFingerprint: "a".repeat(64),
-  approvedAt: "2026-10-02T08:00:00Z",
   gitSelectedPath: GIT_PATH,
+  approvedAt: "2026-10-02T08:00:00Z",
 };
+const NO_NAMES = { names: [], more: 0 };
+const DETAILS = { hooks: NO_NAMES, filters: { names: [{ driver: "lfs", scope: "local" as const }], more: 0 }, monitors: NO_NAMES, mergeDrivers: NO_NAMES, mergeTools: NO_NAMES, signing: NO_NAMES, other: NO_NAMES };
 
 // The shell end of the private channel. It sends contract §6 replies and never invents Git output beyond the bytes a test sets.
 function createChannelDouble() {
@@ -820,7 +823,7 @@ describe("native runner frame walks", () => {
   test("a confirm or confirmRun reply with deadline fails the call, because neither is a walk", async () => {
     const channel = createChannelDouble();
     const requests: TrustRequest[] = [
-      { type: "confirm", worktreeRoot: REPO, gitDirectory: GIT_DIR, commonDirectory: GIT_DIR, gitSelectedPath: GIT_PATH, fingerprint: "a".repeat(64), persist: true },
+      { type: "confirm", worktreeRoot: REPO, adminDirectory: GIT_DIR, commonDirectory: GIT_DIR, gitSelectedPath: GIT_PATH, policyVersion: 2, action: "commit", details: DETAILS },
       { type: "confirmRun", worktreeRoot: REPO, submodulePaths: [isWindows ? "C:\\repo\\sub" : "/repo/sub"], programCount: 1, uncheckedCount: 0 },
     ];
     for (const request of requests) {
@@ -870,17 +873,19 @@ describe("native runner mutation and trust frames", () => {
     ]);
   });
 
+  // Feature 004 contract Δ6: the version 2 frame.
   const confirm = {
     type: "confirm",
     worktreeRoot: REPO,
-    gitDirectory: GIT_DIR,
+    adminDirectory: GIT_DIR,
     commonDirectory: GIT_DIR,
     gitSelectedPath: GIT_PATH,
-    fingerprint: "a".repeat(64),
-    persist: true,
+    policyVersion: 2,
+    action: "commit",
+    details: DETAILS,
   } as const;
 
-  test("confirm carries bound only with persist false, and approved carries stored and record", async () => {
+  test("confirm version 2 carries the action and the details, and approved carries stored and a version 2 record", async () => {
     const channel = createChannelDouble();
     const stored = channel.runner.trust(confirm);
     const request = channel.last("confirm");
@@ -893,11 +898,6 @@ describe("native runner mutation and trust frames", () => {
     channel.reply("trust", { type: "confirm", callId: channel.last("confirm").callId, result: "approved", stored: false });
     expect(await failedWrite).toEqual({ result: "approved", stored: false });
 
-    const session = channel.runner.trust({ ...confirm, persist: false, bound: "file-count" });
-    expect(channel.last("confirm")).toMatchObject({ persist: false, bound: "file-count" });
-    channel.reply("trust", { type: "confirm", callId: channel.last("confirm").callId, result: "approved", stored: false });
-    expect(await session).toEqual({ result: "approved", stored: false });
-
     const declined = channel.runner.trust(confirm);
     channel.reply("trust", { type: "confirm", callId: channel.last("confirm").callId, result: "declined" });
     expect(await declined).toEqual({ result: "declined" });
@@ -907,17 +907,25 @@ describe("native runner mutation and trust frames", () => {
       { result: "approved", stored: true },
       { result: "approved", stored: false, record: RECORD },
       { result: "approved", stored: true, record: { ...RECORD, approvedAt: "yesterday" } },
+      // Plan.md O-5: the shell never stores a version 1 record.
+      { result: "approved", stored: true, record: { ...RECORD, policyVersion: undefined, adminDirectory: undefined, gitDirectory: GIT_DIR, configurationFingerprint: "a".repeat(64) } },
       { result: "declined", stored: false },
     ]) {
       const bad = channel.runner.trust(confirm);
-      expect(channel.reply("trust", { type: "confirm", callId: channel.last("confirm").callId, ...reply })).toBe(false);
+      expect(channel.reply("trust", { type: "confirm", callId: channel.last("confirm").callId, ...JSON.parse(JSON.stringify(reply)) })).toBe(false);
       await expect(bad).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
     }
-    const sessionOnly = channel.runner.trust({ ...confirm, persist: false, bound: "total-bytes" });
-    expect(channel.reply("trust", { type: "confirm", callId: channel.last("confirm").callId, result: "approved", stored: true, record: RECORD })).toBe(false);
-    await expect(sessionOnly).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
 
-    for (const bad of [{ ...confirm, persist: false }, { ...confirm, bound: "file-count" }, { ...confirm, persist: false, bound: "files" }, { ...confirm, fingerprint: "A".repeat(64) }]) {
+    const { adminDirectory: _a, policyVersion: _p, action: _c, details: _d, ...v1 } = confirm;
+    for (const bad of [
+      { ...v1, gitDirectory: GIT_DIR, fingerprint: "a".repeat(64), persist: true },
+      { ...confirm, fingerprint: "a".repeat(64) },
+      { ...confirm, persist: true },
+      { ...confirm, bound: "file-count" },
+      { ...confirm, policyVersion: 1 },
+      { ...confirm, action: "clone" },
+      { ...confirm, details: { ...DETAILS, filters: { names: Array.from({ length: 21 }, () => ({ driver: "lfs", scope: "local" })), more: 0 } } },
+    ]) {
       await expect(channel.runner.trust(bad as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     }
   });

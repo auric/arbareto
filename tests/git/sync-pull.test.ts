@@ -233,7 +233,7 @@ describeGit("sync pull and integrate (T044)", () => {
         const r = await register(service, built.repo);
         // The fixture filter driver is repository-controlled, so the trust gate decides first.
         const trust = await service.readTrust(r.repositoryId);
-        expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+        expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
         for (const payload of [{ action: "pull" }, { action: "integrate", mode: "rebase" }]) {
           expect(outcome(await reviewSync(service, r, payload))).toEqual({ state: "failed", code: "OPERATION_IN_PROGRESS" });
         }
@@ -363,7 +363,7 @@ describeGit("sync pull and integrate (T044)", () => {
       expect(outcome(await reviewSync(service, r, { action: "pull", mode: "merge" }))).toEqual({ state: "failed", code: "TRUST_REQUIRED" });
       expect(service.runner.calls.filter((c) => c.environmentPolicy === "remote" || c.environmentPolicy === "integrate")).toEqual([]);
       const trust = await service.readTrust(r.repositoryId);
-      expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+      expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
       const from = service.runner.calls.length;
       const response = await run(service, r, { action: "pull", mode: "merge" });
       expect(outcome(response)).toEqual(SUCCEEDED);
@@ -419,7 +419,7 @@ describeGit("sync pull and integrate (T044)", () => {
         await withSync(`t044-cancel-${mode}`, async (service) => {
           const r = await register(service, repo);
           const trust = await service.readTrust(r.repositoryId);
-          expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+          expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
           const requestId = sendSync(service, r, (await reviewed(service, r, { action: "integrate", mode })).syncReviewToken);
           await until(() => existsSync(native(started)), `${event} hook start`, 30_000);
           const canceledAt = performance.now();
@@ -458,7 +458,7 @@ describeGit("sync pull and integrate (T044)", () => {
       await withSync("t044-cancel-lock", async (service) => {
         const r = await register(service, repo);
         const trust = await service.readTrust(r.repositoryId);
-        expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+        expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
         const requestId = sendSync(service, r, (await reviewed(service, r, { action: "integrate", mode: "rebase" })).syncReviewToken);
         await until(() => existsSync(native(started)), "pre-rebase hook start", 30_000);
         await service.cancel(await service.operationId(requestId));

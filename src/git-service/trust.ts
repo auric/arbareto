@@ -4,7 +4,7 @@
 // Contract §7 "Startup, trust, and environment": the trust listing, the read gate, the configuration fingerprint, and the trust operations.
 // Upstream rules cite git-for-windows 49d759b (v2.56.0.windows.1), the revision of the T280 probe (research R5).
 
-import { IdentityReply, type FileFact, type TrustBound, type TrustRecord } from "../contracts/channel";
+import { IdentityReply, TRUST_DIALOG_NAMES, type FileFact, type TrustAction, type TrustDetails, type TrustRecord } from "../contracts/channel";
 import type { ConfigScope } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import {
@@ -723,6 +723,8 @@ export function configuredHooks(entries: readonly ConfigEntry[]): { hooks: Confi
 
 // ---- Program file facts (contract §6 "File facts", §7 "Program file digests") ----
 
+// Contract §7 "Program file digests" and §12 "Trust": only a submodule listing still reads digests (feature 004 contract Δ7 and Δ12).
+type TrustBound = "file-count" | "file-bytes" | "total-bytes" | "link" | "name";
 export type FileState = { kind: "digest"; digest: string } | { kind: "absent" } | { kind: "unchecked"; bound: TrustBound };
 
 // Contract §8 "Change check": one phase-1 `fileFacts` entry of a trust listing, with its fact.
@@ -1075,14 +1077,17 @@ export interface TrustListing {
   hooksDirectory: string | null;
   hooks: HookView;
   integrations: ProgramIntegration[];
-  // Data-model §3 `configurationFingerprint`.
+  // Data-model §3 `configurationFingerprint`. Feature 004 contract Δ7: a repository listing covers the phase-1 fact kind of each program file, not its bytes.
+  // No trust approval binds it. The policy fingerprint and the review tokens bind it.
   fingerprint: string;
-  bound?: TrustBound;
   // Contract §5 "Effective configuration/trust input": overflow blocks approval, so reads and `commit` need an approval that cannot come.
   inputLimited: boolean;
   approvalRequired: { reads: boolean; commit: boolean; sync: boolean; workbench: boolean };
+  // Feature 004 data-model §10 `programs` and contract Δ6 `details`.
+  programs: TrustDetails;
   changeFiles: ChangeFiles;
-  // The file state of each integration and each folder hook, in list order. Null: the file lies outside the roots, or the integration is not repository-controlled.
+  // The file state of each integration and each folder hook, in list order. Null: the file lies outside the roots, the integration is not repository-controlled,
+  // or the listing reads no digests. Only a submodule listing reads digests (contract §12 "Trust").
   files: { integrations: (FileState | null)[]; folder: (FileState | null)[] };
   // Contract §12 "Trust": a submodule listing whose repository-controlled hooks folder lies outside the roots. It lists no hook of that folder.
   hooksOutside?: true;
@@ -1315,10 +1320,12 @@ async function buildListing(
   }
   for (const { walked: entry } of listedFolder) ordered.push(entry);
 
+  // Contract §12 "Trust": a submodule listing digests its program files. Feature 004 contract Δ7: a repository listing runs no phase 2.
+  const digests = submodule !== undefined;
   // Contract §7 "Program file digests": phase 2 digests at most 64 distinct `file` facts in fingerprint order. No other fact counts.
   const slots = new Map<string, number>();
   const phase2: Inside[] = [];
-  for (const entry of ordered) {
+  for (const entry of digests ? ordered : []) {
     if (entry.kind !== "fact" || entry.fact.kind !== "file" || slots.has(keyOf(entry.at, rules))) continue;
     slots.set(keyOf(entry.at, rules), slots.size);
     if (slots.size <= TRUST_DIGEST_FILES) phase2.push(entry.at);
@@ -1340,19 +1347,21 @@ async function buildListing(
     return states.get(keyOf(entry.at, rules)) ?? { kind: "absent" };
   };
 
-  // Contract §5: the first reached bound is reported.
-  let bound: TrustBound | undefined;
   const digest = new Digest().field("format", "arbareto-trust-1").field("inputLimited", inputLimited);
-  // Contract §7 fact table. A path without a link adds only the `file` field, as before. So old approvals stay valid.
-  // Null: the file lies outside the roots.
+  // Contract §7 fact table. Null: the file lies outside the roots, or the listing reads no digests.
   const fileFields = (entry: Walked): FileState | null => {
     for (const hop of entry.hops) digest.field("hop", hop);
     if (entry.kind === "outside") {
       digest.field("resolved", entry.location).field("file", "outside");
       return null;
     }
+    // Feature 004 spec FR-071: a repository listing covers no file bytes, so an edit of a program file changes no fingerprint.
+    // As phase 2 did, only a `file` fact counts as a file.
+    if (!digests) {
+      digest.field("file", entry.kind === "unresolved" ? "unchecked" : entry.fact.kind === "file" ? "file" : "absent");
+      return null;
+    }
     const state: FileState = entry.kind === "unresolved" ? { kind: "unchecked", bound: entry.bound } : stateOf(entry);
-    if (state.kind === "unchecked") bound ??= state.bound;
     digest.field("file", fileValue(state));
     return state;
   };
@@ -1367,10 +1376,7 @@ async function buildListing(
   if (folderWalk !== null) {
     for (const hop of folderWalk.hops) digest.field("hooksFolderHop", hop);
     if (folderWalk.kind === "outside") digest.field("hooksFolderResolved", folderWalk.location);
-    if (folderWalk.kind === "unresolved") {
-      digest.field("hooksFolder", "unchecked");
-      bound ??= folderWalk.bound;
-    }
+    if (folderWalk.kind === "unresolved") digest.field("hooksFolder", "unchecked");
   }
   for (const [i, integration] of integrations.entries()) {
     if (!integration.repositoryControlled) continue;
@@ -1401,10 +1407,11 @@ async function buildListing(
   const activeHooks = [...configured.filter((h) => !h.disabled && !h.eventDisabled), ...folder];
   const commitHooks = activeHooks.some((h) => COMMIT_EVENTS.has(h.event) && h.repositoryControlled);
   // Feature 003 plan.md D11: a repository-controlled `protocol.allow` or `protocol.<name>.allow` entry changes Git's transport policy.
-  const protocolControlled = entries.some((e) => {
+  const protocolEntries = entries.filter((e) => {
     const p = keyParts(e.key);
     return p !== null && p.section === "protocol" && p.variable === "allow" && entryControlled(e);
   });
+  const protocolControlled = protocolEntries.length > 0;
   const approvalRequired = {
     reads: inputLimited || integrations.some((i) => i.reads && i.repositoryControlled),
     commit: inputLimited || hooksPathControlled || folderUnlisted || commitHooks || integrations.some((i) => i.commit && i.repositoryControlled),
@@ -1420,15 +1427,55 @@ async function buildListing(
       hooks: { configured, folder, fatal: derived.fatal },
       integrations,
       fingerprint: digest.hex(),
-      ...(bound === undefined ? {} : { bound }),
       inputLimited,
       approvalRequired,
+      programs: programNames(activeHooks, hooksDirectory, integrations, [...(hooksPathControlled ? [hooksPath!] : []), ...protocolEntries]),
       changeFiles: { configPaths: config.paths, programFiles: reader.programFiles, complete: config.complete },
       files: { integrations: integrationFiles, folder: folderFiles },
       ...(hooksOutside ? { hooksOutside: true as const } : {}),
       ...(reader.index() === undefined ? {} : { index: reader.index() }),
     },
   };
+}
+
+// Feature 004 data-model §10 `programs` and contract Δ6 `details`: each repository-controlled program by name and scope, never a value.
+// Every text is redacted (contract §7 "URL user information"). A kind lists at most 20 names, then the count of the others.
+// `keys`: the repository-controlled `core.hooksPath` and `protocol.allow` entries, which need approval without a program of their own.
+function programNames(
+  hooks: readonly ((ConfiguredHook & { repositoryControlled: boolean }) | (FolderHook & { repositoryControlled: boolean }))[],
+  hooksDirectory: string | null,
+  integrations: readonly ProgramIntegration[],
+  keys: readonly ConfigEntry[],
+): TrustDetails {
+  const kinds = { hooks: [] as TrustDetails["hooks"]["names"], filters: [] as TrustDetails["filters"]["names"], monitors: [] as TrustDetails["monitors"]["names"], mergeDrivers: [] as TrustDetails["mergeDrivers"]["names"], signing: [] as TrustDetails["signing"]["names"], other: [] as TrustDetails["other"]["names"] };
+  const seen = new Set<string>();
+  const add = <K extends keyof typeof kinds>(kind: K, item: (typeof kinds)[K][number]) => {
+    const key = JSON.stringify([kind, item]);
+    if (seen.has(key)) return;
+    seen.add(key);
+    (kinds[kind] as unknown[]).push(item);
+  };
+  for (const hook of hooks) {
+    if (!hook.repositoryControlled) continue;
+    if ("path" in hook) add("hooks", { event: hook.event, folder: redactUrlUserInfo(hooksDirectory!) });
+    else if (hook.command !== null) add("hooks", { event: redactUrlUserInfo(hook.event), scope: hook.command.scope });
+  }
+  for (const { key, entry, repositoryControlled, reads, commit, sync, workbench } of integrations) {
+    const p = keyParts(key);
+    if (!repositoryControlled || p === null) continue;
+    const { section, subsection, variable } = p;
+    const scope = entry.scope;
+    if (section === "filter") add("filters", { driver: redactUrlUserInfo(subsection!), scope });
+    else if (section === "core" && variable === "fsmonitor") add("monitors", { scope });
+    else if (section === "merge" && variable === "driver") add("mergeDrivers", { driver: redactUrlUserInfo(subsection!), scope });
+    else if (section === "gpg") add("signing", { key: redactUrlUserInfo(key), scope });
+    // A `hook.<name>.command` program shows as its hooks. A program of no class needs no approval, such as `diff.<driver>.textconv`.
+    else if (section !== "hook" && (reads || commit || sync || workbench)) add("other", { key: redactUrlUserInfo(key), scope });
+  }
+  for (const entry of keys) add("other", { key: redactUrlUserInfo(entry.key), scope: entry.scope });
+  const capped = <T>(items: T[]) => ({ names: items.slice(0, TRUST_DIALOG_NAMES), more: Math.max(0, items.length - TRUST_DIALOG_NAMES) });
+  // T060 adds the class `mergetool` and its tool discovery (plan.md D12). Until then, `mergeTools` names nothing.
+  return { hooks: capped(kinds.hooks), filters: capped(kinds.filters), monitors: capped(kinds.monitors), mergeDrivers: capped(kinds.mergeDrivers), mergeTools: capped([]), signing: capped(kinds.signing), other: capped(kinds.other) };
 }
 
 const SHELL_COMMAND = "<shell command>";
@@ -1519,8 +1566,6 @@ export interface TrustView {
   trustId?: string;
   persistence: "stored" | "session";
   approvalRequired: TrustListing["approvalRequired"];
-  fingerprint: string;
-  bound?: TrustBound;
 }
 
 // The terminal result of a trust operation. `rejected` comes only from an acceptance check.
@@ -1537,23 +1582,30 @@ export interface TrustTarget extends ListingTarget {
 
 export interface ReadTrustValue {
   generation: number;
-  fingerprint: string;
   state: TrustState;
   persistence: "stored" | "session";
   trustId?: string;
   approvalRequired: TrustListing["approvalRequired"];
-  bound?: TrustBound;
   inputLimited?: true;
   entries: ReturnType<typeof displayEntries>;
   hooks: ReturnType<typeof displayHooks>;
+  programs: TrustDetails;
+}
+
+// Feature 004 spec FR-071: an approval binds the folders and the selected Git path. The record also binds their identities.
+interface Binding {
+  commonDirectory: string;
+  worktreeRoot: string;
+  adminDirectory: string;
+  gitSelectedPath: string;
 }
 
 interface WorktreeTrust {
   common: PhysicalIdentity;
   commonDirectory: string;
   trustId?: string;
-  // A session approval: over a digest bound, or after a failed store. It takes precedence over a stored record.
-  approval?: { fingerprint: string; gitSelectedPath: string };
+  // A session approval after a failed store. It takes precedence over a stored record.
+  approval?: Binding;
   revoked: boolean;
 }
 
@@ -1561,11 +1613,23 @@ interface WorktreeTrust {
 const samePath = (a: string, b: string) => NATIVE.fold(a) === NATIVE.fold(b);
 const worktreeKey = (w: Workspace) => JSON.stringify([w.commonIdentity, w.worktreeIdentity]);
 
+// Contract §7 "Trust approval store": a record of the same worktree. Both record versions hold these fields.
 const sameWorktreeRecord = (record: TrustRecord, w: Workspace) =>
   (sameIdentity(record.commonIdentity, w.commonIdentity) &&
     sameIdentity(record.worktreeIdentity[0]!, w.worktreeIdentity[0]) &&
     sameIdentity(record.worktreeIdentity[1]!, w.worktreeIdentity[1])) ||
   (samePath(record.commonDirectory, w.commonDirectory) && samePath(record.worktreeRoot, w.worktreeRoot));
+
+const sameBinding = (b: Binding, w: Workspace, gitSelectedPath: string) =>
+  samePath(b.commonDirectory, w.commonDirectory) && samePath(b.worktreeRoot, w.worktreeRoot) && samePath(b.adminDirectory, w.gitDirectory) && samePath(b.gitSelectedPath, gitSelectedPath);
+
+// Feature 004 data-model §10: only a version 2 record with the same identities, folders, and selected Git path approves.
+const approvedBy = (record: TrustRecord, w: Workspace, gitSelectedPath: string) =>
+  "policyVersion" in record &&
+  sameIdentity(record.commonIdentity, w.commonIdentity) &&
+  sameIdentity(record.worktreeIdentity[0]!, w.worktreeIdentity[0]) &&
+  sameIdentity(record.worktreeIdentity[1]!, w.worktreeIdentity[1]) &&
+  sameBinding(record, w, gitSelectedPath);
 
 // T212 decision W8: `confirm` needs the UNC form of the WSL Git path. Without it, `readTrust` and `approveTrust` refuse with the §11 code before any listing.
 // Only a WSL Git path has no UNC form (`ReadInstallation`).
@@ -1586,8 +1650,6 @@ export function createTrust({ runner, environment, configFiles = () => undefined
   const list = (target: ListingTarget) => listTrust(runner, target, environment, configFiles(target.workspace.gitInstallationId));
   let records: TrustRecord[] = [];
   const worktrees = new Map<string, WorktreeTrust>();
-  // Contract §2 and §9: `approveTrust` names the fingerprint and the generation of the last `readTrust`.
-  const issued = new Map<string, { fingerprint: string; generation: number; inputLimited: boolean }>();
   // Each released `repositoryId`. The registration never issues one again (contract §6 "Registration reuse and release").
   const released = new Set<string>();
   const shared = createSharedListings();
@@ -1600,37 +1662,29 @@ export function createTrust({ runner, environment, configFiles = () => undefined
   };
   const trustIdOf = (t: WorktreeTrust) => (t.trustId ??= crypto.randomUUID());
 
-  // Contract §7 "Trust approval store": the state from the records and the session approvals.
-  function stateOf(w: Workspace, fingerprint: string, gitSelectedPath: string | null): { state: TrustState; trustId?: string; session: boolean } {
+  // Feature 004 plan.md D12 "State": a matching version 2 record or session approval gives `approved`. Any other record of the worktree gives `changed`,
+  // also a version 1 record (plan.md O-5). No listing fact decides the state.
+  function stateOf(w: Workspace, gitSelectedPath: string | null): { state: TrustState; trustId?: string; session: boolean } {
     const t = worktree(w);
-    const sameGit = (path: string) => gitSelectedPath !== null && samePath(path, gitSelectedPath);
     if (t.revoked) return { state: "revoked", session: false };
     if (t.approval !== undefined) {
-      const same = t.approval.fingerprint === fingerprint && sameGit(t.approval.gitSelectedPath);
+      const same = gitSelectedPath !== null && sameBinding(t.approval, w, gitSelectedPath);
       return { state: same ? "approved" : "changed", trustId: trustIdOf(t), session: true };
     }
-    const matching = records.filter((r) => sameIdentity(r.commonIdentity, w.commonIdentity) && sameIdentity(r.worktreeIdentity[0]!, w.worktreeIdentity[0]) && sameIdentity(r.worktreeIdentity[1]!, w.worktreeIdentity[1]));
-    if (matching.some((r) => r.configurationFingerprint === fingerprint && sameGit(r.gitSelectedPath))) return { state: "approved", trustId: trustIdOf(t), session: false };
-    if (matching.length > 0 || records.some((r) => samePath(r.commonDirectory, w.commonDirectory) && samePath(r.worktreeRoot, w.worktreeRoot))) {
-      return { state: "changed", trustId: trustIdOf(t), session: false };
-    }
-    return { state: "untrusted", session: false };
+    const own = records.filter((r) => sameWorktreeRecord(r, w));
+    if (own.length === 0) return { state: "untrusted", session: false };
+    const approved = gitSelectedPath !== null && own.some((r) => approvedBy(r, w, gitSelectedPath));
+    return { state: approved ? "approved" : "changed", trustId: trustIdOf(t), session: false };
   }
 
-  function view(w: Workspace, listing: TrustListing, installation: ReadInstallation): TrustView {
-    const { state, trustId, session } = stateOf(w, listing.fingerprint, installation.selectedPath);
-    return {
-      state,
-      ...(trustId === undefined ? {} : { trustId }),
-      persistence: session || listing.bound !== undefined ? "session" : "stored",
-      // Contract §3 `readTrust` and feature 003 contract Δ7.
-      approvalRequired: { ...listing.approvalRequired },
-      fingerprint: listing.fingerprint,
-      ...(listing.bound === undefined ? {} : { bound: listing.bound }),
-    };
+  function view(w: Workspace, listing: Pick<TrustListing, "approvalRequired">, installation: ReadInstallation): TrustView {
+    const { state, trustId, session } = stateOf(w, installation.selectedPath);
+    // Contract §3 `readTrust` and feature 003 contract Δ7.
+    return { state, ...(trustId === undefined ? {} : { trustId }), persistence: session ? "session" : "stored", approvalRequired: { ...listing.approvalRequired } };
   }
 
   // Contract §7: the gate of reads, of `commit`, of feature 003 `sync`, and of feature 004 `workbench`. Null: the operation may run. An input-limited listing can never pass.
+  // Feature 004 plan.md D12: the state comes from the records alone, so the fingerprint takes no part in it.
   function gate(
     w: Workspace,
     listing: Pick<TrustListing, "fingerprint" | "inputLimited"> & { approvalRequired: Readonly<Partial<TrustListing["approvalRequired"]>> },
@@ -1638,7 +1692,7 @@ export function createTrust({ runner, environment, configFiles = () => undefined
     kind: keyof TrustListing["approvalRequired"],
   ): "TRUST_REQUIRED" | "TRUST_CHANGED" | null {
     if (listing.approvalRequired[kind] !== true) return null;
-    const { state } = stateOf(w, listing.fingerprint, installation.selectedPath);
+    const { state } = stateOf(w, installation.selectedPath);
     if (state === "approved" && !listing.inputLimited) return null;
     return state === "changed" ? "TRUST_CHANGED" : "TRUST_REQUIRED";
   }
@@ -1649,14 +1703,13 @@ export function createTrust({ runner, environment, configFiles = () => undefined
       records = [...handshake];
     },
 
-    // Contract §6 "Registration reuse and release": a release clears the session approval and the trust ID of its worktree, and the issued fingerprint and shared listing of its `repositoryId`.
+    // Contract §6 "Registration reuse and release": a release clears the session approval and the trust ID of its worktree, and the shared listing of its `repositoryId`.
     release(w: Workspace): void {
       const t = worktrees.get(worktreeKey(w));
       if (t !== undefined) {
         delete t.approval;
         delete t.trustId;
       }
-      issued.delete(w.repositoryId);
       shared.release(w.repositoryId);
       released.add(w.repositoryId);
     },
@@ -1665,60 +1718,49 @@ export function createTrust({ runner, environment, configFiles = () => undefined
     gate,
     shared,
 
-    // Contract §3 `readTrust`. The result issues the fingerprint and the generation that `approveTrust` names.
+    // Contract §3 `readTrust`. It never asks (feature 004 spec FR-072).
     async readTrust(target: TrustTarget, generation: number): Promise<TrustOutcome<ReadTrustValue>> {
       if (target.installation.selectedPath === null) return unmappableGit(target.workspace);
       const outcome = await list(target);
       if (!outcome.ok) return stopped(outcome);
-      // A release cancels the read (contract §6 "Registration reuse and release"). A canceled read issues nothing.
+      // A release cancels the read (contract §6 "Registration reuse and release").
       if (target.signal.aborted) return { result: "canceled" };
       const { listing } = outcome;
-      // Contract §5 "Trust report rows": the approval covers every row, so a report above a bound is refused whole and issues nothing.
+      // Contract §5 "Trust report rows": a report above a bound is refused whole.
       const rows = listing.entries.length > TRUST_REPORT_ENTRIES ? "TRUST_REPORT_ENTRIES" : listing.hooks.configured.length + listing.hooks.folder.length > TRUST_REPORT_HOOKS ? "TRUST_REPORT_HOOKS" : null;
-      if (rows !== null) {
-        issued.delete(target.workspace.repositoryId);
-        return { result: "failed", code: "OUTPUT_LIMIT", value: { reason: rows } };
-      }
-      issued.set(target.workspace.repositoryId, { fingerprint: listing.fingerprint, generation, inputLimited: listing.inputLimited });
+      if (rows !== null) return { result: "failed", code: "OUTPUT_LIMIT", value: { reason: rows } };
       const value: ReadTrustValue = {
         generation,
         ...view(target.workspace, listing, target.installation),
         ...(listing.inputLimited ? { inputLimited: true as const } : {}),
         entries: displayEntries(listing),
         hooks: displayHooks(listing),
+        programs: listing.programs,
       };
       return listing.inputLimited ? { result: "limited", code: "OUTPUT_LIMIT", value } : { result: "succeeded", value };
     },
 
-    // Contract §9: a fingerprint-generation mismatch gives TRUST_CHANGED at acceptance. Contract §5: input overflow blocks approval.
-    acceptApprove(repositoryId: string, fingerprint: string, generation: number): ErrorCode | null {
-      const last = issued.get(repositoryId);
-      if (last === undefined || last.fingerprint !== fingerprint || last.generation !== generation) return "TRUST_CHANGED";
-      return last.inputLimited ? "OUTPUT_LIMIT" : null;
-    },
-
-    // Contract §3 `approveTrust` and §7 "Trust approval store". The service stores nothing itself. The shell writes the record.
-    async approveTrust(target: TrustTarget, fingerprint: string): Promise<TrustOutcome<{ trustId: string; persistence: "stored" | "session"; saveFailed: boolean }>> {
+    // Contract §3 `approveTrust` and feature 004 contract Δ6: the shell shows one dialog with the action and the details, and it writes the record.
+    async approveTrust(target: TrustTarget, action: TrustAction): Promise<TrustOutcome<{ trustId: string; persistence: "stored" | "session"; saveFailed: boolean }>> {
       const w = target.workspace;
       const gitSelectedPath = target.installation.selectedPath;
       if (gitSelectedPath === null) return unmappableGit(w);
       const outcome = await list(target);
       if (!outcome.ok) return stopped(outcome);
       const { listing } = outcome;
+      // Contract §5: input overflow blocks approval.
       if (listing.inputLimited) return { result: "failed", code: "OUTPUT_LIMIT" };
-      if (listing.fingerprint !== fingerprint) return { result: "failed", code: "TRUST_CHANGED" };
-      const persist = listing.bound === undefined;
       let reply;
       try {
         reply = await runner.trust({
           type: "confirm",
           worktreeRoot: w.worktreeRoot,
-          gitDirectory: w.gitDirectory,
+          adminDirectory: w.gitDirectory,
           commonDirectory: w.commonDirectory,
           gitSelectedPath,
-          fingerprint,
-          persist,
-          ...(listing.bound === undefined ? {} : { bound: listing.bound }),
+          policyVersion: 2,
+          action,
+          details: listing.programs,
         });
       } catch (error) {
         if (error instanceof RunnerRefusal) return { result: "failed", code: error.code };
@@ -1731,16 +1773,15 @@ export function createTrust({ runner, environment, configFiles = () => undefined
       const t = worktree(w);
       t.revoked = false;
       t.trustId = crypto.randomUUID();
-      if (persist && reply.stored === true) {
-        // Contract §7: the new record replaces every record of the same worktree.
+      if (reply.stored === true) {
+        // Contract §7: the new record replaces every record of the same worktree, a version 1 record too (plan.md O-5).
         records = [...records.filter((r) => !sameWorktreeRecord(r, w)), reply.record];
         delete t.approval;
         return { result: "succeeded", value: { trustId: t.trustId, persistence: "stored", saveFailed: false } };
       }
-      t.approval = { fingerprint, gitSelectedPath };
-      // With `persist: false`, the shell deletes every record of the same worktree. A failed store leaves the records unchanged.
-      if (!persist) records = records.filter((r) => !sameWorktreeRecord(r, w));
-      return { result: "succeeded", value: { trustId: t.trustId, persistence: "session", saveFailed: persist } };
+      // A failed store leaves the stored records unchanged.
+      t.approval = { commonDirectory: w.commonDirectory, worktreeRoot: w.worktreeRoot, adminDirectory: w.gitDirectory, gitSelectedPath };
+      return { result: "succeeded", value: { trustId: t.trustId, persistence: "session", saveFailed: true } };
     },
 
     // Contract §3 `revokeTrust`: the payload names the current trust ID of the workspace.

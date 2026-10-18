@@ -739,26 +739,19 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     },
     approveTrust: (request) => {
       const workspace = workspaceOf(request.repositoryId);
-      const { fingerprint } = request.payload;
       trustOperation(
         request,
-        () => trust.acceptApprove(request.repositoryId, fingerprint, request.repositoryGeneration),
-        (t) => trust.approveTrust({ ...t, workspace }, fingerprint),
+        () => null,
+        (t) => trust.approveTrust({ ...t, workspace }, request.payload.action),
       );
     },
     revokeTrust: (request) => {
       const workspace = workspaceOf(request.repositoryId);
       trustOperation(
         request,
-        () => trust.acceptRevoke(workspace, request.payload.trustId),
-        (t) => {
-          // Contract §6 "Lingering Jobs": a revoke after `started` sets `endProcesses` on the `ended` frame of each unfinished mutation of that common directory.
-          for (const operationId of exclusion.running(workspace.commonIdentity)) {
-            const state = registry.get(operationId)?.state;
-            if (state === "running" || state === "cancel-requested" || state === "reconciling") registry.apply(operationId, { type: "revoke-trust" });
-          }
-          return trust.revokeTrust({ ...t, workspace });
-        },
+        // Feature 004 plan.md D12: Stop trusting is unavailable while a mutation of that common directory runs, because revocation never cancels running work.
+        () => trust.acceptRevoke(workspace, request.payload.trustId) ?? (exclusion.running(workspace.commonIdentity).length > 0 ? "BUSY" : null),
+        (t) => trust.revokeTrust({ ...t, workspace }),
       );
     },
     applyHunk: (request) => {

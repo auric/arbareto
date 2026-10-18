@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { BRANCH_NAME_BYTES } from "./branch-name";
-import { DamagedMarker, LinuxPath, SYNC_ACTIONS, SyncAction, TRUST_BOUNDS, UtcTime } from "./channel";
+import { DamagedMarker, LinuxPath, SYNC_ACTIONS, SyncAction, TRUST_ACTIONS, TrustDetails, UtcTime } from "./channel";
 import {
   DESTINATION_NOT_EMPTY_REASONS,
   ERROR_CODES,
@@ -149,7 +149,8 @@ const SearchHistory = op("searchHistory", repository, z.strictObject({ viewId: I
 const CloseHistory = op("closeHistory", repository, z.strictObject({ viewId: Identifier }));
 const ReadComparison = op("readComparison", { ...snapshot, selectionId: Identifier }, z.strictObject({ snapshotId: Identifier, entryId: Identifier }));
 const ReadTrust = op("readTrust", repository, empty());
-const ApproveTrust = op("approveTrust", snapshot, z.strictObject({ fingerprint: Fingerprint, approve: z.literal(true) }));
+// Feature 004 contract Δ7: the payload names the action of the dialog. No fingerprint binds the approval (data-model §10).
+const ApproveTrust = op("approveTrust", repository, z.strictObject({ action: z.enum(TRUST_ACTIONS) }));
 const RevokeTrust = op("revokeTrust", repository, z.strictObject({ trustId: Identifier }));
 // Feature 004 data-model §6: ascending unique ordinals of `+` and `-` lines of the retained hunk. The 001 canonical diff bound caps a hunk body.
 const LineOrdinals = z
@@ -618,32 +619,32 @@ export const TrustHook = z.union([
 const TRUST_REPORT_BOUNDS = ["TRUST_REPORT_ENTRIES", "TRUST_REPORT_HOOKS"] as const;
 const TrustReportLimited = z.strictObject({ reason: z.enum(TRUST_REPORT_BOUNDS) }).meta({ title: "TrustReportLimited" });
 
-// Contract §3 `readTrust` and data-model §3. `bound` names the reached contract §7 "Program file digests" bound, which gives `persistence` `session`.
+// Contract §3 `readTrust` and feature 004 data-model §10. `persistence` is `session` only after a failed store.
 // `inputLimited` marks a listing above the contract §5 "Effective configuration/trust input" bound. Only an approved or changed state carries a `trustId`.
+// `programs` names the repository-controlled programs for the status chip (spec FR-073), as the `confirm` frame `details` do.
 export const ReadTrustResult = z
   .union([
     z
       .strictObject({
         generation: Generation,
-        fingerprint: Fingerprint,
         state: z.enum(["untrusted", "approved", "changed", "revoked"]),
         persistence: TrustPersistence,
         trustId: Identifier.optional(),
         // Feature 003 contract Δ7 adds `sync`. Feature 004 contract Δ7 (T033) adds `workbench`.
         approvalRequired: z.strictObject({ reads: z.boolean(), commit: z.boolean(), sync: z.boolean(), workbench: z.boolean() }),
-        bound: z.enum(TRUST_BOUNDS).optional(),
         inputLimited: z.literal(true).optional(),
         entries: z.array(TrustEntry).max(limits.TRUST_REPORT_ENTRIES),
         hooks: z.array(TrustHook).max(limits.TRUST_REPORT_HOOKS),
+        programs: TrustDetails,
       })
-      .refine((r) => (r.bound === undefined || r.persistence === "session") && ((r.state === "approved" || r.state === "changed") === (r.trustId !== undefined)))
+      .refine((r) => (r.state === "approved" || r.state === "changed") === (r.trustId !== undefined))
       .meta({ title: "TrustReport" }),
     TrustListingFailed,
     TrustReportLimited,
   ])
   .meta({ title: "ReadTrustResult" });
 
-// Contract §3 `approveTrust`: `saveFailed` is true only after a `persist: true` confirmation that the shell could not store.
+// Contract §3 `approveTrust`: `saveFailed` is true only after an approval that the shell could not store.
 export const ApproveTrustResult = z
   .union([
     z

@@ -1,5 +1,0 @@
-{
-  "schema": "trust-request",
-  "expected": "INVALID_REQUEST",
-  "text": "{\"type\":\"confirm\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000007\",\"worktreeRoot\":\"C:\\\\repo\",\"gitDirectory\":\"C:\\\\repo\\\\.git\",\"commonDirectory\":\"C:\\\\repo\\\\.git\",\"gitSelectedPath\":\"C:\\\\Program Files\\\\Git\\\\cmd\\\\git.exe\",\"fingerprint\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"persist\":true,\"bound\":\"total-bytes\"}"
-}

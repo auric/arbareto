@@ -357,7 +357,7 @@ describeGit("sync push (T034)", () => {
         if (hooked) {
           const trust = await service.readTrust(r.repositoryId);
           expect({ name, sync: trust.result!.approvalRequired.sync }).toEqual({ name, sync: true });
-          expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+          expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
         }
         const review = await reviewed(service, r, { action });
         change(a);

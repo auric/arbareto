@@ -450,8 +450,8 @@ describe("trust (contract §7 \"Mutation trust\")", () => {
     TIMEOUT_MS,
   );
 
-  // Decision G3: the preflight runs Git reads before the gate decides, so the change ends the commit failed, and no commit process starts.
-  caseTest(TASK, `F11: after approval, a one-byte edit of the hook file gives failed with TRUST_CHANGED, and no commit process starts`, SHELL, () =>
+  // Feature 004 spec FR-071: the approval binds the folders and the Git selection, not the hook bytes.
+  caseTest(TASK, `F11: after approval, a one-byte edit of the hook file asks nothing, and the commit runs`, SHELL, () =>
     withService({ name: "t098-trust-changed" }, async (service) => {
       const repo = repoOf(buildF11(gitPath(), "t098-trust-changed", "traditional"));
       await underTest("commit");
@@ -460,8 +460,8 @@ describe("trust (contract §7 \"Mutation trust\")", () => {
       const r = await reviewOk(service, repositoryId);
       const hook = gitPathOf(repo, "hooks/pre-commit");
       writeFileSync(hook, `${readFileSync(hook, "utf8")}#`);
-      expect(outcome(await commit(service, repositoryId, r, "trust\n"))).toEqual(FAILED("TRUST_CHANGED"));
-      expect(commitCalls(service)).toEqual([]);
+      expect(outcome(await commit(service, repositoryId, r, "trust\n"))).toEqual(SUCCEEDED);
+      expect(commitCalls(service).length).toBe(1);
     }),
     TIMEOUT_MS,
   );

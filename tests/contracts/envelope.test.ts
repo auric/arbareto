@@ -52,8 +52,8 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
   },
   readTrust: { renderer: () => ({}), service: () => ({}) },
   approveTrust: {
-    renderer: () => ({ fingerprint: FINGERPRINT, approve: true }),
-    service: () => ({ fingerprint: FINGERPRINT, approve: true }),
+    renderer: () => ({ action: "commit" }),
+    service: () => ({ action: "commit" }),
   },
   revokeTrust: { renderer: () => ({ trustId: id() }), service: () => ({ trustId: id() }) },
   applyHunk: {
@@ -132,7 +132,6 @@ const GENERATION_REQUIRED = [
   "commit",
   "reviewSubmodules",
   "updateSubmodules",
-  "approveTrust",
   "readTracking",
   "reviewSync",
   "readBranches",
@@ -388,21 +387,19 @@ describe("repositoryId", () => {
     expectCode(envelope("readTrust", "renderer", { repositoryId: id() }), "INVALID_REQUEST"));
 });
 
-describe("approveTrust fingerprint", () => {
-  test.each([
-    ["a".repeat(63)],
-    ["a".repeat(65)],
-    ["A".repeat(64)],
-    ["g" + "a".repeat(63)],
-    [id()],
-  ])("fingerprint %j gives INVALID_REQUEST", (fingerprint) =>
-    expectCode(envelope("approveTrust", "renderer", { fingerprint, approve: true }), "INVALID_REQUEST"),
+// Feature 004 contract Δ7: the payload names one contract Δ6 action and no fingerprint.
+describe("approveTrust action", () => {
+  test.each([["clone"], [""], ["Commit"], [1], [null]])("action %j gives INVALID_REQUEST", (action) =>
+    expectCode(envelope("approveTrust", "renderer", { action }), "INVALID_REQUEST"),
   );
+  test("the feature 001 payload with a fingerprint gives INVALID_REQUEST", () => {
+    expectCode(envelope("approveTrust", "renderer", { fingerprint: FINGERPRINT, approve: true }), "INVALID_REQUEST");
+    expectCode(envelope("approveTrust", "renderer", { action: "commit", fingerprint: FINGERPRINT }), "INVALID_REQUEST");
+  });
 });
 
 describe("explicit approval fields", () => {
   const cases: Array<[string, string]> = [
-    ["approveTrust", "approve"],
     ["commit", "confirmFullScope"],
     ["updateSubmodules", "start"],
     ["sync", "start"],

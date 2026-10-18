@@ -84,6 +84,7 @@ import { actionReason, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
 import { useSync } from "../sync/useSync";
 import { suppressPageMenu } from "../components/action-menu";
 import { DockRegion } from "../components/docked-panel";
+import { IntegratePanel, type IntegrateRequest } from "../integrate/IntegratePanel";
 import { Segmented } from "../components/segmented";
 import { createWorkbench, type View, type Workbench as WorkbenchStore } from "../state/workbench";
 import { CommitView } from "../views/CommitView";
@@ -126,6 +127,8 @@ export type WorkbenchBridge = RequestBridge &
     | "clearSyncPath"
     | "launchPuttygen"
     | "readBranches"
+    | "reviewWorkbench"
+    | "runWorkbench"
   >;
 /** The hunk and file staging facts that the workbench gives the changes pane and the comparison view (T145, T202). */
 export type Staging = {
@@ -623,6 +626,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [submoduleReview, setSubmoduleReview] = useState<{ value: SubmoduleReviewValue; target: { repositoryId: string; repositoryGeneration: number }; snapshotId: string; open: boolean } | null>(null);
   // Feature 003 plan.md D12: the clone panel replaces the main area until it closes. The settings panel is the 004 Settings view (plan.md D15, O-7).
   const [mainPanel, setMainPanel] = useState<"clone" | null>(null);
+  // Feature 004 plan.md D15 "Docked panel": the Merge or Rebase panel of one worktree. The WP12 branch menu calls `openIntegrate`.
+  const [integrate, setIntegrate] = useState<{ key: string; request: IntegrateRequest } | null>(null);
+  const openIntegrate = (request: IntegrateRequest) => setIntegrate({ key: viewKey, request });
   const openSettings = () => {
     setMainPanel(null);
     store.setView(viewKey, "settings");
@@ -1324,7 +1330,21 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The Commit view shows the push panel and the commit workspace. The dock of the hidden History view then holds neither.
   const inCommitView = view === "commit";
   const dock = (
-    <DockRegion panel={null}>
+    <DockRegion
+      panel={
+        integrate === null || integrate.key !== viewKey || pushBranch === null ? null : (
+          <IntegratePanel
+            request={integrate.request}
+            current={pushBranch}
+            bridge={bridge}
+            target={staging.target}
+            blockedReason={blockedReason}
+            onEnded={(response) => store.ended("runWorkbench", response)}
+            onClose={() => setIntegrate(null)}
+          />
+        )
+      }
+    >
       {inCommitView ? null : pushPanel}
       {inCommitView ? null : commitPanel}
       {panel === "details" && kept !== null && pushPanel === null ? (

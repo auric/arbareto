@@ -7,18 +7,17 @@
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES, REFLOG_SCAN_ENTRIES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS, SYNC_REFS_BYTES, SYNC_REFS_RECORDS, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
 import { nameRefusal, newName, refExists } from "./branch-ops";
 import { batchCommandArgs, isObjectId, isOneLevelRefName, isRefName } from "./commands";
-import { commandLineUnits, createCollector, wslCommandLineUnits } from "./git-runner";
+import { createCollector, stepUnits } from "./git-runner";
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { latin1 } from "./read-steps";
 import type { Head } from "./snapshot";
-import { pathForms } from "./submodule-review";
 import { discardCandidates, ignoreRead, inTheWay, sortFacts, untrackedOf } from "./switch-check";
 import { changes } from "./sync";
 import { observe } from "./sync-integrate";
 import { indexState, readOut, refKey } from "./sync-review";
 import { isComponent, requestFacts } from "./trust";
 import { changedPathsArgs, commitObjectArgs, containsArgs, detachArgs, refPeelArgs, stagesArgs, stashApplyArgs, stashDropArgs, stashPushArgs, stashReflogArgs, stashValueArgs, switchArgs, trackArgs, trackedStatusArgs } from "./workbench-commands";
-import { parseTrackedStatus, trackingRemotes } from "./workbench-parsers";
+import { oidList, parseTrackedStatus, trackingRemotes } from "./workbench-parsers";
 import { conclude, heldElsewhere, killed, readWorktrees, registerWorkbenchAction, unavailable, type Refused, type StepEnd } from "./workbench-review";
 
 export const STASH_REMEDY_TEXT = "The stash keeps the changes. This command applies them again.";
@@ -75,10 +74,8 @@ async function stashEntries(ctx: ObserveContext): Promise<Fact<{ oids: string[];
   const step = await stepOf(ctx, stashReflogArgs(), out);
   if (!("exit" in step)) return step;
   if (step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
-  const text = latin1(out.take());
-  const oids = text === "" ? [] : text.endsWith("\0") ? text.slice(0, -1).split("\0") : null;
-  if (oids === null || !oids.every((oid) => isObjectId(oid, ctx.workspace.objectFormat))) return MALFORMED;
-  return { value: { oids, complete: !out.limited } };
+  const oids = oidList(out.take(), ctx.workspace.objectFormat);
+  return oids === null ? MALFORMED : { value: { oids, complete: !out.limited } };
 }
 
 // git-cat-file(1) `commit` prints the raw object. The header line after `tree` names the first parent.
@@ -150,13 +147,10 @@ async function detachCommit(ctx: ObserveContext, oid: string): Promise<Fact<stri
 
 // Contract §6 command-line bound: each `ls-files` batch fits WINDOWS_COMMAND_LINE_UNITS under the measure of its route.
 function batches(paths: readonly string[], ctx: ObserveContext): string[][] {
-  const forms = pathForms(ctx.workspace, ctx.installation);
-  const launch = forms.launch;
-  const units = launch === undefined ? (args: string[]) => commandLineUnits(ctx.installation.selectedPath ?? "", args) : (args: string[]) => wslCommandLineUnits(launch, ctx.operationId, "read", "", forms.gitRoot, args);
   const out: string[][] = [];
   for (const path of paths) {
     const last = out.at(-1);
-    if (last !== undefined && units(stagesArgs([...last, path])) <= WINDOWS_COMMAND_LINE_UNITS) last.push(path);
+    if (last !== undefined && stepUnits(ctx, "read", stagesArgs([...last, path])) <= WINDOWS_COMMAND_LINE_UNITS) last.push(path);
     else out.push([path]);
   }
   return out;

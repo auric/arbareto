@@ -180,8 +180,14 @@ export function forceNoteCountArgs(onto: string, tracking: string, objectFormat:
   return read("rev-list", "--count", `${oid(onto, objectFormat)}..HEAD`, "--not", ref(tracking));
 }
 
-export function updateRefsArgs(onto: string, objectFormat: ObjectFormat): string[] {
-  return read("for-each-ref", "--merged=HEAD", `--no-merged=${oid(onto, objectFormat)}`, "--format=%(refname)", "refs/heads");
+// Plan.md D6: the commits that sequencer.c `sequencer_make_script` walks, with each mark and parent. `rebase.rebaseMerges` keeps the merge commits.
+export function rebaseWalkArgs(onto: string, rebaseMerges: boolean, objectFormat: ObjectFormat): string[] {
+  return read("rev-list", "--right-only", "--cherry-mark", ...(rebaseMerges ? [] : ["--no-merges"]), "--parents", `${oid(onto, objectFormat)}...HEAD`);
+}
+
+// Plan.md D4: the entries of the local configuration file alone. git-config(1) `--no-includes` leaves out the files that it includes.
+export function localConfigArgs(): string[] {
+  return read("config", "list", "--local", "--no-includes", "--show-scope", "--show-origin", "-z");
 }
 
 export function excludePathArgs(): string[] {

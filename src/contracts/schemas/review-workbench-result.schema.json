@@ -754,6 +754,8 @@
             "merge-options",
             "invalid-config",
             "unknown-operation",
+            "apply-backend",
+            "config-in-include",
             "untracked-in-way"
           ]
         },

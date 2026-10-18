@@ -282,6 +282,15 @@ impl Drop for WalkEnd {
     }
 }
 
+/// Ends the count of one walk watchdog, also at a panic.
+struct WatchdogEnd(Arc<ProcessRequests>);
+
+impl Drop for WatchdogEnd {
+    fn drop(&mut self) {
+        self.0.watchdogs.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 #[derive(Default)]
 struct State {
     /// Operations after `ended` or `closeJob`, oldest first. Every other operation is active from its first request.
@@ -399,6 +408,8 @@ pub struct ProcessRequests {
     peak: AtomicUsize,
     /// The walks whose work did not return yet.
     walk_threads: AtomicUsize,
+    /// The walk watchdogs that did not end yet. Only a watchdog replies to a walk.
+    watchdogs: AtomicUsize,
     /// The stop of each WSL identity probe outside a walk. A service exit sets it and makes a new one.
     session_stop: Mutex<Option<Arc<WalkStop>>>,
     /// Without it, a `register` with `confirm: true` gets `declined`.
@@ -434,6 +445,7 @@ impl ProcessRequests {
             generation: AtomicU64::new(0),
             peak: AtomicUsize::new(0),
             walk_threads: AtomicUsize::new(0),
+            watchdogs: AtomicUsize::new(0),
             session_stop: Mutex::new(WalkStop::new().map(Arc::new)),
             git_confirmation: OnceLock::new(),
             startup_git: OnceLock::new(),
@@ -717,6 +729,12 @@ impl ProcessRequests {
     #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
     pub fn active_walks(&self) -> usize {
         self.walk_threads.load(Ordering::SeqCst)
+    }
+
+    /// Test hook: the walk watchdogs that did not end yet. At 0, no walk sends another reply.
+    #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
+    pub fn active_watchdogs(&self) -> usize {
+        self.watchdogs.load(Ordering::SeqCst)
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -2275,9 +2293,12 @@ impl ProcessRequests {
             }
         };
         let (deadline, call) = (read_at + self.config.walk_deadline, call_id.to_string());
+        self.watchdogs.fetch_add(1, Ordering::SeqCst);
         let watchdog = {
             let (worker, stop) = (Arc::clone(&worker), Arc::clone(&stop));
             std::thread::Builder::new().spawn(move || {
+                // Dropped last, so the count falls after the reply.
+                let _end = WatchdogEnd(Arc::clone(&me));
                 let event =
                     received.recv_timeout(deadline.saturating_duration_since(Instant::now()));
                 // `cancel`, `closeJob`, and a service exit send `Stop` under the state lock while `walks` holds the walk.
@@ -2316,6 +2337,7 @@ impl ProcessRequests {
             })
         };
         if watchdog.is_err() {
+            self.watchdogs.fetch_sub(1, Ordering::SeqCst);
             state.walks.remove(call_id);
             stop_walk(&stop);
             return Err(OWNERSHIP);
@@ -12162,7 +12184,10 @@ pub(crate) mod tests {
                 harness.reply(&call),
                 json!({ "type": "fileAppend", "callId": call, "result": reply })
             );
-            std::thread::sleep(Duration::from_millis(500));
+            assert!(
+                eventually(CLOSE_WAIT, || harness.requests.active_watchdogs() == 0),
+                "the watchdog, the only sender of a walk reply, ends"
+            );
             assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
             assert_eq!(std::fs::read(&gitignore).expect("read"), after, "{reply}");
         }
@@ -12204,7 +12229,10 @@ pub(crate) mod tests {
             wsl.harness.reply(&call),
             json!({ "type": "fileAppend", "callId": call, "result": "interrupted" })
         );
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            eventually(CLOSE_WAIT, || wsl.harness.requests.active_watchdogs() == 0),
+            "the watchdog, the only sender of a walk reply, ends"
+        );
         assert_eq!(wsl.harness.replies_for(&call).len(), 1, "one reply");
     }
 

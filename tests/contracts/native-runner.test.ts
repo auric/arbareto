@@ -1163,15 +1163,13 @@ describe("native runner feature 004 requests", () => {
     channel.reply("process", { type: "refused", callId: channel.last("fileAppend").callId, code: "INVALID_REQUEST" });
     const error = await refused.catch((e: unknown) => e);
     expect({ refusal: error instanceof RunnerRefusal, code: (error as RunnerRefusal).code }).toEqual({ refusal: true, code: "INVALID_REQUEST" });
+    // A call that settled at the abort keeps its first value. So the reply value proves that the call waited for the reply.
     for (const result of ["stopped", "appended"] as const) {
       const abort = new AbortController();
-      let settled = false;
-      const canceled = channel.runner.fileAppend(request, abort.signal).finally(() => (settled = true));
+      const canceled = channel.runner.fileAppend(request, abort.signal);
       const { callId } = channel.last("fileAppend");
       abort.abort();
       expect(channel.last("cancel")).toEqual({ type: "cancel", callId });
-      await Bun.sleep(20);
-      expect(settled).toBe(false);
       expect(channel.reply("process", { type: "fileAppend", callId, result })).toBe(true);
       expect(await canceled).toEqual({ result });
     }

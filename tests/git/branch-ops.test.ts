@@ -5,7 +5,7 @@
 // The oracle is a second build of the same fixture with Git's own branch commands.
 
 import { expect } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
@@ -240,6 +240,28 @@ caseTest(TASK, "research.md R21 F9: Delete equals Git's own branch -D in refs, r
     expect(readFileSync(f.configs.local!)).toEqual(readFileSync(o.configs.local!));
     expect(existsSync(join(f.repo, ".git", "logs", "refs", "heads", branch))).toBe(existsSync(join(o.repo, ".git", "logs", "refs", "heads", branch)));
   }
+}, TIMEOUT_MS);
+
+// git-config(1): `--local` writes the local file alone, and `--no-includes` lists it alone. builtin/branch.c `delete_branch_config` edits that file too.
+caseTest(TASK, "plan.md D4: a branch.<name> key from an included file makes Delete unavailable with config-in-include before any step, because config --local --remove-section cannot remove it", SHELL, async () => {
+  const include = (f: WbFixture) => {
+    writeFileSync(join(f.repo, ".git", "inc.cfg"), '[branch "merged"]\n\tremote = origin\n[branch "unmerged"]\n\tdescription = included\n');
+    git(f, ["config", "set", "--local", "include.path", "inc.cfg"]);
+  };
+  const f = build();
+  include(f);
+  await withSync("t022-config-in-include", async (service) => {
+    const r = await open(service, f.repo);
+    // `merged` has its keys only in the included file. `unmerged` has keys in both files.
+    for (const branch of ["merged", "unmerged"]) {
+      expect({ branch, ...refused(await review(service, r, { action: "delete-branch", ref: `refs/heads/${branch}` })) }).toEqual({ branch, ...unavailable("config-in-include") });
+    }
+    expect((await reviewed(service, r, { action: "delete-branch", ref: "refs/heads/held" })).plan).toMatchObject({ ref: "refs/heads/held" });
+    expect(steps(service)).toEqual([]);
+  });
+  const o = build();
+  include(o);
+  expect(wb(repoOf(o), ["config", "--local", "--remove-section", "branch.merged"], { allowExit: "any" }).exitCode).toBe(128);
 }, TIMEOUT_MS);
 
 caseTest(TASK, "FR-014: a remote-tracking branch offers no Rename and no Delete", SHELL, async () => {

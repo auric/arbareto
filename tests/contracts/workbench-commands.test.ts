@@ -43,7 +43,9 @@ const READS: [string, string[], string[]][] = [
   ["rebase rewritten count", wb.rewrittenCountArgs(A, "sha1"), [...R, "rev-list", "--count", `${A}..HEAD`]],
   ["rebase held count", wb.heldCountArgs(A, "sha1"), [...R, "rev-list", "--count", `${A}..HEAD`, "--not", "--remotes"]],
   ["rebase force note count", wb.forceNoteCountArgs(A, "refs/remotes/origin/topic", "sha1"), [...R, "rev-list", "--count", `${A}..HEAD`, "--not", "refs/remotes/origin/topic"]],
-  ["rebase moved branches", wb.updateRefsArgs(A, "sha1"), [...R, "for-each-ref", "--merged=HEAD", `--no-merged=${A}`, "--format=%(refname)", "refs/heads"]],
+  ["rebase walk of the moved branches", wb.rebaseWalkArgs(A, false, "sha1"), [...R, "rev-list", "--right-only", "--cherry-mark", "--no-merges", "--parents", `${A}...HEAD`]],
+  ["rebase walk with rebase.rebaseMerges", wb.rebaseWalkArgs(S, true, "sha256"), [...R, "rev-list", "--right-only", "--cherry-mark", "--parents", `${S}...HEAD`]],
+  ["delete local configuration keys", wb.localConfigArgs(), [...R, "config", "list", "--local", "--no-includes", "--show-scope", "--show-origin", "-z"]],
   ["choose-side and mergetool stages", wb.stagesArgs(["uu.txt"]), [...R, "ls-files", "-z", "--stage", "--", "uu.txt"]],
   ["ignore exclude path", wb.excludePathArgs(), [...R, "rev-parse", "--path-format=absolute", "--git-path", "info/exclude"]],
   ["worktree-remove status", wb.worktreeStatusArgs("D:\\src\\wt"), [...R, "-C", "D:\\src\\wt", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=dirty"]],
@@ -235,6 +237,7 @@ describe("refused inputs", () => {
     throws(() => wb.stashApplyArgs(A, "sha256"));
     throws(() => wb.createArgs("x", A.toUpperCase(), "sha1"));
     throws(() => wb.movedCountArgs("a".repeat(39), false, "sha1"));
+    throws(() => wb.rebaseWalkArgs(A, false, "sha256"));
   });
 
   test("an empty or NUL item", () => {

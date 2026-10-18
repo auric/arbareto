@@ -25,6 +25,7 @@ import type { WorkspaceReader } from "./status";
 import { stepStderr } from "./submodule-update";
 import { runMarked, STEP_REMEDY_TEXT } from "./sync";
 import { observe, type Observed } from "./sync-integrate";
+import { parseRevListCount } from "./sync-parsers";
 import { listRefs, readOut, refKey, type ReviewOutcome } from "./sync-review";
 import type { ListingOutcome, Trust, TrustListing } from "./trust";
 import { worktreeListArgs } from "./workbench-commands";
@@ -113,6 +114,15 @@ export async function refTarget(ctx: ObserveContext, ref: string): Promise<Fact<
   return oid === undefined ? { refused: "UNKNOWN_TARGET" } : { value: oid };
 }
 
+// One `rev-list --count` read. Its output is one count and LF, so more bytes break the grammar.
+export async function revCount(ctx: ObserveContext, args: string[]): Promise<Fact<number>> {
+  const out = await readOut(ctx, args, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+  if ("limited" in out) return { code: "MALFORMED_GIT_OUTPUT" };
+  if (!("value" in out)) return out;
+  const n = parseRevListCount(out.value);
+  return n === null ? { code: "MALFORMED_GIT_OUTPUT" } : { value: n };
+}
+
 // Contract Δ3 `readWorktrees` with its Δ5 bounds. `digest` binds the listing bytes.
 export async function readWorktrees(ctx: ObserveContext): Promise<Fact<{ records: WorktreeRecord[]; digest: string }>> {
   const read = await readOut(ctx, worktreeListArgs(), WORKTREE_LISTING_BYTES);
@@ -188,6 +198,8 @@ interface Issued {
   bound: unknown;
   issuedAt: number;
   consumed: string | null;
+  // The accepted run that validates the token. Until it consumes the token or ends, a second run gets its repeat answer (contract §2).
+  running: string | null;
 }
 
 type Accepted = { ok: true; entry: Issued } | { ok: false; code: "UNKNOWN_TARGET" | "APPROVAL_EXPIRED" } | { ok: false; consumed: string };
@@ -210,11 +222,12 @@ export function createWorkbench(o: WorkbenchOptions) {
   const now = o.now ?? (() => performance.now());
   const tokens = new Map<string, Issued>();
 
-  // Contract §9 acceptance order: a consumed token answers the repeat before any other check.
-  function accept(token: string): Accepted {
+  // Contract §9 acceptance order: a consumed token answers the repeat before any other check. So does a token in use by another run.
+  function accept(token: string, self: string | null = null): Accepted {
     const e = tokens.get(token);
     if (e === undefined) return { ok: false, code: "UNKNOWN_TARGET" };
-    if (e.consumed !== null) return { ok: false, consumed: e.consumed };
+    const holder = e.consumed ?? e.running;
+    if (holder !== null && holder !== self) return { ok: false, consumed: holder };
     if (now() - e.issuedAt > APPROVAL_LIFETIME_MS) return { ok: false, code: "APPROVAL_EXPIRED" };
     return { ok: true, entry: e };
   }
@@ -329,7 +342,7 @@ export function createWorkbench(o: WorkbenchOptions) {
       const again = await observeAll(ctx, e.payload, () => o.trust.listTrust({ operationId, signal, workspace: w }));
       const stale = staleOf(e, again, w.generation);
       if (stale !== null) return refuse(stale);
-      const later = accept(token);
+      const later = accept(token, operationId);
       if (!later.ok) return refuse({ code: "code" in later ? later.code : "UNKNOWN_TARGET" });
       e.consumed = operationId;
       const full = again as Full;
@@ -371,6 +384,7 @@ export function createWorkbench(o: WorkbenchOptions) {
         bound: observed.bound,
         issuedAt: at,
         consumed: null,
+        running: null,
       });
       return { result: "succeeded", value: { action: payload.action, plan: observed.plan, workbenchToken } };
     },
@@ -392,7 +406,11 @@ export function createWorkbench(o: WorkbenchOptions) {
       const cls = classOf(e.payload.action);
       const gate = cls === null ? null : o.trust.gate(w, { approvalRequired: { [cls]: e.trust.required }, fingerprint: e.trust.fingerprint, inputLimited: false }, installation, cls);
       if (gate !== null) return void registry.apply(operationId, { type: "invalid-approval", code: gate });
-      void execute(w, installation, operationId, signal, token, e);
+      // Contract §2: the token is in use before the first await. A run that ends before the consumption leaves it to a later run (data-model §2).
+      e.running = operationId;
+      void execute(w, installation, operationId, signal, token, e).finally(() => {
+        if (e.consumed === null) e.running = null;
+      });
     },
   };
 }

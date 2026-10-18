@@ -25,7 +25,7 @@ Each section names its source. Field names are contract names. "001 data-model ย
   - always: the HEAD target and OID, the operation markers, the trust state and class flag, the repository generation;
   - `switch`: the target ref and OID, the tracked status digest, `refs/stash`, the choice, and for Discard the in-the-way result;
   - `create-branch`, `rename-branch`: the name, the start OID, the absent target ref;
-  - `delete-branch`: the ref and OID, the unmerged count, the worktree list digest;
+  - `delete-branch`: the ref and OID, the unmerged count, the worktree list digest, and whether the local file holds a `branch.<name>` key;
   - `merge`, `rebase`: the source ref and OID, the counts, the options, the message digest;
   - `choose-side`, `mergetool`: the path, its index stages with modes and OIDs, the working file identity and SHA-256, the operation state;
   - `ignore`: the target file state (`absent`, or size and SHA-256), the line;
@@ -34,6 +34,7 @@ Each section names its source. Field names are contract names. "001 data-model ย
   - `worktree-prune`: the prunable records;
   - `config-save`: each changed key with its scope, earlier entries, and new value or unset.
 - Consumption: only after validation, as 003 data-model ยง2.
+- In use: an accepted `runWorkbench` holds the token until it consumes the token or ends. Meanwhile a second `runWorkbench` with that token gets the contract ยง2 repeat answer with the first operation.
 
 ## 3. Switch plan and result
 
@@ -52,12 +53,13 @@ Each section names its source. Field names are contract names. "001 data-model ย
 - `ref`, `oid`, `onlyHere` (the unmerged count), `reflogKeeps` (true, false), `heldBy` (null, else the action is refused), `current` (false, else refused).
 - Text rules: `onlyHere > 0` gives "<branch> has <n> commits that no other branch has. Deleting the branch loses them." `onlyHere = 0` gives "Deleting <branch> loses no commit." `reflogKeeps` gives the D4 reflog sentence.
 - `reflogKeeps` is false when the tip is not in the first 10,000 HEAD reflog entries (`REFLOG_SCAN_ENTRIES`). False is the cautious direction: the confirmation then states that no reflog keeps the commit.
+- A local `branch.<name>` key from an included file gives `WORKBENCH_UNAVAILABLE` reason `config-in-include` (plan D4).
 
 ## 5. Merge and rebase requests
 
 - Merge: `source` (ref and OID), `result` (`merge` or `squash`), `noFastForward`, `noCommit`, `preview` (the `fmt-merge-msg` text, bound by digest), `message` (null for the preview, else the edited text, 1 to 8 KiB (`MERGE_MESSAGE_BYTES`, contract ฮ”5), so the `-m` item fits the 001 ยง6 command line, and otherwise the 001 commit message rule; a longer preview gives `message-size`; with `result: merge`, the argv sends the preview without its final LF or the edited text with `--no-log -m`; with `squash`, the argv sends no `-m`, because Git ignores it (research R21 F30)), `facts` (`ahead`, `behind`, `fastForward`, `mergeFf` with source).
 - A longer edited `message` fails the request schema with `INVALID_REQUEST`, so only a longer preview gives `message-size`.
-- Rebase: `onto` (ref and OID), `moved`, `rewritten`, `held`, `forceNote` (`{trackingRef}` or null), `movedBranches` (refs, when `rebase.updateRefs` is true, without the branches that other worktrees check out), `autostash` (value plus `{scope, origin}` or `default`), `autosquash` (false at review; the user sets it).
+- Rebase: `onto` (ref and OID), `moved`, `rewritten`, `held`, `forceNote` (`{trackingRef}` or null), `movedBranches` (refs, when `rebase.updateRefs` is true: the current branch when `<oid>..HEAD` is not empty, and each branch of an `update-ref` line of Git's todo list without the branches that other worktrees check out (plan D6); the branches may move, because the list can name a branch that Git leaves (contract gap)), `autostash` (value plus `{scope, origin}` or `default`), `autosquash` (false at review; the user sets it).
 - Squash: with `result: squash`, `noFastForward` and `noCommit` are false and `message` is null, else `INVALID_REQUEST`. Git refuses `--squash --no-ff`, a squash never commits, and Git ignores `-m` (plan D5, research R21 F30). The UI shows Don't commit as unavailable with "Squash never commits".
 - Validation: `merge` refuses a detached HEAD, an unborn branch, the current branch as source, and an operation in progress (spec FR-028).
 - Don't commit without No fast-forward, when a fast-forward is possible and the effective `merge.ff` is not false, gives `INVALID_REQUEST`, because the panel locks No fast-forward (plan D5). A missing source ref gives `UNKNOWN_TARGET`.

@@ -5,15 +5,16 @@
 // The oracle is Git's own command on a second build or a copy. The fixed fixture dates make the commit object IDs of both sides equal.
 
 import { expect } from "bun:test";
+import { join } from "node:path";
 import { MERGE_MESSAGE_BYTES } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { commit, compare, outcome, reviewOk, SUCCEEDED } from "./hunk-harness";
-import { fc, gitOut, gitPaths, gitRun, importStream, markers, refMap, type GitHost } from "./remote-fixtures";
+import { fc, gitOut, gitPaths, gitRun, importStream, markers, refMap, revParse, type GitHost } from "./remote-fixtures";
 import { caseTest, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 import { ANY_EXIT, gitExe, hostFor, INTEGRATE_ENV, refreshIndex, register, repoShape, reviewed, subcommandOf, sync, TIMEOUT_MS, withSync } from "./sync-harness";
-import { buildWorkbench, type WbFixture, type WbFixtureName } from "./workbench-fixtures";
+import { buildWorkbench, repoOf, wb, type WbFixture, type WbFixtureName } from "./workbench-fixtures";
 
 for (const module of ["merge-rebase", "workbench-review"]) {
   try {
@@ -143,6 +144,32 @@ function conflictRepo(h: GitHost, name: string): string {
   ]);
   gitRun(h, repo, ["reset", "-q", "--hard", "main"]);
   return repo;
+}
+
+// A superproject whose submodule `sub` is at `s1` on `main` and at `s2` on `topic`, with `submodule.recurse=true`. `main` also holds the commit `side`.
+function submoduleRepo(h: GitHost, name: string): { repo: string; s1: string; s2: string } {
+  const sub = `${h.root}/${name}-sub`;
+  gitRun(h, h.root, ["init", "-q", "-b", "main", "--", sub]);
+  importStream(h, sub, [fc({ mark: 1, message: "s1\n", files: { "s.txt": "1\n" } }), fc({ mark: 2, message: "s2\n", from: 1, files: { "s.txt": "2\n" } })]);
+  const [s1, s2] = [revParse(h, sub, "main~1"), revParse(h, sub, "main")];
+  const repo = `${h.root}/${name}`;
+  gitRun(h, h.root, ["init", "-q", "-b", "main", "--", repo]);
+  for (const [key, value] of [["core.autocrlf", "false"], ["core.eol", "lf"], ["core.safecrlf", "false"]] as const) gitRun(h, repo, ["config", key, value]);
+  gitRun(h, repo, ["-c", "protocol.file.allow=always", "submodule", "add", "-q", "--", sub, "sub"]);
+  const at = (oid: string) => gitRun(h, `${repo}/sub`, ["checkout", "-q", "--detach", oid]);
+  at(s1);
+  gitRun(h, repo, ["add", "--", "sub"]);
+  gitRun(h, repo, ["commit", "-q", "-m", "add sub"]);
+  gitRun(h, repo, ["checkout", "-q", "-b", "topic"]);
+  at(s2);
+  gitRun(h, repo, ["commit", "-q", "-a", "-m", "sub at s2"]);
+  gitRun(h, repo, ["checkout", "-q", "main"]);
+  at(s1);
+  h.write(`${repo}/side.txt`, "side\n");
+  gitRun(h, repo, ["add", "--", "side.txt"]);
+  gitRun(h, repo, ["commit", "-q", "-m", "side"]);
+  gitRun(h, repo, ["config", "submodule.recurse", "true"]);
+  return { repo, s1, s2 };
 }
 
 // Repository hooks are repository-controlled, so they need approval before a review (plan.md D12).
@@ -435,6 +462,100 @@ describeGit("merge and rebase (T023)", () => {
     expect(stateOf(h, app.repo)).toEqual(stateOf(h, git.repo));
   }, TIMEOUT_MS);
 
+  // sequencer.c `todo_list_add_update_ref_commands` adds `update-ref` only for a branch at a commit of the todo list. `sequencer_make_script` drops the merge
+  // commits without `rebase.rebaseMerges` and each patch-same commit that is not empty, because builtin/rebase.c sets `keep_empty`.
+  caseTest(TASK, "F16: under rebase.updateRefs the moved-branch list leaves out a branch at a merge commit and at a patch-same commit, keeps a branch at an empty patch-same commit, and equals the refs that Git's own rebase moves", SHELL, async () => {
+    const h = hostFor("t023-update-refs-walk");
+    const [app, git] = pair("rebase-mix", "update-refs-walk", (f) => {
+      const r = repoOf(f);
+      wb(r, ["config", "rebase.updateRefs", "true"]);
+      // An empty commit on `up` makes the empty commit of `topic` patch-same.
+      const empty = wb(r, ["commit-tree", "-p", "refs/heads/up", "-m", "up empty", `${f.oids.up}^{tree}`]).stdout.toString("utf8").trim();
+      wb(r, ["update-ref", "refs/heads/up", empty]);
+      for (const label of ["t1", "same", "empty", "merge"]) wb(r, ["update-ref", `refs/heads/at-${label}`, f.oids[label]!]);
+    });
+    const walk = gitOut(h, git.repo, ["rev-list", "--right-only", "--cherry-mark", "up...HEAD"]).trim().split("\n");
+    expect([`=${git.oids.same}`, `=${git.oids.empty}`].every((line) => walk.includes(line))).toBe(true);
+    const before = refMap(h, git.repo, ["refs/heads"]);
+    own(h, git.repo, ["rebase", "--no-autostash", "--no-autosquash", "up"]);
+    const after = refMap(h, git.repo, ["refs/heads"]);
+    const moved = Object.keys(before).filter((k) => before[k] !== after[k]).sort();
+    expect(moved).toEqual(["refs/heads/at-empty", "refs/heads/at-t1", "refs/heads/side", "refs/heads/topic"]);
+    await withSync("t023-update-refs-walk", async (service) => {
+      const r = await register(service, app.repo);
+      const review = await tokenOf<RebasePlan>(service, r, REBASE("refs/heads/up"));
+      expect(review.plan.movedBranches).toEqual({ refs: moved, more: 0 });
+      expect(outcome(await runWb(service, r, review.workbenchToken))).toEqual(SUCCEEDED);
+    });
+    expect(stateOf(h, app.repo)).toEqual(stateOf(h, git.repo));
+  }, TIMEOUT_MS);
+
+  // Contract gap: branch.c `branch_checked_out` also names a branch that another worktree rebases (`rebase-merge/head-name`).
+  // No Git read gives that state, so the list still names the branch, and Git's own rebase leaves it.
+  caseTest(TASK, "contract gap: a branch that another worktree rebases stays in the moved-branch list, and Git's own rebase leaves that branch", SHELL, async () => {
+    const h = hostFor("t023-update-refs-rebasing");
+    const [app, git] = pair("rebase-update-refs", "update-refs-rebasing", (f) => {
+      const r = repoOf(f);
+      const dir = join(f.root, "wt-rebasing");
+      wb(r, ["worktree", "add", "-q", "-b", "rebasing", "--", dir, f.oids.c1!]);
+      // The exec step fails, so the rebase of `rebasing` stops in that worktree and keeps its state.
+      // `--no-update-refs` keeps `part` out of its `rebase-merge/update-refs`, so only `head-name` names a branch.
+      wb({ ...r, dir }, ["rebase", "--no-update-refs", "--exec", "false", f.oids.base!], { allowExit: [1] });
+    });
+    const before = refMap(h, git.repo, ["refs/heads"]);
+    own(h, git.repo, ["rebase", "--no-autostash", "--no-autosquash", "up"]);
+    const after = refMap(h, git.repo, ["refs/heads"]);
+    const moved = Object.keys(before).filter((k) => before[k] !== after[k]).sort();
+    expect(moved).toEqual(["refs/heads/part", "refs/heads/topic"]);
+    await withSync("t023-update-refs-rebasing", async (service) => {
+      const r = await register(service, app.repo);
+      const review = await tokenOf<RebasePlan>(service, r, REBASE("refs/heads/up"));
+      expect(review.plan.movedBranches).toEqual({ refs: [...moved, "refs/heads/rebasing"].sort(), more: 0 });
+      expect(outcome(await runWb(service, r, review.workbenchToken))).toEqual(SUCCEEDED);
+    });
+    expect(stateOf(h, app.repo)).toEqual(stateOf(h, git.repo));
+  }, TIMEOUT_MS);
+
+  // builtin/rebase.c `cmd_rebase`: `--autosquash` implies the merge backend. Without it, `rebase.backend=apply` selects the apply backend, which ignores `rebase.updateRefs`.
+  caseTest(TASK, "plan.md D6: rebase.backend=apply without Autosquash gives apply-backend before any process; Autosquash takes the merge backend, as Git's own rebase shows", SHELL, async () => {
+    const h = hostFor("t023-apply-backend");
+    const apply = (f: WbFixture) => void wb(repoOf(f), ["config", "rebase.backend", "apply"]);
+    const [app, git] = pair("rebase-update-refs", "apply-backend", apply);
+    await withSync("t023-apply-backend", async (service) => {
+      const r = await register(service, app.repo);
+      const response = await reviewWb(service, r, REBASE("refs/heads/up"));
+      expect({ ...refusal(response), token: response.result?.workbenchToken }).toEqual({ ...unavailable("apply-backend"), token: undefined });
+      expect(integrations(service)).toEqual([]);
+      expect((await tokenOf<RebasePlan>(service, r, REBASE("refs/heads/up", { autosquash: true }))).plan.movedBranches).toEqual({ refs: ["refs/heads/part", "refs/heads/topic"], more: 0 });
+    });
+    const part = git.oids.c1!;
+    own(h, git.repo, ["rebase", "--no-autostash", "--no-autosquash", "up"]);
+    expect({ part: revParse(h, git.repo, "refs/heads/part"), markers: markers(h, git.repo) }).toEqual({ part, markers: [] });
+    const [, merge] = pair("rebase-update-refs", "apply-backend-autosquash", apply);
+    own(h, merge.repo, ["rebase", "--no-autostash", "--autosquash", "up"]);
+    expect(revParse(h, merge.repo, "refs/heads/part")).not.toBe(part);
+  }, TIMEOUT_MS);
+
+  // builtin/merge.c and builtin/rebase.c never call `git_default_submodule_config`. Only checkout, read-tree, and reset read `submodule.recurse` (Git 2.56 submodule.c).
+  caseTest(TASK, "plan.md D5 and D6: with submodule.recurse=true, the merge and the rebase leave the submodule HEAD, as Git's own merge and rebase do", SHELL, async () => {
+    const h = hostFor("t023-submodule-recurse");
+    const { repo, s1, s2 } = submoduleRepo(h, "t023-submodule");
+    for (const [label, payload, args] of [
+      ["merge", MERGE("refs/heads/topic"), ["merge", "--no-edit", "topic"]],
+      ["rebase", REBASE("refs/heads/topic"), ["rebase", "--no-autostash", "--no-autosquash", "topic"]],
+    ] as const) {
+      const app = copyOf(h, repo);
+      const git = copyOf(h, repo);
+      await withSync(`t023-submodule-${label}`, async (service) => {
+        const r = await register(service, app);
+        expect({ label, ...outcome(await reviewAndRun(service, r, payload)) }).toEqual({ label, ...SUCCEEDED });
+      });
+      own(h, git, [...args]);
+      const gitlink = gitOut(h, app, ["ls-files", "-s", "--", "sub"]).split(" ")[1];
+      expect({ label, gitlink, sub: revParse(h, `${app}/sub`, "HEAD"), state: stateOf(h, app) }).toEqual({ label, gitlink: s2, sub: s1, state: stateOf(h, git) });
+    }
+  }, TIMEOUT_MS);
+
   caseTest(TASK, "F15: Autosquash is false at review also with rebase.autoSquash=true, and each explicit form equals Git's own rebase with that form", SHELL, async () => {
     const h = hostFor("t023-autosquash");
     for (const autosquash of [false, true]) {
@@ -650,9 +771,9 @@ describeGit("merge and rebase (T023)", () => {
     expect(stateOf(h, app.repo)).toEqual(stateOf(h, git.repo));
   }, TIMEOUT_MS);
 
-  caseTest(TASK, "plan.md D6: a rebase.autoStash, rebase.updateRefs, or rebase.rebaseMerges value that Git's own rebase stops on gives invalid-config before any process", SHELL, async () => {
+  caseTest(TASK, "plan.md D6: a rebase.autoStash, rebase.updateRefs, rebase.rebaseMerges, or rebase.backend value that Git's own rebase stops on gives invalid-config before any process", SHELL, async () => {
     const h = hostFor("t023-invalid-config");
-    for (const key of ["rebase.autoStash", "rebase.updateRefs", "rebase.rebaseMerges"]) {
+    for (const key of ["rebase.autoStash", "rebase.updateRefs", "rebase.rebaseMerges", "rebase.backend"]) {
       const [app, git] = pair("rebase-mix", "invalid-config", (f) => void gitRun(h, f.repo, ["config", key, "maybe"]));
       await withSync(`t023-invalid-config-${builds}`, async (service) => {
         const r = await register(service, app.repo);

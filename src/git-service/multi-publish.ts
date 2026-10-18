@@ -25,7 +25,7 @@ import { localFacts, rawRecord, wholeFileRemedy, workingParts } from "./comparis
 import { createTailCollector } from "./discovery";
 import { hunkEligibility } from "./eligibility";
 import { blobProof, changedSet, indexInfoInput } from "./file-publish";
-import { commandLineUnits, createCollector, RunnerRefusal, wslCommandLineUnits, type Collector } from "./git-runner";
+import { createCollector, RunnerRefusal, stepUnits, type Collector } from "./git-runner";
 import { ownedCandidate } from "./hunk-candidate";
 import {
   besideIndex,
@@ -56,7 +56,6 @@ import type { Workspace } from "./registration";
 import type { ChangeSnapshot, ReadInstallation, WorkingVersion } from "./snapshot";
 import type { StatusCut, WorkspaceReader } from "./status";
 import { createStatusParser, type StatusRecord } from "./status-parser";
-import { pathForms } from "./submodule-review";
 import { parseAttributes } from "./support";
 import type { TrustListing } from "./trust";
 import type { WslWhole } from "./wsl-files";
@@ -305,11 +304,9 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
     const w = ctx.workspace;
     const groups = a.items.map((item) => [item.path, ...(item.entry.sourcePathBytes === undefined ? [] : [pathOf({ pathBytes: item.entry.sourcePathBytes })])]);
     const wanted = new Set(groups.flat().map(latin1));
-    const forms = pathForms(w, installation);
-    const launch = forms.launch;
     const args = (batch: string[]) => [...statusArgs(), "--", ...batch];
-    // Contract §6: each process stays inside the command-line bound. The shell starts `executablePath`, the Git file in the `--exec-path` folder.
-    const units = (list: string[]) => (launch === undefined ? commandLineUnits(installation.executablePath, args(list)) : wslCommandLineUnits(launch, ctx.operationId, "read", "", forms.gitRoot, args(list)));
+    // Contract §6: each process stays inside the command-line bound.
+    const units = (list: string[]) => stepUnits({ operationId: ctx.operationId, workspace: w, installation }, "read", args(list));
     const batches: string[][] = [];
     for (const group of groups) {
       const texts = group.map((p) => utf8.decode(p));

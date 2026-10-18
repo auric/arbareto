@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import { PATH_RULES } from "../../src/contracts/native-path";
 import type { ConfigEntry } from "../../src/git-service/trust";
-import { configView, localNameOf, parseBranches, parseTrackedStatus, parseWorktrees, sameHost, trackingRemotes, urlHost } from "../../src/git-service/workbench-parsers";
+import { configView, localNameOf, oidList, parseBranches, parseRebaseWalk, parseTrackedStatus, parseWorktrees, sameHost, trackingRemotes, urlHost } from "../../src/git-service/workbench-parsers";
 
 printOrigin("../../src/git-service/workbench-parsers.ts", import.meta.dir);
 
@@ -95,16 +95,16 @@ describe("worktree records (data-model §8)", () => {
     "worktree D:/w/wt-gone\0HEAD 8e2f38fb0a85f3224292830b67d5e6e2dae15cd7\0branch refs/heads/gone\0prunable gitdir file points to non-existent location\0\0" +
     "worktree D:/w/wt-locked\0HEAD 8e2f38fb0a85f3224292830b67d5e6e2dae15cd7\0branch refs/heads/locked\0locked on a USB stick\0\0";
   const H = "8e2f38fb0a85f3224292830b67d5e6e2dae15cd7";
-  const base = { invalidUtf8: false, head: H, bare: false, detached: false, locked: null, prunable: null, main: false };
+  const base = { invalidUtf8: false, head: H, branchKey: null, bare: false, detached: false, locked: null, prunable: null, main: false };
   const parse = (text: string, format: "sha1" | "sha256" = "sha1") => parseWorktrees(bytes(text), format);
 
   test("a recorded listing", () => {
     expect(parse(RECORDED)).toEqual([
-      { ...base, path: "D:/w/repo", branch: "refs/heads/main", main: true },
+      { ...base, path: "D:/w/repo", branch: "refs/heads/main", branchKey: "refs/heads/main", main: true },
       { ...base, path: "D:/w/wt space", branch: null, detached: true },
-      { ...base, path: "D:/w/wt-bare-lock", branch: "refs/heads/nolock2", locked: { reason: null } },
-      { ...base, path: "D:/w/wt-gone", branch: "refs/heads/gone", prunable: { reason: "gitdir file points to non-existent location" } },
-      { ...base, path: "D:/w/wt-locked", branch: "refs/heads/locked", locked: { reason: "on a USB stick" } },
+      { ...base, path: "D:/w/wt-bare-lock", branch: "refs/heads/nolock2", branchKey: "refs/heads/nolock2", locked: { reason: null } },
+      { ...base, path: "D:/w/wt-gone", branch: "refs/heads/gone", branchKey: "refs/heads/gone", prunable: { reason: "gitdir file points to non-existent location" } },
+      { ...base, path: "D:/w/wt-locked", branch: "refs/heads/locked", branchKey: "refs/heads/locked", locked: { reason: "on a USB stick" } },
     ]);
   });
 
@@ -120,7 +120,7 @@ describe("worktree records (data-model §8)", () => {
 
   test("an unborn branch and a record without branch or detached", () => {
     expect(parse(`worktree /w/a\0HEAD ${Z}\0branch refs/heads/main\0\0worktree /w/b\0HEAD ${A}\0\0`)).toEqual([
-      { ...base, path: "/w/a", head: Z, branch: "refs/heads/main", main: true },
+      { ...base, path: "/w/a", head: Z, branch: "refs/heads/main", branchKey: "refs/heads/main", main: true },
       { ...base, path: "/w/b", head: A, branch: null },
     ]);
   });
@@ -129,6 +129,9 @@ describe("worktree records (data-model §8)", () => {
     expect(parse(utf8(`worktree /w/ä\0HEAD ${A}\0detached\0\0`))).toMatchObject([{ path: "/w/ä", invalidUtf8: false }]);
     expect(parse(`worktree /w/\xff\0HEAD ${A}\0detached\0\0`)).toMatchObject([{ path: "/w/\ufffd", invalidUtf8: true }]);
     expect(parse(`worktree /w/a\0HEAD ${A2}\0detached\0\0`, "sha256")).toMatchObject([{ head: A2 }]);
+    // The key keeps the raw bytes, so it equals the listing key of the ref.
+    expect(parse(utf8(`worktree /w/a\0HEAD ${A}\0branch refs/heads/ä\0\0`))).toMatchObject([{ branch: "refs/heads/ä", branchKey: utf8("refs/heads/ä") }]);
+    expect(parse(`worktree /w/a\0HEAD ${A}\0branch refs/heads/\xff\0\0`)).toMatchObject([{ branch: "refs/heads/�", branchKey: "refs/heads/\xff", invalidUtf8: true }]);
   });
 
   test("empty output gives no record", () => expect(parse("")).toEqual([]));
@@ -156,6 +159,44 @@ describe("worktree records (data-model §8)", () => {
   ];
   for (const [name, output] of refused) {
     test(`${name} gives MALFORMED_GIT_OUTPUT`, () => expect(parse(output, name.includes("SHA-256") ? "sha256" : "sha1")).toBeNull());
+  }
+});
+
+describe("object ID lists (plan.md D3 and D4)", () => {
+  test("NUL-ended object IDs, and an empty list", () => {
+    expect(oidList(bytes(`${A}\0${B}\0`), "sha1")).toEqual([A, B]);
+    expect(oidList(bytes(""), "sha1")).toEqual([]);
+    expect(oidList(bytes(`${A2}\0`), "sha256")).toEqual([A2]);
+  });
+  for (const [name, output, format] of [
+    ["no NUL at the end", A, "sha1"],
+    ["an empty entry", `${A}\0\0`, "sha1"],
+    ["a SHA-1 ID in a SHA-256 repository", `${A}\0`, "sha256"],
+    ["upper-case hex", `${A.toUpperCase()}\0`, "sha1"],
+  ] as const) {
+    test(`${name} gives MALFORMED_GIT_OUTPUT`, () => expect(oidList(bytes(output), format)).toBeNull());
+  }
+});
+
+describe("rebase walk (plan.md D6, git-rev-list(1) --cherry-mark --parents)", () => {
+  test("marks, parents, and a root commit", () => {
+    expect(parseRebaseWalk(bytes(`+${A} ${B}\n=${B} ${Z} ${A}\n+${Z}\n`), "sha1")).toEqual([
+      { oid: A, same: false, parent: B },
+      { oid: B, same: true, parent: Z },
+      { oid: Z, same: false, parent: null },
+    ]);
+    expect(parseRebaseWalk(bytes(""), "sha1")).toEqual([]);
+    expect(parseRebaseWalk(bytes(`=${A2}\n`), "sha256")).toEqual([{ oid: A2, same: true, parent: null }]);
+  });
+  for (const [name, output] of [
+    ["no LF at the end", `+${A}`],
+    ["no mark", `${A}\n`],
+    ["the left mark", `<${A}\n`],
+    ["two spaces", `+${A}  ${B}\n`],
+    ["a short parent", `+${A} ${"b".repeat(39)}\n`],
+    ["an empty line", `+${A}\n\n`],
+  ]) {
+    test(`${name} gives MALFORMED_GIT_OUTPUT`, () => expect(parseRebaseWalk(bytes(output), "sha1")).toBeNull());
   }
 });
 

@@ -52,9 +52,10 @@ import { MATCHING_PROBE_WSL_FOLDER } from "../contracts/matching-probe";
 import { NATIVE } from "../contracts/native-path";
 import { ChannelPath, Identifier, isIdentifier, Text } from "../contracts/operations";
 import wslProcess from "../contracts/wsl-process.json";
-import { wslUnitName } from "../contracts/wsl-route";
+import { routeWslPath, wslUnitName } from "../contracts/wsl-route";
 import { configGlobalPathArgs, configSystemPathArgs } from "./commands";
 import type { FileAppendReply, FileAppendRequest } from "./ignore";
+import type { Workspace } from "./registration";
 
 export { isChannelPath } from "../contracts/operations";
 export type { FileFact, FileIdentity, IdentityReply, MarkerFailure, MutationStarted, ProcessContext, ResolveGitRequest, TrustBound, TrustRecord, TrustRequest, WslDistrosCall, WslDistrosResult, WslIdentity };
@@ -285,6 +286,17 @@ const WRAPPER = wslProcess.wrapper.join("\n");
 export function wslCommandLineUnits(launch: WslLaunch, operationId: string, mode: string, index: string, directory: string, args: readonly string[]): number {
   const head = ["--distribution", launch.distro, "--cd", "/", "--exec", "/bin/sh", "-c", WRAPPER, "sh", wslUnitName(operationId, WIDEST_UNIT), mode, index];
   return commandLineUnits(launch.wslExecutable, [...head, launch.systemdRun, launch.systemctl, launch.setsid, launch.noexpand ? "1" : "", launch.git, "--no-lazy-fetch", "-C", directory, ...args.slice(1)]);
+}
+
+// Contract §6 "Process fields": the units of the command line that the shell starts for one call under `policy`.
+// The shell starts a Windows Git as `executablePath`, the Git file in the `--exec-path` folder, and a WSL Git through `wsl.exe`.
+export function stepUnits(ctx: { operationId: string; workspace: Pick<Workspace, "worktreeRoot" | "wsl">; installation: { executablePath: string } }, policy: EnvironmentPolicy, args: readonly string[]): number {
+  const w = ctx.workspace.wsl;
+  if (w === undefined) return commandLineUnits(ctx.installation.executablePath, args);
+  const route = routeWslPath(ctx.workspace.worktreeRoot, { listed: [w.distro], registry: [{ name: w.distro, guid: w.guid, version: 2 }] });
+  if (route.kind !== "wsl") throw new TypeError("a WSL workspace needs a Linux worktree root");
+  const launch = { wslExecutable: w.wslExecutable, distro: w.distro, git: w.path, systemdRun: w.systemdRun, systemctl: w.systemctl, setsid: w.setsid, noexpand: w.noexpand };
+  return wslCommandLineUnits(launch, ctx.operationId, policy, "", route.linuxPath, args);
 }
 
 // The policies of each context kind, as src-tauri/src/process_requests.rs `policy_fits` admits them (feature 004 contract Δ6).

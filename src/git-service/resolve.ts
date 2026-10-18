@@ -85,6 +85,9 @@ function toolOf(entries: readonly ConfigEntry[]): Tool | Refused {
   // The decoded text of an inexact entry is not the value that Git reads.
   if (!tool.exact) return unavailable("unreadable");
   const name = tool.value;
+  // git-mergetool--lib `setup_tool` sources "$MERGE_TOOLS_DIR/$tool" when that file exists, so a separator can name a file outside that folder.
+  // The name is also the subsection of `mergetool.<name>.cmd`. The rule holds for every scope (plan.md D7).
+  if (name === "." || name === ".." || name.includes("/") || name.includes("\\")) return unavailable("merge-tool-name");
   const keys = entries.filter((e) => e.key === `mergetool.${name}.cmd` || e.key === `mergetool.${name}.path`).map(({ key, value, scope, origin }) => ({ key, value, scope, origin }));
   return { name, scope: tool.scope, origin: tool.origin, keys };
 }

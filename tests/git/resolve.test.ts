@@ -11,6 +11,7 @@ import { SUBMODULE_UPDATE_CEILING_MS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { FIXTURE_HOME, fixtureDir, useFixtureRoot } from "./fixture-root";
 import { put } from "./fixtures";
+import { nativeEnv } from "./remote-fixtures";
 import { workingFileDigests } from "./git-oracle";
 import { caseTest, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 import { gitExe, native, TIMEOUT_MS, until, withSync } from "./sync-harness";
@@ -350,6 +351,39 @@ caseTest(TASK, "FR-093: without a merge.tool value, Open in merge tool gives no-
     expect(refused(response)).toEqual(unavailable("no-merge-tool"));
     expect(gitCommands(service, from)).not.toContain("ls-files");
   });
+}, TIMEOUT_MS);
+
+// git-mergetool--lib `setup_tool` sources "$MERGE_TOOLS_DIR/$tool" when that file exists. `MERGE_TOOLS_DIR` points into the fixture, so the planted name reaches the canary from every install folder.
+caseTest(TASK, "plan.md D7: a merge.tool value with a path separator gives merge-tool-name in the local and the global scope, and the planted file that Git's own mergetool sources never runs", SHELL, async () => {
+  for (const scope of ["local", "global"] as const) {
+    const f = build("merge");
+    const o = build("merge");
+    const root = fixtureDir(`t053-tool-name-${scope}`);
+    const tools = join(root, "a", "b");
+    mkdirSync(tools, { recursive: true });
+    const log = join(root, "sourced.log");
+    put(root, "x", `echo "$PWD" >> '${log.replaceAll("\\", "/")}'\n`);
+    const env = { MERGE_TOOLS_DIR: tools.replaceAll("\\", "/") };
+    const body = async () => {
+      if (scope === "local") git(f, ["config", "--local", "merge.tool", "../../x"]);
+      await withSync(
+        `t053-tool-name-${scope}`,
+        async (service) => {
+          const r = await open(service, f);
+          const response = await review(service, r, "uu.txt", { action: "mergetool" });
+          // A review that issues a token must not run the planted file either.
+          if (response.state === "succeeded") await run(service, r, response.result!.workbenchToken);
+          expect({ scope, sourced: existsSync(log) }).toEqual({ scope, sourced: false });
+          expect({ scope, ...refused(response) }).toEqual({ scope, ...unavailable("merge-tool-name") });
+        },
+        { environment: nativeEnv(env) },
+      );
+      // Git's own mergetool on a copy sources the planted file, so the name is live.
+      wb(o, ["--literal-pathspecs", "mergetool", "--tool=../../x", "--no-prompt", "--", "uu.txt"], { allowExit: "any", input: "", env });
+      expect({ scope, sourced: existsSync(log) }).toEqual({ scope, sourced: true });
+    };
+    await (scope === "global" ? withGlobal([["merge.tool", "../../x"]], body) : body());
+  }
 }, TIMEOUT_MS);
 
 // A console merge tool that writes its Windows process ID and then waits. It ends itself after 120 s, so a failed Cancel leaves no process.

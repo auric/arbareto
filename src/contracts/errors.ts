@@ -109,6 +109,7 @@ export const WORKBENCH_UNAVAILABLE_REASONS = [
   "dirty-tree",
   "interactive",
   "no-merge-tool",
+  "merge-tool-name",
   "side-missing",
   "side-not-regular",
   "stages-missing",

@@ -7,14 +7,14 @@
 import type { MutationStarted } from "../contracts/channel";
 import type { Phase, Response, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors";
-import { APPROVAL_LIFETIME_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, WORKTREE_LISTING_BYTES, WORKTREE_RECORDS } from "../contracts/limits";
+import { APPROVAL_LIFETIME_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_UPDATE_CEILING_MS, WORKTREE_LISTING_BYTES, WORKTREE_RECORDS } from "../contracts/limits";
 import type { OperationEvent } from "../contracts/outcome";
 import { buildRemedyCommand, type RemedyValue } from "../contracts/remedy-command";
 import type { StallRemedy } from "../contracts/submodules";
 import type { Exclusion } from "./exclusion";
-import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit, type GitRunner, type ProcessContext } from "./git-runner";
+import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit, type ProcessContext } from "./git-runner";
 import { captureHead, sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
-import { enterReconciling, isStop, settled, type Fact, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
+import { enterReconciling, isStop, settled, type Fact, type Failure, type ObserveContext, type PublishContext, type Stop } from "./hunk-publish";
 import { reviewIgnore, runIgnore, type IgnorePlan } from "./ignore";
 import type { OperationRegistry } from "./operations";
 import { contextOf } from "./read-steps";
@@ -37,8 +37,8 @@ export type WorkbenchAction = WorkbenchPayload["action"];
 export type PayloadOf<A extends WorkbenchAction> = Extract<WorkbenchPayload, { action: A }>;
 type RunRequest = Extract<ServiceRequest, { operation: "runWorkbench" }>;
 
-// The context of a handler. Its reader also maps an entry of a shown snapshot and reads the workspace.
-export type WorkbenchContext = ObserveContext & { reader: Pick<WorkspaceReader, "operationState" | "entry" | "readWorkspace"> };
+// The context of a handler. Its reader also maps an entry of a shown snapshot and reads the workspace. Its runner also sends the `wslFiles` walks.
+export type WorkbenchContext = PublishContext & { reader: Pick<WorkspaceReader, "operationState" | "entry" | "readWorkspace"> };
 
 // Contract Δ3 "Every review reads": the HEAD capture, the operation markers, and the trust listing.
 export interface Common {
@@ -61,6 +61,10 @@ export interface StepEnd {
   outputTail: string;
 }
 
+export interface StepOptions {
+  context?: ProcessContext;
+}
+
 // The step helpers of one `runWorkbench` operation. `q` reads with a signal that never aborts (contract §8).
 export interface WorkbenchRun {
   ctx: WorkbenchContext;
@@ -69,7 +73,7 @@ export interface WorkbenchRun {
   // The refs, HEAD, index, and markers right before the first step.
   before: Observed;
   // A step after a Cancel starts no process and ends `canceled`. `context` defaults to the registered workspace; contract Δ6 `worktreeAdd` passes its binding.
-  step(args: string[], phase: Phase, context?: ProcessContext): Promise<StepEnd>;
+  step(args: string[], phase: Phase, options?: StepOptions): Promise<StepEnd>;
   // A progress event for a step without a Git process.
   progress(phase: Phase): void;
   // Enters `reconciling` after the steps. Null: a WSL step gave no process-end fact, so the outcome stays unknown.
@@ -100,7 +104,7 @@ export function registerWorkbenchAction<A extends WorkbenchAction, B>(action: A,
 const IN_PROGRESS_ALLOWED: ReadonlySet<string> = new Set(["choose-side", "mergetool", "ignore", "config-save", "worktree-prune", "worktree-remove"]);
 
 // Contract Δ7 "Mutation trust": `ignore` and `config-save` run no repository program, so they need no class. Every other action takes the class `workbench`.
-// shortcut: `mergetool` takes `workbench` until T060 adds the class `mergetool` and its handler.
+// shortcut: `mergetool` takes `workbench` until T060 adds the class `mergetool`.
 const CLASSLESS: ReadonlySet<string> = new Set(["ignore", "config-save"]);
 const classOf = (action: string): "workbench" | null => (CLASSLESS.has(action) ? null : "workbench");
 
@@ -207,7 +211,7 @@ type Accepted = { ok: true; entry: Issued } | { ok: false; code: "UNKNOWN_TARGET
 type Full = { common: Common; bound: unknown; plan: Record<string, unknown> };
 
 export interface WorkbenchOptions extends Pick<HistoryReaderOptions, "listingTuple"> {
-  runner: GitRunner;
+  runner: PublishContext["runner"];
   trust: Trust;
   reader: WorkbenchContext["reader"];
   registry: OperationRegistry;
@@ -296,8 +300,10 @@ export function createWorkbench(o: WorkbenchOptions) {
         common,
         before,
         // Plan.md D2: each step runs under the policy `integrate` with the 003 limits and the 15 s stall notice.
-        async step(args, phase, context = contextOf(w)) {
+        // Contract Δ6: only the `mergetool` action has the phase `mergetool`. Its step runs under the policy `mergetool` with the ceiling alone, so it gets no stall notice.
+        async step(args, phase, { context = contextOf(w) } = {}) {
           if (signal.aborted) return { exit: null, canceled: true, refused: null, outputTail: "" };
+          const tool = phase === "mergetool";
           const report = () => {
             const state = registry.get(operationId)?.state;
             if (state === "running" || state === "cancel-requested") registry.progress(operationId, phase);
@@ -309,7 +315,7 @@ export function createWorkbench(o: WorkbenchOptions) {
           let exit: GitExit | null = null;
           let refused: ErrorCode | null = null;
           try {
-            exit = await o.runner.run({ operationId, context, arguments: args, environmentPolicy: "integrate", limits: PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
+            exit = await o.runner.run({ operationId, context, arguments: args, environmentPolicy: tool ? "mergetool" : "integrate", limits: tool ? { ceilingMs: SUBMODULE_UPDATE_CEILING_MS } : PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
             lastDescendants = exit.activeDescendants ?? 0;
           } catch (error) {
             if (!signal.aborted && !(error instanceof RunnerRefusal)) throw error;

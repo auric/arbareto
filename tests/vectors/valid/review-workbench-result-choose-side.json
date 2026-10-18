@@ -1,0 +1,5 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "valid",
+  "text": "{\"action\":\"choose-side\",\"plan\":{\"path\":\"dXUudHh0\",\"kind\":{\"xy\":\"UU\",\"text\":\"Both modified\"},\"stages\":[{\"stage\":1,\"mode\":\"100644\",\"oid\":\"0123456789abcdef0123456789abcdef01234567\"},{\"stage\":2,\"mode\":\"100644\",\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\"},{\"stage\":3,\"mode\":\"100755\",\"oid\":\"0123456789abcdef0123456789abcdef01234567\"}],\"names\":{\"ours\":{\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\",\"refs\":[\"refs/heads/main\"]},\"theirs\":{\"oid\":\"0123456789abcdef0123456789abcdef01234567\",\"refs\":[]}},\"operation\":\"rebasing\",\"side\":\"theirs\"},\"workbenchToken\":\"6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b\"}"
+}

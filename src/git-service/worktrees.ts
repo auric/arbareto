@@ -202,7 +202,7 @@ registerWorkbenchAction<"worktree-add", AddBound>("worktree-add", {
   async run(r, p, b) {
     const w = r.ctx.workspace;
     const context: ProcessContext = { contextKind: "worktreeAdd", gitInstallationId: w.gitInstallationId, repositoryId: w.repositoryId, bootstrapId: p.bootstrapId };
-    const end = await r.step(addArgs(p, b.path, w.objectFormat), "worktree", context);
+    const end = await r.step(addArgs(p, b.path, w.objectFormat), "worktree", { context });
     const ref = "existing" in p.branch ? p.branch.existing : `${HEADS}${p.branch.new}`;
     const refs = new Map(r.before.refs);
     if (!("existing" in p.branch)) refs.set(refKey(ref), b.oid);

@@ -1384,6 +1384,19 @@ const WorktreeRemovePlan = z
 const WorktreePrunePlan = z
   .strictObject({ prunable: z.array(z.strictObject({ path: Text.min(1), reason: z.string().nullable() }).meta({ title: "PrunableWorktree" })).min(1).max(WORKTREE_RECORDS) })
   .meta({ title: "WorktreePrunePlan" });
+// Data-model §11 and plan.md D7. `stages` holds the unmerged stages of the path. A side names the refs at its commit, and a side without a commit fact is null.
+const ResolveStage = z.strictObject({ stage: z.int().min(1).max(3), mode: FileMode, oid: ObjectId }).meta({ title: "ResolveStage" });
+const SideName = z.strictObject({ oid: ObjectId, refs: z.array(FullRef).max(REF_LISTING_RECORDS) }).meta({ title: "SideName" }).nullable();
+const resolvePlan = {
+  path: z.base64().min(1),
+  kind: z.strictObject({ xy: z.enum(["UU", "AA", "AU", "UA", "DU", "UD", "DD"]), text: Text.min(1) }).meta({ title: "ConflictKind" }),
+  stages: z.array(ResolveStage).min(1).max(3),
+  names: z.strictObject({ ours: SideName, theirs: SideName }).meta({ title: "SideNames" }),
+  operation: WorkspaceOperationState,
+};
+const ChooseSidePlan = z.strictObject({ ...resolvePlan, side: z.enum(["ours", "theirs"]) }).meta({ title: "ChooseSidePlan" });
+// Spec FR-093: the effective `merge.tool` value with its scope and origin.
+const MergetoolPlan = z.strictObject({ ...resolvePlan, tool: z.strictObject({ name: Text.min(1), scope: ConfigScope, origin: z.string() }).meta({ title: "MergeTool" }) }).meta({ title: "MergetoolPlan" });
 const reviewed = <A extends string, P extends z.ZodType>(action: A, plan: P, title: string) => z.strictObject({ action: z.literal(action), plan, workbenchToken: Identifier }).meta({ title });
 // Contract Δ3 "Result": `{action, plan, workbenchToken}`, or a refusal value: the Δ9 reason with its facts, the in-the-way paths, or the CONFLICTED count.
 // A `merge` or `rebase` refusal after the counts carries the plan (contract Δ3).
@@ -1400,6 +1413,8 @@ export const ReviewWorkbenchResult = z
       reviewed("worktree-add", WorktreeAddPlan, "WorktreeAddReviewed"),
       reviewed("worktree-remove", WorktreeRemovePlan, "WorktreeRemoveReviewed"),
       reviewed("worktree-prune", WorktreePrunePlan, "WorktreePruneReviewed"),
+      reviewed("choose-side", ChooseSidePlan, "ChooseSideReviewed"),
+      reviewed("mergetool", MergetoolPlan, "MergetoolReviewed"),
     ]),
     z
       .strictObject({
@@ -1466,7 +1481,8 @@ const RefChanges = z.array(RefChange).max(SYNC_REFS_RECORDS);
 const STASH_STATES = ["dropped", ...STASH_KEPT_REASONS.map((reason) => `kept-${reason}` as const)] as const;
 const BRANCH_ACTIONS = ["create-branch", "rename-branch", "delete-branch"] as const;
 const WORKTREE_ACTIONS = ["worktree-add", "worktree-remove", "worktree-prune"] as const;
-const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", "ignore", ...WORKTREE_ACTIONS] as const;
+const RESOLVE_ACTIONS = ["choose-side", "mergetool"] as const;
+const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", "ignore", ...WORKTREE_ACTIONS, ...RESOLVE_ACTIONS] as const;
 // Contract Δ3 `runWorkbench` "Results": the observed effects. A failed step adds its `outputTail`. An unknown outcome names the action only.
 // A refusal before any step can carry the CONFLICTED count. A repeated request gets the `getOperation` result of its operation (contract §2).
 export const RunWorkbenchResult = z
@@ -1497,6 +1513,8 @@ export const RunWorkbenchResult = z
     z.strictObject({ action: z.literal("ignore"), reason: z.literal("ignore-not-regular").optional() }).meta({ title: "IgnoreRun" }),
     // `worktrees`: the record paths of the fresh list after the steps.
     z.strictObject({ action: z.enum(WORKTREE_ACTIONS), head: Head, refs: RefChanges, worktrees: z.array(Text.min(1)).max(WORKTREE_RECORDS), outputTail: OutputTail.optional() }).meta({ title: "WorktreeRun" }),
+    // Spec FR-096: `staged` comes from the fresh index read. It is true when the path has no stage above 0.
+    z.strictObject({ action: z.enum(RESOLVE_ACTIONS), staged: z.boolean(), operationState: WorkspaceOperationState, outputTail: OutputTail.optional() }).meta({ title: "ResolveRun" }),
     z.strictObject({ action: z.enum(RUN_ACTIONS) }).meta({ title: "WorkbenchUnread" }),
     z.strictObject({ unmerged: Count }).meta({ title: "WorkbenchConflicted" }),
     OperationResult.meta({ title: "WorkbenchRepeat" }),

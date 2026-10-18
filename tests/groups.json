@@ -184,6 +184,7 @@
     "tests/git/remote-facts.test.ts",
     "tests/git/remote-fixtures.test.ts",
     "tests/git/remote-servers.test.ts",
+    "tests/git/resolve.test.ts",
     "tests/git/reveal-path.test.ts",
     "tests/git/service-harness.test.ts",
     "tests/git/snapshot.test.ts",

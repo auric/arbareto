@@ -1358,7 +1358,27 @@ const IgnorePlan = z
     expected: z.union([z.literal("absent"), z.strictObject({ size: Count, sha256: Fingerprint }).meta({ title: "IgnoreExpected" })]),
   })
   .meta({ title: "IgnorePlan" });
-const reviewed = <A extends string, P extends z.ZodType>(action: A, plan: P, title: string) => z.strictObject({ action: z.literal(action), plan, workbenchToken: Identifier }).meta({ title });
+// Data-model §2 `config-save`: each changed key in Git's canonical form with the one earlier entry of the scope, or null. Every text passes the URL redaction.
+const ConfigSavePlan = z
+  .strictObject({
+    scope: z.enum(["local", "global"]),
+    changes: z
+      .array(
+        z
+          .strictObject({
+            key: Text.min(1),
+            value: Text.nullable(),
+            earlier: z.strictObject({ origin: Text.min(1), value: Text.nullable() }).meta({ title: "ConfigEarlier" }).nullable(),
+          })
+          .meta({ title: "ConfigSaveChange" }),
+      )
+      .min(1)
+      .max(CONFIG_CHANGES),
+  })
+  .meta({ title: "ConfigSavePlan" });
+// git-config(1) "EXIT STATUS" 1 to 6.
+export const CONFIG_EXIT_REASONS = ["invalid-key", "no-section-or-name", "invalid-file", "cannot-write", "nothing-set", "invalid-pattern"] as const;
+const reviewed =<A extends string, P extends z.ZodType>(action: A, plan: P, title: string) => z.strictObject({ action: z.literal(action), plan, workbenchToken: Identifier }).meta({ title });
 // Contract Δ3 "Result": `{action, plan, workbenchToken}`, or a refusal value: the Δ9 reason with its facts, the in-the-way paths, or the CONFLICTED count.
 // A `merge` or `rebase` refusal after the counts carries the plan (contract Δ3).
 export const ReviewWorkbenchResult = z
@@ -1371,6 +1391,7 @@ export const ReviewWorkbenchResult = z
       reviewed("merge", MergePlan, "MergeReviewed"),
       reviewed("rebase", RebasePlan, "RebaseReviewed"),
       reviewed("ignore", IgnorePlan, "IgnoreReviewed"),
+      reviewed("config-save", ConfigSavePlan, "ConfigSaveReviewed"),
     ]),
     z
       .strictObject({
@@ -1432,7 +1453,7 @@ const RefChanges = z.array(RefChange).max(SYNC_REFS_RECORDS);
 // Data-model §3 `stash.state`: `dropped`, or `kept-` with the contract Δ9 STASH_KEPT reason.
 const STASH_STATES = ["dropped", ...STASH_KEPT_REASONS.map((reason) => `kept-${reason}` as const)] as const;
 const BRANCH_ACTIONS = ["create-branch", "rename-branch", "delete-branch"] as const;
-const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", "ignore"] as const;
+const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", "ignore", "config-save"] as const;
 // Contract Δ3 `runWorkbench` "Results": the observed effects. A failed step adds its `outputTail`. An unknown outcome names the action only.
 // A refusal before any step can carry the CONFLICTED count. A repeated request gets the `getOperation` result of its operation (contract §2).
 export const RunWorkbenchResult = z
@@ -1461,6 +1482,20 @@ export const RunWorkbenchResult = z
       })
       .meta({ title: "MergeRebaseRun" }),
     z.strictObject({ action: z.literal("ignore"), reason: z.literal("ignore-not-regular").optional() }).meta({ title: "IgnoreRun" }),
+    // Plan.md D11: `written` comes from the fresh listing. `failed` names the stopped key, `stale` a key whose entries changed before its write.
+    z
+      .strictObject({
+        action: z.literal("config-save"),
+        scope: z.enum(["local", "global"]),
+        written: z.array(Text.min(1)).max(CONFIG_CHANGES),
+        failed: z
+          .strictObject({ key: Text.min(1), exitCode: z.int().min(0).max(limits.PROCESS_EXIT_CODE_MAX).nullable(), reason: z.enum(CONFIG_EXIT_REASONS).optional() })
+          .meta({ title: "ConfigSaveFailed" })
+          .optional(),
+        stale: Text.min(1).optional(),
+        outputTail: OutputTail.optional(),
+      })
+      .meta({ title: "ConfigSaveRun" }),
     z.strictObject({ action: z.enum(RUN_ACTIONS) }).meta({ title: "WorkbenchUnread" }),
     z.strictObject({ unmerged: Count }).meta({ title: "WorkbenchConflicted" }),
     OperationResult.meta({ title: "WorkbenchRepeat" }),

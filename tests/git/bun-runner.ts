@@ -590,8 +590,13 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (args === undefined || args.length !== fixed.length || args.some((arg, i) => arg !== fixed[i])) throw new RunnerRefusal("INVALID_REQUEST", "clone arguments");
       return { program, cwd: launchDirectory };
     }
-    // Feature 004 P3 binds the `globalConfig` context. Until then this runner refuses it.
-    if (context.contextKind === "globalConfig") throw unknownTarget();
+    // Feature 004 contract Δ6, as `src-tauri/src/process_requests.rs` resolves it: the admitted Git in the launch folder. It has no WSL form.
+    if (context.contextKind === "globalConfig") {
+      const program = gits.get(context.gitInstallationId);
+      if (program === undefined) throw unknownTarget();
+      if (wslGits.has(context.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL globalConfig");
+      return { program, cwd: launchDirectory };
+    }
     const bound = contexts.get(context.bootstrapId);
     // Feature 003 contract Δ6: before its clone exits with status 0, a clone destination has no identity.
     if (!bound || bound.kind !== context.contextKind || bound.pending) throw unknownTarget();

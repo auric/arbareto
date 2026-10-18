@@ -228,8 +228,12 @@ export interface ConfigView {
   // Listing order.
   entries: ConfigViewEntry[];
   effective: ConfigViewEntry | null;
+  // Data-model §9 `scopes`: the entries of each scope, in listing order.
+  scopes: Record<(typeof VIEW_SCOPES)[number], ConfigViewEntry[]>;
   readOnly: { local: boolean; global: boolean };
 }
+
+const VIEW_SCOPES = ["system", "global", "local", "worktree", "command"] as const;
 
 // FR-060 boolean keys, as Git prints them: section and variable in lowercase.
 const BOOL_KEYS: ReadonlySet<string> = new Set(["fetch.prune", "merge.autostash", "rebase.autostash", "rebase.autosquash", "rebase.updaterefs", "rerere.enabled", "rerere.autoupdate", "push.autosetupremote"]);
@@ -246,18 +250,23 @@ const ENUMS: ReadonlyMap<string, { values: readonly string[]; read: (value: stri
   ["push.default", { values: PUSH_DEFAULTS, read: (v) => (v !== null && PUSH_DEFAULTS.includes(v) ? v : null) }],
 ]);
 
+// The value as Git reads it for the type of `key`. Null: Git cannot read it, or a text key has no value.
+export function configReading(key: string, value: string | null): string | null {
+  return BOOL_KEYS.has(key) ? boolReading(value) : (ENUMS.get(key)?.read ?? ((v: string | null) => v))(value);
+}
+
 // `key` is the canonical key as Git prints it. The effective value is the last entry (git-config(1)).
 export function configView(listing: readonly ConfigEntry[], key: string): ConfigView {
   const kind = ENUMS.get(key);
   const type: ConfigType = BOOL_KEYS.has(key) ? { kind: "bool" } : kind ? { kind: "enum", values: kind.values } : { kind: "text" };
-  const read = BOOL_KEYS.has(key) ? boolReading : (kind?.read ?? ((v: string | null) => v));
-  const entries = listing.filter((e) => e.key === key).map(({ scope, origin, value }) => ({ scope, origin, value, reading: read(value) }));
+  const entries = listing.filter((e) => e.key === key).map(({ scope, origin, value }) => ({ scope, origin, value, reading: configReading(key, value) }));
   // FR-063: several entries in one scope. Plan.md D11: a boolean that Git cannot read.
   const readOnly = (scope: ConfigScope) => {
     const own = entries.filter((e) => e.scope === scope);
     return own.length > 1 || (type.kind === "bool" && own.length === 1 && own[0]!.reading === null);
   };
-  return { key, type, entries, effective: entries.at(-1) ?? null, readOnly: { local: readOnly("local"), global: readOnly("global") } };
+  const scopes = Object.fromEntries(VIEW_SCOPES.map((scope) => [scope, entries.filter((e) => e.scope === scope)])) as ConfigView["scopes"];
+  return { key, type, entries, effective: entries.at(-1) ?? null, scopes, readOnly: { local: readOnly("local"), global: readOnly("global") } };
 }
 
 // ---- Refspec map (research.md R2, remote.c `query_refspecs`) ----

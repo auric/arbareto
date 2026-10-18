@@ -710,6 +710,112 @@
           ],
           "additionalProperties": false,
           "title": "IgnoreReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "config-save"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "local",
+                    "global"
+                  ]
+                },
+                "changes": {
+                  "minItems": 1,
+                  "maxItems": 32,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000]*$"
+                      },
+                      "value": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[^\\u0000]*$"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      },
+                      "earlier": {
+                        "anyOf": [
+                          {
+                            "type": "object",
+                            "properties": {
+                              "origin": {
+                                "type": "string",
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000]*$"
+                              },
+                              "value": {
+                                "anyOf": [
+                                  {
+                                    "type": "string",
+                                    "pattern": "^[^\\u0000]*$"
+                                  },
+                                  {
+                                    "type": "null"
+                                  }
+                                ]
+                              }
+                            },
+                            "required": [
+                              "origin",
+                              "value"
+                            ],
+                            "additionalProperties": false,
+                            "title": "ConfigEarlier"
+                          },
+                          {
+                            "type": "null"
+                          }
+                        ]
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "value",
+                      "earlier"
+                    ],
+                    "additionalProperties": false,
+                    "title": "ConfigSaveChange"
+                  }
+                }
+              },
+              "required": [
+                "scope",
+                "changes"
+              ],
+              "additionalProperties": false,
+              "title": "ConfigSavePlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "ConfigSaveReviewed"
         }
       ]
     },

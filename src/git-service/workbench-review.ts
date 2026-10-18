@@ -4,7 +4,7 @@
 // Feature 004 contract Δ3 `reviewWorkbench` and `runWorkbench`, data-model §2, and plan.md D2.
 // Each action module registers its reads and steps with `registerWorkbenchAction`. A token is one use, and `runWorkbench` consumes it only after validation.
 
-import type { MutationStarted } from "../contracts/channel";
+import type { MutationStarted, ProcessContext } from "../contracts/channel";
 import type { Phase, Response, ServiceRequest } from "../contracts/envelope";
 import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors";
 import { APPROVAL_LIFETIME_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, WORKTREE_LISTING_BYTES, WORKTREE_RECORDS } from "../contracts/limits";
@@ -68,8 +68,8 @@ export interface WorkbenchRun {
   common: Common;
   // The refs, HEAD, index, and markers right before the first step.
   before: Observed;
-  // A step after a Cancel starts no process and ends `canceled`.
-  step(args: string[], phase: Phase): Promise<StepEnd>;
+  // A step after a Cancel starts no process and ends `canceled`. `context` replaces the registered repository, such as `globalConfig` (contract Δ6).
+  step(args: string[], phase: Phase, options?: { context?: ProcessContext; counters?: Record<string, number> }): Promise<StepEnd>;
   // A progress event for a step without a Git process.
   progress(phase: Phase): void;
   // Enters `reconciling` after the steps. Null: a WSL step gave no process-end fact, so the outcome stays unknown.
@@ -296,11 +296,11 @@ export function createWorkbench(o: WorkbenchOptions) {
         common,
         before,
         // Plan.md D2: each step runs under the policy `integrate` with the 003 limits and the 15 s stall notice.
-        async step(args, phase) {
+        async step(args, phase, options = {}) {
           if (signal.aborted) return { exit: null, canceled: true, refused: null, outputTail: "" };
           const report = () => {
             const state = registry.get(operationId)?.state;
-            if (state === "running" || state === "cancel-requested") registry.progress(operationId, phase);
+            if (state === "running" || state === "cancel-requested") registry.progress(operationId, phase, options.counters);
           };
           report();
           const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
@@ -309,7 +309,7 @@ export function createWorkbench(o: WorkbenchOptions) {
           let exit: GitExit | null = null;
           let refused: ErrorCode | null = null;
           try {
-            exit = await o.runner.run({ operationId, context: contextOf(w), arguments: args, environmentPolicy: "integrate", limits: PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
+            exit = await o.runner.run({ operationId, context: options.context ?? contextOf(w), arguments: args, environmentPolicy: "integrate", limits: PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
             lastDescendants = exit.activeDescendants ?? 0;
           } catch (error) {
             if (!signal.aborted && !(error instanceof RunnerRefusal)) throw error;

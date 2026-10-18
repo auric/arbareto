@@ -812,6 +812,7 @@
                       "path",
                       "active-value",
                       "remote-name",
+                      "parent-not-initialized",
                       "gitdir-config",
                       "limit",
                       "programs",

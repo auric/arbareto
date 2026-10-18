@@ -486,6 +486,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     sshClient: "git" as "git" | { plink: string },
     // Runs before each `destinationFacts` reply. A throw replaces the reply, as a broken channel does.
     destinationFacts: null as ((request: { operationId: string; cloneId: string }) => void) | null,
+    // Replaces the OS facts of a `worktreeAdd` binding, such as an `error` result that the double cannot produce by itself.
+    worktreeAddFacts: null as ((path: string) => DestinationFactsReply) | null,
     // A repository `register` waits for this promise before its reply.
     holdRegister: null as ((request: { repositoryId: string }) => Promise<void>) | null,
   };
@@ -1345,7 +1347,7 @@ export function createBunRunner(options: BunRunnerOptions) {
         const bound = contexts.get(request.bootstrapId);
         if (inactive.has(request.operationId) || bound?.kind !== "worktreeAdd" || !repositories.has(bound.repositoryId!)) throw unknownTarget();
         if (wslParts(bound.path) !== null) throw new RunnerRefusal("INVALID_REQUEST", "WSL destination");
-        return { ...destinationOf(bound.path), path: bound.path };
+        return { ...(inject.worktreeAddFacts?.(bound.path) ?? destinationOf(bound.path)), path: bound.path };
       }
       inject.destinationFacts?.(request);
       const bound = contexts.get(request.cloneId);

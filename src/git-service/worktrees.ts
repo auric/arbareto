@@ -150,7 +150,8 @@ function addArgs(p: PayloadOf<"worktree-add">, path: string, objectFormat: Objec
   return "existing" in b ? worktreeAddExistingArgs(path, b.existing.slice(HEADS.length)) : worktreeAddNewArgs(b.new, path, b.start, objectFormat);
 }
 
-// Contract Δ3: `absent` or `empty` passes. Every other reply gives DESTINATION_NOT_EMPTY, and an `error` reply gives no reason.
+// Contract Δ3: `absent` or `empty` passes. An `error` reply is no destination type, so it gives REPOSITORY_UNAVAILABLE with the path, as feature 003 `clone` step 2 does.
+// Every other reply gives DESTINATION_NOT_EMPTY with its result as the reason.
 async function destination(ctx: ObserveContext, bootstrapId: string): Promise<Fact<Omit<AddBound, "oid">> | Refused> {
   // `session.ts` gives the workbench its full runner, which also serves the feature 003 private requests.
   const runner = ctx.runner as GitRunner & Pick<SyncRunner, "destinationFacts">;
@@ -163,7 +164,7 @@ async function destination(ctx: ObserveContext, bootstrapId: string): Promise<Fa
   }
   if (!("path" in facts)) return { code: "GIT_FAILED" };
   if (facts.result === "absent" || facts.result === "empty") return { value: { path: facts.path, destination: facts.result } };
-  return facts.result === "error" ? { refused: "DESTINATION_NOT_EMPTY" } : { refused: "DESTINATION_NOT_EMPTY", result: { reason: facts.result } };
+  return facts.result === "error" ? { refused: "REPOSITORY_UNAVAILABLE", result: { path: facts.path } } : { refused: "DESTINATION_NOT_EMPTY", result: { reason: facts.result } };
 }
 
 registerWorkbenchAction<"worktree-add", AddBound>("worktree-add", {
@@ -243,6 +244,8 @@ registerWorkbenchAction<"worktree-remove", RemoveBound>("worktree-remove", {
     if (isCurrent(ctx, id.value[0]!)) return unavailable("current-worktree");
     // git-worktree(1) `remove`: a locked worktree needs `--force` twice, and the app passes it once at most.
     if (record.locked !== null) return unavailable("locked");
+    // The list marks a record prunable when its folder is missing, so no read can run in it. Prune removes the record.
+    if (record.prunable !== null) return unavailable("prunable");
     const statusArgs = worktreeStatusArgs(record.path);
     if (!fits(ctx, "read", statusArgs) || !fits(ctx, "integrate", worktreeRemoveArgs(record.path, true))) return unavailable("limit");
     let branch: DeleteFacts | null = null;

@@ -38,6 +38,7 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 - Command: `worktree list --porcelain -z` [`read`].
 - Parse: data-model §8 record checks. Bounds: `WORKTREE_RECORDS` and `WORKTREE_LISTING_BYTES` (4 MiB).
 - The service sends one identity request per record path (001 §6), at most 8 paths per request, to mark the current record.
+- Unidentifiable record: only the refusal `absent` proves a missing folder, and that record is not current. A record path without an exact identity form (bytes that are no valid UTF-8, or a Linux name without a UNC form), or any other identity refusal, refuses the read with `UNSUPPORTED_REPOSITORY` (001 §6 "Process fields").
 
 ### `readGitSettings`
 
@@ -80,9 +81,9 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
     - Without `autostash`: `status --porcelain=v2 -z --untracked-files=no --ignore-submodules=all`. A record gives reason `dirty-tree`. builtin/rebase.c `require_clean_work_tree` ignores submodules, and the parse skips the `# ` header lines (git-status(1)).
   - `choose-side`, `mergetool`: `ls-files -z --stage -- <path>`; the working file facts and SHA-256 (001 §4 "Binding"); for `mergetool`, the effective `merge.tool` and its tool keys.
   - `ignore`: `rev-parse --path-format=absolute --git-path info/exclude` for `exclude`; `fileFacts` with `digest: true` of the target (1 MiB bound). The line of `src/contracts/ignore-line.ts` gives reason `path` for a control character or invalid UTF-8, and reason `limit` above 4,096 UTF-8 bytes.
-  - `worktree-add`: `{existing: "refs/heads/@"}` gives reason `reserved-name` before any Git process (plan D4); `readWorktrees`; `destinationFacts` (003 Δ6) of the bound path: `absent` or `empty` passes, other replies give `DESTINATION_NOT_EMPTY`; for `new`, the `create-branch` checks.
-  - `worktree-remove`: `readWorktrees`; in that worktree, `-C <path> status --porcelain=v2 -z --untracked-files=all --ignore-submodules=dirty` under the trust state of that worktree; for `deleteBranch`, the `delete-branch` reads.
-  - `worktree-prune`: `readWorktrees`. No prunable record gives reason `nothing-to-prune`.
+  - `worktree-add`: `{existing: "refs/heads/@"}` gives reason `reserved-name` before any Git process (plan D4); `readWorktrees`; `destinationFacts` (003 Δ6) of the bound path: `absent` or `empty` passes; an `error` reply gives `REPOSITORY_UNAVAILABLE` with `path`, the `path` of the reply, as the 003 `clone` step 2 does; other replies give `DESTINATION_NOT_EMPTY` with the reply result as `reason`; for `new`, the `create-branch` checks.
+  - `worktree-remove`: `readWorktrees`; a record that the list marks `prunable` gives reason `prunable` before any read in that worktree, because its folder is missing and `-C <path>` fails; in that worktree, `-C <path> status --porcelain=v2 -z --untracked-files=all --ignore-submodules=dirty` under the trust state of that worktree; for `deleteBranch`, the `delete-branch` reads.
+  - `worktree-prune`: `readWorktrees`. No prunable record gives reason `nothing-to-prune`. Hidden prune targets: Git's `worktree prune` also removes an administration entry that `worktree list` never shows, such as one without a `gitdir` file (Git 2.56.0.windows.2, 2026-10-18), so such an entry alone gives `nothing-to-prune`, and a run with a prunable record removes it too.
   - `config-save`: the configuration listing. A key with several entries in the scope gives reason `multi-value`.
 - Result: `{action, plan, workbenchToken}`. `plan` holds the data-model §3 to §11 fields for display.
 - A `merge` or `rebase` refusal after the counts (`ff-only`, `squash-no-ff`, `message-size`, `dirty-tree`) carries `{reason, plan}`, so the panel still states the facts.
@@ -241,13 +242,14 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 
 | Code | Reasons | Meaning |
 |---|---|---|
-| `WORKBENCH_UNAVAILABLE` | `detached`, `unborn`, `current-branch`, `other-worktree`, `name-exists`, `invalid-name`, `reserved-name`, `same-branch`, `ff-only`, `dirty-tree`, `interactive`, `no-merge-tool`, `side-missing`, `side-not-regular`, `stages-missing`, `main-worktree`, `current-worktree`, `locked`, `nothing-to-prune`, `multi-value`, `limit`, `push-current-only`, `ignore-exists`, `ignore-not-text`, `ignore-not-regular`, `ignore-size`, `path`, `message-size`, `unreadable`, `no-tracking-refspec`, `several-tracking-remotes`, `squash-no-ff`, `merge-options`, `invalid-config`, `unknown-operation`, `apply-backend`, `config-in-include` | The action cannot run. No process starts. |
+| `WORKBENCH_UNAVAILABLE` | `detached`, `unborn`, `current-branch`, `other-worktree`, `name-exists`, `invalid-name`, `reserved-name`, `same-branch`, `ff-only`, `dirty-tree`, `interactive`, `no-merge-tool`, `side-missing`, `side-not-regular`, `stages-missing`, `main-worktree`, `current-worktree`, `locked`, `prunable`, `nothing-to-prune`, `multi-value`, `limit`, `push-current-only`, `ignore-exists`, `ignore-not-text`, `ignore-not-regular`, `ignore-size`, `path`, `message-size`, `unreadable`, `no-tracking-refspec`, `several-tracking-remotes`, `squash-no-ff`, `merge-options`, `invalid-config`, `unknown-operation`, `apply-backend`, `config-in-include` | The action cannot run. No process starts. |
 | `UNTRACKED_IN_WAY` | `untracked-in-way` | Discard would overwrite these untracked files. The result lists up to 100 paths. |
 | `STASH_KEPT` | `conflicts`, `failed-apply`, `failed-checkout`, `not-found`, `stash-changed` | The switch kept the stash. The result names its commit ID and the remedy. |
 
 - `STASH_KEPT` never ends a response. A kept stash is an observed effect, and 001 §9 gives `failed-with-effects` only `FAILED_WITH_EFFECTS`. The result carries data-model §3 `stash.state` `kept-<reason>`.
 - `same-branch` (switch): the target is the current branch. `unborn` (switch): Stash and reapply or Discard changes on an unborn HEAD. `no-tracking-refspec` and `several-tracking-remotes` (switch `track`): plan D3 Track rule.
 - `apply-backend` (rebase): without Autosquash, the effective `rebase.backend` is `apply` (plan D6). `config-in-include` (delete-branch): a local `branch.<name>` key comes from an included file (plan D4).
+- `prunable` (worktree-remove): the list marks the record `prunable`, so its folder is missing. Prune removes the record (plan D10, spec FR-057).
 
 Reused: `OPERATION_IN_PROGRESS`, `CONFLICTED`, `APPROVAL_EXPIRED`, `STALE_REVIEW`, `STALE_SELECTION`, `TRUST_REQUIRED`, `TRUST_CHANGED`, `MALFORMED_GIT_OUTPUT`, `OUTPUT_LIMIT`, `GIT_FAILED`, `DEADLINE`, `CANCELED`, `COMPLETED_WITH_EFFECTS`, `FAILED_WITH_EFFECTS`, `STATE_UNKNOWN`, `UNKNOWN_TARGET`, `BUSY`, `DESTINATION_NOT_EMPTY`, `UNSUPPORTED_COMPARISON`. File action reasons add `context-only`, `several-hunks` (renderer only, Δ4), `deleted-file`, `new-file`, `eof-newline`.
 

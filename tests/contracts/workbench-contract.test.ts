@@ -136,6 +136,7 @@ describe("contract Δ9 codes", () => {
       "main-worktree",
       "current-worktree",
       "locked",
+      "prunable",
       "nothing-to-prune",
       "multi-value",
       "limit",

@@ -252,18 +252,26 @@ caseTest(TASK, "FR-052 and plan.md D4: refs/heads/@ and a new @ give reserved-na
     expect(refused(await add({ new: "main", start: f.oids.base! }))).toEqual(unavailable("name-exists", { ref: "refs/heads/main" }));
     expect(refused(await add({ new: "fresh", start: f.oids.base! }, "wt-full"))).toEqual({ state: "failed", code: "DESTINATION_NOT_EMPTY", result: { reason: "not-empty" } });
     expect(refused(await add({ new: "fresh", start: f.oids.base! }, "wt-file"))).toEqual({ state: "failed", code: "DESTINATION_NOT_EMPTY", result: { reason: "file" } });
+    // An `error` reply is no destination type, so it refuses as feature 003 `clone` step 2 does.
+    service.runner.inject.worktreeAddFacts = () => ({ result: "error", code: "access-denied" });
+    expect(refused(await add({ new: "fresh", start: f.oids.base! }, "wt-denied"))).toEqual({ state: "failed", code: "REPOSITORY_UNAVAILABLE", result: { path: folder(f, "wt-denied") } });
+    service.runner.inject.worktreeAddFacts = null;
     expect(steps(service)).toEqual([]);
   });
   expect(stateOf(f)).toEqual(before);
 }, TIMEOUT_MS);
 
-caseTest(TASK, "FR-054: Remove is unavailable for the main, the current, and a locked worktree, and a path that no fresh record names gives UNKNOWN_TARGET; no step starts", SHELL, async () => {
+caseTest(TASK, "FR-054: Remove is unavailable for the main, the current, a locked, and a prunable worktree, and a path that no fresh record names gives UNKNOWN_TARGET; no step starts", SHELL, async () => {
   const f = build();
   const before = stateOf(f);
   await withSync("t049-remove-unavailable", async (service) => {
     const r = await open(service, f.repo);
     expect(refused(await review(service, r, removePayload(recordPath(f, "repo"), true, true)))).toEqual(unavailable("main-worktree"));
     for (const name of ["wt-locked-reason", "wt-locked"]) expect(refused(await review(service, r, removePayload(recordPath(f, name), true, false)))).toEqual(unavailable("locked"));
+    // The folder of a prunable record is missing, so no Git process runs in it. Prune removes the record (FR-057).
+    const prunable = recordPath(f, "wt-prunable");
+    expect(refused(await review(service, r, removePayload(prunable, true, true)))).toEqual(unavailable("prunable"));
+    expect(service.runner.calls.some((c) => c.arguments.includes(prunable))).toBe(false);
     expect(refused(await review(service, r, removePayload(slash(folder(f, "wt-none")), false, false)))).toEqual({ state: "failed", code: "UNKNOWN_TARGET", result: undefined });
     const spaces = await open(service, folder(f, "wt with spaces"));
     expect(refused(await review(service, spaces, removePayload(recordPath(f, "wt with spaces"), false, false)))).toEqual(unavailable("current-worktree"));

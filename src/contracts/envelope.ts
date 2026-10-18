@@ -1412,6 +1412,8 @@ export const ReviewWorkbenchResult = z
         paths: z.array(Text.min(1)).min(1).max(IN_THE_WAY_PATHS).optional(),
         more: Count.optional(),
         unmerged: Count.optional(),
+        // The REPOSITORY_UNAVAILABLE refusal of `worktree-add`: the bound path that the shell could not read (contract Δ3).
+        path: Text.min(1).optional(),
       })
       .refine(
         (r) =>
@@ -1420,7 +1422,8 @@ export const ReviewWorkbenchResult = z
           (r.remotes === undefined || r.reason === "several-tracking-remotes") &&
           (r.paths !== undefined) === (r.reason === "untracked-in-way") &&
           (r.paths !== undefined) === (r.more !== undefined) &&
-          (r.unmerged === undefined || r.reason === undefined),
+          (r.unmerged === undefined || r.reason === undefined) &&
+          (r.path === undefined || r.reason === undefined),
       )
       .meta({ title: "WorkbenchRefused" }),
   ])

@@ -79,6 +79,8 @@ export interface WorktreeRecord {
   invalidUtf8: boolean;
   head: string | null;
   branch: string | null;
+  // The raw bytes of the `branch` value as a listing key (`refKey`), so that a compare with a listing key is exact.
+  branchKey: string | null;
   bare: boolean;
   detached: boolean;
   // `reason` is untrusted text.
@@ -98,7 +100,7 @@ function worktreeRecord(lines: string[], objectFormat: ObjectFormat, main: boole
   const first = lines[0]!;
   if (!first.startsWith("worktree ") || first.length === "worktree ".length) return null;
   const path = decoded(first.slice("worktree ".length));
-  const r: WorktreeRecord = { path: path.text, invalidUtf8: !path.exact, head: null, branch: null, bare: false, detached: false, locked: null, prunable: null, main };
+  const r: WorktreeRecord = { path: path.text, invalidUtf8: !path.exact, head: null, branch: null, branchKey: null, bare: false, detached: false, locked: null, prunable: null, main };
   const seen = new Set<string>();
   for (const line of lines.slice(1)) {
     const label = line.split(" ", 1)[0]!;
@@ -109,6 +111,7 @@ function worktreeRecord(lines: string[], objectFormat: ObjectFormat, main: boole
     else if (label === "branch" && line.startsWith("branch refs/")) {
       const branch = decoded(line.slice(7));
       r.branch = branch.text;
+      r.branchKey = line.slice(7);
       r.invalidUtf8 ||= !branch.exact;
     } else if (line === "bare") r.bare = true;
     else if (line === "detached") r.detached = true;
@@ -139,6 +142,40 @@ export function parseWorktrees(stdout: Uint8Array, objectFormat: ObjectFormat): 
     lines = [];
   }
   return lines.length === 0 ? records : null;
+}
+
+// ---- Object ID lists (`stashReflogArgs` and `headReflogArgs`, plan.md D3 and D4) ----
+
+// `-z` with `--format=%H`: each object ID ends with NUL (git-log(1)).
+export function oidList(stdout: Uint8Array, objectFormat: ObjectFormat): string[] | null {
+  const text = latin1(stdout);
+  const oids = text === "" ? [] : text.endsWith("\0") ? text.slice(0, -1).split("\0") : null;
+  return oids !== null && oids.every((oid) => isObjectId(oid, objectFormat)) ? oids : null;
+}
+
+// ---- Rebase walk (`rebaseWalkArgs`, plan.md D6) ----
+
+export interface WalkCommit {
+  oid: string;
+  // `=`: a patch-same commit (git-rev-list(1) `--cherry-mark`).
+  same: boolean;
+  // Null for a root commit.
+  parent: string | null;
+}
+
+// `rev-list --cherry-mark --parents`: the mark `+` or `=`, the commit, and a space before each parent, then LF.
+export function parseRebaseWalk(stdout: Uint8Array, objectFormat: ObjectFormat): WalkCommit[] | null {
+  const raw = latin1(stdout);
+  if (raw === "") return [];
+  if (!raw.endsWith("\n")) return null;
+  const commits: WalkCommit[] = [];
+  for (const line of raw.slice(0, -1).split("\n")) {
+    const [first = "", ...parents] = line.split(" ");
+    const oid = first.slice(1);
+    if ((first[0] !== "+" && first[0] !== "=") || ![oid, ...parents].every((o) => isObjectId(o, objectFormat))) return null;
+    commits.push({ oid, same: first[0] === "=", parent: parents[0] ?? null });
+  }
+  return commits;
 }
 
 // ---- Tracked status (`trackedStatusArgs` and `rebaseStatusArgs`, plan.md D3 and D6) ----

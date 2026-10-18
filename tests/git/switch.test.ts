@@ -7,6 +7,7 @@
 import { expect } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
 import { localNameOf } from "../../src/git-service/workbench-parsers";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
@@ -246,6 +247,73 @@ caseTest(TASK, "FR-011 and SC-002: Discard with an untracked file or folder in t
   });
   for (const args of [["stash", "push", "--quiet", "-m", MESSAGE], ["checkout", "-q", "--no-guess", "target", "--"], ["stash", "drop", "--quiet"]]) git(o, args);
   expect(stateOf(f)).toEqual(stateOf(o));
+}, TIMEOUT_MS);
+
+// Contract §2: the token is in use from the accepted run on. The held process starts keep the first run in its validation.
+caseTest(TASK, "contract §2: a second runWorkbench with the token of a run that still validates gets the repeat answer with that operation, and only the first run starts a step", SHELL, async () => {
+  const f = build("switch-clean");
+  await withSync("t021-repeat-validating", async (service) => {
+    const r = await open(service, f.repo);
+    const rv = await reviewed(service, r, switchTo("keep"));
+    const from = service.runner.calls.length;
+    const release = service.runner.holdStart();
+    const first = sendRun(service, r, rv.workbenchToken);
+    const repeat = await service.response<unknown>(sendRun(service, r, rv.workbenchToken), 10_000).finally(release);
+    const response = await service.response<SwitchResult>(first);
+    expect(outcome(response)).toEqual(SUCCEEDED);
+    expect({ ...outcome(repeat), operationId: repeat.operationId }).toEqual({ ...SUCCEEDED, operationId: response.operationId });
+    expect(steps(service, from)).toEqual([["--no-lazy-fetch", "checkout", "--no-guess", "--no-recurse-submodules", "target", "--"]]);
+  });
+}, TIMEOUT_MS);
+
+// Contract §6 "Process fields": the UTF-16 units of the shell command line with its null. The program is quoted. The arguments hold no space, tab, or quote.
+function unitsOf(program: string, args: readonly string[]): number {
+  if (args.some((a) => a === "" || /[ \t"]/.test(a))) throw new Error("an argument needs quoting");
+  return args.reduce((n, a) => n + 1 + a.length, program.length + 3);
+}
+
+// Contract Δ3 `switch`: the in-the-way `ls-files` read of the Discard entries.
+const STAGES = ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs", "ls-files", "-z", "--stage", "--"];
+
+// Adds files to `target` and an untracked file at each of their paths, so that one `ls-files` batch of every entry has exactly the bound under `program`.
+// In `switch-clean`, `a.txt` is the one other entry. Each `<repo>\<path>` stays under the 260-unit MAX_PATH of Git for Windows without `core.longpaths`.
+function fillStagesBatch(f: WbFixture, program: string): void {
+  const budget = WINDOWS_COMMAND_LINE_UNITS - unitsOf(program, [...STAGES, "a.txt"]);
+  const longest = 259 - f.repo.length - 1;
+  const count = Math.ceil(budget / (longest + 1));
+  const base = Math.floor(budget / count) - 1;
+  const extra = budget - count * (base + 1);
+  const paths = Array.from({ length: count }, (_, i) => `${i}`.padEnd(base + (i < extra ? 1 : 0), "x"));
+  const r = repoOf(f);
+  const blob = wb(r, ["hash-object", "-w", "--stdin"], { input: "target\n" }).stdout.toString("utf8").trim();
+  const env = { GIT_INDEX_FILE: join(f.root, "fill-index") };
+  wb(r, ["read-tree", TARGET], { env });
+  wb(r, ["update-index", "--add", "--index-info"], { env, input: paths.map((p) => `100644 ${blob}\t${p}\n`).join("") });
+  const tree = wb(r, ["write-tree"], { env }).stdout.toString("utf8").trim();
+  wb(r, ["update-ref", TARGET, wb(r, ["commit-tree", "-p", TARGET, "-m", "fill", tree]).stdout.toString("utf8").trim()]);
+  for (const p of paths) put(f, p, "untracked\n");
+}
+
+// Contract §6 "Process fields": the shell starts `executablePath`, and the command-line bound counts that program.
+// The added entries fill one `ls-files` batch to the bound under `selectedPath`. Under `executablePath`, that batch is too long.
+caseTest(TASK, "contract §6: a Discard ls-files batch that fits only under the selected Git path splits under the executable path, and the shell refuses no call", SHELL, async () => {
+  const f = build("switch-clean");
+  await withSync("t021-batch-units", async (service) => {
+    const env = await service.request<{ selectedPath: string; executablePath: string }>("getEnvironment", {});
+    const { selectedPath, executablePath } = env.result!;
+    expect(executablePath.length).toBeGreaterThan(selectedPath.length);
+    fillStagesBatch(f, selectedPath);
+    const r = await open(service, f.repo);
+    const from = service.runner.calls.length;
+    const response = await review(service, r, switchTo("discard"));
+    const calls = service.runner.calls.slice(from);
+    expect(calls.filter((c) => c.refused !== undefined).map((c) => c.refused)).toEqual([]);
+    expect({ ...outcome(response), reason: (response.result as { reason?: string } | undefined)?.reason }).toEqual({ state: "failed", code: "UNTRACKED_IN_WAY", reason: "untracked-in-way" });
+    const batches = calls.filter((c) => c.arguments[3] === "ls-files").map((c) => [...c.arguments]);
+    const paths = batches.flatMap((args) => args.slice(args.indexOf("--") + 1));
+    expect(unitsOf(selectedPath, [...STAGES, ...paths])).toBe(WINDOWS_COMMAND_LINE_UNITS);
+    expect(batches.map((args) => unitsOf(executablePath, args) <= WINDOWS_COMMAND_LINE_UNITS)).toEqual([true, true]);
+  });
 }, TIMEOUT_MS);
 
 caseTest(TASK, "plan.md D3 stash protocol: nothing to stash runs as Keep changes and creates no stash", SHELL, async () => {

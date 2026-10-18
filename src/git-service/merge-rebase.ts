@@ -4,21 +4,21 @@
 // Feature 004 contract Δ3 `reviewWorkbench` and `runWorkbench` for `merge` and `rebase`, data-model §2 and §5, and plan.md D5 and D6.
 // The dispatcher of `workbench-review.ts` holds the token, the common reads, and the run lifecycle. Each outcome comes from fresh reads after the step.
 
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, MERGE_MESSAGE_BYTES, STATUS_LISTING_BYTES, SYNC_REFS_BYTES, SYNC_REFS_RECORDS, WINDOWS_COMMAND_LINE_UNITS, WORKTREE_LISTING_BYTES, WORKTREE_RECORDS } from "../contracts/limits";
-import { isRefName } from "./commands";
-import { commandLineUnits, createCollector, wslCommandLineUnits } from "./git-runner";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, MERGE_MESSAGE_BYTES, STATUS_LISTING_BYTES, SYNC_REFS_BYTES, SYNC_REFS_RECORDS, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
+import { batchCommandArgs, isObjectId, isRefName, type ObjectFormat } from "./commands";
+import { createCollector, stepUnits } from "./git-runner";
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
+import { latin1 } from "./read-steps";
 import type { Head } from "./snapshot";
-import { pathForms } from "./submodule-review";
 import { changes } from "./sync";
 import { pushRecordArgs } from "./sync-commands";
 import { count, mergePreview, observe, parentsOf, previewItem, type Observed } from "./sync-integrate";
-import { decidePushDestination, invalidRemoteValue, parseAheadBehind, parsePushRecord, parseRevListCount } from "./sync-parsers";
+import { decidePushDestination, invalidRemoteValue, parseAheadBehind, parsePushRecord } from "./sync-parsers";
 import { indexState, listRefs, readOut, refKey, refText, remoteList } from "./sync-review";
 import { parseMaybeBool, type ConfigEntry } from "./trust";
-import { forceNoteCountArgs, headIsAncestorArgs, heldCountArgs, mergeArgs, mergeCountsArgs, movedCountArgs, rebaseOntoArgs, rebaseStatusArgs, rewrittenCountArgs, updateRefsArgs, worktreeListArgs } from "./workbench-commands";
-import { parseTrackedStatus, parseWorktrees } from "./workbench-parsers";
-import { conclude, registerWorkbenchAction, unavailable, type Common, type Observation, type PayloadOf, type Refused, type WorkbenchRun } from "./workbench-review";
+import { forceNoteCountArgs, headIsAncestorArgs, heldCountArgs, mergeArgs, mergeCountsArgs, movedCountArgs, rebaseOntoArgs, rebaseStatusArgs, rebaseWalkArgs, rewrittenCountArgs } from "./workbench-commands";
+import { parseRebaseWalk, parseTrackedStatus, type WalkCommit } from "./workbench-parsers";
+import { conclude, readWorktrees, refTarget, registerWorkbenchAction, revCount, unavailable, type Common, type Observation, type PayloadOf, type Refused, type WorkbenchRun } from "./workbench-review";
 
 export type MergeRebasePayload = PayloadOf<"merge" | "rebase">;
 type MergePayload = PayloadOf<"merge">;
@@ -103,21 +103,20 @@ function rebaseMergesOf(entries: readonly ConfigEntry[]): boolean | null {
   return merges;
 }
 
+// builtin/rebase.c `cmd_rebase`: `--autosquash` implies the merge backend. Otherwise the effective `rebase.backend` decides.
+// `rebase_config` reads the key with `git_config_string`, which stops Git on a key without a value. Git also stops on a value other than `merge` and `apply`.
+function backendOf(entries: readonly ConfigEntry[], autosquash: boolean): "merge" | "apply" | null {
+  let value = "merge";
+  for (const e of entries) {
+    if (e.key !== "rebase.backend") continue;
+    if (e.value === null) return null;
+    value = e.value;
+  }
+  if (autosquash) return "merge";
+  return value === "merge" || value === "apply" ? value : null;
+}
+
 // ---- Review reads ----
-
-async function revCount(ctx: ObserveContext, args: string[]): Promise<Fact<number>> {
-  const out = await readOut(ctx, args, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
-  if ("limited" in out) return { code: "MALFORMED_GIT_OUTPUT" };
-  if (!("value" in out)) return out;
-  const n = parseRevListCount(out.value);
-  return n === null ? { code: "MALFORMED_GIT_OUTPUT" } : { value: n };
-}
-
-// Contract §6: the command line that the shell builds for the step, `git.exe` or `wsl.exe`.
-function commandUnits(ctx: ObserveContext, args: readonly string[]): number {
-  const forms = pathForms(ctx.workspace, ctx.installation);
-  return forms.launch === undefined ? commandLineUnits(ctx.installation.selectedPath ?? "", args) : wslCommandLineUnits(forms.launch, ctx.operationId, "integrate", "", forms.gitRoot, args);
-}
 
 // Plan.md D6 and research.md R21 F14: Git refuses a rebase with a tracked change unless `--autostash`.
 async function trackedChanges(ctx: ObserveContext): Promise<Fact<boolean>> {
@@ -153,28 +152,54 @@ async function forceNoteOf(ctx: ObserveContext, head: Branch, onto: string, rewr
   return { value: kept.value < rewritten ? { trackingRef: tracking } : null };
 }
 
-// Research.md R21 F16: Git does not move a branch that another worktree checks out. The current branch moves with the rebase itself.
-// The result holds listing keys (`refKey`), so the compare uses the raw bytes of each `branch` attribute.
-async function updatedRefs(ctx: ObserveContext, head: Branch, onto: string): Promise<Fact<string[]>> {
-  const objectFormat = ctx.workspace.objectFormat;
+// The empty tree of each object format (Git hash.c `empty_tree_oid`).
+const EMPTY_TREE: Record<ObjectFormat, string> = { sha1: "4b825dc642cb6eb9a060e54bf8d69288fbee4904", sha256: "6ef19b41225c5369f1c104d45d8d85efa9b057b53b14b4b9b939dd74decc5321" };
+
+// sequencer.c `is_original_commit_empty`: the tree equals the tree of the first parent, or the empty tree for a root commit.
+async function emptyOf(ctx: ObserveContext, commits: readonly WalkCommit[]): Promise<Fact<Set<string>>> {
+  const of = ctx.workspace.objectFormat;
+  const asked = commits.flatMap((c) => (c.parent === null ? [c.oid] : [c.oid, c.parent]));
+  const out = createCollector({ maxBytes: asked.length * 96 });
+  const step = await stepOf(ctx, batchCommandArgs(), out, new TextEncoder().encode(asked.map((oid) => `info ${oid}^{tree}\0`).join("")));
+  if (!("exit" in step)) return step;
+  if (step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
+  // git-cat-file(1) "BATCH OUTPUT": `<oid> SP <type> SP <size>` for each `info` command, and `-Z` ends each with NUL.
+  const replies = latin1(out.take()).split("\0");
+  const trees = replies.slice(0, -1).map((reply) => /^([0-9a-f]+) tree (?:0|[1-9][0-9]*)$/.exec(reply)?.[1] ?? "");
+  if (out.limited || replies.at(-1) !== "" || trees.length !== asked.length || !trees.every((tree) => isObjectId(tree, of))) return { code: "MALFORMED_GIT_OUTPUT" };
+  const tree = new Map(asked.map((oid, i) => [oid, trees[i]!]));
+  return { value: new Set(commits.filter((c) => tree.get(c.oid) === (c.parent === null ? EMPTY_TREE[of] : tree.get(c.parent))).map((c) => c.oid)) };
+}
+
+// The current branch when `headMoves`, and each branch of an `update-ref` line. The result holds listing keys in listing order.
+// sequencer.c `todo_list_add_update_ref_commands`: an `update-ref` line for each local branch whose value is a commit of the todo list.
+// `add_decorations_to_list` skips the HEAD branch and each branch that branch.c `branch_checked_out` names. The todo list holds the commits of
+// `sequencer_make_script`: the `rebaseWalkArgs` walk, without a patch-same commit unless it is empty, because builtin/rebase.c sets `keep_empty`.
+// Contract gap: `branch_checked_out` also names the branches that a worktree rebases or bisects, and this read sees only the `branch` attributes.
+async function updatedRefs(ctx: ObserveContext, head: Branch, onto: string, rebaseMerges: boolean, headMoves: boolean): Promise<Fact<string[]>> {
+  const of = ctx.workspace.objectFormat;
+  const refs = await listRefs(ctx, "refs/heads");
+  if (!("value" in refs)) return refs;
+  const worktrees = await readWorktrees(ctx);
+  if (!("value" in worktrees)) return worktrees;
+  const current = refKey(head.target);
+  const held = new Set(worktrees.value.records.flatMap((r) => (r.branchKey === null || r.branchKey === current ? [] : [r.branchKey])));
+  const candidates = [...refs.value].filter(([key]) => !held.has(key));
+  if (candidates.every(([key]) => key === current)) return { value: headMoves ? candidates.map(([key]) => key) : [] };
   const out = createCollector({ maxBytes: SYNC_REFS_BYTES, maxRecords: SYNC_REFS_RECORDS, separator: 0x0a });
-  const step = await stepOf(ctx, updateRefsArgs(onto, objectFormat), out);
+  const step = await stepOf(ctx, rebaseWalkArgs(onto, rebaseMerges, of), out);
   if (!("exit" in step)) return step;
   if (out.limited) return { code: "OUTPUT_LIMIT", reason: out.records > SYNC_REFS_RECORDS ? "SYNC_REFS_RECORDS" : "SYNC_REFS_BYTES" };
   if (step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
-  const raw = Buffer.from(out.take()).toString("latin1");
-  const listed = raw === "" ? [] : raw.endsWith("\n") ? raw.slice(0, -1).split("\n") : null;
-  if (listed === null || !listed.every((ref) => ref.length > HEADS.length && ref.startsWith(HEADS))) return { code: "MALFORMED_GIT_OUTPUT" };
-  const worktrees = await readOut(ctx, worktreeListArgs(), WORKTREE_LISTING_BYTES);
-  if ("limited" in worktrees) return { code: "OUTPUT_LIMIT", reason: "WORKTREE_LISTING_BYTES" };
-  if (!("value" in worktrees)) return worktrees;
-  const records = parseWorktrees(worktrees.value, objectFormat);
-  if (records === null) return { code: "MALFORMED_GIT_OUTPUT" };
-  if (records.length > WORKTREE_RECORDS) return { code: "OUTPUT_LIMIT", reason: "WORKTREE_RECORDS" };
-  // `parseWorktrees` accepted the grammar, so each field that starts with `branch ` is a `branch` attribute line.
-  const current = refKey(head.target);
-  const held = new Set(Buffer.from(worktrees.value).toString("latin1").split("\0").flatMap((line) => (line.startsWith("branch ") && line.slice(7) !== current ? [line.slice(7)] : [])));
-  return { value: listed.filter((key) => !held.has(key)) };
+  const walk = parseRebaseWalk(out.take(), of);
+  if (walk === null) return { code: "MALFORMED_GIT_OUTPUT" };
+  const values = new Set(candidates.map(([, oid]) => oid));
+  const shown = walk.filter((c) => values.has(c.oid));
+  const same = shown.filter((c) => c.same);
+  const empty = same.length === 0 ? { value: new Set<string>() } : await emptyOf(ctx, same);
+  if (!("value" in empty)) return empty;
+  const picked = new Set(shown.filter((c) => !c.same || empty.value.has(c.oid)).map((c) => c.oid));
+  return { value: candidates.filter(([key, oid]) => (key === current ? headMoves : picked.has(oid))).map(([key]) => key) };
 }
 
 // Contract Δ3 `merge` reads and plan.md D5.
@@ -205,7 +230,7 @@ async function reviewMerge(ctx: ObserveContext, p: MergePayload, head: Branch, s
   if (p.result === "merge") {
     const text = p.message ?? plan.preview;
     if (text === null || utf8Bytes(text) > MERGE_MESSAGE_BYTES) return unavailable("message-size", { plan });
-    if (commandUnits(ctx, mergeArgs(source.ref, { result: "merge", noFastForward: p.noFastForward, noCommit: p.noCommit, message: messageItem(p, text) })) > WINDOWS_COMMAND_LINE_UNITS) return unavailable("message-size", { plan });
+    if (stepUnits(ctx, "integrate", mergeArgs(source.ref, { result: "merge", noFastForward: p.noFastForward, noCommit: p.noCommit, message: messageItem(p, text) })) > WINDOWS_COMMAND_LINE_UNITS) return unavailable("message-size", { plan });
   }
   return bind(plan);
 }
@@ -216,7 +241,10 @@ async function reviewRebase(ctx: ObserveContext, p: RebasePayload, head: Branch,
   const autostash = rebaseBool(entries, "rebase.autostash");
   const updateRefs = rebaseBool(entries, "rebase.updaterefs");
   const rebaseMerges = rebaseMergesOf(entries);
-  if (autostash === null || updateRefs === null || rebaseMerges === null) return unavailable("invalid-config");
+  const backend = backendOf(entries, p.autosquash);
+  if (autostash === null || updateRefs === null || rebaseMerges === null || backend === null) return unavailable("invalid-config");
+  // The apply backend ignores `rebase.updateRefs` and takes its commits from `format-patch`, so the plan would not state Git's rebase.
+  if (backend === "apply") return unavailable("apply-backend");
   const moved = await revCount(ctx, movedCountArgs(onto.oid, rebaseMerges, objectFormat));
   if (!("value" in moved)) return moved;
   const rewritten = await revCount(ctx, rewrittenCountArgs(onto.oid, objectFormat));
@@ -225,7 +253,8 @@ async function reviewRebase(ctx: ObserveContext, p: RebasePayload, head: Branch,
   if (!("value" in notRemote)) return notRemote;
   const forceNote = await forceNoteOf(ctx, head, onto.oid, rewritten.value, entries);
   if (!("value" in forceNote)) return forceNote;
-  const refs = updateRefs.value ? await updatedRefs(ctx, head, onto.oid) : { value: null };
+  // The panel lists the current branch when it holds a commit that `onto` does not hold.
+  const refs = updateRefs.value ? await updatedRefs(ctx, head, onto.oid, rebaseMerges, rewritten.value > 0) : { value: null };
   if (!("value" in refs)) return refs;
   const movedBranches = refs.value === null ? null : { refs: refs.value.slice(0, MOVED_BRANCHES_LISTED).map(refText), more: Math.max(0, refs.value.length - MOVED_BRANCHES_LISTED) };
   const plan: RebasePlan = { onto, moved: moved.value, rewritten: rewritten.value, held: rewritten.value - notRemote.value, forceNote: forceNote.value, movedBranches, autostash, autosquash: false };
@@ -247,13 +276,11 @@ export async function observeMergeRebase(ctx: ObserveContext, payload: MergeReba
   if (head.state === "unborn") return unavailable("unborn");
   if (head.state === "detached") return unavailable("detached");
   if (payload.ref === head.target) return unavailable("same-branch");
-  const refs = await listRefs(ctx, payload.ref);
-  if (!("value" in refs)) return refs;
-  const oid = refs.value.get(refKey(payload.ref));
-  if (oid === undefined) return { refused: "UNKNOWN_TARGET" };
+  const oid = await refTarget(ctx, payload.ref);
+  if (!("value" in oid)) return oid;
 
   const bind: Bind = (plan, moved = null) => ({ bound: { plan, moved }, plan });
-  const source = { ref: payload.ref, oid };
+  const source = { ref: payload.ref, oid: oid.value };
   return payload.action === "merge" ? reviewMerge(ctx, payload, head, source, listing.entries, bind) : reviewRebase(ctx, payload, head, source, listing.entries, bind);
 }
 

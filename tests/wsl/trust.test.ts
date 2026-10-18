@@ -166,6 +166,7 @@ describe("WSL trust listing rules (T212 decisions W3 to W5)", () => {
   const list = (runner: GitRunner, w: Workspace): Promise<ListingOutcome> =>
     createTrust({ runner, environment: { PATH: "C:\\Windows", HOME: "C:\\Users\\u" } }).listTrust({ operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace: w });
 
+  // Feature 004 contract Δ7: only a submodule listing reads digests, so these repository listings send phase-1 requests only.
   test("an absolute Linux link target maps below its root, letter case counts, and a hook needs the X_OK result", async () => {
     const { runner, entries } = stub("", {
       "gitDirectory:hooks": { kind: "directory" },
@@ -181,7 +182,7 @@ describe("WSL trust listing rules (T212 decisions W3 to W5)", () => {
     expect(listing.hooksDirectory).toBe("/home/u/r/.git/hooks");
     expect(entries().filter((e) => e.endsWith(".exe"))).toEqual([]);
     expect(entries()).toContain("worktreeRoot:scripts/pre-commit");
-    expect(entries()).toContain("digest worktreeRoot:scripts/pre-commit");
+    expect(entries().filter((e) => e.startsWith("digest "))).toEqual([]);
     // `/home/u/R` is another folder on Linux, so the target lies outside every root and gets no entry.
     expect(entries().some((e) => e.includes("pre-push") && !e.startsWith("gitDirectory:hooks/"))).toBe(false);
     // hook.c `find_hook`: POSIX Git lists an entry only after `access(X_OK)`.
@@ -192,15 +193,19 @@ describe("WSL trust listing rules (T212 decisions W3 to W5)", () => {
   });
 
   test("a bare-name program takes the first Linux PATH candidate with the owner execute bit", async () => {
-    const { runner, entries } = stub("local\0file:.git/config\0filter.x.clean\ntool\0", {
-      "worktreeRoot:bin/tool": file(false),
-      "worktreeRoot:other/tool": file(true),
-    });
-    const outcome = await list(runner, workspace("bin:other:/usr/bin"));
-    if (!outcome.ok) throw new Error(JSON.stringify(outcome));
-    expect(outcome.listing.approvalRequired.reads).toBe(true);
-    // run-command.c `locate_in_PATH` skips a file without `S_IXUSR`, so only the second candidate is digested.
-    expect(entries().filter((e) => e.startsWith("digest "))).toEqual(["digest worktreeRoot:other/tool"]);
+    const fingerprint = async (facts: Record<string, FileFact>) => {
+      const { runner, entries } = stub("local\0file:.git/config\0filter.x.clean\ntool\0", facts);
+      const outcome = await list(runner, workspace("bin:other:/usr/bin"));
+      if (!outcome.ok) throw new Error(JSON.stringify(outcome));
+      expect(outcome.listing.approvalRequired.reads).toBe(true);
+      expect(entries().filter((e) => e.startsWith("digest "))).toEqual([]);
+      return outcome.listing.fingerprint;
+    };
+    // run-command.c `locate_in_PATH` skips a file without `S_IXUSR`. The found candidate enters the fingerprint, so a skipped first candidate
+    // gives the fingerprint of an absent one, and an executable first candidate gives another one.
+    const skipped = await fingerprint({ "worktreeRoot:bin/tool": file(false), "worktreeRoot:other/tool": file(true) });
+    expect(await fingerprint({ "worktreeRoot:other/tool": file(true) })).toBe(skipped);
+    expect(await fingerprint({ "worktreeRoot:bin/tool": file(true), "worktreeRoot:other/tool": file(true) })).not.toBe(skipped);
   });
 
   test("a protected Linux program path outside the roots gets identity requests in the UNC form, and a name without that form fails the listing", async () => {

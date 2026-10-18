@@ -128,9 +128,9 @@ export function admitCommit(
   // T111 drops kept review data older than 60 seconds at its next issue, so the admission keeps this reference.
   const review = retained(approval.reviewToken);
   if (review === undefined || review.repositoryId !== request.repositoryId) return { code: "UNKNOWN_TARGET" };
-  // Feature 004 contract Δ3: `amend` equals the review, and a review that rewrites the upstream needs `confirmRewrite: true`.
+  // Feature 004 contract Δ3: `amend` equals the review. A review that rewrites the upstream, or cannot know it, needs `confirmRewrite: true`.
   const amend = approval.binding.amend;
-  if ((request.payload?.amend === true) !== (amend !== undefined) || (amend?.rewritesUpstream === true && request.payload?.confirmRewrite !== true)) return { code: "INVALID_REQUEST" };
+  if ((request.payload?.amend === true) !== (amend !== undefined) || (amend !== undefined && amend.rewritesUpstream !== false && request.payload?.confirmRewrite !== true)) return { code: "INVALID_REQUEST" };
   // Contract §9: an unfinished operation refuses at acceptance, before the trust gate. `unknown` decides at the preflight.
   const state = approval.binding.operationState;
   if (state === "conflicted") return { code: "CONFLICTED" };

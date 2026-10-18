@@ -7,7 +7,7 @@
 import type { ErrorCode } from "../contracts/errors";
 import { APPROVAL_LIFETIME_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../contracts/limits";
 import type { Approvals } from "./approvals";
-import { emptyTreeArgs, isObjectId, isRefName, stagedNameStatusArgs } from "./commands";
+import { emptyTreeArgs, headRefExistsArgs, isObjectId, isRefName, stagedNameStatusArgs } from "./commands";
 import { createCollector, RunnerRefusal, type GitExit, type GitRunner, type WslIndexResult, type WslRunner } from "./git-runner";
 import { contextOf, latin1, runRead, type ReadTarget } from "./read-steps";
 import type { Workspace } from "./registration";
@@ -33,12 +33,13 @@ export interface ScopeEntry {
   pathBytes: string;
 }
 
-// Feature 004 contract Δ3 `reviewCommit` with `amend`. `upstream` is the full ref, or null.
+// Feature 004 contract Δ3 `reviewCommit` with `amend`. `upstream` names the full ref, or null. `present: false`: the repository holds no such ref,
+// so no fact tells whether the remote holds HEAD, and `rewritesUpstream` is `unknown`.
 export interface AmendValue {
   headOid: string;
   message: string;
-  upstream: string | null;
-  rewritesUpstream: boolean;
+  upstream: { name: string; present: boolean } | null;
+  rewritesUpstream: boolean | "unknown";
 }
 
 export interface ReviewValue {
@@ -100,9 +101,9 @@ async function headCommit(runner: GitRunner, t: ReadTarget, oid: string): Promis
   }
 }
 
-// Plan.md D8: the upstream U of the HEAD branch, then `merge-base --is-ancestor HEAD <U>`. git-merge-base(1): exit 0 true, exit 1 false.
-// Another exit gives GIT_FAILED. A detached HEAD has no branch, so it has no upstream.
-export async function readRewrite(runner: GitRunner, t: ReadTarget, head: Exclude<Head, { state: "unborn" }>): Promise<{ upstream: string | null; rewritesUpstream: boolean } | Failed> {
+// Plan.md D8: the upstream U of the HEAD branch, `show-ref --exists <U>`, then `merge-base --is-ancestor HEAD <U>`. git-show-ref(1): exit 0 for an existing ref,
+// exit 2 for a missing one. git-merge-base(1): exit 0 true, exit 1 false. Another exit gives GIT_FAILED. A detached HEAD has no branch, so it has no upstream.
+export async function readRewrite(runner: GitRunner, t: ReadTarget, head: Exclude<Head, { state: "unborn" }>): Promise<Pick<AmendValue, "upstream" | "rewritesUpstream"> | Failed> {
   if (head.state === "detached") return { upstream: null, rewritesUpstream: false };
   const read = await readStep(runner, t, upstreamOfArgs(head.target), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
   if ("result" in read) return read;
@@ -113,10 +114,14 @@ export async function readRewrite(runner: GitRunner, t: ReadTarget, head: Exclud
   const upstream = text.endsWith("\n") && !text.slice(0, -1).includes("\n") ? text.slice(0, -1) : null;
   if (upstream === null || (upstream !== "" && !(upstream.startsWith("refs/") && isRefName(upstream)))) return { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
   if (upstream === "") return { upstream: null, rewritesUpstream: false };
+  const exists = await readStep(runner, t, headRefExistsArgs(upstream), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+  if ("result" in exists) return exists;
+  if (exists.exit.exitCode === 2) return { upstream: { name: upstream, present: false }, rewritesUpstream: "unknown" };
+  if (exists.exit.exitCode !== 0) return { result: "failed", code: "GIT_FAILED" };
   const ancestor = await readStep(runner, t, headIsAncestorArgs(upstream, t.workspace.objectFormat), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
   if ("result" in ancestor) return ancestor;
   const code = ancestor.exit.exitCode;
-  return code === 0 || code === 1 ? { upstream, rewritesUpstream: code === 0 } : { result: "failed", code: "GIT_FAILED" };
+  return code === 0 || code === 1 ? { upstream: { name: upstream, present: true }, rewritesUpstream: code === 0 } : { result: "failed", code: "GIT_FAILED" };
 }
 
 export interface ReviewTarget {

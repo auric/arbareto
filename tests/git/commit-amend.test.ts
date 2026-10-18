@@ -32,8 +32,8 @@ const refused = (r: ServiceResponse<unknown>) => ({ ...outcome(r), result: r.res
 interface AmendFacts {
   headOid: string;
   message: string;
-  upstream: string | null;
-  rewritesUpstream: boolean;
+  upstream: { name: string; present: boolean } | null;
+  rewritesUpstream: boolean | "unknown";
 }
 
 interface Reviewed {
@@ -43,8 +43,9 @@ interface Reviewed {
   disclosure: { approvalRequired: boolean; trust: string };
 }
 
-// `holds`: the upstream ref points at HEAD. `behind`: it points at the parent of HEAD. `none`: the branch has no upstream.
-type Upstream = "holds" | "behind" | "none";
+// `holds`: the upstream ref points at HEAD. `behind`: it points at the parent of HEAD. `absent`: the configuration names an upstream, and no such ref exists.
+// `none`: the branch has no upstream.
+type Upstream = "holds" | "behind" | "absent" | "none";
 
 const git = (r: WbRepo, args: string[], allowExit: readonly number[] = [0], input?: string) => wb(r, args, { allowExit, ...(input === undefined ? {} : { input }) });
 const text = (r: WbRepo, args: string[]) => git(r, args).stdout.toString("utf8");
@@ -69,7 +70,7 @@ function build(tag: string, upstream: Upstream = "none"): WbRepo {
     git(r, ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]);
     git(r, ["config", "branch.main.remote", "origin"]);
     git(r, ["config", "branch.main.merge", "refs/heads/main"]);
-    git(r, ["update-ref", UPSTREAM, upstream === "holds" ? "HEAD" : "HEAD~1"]);
+    if (upstream !== "absent") git(r, ["update-ref", UPSTREAM, upstream === "holds" ? "HEAD" : "HEAD~1"]);
   }
   return r;
 }
@@ -121,10 +122,13 @@ const argsOf = (service: Service, from: number) => service.runner.calls.slice(fr
 // Contract §5 "Pending reads": a failed read runs the registration recheck. It is no step of the review.
 const RECHECK = [...READ, "rev-parse", "--is-bare-repository", "--is-inside-git-dir"];
 const reviewSteps = (service: Service, from: number) => argsOf(service, from).filter((a) => !Bun.deepEquals(a, RECHECK));
-const amendReads = (service: Service, from: number) => argsOf(service, from).filter((a) => a.includes("--format=%(upstream)") || a.includes("merge-base"));
+const amendReads = (service: Service, from: number) => argsOf(service, from).filter((a) => a.includes("--format=%(upstream)") || a.includes(UPSTREAM));
+// The upstream facts of a review: the full ref and whether the repository holds it.
+const upstreamOf = (upstream: Upstream) => (upstream === "none" ? null : { name: UPSTREAM, present: upstream !== "absent" });
+const REWRITES: Record<Upstream, boolean | "unknown"> = { holds: true, behind: false, absent: "unknown", none: false };
 
-caseTest(TASK, "FR-098 and contract Δ3: reviewCommit with amend returns the HEAD message from cat-file commit, the upstream, and rewritesUpstream from merge-base --is-ancestor; an empty staged scope still gets a token", SHELL, async () => {
-  for (const upstream of ["none", "behind", "holds"] as const) {
+caseTest(TASK, "FR-098 and contract Δ3: reviewCommit with amend returns the HEAD message from cat-file commit, the upstream, and rewritesUpstream from show-ref --exists and merge-base --is-ancestor; an empty staged scope still gets a token", SHELL, async () => {
+  for (const upstream of ["none", "behind", "holds", "absent"] as const) {
     const f = build(`review-${upstream}`, upstream);
     await withSync(`t054-review-${upstream}`, async (service) => {
       const reg = await open(service, f);
@@ -136,24 +140,31 @@ caseTest(TASK, "FR-098 and contract Δ3: reviewCommit with amend returns the HEA
       expect({ upstream, scope: r.result.scope, amend: r.result.amend }).toEqual({
         upstream,
         scope: [],
-        amend: { headOid: oid(f, "HEAD"), message: headMessage(f), upstream: upstream === "none" ? null : UPSTREAM, rewritesUpstream: upstream === "holds" },
+        amend: { headOid: oid(f, "HEAD"), message: headMessage(f), upstream: upstreamOf(upstream), rewritesUpstream: REWRITES[upstream] },
       });
       expect(argsOf(service, from)).toContainEqual([...READ, "cat-file", "commit", oid(f, "HEAD")]);
-      const reads = [[...READ, "for-each-ref", "--format=%(upstream)", "refs/heads/main"], ...(upstream === "none" ? [] : [[...READ, "merge-base", "--is-ancestor", "HEAD", UPSTREAM]])];
+      // git-show-ref(1) `--exists`: exit 2 for a missing ref, so no merge-base read follows.
+      const reads = [
+        [...READ, "for-each-ref", "--format=%(upstream)", "refs/heads/main"],
+        ...(upstream === "none" ? [] : [[...READ, "show-ref", "--exists", UPSTREAM]]),
+        ...(upstream === "none" || upstream === "absent" ? [] : [[...READ, "merge-base", "--is-ancestor", "HEAD", UPSTREAM]]),
+      ];
       expect({ upstream, reads: amendReads(service, from) }).toEqual({ upstream, reads });
     });
   }
 }, TIMEOUT_MS);
 
-caseTest(TASK, "contract Δ3: a merge-base --is-ancestor exit other than 0 and 1 gives GIT_FAILED, and a detached HEAD has no upstream", SHELL, async () => {
+caseTest(TASK, "contract Δ3: a show-ref --exists exit other than 0 and 2 and a merge-base --is-ancestor exit other than 0 and 1 give GIT_FAILED, and a detached HEAD has no upstream", SHELL, async () => {
   const f = build("exit", "holds");
   await withSync("t054-exit", async (service) => {
     const reg = await open(service, f);
-    service.runner.inject.exit = (call) => (call.arguments.includes("merge-base") ? 128 : undefined);
-    try {
-      expect(outcome((await review(service, reg)).response)).toEqual({ state: "failed", code: "GIT_FAILED" });
-    } finally {
-      service.runner.inject.exit = undefined;
+    for (const command of ["show-ref", "merge-base"]) {
+      service.runner.inject.exit = (call) => (call.arguments.includes(command) && call.arguments.includes(UPSTREAM) ? 128 : undefined);
+      try {
+        expect({ command, ...outcome((await review(service, reg)).response) }).toEqual({ command, state: "failed", code: "GIT_FAILED" });
+      } finally {
+        service.runner.inject.exit = undefined;
+      }
     }
     git(f, ["checkout", "-q", "--detach", "HEAD"]);
     const from = service.runner.calls.length;
@@ -186,6 +197,30 @@ caseTest(TASK, "FR-100 and contract Δ3: a token with rewritesUpstream true and 
     expect(outcome(done)).toEqual(SUCCEEDED);
     expect(commitCalls(service)).toEqual([[L, "commit", "--quiet", "--amend", "--file=-"]]);
     expect(done.result?.commitOid).toBe(oid(f, "HEAD"));
+  });
+  git(o, ["commit", "--quiet", "--amend", "--file=-"], [0], NEW_MESSAGE);
+  expect(stateOf(f)).toEqual(stateOf(o));
+}, TIMEOUT_MS);
+
+// An upstream that the configuration names, but that the repository does not hold, such as one that was never fetched. No fact tells whether the remote
+// holds HEAD, so the review reports `unknown`, and the amend asks as for an upstream that holds HEAD. Unknown never counts as safe.
+caseTest(TASK, "FR-100 and contract Δ3: an upstream ref that show-ref --exists does not find gives rewritesUpstream unknown, which needs confirmRewrite: true; a ref that appears after the review gives STALE_REVIEW", SHELL, async () => {
+  const f = build("absent", "absent");
+  const o = build("absent", "absent");
+  await withSync("t054-absent", async (service) => {
+    const reg = await open(service, f);
+    const r = await reviewed(service, reg);
+    expect(r.result.amend).toMatchObject({ upstream: { name: UPSTREAM, present: false }, rewritesUpstream: "unknown" });
+    expect(outcome(await commit(service, reg, r, NEW_MESSAGE))).toEqual({ state: "rejected", code: "INVALID_REQUEST" });
+    expect(commitCalls(service)).toEqual([]);
+    // Data-model §2: the token binds `unknown`. A fetch that writes the ref changes the fact, so the confirmed run refuses.
+    git(f, ["update-ref", UPSTREAM, "HEAD"]);
+    expect(outcome(await commit(service, reg, r, NEW_MESSAGE, { amend: true, confirmRewrite: true }))).toEqual({ state: "failed", code: "STALE_REVIEW" });
+    git(f, ["update-ref", "-d", UPSTREAM]);
+    const again = await reviewed(service, reg);
+    expect(again.result.amend?.rewritesUpstream).toBe("unknown");
+    expect(outcome(await commit(service, reg, again, NEW_MESSAGE, { amend: true, confirmRewrite: true }))).toEqual(SUCCEEDED);
+    expect(commitCalls(service)).toEqual([[L, "commit", "--quiet", "--amend", "--file=-"]]);
   });
   git(o, ["commit", "--quiet", "--amend", "--file=-"], [0], NEW_MESSAGE);
   expect(stateOf(f)).toEqual(stateOf(o));

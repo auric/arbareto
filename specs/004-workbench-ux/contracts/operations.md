@@ -133,10 +133,11 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 
 ### `reviewCommit` and `commit` (001 §3, §4 "Commit validation and handoff")
 
-- `reviewCommit` payload adds `amend?: true`. The review then adds these reads: `cat-file commit <HEAD oid>` for the message, the bytes after the first empty line; `for-each-ref --format=%(upstream) <HEAD ref>`; with an upstream U, `merge-base --is-ancestor HEAD <U>` (exit 0 or 1; another exit gives `GIT_FAILED`).
-- The result adds `amend: {headOid, message, upstream, rewritesUpstream}`. An empty staged scope still carries a `reviewToken` for an amend. The token binds `headOid` and `rewritesUpstream`.
+- `reviewCommit` payload adds `amend?: true`. The review then adds these reads: `cat-file commit <HEAD oid>` for the message, the bytes after the first empty line; `for-each-ref --format=%(upstream) <HEAD ref>`; with an upstream U, `show-ref --exists <U>` (exit 0 present, exit 2 absent; another exit gives `GIT_FAILED`); with a present U, `merge-base --is-ancestor HEAD <U>` (exit 0 or 1; another exit gives `GIT_FAILED`). A detached HEAD has no HEAD ref, so it has no upstream.
+- The result adds `amend: {headOid, message, upstream: {name, present} | null, rewritesUpstream: true | false | "unknown"}`. `name` is the full ref of U. An absent U gives `present: false` and `rewritesUpstream` `unknown`, because no fact tells whether the remote holds HEAD. An empty staged scope still carries a `reviewToken` for an amend. The token binds `headOid` and `rewritesUpstream`, and the commit preflight reads them again. A difference gives `STALE_REVIEW`.
+- `disclosure.approvalRequired` of an amend review also holds for a repository-controlled `post-rewrite` hook, because `git commit --amend` runs it (githooks(5)). The 001 class `commit` lists no such event.
 - Refusals: an unborn HEAD gives `WORKBENCH_UNAVAILABLE` reason `unborn`. A merge or a rebase gives `OPERATION_IN_PROGRESS`. An `encoding` header that Git does not treat as UTF-8 gives `COMMIT_ENCODING_UNSUPPORTED`.
-- `commit` payload adds `amend?: true` and `confirmRewrite?: true`. A token with `rewritesUpstream` true and no `confirmRewrite: true` gives `INVALID_REQUEST`. `amend` must equal the review.
+- `commit` payload adds `amend?: true` and `confirmRewrite?: true`. A token with `rewritesUpstream` true or `unknown` and no `confirmRewrite: true` gives `INVALID_REQUEST`. Unknown never counts as safe. `amend` must equal the review.
 - `confirmRewrite` comes only with `amend: true`, because only an amend review can rewrite the upstream. Another form gives `INVALID_REQUEST`.
 - Step: `commit --quiet --amend --file=-`. This changes the 001 §4 rule that forbids `--amend`, for this payload only. Every other 001 handoff rule stays.
 
@@ -352,3 +353,8 @@ No file decision gives a line refusal, so the `readComparison` `fileAction` neve
 - The `confirmRun` frame names absolute native paths (`ChannelPath`), but the Δ12 text names repository-relative paths, such as "lib/a and lib/b". The frame schema and `src-tauri/src/dialogs.rs` need that change. This is Rust work for WP17 or WP20.
 - The `unchecked` entries from digest bounds go only when T057 removes the bounds from `trust.ts`. A program path or a hooks folder outside the superproject roots stays `unchecked`, because Arbareto reads nothing there. §12 names that case, but the Δ12 list does not.
 - A row that a level read finds during the run gets no host check. A remote URL that changes after the preflight gets none either. The 001 review had the same gap for found rows.
+- No `approveTrust` form approves a worktree that is not open, and the `worktree-remove` refusal `TRUST_REQUIRED` cannot name that worktree. The user opens it with `openWorktree` and trusts it there.
+- Target folder identity (plan O-20): the top level of `-C <path> rev-parse` must have the identity of the record path, and its common folder that of the workspace. Another identity gives `UNKNOWN_TARGET`, because no Δ9 reason names it.
+- The shell serves `fileFacts` only below the registered roots. So the listing of another worktree leaves each fact below its own folders unresolved, and such an entry counts as listed and found.
+- A HEAD message whose bytes are no valid UTF-8 has no exact text, so the amend review refuses it with `COMMIT_ENCODING_UNSUPPORTED`.
+- `reviewCommit` has no result schema (a 001 gap), so the `amend` part has no JSON Schema and no vectors.

@@ -63,7 +63,7 @@ function stateOf(f: WbFixture) {
 async function open(service: Service, dir: string): Promise<RegistrationResult> {
   const r = await service.register(native(dir));
   const trust = await service.readTrust(r.repositoryId);
-  if (trust.result!.approvalRequired.sync) expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+  if (trust.result!.approvalRequired.sync) expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
   return r;
 }
 

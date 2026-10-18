@@ -273,7 +273,7 @@ describe("reconciliation and lingering (contract §6 \"Lingering Jobs\", §8, §
     await withFixture(b, name, async (service) => {
       const { repositoryId } = await service.register(superOf(b));
       const trust = await service.readTrust(repositoryId);
-      const approved = await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation);
+      const approved = await service.approveTrust(repositoryId);
       const r = await reviewSubmodules(service, repositoryId);
       const response = await updateSubmodules(service, repositoryId, r);
       expect({ ...outcome(response), lingering: one<number>(response.result, "lingeringDescendants"), live: service.runner.liveRecorded() }).toEqual({ ...SUCCEEDED, lingering: 1, live: 1 });

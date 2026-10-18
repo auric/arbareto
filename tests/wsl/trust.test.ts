@@ -55,8 +55,7 @@ async function register(s: WslSession, repo: SeamRepo): Promise<{ repositoryId: 
 async function approve(s: WslSession, w: { repositoryId: string; generation: number }) {
   const trust = await s.response(s.request("readTrust", {}, { repositoryId: w.repositoryId }));
   expect(trust).toMatchObject({ state: "succeeded" });
-  const fingerprint = (trust.result as { fingerprint: string }).fingerprint;
-  return s.response(s.request("approveTrust", { fingerprint, approve: true }, { repositoryId: w.repositoryId, repositoryGeneration: w.generation }));
+  return s.response(s.request("approveTrust", { action: "read" }, { repositoryId: w.repositoryId }));
 }
 
 describe("WSL trust approval of the selected Git (T212 decision W8)", () => {
@@ -84,7 +83,7 @@ describe("WSL trust approval of the selected Git (T212 decision W8)", () => {
       const git = "/opt/a:b/git";
       const repo = seamRepository(host, runner, { config: filterConfig(host), probe: { git } });
       const w = await register(s, repo);
-      // T318: `readTrust` issues no fingerprint, so `approveTrust` cannot follow. tests/git/trust.test.ts checks that both give one refusal.
+      // T318: `readTrust` and `approveTrust` give one refusal before any listing. tests/git/trust.test.ts checks both.
       const refused = await s.response(s.request("readTrust", {}, { repositoryId: w.repositoryId }));
       expect(refused).toMatchObject({
         state: "failed",
@@ -92,7 +91,7 @@ describe("WSL trust approval of the selected Git (T212 decision W8)", () => {
         result: { remedy: { text: `The Git path ${git} in ${host.distro} holds a name that Windows cannot show. Install Git in another folder of the distro, then approve again.` } },
       });
       // No native confirmation ran, so no record and no session approval exist.
-      expect(runner.trustStore.persists).toEqual([]);
+      expect(runner.frames.filter((f) => f.type === "confirm")).toEqual([]);
       expect(runner.trustStore.records).toEqual([]);
       expect(listScopes(host)).toEqual([]);
     },

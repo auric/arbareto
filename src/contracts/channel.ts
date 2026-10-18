@@ -111,8 +111,9 @@ export const DamagedMarker = z.strictObject({
     .refine((name) => name.length <= DAMAGED_MARKER_FILE_NAME_UNITS),
 });
 
-// Contract §7 "Trust approval store": the handshake form, also the `record` of a `confirm` reply.
-export const TrustRecord = z
+const oneRecordForm = (record: { commonIdentity: unknown; worktreeIdentity: unknown }) => Array.isArray(record.worktreeIdentity) && oneForm([record.commonIdentity, ...record.worktreeIdentity]);
+// Contract §7 "Trust approval store": the feature 001 record. Feature 004 plan.md O-5: the handshake still carries it, and it gives `changed`.
+export const TrustRecordV1 = z
   .strictObject({
     commonDirectory: ChannelPath,
     commonIdentity: PhysicalIdentity,
@@ -123,8 +124,28 @@ export const TrustRecord = z
     approvedAt: UtcTime,
     gitSelectedPath: ChannelPath,
   })
-  .refine((record) => Array.isArray(record.worktreeIdentity) && oneForm([record.commonIdentity, ...record.worktreeIdentity]))
-  .refine(withinBytes(TRUST_RECORD_BYTES));
+  .refine(oneRecordForm)
+  .refine(withinBytes(TRUST_RECORD_BYTES))
+  .meta({ title: "TrustRecordV1" });
+// Feature 004 data-model §10: the record binds the folders, their identities, and the selected Git path. It holds no fingerprint and no program digest.
+// `worktreeIdentity` holds the worktree root identity, then the administration-directory identity.
+export const TrustRecordV2 = z
+  .strictObject({
+    policyVersion: z.literal(2),
+    commonDirectory: ChannelPath,
+    commonIdentity: PhysicalIdentity,
+    worktreeRoot: ChannelPath,
+    adminDirectory: ChannelPath,
+    worktreeIdentity: z.array(PhysicalIdentity).length(2),
+    gitSelectedPath: ChannelPath,
+    approvedAt: UtcTime,
+  })
+  .refine(oneRecordForm)
+  .refine(withinBytes(TRUST_RECORD_BYTES))
+  .meta({ title: "TrustRecordV2" });
+export type TrustRecordV2 = z.infer<typeof TrustRecordV2>;
+// The handshake form.
+export const TrustRecord = z.union([TrustRecordV1, TrustRecordV2]);
 export type TrustRecord = z.infer<typeof TrustRecord>;
 
 // Without a readable selected file, the shell sends no `bootstrapId` (contract §6 "Startup contexts").
@@ -729,24 +750,45 @@ export const StartedReply = z.union([
 ]);
 export const MutationReply = z.xor([StartedReply.meta({ title: "StartedGroup" }), Refused]);
 
-// ---- `trust` frames (contract §7 "Trust approval store") ----
+// ---- `trust` frames (contract §7 "Trust approval store", feature 004 contract Δ6) ----
 
-// Contract §7 "Program file digests".
-export const TRUST_BOUNDS = ["file-count", "file-bytes", "total-bytes", "link", "name"] as const;
-export type TrustBound = (typeof TRUST_BOUNDS)[number];
+// Contract Δ6: the action that the dialog names.
+export const TRUST_ACTIONS = ["commit", "read", "fetch", "pull", "push", "switch", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "submodules"] as const;
+export type TrustAction = (typeof TRUST_ACTIONS)[number];
+// Contract Δ5 "Trust dialog names per kind". It is no output bound, so `limits.ts` does not list it.
+export const TRUST_DIALOG_NAMES = 20;
+// Plan D14: the service and the shell show an empty name, or a name with a character of the categories Cc, Cf, Zl, or Zp, as a fixed text.
+// So the frame admits any text without NUL.
+const dialogNames = <T extends z.ZodType>(item: T) => z.strictObject({ names: z.array(item).max(TRUST_DIALOG_NAMES), more: Count });
+// Contract Δ6 `details` and data-model §10 `programs`: the repository-controlled programs by name and scope, never a value.
+// A hooks-folder hook names its folder. A `hook.<name>.event` hook names the scope of its command.
+// `other` names each other program key and the keys `core.hooksPath` and `protocol.allow`. Contract Δ6 lists no kind for them.
+export const TrustDetails = z
+  .strictObject({
+    hooks: dialogNames(
+      z.union([z.strictObject({ event: Text, folder: Text }).meta({ title: "FolderHookName" }), z.strictObject({ event: Text, scope: ConfigScope }).meta({ title: "ConfiguredHookName" })]),
+    ),
+    filters: dialogNames(z.strictObject({ driver: Text, scope: ConfigScope })),
+    monitors: dialogNames(z.strictObject({ scope: ConfigScope })),
+    mergeDrivers: dialogNames(z.strictObject({ driver: Text, scope: ConfigScope })),
+    mergeTools: dialogNames(z.strictObject({ tool: Text, scope: ConfigScope })),
+    signing: dialogNames(z.strictObject({ key: Text, scope: ConfigScope })),
+    other: dialogNames(z.strictObject({ key: Text, scope: ConfigScope })),
+  })
+  .meta({ title: "TrustDetails" });
+export type TrustDetails = z.infer<typeof TrustDetails>;
 
+// Contract Δ6 `confirm` version 2: no fingerprint, `persist`, or `bound`.
 const confirm = {
   type: z.literal("confirm"),
   worktreeRoot: ChannelPath,
-  gitDirectory: ChannelPath,
+  adminDirectory: ChannelPath,
   commonDirectory: ChannelPath,
   gitSelectedPath: ChannelPath,
-  fingerprint: Fingerprint,
-  persist: z.boolean(),
-  bound: z.enum(TRUST_BOUNDS).optional(),
+  policyVersion: z.literal(2),
+  action: z.enum(TRUST_ACTIONS),
+  details: TrustDetails,
 };
-// `bound` comes only with `persist: false`.
-const boundRule = (value: { persist: boolean; bound?: string }) => value.persist === (value.bound === undefined);
 const revoke = { type: z.literal("revoke"), commonDirectory: ChannelPath };
 const confirmRun = {
   type: z.literal("confirmRun"),
@@ -759,23 +801,24 @@ const countRule = (value: { programCount: number; uncheckedCount: number }) => v
 
 // The runner call form, without `callId`.
 export const TrustCall = z.discriminatedUnion("type", [
-  z.strictObject(confirm).refine(boundRule).meta({ title: "ConfirmCall" }),
+  z.strictObject(confirm).meta({ title: "ConfirmCall" }),
   z.strictObject(revoke).meta({ title: "RevokeCall" }),
   z.strictObject(confirmRun).refine(countRule).meta({ title: "ConfirmRunCall" }),
 ]);
 export type TrustRequest = z.infer<typeof TrustCall>;
 
 export const TrustRequest = z.discriminatedUnion("type", [
-  z.strictObject({ ...confirm, ...call }).refine(boundRule).meta({ title: "Confirm" }),
+  z.strictObject({ ...confirm, ...call }).meta({ title: "Confirm" }),
   z.strictObject({ ...revoke, ...call }).meta({ title: "Revoke" }),
   z.strictObject({ ...confirmRun, ...call }).refine(countRule).meta({ title: "ConfirmRun" }),
 ]);
 
 const reply = (type: "confirm" | "confirmRun" | "revoke") => ({ type: z.literal(type), ...call });
+// Contract Δ6: a stored approval replies with the version 2 record.
 export const ConfirmReply = z.union([
   z.strictObject({ ...reply("confirm"), result: z.literal("declined") }).meta({ title: "ConfirmDeclined" }),
   z.strictObject({ ...reply("confirm"), result: z.literal("approved"), stored: z.literal(false) }).meta({ title: "ConfirmSession" }),
-  z.strictObject({ ...reply("confirm"), result: z.literal("approved"), stored: z.literal(true), record: TrustRecord }).meta({ title: "ConfirmStored" }),
+  z.strictObject({ ...reply("confirm"), result: z.literal("approved"), stored: z.literal(true), record: TrustRecordV2 }).meta({ title: "ConfirmStored" }),
 ]);
 export const ConfirmRunReply = z.strictObject({ ...reply("confirmRun"), result: z.enum(["approved", "declined"]) }).meta({ title: "ConfirmRunReply" });
 export const RevokeReply = z.union([
@@ -783,34 +826,3 @@ export const RevokeReply = z.union([
   z.strictObject({ type: z.literal("revoke"), ...walkDeadline }).meta({ title: "RevokeDeadline" }),
 ]);
 export const TrustReply = z.xor([ConfirmReply.meta({ title: "ConfirmGroup" }), ConfirmRunReply, RevokeReply.meta({ title: "RevokeGroup" }), Refused]);
-
-// ---- Feature 004 `trust` frame `confirm` version 2 (contract Δ6, plan D12 and D14) ----
-// The shell reads the version 1 frame until the plan P7 trust shell change. That change puts this frame and the version 2 record in `TrustRequest`.
-
-// Contract Δ6: the action that the dialog names.
-export const TRUST_ACTIONS = ["commit", "read", "fetch", "pull", "push", "switch", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "submodules"] as const;
-// Contract Δ5 "Trust dialog names per kind". It is no output bound, so `limits.ts` does not list it.
-const TRUST_DIALOG_NAMES = 20;
-// Plan D14: the shell shows a value with a control character as a fixed text, so a name is any text without NUL.
-const DialogName = Text.min(1);
-const dialogNames = <T extends z.ZodRawShape>(item: T) => z.strictObject({ names: z.array(z.strictObject(item)).max(TRUST_DIALOG_NAMES), more: Count });
-export const TrustConfirmV2 = z
-  .strictObject({
-    type: z.literal("confirm"),
-    ...call,
-    worktreeRoot: ChannelPath,
-    adminDirectory: ChannelPath,
-    commonDirectory: ChannelPath,
-    gitSelectedPath: ChannelPath,
-    policyVersion: z.literal(2),
-    action: z.enum(TRUST_ACTIONS),
-    details: z.strictObject({
-      hooks: dialogNames({ event: DialogName, folder: DialogName }),
-      filters: dialogNames({ driver: DialogName, scope: ConfigScope }),
-      monitors: dialogNames({ scope: ConfigScope }),
-      mergeDrivers: dialogNames({ driver: DialogName, scope: ConfigScope }),
-      mergeTools: dialogNames({ tool: DialogName, scope: ConfigScope }),
-      signing: dialogNames({ key: DialogName, scope: ConfigScope }),
-    }),
-  })
-  .meta({ title: "ConfirmV2" });

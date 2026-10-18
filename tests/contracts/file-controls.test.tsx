@@ -67,7 +67,7 @@ function comparison(fileAction: string, remedy: typeof ADD_REMEDY | null = null)
 }
 
 function trust(state: string, reads: boolean) {
-  return { generation: 1, fingerprint: "f".repeat(64), state, persistence: "repository", approvalRequired: { reads, commit: false }, entries: [], hooks: [] };
+  return { generation: 1, programs: {}, state, persistence: "repository", approvalRequired: { reads, commit: false }, entries: [], hooks: [] };
 }
 
 function setup(fields: Partial<Props> = {}) {

@@ -1,0 +1,5 @@
+{
+  "schema": "trust-record",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"commonDirectory\":\"//wsl.localhost/Ubuntu-24.04/home/u/r/.git\",\"commonIdentity\":{\"distroGuid\":\"{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}\",\"fileSystemId\":\"fedc9aa3bd65bc57\",\"inode\":\"3\"},\"worktreeRoot\":\"//wsl.localhost/Ubuntu-24.04/home/u/r\",\"worktreeIdentity\":[{\"distroGuid\":\"{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}\",\"fileSystemId\":\"fedc9aa3bd65bc57\",\"inode\":\"2\"},{\"distroGuid\":\"{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}\",\"fileSystemId\":\"fedc9aa3bd65bc57\",\"inode\":\"3\"}],\"approvedAt\":\"2026-10-06T08:00:00Z\",\"gitSelectedPath\":\"//wsl.localhost/Ubuntu-24.04/usr/bin/git\",\"policyVersion\":2,\"gitDirectory\":\"//wsl.localhost/Ubuntu-24.04/home/u/r/.git\"}"
+}

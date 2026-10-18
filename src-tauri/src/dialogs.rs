@@ -4,7 +4,7 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf, Prefix};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Instant;
 
 use serde_json::{Value, json};
@@ -45,8 +45,14 @@ const ANOTHER: i32 = 101;
 
 const INVALID: &str = "INVALID_REQUEST";
 
-/// Contract §7 "Program file digests": the text of an approval over a digest bound.
-const SESSION_APPROVAL: &str = "Arbareto cannot check these program files for later edits. This approval lasts until Arbareto closes or its Git service restarts.";
+/// Feature 004 plan.md D14: the texts of the trust dialog.
+const TRUST_INSTRUCTION: &str = "Do you trust this repository?";
+const TRUST_ADVICE: &str = "Trust it if you or your team set it up. Do not trust a folder from an unknown source, such as a downloaded archive.";
+const TRUST_REMEMBERS: &str = "Arbareto remembers your choice for this folder.";
+/// Plan D14: the text of a name that `shown` refuses.
+const UNSHOWN_NAME: &str = "a name that Arbareto cannot show";
+const SHOW_DETAILS: &str = "Show details";
+const HIDE_DETAILS: &str = "Hide details";
 
 /// One button of a `TaskDialogIndirect` confirmation.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,7 +64,12 @@ pub struct Button {
 /// One native confirmation. Only `accept_button` accepts. The lifecycle dialogs default to their action button.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Confirmation {
+    /// `pszMainInstruction`. `None` shows the content only.
+    pub instruction: Option<String>,
+    /// `pszContent`.
     pub text: String,
+    /// `pszExpandedInformation`, collapsed behind Show details. `None` shows no expander.
+    pub details: Option<String>,
     pub buttons: Vec<Button>,
     pub default_button: i32,
     pub accept_button: i32,
@@ -76,7 +87,9 @@ fn confirmation(text: String, accept: &'static str, extra: Option<Button>) -> Co
         label: "Cancel",
     });
     Confirmation {
+        instruction: None,
         text,
+        details: None,
         buttons,
         default_button: CANCEL,
         accept_button: ACCEPT,
@@ -381,37 +394,146 @@ pub fn confirm_wsl_git(native: &dyn Native, proposal: &WslProposal) -> bool {
     native.confirm(&confirmation) == Some(confirmation.accept_button)
 }
 
-/// The contract §7 "Program file digests" text of a `bound` name.
-fn bound_text(bound: &str) -> Option<&'static str> {
-    match bound {
-        "file-count" => Some("64 files"),
-        "file-bytes" => Some("1 MiB per file"),
-        "total-bytes" => Some("8 MiB total"),
-        "link" => Some("a link that Arbareto cannot follow"),
-        "name" => Some("a file name that Arbareto cannot check"),
-        _ => None,
+/// The sentence that names a contract Δ6 action. The frame schema admits no other action.
+fn action_sentence(action: &str) -> Option<&'static str> {
+    Some(match action {
+        "commit" => "Git runs them when you commit.",
+        "read" => "Git runs them when Arbareto reads your changes.",
+        "fetch" => "Git runs them when you fetch.",
+        "pull" => "Git runs them when you pull.",
+        "push" => "Git runs them when you push.",
+        "switch" => "Git runs them when you switch branches.",
+        "branch" => "Git runs them when you create, rename, or delete a branch.",
+        "merge" => "Git runs them when you merge.",
+        "rebase" => "Git runs them when you rebase.",
+        "resolve" => "Git runs them when you resolve a conflict.",
+        "mergetool" => "Git runs them when you open the merge tool.",
+        "worktree" => "Git runs them when you add or remove a worktree.",
+        "submodules" => "Git runs them when you update submodules.",
+        _ => return None,
+    })
+}
+
+/// Plan D14: the Unicode general categories Cc, Cf, Zl, and Zp. A character such as U+202E can make a name read differently from its bytes.
+/// `regress` reads these ECMAScript classes as the service does (`src/git-service/trust.ts` `shownName`).
+static UNSHOWN_CHARACTER: LazyLock<regress::Regex> = LazyLock::new(|| {
+    regress::Regex::with_flags(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]", "u").expect("a valid character class")
+});
+
+/// The text of one repository value. Plan D14: an empty value, or one with a character of `UNSHOWN_CHARACTER`, shows as a fixed text.
+/// A `str` holds valid UTF-8 and no lone surrogate.
+fn shown(text: &str) -> String {
+    if text.is_empty() || UNSHOWN_CHARACTER.find(text).is_some() {
+        UNSHOWN_NAME.to_string()
+    } else {
+        text.to_string()
     }
 }
 
-/// The trust confirmation: Approve and Cancel.
-pub fn trust_confirmation(request: &Confirm) -> Confirmation {
-    let mut text = format!(
-        "Approve this repository?\nWorktree: {}\nFingerprint: {}\nApproval lets Git run the programs that this repository's configuration names.",
-        request.worktree_root.display(),
-        request.fingerprint
-    );
-    if !request.persist {
-        if let Some(bound) = request.bound.as_deref().and_then(bound_text) {
-            text.push_str(&format!("\nReached bound: {bound}."));
+/// The contract §7 configuration scope names.
+fn scope_text(scope: &str) -> &'static str {
+    match scope {
+        "system" => "system settings",
+        "global" => "global settings",
+        "local" => "repository settings",
+        "worktree" => "worktree settings",
+        "command" => "command-line settings",
+        "submodule" => "submodule settings",
+        _ => "unknown settings",
+    }
+}
+
+/// The contract Δ6 `details` kinds in their dialog order, with the singular and the plural label.
+const DETAIL_KINDS: [(&str, &str, &str); 7] = [
+    ("hooks", "Hook", "Hooks"),
+    ("filters", "File filter", "File filters"),
+    ("monitors", "File system monitor", "File system monitors"),
+    ("mergeDrivers", "Merge driver", "Merge drivers"),
+    ("mergeTools", "Merge tool", "Merge tools"),
+    ("signing", "Signing program", "Signing programs"),
+    ("other", "Other program", "Other programs"),
+];
+
+/// The name and the group of one `details` item. A monitor item names only its scope.
+fn detail_item(item: &Value) -> (String, String) {
+    let name = ["event", "driver", "tool", "key"]
+        .iter()
+        .find_map(|field| item[*field].as_str())
+        .map_or_else(|| "core.fsmonitor".to_string(), shown);
+    let group = match item["folder"].as_str() {
+        Some(folder) => format!("folder {}", shown(folder)),
+        None => scope_text(item["scope"].as_str().unwrap_or_default()).to_string(),
+    };
+    (name, group)
+}
+
+/// One details line, such as `Hooks: pre-commit, post-commit (folder C:\repo\.git\hooks)`. `None` for an empty kind.
+/// Consecutive names of one group share the group text. A `more` count adds "and <n> more" (plan.md D14).
+fn detail_line(kind: &Value, one: &str, many: &str) -> Option<String> {
+    let names = kind["names"].as_array()?;
+    let more = kind["more"].as_u64().unwrap_or(0);
+    if names.is_empty() && more == 0 {
+        return None;
+    }
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for (name, group) in names.iter().map(detail_item) {
+        match groups.last_mut() {
+            Some((last, list)) if *last == group => list.push(name),
+            _ => groups.push((group, vec![name])),
         }
-        text.push_str(&format!(
-            "\n{SESSION_APPROVAL} An edit of an unchecked file keeps this approval."
-        ));
     }
-    confirmation(text, "Approve", None)
+    let mut text = groups
+        .iter()
+        .map(|(group, list)| format!("{} ({group})", list.join(", ")))
+        .collect::<Vec<_>>()
+        .join("; ");
+    if more > 0 {
+        let joint = if text.is_empty() { "" } else { ", and " };
+        text.push_str(&format!("{joint}{more} more"));
+    }
+    let label = if names.len() as u64 + more == 1 {
+        one
+    } else {
+        many
+    };
+    Some(format!("{label}: {text}"))
 }
 
-/// True only for the Approve button.
+/// The trust task dialog of feature 004 plan.md D14: Trust and Not now, the default.
+/// The details name only folders, names, and scopes, never a configuration value or a fingerprint (spec FR-070).
+pub fn trust_confirmation(request: &Confirm) -> Confirmation {
+    let action =
+        action_sentence(&request.action).map_or(String::new(), |sentence| format!(" {sentence}"));
+    let mut details = vec![format!(
+        "Folder: {}",
+        shown(&request.worktree_root.to_string_lossy())
+    )];
+    details.extend(
+        DETAIL_KINDS
+            .iter()
+            .filter_map(|(key, one, many)| detail_line(&request.details[*key], one, many)),
+    );
+    details.push(TRUST_REMEMBERS.to_string());
+    Confirmation {
+        instruction: Some(TRUST_INSTRUCTION.to_string()),
+        text: format!("This repository has its own programs.{action}\n\n{TRUST_ADVICE}"),
+        details: Some(details.join("\n")),
+        buttons: vec![
+            Button {
+                id: ACCEPT,
+                label: "Trust",
+            },
+            Button {
+                id: CANCEL,
+                label: "Not now",
+            },
+        ],
+        default_button: CANCEL,
+        accept_button: ACCEPT,
+    }
+}
+
+/// True only for the Trust button.
 pub fn confirm_trust(native: &dyn Native, request: &Confirm) -> bool {
     let confirmation = trust_confirmation(request);
     native.confirm(&confirmation) == Some(confirmation.accept_button)
@@ -454,54 +576,81 @@ pub fn confirm_damaged_dismissal(native: &dyn Native, damaged: &Damaged) -> bool
 /// Contract §12 "Trust": `<paths>` names at most 10 paths and then the count of the others.
 const RUN_PATHS: usize = 10;
 
-/// The `confirmRun` confirmation: Run and Cancel (contract §12 "Trust").
+/// A path below the worktree root as Git names it, with `/` between the names. A path outside the root keeps its native form.
+fn relative_path(root: &Path, path: &str) -> String {
+    let relative = Path::new(path)
+        .strip_prefix(root)
+        .ok()
+        .filter(|relative| relative.components().next().is_some());
+    shown(&relative.map_or_else(
+        || path.to_string(),
+        |relative| {
+            relative
+                .components()
+                .map(|name| name.as_os_str().to_string_lossy())
+                .collect::<Vec<_>>()
+                .join("/")
+        },
+    ))
+}
+
+/// The `confirmRun` confirmation: Run and Cancel, the default (contract §12 "Trust", feature 004 contract Δ12).
+/// It names the submodule paths relative to `root`, such as "lib/a and lib/b".
 pub fn run_confirmation(
+    root: &Path,
     paths: &[String],
     program_count: u64,
     unchecked_count: u64,
 ) -> Confirmation {
-    let mut named = paths
+    let names: Vec<String> = paths
         .iter()
         .take(RUN_PATHS)
-        .map(String::as_str)
-        .collect::<Vec<_>>()
-        .join(", ");
-    match paths.len().saturating_sub(RUN_PATHS) {
-        0 => {}
-        1 => named.push_str(", and 1 other"),
-        others => named.push_str(&format!(", and {others} others")),
-    }
+        .map(|path| relative_path(root, path))
+        .collect();
+    let named = match (names.as_slice(), paths.len().saturating_sub(RUN_PATHS)) {
+        ([one], 0) => one.clone(),
+        ([first, second], 0) => format!("{first} and {second}"),
+        ([head @ .., last], 0) => format!("{}, and {last}", head.join(", ")),
+        (_, 1) => format!("{}, and 1 other", names.join(", ")),
+        (_, others) => format!("{}, and {others} others", names.join(", ")),
+    };
     let programs = if program_count == 1 {
         "program"
     } else {
         "programs"
     };
     let mut text = format!(
-        "Update submodules runs {program_count} {programs} from submodule settings and hooks in {named}. They can run any code on this computer."
+        "Update submodules runs {program_count} {programs} from {named}. Run them only if you trust these submodules."
     );
     if unchecked_count > 0 {
         text.push_str(&format!(
-            " Arbareto cannot check {unchecked_count} of them before the run."
+            " Arbareto cannot check {unchecked_count} of them first."
         ));
     }
-    confirmation(text, "Run", None)
+    Confirmation {
+        instruction: Some("Run the programs of these submodules?".to_string()),
+        ..confirmation(text, "Run", None)
+    }
 }
 
 /// True only for the Run button. It reads and writes no trust record.
 pub fn confirm_run(
     native: &dyn Native,
+    root: &Path,
     paths: &[String],
     program_count: u64,
     unchecked_count: u64,
 ) -> bool {
-    let confirmation = run_confirmation(paths, program_count, unchecked_count);
+    let confirmation = run_confirmation(root, paths, program_count, unchecked_count);
     native.confirm(&confirmation) == Some(confirmation.accept_button)
 }
 
 /// The startup failure dialog without a `Service`. No restart can run then.
 pub fn service_stopped() -> Confirmation {
     Confirmation {
+        instruction: None,
         text: "Git service stopped.".to_string(),
+        details: None,
         buttons: vec![Button {
             id: ACCEPT,
             label: "Close Arbareto",
@@ -597,7 +746,7 @@ unsafe extern "system" fn track(
     _: LPARAM,
     data: isize,
 ) -> HRESULT {
-    // SAFETY: `Dialogs::confirm` passes `&self.open`, and that borrow outlives the dialog.
+    // SAFETY: `show_confirmation` passes `open`, and that borrow outlives the dialog.
     let open = unsafe { &*(data as *const Mutex<Vec<isize>>) };
     match notification {
         TDN_CREATED => lock(open).push(hwnd.0 as isize),
@@ -605,6 +754,97 @@ unsafe extern "system" fn track(
         _ => {}
     }
     S_OK
+}
+
+/// The texts that one `TASKDIALOGCONFIG` points to. They live until the modal call returns.
+struct TaskTexts {
+    title: HSTRING,
+    instruction: Option<HSTRING>,
+    text: HSTRING,
+    details: Option<HSTRING>,
+    show: HSTRING,
+    hide: HSTRING,
+    labels: Vec<HSTRING>,
+}
+
+impl TaskTexts {
+    fn new(confirmation: &Confirmation) -> TaskTexts {
+        TaskTexts {
+            title: HSTRING::from("Arbareto"),
+            instruction: confirmation.instruction.as_deref().map(HSTRING::from),
+            text: HSTRING::from(confirmation.text.as_str()),
+            details: confirmation.details.as_deref().map(HSTRING::from),
+            show: HSTRING::from(SHOW_DETAILS),
+            hide: HSTRING::from(HIDE_DETAILS),
+            labels: confirmation
+                .buttons
+                .iter()
+                .map(|button| HSTRING::from(button.label))
+                .collect(),
+        }
+    }
+
+    fn buttons(&self, confirmation: &Confirmation) -> Vec<TASKDIALOG_BUTTON> {
+        confirmation
+            .buttons
+            .iter()
+            .zip(&self.labels)
+            .map(|(button, label)| TASKDIALOG_BUTTON {
+                nButtonID: button.id,
+                pszButtonText: PCWSTR(label.as_ptr()),
+            })
+            .collect()
+    }
+}
+
+/// A null pointer for an absent text.
+fn text_or_null(text: Option<&HSTRING>) -> PCWSTR {
+    text.map_or(PCWSTR::null(), |text| PCWSTR(text.as_ptr()))
+}
+
+/// The `TASKDIALOGCONFIG` of one confirmation (research R17).
+/// `TDF_ALLOW_DIALOG_CANCELLATION` makes Escape, Alt+F4, and the close button return `IDCANCEL`.
+/// No flag enables hyperlinks, because the texts hold repository values (plan.md D14).
+fn task_config(
+    owner: HWND,
+    confirmation: &Confirmation,
+    texts: &TaskTexts,
+    buttons: &[TASKDIALOG_BUTTON],
+    open: &Mutex<Vec<isize>>,
+) -> TASKDIALOGCONFIG {
+    let control = |text: &HSTRING| text_or_null(texts.details.as_ref().and(Some(text)));
+    TASKDIALOGCONFIG {
+        cbSize: size_of::<TASKDIALOGCONFIG>() as u32,
+        hwndParent: owner,
+        dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW,
+        pszWindowTitle: PCWSTR(texts.title.as_ptr()),
+        pszMainInstruction: text_or_null(texts.instruction.as_ref()),
+        pszContent: PCWSTR(texts.text.as_ptr()),
+        pszExpandedInformation: text_or_null(texts.details.as_ref()),
+        pszCollapsedControlText: control(&texts.show),
+        pszExpandedControlText: control(&texts.hide),
+        cButtons: buttons.len() as u32,
+        pButtons: buttons.as_ptr(),
+        nDefaultButton: confirmation.default_button,
+        pfCallback: Some(track),
+        lpCallbackData: std::ptr::from_ref(open) as isize,
+        ..Default::default()
+    }
+}
+
+/// Shows one confirmation and returns the ID of the pressed button. `None` is a call failure.
+fn show_confirmation(
+    owner: HWND,
+    confirmation: &Confirmation,
+    open: &Mutex<Vec<isize>>,
+) -> Option<i32> {
+    let texts = TaskTexts::new(confirmation);
+    let buttons = texts.buttons(confirmation);
+    let config = task_config(owner, confirmation, &texts, &buttons, open);
+    let mut pressed = 0;
+    // SAFETY: `texts`, `buttons`, and `open` outlive the modal call.
+    unsafe { TaskDialogIndirect(&config, Some(&mut pressed), None, None) }.ok()?;
+    Some(pressed)
 }
 
 /// The `rejected` code of a picker call that failed (contract §3).
@@ -711,39 +951,7 @@ impl Native for Dialogs {
             .owner()
             .and_then(|window| window.hwnd().ok())
             .unwrap_or_default();
-        let title = HSTRING::from("Arbareto");
-        let text = HSTRING::from(confirmation.text.as_str());
-        let labels: Vec<HSTRING> = confirmation
-            .buttons
-            .iter()
-            .map(|button| HSTRING::from(button.label))
-            .collect();
-        let buttons: Vec<TASKDIALOG_BUTTON> = confirmation
-            .buttons
-            .iter()
-            .zip(&labels)
-            .map(|(button, label)| TASKDIALOG_BUTTON {
-                nButtonID: button.id,
-                pszButtonText: PCWSTR(label.as_ptr()),
-            })
-            .collect();
-        let config = TASKDIALOGCONFIG {
-            cbSize: size_of::<TASKDIALOGCONFIG>() as u32,
-            hwndParent: owner,
-            dwFlags: TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW,
-            pszWindowTitle: PCWSTR(title.as_ptr()),
-            pszContent: PCWSTR(text.as_ptr()),
-            cButtons: buttons.len() as u32,
-            pButtons: buttons.as_ptr(),
-            nDefaultButton: confirmation.default_button,
-            pfCallback: Some(track),
-            lpCallbackData: (&raw const self.open) as isize,
-            ..Default::default()
-        };
-        let mut pressed = 0;
-        // SAFETY: the strings, the button array, and `self.open` outlive the modal call.
-        unsafe { TaskDialogIndirect(&config, Some(&mut pressed), None, None) }.ok()?;
-        Some(pressed)
+        show_confirmation(owner, confirmation, &self.open)
     }
 
     fn search_path(&self) -> Option<PathBuf> {
@@ -787,10 +995,7 @@ pub(crate) mod tests {
 
     const SESSION: &str = "11111111-1111-4111-8111-111111111111";
     const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-    const FINGERPRINT: &str = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
     const CALL: &str = "0f0f0f0f-0000-4000-8000-0000000000cc";
-    /// Contract §7 "Program file digests": the session-only text.
-    const SESSION_ONLY: &str = "Arbareto cannot check these program files for later edits. This approval lasts until Arbareto closes or its Git service restarts.";
 
     /// How the injected confirmation answers.
     #[derive(Clone, Copy)]
@@ -944,16 +1149,32 @@ pub(crate) mod tests {
         }
     }
 
-    fn trust_request(fixture: &Fixture, persist: bool, bound: Option<&str>) -> Confirm {
+    /// The contract Δ6 `details` with no name in any kind.
+    fn no_details() -> Value {
+        let none = json!({ "names": [], "more": 0 });
+        json!({ "hooks": none, "filters": none, "monitors": none, "mergeDrivers": none, "mergeTools": none, "signing": none, "other": none })
+    }
+
+    fn trust_request(worktree: &str, action: &str, details: Value) -> Confirm {
         Confirm {
-            worktree_root: folder(fixture, "repo"),
-            git_directory: folder(fixture, "repo\\.git"),
-            common_directory: fixture.path("repo\\.git"),
+            worktree_root: PathBuf::from(worktree),
+            admin_directory: PathBuf::from(format!("{worktree}\\.git")),
+            common_directory: PathBuf::from(format!("{worktree}\\.git")),
             git_selected_path: PathBuf::from("C:\\Program Files\\Git\\cmd\\git.exe"),
-            fingerprint: FINGERPRINT.to_string(),
-            persist,
-            bound: bound.map(str::to_string),
+            action: action.to_string(),
+            details,
         }
+    }
+
+    /// The details of the plan.md D14 example: two folder hooks and the local `lfs` filter.
+    fn sample_details() -> Value {
+        let mut details = no_details();
+        details["hooks"] = json!({ "names": [
+            { "event": "pre-commit", "folder": "C:\\Repos\\sample-repo\\.git\\hooks" },
+            { "event": "post-commit", "folder": "C:\\Repos\\sample-repo\\.git\\hooks" },
+        ], "more": 0 });
+        details["filters"] = json!({ "names": [{ "driver": "lfs", "scope": "local" }], "more": 0 });
+        details
     }
 
     fn display(path: &Path) -> String {
@@ -1302,50 +1523,320 @@ pub(crate) mod tests {
     // ---- Trust and dismissal confirmations ----
 
     #[test]
-    fn the_trust_confirmation_names_the_worktree_and_the_fingerprint_with_a_cancel_default() {
-        let fixture = Fixture::new();
-        let request = trust_request(&fixture, true, None);
-        let confirmation = trust_confirmation(&request);
-        assert!(confirmation.text.contains(&display(&request.worktree_root)));
-        assert!(confirmation.text.contains(FINGERPRINT));
-        assert!(!confirmation.text.contains(SESSION_ONLY));
-        assert_eq!(labels(&confirmation), ["Approve", "Cancel"]);
-        assert_eq!(confirmation.default_button, id_of(&confirmation, "Cancel"));
-        assert_eq!(confirmation.accept_button, id_of(&confirmation, "Approve"));
+    fn the_trust_dialog_shows_the_plan_d14_texts_with_trust_100_and_not_now_idcancel_as_the_default()
+     {
+        let confirmation = trust_confirmation(&trust_request(
+            "C:\\Repos\\sample-repo",
+            "commit",
+            sample_details(),
+        ));
+        assert_eq!(
+            confirmation.instruction.as_deref(),
+            Some("Do you trust this repository?")
+        );
+        assert_eq!(
+            confirmation.text,
+            "This repository has its own programs. Git runs them when you commit.\n\nTrust it if you or your team set it up. Do not trust a folder from an unknown source, such as a downloaded archive."
+        );
+        assert_eq!(
+            confirmation.details.as_deref(),
+            Some(
+                "Folder: C:\\Repos\\sample-repo\nHooks: pre-commit, post-commit (folder C:\\Repos\\sample-repo\\.git\\hooks)\nFile filter: lfs (repository settings)\nArbareto remembers your choice for this folder."
+            )
+        );
+        assert_eq!(labels(&confirmation), ["Trust", "Not now"]);
+        assert_eq!(
+            confirmation.buttons,
+            [
+                Button {
+                    id: 100,
+                    label: "Trust"
+                },
+                Button {
+                    id: IDCANCEL.0,
+                    label: "Not now"
+                }
+            ]
+        );
+        assert_eq!(
+            (confirmation.default_button, confirmation.accept_button),
+            (IDCANCEL.0, 100)
+        );
     }
 
     #[test]
-    fn without_persist_the_trust_confirmation_names_the_bound_and_the_session_only_text() {
-        let fixture = Fixture::new();
-        // Contract §7 "Program file digests": the bound names map to the §5 row.
-        for (bound, named) in [
-            ("file-count", "64 files"),
-            ("file-bytes", "1 MiB per file"),
-            ("total-bytes", "8 MiB total"),
-            ("link", "a link that Arbareto cannot follow"),
-            ("name", "a file name that Arbareto cannot check"),
+    fn the_trust_dialog_names_each_action_and_shows_no_fingerprint() {
+        for (action, sentence) in [
+            ("commit", "Git runs them when you commit."),
+            ("read", "Git runs them when Arbareto reads your changes."),
+            ("fetch", "Git runs them when you fetch."),
+            ("pull", "Git runs them when you pull."),
+            ("push", "Git runs them when you push."),
+            ("switch", "Git runs them when you switch branches."),
+            (
+                "branch",
+                "Git runs them when you create, rename, or delete a branch.",
+            ),
+            ("merge", "Git runs them when you merge."),
+            ("rebase", "Git runs them when you rebase."),
+            ("resolve", "Git runs them when you resolve a conflict."),
+            ("mergetool", "Git runs them when you open the merge tool."),
+            (
+                "worktree",
+                "Git runs them when you add or remove a worktree.",
+            ),
+            ("submodules", "Git runs them when you update submodules."),
         ] {
-            let confirmation = trust_confirmation(&trust_request(&fixture, false, Some(bound)));
+            let confirmation = trust_confirmation(&trust_request("C:\\repo", action, no_details()));
             assert!(
-                confirmation.text.contains(named),
-                "{bound}: {}",
+                confirmation.text.starts_with(&format!(
+                    "This repository has its own programs. {sentence}\n\n"
+                )),
+                "{action}: {}",
                 confirmation.text
             );
-            assert!(confirmation.text.contains(SESSION_ONLY), "{bound}");
+            assert!(
+                !format!("{confirmation:?}")
+                    .to_lowercase()
+                    .contains("fingerprint"),
+                "{action}"
+            );
         }
     }
 
     #[test]
-    fn only_approve_accepts_the_trust_confirmation() {
-        let fixture = Fixture::new();
-        let request = trust_request(&fixture, true, None);
+    fn the_trust_details_name_each_kind_by_name_and_scope_and_group_one_folder() {
+        let mut details = no_details();
+        details["hooks"] = json!({ "names": [
+            { "event": "pre-commit", "folder": "C:\\repo\\.git\\hooks" },
+            { "event": "pre-push", "scope": "global" },
+        ], "more": 0 });
+        details["monitors"] = json!({ "names": [{ "scope": "worktree" }], "more": 0 });
+        details["mergeDrivers"] = json!({ "names": [{ "driver": "union", "scope": "system" }, { "driver": "ours", "scope": "system" }], "more": 0 });
+        details["mergeTools"] =
+            json!({ "names": [{ "tool": "fixture", "scope": "command" }], "more": 0 });
+        details["signing"] =
+            json!({ "names": [{ "key": "gpg.program", "scope": "submodule" }], "more": 0 });
+        details["other"] =
+            json!({ "names": [{ "key": "core.sshcommand", "scope": "unknown" }], "more": 0 });
+        let shown = trust_confirmation(&trust_request("C:\\repo", "fetch", details))
+            .details
+            .expect("details");
+        assert_eq!(
+            shown.lines().collect::<Vec<_>>(),
+            [
+                "Folder: C:\\repo",
+                "Hooks: pre-commit (folder C:\\repo\\.git\\hooks); pre-push (global settings)",
+                "File system monitor: core.fsmonitor (worktree settings)",
+                "Merge drivers: union, ours (system settings)",
+                "Merge tool: fixture (command-line settings)",
+                "Signing program: gpg.program (submodule settings)",
+                "Other program: core.sshcommand (unknown settings)",
+                "Arbareto remembers your choice for this folder.",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_trust_details_show_20_names_per_kind_then_the_count_of_the_others() {
+        let names: Vec<Value> = (0..20)
+            .map(|n| json!({ "driver": format!("f{n:02}"), "scope": "local" }))
+            .collect();
+        let mut details = no_details();
+        details["filters"] = json!({ "names": names, "more": 5 });
+        let shown = trust_confirmation(&trust_request("C:\\repo", "read", details))
+            .details
+            .expect("details");
+        let filters = shown.lines().nth(1).expect("filter line");
+        let listed = (0..20)
+            .map(|n| format!("f{n:02}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert_eq!(
+            filters,
+            format!("File filters: {listed} (repository settings), and 5 more")
+        );
+        // Contract Δ6: the frame itself holds at most 20 names per kind.
+        let mut frame = json!({
+            "type": "confirm", "callId": CALL, "worktreeRoot": "C:\\repo", "adminDirectory": "C:\\repo\\.git", "commonDirectory": "C:\\repo\\.git",
+            "gitSelectedPath": "C:\\Git\\cmd\\git.exe", "policyVersion": 2, "action": "read", "details": no_details(),
+        });
+        frame["details"]["filters"] = json!({ "names": (0..20).map(|n| json!({ "driver": format!("f{n}"), "scope": "local" })).collect::<Vec<_>>(), "more": 5 });
+        assert!(crate::schema::trust_request(&frame).is_ok(), "20 names");
+        frame["details"]["filters"]["names"]
+            .as_array_mut()
+            .expect("names")
+            .push(json!({ "driver": "f20", "scope": "local" }));
+        assert!(crate::schema::trust_request(&frame).is_err(), "21 names");
+        frame["details"]["filters"]["names"]
+            .as_array_mut()
+            .expect("names")
+            .pop();
+        frame["policyVersion"] = json!(1);
+        assert!(crate::schema::trust_request(&frame).is_err(), "version 1");
+        frame["policyVersion"] = json!(2);
+        frame["details"]["filters"]["more"] = json!(-1);
+        assert!(
+            crate::schema::trust_request(&frame).is_err(),
+            "a negative count"
+        );
+    }
+
+    #[test]
+    fn a_value_with_a_control_character_or_an_empty_value_shows_a_fixed_text() {
+        let mut details = no_details();
+        details["filters"] = json!({ "names": [{ "driver": "lfs\u{1b}[31m", "scope": "local" }, { "driver": "", "scope": "local" }, { "driver": "caf\u{e9}", "scope": "local" }], "more": 0 });
+        let shown = trust_confirmation(&trust_request("C:\\repo", "commit", details))
+            .details
+            .expect("details");
+        assert_eq!(
+            shown.lines().nth(1),
+            Some(
+                "File filters: a name that Arbareto cannot show, a name that Arbareto cannot show, caf\u{e9} (repository settings)"
+            )
+        );
+        assert!(!shown.contains('\u{1b}'));
+    }
+
+    /// Plan D14: each general category of the rule, with U+202E RIGHT-TO-LEFT OVERRIDE and the U+2066 to U+2069 isolates.
+    #[test]
+    fn a_name_with_a_format_or_separator_character_shows_a_fixed_text_in_every_details_line() {
+        let hidden = [
+            "lfs\u{202e}exe.sh",
+            "\u{2066}lfs\u{2069}",
+            "a\u{2067}b",
+            "a\u{2068}b",
+            "a\u{200b}b",
+            "a\u{feff}b",
+            "a\u{2028}b",
+            "a\u{2029}b",
+            "a\u{85}b",
+        ];
+        for name in hidden {
+            assert_eq!(
+                shown(name),
+                UNSHOWN_NAME,
+                "{:?}",
+                name.escape_unicode().to_string()
+            );
+        }
+        // Other letters, marks, and spaces stay as they are.
+        for name in [
+            "caf\u{e9}",
+            "\u{540d}\u{524d}",
+            "e\u{301}",
+            "a b",
+            "a\u{a0}b",
+        ] {
+            assert_eq!(shown(name), name);
+        }
+        let mut details = no_details();
+        details["hooks"] = json!({ "names": [{ "event": "pre\u{202e}commit", "scope": "local" }, { "event": "pre-commit", "folder": "C:\\repo\\.git\\hooks\u{2066}" }], "more": 0 });
+        details["filters"] =
+            json!({ "names": [{ "driver": "\u{2066}lfs\u{2069}", "scope": "local" }], "more": 0 });
+        details["signing"] =
+            json!({ "names": [{ "key": "gpg\u{202e}.program", "scope": "local" }], "more": 0 });
+        details["other"] =
+            json!({ "names": [{ "key": "core.sshcommand\u{2029}", "scope": "local" }], "more": 0 });
+        let text = trust_confirmation(&trust_request("C:\\repo\u{202e}x", "commit", details))
+            .details
+            .expect("details");
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
+            [
+                "Folder: a name that Arbareto cannot show",
+                "Hooks: a name that Arbareto cannot show (repository settings); pre-commit (folder a name that Arbareto cannot show)",
+                "File filter: a name that Arbareto cannot show (repository settings)",
+                "Signing program: a name that Arbareto cannot show (repository settings)",
+                "Other program: a name that Arbareto cannot show (repository settings)",
+                "Arbareto remembers your choice for this folder.",
+            ]
+        );
+        assert!(
+            !text
+                .chars()
+                .any(|c| matches!(c, '\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{2029}')),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn only_trust_accepts_the_trust_dialog() {
+        let request = trust_request("C:\\repo", "commit", sample_details());
         assert!(confirm_trust(
-            &Fake::pressing(&[Press::Label("Approve")]),
+            &Fake::pressing(&[Press::Label("Trust")]),
             &request
         ));
-        for press in CANCELS {
+        // Enter on the default, Escape, Alt+F4, the close button, Not now, an unknown ID, and a call failure.
+        for press in [
+            Press::Label("Not now"),
+            CANCELS[0],
+            CANCELS[1],
+            CANCELS[3],
+            CANCELS[4],
+        ] {
             assert!(!confirm_trust(&Fake::pressing(&[press]), &request));
         }
+    }
+
+    #[test]
+    fn the_task_config_allows_cancellation_enables_no_hyperlinks_and_defaults_to_idcancel() {
+        use windows::Win32::UI::Controls::TDF_ENABLE_HYPERLINKS;
+        let open = Mutex::new(Vec::new());
+        let confirmation = trust_confirmation(&trust_request(
+            "C:\\Repos\\sample-repo",
+            "commit",
+            sample_details(),
+        ));
+        let texts = TaskTexts::new(&confirmation);
+        let buttons = texts.buttons(&confirmation);
+        let config = task_config(HWND::default(), &confirmation, &texts, &buttons, &open);
+        assert_eq!(
+            config.dwFlags & TDF_ALLOW_DIALOG_CANCELLATION,
+            TDF_ALLOW_DIALOG_CANCELLATION
+        );
+        assert_eq!(config.dwFlags & TDF_ENABLE_HYPERLINKS, Default::default());
+        // TASKDIALOGCONFIG is packed, so each field is copied before use.
+        assert_eq!({ config.nDefaultButton }, IDCANCEL.0);
+        assert_eq!(
+            buttons.iter().map(|b| b.nButtonID).collect::<Vec<_>>(),
+            [100, IDCANCEL.0]
+        );
+        // SAFETY: each pointer is null or points into `texts`, which lives to the end of the test.
+        let read =
+            |text: PCWSTR| (!text.is_null()).then(|| unsafe { text.to_string() }.expect("UTF-16"));
+        assert_eq!(read(config.pszWindowTitle).as_deref(), Some("Arbareto"));
+        assert_eq!(
+            read(config.pszMainInstruction).as_deref(),
+            Some("Do you trust this repository?")
+        );
+        assert_eq!(read(config.pszContent), Some(confirmation.text.clone()));
+        assert_eq!(
+            read(config.pszExpandedInformation),
+            confirmation.details.clone()
+        );
+        assert_eq!(
+            read(config.pszCollapsedControlText).as_deref(),
+            Some("Show details")
+        );
+        assert_eq!(
+            read(config.pszExpandedControlText).as_deref(),
+            Some("Hide details")
+        );
+        // A confirmation without details shows no expander and no main instruction.
+        let plain = service_stopped();
+        let texts = TaskTexts::new(&plain);
+        let config = task_config(
+            HWND::default(),
+            &plain,
+            &texts,
+            &texts.buttons(&plain),
+            &open,
+        );
+        assert!({ config.pszMainInstruction }.is_null());
+        assert!({ config.pszExpandedInformation }.is_null());
+        assert!({ config.pszCollapsedControlText }.is_null());
+        assert!({ config.pszExpandedControlText }.is_null());
     }
 
     #[test]
@@ -1408,57 +1899,103 @@ pub(crate) mod tests {
 
     // ---- confirmRun (contract §12 "Trust") ----
 
+    const RUN_ROOT: &str = r"C:\repo";
+
     fn paths(count: usize) -> Vec<String> {
-        (1..=count).map(|n| format!(r"C:\repo\sub{n}")).collect()
+        (1..=count).map(|n| format!(r"{RUN_ROOT}\sub{n}")).collect()
+    }
+
+    fn run_text(paths: &[String], program_count: u64, unchecked_count: u64) -> String {
+        run_confirmation(Path::new(RUN_ROOT), paths, program_count, unchecked_count).text
     }
 
     #[test]
-    fn the_run_confirmation_shows_the_contract_text_with_run_and_a_cancel_default() {
-        let confirmation = run_confirmation(&paths(2), 3, 0);
+    fn the_run_confirmation_shows_the_contract_delta_12_text_with_run_and_a_cancel_default() {
+        let lib = [format!(r"{RUN_ROOT}\lib\a"), format!(r"{RUN_ROOT}\lib\b")];
+        let confirmation = run_confirmation(Path::new(RUN_ROOT), &lib, 4, 0);
+        assert_eq!(
+            confirmation.instruction.as_deref(),
+            Some("Run the programs of these submodules?")
+        );
         assert_eq!(
             confirmation.text,
-            r"Update submodules runs 3 programs from submodule settings and hooks in C:\repo\sub1, C:\repo\sub2. They can run any code on this computer."
+            "Update submodules runs 4 programs from lib/a and lib/b. Run them only if you trust these submodules."
         );
+        assert_eq!(confirmation.details, None);
         assert_eq!(labels(&confirmation), ["Run", "Cancel"]);
         assert_eq!(confirmation.default_button, id_of(&confirmation, "Cancel"));
         assert_eq!(confirmation.accept_button, id_of(&confirmation, "Run"));
         assert_eq!(
-            run_confirmation(&paths(1), 1, 1).text,
-            r"Update submodules runs 1 program from submodule settings and hooks in C:\repo\sub1. They can run any code on this computer. Arbareto cannot check 1 of them before the run."
+            run_text(&paths(1), 1, 1),
+            "Update submodules runs 1 program from sub1. Run them only if you trust these submodules. Arbareto cannot check 1 of them first."
         );
+        assert!(run_text(&paths(1), 5, 2).ends_with(" Arbareto cannot check 2 of them first."));
         assert!(
-            run_confirmation(&paths(1), 5, 2)
-                .text
-                .ends_with(" Arbareto cannot check 2 of them before the run.")
+            run_text(&paths(3), 3, 0).contains("from sub1, sub2, and sub3. Run"),
+            "three paths"
         );
     }
 
     #[test]
+    fn the_run_confirmation_names_each_path_relative_to_the_worktree_root_or_in_full_outside_it() {
+        // A kept Git directory of a linked worktree lies outside its worktree root.
+        let paths = [
+            format!(r"{RUN_ROOT}\.git\modules\lib"),
+            r"D:\common\.git\modules\x".to_string(),
+        ];
+        assert_eq!(
+            run_text(&paths, 2, 0),
+            r"Update submodules runs 2 programs from .git/modules/lib and D:\common\.git\modules\x. Run them only if you trust these submodules."
+        );
+        // A WSL root and its paths have the UNC form.
+        let wsl = r"\\wsl.localhost\Ubuntu-26.04\home\u\r";
+        let text = run_confirmation(Path::new(wsl), &[format!(r"{wsl}\lib\a")], 1, 0).text;
+        assert!(text.contains("from lib/a. Run"), "{text}");
+        // Plan.md D14: a path with a character of the categories Cc, Cf, Zl, or Zp shows as a fixed text.
+        for name in ["sub\u{1b}[31m", "lib\u{202e}a", "\u{2066}lib\u{2069}"] {
+            let text = run_text(&[format!("{RUN_ROOT}\\{name}")], 1, 0);
+            assert!(
+                text.contains("from a name that Arbareto cannot show. Run"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
     fn the_run_confirmation_names_at_most_ten_paths_and_then_the_count_of_the_others() {
-        let text = run_confirmation(&paths(12), 12, 0).text;
-        let named = paths(10).join(", ");
+        let named = (1..=10)
+            .map(|n| format!("sub{n}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let text = run_text(&paths(12), 12, 0);
         assert!(
-            text.contains(&format!("hooks in {named}, and 2 others. They")),
+            text.contains(&format!("from {named}, and 2 others. Run")),
             "{text}"
         );
-        assert!(!text.contains(r"C:\repo\sub11"));
-        let text = run_confirmation(&paths(11), 11, 0).text;
-        assert!(text.contains(", and 1 other. They"), "{text}");
-        let text = run_confirmation(&paths(10), 10, 0).text;
-        assert!(text.contains(&format!("hooks in {}. They", paths(10).join(", "))));
+        assert!(!text.contains("sub11"));
+        let text = run_text(&paths(11), 11, 0);
+        assert!(text.contains(", and 1 other. Run"), "{text}");
+        let text = run_text(&paths(10), 10, 0);
+        let (head, last) = named.rsplit_once(", ").expect("ten names");
+        assert!(
+            text.contains(&format!("from {head}, and {last}. Run")),
+            "{text}"
+        );
     }
 
     #[test]
     fn only_run_accepts_the_run_confirmation() {
         let paths = paths(1);
+        let root = Path::new(RUN_ROOT);
         assert!(confirm_run(
             &Fake::pressing(&[Press::Label("Run")]),
+            root,
             &paths,
             1,
             0
         ));
         for press in CANCELS {
-            assert!(!confirm_run(&Fake::pressing(&[press]), &paths, 1, 0));
+            assert!(!confirm_run(&Fake::pressing(&[press]), root, &paths, 1, 0));
         }
     }
 

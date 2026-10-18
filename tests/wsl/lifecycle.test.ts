@@ -59,8 +59,8 @@ async function prepare(s: WslSession, repo: WslRepo): Promise<Prepared> {
   const { repositoryId, generation } = registered.result as { repositoryId: string; generation: number };
   const envelope = { repositoryId, repositoryGeneration: generation };
   const trust = await s.response(s.request("readTrust", {}, { repositoryId }));
-  const fingerprint = (trust.result as { fingerprint: string }).fingerprint;
-  const approved = await s.response(s.request("approveTrust", { fingerprint, approve: true }, envelope));
+  expect(trust).toMatchObject({ state: "succeeded" });
+  const approved = await s.response(s.request("approveTrust", { action: "commit" }, { repositoryId }));
   expect(approved).toMatchObject({ state: "succeeded" });
   const read = await s.response(s.request("readWorkspace", { refresh: false, check: "full" }, { repositoryId }));
   const result = read.result as { snapshotId: string; generation: number };

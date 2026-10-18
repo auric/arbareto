@@ -59,7 +59,7 @@ async function codeAndSpawns(service: Service, request: () => Promise<{ code?: s
 async function approve(service: Service, repositoryId: string): Promise<string> {
   const trust = await service.readTrust(repositoryId);
   expect(trust.state).toBe("succeeded");
-  const approved = await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation);
+  const approved = await service.approveTrust(repositoryId);
   expect(approved.state).toBe("succeeded");
   return approved.result!.trustId;
 }

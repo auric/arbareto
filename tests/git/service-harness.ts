@@ -9,7 +9,7 @@ import { chmodSync, closeSync, existsSync, lstatSync, mkdtempSync, openSync, rmS
 import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Handshake, MutationStarted } from "../../src/contracts/channel";
+import type { Handshake, MutationStarted, TrustAction, TrustDetails } from "../../src/contracts/channel";
 import { ReadBranchesResult, ReviewWorkbenchResult, RunWorkbenchResult } from "../../src/contracts/envelope";
 import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
 import { isObject } from "../../src/contracts/strict-json";
@@ -325,13 +325,12 @@ export interface OpenedHistory {
 
 export interface TrustResult {
   generation: number;
-  fingerprint: string;
   state: "untrusted" | "approved" | "changed" | "revoked";
   persistence: "stored" | "session";
   trustId?: string;
   approvalRequired: { reads: boolean; commit: boolean; sync: boolean; workbench: boolean };
-  bound?: "file-count" | "file-bytes" | "total-bytes" | "link" | "name";
   inputLimited?: boolean;
+  programs: TrustDetails;
   entries: { key: string; scope: string; origin?: string; value?: string }[];
   hooks: { event: string; scope?: string; path?: string; disabled?: boolean }[];
 }
@@ -372,7 +371,8 @@ export interface Service {
   // The feature 001 cases read the current checkout, so `scope` defaults to "current".
   openHistory(id: string, generation: number, scope?: "all" | "current"): Promise<ServiceResponse<OpenedHistory>>;
   readTrust(id: string): Promise<ServiceResponse<TrustResult>>;
-  approveTrust(id: string, fingerprint: string, generation: number): Promise<ServiceResponse<ApproveResult>>;
+  // Feature 004 contract Δ7: the action names the dialog sentence only.
+  approveTrust(id: string, action?: TrustAction): Promise<ServiceResponse<ApproveResult>>;
   revokeTrust(id: string, trustId: string): Promise<ServiceResponse<RevokeResult>>;
   cancel(operationId: string): Promise<ServiceResponse>;
   getOperation(operationId: string): Promise<ServiceResponse>;
@@ -594,7 +594,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     readEntries: (id, generation, snapshotId, cursor) => service.request("readEntries", { snapshotId, cursor }, { repositoryId: id, repositoryGeneration: generation }),
     openHistory: (id, generation, scope = "current") => service.request("openHistory", { scope }, { repositoryId: id, repositoryGeneration: generation }),
     readTrust: (id) => service.request("readTrust", {}, { repositoryId: id }),
-    approveTrust: (id, fingerprint, generation) => service.request("approveTrust", { fingerprint, approve: true }, { repositoryId: id, repositoryGeneration: generation }),
+    approveTrust: (id, action = "commit") => service.request("approveTrust", { action }, { repositoryId: id }),
     revokeTrust: (id, trustId) => service.request("revokeTrust", { trustId }, { repositoryId: id }),
     cancel: (operationId) => service.request("cancel", { operationId }),
     getOperation: (operationId) => service.request("getOperation", { operationId }),

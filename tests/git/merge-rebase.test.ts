@@ -176,7 +176,7 @@ function submoduleRepo(h: GitHost, name: string): { repo: string; s1: string; s2
 async function approved(service: Service, repo: string): Promise<RegistrationResult> {
   const r = await register(service, repo);
   const trust = await service.readTrust(r.repositoryId);
-  if (trust.result!.approvalRequired.sync) expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+  if (trust.result!.approvalRequired.sync) expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
   return r;
 }
 
@@ -827,7 +827,7 @@ describeGit("merge and rebase (T023)", () => {
       expect({ ...outcome(refused), token: refused.result?.workbenchToken }).toEqual({ state: "failed", code: "TRUST_REQUIRED", token: undefined });
       expect({ calls: integrations(service), log: h.read(log) }).toEqual({ calls: [], log: null });
       const trust = await service.readTrust(r.repositoryId);
-      expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+      expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
       expect(outcome(await reviewAndRun(service, r, MERGE("refs/heads/topic")))).toEqual(SUCCEEDED);
     });
     own(h, git.repo, ["merge", "--no-edit", "topic"]);

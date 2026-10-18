@@ -36,7 +36,7 @@ const KEY = "a".repeat(64);
 const TARGET = { repositoryId: fixtureId(1), repositoryGeneration: 1 };
 const HEAD = { state: "branch", target: "refs/heads/main", oid: oid(1) } as const;
 const ok = (result: unknown): BridgeResponse => ({ requestId: "r", operationId: fixtureId(0x201), state: "succeeded", result }) as BridgeResponse;
-const REPORT = { generation: 1, fingerprint: "f".repeat(64), state: "approved", persistence: "repository", approvalRequired: { reads: false, commit: false, sync: false }, entries: [], hooks: [], trustId: "trust-1" };
+const REPORT = { generation: 1, programs: {}, state: "approved", persistence: "repository", approvalRequired: { reads: false, commit: false, sync: false }, entries: [], hooks: [], trustId: "trust-1" };
 const flush = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 0))));
 const typeInto = (field: HTMLTextAreaElement, value: string) =>
   act(async () => {

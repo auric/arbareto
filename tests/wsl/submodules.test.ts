@@ -88,7 +88,8 @@ async function prepare(s: WslSession, f: F31): Promise<Prepared> {
   const { repositoryId, generation } = registered.result as { repositoryId: string; generation: number };
   const envelope = { repositoryId, repositoryGeneration: generation };
   const trust = await s.response(s.request("readTrust", {}, { repositoryId }));
-  const approved = await s.response(s.request("approveTrust", { fingerprint: (trust.result as { fingerprint: string }).fingerprint, approve: true }, envelope));
+  expect(trust).toMatchObject({ state: "succeeded" });
+  const approved = await s.response(s.request("approveTrust", { action: "submodules" }, { repositoryId }));
   expect(approved).toMatchObject({ state: "succeeded" });
   const read = await s.response(s.request("readWorkspace", { refresh: false, check: "full" }, { repositoryId }));
   const snapshot = read.result as { snapshotId: string; generation: number };
@@ -314,7 +315,8 @@ describe("WSL submodule update with Git 2.55.0 (T232)", () => {
     const registered = await s.response(s.chooseRepository(uncPath(f.sup.host, f.sup.dir)));
     const { repositoryId } = registered.result as { repositoryId: string };
     const trust = await s.response(s.request("readTrust", {}, { repositoryId }));
-    await s.response(s.request("approveTrust", { fingerprint: (trust.result as { fingerprint: string }).fingerprint, approve: true }, { repositoryId, repositoryGeneration: (registered.result as { generation: number }).generation }));
+    expect(trust).toMatchObject({ state: "succeeded" });
+    await s.response(s.request("approveTrust", { action: "submodules" }, { repositoryId }));
     const read = await s.response(s.request("readWorkspace", { refresh: false, check: "full" }, { repositoryId }));
     const snapshot = read.result as { snapshotId: string; generation: number };
     const review = await s.response(s.request("reviewSubmodules", { snapshotId: snapshot.snapshotId }, { repositoryId, repositoryGeneration: snapshot.generation }));

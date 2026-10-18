@@ -445,7 +445,7 @@ describe("ref moves, generations, trust, and network (spec FR-002, FR-005, FR-05
         const repo = join(buildF17(gitPath(), "t024-revoke", "trust").root, "repo");
         const { repositoryId, generation } = await service.register(repo);
         const trust = await service.readTrust(repositoryId);
-        const approved = await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation);
+        const approved = await service.approveTrust(repositoryId);
         expect(approved.state).toBe("succeeded");
         const view = await opened(service, repositoryId, generation);
         expect((await load(service, repositoryId, view.viewId, { row: 0 })).state).toBe("succeeded");

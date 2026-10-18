@@ -97,14 +97,13 @@ const DISPOSE_WAIT_MS = 10_000;
 type Policy = { remove: string[]; removePrefixes: string[]; set: Record<string, string>; indexFileVariable: string | null };
 const POLICIES: Record<string, Policy> = policyFile.policies;
 
+// The handshake records. A test can put a version 1 record here (feature 004 plan.md O-5).
 export interface TrustStore {
   records: TrustRecord[];
-  // The `persist` value of each `confirm`, in order.
-  persists: boolean[];
 }
 
 // Pass one store to a second runner to simulate a new service session.
-export const createTrustStore = (): TrustStore => ({ records: [], persists: [] });
+export const createTrustStore = (): TrustStore => ({ records: [] });
 
 export interface BunRunnerOptions {
   git: string;
@@ -451,6 +450,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     registerResult: { result: "approved" } as RegisterReply,
     markerFailure: undefined as MarkerFailure | undefined,
     confirmResult: "approved" as "approved" | "declined",
+    // A failed record write: the shell replies `approved` with `stored: false` (contract §7 "Trust approval store").
+    trustStoreFails: false,
     // Identity replies by path. They take precedence over the `FileIdInfo` call.
     identities: new Map<string, IdentityReply>(),
     // File IDs by path, such as all zeros or all ones, that replace the `FileIdInfo` result.
@@ -1463,28 +1464,31 @@ export function createBunRunner(options: BunRunnerOptions) {
         const result = typeof inject.confirmRun === "function" ? await inject.confirmRun(request) : inject.confirmRun;
         return result === "approved" ? { result: "approved" } : { result: "declined" };
       }
-      trustStore.persists.push(request.persist);
+      // `callsBefore` orders the frame against the recorded Git calls.
+      frames.push({ ...request, callsBefore: calls.length });
       if (inject.confirmResult === "declined") return { result: "declined" };
       const commonIdentity = identityOf(request.commonDirectory);
-      const worktreeIdentity = [identityOf(request.worktreeRoot), identityOf(request.gitDirectory)];
-      // Contract §7 "Trust approval store": a record of the same worktree matches by both identities or by both paths.
+      const worktreeIdentity = [identityOf(request.worktreeRoot), identityOf(request.adminDirectory)];
+      const readable = [commonIdentity, ...worktreeIdentity].every((i) => !("code" in i));
+      // Contract §7 "Trust approval store": a failed store leaves the records unchanged.
+      if (!readable || inject.trustStoreFails) return { result: "approved", stored: false };
+      // A record of the same worktree matches by both identities or by both paths. A version 1 record goes too (feature 004 plan.md O-5).
       trustStore.records = trustStore.records.filter(
         (r) =>
           !(sameIdentity(r.commonIdentity, commonIdentity) && sameIdentity(r.worktreeIdentity, worktreeIdentity)) &&
           !(r.commonDirectory === request.commonDirectory && r.worktreeRoot === request.worktreeRoot),
       );
-      const readable = [commonIdentity, ...worktreeIdentity].every((i) => !("code" in i));
-      if (!request.persist || !readable) return { result: "approved", stored: false };
+      // Feature 004 data-model §10.
       const record = {
+        policyVersion: 2,
         commonDirectory: request.commonDirectory,
         commonIdentity,
         worktreeRoot: request.worktreeRoot,
-        gitDirectory: request.gitDirectory,
+        adminDirectory: request.adminDirectory,
         worktreeIdentity,
-        configurationFingerprint: request.fingerprint,
-        approvedAt: new Date().toISOString(),
         gitSelectedPath: request.gitSelectedPath,
-      } as TrustRecord;
+        approvedAt: new Date().toISOString(),
+      } as Extract<TrustRecord, { policyVersion: 2 }>;
       trustStore.records.push(record);
       return { result: "approved", stored: true, record };
     },

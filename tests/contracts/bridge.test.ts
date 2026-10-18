@@ -49,7 +49,7 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   readRefs: (b) => b.readRefs(gen()),
   readComparison: (b) => b.readComparison({ ...gen(), selectionId: id() }, { snapshotId: id(), entryId: id() }),
   readTrust: (b) => b.readTrust(repo()),
-  approveTrust: (b) => b.approveTrust(gen(), { fingerprint: "a".repeat(64), approve: true }),
+  approveTrust: (b) => b.approveTrust(repo(), { action: "commit" }),
   revokeTrust: (b) => b.revokeTrust(repo(), { trustId: id() }),
   applyHunk: (b) => b.applyHunk(gen(), { comparisonId: id(), hunkId: id(), snapshotId: id(), direction: "stage" }),
   applyFile: (b) => b.applyFile(gen(), { comparisonId: id(), snapshotId: id(), direction: "unstage" }),

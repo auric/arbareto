@@ -292,6 +292,8 @@ pub fn prompt(mutations: &[Mutation]) -> Confirmation {
         [] => (String::new(), "is", "it"),
     };
     Confirmation {
+        instruction: None,
+        details: None,
         text: format!(
             "{names} {verb} running. Arbareto cannot guarantee a rollback if you interrupt {object}. The repository can keep a part of the change."
         ),

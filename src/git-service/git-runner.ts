@@ -27,8 +27,8 @@ import {
   type MutationStarted,
   type RegisterRequest as RegisterRequestBase,
   type ResolveGitRequest,
-  type TrustBound,
   type TrustRecord,
+  type TrustRecordV2,
   type TrustRequest,
   type WslDistrosResult,
   type WslFileResult,
@@ -58,7 +58,7 @@ import type { FileAppendReply, FileAppendRequest } from "./ignore";
 import type { Workspace } from "./registration";
 
 export { isChannelPath } from "../contracts/operations";
-export type { FileFact, FileIdentity, IdentityReply, MarkerFailure, MutationStarted, ProcessContext, ResolveGitRequest, TrustBound, TrustRecord, TrustRequest, WslDistrosCall, WslDistrosResult, WslIdentity };
+export type { FileFact, FileIdentity, IdentityReply, MarkerFailure, MutationStarted, ProcessContext, ResolveGitRequest, TrustRecord, TrustRequest, WslDistrosCall, WslDistrosResult, WslIdentity };
 export type { FileAppendReply, FileAppendRequest };
 
 // Contract §6 "Channel frames" `register`: the Git form, the repository form, or the WSL form (§11).
@@ -129,7 +129,7 @@ export type StartedReply = { markerId: string } | { busy: true } | { failure: Ma
 export type TrustReply =
   | { result: "declined" }
   | { result: "approved"; stored?: false }
-  | { result: "approved"; stored: true; record: TrustRecord }
+  | { result: "approved"; stored: true; record: TrustRecordV2 }
   | { endedProcesses: number };
 
 export type RegisterReply = { result: "approved" | "declined" } | { result: "another"; bootstrapId: string; executablePath: string };

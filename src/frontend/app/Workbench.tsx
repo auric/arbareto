@@ -1839,6 +1839,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           <TrustDialog
             open={trust.open}
             report={trust.report}
+            action={fromCommit.current ? "commit" : "read"}
             repositoryId={state.repository.repositoryId}
             bridge={bridge}
             client={client}

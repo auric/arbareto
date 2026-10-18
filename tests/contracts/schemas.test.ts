@@ -191,24 +191,30 @@ describe("channel schemas", () => {
     expect(TrustRecord.safeParse({ ...RECORD, gitSelectedPath: "\\\\?\\C:\\Git\\cmd\\git.exe" }).success).toBe(false);
   });
 
-  test("a confirm frame carries gitSelectedPath, and bound only with persist false", () => {
+  // Feature 004 contract Δ6: the version 2 frame, and a stored approval replies with a version 2 record.
+  test("a confirm frame carries gitSelectedPath, the action, and the details, and no fingerprint, persist, or bound", () => {
+    const none = { names: [], more: 0 };
     const confirm = {
       type: "confirm",
       callId: id(),
       worktreeRoot: REPO,
-      gitDirectory: GIT_DIR,
+      adminDirectory: GIT_DIR,
       commonDirectory: GIT_DIR,
       gitSelectedPath: GIT_PATH,
-      fingerprint: "a".repeat(64),
-      persist: true,
+      policyVersion: 2,
+      action: "commit",
+      details: { hooks: none, filters: none, monitors: none, mergeDrivers: none, mergeTools: none, signing: none, other: none },
     };
     expect(TrustRequest.safeParse(confirm).success).toBe(true);
-    expect(TrustRequest.safeParse({ ...confirm, persist: false, bound: "file-bytes" }).success).toBe(true);
-    expect(TrustRequest.safeParse({ ...confirm, persist: false }).success).toBe(false);
-    expect(TrustRequest.safeParse({ ...confirm, bound: "file-bytes" }).success).toBe(false);
+    for (const old of [{ fingerprint: "a".repeat(64) }, { persist: true }, { bound: "file-bytes" }]) expect(TrustRequest.safeParse({ ...confirm, ...old }).success).toBe(false);
     const { gitSelectedPath: _path, ...withoutPath } = confirm;
     expect(TrustRequest.safeParse({ ...withoutPath, gitInstallationDigest: "b".repeat(64) }).success).toBe(false);
-    expect(TrustReply.safeParse({ type: "confirm", callId: id(), result: "approved", stored: true, record: RECORD }).success).toBe(true);
+    const { gitDirectory: admin, configurationFingerprint: _f, ...rest } = RECORD;
+    const v2 = { policyVersion: 2, ...rest, adminDirectory: admin };
+    expect(TrustReply.safeParse({ type: "confirm", callId: id(), result: "approved", stored: true, record: v2 }).success).toBe(true);
+    // Plan.md O-5: the shell stores only version 2, so a version 1 record in a reply is refused.
+    expect(TrustReply.safeParse({ type: "confirm", callId: id(), result: "approved", stored: true, record: RECORD }).success).toBe(false);
+    expect(TrustRecord.safeParse(v2).success).toBe(true);
   });
 
   test("process and mutation frames follow contract §6", () => {
@@ -254,9 +260,10 @@ describe("channel schemas", () => {
 });
 
 describe("trust report rows (contract §5 \"Trust report rows\", T372)", () => {
+  const none = { names: [], more: 0 };
   const report = (entries: number, hooks: number) => ({
     generation: 1,
-    fingerprint: "a".repeat(64),
+    programs: { hooks: none, filters: none, monitors: none, mergeDrivers: none, mergeTools: none, signing: none, other: none },
     state: "untrusted",
     persistence: "stored",
     approvalRequired: { reads: true, commit: true, sync: true, workbench: true },

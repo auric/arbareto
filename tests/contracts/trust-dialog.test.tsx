@@ -15,16 +15,17 @@ const { SAVE_FAILED_TEXT, SaveFailedNotice, TrustDialog, trustBeforeReview } = a
 
 type Report = TrustReport;
 // Contract §3 `readTrust` field values for the dialog input.
+const NONE = { names: [], more: 0 };
 const REPORT: Report = {
   generation: 3,
-  fingerprint: "a".repeat(64),
   state: "untrusted",
   persistence: "stored",
   approvalRequired: { reads: true, commit: true, sync: true, workbench: true },
   entries: [{ key: "core.hooksPath", scope: "local", origin: "file:.git/config", value: ".githooks" }],
   hooks: [{ event: "pre-commit", path: ".githooks/pre-commit", repositoryControlled: true }],
+  // Feature 004 data-model §10.
+  programs: { hooks: { names: [{ event: "pre-commit", folder: ".githooks" }], more: 0 }, filters: NONE, monitors: NONE, mergeDrivers: NONE, mergeTools: NONE, signing: NONE, other: { names: [{ key: "core.hookspath", scope: "local" }], more: 0 } },
 };
-const SESSION = "Arbareto cannot check these program files for later edits. This approval lasts until Arbareto closes or its Git service restarts.";
 
 // The bridge double answers `approveTrust` with the queued responses in order and records each call.
 function bridgeDouble(...responses: unknown[]) {
@@ -64,6 +65,7 @@ async function mount(report: Report, bridge: ReturnType<typeof bridgeDouble>["br
         <TrustDialog
           open={open}
           report={report}
+          action="commit"
           repositoryId={fixtureId(1)}
           bridge={bridge as never}
           client={client}
@@ -122,12 +124,12 @@ describe("trust dialog (plan.md \"Keyboard and focus\" Trust dialog row)", () =>
     expect(document.activeElement).toBe(opener);
   });
 
-  test("Approve sends approveTrust with the issued fingerprint; a declined native confirmation keeps the dialog and focuses Approve", async () => {
+  test("Approve sends approveTrust with the action (feature 004 contract Δ7); a declined native confirmation keeps the dialog and focuses Approve", async () => {
     const double = bridgeDouble({ requestId: "r1", state: "canceled" });
     const { approved } = await mount(REPORT, double.bridge);
     await act(async () => button("Approve").click());
     await settle();
-    expect(double.calls).toEqual([[{ repositoryId: fixtureId(1), repositoryGeneration: 3 }, { fingerprint: REPORT.fingerprint, approve: true }]]);
+    expect(double.calls).toEqual([[{ repositoryId: fixtureId(1) }, { action: "commit" }]]);
     expect(approved).toEqual([]);
     expect(popup()).not.toBeNull();
     expect(document.activeElement).toBe(button("Approve"));
@@ -143,8 +145,8 @@ describe("trust dialog (plan.md \"Keyboard and focus\" Trust dialog row)", () =>
     expect(document.activeElement).toBe(opener);
   });
 
-  test("a changed fingerprint (failed with TRUST_CHANGED) keeps the dialog open and reaches onFailed, never onApproved", async () => {
-    const failed = { requestId: "r1", state: "failed", code: "TRUST_CHANGED" };
+  test("a failed approval (OUTPUT_LIMIT) keeps the dialog open and reaches onFailed, never onApproved", async () => {
+    const failed = { requestId: "r1", state: "failed", code: "OUTPUT_LIMIT" };
     const host = await mountWithFailure(failed);
     await act(async () => button("Approve").click());
     await settle();
@@ -181,14 +183,6 @@ describe("trust dialog (plan.md \"Keyboard and focus\" Trust dialog row)", () =>
     expect(text).toContain("core.hooksPath=.githooks");
     expect(text).toContain("file:.git/config");
     expect(text).toContain(".githooks/pre-commit");
-    expect(text).not.toContain(SESSION);
-  });
-
-  test("persistence session names the reached digest bound and states the session-only text", async () => {
-    await mount({ ...REPORT, persistence: "session", bound: "file-count" }, bridgeDouble().bridge);
-    const text = popup()!.textContent!;
-    expect(text).toContain("Reached bound: 64 files.");
-    expect(text).toContain(SESSION);
   });
 
   test("commit review shows the dialog first only when approval is required for commit and not approved", () => {
@@ -198,17 +192,11 @@ describe("trust dialog (plan.md \"Keyboard and focus\" Trust dialog row)", () =>
     expect(trustBeforeReview({ ...REPORT, state: "approved", trustId: "t" })).toBe(false);
   });
 
-  // Contract §7 "Trust approval store": the dialog text without a reached bound.
-  const PERSISTS = "Arbareto keeps this approval across launches until you revoke trust, or until the named programs or the Git selection change.";
+  // Feature 004 spec FR-071: the approval binds the folders and the Git selection.
+  const PERSISTS = "Arbareto keeps this approval across launches until you revoke trust, or until the repository folder or the Git selection changes.";
 
-  test("without a reached bound, the dialog states that the approval persists across launches", async () => {
+  test("the dialog states that the approval persists across launches", async () => {
     await mount(REPORT, bridgeDouble().bridge);
     expect(popup()!.textContent).toContain(PERSISTS);
-  });
-
-  test("with a reached bound, the dialog shows the session-only text and not the persistence sentence", async () => {
-    await mount({ ...REPORT, persistence: "session", bound: "link" }, bridgeDouble().bridge);
-    expect(popup()!.textContent).toContain(`Reached bound: a link that Arbareto cannot follow. ${SESSION}`);
-    expect(popup()!.textContent).not.toContain(PERSISTS);
   });
 });

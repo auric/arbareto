@@ -438,8 +438,7 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
         if (!reply.success) return undefined;
         if (reply.data.result === "declined") return { result: "declined" };
         if (!reply.data.stored) return { result: "approved", stored: false };
-        // Contract §7 "Trust approval store": with `persist: false`, the shell writes no record.
-        return request.persist ? { result: "approved", stored: true, record: reply.data.record } : undefined;
+        return { result: "approved", stored: true, record: reply.data.record };
       });
     },
 

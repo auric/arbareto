@@ -42,7 +42,7 @@ function fixture(tag: string): Fixture {
 async function approve(service: Service, repositoryId: string, generation: number): Promise<void> {
   const trust = await service.readTrust(repositoryId);
   expect(trust.state).toBe("succeeded");
-  expect((await service.approveTrust(repositoryId, trust.result!.fingerprint, generation)).state).toBe("succeeded");
+  expect((await service.approveTrust(repositoryId)).state).toBe("succeeded");
 }
 
 describeGit("trust class sync (T036)", () => {
@@ -134,7 +134,8 @@ describeGit("trust class sync (T036)", () => {
     });
   }, TIMEOUT_MS);
 
-  caseTest(TASK, "sync refuses with TRUST_REQUIRED for a program added after the review, and with TRUST_CHANGED for an approved hook that changed, before any process", SHELL, async () => {
+  // Feature 004 spec FR-071 (contract Δ14): an approval binds the folders and the Git selection, so a rewritten hook asks nothing.
+  caseTest(TASK, "sync refuses with TRUST_REQUIRED for a program added after the review before any process, and after approval a rewritten hook runs without a new approval", SHELL, async () => {
     const f = fixture("t036-sync");
     await withSync("t036-sync", async (service) => {
       const r = await register(service, f.repo);
@@ -143,6 +144,7 @@ describeGit("trust class sync (T036)", () => {
       let from = service.runner.calls.length;
       expect(outcome(await sync(service, r, review.syncReviewToken))).toEqual({ state: "failed", code: "TRUST_REQUIRED" });
       expect(remoteCalls(service, from)).toEqual([]);
+      expect(existsSync(native(f.log))).toBe(false);
       gitRun(f.h, f.repo, ["config", "--unset", "remote.origin.uploadpack"]);
 
       const hook = `${f.repo}/.git/hooks/pre-push`;
@@ -151,11 +153,12 @@ describeGit("trust class sync (T036)", () => {
       gitRun(f.h, f.repo, ["checkout", "-q", "-b", "feature"]);
       review = await reviewed(service, r, { action: "push", destination: { remote: "origin", branch: "feature", setUpstream: false } });
       f.h.write(hook, `#!/bin/sh\nexec '${f.canary}'\n`);
-      from = service.runner.calls.length;
-      expect(outcome(await sync(service, r, review.syncReviewToken))).toEqual({ state: "failed", code: "TRUST_CHANGED" });
-      expect(remoteCalls(service, from)).toEqual([]);
+      const confirms = service.runner.frames.filter((frame) => frame.type === "confirm").length;
+      // The canary exits 1, so the pre-push hook refuses the push.
+      expect(outcome(await sync(service, r, review.syncReviewToken))).toEqual({ state: "failed", code: "GIT_FAILED" });
+      expect(service.runner.frames.filter((frame) => frame.type === "confirm").length).toBe(confirms);
     });
-    expect(existsSync(native(f.log))).toBe(false);
+    expect(existsSync(native(f.log))).toBe(true);
   }, TIMEOUT_MS);
 
   caseTest(TASK, "US3 scenario 3: after approval the pre-push hook runs; a hook refusal shows its output and changes no remote ref", SHELL, async () => {
@@ -176,15 +179,15 @@ describeGit("trust class sync (T036)", () => {
       expect(refused.result!.push!.outputTail).toContain("hook says no");
       expect(refMap(f.h, f.origin)).toEqual(origin);
 
+      // Feature 004 spec FR-071: the rewritten hook needs no new approval.
       f.h.write(hook, `#!/bin/sh\n: > '${ran}'\nexit 0\n`);
-      await approve(service, r.repositoryId, r.generation);
       expect(outcome(await run(service, r, { action: "push", destination }))).toEqual({ state: "succeeded", code: undefined });
       expect(existsSync(native(ran))).toBe(true);
       expect(refMap(f.h, f.origin, ["refs/heads/feature"])).toEqual({ "refs/heads/feature": refMap(f.h, f.repo, ["refs/heads/feature"])["refs/heads/feature"] });
     });
   }, TIMEOUT_MS);
 
-  caseTest(TASK, "Δ7: readTrust shows only the program of each transport value, a credential shell snippet as <shell command>, and remote.<name>.puttykeyfile, redacted; no secret reaches a response, progress event, or session log, and the fingerprint stays stable", SHELL, async () => {
+  caseTest(TASK, "Δ7: readTrust shows only the program of each transport value, a credential shell snippet as <shell command>, and remote.<name>.puttykeyfile, redacted; no secret reaches a response, progress event, or session log, and the program names stay stable", SHELL, async () => {
     const f = fixture("t036-display");
     const values: [string, string][] = [
       ["core.sshCommand", "ssh -o ProxyCommand=http://user:secret@proxy.invalid/x"],
@@ -230,7 +233,7 @@ describeGit("trust class sync (T036)", () => {
       expect(JSON.stringify(first.result).includes("secret")).toBe(false);
       expect(JSON.stringify([service.responses, service.progress, service.log()]).includes("secret")).toBe(false);
       const second = await service.readTrust(r.repositoryId);
-      expect(second.result!.fingerprint).toBe(first.result!.fingerprint);
+      expect(second.result!.programs).toEqual(first.result!.programs);
     });
   }, TIMEOUT_MS);
 });

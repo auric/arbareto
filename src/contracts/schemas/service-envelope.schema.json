@@ -931,26 +931,30 @@
           "maxLength": 64,
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
         },
-        "repositoryGeneration": {
-          "type": "integer",
-          "minimum": 0,
-          "maximum": 9007199254740991
-        },
         "payload": {
           "type": "object",
           "properties": {
-            "fingerprint": {
+            "action": {
               "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
-            },
-            "approve": {
-              "type": "boolean",
-              "const": true
+              "enum": [
+                "commit",
+                "read",
+                "fetch",
+                "pull",
+                "push",
+                "switch",
+                "branch",
+                "merge",
+                "rebase",
+                "resolve",
+                "mergetool",
+                "worktree",
+                "submodules"
+              ]
             }
           },
           "required": [
-            "fingerprint",
-            "approve"
+            "action"
           ],
           "additionalProperties": false,
           "title": "ApproveTrustPayload"
@@ -962,7 +966,6 @@
         "requestId",
         "operation",
         "repositoryId",
-        "repositoryGeneration",
         "payload"
       ],
       "additionalProperties": false,

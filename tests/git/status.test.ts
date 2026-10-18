@@ -64,7 +64,7 @@ async function readSucceeded(service: Service, repo: string): Promise<WorkspaceR
 async function approve(service: Service, repositoryId: string): Promise<void> {
   const trust = await service.readTrust(repositoryId);
   expect(trust.state).toBe("succeeded");
-  expect((await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation)).state).toBe("succeeded");
+  expect((await service.approveTrust(repositoryId)).state).toBe("succeeded");
 }
 
 const b64 = (bytes: Uint8Array | string) => Buffer.from(bytes).toString("base64");
@@ -382,13 +382,8 @@ describe("F05 submodules (contract §7)", () => {
 
         // A staged gitlink commit that differs from HEAD. `update-index --cacheinfo` starts no Git inside the submodule.
         ownedGit(git, FIXTURE_ROOT, repo, ["update-index", "--cacheinfo", `160000,${subs["sub-moved"].checkedOut},sub-moved`]);
-        let second = await service.readWorkspace(repositoryId);
-        if (lfsWrote) {
-          // The changed local configuration and hooks change the fingerprint, so read 2 needs a new approval.
-          expect(outcome(second)).toMatchObject({ code: "TRUST_CHANGED" });
-          await approve(service, repositoryId);
-          second = await service.readWorkspace(repositoryId);
-        }
+        // Feature 004 spec FR-071: the changed local configuration and hooks of Git LFS need no new approval.
+        const second = await service.readWorkspace(repositoryId);
         expect(second.state).toBe("succeeded");
         expect(logs.filter((log) => existsSync(log))).toEqual([]);
         const after = byPath(second.result!.entries);

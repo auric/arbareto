@@ -716,7 +716,8 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(TASK, `a revoke during a running commit cancels nothing, ended sets endProcesses, and the child ends`, SHELL, () =>
+  // Feature 004 plan.md D12: Stop trusting is unavailable while a mutation runs, because revocation never cancels running work.
+  caseTest(TASK, `a revoke during a running commit gives BUSY and changes nothing; the revoke after the commit ends the lingering child`, SHELL, () =>
     withService({ name: "t100-revoke-during" }, async (service) => {
       const built = buildF14(gitPath(), "t100-revoke-during", "lingering");
       const repo = repoOf(built);
@@ -727,12 +728,18 @@ describe("lingering Jobs and revoke (contract §6 \"Lingering Jobs\")", () => {
       const trustId = (await service.readTrust(repositoryId)).result!.trustId!;
       const { requestId, operationId } = await startCommit(service, repositoryId, r, "revoke during\n");
       await gate.reached();
-      expect((await service.revokeTrust(repositoryId, trustId)).state).toBe("succeeded");
-      gate.release();
+      try {
+        expect(outcome(await service.revokeTrust(repositoryId, trustId))).toEqual({ state: "rejected", code: "BUSY" });
+        expect(service.trustStore.records.length).toBe(1);
+      } finally {
+        gate.release();
+      }
       const response = await service.response(requestId);
-      expect({ ...outcome(response), lingering: one<number>(response.result, "lingeringDescendants") }).toEqual({ ...SUCCEEDED, lingering: 0 });
+      expect(outcome(response)).toEqual(SUCCEEDED);
       await until(() => endedFrame(service, operationId) !== undefined, "ended frame");
-      expect(endedFrame(service, operationId)!.endProcesses).toBe(true);
+      expect(endedFrame(service, operationId)!.endProcesses).toBe(false);
+      const revoked = await service.revokeTrust(repositoryId, trustId);
+      expect({ ...outcome(revoked), ended: revoked.result?.endedProcesses }).toEqual({ ...SUCCEEDED, ended: 1 });
       await until(() => service.runner.liveRecorded() === 0, "child end", END_MS);
     }),
     TIMEOUT_MS,

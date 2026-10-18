@@ -92,7 +92,7 @@ async function withService(options: Omit<OpenOptions, "git">, body: (service: Se
 async function approve(service: Service, repositoryId: string): Promise<void> {
   const trust = await service.readTrust(repositoryId);
   expect(trust.state).toBe("succeeded");
-  expect((await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation)).state).toBe("succeeded");
+  expect((await service.approveTrust(repositoryId)).state).toBe("succeeded");
 }
 
 // One full read. Returns the result and the argument arrays of the Git calls that the read started.

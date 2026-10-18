@@ -22,6 +22,7 @@ import {
 import { NATIVE } from "../contracts/native-path";
 import {
   buildRefusalRemedy,
+  buildSubmoduleRemedy,
   redactUrlUserInfo,
   sameSubmoduleHost,
   submoduleUrlHost,
@@ -175,8 +176,9 @@ export const REFUSAL_TEXTS = {
   remoteName: (path: string, name: string) => `Submodule ${path} has a remote named ${name}, which Git can read as an option. Rename that remote in a terminal, then use Refresh.`,
   gitdirConfig: "This repository sets custom locations for submodule Git folders. Arbareto reads only the default location. Update the submodules in a terminal.",
   limit: "This repository has more than 256 submodules or more than 8 nesting levels. Update them in a terminal.",
-  // Feature 004 contract Δ12 names the reason without a text.
+  // Feature 004 contract Δ12.
   parentNotInitialized: (parent: string, path: string) => `Submodule ${parent} is not initialized. Update ${parent} first, then update submodule ${path}.`,
+  inactive: (path: string) => `Submodule ${path} is not active, and Arbareto does not activate submodules. Activate it with the command, then update it again.`,
 };
 const NOTES = {
   relative: "Git resolves this URL against the remote of the parent repository.",
@@ -957,6 +959,11 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
           row.action = "skip";
           // Reconciliation compares the HEAD of a skipped checked-out row with this commit.
           if (initialized[i]) row.head = topHeads === null ? (await readHead({ worktree })).head : (topHeads.get(latin1(link.path)) ?? link.oid);
+          // Contract Δ12: Git's `--init` with this path would activate the row and write its settings, so the scoped update refuses it.
+          if (scope !== null && Buffer.from(pathBytes).equals(scope)) {
+            const remedy = gitPath === null ? null : buildSubmoduleRemedy({ step: "register", gitPath, parentWorktree: lv.worktree, path: link.path, nested: lv.depth > 0, wsl });
+            refuse("inactive", display, REFUSAL_TEXTS.inactive(display), remedy, row);
+          }
           continue;
         }
 

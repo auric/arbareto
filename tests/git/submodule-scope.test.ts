@@ -24,6 +24,7 @@ import {
   globalEnv,
   objectsWith,
   oracleOf,
+  q,
   ranCanaries,
   refusalsOf,
   resultOf,
@@ -243,6 +244,30 @@ describe("scope (contract Δ12, spec FR-081)", () => {
       expect(stateOf(b)).toEqual(before);
     });
   }
+
+  scopeCase("F28 active-pathspec: the full review skips solo, which submodule.active leaves out; a scoped review of solo refuses with inactive and the register command, and its update changes nothing", async () => {
+    const b = buildF28(gitPath(), "t052-scope-inactive", "active-pathspec");
+    const sup = superOf(b);
+    const before = { state: stateOf(b), config: submoduleKeys(b, sup) };
+    await withFixture(b, "t052-scope-inactive", async (service) => {
+      const { repositoryId } = await service.register(sup);
+      const full = await review(service, repositoryId);
+      expect({ action: actionsOf(full).solo, refusals: full.refusals }).toEqual({ action: "skip", refusals: [] });
+      const r = await review(service, repositoryId, "solo");
+      expect(r.refusals.map((x) => [x.path, x.reason, x.text, x.remedy])).toEqual([
+        [
+          "solo",
+          "inactive",
+          "Submodule solo is not active, and Arbareto does not activate submodules. Activate it with the command, then update it again.",
+          { command: `& ${q(gitPath())} --no-lazy-fetch -C ${q(sup)} submodule init -- ${q(":(literal)solo")}`, text: "This command registers this submodule in a terminal. Then use Update submodules again." },
+        ],
+      ]);
+      const from = service.runner.calls.length;
+      const response = await update(service, repositoryId, r);
+      expect({ code: response.code, steps: updateSteps(service, from).length }).toEqual({ code: "UNSUPPORTED_SUBMODULE", steps: 0 });
+    });
+    expect({ state: stateOf(b), config: submoduleKeys(b, sup) }).toEqual(before);
+  });
 
   scopeCase("F27 base: a scope path that names no row fails with UNKNOWN_TARGET and gives no token", async () => {
     const b = buildF27(gitPath(), "t052-scope-unknown", "base");

@@ -22,8 +22,9 @@ export const SUBMODULE_REFUSAL_REASONS = [
   "path",
   "active-value",
   "remote-name",
-  // Feature 004 contract Δ12: a scoped review of a nested row whose parent row has no `.git` entry.
+  // Feature 004 contract Δ12: a scoped review of a nested row whose parent row has no `.git` entry, and of a row outside the active set.
   "parent-not-initialized",
+  "inactive",
   "gitdir-config",
   "limit",
 ] as const;

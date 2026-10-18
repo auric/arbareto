@@ -69,7 +69,7 @@
 - Decision: moved count `rev-list --count --right-only --cherry-pick --no-merges <oid>...HEAD`; rewritten count `rev-list --count <oid>..HEAD`; held count by `--not --remotes`; force note by `--not <T>` of the 003 push tracking ref.
 - Rationale: `sequencer_make_script` walks `upstream...orig_head` with `right_only`, `cherry_mark` unless `--reapply-cherry-picks`, and `max_parents=1` unless `--rebase-merges`, and drops PATCHSAME commits (source). With an explicit upstream, the default is `--no-fork-point` (doc, git-rebase(1)). Empty commits can make the counts differ (source note), so F13 compares the count with the commits that Git's own rebase creates.
 - Options: the argv always passes the explicit Autostash and Autosquash forms, so Git does what the check boxes show. On Git 2.56, `rebase.autoSquash=true` alone does not squash in a non-interactive rebase (experiment, F15). So Autosquash starts unchecked and takes no default from `rebase.autoSquash`.
-- Moved branches: `rebase.updateRefs` moves local branches whose tips lie in the rewritten range (doc, git-rebase(1) `--update-refs`). `for-each-ref --merged=HEAD --no-merged=<oid> refs/heads` lists those tips. Git does not move a branch that another worktree checks out (experiment, F16). So the list drops the `branch` attributes of the other worktree records of `worktree list --porcelain -z`.
+- Moved branches: `rebase.updateRefs` moves local branches whose tips lie in the rewritten range (doc, git-rebase(1) `--update-refs`). The list follows the `update-ref` lines of Git's todo list (source, sequencer.c `todo_list_add_update_ref_commands`; plan D6). Git adds a line for each local branch whose ref value is a commit of the todo list. Git skips the HEAD branch and each branch that `branch_checked_out` names. F16 confirmed that Git does not move a branch that another worktree checks out (experiment). So the list drops the `branch` attributes of the other worktree records of `worktree list --porcelain -z`. The earlier `for-each-ref --merged` read is gone.
 - Dirty tree: Git refuses a rebase with tracked changes unless `--autostash` (doc). F14 confirms it on both Git versions.
 
 ## R9 Conflict resolve and merge tool
@@ -285,6 +285,21 @@ Run of 2026-10-18 in `C:\Projects\arbareto-l4` on f004-impl at 1cab2ad. One run 
 - T020 control mutation: without the `[` escape in `src/contracts/ignore-line.ts`, `tests/contracts/ignore-line.test.ts` failed (8 pass, 1 fail). After the undo, 9 of 9 passed.
 - Facts: "Results" holds each `OBSERVATION` line of this run with its mark (R21).
 
+## R23 Batch 2 verification (T035)
+
+Run of 2026-10-18 in `C:\Projects\arbareto-l4` on f004-impl at 00bf0b3. The batch 2 review is recorded ("Batch reviews").
+- `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, and `bun test tests/contracts/groups.test.ts` (1 pass): exit 0.
+- `cargo test --locked --manifest-path src-tauri/Cargo.toml`: exit 0, 542 passed, 0 failed, 4 ignored.
+- `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0. Parallel group: 6,005 pass, 0 fail, 39 skip. Serial group: 466 pass, 0 fail, 9 skip. Every `ORIGIN` line is under `C:\Projects\arbareto-l4`. The 15 distinct skip reasons are capabilities.
+- `bun run test:windows`: exit 0, 112 pass, 0 fail, 5 skip. Two UIA focus cases printed the `foreground` capability skip: owner pid 10616, lock timeout 2147483647, idle about 2.6 hours.
+- Control mutation 1: the mutation removed the expected object ID from the `update-ref --no-deref -d` builder `deleteRefArgs` (`src/git-service/workbench-commands.ts:252`). `branch-ops.ts` builds its delete step with it. The moved-branch case and the F9 case of `tests/git/branch-ops.test.ts` failed (7 pass, 2 fail). After the undo, 9 of 9 passed.
+- Control mutation 2: the mutation made `stashApplyArgs` (`src/git-service/workbench-commands.ts:228`) reapply by `stash@{0}`. `switch.ts` builds its reapply step with it. The two-earlier-stashes case and the SC-001/SC-002 case of `tests/git/switch.test.ts` failed (20 pass, 2 fail). After the undo, 22 of 22 passed.
+- Earlier run, for context: a green run on 17aaa20, before the review fixes, gave 5,971/0/39 and 466/0/9, cargo 542 passed, and `test:windows` 112 passed.
+
+## R24 Mockup board update (T036)
+
+- Commit 4ac9b99 and the scratchpad `ux-004/` work did T036. The boards already had the correct keys, Switch, and Amend. The Submodules board shows the running rule. `ux-004/gen/check.mjs` is clean on all nine boards.
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.
@@ -292,5 +307,24 @@ Each batch verification task passes only after one independent review of its bat
 **Batch 0, 2026-10-18.** Independent batch 0 review, reviewer agent, 2026-10-18. Scope: the fact tests and the fixture builder (T001 to T005). Verdict: fix first. Items: F1 did not run every contract argv; some T005 skips printed `SKIP`, not `unverified`; some checks could not fail; one Git process ran outside the isolated environment; a leftover tool was only logged; the fixture cache was reused by key alone. Suspicions: the WSL `:` candidate path, an N4 PID reuse, and the 001 `acquireLock`. Resolution: fe8f75f fixes all items and suspicions, and 6262511 merges it. The `:` rule refuses with reason `path`.
 
 **Batch 1, 2026-10-18.** Independent batch 1 review, reviewer agent, 2026-10-18. Scope: WP4 to WP6 (T007 to T019). Verdict: no blocking finding and no heuristic. Medium: a registered run could do `worktree add`, and also `clone`. Low: the `exclude` target must be exactly `info/exclude`; the IPv6 scp host; `urlHost` for custom schemes; hard links on append targets. Lean: one `latin1`. Resolution: e357520 fixes all items.
+
+**Batch 2, 2026-10-18.** Independent batch 2 review, reviewer agent, 2026-10-18. Scope: d8a3755..17aaa20 (WP7 to WP10, T021 to T034). Verdict: no data-safety or security defect.
+- Medium, fixed in e42c49a: two command-line checks measured `selectedPath`, not the started `executablePath`. One `stepUnits` helper now measures both.
+- Duplicates merged in e42c49a: `refTarget`, `readWorktrees`, `oidList`, and `revCount`.
+- Suspicions settled in e42c49a:
+  - The moved-branch list follows Git's update-refs selection (sequencer.c).
+  - Git's merge and rebase never recurse into submodules (submodule.c:203). A test shows it.
+  - `rebase.backend=apply` without Autosquash refuses with `apply-backend`.
+  - A duplicate run of one token gets the repeat answer.
+  - An included branch configuration refuses with `config-in-include`.
+  - End signals replace two timing waits in tests.
+  - The ignore review needs no gate.
+  - The minimum Git 2.55 is above 2.44, which `--autosquash` needs.
+- Earlier fixes during the batch, from the WP7 to WP10 reports:
+  - Track needs exactly one mapping refspec (25c09f0).
+  - Squash with `merge.ff=false`, `mergeoptions`, and the status headers (1f223f1).
+  - Parallel exact proofs, the user's O-17 choice (7ee3d86).
+  - One reply for each `fileAppend` (94b5dba).
+- Open: the "may move" list cannot see a branch that another worktree rebases (contract gap, plan D6).
 
 Open: the merge tool start stall (plan O-19, R21 N3). bd077e1 adds its diagnostics: the N3 test records each stall as a `match=false` finding with Git output, `GIT_TRACE`, and the Job members.

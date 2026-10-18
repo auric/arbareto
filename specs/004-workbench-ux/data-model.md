@@ -9,7 +9,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 - `name`: the short name. Display text only; actions send `ref`.
 - `oid`: the commit of the ref.
 - `upstream`: the full upstream ref, or null. From `%(upstream)`.
-- `tracking`: the 003 data-model §1 entry when its `oid` and upstream OID equal this read, else null (003 FR-021 pairing rule).
+- `tracking`: the 003 data-model §1 entry when its `oid` and upstream OID equal the ref values of this read, else null (003 FR-021 pairing rule). The pairing compares the ref values, not the peeled commits (contract Δ3).
 - `heldBy`: the worktree path whose record has `branch <ref>`, or null.
 - `current`: true for the `*` record of `%(HEAD)`.
 - `localName`: for a remote ref, the D3 refspec mapping result, or null when zero or several refspecs map it.

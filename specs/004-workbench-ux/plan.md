@@ -354,8 +354,22 @@ Each phase writes its tests first. P0.2 to P0.4 are the riskiest proofs and run 
   - `squash-no-ff`: "merge.ff is false in <scope> (<file>), so Git refuses Squash."
   - `invalid-config`: "A Git setting has a value that Git cannot read, so Git stops the rebase. Correct the setting first."
   - `unknown-operation`: "Arbareto cannot tell which operation is in progress. Finish it in a terminal."
-  - `apply-backend`: "rebase.backend is apply in <scope> (<file>), so Git ignores rebase.updateRefs. Select Autosquash to use the merge backend, or rebase in a terminal."
-- Rebase panel moved branches (D6): the heading reads "These branches may move with the rebase:". The list can name a branch that another worktree rebases or bisects, or a branch whose commit Git keeps (contract gap).
+  - `apply-backend`: "rebase.backend is apply, so Git ignores rebase.updateRefs. Select Autosquash to use the merge backend, or rebase in a terminal." The refusal carries no plan, so the text names no scope or file.
+  - `ff-only`: "merge.ff is only in <scope> (<file>), and Git cannot fast-forward here. Select No fast-forward to create a merge commit." Git's `--no-ff` replaces `merge.ff=only`.
+  - `message-size`: "The merge message is above 8 KiB (8,192 UTF-8 bytes), the limit of the Git command line."
+  - `dirty-tree`: "Commit or stash your changes, or select Autostash." (D6).
+  - `TRUST_REQUIRED` and `TRUST_CHANGED`: "This action runs programs of this repository. Trust the repository first with the trust chip in the status bar."
+  - Another code or reason: "Merge is unavailable: <code>" or "Rebase is unavailable: <code>". A failed run: "Merge did not complete: <code>" or "Rebase did not complete: <code>".
+- Merge and Rebase panel texts (D5, D6, data-model §5):
+  - Titles: "Merge <source> into <current>" and "Rebase <current> onto <onto>". Close buttons: "Close merge panel" and "Close rebase panel". Primary buttons: "Merge (Ctrl+Enter)" and "Rebase (Ctrl+Enter)".
+  - Before the review result: "Arbareto reads the Git facts." While the run is active: "The merge runs." or "The rebase runs."
+  - Merge facts: "<source> has <n> commits that <current> lacks." Then "Fast-forward is possible." or "Fast-forward is not possible: <current> has <n> commits that <source> lacks." Then "merge.ff is <value> in <scope> (<file>)." or "merge.ff is not set, so Git uses its default (true)."
+  - Merge options: the "Result" group with "Merge commit" and "Squash" ("Stage all changes as one. No merge commit. You commit later."). "No fast-forward" ("Always create a merge commit, also when Git could fast-forward."). "Don't commit" ("Stop before the commit, so you can check the result.").
+  - Unavailable options: with Squash, No fast-forward shows "Git refuses No fast-forward with Squash." and Don't commit shows "Squash never commits.". The D5 lock shows "Git fast-forwards without a merge commit, so Don't commit needs No fast-forward." The effective `merge.ff` false gives Squash the `squash-no-ff` text.
+  - Message editor: the label "Merge commit message" and the counter "<n> of 8,192 UTF-8 bytes". A message of only blanks gives "Enter a merge commit message." Above the bound, Merge shows the `message-size` text and sends no request.
+  - Rebase facts: "Moves the <n> commits of <current> that <onto> lacks on top of <onto>." Then "The rebase rewrites <n> commits. A remote-tracking branch holds <held> of them." Then the D6 force note, only from `forceNote`.
+  - Rebase options: "Autostash" ("Stash the changes first. Reapply them after the rebase.", then "From rebase.autoStash in <scope> (<file>)." or "rebase.autoStash is not set, so Autostash starts off."). "Autosquash" ("Fold fixup! and squash! commits into their targets."). "Interactive", unavailable with "Not in this version".
+- Rebase panel moved branches (D6): the heading reads "These branches may move with the rebase:". The list can name a branch that another worktree rebases or bisects, or a branch whose commit Git keeps (contract gap). Above 100 branches, "<n> more branches may move." follows the list.
 - Delete confirmation reason (D4): `config-in-include`: "An included configuration file sets branch.<name>. Git cannot remove that setting here, so delete the branch in a terminal."
 - Commit view layout (spec FR-029): Changes and Staged lists on the left, the diff on the right, the message editor below the diff. Each region scrolls alone, and splitters follow 001 "Splitter". The status bar states the counts, such as "3 staged files. 1,258 changes, 1,248 of them untracked." (spec FR-048).
 - Virtual tree (spec FR-031, FR-086): each list flattens its folders and files into rows, and `@tanstack/react-virtual` renders the visible rows, as 001 ChangesPane does. Folder counts come from one pass over the entries of the snapshot. The Untracked section builds its rows only when it first expands, so a collapsed section of 100,000 files costs no row work (spec FR-030).

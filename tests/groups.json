@@ -117,6 +117,7 @@
     "tests/contracts/view-switch.test.tsx",
     "tests/contracts/workbench-commands.test.ts",
     "tests/contracts/workbench-contract.test.ts",
+    "tests/contracts/workbench-integrate.test.tsx",
     "tests/contracts/workbench-mount.test.tsx",
     "tests/contracts/workbench-parsers.test.ts",
     "tests/contracts/workbench-views.test.tsx",

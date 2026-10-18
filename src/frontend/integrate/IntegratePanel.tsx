@@ -1,0 +1,254 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 Ihor Lifanov
+
+// Type-only imports keep zod out of the renderer bundle.
+import { useEffect, useId, useLayoutEffect, useRef, useState, type InputHTMLAttributes, type ReactNode } from "react";
+import type { z } from "zod";
+import type { ReviewWorkbenchResult } from "../../contracts/envelope";
+import { MERGE_MESSAGE_BYTES } from "../../contracts/limits";
+import { codeText } from "../app/RepositoryStates";
+import type { BridgeResponse, createBridge } from "../bridge";
+import { DockedPanel } from "../components/docked-panel";
+import { isObject } from "../lib/utils";
+import { TEXTS, type ConfigSource } from "./texts";
+
+// Feature 004 spec FR-021 to FR-028, plan.md D5, D6, D15 "Docked panel", contract Δ3 `reviewWorkbench` and `runWorkbench` merge and rebase.
+
+/** Opens a panel. `ref` is the full source or onto ref, and `name` its short display name. */
+export type IntegrateRequest = { action: "merge" | "rebase"; ref: string; name: string };
+type Reviewed = Extract<z.infer<typeof ReviewWorkbenchResult>, { workbenchToken: string }>;
+type MergePlan = Extract<Reviewed, { action: "merge" }>["plan"];
+type RebasePlan = Extract<Reviewed, { action: "rebase" }>["plan"];
+type Review = { response: BridgeResponse | null; token: string | null; plan: MergePlan | RebasePlan | null; reason: string | null; code: string | null };
+
+export type IntegratePanelProps = {
+  request: IntegrateRequest;
+  /** The short name of the current branch. */
+  current: string;
+  bridge: Pick<ReturnType<typeof createBridge>, "reviewWorkbench" | "runWorkbench">;
+  target: { repositoryId: string; repositoryGeneration: number } | null;
+  /** The workbench reason that blocks every mutation, or null. */
+  blockedReason: string | null;
+  /** The store's `ended("runWorkbench", response)`. */
+  onEnded(response: BridgeResponse): void;
+  onClose(): void;
+};
+
+const shortRef = (ref: string) => ref.replace(/^refs\/(heads|remotes)\//, "");
+const utf8Bytes = (text: string) => new TextEncoder().encode(text).length;
+
+function reviewOf(response: BridgeResponse): Review {
+  const result = isObject(response.result) ? response.result : {};
+  const token = response.state === "succeeded" && typeof result.workbenchToken === "string" ? result.workbenchToken : null;
+  const plan = isObject(result.plan) ? (result.plan as MergePlan | RebasePlan) : null;
+  return { response, token, plan, reason: typeof result.reason === "string" ? result.reason : null, code: token === null ? (response.code ?? response.state) : null };
+}
+
+/** The D15 text of a refused review. Unmapped codes and reasons show the code. */
+function refusalText(review: Review, action: "Merge" | "Rebase", current: string, plan: MergePlan | RebasePlan | null): string {
+  const ff = plan !== null && "facts" in plan ? plan.facts.mergeFf.source : "default";
+  if (review.code === "TRUST_REQUIRED" || review.code === "TRUST_CHANGED") return TEXTS.trust;
+  if (review.code !== "WORKBENCH_UNAVAILABLE" || review.reason === null) return TEXTS.unavailable(action) + (review.code ?? "unknown");
+  const texts: Record<string, string> = {
+    "ff-only": TEXTS.ffOnly(ff as ConfigSource),
+    "message-size": TEXTS.messageSize,
+    "squash-no-ff": TEXTS.squashNoFf(ff as ConfigSource),
+    "merge-options": TEXTS.mergeOptions(current),
+    "invalid-config": TEXTS.invalidConfig,
+    "unknown-operation": TEXTS.unknownOperation,
+    "apply-backend": TEXTS.applyBackend,
+    "dirty-tree": TEXTS.dirtyTree,
+  };
+  return texts[review.reason] ?? TEXTS.unavailable(action) + review.reason;
+}
+
+type Keyed = { key: string; value: Review };
+/** Latest wins: each new payload key sends one review, and an older response is dropped. */
+function useReview(bridge: IntegratePanelProps["bridge"], target: IntegratePanelProps["target"], key: string, setReview: (review: Keyed) => void) {
+  const seq = useRef(0);
+  const repositoryId = target?.repositoryId ?? null;
+  const generation = target?.repositoryGeneration ?? null;
+  useEffect(() => {
+    if (repositoryId === null || generation === null) return;
+    const mine = ++seq.current;
+    void bridge.reviewWorkbench({ repositoryId, repositoryGeneration: generation }, JSON.parse(key)).then((response) => {
+      if (mine === seq.current) setReview({ key, value: reviewOf(response) });
+    });
+  }, [bridge, repositoryId, generation, key, setReview]);
+}
+
+function Option({ label, note, reason, ...input }: { label: string; note?: string; reason?: string | null } & InputHTMLAttributes<HTMLInputElement>) {
+  const id = useId();
+  const text = reason ?? note;
+  return (
+    <div className="flex flex-col">
+      <label className="flex items-center gap-2">
+        <input {...input} disabled={input.disabled ?? (reason !== null && reason !== undefined)} aria-describedby={text === undefined ? undefined : id} />
+        {label}
+      </label>
+      {text === undefined ? null : (
+        <span id={id} className="text-muted-text" style={{ paddingLeft: 22 }}>
+          {text}
+        </span>
+      )}
+    </div>
+  );
+}
+
+/** The docked Merge or Rebase panel. A stop with conflicts closes it, and the 003 conflict row takes over (FR-023, FR-027). */
+export function IntegratePanel(props: IntegratePanelProps) {
+  const { request, current, bridge, target, blockedReason, onEnded, onClose } = props;
+  const merge = request.action === "merge";
+  const action = merge ? "Merge" : "Rebase";
+  // Merge options.
+  const [result, setResult] = useState<"merge" | "squash">("merge");
+  const [noFf, setNoFf] = useState(false);
+  const [noCommit, setNoCommit] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  // Rebase options. Null Autostash follows the plan's `rebase.autoStash` value.
+  const [autostash, setAutostash] = useState<boolean | null>(null);
+  const [autosquash, setAutosquash] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [failure, setFailure] = useState<ReactNode>(null);
+  const [opener] = useState(() => (typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null)));
+  const body = useRef<HTMLDivElement>(null);
+  // The plan of the newest review. A refusal before the counts holds no plan, so the panel then states no facts.
+  const [review, setReview] = useState<Keyed | null>(null);
+  const shownPlan = review?.value.plan ?? null;
+  useLayoutEffect(() => {
+    const inputs = [...(body.current?.querySelectorAll<HTMLInputElement>("input:not(:disabled)") ?? [])];
+    (inputs.find((i) => i.checked) ?? inputs[0])?.focus();
+  }, []);
+
+  const mergePlan = merge && shownPlan !== null && "facts" in shownPlan ? shownPlan : null;
+  const rebasePlan = !merge && shownPlan !== null && "onto" in shownPlan ? shownPlan : null;
+  const facts = mergePlan?.facts ?? null;
+  const squash = result === "squash";
+  // Plan D5 and data-model §5: the service refuses Don't commit without No fast-forward in this case.
+  const locked = !squash && noCommit && facts !== null && facts.behind > 0 && facts.fastForward && facts.mergeFf.value !== "false";
+  const squashBlocked = facts !== null && facts.mergeFf.value === "false" ? TEXTS.squashNoFf(facts.mergeFf.source as ConfigSource) : null;
+  const effectiveAutostash = autostash ?? rebasePlan?.autostash.value ?? false;
+  const preview = mergePlan?.preview ?? null;
+  const text = message ?? preview;
+  const payload = merge
+    ? { action: "merge" as const, ref: request.ref, result, noFastForward: !squash && (noFf || locked), noCommit: !squash && noCommit, message: null }
+    : { action: "rebase" as const, ref: request.ref, autostash: effectiveAutostash, autosquash };
+  const key = JSON.stringify(payload);
+  useReview(bridge, target, key, setReview);
+
+  // The editor bound (contract Δ5): an edited message above MERGE_MESSAGE_BYTES or without text is never sent.
+  const messageBytes = text === null ? 0 : utf8Bytes(text);
+  const messageReason = !merge || squash || text === null ? null : messageBytes > MERGE_MESSAGE_BYTES ? TEXTS.messageSize : /^[ \t\n\r]*$/.test(text) ? TEXTS.messageEmpty : null;
+  const shown = review?.key === key ? review.value : null;
+  const reason: string | null =
+    blockedReason ?? (running ? (merge ? TEXTS.mergeRuns : TEXTS.rebaseRuns) : shown === null ? TEXTS.pending : shown.token === null ? refusalText(shown, action, current, shownPlan) : messageReason);
+
+  async function run() {
+    if (target === null) return;
+    setRunning(true);
+    setFailure(null);
+    const sent = merge ? { ...payload, message: squash || message === null || message === preview ? null : message } : payload;
+    const again = reviewOf(await bridge.reviewWorkbench(target, sent));
+    if (again.token === null) {
+      setRunning(false);
+      setFailure(refusalText(again, action, current, again.plan ?? shownPlan));
+      return;
+    }
+    const response = await bridge.runWorkbench({ repositoryId: target.repositoryId }, { workbenchToken: again.token, start: true });
+    onEnded(response);
+    setRunning(false);
+    const state = isObject(response.result) ? response.result.operationState : undefined;
+    // A success, or a stop that leaves the merge or rebase in progress for the 003 conflict row.
+    if (response.state === "succeeded" || response.state === "completed-with-effects" || state === "merging" || state === "rebasing") {
+      onClose();
+      if (opener?.isConnected) opener.focus();
+    } else setFailure(codeText(TEXTS.failed(action), response.code ?? response.state));
+  }
+
+  const ids = { result: useId(), message: useId(), bytes: useId(), branches: useId() };
+  return (
+    <DockedPanel
+      title={merge ? TEXTS.mergeTitle(request.name, current) : TEXTS.rebaseTitle(current, request.name)}
+      closeLabel={merge ? TEXTS.closeMerge : TEXTS.closeRebase}
+      primary={{ label: action, reason, onRun: () => void run() }}
+      onClose={onClose}
+    >
+      <div ref={body} data-slot="integrate-panel" className="flex flex-col gap-2">
+        {mergePlan === null ? null : (
+          <div className="flex flex-col">
+            <p>{TEXTS.behind(request.name, current, mergePlan.facts.behind)}</p>
+            <p>{mergePlan.facts.fastForward ? TEXTS.fastForward : TEXTS.noFastForward(current, request.name, mergePlan.facts.ahead)}</p>
+            <p className="text-muted-text">{TEXTS.mergeFf(mergePlan.facts.mergeFf.value, mergePlan.facts.mergeFf.source as ConfigSource)}</p>
+          </div>
+        )}
+        {rebasePlan === null ? null : (
+          <div className="flex flex-col">
+            <p>{TEXTS.moved(current, request.name, rebasePlan.moved)}</p>
+            <p>{TEXTS.held(rebasePlan.rewritten, rebasePlan.held)}</p>
+            {rebasePlan.forceNote === null ? null : <p className="text-warning">{TEXTS.forceNote(shortRef(rebasePlan.forceNote.trackingRef))}</p>}
+            {rebasePlan.movedBranches === null ? null : (
+              <>
+                <p id={ids.branches}>{TEXTS.movedBranches}</p>
+                <ul aria-labelledby={ids.branches} className="list-disc pl-6 font-mono">
+                  {rebasePlan.movedBranches.refs.map((ref) => (
+                    <li key={ref}>{shortRef(ref)}</li>
+                  ))}
+                </ul>
+                {rebasePlan.movedBranches.more === 0 ? null : <p>{TEXTS.moreBranches(rebasePlan.movedBranches.more)}</p>}
+              </>
+            )}
+          </div>
+        )}
+        {merge ? (
+          <>
+            <fieldset className="flex flex-col gap-1" aria-labelledby={ids.result}>
+              <legend id={ids.result} className="font-semibold">
+                {TEXTS.result}
+              </legend>
+              <Option type="radio" name={ids.result} label={TEXTS.mergeCommit} checked={!squash} onChange={() => setResult("merge")} />
+              <Option type="radio" name={ids.result} label={TEXTS.squash} note={TEXTS.squashNote} reason={squashBlocked} checked={squash} onChange={() => setResult("squash")} />
+            </fieldset>
+            <Option
+              type="checkbox"
+              label={TEXTS.noFf}
+              note={TEXTS.noFfNote}
+              reason={squash ? TEXTS.noFfSquash : locked ? TEXTS.noFfLocked : null}
+              checked={!squash && (noFf || locked)}
+              onChange={(event) => setNoFf(event.target.checked)}
+            />
+            <Option type="checkbox" label={TEXTS.noCommit} note={TEXTS.noCommitNote} reason={squash ? TEXTS.noCommitSquash : null} checked={!squash && noCommit} onChange={(event) => setNoCommit(event.target.checked)} />
+            {squash || text === null ? null : (
+              <div className="flex min-h-0 flex-col gap-1">
+                <label htmlFor={ids.message}>{TEXTS.message}</label>
+                <textarea
+                  id={ids.message}
+                  value={text}
+                  rows={4}
+                  spellCheck={false}
+                  aria-describedby={ids.bytes}
+                  aria-invalid={messageReason !== null}
+                  className="min-h-24 resize-y rounded-sm border border-control-border bg-surface p-2 font-mono"
+                  onChange={(event) => setMessage(event.target.value)}
+                />
+                <span id={ids.bytes} className="num text-muted-text">
+                  {TEXTS.messageBytes(messageBytes)}
+                </span>
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            <Option type="checkbox" label={TEXTS.autostash} note={rebasePlan === null ? TEXTS.autostashNote : `${TEXTS.autostashNote} ${TEXTS.autostashSource(rebasePlan.autostash.source as ConfigSource)}`} checked={effectiveAutostash} onChange={(event) => setAutostash(event.target.checked)} />
+            <Option type="checkbox" label={TEXTS.autosquash} note={TEXTS.autosquashNote} checked={autosquash} onChange={(event) => setAutosquash(event.target.checked)} />
+            <Option type="checkbox" label={TEXTS.interactive} reason={TEXTS.interactiveReason} checked={false} readOnly />
+          </>
+        )}
+        {failure === null ? null : (
+          <p role="alert" className="text-removed">
+            {failure}
+          </p>
+        )}
+      </div>
+    </DockedPanel>
+  );
+}

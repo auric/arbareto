@@ -280,6 +280,7 @@ No file decision gives a line refusal, so the `readComparison` `fileAction` neve
 - The review computes no nested active set (§12 "Plan"). So a nested scope row outside the active set gets `inactive` from the level read during the run.
 - A scope path that names no row fails with `UNKNOWN_TARGET`, unless a refusal on the way to it explains the missing row. No token goes out.
 - Host lines: the review result adds `hosts: [{path, fetch, settings}]` for each row whose fetch host differs from the host of its effective `submodule.<name>.url` (plan D13). The review token binds them.
+- A host is `{kind: "host", name}`, `{kind: "local"}`, or `{kind: "unknown"}`. The line shows `local` as "this computer" and `unknown` as "a host that Arbareto cannot name".
 - Host lines compare the raw `remote.<name>.url` values of the submodule listing with the raw effective `submodule.<name>.url`. No `url.<base>.insteadOf` rule applies. A local `insteadOf` entry of a submodule still enters the run confirmation (§12 "Trust").
 - A `reuse` row without a HEAD commit gives host lines too, because its clone step fetches in the kept Git directory (§12 "Plan").
 - `updateSubmodules` payload adds `confirmHosts?: true`. A review with host lines needs it. Without it, the update refuses with `STALE_REVIEW` reason `hosts`, and no process starts.

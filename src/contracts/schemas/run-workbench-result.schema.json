@@ -532,13 +532,160 @@
         "action": {
           "type": "string",
           "enum": [
+            "worktree-add",
+            "worktree-remove",
+            "worktree-prune"
+          ]
+        },
+        "head": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "branch"
+                },
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "state",
+                "target",
+                "oid"
+              ],
+              "additionalProperties": false,
+              "title": "BranchHead"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "detached"
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "state",
+                "oid"
+              ],
+              "additionalProperties": false,
+              "title": "DetachedHead"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "unborn"
+                },
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "state",
+                "target"
+              ],
+              "additionalProperties": false,
+              "title": "UnbornHead"
+            }
+          ],
+          "title": "Head"
+        },
+        "refs": {
+          "maxItems": 100000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ref": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$"
+              },
+              "oldObjectId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "newObjectId": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "ref",
+              "oldObjectId",
+              "newObjectId"
+            ],
+            "additionalProperties": false,
+            "title": "RefChange"
+          }
+        },
+        "worktrees": {
+          "maxItems": 1000,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000]*$"
+          }
+        },
+        "outputTail": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "action",
+        "head",
+        "refs",
+        "worktrees"
+      ],
+      "additionalProperties": false,
+      "title": "WorktreeRun"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
             "switch",
             "create-branch",
             "rename-branch",
             "delete-branch",
             "merge",
             "rebase",
-            "ignore"
+            "ignore",
+            "worktree-add",
+            "worktree-remove",
+            "worktree-prune"
           ]
         }
       },

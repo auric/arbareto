@@ -13,7 +13,7 @@ import type { Head } from "./snapshot";
 import { changes } from "./sync";
 import { observe } from "./sync-integrate";
 import { readOut, refKey } from "./sync-review";
-import { parseConfigListing, type ConfigEntry } from "./trust";
+import { parseConfigListing, type ConfigEntry, type TrustListing } from "./trust";
 import { branchNameCheckArgs, createArgs, createSwitchArgs, deleteRefArgs, headReflogArgs, headReflogExistsArgs, localConfigArgs, removeBranchSectionArgs, renameArgs, unmergedCountArgs } from "./workbench-commands";
 import { oidList } from "./workbench-parsers";
 import { heldElsewhere, killed, readWorktrees, refTarget, registerWorkbenchAction, revCount, unavailable, conclude, type Refused, type StepEnd, type WorkbenchRun } from "./workbench-review";
@@ -146,13 +146,41 @@ registerWorkbenchAction("rename-branch", {
 
 // ---- Delete ----
 
-interface DeleteBound {
+// Data-model §4 facts of one local branch. `section`: the local file holds a `branch.<name>` key.
+export interface DeleteFacts {
   oid: string;
   onlyHere: number;
   reflogKeeps: boolean;
-  worktrees: string;
   section: boolean;
 }
+
+// Plan.md D4 delete reads after the worktree check. Feature 004 plan.md D10 "Also delete the branch" reads them too.
+export async function deleteFacts(ctx: ObserveContext, ref: string, listing: Pick<TrustListing, "entries">): Promise<Fact<DeleteFacts> | Refused> {
+  const tip = await refTarget(ctx, ref);
+  if (!("value" in tip)) return tip;
+  const count = await revCount(ctx, unmergedCountArgs(tip.value, short(ref), ctx.workspace.objectFormat));
+  if (!("value" in count)) return count;
+  const keeps = await headReflogKeeps(ctx, tip.value);
+  if (!("value" in keeps)) return keeps;
+  // builtin/branch.c `delete_branch_config` removes the `branch.<name>` section. A key prints as section, subsection, and a variable without a dot.
+  const inSection = (e: ConfigEntry) => e.scope === "local" && e.key.slice(0, e.key.lastIndexOf(".")) === `branch.${short(ref)}`;
+  const listed = listing.entries.filter(inSection).length;
+  const own = listed === 0 ? { value: 0 } : await localSectionKeys(ctx, inSection);
+  if (!("value" in own)) return own;
+  // `config --local --remove-section` changes the local file alone. A key of an included file would stay, and Git exits 128 when the local file holds no key.
+  if (own.value < listed) return unavailable("config-in-include");
+  return { value: { oid: tip.value, onlyHere: count.value, reflogKeeps: keeps.value, section: own.value > 0 } };
+}
+
+// Contract Δ3 `delete-branch` steps. A nonzero `update-ref` exit runs no second step.
+export async function deleteSteps(r: WorkbenchRun, ref: string, b: Pick<DeleteFacts, "oid" | "section">): Promise<StepEnd[]> {
+  const name = short(ref);
+  const ends = [await r.step(deleteRefArgs(name, b.oid, r.ctx.workspace.objectFormat), "branch")];
+  if (ends[0]!.exit?.exitCode === 0 && b.section) ends.push(await r.step(removeBranchSectionArgs(name), "branch"));
+  return ends;
+}
+
+type DeleteBound = DeleteFacts & { worktrees: string };
 
 registerWorkbenchAction("delete-branch", {
   precheck: (p) => (isRefName(p.ref) ? null : { refused: "INVALID_REQUEST" }),
@@ -163,29 +191,14 @@ registerWorkbenchAction("delete-branch", {
     if (!("value" in worktrees)) return worktrees;
     const held = heldElsewhere(worktrees.value.records, p.ref, head);
     if (held !== null) return unavailable("other-worktree", { worktree: held.path });
-    const tip = await refTarget(ctx, p.ref);
-    if (!("value" in tip)) return tip;
-    const count = await revCount(ctx, unmergedCountArgs(tip.value, short(p.ref), ctx.workspace.objectFormat));
-    if (!("value" in count)) return count;
-    const keeps = await headReflogKeeps(ctx, tip.value);
-    if (!("value" in keeps)) return keeps;
-    // builtin/branch.c `delete_branch_config` removes the `branch.<name>` section. A key prints as section, subsection, and a variable without a dot.
-    const inSection = (e: ConfigEntry) => e.scope === "local" && e.key.slice(0, e.key.lastIndexOf(".")) === `branch.${short(p.ref)}`;
-    const listed = common.listing.entries.filter(inSection).length;
-    const own = listed === 0 ? { value: 0 } : await localSectionKeys(ctx, inSection);
-    if (!("value" in own)) return own;
-    // `config --local --remove-section` changes the local file alone. A key of an included file would stay, and Git exits 128 when the local file holds no key.
-    if (own.value < listed) return unavailable("config-in-include");
-    const section = own.value > 0;
-    const bound: DeleteBound = { oid: tip.value, onlyHere: count.value, reflogKeeps: keeps.value, worktrees: worktrees.value.digest, section };
-    return { bound, plan: { ref: p.ref, oid: tip.value, onlyHere: bound.onlyHere, reflogKeeps: bound.reflogKeeps, heldBy: null, current: false } };
+    const facts = await deleteFacts(ctx, p.ref, common.listing);
+    if (!("value" in facts)) return facts;
+    const bound: DeleteBound = { ...facts.value, worktrees: worktrees.value.digest };
+    return { bound, plan: { ref: p.ref, oid: bound.oid, onlyHere: bound.onlyHere, reflogKeeps: bound.reflogKeeps, heldBy: null, current: false } };
   },
   started: () => "delete-branch",
   async run(r, p, b: DeleteBound) {
-    const name = short(p.ref);
-    const ends = [await r.step(deleteRefArgs(name, b.oid, r.ctx.workspace.objectFormat), "branch")];
-    // A nonzero `update-ref` exit runs no second step (contract Δ3).
-    if (ends[0]!.exit?.exitCode === 0 && b.section) ends.push(await r.step(removeBranchSectionArgs(name), "branch"));
+    const ends = await deleteSteps(r, p.ref, b);
     const refs = new Map(r.before.refs);
     refs.delete(refKey(p.ref));
     await settle(r, "delete-branch", ends, { refs, head: r.common.head });

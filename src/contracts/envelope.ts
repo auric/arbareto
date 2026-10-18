@@ -44,6 +44,7 @@ import {
   SYNC_LEASE_COMMITS,
   SYNC_REFS_RECORDS,
   SYNC_REMOTES,
+  WORKTREE_RECORDS,
 } from "./limits";
 import {
   ChannelPath,
@@ -1358,6 +1359,31 @@ const IgnorePlan = z
     expected: z.union([z.literal("absent"), z.strictObject({ size: Count, sha256: Fingerprint }).meta({ title: "IgnoreExpected" })]),
   })
   .meta({ title: "IgnorePlan" });
+// Plan.md D10. `path` is the bound path in Git's form for the route (contract Δ6).
+const WorktreeAddPlan = z
+  .strictObject({
+    branch: z.union([z.strictObject({ new: Text.min(1), start: ObjectId }).meta({ title: "WorktreeAddNew" }), z.strictObject({ existing: FullRef, oid: ObjectId }).meta({ title: "WorktreeAddExisting" })]),
+    path: Text.min(1),
+    destination: z.enum(["absent", "empty"]),
+  })
+  .meta({ title: "WorktreeAddPlan" });
+// Spec FR-055 and FR-056: the counts of that worktree, and the data-model §4 facts of its branch for "Also delete the branch".
+const WorktreeRemovePlan = z
+  .strictObject({
+    worktree: Text.min(1),
+    branch: FullRef.nullable(),
+    head: ObjectId.nullable(),
+    tracked: Count,
+    untracked: Count,
+    force: z.boolean(),
+    deleteBranch: z.strictObject({ ref: FullRef, oid: ObjectId, onlyHere: Count, reflogKeeps: z.boolean() }).meta({ title: "WorktreeBranchDelete" }).nullable(),
+  })
+  .refine((p) => (p.deleteBranch === null || p.deleteBranch.ref === p.branch) && (!p.force || p.tracked + p.untracked > 0))
+  .meta({ title: "WorktreeRemovePlan" });
+// Spec FR-057. `reason` is Git's untrusted text.
+const WorktreePrunePlan = z
+  .strictObject({ prunable: z.array(z.strictObject({ path: Text.min(1), reason: z.string().nullable() }).meta({ title: "PrunableWorktree" })).min(1).max(WORKTREE_RECORDS) })
+  .meta({ title: "WorktreePrunePlan" });
 const reviewed = <A extends string, P extends z.ZodType>(action: A, plan: P, title: string) => z.strictObject({ action: z.literal(action), plan, workbenchToken: Identifier }).meta({ title });
 // Contract Δ3 "Result": `{action, plan, workbenchToken}`, or a refusal value: the Δ9 reason with its facts, the in-the-way paths, or the CONFLICTED count.
 // A `merge` or `rebase` refusal after the counts carries the plan (contract Δ3).
@@ -1371,14 +1397,18 @@ export const ReviewWorkbenchResult = z
       reviewed("merge", MergePlan, "MergeReviewed"),
       reviewed("rebase", RebasePlan, "RebaseReviewed"),
       reviewed("ignore", IgnorePlan, "IgnoreReviewed"),
+      reviewed("worktree-add", WorktreeAddPlan, "WorktreeAddReviewed"),
+      reviewed("worktree-remove", WorktreeRemovePlan, "WorktreeRemoveReviewed"),
+      reviewed("worktree-prune", WorktreePrunePlan, "WorktreePruneReviewed"),
     ]),
     z
       .strictObject({
-        reason: z.enum([...WORKBENCH_UNAVAILABLE_REASONS, ...UNTRACKED_IN_WAY_REASONS]).optional(),
+        reason: z.enum([...WORKBENCH_UNAVAILABLE_REASONS, ...UNTRACKED_IN_WAY_REASONS, ...DESTINATION_NOT_EMPTY_REASONS]).optional(),
         worktree: Text.min(1).optional(),
         ref: FullRef.optional(),
         remotes: z.array(RemoteName).min(2).max(SYNC_REMOTES).optional(),
-        plan: z.union([MergePlan, RebasePlan]).optional(),
+        // A `dirty-tree` refusal of `worktree-remove` carries the counts (spec FR-055).
+        plan: z.union([MergePlan, RebasePlan, WorktreeRemovePlan]).optional(),
         paths: z.array(Text.min(1)).min(1).max(IN_THE_WAY_PATHS).optional(),
         more: Count.optional(),
         unmerged: Count.optional(),
@@ -1432,7 +1462,8 @@ const RefChanges = z.array(RefChange).max(SYNC_REFS_RECORDS);
 // Data-model §3 `stash.state`: `dropped`, or `kept-` with the contract Δ9 STASH_KEPT reason.
 const STASH_STATES = ["dropped", ...STASH_KEPT_REASONS.map((reason) => `kept-${reason}` as const)] as const;
 const BRANCH_ACTIONS = ["create-branch", "rename-branch", "delete-branch"] as const;
-const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", "ignore"] as const;
+const WORKTREE_ACTIONS = ["worktree-add", "worktree-remove", "worktree-prune"] as const;
+const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", "ignore", ...WORKTREE_ACTIONS] as const;
 // Contract Δ3 `runWorkbench` "Results": the observed effects. A failed step adds its `outputTail`. An unknown outcome names the action only.
 // A refusal before any step can carry the CONFLICTED count. A repeated request gets the `getOperation` result of its operation (contract §2).
 export const RunWorkbenchResult = z
@@ -1461,6 +1492,8 @@ export const RunWorkbenchResult = z
       })
       .meta({ title: "MergeRebaseRun" }),
     z.strictObject({ action: z.literal("ignore"), reason: z.literal("ignore-not-regular").optional() }).meta({ title: "IgnoreRun" }),
+    // `worktrees`: the record paths of the fresh list after the steps.
+    z.strictObject({ action: z.enum(WORKTREE_ACTIONS), head: Head, refs: RefChanges, worktrees: z.array(Text.min(1)).max(WORKTREE_RECORDS), outputTail: OutputTail.optional() }).meta({ title: "WorktreeRun" }),
     z.strictObject({ action: z.enum(RUN_ACTIONS) }).meta({ title: "WorkbenchUnread" }),
     z.strictObject({ unmerged: Count }).meta({ title: "WorkbenchConflicted" }),
     OperationResult.meta({ title: "WorkbenchRepeat" }),

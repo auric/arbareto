@@ -710,6 +710,268 @@
           ],
           "additionalProperties": false,
           "title": "IgnoreReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "worktree-add"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "branch": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "new": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        "start": {
+                          "type": "string",
+                          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                        }
+                      },
+                      "required": [
+                        "new",
+                        "start"
+                      ],
+                      "additionalProperties": false,
+                      "title": "WorktreeAddNew"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "existing": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        "oid": {
+                          "type": "string",
+                          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                        }
+                      },
+                      "required": [
+                        "existing",
+                        "oid"
+                      ],
+                      "additionalProperties": false,
+                      "title": "WorktreeAddExisting"
+                    }
+                  ]
+                },
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "destination": {
+                  "type": "string",
+                  "enum": [
+                    "absent",
+                    "empty"
+                  ]
+                }
+              },
+              "required": [
+                "branch",
+                "path",
+                "destination"
+              ],
+              "additionalProperties": false,
+              "title": "WorktreeAddPlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "WorktreeAddReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "worktree-remove"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "worktree": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "branch": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "head": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "tracked": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "untracked": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "force": {
+                  "type": "boolean"
+                },
+                "deleteBranch": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ref": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        "oid": {
+                          "type": "string",
+                          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                        },
+                        "onlyHere": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "reflogKeeps": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "ref",
+                        "oid",
+                        "onlyHere",
+                        "reflogKeeps"
+                      ],
+                      "additionalProperties": false,
+                      "title": "WorktreeBranchDelete"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "worktree",
+                "branch",
+                "head",
+                "tracked",
+                "untracked",
+                "force",
+                "deleteBranch"
+              ],
+              "additionalProperties": false,
+              "title": "WorktreeRemovePlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "WorktreeRemoveReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "worktree-prune"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "prunable": {
+                  "minItems": 1,
+                  "maxItems": 1000,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "path": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000]*$"
+                      },
+                      "reason": {
+                        "type": [
+                          "string",
+                          "null"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "path",
+                      "reason"
+                    ],
+                    "additionalProperties": false,
+                    "title": "PrunableWorktree"
+                  }
+                }
+              },
+              "required": [
+                "prunable"
+              ],
+              "additionalProperties": false,
+              "title": "WorktreePrunePlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "WorktreePruneReviewed"
         }
       ]
     },
@@ -756,7 +1018,10 @@
             "unknown-operation",
             "apply-backend",
             "config-in-include",
-            "untracked-in-way"
+            "untracked-in-way",
+            "not-empty",
+            "file",
+            "other"
           ]
         },
         "worktree": {
@@ -1076,6 +1341,100 @@
               ],
               "additionalProperties": false,
               "title": "RebasePlan"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "worktree": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "branch": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "head": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "tracked": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "untracked": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "force": {
+                  "type": "boolean"
+                },
+                "deleteBranch": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "ref": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        "oid": {
+                          "type": "string",
+                          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                        },
+                        "onlyHere": {
+                          "type": "integer",
+                          "minimum": 0,
+                          "maximum": 9007199254740991
+                        },
+                        "reflogKeeps": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "ref",
+                        "oid",
+                        "onlyHere",
+                        "reflogKeeps"
+                      ],
+                      "additionalProperties": false,
+                      "title": "WorktreeBranchDelete"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "worktree",
+                "branch",
+                "head",
+                "tracked",
+                "untracked",
+                "force",
+                "deleteBranch"
+              ],
+              "additionalProperties": false,
+              "title": "WorktreeRemovePlan"
             }
           ]
         },

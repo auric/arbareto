@@ -10,6 +10,7 @@ import { codeText } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { DockedPanel } from "../components/docked-panel";
 import { isObject } from "../lib/utils";
+import { shortRef } from "../refs/ReferencesSidebar";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { TEXTS, type ConfigSource } from "./texts";
 
@@ -36,10 +37,11 @@ export type IntegratePanelProps = {
   onOperation(op: StatusOperation): void;
   /** The store's `ended("runWorkbench", response)`. */
   onEnded(response: BridgeResponse): void;
+  /** The control that opened the panel. Close returns the focus to it. */
+  opener?: Element | null;
   onClose(): void;
 };
 
-const shortRef = (ref: string) => ref.replace(/^refs\/(heads|remotes)\//, "");
 const utf8Bytes = (text: string) => new TextEncoder().encode(text).length;
 
 function reviewOf(response: BridgeResponse): Review {
@@ -49,6 +51,10 @@ function reviewOf(response: BridgeResponse): Review {
   const unmerged = typeof result.unmerged === "number" ? result.unmerged : null;
   return { response, token, plan, reason: typeof result.reason === "string" ? result.reason : null, code: token === null ? (response.code ?? response.state) : null, unmerged };
 }
+
+/** The plan facts that the panel states (plan D5, D6). The options that the plan echoes are left out. */
+const factsOf = (plan: MergePlan | RebasePlan | null) =>
+  plan === null ? null : JSON.stringify("facts" in plan ? [plan.facts, plan.preview] : [plan.moved, plan.rewritten, plan.held, plan.forceNote, plan.movedBranches, plan.autostash]);
 
 /** The D15 text of a refused review. `source` is the short name of the source or onto branch. Unmapped codes and reasons show the code. */
 function refusalText(review: Review, action: "Merge" | "Rebase", current: string, source: string, plan: MergePlan | RebasePlan | null): string {
@@ -108,7 +114,7 @@ function Option({ label, note, reason, ...input }: { label: string; note?: strin
 
 /** The docked Merge or Rebase panel. A stop with conflicts closes it, and the 003 conflict row takes over (FR-023, FR-027). */
 export function IntegratePanel(props: IntegratePanelProps) {
-  const { request, current, bridge, target, blockedReason, operationRunning, onOperation, onEnded, onClose } = props;
+  const { request, current, bridge, target, blockedReason, operationRunning, onOperation, onEnded, opener, onClose } = props;
   const merge = request.action === "merge";
   const action = merge ? "Merge" : "Rebase";
   // Merge options.
@@ -121,7 +127,6 @@ export function IntegratePanel(props: IntegratePanelProps) {
   const [autosquash, setAutosquash] = useState(false);
   const [running, setRunning] = useState(false);
   const [failure, setFailure] = useState<ReactNode>(null);
-  const [opener] = useState(() => (typeof document === "undefined" ? null : (document.activeElement as HTMLElement | null)));
   const body = useRef<HTMLDivElement>(null);
   // The plan of the newest review. A refusal before the counts holds no plan, so the panel then states no facts.
   const [review, setReview] = useState<Keyed | null>(null);
@@ -169,6 +174,12 @@ export function IntegratePanel(props: IntegratePanelProps) {
       setFailure(refusalText(again, action, current, request.name, again.plan ?? shownPlan));
       return;
     }
+    // The run needs the facts that the panel showed. Other facts show first, and the next run reviews again.
+    if (factsOf(again.plan) !== factsOf(shown?.plan ?? null)) {
+      setRunning(false);
+      setReview({ key, value: again });
+      return;
+    }
     const token = again.token;
     const texts = merge ? TEXTS.runMerge : TEXTS.runRebase;
     const response = await trackOperation("runWorkbench", undefined, (onProgress) => bridge.runWorkbench({ repositoryId: target.repositoryId }, { workbenchToken: token, start: true }, onProgress), (op) => onOperation({ ...op, texts }));
@@ -176,10 +187,8 @@ export function IntegratePanel(props: IntegratePanelProps) {
     setRunning(false);
     const state = isObject(response.result) ? response.result.operationState : undefined;
     // A success, or a stop that leaves the merge or rebase in progress for the 003 conflict row.
-    if (response.state === "succeeded" || response.state === "completed-with-effects" || state === "merging" || state === "rebasing") {
-      onClose();
-      if (opener?.isConnected) opener.focus();
-    } else setFailure(codeText(TEXTS.failed(action), response.code ?? response.state));
+    if (response.state === "succeeded" || response.state === "completed-with-effects" || state === "merging" || state === "rebasing") onClose();
+    else setFailure(codeText(TEXTS.failed(action), response.code ?? response.state));
   }
 
   const ids = { result: useId(), message: useId(), bytes: useId(), branches: useId() };
@@ -188,6 +197,7 @@ export function IntegratePanel(props: IntegratePanelProps) {
       title={merge ? TEXTS.mergeTitle(request.name, current) : TEXTS.rebaseTitle(current, request.name)}
       closeLabel={merge ? TEXTS.closeMerge : TEXTS.closeRebase}
       primary={{ label: action, reason, quiet: running || operationRunning, onRun: () => void run() }}
+      opener={opener}
       onClose={onClose}
     >
       <div ref={body} data-slot="integrate-panel" className="flex flex-col gap-2">

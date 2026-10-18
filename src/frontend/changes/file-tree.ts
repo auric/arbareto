@@ -8,10 +8,12 @@ import { MULTI_FILE_ACTION_FILES } from "../../contracts/limits";
 // The tree splits the path bytes at `/` (0x2F). UTF-8 never holds 0x2F inside a multi-byte sequence, so each folder prefix is exact.
 
 export type Layout = "tree" | "flat";
-export type FileRow = { kind: "file"; key: string; depth: number; entry: ChangeEntry };
+/** `pos` and `size` are the 1-based position and the set size of the row among its siblings (WAI-ARIA `aria-posinset`, `aria-setsize`). */
+type Place = { pos: number; size: number };
+export type FileRow = { kind: "file"; key: string; depth: number; entry: ChangeEntry } & Place;
 /** `folder` holds the folder path bytes in base64, as `applyFiles` and the ignore review take them. */
-export type FolderRow = { kind: "folder"; key: string; depth: number; name: string; path: string; folder: string; count: number; expanded: boolean; untracked: boolean };
-export type SectionRow = { kind: "section"; key: "untracked"; depth: 0; count: number; expanded: boolean };
+export type FolderRow = { kind: "folder"; key: string; depth: number; name: string; path: string; folder: string; count: number; expanded: boolean; untracked: boolean } & Place;
+export type SectionRow = { kind: "section"; key: "untracked"; depth: 0; count: number; expanded: boolean } & Place;
 export type TreeRow = FileRow | FolderRow | SectionRow;
 export type FilesKind = "selected" | "folder" | "all-untracked" | "all-changes" | "all-staged";
 export type FilesRequest = { direction: "stage" | "unstage"; kind: FilesKind; entryIds: string[]; folder?: string };
@@ -25,8 +27,8 @@ const display = (binary: string) => utf8.decode(Uint8Array.from(binary, (c) => c
 type Folder = { name: string; children: Map<string, Folder | ChangeEntry>; count: number };
 const isFolder = (node: Folder | ChangeEntry): node is Folder => "children" in node;
 
-/** One tree of `entries` in service order. A folder with one folder child joins it, as "docs/drafts". */
-function treeRows(entries: readonly ChangeEntry[], scope: string, depth: number, toggled: ReadonlySet<string>, untracked: boolean, out: TreeRow[]) {
+/** One tree of `entries` in service order. A folder with one folder child joins it, as "docs/drafts". `extra` siblings follow the top level. It returns the top-level count. */
+function treeRows(entries: readonly ChangeEntry[], scope: string, depth: number, toggled: ReadonlySet<string>, untracked: boolean, out: TreeRow[], extra: number): number {
   const root: Folder = { name: "", children: new Map(), count: 0 };
   for (const entry of entries) {
     const parts = bytesOf(entry).split(SLASH);
@@ -41,10 +43,12 @@ function treeRows(entries: readonly ChangeEntry[], scope: string, depth: number,
     node.children.set(`f${entry.entryId}`, entry);
   }
   // Untracked folders start collapsed, so 100,000 files below them make no rows (spec FR-030, FR-086).
-  const walk = (folder: Folder, prefix: string, level: number) => {
+  const walk = (folder: Folder, prefix: string, level: number, size: number) => {
+    let pos = 0;
     for (const child of folder.children.values()) {
+      pos++;
       if (!isFolder(child)) {
-        out.push({ kind: "file", key: child.entryId, depth: level, entry: child });
+        out.push({ kind: "file", key: child.entryId, depth: level, entry: child, pos, size });
         continue;
       }
       let node = child;
@@ -59,16 +63,18 @@ function treeRows(entries: readonly ChangeEntry[], scope: string, depth: number,
       const folder = btoa(path);
       const key = `${scope}:${folder}`;
       const expanded = untracked === toggled.has(key);
-      out.push({ kind: "folder", key, depth: level, name: display(name), path: display(path), folder, count: node.count, expanded, untracked });
-      if (expanded) walk(node, path + SLASH, level + 1);
+      out.push({ kind: "folder", key, depth: level, name: display(name), path: display(path), folder, count: node.count, expanded, untracked, pos, size });
+      if (expanded) walk(node, path + SLASH, level + 1, node.children.size);
     }
   };
-  walk(root, "", depth);
+  walk(root, "", depth, root.children.size + extra);
+  return root.children.size;
 }
 
-function listRows(entries: readonly ChangeEntry[], layout: Layout, scope: string, depth: number, toggled: ReadonlySet<string>, untracked: boolean, out: TreeRow[]) {
-  if (layout === "tree") return treeRows(entries, scope, depth, toggled, untracked, out);
-  for (const entry of entries) out.push({ kind: "file", key: entry.entryId, depth, entry });
+function listRows(entries: readonly ChangeEntry[], layout: Layout, scope: string, depth: number, toggled: ReadonlySet<string>, untracked: boolean, out: TreeRow[], extra = 0): number {
+  if (layout === "tree") return treeRows(entries, scope, depth, toggled, untracked, out, extra);
+  entries.forEach((entry, i) => out.push({ kind: "file", key: entry.entryId, depth, entry, pos: i + 1, size: entries.length + extra }));
+  return entries.length;
 }
 
 /**
@@ -83,9 +89,10 @@ export function changesRows(entries: readonly ChangeEntry[], layout: Layout, tog
     else if (e.category === "untracked") untracked++;
   }
   const out: TreeRow[] = [];
-  listRows(tracked, layout, "t", 0, toggled, false, out);
+  // The Untracked section row is the last sibling of the tracked top level.
+  const top = listRows(tracked, layout, "t", 0, toggled, false, out, untracked === 0 ? 0 : 1);
   if (untracked === 0) return out;
-  out.push({ kind: "section", key: "untracked", depth: 0, count: untracked, expanded: untrackedOpen });
+  out.push({ kind: "section", key: "untracked", depth: 0, count: untracked, expanded: untrackedOpen, pos: top + 1, size: top + 1 });
   if (untrackedOpen) listRows(entries.filter((e) => e.category === "untracked"), layout, "u", 1, toggled, true, out);
   return out;
 }

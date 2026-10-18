@@ -156,6 +156,8 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
         aria-expanded="true"
         aria-controls={ids.list}
         aria-autocomplete="list"
+        spellCheck={false}
+        autoComplete="off"
         aria-activedescendant={count === 0 ? undefined : optionId(active)}
         className="h-(--h-button) shrink-0 rounded-sm border border-control-border bg-surface px-2"
         value={query}

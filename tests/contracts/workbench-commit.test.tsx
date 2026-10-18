@@ -8,7 +8,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
 import { stubLayout } from "./history-fake";
-import { button, buttons, click, createWorld, itemLabel, mountWorkbench, press, settle, snapshot as snapshotOf, succeeded, text, unmountAll, type World } from "./sync-fake";
+import { answer, button, buttons, click, createWorld, itemLabel, keyboardFocus, mountWorkbench, press, settle, snapshot as snapshotOf, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
 
 // tasks.md T042 (feature 004, WP14). Story US4 and the FR-098 box of US11. Spec FR-029 to FR-048, FR-086, FR-098, SC-006, SC-014.
 // Plan D8, D9, D15 ("Commit view layout", "Virtual tree", "Limited status", "Multi-select", "Line selection", "Row and hunk buttons", "Ignore items", "Message editor"), D16, and O-11.
@@ -50,7 +50,7 @@ const workbench = await import("../../src/frontend/app/Workbench");
 const { ChangesPane, HELP_LINE } = await import("../../src/frontend/changes/ChangesPane");
 const { changesRows, countsText, derivedRequest, stagedRows } = await import("../../src/frontend/changes/file-tree");
 const { patchRows, pickLines, stepRange } = await import("../../src/frontend/changes/hunk-mapping");
-const { LINE_TEXT } = await import("../../src/frontend/changes/HunkControls");
+const { LINE_TEXT, STALE_TEXT } = await import("../../src/frontend/changes/HunkControls");
 const { CommitTray } = await import("../../src/frontend/commit/CommitTray");
 const { guideStyle } = await import("../../src/frontend/commit/MessageGuide");
 const { createDrafts } = await import("../../src/frontend/state/drafts");
@@ -344,11 +344,11 @@ describe("multi-select and multi-file actions (FR-034 to FR-036, FR-038 to FR-04
     const double = await openCommitView(world);
     await click(button("Stage all changes"));
     expect(double.pending("applyFiles")!.args[1]).toMatchObject({ kind: "all-changes", direction: "stage", entryIds: [...tracked, ...untracked].map((e) => e.entryId) });
-    await act(async () => double.pending("applyFiles")!.resolve({ requestId: "r", state: "failed", code: "CANCELED" }));
+    await act(async () => double.pending("applyFiles")!.resolve({ requestId: fixtureId(0x5ff), state: "failed", code: "CANCELED" }));
     await settle();
     await click(button("Stage all untracked"));
     expect(double.pending("applyFiles")!.args[1]).toMatchObject({ kind: "all-untracked", direction: "stage", entryIds: untracked.map((e) => e.entryId) });
-    await act(async () => double.pending("applyFiles")!.resolve({ requestId: "r", state: "failed", code: "CANCELED" }));
+    await act(async () => double.pending("applyFiles")!.resolve({ requestId: fixtureId(0x5ff), state: "failed", code: "CANCELED" }));
     await settle();
     await click(button("Unstage all"));
     expect(double.pending("applyFiles")!.args[1]).toMatchObject({ kind: "all-staged", direction: "unstage", entryIds: staged.map((e) => e.entryId) });
@@ -361,7 +361,7 @@ describe("multi-select and multi-file actions (FR-034 to FR-036, FR-038 to FR-04
     await click(menuItem("Stage folder"));
     const src = all.filter((e) => e.category !== "staged" && e.path.startsWith("src/"));
     expect(double.pending("applyFiles")!.args[1]).toEqual({ snapshotId: expect.any(String), entryIds: src.map((e) => e.entryId), direction: "stage", kind: "folder", folder: b64("src") });
-    await act(async () => double.pending("applyFiles")!.resolve({ requestId: "r", state: "failed", code: "CANCELED" }));
+    await act(async () => double.pending("applyFiles")!.resolve({ requestId: fixtureId(0x5ff), state: "failed", code: "CANCELED" }));
     await settle();
     await click(button("Unstage folder src/api", item("Staged", "src/api")));
     expect(double.pending("applyFiles")!.args[1]).toMatchObject({ kind: "folder", direction: "unstage", folder: b64("src/api"), entryIds: all.filter((e) => e.category === "staged" && e.path.startsWith("src/api/")).map((e) => e.entryId) });
@@ -382,11 +382,11 @@ describe("multi-select and multi-file actions (FR-034 to FR-036, FR-038 to FR-04
     const files = ["a.ts", "b.ts"].map((p) => entry("unstaged", p, ".M"));
     const double = await openCommitView(createWorld({ entries: files }));
     await click(button("Stage all changes"));
-    await act(async () => double.pending("applyFiles")!.resolve({ requestId: "r", state: "rejected", code: "UNSUPPORTED_COMPARISON", result: { reason: "symlink", entryId: files[1]!.entryId } }));
+    await act(async () => double.pending("applyFiles")!.resolve({ requestId: fixtureId(0x5ff), state: "rejected", code: "UNSUPPORTED_COMPARISON", result: { reason: "symlink", entryId: files[1]!.entryId } }));
     await settle();
     expect(text(document.querySelector("footer")!)).toContain("Stage files did not start: b.ts. This entry is a symbolic link.");
     await click(button("Stage all changes"));
-    await act(async () => double.pending("applyFiles")!.resolve({ requestId: "r", state: "rejected", code: "WORKBENCH_UNAVAILABLE", result: { reason: "limit" } }));
+    await act(async () => double.pending("applyFiles")!.resolve({ requestId: fixtureId(0x5ff), state: "rejected", code: "WORKBENCH_UNAVAILABLE", result: { reason: "limit" } }));
     await settle();
     expect(text(document.querySelector("footer")!)).toContain("Stage files did not start: One action covers at most 10,000 files and 512 MiB of working files.");
   });
@@ -397,8 +397,8 @@ describe("multi-select and multi-file actions (FR-034 to FR-036, FR-038 to FR-04
     await click(button("Stage all changes"));
     const call = double.pending("applyFiles")!;
     const onProgress = call.args[2] as (event: unknown) => void;
-    await act(async () => onProgress({ requestId: "r", operationId: fixtureId(0x500), state: "accepted", counters: {} }));
-    await act(async () => onProgress({ requestId: "r", operationId: fixtureId(0x500), state: "running", phase: "stage-files", counters: { fileIndex: 3, fileCount: 10 }, stalled: false }));
+    await act(async () => onProgress({ requestId: fixtureId(0x5ff), operationId: fixtureId(0x500), state: "accepted", counters: {} }));
+    await act(async () => onProgress({ requestId: fixtureId(0x5ff), operationId: fixtureId(0x500), state: "running", phase: "stage-files", counters: { fileIndex: 3, fileCount: 10 }, stalled: false }));
     await settle();
     const footer = document.querySelector("footer")!;
     expect(text(footer)).toContain("Staging files (3 of 10)…");
@@ -490,7 +490,7 @@ describe("Untracked menu and ignore items (FR-045, FR-046, plan D9)", () => {
       await click(item("Changes", "Untracked"));
       await contextMenu(item("Changes", "notes.txt"));
       await click(menuItem("Add to .gitignore"));
-      await act(async () => double.pending("reviewWorkbench")!.resolve({ requestId: "r", state: "rejected", code: "WORKBENCH_UNAVAILABLE", result: { reason } }));
+      await act(async () => double.pending("reviewWorkbench")!.resolve({ requestId: fixtureId(0x5ff), state: "rejected", code: "WORKBENCH_UNAVAILABLE", result: { reason } }));
       await settle();
       expect(text(document.querySelector("footer")!)).toContain(expected);
       expect(document.querySelector('[data-slot="popover-content"]')).toBeNull();
@@ -638,9 +638,59 @@ describe("line selection (FR-041 to FR-044, contract Δ4)", () => {
     expect(double.count("applyHunk")).toBe(0);
   });
 
-  test("the selected lines take the 3 px Accent bar on the left", async () => {
-    const source = await Bun.file(Bun.resolveSync("../../src/frontend/changes/PatchView.tsx", import.meta.dir)).text();
-    expect(source).toContain("[data-selected-line]{background:none;box-shadow:inset 3px 0 0 var(--accent-role)}");
+  test("S, U, and Shift+Down on a hunk toolbar button do nothing: the keys act only in the diff body (FR-087)", async () => {
+    const { double } = await shownDiff();
+    await act(async () => pierre.onLines!({ start: 2, side: "deletions", end: 3, endSide: "additions" }));
+    await settle();
+    const toolbar = commitView()!.querySelector<HTMLElement>('[role="toolbar"][aria-label="Hunk controls"]')!;
+    const lines = button("Stage 3 lines (S)", toolbar);
+    await act(async () => lines.focus());
+    await press(lines, "s");
+    expect(double.count("applyHunk")).toBe(0);
+    await press(lines, "ArrowDown", { shiftKey: true });
+    expect(pierre.lines).toEqual({ start: 2, side: "deletions", end: 3, endSide: "additions" });
+    await press(button("Previous hunk", toolbar), "s");
+    expect(double.count("applyHunk")).toBe(0);
+  });
+
+  test("a point that names no row gives no line pick: the line action states the mapping failure and sends nothing (contract §4)", async () => {
+    expect(pickLines(rows, { start: 99, side: "additions", end: 2 }, "stage")).toBeNull();
+    const { double } = await shownDiff();
+    await act(async () => pierre.onLines!({ start: 99, side: "additions", end: 99 }));
+    await settle();
+    const action = commitView()!.querySelector<HTMLElement>('[data-slot="line-action"]')!;
+    expect(action.getAttribute("aria-disabled")).toBe("true");
+    expect(describedBy(action)).toContain("DISPLAY_MAPPING_FAILED");
+    expect(describedBy(action)).not.toContain(LINE_TEXT["context-only"].slice(0, -1));
+    await press(diffBody(), "s");
+    await click(action);
+    expect(double.count("applyHunk")).toBe(0);
+  });
+
+  test("while an operation runs, the hunk and line buttons give the running reason only in the tooltip and the description (D15)", async () => {
+    const { double } = await shownDiff();
+    await act(async () => pierre.onLines!({ start: 2, side: "deletions", end: 3, endSide: "additions" }));
+    await settle();
+    await click(button("Stage all changes"));
+    const call = double.pending("applyFiles")!;
+    await act(async () => (call.args[2] as (event: unknown) => void)({ requestId: fixtureId(0x5ff), operationId: fixtureId(0x501), state: "accepted", counters: {} }));
+    await settle();
+    const pane = commitView()!.querySelector<HTMLElement>('[data-section="comparison"]')!;
+    for (const name of ["Stage selected hunk", "Stage 3 lines (S)"]) expect(describedBy(button(name, pane))).toContain(RUNNING_REASON.slice(0, -1));
+    expect(describedBy(button("Stage hunk", pane.querySelector('[data-hunk="0"]')!))).toBe(RUNNING_REASON);
+    const stated = [...pane.querySelectorAll("*")].filter((e) => e.childElementCount === 0 && (e.textContent ?? "").includes(RUNNING_REASON.slice(0, -1)));
+    expect(stated.length).toBeGreaterThan(0);
+    expect(stated.every((e) => e.closest("[hidden]") !== null)).toBe(true);
+    await keyboardFocus(button("Stage hunk", pane.querySelector('[data-hunk="0"]')!));
+    expect(tooltipText()).toBe(RUNNING_REASON);
+  });
+
+  test("a STALE_SELECTION from a hunk's own Stage hunk button shows the stale text", async () => {
+    const { double } = await shownDiff();
+    const pane = commitView()!.querySelector('[data-section="comparison"]')!;
+    await click(button("Stage hunk", pane.querySelector('[data-hunk="1"]')!));
+    await answer(double.pending("applyHunk"), { requestId: fixtureId(0x5ff), state: "rejected", code: "STALE_SELECTION" });
+    expect(text(commitView()!)).toContain(STALE_TEXT.slice(0, -1));
   });
 });
 
@@ -778,6 +828,12 @@ describe("Working directory row (plan D15, O-11)", () => {
     expect(commitView()).not.toBeNull();
   });
 
+  test("the summary counts have thousands separators", async () => {
+    const { WorkingSummary } = await import("../../src/frontend/commit/WorkingSummary");
+    const host = await render(<WorkingSummary working={12_345} staged={1_200} onOpen={() => {}} />);
+    expect(text(host)).toContain("12,345 working changes, 1,200 staged");
+  });
+
   test("a double-click on the row opens the Commit view", async () => {
     await mountWorkbench(workbench, createWorld({ entries: board().all }));
     await act(async () => void working().dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
@@ -819,6 +875,60 @@ describe("virtual list (FR-086, SC-007 component check)", () => {
     } finally {
       restore();
     }
+  });
+
+  test("a virtual row in the middle of 10,000 rows reports its true position and set size", async () => {
+    const restore = sizeTrees(400);
+    try {
+      const entries = Array.from({ length: 10_000 }, (_, i) => entry("unstaged", `f${String(i).padStart(5, "0")}.ts`, ".M"));
+      const host = await render(<ChangesPane entries={entries} selection={null} onSelect={() => {}} onFileAction={() => new Promise(() => {})} layout="flat" />);
+      const changes = host.querySelector<HTMLElement>('[data-file-tree="changes"]')!;
+      await act(async () => {
+        changes.scrollTop = 26 * 5000;
+        changes.dispatchEvent(new Event("scroll"));
+      });
+      await settle();
+      const middle = changes.querySelector('[aria-label="f05000.ts"]')!;
+      expect([middle.getAttribute("aria-posinset"), middle.getAttribute("aria-setsize")]).toEqual(["5001", "10000"]);
+    } finally {
+      restore();
+    }
+  });
+
+  test("tree rows report the position and the set size of their level", async () => {
+    await openCommitView(createWorld({ entries: board().all }));
+    const at = (label: string) => [item("Changes", label).getAttribute("aria-posinset"), item("Changes", label).getAttribute("aria-setsize")];
+    // Level 1 holds README.md, src, and the Untracked section row.
+    expect(at("README.md")).toEqual(["1", "3"]);
+    expect(at("src")).toEqual(["2", "3"]);
+    expect(at("Untracked")).toEqual(["3", "3"]);
+    expect(at("src/auth")).toEqual(["1", "2"]);
+    expect(at("src/auth/session.ts")).toEqual(["2", "2"]);
+    await click(item("Changes", "Untracked"));
+    // The untracked level: docs/drafts, logs, notes.txt, and src.
+    expect(at("notes.txt")).toEqual(["3", "4"]);
+    const staged = item("Staged", "CHANGELOG.md");
+    expect([staged.getAttribute("aria-posinset"), staged.getAttribute("aria-setsize")]).toEqual(["1", "2"]);
+  });
+
+  test("stage-files progress events re-render no visible file row", async () => {
+    let reads = 0;
+    // Only the file row reads `xy` (its status letter), so each read is one row render.
+    const counted = (path: string) => Object.defineProperty(entry("unstaged", path), "xy", { enumerable: true, get: () => (reads++, ".M") }) as ChangeEntry;
+    const files = ["a.ts", "b.ts", "c.ts"].map(counted);
+    const double = await openCommitView(createWorld({ entries: files }));
+    expect(reads).toBeGreaterThan(0);
+    await click(button("Stage all changes"));
+    const onProgress = double.pending("applyFiles")!.args[2] as (event: unknown) => void;
+    await act(async () => onProgress({ requestId: fixtureId(0x5ff), operationId: fixtureId(0x502), state: "accepted", counters: {} }));
+    await settle();
+    reads = 0;
+    for (const fileIndex of [1, 2, 3]) {
+      await act(async () => onProgress({ requestId: fixtureId(0x5ff), operationId: fixtureId(0x502), state: "running", phase: "stage-files", counters: { fileIndex, fileCount: 3 }, stalled: false }));
+      await settle();
+    }
+    expect(text(document.querySelector("footer")!)).toContain("Staging files (3 of 3)…");
+    expect(reads).toBe(0);
   });
 
   test("the help line stays in the Changes list", async () => {

@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import type { BridgeResponse } from "../bridge";
+import { TEXTS } from "../integrate/texts";
 import { isObject } from "../lib/utils";
 import { shortRef } from "../refs/ReferencesSidebar";
 import { shortId } from "../status/OperationStatus";
@@ -56,10 +57,10 @@ export const T = {
   push: "Push",
   copy: "Copy branch name",
   sameBranch: (branch: string) => `${branch} is the current branch.`,
-  mergeCurrent: (branch: string) => `${branch} is the current branch. Select another branch to merge into it.`,
-  rebaseCurrent: (branch: string) => `${branch} is the current branch. Select another branch to rebase onto.`,
-  detachedReason: "HEAD is detached. Switch to a branch first.",
-  noCommit: "The current branch has no commit yet.",
+  mergeCurrent: TEXTS.sameMerge,
+  rebaseCurrent: TEXTS.sameRebase,
+  detachedReason: TEXTS.detached,
+  noCommit: TEXTS.unborn,
   unborn: "The current branch has no commit yet. Git can stash only after the first commit.",
   noPanel: "Arbareto cannot start this action here yet.",
   pushOther: "Push sends the current branch only.",
@@ -104,7 +105,7 @@ export function refusalText(response: BridgeResponse, branch: string): string {
     const more = typeof r.more === "number" && r.more > 0 ? `, and ${r.more.toLocaleString("en-US")} more` : "";
     return `Discard would overwrite these untracked files: ${r.paths.join(", ")}${more}.`;
   }
-  if (code === "CONFLICTED" && typeof r.unmerged === "number") return `Resolve the ${r.unmerged.toLocaleString("en-US")} conflicted files first.`;
+  if (code === "CONFLICTED" && typeof r.unmerged === "number") return TEXTS.conflicted(r.unmerged);
   const reason = typeof r.reason === "string" ? r.reason : null;
   if (code === "WORKBENCH_UNAVAILABLE" && reason !== null && reason in REASONS) return REASONS[reason]!(r, branch);
   return `The action did not start: ${code}${reason === null ? "" : ` ${reason}`}.`;

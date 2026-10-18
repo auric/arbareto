@@ -148,10 +148,12 @@ type DiffProps = {
   lines: LineRange | null;
   onLines(range: LineRange | null): void;
   hunkAction?(index: number): ReactNode;
+  /** S, U, Shift+Up, and Shift+Down of the diff body. */
+  onKeyDown(event: KeyboardEvent<HTMLDivElement>): void;
 };
 
 /** A supported, complete comparison: the mapped diff, or `DISPLAY_MAPPING_FAILED` with every hunk action disabled. */
-function Diff({ mapped, view, selectedHunk, onRefresh, reset, lines, onLines, hunkAction }: DiffProps) {
+function Diff({ mapped, view, selectedHunk, onRefresh, reset, lines, onLines, hunkAction, onKeyDown }: DiffProps) {
   if (mapped === null || !mapped.mapping.ok) return <ErrorState code="DISPLAY_MAPPING_FAILED" result={undefined} onRefresh={onRefresh} />;
   const { patch, mapping } = mapped;
   const index = selectedHunk === null ? -1 : mapping.hunkIds.indexOf(selectedHunk);
@@ -163,7 +165,7 @@ function Diff({ mapped, view, selectedHunk, onRefresh, reset, lines, onLines, hu
         </p>
       ) : null}
       {/* The diff body is one Tab stop. S, U, Shift+Up, and Shift+Down act while focus is in the diff (spec FR-043, FR-087). */}
-      <div tabIndex={0} aria-label="Diff" data-slot="diff-body" className="flex min-h-0 flex-1 flex-col">
+      <div tabIndex={0} aria-label="Diff" data-slot="diff-body" className="flex min-h-0 flex-1 flex-col" onKeyDown={onKeyDown}>
         <Suspense fallback={<Loading hasContent={false} refreshing={false} />}>
           {/* An external change remounts the view and resets its scroll. An own hunk action keeps the view and anchors it. */}
           <PatchView
@@ -253,7 +255,7 @@ export function ComparisonView({ entry, response, selectedHunk, onRefresh, helpL
   if (entry === null) return <NoSelection helpLine={helpLine} />;
   const scope = result !== null && "scope" in result ? SIDES[result.scope] : null;
   return (
-    <div className="flex h-full min-h-0 flex-col" onKeyDown={onKeyDown}>
+    <div className="flex h-full min-h-0 flex-col">
       <ComparisonHeading
         path={entry.path}
         scope={SCOPE[entry.category]}
@@ -275,6 +277,7 @@ export function ComparisonView({ entry, response, selectedHunk, onRefresh, helpL
           reset={shown.reset}
           lines={range}
           onLines={onLines}
+          onKeyDown={onKeyDown}
           hunkAction={hunkAction === undefined || !("comparisonId" in result) ? undefined : (index) => hunkAction(result as Comparison, false, index)}
         />
       )}

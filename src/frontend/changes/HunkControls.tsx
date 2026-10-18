@@ -7,6 +7,7 @@ import { Fragment, useId, useRef, useState, type RefObject } from "react";
 import type { ChangeEntry, Comparison, WorkspaceSnapshot } from "../../contracts/envelope";
 import { WarningIcon } from "../app/NoticeBand";
 import type { BridgeResponse, createBridge } from "../bridge";
+import { RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
 import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
@@ -113,7 +114,8 @@ export type HunkControlsProps = {
   lines?: LineState;
 };
 
-export type ReasonPart = { id: string; text: string | null };
+/** `quiet` keeps the text as the description of its control only (plan D15 running rule). */
+export type ReasonPart = { id: string; text: string | null; quiet?: boolean };
 
 type NavProps = { label: string; icon: IconSvgElement; keys: [aria: string, text: string]; reason: string | null; reasonId: string; onStep(): void };
 
@@ -143,10 +145,10 @@ const sentence = (text: string) => text.replace(/\.$/, "");
  */
 export function ReasonLine({ parts }: { parts: readonly ReasonPart[] }) {
   const shown = new Set<string>();
-  const nodes = parts.map(({ id, text }) => {
+  const nodes = parts.map(({ id, text, quiet }) => {
     if (text === null) return null;
     const plain = sentence(text);
-    if (shown.has(plain))
+    if (quiet || shown.has(plain))
       return (
         <span key={id} id={id} hidden>
           {plain}
@@ -172,10 +174,11 @@ export function ReasonLine({ parts }: { parts: readonly ReasonPart[] }) {
   );
 }
 
-/** The reason that blocks every hunk action of this comparison, or null. */
+/** The reason that blocks every hunk action of this comparison, or null. A running mutation gives the D15 running reason. */
 function hunkReason(props: HunkControlsProps): string | null {
   const { comparison } = props;
   return (
+    (props.blocked === "running" ? RUNNING_REASON : null) ??
     stagingReason(props) ??
     (comparison.support !== "supported" ? (comparison.support === null ? COMPARISON_INCOMPLETE : LIMITATION_TEXT[comparison.support]) : null) ??
     (comparison.completeness.state !== "complete" ? COMPARISON_INCOMPLETE : null) ??
@@ -205,24 +208,26 @@ export function HunkButton(props: HunkControlsProps & { index: number }) {
   if (hunk === undefined) return null;
   return (
     <>
-      <Button
-        variant="outline"
-        size="sm"
-        disabled={reason !== null}
-        focusableWhenDisabled
-        aria-describedby={reason === null ? undefined : reasonId}
-        onClick={async () => {
-          if (reason !== null || running.current) return;
-          running.current = true;
-          try {
-            await sendHunk(props, hunk);
-          } finally {
-            running.current = false;
-          }
-        }}
-      >
-        {label}
-      </Button>
+      <RunningTooltip reason={props.blocked === "running" ? reason : null}>
+        <Button
+          variant="outline"
+          size="sm"
+          disabled={reason !== null}
+          focusableWhenDisabled
+          aria-describedby={reason === null ? undefined : reasonId}
+          onClick={async () => {
+            if (reason !== null || running.current) return;
+            running.current = true;
+            try {
+              await sendHunk(props, hunk);
+            } finally {
+              running.current = false;
+            }
+          }}
+        >
+          {label}
+        </Button>
+      </RunningTooltip>
       {reason === null ? null : (
         <span id={reasonId} hidden>
           {reason}
@@ -276,9 +281,11 @@ export function HunkControls(props: HunkControlsProps) {
   // Spec FR-041 to FR-044: the selected lines of one hunk. A selection in two hunks sends no request (contract Δ4).
   const range = props.lines?.range ?? null;
   const rows = props.lines?.patch ?? null;
-  const pick = range === null || rows === null ? null : pickLines(rows, range, unstage ? "unstage" : "stage");
+  // Undefined: no line selection. Null: a point of the selection names no row of the canonical patch (contract §4).
+  const pick = range === null || rows === null ? undefined : pickLines(rows, range, unstage ? "unstage" : "stage");
   const picked = pick?.ok === true ? pick : null;
-  const lineReason = pick === null ? null : (blockReason ?? (pick.ok ? null : LINE_TEXT[pick.reason as keyof typeof LINE_TEXT]));
+  const lineReason = pick === undefined ? null : (blockReason ?? (pick === null ? MAPPING_FAILED : pick.ok ? null : LINE_TEXT[pick.reason as keyof typeof LINE_TEXT]));
+  const quiet = props.blocked === "running";
   const lineHunk = picked === null ? undefined : comparison.hunks[picked.hunk];
   const runLines = (direction: "stage" | "unstage") => {
     if ((direction === "unstage") !== unstage || lineReason !== null || picked === null || lineHunk === undefined) return;
@@ -292,29 +299,33 @@ export function HunkControls(props: HunkControlsProps) {
       <div role="toolbar" aria-label="Hunk controls" className="flex flex-wrap items-center gap-x-2" style={{ minHeight: "var(--h-hunk-toolbar)" }}>
         {navButton({ label: "Previous hunk", icon: ArrowUp01Icon, keys: ["Alt+ArrowUp", "Alt+Up"], reason: navReason.previous, reasonId: ids.previous, onStep: () => step("previous") })}
         {navButton({ label: "Next hunk", icon: ArrowDown01Icon, keys: ["Alt+ArrowDown", "Alt+Down"], reason: navReason.next, reasonId: ids.next, onStep: () => step("next") })}
-        <Button variant="outline" size="sm" disabled={actionReason !== null} focusableWhenDisabled aria-describedby={actionReason === null ? undefined : ids.action} onClick={() => void act()}>
-          {label}
-        </Button>
-        {pick === null ? null : (
-          <Button
-            variant="outline"
-            size="sm"
-            data-slot="line-action"
-            aria-keyshortcuts={unstage ? "U" : "S"}
-            disabled={lineReason !== null}
-            focusableWhenDisabled
-            aria-describedby={lineReason === null ? undefined : ids.lines}
-            onClick={() => runLines(unstage ? "unstage" : "stage")}
-          >
-            {`${linesLabel(unstage, lineCount)} (${unstage ? "U" : "S"})`}
+        <RunningTooltip reason={quiet ? actionReason : null}>
+          <Button variant="outline" size="sm" disabled={actionReason !== null} focusableWhenDisabled aria-describedby={actionReason === null ? undefined : ids.action} onClick={() => void act()}>
+            {label}
           </Button>
+        </RunningTooltip>
+        {pick === undefined ? null : (
+          <RunningTooltip reason={quiet ? lineReason : null}>
+            <Button
+              variant="outline"
+              size="sm"
+              data-slot="line-action"
+              aria-keyshortcuts={unstage ? "U" : "S"}
+              disabled={lineReason !== null}
+              focusableWhenDisabled
+              aria-describedby={lineReason === null ? undefined : ids.lines}
+              onClick={() => runLines(unstage ? "unstage" : "stage")}
+            >
+              {`${linesLabel(unstage, lineCount)} (${unstage ? "U" : "S"})`}
+            </Button>
+          </RunningTooltip>
         )}
       </div>
       <ReasonLine
         parts={[
-          { id: ids.action, text: actionReason },
+          { id: ids.action, text: actionReason, quiet },
           { id: ids.notice, text: shownNotice },
-          { id: ids.lines, text: lineReason === null ? null : `${linesLabel(unstage, lineCount)} is unavailable: ${lineReason}` },
+          { id: ids.lines, text: lineReason === null ? null : `${linesLabel(unstage, lineCount)} is unavailable: ${lineReason}`, quiet },
           ...reasons,
           { id: ids.previous, text: navReason.previous },
           { id: ids.next, text: navReason.next },

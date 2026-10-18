@@ -9,6 +9,7 @@ import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { MENU_CONTENT } from "../app/RepositoryMenu";
 import { BLOCKED_TEXT, operationBlock } from "../changes/HunkControls";
 import { IconButton } from "../components/icon-button";
+import { RUNNING_REASON } from "../components/running-tooltip";
 import { Button } from "../components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
@@ -23,8 +24,8 @@ type OperationState = WorkspaceSnapshot["operationState"];
 const DETACHED = "No branch checked out.";
 const UNBORN = "The branch has no commits yet.";
 const NO_UPSTREAM = "The branch has no upstream.";
-// Plan D12: the reason while an operation runs. It goes only into the tooltip and the accessible description.
-export const RUNNING_REASON = "A Git operation is running. Its progress and Cancel are in the status bar.";
+
+export { RUNNING_REASON };
 
 type SyncAction = (typeof SYNC_ACTIONS)[number];
 type Slot = "fetch" | "pull" | "push";

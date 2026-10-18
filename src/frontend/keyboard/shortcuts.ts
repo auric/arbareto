@@ -149,11 +149,12 @@ export const KEYS: Record<ScopedAction, { aria: string; text: string; scopes: re
 };
 const BY_KEY = new Map(Object.entries(KEYS).flatMap(([action, k]) => k.scopes.map((scope) => [`${scope} ${k.aria}`, action as ScopedAction] as const)));
 
-export type ScopedKeyEvent = Pick<KeyboardEvent, "key" | "ctrlKey" | "shiftKey" | "altKey" | "metaKey"> & { isComposing?: boolean };
+// The browser KeyboardEvent, not the React event: React events carry no `isComposing`.
+export type ScopedKeyEvent = Pick<KeyboardEvent, "key" | "ctrlKey" | "shiftKey" | "altKey" | "metaKey" | "isComposing">;
 
 /** The D15 action of a key in `scope`, or null. A single letter matches without regard to Caps Lock. */
 export function scopedAction(event: ScopedKeyEvent, scope: KeyScope): ScopedAction | null {
-  if (event.isComposing === true) return null;
+  if (event.isComposing) return null;
   const key = event.key === " " ? "Space" : event.key.length === 1 ? event.key.toUpperCase() : event.key;
   const aria = [event.ctrlKey && "Control", event.shiftKey && "Shift", event.altKey && "Alt", event.metaKey && "Meta", key].filter(Boolean).join("+");
   return BY_KEY.get(`${scope} ${aria}`) ?? null;

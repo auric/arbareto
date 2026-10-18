@@ -342,7 +342,7 @@ describe("Run, conflicts, and keys (FR-023, FR-027, plan D15)", () => {
       await answer(double.pending("reviewWorkbench"), reviewed(action, action === "merge" ? mergePlan() : rebasePlan({ autostash: { value: false, source: "default" } })));
       const run = double.pending("runWorkbench")!;
       expect(ops.map((o) => [o.kind, o.texts, o.response])).toEqual([["runWorkbench", names, null]]);
-      const event = { requestId: "r", operationId: fixtureId(0x530), state: "running", phase: action, counters: {} };
+      const event = { requestId: fixtureId(0x5ff), operationId: fixtureId(0x530), state: "running", phase: action, counters: {} };
       await act(async () => (run.args[2] as (e: unknown) => void)(event));
       expect(ops.at(-1)!.progress).toEqual(event as never);
       const response = ran("succeeded", undefined, "normal", 0);
@@ -351,6 +351,39 @@ describe("Run, conflicts, and keys (FR-023, FR-027, plan D15)", () => {
       expect(new Set(ops.map((o) => o.requestId)).size).toBe(1);
     });
   }
+
+  test("a rebase whose new review before the run rewrites other commits shows the new facts and does not run", async () => {
+    const { double } = await mount("rebase");
+    const plan = (rewritten: number) => rebasePlan({ rewritten, autostash: { value: false, source: "default" } });
+    await answer(double.pending("reviewWorkbench"), reviewed("rebase", plan(2)));
+    expect(text(panel())).toContain("The rebase rewrites 2 commits.");
+    await press(primary("Rebase"), "Enter", { ctrlKey: true });
+    await answer(double.pending("reviewWorkbench"), reviewed("rebase", plan(5)));
+    expect(double.of("runWorkbench").length).toBe(0);
+    expect(text(panel())).toContain("The rebase rewrites 5 commits.");
+    expect(text(panel())).not.toContain("The rebase runs.");
+    await press(primary("Rebase"), "Enter", { ctrlKey: true });
+    await answer(double.pending("reviewWorkbench"), reviewed("rebase", plan(5)));
+    expect(double.of("runWorkbench").length).toBe(1);
+  });
+
+  test("a merge whose new review before the run finds other counts shows them and does not run", async () => {
+    const { double } = await mount("merge");
+    await answer(double.pending("reviewWorkbench"), reviewed("merge", mergePlan()));
+    await press(primary("Merge"), "Enter", { ctrlKey: true });
+    await answer(double.pending("reviewWorkbench"), reviewed("merge", mergePlan({ facts: facts({ behind: 7 }) })));
+    expect(double.of("runWorkbench").length).toBe(0);
+    expect(text(panel())).toContain("feature/login has 7 commits that main lacks.");
+  });
+
+  test("an edited message alone does not count as a changed fact", async () => {
+    const { double } = await mount("merge");
+    await answer(double.pending("reviewWorkbench"), reviewed("merge", mergePlan()));
+    await setText(message()!, "Merge the login form");
+    await press(message()!, "Enter", { ctrlKey: true });
+    await answer(double.pending("reviewWorkbench"), reviewed("merge", mergePlan({ message: "Merge the login form" })));
+    expect(double.of("runWorkbench").length).toBe(1);
+  });
 
   test("a run that fails without a stop stays open with the code", async () => {
     const { double, ended, closed } = await mount("merge");

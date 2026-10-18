@@ -222,6 +222,7 @@ describe("switch confirmation (FR-009 to FR-011)", () => {
     expect(reviews(double)[0]!.choice).toBe("stash");
     const shown = text(popup()!);
     expect(shown).toContain("You have 4 changes to tracked files.");
+    expect(shown).toContain("Default");
     for (const label of ["Keep changes", "Stash and reapply", "Discard changes"]) expect(radio(label)).toBeDefined();
     expect(radio("Stash and reapply")!.checked).toBe(true);
     expect(radio("Discard changes")!.checked).toBe(false);
@@ -235,7 +236,7 @@ describe("switch confirmation (FR-009 to FR-011)", () => {
   });
 
   test("an untracked file in the way refuses Discard and names the file", async () => {
-    const world = branchWorld((p) => (p.choice === "discard" ? { requestId: "r", state: "rejected", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths: ["build/out.txt"], more: 0 } } : reviewed("switch", switchPlan({ trackedChanges: 1, choice: p.choice }))));
+    const world = branchWorld((p) => (p.choice === "discard" ? { requestId: fixtureId(0x5ff), state: "rejected", code: "UNTRACKED_IN_WAY", result: { reason: "untracked-in-way", paths: ["build/out.txt"], more: 0 } } : reviewed("switch", switchPlan({ trackedChanges: 1, choice: p.choice }))));
     const double = await mountWorkbench(workbench, world);
     await doubleClick(await sidebarRow("login-form"));
     await click(radio("Discard changes")!);
@@ -243,6 +244,80 @@ describe("switch confirmation (FR-009 to FR-011)", () => {
     expect(text(popup()!)).toContain("build/out.txt");
     expect(double.count("runWorkbench")).toBe(0);
   });
+});
+
+describe("a changed review before the run (FR-011, data safety)", () => {
+  test("a Discard switch whose new review finds other tracked changes shows the new plan and does not run", async () => {
+    let tracked = 1;
+    const double = await mountWorkbench(workbench, branchWorld((p) => reviewed("switch", switchPlan({ trackedChanges: tracked, choice: p.choice }))));
+    await doubleClick(await sidebarRow("login-form"));
+    expect(text(popup()!)).toContain("You have 1 change to tracked files.");
+    await click(radio("Discard changes")!);
+    tracked = 5;
+    await click(button("Discard and switch"));
+    expect(reviews(double).at(-1)!.choice).toBe("discard");
+    expect(double.count("runWorkbench")).toBe(0);
+    expect(text(popup()!)).toContain("You have 5 changes to tracked files.");
+    expect(radio("Discard changes")!.checked).toBe(true);
+    await click(button("Discard and switch"));
+    expect(double.count("runWorkbench")).toBe(1);
+  });
+
+  test("a new review that finds an unreachable commit shows it before the run", async () => {
+    let unreachable: string | null = null;
+    const double = await mountWorkbench(workbench, branchWorld((p) => reviewed("switch", switchPlan({ trackedChanges: 2, unreachable, choice: p.choice }))));
+    await doubleClick(await sidebarRow("login-form"));
+    await click(radio("Discard changes")!);
+    unreachable = oid(7);
+    await click(button("Discard and switch"));
+    expect(double.count("runWorkbench")).toBe(0);
+    expect(text(popup()!)).toContain(`Commit ${oid(7).slice(0, 12)} is on no branch.`);
+  });
+
+  test("after a failed readSyncSettings, no choice shows the Default tag", async () => {
+    const world = branchWorld((p) => reviewed("switch", switchPlan({ trackedChanges: 2, choice: p.choice })));
+    world.answers.readSyncSettings = () => ({ requestId: fixtureId(0x520), state: "rejected", code: "SERVICE_UNAVAILABLE" });
+    await mountWorkbench(workbench, world);
+    await doubleClick(await sidebarRow("login-form"));
+    expect(text(popup()!)).toContain("You have 2 changes to tracked files.");
+    expect(text(popup()!)).not.toContain("Default");
+  });
+});
+
+describe("keys during IME composition and the keyboard path to the history labels", () => {
+  test("Ctrl+. during an IME composition does nothing on a branch row", async () => {
+    const double = await mountWorkbench(workbench, branchWorld());
+    const row = await sidebarRow("login-form");
+    await act(async () => row.focus());
+    await press(row, ".", { ctrlKey: true, isComposing: true });
+    expect(double.count("reviewWorkbench")).toBe(0);
+  });
+
+  test("Ctrl+B during an IME composition does nothing on a history row", async () => {
+    await mountWorkbench(workbench, branchWorld());
+    const row = document.querySelector('[data-slot="row-labels"] .chip[data-kind="branch"]')!.closest<HTMLElement>('[role="option"]')!;
+    await click(row);
+    const list = row.closest<HTMLElement>('[role="listbox"]')!;
+    await press(list, "b", { ctrlKey: true, isComposing: true });
+    expect(document.querySelector('input[aria-label="Branch name"]')).toBeNull();
+    await press(list, "b", { ctrlKey: true });
+    expect(document.querySelector('input[aria-label="Branch name"]')).not.toBeNull();
+  });
+
+  for (const [name, init] of [
+    ["Shift+F10", { key: "F10", shiftKey: true }],
+    ["the Menu key", { key: "ContextMenu" }],
+  ] as const) {
+    test(`${name} on a history row opens the branch menu of its branch label`, async () => {
+      await mountWorkbench(workbench, branchWorld());
+      const chip = document.querySelector<HTMLElement>('[data-slot="row-labels"] .chip[data-kind="branch"]')!;
+      const row = chip.closest<HTMLElement>('[role="option"]')!;
+      await click(row);
+      await press(row.closest('[role="listbox"]')!, init.key, init);
+      expect(openMenuItems().map(itemLabel)[0]).toBe("Switch");
+      expect(document.querySelector('[data-slot="dropdown-menu-content"]')!.getAttribute("aria-label")).toBe(`Actions for ${text(chip.querySelector("[data-chip-name]")!)}`);
+    });
+  }
 });
 
 function buttons(label: string) {
@@ -343,7 +418,7 @@ describe("branch dialogs (FR-015 to FR-019)", () => {
   });
 
   test("New branch… takes a name, Switch to the new branch starts checked, and a refused name shows its reason", async () => {
-    const double = await mountWorkbench(workbench, branchWorld(() => ({ requestId: "r", state: "rejected", code: "WORKBENCH_UNAVAILABLE", result: { reason: "reserved-name" } })));
+    const double = await mountWorkbench(workbench, branchWorld(() => ({ requestId: fixtureId(0x5ff), state: "rejected", code: "WORKBENCH_UNAVAILABLE", result: { reason: "reserved-name" } })));
     await openList();
     await click(options().at(-1)!);
     const field = document.querySelector<HTMLInputElement>('input[aria-label="Branch name"]')!;
@@ -371,7 +446,7 @@ describe("branch dialogs (FR-015 to FR-019)", () => {
 });
 
 describe("refusal texts (contract Δ9, plan D3, D4, D15)", () => {
-  const refused = (code: string, result: Record<string, unknown>) => refusalText({ requestId: "r", state: "rejected", code, result } as never, "login-form");
+  const refused = (code: string, result: Record<string, unknown>) => refusalText({ requestId: fixtureId(0x5ff), state: "rejected", code, result } as never, "login-form");
   test("each reason gives its D15 text", () => {
     expect(refused("UNTRACKED_IN_WAY", { reason: "untracked-in-way", paths: ["a.txt", "b/c.txt"], more: 3 })).toBe("Discard would overwrite these untracked files: a.txt, b/c.txt, and 3 more.");
     expect(refused("WORKBENCH_UNAVAILABLE", { reason: "no-tracking-refspec" })).toBe("No refspec of a remote maps this branch, so Git cannot set up tracking. Check out the commit only.");
@@ -385,10 +460,12 @@ describe("refusal texts (contract Δ9, plan D3, D4, D15)", () => {
     expect(refused("WORKBENCH_UNAVAILABLE", { reason: "other-worktree", worktree: "C:\\wt\\x" })).toBe("The worktree C:\\wt\\x holds this branch. Open that worktree, or remove it first.");
     expect(refused("WORKBENCH_UNAVAILABLE", { reason: "name-exists", ref: "refs/heads/login-form" })).toBe("The branch login-form exists. Use another name.");
     expect(refused("STALE_REVIEW", {})).toBe("The action did not start: STALE_REVIEW.");
+    expect(refused("CONFLICTED", { unmerged: 1 })).toBe("Resolve the 1 conflicted file first.");
+    expect(refused("CONFLICTED", { unmerged: 1200 })).toBe("Resolve the 1,200 conflicted files first.");
   });
 
   test("the delete confirmation states config-in-include and offers no Delete", async () => {
-    await mountWorkbench(workbench, branchWorld(() => ({ requestId: "r", state: "rejected", code: "WORKBENCH_UNAVAILABLE", result: { reason: "config-in-include" } })));
+    await mountWorkbench(workbench, branchWorld(() => ({ requestId: fixtureId(0x5ff), state: "rejected", code: "WORKBENCH_UNAVAILABLE", result: { reason: "config-in-include" } })));
     await contextMenu(await sidebarRow("login-form"));
     await click(openMenuItems().find((i) => itemLabel(i) === "Delete…")!);
     const dialog = document.querySelector('[role="dialog"]')!;
@@ -410,7 +487,7 @@ describe("integration with the status bar and the panels (plan D15)", () => {
     await press(filterField(), "Enter");
     await settle();
     const run = double.pending("runWorkbench")!;
-    await act(async () => (run.args[2] as (e: unknown) => void)({ requestId: "r", operationId: fixtureId(0x511), state: "running", phase: "switch-checkout", counters: {} }));
+    await act(async () => (run.args[2] as (e: unknown) => void)({ requestId: fixtureId(0x5ff), operationId: fixtureId(0x511), state: "running", phase: "switch-checkout", counters: {} }));
     await settle();
     expect(text(footer())).toContain("Switching in");
     expect(buttons("Cancel").filter((b) => footer().contains(b))).toHaveLength(1);
@@ -441,10 +518,35 @@ describe("integration with the status bar and the panels (plan D15)", () => {
     expect(reviews(double).at(-1)).toMatchObject({ action: "rebase", ref: "refs/heads/login-form" });
   });
 
+  test("Escape on a panel that a branch menu item opened returns the focus to the branch row", async () => {
+    await mountWorkbench(workbench, branchWorld());
+    const row = await sidebarRow("login-form");
+    await contextMenu(row);
+    await click(openMenuItems().find((i) => itemLabel(i) === "Merge into current branch (main)…")!);
+    const section = document.querySelector('[data-slot="integrate-panel"]')!.closest("section")!;
+    expect(section.contains(document.activeElement)).toBe(true);
+    await press(document.activeElement!, "Escape");
+    expect(document.querySelector('[data-slot="integrate-panel"]')).toBeNull();
+    expect(document.activeElement).toBe(row);
+  });
+
+  test("the branch name and filter fields have no spell check and no autocomplete", async () => {
+    await mountWorkbench(workbench, branchWorld());
+    await openList();
+    const off = (input: HTMLInputElement) => [input.getAttribute("spellcheck"), input.getAttribute("autocomplete")];
+    expect(off(filterField())).toEqual(["false", "off"]);
+    await click(options()[3]!);
+    expect(off(document.querySelector<HTMLInputElement>('input[aria-label="Branch name"]')!)).toEqual(["false", "off"]);
+    await click(button("Cancel"));
+    await openList();
+    await click(options().at(-1)!);
+    expect(off(document.querySelector<HTMLInputElement>('input[aria-label="Branch name"]')!)).toEqual(["false", "off"]);
+  });
+
   test("name-exists offers a switch to the existing branch (plan D3)", async () => {
     const double = await mountWorkbench(
       workbench,
-      branchWorld((p) => ("track" in (p.target as object) ? { requestId: "r", state: "failed", code: "WORKBENCH_UNAVAILABLE", result: { reason: "name-exists", ref: "refs/heads/login-form" } } : reviewed("switch", switchPlan({ target: p.target, choice: p.choice })))),
+      branchWorld((p) => ("track" in (p.target as object) ? { requestId: fixtureId(0x5ff), state: "failed", code: "WORKBENCH_UNAVAILABLE", result: { reason: "name-exists", ref: "refs/heads/login-form" } } : reviewed("switch", switchPlan({ target: p.target, choice: p.choice })))),
     );
     await openList();
     await click(options()[3]!);

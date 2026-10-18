@@ -37,7 +37,7 @@ import {
 import { ViewCommitDetails } from "../history/CommitDetails";
 import { HistoryList } from "../history/HistoryList";
 import { branchName, INDEX_ROW, WORKING_ROW } from "../history/HistoryView";
-import { createShortcutHandler, isEditable, nextSection, type Panel, type Section } from "../keyboard/shortcuts";
+import { createShortcutHandler, filterTarget, isEditable, nextSection, type Panel, type Section } from "../keyboard/shortcuts";
 import { isObject } from "../lib/utils";
 import {
   chooseProfile,
@@ -809,8 +809,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const statusStop = operation !== null || starting !== null;
   // Plan.md D15 F6 order: each view has its own order.
   const sectionPanel: Panel | null = view === "commit" ? "commit" : view === "settings" ? "settings" : panel;
-  const live = useRef({ requests, menuOpen, modalOpen, switcherOpen, repository: state.repository, panel: sectionPanel, statusStop, starting: starting !== null });
-  live.current = { requests, menuOpen, modalOpen, switcherOpen, repository: state.repository, panel: sectionPanel, statusStop, starting: starting !== null };
+  const live = useRef({ requests, menuOpen, modalOpen, switcherOpen, repository: state.repository, panel: sectionPanel, statusStop, starting: starting !== null, view });
+  live.current = { requests, menuOpen, modalOpen, switcherOpen, repository: state.repository, panel: sectionPanel, statusStop, starting: starting !== null, view };
 
   useEffect(() => {
     window.addEventListener("contextmenu", suppressPageMenu);
@@ -1070,7 +1070,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         setSwitcherOpen(true);
       }
       else if (action.type === "focusSection") moveSection(action.direction);
-      else if (action.type === "focusFilter") filterRef.current?.focus();
+      else if (action.type === "focusFilter") {
+        const target = filterTarget(live.current.view);
+        if (target === "history") filterRef.current?.focus();
+        else if (target === "files") sections.current?.querySelector<HTMLElement>('section[aria-label="Commit view"] input[aria-label="Filter files"]')?.focus();
+      }
       else if (action.type === "match") void historyView.match(action.direction);
       else if (action.type === "sync") runSync.current(action.control);
       else if (action.type === "toggleScope" && live.current.repository !== null) void historyView.setScope(historyView.getState().scope === "current" ? "all" : "current");
@@ -1432,10 +1436,13 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     const id = (event.target as HTMLElement).closest<HTMLElement>("[data-row-id]")?.dataset.rowId;
     if (id === WORKING_ROW || id === INDEX_ROW) openCommitView();
   };
+  // Plan D15 "Docked panel": a docked panel takes its content height, at most 60% of the work area.
+  const docked = integrate !== null && integrate.key === viewKey && pushBranch !== null;
+  const dockedMax = 0.6 * workArea;
   const dock = (
     <DockRegion
       panel={
-        integrate === null || integrate.key !== viewKey || pushBranch === null ? null : (
+        !docked ? null : (
           <IntegratePanel
             request={integrate.request}
             current={pushBranch}
@@ -1487,7 +1494,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         <section aria-label="History" data-section="historyList" className="flex min-h-0 flex-col" style={{ flex: "1 1 0" }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
           <HistoryView {...pane} />
         </section>
-        <section aria-label="Dock" className="flex min-h-0 flex-col border-t border-divider" style={{ flex: "0 0 auto", minHeight: m.reducedPaneMin }}>
+        <section aria-label="Dock" className="flex min-h-0 flex-col border-t border-divider" style={{ flex: "0 0 auto", minHeight: m.reducedPaneMin, maxHeight: docked ? dockedMax : undefined }}>
           {dock}
         </section>
       </div>
@@ -1498,9 +1505,17 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         </div>
         <Splitter label="Resize references sidebar" orientation="vertical" value={sideWidth} min={sideBounds!.min} max={sideBounds!.max} onChange={resize("sidebar")} onCommit={keepPane("sidebar")} />
         <div className="flex min-h-0 flex-col">
-          <section aria-label="History" data-section="historyList" className="flex min-h-0 flex-col" style={{ flex: "0 0 auto", height: Math.max(listHeight, m.historyListMin) }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
+          <section
+            aria-label="History"
+            data-section="historyList"
+            className="flex min-h-0 flex-col"
+            style={docked ? { flex: "1 1 0", minHeight: m.historyListMin } : { flex: "0 0 auto", height: Math.max(listHeight, m.historyListMin) }}
+            onKeyDown={onHistoryKey}
+            onDoubleClick={onHistoryDoubleClick}
+          >
             <HistoryView {...pane} />
           </section>
+          {/* The dock splitter sets the height of the dock content. A docked panel takes its own height, so the splitter hides. */}
           <Splitter
             label="Resize dock"
             orientation="horizontal"
@@ -1510,8 +1525,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             reverse
             onChange={resize("detailsDock")}
             onCommit={keepPane("detailsDock")}
+            className={docked ? "hidden" : undefined}
           />
-          <section aria-label="Dock" className="flex min-h-0 flex-1 flex-col">
+          <section aria-label="Dock" className={`flex min-h-0 flex-col ${docked ? "border-t border-divider" : "flex-1"}`} style={docked ? { flex: "0 0 auto", maxHeight: dockedMax } : undefined}>
             {dock}
           </section>
         </div>
@@ -1526,7 +1542,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             <RecoveryMarkers environment={environment} onDismissMarker={(markerId) => void dismissMarker(markerId)} />
           </div>
         ) : null}
-        <header data-section="header" className="flex flex-wrap items-center gap-x-2 border-b border-divider px-2" style={{ minHeight: "var(--h-header)" }}>
+        {/* Feature 004 plan.md D15 "Top bar row": one row wherever the 001 header model reserves one row. */}
+        <header data-section="header" className={`flex ${rows === 1 ? "flex-nowrap" : "flex-wrap"} items-center gap-x-2 border-b border-divider px-2`} style={{ minHeight: "var(--h-header)" }}>
           <div ref={switcher} className="flex min-w-[160px] shrink items-center" style={{ order: 1, minHeight: "var(--h-header)" }}>
             <RepositorySwitcher
               bridge={bridge}

@@ -21,7 +21,8 @@ export const T = {
   empty: "No branches",
   noMatch: "No branch matches the filter.",
   listFailed: (code: string) => `Arbareto cannot read the branches: ${code}.`,
-  newBranch: "New branch… (Ctrl+B)",
+  // The list adds the key column " (Ctrl+B)" (plan D15 "Branch list", D16 "Geometry").
+  newBranch: "New branch…",
   noUpstream: "No upstream",
   localNoun: "local branch",
   remoteNoun: "remote-tracking branch",

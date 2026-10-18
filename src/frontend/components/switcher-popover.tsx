@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import { Search01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
-import { useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactElement, type ReactNode } from "react";
+import { Fragment, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactElement, type ReactNode } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
@@ -12,6 +14,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 const VIRTUAL_MIN = 200;
 // 001 RecentList loading text.
 const LOADING_TEXT = "Loading…";
+// Plan D16 "Geometry": group headings are 26 px.
+const HEADING_HEIGHT = 26;
+const fmt = new Intl.NumberFormat("en-US");
 
 export type SwitcherPopoverProps<T> = {
   open: boolean;
@@ -34,12 +39,12 @@ export type SwitcherPopoverProps<T> = {
   itemText(item: T): string;
   /** The accessible name of an option. The default is `itemText`. */
   itemLabel?(item: T): string;
-  /** The heading of the item's group. A heading row shows before the first shown item of each group. The option names must state the group too, because the heading is no option. */
+  /** The heading of the item's group. A heading row with the group count shows before the first shown item of each group. The option names must state the group too, because the heading is no option. */
   itemGroup?(item: T): string;
   renderItem(item: T): ReactNode;
   onPick(item: T): void;
-  /** The last option, such as "New branch… (Ctrl+B)". The filter never hides it. */
-  footer?: { label: string; onPick(): void };
+  /** The last option, such as "New branch…" with the key Ctrl+B. The filter never hides it. */
+  footer?: { label: string; keys?: { aria: string; text: string }; onPick(): void };
   emptyText: string;
   noMatchText: string;
 };
@@ -54,8 +59,8 @@ export function SwitcherPopover<T>({ open, onOpenChange, trigger, children, tool
         <TooltipTrigger render={<PopoverTrigger render={trigger} />}>{children}</TooltipTrigger>
         <TooltipContent>{tooltip}</TooltipContent>
       </Tooltip>
-      {/* 001 plan.md "Dialog sizes": at most 480 DIPs wide and 60% of the client height. */}
-      <PopoverContent align="start" className="max-h-[min(60vh,calc(100vh-32px))] w-[min(480px,calc(100vw-32px))]">
+      {/* Plan D16 "Geometry": 380 DIPs wide and aligned to the end of the button. 001 plan.md "Dialog sizes": at most 60% of the client height. */}
+      <PopoverContent align="end" className="max-h-[min(60vh,calc(100vh-32px))] w-[min(380px,calc(100vw-32px))]">
         {open ? <SwitcherList {...list} /> : null}
       </PopoverContent>
     </Popover>
@@ -71,16 +76,29 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
   const count = shown.length + (footer === undefined ? 0 : 1);
   const active = Math.min(activeIndex, Math.max(0, count - 1));
   const optionId = (index: number) => `${ids.option}-${index}`;
-  // The rows: an option index, or a group heading.
+  // The group counts of the read. The filter never changes them.
+  const totals = new Map<string, number>();
+  if (itemGroup !== undefined) {
+    for (const item of items ?? []) {
+      const name = itemGroup(item);
+      totals.set(name, (totals.get(name) ?? 0) + 1);
+    }
+  }
+  // The rows: an option index, or a group heading. `groupAt` holds the group heading of each row, or null.
   const rows: (number | { heading: string })[] = [];
   const rowAt: number[] = [];
+  const groupAt: (string | null)[] = [];
   let group: string | undefined;
   for (let index = 0; index < count; index++) {
     const next = index < shown.length ? itemGroup?.(shown[index]!) : undefined;
-    if (next !== undefined && next !== group) rows.push({ heading: next });
+    if (next !== undefined && next !== group) {
+      rows.push({ heading: next });
+      groupAt.push(next);
+    }
     group = next;
     rowAt.push(rows.length);
     rows.push(index);
+    groupAt.push(next ?? null);
   }
   const rowOf = (index: number) => rowAt[index] ?? -1;
   const virtual = rows.length > VIRTUAL_MIN;
@@ -88,7 +106,7 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
     count: rows.length,
     enabled: virtual,
     getScrollElement: () => scroller.current,
-    estimateSize: () => rowHeight,
+    estimateSize: (at) => (typeof rows[at] === "number" ? rowHeight : HEADING_HEIGHT),
     overscan: 8,
     useFlushSync: false,
     // The active option stays mounted, so `aria-activedescendant` names an element.
@@ -118,10 +136,13 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
   const row = (at: number, style?: CSSProperties) => {
     const r = rows[at]!;
     if (typeof r === "number") return option(r, style);
-    // The option names state the group, so the heading stays out of the accessibility tree.
+    // The group element carries the heading and the count as its name, so the heading row stays out of the accessibility tree.
     return (
-      <div key={`heading:${r.heading}`} data-slot="list-heading" role="presentation" aria-hidden="true" className="flex items-center px-2 font-semibold text-muted-text" style={{ minHeight: rowHeight, ...style }}>
-        {r.heading}
+      <div key={`heading:${r.heading}`} data-slot="list-heading" role="presentation" aria-hidden="true" className="flex items-center gap-2 px-2 text-muted-text" style={{ height: HEADING_HEIGHT, ...style }}>
+        <span className="font-semibold text-text">{r.heading}</span>{" "}
+        <span data-slot="list-count" className="num text-muted-text">
+          {fmt.format(totals.get(r.heading) ?? 0)}
+        </span>
       </div>
     );
   };
@@ -133,7 +154,8 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
         id={optionId(index)}
         role="option"
         aria-selected={index === active}
-        aria-label={item === null ? undefined : itemLabel(item)}
+        aria-label={item === null ? (footer!.keys === undefined ? undefined : `${footer!.label} (${footer!.keys.text})`) : itemLabel(item)}
+        aria-keyshortcuts={item === null ? footer!.keys?.aria : undefined}
         className={`list-row flex min-w-0 items-center gap-2 px-2 ${index === active ? "bg-hover-fill" : ""}`}
         style={style}
         onMouseDown={(event) => event.preventDefault()}
@@ -142,40 +164,84 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
           pick(index);
         }}
       >
-        {item === null ? footer!.label : renderItem(item)}
+        {item === null ? (
+          <>
+            {footer!.label}
+            {footer!.keys === undefined ? null : (
+              <span data-slot="option-key" aria-hidden="true" className="ml-auto pl-4 whitespace-nowrap text-muted-text">
+                {footer!.keys.text}
+              </span>
+            )}
+          </>
+        ) : (
+          renderItem(item)
+        )}
       </div>
     );
+  };
+
+  // Consecutive rows of one group go into one `group` element named "<heading>, <n>". A static group element keeps the absolute rows on the list's own box.
+  const grouped = (shownRows: [number, CSSProperties | undefined][]) => {
+    const out: ReactNode[] = [];
+    let run: ReactNode[] = [];
+    let runGroup: string | null = null;
+    const flush = () => {
+      if (run.length === 0) return;
+      out.push(
+        runGroup === null ? (
+          <Fragment key={`rows:${out.length}`}>{run}</Fragment>
+        ) : (
+          <div key={`group:${runGroup}`} role="group" aria-label={`${runGroup}, ${fmt.format(totals.get(runGroup) ?? 0)}`}>
+            {run}
+          </div>
+        ),
+      );
+      run = [];
+    };
+    for (const [at, style] of shownRows) {
+      if ((groupAt[at] ?? null) !== runGroup) {
+        flush();
+        runGroup = groupAt[at] ?? null;
+      }
+      run.push(row(at, style));
+    }
+    flush();
+    return out;
   };
 
   return (
     <div className="flex min-h-0 flex-col gap-2">
       {/* Base UI focuses the first tabbable element of the popup, so the filter field has the first focus. */}
-      <input
-        role="combobox"
-        aria-label={filterLabel}
-        aria-expanded="true"
-        aria-controls={ids.list}
-        aria-autocomplete="list"
-        spellCheck={false}
-        autoComplete="off"
-        aria-activedescendant={count === 0 ? undefined : optionId(active)}
-        className="h-(--h-button) shrink-0 rounded-sm border border-control-border bg-surface px-2"
-        value={query}
-        onChange={(event) => {
-          setQuery(event.target.value);
-          setActiveIndex(0);
-        }}
-        onKeyDown={onKeyDown}
-      />
+      <div className="relative flex shrink-0 items-center">
+        <HugeiconsIcon icon={Search01Icon} strokeWidth={2} aria-hidden="true" className="pointer-events-none absolute left-2 size-(--icon-size) text-muted-text" />
+        <input
+          role="combobox"
+          aria-label={filterLabel}
+          aria-expanded="true"
+          aria-controls={ids.list}
+          aria-autocomplete="list"
+          spellCheck={false}
+          autoComplete="off"
+          aria-activedescendant={count === 0 ? undefined : optionId(active)}
+          placeholder={filterLabel}
+          className="h-(--h-button) w-full rounded-sm border border-control-border bg-surface pr-2 pl-8"
+          value={query}
+          onChange={(event) => {
+            setQuery(event.target.value);
+            setActiveIndex(0);
+          }}
+          onKeyDown={onKeyDown}
+        />
+      </div>
       {failure ?? (
         <>
           <div ref={scroller} id={ids.list} role="listbox" aria-label={listLabel} className="min-h-0 overflow-y-auto">
             {virtual ? (
               <div role="presentation" className="relative" style={{ height: virtualizer.getTotalSize() }}>
-                {virtualizer.getVirtualItems().map((v) => row(v.index, { position: "absolute", top: 0, left: 0, right: 0, transform: `translateY(${v.start}px)` }))}
+                {grouped(virtualizer.getVirtualItems().map((v) => [v.index, { position: "absolute", top: 0, left: 0, right: 0, transform: `translateY(${v.start}px)` }]))}
               </div>
             ) : (
-              rows.map((_, at) => row(at))
+              grouped(rows.map((_, at) => [at, undefined]))
             )}
           </div>
           {items === null ? <p className="text-muted-text">{LOADING_TEXT}</p> : items.length === 0 ? <p className="text-muted-text">{emptyText}</p> : shown.length === 0 ? <p className="text-muted-text">{noMatchText}</p> : null}

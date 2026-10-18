@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import { Copy01Icon, Delete02Icon, GitBranchIcon, GitCompareArrowsIcon, GitMergeIcon, PencilEdit02Icon, PlusSignIcon, Upload04Icon } from "@hugeicons/core-free-icons";
+import type { IconSvgElement } from "@hugeicons/react";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { useCopy } from "../app/RepositoryStates";
@@ -293,8 +295,9 @@ export function useBranchActions(options: BranchActionsOptions) {
 
   function menuGroups(entry: BranchEntry, copy: (text: string) => void): ActionItem[][] {
     const r = reasons(entry);
-    const item = (label: string, action: ScopedAction | "push", danger = false): ActionItem => ({
+    const item = (label: string, action: ScopedAction | "push", icon: IconSvgElement, danger = false): ActionItem => ({
       label,
+      icon,
       keys: action === "push" ? undefined : { aria: KEYS[action].aria, text: KEYS[action].text },
       reason: r[action],
       danger,
@@ -305,10 +308,12 @@ export function useBranchActions(options: BranchActionsOptions) {
         act(entry, action, menu?.anchor ?? null);
       },
     });
-    const copyItem: ActionItem = { label: T.copy, onSelect: () => (setMenu(null), copy(entry.name)) };
-    const integrate = [item(T.switch, "switch"), item(T.merge(current), "merge"), item(T.rebase(current, entry.name), "rebase"), item(T.createHere, "createBranch")];
-    if (entry.kind === "remote") return [[...integrate, copyItem]];
-    const groups = [[...integrate, item(T.rename, "rename"), item(T.delete, "delete", true), item(T.push, "push"), copyItem]];
+    // D16 "Branch menu groups": (1) Switch, Merge, Rebase; (2) Create branch here, Rename, Delete; (3) Push, Copy branch name.
+    const copyItem: ActionItem = { label: T.copy, icon: Copy01Icon, onSelect: () => (setMenu(null), copy(entry.name)) };
+    const integrate = [item(T.switch, "switch", GitBranchIcon), item(T.merge(current), "merge", GitMergeIcon), item(T.rebase(current, entry.name), "rebase", GitCompareArrowsIcon)];
+    const create = item(T.createHere, "createBranch", PlusSignIcon);
+    if (entry.kind === "remote") return [integrate, [create], [copyItem]];
+    const groups = [integrate, [create, item(T.rename, "rename", PencilEdit02Icon), item(T.delete, "delete", Delete02Icon, true)], [item(T.push, "push", Upload04Icon), copyItem]];
     // 002 FR-049 change: the item stays on the current branch.
     if (entry.current) groups.push([{ label: SHOW_BRANCH_HISTORY, keys: { aria: "Control+Shift+B", text: "Ctrl+Shift+B" }, onSelect: () => (setMenu(null), onShowBranchHistory()) }]);
     return groups;

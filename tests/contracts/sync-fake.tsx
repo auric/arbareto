@@ -232,10 +232,10 @@ export function button(label: string, from: ParentNode = document): HTMLElement 
   if (found.length !== 1) throw new Error(`expected one button "${label}", found ${found.length}: ${[...from.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? text(b)).join(" | ")}`);
   return found[0]!;
 }
-/** The text of a menu item without its key column. */
+/** The text of a menu item without its key column and its inline reason (plan D16). */
 export function itemLabel(item: Element): string {
   const copy = item.cloneNode(true) as Element;
-  for (const key of copy.querySelectorAll('[data-slot$="shortcut"]')) key.remove();
+  for (const key of copy.querySelectorAll('[data-slot$="shortcut"], [data-slot="menu-reason"]')) key.remove();
   return text(copy);
 }
 /** An open menu item by its label text. */

@@ -2,11 +2,13 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
+import { Copy01Icon, Delete02Icon, GitBranchIcon } from "@hugeicons/core-free-icons";
 import { act, useEffect, useRef, useState, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { button, click, createWorld, mountWorkbench, oid, press, settle, succeeded, text, unmountAll } from "./sync-fake";
+import { readFileSync } from "node:fs";
+import { button, click, createWorld, keyboardFocus, mountWorkbench, oid, press, settle, snapshot, succeeded, text, tooltipText, unmountAll } from "./sync-fake";
 import { contractChecked, fixtureId } from "./bridge-contract";
 
 // tasks.md T037 (feature 004, WP11). Stories US1 to US4. Spec FR-033, FR-068, FR-085, FR-086. Plan D15, D16. Data-model §14. Contract Δ8.
@@ -167,6 +169,26 @@ describe("views (FR-033, FR-068, data-model §14)", () => {
     // Plan D16: the segmented parts are standard buttons, 28 px in the compact density.
     for (const part of bar.querySelectorAll<HTMLElement>('nav[aria-label="Views"] button')) expect(part.style.height).toBe("var(--h-button)");
   });
+
+  test("the top bar stays one row, and the repository button shows the folder name only, with the full path in its tooltip and accessible name (T087)", async () => {
+    const root = "C:\\Users\\sample\\AppData\\Local\\Temp\\a-long-sample-folder-name-that-fills-the-top-bar\\nested\\deeper\\sample-repo";
+    const world = createWorld();
+    world.answers.readWorkspace = () => {
+      const shot = snapshot(world);
+      return succeeded({ ...shot, identity: { ...shot.identity, worktreeRoot: root } });
+    };
+    await mountWorkbench(workbench, world);
+    // The 001 header model gives one row at this width (plan.md "Header layout").
+    expect(window.innerWidth).toBeGreaterThanOrEqual(960);
+    const classes = header().className.split(/\s+/);
+    expect(classes).toContain("flex-nowrap");
+    expect(classes).not.toContain("flex-wrap");
+    const repository = header().querySelector<HTMLElement>('[aria-keyshortcuts="Control+R"]')!;
+    expect(text(repository)).toBe("sample-repo");
+    expect(repository.getAttribute("aria-label")).toBe(`sample-repo, ${root}`);
+    await keyboardFocus(repository);
+    expect(tooltipText()).toContain(root);
+  });
 });
 
 describe("switcher popover (plan.md D15)", () => {
@@ -237,10 +259,10 @@ describe("action menu (FR-014, FR-085, plan.md D15, D16)", () => {
         trigger={<Button>Actions</Button>}
         groups={[
           [
-            { label: "Switch", keys: { aria: "Control+.", text: "Ctrl+." }, onSelect: () => ran.push("switch") },
-            { label: "Delete…", keys: { aria: "Delete", text: "Del" }, reason: REASON, danger: true, onSelect: () => ran.push("delete") },
+            { label: "Switch", icon: GitBranchIcon, keys: { aria: "Control+.", text: "Ctrl+." }, onSelect: () => ran.push("switch") },
+            { label: "Delete…", icon: Delete02Icon, keys: { aria: "Delete", text: "Del" }, reason: REASON, danger: true, onSelect: () => ran.push("delete") },
           ],
-          [{ label: "Copy branch name", onSelect: () => ran.push("copy") }],
+          [{ label: "Copy branch name", icon: Copy01Icon, onSelect: () => ran.push("copy") }],
         ]}
       />
     );
@@ -276,6 +298,49 @@ describe("action menu (FR-014, FR-085, plan.md D15, D16)", () => {
     expect(ran).toEqual([]);
     await click(openItems().find((e) => accessibleName(e) === "Switch")!);
     expect(ran).toEqual(["switch"]);
+  });
+
+  test("each item shows a 16 px icon before its label, and an unavailable item shows its Muted reason on its line before the key column (D16, T089)", async () => {
+    await render(<Menu ran={[]} />);
+    await click(button("Actions"));
+    for (const item of openItems()) {
+      const icon = item.firstElementChild!;
+      expect(icon.getAttribute("data-slot")).toBe("menu-icon");
+      expect(icon.getAttribute("aria-hidden")).toBe("true");
+      expect(icon.querySelector("svg")?.getAttribute("class")).toContain("size-4");
+    }
+    const item = openItems().find((e) => accessibleName(e) === "Delete…")!;
+    const reason = document.getElementById(item.getAttribute("aria-describedby")!)!;
+    expect(item.contains(reason)).toBe(true);
+    expect(reason.className.split(/\s+/)).toContain("text-muted-text");
+    expect(reason.getAttribute("aria-hidden")).toBe("true");
+    const key = item.querySelector('[data-slot="dropdown-menu-shortcut"]')!;
+    expect(reason.compareDocumentPosition(key) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The reason never wraps to a line of its own.
+    expect(reason.className.split(/\s+/)).toContain("whitespace-nowrap");
+  });
+
+  test("the focus outline marks only the focused item, 2 px inside it, and never the whole menu (D16, T089)", () => {
+    const css = readFileSync(printOrigin("../../src/frontend/index.css", import.meta.dir), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const rules = [...css.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.replace(/\s+/g, " ").trim(), body: m[2]!.replace(/\s+/g, " ").trim() }));
+    const popup = rules.find((r) => r.selector.includes('[data-slot="dropdown-menu-content"]') && r.selector.includes('[data-slot="menubar-content"]') && r.selector.endsWith(":focus-visible"));
+    expect(popup?.body).toBe("outline: none;");
+    const items = rules.find((r) => r.selector.includes('[role="menuitem"]') && r.selector.endsWith(":focus-visible"));
+    expect(items?.body).toBe("outline-offset: calc(-1 * var(--focus-width));");
+  });
+
+  test("a row opens its menu beside the row, so the row stays visible (D16, T089)", async () => {
+    function RowMenu() {
+      const [row, setRow] = useState<HTMLElement | null>(null);
+      return (
+        <>
+          <div ref={setRow}>login-form</div>
+          {row === null ? null : <ActionMenu label="Actions for login-form" groups={[[{ label: "Switch", onSelect: () => {} }]]} open anchor={row} onOpenChange={() => {}} />}
+        </>
+      );
+    }
+    await render(<RowMenu />);
+    expect(document.querySelector('[data-slot="dropdown-menu-content"]')?.getAttribute("data-side")).toBe("inline-end");
   });
 
   test("selectable text keeps the built-in menu with Copy, unless the element opens its own action menu", async () => {

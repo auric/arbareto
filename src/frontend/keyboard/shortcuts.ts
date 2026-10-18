@@ -126,6 +126,11 @@ export function createShortcutHandler() {
   };
 }
 
+/** Feature 004 plan.md D15 keyboard map, Ctrl+F: the filter of the active view. History keeps the 002 history filter. The Settings view has no filter. */
+export function filterTarget(view: "history" | "commit" | "settings"): "history" | "files" | null {
+  return view === "history" ? "history" : view === "commit" ? "files" : null;
+}
+
 // Feature 004 plan.md D15 keyboard map. A region calls `scopedAction` from its own key handler, so each key acts only there (spec FR-087).
 
 /** The focused region of a scoped key. */

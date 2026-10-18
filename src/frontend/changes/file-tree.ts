@@ -24,28 +24,42 @@ const utf8 = new TextDecoder("utf-8");
 const bytesOf = (entry: ChangeEntry) => atob(entry.pathBytes);
 const display = (binary: string) => utf8.decode(Uint8Array.from(binary, (c) => c.charCodeAt(0)));
 
-type Folder = { name: string; children: Map<string, Folder | ChangeEntry>; count: number };
+type Folder = { name: string; children: Map<string, Folder | ChangeEntry>; count: number; shown: number };
 const isFolder = (node: Folder | ChangeEntry): node is Folder => "children" in node;
+/** Spec FR-101: the rows that Filter files shows. Without it, every entry shows. */
+export type Keep = (entry: ChangeEntry) => boolean;
 
-/** One tree of `entries` in service order. A folder with one folder child joins it, as "docs/drafts". `extra` siblings follow the top level. It returns the top-level count. */
-function treeRows(entries: readonly ChangeEntry[], scope: string, depth: number, toggled: ReadonlySet<string>, untracked: boolean, out: TreeRow[], extra: number): number {
-  const root: Folder = { name: "", children: new Map(), count: 0 };
+/**
+ * One tree of `entries` in service order. A folder with one folder child joins it, as "docs/drafts". `extra` siblings follow the top level. It returns the top-level count.
+ * Folder counts stay the counts of the status read. `keep` hides the files that it rejects, and the folders without a kept file.
+ */
+function treeRows(entries: readonly ChangeEntry[], scope: string, depth: number, toggled: ReadonlySet<string>, untracked: boolean, out: TreeRow[], extra: number, keep?: Keep): number {
+  const root: Folder = { name: "", children: new Map(), count: 0, shown: 0 };
   for (const entry of entries) {
     const parts = bytesOf(entry).split(SLASH);
+    const kept = keep === undefined || keep(entry) ? 1 : 0;
     let node = root;
     node.count++;
+    node.shown += kept;
     for (const part of parts.slice(0, -1)) {
       let next = node.children.get(`d${part}`) as Folder | undefined;
-      if (next === undefined) node.children.set(`d${part}`, (next = { name: part, children: new Map(), count: 0 }));
+      if (next === undefined) node.children.set(`d${part}`, (next = { name: part, children: new Map(), count: 0, shown: 0 }));
       next.count++;
+      next.shown += kept;
       node = next;
     }
     node.children.set(`f${entry.entryId}`, entry);
   }
+  const shownChildren = (folder: Folder) => {
+    const all = [...folder.children.values()];
+    return keep === undefined ? all : all.filter((child) => (isFolder(child) ? child.shown > 0 : keep(child)));
+  };
   // Untracked folders start collapsed, so 100,000 files below them make no rows (spec FR-030, FR-086).
-  const walk = (folder: Folder, prefix: string, level: number, size: number) => {
+  const walk = (folder: Folder, prefix: string, level: number, more: number) => {
+    const children = shownChildren(folder);
+    const size = children.length + more;
     let pos = 0;
-    for (const child of folder.children.values()) {
+    for (const child of children) {
       pos++;
       if (!isFolder(child)) {
         out.push({ kind: "file", key: child.entryId, depth: level, entry: child, pos, size });
@@ -64,24 +78,25 @@ function treeRows(entries: readonly ChangeEntry[], scope: string, depth: number,
       const key = `${scope}:${folder}`;
       const expanded = untracked === toggled.has(key);
       out.push({ kind: "folder", key, depth: level, name: display(name), path: display(path), folder, count: node.count, expanded, untracked, pos, size });
-      if (expanded) walk(node, path + SLASH, level + 1, node.children.size);
+      if (expanded) walk(node, path + SLASH, level + 1, 0);
     }
+    return children.length;
   };
-  walk(root, "", depth, root.children.size + extra);
-  return root.children.size;
+  return walk(root, "", depth, extra);
 }
 
-function listRows(entries: readonly ChangeEntry[], layout: Layout, scope: string, depth: number, toggled: ReadonlySet<string>, untracked: boolean, out: TreeRow[], extra = 0): number {
-  if (layout === "tree") return treeRows(entries, scope, depth, toggled, untracked, out, extra);
-  entries.forEach((entry, i) => out.push({ kind: "file", key: entry.entryId, depth, entry, pos: i + 1, size: entries.length + extra }));
-  return entries.length;
+function listRows(entries: readonly ChangeEntry[], layout: Layout, scope: string, depth: number, toggled: ReadonlySet<string>, untracked: boolean, out: TreeRow[], extra = 0, keep?: Keep): number {
+  if (layout === "tree") return treeRows(entries, scope, depth, toggled, untracked, out, extra, keep);
+  const shown = keep === undefined ? entries : entries.filter(keep);
+  shown.forEach((entry, i) => out.push({ kind: "file", key: entry.entryId, depth, entry, pos: i + 1, size: shown.length + extra }));
+  return shown.length;
 }
 
 /**
  * The rows of the Changes list: the tracked changes first, then the Untracked section row with its count.
- * The untracked rows build only while the section is open (plan.md D15 "Virtual tree").
+ * The untracked rows build only while the section is open (plan.md D15 "Virtual tree"). `keep` filters only these shown rows (spec FR-101).
  */
-export function changesRows(entries: readonly ChangeEntry[], layout: Layout, toggled: ReadonlySet<string>, untrackedOpen: boolean): TreeRow[] {
+export function changesRows(entries: readonly ChangeEntry[], layout: Layout, toggled: ReadonlySet<string>, untrackedOpen: boolean, keep?: Keep): TreeRow[] {
   const tracked: ChangeEntry[] = [];
   let untracked = 0;
   for (const e of entries) {
@@ -90,17 +105,17 @@ export function changesRows(entries: readonly ChangeEntry[], layout: Layout, tog
   }
   const out: TreeRow[] = [];
   // The Untracked section row is the last sibling of the tracked top level.
-  const top = listRows(tracked, layout, "t", 0, toggled, false, out, untracked === 0 ? 0 : 1);
+  const top = listRows(tracked, layout, "t", 0, toggled, false, out, untracked === 0 ? 0 : 1, keep);
   if (untracked === 0) return out;
   out.push({ kind: "section", key: "untracked", depth: 0, count: untracked, expanded: untrackedOpen, pos: top + 1, size: top + 1 });
-  if (untrackedOpen) listRows(entries.filter((e) => e.category === "untracked"), layout, "u", 1, toggled, true, out);
+  if (untrackedOpen) listRows(entries.filter((e) => e.category === "untracked"), layout, "u", 1, toggled, true, out, 0, keep);
   return out;
 }
 
 /** The rows of the Staged list. */
-export function stagedRows(entries: readonly ChangeEntry[], layout: Layout, toggled: ReadonlySet<string>): TreeRow[] {
+export function stagedRows(entries: readonly ChangeEntry[], layout: Layout, toggled: ReadonlySet<string>, keep?: Keep): TreeRow[] {
   const out: TreeRow[] = [];
-  listRows(entries.filter((e) => e.category === "staged"), layout, "s", 0, toggled, false, out);
+  listRows(entries.filter((e) => e.category === "staged"), layout, "s", 0, toggled, false, out, 0, keep);
   return out;
 }
 

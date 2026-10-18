@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
-import { createShortcutHandler, KEYS, scopedAction, type KeyScope, type ScopedAction, type ShortcutContext } from "../../src/frontend/keyboard/shortcuts";
+import { createShortcutHandler, filterTarget, KEYS, scopedAction, type KeyScope, type ScopedAction, type ShortcutContext } from "../../src/frontend/keyboard/shortcuts";
 
 // tasks.md T038 (feature 004, WP11). Stories US1 to US4. Spec FR-014, FR-043, FR-087, SC-014. Plan D15 keyboard map.
 
@@ -99,5 +99,19 @@ describe("window keys and collisions (FR-014, SC-014)", () => {
       const keys = D15.filter((r) => r[3].includes(scope)).map((r) => r[1]);
       expect(new Set(keys).size).toBe(keys.length);
     }
+  });
+});
+
+describe("Ctrl+F per view (FR-101, plan D15 keyboard map, T092)", () => {
+  test("Ctrl+F focuses the filter of the active view: the history filter in History, Filter files in Commit, and nothing in Settings", () => {
+    expect(filterTarget("history")).toBe("history");
+    expect(filterTarget("commit")).toBe("files");
+    expect(filterTarget("settings")).toBeNull();
+  });
+
+  test("Ctrl+F acts in the window and in an editable field, so it leaves the message field for the filter", () => {
+    for (const path of [[body], [row, body], [input, body], [textarea, body]]) expect(pageAction({ key: "f", ctrlKey: true }, path)).toEqual({ type: "focusFilter" });
+    expect(pageAction({ key: "F", ctrlKey: true }, [body])).toEqual({ type: "focusFilter" });
+    for (const modifier of ["shiftKey", "altKey", "metaKey"] as const) expect(pageAction({ key: "f", ctrlKey: true, [modifier]: true }, [body])).toBeNull();
   });
 });

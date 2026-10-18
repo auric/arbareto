@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import type { ChangeEntry } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
@@ -9,18 +9,8 @@ import { printOrigin } from "../origin";
 
 printOrigin("../../src/frontend/changes/ComparisonView.tsx", import.meta.dir);
 printOrigin("../../src/frontend/changes/hunk-mapping.ts", import.meta.dir);
+printOrigin("../../src/frontend/changes/patch-css.ts", import.meta.dir);
 // `ComparisonView.tsx` loads Base UI. Base UI must first evaluate with a DOM (tests/dom.ts).
-printOrigin("../../src/frontend/changes/PatchView.tsx", import.meta.dir);
-// Pierre needs the Vite build (T160). The double renders the CSS that PatchView gives Pierre and one line that Pierre marks as selected.
-mock.module("@pierre/diffs/react", () => ({
-  Virtualizer: ({ children }: { children: ReactNode }) => <div>{children}</div>,
-  FileDiff: ({ options, selectedLines }: { options: { unsafeCSS: string }; selectedLines: unknown }) => (
-    <div data-slot="pierre-double">
-      <style>{options.unsafeCSS}</style>
-      {selectedLines === null ? null : <div data-selected-line="" />}
-    </div>
-  ),
-}));
 registerDom();
 const { createRoot } = await import("react-dom/client");
 const { ComparisonView } = await import("../../src/frontend/changes/ComparisonView");
@@ -151,9 +141,15 @@ describe("hunk mapping", () => {
 });
 
 describe("selected lines (feature 004 plan.md D16)", () => {
+  // Pierre needs the Vite build (T160), and other files stub PatchView in a shared process. The test renders the PatchView `unsafeCSS` on a line that Pierre marks as selected.
   test("the selected lines take the 3 px Accent bar on the left and no fill", async () => {
-    const { default: PatchView } = await import("../../src/frontend/changes/PatchView");
-    const host = await show(<PatchView patch={PATCH} selected={null} lines={{ start: 2, side: "additions", end: 2 }} onLines={noop} />);
+    const { PATCH_CSS } = await import("../../src/frontend/changes/patch-css");
+    const host = await show(
+      <div>
+        <style>{PATCH_CSS}</style>
+        <div data-selected-line="" />
+      </div>,
+    );
     host.style.setProperty("--accent-role", "rgb(1, 2, 3)");
     const line = host.querySelector<HTMLElement>("[data-selected-line]")!;
     const style = getComputedStyle(line);

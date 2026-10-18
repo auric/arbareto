@@ -101,6 +101,28 @@ describe("readBranches (contract Δ3, data-model §1)", () => {
     TIMEOUT_MS,
   );
 
+  caseTest(TASK, "data-model §1 `oid`: a remote ref to an annotated tag reports the commit of the tag, a remote ref to a tree is no entry, and tracking still pairs on the ref value", SHELL, () =>
+    withService({ name: "t034-branches-peel" }, async (service) => {
+      const f = build("switch-clean");
+      // `git update-ref` refuses a non-commit value under refs/heads/, so these values sit under refs/remotes/.
+      wb(repoOf(f), ["tag", "-a", "-m", "annotated", "anno", "target"]);
+      wb(repoOf(f), ["update-ref", "refs/remotes/one/anno", "refs/tags/anno"]);
+      wb(repoOf(f), ["update-ref", "refs/remotes/one/tree", "target^{tree}"]);
+      wb(repoOf(f), ["config", "branch.target.remote", "one"]);
+      wb(repoOf(f), ["config", "branch.target.merge", "refs/heads/anno"]);
+      const r = await service.register(f.repo);
+      const response = await readBranches(service, r);
+      expect(outcome(response)).toEqual({ state: "succeeded", code: undefined });
+      const byRef = new Map(response.result!.entries.map((e) => [e.ref, e]));
+      const commit = out(f, ["rev-parse", "--verify", "-q", "refs/remotes/one/anno^{commit}"]).trim();
+      expect(out(f, ["rev-parse", "refs/remotes/one/anno"]).trim()).not.toBe(commit);
+      expect({ oid: byRef.get("refs/remotes/one/anno")?.oid, tree: byRef.has("refs/remotes/one/tree") }).toEqual({ oid: commit, tree: false });
+      // Git counts against the peeled upstream commit. The pairing compares the ref values of both listings.
+      expect(byRef.get("refs/heads/target")?.tracking).toMatchObject({ upstream: "refs/remotes/one/anno", upstreamObjectId: out(f, ["rev-parse", "refs/remotes/one/anno"]).trim(), track: { state: "counts", ahead: 0, behind: 0 } });
+    }),
+    TIMEOUT_MS,
+  );
+
   caseTest(TASK, "plan.md D3: one mapping fetch refspec gives the local name, and zero or two mapping refspecs give none", SHELL, () =>
     withService({ name: "t034-local-names" }, async (service) => {
       const f = build("switch-clean");

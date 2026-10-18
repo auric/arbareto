@@ -111,7 +111,8 @@ export function createBranchesReader({ runner, trust, reader, listingTuple }: Pi
 
         // Exact matches only: a ref with bytes that are no valid UTF-8 has lossy text, so it pairs with nothing.
         const exact = records.filter((r) => !r.invalidUtf8);
-        const oids = new Map(exact.map((r) => [r.ref, r.oid]));
+        // The feature 003 tracking listing names each ref value, so the pairing compares ref values, not peeled commits.
+        const values = new Map(exact.map((r) => [r.ref, r.object]));
         const locals = new Set(exact.filter((r) => r.kind === "local").map((r) => r.ref));
         const tracked = new Map(trackingEntries.filter((e) => !e.invalidUtf8).map((e) => [`${HEADS}${e.name}`, e]));
         // Data-model §1 `heldBy`: the first worktree record with `branch <ref>`. The main worktree is the first record (git-worktree(1)).
@@ -120,8 +121,8 @@ export function createBranchesReader({ runner, trust, reader, listingTuple }: Pi
         const entries: BranchEntry[] = records.map((r) => {
           // Feature 003 data-model §1 pairing: the tracking entry counts only when its object IDs equal this read.
           const entry = r.invalidUtf8 ? undefined : tracked.get(r.ref);
-          const upstreamOid = r.upstream === null ? null : (oids.get(r.upstream) ?? null);
-          const tracking = entry !== undefined && entry.objectId === r.oid && entry.upstream === r.upstream && entry.upstreamObjectId === upstreamOid ? entry : null;
+          const upstreamValue = r.upstream === null ? null : (values.get(r.upstream) ?? null);
+          const tracking = entry !== undefined && entry.objectId === r.object && entry.upstream === r.upstream && entry.upstreamObjectId === upstreamValue ? entry : null;
           // Plan.md D3: zero or several mapping refspecs give no local name.
           const localName = r.kind === "remote" && !r.invalidUtf8 ? localNameOf(r.ref, listed.listing.entries, objectFormat) : null;
           return {

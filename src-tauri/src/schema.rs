@@ -767,20 +767,21 @@ pub mod reply {
         ))
     }
 
-    /// Feature 004 contract Δ6 `fileAppend`: `appended`, `stale`, `refused` with `not-regular`, or `error` with a file fact code.
+    /// Feature 004 contract Δ6 `fileAppend`: `appended`, `stale`, `stopped`, `interrupted`, `refused` with `not-regular`, or `error` with a file fact code.
     pub fn file_append(call_id: &str, appended: AppendResult) -> Value {
         use p::FileAppendGroup as G;
+        use p::FileAppendResultResult as R;
         let type_ = "fileAppend".to_string();
+        let result = |result: R| G::Result {
+            call_id: field(call_id),
+            result,
+            type_: type_.clone(),
+        };
         encode(p::ProcessReply::FileAppendGroup(match appended {
-            AppendResult::Appended | AppendResult::Stale => G::Result {
-                call_id: field(call_id),
-                result: if appended == AppendResult::Appended {
-                    p::FileAppendResultResult::Appended
-                } else {
-                    p::FileAppendResultResult::Stale
-                },
-                type_,
-            },
+            AppendResult::Appended => result(R::Appended),
+            AppendResult::Stale => result(R::Stale),
+            AppendResult::Stopped => result(R::Stopped),
+            AppendResult::Interrupted => result(R::Interrupted),
             AppendResult::NotRegular => G::Refused {
                 call_id: field(call_id),
                 reason: p::FileAppendRefusedReason::NotRegular,
@@ -1886,6 +1887,14 @@ mod tests {
             (
                 reply::file_append(call, AppendResult::Stale),
                 json!({ "type": "fileAppend", "callId": call, "result": "stale" }),
+            ),
+            (
+                reply::file_append(call, AppendResult::Stopped),
+                vector("process-reply-file-append-stopped.json"),
+            ),
+            (
+                reply::file_append(call, AppendResult::Interrupted),
+                json!({ "type": "fileAppend", "callId": call, "result": "interrupted" }),
             ),
             (
                 reply::file_append(call, AppendResult::Error(E::SharingViolation)),

@@ -1346,9 +1346,9 @@ export function createBunRunner(options: BunRunnerOptions) {
       const names = request.target === "gitignore" ? [".gitignore"] : ["info", "exclude"];
       if (resolve(request.path) !== resolve(join(root, ...names))) throw new RunnerRefusal("INVALID_REQUEST", "fileAppend path");
       const bytes = Buffer.from(request.bytes, "base64");
-      // src-tauri `file_append_deadline`: the reply group has no deadline form, so a walk past its deadline gives `error` `other-error`.
-      const deadline = (reply: FileAppendReply | WalkStop): FileAppendReply | WalkStop => ("stop" in reply && reply.stop === "deadline" ? { result: "error", code: "other-error" } : reply);
-      return deadline(await walk(signal, (): FileAppendReply => {
+      // src-tauri `file_append_deadline` and `file_append_stopped`: a walk past its deadline gives `error` `other-error`, and a stop before the read gives `stopped`.
+      const replied = (reply: FileAppendReply | WalkStop): FileAppendReply => ("stop" in reply ? (reply.stop === "deadline" ? { result: "error", code: "other-error" } : { result: "stopped" }) : reply);
+      return replied(await walk(signal, (): FileAppendReply => {
         let at = root;
         for (const [i, name] of names.entries()) {
           at = join(at, name);

@@ -20,7 +20,7 @@ export type IgnoreTarget = "gitignore" | "exclude";
 
 // Contract Δ6 `fileAppend`: the frame without `type` and `callId`, and its reply without them.
 export type FileAppendRequest = Omit<Extract<z.infer<typeof ProcessRequest>, { type: "fileAppend" }>, "type" | "callId">;
-export type FileAppendReply = { result: "appended" | "stale" } | { result: "refused"; reason: "not-regular" } | { result: "error"; code: (typeof FILE_FACT_ERRORS)[number] };
+export type FileAppendReply = { result: "appended" | "stale" | "stopped" | "interrupted" } | { result: "refused"; reason: "not-regular" } | { result: "error"; code: (typeof FILE_FACT_ERRORS)[number] };
 export interface FileAppender {
   fileAppend(request: FileAppendRequest, signal: AbortSignal): Promise<FileAppendReply | WalkStop>;
 }
@@ -184,14 +184,16 @@ export async function runIgnore<S>(t: IgnoreContext & { appender: FileAppender }
   if ("refused" in reply) return { type: "no-effects", observed: "failed", code: reply.refused, status };
   if (!("stop" in reply) && reply.result === "stale") return { type: "no-effects", observed: "failed", code: "STALE_REVIEW", status };
   if (!("stop" in reply) && reply.result === "refused") return { type: "no-effects", observed: "failed", code: "WORKBENCH_UNAVAILABLE", reason: "ignore-not-regular", status };
-  // `appended` and `error` can follow a write. A stop can reach the shell after its walk wrote. So the fresh read decides.
+  // `appended` and `error` can follow a write, so the fresh read decides. After a stop, `stopped` says that nothing was written, and the read cross-checks it.
+  // `interrupted`, and no reply within the walk deadline, leave the write unknown, so the read decides.
   if (!("fact" in facts)) return { type: "reconciliation-read-failed", code: "code" in facts ? facts.code : "DEADLINE", status };
   const fact = facts.fact;
   if (fact.kind === "error") return { type: "reconciliation-read-failed", code: "GIT_FAILED", status };
   const same = (state: "absent" | FileState) => (state === "absent" ? fact.kind === "absent" : fact.kind === "file" && fact.size === state.size && fact.digest === state.sha256);
-  if ("stop" in reply) {
+  if ("stop" in reply || reply.result === "stopped" || reply.result === "interrupted") {
     if (!same(plan.expected)) return { type: "failed-with-effects", status };
-    return { type: "no-effects", observed: reply.stop === "canceled" ? "canceled" : "failed", ...(reply.stop === "deadline" ? { code: "DEADLINE" as const } : {}), status };
+    const deadline = "stop" in reply && reply.stop === "deadline";
+    return { type: "no-effects", observed: deadline ? "failed" : "canceled", ...(deadline ? { code: "DEADLINE" as const } : {}), status };
   }
   if (same(plan.after)) return { type: reply.result === "appended" ? "intended-effects-confirmed" : "differing-effects", status };
   if (reply.result === "error" && same(plan.expected)) return { type: "no-effects", observed: "failed", code: "GIT_FAILED", status };

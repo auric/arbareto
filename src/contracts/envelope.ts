@@ -1398,6 +1398,7 @@ export const ReviewWorkbenchResult = z
 
 // Data-model §1 `readBranches`. Only a remote entry maps to a local name, and only a local entry is current or holds a tracking entry.
 // `invalidUtf8`: the ref bytes are no valid UTF-8, so `ref` is display text only.
+// `oid` is a commit, peeled for a ref that names an annotated tag. `tracking` keeps the 003 ref values, so its upstream OID can be the tag object.
 const BranchEntry = z
   .strictObject({
     ref: FullRef,

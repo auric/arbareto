@@ -23,7 +23,10 @@ export interface BranchRecord {
   name: string;
   // True when the ref bytes are no valid UTF-8, so `ref` is not the name that Git uses.
   invalidUtf8: boolean;
+  // Data-model §1: the commit of the ref. An annotated tag gives its peeled commit.
   oid: string;
+  // `%(objectname)`: the ref value. Feature 003 `readTracking` pairs on this value.
+  object: string;
   upstream: string | null;
   current: boolean;
 }
@@ -31,8 +34,11 @@ export interface BranchRecord {
 const HEADS = "refs/heads/";
 const REMOTES = "refs/remotes/";
 const isRefField = (field: string) => field === "" || field.startsWith("refs/");
+// git-cat-file(1) `objecttype` values.
+const OBJECT_TYPES: readonly string[] = ["commit", "tree", "blob", "tag"];
 
-// Five fields with four NUL bytes and LF. A record with a non-empty `symref` is no branch entry.
+// Eight fields with seven NUL bytes and LF. A record with a non-empty `symref`, and a record whose object peels to no commit, is no branch entry.
+// git-for-each-ref(1): a `*` field holds the value of the peeled object of a tag, and Git peels nested tags fully, so a peeled type is never `tag`.
 export function parseBranches(stdout: Uint8Array, objectFormat: ObjectFormat): BranchRecord[] | null {
   const raw = latin1(stdout);
   if (raw === "") return [];
@@ -41,12 +47,15 @@ export function parseBranches(stdout: Uint8Array, objectFormat: ObjectFormat): B
   let current = 0;
   for (const line of raw.slice(0, -1).split("\n")) {
     const f = line.split("\0");
-    if (f.length !== 5) return null;
-    const [refname, oid, upstream, head, symref] = f as [string, string, string, string, string];
+    if (f.length !== 8) return null;
+    const [refname, object, upstream, head, symref, type, peeled, peeledType] = f as [string, string, string, string, string, string, string, string];
     const prefix = refname.startsWith(HEADS) ? HEADS : refname.startsWith(REMOTES) ? REMOTES : null;
-    if (prefix === null || refname.length === prefix.length || !isObjectId(oid, objectFormat) || !isRefField(upstream) || !isRefField(symref)) return null;
+    if (prefix === null || refname.length === prefix.length || !isObjectId(object, objectFormat) || !isRefField(upstream) || !isRefField(symref)) return null;
+    const peel = type === "tag" ? isObjectId(peeled, objectFormat) && OBJECT_TYPES.includes(peeledType) && peeledType !== "tag" : OBJECT_TYPES.includes(type) && peeled === "" && peeledType === "";
+    if (!peel) return null;
     if (head !== " " && !(head === "*" && prefix === HEADS && ++current === 1)) return null;
-    if (symref !== "") continue;
+    const oid = type === "commit" ? object : peeledType === "commit" ? peeled : null;
+    if (symref !== "" || oid === null) continue;
     const ref = decoded(refname);
     entries.push({
       ref: ref.text,
@@ -54,6 +63,7 @@ export function parseBranches(stdout: Uint8Array, objectFormat: ObjectFormat): B
       name: ref.text.slice(prefix.length),
       invalidUtf8: !ref.exact,
       oid,
+      object,
       upstream: upstream === "" ? null : decoded(upstream).text,
       current: head === "*",
     });

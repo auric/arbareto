@@ -1,0 +1,5 @@
+{
+  "schema": "read-branches-result",
+  "expected": "valid",
+  "text": "{\"entries\":[{\"ref\":\"refs/heads/main\",\"kind\":\"local\",\"name\":\"main\",\"invalidUtf8\":false,\"oid\":\"0123456789abcdef0123456789abcdef01234567\",\"upstream\":\"refs/remotes/origin/anno\",\"tracking\":{\"name\":\"main\",\"invalidUtf8\":false,\"objectId\":\"0123456789abcdef0123456789abcdef01234567\",\"upstream\":\"refs/remotes/origin/anno\",\"upstreamObjectId\":\"fedcba9876543210fedcba9876543210fedcba98\",\"track\":{\"state\":\"counts\",\"ahead\":0,\"behind\":0},\"current\":true},\"heldBy\":\"C:/repo\",\"current\":true,\"localName\":null,\"hasLocal\":false},{\"ref\":\"refs/remotes/origin/anno\",\"kind\":\"remote\",\"name\":\"origin/anno\",\"invalidUtf8\":false,\"oid\":\"0123456789abcdef0123456789abcdef01234567\",\"upstream\":null,\"tracking\":null,\"heldBy\":null,\"current\":false,\"localName\":\"anno\",\"hasLocal\":false}]}"
+}

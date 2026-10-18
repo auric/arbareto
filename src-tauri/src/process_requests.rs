@@ -208,26 +208,34 @@ enum Reply {
     Start,
     /// A request of frame kind `.0`. Only its reply or its deadline reply ends it (T314 D3).
     Frame(&'static str, DeadlineReply),
+    /// Feature 004 contract Δ6 `fileAppend`: `cancel` and `closeJob` stop it, and the stop reply `.1` follows, so every request gets one reply.
+    Answered(DeadlineReply, DeadlineReply),
 }
 
 impl Reply {
     fn frame(self) -> &'static str {
         match self {
             Reply::Frame(frame, _) => frame,
-            Reply::Walk(_) | Reply::Start => "process",
+            Reply::Walk(_) | Reply::Start | Reply::Answered(..) => "process",
         }
     }
 
     fn deadline(self, call_id: &str) -> Value {
         match self {
             Reply::Start => reply::exit(call_id, None, Some(0), Some(ExitDeadline::Deadline)),
-            Reply::Walk(deadline) | Reply::Frame(_, deadline) => deadline(call_id),
+            Reply::Walk(deadline) | Reply::Frame(_, deadline) | Reply::Answered(deadline, _) => {
+                deadline(call_id)
+            }
         }
     }
 
-    /// The reply after a stop. Only a `run` start gets one.
+    /// The reply after a stop. Only a `run` start and a `fileAppend` walk get one.
     fn stopped(self, call_id: &str) -> Option<Value> {
-        matches!(self, Reply::Start).then(|| reply::exit(call_id, None, Some(0), None))
+        match self {
+            Reply::Start => Some(reply::exit(call_id, None, Some(0), None)),
+            Reply::Answered(_, stopped) => Some(stopped(call_id)),
+            Reply::Walk(_) | Reply::Frame(..) => None,
+        }
     }
 }
 
@@ -1114,9 +1122,10 @@ impl ProcessRequests {
         let (expected, bytes, call) = (parsed.expected, parsed.bytes, call_id.to_string());
         let Some(installation) = installation else {
             let root = roots[root].clone();
+            // Only the watchdog runs the finish that writes, so a stop before it gives `stopped` with nothing written.
             return self.spawn_walk(
                 &mut state,
-                Reply::Walk(file_append_deadline),
+                Reply::Answered(file_append_deadline, file_append_stopped),
                 call_id,
                 operation_id,
                 read_at,
@@ -1157,9 +1166,10 @@ impl ProcessRequests {
         self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
         let (operation, deadline) = (operation_id.to_string(), self.walk_bound());
+        // The `append` process writes inside the walk, and a stop ends it at any point, so the shell cannot know whether it wrote.
         self.spawn_walk(
             &mut state,
-            Reply::Walk(file_append_deadline),
+            Reply::Answered(file_append_deadline, file_append_interrupted),
             call_id,
             operation_id,
             read_at,
@@ -2215,7 +2225,7 @@ impl ProcessRequests {
     }
 
     /// Runs `work` on its own thread with a watchdog thread (contract §6 "Walks").
-    /// Only the watchdog replies and runs the finish of `work`, so a walk gets one reply or none, and no change follows a stop.
+    /// Only the watchdog replies and runs the finish of `work`, so a walk gets one reply or none, and no finish runs after a stop.
     /// At the deadline, the watchdog runs `at_deadline` before the deadline reply. The caller holds `state` until it returns.
     #[allow(clippy::too_many_arguments)]
     fn spawn_walk(
@@ -3719,6 +3729,16 @@ fn file_append_deadline(call_id: &str) -> Value {
         call_id,
         AppendResult::Error(schema::process_reply::FileAppendErrorCode::OtherError),
     )
+}
+
+/// Feature 004 contract Δ6: a stop before the finish of a Windows walk writes nothing.
+fn file_append_stopped(call_id: &str) -> Value {
+    reply::file_append(call_id, AppendResult::Stopped)
+}
+
+/// Feature 004 contract Δ6: a stop of a WSL walk can end the `append` process during its write.
+fn file_append_interrupted(call_id: &str) -> Value {
+    reply::file_append(call_id, AppendResult::Interrupted)
 }
 
 /// Feature 004 contract Δ3 `revealPath`: an error, the deadline included, gives `UNKNOWN_TARGET`.
@@ -12090,6 +12110,102 @@ pub(crate) mod tests {
         );
         assert!(!workspace.worktree.join("exclude").exists());
         assert!(!workspace.worktree.join("x").exists());
+    }
+
+    /// Feature 004 contract Δ6: every `fileAppend` request gets one reply. A stop before the finish of the walk gives `stopped`, and nothing is written.
+    /// Without the stop, the same held walk writes and replies `appended`.
+    #[test]
+    fn a_stop_before_the_file_append_finish_replies_stopped_and_writes_nothing() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::IgnoreGitignore, &workspace);
+        let gitignore = workspace.worktree.join(".gitignore");
+        std::fs::write(&gitignore, b"/a\n").expect("gitignore");
+        let expected = |bytes: &[u8]| json!({ "size": bytes.len(), "sha256": crate::settings::hex(&crate::settings::sha256(bytes)) });
+        for (stop, bytes, reply, after) in [
+            (true, expected(b"/a\n"), "stopped", &b"/a\n"[..]),
+            (false, expected(b"/a\n"), "appended", &b"/a\n/b\n"[..]),
+        ] {
+            let Some(oplock) = Oplock::request(&gitignore) else {
+                println!("{SKIP_OPLOCK}");
+                return;
+            };
+            let call = uuid();
+            harness.send(file_append_body(
+                &call,
+                &operation,
+                &workspace.repository,
+                "gitignore",
+                &gitignore,
+                bytes,
+                b"/b\n",
+            ));
+            assert!(
+                oplock.broken(WAIT),
+                "the target open of the walk waits on the oplock break"
+            );
+            // The seam: the state lock holds the watchdog after the check of the walk ends.
+            let state = harness.requests.state();
+            drop(oplock);
+            assert!(
+                eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+                "the check ends after the oplock holder closes"
+            );
+            std::thread::sleep(Duration::from_millis(200));
+            if stop {
+                // `cancel` sends exactly this event under the state lock.
+                let _ = state.walks[call.as_str()].events.send(WalkEvent::Stop);
+            }
+            drop(state);
+            assert_eq!(
+                harness.reply(&call),
+                json!({ "type": "fileAppend", "callId": call, "result": reply })
+            );
+            std::thread::sleep(Duration::from_millis(500));
+            assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
+            assert_eq!(std::fs::read(&gitignore).expect("read"), after, "{reply}");
+        }
+    }
+
+    /// Feature 004 contract Δ6: a cancel ends the WSL `append` process at any point, so the reply is `interrupted`.
+    #[test]
+    fn a_canceled_wsl_file_append_replies_interrupted() {
+        let wsl = wsl_harness(true);
+        let (_git, repository) = slow_wsl_repository(&wsl);
+        let operation = uuid();
+        wsl.harness.requests.tag(
+            &operation,
+            Mutation::IgnoreExclude,
+            PhysicalIdentity::Wsl(wsl::WslIdentity {
+                guid: WSL_GUID.to_string(),
+                file_system_id: "fedc9aa3bd65bc57".to_string(),
+                inode: "4242".to_string(),
+            }),
+        );
+        let call = uuid();
+        let path = PathBuf::from(format!(r"{WSL_PATH}\.git\info\exclude"));
+        wsl.harness.send(file_append_body(
+            &call,
+            &operation,
+            &repository,
+            "exclude",
+            &path,
+            json!({ "size": 3, "sha256": HEX_A }),
+            b"/x\n",
+        ));
+        assert!(
+            walk_child_started(&wsl, &operation),
+            "the append child runs"
+        );
+        wsl.harness
+            .send(json!({ "type": "cancel", "callId": call }));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            json!({ "type": "fileAppend", "callId": call, "result": "interrupted" })
+        );
+        std::thread::sleep(Duration::from_millis(500));
+        assert_eq!(wsl.harness.replies_for(&call).len(), 1, "one reply");
     }
 
     /// Feature 004 contract Δ11: a WSL repository appends through the `wslFiles` mode `append` with its Linux roots.

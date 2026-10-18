@@ -25,7 +25,7 @@ import {
   WslDistrosReply,
   WslFilesReply,
 } from "../contracts/channel";
-import { INLINE_PROCESS_INPUT_BYTES, NATIVE_CHUNK_BYTES, UNACKNOWLEDGED_INPUT_CHUNKS } from "../contracts/limits";
+import { GIT_PROCESS_DEADLINE_MS, INLINE_PROCESS_INPUT_BYTES, NATIVE_CHUNK_BYTES, UNACKNOWLEDGED_INPUT_CHUNKS } from "../contracts/limits";
 import { isChannelPath, isIdentifier } from "../contracts/operations";
 import { isObject } from "../contracts/strict-json";
 import {
@@ -119,11 +119,21 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
 
   // A request other than `run`. A malformed reply fails the call at once.
   // Contract §6 "Walks": an abort of `canceled.signal` sends `cancel` and resolves `canceled.value` at once. An aborted signal sends nothing.
-  function ask<T>(kind: FrameKind, body: Body, parse: (reply: Body) => T | undefined, canceled?: { signal: AbortSignal; value: T }): Promise<T> {
+  // With `wait`, the shell still replies after `cancel`, so the call waits up to `wait` ms for that reply before it resolves `canceled.value`.
+  function ask<T>(kind: FrameKind, body: Body, parse: (reply: Body) => T | undefined, canceled?: { signal: AbortSignal; value: T; wait?: number }): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (canceled?.signal.aborted) return resolve(canceled.value);
       const callId = crypto.randomUUID();
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const abort = () => {
+        if (canceled!.wait !== undefined) {
+          send(kind, { type: "cancel", callId });
+          timer = setTimeout(() => {
+            pending.delete(callId);
+            resolve(canceled!.value);
+          }, canceled!.wait);
+          return;
+        }
         pending.delete(callId);
         resolve(canceled!.value);
         send(kind, { type: "cancel", callId });
@@ -131,6 +141,7 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
       pending.set(callId, {
         handle(replyKind, reply) {
           pending.delete(callId);
+          clearTimeout(timer);
           canceled?.signal.removeEventListener("abort", abort);
           const refused = replyKind === kind ? Refused.safeParse(reply) : undefined;
           if (refused?.success) {
@@ -461,6 +472,7 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
     },
 
     // Feature 004 contract Δ6 `fileAppend`: a walk, so an abort sends `cancel`. The reply group has no deadline form.
+    // Every request gets one reply, also after `cancel`, so the call waits for it within the walk deadline (contract §5). No reply by then gives `canceled`.
     async fileAppend(request, signal) {
       checkSyncRequest("fileAppend", request);
       return ask<FileAppendReply | WalkStop>(
@@ -472,7 +484,7 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
           const { type: _type, callId: _callId, ...result } = reply.data;
           return result;
         },
-        { signal, value: CANCELED },
+        { signal, value: CANCELED, wait: GIT_PROCESS_DEADLINE_MS },
       );
     },
 

@@ -18,7 +18,7 @@ const S = "c".repeat(64);
 const MESSAGE = "Merge branch 'topic'\n\n* topic:\n  Topic work\n";
 
 const READS: [string, string[], string[]][] = [
-  ["readBranches for-each-ref", wb.branchListArgs(), [...R, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00%(HEAD)%00%(symref)", "refs/heads", "refs/remotes"]],
+  ["readBranches for-each-ref", wb.branchListArgs(), [...R, "for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00%(HEAD)%00%(symref)%00%(objecttype)%00%(*objectname)%00%(*objecttype)", "refs/heads", "refs/remotes"]],
   ["readWorktrees", wb.worktreeListArgs(), [...R, "worktree", "list", "--porcelain", "-z"]],
   ["readGitSettings", commands.configListArgs(), [...R, "config", "list", "--show-scope", "--show-origin", "-z"]],
   ["switch tracked status", wb.trackedStatusArgs(), [...R, "status", "--porcelain=v2", "-z", "--untracked-files=no", "--ignore-submodules=dirty"]],

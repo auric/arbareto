@@ -1638,7 +1638,9 @@
               "type": "string",
               "enum": [
                 "appended",
-                "stale"
+                "stale",
+                "stopped",
+                "interrupted"
               ]
             }
           },

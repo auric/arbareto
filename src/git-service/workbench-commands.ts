@@ -68,7 +68,7 @@ function scope(value: ConfigWriteScope): string {
 // ---- Reads ----
 
 export function branchListArgs(): string[] {
-  return read("for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00%(HEAD)%00%(symref)", "refs/heads", "refs/remotes");
+  return read("for-each-ref", "--format=%(refname)%00%(objectname)%00%(upstream)%00%(HEAD)%00%(symref)%00%(objecttype)%00%(*objectname)%00%(*objecttype)", "refs/heads", "refs/remotes");
 }
 
 export function worktreeListArgs(): string[] {

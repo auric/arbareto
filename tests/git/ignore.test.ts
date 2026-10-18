@@ -253,29 +253,33 @@ describe("refusals change no byte (spec FR-046, contract Δ9)", () => {
 });
 
 describe("a canceled fileAppend reply (contract Δ6, T034)", () => {
-  // A cancel can reach the shell after its walk wrote. The double then appends and replies canceled, and the fresh read decides.
-  for (const append of [true, false]) {
-    caseTest("T034", `the shell ${append ? "appends" : "writes nothing"} and the reply is canceled: the fresh target read gives ${append ? "failed-with-effects" : "no-effects canceled"}`, SHELL, () =>
-      withService({ name: `t034-canceled-${append}` }, async (service) => {
-        const repo = tree();
-        const o = await open(service, repo);
-        const { reviewIgnore, runIgnore } = await underTest();
-        const review = await reviewIgnore(context(o), entryOf(o.read, "top-new.txt")!, "gitignore");
-        if (!("plan" in review)) throw new Error(JSON.stringify(review));
-        const order: string[] = [];
-        const shell = appendDouble(o, order);
-        const canceled: FileAppender = {
-          async fileAppend(request, signal) {
-            if (append) expect(await shell.fileAppend(request, signal)).toEqual({ result: "appended" });
-            return { stop: "canceled" };
-          },
-        };
-        const outcome = await runIgnore({ ...context(o), appender: canceled }, review.plan, async () => null);
-        expect({ type: outcome.type, observed: "observed" in outcome ? outcome.observed : undefined, bytes: bytesOf(join(repo, ".gitignore")) }).toEqual(
-          append ? { type: "failed-with-effects", observed: undefined, bytes: "/top-new.txt\n" } : { type: "no-effects", observed: "canceled", bytes: null },
-        );
-      }),
-      TIMEOUT_MS,
-    );
+  // The reply after a cancel is `stopped`, `interrupted`, or no reply within the walk deadline (`canceled`). The fresh target read cross-checks each one.
+  // A `stopped` reply with changed bytes is a contract mismatch, so it also gives failed-with-effects.
+  for (const [name, final] of [["stopped", { result: "stopped" }], ["interrupted", { result: "interrupted" }], ["canceled", { stop: "canceled" }]] as const) {
+    for (const append of [true, false]) {
+      caseTest("T034", `the target ${append ? "changed" : "stayed"} and the reply is ${name}: the fresh target read gives ${append ? "failed-with-effects" : "no-effects canceled"}`, SHELL, () =>
+        withService({ name: `t034-${name}-${append}` }, async (service) => {
+          const repo = tree();
+          const o = await open(service, repo);
+          const { reviewIgnore, runIgnore } = await underTest();
+          const review = await reviewIgnore(context(o), entryOf(o.read, "top-new.txt")!, "gitignore");
+          if (!("plan" in review)) throw new Error(JSON.stringify(review));
+          const order: string[] = [];
+          const shell = appendDouble(o, order);
+          const canceled: FileAppender = {
+            async fileAppend(request, signal) {
+              if (append) expect(await shell.fileAppend(request, signal)).toEqual({ result: "appended" });
+              else if (name === "stopped") expect(await shell.fileAppend(request, AbortSignal.abort())).toEqual(final);
+              return final;
+            },
+          };
+          const outcome = await runIgnore({ ...context(o), appender: canceled }, review.plan, async () => null);
+          expect({ type: outcome.type, observed: "observed" in outcome ? outcome.observed : undefined, bytes: bytesOf(join(repo, ".gitignore")) }).toEqual(
+            append ? { type: "failed-with-effects", observed: undefined, bytes: "/top-new.txt\n" } : { type: "no-effects", observed: "canceled", bytes: null },
+          );
+        }),
+        TIMEOUT_MS,
+      );
+    }
   }
 });

@@ -50,6 +50,10 @@ pub(crate) enum AppendResult {
     /// The target or a component on the way is a reparse point, or the target is no regular file or has more than one link.
     NotRegular,
     Error(FileAppendErrorCode),
+    /// A stop came before the write, so nothing was written.
+    Stopped,
+    /// A stop came while a WSL `append` process could write, so the shell does not know whether it wrote.
+    Interrupted,
 }
 
 /// The checked fields of a `fileAppend` frame. It reads no file.

@@ -1149,10 +1149,10 @@ describe("native runner feature 004 requests", () => {
     await expect(extra).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
   });
 
-  test("fileAppend sends its frame and maps appended, stale, refused not-regular, and error; a refused frame throws RunnerRefusal; an abort sends cancel", async () => {
+  test("fileAppend sends its frame and maps each reply form; a refused frame throws RunnerRefusal; an abort sends cancel and waits for the reply", async () => {
     const channel = createChannelDouble();
     const request = { operationId: id(), repositoryId: id(), target: "gitignore" as const, path: isWindows ? "C:\\repo\\.gitignore" : "/repo/.gitignore", expected: "absent" as const, bytes: Buffer.from("/build/\n").toString("base64") };
-    for (const reply of [{ result: "appended" }, { result: "stale" }, { result: "refused", reason: "not-regular" }, { result: "error", code: "io-error" }]) {
+    for (const reply of [{ result: "appended" }, { result: "stale" }, { result: "stopped" }, { result: "interrupted" }, { result: "refused", reason: "not-regular" }, { result: "error", code: "io-error" }]) {
       const appended = channel.runner.fileAppend(request, SIGNAL);
       const body = channel.last("fileAppend");
       expect(body).toEqual({ type: "fileAppend", callId: body.callId, ...request });
@@ -1163,12 +1163,18 @@ describe("native runner feature 004 requests", () => {
     channel.reply("process", { type: "refused", callId: channel.last("fileAppend").callId, code: "INVALID_REQUEST" });
     const error = await refused.catch((e: unknown) => e);
     expect({ refusal: error instanceof RunnerRefusal, code: (error as RunnerRefusal).code }).toEqual({ refusal: true, code: "INVALID_REQUEST" });
-    const abort = new AbortController();
-    const canceled = channel.runner.fileAppend(request, abort.signal);
-    const { callId } = channel.last("fileAppend");
-    abort.abort();
-    expect(await canceled).toEqual({ stop: "canceled" });
-    expect(channel.last("cancel")).toEqual({ type: "cancel", callId });
+    for (const result of ["stopped", "appended"] as const) {
+      const abort = new AbortController();
+      let settled = false;
+      const canceled = channel.runner.fileAppend(request, abort.signal).finally(() => (settled = true));
+      const { callId } = channel.last("fileAppend");
+      abort.abort();
+      expect(channel.last("cancel")).toEqual({ type: "cancel", callId });
+      await Bun.sleep(20);
+      expect(settled).toBe(false);
+      expect(channel.reply("process", { type: "fileAppend", callId, result })).toBe(true);
+      expect(await canceled).toEqual({ result });
+    }
     const before = channel.sent.length;
     const empty = channel.runner.fileAppend({ ...request, bytes: "" }, SIGNAL).catch((error: unknown) => error);
     expect(channel.sent.length).toBe(before);

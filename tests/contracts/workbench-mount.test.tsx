@@ -180,7 +180,7 @@ describe("start", () => {
   test("a restoreWorkspace registration shows the one view without mode tabs and sends the full read, openHistory, and readTrust", async () => {
     const double = await mount(succeeded(REGISTRATION));
     // Feature 003 data-model §10: the Pull main part reads `readSyncSettings`.
-    expect(double.calls.map((c) => c.operation).sort()).toEqual(["openHistory", "readSyncSettings", "readTrust", "readWorkspace"]);
+    expect(double.calls.map((c) => c.operation).sort()).toEqual(["openHistory", "readBranches", "readSyncSettings", "readTrust", "readWorkspace"]);
     expect(double.pending("readWorkspace").args[1]).toEqual({ refresh: false, check: "full" });
     expect(document.querySelector('[role="tab"], [role="tablist"]')).toBeNull();
     expect(document.querySelector('section[aria-label="History"]')).not.toBeNull();

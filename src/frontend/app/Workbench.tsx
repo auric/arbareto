@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { GitBranchIcon, GitCommitIcon, RefreshIcon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { GitCommitIcon, RefreshIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Component, lazy, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type ReactNode, type RefObject } from "react";
 import type { ChangeEntry, Comparison as ComparisonResult, Environment, RecoveryStatement, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
@@ -54,7 +54,6 @@ import {
   type Size,
 } from "../layout/profiles";
 import { Splitter } from "../layout/Splitter";
-import { GIT_SEPARATORS, splitPath } from "../lib/path";
 import { ReferencesSidebar } from "../refs/ReferencesSidebar";
 import { createHistoryView, refsChanged, type HistoryBridge, type HistoryView as HistoryStore } from "../state/history-view";
 import { createRequests, isRegistration, wslDistro, type Clock, type RequestBridge, type Requests, type RequestState } from "../state/requests";
@@ -87,6 +86,8 @@ import { DockRegion } from "../components/docked-panel";
 import { IntegratePanel, type IntegrateRequest } from "../integrate/IntegratePanel";
 import { Segmented } from "../components/segmented";
 import { createWorkbench, type View, type Workbench as WorkbenchStore } from "../state/workbench";
+import { BranchButton } from "../branches/BranchButton";
+import { useBranchActions } from "../branches/BranchActions";
 import { CommitView } from "../views/CommitView";
 import { HistoryView as HistoryFrame } from "../views/HistoryView";
 import { SettingsView } from "../views/SettingsView";
@@ -129,6 +130,7 @@ export type WorkbenchBridge = RequestBridge &
     | "readBranches"
     | "reviewWorkbench"
     | "runWorkbench"
+    | "openWorktree"
   >;
 /** The hunk and file staging facts that the workbench gives the changes pane and the comparison view (T145, T202). */
 export type Staging = {
@@ -185,6 +187,8 @@ export type WorkbenchPaneProps = {
   tracking?: ReadonlyMap<string, TrackLabel>;
   /** The feature 004 store (plan.md D15 "State"). */
   workbench: WorkbenchStore;
+  /** The feature 004 branch actions (spec FR-014): the history labels and Create branch here on a history row. */
+  branches?: ReturnType<typeof useBranchActions>;
 };
 export type WorkbenchProps = {
   bridge: WorkbenchBridge;
@@ -281,12 +285,6 @@ function headerRowCount(width: number, textScale: number): number {
 }
 
 /** plan.md "Status and fallback texts": the toolbar branch text. */
-function headText(head: WorkspaceSnapshot["head"]): string {
-  if (head.state === "detached") return "Detached HEAD";
-  if (head.state === "unborn") return `${branchName(head.target)}, no commits yet`;
-  return branchName(head.target);
-}
-
 // plan.md "Header layout": the WSL badge is 160 DIPs wide, times the text-size factor.
 const WSL_BADGE_DIPS = 160;
 
@@ -454,7 +452,7 @@ export function ComparisonViewMount({ state, requests, staging }: WorkbenchPaneP
 }
 
 /** The feature 002 history list with the Working directory and Index rows (plan.md D6). */
-export function HistoryViewMount({ state, history, density, profile, textScale, onSelectRow, filterRef, tracking }: WorkbenchPaneProps) {
+export function HistoryViewMount({ state, history, density, profile, textScale, onSelectRow, filterRef, tracking, branches }: WorkbenchPaneProps) {
   const entries = state.workspace?.completeness.state === "complete" ? state.entries : null;
   return (
     <HistoryList
@@ -467,6 +465,8 @@ export function HistoryViewMount({ state, history, density, profile, textScale, 
       onScope={(scope) => void history.setScope(scope)}
       filterRef={filterRef}
       tracking={tracking}
+      onLabelMenu={branches === undefined ? undefined : (label, anchor) => branches.onRef(label.kind as "branch" | "remote", label.name, "menu", anchor)}
+      onCreateBranch={branches?.create}
     />
   );
 }
@@ -1098,7 +1098,6 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
 
   const distro = wslDistro(workspace);
   const wslGit = workspace?.location.kind === "wsl" ? workspace.location.git : null;
-  const head = workspace ? headText(workspace.head) : null;
   const rows = headerRowCount(client.width, textScale);
   // plan.md "Notice band": the blocking row, then the submodule row.
   let conflicted = 0;
@@ -1179,6 +1178,18 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     const main = syncSettings.action;
     if (control === "pull" && main !== null && actionReason(reasons, main) === null) sync.run(pullAction(main).payload);
   };
+  const branches = useBranchActions({
+    bridge,
+    target: requests.target,
+    repositoryId,
+    workbench: store,
+    head: currentHead,
+    blockedReason,
+    onNotice: setNotice,
+    onOpenWorktree: (path) => void (repositoryId === null ? undefined : bridge.openWorktree({ repositoryId, path }).then(registered)),
+    push: { reason: reasons.pushReason, run: () => runSync.current("push") },
+    onShowBranchHistory: () => void historyView.setScope("current"),
+  });
   const trackingCount =
     currentHead === null ? null : currentHead.state === "detached" || trackingCode !== null ? (
       <span data-slot="tracking-count" className="shrink-0 text-muted-text">
@@ -1242,6 +1253,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     filterRef,
     tracking: labels,
     workbench: store,
+    branches,
   };
   const laneBounds = paneBounds("fileLane", { width: client.width - sideWidth - m.splitter, available: workArea, density: preferences.density, textScale });
   const lane = Math.min(Math.max(panes.fileLane, laneBounds.min), laneBounds.max);
@@ -1367,6 +1379,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       repository={state.repository?.worktreeKey ?? ""}
       onShowBranchHistory={() => void historyView.setScope("current")}
       tracking={labels}
+      onBranchAction={branches.entries === null ? undefined : (entry, action, anchor) => branches.onRef(entry.kind as "branch" | "remote", entry.name, action, anchor)}
     />
   );
 
@@ -1440,21 +1453,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               <WslBadge distro={distro} textScale={textScale} />
             </span>
           )}
-          {head === null ? null : (
-            // plan.md "Header layout": the branch text takes only the width that the other items leave, so it never moves them to another row.
-            // Its folder part shrinks first and its last `/` segment last (git-check-ref-format(1) hierarchy). The title and the hidden text hold the full name.
-            <span data-slot="branch-text" title={head} className="flex min-w-0 items-center gap-1 whitespace-nowrap" style={{ order: 3, flex: "1 1 0px" }}>
-              <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
-              <span className="sr-only">{head}</span>
-              {splitPath(head, GIT_SEPARATORS)[0] === "" ? null : (
-                <span data-branch-part="folder" aria-hidden="true" className="min-w-0 shrink-[1000] truncate">
-                  {splitPath(head, GIT_SEPARATORS)[0]}
-                </span>
-              )}
-              <span data-branch-part="last" aria-hidden="true" className="min-w-0 truncate">
-                {splitPath(head, GIT_SEPARATORS)[1]}
-              </span>
-            </span>
+          {workspace === null ? null : (
+            // plan.md "Header layout": the branch button takes only the width that the other items leave, so it never moves them to another row.
+            <BranchButton head={workspace.head} operationState={workspace.operationState} counts={currentLabel} tracking={labels} actions={branches} blockedReason={blockedReason} rowHeight={m.row} />
           )}
           {state.repository === null ? null : (
             // The 004 design standard: the Fetch, Pull, and Push group follows the branch. Feature 004 adds its branch and worktree buttons before it.
@@ -1783,6 +1784,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             </Suspense>
           </AboutBoundary>
         ) : null}
+        {branches.overlays}
       </div>
     </CopyFailed>
   );

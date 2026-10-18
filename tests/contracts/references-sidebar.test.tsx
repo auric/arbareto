@@ -404,7 +404,7 @@ describe("virtual tree", () => {
     await settle();
     await type(host, "09994");
     await settle();
-    expect(names(host)).toContain("branch-09994, local branch");
+    expect(names(host)).toContain("branch-09994, local branch, No upstream");
     await type(host, "");
     await settle();
     await click(item(host, "Branches"));

@@ -532,13 +532,54 @@
         "action": {
           "type": "string",
           "enum": [
+            "choose-side",
+            "mergetool"
+          ]
+        },
+        "staged": {
+          "type": "boolean"
+        },
+        "operationState": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "conflicted",
+            "merging",
+            "rebasing",
+            "cherry-picking",
+            "reverting",
+            "sequencer-active",
+            "unknown"
+          ]
+        },
+        "outputTail": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "action",
+        "staged",
+        "operationState"
+      ],
+      "additionalProperties": false,
+      "title": "ResolveRun"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
             "switch",
             "create-branch",
             "rename-branch",
             "delete-branch",
             "merge",
             "rebase",
-            "ignore"
+            "ignore",
+            "choose-side",
+            "mergetool"
           ]
         }
       },

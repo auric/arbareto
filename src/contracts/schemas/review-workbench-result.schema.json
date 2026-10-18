@@ -710,6 +710,419 @@
           ],
           "additionalProperties": false,
           "title": "IgnoreReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "choose-side"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "format": "base64",
+                  "contentEncoding": "base64",
+                  "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+                },
+                "kind": {
+                  "type": "object",
+                  "properties": {
+                    "xy": {
+                      "type": "string",
+                      "enum": [
+                        "UU",
+                        "AA",
+                        "AU",
+                        "UA",
+                        "DU",
+                        "UD",
+                        "DD"
+                      ]
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]*$"
+                    }
+                  },
+                  "required": [
+                    "xy",
+                    "text"
+                  ],
+                  "additionalProperties": false,
+                  "title": "ConflictKind"
+                },
+                "stages": {
+                  "minItems": 1,
+                  "maxItems": 3,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "stage": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3
+                      },
+                      "mode": {
+                        "type": "string",
+                        "pattern": "^[0-7]{6}$"
+                      },
+                      "oid": {
+                        "type": "string",
+                        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                      }
+                    },
+                    "required": [
+                      "stage",
+                      "mode",
+                      "oid"
+                    ],
+                    "additionalProperties": false,
+                    "title": "ResolveStage"
+                  }
+                },
+                "names": {
+                  "type": "object",
+                  "properties": {
+                    "ours": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "oid": {
+                              "type": "string",
+                              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                            },
+                            "refs": {
+                              "maxItems": 10000,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000]*$"
+                              }
+                            }
+                          },
+                          "required": [
+                            "oid",
+                            "refs"
+                          ],
+                          "additionalProperties": false,
+                          "title": "SideName"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "theirs": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "oid": {
+                              "type": "string",
+                              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                            },
+                            "refs": {
+                              "maxItems": 10000,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000]*$"
+                              }
+                            }
+                          },
+                          "required": [
+                            "oid",
+                            "refs"
+                          ],
+                          "additionalProperties": false,
+                          "title": "SideName"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ours",
+                    "theirs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "SideNames"
+                },
+                "operation": {
+                  "type": "string",
+                  "enum": [
+                    "normal",
+                    "conflicted",
+                    "merging",
+                    "rebasing",
+                    "cherry-picking",
+                    "reverting",
+                    "sequencer-active",
+                    "unknown"
+                  ]
+                },
+                "side": {
+                  "type": "string",
+                  "enum": [
+                    "ours",
+                    "theirs"
+                  ]
+                }
+              },
+              "required": [
+                "path",
+                "kind",
+                "stages",
+                "names",
+                "operation",
+                "side"
+              ],
+              "additionalProperties": false,
+              "title": "ChooseSidePlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "ChooseSideReviewed"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "action": {
+              "type": "string",
+              "const": "mergetool"
+            },
+            "plan": {
+              "type": "object",
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "minLength": 1,
+                  "format": "base64",
+                  "contentEncoding": "base64",
+                  "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+                },
+                "kind": {
+                  "type": "object",
+                  "properties": {
+                    "xy": {
+                      "type": "string",
+                      "enum": [
+                        "UU",
+                        "AA",
+                        "AU",
+                        "UA",
+                        "DU",
+                        "UD",
+                        "DD"
+                      ]
+                    },
+                    "text": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]*$"
+                    }
+                  },
+                  "required": [
+                    "xy",
+                    "text"
+                  ],
+                  "additionalProperties": false,
+                  "title": "ConflictKind"
+                },
+                "stages": {
+                  "minItems": 1,
+                  "maxItems": 3,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "stage": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 3
+                      },
+                      "mode": {
+                        "type": "string",
+                        "pattern": "^[0-7]{6}$"
+                      },
+                      "oid": {
+                        "type": "string",
+                        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                      }
+                    },
+                    "required": [
+                      "stage",
+                      "mode",
+                      "oid"
+                    ],
+                    "additionalProperties": false,
+                    "title": "ResolveStage"
+                  }
+                },
+                "names": {
+                  "type": "object",
+                  "properties": {
+                    "ours": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "oid": {
+                              "type": "string",
+                              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                            },
+                            "refs": {
+                              "maxItems": 10000,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000]*$"
+                              }
+                            }
+                          },
+                          "required": [
+                            "oid",
+                            "refs"
+                          ],
+                          "additionalProperties": false,
+                          "title": "SideName"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "theirs": {
+                      "anyOf": [
+                        {
+                          "type": "object",
+                          "properties": {
+                            "oid": {
+                              "type": "string",
+                              "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                            },
+                            "refs": {
+                              "maxItems": 10000,
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1,
+                                "pattern": "^[^\\u0000]*$"
+                              }
+                            }
+                          },
+                          "required": [
+                            "oid",
+                            "refs"
+                          ],
+                          "additionalProperties": false,
+                          "title": "SideName"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "ours",
+                    "theirs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "SideNames"
+                },
+                "operation": {
+                  "type": "string",
+                  "enum": [
+                    "normal",
+                    "conflicted",
+                    "merging",
+                    "rebasing",
+                    "cherry-picking",
+                    "reverting",
+                    "sequencer-active",
+                    "unknown"
+                  ]
+                },
+                "tool": {
+                  "type": "object",
+                  "properties": {
+                    "name": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "system",
+                        "global",
+                        "local",
+                        "worktree",
+                        "command",
+                        "submodule",
+                        "unknown"
+                      ]
+                    },
+                    "origin": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "name",
+                    "scope",
+                    "origin"
+                  ],
+                  "additionalProperties": false,
+                  "title": "MergeTool"
+                }
+              },
+              "required": [
+                "path",
+                "kind",
+                "stages",
+                "names",
+                "operation",
+                "tool"
+              ],
+              "additionalProperties": false,
+              "title": "MergetoolPlan"
+            },
+            "workbenchToken": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "action",
+            "plan",
+            "workbenchToken"
+          ],
+          "additionalProperties": false,
+          "title": "MergetoolReviewed"
         }
       ]
     },

@@ -188,26 +188,44 @@ const STATUS_RECORDS = new Map(
   }),
 );
 
-// git-status(1) "Porcelain Format Version 2" with `-z` and without untracked entries. A `2` record has one more NUL field, the original path.
+// git-status(1) "Porcelain Format Version 2" with `-z`. A `2` record has one more NUL field, the original path.
 // Header lines start with `# ` and come before the entries. Parsers ignore headers they do not know, such as `# stash <n>` of `status.showStash`.
-export function parseTrackedStatus(stdout: Uint8Array, objectFormat: ObjectFormat): { records: number; unmerged: number } | null {
+// `untrackedRecords`: the read lists untracked files, so `? <path>` records count in `untracked`. Otherwise such a record breaks the grammar.
+function statusCounts(stdout: Uint8Array, objectFormat: ObjectFormat, untrackedRecords: boolean): { records: number; unmerged: number; untracked: number } | null {
   const raw = latin1(stdout);
-  if (raw === "") return { records: 0, unmerged: 0 };
+  if (raw === "") return { records: 0, unmerged: 0, untracked: 0 };
   if (!raw.endsWith("\0")) return null;
   const { ordinary, renamed, unmerged: conflict } = STATUS_RECORDS.get(objectFormat)!;
   const fields = raw.slice(0, -1).split("\0");
   let records = 0;
   let unmerged = 0;
+  let untracked = 0;
   for (let i = 0; i < fields.length; i++) {
     const field = fields[i]!;
-    if (/^# [^ ]/.test(field) && records === 0) continue;
+    if (/^# [^ ]/.test(field) && records === 0 && untracked === 0) continue;
+    if (untrackedRecords && /^\? [^]+$/.test(field)) {
+      untracked++;
+      continue;
+    }
     if (renamed.test(field)) {
       if (++i >= fields.length) return null;
     } else if (conflict.test(field)) unmerged++;
     else if (!ordinary.test(field)) return null;
     records++;
   }
-  return { records, unmerged };
+  return { records, unmerged, untracked };
+}
+
+// Without untracked entries (plan.md D3 and D6).
+export function parseTrackedStatus(stdout: Uint8Array, objectFormat: ObjectFormat): { records: number; unmerged: number } | null {
+  const counts = statusCounts(stdout, objectFormat, false);
+  return counts && { records: counts.records, unmerged: counts.unmerged };
+}
+
+// Contract Δ3 `worktree-remove`: `--untracked-files=all` and no `--ignored`. Changed, renamed, and unmerged records are tracked changes.
+export function parseWorktreeStatus(stdout: Uint8Array, objectFormat: ObjectFormat): { tracked: number; untracked: number } | null {
+  const counts = statusCounts(stdout, objectFormat, true);
+  return counts && { tracked: counts.records, untracked: counts.untracked };
 }
 
 // ---- Configuration value view (data-model §9, plan.md D11) ----

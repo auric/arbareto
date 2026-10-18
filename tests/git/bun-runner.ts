@@ -56,6 +56,7 @@ import {
   type WslFileResult,
   type WslFilesCall,
   type WslIndexResult,
+  type WorktreeAddFactsReply,
   type WslProbeRun,
 } from "../../src/git-service/git-runner";
 import { printOrigin } from "../origin";
@@ -412,7 +413,8 @@ export function createBunRunner(options: BunRunnerOptions) {
 
   const trustStore = options.trustStore ?? createTrustStore();
   // Feature 003 contract Δ6: a `clone` context and its `repositoryDiscovery` peer. The peer binds its identity only after the clone exits with status 0.
-  type Context = { kind: "gitProbe" | "repositoryDiscovery" | "clone"; path: string; owner?: string; identity?: IdentityReply; peer?: string; url?: string; key?: string; pending?: true };
+  // Feature 004 contract Δ6: a `worktreeAdd` context binds a path and the repository of its review. It holds no identity and no owner.
+  type Context = { kind: "gitProbe" | "repositoryDiscovery" | "clone" | "worktreeAdd"; path: string; owner?: string; identity?: IdentityReply; peer?: string; url?: string; key?: string; pending?: true; repositoryId?: string };
   const contexts = new Map<string, Context>();
   const gits = new Map<string, string>();
   const repositories = new Map<string, { worktreeRoot: string; gitDirectory: string; commonDirectory: string; gitInstallationId: string }>();
@@ -484,6 +486,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     sshClient: "git" as "git" | { plink: string },
     // Runs before each `destinationFacts` reply. A throw replaces the reply, as a broken channel does.
     destinationFacts: null as ((request: { operationId: string; cloneId: string }) => void) | null,
+    // Replaces the OS facts of a `worktreeAdd` binding, such as an `error` result that the double cannot produce by itself.
+    worktreeAddFacts: null as ((path: string) => DestinationFactsReply) | null,
     // A repository `register` waits for this promise before its reply.
     holdRegister: null as ((request: { repositoryId: string }) => Promise<void>) | null,
   };
@@ -592,6 +596,18 @@ export function createBunRunner(options: BunRunnerOptions) {
     }
     // Feature 004 P3 binds the `globalConfig` context. Until then this runner refuses it.
     if (context.contextKind === "globalConfig") throw unknownTarget();
+    // Feature 004 contract Δ6, as src-tauri/src/process_requests.rs `target` and `worktree_add_fits` check it: only a `run` of the two
+    // `worktree add` forms with the bound path, in the registered repository of the review. The double has no WSL `worktreeAdd` route.
+    if (context.contextKind === "worktreeAdd") {
+      const bound = contexts.get(context.bootstrapId);
+      const program = gits.get(context.gitInstallationId);
+      const repository = repositories.get(context.repositoryId);
+      if (bound?.kind !== "worktreeAdd" || bound.repositoryId !== context.repositoryId || program === undefined || repository === undefined || args === undefined) throw unknownTarget();
+      if (wslGits.has(context.gitInstallationId) || wslParts(bound.path) !== null) throw new RunnerRefusal("INVALID_REQUEST", "WSL worktreeAdd");
+      const fits = (args.length === 6 && args[3] === "--" && args[4] === bound.path) || (args.length === 8 && args[3] === "-b" && args[5] === "--" && args[6] === bound.path);
+      if (!fits) throw new RunnerRefusal("INVALID_REQUEST", "worktree add arguments");
+      return { program, cwd: repository.worktreeRoot };
+    }
     const bound = contexts.get(context.bootstrapId);
     // Feature 003 contract Δ6: before its clone exits with status 0, a clone destination has no identity.
     if (!bound || bound.kind !== context.contextKind || bound.pending) throw unknownTarget();
@@ -1067,6 +1083,8 @@ export function createBunRunner(options: BunRunnerOptions) {
       const env = environment(call);
       if (commandLineUnits(target.program, call.arguments) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
       if (call.context.contextKind === "repositoryDiscovery") revalidate(call.context.bootstrapId);
+      // Feature 004 contract Δ6: the admitted `worktree add` run consumes its binding.
+      if (call.context.contextKind === "worktreeAdd") contexts.delete(call.context.bootstrapId);
       return execute(call, [target.program, ...call.arguments], target.cwd, env, recorded);
     }
     // Contract §11 "Process launch": `--no-lazy-fetch` stays first, and `-C` takes the Linux directory.
@@ -1238,8 +1256,11 @@ export function createBunRunner(options: BunRunnerOptions) {
     release(target) {
       checkRelease(target);
       frames.push({ type: "release", ...target });
-      if ("repositoryId" in target) repositories.delete(target.repositoryId);
-      else {
+      if ("repositoryId" in target) {
+        repositories.delete(target.repositoryId);
+        // Feature 004 contract Δ6: the release of a repository ends its `worktreeAdd` contexts.
+        for (const [id, context] of contexts) if (context.kind === "worktreeAdd" && context.repositoryId === target.repositoryId) contexts.delete(id);
+      } else {
         gits.delete(target.gitInstallationId);
         wslGits.delete(target.gitInstallationId);
       }
@@ -1317,11 +1338,17 @@ export function createBunRunner(options: BunRunnerOptions) {
     },
 
     // Feature 003 contract Δ6 `destinationFacts`: the OS facts of the bound destination. The request carries no path.
-    async destinationFacts(request): Promise<DestinationFactsReply> {
+    async destinationFacts(request): Promise<DestinationFactsReply | WorktreeAddFactsReply> {
       checkSyncRequest("destinationFacts", request);
       frames.push({ type: "destinationFacts", ...request });
-      // Feature 004 contract Δ6: the double binds no `worktreeAdd` context, so that form names no binding.
-      if (!("cloneId" in request)) throw unknownTarget();
+      // Feature 004 contract Δ6: the review and the run of one `worktree-add` read the binding, so no operation owns it.
+      // The reply adds the bound path in Git's form, which is the Windows path for a Windows Git.
+      if (!("cloneId" in request)) {
+        const bound = contexts.get(request.bootstrapId);
+        if (inactive.has(request.operationId) || bound?.kind !== "worktreeAdd" || !repositories.has(bound.repositoryId!)) throw unknownTarget();
+        if (wslParts(bound.path) !== null) throw new RunnerRefusal("INVALID_REQUEST", "WSL destination");
+        return { ...(inject.worktreeAddFacts?.(bound.path) ?? destinationOf(bound.path)), path: bound.path };
+      }
       inject.destinationFacts?.(request);
       const bound = contexts.get(request.cloneId);
       if (inactive.has(request.operationId) || bound?.kind !== "clone") throw unknownTarget();
@@ -1604,6 +1631,13 @@ export function createBunRunner(options: BunRunnerOptions) {
       contexts.set(bootstrapId, { kind: "repositoryDiscovery", path, peer: cloneId, pending: true });
       contexts.set(cloneId, { kind: "clone", path, peer: bootstrapId, url, ...(key === undefined ? {} : { key }) });
       return { cloneId, bootstrapId };
+    },
+    // Feature 004 contract Δ6: the native step of a `worktree-add` review. It replaces each earlier binding of the repository (src-tauri/src/bootstrap.rs `create_worktree_add`).
+    addWorktreeAdd(path: string, repositoryId: string): string {
+      for (const [id, context] of contexts) if (context.kind === "worktreeAdd" && context.repositoryId === repositoryId) contexts.delete(id);
+      const bootstrapId = crypto.randomUUID();
+      contexts.set(bootstrapId, { kind: "worktreeAdd", path, repositoryId });
+      return bootstrapId;
     },
     // The path of a live native context, or `undefined` after its end.
     contextPath(bootstrapId: string): string | undefined {

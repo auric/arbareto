@@ -115,6 +115,7 @@ export const WORKBENCH_UNAVAILABLE_REASONS = [
   "main-worktree",
   "current-worktree",
   "locked",
+  "prunable",
   "nothing-to-prune",
   "multi-value",
   "limit",

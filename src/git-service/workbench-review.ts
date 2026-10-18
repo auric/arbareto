@@ -12,7 +12,7 @@ import type { OperationEvent } from "../contracts/outcome";
 import { buildRemedyCommand, type RemedyValue } from "../contracts/remedy-command";
 import type { StallRemedy } from "../contracts/submodules";
 import type { Exclusion } from "./exclusion";
-import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit, type GitRunner } from "./git-runner";
+import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit, type GitRunner, type ProcessContext } from "./git-runner";
 import { captureHead, sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
 import { enterReconciling, isStop, settled, type Fact, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
 import { reviewIgnore, runIgnore, type IgnorePlan } from "./ignore";
@@ -68,8 +68,8 @@ export interface WorkbenchRun {
   common: Common;
   // The refs, HEAD, index, and markers right before the first step.
   before: Observed;
-  // A step after a Cancel starts no process and ends `canceled`.
-  step(args: string[], phase: Phase): Promise<StepEnd>;
+  // A step after a Cancel starts no process and ends `canceled`. `context` defaults to the registered workspace; contract Δ6 `worktreeAdd` passes its binding.
+  step(args: string[], phase: Phase, context?: ProcessContext): Promise<StepEnd>;
   // A progress event for a step without a Git process.
   progress(phase: Phase): void;
   // Enters `reconciling` after the steps. Null: a WSL step gave no process-end fact, so the outcome stays unknown.
@@ -296,7 +296,7 @@ export function createWorkbench(o: WorkbenchOptions) {
         common,
         before,
         // Plan.md D2: each step runs under the policy `integrate` with the 003 limits and the 15 s stall notice.
-        async step(args, phase) {
+        async step(args, phase, context = contextOf(w)) {
           if (signal.aborted) return { exit: null, canceled: true, refused: null, outputTail: "" };
           const report = () => {
             const state = registry.get(operationId)?.state;
@@ -309,7 +309,7 @@ export function createWorkbench(o: WorkbenchOptions) {
           let exit: GitExit | null = null;
           let refused: ErrorCode | null = null;
           try {
-            exit = await o.runner.run({ operationId, context: contextOf(w), arguments: args, environmentPolicy: "integrate", limits: PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
+            exit = await o.runner.run({ operationId, context, arguments: args, environmentPolicy: "integrate", limits: PROCESS_LIMITS.network, stdout, stderr, signal, onActivity: stall.onActivity });
             lastDescendants = exit.activeDescendants ?? 0;
           } catch (error) {
             if (!signal.aborted && !(error instanceof RunnerRefusal)) throw error;

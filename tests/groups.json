@@ -206,6 +206,7 @@
     "tests/git/sync-trust.test.ts",
     "tests/git/tracking.test.ts",
     "tests/git/trust.test.ts",
+    "tests/git/worktrees.test.ts",
     "tests/git/wsl-files.test.ts",
     "tests/wsl/file-facts.test.ts",
     "tests/wsl/identity-order.test.ts",

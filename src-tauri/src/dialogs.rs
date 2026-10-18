@@ -4,7 +4,7 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf, Prefix};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Instant;
 
 use serde_json::{Value, json};
@@ -49,7 +49,7 @@ const INVALID: &str = "INVALID_REQUEST";
 const TRUST_INSTRUCTION: &str = "Do you trust this repository?";
 const TRUST_ADVICE: &str = "Trust it if you or your team set it up. Do not trust a folder from an unknown source, such as a downloaded archive.";
 const TRUST_REMEMBERS: &str = "Arbareto remembers your choice for this folder.";
-/// Plan D14: an empty value or a value with a control character shows as this text.
+/// Plan D14: the text of a name that `shown` refuses.
 const UNSHOWN_NAME: &str = "a name that Arbareto cannot show";
 const SHOW_DETAILS: &str = "Show details";
 const HIDE_DETAILS: &str = "Hide details";
@@ -414,9 +414,16 @@ fn action_sentence(action: &str) -> Option<&'static str> {
     })
 }
 
-/// The text of one repository value. Plan D14: an empty value or one with a control character shows as a fixed text.
+/// Plan D14: the Unicode general categories Cc, Cf, Zl, and Zp. A character such as U+202E can make a name read differently from its bytes.
+/// `regress` reads these ECMAScript classes as the service does (`src/git-service/trust.ts` `shownName`).
+static UNSHOWN_CHARACTER: LazyLock<regress::Regex> = LazyLock::new(|| {
+    regress::Regex::with_flags(r"[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]", "u").expect("a valid character class")
+});
+
+/// The text of one repository value. Plan D14: an empty value, or one with a character of `UNSHOWN_CHARACTER`, shows as a fixed text.
+/// A `str` holds valid UTF-8 and no lone surrogate.
 fn shown(text: &str) -> String {
-    if text.is_empty() || text.chars().any(char::is_control) {
+    if text.is_empty() || UNSHOWN_CHARACTER.find(text).is_some() {
         UNSHOWN_NAME.to_string()
     } else {
         text.to_string()
@@ -1691,6 +1698,68 @@ pub(crate) mod tests {
         assert!(!shown.contains('\u{1b}'));
     }
 
+    /// Plan D14: each general category of the rule, with U+202E RIGHT-TO-LEFT OVERRIDE and the U+2066 to U+2069 isolates.
+    #[test]
+    fn a_name_with_a_format_or_separator_character_shows_a_fixed_text_in_every_details_line() {
+        let hidden = [
+            "lfs\u{202e}exe.sh",
+            "\u{2066}lfs\u{2069}",
+            "a\u{2067}b",
+            "a\u{2068}b",
+            "a\u{200b}b",
+            "a\u{feff}b",
+            "a\u{2028}b",
+            "a\u{2029}b",
+            "a\u{85}b",
+        ];
+        for name in hidden {
+            assert_eq!(
+                shown(name),
+                UNSHOWN_NAME,
+                "{:?}",
+                name.escape_unicode().to_string()
+            );
+        }
+        // Other letters, marks, and spaces stay as they are.
+        for name in [
+            "caf\u{e9}",
+            "\u{540d}\u{524d}",
+            "e\u{301}",
+            "a b",
+            "a\u{a0}b",
+        ] {
+            assert_eq!(shown(name), name);
+        }
+        let mut details = no_details();
+        details["hooks"] = json!({ "names": [{ "event": "pre\u{202e}commit", "scope": "local" }, { "event": "pre-commit", "folder": "C:\\repo\\.git\\hooks\u{2066}" }], "more": 0 });
+        details["filters"] =
+            json!({ "names": [{ "driver": "\u{2066}lfs\u{2069}", "scope": "local" }], "more": 0 });
+        details["signing"] =
+            json!({ "names": [{ "key": "gpg\u{202e}.program", "scope": "local" }], "more": 0 });
+        details["other"] =
+            json!({ "names": [{ "key": "core.sshcommand\u{2029}", "scope": "local" }], "more": 0 });
+        let text = trust_confirmation(&trust_request("C:\\repo\u{202e}x", "commit", details))
+            .details
+            .expect("details");
+        assert_eq!(
+            text.lines().collect::<Vec<_>>(),
+            [
+                "Folder: a name that Arbareto cannot show",
+                "Hooks: a name that Arbareto cannot show (repository settings); pre-commit (folder a name that Arbareto cannot show)",
+                "File filter: a name that Arbareto cannot show (repository settings)",
+                "Signing program: a name that Arbareto cannot show (repository settings)",
+                "Other program: a name that Arbareto cannot show (repository settings)",
+                "Arbareto remembers your choice for this folder.",
+            ]
+        );
+        assert!(
+            !text
+                .chars()
+                .any(|c| matches!(c, '\u{202e}' | '\u{2066}'..='\u{2069}' | '\u{2029}')),
+            "{text}"
+        );
+    }
+
     #[test]
     fn only_trust_accepts_the_trust_dialog() {
         let request = trust_request("C:\\repo", "commit", sample_details());
@@ -1882,12 +1951,14 @@ pub(crate) mod tests {
         let wsl = r"\\wsl.localhost\Ubuntu-26.04\home\u\r";
         let text = run_confirmation(Path::new(wsl), &[format!(r"{wsl}\lib\a")], 1, 0).text;
         assert!(text.contains("from lib/a. Run"), "{text}");
-        // Plan.md D14: a name with a control character shows as a fixed text.
-        let text = run_text(&[format!("{RUN_ROOT}\\sub\u{1b}[31m")], 1, 0);
-        assert!(
-            text.contains("from a name that Arbareto cannot show. Run"),
-            "{text}"
-        );
+        // Plan.md D14: a path with a character of the categories Cc, Cf, Zl, or Zp shows as a fixed text.
+        for name in ["sub\u{1b}[31m", "lib\u{202e}a", "\u{2066}lib\u{2069}"] {
+            let text = run_text(&[format!("{RUN_ROOT}\\{name}")], 1, 0);
+            assert!(
+                text.contains("from a name that Arbareto cannot show. Run"),
+                "{text}"
+            );
+        }
     }
 
     #[test]

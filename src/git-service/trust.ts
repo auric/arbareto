@@ -654,6 +654,8 @@ export interface ConfiguredHook {
   name: string;
   // The scope of the last `hook.<name>.event` entry, as `git hook list --show-scope` prints it.
   eventScope: ConfigScope;
+  // False when the bytes of that entry are no valid UTF-8, so `event` is not the text that Git uses.
+  eventExact: boolean;
   // The last `hook.<name>.command` entry. Git runs its value from any scope (hook.c `hook_config_lookup_all`).
   command: ConfigEntry | null;
   disabled: boolean;
@@ -666,7 +668,7 @@ export interface FolderHook {
 }
 
 // unsorted_string_list_delete_item (string-list.c) moves the last item into the freed slot.
-function removeName(list: { name: string; scope: ConfigScope }[], name: string): void {
+function removeName(list: { name: string; scope: ConfigScope; exact: boolean }[], name: string): void {
   const i = list.findIndex((item) => item.name === name);
   if (i < 0) return;
   list[i] = list[list.length - 1]!;
@@ -676,7 +678,7 @@ function removeName(list: { name: string; scope: ConfigScope }[], name: string):
 // hook.c `hook_config_lookup_all` and `build_hook_config_map`. `fatal`: every `git hook` call and hook run dies, so no hook runs.
 // The derivation still lists each registration, so the approval rule stays conservative.
 export function configuredHooks(entries: readonly ConfigEntry[]): { hooks: ConfiguredHook[]; fatal: boolean } {
-  const events = new Map<string, { name: string; scope: ConfigScope }[]>();
+  const events = new Map<string, { name: string; scope: ConfigScope; exact: boolean }[]>();
   const commands = new Map<string, ConfigEntry>();
   const disabled = new Set<string>();
   const parallel = new Set<string>();
@@ -697,7 +699,7 @@ export function configuredHooks(entries: readonly ConfigEntry[]): { hooks: Confi
       if (KNOWN_EVENTS.has(name)) fatal = true;
       const list = events.get(entry.value) ?? [];
       removeName(list, name);
-      list.push({ name, scope: entry.scope });
+      list.push({ name, scope: entry.scope, exact: entry.exact });
       events.set(entry.value, list);
     } else if (variable === "command") commands.set(name, entry);
     else if (variable === "enabled") {
@@ -712,10 +714,10 @@ export function configuredHooks(entries: readonly ConfigEntry[]): { hooks: Confi
   const order = [...HOOK_EVENTS.filter((event) => events.has(event)), ...[...events.keys()].filter((event) => !KNOWN_EVENTS.has(event))];
   const hooks: ConfiguredHook[] = [];
   for (const event of order) {
-    for (const { name, scope } of events.get(event)!) {
+    for (const { name, scope, exact } of events.get(event)!) {
       const command = commands.get(name) ?? null;
       if (command === null && !disabled.has(name)) fatal = true;
-      hooks.push({ event, name, eventScope: scope, command, disabled: disabled.has(name), eventDisabled: disabledEvents.has(event) });
+      hooks.push({ event, name, eventScope: scope, eventExact: exact, command, disabled: disabled.has(name), eventDisabled: disabledEvents.has(event) });
     }
   }
   return { hooks, fatal };
@@ -1438,8 +1440,15 @@ async function buildListing(
   };
 }
 
+// Plan.md D14: a name that is empty, that holds invalid UTF-8, or that holds a character of the Unicode general category Cc, Cf, Zl, or Zp
+// shows as this text. Such a character, such as U+202E RIGHT-TO-LEFT OVERRIDE, can make a name read differently from its bytes.
+export const UNSHOWN_NAME = "a name that Arbareto cannot show";
+const UNSHOWN_CHARACTER = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+// `exact`: false when the decoder replaced invalid UTF-8.
+export const shownName = (text: string, exact = true): string => (!exact || text === "" || !text.isWellFormed() || UNSHOWN_CHARACTER.test(text) ? UNSHOWN_NAME : text);
+
 // Feature 004 data-model §10 `programs` and contract Δ6 `details`: each repository-controlled program by name and scope, never a value.
-// Every text is redacted (contract §7 "URL user information"). A kind lists at most 20 names, then the count of the others.
+// Every text is redacted (contract §7 "URL user information") and passes `shownName`. A kind lists at most 20 names, then the count of the others.
 // `keys`: the repository-controlled `core.hooksPath` and `protocol.allow` entries, which need approval without a program of their own.
 function programNames(
   hooks: readonly ((ConfiguredHook & { repositoryControlled: boolean }) | (FolderHook & { repositoryControlled: boolean }))[],
@@ -1449,30 +1458,32 @@ function programNames(
 ): TrustDetails {
   const kinds = { hooks: [] as TrustDetails["hooks"]["names"], filters: [] as TrustDetails["filters"]["names"], monitors: [] as TrustDetails["monitors"]["names"], mergeDrivers: [] as TrustDetails["mergeDrivers"]["names"], signing: [] as TrustDetails["signing"]["names"], other: [] as TrustDetails["other"]["names"] };
   const seen = new Set<string>();
-  const add = <K extends keyof typeof kinds>(kind: K, item: (typeof kinds)[K][number]) => {
-    const key = JSON.stringify([kind, item]);
+  // Two names that both show as UNSHOWN_NAME stay two names, so `add` compares the texts before `shownName`.
+  const add = <K extends keyof typeof kinds>(kind: K, item: (typeof kinds)[K][number], exact: boolean) => {
+    const key = JSON.stringify([kind, item, exact]);
     if (seen.has(key)) return;
     seen.add(key);
-    (kinds[kind] as unknown[]).push(item);
+    (kinds[kind] as unknown[]).push(Object.fromEntries(Object.entries(item).map(([field, text]) => [field, field === "scope" ? text : shownName(text as string, exact)])));
   };
   for (const hook of hooks) {
     if (!hook.repositoryControlled) continue;
-    if ("path" in hook) add("hooks", { event: hook.event, folder: redactUrlUserInfo(hooksDirectory!) });
-    else if (hook.command !== null) add("hooks", { event: redactUrlUserInfo(hook.event), scope: hook.command.scope });
+    // `listTrust` refuses a hooks folder text that is no valid UTF-8, and `HOOK_EVENTS` holds ASCII names only.
+    if ("path" in hook) add("hooks", { event: hook.event, folder: redactUrlUserInfo(hooksDirectory!) }, true);
+    else if (hook.command !== null) add("hooks", { event: redactUrlUserInfo(hook.event), scope: hook.command.scope }, hook.eventExact);
   }
   for (const { key, entry, repositoryControlled, reads, commit, sync, workbench } of integrations) {
     const p = keyParts(key);
     if (!repositoryControlled || p === null) continue;
     const { section, subsection, variable } = p;
-    const scope = entry.scope;
-    if (section === "filter") add("filters", { driver: redactUrlUserInfo(subsection!), scope });
-    else if (section === "core" && variable === "fsmonitor") add("monitors", { scope });
-    else if (section === "merge" && variable === "driver") add("mergeDrivers", { driver: redactUrlUserInfo(subsection!), scope });
-    else if (section === "gpg") add("signing", { key: redactUrlUserInfo(key), scope });
+    const { scope, exact } = entry;
+    if (section === "filter") add("filters", { driver: redactUrlUserInfo(subsection!), scope }, exact);
+    else if (section === "core" && variable === "fsmonitor") add("monitors", { scope }, exact);
+    else if (section === "merge" && variable === "driver") add("mergeDrivers", { driver: redactUrlUserInfo(subsection!), scope }, exact);
+    else if (section === "gpg") add("signing", { key: redactUrlUserInfo(key), scope }, exact);
     // A `hook.<name>.command` program shows as its hooks. A program of no class needs no approval, such as `diff.<driver>.textconv`.
-    else if (section !== "hook" && (reads || commit || sync || workbench)) add("other", { key: redactUrlUserInfo(key), scope });
+    else if (section !== "hook" && (reads || commit || sync || workbench)) add("other", { key: redactUrlUserInfo(key), scope }, exact);
   }
-  for (const entry of keys) add("other", { key: redactUrlUserInfo(entry.key), scope: entry.scope });
+  for (const entry of keys) add("other", { key: redactUrlUserInfo(entry.key), scope: entry.scope }, entry.exact);
   const capped = <T>(items: T[]) => ({ names: items.slice(0, TRUST_DIALOG_NAMES), more: Math.max(0, items.length - TRUST_DIALOG_NAMES) });
   // T060 adds the class `mergetool` and its tool discovery (plan.md D12). Until then, `mergeTools` names nothing.
   return { hooks: capped(kinds.hooks), filters: capped(kinds.filters), monitors: capped(kinds.monitors), mergeDrivers: capped(kinds.mergeDrivers), mergeTools: capped([]), signing: capped(kinds.signing), other: capped(kinds.other) };

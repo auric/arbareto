@@ -757,7 +757,8 @@ export const TRUST_ACTIONS = ["commit", "read", "fetch", "pull", "push", "switch
 export type TrustAction = (typeof TRUST_ACTIONS)[number];
 // Contract Δ5 "Trust dialog names per kind". It is no output bound, so `limits.ts` does not list it.
 export const TRUST_DIALOG_NAMES = 20;
-// Plan D14: the shell shows an empty value or a value with a control character as a fixed text, so a name is any text without NUL.
+// Plan D14: the service and the shell show an empty name, or a name with a character of the categories Cc, Cf, Zl, or Zp, as a fixed text.
+// So the frame admits any text without NUL.
 const dialogNames = <T extends z.ZodType>(item: T) => z.strictObject({ names: z.array(item).max(TRUST_DIALOG_NAMES), more: Count });
 // Contract Δ6 `details` and data-model §10 `programs`: the repository-controlled programs by name and scope, never a value.
 // A hooks-folder hook names its folder. A `hook.<name>.event` hook names the scope of its command.

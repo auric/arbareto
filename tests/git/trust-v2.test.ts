@@ -5,13 +5,14 @@
 // The shell double records each `trust` `confirm` frame in `runner.frames` with `callsBefore`, the count of Git calls before the frame.
 
 import { describe, expect } from "bun:test";
-import { existsSync, renameSync } from "node:fs";
+import { appendFileSync, existsSync, renameSync } from "node:fs";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { buildF02, buildF14, put, type Built } from "./fixtures";
 import { applyHunk, barrier, commit, commitCalls, commitPayload, gitPathOf, gitText, outcome, putHook, readOk, repoOf, reviewOk, selectHunks, shQuote, SUCCEEDED, TIMEOUT_MS, until, withService, gitPath } from "./hunk-harness";
 import { caseTest, openService, type OpenOptions, type Service, type ServiceResponse } from "./service-harness";
+import { UNSHOWN_NAME } from "../../src/git-service/trust";
 
 printOrigin("../../src/git-service/trust.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
@@ -424,6 +425,47 @@ describe("trust option (d) (spec FR-069 to FR-075, plan.md D12)", () => {
         // The 001 `entries` keep their value display allowlist (contract §7). The dialog details, `programs`, and the log carry no value.
         const text = JSON.stringify([frame, trust.programs, service.log()]);
         expect(["ARBARETO-T051-VALUE", "ARBARETO-T051-KEY", "ARBARETO-T051-PASSWORD", "secret-tool"].filter((secret) => text.includes(secret))).toEqual([]);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    TASK,
+    "plan.md D14: a name with a character of the Unicode general category Cc, Cf, Zl, or Zp, or with invalid UTF-8, shows as a fixed text in programs and in the dialog details",
+    W,
+    () =>
+      withService({ name: "t051-hidden-names" }, async (service) => {
+        const built = buildF02(gitPath(), "t051-hidden-names");
+        const repo = repoOf(built);
+        const config = (key: string, value: string) => gitText(repo, ["config", key, value]);
+        // U+202E RIGHT-TO-LEFT OVERRIDE makes the rest of a name read from right to left.
+        config("filter.lfs\u202eexe.clean", "cat");
+        config("filter.\u2066x\u2069.clean", "cat");
+        config("filter.plain.clean", "cat");
+        config("hook.t051.command", "./t051-hook.sh");
+        config("hook.t051.event", "pre-commit\u2066");
+        // The bytes 0xff are no UTF-8, so the service decodes them with a replacement character.
+        appendFileSync(gitPathOf(repo, "config"), Buffer.concat([Buffer.from('[filter "bad'), Buffer.from([0xff]), Buffer.from('"]\n\tclean = cat\n')]));
+        const { repositoryId } = await service.register(repo);
+        const trust = await trustOf(service, repositoryId);
+        expect({ filters: trust.programs.filters, hooks: trust.programs.hooks }).toEqual({
+          filters: {
+            names: [
+              { driver: UNSHOWN_NAME, scope: "local" },
+              { driver: UNSHOWN_NAME, scope: "local" },
+              { driver: "plain", scope: "local" },
+              { driver: UNSHOWN_NAME, scope: "local" },
+            ],
+            more: 0,
+          },
+          hooks: { names: [{ event: UNSHOWN_NAME, scope: "local" }], more: 0 },
+        });
+        service.runner.inject.confirmResult = "declined";
+        expect(outcome(await approveTrust(service, repositoryId, "commit"))).toEqual(CANCELED);
+        const [frame] = confirms(service);
+        expect(frame!.details).toEqual(trust.programs);
+        const text = JSON.stringify([frame!.details, trust.programs]);
+        expect([..."\u202e\u2066\u2069\ufffd"].filter((c) => text.includes(c)).map((c) => c.codePointAt(0)!.toString(16))).toEqual([]);
       }),
     TIMEOUT_MS,
   );

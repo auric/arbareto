@@ -82,7 +82,12 @@ function Item({ item }: { item: ActionItem }) {
   );
 }
 
-/** D15: the page cancels `contextmenu`, so WebView2 raises no `ContextMenuRequested`. Editable fields keep the built-in text menu. */
+/**
+ * D15: the page cancels `contextmenu`, so WebView2 raises no `ContextMenuRequested`.
+ * Editable fields and elements inside a `.select-text` region keep the built-in menu with Copy.
+ * An element with its own action menu cancels the event in its own handler first, so it never shows the built-in menu.
+ */
 export function suppressPageMenu(event: MouseEvent) {
-  if (!isEditable((event.target as HTMLElement | null) ?? undefined)) event.preventDefault();
+  const target = event.target instanceof Element ? event.target : null;
+  if (target === null || (!isEditable(target as HTMLElement) && target.closest(".select-text") === null)) event.preventDefault();
 }

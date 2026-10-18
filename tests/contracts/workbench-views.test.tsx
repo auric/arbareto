@@ -276,6 +276,28 @@ describe("action menu (FR-014, FR-085, plan.md D15, D16)", () => {
     expect(ran).toEqual(["switch"]);
   });
 
+  test("selectable text keeps the built-in menu with Copy, unless the element opens its own action menu", async () => {
+    await mountWorkbench(workbench, createWorld());
+    const fire = (target: Element) => {
+      const event = new MouseEvent("contextmenu", { bubbles: true, cancelable: true });
+      target.dispatchEvent(event);
+      return event.defaultPrevented;
+    };
+    // A stand-in for the commit details, a diff, or Git output inside the window.
+    const region = document.querySelector("main")!.appendChild(document.createElement("div"));
+    region.className = "select-text";
+    const line = region.appendChild(document.createElement("span"));
+    line.textContent = "Selectable line";
+    const row = region.appendChild(document.createElement("div"));
+    row.addEventListener("contextmenu", (event) => event.preventDefault());
+    expect(fire(line)).toBe(false);
+    expect(fire(region)).toBe(false);
+    expect(fire(row)).toBe(true);
+    // Outside a `.select-text` region the page still cancels the event.
+    expect(fire(document.querySelector("main")!)).toBe(true);
+    region.remove();
+  });
+
   test("the page calls preventDefault on contextmenu outside editable fields", async () => {
     await mountWorkbench(workbench, createWorld());
     await showReferences();

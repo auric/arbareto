@@ -6,10 +6,7 @@ import { FileDiff, Virtualizer } from "@pierre/diffs/react";
 import { useMemo, useRef, type ReactNode } from "react";
 import { diffLanguage } from "../highlight/language";
 import { DIFF_THEME } from "../highlight/set";
-
-// Static CSS only. Repository content never enters `unsafeCSS`.
-// plan.md "Selected hunk": a 3 DIP Accent left bar and no fill. The focus outline stays as Pierre draws it.
-const CSS = "[data-selected-line]{background:none;box-shadow:inset 3px 0 0 var(--accent-role)}";
+import { PATCH_CSS } from "./patch-css";
 
 export type PatchViewProps = {
   /** The decoded canonical patch. */
@@ -87,7 +84,7 @@ export default function PatchView({ patch, selected, anchor = null, lines = null
           disableFileHeader: true,
           preferredHighlighter: "shiki-js",
           theme: DIFF_THEME,
-          unsafeCSS: CSS,
+          unsafeCSS: PATCH_CSS,
           // Spec FR-043: drag over the line numbers. The view owns the selection, so a new patch clears it.
           enableLineSelection: onLines !== undefined,
           controlledSelection: true,

@@ -62,6 +62,7 @@ Use only the README "Development" commands:
 | Q26 | The WSL rows of Q5 to Q23 in Ubuntu-26.04. | `tests/wsl/workbench-wsl.test.ts` | Same results through the distro's Git. No remaining process after Cancel or close. | FR-006 |
 | Q27 | Review of the requirement-to-test map. | review checklist | No outcome depends on Git message text, timing, or a name pattern. | SC-013 |
 | Q28 | Amend with and without staged changes; HEAD on its upstream, not on it, and no upstream; HEAD moved after the review. | `tests/git/commit-amend.test.ts`, `tests/contracts/workbench-amend.test.tsx` | Tree, parents, message, and refs equal `git commit --amend` on a copy. The confirmation shows exactly when `merge-base --is-ancestor` exits 0. A moved HEAD refuses. | SC-016, FR-098 to FR-100 |
+| Q29 | Filter files in the Commit view: Ctrl+F, the text "login", then Stage all changes. | `tests/contracts/workbench-commit.test.tsx`, `tests/contracts/shortcuts-004.test.ts` | Ctrl+F focuses Filter files. The lists show only the rows whose path holds "login". Stage all changes stages every change, also the hidden ones. Counts keep the values of the status read. | FR-101 |
 
 ## Manual checks in the packaged build
 

@@ -300,6 +300,53 @@ Run of 2026-10-18 in `C:\Projects\arbareto-l4` on f004-impl at 00bf0b3. The batc
 
 - Commit 4ac9b99 and the scratchpad `ux-004/` work did T036. The boards already had the correct keys, Switch, and Amend. The Submodules board shows the running rule. `ux-004/gen/check.mjs` is clean on all nine boards.
 
+## R25 Batch 3 verification (T048)
+
+Run of 2026-10-18 in `C:\Projects\arbareto-l4` on f004-impl at 00c9157. The batch 3 review is recorded ("Batch reviews").
+- `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, and `bun test tests/contracts/groups.test.ts`: exit 0.
+- `bun run test:all`: exit 0. Parallel group: 6,109 pass, 0 fail, 39 skip. Serial group: 520 pass, 0 fail, 9 skip.
+- `bun run test:windows`: 112 pass, 0 fail, 5 skip. Two of the skips are the `foreground` capability skips.
+- In every step, each `ORIGIN` repository root is under `C:\Projects\arbareto-l4`. The `test:windows` `ORIGIN` lines also name the installed app and its fixture copy, as in R23.
+- `bun run test:contracts`: 4,394 pass, 1 fail. Cause: a `mock.module` of PatchView in another file reached `comparison-view.test.tsx` in the single-process run. 2f31806 fixes the leak. On 2f31806, `bun run test:contracts` gives 4,395 pass, 32 skip, 0 fail.
+- Control mutation: the mutation let S act outside the diff (`src/frontend/keyboard/shortcuts.ts:143`). `tests/contracts/shortcuts-004.test.ts` failed (4 pass, 3 fail). After the undo, 7 of 7 passed.
+- Earlier run, for context: a green run on eaf5f6f, before the review fixes, gave 6,095/0/39 and 513/0/9.
+
+Screenshots on 2f31806: `bun run dev` with a scratch profile and a scratch repository. UI Automation and window messages drove the app, with no input. `PrintWindow(PW_RENDERFULLCONTENT)` made the images: `1-branch-switcher.png`, `2-branch-context.png`, `3-merge-panel.png`, and `4-commit-view.png` in the orchestrator scratchpad `t048/shots/`. Differences against the T036 boards:
+- Branch list:
+  - The filter has no search icon and no placeholder.
+  - The Local and Remote headers show no counts.
+  - The current branch has no check mark.
+  - The list has no "Manage branches" row.
+  - Ctrl+B is inline, not right-aligned.
+  - The popover is about 600 px wide, not 380 px. It is anchored below the button, not right-aligned.
+- Top bar:
+  - The branch button has no ↑/↓ chips.
+  - The worktree button is absent. Batch 5 adds it.
+  - The menubar, Refresh, and the Commit icon are on a second row, not at the right end.
+  - The repository button shows the full long path.
+- Branch menu:
+  - The items and the keys match.
+  - The items have no icons, and the groups have no separators.
+  - The Push reason is on a second line. The board puts it at the right of the same line.
+  - A focus border surrounds the whole menu.
+  - The menu covers its row.
+- Merge panel:
+  - The panel docks at full width.
+  - The panel has no branch icon and no "Before" tag, and it has an extra × close.
+  - The panel has an extra "Result" label and a `merge.ff` source line.
+  - The options need scrolling.
+  - The buttons are Merge then Cancel, left-aligned. The board has Cancel then Merge, right-aligned.
+- Commit view:
+  - The view has no Filter files box.
+  - The help line is cut off in the sidebar and repeated in the diff pane.
+  - The status letters are grey, not coloured.
+  - The Staged block sits low, with empty space above it.
+  - The message box has two columns, and the right part is empty.
+  - Commit is not the primary button.
+  - The view has no Author, Branch, and Staged summary.
+  - The board says "Commit & push". The app says "Commit and push", which ASD-STE100 prefers.
+  - The diff pane showed its empty state because no file was selected.
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.
@@ -328,3 +375,13 @@ Each batch verification task passes only after one independent review of its bat
 - Open: the "may move" list cannot see a branch that another worktree rebases (contract gap, plan D6).
 
 Open: the merge tool start stall (plan O-19, R21 N3). bd077e1 adds its diagnostics: the N3 test records each stall as a `match=false` finding with Git output, `GIT_TRACE`, and the Job members.
+
+**Batch 3, 2026-10-18.** Independent batch 3 review, reviewer agent, 2026-10-18. Scope: f388750..eaf5f6f (WP11 to WP14, T037 to T047). Skills: `ponytail-review`, `web-design-guidelines`, and `arbareto-ux`. Verdict: fix first.
+- Medium: a re-review that the user did not see could switch to Discard.
+- Medium: S and U acted outside the diff body.
+- Medium: `aria-setsize` and `aria-posinset` were missing.
+- Medium: the counts were recomputed for each progress event.
+- Medium: the IME guard was dead code.
+- Resolution: 0769649 fixes the five Mediums, the Low items, and the suspicions (focus after Close, the stale notice, and the Segmented control height). 00c9157 merges it.
+- Open: the renderer does not validate review results at run time, because `portable-imports` forbids zod in the renderer (contract gap).
+- Open: on a History row with several branch labels, the keyboard reaches only the menu of the first label.

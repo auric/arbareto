@@ -121,7 +121,7 @@ describe("trust option (d) (spec FR-069 to FR-075, plan.md D12)", () => {
         const trust = read.result as unknown as Trust;
         expect({ state: trust.state, approvalRequired: trust.approvalRequired, programs: trust.programs }).toEqual({
           state: "untrusted",
-          approvalRequired: { reads: false, commit: false, sync: false, workbench: false },
+          approvalRequired: { reads: false, commit: false, sync: false, workbench: false, mergetool: false },
           programs: NO_PROGRAMS,
         });
         // Contract Δ7: the readTrust result holds no fingerprint and no digest bound.
@@ -148,7 +148,7 @@ describe("trust option (d) (spec FR-069 to FR-075, plan.md D12)", () => {
         await readOk(service, repositoryId);
         const read = await service.readTrust(repositoryId);
         const trust = read.result as unknown as Trust;
-        expect({ state: trust.state, approvalRequired: trust.approvalRequired }).toEqual({ state: "untrusted", approvalRequired: { reads: false, commit: true, sync: true, workbench: false } });
+        expect({ state: trust.state, approvalRequired: trust.approvalRequired }).toEqual({ state: "untrusted", approvalRequired: { reads: false, commit: true, sync: true, workbench: false, mergetool: false } });
         expect(hookFolders(trust.programs.hooks!.names)).toEqual([{ event: "pre-commit", folder: samePath(hooks) }]);
         const r = await reviewOk(service, repositoryId);
         const from = service.runner.calls.length;

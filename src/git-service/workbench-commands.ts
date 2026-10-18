@@ -90,6 +90,20 @@ export function worktreeStatusArgs(path: string): string[] {
   return read("-C", item(path), "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=dirty");
 }
 
+// Plan.md O-20: the 001 trust listing commands, run in another worktree with `-C`.
+export function worktreeConfigListArgs(path: string): string[] {
+  return read("-C", item(path), "config", "list", "--show-scope", "--show-origin", "-z");
+}
+
+export function worktreeHooksPathArgs(path: string): string[] {
+  return read("-C", item(path), "rev-parse", "--git-path", "hooks");
+}
+
+// git-rev-parse(1): the top level, the administration folder, and the common folder of another worktree, one line each. It loads no index.
+export function worktreeLayoutArgs(path: string): string[] {
+  return read("-C", item(path), "rev-parse", "--show-toplevel", "--absolute-git-dir", "--path-format=absolute", "--git-common-dir");
+}
+
 // Contract Δ3 `switch`: the records at and below a branch ref, with the type and the peeled object (git-for-each-ref(1) `*` fields).
 export function refPeelArgs(name: string): string[] {
   return read("for-each-ref", "--format=%(refname)%00%(objectname)%00%(objecttype)%00%(*objectname)%00%(*objecttype)", localOrRemote(name));

@@ -165,6 +165,25 @@ caseTest(TASK, "FR-058, FR-059, and plan.md D11: with a repository, each FR-060 
   expect(digests(f)).toEqual(before);
 }, TIMEOUT_MS);
 
+// T060 wires `readGitSettings` in `session.ts` with the service environment.
+caseTest("T060", "contract Δ3 readGitSettings through the session: with a repository the response equals the module read, and without one only the listing runs, in the globalConfig context", SHELL, async () => {
+  const f = build("config-scopes");
+  await withConfig("t060-settings", f, async (service) => {
+    const { r, gitInstallationId } = await open(service, f.repo);
+    const read = await service.request<GitSettings>("readGitSettings", {}, { repositoryId: r.repositoryId });
+    expect(outcome(read)).toEqual({ state: "succeeded", code: undefined });
+    // The module read takes the common directory of `target`, and the session the Git-printed one. Both name the same file.
+    const module = await settings(service, gitInstallationId, f, r.repositoryId);
+    expect({ ...read.result!, files: { ...read.result!.files, local: slashed(read.result!.files.local!) } }).toEqual({ ...module, files: { ...module.files, local: slashed(module.files.local!) } });
+    const from = service.runner.calls.length;
+    const global = await service.request<GitSettings>("readGitSettings", {});
+    expect(outcome(global)).toEqual({ state: "succeeded", code: undefined });
+    expect(service.runner.calls.slice(from).map((c) => [c.contextKind, c.environmentPolicy, ...c.arguments])).toEqual([["globalConfig", "read", ...LIST]]);
+    expect(global.result).toEqual(await settings(service, gitInstallationId, null));
+    expect(global.result!.files).toEqual({ local: null, global: null, system: null });
+  });
+}, TIMEOUT_MS);
+
 caseTest(TASK, "plan.md D11: an XDG global file is the header and the save target when ~/.gitconfig does not exist; an existing ~/.gitconfig takes its place", SHELL, async () => {
   const f = build("config-xdg");
   const o = build("config-xdg");

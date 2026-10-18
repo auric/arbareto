@@ -178,7 +178,7 @@ describe("accepted entries (contract §4 \"File staging\")", () => {
       await underTest();
       await acceptedSteps(service, "t196-f02", repo, [restoreStep("other-a.txt"), restoreStep("other-b.txt"), addStep("multi.txt"), restoreStep("multi.txt")]);
       const { repositoryId } = await service.register(repo);
-      expect((await service.readTrust(repositoryId)).result?.approvalRequired).toEqual({ reads: false, commit: false, sync: false, workbench: false });
+      expect((await service.readTrust(repositoryId)).result?.approvalRequired).toEqual({ reads: false, commit: false, sync: false, workbench: false, mergetool: false });
       expect(service.trustStore.records).toEqual([]);
     }),
     TIMEOUT_MS,

@@ -266,7 +266,7 @@ describe("trust report rows (contract §5 \"Trust report rows\", T372)", () => {
     programs: { hooks: none, filters: none, monitors: none, mergeDrivers: none, mergeTools: none, signing: none, other: none },
     state: "untrusted",
     persistence: "stored",
-    approvalRequired: { reads: true, commit: true, sync: true, workbench: true },
+    approvalRequired: { reads: true, commit: true, sync: true, workbench: true, mergetool: false },
     entries: Array.from({ length: entries }, () => ({ key: "a", scope: "local", origin: "file:" })),
     hooks: Array.from({ length: hooks }, () => ({ event: "x", path: "h", repositoryControlled: true })),
   });

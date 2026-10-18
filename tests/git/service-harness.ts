@@ -10,7 +10,7 @@ import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Handshake, MutationStarted, TrustAction, TrustDetails } from "../../src/contracts/channel";
-import { ReadBranchesResult, ReviewWorkbenchResult, RunWorkbenchResult } from "../../src/contracts/envelope";
+import { ReadBranchesResult, ReadGitSettingsResult, ReadWorktreesResult, ReviewWorkbenchResult, RunWorkbenchResult } from "../../src/contracts/envelope";
 import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
 import { isObject } from "../../src/contracts/strict-json";
 import type { HunkCheckpoint } from "../../src/git-service/hunk-publish";
@@ -328,7 +328,7 @@ export interface TrustResult {
   state: "untrusted" | "approved" | "changed" | "revoked";
   persistence: "stored" | "session";
   trustId?: string;
-  approvalRequired: { reads: boolean; commit: boolean; sync: boolean; workbench: boolean };
+  approvalRequired: { reads: boolean; commit: boolean; sync: boolean; workbench: boolean; mergetool: boolean };
   inputLimited?: boolean;
   programs: TrustDetails;
   entries: { key: string; scope: string; origin?: string; value?: string }[];
@@ -392,8 +392,14 @@ export function checkFrame(frame: object): void {
 
 const isResponse =(value: unknown): value is ServiceResponse => isObject(value) && typeof value.state === "string" && (value.requestId === null || typeof value.requestId === "string");
 
-// Feature 004 contract Δ10 (T034): every result of these operations must fit its schema.
-const RESULT_SCHEMAS: Readonly<Record<string, { safeParse(value: unknown): { success: boolean } }>> = { readBranches: ReadBranchesResult, reviewWorkbench: ReviewWorkbenchResult, runWorkbench: RunWorkbenchResult };
+// Feature 004 contract Δ10 (T034, T060): every result of these operations must fit its schema.
+const RESULT_SCHEMAS: Readonly<Record<string, { safeParse(value: unknown): { success: boolean } }>> = {
+  readBranches: ReadBranchesResult,
+  readWorktrees: ReadWorktreesResult,
+  readGitSettings: ReadGitSettingsResult,
+  reviewWorkbench: ReviewWorkbenchResult,
+  runWorkbench: RunWorkbenchResult,
+};
 
 export async function openService(options: OpenOptions): Promise<Service> {
   const trustStore = options.trustStore ?? createTrustStore();

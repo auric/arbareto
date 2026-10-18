@@ -530,7 +530,7 @@ export function createSyncer(o: SyncerOptions) {
     if (approval.kind !== "sync" || approval.repositoryId !== request.repositoryId) return void registry.apply(operationId, { type: "invalid-approval", code: "UNKNOWN_TARGET" });
     // Contract Δ7 "Mutation trust": the reviewed listing decides before any process.
     const t = approval.binding.trust;
-    const gate = o.trust.gate(w, { approvalRequired: { sync: t.sync }, fingerprint: t.fingerprint, inputLimited: false }, installation, "sync");
+    const gate = o.trust.gate(w, { approvalRequired: { sync: t.sync }, inputLimited: false }, installation, "sync");
     if (gate !== null) return void registry.apply(operationId, { type: "invalid-approval", code: gate });
     void execute(w, installation, operationId, signal, key, approval);
   }

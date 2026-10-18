@@ -1,0 +1,8 @@
+{
+  "schema": "read-git-settings-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"values\":[{\"key\":\"user.name\",\"type\":{\"kind\":\"text\"},\"entries\":[{\"scope\":\"local\",\"origin\":\"file:.git/config\",\"value\":\"local name\",\"reading\":\"local name\"}],\"effective\":{\"scope\":\"local\",\"origin\":\"file:.git/config\",\"value\":\"local name\",\"reading\":\"local name\"},\"scopes\":{\"system\":[],\"global\":[],\"local\":[{\"scope\":\"local\",\"origin\":\"file:.git/config\",\"value\":\"local name\",\"reading\":\"local name\"}],\"worktree\":[],\"command\":[]},\"readOnly\":{\"local\":\"locked\",\"global\":null}}],\"files\":{\"local\":\"C:/repo/.git/config\",\"global\":\"C:/Users/u/.gitconfig\",\"system\":\"C:/Program Files/Git/etc/gitconfig\"}}",
+  "repair": {
+    "values.0.readOnly.local": "multi-value"
+  }
+}

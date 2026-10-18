@@ -44,13 +44,17 @@
             },
             "workbench": {
               "type": "boolean"
+            },
+            "mergetool": {
+              "type": "boolean"
             }
           },
           "required": [
             "reads",
             "commit",
             "sync",
-            "workbench"
+            "workbench",
+            "mergetool"
           ],
           "additionalProperties": false
         },

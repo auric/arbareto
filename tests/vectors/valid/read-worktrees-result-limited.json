@@ -1,0 +1,5 @@
+{
+  "schema": "read-worktrees-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"WORKTREE_LISTING_BYTES\"}"
+}

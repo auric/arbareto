@@ -28,8 +28,8 @@ const PLATFORMS = ["windows", "posix"];
 const HOST_PLATFORM = process.platform === "win32" ? "windows" : "posix";
 
 // Every invalid vector of these schemas carries `repair`. The repaired text must pass, so a second fault cannot mask the named one.
-// Feature 004 T034 adds the workbench result schemas.
-const FAULT_SCHEMAS = ["registration-result", "open-recent-repository-result", "recent-repositories-result", "review-workbench-result", "run-workbench-result", "read-branches-result"];
+// Feature 004 T034 adds the workbench result schemas, and T060 the worktree and Git settings result schemas.
+const FAULT_SCHEMAS = ["registration-result", "open-recent-repository-result", "recent-repositories-result", "review-workbench-result", "run-workbench-result", "read-branches-result", "read-worktrees-result", "read-git-settings-result"];
 
 function repaired(value: unknown, repair: Record<string, unknown>): unknown {
   const copy = structuredClone(value) as Record<string, unknown>;
@@ -151,7 +151,7 @@ describe("golden vectors", () => {
     const actions = (schema: string) => texts("valid", schema).map((t) => t.action ?? t.reason);
     expect(actions("review-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "rebase", "ignore", "config-save", "untracked-in-way"]));
     expect(actions("run-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "ignore", "rebase", "config-save"]));
-    for (const schema of ["review-workbench-result", "run-workbench-result", "read-branches-result"]) for (const kind of ["valid", "invalid"]) expect({ schema, kind, count: texts(kind, schema).length > 0 }).toEqual({ schema, kind, count: true });
+    for (const schema of ["review-workbench-result", "run-workbench-result", "read-branches-result", "read-worktrees-result", "read-git-settings-result"]) for (const kind of ["valid", "invalid"]) expect({ schema, kind, count: texts(kind, schema).length > 0 }).toEqual({ schema, kind, count: true });
   });
 
   const faulted = vectors.filter(({ kind, vector }) => kind === "invalid" && FAULT_SCHEMAS.includes(vector.schema));

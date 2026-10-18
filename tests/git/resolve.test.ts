@@ -4,8 +4,8 @@
 // T053: Choose ours, Choose theirs, and Open in merge tool (spec FR-089 to FR-097, SC-015, plan.md D7, contract Δ3 `choose-side` and `mergetool`, data-model §11, quickstart.md Q13 and Q14).
 // The oracle is Git's own `checkout --ours`, `checkout --theirs`, and `mergetool` on a second build of the same fixture.
 
-import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { expect } from "bun:test";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { SUBMODULE_UPDATE_CEILING_MS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
@@ -25,8 +25,6 @@ for (const module of ["resolve", "workbench-review", "session"]) {
   }
 }
 printOrigin("../../src/contracts/envelope.ts", import.meta.dir);
-// Until T060 imports `resolve.ts` in `session.ts`, this import registers the resolve actions in the dispatcher of `workbench-review.ts`.
-await import("../../src/git-service/resolve");
 
 useFixtureRoot();
 
@@ -370,6 +368,11 @@ caseTest(TASK, "plan.md D7: a merge.tool value with a path separator gives merge
         `t053-tool-name-${scope}`,
         async (service) => {
           const r = await open(service, f);
+          // Spec FR-097 and plan.md D12: the local value is repository-controlled, so the trust refusal comes first. After the approval, the name rule still refuses.
+          if (scope === "local") {
+            expect(outcome(await review(service, r, "uu.txt", { action: "mergetool" }))).toEqual({ state: "failed", code: "TRUST_REQUIRED" });
+            expect((await service.approveTrust(r.repositoryId, "mergetool")).state).toBe("succeeded");
+          }
           const response = await review(service, r, "uu.txt", { action: "mergetool" });
           // A review that issues a token must not run the planted file either.
           if (response.state === "succeeded") await run(service, r, response.result!.workbenchToken);
@@ -431,12 +434,13 @@ caseTest(TASK, "FR-095: while the tool runs, the operation is in the phase merge
   }
 }, TIMEOUT_MS);
 
-// FR-097 last sentence: Git's checkout and Git's mergetool run the hooks of the class `workbench` (research.md R9, R21 F19).
-caseTest(TASK, "FR-097 and quickstart Q14: a repository-controlled post-checkout hook refuses Choose ours and Open in merge tool with TRUST_REQUIRED before the stage read, and the canary does not run", SHELL, () =>
+// FR-097 last sentence: Git's checkout and Git's mergetool write the index, so both run `post-index-change` (research.md R9, R21 F19). Its script runs no `post-checkout` (git-mergetool.sh).
+// So the hook is in the class `workbench` of Choose ours and in the class `mergetool` of Open in merge tool (plan.md D12).
+caseTest(TASK, "FR-097 and quickstart Q14: a repository-controlled post-index-change hook refuses Choose ours and Open in merge tool with TRUST_REQUIRED before the stage read, and the canary does not run", SHELL, () =>
   withGlobal([["merge.tool", "fixture"]], async () => {
     const f = build("merge");
-    const hook = canary(join(f.dir, ".."), "post-checkout");
-    put(f.dir, ".git/hooks/post-checkout", `#!/bin/sh\nexec ${hook.command} "$@"\n`);
+    const hook = canary(join(f.dir, ".."), "post-index-change");
+    put(f.dir, ".git/hooks/post-index-change", `#!/bin/sh\nexec ${hook.command} "$@"\n`);
     await withSync("t053-trust", async (service) => {
       const r = await open(service, f);
       for (const payload of [{ action: "choose-side", side: "ours" }, { action: "mergetool" }] as const) {
@@ -451,15 +455,16 @@ caseTest(TASK, "FR-097 and quickstart Q14: a repository-controlled post-checkout
   }),
 TIMEOUT_MS);
 
-// Spec FR-097 and plan.md D12: a repository-controlled `mergetool.<tool>.cmd` needs the trust class `mergetool`, which T060 adds to `trust.ts`.
-// Until then, the dispatcher gates `mergetool` with the class `workbench`, which lists no merge tool key. Run with `bun test --todo` to see the gap.
-test.todo("FR-097 and quickstart Q14: a merge tool from the repository scope in an untrusted repository gives TRUST_REQUIRED before any Git process of the action, and the canary does not run (T060)", async () => {
+// Spec FR-097 and plan.md D12: a repository-controlled `mergetool.<tool>.cmd` needs the trust class `mergetool` (T060).
+// The trust request is the TRUST_REQUIRED refusal. The renderer then asks with `approveTrust` (contract Δ7).
+caseTest("T060", "FR-097 and quickstart Q14: a merge tool from the repository scope in an untrusted repository gives TRUST_REQUIRED before any Git process of the action, and the canary does not run", SHELL, async () => {
   const f = build("merge");
   const tool = canary(join(f.dir, ".."), "repository-tool");
   git(f, ["config", "--local", "merge.tool", "repository"]);
   git(f, ["config", "--local", "mergetool.repository.cmd", `${tool.command} "$MERGED"`]);
   await withSync("t053-repository-tool", async (service) => {
     const r = await open(service, f);
+    expect((await service.readTrust(r.repositoryId)).result!.approvalRequired).toEqual({ reads: false, commit: false, sync: false, workbench: false, mergetool: true });
     const at = await shown(service, r, "uu.txt");
     const from = service.runner.calls.length;
     const response = await service.request("reviewWorkbench", { action: "mergetool", ...at.entry }, { repositoryId: r.repositoryId, repositoryGeneration: at.generation });
@@ -468,4 +473,53 @@ test.todo("FR-097 and quickstart Q14: a merge tool from the repository scope in 
     expect(steps(service, from)).toEqual([]);
   });
   expect(existsSync(tool.log)).toBe(false);
-});
+}, TIMEOUT_MS);
+
+// Plan.md D12 class `mergetool`: the merge tool keys, each filter and the monitor (`checkout-index` and `git add`), and `post-index-change` (research.md R9).
+caseTest("T060", "plan.md D12: the class mergetool holds a repository merge.tool, mergetool.<tool>.cmd and .path, each filter, the monitor, and post-index-change; a post-checkout hook and a merge driver stay out", SHELL, async () => {
+  const f = build("merge");
+  const configFile = join(f.dir, ".git", "config");
+  const base = readFileSync(configFile);
+  const program = canary(join(f.dir, ".."), "class").command;
+  await withSync("t060-class", async (service) => {
+    const r = await open(service, f);
+    const read = async () => (await service.readTrust(r.repositoryId)).result!;
+    expect((await read()).approvalRequired.mergetool).toBe(false);
+    const keys: [string, string][] = [["merge.tool", "repository"], ["mergetool.repository.cmd", program], ["mergetool.repository.path", program], ["filter.c.clean", program], ["filter.c.smudge", program], ["filter.c.process", program], ["core.fsmonitor", program]];
+    for (const [key, value] of keys) {
+      writeFileSync(configFile, base);
+      git(f, ["config", "--local", key, value]);
+      const trust = await read();
+      expect({ key, mergetool: trust.approvalRequired.mergetool }).toEqual({ key, mergetool: true });
+      if (key.startsWith("merge")) expect({ key, names: trust.programs.mergeTools!.names }).toEqual({ key, names: [{ tool: "repository", scope: "local" }] });
+    }
+    writeFileSync(configFile, base);
+    git(f, ["config", "--local", "merge.c.driver", `${program} %O %A %B`]);
+    expect(await read().then((t) => [t.approvalRequired.workbench, t.approvalRequired.mergetool])).toEqual([true, false]);
+    writeFileSync(configFile, base);
+    for (const [event, mergetool] of [["post-index-change", true], ["post-checkout", false]] as const) {
+      put(f.dir, `.git/hooks/${event}`, `#!/bin/sh\nexec ${program} "$@"\n`);
+      expect({ event, mergetool: (await read()).approvalRequired.mergetool }).toEqual({ event, mergetool });
+      rmSync(join(f.dir, ".git", "hooks", event));
+    }
+    // Spec FR-097: a global tool with its program outside the roots needs no approval. git-mergetool--lib runs `( eval $merge_tool_cmd )`, so a pattern
+    // character can bring repository file names into the evaluated text, and an expansion other than `$NAME` names no program.
+    const global: [string, boolean][] = [[`${program} "$MERGED"`, false], [`${program} $LOCAL \${REMOTE}`, false], [`${program} *.txt`, true], [`${program} "$(id)"`, true]];
+    for (const [cmd, mergetool] of global) {
+      await withGlobal([["merge.tool", "global"], ["mergetool.global.cmd", cmd]], async () => {
+        expect({ cmd, mergetool: (await read()).approvalRequired.mergetool }).toEqual({ cmd, mergetool });
+      });
+    }
+  });
+  // XCU 2.5.3: with IFS in the service environment, the fields of the evaluated text are unknown, so the same global tool needs approval.
+  await withGlobal([["merge.tool", "global"], ["mergetool.global.cmd", `${program} "$MERGED"`]], () =>
+    withSync(
+      "t060-class-ifs",
+      async (service) => {
+        const r = await open(service, f);
+        expect((await service.readTrust(r.repositoryId)).result!.approvalRequired.mergetool).toBe(true);
+      },
+      { environment: nativeEnv({ IFS: " \t\n" }) },
+    ),
+  );
+}, TIMEOUT_MS);

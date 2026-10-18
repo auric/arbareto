@@ -621,8 +621,8 @@ const TOOL_NAME = "native-merge-tool.exe";
 const OPEN_FOLDER = "Open folder… (Ctrl+O)";
 // The accessible name of the current branch row in src/frontend/refs/ReferencesSidebar.tsx, for a branch without an upstream.
 const CURRENT_ROW = "main, local branch, Current";
-// `SHOW_BRANCH_HISTORY` and its shortcut text in src/frontend/refs/ReferencesSidebar.tsx. WebView2 joins the two texts with one space in the item name.
-const MENU_ITEM = "Show only this branch's history Ctrl+Shift+B";
+// `SHOW_BRANCH_HISTORY` in src/frontend/refs/ReferencesSidebar.tsx. The shortcut column is `aria-hidden`, so the UIA name is the label only (feature 004 spec FR-085).
+const MENU_ITEM = "Show only this branch's history";
 
 function powershell(script: string): unknown {
   const shell = join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");

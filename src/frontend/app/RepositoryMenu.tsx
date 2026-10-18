@@ -11,9 +11,9 @@ import { codeText } from "./RepositoryStates";
 /** plan.md "Compact token system", Icons: each header menu is at least 220 DIPs wide, so a label and its key stay on one line. */
 export const MENU_CONTENT = "min-w-[220px]";
 
-/** The key of a menu item in a right-aligned Muted text column. It never wraps. */
+/** The key of a menu item in a right-aligned Muted text column. It never wraps. The item gives the key in `aria-keyshortcuts`, so the column is hidden from assistive technology (feature 004 spec FR-085). */
 export function MenuKey({ children }: { children: string }) {
-  return <MenubarShortcut className="ml-auto pl-4 text-xs tracking-normal whitespace-nowrap text-muted-text">{children}</MenubarShortcut>;
+  return <MenubarShortcut aria-hidden="true" className="ml-auto pl-4 text-xs tracking-normal whitespace-nowrap text-muted-text">{children}</MenubarShortcut>;
 }
 
 // plan.md "Long text": a count of 1 takes the singular noun.

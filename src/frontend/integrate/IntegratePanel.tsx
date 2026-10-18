@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import { GitCompareArrowsIcon, GitMergeIcon } from "@hugeicons/core-free-icons";
 // Type-only imports keep zod out of the renderer bundle.
 import { useEffect, useId, useLayoutEffect, useRef, useState, type InputHTMLAttributes, type ReactNode } from "react";
 import type { z } from "zod";
@@ -195,6 +196,7 @@ export function IntegratePanel(props: IntegratePanelProps) {
   return (
     <DockedPanel
       title={merge ? TEXTS.mergeTitle(request.name, current) : TEXTS.rebaseTitle(current, request.name)}
+      icon={merge ? GitMergeIcon : GitCompareArrowsIcon}
       closeLabel={merge ? TEXTS.closeMerge : TEXTS.closeRebase}
       primary={{ label: action, reason, quiet: running || operationRunning, onRun: () => void run() }}
       opener={opener}

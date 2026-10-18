@@ -407,6 +407,23 @@ describe("Run, conflicts, and keys (FR-023, FR-027, plan D15)", () => {
     expect(first.closed.length).toBe(2);
   });
 
+  for (const action of ["merge", "rebase"] as const) {
+    test(`the ${action} panel head shows the Accent ${action} glyph before the title, and the foot puts Cancel, then the primary button, at the right (D16, T090)`, async () => {
+      await mount(action);
+      const heading = panel().querySelector("h2")!;
+      const head = heading.parentElement!;
+      const glyph = head.firstElementChild!;
+      expect(glyph.getAttribute("data-slot")).toBe("panel-icon");
+      expect(glyph.getAttribute("aria-hidden")).toBe("true");
+      expect(glyph.className.split(/\s+/)).toContain("text-accent-role");
+      expect(glyph.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(head.lastElementChild!.getAttribute("aria-label")).toBe(action === "merge" ? "Close merge panel" : "Close rebase panel");
+      const foot = panel().querySelector<HTMLElement>('[data-slot="panel-foot"]')!;
+      expect(foot.className.split(/\s+/)).toEqual(expect.arrayContaining(["border-t", "justify-end", "px-3", "py-2"]));
+      expect([...foot.querySelectorAll("button")].map(text)).toEqual(["Cancel", action === "merge" ? "Merge (Ctrl+Enter)" : "Rebase (Ctrl+Enter)"]);
+    });
+  }
+
   test("the 003 conflict row shows Abort in the Removed text (plan D16)", async () => {
     await render(<ConflictRow operationState="rebasing" conflicted={2} reason={null} onAction={async () => null} />);
     const abort = [...document.querySelectorAll("button")].find((b) => text(b).startsWith("Abort"))!;

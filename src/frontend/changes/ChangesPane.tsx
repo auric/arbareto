@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { ArrowDown01Icon, ArrowRight01Icon, Folder01Icon, ListIcon, ListTreeIcon, MinusSignIcon, PlusSignIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowRight01Icon, Folder01Icon, ListIcon, ListTreeIcon, MinusSignIcon, PlusSignIcon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
@@ -12,6 +12,8 @@ import { ConfirmPopover } from "../components/confirm-popover";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import { RunningTooltip } from "../components/running-tooltip";
+import { matches } from "../components/switcher-popover";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { KEYS } from "../keyboard/shortcuts";
 import { Splitter } from "../layout/Splitter";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
@@ -29,6 +31,8 @@ export const BUSY_REASON = "A file action is running. Wait for its result.";
 // Feature 004 plan.md D15 "Commit view texts".
 export const SHOW_FOLDER_REASON = "Show in Explorer takes one file. Select a file in the folder.";
 export const cutHeading = (n: number) => `At least ${formatCount(n)} untracked files. Git lists more than Arbareto reads.`;
+export const FILTER_FILES = "Filter files";
+export const NO_FILE_MATCH = "No file matches the filter.";
 
 /** Feature 003 FR-052: `resolve` is Mark resolved of a Conflicted entry. */
 export type FileDirection = "stage" | "unstage" | "resolve";
@@ -122,11 +126,17 @@ export function ChangesPane(props: ChangesPaneProps) {
   const [menu, setMenu] = useState<{ row: TreeRow; list: ListName; anchor: HTMLElement } | null>(null);
   const [ignore, setIgnore] = useState<{ review: Extract<IgnoreReview, { ok: true }>; anchor: HTMLElement } | null>(null);
   const copy = useCopy();
+  // Spec FR-101: Filter files filters only the shown rows. The derived actions and every count keep the status read.
+  const [query, setQuery] = useState("");
 
   // The rows build from the entries of this snapshot. The Untracked rows build only while the section is open (plan.md D15).
-  const rows = useMemo(() => ({ changes: changesRows(entries, layout, toggled, untrackedOpen), staged: stagedRows(entries, layout, toggled) }), [entries, layout, toggled, untrackedOpen]);
+  const rows = useMemo(() => {
+    const keep = query === "" ? undefined : (e: ChangeEntry) => matches(e.path, query);
+    return { changes: changesRows(entries, layout, toggled, untrackedOpen, keep), staged: stagedRows(entries, layout, toggled, keep) };
+  }, [entries, layout, toggled, untrackedOpen, query]);
   const lists = useRef<Partial<Record<ListName, ListHandle>>>({});
   const root = useRef<HTMLDivElement>(null);
+  const body = useRef<HTMLDivElement>(null);
   const pending = useRef<string | null>(null);
   const running = useRef(false);
   const reasonShown = useRef<string | null>(null);
@@ -140,13 +150,18 @@ export function ChangesPane(props: ChangesPaneProps) {
   }, []);
 
   // Data-model §14: a new snapshot keeps the marked entries whose IDs still exist.
-  const alive = useMemo(() => new Set(entries.map((e) => e.entryId)), [entries]);
+  const alive = useMemo(() => new Map(entries.map((e) => [e.entryId, e])), [entries]);
   // One pass per snapshot for each derived set, so a key press does no work over 100,000 entries (spec SC-007).
   const derived = useMemo(
     () => ({ changes: derivedRequest(entries, "all-changes"), untracked: derivedRequest(entries, "all-untracked"), staged: derivedRequest(entries, "all-staged") }),
     [entries],
   );
-  const shownMarks = marked === null ? null : { ...marked, ids: new Set([...marked.ids].filter((id) => alive.has(id))) };
+  // Spec FR-101: a row that the filter hides leaves the selection.
+  const shownMarks = marked === null ? null : { ...marked, ids: new Set([...marked.ids].filter((id) => alive.has(id) && (query === "" || matches(alive.get(id)!.path, query)))) };
+  const onQuery = (next: string) => {
+    setQuery(next);
+    if (next !== "") setMarked((m) => (m === null ? m : { ...m, ids: new Set([...m.ids].filter((id) => !alive.has(id) || matches(alive.get(id)!.path, next))) }));
+  };
 
   const reason = (text: string | null) => {
     if (text === null && reasonShown.current === null) return;
@@ -394,7 +409,7 @@ export function ChangesPane(props: ChangesPaneProps) {
   const [stagedSize, setStagedSize] = useState<number | null>(null);
   const [box, setBox] = useState(0);
   useLayoutEffect(() => {
-    const element = root.current;
+    const element = body.current;
     if (element === null || typeof ResizeObserver === "undefined") return;
     const measure = () => setBox(sideBySide ? element.clientWidth : element.clientHeight);
     measure();
@@ -405,68 +420,98 @@ export function ChangesPane(props: ChangesPaneProps) {
   const minPane = rowHeight * 3;
   const staged = stagedSize ?? Math.round(box / 2);
 
+  // The no-match line shows only when no hidden row can match: a collapsed Untracked section creates no rows (spec FR-030).
+  const collapsed = rows.changes.some((r) => r.kind === "section" && !r.expanded);
+  const noMatch = query !== "" && !collapsed && rows.staged.length === 0 && rows.changes.every((r) => r.kind === "section");
+
   return (
-    <div ref={root} data-slot="changes-pane" className={`flex h-full min-h-0 flex-1 ${sideBySide ? "flex-row" : "flex-col"}`} onFocus={onFocus} onBlur={onBlur}>
-      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
-        <ListHeading level={2} label="Changes" count={working} rowHeight={rowHeight}>
-          {files === undefined ? null : (
-            <>
-              {changesMarks !== null && changesMarks.size > 1 ? (
-                <FilesButton label={selectedLabel("changes", changesMarks.size)} keys={KEYS.stageEntry} request={selectedRequest("changes", [...changesMarks])} reasonOf={filesReason} running={files.running} onRun={runFiles} />
-              ) : null}
-              <FilesButton label="Stage all changes" request={derived.changes} reasonOf={filesReason} running={files.running} onRun={runFiles} />
-            </>
-          )}
-          <span role="group" aria-label="Layout" className="flex items-center">
-            <IconButton icon={ListTreeIcon} label="Tree layout" aria-pressed={layout === "tree"} onClick={() => setLayout("tree")} />
-            <IconButton icon={ListIcon} label="Flat layout" aria-pressed={layout === "flat"} onClick={() => setLayout("flat")} />
-          </span>
-        </ListHeading>
-        {complete && working === 0 ? <p className="px-2 text-muted-text">Working tree clean</p> : null}
-        <p id={helpId} className="shrink-0 truncate px-2 text-muted-text" style={{ height: "var(--h-help-line)", lineHeight: "var(--h-help-line)" }}>
-          {helpLine}
-        </p>
-        {untrackedReason === null ? null : (
-          <p id={untrackedReasonId} data-slot="files-reason" hidden={files?.running} className="shrink-0 px-2 text-muted-text">
-            {`Stage all untracked is unavailable: ${untrackedReason}`}
+    <div ref={root} data-slot="changes-workspace" className="flex h-full min-h-0 flex-1 flex-col" onFocus={onFocus} onBlur={onBlur}>
+      {/* Plan D15 "Filter files": one field above the Changes and Staged trees. */}
+      <div className="relative flex shrink-0 items-center px-2 pt-2">
+        <HugeiconsIcon icon={Search01Icon} strokeWidth={2} aria-hidden="true" className="pointer-events-none absolute left-4 size-(--icon-size) text-muted-text" />
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <input
+                type="text"
+                aria-label={FILTER_FILES}
+                aria-keyshortcuts="Control+F"
+                placeholder={FILTER_FILES}
+                spellCheck={false}
+                autoComplete="off"
+                className="h-(--h-button) w-full rounded-sm border border-control-border bg-surface pr-2 pl-8"
+                value={query}
+                onChange={(event) => onQuery(event.target.value)}
+              />
+            }
+          />
+          <TooltipContent>{`${FILTER_FILES} (Ctrl+F)`}</TooltipContent>
+        </Tooltip>
+      </div>
+      {noMatch ? <p className="shrink-0 px-2 pt-1 text-muted-text">{NO_FILE_MATCH}</p> : null}
+      <div ref={body} data-slot="changes-pane" className={`flex min-h-0 flex-1 ${sideBySide ? "flex-row" : "flex-col"}`}>
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
+          <ListHeading level={2} label="Changes" count={working} rowHeight={rowHeight}>
+            {files === undefined ? null : (
+              <>
+                {changesMarks !== null && changesMarks.size > 1 ? (
+                  <FilesButton label={selectedLabel("changes", changesMarks.size)} keys={KEYS.stageEntry} request={selectedRequest("changes", [...changesMarks])} reasonOf={filesReason} running={files.running} onRun={runFiles} />
+                ) : null}
+                <FilesButton label="Stage all changes" request={derived.changes} reasonOf={filesReason} running={files.running} onRun={runFiles} />
+              </>
+            )}
+            <span role="group" aria-label="Layout" className="flex items-center">
+              <IconButton icon={ListTreeIcon} label="Tree layout" aria-pressed={layout === "tree"} onClick={() => setLayout("tree")} />
+              <IconButton icon={ListIcon} label="Flat layout" aria-pressed={layout === "flat"} onClick={() => setLayout("flat")} />
+            </span>
+          </ListHeading>
+          {complete && working === 0 ? <p className="px-2 text-muted-text">Working tree clean</p> : null}
+          {/* Plan D15 "Commit view texts": the sidebar shows no help line. The text stays the description of the Changes tree. */}
+          <p id={helpId} hidden>
+            {helpLine}
           </p>
-        )}
-        <TreeList {...listProps("changes")} label="Changes" describedBy={helpId} layout={layout} cut={files?.cut === true} untrackedCount={untrackedCount} section={{ reason: untrackedReason, reasonId: untrackedReasonId }} />
-      </section>
-      {stageBar === undefined ? null : (
-        // plan.md "Section minima": one row-button row. In a file band, the bar stands between the two lists.
-        <div className={`flex shrink-0 gap-2 border-divider px-2 ${sideBySide ? "flex-col justify-center border-l" : "items-center border-t"}`} style={{ minHeight: "var(--h-stage-bar)" }}>
-          {stageBar}
-        </div>
-      )}
-      {box > minPane * 2 ? (
-        <Splitter
-          label="Resize Changes and Staged"
-          orientation={sideBySide ? "vertical" : "horizontal"}
-          value={staged}
-          min={minPane}
-          max={box - minPane}
-          reverse
-          onChange={setStagedSize}
-        />
-      ) : null}
-      <section
-        data-section="staged"
-        className={`flex min-h-0 min-w-0 flex-col overflow-y-auto border-divider ${sideBySide ? "border-l" : "border-t"} ${box > minPane * 2 ? "shrink-0" : "flex-1"}`}
-        style={box > minPane * 2 ? { flexBasis: staged } : undefined}
-      >
-        <ListHeading level={2} label="Staged" count={stagedCount} rowHeight={rowHeight}>
-          {files === undefined ? null : (
-            <>
-              {stagedMarks !== null && stagedMarks.size > 1 ? (
-                <FilesButton label={selectedLabel("staged", stagedMarks.size)} keys={KEYS.stageEntry} request={selectedRequest("staged", [...stagedMarks])} reasonOf={filesReason} running={files.running} onRun={runFiles} />
-              ) : null}
-              <FilesButton label="Unstage all" request={derived.staged} reasonOf={filesReason} running={files.running} onRun={runFiles} />
-            </>
+          {untrackedReason === null ? null : (
+            <p id={untrackedReasonId} data-slot="files-reason" hidden={files?.running} className="shrink-0 px-2 text-muted-text">
+              {`Stage all untracked is unavailable: ${untrackedReason}`}
+            </p>
           )}
-        </ListHeading>
-        <TreeList {...listProps("staged")} label="Staged" layout={layout} cut={false} untrackedCount={0} section={null} />
-      </section>
+          <TreeList {...listProps("changes")} label="Changes" describedBy={helpId} layout={layout} cut={files?.cut === true} untrackedCount={untrackedCount} section={{ reason: untrackedReason, reasonId: untrackedReasonId }} />
+        </section>
+        {stageBar === undefined || stageBar === null ? null : (
+          // plan.md "Section minima": one row-button row. In a file band, the bar stands between the two lists.
+          <div className={`flex shrink-0 gap-2 border-divider px-2 ${sideBySide ? "flex-col justify-center border-l" : "items-center border-t"}`} style={{ minHeight: "var(--h-stage-bar)" }}>
+            {stageBar}
+          </div>
+        )}
+        {box > minPane * 2 ? (
+          <Splitter
+            label="Resize Changes and Staged"
+            orientation={sideBySide ? "vertical" : "horizontal"}
+            value={staged}
+            min={minPane}
+            max={box - minPane}
+            reverse
+            onChange={setStagedSize}
+          />
+        ) : null}
+        <section
+          data-section="staged"
+          className={`flex min-h-0 min-w-0 flex-col overflow-y-auto border-divider ${sideBySide ? "border-l" : "border-t"} ${box > minPane * 2 ? "shrink-0" : "flex-1"}`}
+          style={box > minPane * 2 ? { flexBasis: staged } : undefined}
+        >
+          <ListHeading level={2} label="Staged" count={stagedCount} rowHeight={rowHeight}>
+            {files === undefined ? null : (
+              <>
+                {stagedMarks !== null && stagedMarks.size > 1 ? (
+                  <FilesButton label={selectedLabel("staged", stagedMarks.size)} keys={KEYS.stageEntry} request={selectedRequest("staged", [...stagedMarks])} reasonOf={filesReason} running={files.running} onRun={runFiles} />
+                ) : null}
+                <FilesButton label="Unstage all" request={derived.staged} reasonOf={filesReason} running={files.running} onRun={runFiles} />
+              </>
+            )}
+          </ListHeading>
+          <TreeList {...listProps("staged")} label="Staged" layout={layout} cut={false} untrackedCount={0} section={null} />
+        </section>
+      </div>
       {menu === null ? null : (
         <ActionMenu label={menu.row.kind === "file" ? menu.row.entry.path : menu.row.kind === "folder" ? menu.row.path : "Untracked"} groups={menuGroups(menu.row, menu.list, menu.anchor)} open anchor={menu.anchor} onOpenChange={(open) => !open && setMenu(null)} finalFocus={() => menu.anchor} />
       )}
@@ -761,6 +806,9 @@ function letter(entry: ChangeEntry): string {
   return (entry.category === "staged" ? xy[0] : xy[1]) ?? "";
 }
 
+// Plan D16 "Geometry": M in Warning text, A and ? in Added text, D in Removed text, other letters in Text. The letter is text, so color is never the only cue.
+const LETTER_COLOR: Record<string, string> = { M: "text-warning", A: "text-added", "?": "text-added", D: "text-removed" };
+
 /** One row. The row button shows on pointer hover and on focus (spec FR-032). The path keeps the file name whole (plan.md "Long text"). */
 const Row = memo(function Row({ row, list, layout, sectionReason, sectionReasonId, folderReason, selected, tabStop, cut, untrackedCount, hasFiles, top, height, events }: RowProps) {
   const style: CSSProperties = { position: "absolute", top: 0, left: 0, right: 0, height, transform: `translateY(${top}px)`, paddingLeft: 8 + 16 * row.depth };
@@ -841,14 +889,15 @@ const Row = memo(function Row({ row, list, layout, sectionReason, sectionReasonI
   const entry = row.entry;
   const [folder, name] = splitPath(entry.path, GIT_SEPARATORS);
   const direction = directionOf(entry.category);
+  const mark = letter(entry);
   return (
     <div {...common} data-entry-id={entry.entryId} aria-selected={selected} aria-label={entry.path}>
       <span aria-hidden="true" className="flex min-w-0 flex-1 whitespace-nowrap">
         {layout === "tree" ? null : <span className="min-w-0 shrink-[1000] truncate">{folder}</span>}
         <span className="min-w-0 truncate">{name}</span>
       </span>
-      <span aria-hidden="true" className="w-4 shrink-0 text-center text-muted-text">
-        {letter(entry)}
+      <span aria-hidden="true" data-slot="status-letter" className={`w-4 shrink-0 text-center ${LETTER_COLOR[mark] ?? "text-text"}`}>
+        {mark}
       </span>
       {rowButton(`${ROW_LABEL[direction]} ${name}`, direction === "unstage" ? MinusSignIcon : PlusSignIcon, null)}
     </div>

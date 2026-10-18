@@ -37,13 +37,11 @@ function textById(html: string, id: string): string {
 const nameOf = (html: string, attrs: string) => attr(attrs, "aria-label") ?? (attr(attrs, "aria-labelledby") ?? "").split(/\s+/).filter(Boolean).map((id) => textById(html, id)).join(" ");
 
 describe("Changes help line", () => {
-  test("the help line shows the plan.md text on one line with an end ellipsis", () => {
+  test("the list shows no visible help line: the text stays hidden as the tree description (004 plan.md D15 Commit view texts)", () => {
     const html = render();
     const line = [...html.matchAll(/<(\w+)\b([^>]*)>([^<]*)<\/\1>/g)].filter((m) => m[3] === HELP);
     expect(line).toHaveLength(1);
-    expect(attr(line[0]![2]!, "class")?.split(/\s+/)).toContain("truncate");
-    // The 18/20 DIP help line height (plan.md density table, T124 token).
-    expect(line[0]![2]).toContain("--h-help-line");
+    expect(line[0]![2]).toMatch(/\shidden=""/);
   });
 
   test("the Changes tree carries the help text as its accessible description, and the Staged tree does not", () => {

@@ -394,6 +394,19 @@
   outline-offset: var(--focus-offset);
 }
 
+/* Feature 004 plan.md D16 "Components": the focus outline marks only the focused menu item, 2 px inside it, and never the whole menu. */
+:is(
+    [data-slot="dropdown-menu-content"],
+    [data-slot="dropdown-menu-sub-content"],
+    [data-slot="menubar-content"],
+    [data-slot="menubar-sub-content"]
+  ):focus-visible {
+  outline: none;
+}
+[role="menu"] :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):focus-visible {
+  outline-offset: calc(-1 * var(--focus-width));
+}
+
 /* Feature 004 plan.md D16: popovers, menus, and dialogs. */
 :is(
     [data-slot="dropdown-menu-content"],
@@ -446,6 +459,9 @@
   }
   .list-row[aria-selected="true"]::before {
     background: HighlightText;
+  }
+  .list-row[aria-selected="true"] [data-slot="status-letter"] {
+    color: HighlightText;
   }
   .selected-hunk-bar {
     forced-color-adjust: none;

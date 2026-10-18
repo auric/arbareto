@@ -22,6 +22,7 @@ printOrigin("../../src/frontend/commit/CommitTray.tsx", import.meta.dir);
 printOrigin("../../src/frontend/commit/MessageGuide.tsx", import.meta.dir);
 printOrigin("../../src/frontend/commit/WorkingSummary.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
+printOrigin("../../src/frontend/keyboard/shortcuts.ts", import.meta.dir);
 
 // Pierre and its worker need the Vite build (T160). The double renders each hunk button that Pierre renders as a hunk annotation,
 // and it keeps the line-selection callback that Pierre calls when a pointer selection over the line numbers ends.
@@ -449,7 +450,7 @@ describe("Untracked menu and ignore items (FR-045, FR-046, plan D9)", () => {
     expect(menuItems().map(itemLabel)).toEqual(["Stage folder", "Add to .gitignore", "Add to info/exclude", "Copy path", "Show in Explorer"]);
     for (const i of menuItems()) expect(i.getAttribute("aria-label")).toBeNull();
     expect(menuItem("Stage folder").getAttribute("aria-keyshortcuts")).toBe("Space");
-    expect(menuItem("Stage folder").querySelector('[aria-hidden="true"]')?.textContent).toBe("Space");
+    expect(menuItem("Stage folder").querySelector('[data-slot="dropdown-menu-shortcut"][aria-hidden="true"]')?.textContent).toBe("Space");
     // Contract Δ3 `revealPath` takes one entry, so a folder row states the reason.
     expect(describedBy(menuItem("Show in Explorer"))).toBe("Show in Explorer takes one file. Select a file in the folder.");
   });
@@ -931,10 +932,168 @@ describe("virtual list (FR-086, SC-007 component check)", () => {
     expect(reads).toBe(0);
   });
 
-  test("the help line stays in the Changes list", async () => {
+  test("the help line shows only in the diff empty state, and the Changes list keeps it as its description (T091)", async () => {
     const host = await render(<ChangesPane entries={[entry("unstaged", "a.ts", ".M")]} selection={null} onSelect={() => {}} onFileAction={() => new Promise(() => {})} />);
-    expect(text(host)).toContain(HELP_LINE);
+    const line = [...host.querySelectorAll("p")].find((p) => p.textContent === HELP_LINE);
+    expect(line).toBeDefined();
+    expect(line!.hidden).toBe(true);
+    expect(describedBy(tree("Changes", host))).toBe(HELP_LINE);
+    await openCommitView(createWorld({ entries: board().all }));
+    const visible = [...commitView()!.querySelectorAll("p")].filter((p) => p.textContent === HELP_LINE && p.closest("[hidden]") === null);
+    expect(visible).toHaveLength(1);
+    expect(visible[0]!.closest('[data-section="comparison"]')).not.toBeNull();
     expect(stagedRows([entry("staged", "a", "M.")], "flat", new Set())).toHaveLength(1);
     expect(derivedRequest([entry("staged", "a", "M.")], "all-staged").direction).toBe("unstage");
+  });
+});
+
+// --- Batch 3 follow-up: D16 status letters and the Staged block (T091) -------------------------------------------
+
+describe("status letters and the Staged block (plan D16, T091)", () => {
+  test("M uses Warning text, A and ? Added text, D Removed text, and every other letter Text", async () => {
+    const entries = [
+      entry("unstaged", "m.ts", ".M"),
+      entry("unstaged", "d.ts", ".D"),
+      entry("unstaged", "t.ts", ".T"),
+      entry("conflicted", "c.ts", "UU"),
+      entry("untracked", "u.ts"),
+      entry("staged", "a.ts", "A."),
+      entry("staged", "r.ts", "R."),
+    ];
+    const host = await render(<ChangesPane entries={entries} selection={null} onSelect={() => {}} onFileAction={() => new Promise(() => {})} layout="flat" untrackedOpen />);
+    const letterOf = (path: string) => {
+      const row = [...host.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((r) => r.getAttribute("aria-label") === path)!;
+      const mark = row.querySelector<HTMLElement>('[data-slot="status-letter"]')!;
+      return [mark.textContent, mark.className.split(/\s+/).find((c) => /^text-(warning|added|removed|text|muted-text)$/.test(c))];
+    };
+    expect(letterOf("m.ts")).toEqual(["M", "text-warning"]);
+    expect(letterOf("d.ts")).toEqual(["D", "text-removed"]);
+    expect(letterOf("t.ts")).toEqual(["T", "text-text"]);
+    expect(letterOf("c.ts")).toEqual(["U", "text-text"]);
+    expect(letterOf("u.ts")).toEqual(["?", "text-added"]);
+    expect(letterOf("a.ts")).toEqual(["A", "text-added"]);
+    expect(letterOf("r.ts")).toEqual(["R", "text-text"]);
+  });
+
+  test("without a shown comparison, the Staged list starts directly below the splitter, with no empty stage bar", async () => {
+    const restore = sizeTrees(600);
+    try {
+      await openCommitView(createWorld({ entries: board().all }));
+      const staged = commitView()!.querySelector<HTMLElement>('[data-section="staged"]')!;
+      expect(staged.previousElementSibling?.getAttribute("aria-label")).toBe("Resize Changes and Staged");
+      expect(commitView()!.innerHTML).not.toContain("--h-stage-bar");
+    } finally {
+      restore();
+    }
+  });
+});
+
+// --- Filter files (FR-101, quickstart Q29, T092) --------------------------------------------------------------------
+
+describe("Filter files (FR-101, Q29)", () => {
+  const filesField = () => document.querySelector<HTMLInputElement>('input[aria-label="Filter files"]');
+  async function typeIn(input: HTMLInputElement, value: string) {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await settle();
+  }
+  const labels = (name: string) => items(name).map((i) => i.getAttribute("aria-label"));
+
+  test("Ctrl+F focuses Filter files in the Commit view and the history filter in the History view", async () => {
+    await mountWorkbench(workbench, createWorld({ entries: board().all }));
+    await press(document.body, "f", { ctrlKey: true });
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Filter commit messages");
+    await click(button("Commit", views()));
+    await press(document.body, "f", { ctrlKey: true });
+    expect(document.activeElement).toBe(filesField());
+    // Ctrl+F also leaves the message field for Filter files.
+    const message = document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Commit message"]')!;
+    await act(async () => message.focus());
+    await press(message, "f", { ctrlKey: true });
+    expect(document.activeElement).toBe(filesField());
+    await click(button("History", views()));
+    await press(document.body, "f", { ctrlKey: true });
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Filter commit messages");
+  });
+
+  test("the field shows the search icon, the placeholder, the key, and the tooltip Filter files (Ctrl+F) above both lists", async () => {
+    await openCommitView(createWorld({ entries: board().all }));
+    const field = filesField()!;
+    expect(field.getAttribute("placeholder")).toBe("Filter files");
+    expect(field.getAttribute("aria-keyshortcuts")).toBe("Control+F");
+    expect(field.parentElement!.querySelector("svg")?.getAttribute("aria-hidden")).toBe("true");
+    for (const name of ["Changes", "Staged"]) expect(field.compareDocumentPosition(tree(name)) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await keyboardFocus(field);
+    expect(tooltipText()).toBe("Filter files (Ctrl+F)");
+  });
+
+  test("login shows only the rows whose path holds it, and Stage all changes still stages every change (Q29)", async () => {
+    const { all, tracked, untracked } = board();
+    const double = await openCommitView(createWorld({ entries: all }));
+    const status = text(document.querySelector("footer")!);
+    await typeIn(filesField()!, "login");
+    // Folder, heading, and status bar counts keep the counts of the status read.
+    expect(labels("Changes")).toEqual(["src, 3", "src/auth, 2", "src/auth/login.ts", "Untracked, 5"]);
+    expect(labels("Staged")).toEqual([]);
+    expect(document.querySelector('[data-list-heading="Changes"] .num')?.textContent).toBe("9");
+    expect(document.querySelector('[data-list-heading="Staged"] .num')?.textContent).toBe("3");
+    expect(text(document.querySelector("footer")!)).toBe(status);
+    await click(button("Stage all changes"));
+    expect(double.pending("applyFiles")!.args[1]).toMatchObject({ kind: "all-changes", direction: "stage", entryIds: [...tracked, ...untracked].map((e) => e.entryId) });
+  });
+
+  test("the match is a literal substring of the display path without regard to letter case, and no match states it", async () => {
+    const files = [entry("unstaged", "a.ts", ".M"), entry("unstaged", "axts", ".M"), entry("unstaged", "dir/A.TS", ".M")];
+    await openCommitView(createWorld({ entries: files }));
+    await click(button("Flat layout"));
+    await typeIn(filesField()!, "a.ts");
+    expect(labels("Changes")).toEqual(["a.ts", "dir/A.TS"]);
+    expect(text(commitView()!)).not.toContain("No file matches the filter.");
+    await typeIn(filesField()!, ".*");
+    expect(labels("Changes")).toEqual([]);
+    expect(text(commitView()!)).toContain("No file matches the filter.");
+    await typeIn(filesField()!, "");
+    expect(labels("Changes")).toEqual(["a.ts", "axts", "dir/A.TS"]);
+  });
+
+  test("Stage folder and Unstage all keep their full scope under a filter", async () => {
+    const { all, staged } = board();
+    const double = await openCommitView(createWorld({ entries: all }));
+    await typeIn(filesField()!, "login");
+    await click(button("Stage folder src", item("Changes", "src")));
+    expect(double.pending("applyFiles")!.args[1]).toMatchObject({ kind: "folder", direction: "stage", entryIds: all.filter((e) => e.category !== "staged" && e.path.startsWith("src/")).map((e) => e.entryId) });
+    await act(async () => double.pending("applyFiles")!.resolve({ requestId: fixtureId(0x5ff), state: "failed", code: "CANCELED" }));
+    await settle();
+    await click(button("Unstage all"));
+    expect(double.pending("applyFiles")!.args[1]).toMatchObject({ kind: "all-staged", direction: "unstage", entryIds: staged.map((e) => e.entryId) });
+  });
+
+  test("a row that the filter hides leaves the selection, so Stage selected covers only shown rows", async () => {
+    const files = ["keep-1.ts", "drop.ts", "keep-2.ts"].map((p) => entry("unstaged", p, ".M"));
+    const double = await openCommitView(createWorld({ entries: files }));
+    await click(item("Changes", "keep-1.ts"));
+    await clickWith(item("Changes", "drop.ts"), { ctrlKey: true });
+    await clickWith(item("Changes", "keep-2.ts"), { ctrlKey: true });
+    expect(button("Stage selected (3)")).not.toBeNull();
+    await typeIn(filesField()!, "keep");
+    await click(button("Stage selected (2)"));
+    expect(double.pending("applyFiles")!.args[1]).toMatchObject({ kind: "selected", entryIds: [files[0]!.entryId, files[2]!.entryId] });
+    await act(async () => double.pending("applyFiles")!.resolve({ requestId: fixtureId(0x5ff), state: "failed", code: "CANCELED" }));
+    await settle();
+    // The hidden row stays out of the selection after the filter clears.
+    await typeIn(filesField()!, "");
+    expect(items("Changes").filter((i) => i.getAttribute("aria-selected") === "true").map((i) => i.getAttribute("aria-label"))).toEqual(["keep-1.ts", "keep-2.ts"]);
+  });
+
+  test("a collapsed Untracked section of 100,000 files creates no rows under a filter", async () => {
+    const untracked = Array.from({ length: 100_000 }, (_, i) => entry("untracked", `out/f${i}.bin`));
+    const entries = [entry("unstaged", "a.ts", ".M"), ...untracked];
+    const host = await render(<ChangesPane entries={entries} selection={null} onSelect={() => {}} onFileAction={() => new Promise(() => {})} />);
+    await typeIn(host.querySelector<HTMLInputElement>('input[aria-label="Filter files"]')!, "f1");
+    expect([...host.querySelectorAll('[role="treeitem"]')].map((i) => i.getAttribute("aria-label"))).toEqual(["Untracked, 100,000"]);
+    // The section can still hold matches, so the pane states no "no match".
+    expect(text(host)).not.toContain("No file matches the filter.");
   });
 });

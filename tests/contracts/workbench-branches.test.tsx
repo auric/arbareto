@@ -21,6 +21,7 @@ mock.module("../../src/frontend/changes/PatchView", () => ({ default: ({ patch }
 registerDom();
 const workbench = await import("../../src/frontend/app/Workbench");
 const { refusalText } = await import("../../src/frontend/branches/texts");
+const { workAreaHeight } = await import("../../src/frontend/layout/profiles");
 
 let restoreLayout: () => void = () => {};
 beforeAll(() => void (restoreLayout = stubLayout(800)));
@@ -142,11 +143,43 @@ describe("branch list (FR-008, FR-009, FR-013, SC-003)", () => {
     expect(document.activeElement).toBe(filterField());
     const names = options().map((o) => o.getAttribute("aria-label") ?? text(o));
     expect(names.slice(0, 5).map((n) => n.split(",")[0])).toEqual(["login-form", "main", "signup", "origin/login-page", "origin/main"]);
-    expect(text(options().at(-1)!)).toBe("New branch… (Ctrl+B)");
+    expect(options().at(-1)!.getAttribute("aria-label")).toBe("New branch… (Ctrl+B)");
     // The current branch is bold, without the word Current.
     const main = options()[1]!;
     expect(main.querySelector(".font-semibold")?.textContent).toBe("main");
     expect(text(main)).not.toContain("Current");
+  });
+
+  test("the list follows the D16 geometry: search icon and placeholder, Muted group counts, the current mark, the key column, and 380 px aligned to the button's end (T088)", async () => {
+    await mountWorkbench(workbench, branchWorld());
+    await openList();
+    const field = filterField();
+    expect(field.getAttribute("placeholder")).toBe("Find a branch");
+    const icon = field.parentElement!.querySelector("svg");
+    expect(icon?.getAttribute("aria-hidden")).toBe("true");
+    // The headings: "Local branches <n>" and "Remote branches <n>" with the count in Muted text, and the groups named "<heading>, <n>".
+    const headings = [...document.querySelectorAll<HTMLElement>('[data-slot="list-heading"]')];
+    expect(headings.map(text)).toEqual(["Local branches 3", "Remote branches 2"]);
+    for (const heading of headings) expect(heading.querySelector('[data-slot="list-count"]')?.className.split(/\s+/)).toContain("text-muted-text");
+    const group = (name: string) => [...document.querySelectorAll<HTMLElement>(`[role="listbox"][aria-label="Branches"] [role="group"][aria-label="${name}"] [role="option"]`)].map((o) => (o.getAttribute("aria-label") ?? "").split(",")[0]);
+    expect(group("Local branches, 3")).toEqual(["login-form", "main", "signup"]);
+    expect(group("Remote branches, 2")).toEqual(["origin/login-page", "origin/main"]);
+    // The current branch shows a check mark that assistive technology skips.
+    const marks = options().map((o) => o.querySelector('[data-slot="current-mark"]'));
+    expect(marks.map((m) => m?.querySelector("svg") !== null && m?.querySelector("svg") !== undefined)).toEqual([false, true, false, false, false, false]);
+    expect(marks[1]!.getAttribute("aria-hidden")).toBe("true");
+    // "New branch… (Ctrl+B)" shows its key in a right-aligned Muted column.
+    const footer = options().at(-1)!;
+    expect(footer.getAttribute("aria-keyshortcuts")).toBe("Control+B");
+    const key = footer.querySelector<HTMLElement>('[data-slot="option-key"]')!;
+    expect(text(key)).toBe("Ctrl+B");
+    expect(key.getAttribute("aria-hidden")).toBe("true");
+    expect(key.className.split(/\s+/)).toEqual(expect.arrayContaining(["ml-auto", "text-muted-text"]));
+    expect(text(popup()!)).not.toContain("Manage branches");
+    // The popover is 380 px wide and aligned to the end of the branch button.
+    const content = document.querySelector<HTMLElement>('[data-slot="popover-content"]')!;
+    expect(content.className).toContain("w-[min(380px,calc(100vw-32px))]");
+    expect(content.getAttribute("data-align")).toBe("end");
   });
 
   test("No upstream shows in the list and in the accessible names, and never as visible sidebar text (FR-008, 003 FR-020)", async () => {
@@ -338,6 +371,27 @@ describe("branch context menu (FR-014, FR-017, FR-020, 002 FR-049)", () => {
     expect(text(document.getElementById(push.getAttribute("aria-describedby")!)!)).toBe("Push sends the current branch only.");
   });
 
+  test("the menu groups and icons follow D16, with a separator between groups (T089)", async () => {
+    const groups = () =>
+      [...document.querySelectorAll('[data-slot="dropdown-menu-content"] [data-slot="dropdown-menu-group"]')].map((g) => [...g.querySelectorAll<HTMLElement>('[role="menuitem"]')].map(itemLabel));
+    const separators = () => document.querySelectorAll('[data-slot="dropdown-menu-content"] [data-slot="dropdown-menu-separator"]').length;
+    await mountWorkbench(workbench, branchWorld());
+    await contextMenu(await sidebarRow("login-form"));
+    expect(groups()).toEqual([
+      ["Switch", "Merge into current branch (main)…", "Rebase current branch (main) onto login-form…"],
+      ["Create branch here…", "Rename…", "Delete…"],
+      ["Push", "Copy branch name"],
+    ]);
+    expect(separators()).toBe(2);
+    for (const item of openMenuItems()) expect(item.querySelector('[data-slot="menu-icon"] svg')).not.toBeNull();
+    // Push on another branch states its reason inside the item line.
+    const push = openMenuItems().find((i) => itemLabel(i) === "Push")!;
+    expect(push.contains(document.getElementById(push.getAttribute("aria-describedby")!))).toBe(true);
+    await press(document.activeElement!, "Escape");
+    await contextMenu(await sidebarRow("origin/login-page"));
+    expect(groups()).toEqual([["Switch", "Merge into current branch (main)…", "Rebase current branch (main) onto origin/login-page…"], ["Create branch here…"], ["Copy branch name"]]);
+  });
+
   test("a remote branch menu holds the FR-014 subset", async () => {
     await mountWorkbench(workbench, branchWorld());
     await contextMenu(await sidebarRow("origin/login-page"));
@@ -389,6 +443,27 @@ describe("branch context menu (FR-014, FR-017, FR-020, 002 FR-049)", () => {
     await contextMenu(chip!);
     expect(openMenuItems().map(itemLabel)[0]).toBe("Switch");
     expect(openMenuItems().map(itemLabel)).toContain("Show only this branch's history");
+  });
+});
+
+describe("docked panel height (plan D15 \"Docked panel\", T090)", () => {
+  test("a Merge panel docks at its content height, at most 60% of the work area, and only its content scrolls", async () => {
+    await mountWorkbench(workbench, branchWorld(() => new Promise(() => {})));
+    await contextMenu(await sidebarRow("login-form"));
+    await click(openMenuItems().find((i) => itemLabel(i) === "Merge into current branch (main)…")!);
+    const dock = document.querySelector<HTMLElement>('section[aria-label="Dock"]')!;
+    const panel = dock.querySelector<HTMLElement>("section[aria-labelledby]")!;
+    expect(panel).not.toBeNull();
+    const profile = document.querySelector("[data-profile]")!.getAttribute("data-profile");
+    const client = { width: window.innerWidth, height: window.innerHeight };
+    const workArea = profile === "constrained" ? client.height : workAreaHeight(client, 1, "compact");
+    expect(dock.style.flex).toBe("0 0 auto");
+    expect(dock.style.maxHeight).toBe(`${0.6 * workArea}px`);
+    // The panel takes its content height. Only its content scrolls, so the head and the foot stay visible.
+    expect(panel.className.split(/\s+/)).not.toContain("h-full");
+    const body = panel.querySelector<HTMLElement>('[data-slot="panel-body"]')!;
+    expect(body.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-h-0", "overflow-auto"]));
+    expect(body.className.split(/\s+/)).not.toContain("flex-1");
   });
 });
 
@@ -561,12 +636,13 @@ describe("integration with the status bar and the panels (plan D15)", () => {
     await mountWorkbench(workbench, branchWorld());
     await openList();
     const headings = () => [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Branches"] [data-slot="list-heading"]')];
-    expect(headings().map((h) => text(h))).toEqual(["Local branches", "Remote branches"]);
+    expect(headings().map((h) => text(h))).toEqual(["Local branches 3", "Remote branches 2"]);
     expect(headings()[0]!.nextElementSibling?.getAttribute("aria-label")?.split(",")[0]).toBe("login-form");
     expect(headings()[1]!.nextElementSibling?.getAttribute("aria-label")?.split(",")[0]).toBe("origin/login-page");
     for (const h of headings()) expect(h.getAttribute("role")).not.toBe("option");
     await type(filterField(), "origin");
-    expect(headings().map((h) => text(h))).toEqual(["Remote branches"]);
+    // The counts keep the values of the read.
+    expect(headings().map((h) => text(h))).toEqual(["Remote branches 2"]);
   });
 
   test("each new refs digest reads the branches again, and an unchanged digest does not", async () => {

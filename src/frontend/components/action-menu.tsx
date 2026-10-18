@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { Fragment, useId, type ComponentProps, type ReactElement } from "react";
 import { isEditable } from "../keyboard/shortcuts";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "./ui/dropdown-menu";
@@ -9,6 +10,8 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem,
 
 export type ActionItem = {
   label: string;
+  /** The 16 px icon before the label (D16 "Geometry"). Without it, the slot stays empty, so the labels align. */
+  icon?: IconSvgElement;
   /** `aria` is the `aria-keyshortcuts` value, `text` the visible key column. */
   keys?: { aria: string; text: string };
   /** The unavailable reason. The item then stays focusable and runs nothing. */
@@ -37,7 +40,8 @@ export function ActionMenu({ label, groups, open, onOpenChange, trigger, anchor,
   return (
     <DropdownMenu open={open} onOpenChange={(next) => onOpenChange(next)}>
       {trigger === undefined ? null : <DropdownMenuTrigger render={trigger} />}
-      <DropdownMenuContent aria-label={label} anchor={anchor ?? undefined} sideOffset={2} finalFocus={finalFocus} className="w-auto min-w-[220px]">
+      {/* D16 "Geometry": a row menu opens beside its row, so the row stays visible. */}
+      <DropdownMenuContent aria-label={label} anchor={anchor ?? undefined} side={anchor ? "inline-end" : "bottom"} sideOffset={2} finalFocus={finalFocus} className="w-auto min-w-[220px]">
         {groups.map((group, index) => (
           <Fragment key={index}>
             {index === 0 ? null : <DropdownMenuSeparator />}
@@ -53,32 +57,34 @@ export function ActionMenu({ label, groups, open, onOpenChange, trigger, anchor,
   );
 }
 
+/** D16 "Geometry": icon, label, the Muted reason of an unavailable item, then the key column, all on one line. */
 function Item({ item }: { item: ActionItem }) {
   const reasonId = useId();
   const reason = item.reason ?? null;
   return (
-    <>
-      <DropdownMenuItem
-        disabled={reason !== null}
-        aria-keyshortcuts={item.keys?.aria}
-        aria-describedby={reason === null ? undefined : reasonId}
-        data-danger={item.danger ? "true" : undefined}
-        className={item.danger ? "danger-text" : undefined}
-        onClick={reason === null ? item.onSelect : undefined}
-      >
-        {item.label}
-        {item.keys === undefined ? null : (
-          <DropdownMenuShortcut aria-hidden="true" className="ml-auto pl-4 text-xs tracking-normal whitespace-nowrap text-muted-text">
-            {item.keys.text}
-          </DropdownMenuShortcut>
-        )}
-      </DropdownMenuItem>
+    <DropdownMenuItem
+      disabled={reason !== null}
+      aria-keyshortcuts={item.keys?.aria}
+      aria-describedby={reason === null ? undefined : reasonId}
+      data-danger={item.danger ? "true" : undefined}
+      className={item.danger ? "danger-text" : undefined}
+      onClick={reason === null ? item.onSelect : undefined}
+    >
+      <span data-slot="menu-icon" aria-hidden="true" className="flex size-4 shrink-0 items-center">
+        {item.icon === undefined ? null : <HugeiconsIcon icon={item.icon} strokeWidth={2} className="size-4" />}
+      </span>
+      <span className="whitespace-nowrap">{item.label}</span>
       {reason === null ? null : (
-        <div id={reasonId} aria-hidden="true" className="px-2 pb-1 text-xs whitespace-normal text-muted-text">
+        <span id={reasonId} data-slot="menu-reason" aria-hidden="true" className="ml-auto pl-4 text-xs whitespace-nowrap text-muted-text">
           {reason}
-        </div>
+        </span>
       )}
-    </>
+      {item.keys === undefined ? null : (
+        <DropdownMenuShortcut aria-hidden="true" className={`${reason === null ? "ml-auto " : ""}pl-4 text-xs tracking-normal whitespace-nowrap text-muted-text`}>
+          {item.keys.text}
+        </DropdownMenuShortcut>
+      )}
+    </DropdownMenuItem>
   );
 }
 

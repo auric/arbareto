@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { ArrowDown01Icon, CloudIcon, GitBranchIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, CloudIcon, GitBranchIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef, useState } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { SwitcherPopover } from "../components/switcher-popover";
+import { KEYS } from "../keyboard/shortcuts";
 import { branchName } from "../history/HistoryView";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
 import type { BranchEntry } from "../state/workbench";
@@ -80,6 +81,10 @@ export function BranchButton({ head, operationState, counts, tracking, actions, 
         const n = note(e);
         return (
           <>
+            {/* Plan D16: the current branch shows a check mark. The option name states the branch, so the mark stays hidden. */}
+            <span data-slot="current-mark" aria-hidden="true" className="flex size-4 shrink-0 items-center text-accent-role">
+              {e.current ? <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" /> : null}
+            </span>
             <HugeiconsIcon icon={e.kind === "local" ? GitBranchIcon : CloudIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
             {/* Git Extensions shows the current branch in bold. */}
             <span className={e.current ? "min-w-0 truncate font-semibold" : "min-w-0 truncate"}>{e.name}</span>
@@ -92,7 +97,7 @@ export function BranchButton({ head, operationState, counts, tracking, actions, 
         );
       }}
       onPick={(e) => pick(() => actions.pick(e, trigger.current))}
-      footer={{ label: T.newBranch, onPick: () => pick(() => actions.create(head.state === "unborn" ? null : head.oid, trigger.current)) }}
+      footer={{ label: T.newBranch, keys: { aria: KEYS.createBranch.aria, text: KEYS.createBranch.text }, onPick: () => pick(() => actions.create(head.state === "unborn" ? null : head.oid, trigger.current)) }}
       emptyText={T.empty}
       noMatchText={T.noMatch}
     >

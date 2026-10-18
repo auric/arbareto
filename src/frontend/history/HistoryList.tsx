@@ -11,6 +11,7 @@ import { Button } from "../components/ui/button";
 import { IconButton } from "../components/icon-button";
 import { metrics, type Density, type Profile } from "../layout/profiles";
 import type { TrackLabel } from "../state/tracking";
+import { scopedAction } from "../keyboard/shortcuts";
 import { SPECIAL_ROWS, type Head, type HistoryView, type Scope, type SearchState, type ViewRow } from "../state/history-view";
 import { BOUNDARY_TEXT, columnWidth, LANE_SPACING, ViewCell, WorkingLineCell } from "./AncestryCell";
 import { INVALID_UTF8_TEXT, LOCAL_DATE } from "./CommitDetails";
@@ -131,10 +132,22 @@ type Tracking = ReadonlyMap<string, TrackLabel>;
 /** Feature 003 FR-019: a local branch label joins its count label by branch name. */
 const countOf = (label: ViewRow["labels"][number], tracking: Tracking | undefined) => (label.kind === "branch" ? (tracking?.get(label.name) ?? null) : null);
 
-function LabelChip({ label, tracking }: { label: ViewRow["labels"][number]; tracking?: Tracking }) {
+type Label = ViewRow["labels"][number];
+/** Feature 004 spec FR-014: the branch menu of a local or remote-tracking branch label. */
+type LabelMenu = (label: Label, anchor: HTMLElement) => void;
+
+function LabelChip({ label, tracking, onMenu }: { label: Label; tracking?: Tracking; onMenu?: LabelMenu }) {
   const count = countOf(label, tracking);
+  const menu =
+    onMenu !== undefined && (label.kind === "branch" || label.kind === "remote")
+      ? (event: { preventDefault(): void; stopPropagation(): void; currentTarget: HTMLElement }) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onMenu(label, event.currentTarget);
+        }
+      : undefined;
   return (
-    <span data-kind={label.kind} className="chip flex shrink-0 items-center gap-1">
+    <span data-kind={label.kind} className="chip flex shrink-0 items-center gap-1" onContextMenu={menu}>
       <HugeiconsIcon icon={LABEL_KINDS.find((k) => k.kind === label.kind)!.icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
       <span data-chip-name className="max-w-[160px] truncate">
         {label.name}
@@ -145,7 +158,7 @@ function LabelChip({ label, tracking }: { label: ViewRow["labels"][number]; trac
 }
 
 /** The labels of one row. A hidden copy measures each label, so the shown labels take at most half of the subject cell. */
-function RowLabels({ labels, tracking }: { labels: ViewRow["labels"]; tracking?: Tracking }) {
+function RowLabels({ labels, tracking, onMenu }: { labels: ViewRow["labels"]; tracking?: Tracking; onMenu?: LabelMenu }) {
   const measure = useRef<HTMLSpanElement>(null);
   const [count, setCount] = useState(labels.length);
   useLayoutEffect(() => {
@@ -169,7 +182,7 @@ function RowLabels({ labels, tracking }: { labels: ViewRow["labels"]; tracking?:
   return (
     <>
       {labels.slice(0, count).map((l) => (
-        <LabelChip key={`${l.kind}:${l.name}`} label={l} tracking={tracking} />
+        <LabelChip key={`${l.kind}:${l.name}`} label={l} tracking={tracking} onMenu={onMenu} />
       ))}
       {hidden > 0 ? <span className="chip shrink-0">+{hidden}</span> : null}
       <span ref={measure} aria-hidden="true" className="invisible absolute flex gap-1">
@@ -241,10 +254,14 @@ export type HistoryListProps = {
   filterRef?: Ref<HTMLInputElement>;
   /** Feature 003 FR-019: the count label of each local branch by name. */
   tracking?: Tracking;
+  /** Feature 004 spec FR-014: a right-click on a branch label opens its branch menu. */
+  onLabelMenu?: LabelMenu;
+  /** Feature 004 plan.md D15: Ctrl+B on the selected commit row opens Create branch here. */
+  onCreateBranch?: (oid: string, anchor: HTMLElement) => void;
 };
 
 /** The feature 002 history list: a fixed-height window over the service view (plan.md D6). One listbox, one Tab stop, focus on the list. */
-export function HistoryList({ view, entries, density, profile, textScale = 1, dateFormat = LOCAL_DATE, onSelect, onScope, filterRef, tracking }: HistoryListProps) {
+export function HistoryList({ view, entries, density, profile, textScale = 1, dateFormat = LOCAL_DATE, onSelect, onScope, filterRef, tracking, onLabelMenu, onCreateBranch }: HistoryListProps) {
   const state = useSyncExternalStore(view.subscribe, view.getState);
   const ids = { heading: useId(), count: useId(), notes: useId(), list: useId() };
   const list = useRef<HTMLDivElement>(null);
@@ -364,6 +381,12 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   }
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const selection = state.selection;
+    const selectedOid = selection?.mode === listMode && selection.index !== null ? selection.id : undefined;
+    if (onCreateBranch !== undefined && selectedOid !== undefined && scopedAction(event, "historyRow") === "createBranch") {
+      event.preventDefault();
+      return onCreateBranch(selectedOid, event.currentTarget);
+    }
     if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
     const page = Math.max(1, Math.floor(height / rowHeight));
     const moves: Record<string, () => void> = {
@@ -469,7 +492,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
           {row.checkout || row.labels.length > 0 ? (
             <span data-slot="row-labels" title={row.labels.map((l) => l.name).join(", ")} className="relative flex min-w-0 max-w-[50%] shrink-0 items-center gap-1 overflow-hidden">
               {row.checkout ? <span className="badge shrink-0">{head?.state === "detached" ? "HEAD, detached" : "HEAD"}</span> : null}
-              <RowLabels labels={row.labels} tracking={tracking} />
+              <RowLabels labels={row.labels} tracking={tracking} onMenu={onLabelMenu} />
             </span>
           ) : null}
           {row.match === true ? <HugeiconsIcon icon={Search01Icon} strokeWidth={2} aria-hidden="true" data-slot="match-mark" className="size-(--icon-size) shrink-0 text-accent-role" /> : null}

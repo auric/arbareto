@@ -10,6 +10,7 @@ import type { BridgeResponse } from "../bridge";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import { COUNTS_TOOLTIP, type TrackLabel } from "../state/tracking";
+import { scopedAction, type ScopedAction } from "../keyboard/shortcuts";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuShortcut } from "../components/ui/dropdown-menu";
 
 // FR-057. plan.md "References sidebar", "Long text", "Keyboard and focus" (References sidebar row), "Task flow and command placement" (Browse references),
@@ -25,6 +26,8 @@ const GROUPS: { kind: Exclude<Kind, "stash">; label: string; empty: string; noun
 ];
 const LOADING = "Loading references…";
 const NO_MATCH = "No reference matches the filter.";
+// Feature 003 data-model §1 label text.
+const NO_UPSTREAM = "No upstream";
 // Contract Δ3 `readHistoryRows` targets other than `found`.
 const NOT_SHOWN = { none: "Not in this history list", unknown: "Not in the loaded history rows" } as const;
 const REFUSAL: Record<string, string> = {
@@ -71,6 +74,11 @@ export type ReferencesSidebarProps = {
   onShowBranchHistory?: () => void;
   /** Feature 003 FR-019: the count label of each local branch by name (`state/tracking.ts`). */
   tracking?: ReadonlyMap<string, TrackLabel>;
+  /**
+   * Feature 004 spec FR-009 and FR-014: the branch actions of a local or remote-tracking branch row. `menu` opens the context menu,
+   * `confirm` is a double-click, and a D15 key gives its action. Without it, only the current branch opens the 002 menu.
+   */
+  onBranchAction?: (entry: RefEntry, action: "menu" | "confirm" | ScopedAction, anchor: HTMLElement) => void;
 };
 
 // plan.md "Keyboard and focus", References sidebar row: the expansion lasts for the window session per repository and is not stored.
@@ -125,7 +133,7 @@ function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: 
   return any;
 }
 
-export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking }: ReferencesSidebarProps) {
+export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction }: ReferencesSidebarProps) {
   const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId() };
   const [query, setQuery] = useState("");
   // Null until the user changes the expansion: the default then follows the current branch of the newest result.
@@ -232,14 +240,27 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   }
 
   const isCurrent = (row: Row) => row.kind === "branch" && row.node.entry !== undefined && refs?.current?.name === row.node.entry.name;
+  // Feature 004: a branch row without a symbolic target has the branch actions.
+  const actionable = (row: Row) => onBranchAction !== undefined && (row.kind === "branch" || row.kind === "remote") && row.node.entry !== undefined && row.node.entry.symref === null;
+  const branchAction = (row: Row, action: "menu" | "confirm" | ScopedAction) => {
+    const element = elements.current.get(row.node.key);
+    if (element !== undefined) onBranchAction!(row.node.entry!, action, element);
+  };
   // Spec FR-049: the item shows only on the current branch, so no other row opens a menu.
   const openMenu = (row: Row) => {
-    if (onShowBranchHistory !== undefined && isCurrent(row)) setMenu(row.node.key);
+    if (actionable(row)) branchAction(row, "menu");
+    else if (onShowBranchHistory !== undefined && isCurrent(row)) setMenu(row.node.key);
   };
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>, index: number) {
-    if (event.ctrlKey || event.altKey || event.metaKey || event.nativeEvent.isComposing) return;
     const row = rows[index]!;
+    // Feature 004 plan.md D15 keyboard map: the branch keys act only on the focused branch row.
+    const scoped = actionable(row) ? scopedAction(event, row.kind === "branch" ? "localBranchRow" : "remoteBranchRow") : null;
+    if (scoped !== null) {
+      event.preventDefault();
+      return branchAction(row, scoped);
+    }
+    if (event.ctrlKey || event.altKey || event.metaKey || event.nativeEvent.isComposing) return;
     // Windows sends Shift+F10 and the Menu key to the focused element.
     if ((event.key === "F10" && event.shiftKey) || event.key === "ContextMenu") {
       event.preventDefault();
@@ -279,6 +300,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
         openMenu(row);
       },
       onClick: () => activate(row),
+      onDoubleClick: actionable(row) ? () => branchAction(row, "confirm") : undefined,
       style: { paddingLeft: 4 + (level - 1) * 12, ...style },
     };
     const entry = node.entry;
@@ -310,14 +332,19 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     const upstream = upstreamText(entry);
     const notShown = entry.commitId === null ? undefined : missing.get(entry.commitId);
     const track = kind === "branch" ? (tracking?.get(entry.name) ?? null) : null;
-    const name = entry.symref === null ? [entry.name, noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream]), ...(track === null ? [] : [track.label])].join(", ") : `${entry.name}, ${noun}, → ${shortRef(entry.symref)}`;
+    // Feature 004 spec FR-008 and the 003 FR-020 change: "No upstream" is part of the name of a local branch row, never visible text.
+    const noUpstream = kind === "branch" && entry.upstream === null;
+    const name =
+      entry.symref === null
+        ? [entry.name, noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream]), ...(noUpstream ? [NO_UPSTREAM] : track === null ? [] : [track.label])].join(", ")
+        : `${entry.name}, ${noun}, → ${shortRef(entry.symref)}`;
     return (
       <div
         key={node.key}
         {...common}
         aria-label={name}
         aria-describedby={notShown === undefined ? undefined : ids[notShown]}
-        aria-haspopup={current && onShowBranchHistory !== undefined ? "menu" : undefined}
+        aria-haspopup={actionable(row) || (current && onShowBranchHistory !== undefined) ? "menu" : undefined}
         aria-current={current ? "true" : undefined}
         className="list-row flex min-w-0 items-center gap-2 pr-2"
       >
@@ -332,7 +359,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
                 {upstream}
               </span>
             )}
-            {track === null ? null : (
+            {track === null || noUpstream ? null : (
               <span aria-hidden="true" title={`${track.label}. ${COUNTS_TOOLTIP}`} className="num ml-auto shrink-0 whitespace-nowrap">
                 {track.text}
               </span>

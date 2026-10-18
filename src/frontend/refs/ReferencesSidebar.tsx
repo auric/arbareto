@@ -433,7 +433,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
               }}
             >
               {SHOW_BRANCH_HISTORY}
-              <DropdownMenuShortcut>Ctrl+Shift+B</DropdownMenuShortcut>
+              <DropdownMenuShortcut aria-hidden="true">Ctrl+Shift+B</DropdownMenuShortcut>
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>

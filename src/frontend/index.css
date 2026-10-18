@@ -251,6 +251,14 @@
   --marker-width: 2px;
   --icon-size: 16px;
   --boundary-width: 2px;
+
+  /* Feature 004 plan.md D16 additions. The Light values are open (O-13), so the shadows serve both themes. */
+  --radius-overlay: 6px;
+  --shadow-overlay: 0 10px 28px rgba(0, 0, 0, 0.5);
+  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.45);
+  /* D16 danger button: Removed fill, Surface text. */
+  --danger-fill: var(--removed);
+  --danger-text: var(--surface);
 }
 
 @layer base {
@@ -386,6 +394,32 @@
   outline-offset: var(--focus-offset);
 }
 
+/* Feature 004 plan.md D16: popovers, menus, and dialogs. */
+:is(
+    [data-slot="dropdown-menu-content"],
+    [data-slot="dropdown-menu-sub-content"],
+    [data-slot="menubar-content"],
+    [data-slot="menubar-sub-content"],
+    [data-slot="popover-content"],
+    [data-slot="dialog-content"]
+  ) {
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-overlay);
+}
+[data-slot="tooltip-content"] {
+  box-shadow: var(--shadow-tooltip);
+}
+
+/* D16 danger rules (D-S5): Removed text on destructive menu items and secondary buttons, the filled danger button only inside a confirmation. */
+/* They come before the disabled rule, so an unavailable destructive item shows Muted. */
+.danger-text {
+  color: var(--removed);
+}
+.danger-button {
+  background-color: var(--danger-fill);
+  color: var(--danger-text);
+}
+
 :is(:disabled, [aria-disabled="true"], [data-disabled]) {
   opacity: 1;
   color: var(--muted-text);
@@ -396,6 +430,11 @@
 @media (forced-colors: active) {
   :focus-visible {
     outline-color: Highlight;
+  }
+  [data-slot="segmented"] [aria-current="page"] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
   }
   .list-row[data-active] {
     outline-color: Highlight;

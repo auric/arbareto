@@ -677,7 +677,7 @@ const shownComparison = (entryId: string, patch: string) => ({
   }),
   entryId,
 });
-const PANE = { density: "compact", profile: "wide", textScale: 1, menuOpen: false, modalOpen: false, onStatus: () => {}, selected: null, onSelectRow: () => {}, history: null as never, filterRef: { current: null } } as const;
+const PANE = { density: "compact", profile: "wide", textScale: 1, menuOpen: false, modalOpen: false, onStatus: () => {}, selected: null, onSelectRow: () => {}, history: null as never, workbench: null as never, filterRef: { current: null } } as const;
 
 async function render(node: () => ReactNode) {
   const host = document.body.appendChild(document.createElement("div"));

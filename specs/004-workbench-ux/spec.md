@@ -411,7 +411,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 #### Git settings
 
-- **FR-058**: The Git settings view MUST offer the scopes Effective, This repository, Global, and System. Effective and System MUST be read-only. Later work: without an open repository, This repository MUST be unavailable. In 004, Settings opens only from an open repository (Assumptions, plan.md D15).
+- **FR-058**: The Git settings view MUST offer the scopes Effective, This repository, Global, and System. Effective and System MUST be read-only. Without an open repository, Settings MUST show the app pages, and the Git configuration pages MUST state that they need an open repository. Later work: global Git settings without an open repository, where This repository MUST be unavailable (Assumptions, plan.md D15).
 - **FR-059**: The view MUST read all values with their scope and their source file from one machine-readable Git read. Each value MUST show its source. The header MUST name the file that a save writes to.
 - **FR-060**: The view MUST offer the keys of the Git Extensions Git Config and Advanced pages: `user.name`, `user.email`, `core.editor`, `commit.template`, `credential.helper`, `diff.tool`, `difftool.<tool>.path`, `difftool.<tool>.cmd`, `merge.tool`, `mergetool.<tool>.path`, `mergetool.<tool>.cmd`, `core.autocrlf`, `i18n.filesEncoding`, `pull.rebase`, `fetch.prune`, `merge.autostash`, `rebase.autostash`, `rebase.autosquash`, `rebase.updateRefs`, `rerere.enabled`, and `rerere.autoUpdate`. It MUST also offer `pull.ff`, `push.default`, and `push.autoSetupRemote`. The pages are User, Editor and tools, Line endings, Pull and push, Fetch, Merge and rebase, Credentials, and Advanced.
 - **FR-061**: A boolean key MUST offer three states: Not set, On, and Off. "Not set" MUST state the effective value and its scope. An enumerated key MUST offer Not set and each value that the Git documentation defines.
@@ -450,7 +450,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 #### Visible controls and keyboard
 
-- **FR-085**: Every new control MUST have an icon or a text label, a tooltip that names the action and its shortcut, an accessible name, and visible focus. The accessible name of a menu item MUST be its label only. The menu item MUST give its shortcut in `aria-keyshortcuts`, and its visible shortcut text MUST be hidden from assistive technology. Unavailable controls MUST state their reason. Destructive actions MUST use explicit labels and MUST stay apart from routine primary actions.
+- **FR-085**: Every new control MUST have an icon or a text label, a tooltip that names the action and its shortcut, an accessible name, and visible focus. The accessible name of a menu item MUST be its label only. The menu item MUST give its shortcut in `aria-keyshortcuts`, and its visible shortcut text MUST be hidden from assistive technology. Selectable text and editable fields MUST keep the built-in menu with Copy, unless the element has its own action menu. Unavailable controls MUST state their reason. Destructive actions MUST use explicit labels and MUST stay apart from routine primary actions.
 - **FR-086**: The branch list, the worktree list, the file lists, and the Submodules group MUST create elements only for the rows near the visible area, as 002 FR-055 requires for the sidebar.
 - **FR-087**: Single-letter shortcuts MUST act only while their region has focus. A new single-letter shortcut MUST NOT act globally.
 - **FR-088**: The window MUST keep the feature 001 SC-005 response targets during every operation of this feature.
@@ -508,7 +508,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - The ignore actions write a fixed, anchored line, not a pattern that the user types. Git Extensions offers a pattern box. This is a reviewer default.
 - The settings view leaves out signing keys (`commit.gpgSign`, `user.signingKey`). Git Extensions has no settings page for them. `core.longpaths` and `init.defaultBranch` are candidates for later. This is a reviewer default.
 - The settings view adds `pull.ff`, which Git Extensions does not offer, because the "When I pull" control needs it. This is a reviewer default from the mockup.
-- Settings opens from an open repository. Global settings without an open repository come later.
+- Settings opens with or without an open repository. Without one, it shows the app pages only, and the Git configuration pages need an open repository. Global Git settings without an open repository come later.
 - `credential.helper` is a text field without a program scan. This is a reviewer default.
 - `push.autoSetupRemote` changes Git's behavior. The 003 push panel (003 FR-016) still decides what Arbareto shows. The plan checks that 003 reads the effective value. This is a reviewer default.
 - English is the first spell check language. More dictionaries come later. The dictionary source and its license are a plan decision.

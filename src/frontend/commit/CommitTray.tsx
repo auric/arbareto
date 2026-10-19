@@ -65,17 +65,25 @@ export type CommitTrayProps = {
 export const AMEND_LABEL = "Amend last commit";
 const AMEND_UNBORN = "The branch has no commits yet.";
 const AMEND_OPERATION = "A merge or a rebase is in progress.";
-const AMEND_NO_MESSAGE = "The review result holds no HEAD message.";
 export const amendStatement = (oid: string) => `Commit replaces commit ${shortId(oid)}.`;
-export const rewriteText = (oid: string, upstream: string) => `Amend rewrites commit ${shortId(oid)}, which ${shortRef(upstream)} already has. The next push needs Force push with lease.`;
-// Contract Δ3 `reviewCommit` with `amend`: the result adds `amend`.
-type AmendReview = { headOid: string; message: string; upstream: string | null; rewritesUpstream: boolean };
-function amendOf(result: unknown): AmendReview | null {
-  const a = (result as { amend?: Partial<AmendReview> } | undefined)?.amend;
-  return typeof a?.headOid === "string" && typeof a.message === "string" && (a.upstream === null || typeof a.upstream === "string") && typeof a.rewritesUpstream === "boolean"
-    ? { headOid: a.headOid, message: a.message, upstream: a.upstream, rewritesUpstream: a.rewritesUpstream }
-    : null;
-}
+// Contract Δ3 `reviewCommit` with `amend`: the result adds `amend`. `reviewCommit` has no result schema (contract Δ3 gap), so the reads stay typed loosely.
+type AmendReview = { headOid: string; message: string; upstream: { name: string | null; present: boolean } | null; rewritesUpstream: boolean | "unknown" };
+const amendOf = (result: unknown) => {
+  const a = (result as { amend?: AmendReview } | undefined)?.amend;
+  return typeof a?.headOid === "string" && typeof a.message === "string" ? a : null;
+};
+// Contract Δ3: the review disclosure states the approval need of an amend, which also runs `post-rewrite`.
+const amendNeedsTrust = (result: unknown) => {
+  const d = (result as { disclosure?: { approvalRequired?: unknown; trust?: unknown } } | undefined)?.disclosure;
+  return d?.approvalRequired !== false && d?.trust !== "approved";
+};
+/** D15: a null name reads "the upstream branch". A present ref is local, so it takes its short name. An absent one keeps the full name. */
+const upstreamName = (u: AmendReview["upstream"]) => (u?.name == null ? "the upstream branch" : u.present ? shortRef(u.name) : u.name);
+/** FR-100: the confirmation text for `rewritesUpstream` true, and for `unknown`. */
+export const rewriteText = (a: AmendReview) =>
+  a.rewritesUpstream === true
+    ? `Amend rewrites commit ${shortId(a.headOid)}, which ${upstreamName(a.upstream)} already has. The next push needs Force push with lease.`
+    : `Arbareto cannot check whether ${upstreamName(a.upstream)} holds this commit. Amend rewrites it if it was pushed.`;
 /** FR-098: the box is unavailable for an unborn branch and while a merge or a rebase is in progress. */
 export function amendReason(head: Head | null, operationState: WorkspaceSnapshot["operationState"] | undefined): string | null {
   if (head?.state === "unborn") return AMEND_UNBORN;
@@ -126,7 +134,7 @@ export function CommitTray(props: CommitTrayProps) {
   // FR-098: the check box keeps the earlier draft. The field shows the amend text while the box is checked.
   const text = amending?.text ?? draft?.text ?? "";
   // FR-100: the open rewrite confirmation, with the facts of the review that asks for it.
-  const [rewrite, setRewrite] = useState<{ oid: string; upstream: string; resolve(confirmed: boolean): void } | null>(null);
+  const [rewrite, setRewrite] = useState<{ text: string; resolve(confirmed: boolean): void } | null>(null);
   const cancelRewrite = useRef<HTMLButtonElement>(null);
 
   const composingRef = useRef(composing);
@@ -142,22 +150,35 @@ export function CommitTray(props: CommitTrayProps) {
     setBusy(true);
     setNotice(null);
     try {
-      // plan.md Commit row: the Trust dialog opens first when `commit` needs an approval that the workspace lacks.
-      const trust = await bridge.readTrust({ repositoryId: target.repositoryId });
-      if (trust.state !== "succeeded" || !isTrustReport(trust.result)) {
+      const amended = (props.amend?.value ?? null) !== null;
+      // Opens the Trust dialog when `needed` holds for the report. False after a failed read or a refused approval.
+      const trusted = async (needed: (report: TrustReport) => boolean) => {
+        const trust = await bridge.readTrust({ repositoryId: target.repositoryId });
+        if (trust.state === "succeeded" && isTrustReport(trust.result)) return !needed(trust.result) || (await props.requestTrust(trust.result));
         setNotice(codeText("Trust review did not complete: ", trustFailureCode(trust)));
-        return focusField();
+        return false;
+      };
+      // The awaits can change the workspace, the staged list, the message, or the box. The disable rules apply again.
+      const shown = () => {
+        const now = live.current;
+        const same = now.target !== null && now.snapshotId !== null && now.target.repositoryId === target.repositoryId && now.worktreeKey === worktreeKey && (now.amend?.value != null) === amended;
+        return same && disableReason(now, composingRef.current) === null ? { now, reviewed: now.target!, snapshotId: now.snapshotId! } : null;
+      };
+      // plan.md Commit row: the Trust dialog opens first when `commit` needs an approval that the workspace lacks.
+      // An amend takes the need from its review disclosure instead (contract Δ3).
+      if (!amended && !(await trusted(trustBeforeReview))) return focusField();
+      let current = shown();
+      if (current === null) return focusField();
+      let review = await bridge.reviewCommit(current.reviewed, amended ? { snapshotId: current.snapshotId, amend: true } : { snapshotId: current.snapshotId });
+      if (amended && review.state === "succeeded" && amendNeedsTrust(review.result)) {
+        if (!(await trusted(() => true))) return focusField();
+        // The approval runs a new full read, so the review names the snapshot that shows then.
+        current = shown();
+        if (current === null) return focusField();
+        review = await bridge.reviewCommit(current.reviewed, { snapshotId: current.snapshotId, amend: true });
       }
-      if (trustBeforeReview(trust.result) && !(await props.requestTrust(trust.result))) return focusField();
-      // The awaits can change the workspace, the staged list, or the message. The disable rules apply again.
-      const now = live.current;
-      if (now.target === null || now.snapshotId === null || now.target.repositoryId !== target.repositoryId || now.worktreeKey !== worktreeKey || disableReason(now, composingRef.current) !== null) {
-        setNotice(null);
-        return focusField();
-      }
-      const reviewed = now.target;
-      const amend = now.amend?.value ?? null;
-      const review = await bridge.reviewCommit(reviewed, amend === null ? { snapshotId: now.snapshotId } : { snapshotId: now.snapshotId, amend: true });
+      const { reviewed } = current;
+      const amend = current.now.amend?.value ?? null;
       const token = review.state === "succeeded" ? (review.result as { reviewToken?: unknown } | undefined)?.reviewToken : undefined;
       if (typeof token !== "string") {
         // Contract §3 `reviewCommit`: a result without `reviewToken` reviewed an empty staged scope, so the shown Staged list is stale.
@@ -169,17 +190,15 @@ export function CommitTray(props: CommitTrayProps) {
       if (amend !== null) {
         // FR-099: the amend binds to the HEAD commit whose message the box loaded. A moved HEAD refuses and asks for a refresh.
         const reviewedAmend = amendOf(review.result);
-        // Contract Δ3: `rewritesUpstream` is true only with an upstream. Another form is no amend review.
-        if (reviewedAmend === null || reviewedAmend.headOid !== amend.headOid || (reviewedAmend.rewritesUpstream && reviewedAmend.upstream === null)) {
+        if (reviewedAmend === null || reviewedAmend.headOid !== amend.headOid) {
           setNotice(STALE_TEXT);
           props.onEnded?.(review);
           return focusField();
         }
-        // FR-100: a commit that the upstream holds needs the destructive confirmation first. Cancel has the first focus.
-        const upstream = reviewedAmend.upstream;
-        if (reviewedAmend.rewritesUpstream && upstream !== null && !(await new Promise<boolean>((resolve) => setRewrite({ oid: reviewedAmend.headOid, upstream, resolve })))) return focusField();
-        const message = amend.text;
-        const payload = { reviewToken: token, message, confirmFullScope: true as const, amend: true as const, ...(reviewedAmend.rewritesUpstream ? { confirmRewrite: true as const } : {}) };
+        // FR-100: `true` and `unknown` need the destructive confirmation first. Only `false` skips it. Cancel has the first focus.
+        const confirm = reviewedAmend.rewritesUpstream !== false;
+        if (confirm && !(await new Promise<boolean>((resolve) => setRewrite({ text: rewriteText(reviewedAmend), resolve })))) return focusField();
+        const payload = { reviewToken: token, message: amend.text, confirmFullScope: true as const, amend: true as const, ...(confirm ? { confirmRewrite: true as const } : {}) };
         response = await trackOperation("commit", undefined, (onProgress) => bridge.commit(reviewed, payload, onProgress), props.onOperation);
         if (response.code === "STALE_REVIEW") setNotice(STALE_TEXT);
         if (response.state === "succeeded") live.current.amend?.onChange(null);
@@ -214,9 +233,10 @@ export function CommitTray(props: CommitTrayProps) {
     setNotice(null);
     try {
       const review = await bridge.reviewCommit(target, { snapshotId, amend: true });
-      const loaded = review.state === "succeeded" ? amendOf(review.result) : null;
-      if (loaded === null) return setNotice(review.state === "succeeded" ? `${AMEND_LABEL} did not start: ${AMEND_NO_MESSAGE}` : codeText(`${AMEND_LABEL} did not start: `, review.code ?? review.state));
-      live.current.amend?.onChange({ ...loaded, text: loaded.message });
+      if (review.state !== "succeeded") return setNotice(codeText(`${AMEND_LABEL} did not start: `, review.code ?? review.state));
+      // D15: a succeeded amend review always holds the amend part.
+      const loaded = amendOf(review.result);
+      if (loaded !== null) live.current.amend?.onChange({ headOid: loaded.headOid, message: loaded.message, text: loaded.message });
     } finally {
       checking.current = false;
     }
@@ -311,7 +331,7 @@ export function CommitTray(props: CommitTrayProps) {
         <Dialog open onOpenChange={(open) => void (open || (rewrite.resolve(false), setRewrite(null)))}>
           <DialogContent showCloseButton={false} initialFocus={cancelRewrite} finalFocus={field} className="flex flex-col gap-2 sm:max-w-lg">
             <DialogTitle>{`${AMEND_LABEL}?`}</DialogTitle>
-            <p>{rewriteText(rewrite.oid, rewrite.upstream)}</p>
+            <p>{rewrite.text}</p>
             <div className="flex justify-end gap-2">
               <Button ref={cancelRewrite} variant="outline" onClick={() => (rewrite.resolve(false), setRewrite(null))}>
                 Cancel

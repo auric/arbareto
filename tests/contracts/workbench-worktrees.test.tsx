@@ -6,7 +6,7 @@ import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { button, click, createWorld, itemLabel, mountWorkbench, oid, press, settle, succeeded, text, unmountAll, type World } from "./sync-fake";
+import { answer, button, click, createWorld, itemLabel, keyboardFocus, mountWorkbench, oid, press, settle, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
 import { fixtureId } from "./bridge-contract";
 
 // tasks.md T064 (feature 004, WP21). Story US5. Spec FR-049 to FR-057. Plan D10, D15. Data-model §8. Contract Δ3, Δ9.
@@ -538,6 +538,67 @@ describe("Add worktree (FR-052, FR-053)", () => {
     addRefusal(refused("WORKBENCH_UNAVAILABLE", { reason: "other-worktree", worktree: "C:/wt/repo-hotfix" }), "The worktree C:/wt/repo-hotfix holds this branch. Open that worktree, or remove it first."));
   test("current-branch states that this worktree holds the branch", () => addRefusal(refused("WORKBENCH_UNAVAILABLE", { reason: "current-branch" }), "This worktree holds the branch. Git allows each branch in one worktree only."));
   test("a trust refusal points to the trust chip", () => addRefusal(refused("TRUST_REQUIRED"), "This action runs programs of this repository. Trust the repository first with the trust chip in the status bar."));
+
+  // T094 (spec FR-052, plan D14 and D15, contract Δ3 `chooseWorktreeFolder`).
+  const browse = (panel: HTMLElement) => [...panel.querySelectorAll("button")].find((b) => text(b) === "Browse…") ?? null;
+  async function browseWith(response: unknown) {
+    const double = await openAdd();
+    const panel = addPanel()!;
+    await type(panel.querySelector<HTMLInputElement>('input[aria-label="New branch name"]')!, "feat/login");
+    await click(browse(panel)!);
+    const call = double.pending("chooseWorktreeFolder");
+    expect(call?.args[0]).toEqual({ repositoryId: fixtureId(1) });
+    await answer(call, response);
+    return { double, panel: addPanel()! };
+  }
+
+  test("Browse… follows the Folder field as one Tab stop with its tooltip", async () => {
+    await openAdd();
+    const panel = addPanel()!;
+    const button = browse(panel)!;
+    expect(button).not.toBeNull();
+    expect(button.tabIndex).toBe(0);
+    const focusable = [...panel.querySelectorAll<HTMLElement>("input, select, button")].filter((e) => e.tabIndex >= 0);
+    expect(focusable[focusable.indexOf(folderField(panel)) + 1]).toBe(button);
+    await keyboardFocus(button);
+    expect(tooltipText()).toBe("Select the parent folder in the folder picker.");
+  });
+
+  test("a chosen parent sets the folder to the parent and the suggested name, and the suggestion then stays", async () => {
+    const { panel } = await browseWith(succeeded({ path: "D:\\work\\" }));
+    const folder = folderField(panel);
+    expect(folder.value).toBe("D:\\work\\repo-login");
+    expect(document.activeElement).toBe(folder);
+    await type(panel.querySelector<HTMLInputElement>('input[aria-label="New branch name"]')!, "feat/other");
+    expect(folder.value).toBe("D:\\work\\repo-login");
+    await type(folder, "D:\\work\\mine");
+    expect(folder.value).toBe("D:\\work\\mine");
+  });
+
+  test("a WSL parent keeps its UNC form", async () => {
+    const { panel } = await browseWith(succeeded({ path: "\\\\wsl.localhost\\Ubuntu\\home\\u" }));
+    expect(folderField(panel).value).toBe("\\\\wsl.localhost\\Ubuntu\\home\\u\\repo-login");
+  });
+
+  test("Cancel changes nothing, and the suggestion still follows the branch name", async () => {
+    const { double, panel } = await browseWith({ requestId: fixtureId(0x603), state: "canceled", code: "CANCELED" });
+    const folder = folderField(panel);
+    expect(folder.value).toBe("C:\\repo-login");
+    expect(document.activeElement).toBe(folder);
+    expect(panel.querySelector('[role="alert"]')).toBeNull();
+    await type(panel.querySelector<HTMLInputElement>('input[aria-label="New branch name"]')!, "feat/other");
+    expect(folder.value).toBe("C:\\repo-other");
+    expect(reviews(double)).toHaveLength(0);
+  });
+
+  const browseRefusal = async (code: string, expected: string) => {
+    const { panel } = await browseWith({ requestId: fixtureId(0x604), state: "rejected", code });
+    expect(folderField(panel).value).toBe("C:\\repo-login");
+    expect(text(panel.querySelector('[role="alert"]')!)).toBe(expected);
+  };
+  test("a folder of the other route states the 001 mixed-location text", () => browseRefusal("UNSUPPORTED_REPOSITORY", "The worktree and its Git directories must all lie inside one WSL distro, or all on Windows."));
+  test("a failed picker states that Browse can run again", () => browseRefusal("PICKER_FAILED", "The folder picker failed. Select Browse… again."));
+  test("another code is no folder", () => browseRefusal("SERVICE_UNAVAILABLE", "Arbareto cannot use the folder picker: SERVICE_UNAVAILABLE."));
 
   test("Escape restores the earlier dock content", async () => {
     await openAdd();

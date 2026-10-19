@@ -5,7 +5,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 ## Δ1 Transport (001 §1)
 
 - New renderer operations: `readBranches`, `readWorktrees`, `readGitSettings`, `reviewWorkbench`, `runWorkbench`, `applyFiles`, `openWorktree`, `revealPath`. Each has one Tauri command and one zod schema.
-- New shell-only operation: `setSwitchChoice`. The shell answers it natively and never forwards it.
+- New shell-only operations: `setSwitchChoice` and `chooseWorktreeFolder`. The shell answers them natively and never forwards them.
 - `openWorktree` is native-first, as `chooseRepository` is (001 §3). `reviewWorkbench` with action `worktree-add` is native-first for its path.
 - `readGitSettings` without `repositoryId` runs in the `globalConfig` context (Δ6).
 - Keep explicit range checks in Rust (001 §1).
@@ -171,6 +171,7 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 ### Shell-only operations
 
 - `setSwitchChoice {choice: "keep" | "stash"}`: stores data-model §13 `switchChoice`. It answers the 003 `readSyncSettings` result, which carries `switchChoice` (Δ14).
+- `chooseWorktreeFolder {repositoryId}` (spec FR-052, plan D14): the 001 folder picker for the parent folder of a new worktree. Result `{path}`, a channel path. Cancel gives `canceled`, and a failed picker call gives `rejected` `PICKER_FAILED`. An unregistered `repositoryId` gives `rejected` `UNKNOWN_TARGET` before the picker shows. The picked folder must take the §11 route of the repository worktree root: no WSL path for a Windows root, and a path that maps to a Linux path in the distro of a WSL root. Another folder gives `rejected` `UNSUPPORTED_REPOSITORY` (the 001 reason `mixed-location`). A path with a lone surrogate gives `rejected` `INVALID_REQUEST`. The renderer gets no other file-system access. The `worktree-add` review checks the composed path again (Δ6).
 
 ## Δ4 File staging (001 §4)
 

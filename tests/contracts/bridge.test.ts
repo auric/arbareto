@@ -83,6 +83,7 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   openWorktree: (b) => b.openWorktree({ repositoryId: id(), path: "/home/u/repo-wt" }),
   revealPath: (b) => b.revealPath({ repositoryId: id(), entryId: id() }),
   setSwitchChoice: (b) => b.setSwitchChoice({ choice: "stash" }),
+  chooseWorktreeFolder: (b) => b.chooseWorktreeFolder({ repositoryId: id() }),
 };
 
 interface Options {

@@ -129,10 +129,11 @@ describe("golden vectors", () => {
     const texts = (kind: string, schema: string) => vectors.filter((v) => v.kind === kind && v.vector.schema === schema).map(({ vector }) => JSON.parse(vector.text) as Record<string, unknown>);
     const envelopes = ["renderer-envelope", "service-envelope", "native-first-envelope"].flatMap((schema) => texts("valid", schema));
     expect(envelopes.map((t) => t.operation)).toEqual(
-      expect.arrayContaining(["readBranches", "readWorktrees", "readGitSettings", "reviewWorkbench", "runWorkbench", "applyFiles", "openWorktree", "revealPath", "setSwitchChoice"]),
+      expect.arrayContaining(["readBranches", "readWorktrees", "readGitSettings", "reviewWorkbench", "runWorkbench", "applyFiles", "openWorktree", "revealPath", "setSwitchChoice", "chooseWorktreeFolder"]),
     );
-    expect(texts("valid", "native-first-envelope").map((t) => t.operation)).toEqual(expect.arrayContaining(["openWorktree", "reviewWorkbench", "setSwitchChoice"]));
-    expect(texts("invalid", "native-first-envelope").map((t) => t.operation)).toEqual(expect.arrayContaining(["openWorktree", "reviewWorkbench", "setSwitchChoice", "revealPath"]));
+    expect(texts("valid", "native-first-envelope").map((t) => t.operation)).toEqual(expect.arrayContaining(["openWorktree", "reviewWorkbench", "setSwitchChoice", "chooseWorktreeFolder"]));
+    expect(texts("invalid", "native-first-envelope").map((t) => t.operation)).toEqual(expect.arrayContaining(["openWorktree", "reviewWorkbench", "setSwitchChoice", "revealPath", "chooseWorktreeFolder"]));
+    for (const kind of ["valid", "invalid"]) expect(texts(kind, "choose-worktree-folder-result")).not.toHaveLength(0);
     expect(texts("valid", "service-envelope").map((t) => t.operation)).toContain("revealPath");
     expect(texts("valid", "response").map((t) => t.code)).toEqual(expect.arrayContaining(["WORKBENCH_UNAVAILABLE", "UNTRACKED_IN_WAY", "STASH_KEPT"]));
     expect(texts("valid", "progress").map((t) => t.phase)).toEqual(expect.arrayContaining(["stage-files", "config"]));

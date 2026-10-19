@@ -117,6 +117,7 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
   openWorktree: { renderer: () => ({ repositoryId: id(), path: CLONE_DESTINATION }), service: () => ({ repositoryId: id(), bootstrapId: id() }) },
   revealPath: { renderer: () => ({ repositoryId: id(), entryId: id() }), service: () => ({ repositoryId: id(), entryId: id() }) },
   setSwitchChoice: { renderer: () => ({ choice: "stash" }) },
+  chooseWorktreeFolder: { renderer: () => ({ repositoryId: id() }) },
 };
 
 const NAMES = Object.keys(PAYLOADS);
@@ -206,9 +207,9 @@ const sidesOf = (name: string) =>
 
 describe("operation list", () => {
   // Feature 002 plan.md P7 retires the contract §3 `readHistory`.
-  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, and the 9 feature 004 contract Δ1 operations", () => {
+  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, and the 10 feature 004 contract Δ1 operations", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(50);
+    expect(OPERATIONS.length).toBe(51);
   });
 
   for (const name of NAMES) {

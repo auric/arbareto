@@ -1069,7 +1069,8 @@ mod tests {
     /// The shell writes process, mutation, and trust replies and never reads them. It reads only the `requestId` of a response.
     /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, sync review, sync, clone, branch, worktree, Git settings, and workbench results in `Response.result` and reads no field of them.
     /// The shell writes the settings result of the shell-only settings operations and never reads it.
-    const NOT_READ: [&str; 30] = [
+    /// The same holds for the `chooseWorktreeFolder` result.
+    const NOT_READ: [&str; 31] = [
         "service-envelope",
         "open-recent-repository-result",
         "recent-repositories-result",
@@ -1101,6 +1102,7 @@ mod tests {
         "read-git-settings-result",
         "review-workbench-result",
         "run-workbench-result",
+        "choose-worktree-folder-result",
     ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
@@ -1215,9 +1217,10 @@ mod tests {
         // T057 replaces 5 `confirm` vectors with 8 version 2 vectors and adds 4 version 2 record vectors (contract Δ6).
         // The `unlisted` hooks item of plan D14 adds 2 `confirm` vectors.
         // WP23 adds 2 `confirm` vectors for the `repository` action (contract Δ6).
+        // T094 adds 3 `native-first-envelope` vectors for `chooseWorktreeFolder` (contract Δ3).
         assert_eq!(
             checked,
-            if cfg!(windows) { 177 } else { 172 },
+            if cfg!(windows) { 180 } else { 175 },
             "shell-read vectors"
         );
     }

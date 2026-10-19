@@ -2,14 +2,18 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { FolderAddIcon } from "@hugeicons/core-free-icons";
-import { useId, useState, useSyncExternalStore } from "react";
+import { useId, useRef, useState, useSyncExternalStore } from "react";
 import { branchNameRefusal } from "../../contracts/branch-name";
+import type { BridgeResponse } from "../bridge";
 import { DockedPanel } from "../components/docked-panel";
 import { RUNNING_REASON } from "../components/running-tooltip";
+import { Button } from "../components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { TEXTS } from "../integrate/texts";
 import { splitPath, WINDOWS_SEPARATORS } from "../lib/path";
+import { isObject } from "../lib/utils";
 import type { Workbench } from "../state/workbench";
-import { W } from "./texts";
+import { browseRefusal, W } from "./texts";
 
 // Feature 004 spec FR-052 and FR-053, plan.md D10 and D15 "Docked panel", the Worktrees board.
 
@@ -26,6 +30,8 @@ export type AddWorktreePanelProps = {
   opener: Element | null;
   /** Reviews and runs the add. It gives the refusal text, or null. */
   onSubmit(request: AddRequest): Promise<string | null>;
+  /** The `chooseWorktreeFolder` response (contract Δ3). */
+  onBrowse(): Promise<BridgeResponse>;
   onClose(): void;
 };
 
@@ -40,7 +46,7 @@ export function suggestFolder(root: string | null, branch: string): string {
   return last === "" ? "" : `${parent}${name}-${last}`;
 }
 
-export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason, running, opener, onSubmit, onClose }: AddWorktreePanelProps) {
+export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason, running, opener, onSubmit, onBrowse, onClose }: AddWorktreePanelProps) {
   const ids = { mode: useId(), folder: useId(), hint: useId() };
   const branches = useSyncExternalStore(workbench.subscribe, () => workbench.getState().branches, () => workbench.getState().branches);
   const [mode, setMode] = useState<"new" | "existing">("new");
@@ -50,7 +56,9 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
   const [edited, setEdited] = useState<string | null>(null);
   const [switchTo, setSwitchTo] = useState(false);
   const [pending, setPending] = useState(false);
+  const [browsing, setBrowsing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const folderField = useRef<HTMLInputElement>(null);
 
   // Spec FR-052: a branch that a worktree holds is left out. `current` is the branch of the open worktree, `heldBy` that of another worktree.
   const free = (branches?.entries ?? []).filter((e) => e.kind === "local" && !e.current && e.heldBy === null);
@@ -75,6 +83,24 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
       setError(await onSubmit({ branch, path: folder, switchTo }));
     } finally {
       setPending(false);
+    }
+  }
+
+  /** A chosen parent gets the suggested name, and the folder then stays as after an edit. Cancel changes nothing. */
+  async function browse() {
+    setBrowsing(true);
+    setError(null);
+    try {
+      const response = await onBrowse();
+      const parent = response.state === "succeeded" && isObject(response.result) && typeof response.result.path === "string" ? response.result.path : null;
+      if (parent !== null) {
+        const name = splitPath(suggestFolder(worktreeRoot, branchText), WINDOWS_SEPARATORS)[1];
+        // Contract §6: a Windows path and a WSL UNC path both take `\`.
+        setEdited(`${parent.replace(/[\\/]+$/, "")}\\${name}`);
+      } else if (response.state !== "canceled") setError(browseRefusal(response.code ?? response.state));
+    } finally {
+      setBrowsing(false);
+      folderField.current?.focus();
     }
   }
 
@@ -129,18 +155,31 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
       </fieldset>
       <div className="flex flex-col gap-1">
         <label htmlFor={ids.folder}>{W.folder}</label>
-        <input
-          id={ids.folder}
-          aria-describedby={ids.hint}
-          spellCheck={false}
-          autoComplete="off"
-          className="h-(--h-button) rounded-sm border border-control-border bg-surface px-2"
-          value={folder}
-          onChange={(event) => {
-            setEdited(event.target.value);
-            setError(null);
-          }}
-        />
+        <div className="flex gap-2">
+          <input
+            ref={folderField}
+            id={ids.folder}
+            aria-describedby={ids.hint}
+            spellCheck={false}
+            autoComplete="off"
+            className="h-(--h-button) min-w-0 flex-1 rounded-sm border border-control-border bg-surface px-2"
+            value={folder}
+            onChange={(event) => {
+              setEdited(event.target.value);
+              setError(null);
+            }}
+          />
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button type="button" variant="outline" className="h-(--h-button)" disabled={browsing} focusableWhenDisabled onClick={() => void browse()}>
+                  {W.browse}
+                </Button>
+              }
+            />
+            <TooltipContent>{W.browseTip}</TooltipContent>
+          </Tooltip>
+        </div>
         <span id={ids.hint} className="text-muted-text">
           {W.folderHint}
         </span>

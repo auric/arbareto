@@ -84,6 +84,7 @@ describe("envelope schemas", () => {
       "chooseGit",
       "chooseRepository",
       "chooseSyncPath",
+      "chooseWorktreeFolder",
       "clearSyncPath",
       "clone",
       "dismissRecoveryMarker",

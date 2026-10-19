@@ -599,3 +599,34 @@ caseTest("T060", "FR-055: a clean worktree whose index listing is larger than ST
     expect(steps(service)).toEqual([]);
   });
 }, TIMEOUT_MS);
+
+// ---- Cancel (FR-003, T098) ----
+
+caseTest("T098", "FR-003: Cancel while a remove with Also delete the branch waits at its worktree remove or at its branch delete stops there, and the result states the refs and the worktree list that Git shows", SHELL, async () => {
+  const isRemove = (call: { arguments: readonly string[] }) => call.arguments[1] === "worktree" && call.arguments[2] === "remove";
+  const isDelete = (call: { arguments: readonly string[] }) => call.arguments[1] === "update-ref";
+  for (const [at, match] of [["worktree-remove", isRemove], ["update-ref", isDelete]] as const) {
+    const f = build();
+    const o = build();
+    const spaces = recordPath(f, "wt with spaces");
+    await withSync(`t098-remove-${at}`, async (service) => {
+      const r = await open(service, f.repo);
+      const rv = await reviewed(service, r, removePayload(spaces, false, true));
+      const release = service.runner.holdStart(match);
+      const requestId = sendRun(service, r, rv.workbenchToken);
+      try {
+        await until(() => service.runner.calls.some(match), `held ${at}`);
+        await service.cancel(await service.operationId(requestId));
+      } finally {
+        release();
+      }
+      const response = await service.response<WorktreeRun>(requestId);
+      expect({ at, exit: service.runner.calls.find(match)!.exit?.exitCode ?? null }).toEqual({ at, exit: null });
+      // The worktree remove ran in the second case, so the list lacks the worktree and the branch stays.
+      expect({ at, ...outcome(response), refs: response.result!.refs }).toEqual({ at, ...(at === "worktree-remove" ? { state: "canceled", code: "CANCELED" } : { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" }), refs: [] });
+      expect({ at, worktrees: response.result!.worktrees }).toEqual({ at, worktrees: recordsOf(f).map((x) => valueOf(x, "worktree")!) });
+    });
+    if (at === "update-ref") git(o, ["worktree", "remove", "--", recordPath(o, "wt with spaces")]);
+    expect({ at, state: stateOf(f) }).toEqual({ at, state: stateOf(o) });
+  }
+}, TIMEOUT_MS);

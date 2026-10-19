@@ -13,9 +13,12 @@ import { FIXTURE_HOME, fixtureDir, useFixtureRoot } from "./fixture-root";
 import { put } from "./fixtures";
 import { nativeEnv } from "./remote-fixtures";
 import { workingFileDigests } from "./git-oracle";
-import { caseTest, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
-import { gitExe, native, TIMEOUT_MS, until, withSync } from "./sync-harness";
+import { caseTest, keepConfigs, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
+import { gitExe, native, TIMEOUT_MS, until, withSync as syncService } from "./sync-harness";
 import { buildWorkbench, canary, FIXTURE_MERGE_RESULT, repoOf, wb, type WbRepo } from "./workbench-fixtures";
+
+// SC-009 (T096): each case keeps the bytes of every configuration file of the repositories that it registers.
+const withSync = (name: string, body: (service: Service) => Promise<void>, options?: Parameters<typeof syncService>[2]) => syncService(name, (service) => keepConfigs(service, body), options);
 
 for (const module of ["resolve", "workbench-review", "session"]) {
   try {

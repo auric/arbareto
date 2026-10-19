@@ -14,9 +14,12 @@ import type { Workspace } from "../../src/git-service/registration";
 import { printOrigin } from "../origin";
 import { fixtureDir, fixtureEnv, useFixtureRoot } from "./fixture-root";
 import { put } from "./fixtures";
-import { git, gitPath, readOk, withService } from "./hunk-harness";
-import { caseTest, type Capability, type Service, type WorkspaceResult } from "./service-harness";
+import { git, gitPath, readOk, withService as hunkService } from "./hunk-harness";
+import { caseTest, keepConfigs, type Capability, type Service, type WorkspaceResult } from "./service-harness";
 import { buildWorkbench } from "./workbench-fixtures";
+
+// SC-009 (T096): each case keeps the bytes of every configuration file of the repositories that it registers.
+const withService = (options: Parameters<typeof hunkService>[0], body: (service: Service) => Promise<void>) => hunkService(options, (service) => keepConfigs(service, body));
 
 const TASK = "T026";
 const SHELL: Capability[] = ["shell-double"];

@@ -21,7 +21,7 @@ import { isStop, settled, stepOf, type Fact, type Failure, type ObserveContext, 
 import { isMissing } from "./read-steps";
 import type { Head, OperationState } from "./snapshot";
 import { gitPathArgs, indexStageArgs, leaseCommitsArgs, leaseCountArgs, pushRecordArgs, pushUrlArgs, rebaseHeadArgs, rebaseHeadExistsArgs, remoteListArgs, syncRefsArgs } from "./sync-commands";
-import { decidePull, decidePushDestination, holdsExec, invalidRemoteValue, parsePushRecord, parsePushUrls, parseRebaseHead, parseRevListCount, upstreamRebase, type PushDestination } from "./sync-parsers";
+import { autoSetupRemote, decidePull, defaultRemote, decidePushDestination, holdsExec, invalidRemoteValue, parsePushRecord, parsePushUrls, parseRebaseHead, parseRevListCount, upstreamRebase, type PushDestination } from "./sync-parsers";
 import { parseMaybeBool, type ConfigEntry, type ListingOutcome } from "./trust";
 
 export type ReviewPayload = Extract<ServiceRequest, { operation: "reviewSync" }>["payload"];
@@ -426,10 +426,10 @@ export async function observeSync(ctx: ObserveContext, payload: ReviewPayload, l
 
   if (payload.action === "fetch") {
     if (payload.remote !== undefined) return remotes.value.includes(payload.remote) ? bound({ remotes: [payload.remote], destination: null, lease: null }) : { refused: "INVALID_REQUEST" };
-    // Plan.md D3: `branch.<branch>.remote`, else `origin`, as git-fetch(1) selects without arguments.
+    // Plan.md D3: builtin/fetch.c without a remote takes `remote_get(NULL)`, so the default of `defaultRemote` applies, also on a detached HEAD.
     const configured = branch === null ? undefined : lastValue(entries, `branch.${branch}.remote`);
     if (configured === null) return unavailable("invalid-config");
-    const remote = configured ?? "origin";
+    const remote = defaultRemote(configured, remotes.value);
     if (remote === ".") return unavailable("local-upstream");
     if (!remotes.value.includes(remote)) return unavailable("remote-missing");
     return bound({ remotes: [remote], destination: null, lease: null });
@@ -454,6 +454,8 @@ export async function observeSync(ctx: ObserveContext, payload: ReviewPayload, l
   // Contract Δ3 Set upstream. Git refuses such an entry in every command, so it cannot reach a push.
   const rebase = upstreamRebase(entries);
   if (rebase === null) return unavailable("invalid-config");
+  // `git push` reads `push.autoSetupRemote` also for an explicit refspec.
+  if (autoSetupRemote(entries) === null) return unavailable("invalid-config");
 
   let destination: Omit<BoundDestination, "url">;
   const choice = payload.action === "push" ? payload.destination : undefined;

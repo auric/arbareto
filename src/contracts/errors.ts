@@ -69,6 +69,7 @@ export const SYNC_UNAVAILABLE_REASONS = [
   "remote-missing",
   "no-remotes",
   "local-upstream",
+  "local-push-remote",
   "several-merge-refs",
   "push-urls",
   "mirror",

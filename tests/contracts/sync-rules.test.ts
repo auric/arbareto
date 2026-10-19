@@ -3,7 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
-import { decidePull, decidePushDestination, invalidRemoteValue, parsePushRecord, upstreamRebase, type PullDecision, type PushDecision, type PushDestination, type PushRecord } from "../../src/git-service/sync-parsers";
+import { decidePull, decidePushDestination, defaultRemote, invalidRemoteValue, parsePushRecord, upstreamRebase, type PullDecision, type PushDecision, type PushDestination, type PushRecord } from "../../src/git-service/sync-parsers";
 import { urlHelper } from "../../src/git-service/trust";
 import { RECORDED } from "./sync-recorded";
 
@@ -47,8 +47,9 @@ describe("D4 push destination", () => {
     expect(decide({ ...noUpstream, pushRemote: "", push: "" }, [["push.default", "current"]])).toEqual({ kind: "panel", prefill: { ...branchDest.destination, trackingRef: null } });
   });
 
-  test("an empty %(push:remotename) and no origin gives the panel", () => {
-    expect(decide({ ...noUpstream, pushRemote: "" }, [["push.default", "current"]], ["fork"])).toEqual({ kind: "panel", prefill: null });
+  test("an empty %(push:remotename), no origin, and not one remote gives the panel", () => {
+    expect(decide({ ...noUpstream, pushRemote: "" }, [["push.default", "current"]], ["fork", "up"])).toEqual({ kind: "panel", prefill: null });
+    expect(decide({ ...noUpstream, pushRemote: "" }, [["push.default", "current"]], [])).toEqual({ kind: "panel", prefill: null });
   });
 
   test("simple or unset with a push remote other than the fetch remote is triangular (R16 d)", () => {
@@ -163,6 +164,85 @@ describe("D4 push destination", () => {
     expect(recorded("remote.origin.push/renamed", "renamed", [["branch.renamed.remote", "origin"], ["remote.origin.push", "refs/heads/renamed:refs/heads/mapped"]])).toEqual({ kind: "destination", destination: at("origin", "refs/heads/mapped", "refs/remotes/origin/mapped", "remote-push-refspec") });
     expect(recorded("branch.pushRemote/topic", "topic", [["branch.topic.remote", "origin"], ["branch.topic.pushremote", "second"]])).toEqual({ kind: "destination", destination: at("second", "refs/heads/topic", null, "push-default-triangular") });
     expect(recorded("push.default=upstream/renamed", "renamed", [["branch.renamed.remote", "origin"], ["push.default", "upstream"]])).toEqual({ kind: "destination", destination: at("origin", "refs/heads/other-name", "refs/remotes/origin/other-name", "push-default-upstream") });
+  });
+
+  // T005 (d) `remote-without-url+insteadOf/topic`: Git's push goes to refs/heads/topic of `nourl` (Git 2.56.0.windows.2).
+  test("a remote without a URL is a remote of git remote, and its destination follows the steps", () => {
+    const nourl = { upstream: "refs/remotes/nourl/topic", upstreamRemote: "nourl", push: "refs/remotes/nourl/topic", pushRemote: "nourl" };
+    expect(decide(nourl, [["branch.topic.remote", "origin"], ["branch.topic.remote", "nourl"]], ["nourl", "origin"])).toEqual({
+      kind: "destination",
+      destination: { remote: "nourl", ref: "refs/heads/topic", trackingRef: "refs/remotes/nourl/topic", source: "push-default-branch" },
+    });
+  });
+
+  // T005 (d) `push.autoSetupRemote+<mode>/noup` on 2.56.0.windows.2: Git pushes refs/heads/noup to origin and would set the upstream, except under matching and nothing.
+  describe("push.autoSetupRemote (builtin/push.c get_upstream_ref)", () => {
+    const at = (config: Config, over: Partial<PushRecord> = {}) => decidePushDestination(record({ branch: "noup", upstream: "", upstreamRemote: "", upstreamRemoteRef: "", push: "", pushRemote: "", ...over }), REMOTES, cfg(config));
+    const prefill = (source: PushDestination["source"], trackingRef: string | null = null): PushDecision => ({ kind: "panel", prefill: { remote: "origin", ref: "refs/heads/noup", trackingRef, source } });
+    const on: Config = [["push.autosetupremote", "true"]];
+
+    test("simple, unset, upstream, and tracking pre-fill refs/heads/<branch> on the push remote", () => {
+      expect(at(on)).toEqual(prefill("push-default-branch"));
+      expect(at([...on, ["push.default", "simple"]])).toEqual(prefill("push-default-branch"));
+      for (const value of ["upstream", "tracking"]) expect(at([...on, ["push.default", value]])).toEqual(prefill("push-default-upstream"));
+      expect(at([...on, ["push.default", "current"]], { push: "refs/remotes/origin/noup" })).toEqual(prefill("push-default-branch", "refs/remotes/origin/noup"));
+    });
+
+    test("matching gives the panel and nothing gives no pre-fill", () => {
+      expect(at([...on, ["push.default", "matching"]])).toEqual({ kind: "panel", prefill: null });
+      expect(at([...on, ["push.default", "nothing"]])).toEqual({ kind: "panel", prefill: null });
+    });
+
+    test("any true entry sets the flag, and a false entry does not clear it", () => {
+      expect(at([["push.autosetupremote", "true"], ["push.autosetupremote", "false"]])).toEqual(prefill("push-default-branch"));
+      expect(at([["push.autosetupremote", "false"], ["push.autosetupremote", null]])).toEqual(prefill("push-default-branch"));
+      expect(at([["push.autosetupremote", "false"]])).toEqual({ kind: "panel", prefill: null });
+    });
+
+    test("an invalid value gives invalid-config, also with an upstream", () => {
+      const invalid: PushDecision = { kind: "refused", reason: "invalid-config" };
+      expect(at([["push.autosetupremote", "maybe"]])).toEqual(invalid);
+      expect(decide({}, [["push.autosetupremote", "true"], ["push.autosetupremote", "maybe"]])).toEqual(invalid);
+    });
+
+    test("merge entries count only with branch.<name>.remote (remote.c set_merge)", () => {
+      expect(at([...on, ["branch.noup.merge", "refs/heads/noup"]])).toEqual(prefill("push-default-branch"));
+      expect(at([...on, ["branch.noup.remote", "origin"], ["branch.noup.merge", "refs/heads/gone"]])).toEqual({ kind: "panel", prefill: null });
+    });
+
+    test("upstream and tracking compare the push remote with the fetch remote", () => {
+      expect(at([...on, ["push.default", "upstream"]], { pushRemote: "fork" })).toEqual({ kind: "panel", prefill: null });
+      expect(at([...on, ["push.default", "upstream"], ["branch.noup.remote", "fork"]], { pushRemote: "fork" })).toEqual({ kind: "panel", prefill: { remote: "fork", ref: "refs/heads/noup", trackingRef: null, source: "push-default-upstream" } });
+    });
+  });
+
+  // T005 (d) `single-remote-up+<mode>/noup` and `two-remotes-*` on 2.56.0.windows.2 (remote.c remotes_remote_for_branch).
+  test("the default remote is the branch remote, else the only remote, else origin", () => {
+    expect(defaultRemote("fork", ["up"])).toBe("fork");
+    expect(defaultRemote("", ["up"])).toBe("");
+    expect(defaultRemote(undefined, ["up"])).toBe("up");
+    expect(defaultRemote(null, ["up"])).toBe("up");
+    expect(defaultRemote(undefined, ["up", "second"])).toBe("origin");
+    expect(defaultRemote(undefined, ["origin", "second"])).toBe("origin");
+    expect(defaultRemote(undefined, [])).toBe("origin");
+  });
+
+  test("a single remote is the push and the fetch remote without branch.<name>.remote", () => {
+    const noup = { branch: "noup", upstream: "", upstreamRemote: "", upstreamRemoteRef: "", push: "", pushRemote: "" };
+    const up: PushDestination = { remote: "up", ref: "refs/heads/noup", trackingRef: null, source: "push-default-branch" };
+    expect(decidePushDestination(record(noup), ["up"], cfg([["push.default", "current"]]))).toEqual({ kind: "panel", prefill: up });
+    expect(decidePushDestination(record(noup), ["up"], cfg([]))).toEqual({ kind: "panel", prefill: null });
+    expect(decidePushDestination(record(noup), ["up"], cfg([["push.default", "upstream"]]))).toEqual({ kind: "panel", prefill: null });
+    expect(decidePushDestination(record(noup), ["up"], cfg([["push.autosetupremote", "true"]]))).toEqual({ kind: "panel", prefill: up });
+    expect(decidePushDestination(record(noup), ["up", "second"], cfg([["push.default", "current"]]))).toEqual({ kind: "panel", prefill: null });
+    // The only remote is also the fetch remote, so an explicit push to it is not triangular.
+    expect(decidePushDestination(record({ ...noup, pushRemote: "fork" }), ["fork"], cfg([]))).toEqual({ kind: "panel", prefill: null });
+    expect(decidePushDestination(record({ ...noup, pushRemote: "fork" }), ["fork", "up"], cfg([]))).toEqual({ kind: "panel", prefill: { remote: "fork", ref: "refs/heads/noup", trackingRef: null, source: "push-default-triangular" } });
+  });
+
+  test("a push remote . gives local-push-remote (R16 d)", () => {
+    expect(decide({ pushRemote: "." })).toEqual({ kind: "refused", reason: "local-push-remote" });
+    expect(decide({ pushRemote: "." }, [], [".", "origin"])).toEqual({ kind: "refused", reason: "local-push-remote" });
   });
 
   test("an empty %(upstream) gives the panel, pre-filled with the destination", () => {

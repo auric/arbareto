@@ -42,6 +42,7 @@ Plan-driven corrections (plan O-1 to O-4, O-9, O-12, O-15, O-16, and an orchestr
 ### Session 2026-10-19
 
 - Q: Does feature 004 deliver the commit message spell check? → A: No. The user postponed it on 2026-10-19. User Story 10, FR-083, FR-084, and SC-012 move to a later feature. Feature 004 keeps their text as the input for that feature.
+- Q: Do the ignore actions and the Global Git settings save work on a WSL repository in feature 004? → A: No (user decision 2026-10-19). Both move to a later feature. A WSL `ignore` review refuses with `WORKBENCH_UNAVAILABLE` reason `unreadable`, and a WSL `global` save gives `INVALID_REQUEST` (contracts/operations.md gaps). Feature 004 keeps these refusal texts. FR-006 states the exceptions.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -334,7 +335,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-003**: After success, failure, or cancellation, the application MUST re-read HEAD, the affected references, the index, the worktree list, and the operation state. It MUST report the observed result.
 - **FR-004**: Every reference name, path, and option value MUST pass to Git as a literal value after an end-of-options marker where Git supports one. A name that Git could read as an option MUST be refused with a reason.
 - **FR-005**: Repository programs that an operation can run MUST follow the trust rules of FR-069 to FR-075. This covers the post-checkout, pre-merge-commit, commit, pre-rebase, and post-rewrite hooks.
-- **FR-006**: Every operation of this feature MUST work for WSL repositories through the distro's Git, under the feature 001 WSL rules.
+- **FR-006**: Every operation of this feature MUST work for WSL repositories through the distro's Git, under the feature 001 WSL rules. Two exceptions move to a later feature (Clarifications, 2026-10-19): the ignore actions and the Global Git settings save on a WSL repository. Feature 004 refuses them with their contract reasons.
 
 #### Branch switching
 

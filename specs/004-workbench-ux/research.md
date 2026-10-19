@@ -119,7 +119,7 @@
 - `--`: the documentation does not state it for `config set`. Git's option parser stops at `--` (unverified for this subcommand). F22 checks a value that starts with `-`.
 - `--global` file: `~/.gitconfig` when it exists, else the XDG file when it exists, else `~/.gitconfig` (doc, source `git_global_config`).
 - Merge and diff tool presets: the file names of Git's `mergetools/` folder (Git source tree). F24 records the list of each Git version from `git mergetool --tool-help` exit 0 and the folder listing of the Git installation; the plan takes names only from the folder.
-- Editor presets: Git Extensions lists vi, Notepad, Notepad++, VS Code, Zed, and Sublime Text (Git Extensions `EditorHelper.cs`). The exact values are unverified (O-10).
+- Editor presets: Git Extensions lists vi, Notepad, Notepad++, VS Code, Zed, and Sublime Text (Git Extensions `EditorHelper.cs`). The exact values are unverified (O-10). O-10 closed on 2026-10-19 by user decision: plan.md D11 gives the sources, and D15 gives the commands.
 
 ## R15 Trust option (d)
 

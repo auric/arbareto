@@ -346,14 +346,15 @@ No file decision gives a line refusal, so the `readComparison` `fileAction` neve
 - A squash that stops with conflicts leaves unmerged entries without `MERGE_HEAD`. The 003 Abort then refuses with `no-operation`, so only Mark resolved and the 001 commit finish it.
 - A merge tool that hands the file to an earlier instance outside the operation Job keeps its window after Cancel.
 - A configuration write races with another writer between the listing and `config set`. Git takes `config.lock` only for the write itself.
-- The `globalConfig` context has no WSL form. A WSL Git gets `INVALID_REQUEST`.
+- No read finds a diff tool, merge tool, or editor program on this PC. So the FR-062 presets show always, also for a program that is not installed (plan O-10).
+- The `globalConfig` context has no WSL form. A WSL Git gets `INVALID_REQUEST`. The Global save on a WSL repository moves to a later feature (spec Clarifications, 2026-10-19). The refusal stays.
 - POSIX has no share mode that keeps other writers out. A writer between the check and the append of the `wslFiles` mode `append` can change the file.
 - The shell cannot see a review token that the service invalidates before its lifetime ends (001 §5 "Approval lifetime"). The `worktreeAdd` context of that token stays until the token lifetime ends, and no run of that token starts.
 - `revealPath` checks the path with its `fileFacts` walk, and `SHParseDisplayName` then reads the path again by text. A folder that changes into a link between the two can make Explorer show an entry outside the root.
 - `fileAppend` for `absent` creates the file and then writes. A failed write leaves an empty file. A later check of that file gives `stale`, so no write follows without a new review.
 - Data-model §6 makes an ordinal of a context line `INVALID_REQUEST`, and the `lines` schema needs one ordinal. So the service never gives `context-only`. Only the renderer gives it.
 - The `applyFiles` schema caps `entryIds` at 10,000. A `selected` request with 10,001 IDs gets `INVALID_REQUEST`, not reason `limit`. A derived kind above the bound gets `limit`.
-- A WSL `ignore` review refuses with `WORKBENCH_UNAVAILABLE` reason `unreadable`. No working-file byte crosses from the distro (001 §11), so the line checks have no input. A later WSL read form closes this gap.
+- A WSL `ignore` review refuses with `WORKBENCH_UNAVAILABLE` reason `unreadable`. No working-file byte crosses from the distro (001 §11), so the line checks have no input. A later feature adds the WSL read form and closes this gap (spec Clarifications, 2026-10-19). The refusal stays.
 - The `applyFiles` reads before step 1 run in state `accepted`, which has no Cancel row (data-model §7). The 30-second Git step deadline bounds each of them.
 - A file-action refusal in a file set gives the reason and the `entryId`, but no `add` remedy. A failed step without a promisor remote gives the step remedy, because no single object ID names the set.
 - The 001 §6 cap of 120 seconds for a registered deadline also caps the `applyFiles` step deadline. At 15 ms for each file, the cap applies above 6,000 files. A 10,000-file `update-index` then gets 120 seconds. That is 3 times the measured 39.7 seconds, but the allowance for each file falls to 9 ms.

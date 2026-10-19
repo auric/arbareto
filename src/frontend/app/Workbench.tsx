@@ -1883,6 +1883,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             <SettingsView
               bridge={bridge}
               target={state.repository !== null && workspace !== null ? { repositoryId: state.repository.repositoryId, repositoryGeneration: workspace.generation } : null}
+              wsl={workspace?.location.kind === "wsl"}
               repository={worktreeKey === null ? null : { worktreeKey, proposals: keyProposals(trust?.report) }}
               operationRunning={running}
               onOperation={setOperation}

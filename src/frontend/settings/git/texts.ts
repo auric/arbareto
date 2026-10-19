@@ -85,6 +85,7 @@ export const TEXTS = {
   notSetOther: (value: string, scope: EntryScope) => `Not set here. Git then uses ${value} from ${SCOPE_NAMES[scope]}.`,
   notSetDefault: "Not set here. No other scope sets it, so Git uses its default.",
   writesPreset: (key: string, value: string) => `Writes ${key}=${value}.`,
+  wslPresets: "Presets are Windows commands. A WSL repository needs a command for its distro.",
   emptyRemoves: "An empty field removes the key from this scope.",
   changed: "Changed",
   was: (value: string | null) => `Was: ${value ?? "not set"}`,

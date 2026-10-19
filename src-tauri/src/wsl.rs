@@ -3451,7 +3451,11 @@ mod tests {
                 sink,
             );
             assert!(supervisor.track(OPERATION, &tracker));
-            std::thread::sleep(Duration::from_millis(4500));
+            // The sample thread exchanges one anchor line before each sample. So four answers follow three finished samples.
+            assert!(
+                eventually(WAIT, || supervisor.anchor_answers(OPERATION) >= 4),
+                "{mode}: four anchor answers"
+            );
             let expected: &[crate::jobs::Event] = if stalls {
                 &[crate::jobs::Event::Stalled]
             } else {

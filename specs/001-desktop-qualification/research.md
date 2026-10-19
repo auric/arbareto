@@ -2011,6 +2011,38 @@ Earlier attempt at `71a5bb0`, 2026-10-13: the parallel step exited 1. One case f
 - A byte search of the release `arbareto.exe` found `3e3d615ea4b458d2703e33b85dba77a04742d0ef-dirty`, because of the uncommitted script.
 - The package was not installed.
 
+**T154 release package, 2026-10-19.** The build used main `62e6e2a871279a98d271dcbeb1c7d9f26b49b458` in the main checkout `C:\Projects\arbareto`. `git --no-optional-locks status --porcelain --untracked-files=all` printed nothing before and after the build. One Git Bash script ran the T001 link probe and then `cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis -- --locked`. The build exited with code 0 in 1m 18s of Cargo time.
+
+| Tool | Source | Value | Minimum | Result |
+| --- | --- | --- | --- | --- |
+| Rust | `rustc --version` | `rustc 1.99.0 (b940084d7 2026-09-28)` | `1.98.0` | pass |
+| Cargo | `cargo --version` | `cargo 1.99.0 (5f94df478 2026-08-27)` | `1.98.0` | pass |
+| Tauri CLI | `cargo tauri --version` | `tauri-cli 2.12.0` | `2.12.0` | pass |
+| Bun | `bun --version` | `1.4.3` | exactly `1.4.3` | pass |
+| MSVC toolset | `rustc --print link-args` after the build: linker `...\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\HostX64\x64\link.exe`. Its banner reads `14.44.35211.0`. Visual Studio 2022 is the only installation. | `14.44.35207` | `14.51.36231` | fail |
+| Windows SDK | `Windows Kits\10\Lib`. Only this version has `um\x64\kernel32.lib`. | `10.0.19041.0` | `10.0.26100.0` | fail |
+| NSIS | `makensis.exe -VERSION` in `%LOCALAPPDATA%\tauri\NSIS`, in Git Bash and in PowerShell | `v3.11` | `3.11` | pass |
+| Git | `git version --build-options` | `git version 2.56.0.windows.2` at `C:\Program Files\Git\cmd\git.exe`, built from commit `cc4dbf752a05efdc0e04e71fd3e8110d11bdd35c` | `2.55.0.windows.3` | pass |
+| WebView2 | Registry value `pv` of `HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}` | `155.0.4283.62` | `154.0.4258.37` | pass |
+
+- The MSVC toolset and the Windows SDK are below the minimums in plan.md "Technical Context" (line 23) and "Tool and runtime boundaries" (line 75). quickstart.md line 36 states the same minimums. The build still exited 0. The minimums are unchanged. The user decides on them.
+- T001 method gap: the probe linked `fn main(){}` with `-C link-arg=/VERBOSE:LIB` and exited with code 0. rustc 1.99.0 printed no `Searching` lines, so the probe gave no toolset or SDK path. The 2026-10-17 record kept the linker output only through a `-C linker=` wrapper script. The toolset value comes from the linker path in `--print link-args`. That call ran after the build, not before it. The SDK value comes from a directory listing, not from the probe.
+- The script called `makensis.exe /VERSION` in Git Bash. MSYS converted `/VERSION` to a path, and makensis printed `Can't open script "C:/Program Files/Git/VERSION"`. The makensis `/HELP` text states: "You can also use - as an option character". The `package` script now calls `makensis.exe -VERSION`. That call printed `v3.11` in Git Bash and in PowerShell.
+- Installer: `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\Arbareto_0.1.0_x64-setup.exe`, 38018813 bytes, SHA-256 `2dec410b6f566ce91211b534c1ec72ad2bf37b95a0b4499baa7e1767ea977ae1`.
+- `dumpbin /dependents` (MSVC 14.44.35207) of `arbareto.exe`: bcryptprimitives, ntdll, advapi32, kernel32, user32, ole32, combase, comctl32, gdi32, dwmapi, shlwapi, version, shell32, api-ms-win-core-synch-l1-2-0, bcrypt, imm32, oleaut32, api-ms-win-core-winrt-l1-1-0, api-ms-win-core-winrt-error-l1-1-0, and api-ms-win-crt-{math,string,convert,runtime,stdio,locale,heap}-l1-1-0.
+- `dumpbin /dependents` of the sidecar `arbareto-git.exe`: ntdll, KERNEL32, api-ms-win-core-synch-l1-2-0, bcryptprimitives, WSOCK32, CRYPT32, WS2_32, dbghelp, USERENV, USER32, ADVAPI32, ole32, SHELL32, OLEAUT32, and IPHLPAPI.
+- Install: the installer ran as the current user with `/S` and exited with code 0. It needed no input.
+- The entry `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Arbareto` has `DisplayName` "Arbareto (Unsigned local test package)", `DisplayVersion` `0.1.0`, and `InstallLocation` `C:\Users\user\AppData\Local\Arbareto`.
+- Installed files: `arbareto.exe` (14557696 bytes), `arbareto-git.exe` (97416704 bytes), and `uninstall.exe` (79348 bytes). No Node executable, development server, or native build tool is present. Tauri embeds the frontend assets in `arbareto.exe`.
+- Installed `arbareto.exe` SHA-256: `a638418a021d2f4ae4a2996ffa3a83b9cdba7eb42e14b20eba5a80756beb8aed`. The target `arbareto.exe` has the same size and SHA-256 `38559c19e8662e381155e39dec8c675bf0e19c465d98631132cc7df7945b71b4`.
+- The two files differ in 3 bytes only: file offsets `0xAC165A` to `0xAC165C` in `.rdata` (RVA `0xAC2A5A`). The target file holds `UNK` (`55 4E 4B`), and the installed file holds `NSS` (`4E 53 53`). The bytes end the string `__TAURI_BUNDLE_TYPE_VAR_UNK` at offset `0xAC1642`. The PE checksum is 0 and the security directory is empty in both files.
+- Cause: the `Cargo.lock` of tauri-cli 2.12.0 locks tauri-bundler 2.10.0. Its `patch_binary` (`src/bundle.rs` lines 40 to 96) replaces `__TAURI_BUNDLE_TYPE_VAR_UNK` with `__TAURI_BUNDLE_TYPE_VAR_NSS` before the NSIS step. The bundler then copies the target file first and writes the copy back after each package type (`src/bundle.rs` lines 141 to 145 and 217 to 218). The build log shows "Patching ...\release\arbareto.exe with bundle type information: nsis". tauri-utils 2.10.1 `platform.rs` line 368 reads this marker as `BundleType::Nsis`. T153 uses the installed `arbareto.exe` SHA-256.
+- Installed `arbareto-git.exe` SHA-256 equals the target file: `a315c9d6401dcc155af509880a8ca44c349faa542b2f3328c8a0332cebf631ec`.
+- Build identity: a byte search of the installed `arbareto.exe` found `62e6e2a871279a98d271dcbeb1c7d9f26b49b458` and no `-dirty` string.
+- Build-time downloads: the build log shows no download. The NSIS tools were already in `%LOCALAPPDATA%\tauri\NSIS`. End-user prerequisites: Git and a preinstalled WebView2 runtime. The installer does not install WebView2 (`webviewInstallMode` `skip`).
+- SC-011: `unverified`. The entry name clause holds. This run did not check the "Unsigned local test package" boot-view label, because that check needs the app started. The release clause depends on B-RELEASE and T176.
+- T154 stays open. The tool versions do not meet the minimums, and the T001 probe gave no toolset or SDK value.
+
 ### Scenario records
 
 This table holds one record for each qualification scenario: SC-001 to SC-019 (spec.md "Success Criteria"), F01 to F33 (plan.md fixture register), and UI-01 to UI-22 (plan.md UI scenarios). Each record holds the data-model §8 fields. A result is only `pass`, `fail`, or `unverified`. A record whose only evidence is source inspection stays `unverified`, and its evidence cell names `source-inspected`. An empty cell means that no fact exists yet. Record results as numbers and observations. Redact secrets before you keep evidence.

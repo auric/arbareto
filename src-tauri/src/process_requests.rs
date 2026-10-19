@@ -279,6 +279,8 @@ impl Drop for WalkEnd {
         self.me.walk_threads.fetch_sub(1, Ordering::SeqCst);
         let event = self.reply.take().map_or(WalkEvent::Stop, WalkEvent::Done);
         let _ = self.events.send(event);
+        #[cfg(test)]
+        self.me.unsent_walk_events.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -410,6 +412,12 @@ pub struct ProcessRequests {
     walk_threads: AtomicUsize,
     /// The walk watchdogs that did not end yet. Only a watchdog replies to a walk.
     watchdogs: AtomicUsize,
+    /// Test hook: the walks whose work did not send its event to the watchdog yet.
+    #[cfg(test)]
+    unsent_walk_events: AtomicUsize,
+    /// Test hook: the thread that reads each stream of each call.
+    #[cfg(test)]
+    readers: Mutex<Vec<(String, usize, std::thread::ThreadId)>>,
     /// The stop of each WSL identity probe outside a walk. A service exit sets it and makes a new one.
     session_stop: Mutex<Option<Arc<WalkStop>>>,
     /// Without it, a `register` with `confirm: true` gets `declined`.
@@ -446,6 +454,10 @@ impl ProcessRequests {
             peak: AtomicUsize::new(0),
             walk_threads: AtomicUsize::new(0),
             watchdogs: AtomicUsize::new(0),
+            #[cfg(test)]
+            unsent_walk_events: AtomicUsize::new(0),
+            #[cfg(test)]
+            readers: Mutex::new(Vec::new()),
             session_stop: Mutex::new(WalkStop::new().map(Arc::new)),
             git_confirmation: OnceLock::new(),
             startup_git: OnceLock::new(),
@@ -735,6 +747,21 @@ impl ProcessRequests {
     #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
     pub fn active_watchdogs(&self) -> usize {
         self.watchdogs.load(Ordering::SeqCst)
+    }
+
+    /// Test hook: the walks whose work did not send its event to the watchdog yet.
+    #[cfg(test)]
+    pub fn unsent_walk_events(&self) -> usize {
+        self.unsent_walk_events.load(Ordering::SeqCst)
+    }
+
+    /// Test hook: the thread that reads `stream` of the call.
+    #[cfg(test)]
+    pub fn reader(&self, call_id: &str, stream: usize) -> Option<std::thread::ThreadId> {
+        lock(&self.readers)
+            .iter()
+            .find(|(call, s, _)| call == call_id && *s == stream)
+            .map(|(_, _, thread)| *thread)
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
@@ -2273,6 +2300,8 @@ impl ProcessRequests {
         let generation = self.current();
 
         self.walk_threads.fetch_add(1, Ordering::SeqCst);
+        #[cfg(test)]
+        self.unsent_walk_events.fetch_add(1, Ordering::SeqCst);
         let worker = {
             let (me, stop) = (Arc::clone(&me), Arc::clone(&stop));
             std::thread::Builder::new().spawn(move || {
@@ -2288,6 +2317,8 @@ impl ProcessRequests {
             Ok(worker) => Arc::new(worker),
             Err(_) => {
                 self.walk_threads.fetch_sub(1, Ordering::SeqCst);
+                #[cfg(test)]
+                self.unsent_walk_events.fetch_sub(1, Ordering::SeqCst);
                 state.walks.remove(call_id);
                 return Err(OWNERSHIP);
             }
@@ -3287,6 +3318,8 @@ impl ProcessRequests {
 
     /// Reads one pipe. Every read runs under the drain lock, so the completion signal sees an exact pipe count.
     fn read_stream(&self, run: &Run, stream: usize) {
+        #[cfg(test)]
+        lock(&self.readers).push((run.call_id.clone(), stream, std::thread::current().id()));
         let pipe = &run.pipes[stream];
         let mut buffer = vec![0u8; CHUNK_BYTES];
         // The chunks that this stream read and did not yet write to the service.
@@ -4124,7 +4157,8 @@ pub(crate) mod tests {
     use crate::bootstrap::tests::Hold;
     use crate::bootstrap::{ContextKind, read_identity};
     use crate::jobs::tests::{
-        CHILD_PREFIX, CLOSE_BOUND, Fixture, Proc, WAIT, eventually, test_exe, wait_file,
+        CHILD_PREFIX, CLOSE_BOUND, Fixture, Proc, TEST_END, WAIT, ends_by_test, eventually,
+        test_exe, wait_file,
     };
 
     /// The `register` digest of a test Git. The shell checks only its form.
@@ -4198,12 +4232,15 @@ pub(crate) mod tests {
     }
 
     type Replies = Arc<(Mutex<Vec<(Instant, Value)>>, Condvar)>;
+    /// The thread, `callId`, `type`, and `stream` of each frame that entered the reply sink, before its gate.
+    type Entered = Arc<Mutex<Vec<(std::thread::ThreadId, Value)>>>;
 
     struct Harness {
         requests: Arc<ProcessRequests>,
         contexts: Arc<Contexts>,
         jobs: Arc<Supervisor>,
         replies: Replies,
+        entered: Entered,
         gate: Arc<Gate>,
         /// Blocks only `inputWritten` replies while closed.
         input_gate: Arc<Gate>,
@@ -4236,6 +4273,7 @@ pub(crate) mod tests {
             let contexts = Arc::new(Contexts::new(&uuid()));
             let jobs = Supervisor::start().expect("start the supervisor");
             let replies: Replies = Arc::new((Mutex::new(Vec::new()), Condvar::new()));
+            let entered: Entered = Arc::new(Mutex::new(Vec::new()));
             let gate = Arc::new(Gate {
                 open: Mutex::new(true),
                 changed: Condvar::new(),
@@ -4245,14 +4283,20 @@ pub(crate) mod tests {
                 changed: Condvar::new(),
             });
             let sink: ReplySink = {
-                let (replies, gate, input_gate) = (
+                let (replies, entered, gate, input_gate) = (
                     Arc::clone(&replies),
+                    Arc::clone(&entered),
                     Arc::clone(&gate),
                     Arc::clone(&input_gate),
                 );
                 Arc::new(move |body: String| {
-                    gate.pass();
                     let frame: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
+                    let inner = &frame["process"];
+                    entered.lock().expect("entered").push((
+                        std::thread::current().id(),
+                        json!({ "callId": inner["callId"], "type": inner["type"], "stream": inner["stream"] }),
+                    ));
+                    gate.pass();
                     let shaped =
                         frame["kind"] == "process" && frame.as_object().map(Map::len) == Some(2);
                     let reply = if shaped {
@@ -4283,6 +4327,7 @@ pub(crate) mod tests {
                 contexts,
                 jobs,
                 replies,
+                entered,
                 gate,
                 input_gate,
                 fixture,
@@ -4341,6 +4386,24 @@ pub(crate) mod tests {
                 .filter(|(_, v)| v["callId"] == call_id)
                 .cloned()
                 .collect()
+        }
+
+        /// The threads that sent an `output` frame of `stream` for the call into the reply sink, in order.
+        fn output_senders(&self, call_id: &str, stream: &str) -> Vec<std::thread::ThreadId> {
+            let frame = json!({ "callId": call_id, "type": "output", "stream": stream });
+            self.entered
+                .lock()
+                .expect("entered")
+                .iter()
+                .filter(|(_, v)| *v == frame)
+                .map(|(thread, _)| *thread)
+                .collect()
+        }
+
+        /// True when no thread other than the harness holds the shell side. Then no reply can follow.
+        /// Only a tracker sink holds a weak reference, and these callers track no process.
+        fn settled(&self) -> bool {
+            eventually(WAIT, || Arc::strong_count(&self.requests) == 1)
         }
 
         fn all_replies(&self) -> Vec<Value> {
@@ -4528,7 +4591,7 @@ pub(crate) mod tests {
             assert_eq!(harness.reply(&call), refused(&call, code), "{name}");
             calls.push(call);
         }
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(harness.settled(), "every thread of the shell side ended");
         for call in calls {
             assert_eq!(
                 harness.replies_for(&call).len(),
@@ -5393,7 +5456,7 @@ pub(crate) mod tests {
             json!({ "deadlineMs": 30_000 }),
         ));
         expect(call, "released gitInstallationId");
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(harness.settled(), "every thread of the shell side ended");
         for call in calls {
             assert_eq!(
                 harness.replies_for(&call).len(),
@@ -5511,7 +5574,12 @@ pub(crate) mod tests {
         );
         let running = uuid();
         let run = harness.run(&running, &workspace, &["sleep", "60000"]);
-        harness.output_line(&run, "stdout", "PID");
+        let child = Proc::open(
+            harness
+                .output_line(&run, "stdout", "PID")
+                .parse()
+                .expect("pid"),
+        );
         harness.send(json!({ "type": "cancel", "callId": run, "extra": 1 }));
         assert_eq!(
             harness
@@ -5524,7 +5592,12 @@ pub(crate) mod tests {
         harness.send(json!({ "type": "release", "repositoryId": workspace.repository, "gitInstallationId": workspace.git }));
         harness.send(json!({ "type": "closeJob", "operationId": running, "extra": 1 }));
         assert!(
-            harness.exit(&run, Duration::from_secs(1)).is_none(),
+            ends_by_test(child.handle),
+            "the malformed closeJob never began to end the run"
+        );
+        assert_eq!(
+            harness.exit(&run, WAIT).expect("exit").1["exitCode"],
+            TEST_END,
             "the malformed closeJob closed nothing"
         );
         let still_bound = harness.run(&uuid(), &workspace, &["sleep", "10"]);
@@ -5535,6 +5608,8 @@ pub(crate) mod tests {
                 .1["exitCode"],
             0
         );
+        let run = harness.run(&running, &workspace, &["sleep", "60000"]);
+        harness.output_line(&run, "stdout", "PID");
         harness.send(json!({ "type": "closeJob", "operationId": running }));
         assert!(
             harness.exit(&run, CLOSE_BOUND).is_some(),
@@ -5862,7 +5937,7 @@ pub(crate) mod tests {
         ] {
             harness.requests.handle(&body);
         }
-        std::thread::sleep(Duration::from_secs(1));
+        assert!(harness.settled(), "every thread of the shell side ended");
         assert_eq!(
             harness.all_replies().len(),
             before,
@@ -5927,7 +6002,16 @@ pub(crate) mod tests {
                 progress.to_str().expect("path"),
             ],
         );
-        std::thread::sleep(Duration::from_secs(2));
+        assert!(
+            eventually(WAIT, || !harness.output_senders(&call, "stdout").is_empty()),
+            "a stdout frame waits in the closed reply sink"
+        );
+        // The pipe reader itself waits in the sink. So the shell reads no further byte while the gate is closed.
+        assert_eq!(
+            harness.output_senders(&call, "stdout"),
+            [harness.requests.reader(&call, 0).expect("stdout reader")],
+            "the stdout reader waits on its frame write"
+        );
         let written = |p: &Path| {
             std::fs::read_to_string(p)
                 .ok()
@@ -5935,8 +6019,6 @@ pub(crate) mod tests {
                 .unwrap_or(0)
         };
         let stalled = written(&progress);
-        std::thread::sleep(Duration::from_secs(1));
-        assert_eq!(written(&progress), stalled, "the child waits on its write");
         assert!(
             stalled < 2 * 1024 * 1024,
             "the shell stopped reading: {stalled} bytes written"
@@ -6156,10 +6238,14 @@ pub(crate) mod tests {
             "the sleeping grandchild ends"
         );
         assert!(
-            !other_child.exits_within(Duration::from_secs(1)),
-            "the other operation keeps running"
+            ends_by_test(other_child.handle),
+            "the cancel never began to end the other operation"
         );
-        assert!(harness.exit(&other, Duration::from_millis(10)).is_none());
+        assert_eq!(
+            harness.exit(&other, WAIT).expect("exit").1["exitCode"],
+            TEST_END,
+            "the cancel closed no Job of the other operation"
+        );
     }
 
     /// Contract §12 "WSL repositories": the process-end run after a Cancel or a deadline needs a new Job for the same operation.
@@ -6317,8 +6403,8 @@ pub(crate) mod tests {
         assert_eq!(harness.requests.ended(&operation, false), Ok(()));
         assert!(harness.jobs.is_lingering(&operation), "the Job lingers");
         assert!(
-            !grandchild.exits_within(Duration::from_secs(1)),
-            "the grandchild keeps running"
+            ends_by_test(grandchild.handle),
+            "ended never began to end the grandchild"
         );
     }
 
@@ -6353,11 +6439,11 @@ pub(crate) mod tests {
             child.exits_within(CLOSE_BOUND),
             "the running operation Job closes"
         );
-        assert!(
-            !grandchild.exits_within(Duration::from_secs(1)),
-            "the lingering Job stays"
-        );
         assert!(harness.jobs.is_lingering(&lingering));
+        assert!(
+            ends_by_test(grandchild.handle),
+            "the service exit never began to end the lingering Job"
+        );
     }
 
     #[test]
@@ -6475,7 +6561,9 @@ pub(crate) mod tests {
             written.starts_with("ok"),
             "the grandchild never blocks or fails on a write: {written}"
         );
-        std::thread::sleep(Duration::from_secs(1));
+        // The grandchild stays. The Job close ends it, so both pipe readers reach end-of-file.
+        harness.send(json!({ "type": "closeJob", "operationId": operation }));
+        assert!(harness.settled(), "every thread of the shell side ended");
         assert_eq!(
             harness.replies_for(&call).len(),
             replies.len(),
@@ -6490,7 +6578,6 @@ pub(crate) mod tests {
             harness.requests.peak_queued_chunks() <= QUEUED_CHUNKS_PER_STREAM,
             "the shell queues none of the discarded bytes"
         );
-        harness.send(json!({ "type": "closeJob", "operationId": operation }));
     }
 
     #[test]
@@ -7335,7 +7422,10 @@ pub(crate) mod tests {
             wsl.harness.jobs.job_handle(&operation).is_some(),
             "the stop never closes the operation Job"
         );
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            wsl.harness.settled(),
+            "every thread of the shell side ended"
+        );
         assert_eq!(wsl.harness.replies_for(&call).len(), 1, "one reply");
     }
 
@@ -7371,7 +7461,10 @@ pub(crate) mod tests {
             wsl.harness.jobs.job_handle(&operation).is_some(),
             "cancel never closes the operation Job"
         );
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            wsl.harness.settled(),
+            "every thread of the shell side ended"
+        );
         assert!(wsl.harness.replies_for(&call).is_empty(), "no reply");
     }
 
@@ -7389,7 +7482,10 @@ pub(crate) mod tests {
             eventually(CLOSE_WAIT, || wsl.harness.requests.active_walks() == 0),
             "closeJob stops the walk"
         );
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(
+            wsl.harness.settled(),
+            "every thread of the shell side ended"
+        );
         assert!(wsl.harness.replies_for(&call).is_empty(), "no reply");
     }
 
@@ -7819,7 +7915,10 @@ pub(crate) mod tests {
                 eventually(CLOSE_WAIT, || wsl.harness.requests.active_walks() == 0),
                 "{stop}"
             );
-            std::thread::sleep(Duration::from_millis(500));
+            assert!(
+                wsl.harness.settled(),
+                "{stop}: every thread of the shell side ended"
+            );
             assert!(
                 wsl.harness.replies_for(&call).is_empty(),
                 "{stop}: no reply"
@@ -8780,7 +8879,7 @@ pub(crate) mod tests {
             "CancelSynchronousIo ends the wait on the oplock break (research U1)"
         );
         drop(oplock);
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(harness.settled(), "every thread of the shell side ended");
         assert_eq!(
             harness.replies_for(&call).len(),
             1,
@@ -8810,7 +8909,7 @@ pub(crate) mod tests {
             "cancel stops the walk, and CancelSynchronousIo ends its wait on the oplock break (research U1)"
         );
         drop(oplock);
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(harness.settled(), "every thread of the shell side ended");
         assert!(
             harness.replies_for(&call).is_empty(),
             "a canceled walk gets no reply"
@@ -8820,10 +8919,11 @@ pub(crate) mod tests {
     #[test]
     fn close_job_stops_each_walk_of_its_operation_and_a_service_exit_stops_every_walk() {
         let harness = Harness::child();
-        let workspace = hooks_workspace(&harness, &["closed", "other"]);
-        let (Some(closed_lock), Some(other_lock)) = (
+        let workspace = hooks_workspace(&harness, &["closed", "other", "last"]);
+        let (Some(closed_lock), Some(other_lock), Some(last_lock)) = (
             Oplock::request(&hook(&workspace, "closed")),
             Oplock::request(&hook(&workspace, "other")),
+            Oplock::request(&hook(&workspace, "last")),
         ) else {
             println!("{SKIP_OPLOCK}");
             return;
@@ -8831,15 +8931,17 @@ pub(crate) mod tests {
         let operation = uuid();
         let closed = blocked_walk(&harness, &workspace, &closed_lock, "closed", &operation);
         let other = blocked_walk(&harness, &workspace, &other_lock, "other", &uuid());
+        let last = blocked_walk(&harness, &workspace, &last_lock, "last", &uuid());
         harness.send(json!({ "type": "closeJob", "operationId": operation }));
         assert!(
-            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 1),
+            eventually(CLOSE_WAIT, || harness.requests.active_walks() == 2),
             "closeJob stops the walk of its operation"
         );
-        std::thread::sleep(Duration::from_millis(500));
+        // A stopped walk gets no reply. So its fact proves that closeJob left the walk of another operation running.
+        drop(other_lock);
         assert_eq!(
-            harness.requests.active_walks(),
-            1,
+            harness.reply(&other)["facts"][0]["digest"],
+            crate::file_facts::tests::ABC,
             "the walk of another operation still waits"
         );
         harness.requests.service_exited();
@@ -8848,10 +8950,10 @@ pub(crate) mod tests {
             "a service exit stops every walk"
         );
         drop(closed_lock);
-        drop(other_lock);
-        std::thread::sleep(Duration::from_millis(500));
+        drop(last_lock);
+        assert!(harness.settled(), "every thread of the shell side ended");
         assert!(
-            harness.replies_for(&closed).is_empty() && harness.replies_for(&other).is_empty(),
+            harness.replies_for(&closed).is_empty() && harness.replies_for(&last).is_empty(),
             "a stopped walk gets no reply"
         );
     }
@@ -8872,11 +8974,14 @@ pub(crate) mod tests {
             eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
             "the walk ends after the oplock holder closes"
         );
-        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            eventually(CLOSE_WAIT, || harness.requests.unsent_walk_events() == 0),
+            "the walk sends its end to the watchdog"
+        );
         // `cancel` sends exactly this event under the state lock. The reader cannot run `cancel` while this test holds the lock.
         let _ = state.walks[call.as_str()].events.send(WalkEvent::Stop);
         drop(state);
-        std::thread::sleep(Duration::from_millis(500));
+        assert!(harness.settled(), "every thread of the shell side ended");
         assert!(
             harness.replies_for(&call).is_empty(),
             "a cancel before the reply wins over a finished walk"
@@ -8909,8 +9014,7 @@ pub(crate) mod tests {
             eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
             "the count drops at the panic"
         );
-        // The wait passes the 300 ms deadline, so a deadline reply would arrive within it.
-        std::thread::sleep(Duration::from_secs(1));
+        assert!(harness.settled(), "every thread of the shell side ended");
         assert!(
             harness.replies_for(&call).is_empty(),
             "a panic gives no reply and no deadline label"
@@ -9914,8 +10018,10 @@ pub(crate) mod tests {
     /// A commit whose hook waits on a hidden console ends at a 5-second deadline with every descendant.
     fn assert_console_wait_ends_at_the_deadline(
         variant: &str,
+        program: &Path,
         hook_line: impl FnOnce(&Fixture) -> String,
     ) {
+        let program = read_identity(program).expect("program identity");
         let Some(git) = find_git() else { return };
         let fixture = GitFixture::new(git, |root| {
             format!(
@@ -9926,7 +10032,15 @@ pub(crate) mod tests {
         let operation = uuid();
         let start = Instant::now();
         let call = fixture.commit(&operation, 5_000);
-        std::thread::sleep(Duration::from_secs(3));
+        assert!(
+            eventually(WAIT, || fixture
+                .harness
+                .jobs
+                .process_ids(&operation)
+                .into_iter()
+                .any(|pid| image_identity(pid) == Some(program))),
+            "{variant}: the waiting program runs in the Job"
+        );
         let processes: Vec<Proc> = fixture
             .harness
             .jobs
@@ -9975,7 +10089,7 @@ pub(crate) mod tests {
         ) else {
             return;
         };
-        assert_console_wait_ends_at_the_deadline("powershell", |_| {
+        assert_console_wait_ends_at_the_deadline("powershell", &powershell, |_| {
             format!(
                 "'{}' -NoProfile -Command \"Read-Host -AsSecureString x\"",
                 sh_path(&powershell)
@@ -9989,13 +10103,43 @@ pub(crate) mod tests {
         else {
             return;
         };
-        assert_console_wait_ends_at_the_deadline("ssh-keygen", |root| {
+        assert_console_wait_ends_at_the_deadline("ssh-keygen", &keygen, |root| {
             format!(
                 "'{}' -y -f '{}'",
                 sh_path(&keygen),
                 sh_path(&passphrase_key(&keygen, root))
             )
         });
+    }
+
+    /// The file identity of the image of a process. The query handle never ends the process.
+    fn image_identity(pid: u32) -> Option<crate::bootstrap::Identity> {
+        use std::os::windows::ffi::OsStringExt;
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows::Win32::System::Threading::{
+            OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+            QueryFullProcessImageNameW,
+        };
+        // SAFETY: the call returns a new handle or fails.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+        // SAFETY: OpenProcess returned a new handle that nothing else owns.
+        let handle = unsafe { OwnedHandle::from_raw_handle(handle.0) };
+        let mut buffer = vec![0u16; 32_768];
+        let mut size = buffer.len() as u32;
+        // SAFETY: `buffer` holds `size` UTF-16 units, and `handle` stays open for the call.
+        unsafe {
+            QueryFullProcessImageNameW(
+                HANDLE(handle.as_raw_handle()),
+                PROCESS_NAME_WIN32,
+                windows::core::PWSTR(buffer.as_mut_ptr()),
+                &mut size,
+            )
+        }
+        .ok()?;
+        read_identity(&PathBuf::from(OsString::from_wide(
+            &buffer[..size as usize],
+        )))
+        .ok()
     }
 
     /// Generates a passphrase key under the owned root, as plan.md F11 and F30 do.
@@ -12174,7 +12318,10 @@ pub(crate) mod tests {
                 eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
                 "the check ends after the oplock holder closes"
             );
-            std::thread::sleep(Duration::from_millis(200));
+            assert!(
+                eventually(CLOSE_WAIT, || harness.requests.unsent_walk_events() == 0),
+                "the walk sends its end to the watchdog"
+            );
             if stop {
                 // `cancel` sends exactly this event under the state lock.
                 let _ = state.walks[call.as_str()].events.send(WalkEvent::Stop);

@@ -809,6 +809,16 @@ impl Supervisor {
             .unwrap_or_default()
     }
 
+    /// Test hook: the count of answer lines of the anchor of the Job.
+    #[cfg(test)]
+    pub fn anchor_answers(&self, operation_id: &str) -> u64 {
+        self.shared
+            .state()
+            .jobs
+            .get(operation_id)
+            .map_or(0, |entry| entry.wsl.line_facts().1)
+    }
+
     /// Test hook: drops every `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` message while set.
     #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
     pub fn drop_zero_messages(&self, drop: bool) {
@@ -856,8 +866,8 @@ pub(crate) mod tests {
     };
     use windows::Win32::System::SystemServices::JOB_OBJECT_ASSIGN_PROCESS;
     use windows::Win32::System::Threading::{
-        GetCurrentProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE,
-        PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
+        GetCurrentProcess, GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        PROCESS_SYNCHRONIZE, PROCESS_TERMINATE, TerminateProcess, WaitForSingleObject,
     };
     use windows::core::{BOOL, w};
 
@@ -932,6 +942,20 @@ pub(crate) mod tests {
 
     pub(crate) fn exits_within(handle: HANDLE, timeout: Duration) -> bool {
         unsafe { WaitForSingleObject(handle, timeout.as_millis() as u32) == WAIT_OBJECT_0 }
+    }
+
+    /// The exit code of `ends_by_test`. A Job close ends its processes with code 1.
+    pub(crate) const TEST_END: u32 = 0x7E57;
+
+    /// Ends a running process with `TEST_END`. True only when no earlier termination began.
+    /// Windows refuses a second termination with `ERROR_ACCESS_DENIED` and keeps the first exit code.
+    pub(crate) fn ends_by_test(handle: HANDLE) -> bool {
+        let mut code = 0;
+        // SAFETY: the caller keeps the handle open for the calls.
+        unsafe { TerminateProcess(handle, TEST_END) }.is_ok()
+            && exits_within(handle, CLOSE_BOUND)
+            && unsafe { GetExitCodeProcess(handle, &mut code) }.is_ok()
+            && code == TEST_END
     }
 
     /// Polls `condition` every 50 ms until it holds or `timeout` passes.
@@ -1683,8 +1707,8 @@ pub(crate) mod tests {
             "the first child ends"
         );
         assert!(
-            !exits_within(second.handle(), Duration::from_secs(1)),
-            "the second child keeps running"
+            ends_by_test(second.handle()),
+            "the close of the first Job never began to end the second child"
         );
         supervisor.close_all();
         supervisor.shutdown();
@@ -1703,8 +1727,8 @@ pub(crate) mod tests {
             "the owned child ends"
         );
         assert!(
-            !exits_within(unrelated.handle(), Duration::from_secs(1)),
-            "the unrelated process survives"
+            ends_by_test(unrelated.handle()),
+            "the close never began to end the unrelated process"
         );
         supervisor.shutdown();
     }
@@ -1817,8 +1841,8 @@ pub(crate) mod tests {
             "the Job lingers while the grandchild sleeps"
         );
         assert!(
-            !grandchildren[0].exits_within(Duration::from_secs(1)),
-            "the grandchild keeps running"
+            ends_by_test(grandchildren[0].handle),
+            "ended never began to end the grandchild"
         );
         grandchildren.clear();
         let closed = eventually(Duration::from_secs(3), || {
@@ -1837,7 +1861,11 @@ pub(crate) mod tests {
         supervisor.ended("op-missed", false);
         assert!(supervisor.is_lingering("op-missed"), "the Job lingers");
         grandchildren.clear();
-        std::thread::sleep(Duration::from_millis(1500));
+        let job = Arc::clone(&supervisor.shared.state().jobs["op-missed"].job);
+        assert!(
+            eventually(WAIT, || matches!(job.active_processes(), Ok(0))),
+            "the lingering Job is empty"
+        );
         supervisor.open("op-next").expect("open");
         let (_next, _) = child_in_job(&supervisor, "op-next", 0, "exit");
         supervisor.ended("op-next", false);
@@ -1908,12 +1936,12 @@ pub(crate) mod tests {
             grandchildren[1].exits_within(CLOSE_BOUND),
             "the second grandchild of the tag ends within 5 s"
         );
-        assert!(
-            !grandchildren[2].exits_within(Duration::from_secs(1)),
-            "the Job with another tag keeps running"
-        );
         assert!(supervisor.is_lingering("op-b"));
         assert_eq!(supervisor.lingering_count(&tag(2)), 1);
+        assert!(
+            ends_by_test(grandchildren[2].handle),
+            "revoke never began to end the Job with another tag"
+        );
         supervisor.close_all();
         supervisor.shutdown();
     }
@@ -2189,7 +2217,11 @@ pub(crate) mod tests {
         assert!(recorded[1].0 - start >= Duration::from_millis(4500));
         supervisor.untrack("op-activity", &tracker);
         let _ = child.child.wait();
-        std::thread::sleep(Duration::from_millis(1500));
+        // Only the port thread clones a tracked `Arc`. So no sample can reach the sink when the test holds the last one.
+        assert!(
+            eventually(WAIT, || Arc::strong_count(&tracker) == 1),
+            "no sample holds the tracker"
+        );
         assert_eq!(kinds(&events).len(), 2, "no event after untrack");
         assert!(!tracker.expired());
         supervisor.shutdown();
@@ -2214,7 +2246,8 @@ pub(crate) mod tests {
             elapsed >= Duration::from_millis(1500) && elapsed < Duration::from_millis(3000),
             "{elapsed:?}"
         );
-        std::thread::sleep(Duration::from_millis(1500));
+        // One more sample pass of the port thread code, after the expiry.
+        supervisor.shared.sample();
         assert_eq!(kinds(&events), [Event::Inactivity]);
         assert!(tracker.expired());
         supervisor.close("op-idle");

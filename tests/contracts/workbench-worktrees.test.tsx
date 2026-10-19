@@ -6,7 +6,7 @@ import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { answer, button, click, createWorld, itemLabel, keyboardFocus, mountWorkbench, oid, press, settle, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
+import { answer, button, click, createWorld, itemLabel, keyboardFocus, mountWorkbench, oid, press, REGISTRATION, settle, sizeSwitcherList, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
 import { fixtureId } from "./bridge-contract";
 
 // tasks.md T064 (feature 004, WP21). Story US5. Spec FR-049 to FR-057. Plan D10, D15. Data-model §8. Contract Δ3, Δ9.
@@ -212,6 +212,78 @@ describe("sidebar Worktrees group (FR-050, FR-051)", () => {
     await press(list, "ArrowDown");
     await press(list, "Enter");
     expect(opened(double)).toEqual([{ repositoryId: fixtureId(1), path: "C:/wt/repo-hotfix" }]);
+  });
+});
+
+describe("the draft of each worktree across Open (FR-051, 001 FR-034, T104)", () => {
+  test("a draft in worktree A survives Open of worktree B and Open of A again through the 001 registration flow", async () => {
+    // Each Open answers with the registration of that worktree. The current worktree follows the last Open.
+    const keys: Record<string, string> = { "C:/wt/repo-signup": REGISTRATION.worktreeKey, "C:/wt/repo-hotfix": "b".repeat(64) };
+    let current = "C:/wt/repo-signup";
+    const world = worktreeWorld();
+    world.answers.readWorktrees = () => succeeded({ entries: ALL.map((e) => ({ ...e, current: e.path === current })) });
+    world.answers.openWorktree = (args) => {
+      current = (args[0] as { path: string }).path;
+      return succeeded({ ...REGISTRATION, worktreeKey: keys[current]! });
+    };
+    const double = await mountWorkbench(workbench, world);
+    const views = () => document.querySelector<HTMLElement>('header nav[aria-label="Views"]')!;
+    const message = async () => {
+      if (document.querySelector('section[aria-label="Commit view"]') === null) await click(button("Commit", views()));
+      return document.querySelector<HTMLTextAreaElement>('textarea[aria-label="Commit message"]')!;
+    };
+    const write = async (field: HTMLTextAreaElement, value: string) => {
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, value);
+        field.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await settle();
+    };
+    const openFromList = async (name: string) => {
+      await openList();
+      await click(options().find((o) => (o.getAttribute("aria-label") ?? "").startsWith(`${name},`))!);
+    };
+    await write(await message(), "Fix the login form");
+    await openFromList("repo-hotfix");
+    expect(opened(double).at(-1)).toEqual({ repositoryId: fixtureId(1), path: "C:/wt/repo-hotfix" });
+    expect((await message()).value).toBe("");
+    await write(await message(), "Hotfix draft");
+    await openFromList("repo-signup");
+    expect(opened(double).at(-1)).toEqual({ repositoryId: fixtureId(1), path: "C:/wt/repo-signup" });
+    expect((await message()).value).toBe("Fix the login form");
+    await openFromList("repo-hotfix");
+    expect((await message()).value).toBe("Hotfix draft");
+  });
+});
+
+describe("virtual worktree list (FR-086, SC-007, T100)", () => {
+  test("more than 200 worktrees create only the options near the view, the arrow keys reach the last option, and each option states its position and set size", async () => {
+    const restore = sizeSwitcherList(300);
+    try {
+      const many = Array.from({ length: 250 }, (_, i) => (i === 0 ? MAIN : wt(`C:/wt/repo-${String(i).padStart(3, "0")}`, { branch: `refs/heads/b${i}`, current: i === 1 })));
+      await mountWorkbench(workbench, worktreeWorld(many));
+      await openList();
+      const shown = () => [...document.querySelectorAll<HTMLElement>('[data-slot="popover-content"] [role="listbox"] [role="option"]')];
+      const bounded = () => expect(shown().length).toBeLessThan(60);
+      bounded();
+      const field = filterField();
+      const active = () => document.getElementById(field.getAttribute("aria-activedescendant") ?? "");
+      const place = (o: Element | null) => [o?.getAttribute("aria-label")?.split(",")[0], o?.getAttribute("aria-posinset"), o?.getAttribute("aria-setsize")];
+      // 250 records, Add worktree…, and Prune missing worktrees make 252 options in one set.
+      expect(place(active())).toEqual(["repo", "1", "252"]);
+      for (let i = 0; i < 251; i++) await act(async () => void field.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
+      await settle();
+      expect(active()?.getAttribute("aria-posinset")).toBe("252");
+      expect(active()?.getAttribute("aria-setsize")).toBe("252");
+      expect(active()?.textContent).toContain("Prune");
+      bounded();
+      await press(field, "ArrowUp");
+      await press(field, "ArrowUp");
+      expect(place(active())).toEqual(["repo-249", "250", "252"]);
+      bounded();
+    } finally {
+      restore();
+    }
   });
 });
 

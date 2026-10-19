@@ -252,4 +252,26 @@ export async function keyboardFocus(element: HTMLElement) {
   });
   await settle();
 }
+/** Gives the listbox of an open switcher popover a height and a scroll offset, so TanStack Virtual sees a viewport. Returns the restore function. */
+export function sizeSwitcherList(height: number): () => void {
+  const proto = HTMLElement.prototype;
+  const keys = ["offsetHeight", "clientHeight", "scrollTop"] as const;
+  const saved = keys.map((key) => [key, Object.getOwnPropertyDescriptor(proto, key)] as const);
+  const base = (key: (typeof keys)[number]) => saved.find(([k]) => k === key)![1];
+  const tops = new WeakMap<Element, number>();
+  const sized = (e: Element) => e.getAttribute("role") === "listbox" && e.closest('[data-slot="popover-content"]') !== null;
+  for (const key of ["offsetHeight", "clientHeight"] as const)
+    Object.defineProperty(proto, key, { configurable: true, get: function (this: Element) { return sized(this) ? height : (base(key)?.get?.call(this) ?? 0); } });
+  Object.defineProperty(proto, "scrollTop", {
+    configurable: true,
+    get: function (this: Element) { return sized(this) ? (tops.get(this) ?? 0) : (base("scrollTop")?.get?.call(this) ?? 0); },
+    set: function (this: Element, value: number) { if (sized(this)) tops.set(this, Math.max(0, value)); else base("scrollTop")?.set?.call(this, value); },
+  });
+  return () => {
+    for (const [key, descriptor] of saved) {
+      if (descriptor === undefined) delete (proto as unknown as Record<string, unknown>)[key];
+      else Object.defineProperty(proto, key, descriptor);
+    }
+  };
+}
 export const tooltipText = () => document.querySelector('[data-slot="tooltip-content"]')?.textContent ?? null;

@@ -348,6 +348,11 @@
     outline: var(--focus-width) solid var(--accent-role);
     outline-offset: calc(-1 * var(--focus-width));
   }
+  /* Feature 004 plan.md D15 "History labels": the active label of the focused history list. */
+  .chip[data-label-active] {
+    outline: var(--focus-width) solid var(--accent-role);
+    outline-offset: calc(-1 * var(--focus-width));
+  }
 
   .selected-hunk-bar {
     width: var(--hunk-bar-width);
@@ -451,6 +456,10 @@
   }
   .list-row[data-active] {
     outline-color: Highlight;
+  }
+  /* The active label sits on the selected row, which fills with Highlight. */
+  .chip[data-label-active] {
+    outline-color: HighlightText;
   }
   .list-row[aria-selected="true"] {
     forced-color-adjust: none;

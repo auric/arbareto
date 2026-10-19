@@ -6,7 +6,7 @@ import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { answer, button, click, createWorld, itemLabel, mountWorkbench, oid, press, settings, settle, succeeded, text, unmountAll, type World } from "./sync-fake";
+import { answer, button, click, createWorld, itemLabel, mountWorkbench, oid, press, settings, settle, sizeSwitcherList, succeeded, text, unmountAll, type World } from "./sync-fake";
 import { fixtureId } from "./bridge-contract";
 
 // tasks.md T040 (feature 004, WP12). Stories US1 and US2. Spec FR-007 to FR-020, SC-003, SC-014. Plan D3, D4, D15, D16. Data-model §1, §3, §4. Contract Δ3, Δ9, Δ14.
@@ -364,6 +364,104 @@ describe("keys during IME composition and the keyboard path to the history label
       expect(document.querySelector('[data-slot="dropdown-menu-content"]')!.getAttribute("aria-label")).toBe(`Actions for ${text(chip.querySelector("[data-chip-name]")!)}`);
     });
   }
+});
+
+describe("the menu of each label on a History row with several branch labels (FR-014, SC-014, T101)", () => {
+  /** A world whose row 0 carries the labels `main` and `feature/login`, and whose row 1 carries `old`. */
+  function labelsWorld(): World {
+    const world = branchWorld();
+    world.branches = [
+      { name: "feature/login", objectId: oid(1), upstream: null, upstreamObjectId: null, track: { state: "none" }, current: false },
+      { name: "main", objectId: oid(1), upstream: null, upstreamObjectId: null, track: { state: "none" }, current: true },
+      { name: "old", objectId: oid(2), upstream: null, upstreamObjectId: null, track: { state: "none" }, current: false },
+    ];
+    world.answers.readBranches = () => succeeded({ entries: [local("feature/login", { oid: oid(1) }), local("main", { oid: oid(1), current: true }), local("old", { oid: oid(2) })] });
+    return world;
+  }
+  const historyList = () => document.querySelector<HTMLElement>("[data-history-list]")!;
+  const menuName = () => document.querySelector('[data-slot="dropdown-menu-content"]')?.getAttribute("aria-label") ?? null;
+  const activeChip = () => [...document.querySelectorAll<HTMLElement>('[data-slot="row-labels"] .chip[data-label-active]')].map((c) => text(c.querySelector("[data-chip-name]")!));
+  const status = () => text(historyList().parentElement!.querySelector('p[role="status"]')!);
+  async function selectRow0() {
+    const chip = [...document.querySelectorAll<HTMLElement>('[data-slot="row-labels"] .chip[data-kind="branch"]')].find((c) => text(c.querySelector("[data-chip-name]")!) === "main")!;
+    await click(chip.closest<HTMLElement>('[role="option"]')!);
+    await act(async () => historyList().focus());
+  }
+
+  test("Right and Left move the active label, and Shift+F10 opens the menu of the active label; the list stays one Tab stop", async () => {
+    await mountWorkbench(workbench, labelsWorld());
+    await selectRow0();
+    const list = historyList();
+    // The row orders its labels as Git lists them: `feature/login`, then `main`.
+    const names = [...document.querySelectorAll<HTMLElement>('[data-row-id] [data-slot="row-labels"] .chip[data-kind="branch"]')].slice(0, 2).map((c) => text(c.querySelector("[data-chip-name]")!));
+    expect(names).toEqual(["feature/login", "main"]);
+    await press(list, "F10", { shiftKey: true });
+    expect(menuName()).toBe("Actions for feature/login");
+    await press(document.activeElement!, "Escape");
+    await act(async () => list.focus());
+    await press(list, "ArrowRight");
+    expect(activeChip()).toEqual(["main"]);
+    expect(status()).toContain("main, branch label 2 of 2.");
+    expect(document.activeElement).toBe(list);
+    await press(list, "ContextMenu");
+    expect(menuName()).toBe("Actions for main");
+    await press(document.activeElement!, "Escape");
+    await act(async () => list.focus());
+    // Right stops at the last label. Left goes back to the first one.
+    await press(list, "ArrowRight");
+    expect(activeChip()).toEqual(["main"]);
+    await press(list, "ArrowLeft");
+    expect(activeChip()).toEqual(["feature/login"]);
+    await press(list, "F10", { shiftKey: true });
+    expect(menuName()).toBe("Actions for feature/login");
+    // No label is a Tab stop.
+    for (const chip of document.querySelectorAll('[data-slot="row-labels"] .chip')) expect(chip.hasAttribute("tabindex")).toBe(false);
+  });
+
+  test("a new selected row starts at its first label", async () => {
+    await mountWorkbench(workbench, labelsWorld());
+    await selectRow0();
+    const list = historyList();
+    await press(list, "ArrowRight");
+    expect(activeChip()).toEqual(["main"]);
+    await press(list, "ArrowDown");
+    expect(activeChip()).toEqual([]);
+    await press(list, "ArrowUp");
+    await press(list, "F10", { shiftKey: true });
+    expect(menuName()).toBe("Actions for feature/login");
+  });
+});
+
+describe("virtual branch list (FR-086, SC-007, T100)", () => {
+  test("more than 200 branches create only the options near the view, the arrow keys reach the last option, and each option states its position and set size", async () => {
+    const restore = sizeSwitcherList(300);
+    try {
+      const names = Array.from({ length: 250 }, (_, i) => `b${String(i).padStart(3, "0")}`);
+      const world = branchWorld();
+      world.answers.readBranches = () => succeeded({ entries: [...names.map((n) => local(n)), ORIGIN_MAIN] });
+      await mountWorkbench(workbench, world);
+      await openList();
+      const bounded = () => expect(options().length).toBeLessThan(60);
+      bounded();
+      const field = filterField();
+      const active = () => document.getElementById(field.getAttribute("aria-activedescendant") ?? "");
+      const place = (o: Element | null) => [o?.getAttribute("aria-label")?.split(",")[0], o?.getAttribute("aria-posinset"), o?.getAttribute("aria-setsize")];
+      expect(place(active())).toEqual(["b000", "1", "250"]);
+      // 250 local branches, 1 remote branch, and New branch… make 252 options.
+      for (let i = 0; i < 251; i++) await act(async () => void field.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
+      await settle();
+      expect(place(active())).toEqual(["New branch… (Ctrl+B)", "1", "1"]);
+      bounded();
+      await press(field, "ArrowUp");
+      expect(place(active())).toEqual(["origin/main", "1", "1"]);
+      await press(field, "ArrowUp");
+      expect(place(active())).toEqual(["b249", "250", "250"]);
+      expect(active()!.closest('[role="group"]')?.getAttribute("aria-label")).toBe("Local branches, 250");
+      bounded();
+    } finally {
+      restore();
+    }
+  });
 });
 
 function buttons(label: string) {

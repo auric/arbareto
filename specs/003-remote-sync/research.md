@@ -194,7 +194,7 @@ Line numbers in Git source are not recorded here. P0.2 records the Git version o
   - The `git http-backend` CGI serves smart HTTP. **documented** (git-http-backend(1))
   - `git daemon --access-hook` runs a program for each service request. **documented** (git-daemon(1))
   - Windows on this PC has no `sshd`: neither Git for Windows nor System32 has one. PuTTY 0.8x is installed. **experiment** (2026-10-12 listing)
-  - Windows PuTTYgen has no command line, so the test `.ppk` is an inert fixture. **unverified**
+  - Windows PuTTYgen has command-line options, but they only pre-select GUI settings. No option saves a file. So the user saves the test `.ppk` in the PuTTYgen GUI, and it is an inert fixture. **documented** (PuTTY manual 0.85, §8.2.16)
 - **Alternatives considered**: public hosts. Forbidden by the spec. Rejected.
 
 ## R14 Git Extensions comparison
@@ -352,6 +352,34 @@ Run of 2026-10-18 in `C:\Projects\arbareto-l2` on `f003-b5-conflicts` at 969a2e8
 - Manual check: the quickstart.md "Manual check in the app" has not run. It needs the user's input.
 
 Ticks: T067 to T073 cite this run and the batch 5 review. T074 stays open until the manual check runs.
+
+## R21 `ssh2` under Bun (P0.3, T007, T008)
+
+Probe of 2026-10-19 in a scratch folder outside the checkout. Host: Windows 11 Pro 10.0.26300. Bun 1.4.3. `ssh2` 1.17.0, the npm `latest`, published 2025-08-20. Git 2.56.0.windows.2. Git's `ssh.exe` is OpenSSH_10.5p1. The repository `package.json` and `bun.lock` did not change.
+
+- **Install**: `bun add ssh2@1.17.0` exited 0. **experiment**
+  - `ssh2` 1.17.0 has the optional dependency `cpu-features` `~0.0.10`. Bun installed `cpu-features` 0.0.10. **experiment**
+  - Bun ran the `cpu-features` install script (`node-gyp rebuild`). It compiled a native addon in about 30 s. **experiment**
+  - The `ssh2` native crypto binding has no build output. `bindingAvailable` is `false`, so `ssh2` uses its JavaScript crypto. **experiment**
+  - The Bun 1.4.3 default trusted list holds `cpu-features` and `ssh2`. **documented** (`src/install/default-trusted-dependencies.txt` at `bun-v1.4.3`)
+- **Server**: the `ssh2` `Server` listens on 127.0.0.1, port 0. The host key is ed25519 from `utils.generateKeyPairSync`. Sign-in is public key only. The exec handler accepts only `git-upload-pack '/<name>'` and `git-receive-pack '/<name>'`. It runs `git upload-pack` or `git receive-pack` with an argument array. **experiment**
+- **Client**: Git `fetch` and `push` with `GIT_SSH_COMMAND` set to Git's own `ssh.exe`. Options: `-F <owned empty file>`, `-i <test key>`, `UserKnownHostsFile=<owned file>`, `GlobalKnownHostsFile=/dev/null`, `StrictHostKeyChecking=yes`, `BatchMode=yes`, `IdentitiesOnly=yes`, and `IdentityAgent=none`. `GIT_CONFIG_GLOBAL` and `HOME` name the scratch folder, and `GIT_CONFIG_NOSYSTEM=1` is set. No path names `~/.ssh`. **experiment**
+- **Results**: three runs gave the same results. **experiment**
+  - Fetch with the allowed key: exit 0. The fetched ref equals the source HEAD. The connection counter rises by 1.
+  - Fetch with another key: exit 128. No ref is written. The connection counter rises by 1.
+  - Push to the bare remote: exit 0. The remote ref moves to the new commit. The connection counter rises by 1.
+  - The owned known-hosts file has equal bytes after the runs.
+  - The server received only the two exec commands above.
+  - Each run printed `RESULT pass` before the 90 s guard timer of the probe.
+- **Result**: pass. `ssh2` 1.17.0 runs under Bun 1.4.3 as a local SSH server for Git's `ssh.exe`.
+- **Not checked**: the probe did not list `~/.ssh`, and it did not list processes after a run. T010 checks that stop leaves no process.
+- **O-5 record (T008)**: the reviewer default applies. T011 adds the test devDependency `ssh2` 1.17.0 (plan.md O-5).
+- **User decision, 2026-10-19**: the repository `bun install` must not build the optional `cpu-features` native addon. `ssh2` works without it, because it uses its JavaScript crypto. The build needs a C++ toolchain on every development computer.
+  - Mechanism: `"trustedDependencies": []` in `package.json`. **documented** (Bun docs, "Lifecycle scripts", bun.com/docs/pm/lifecycle, read 2026-10-19)
+  - The docs state: a defined `trustedDependencies` replaces the default list. An empty array allows no package scripts, also none from the default list. The lockfile records the list, also an empty one. `bun install --frozen-lockfile` then ignores the default list. **documented** (same page)
+  - The `--ignore-scripts` flag and `install.ignoreScripts` in `bunfig.toml` also stop all lifecycle scripts. They are not used, because the flag must be on every install, and the repository has no `bunfig.toml`. **documented** (same page)
+  - Today no installed package of the repository declares a `preinstall`, `install`, or `postinstall` script. So the empty list blocks no script that the repository uses. **experiment** (`node_modules` listing of the main checkout at e0cf66e, 2026-10-19)
+  - T011 check: after `bun install`, `node_modules/cpu-features/build` does not exist.
 
 ## Batch reviews
 

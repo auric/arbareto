@@ -91,6 +91,9 @@ import { IntegratePanel, type IntegrateRequest } from "../integrate/IntegratePan
 import { Segmented } from "../components/segmented";
 import { createWorkbench, type View, type Workbench as WorkbenchStore } from "../state/workbench";
 import { BranchButton } from "../branches/BranchButton";
+import { useWorktreeActions } from "../worktrees/WorktreeActions";
+import { WorktreeButton } from "../worktrees/WorktreeButton";
+import { WorktreesGroup } from "../worktrees/WorktreesGroup";
 import { useBranchActions } from "../branches/BranchActions";
 import { CommitView } from "../views/CommitView";
 import { HistoryView as HistoryFrame } from "../views/HistoryView";
@@ -132,6 +135,7 @@ export type WorkbenchBridge = RequestBridge &
     | "clearSyncPath"
     | "launchPuttygen"
     | "readBranches"
+    | "readWorktrees"
     | "applyFiles"
     | "reviewWorkbench"
     | "runWorkbench"
@@ -696,7 +700,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [mainPanel, setMainPanel] = useState<"clone" | null>(null);
   // Feature 004 plan.md D15 "Docked panel": the Merge or Rebase panel of one worktree. The WP12 branch menu calls `openIntegrate`.
   const [integrate, setIntegrate] = useState<{ key: string; request: IntegrateRequest; opener: Element | null } | null>(null);
-  const openIntegrate = (request: IntegrateRequest, opener: Element | null) => setIntegrate({ key: viewKey, request, opener });
+  const openIntegrate = (request: IntegrateRequest, opener: Element | null) => {
+    worktrees.closeAdd();
+    setIntegrate({ key: viewKey, request, opener });
+  };
   const openSettings = () => {
     setMainPanel(null);
     store.setView(viewKey, "settings");
@@ -1266,6 +1273,25 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     push: { reason: reasons.pushReason, run: () => runSync.current("push") },
     onShowBranchHistory: () => void historyView.setScope("current"),
   });
+  // Feature 004 WP21 (spec FR-049 to FR-057): the worktree button, the sidebar Worktrees group, and the Add worktree panel.
+  const worktrees = useWorktreeActions({
+    bridge,
+    target: requests.target,
+    repositoryId,
+    refsDigest,
+    workbench: store,
+    worktreeRoot: path,
+    start: panel === "details" && kept !== null ? kept : currentHead === null || currentHead.state === "unborn" ? null : currentHead.oid,
+    blockedReason: mutationReason,
+    running,
+    onOperation: setOperation,
+    onNotice: setNotice,
+    onOpen: (worktree) => void (repositoryId === null ? undefined : bridge.openWorktree({ repositoryId, path: worktree }).then(registered)),
+    onDock: () => {
+      setIntegrate(null);
+      store.setView(viewKey, "history");
+    },
+  });
   const trackingCount =
     currentHead === null ? null : currentHead.state === "detached" || trackingCode !== null ? (
       <span data-slot="tracking-count" className="shrink-0 text-muted-text">
@@ -1437,12 +1463,13 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (id === WORKING_ROW || id === INDEX_ROW) openCommitView();
   };
   // Plan D15 "Docked panel": a docked panel takes its content height, at most 60% of the work area.
-  const docked = integrate !== null && integrate.key === viewKey && pushBranch !== null;
+  const integrateDocked = integrate !== null && integrate.key === viewKey && pushBranch !== null;
+  const docked = integrateDocked || worktrees.addPanel !== null;
   const dockedMax = 0.6 * workArea;
   const dock = (
     <DockRegion
       panel={
-        !docked ? null : (
+        !integrateDocked ? worktrees.addPanel : (
           <IntegratePanel
             request={integrate.request}
             current={pushBranch}
@@ -1481,6 +1508,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       onShowBranchHistory={() => void historyView.setScope("current")}
       tracking={labels}
       onBranchAction={branches.entries === null ? undefined : (entry, action, anchor) => branches.onRef(entry.kind as "branch" | "remote", entry.name, action, anchor)}
+      after={state.repository === null ? null : <WorktreesGroup actions={worktrees} rowHeight={m.row} />}
     />
   );
 
@@ -1568,6 +1596,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             // plan.md "Header layout": the branch button takes only the width that the other items leave, so it never moves them to another row.
             <BranchButton head={workspace.head} operationState={workspace.operationState} counts={currentLabel} tracking={labels} actions={branches} blockedReason={mutationReason} rowHeight={m.row} />
           )}
+          {workspace === null ? null : <WorktreeButton actions={worktrees} worktreeRoot={path} rowHeight={m.row} />}
           {state.repository === null ? null : (
             // The 004 design standard: the Fetch, Pull, and Push group follows the branch. Feature 004 adds its branch and worktree buttons before it.
             <span className="flex min-w-0 items-center" style={{ order: 4 }}>
@@ -1896,6 +1925,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           </AboutBoundary>
         ) : null}
         {branches.overlays}
+        {worktrees.overlays}
       </div>
     </CopyFailed>
   );

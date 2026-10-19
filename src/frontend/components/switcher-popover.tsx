@@ -18,6 +18,8 @@ const LOADING_TEXT = "Loading…";
 const HEADING_HEIGHT = 26;
 const fmt = new Intl.NumberFormat("en-US");
 
+type Footer = { label: string; keys?: { aria: string; text: string }; note?: string; onPick(): void };
+
 export type SwitcherPopoverProps<T> = {
   open: boolean;
   onOpenChange(open: boolean): void;
@@ -43,8 +45,10 @@ export type SwitcherPopoverProps<T> = {
   itemGroup?(item: T): string;
   renderItem(item: T): ReactNode;
   onPick(item: T): void;
-  /** The last option, such as "New branch…" with the key Ctrl+B. The filter never hides it. */
-  footer?: { label: string; keys?: { aria: string; text: string }; onPick(): void };
+  /** The last options, such as "New branch…" with the key Ctrl+B. The filter never hides them. `note` is a Muted state on the option line. */
+  footer?: Footer | readonly Footer[];
+  /** The Delete key on the active item. It acts only with a collapsed caret at the end of the filter text, where Delete has no text effect (001 switcher rule). */
+  onItemDelete?(item: T): void;
   emptyText: string;
   noMatchText: string;
 };
@@ -67,13 +71,14 @@ export function SwitcherPopover<T>({ open, onOpenChange, trigger, children, tool
   );
 }
 
-function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, itemKey, itemText, itemLabel = itemText, itemGroup, renderItem, onPick, footer, emptyText, noMatchText }: Omit<SwitcherPopoverProps<T>, "open" | "onOpenChange" | "trigger" | "children" | "tooltip">) {
+function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, itemKey, itemText, itemLabel = itemText, itemGroup, renderItem, onPick, footer, onItemDelete, emptyText, noMatchText }: Omit<SwitcherPopoverProps<T>, "open" | "onOpenChange" | "trigger" | "children" | "tooltip">) {
   const ids = { list: useId(), option: useId() };
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const scroller = useRef<HTMLDivElement>(null);
   const shown = (items ?? []).filter((item) => matches(itemText(item), query));
-  const count = shown.length + (footer === undefined ? 0 : 1);
+  const footers: readonly Footer[] = footer === undefined ? [] : "label" in footer ? [footer] : footer;
+  const count = shown.length + footers.length;
   const active = Math.min(activeIndex, Math.max(0, count - 1));
   const optionId = (index: number) => `${ids.option}-${index}`;
   // The group counts of the read. The filter never changes them.
@@ -119,7 +124,7 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
 
   function pick(index: number) {
     if (index < shown.length) onPick(shown[index]!);
-    else footer?.onPick();
+    else footers[index - shown.length]?.onPick();
   }
   function onKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
@@ -130,6 +135,12 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
     } else if (event.key === "Enter" && count > 0) {
       event.preventDefault();
       pick(active);
+    } else if (event.key === "Delete" && onItemDelete !== undefined && active < shown.length) {
+      const input = event.currentTarget;
+      const end = input.value.length;
+      if (input.selectionStart !== end || input.selectionEnd !== end) return;
+      event.preventDefault();
+      onItemDelete(shown[active]!);
     }
   }
 
@@ -148,14 +159,15 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
   };
   const option = (index: number, style?: CSSProperties) => {
     const item = index < shown.length ? shown[index]! : null;
+    const end = item === null ? footers[index - shown.length]! : null;
     return (
       <div
-        key={item === null ? "footer" : itemKey(item)}
+        key={end === null ? itemKey(item!) : `footer:${end.label}`}
         id={optionId(index)}
         role="option"
         aria-selected={index === active}
-        aria-label={item === null ? (footer!.keys === undefined ? undefined : `${footer!.label} (${footer!.keys.text})`) : itemLabel(item)}
-        aria-keyshortcuts={item === null ? footer!.keys?.aria : undefined}
+        aria-label={end === null ? itemLabel(item!) : end.keys === undefined ? (end.note === undefined ? undefined : `${end.label}, ${end.note}`) : `${end.label} (${end.keys.text})`}
+        aria-keyshortcuts={end === null ? (onItemDelete === undefined ? undefined : "Delete") : end.keys?.aria}
         className={`list-row flex min-w-0 items-center gap-2 px-2 ${index === active ? "bg-hover-fill" : ""}`}
         style={style}
         onMouseDown={(event) => event.preventDefault()}
@@ -164,17 +176,22 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
           pick(index);
         }}
       >
-        {item === null ? (
+        {end !== null ? (
           <>
-            {footer!.label}
-            {footer!.keys === undefined ? null : (
+            {end.label}
+            {end.note === undefined ? null : (
+              <span data-slot="option-note" className="ml-auto pl-4 whitespace-nowrap text-muted-text">
+                {end.note}
+              </span>
+            )}
+            {end.keys === undefined ? null : (
               <span data-slot="option-key" aria-hidden="true" className="ml-auto pl-4 whitespace-nowrap text-muted-text">
-                {footer!.keys.text}
+                {end.keys.text}
               </span>
             )}
           </>
         ) : (
-          renderItem(item)
+          renderItem(item!)
         )}
       </div>
     );

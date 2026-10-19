@@ -5,7 +5,7 @@ import { Archive01Icon, Cancel01Icon, CloudIcon, GitBranchIcon, Search01Icon, Ta
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type Ref } from "react";
 import { HISTORY_VIEW_COMMITS } from "../../contracts/limits";
-import { CopyButton } from "../app/RepositoryStates";
+import { CopyButton, unknownFormText, unknownReadText } from "../app/RepositoryStates";
 import { WarningIcon } from "../app/NoticeBand";
 import { Button } from "../components/ui/button";
 import { IconButton } from "../components/icon-button";
@@ -104,6 +104,7 @@ function refusedText(search: SearchState): string {
   if (search.code === "SEARCH_UNSUPPORTED") return `Search is not available here. ${search.remedy?.text ?? ""}`.trim();
   if (search.code === "OUTPUT_LIMIT") return `Search is not available, because this history list stopped at ${fmt.format(HISTORY_VIEW_COMMITS)} commits.`;
   if (search.code === "HISTORY_CHANGED") return "The search stopped: Git listed the commits in a different order. Press Enter to search again.";
+  if (search.code === undefined) return unknownFormText("Search");
   return `The search failed: ${search.code}. Press Enter to search again.`;
 }
 
@@ -606,7 +607,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
     notes.push(
       <p key="open" className="flex items-center gap-2">
         <WarningIcon />
-        <span>{state.openFailure.code === "OUTPUT_LIMIT" && state.openFailure.reason !== undefined ? limitText(state.openFailure.reason) : `Arbareto cannot open the history: ${state.openFailure.code}.`}</span>
+        <span>{state.openFailure.code === "OUTPUT_LIMIT" && state.openFailure.reason !== undefined ? limitText(state.openFailure.reason) : state.openFailure.code === null ? unknownReadText("The history") : `Arbareto cannot open the history: ${state.openFailure.code}.`}</span>
         <Button variant="outline" size="sm" onClick={() => void view.refresh()}>
           Refresh
         </Button>

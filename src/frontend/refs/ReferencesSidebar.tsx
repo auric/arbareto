@@ -6,6 +6,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { RefEntry, RefsResult } from "../../contracts/envelope";
+import { unknownReadText } from "../app/RepositoryStates";
 import type { BridgeResponse } from "../bridge";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
@@ -50,6 +51,7 @@ export const shortRef = (name: string) => {
 const upstreamText = (entry: RefEntry) => (entry.upstream === null ? null : `→ ${shortRef(entry.upstream)}${entry.upstreamPresent ? "" : ", not present"}`);
 
 function refusalText(response: BridgeResponse): string {
+  if (response.state === "succeeded") return unknownReadText("The references");
   const completeness = (response.result as { completeness?: { code?: string; reason?: string } } | undefined)?.completeness;
   const reason = completeness?.reason;
   if (reason !== undefined && reason in REFUSAL) return REFUSAL[reason]!;

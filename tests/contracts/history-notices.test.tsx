@@ -60,6 +60,18 @@ async function run(step: () => Promise<unknown> | unknown) {
   await settle();
 }
 
+describe("feature 004 plan D15: a succeeded result of unknown form", () => {
+  test("openHistory without a viewId names the unknown form, not the state", async () => {
+    const fake = createFake({ total: 10, loaded: 10 });
+    const view = createHistoryView({ ...fake.bridge, openHistory: async () => ({ requestId: "r", state: "succeeded" as const, result: {} }) } as typeof fake.bridge, TARGET);
+    const host = await show(<HistoryList view={view} entries={[]} density="compact" profile="wide" onSelect={() => {}} onScope={() => {}} />);
+    await run(() => view.open("all", false));
+    expect(view.getState().openFailure).toMatchObject({ code: null });
+    expect(text(host)).toContain("The history did not load: the result has an unknown form.");
+    expect(text(host)).not.toContain("succeeded");
+  });
+});
+
 describe("contract Δ8: References changed", () => {
   test("a newer refsDigest or workspace HEAD shows the notice, and the view keeps its rows and labels", async () => {
     const { view, fake, host } = await mount({ total: 10, loaded: 10 });

@@ -4,6 +4,7 @@
 import { Cancel01Icon, Search01Icon, Settings02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { unknownFormText, unknownReadText } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { ConfirmPopover } from "../components/confirm-popover";
 import { IconButton } from "../components/icon-button";
@@ -40,7 +41,7 @@ export type SettingsViewProps = {
   onClose(): void;
 };
 
-type Read = { state: "loading" } | { state: "loaded"; value: SyncSettings } | { state: "failed"; code: string };
+type Read = { state: "loading" } | { state: "loaded"; value: SyncSettings } | { state: "failed"; text: string };
 
 /** An app setting radio group, such as the Pull button default (FR-066) and the switch choice (FR-068). */
 function AppChoice<T extends string>({ slot, heading, note, options, value, onChange }: { slot: string; heading: string; note: string; options: { value: T; label: string }[]; value: T; onChange(value: T): void }) {
@@ -86,7 +87,7 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
     void bridge.readSyncSettings().then((response) => {
       if (!current) return;
       const value = syncSettingsOf(response);
-      setRead(value === null ? { state: "failed", code: response.code ?? response.state } : { state: "loaded", value });
+      setRead(value !== null ? { state: "loaded", value } : { state: "failed", text: response.state === "succeeded" ? unknownReadText("The settings") : `The settings did not load: ${response.code ?? response.state}.` });
     });
     return () => void (current = false);
   }, [bridge]);
@@ -107,7 +108,7 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
       if (response.state === "canceled") return null;
       const next = syncSettingsOf(response);
       if (next === null) {
-        setFailure(puttyUnavailableText(response) ?? `${TEXTS.appFailed}${response.code ?? response.state}.`);
+        setFailure(puttyUnavailableText(response) ?? (response.state === "succeeded" ? unknownFormText("The setting change") : `${TEXTS.appFailed}${response.code ?? response.state}.`));
         return null;
       }
       setFailure(null);
@@ -120,7 +121,7 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
   };
 
   const app = (render: (settings: SyncSettings) => ReactNode) =>
-    read.state === "loading" ? <p className="text-muted-text">The settings are still loading…</p> : read.state === "failed" ? <p role="alert">{`The settings did not load: ${read.code}.`}</p> : render(read.value);
+    read.state === "loading" ? <p className="text-muted-text">The settings are still loading…</p> : read.state === "failed" ? <p role="alert">{read.text}</p> : render(read.value);
   const gitPage = (name: string) => (target === null ? <p>{TEXTS.needsRepository}</p> : <GitPage name={name} scope={scope} query={query} settings={git} />);
   // Plan D15 "Find a setting": a query keeps only the Git pages with a matching key. The app pages hold no Git key.
   const values = git.read.state === "loaded" ? git.read.value.values : null;

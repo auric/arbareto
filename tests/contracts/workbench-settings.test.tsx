@@ -444,6 +444,30 @@ describe("app settings (FR-066, FR-068, O-7)", () => {
     expect(r.double.pending("setSwitchChoice")!.args[0]).toEqual({ choice: "keep" });
   });
 
+  // Plan D15 "Malformed result": a succeeded response never shows its state as a code.
+  const unknown = { requestId: fixtureId(33), operationId: fixtureId(34), state: "succeeded", repositoryGeneration: 1, result: {} };
+  test("a succeeded app settings read of unknown form names the unknown form", async () => {
+    await render({ target: null, app: unknown });
+    await page("Branch switch");
+    expect(text(content())).toContain("The settings did not load: the result has an unknown form.");
+    expect(text(content())).not.toContain("succeeded");
+  });
+
+  test("a succeeded setting change of unknown form names the unknown form", async () => {
+    const r = await render({ target: null, app: sync({ switchChoice: "stash" }) });
+    await page("Branch switch");
+    await click(labelInput(content(), "Keep changes"));
+    await answer(r.double.pending("setSwitchChoice"), unknown);
+    expect(text(view())).toContain("The setting change did not complete: the result has an unknown form.");
+    expect(text(view())).not.toContain("succeeded");
+  });
+
+  test("a succeeded Git settings read of unknown form names the unknown form", async () => {
+    await render({ git: unknown });
+    expect(text(content())).toContain("The Git settings did not load: the result has an unknown form.");
+    expect(text(content())).not.toContain("succeeded");
+  });
+
   test("the 003 pages SSH and Clone hold the SSH client and the default clone folder", async () => {
     await render();
     await page("SSH");
@@ -463,7 +487,7 @@ describe("app settings (FR-066, FR-068, O-7)", () => {
   });
 
   for (const how of ["Close", "Escape"] as const) {
-    test(`${how} with a pending change asks first, with Keep editing focused, and Discard changes returns without a write`, async () => {
+    test(`${how} with a pending change asks first, with Keep editing focused, and Discard setting changes returns without a write`, async () => {
       const r = await render();
       await scope("local");
       await type(row("user.name").querySelector("input")!, "Bob");
@@ -478,7 +502,7 @@ describe("app settings (FR-066, FR-068, O-7)", () => {
       expect(r.closed()).toBe(0);
       expect(row("user.name").querySelector("input")!.value).toBe("Bob");
       await close();
-      await click(button("Discard changes", document.querySelector<HTMLElement>('[data-slot="popover-content"]')!));
+      await click(button("Discard setting changes", document.querySelector<HTMLElement>('[data-slot="popover-content"]')!));
       expect(r.closed()).toBe(1);
       expect(r.double.writes()).toEqual([]);
     });

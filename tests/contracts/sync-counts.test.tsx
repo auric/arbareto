@@ -112,6 +112,13 @@ describe("toolbar counts (FR-019 to FR-022)", () => {
     expect(text(count()!)).toBe("Counts did not load: GIT_FAILED.");
   });
 
+  test("a succeeded readTracking without a list names the unknown form, not the state (feature 004 plan D15)", async () => {
+    const world = createWorld();
+    world.answers.readTracking = () => ({ requestId: "r", operationId: fixtureId(0x202), state: "succeeded", result: {} });
+    await mountWorkbench(workbench, world);
+    expect(text(count()!)).toBe("Counts did not load: the result has an unknown form.");
+  });
+
   test("readTracking runs for each new refsDigest, each outcome, and each focus return", async () => {
     const world = createWorld();
     const double = await mountWorkbench(workbench, world);

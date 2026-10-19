@@ -314,6 +314,8 @@ describe("states", () => {
     ["REF_LISTING_RECORDS", { state: "limited", code: "OUTPUT_LIMIT", result: { completeness: { state: "limited", code: "OUTPUT_LIMIT", reason: "REF_LISTING_RECORDS" } } }, "This repository has more than 10,000 references. This version does not list them."],
     ["REF_LISTING_BYTES", { state: "limited", code: "OUTPUT_LIMIT", result: { completeness: { state: "limited", code: "OUTPUT_LIMIT", reason: "REF_LISTING_BYTES" } } }, "The reference list is larger than this version can show."],
     ["another refusal", { state: "failed", code: "GIT_FAILED", result: { completeness: { state: "failed", code: "GIT_FAILED" } } }, "Arbareto cannot read the references: GIT_FAILED."],
+    // Feature 004 plan D15 "Malformed result".
+    ["succeeded of unknown form", { state: "succeeded", result: {} }, "The references did not load: the result has an unknown form."],
   ] as const) {
     test(`a ${name} refusal shows its text with the error icon and Refresh`, async () => {
       const { host, refreshes } = await sidebar({ refs: null, failure: { requestId: crypto.randomUUID(), ...response } as never });

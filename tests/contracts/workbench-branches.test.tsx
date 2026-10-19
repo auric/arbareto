@@ -137,6 +137,19 @@ describe("branch button (FR-007)", () => {
 });
 
 describe("branch list (FR-008, FR-009, FR-013, SC-003)", () => {
+  for (const [name, response, sentence] of [
+    ["a failed readBranches names its code", { requestId: fixtureId(0x530), state: "failed", code: "GIT_FAILED" }, "Arbareto cannot read the branches: GIT_FAILED."],
+    ["a succeeded readBranches of unknown form names the unknown form (plan D15)", succeeded({}), "The branches did not load: the result has an unknown form."],
+  ] as const) {
+    test(name, async () => {
+      const world = branchWorld();
+      world.answers.readBranches = () => response;
+      await mountWorkbench(workbench, world);
+      await openList();
+      expect(text(popup()!)).toContain(sentence);
+    });
+  }
+
   test("the list shows local then remote branches, gives the filter the first focus, and ends with New branch… (Ctrl+B)", async () => {
     await mountWorkbench(workbench, branchWorld());
     await openList();

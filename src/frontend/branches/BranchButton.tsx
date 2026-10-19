@@ -42,7 +42,7 @@ export function BranchButton({ head, operationState, counts, tracking, actions, 
   const trigger = useRef<HTMLButtonElement>(null);
   const text = buttonText(head, operationState);
   const [folder, last] = splitPath(text, GIT_SEPARATORS);
-  const failure = blockedReason !== null ? <p>{blockedReason}</p> : actions.failure !== null ? <p role="alert">{T.listFailed(actions.failure)}</p> : undefined;
+  const failure = blockedReason !== null ? <p>{blockedReason}</p> : actions.failure !== null ? <p role="alert">{actions.failure}</p> : undefined;
   // Spec FR-008: "No upstream" shows in the list. A held branch offers Open instead of a switch (FR-013).
   const note = (e: BranchEntry) => (e.heldBy !== null && !e.current ? T.open(e.heldBy) : e.kind === "local" && e.upstream === null ? T.noUpstream : e.kind === "local" ? (tracking.get(e.name)?.text ?? null) : null);
   const label = (e: BranchEntry) => [e.name, e.kind === "local" ? T.localNoun : T.remoteNoun, ...(e.kind === "local" && e.upstream !== null ? [tracking.get(e.name)?.label] : []), note(e)].filter((part) => part != null).join(", ");

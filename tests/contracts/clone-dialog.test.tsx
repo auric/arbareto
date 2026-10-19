@@ -178,6 +178,12 @@ describe("clone panel destination (FR-054)", () => {
     expect(text(panel())).toContain("The clone settings did not load: SERVICE_UNAVAILABLE.");
   });
 
+  test("a succeeded settings read of unknown form names the unknown form, not the state (feature 004 plan D15)", async () => {
+    await renderClone({ requestId: "s", state: "succeeded", result: {} });
+    expect(text(panel())).toContain("The clone settings did not load: the result has an unknown form.");
+    expect(text(panel())).not.toContain("succeeded");
+  });
+
   test("Escape closes the panel", async () => {
     const r = await renderClone();
     await press(urlField(), "Escape");

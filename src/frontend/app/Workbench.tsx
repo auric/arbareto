@@ -72,7 +72,7 @@ import { isTrustReport, READS_TRUST_TEXT, ReadsTrustNotice, SaveFailedNotice, sh
 import type { TrustAction } from "../../contracts/channel";
 import { blockingText, hasRecoveryRow, NoticeBand } from "./NoticeBand";
 import { MENU_CONTENT, MenuKey, RepositoryMenu } from "./RepositoryMenu";
-import { codeText, COPY_FAILED_TEXT, failureText, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
+import { codeText, COPY_FAILED_TEXT, failureText, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, unknownReadText, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
 import { folderName, RepositorySwitcher } from "./RepositorySwitcher";
 import { hasMarkers, RecoveryMarkers } from "../boot/BootView";
 import { COUNTS_TOOLTIP, isTrackingList, NO_BRANCH, trackingLabels, type TrackingEntry, type TrackLabel } from "../state/tracking";
@@ -246,7 +246,8 @@ const SETTINGS_LOADING = "The default pull action is still loading…";
 type SyncSettingsState = { action: DefaultPullAction | null; reason: string | null };
 function settingsOf(response: BridgeResponse): SyncSettingsState {
   const action = isObject(response.result) ? response.result.defaultPullAction : undefined;
-  return response.state === "succeeded" && typeof action === "string" ? { action: action as DefaultPullAction, reason: null } : { action: null, reason: `The default pull action did not load: ${response.code ?? response.state}.` };
+  if (response.state === "succeeded" && typeof action === "string") return { action: action as DefaultPullAction, reason: null };
+  return { action: null, reason: response.state === "succeeded" ? unknownReadText("The default pull action") : `The default pull action did not load: ${response.code ?? response.state}.` };
 }
 // Plan.md D12 "Settings panel": a proposal is the last `remote.<name>.puttykeyfile` entry with a value (git-config(1): the last value wins).
 function keyProposals(report: TrustReport | undefined): KeyProposal[] {
@@ -788,7 +789,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [operation, setOperation] = useState<StatusOperation | null>(null);
   // Feature 003 data-model §1: the newest `readTracking` entries of the open repository.
   // `code` is the response code or state of a failed read, null after a success.
-  const [tracking, setTracking] = useState<{ repositoryId: string; entries: TrackingEntry[] | null; code: string | null } | null>(null);
+  const [tracking, setTracking] = useState<{ repositoryId: string; entries: TrackingEntry[] | null; failure: string | null } | null>(null);
   const trackingSeq = useRef(0);
   const [syncSettings, setSyncSettings] = useState<SyncSettingsState>({ action: null, reason: SETTINGS_LOADING });
   const [anchor, setAnchor] = useState<Staging["anchor"]>(null);
@@ -937,7 +938,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     void bridge.readTracking(target).then((response) => {
       if (seq !== trackingSeq.current) return;
       const list = response.state === "succeeded" && isTrackingList(response.result) ? response.result : null;
-      setTracking({ repositoryId: target.repositoryId, entries: list?.entries ?? null, code: list === null ? (response.code ?? response.state) : null });
+      const failure = list !== null ? null : response.state === "succeeded" ? unknownReadText("Counts") : `Counts did not load: ${response.code ?? response.state}.`;
+      setTracking({ repositoryId: target.repositoryId, entries: list?.entries ?? null, failure });
     });
   }
   // Plan.md D8 triggers: each new `readRefs.refsDigest` and each focus return. Each sync outcome runs one too.
@@ -1296,7 +1298,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const onEnded = (kind: "applyHunk" | "applyFile" | "commit" | "updateSubmodules" | "sync", response: BridgeResponse) => requests.mutationEnded(kind, response);
   const shownTracking = tracking !== null && tracking.repositoryId === repositoryId ? tracking : null;
   const entries = shownTracking?.entries ?? null;
-  const trackingCode = shownTracking?.code ?? null;
+  const trackingFailure = shownTracking?.failure ?? null;
   const labels = useMemo(() => trackingLabels(entries, state.refs), [entries, state.refs]);
   // Plan.md D8: the toolbar uses the `*` entry of the checked-out branch.
   const currentHead = workspace?.head ?? null;
@@ -1353,9 +1355,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     },
   });
   const trackingCount =
-    currentHead === null ? null : currentHead.state === "detached" || trackingCode !== null ? (
+    currentHead === null ? null : currentHead.state === "detached" || trackingFailure !== null ? (
       <span data-slot="tracking-count" className="shrink-0 text-muted-text">
-        {currentHead.state === "detached" ? NO_BRANCH : `Counts did not load: ${trackingCode}.`}
+        {currentHead.state === "detached" ? NO_BRANCH : trackingFailure}
       </span>
     ) : (
       <span data-slot="tracking-count" className="num shrink-0" title={currentLabel === null ? undefined : `${currentLabel.label}${currentEntry?.upstream ? `, ${shortRef(currentEntry.upstream)}` : ""}. ${COUNTS_TOOLTIP}`}>

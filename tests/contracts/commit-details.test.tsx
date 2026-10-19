@@ -222,7 +222,17 @@ describe("Selected commit of a feature 002 view", () => {
     const failing = { ...broken.bridge, readHistoryRows: async () => ({ requestId: "r", state: "failed" as const, code: "GIT_FAILED" as const }) };
     const failed = createHistoryView(failing, TARGET);
     await act(async () => void (await failed.open("all", false)));
-    expect((await reads(failed, fakeOid(3))).count).toBe(0);
+    const failedRead = await reads(failed, fakeOid(3));
+    expect(failedRead.count).toBe(0);
+    expect(text(failedRead.host)).toContain("Arbareto cannot read this commit: GIT_FAILED.");
+    // Feature 004 plan D15 "Malformed result": a succeeded details read without a target never shows its state.
+    const odd = createFake({ total: 10, loaded: 10 });
+    const malformed = { ...odd.bridge, readHistoryRows: (async (target, payload, ...rest) => (payload.text === "details" ? { requestId: "r", state: "succeeded" as const, result: {} } : odd.bridge.readHistoryRows(target, payload, ...rest))) as typeof odd.bridge.readHistoryRows };
+    const unknownForm = createHistoryView(malformed, TARGET);
+    await act(async () => void (await unknownForm.open("all", false)));
+    const unknownRead = await reads(unknownForm, fakeOid(3));
+    expect(unknownRead.count).toBe(0);
+    expect(text(unknownRead.host)).toContain("The commit did not load: the result has an unknown form.");
   });
 });
 

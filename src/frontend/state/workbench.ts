@@ -13,7 +13,7 @@ export type View = "history" | "commit" | "settings";
 type BranchList = Extract<z.infer<typeof ReadBranchesResult>, { entries: unknown }>;
 export type BranchEntry = BranchList["entries"][number];
 type Target = { repositoryId: string; repositoryGeneration: number };
-/** The newest `readBranches` result of one repository generation. `code` is the response code or state of a failed read. */
+/** The newest `readBranches` result of one repository generation. `code` is the response code or state of a failed read. Null `entries` with a null `code` is a `succeeded` read with a result of unknown form. */
 export type Branches = { repositoryId: string; repositoryGeneration: number; entries: BranchEntry[] | null; code: string | null };
 /** Contract Δ3 `reviewCommit` with `amend`: the HEAD commit and its message at the check, and the text that the editor shows while the box is checked. */
 export type Amend = { headOid: string; message: string; text: string };
@@ -65,7 +65,7 @@ export function createWorkbench({ bridge, target, mutationEnded, refreshHistory 
       if (seq !== branchSeq || now === null || now.repositoryId !== t.repositoryId || now.repositoryGeneration !== t.repositoryGeneration) return;
       const result = response.result as Partial<BranchList> | undefined;
       const entries = response.state === "succeeded" && Array.isArray(result?.entries) ? result.entries : null;
-      set({ branches: { ...t, entries, code: entries === null ? (response.code ?? response.state) : null } });
+      set({ branches: { ...t, entries, code: entries === null && response.state !== "succeeded" ? (response.code ?? response.state) : null } });
     });
   }
 

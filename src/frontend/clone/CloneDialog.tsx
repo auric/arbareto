@@ -5,7 +5,7 @@ import { Cancel01Icon, Download04Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { suggestCloneName } from "../../contracts/clone-name";
-import { codeText, CommandRemedy, OutputTail } from "../app/RepositoryStates";
+import { codeText, CommandRemedy, OutputTail, unknownReadText } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge, ProgressEvent } from "../bridge";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
@@ -17,7 +17,7 @@ import { ConnectButton, puttyUnavailableText } from "../settings/ConnectTerminal
 type Bridge = ReturnType<typeof createBridge>;
 /** Data-model §10: the fields that the clone panel reads. */
 type CloneSettings = { sshClient: "git" | "plink"; lastCloneParent: string | null; defaultCloneFolder: string | null };
-type SettingsRead = { state: "loading" } | { state: "loaded"; value: CloneSettings } | { state: "failed"; code: string };
+type SettingsRead = { state: "loading" } | { state: "loaded"; value: CloneSettings } | { state: "failed"; text: string };
 
 const textOrNull = (value: unknown): value is string | null => value === null || typeof value === "string";
 function settingsOf(response: BridgeResponse): SettingsRead {
@@ -25,7 +25,7 @@ function settingsOf(response: BridgeResponse): SettingsRead {
   if (response.state === "succeeded" && isObject(r) && (r.sshClient === "git" || r.sshClient === "plink") && textOrNull(r.lastCloneParent) && textOrNull(r.defaultCloneFolder)) {
     return { state: "loaded", value: { sshClient: r.sshClient, lastCloneParent: r.lastCloneParent, defaultCloneFolder: r.defaultCloneFolder } };
   }
-  return { state: "failed", code: response.code ?? response.state };
+  return { state: "failed", text: response.state === "succeeded" ? unknownReadText("The clone settings") : `The clone settings did not load: ${response.code ?? response.state}.` };
 }
 
 /** FR-050 and data-model §8: the folder state from `exists` and `empty`. A result without both is unknown. */
@@ -173,7 +173,7 @@ export function CloneDialog({ bridge, separator, onOpened, onClose }: CloneDialo
           void start();
         }}
       >
-        {settings.state === "failed" ? <p className="text-muted-text">{`The clone settings did not load: ${settings.code}.`}</p> : null}
+        {settings.state === "failed" ? <p className="text-muted-text">{settings.text}</p> : null}
         <div className="grid items-center gap-x-3 gap-y-2" style={{ gridTemplateColumns: "130px minmax(0, 1fr)" }}>
           <label htmlFor={ids.url}>Remote URL</label>
           <input

@@ -431,7 +431,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-065**: After Save, the view MUST read the values again and show them. A failed write MUST name the key and show the bounded end of Git's output.
 - **FR-066**: The page Pull and push MUST show the Pull button default action of 003 FR-056 with its five choices. It MUST state that it is an Arbareto setting for all repositories and not stored in Git configuration.
 - **FR-067**: The view MUST show values as untrusted plain text. It MUST NOT run a configured program to test it.
-- **FR-068**: The Settings view MUST also hold the preselected switch choice of FR-010. Git settings MUST open as a full view inside the main window, with Close. Close MUST return to the earlier view and MUST NOT write a pending change.
+- **FR-068**: The Settings view MUST also hold the preselected switch choice of FR-010. Git settings MUST open as a full view inside the main window, with Close. Close MUST return to the earlier view and MUST NOT write a pending change. Esc or Close with pending local or global changes MUST ask first, with Keep editing as the first focus.
 
 #### Trust
 

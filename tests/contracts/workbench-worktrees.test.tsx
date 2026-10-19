@@ -40,7 +40,7 @@ const local = (name: string, fields: Entry = {}): Entry => ({ ref: `refs/heads/$
 const BRANCHES = [local("@"), local("fix/crash", { heldBy: "C:/wt/repo-hotfix" }), local("login"), local("main", { heldBy: "C:/repo" }), local("signup", { current: true })];
 
 type Plan = Record<string, unknown>;
-const removePlan = (fields: Plan = {}): Plan => ({ worktree: "C:/wt/repo-hotfix", branch: "refs/heads/fix/crash", head: oid(4), tracked: 0, untracked: 0, force: false, deleteBranch: null, ...fields });
+const removePlan = (fields: Plan = {}): Plan => ({ worktree: "C:/wt/repo-hotfix", branch: "refs/heads/fix/crash", head: oid(4), tracked: 0, untracked: 0, force: false, deleteBranch: null, submodules: false, ...fields });
 const reviewed = (action: string, plan: Plan) => succeeded({ action, plan, workbenchToken: TOKEN });
 const refused = (code: string, result: Record<string, unknown> = {}) => ({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "failed", code, repositoryGeneration: 1, result });
 const worktreeRun = (action: string, worktrees: string[]) => succeeded({ action, head: { state: "branch", target: "refs/heads/signup", oid: oid(1) }, refs: [], worktrees });
@@ -267,6 +267,49 @@ describe("Remove (FR-054 to FR-056)", () => {
     expect(ready.hasAttribute("disabled") || ready.getAttribute("aria-disabled") === "true").toBe(false);
     await click(ready);
     expect(double.count("runWorkbench")).toBe(1);
+  });
+
+  test("submodules without changes need the force box, with their own text and label", async () => {
+    const double = await mountWorkbench(
+      workbench,
+      worktreeWorld(ALL, (p) =>
+        p.force === true ? reviewed("worktree-remove", removePlan({ submodules: true, force: true })) : refused("WORKBENCH_UNAVAILABLE", { reason: "dirty-tree", plan: removePlan({ submodules: true }) }),
+      ),
+    );
+    await rowMenu("repo-hotfix");
+    await click(menuItem("Remove worktree…")!);
+    const d = dialog()!;
+    expect(text(d)).toContain("This worktree has submodules. Git removes it only with its force option.");
+    expect(text(d)).not.toContain("uncommitted change");
+    expect(checkbox("Delete my uncommitted changes too", d)).toBeNull();
+    expect(isOff(button("Remove worktree", d))).toBe(true);
+    await click(button("Remove worktree", d));
+    expect(double.count("runWorkbench")).toBe(0);
+    await check(checkbox("Delete the worktree with its submodules too", d)!);
+    expect(reviews(double).at(-1)).toEqual({ action: "worktree-remove", worktree: "C:/wt/repo-hotfix", force: true, deleteBranch: false });
+    await click(button("Remove worktree", dialog()!));
+    expect(double.count("runWorkbench")).toBe(1);
+  });
+
+  test("submodules with changes show both facts and the changes label", async () => {
+    await mountWorkbench(workbench, worktreeWorld(ALL, () => refused("WORKBENCH_UNAVAILABLE", { reason: "dirty-tree", plan: removePlan({ tracked: 2, untracked: 0, submodules: true }) })));
+    await rowMenu("repo-hotfix");
+    await click(menuItem("Remove worktree…")!);
+    const d = dialog()!;
+    expect(text(d)).toContain("2 uncommitted changes and 0 untracked files.");
+    expect(text(d)).toContain("This worktree has submodules. Git removes it only with its force option.");
+    expect(checkbox("Delete my uncommitted changes too", d)).not.toBeNull();
+    expect(isOff(button("Remove worktree and changes", d))).toBe(true);
+  });
+
+  test("a clean plan without submodules shows no force box", async () => {
+    await mountWorkbench(workbench, worktreeWorld());
+    await rowMenu("repo-hotfix");
+    await click(menuItem("Remove worktree…")!);
+    const d = dialog()!;
+    expect(text(d)).not.toContain("submodules");
+    expect([...d.querySelectorAll('input[type="checkbox"]')]).toHaveLength(1);
+    expect(isOff(button("Remove worktree", d))).toBe(false);
   });
 
   test("Also delete the branch states the commits that only this branch holds and the reflog fact", async () => {

@@ -46,7 +46,10 @@ export const W = {
   reading: "Arbareto reads the status of this worktree.",
   counts: (tracked: number, untracked: number) => `${count(tracked, "uncommitted change", "uncommitted changes")} and ${count(untracked, "untracked file", "untracked files")}.`,
   lostNote: "They are in no commit and no stash. Removing deletes them for good.",
+  submodules: "This worktree has submodules. Git removes it only with its force option.",
+  // Spec FR-055 fixes the first label. Without changes, the second label states what the force option removes.
   force: "Delete my uncommitted changes too",
+  forceSubmodules: "Delete the worktree with its submodules too",
   forceHint: "Remove stays unavailable until you check this.",
   deleteBranch: "Also delete the branch",
   removeButton: "Remove worktree",

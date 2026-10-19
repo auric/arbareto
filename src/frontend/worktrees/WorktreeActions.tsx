@@ -284,9 +284,12 @@ function RemoveConfirm({ overlay: o, onChange, onCancel, onConfirm }: { overlay:
   const cancel = useRef<HTMLButtonElement>(null);
   const plan = o.plan;
   const dirty = plan !== null && plan.tracked + plan.untracked > 0;
+  // Spec FR-055: initialized submodules need the same check box, also without changes.
+  const submodules = plan?.submodules === true;
+  const needsForce = dirty || submodules;
   const branch = short(o.entry.branch);
   const facts = o.deleteBranch ? (plan?.deleteBranch ?? null) : null;
-  const ready = o.token !== null && !o.pending && (!dirty || o.force);
+  const ready = o.token !== null && !o.pending && (!needsForce || o.force);
   return (
     <Dialog open onOpenChange={(next) => void (next || onCancel())}>
       <DialogContent showCloseButton={false} initialFocus={cancel} className="flex flex-col gap-2 sm:max-w-lg">
@@ -298,12 +301,13 @@ function RemoveConfirm({ overlay: o, onChange, onCancel, onConfirm }: { overlay:
             <p>{W.lostNote}</p>
           </>
         ) : null}
+        {submodules ? <p>{W.submodules}</p> : null}
         <p>{W.folderNote}</p>
-        {dirty ? (
+        {needsForce ? (
           <label className="flex flex-col gap-0.5">
             <span className="flex items-center gap-2">
               <input type="checkbox" checked={o.force} onChange={(event) => onChange({ ...o, force: event.target.checked })} />
-              <span className="danger-text">{W.force}</span>
+              <span className="danger-text">{dirty ? W.force : W.forceSubmodules}</span>
             </span>
             {o.force ? null : <span className="ml-6 text-muted-text">{W.forceHint}</span>}
           </label>

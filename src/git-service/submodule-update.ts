@@ -481,7 +481,9 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
         const built = buildSubmoduleRemedy(remedy);
         return built.command === null ? { text: built.text } : { command: built.command, text: built.text };
       });
-      const fail = () => void (r.facts.phase.failedStep = { firstFetch, outputTail: stderr.outputTail(), remedy: buildSubmoduleRemedy(remedy) });
+      // The runner end gives the exit code. A refusal after the start request gives none.
+      let exitCode: number | null = null;
+      const fail = () => void (r.facts.phase.failedStep = { firstFetch, outputTail: stderr.outputTail(), exitCode, remedy: buildSubmoduleRemedy(remedy) });
       let exit: GitExit;
       try {
         exit = await o.runner.run({
@@ -507,6 +509,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       }
       // Contract §6 "Lingering Jobs": the count never changes the outcome, so an exit without a count shows no lingering sentence.
       lastDescendants = exit.activeDescendants ?? 0;
+      exitCode = exit.exitCode;
       if (exit.deadline !== undefined) throw new Halted({ deadline: exit.deadline });
       if (signal.aborted) throw new Halted("canceled");
       if (exit.diagnosticLimit) {

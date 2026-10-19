@@ -5,7 +5,7 @@
 
 import { z } from "zod";
 import { Base64 } from "./channel";
-import { COMMIT_OUTPUT_TAIL_BYTES, COMMIT_OUTPUT_TAIL_LINES } from "./limits";
+import { COMMIT_OUTPUT_TAIL_BYTES, COMMIT_OUTPUT_TAIL_LINES, PROCESS_EXIT_CODE_MAX } from "./limits";
 import { Count, Fingerprint, Identifier, OutputTail, Phase, ProgressFields, Text } from "./operations";
 import { buildRemedyCommand, type RemedyValue } from "./remedy-command";
 
@@ -102,6 +102,8 @@ export const SubmoduleRowResult = z
     text: Text.optional(),
     remedy: RowRemedy.optional(),
     outputTail: OutputTail.optional(),
+    // Feature 004 contract Δ12: the Git exit code of the failed step. Null: the step ended without an exit code, such as after a kill.
+    exitCode: z.int().min(0).max(PROCESS_EXIT_CODE_MAX).nullable().optional(),
     failedRead: z.enum(SUBMODULE_FAILED_READS).optional(),
     folderPath: Text.optional(),
   })
@@ -114,6 +116,8 @@ export const SubmoduleRowResult = z
     // A failed read carries no remedy and no process output.
     if (row.failedRead !== undefined && (row.state !== "failed" || row.remedy !== undefined || row.outputTail !== undefined)) return false;
     if (row.outputTail !== undefined && row.state !== "failed") return false;
+    // A failed step carries its output tail and its exit code together.
+    if ((row.exitCode !== undefined) !== (row.outputTail !== undefined)) return false;
     return row.remedy === undefined || row.state === "failed" || refused || row.state === "clone-interrupted";
   });
 export type SubmoduleRowResult = z.infer<typeof SubmoduleRowResult>;

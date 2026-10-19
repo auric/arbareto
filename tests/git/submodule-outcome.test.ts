@@ -26,7 +26,7 @@ interface UpdatePhase {
   failedRead?: SubmoduleFailedRead;
   // The last step of the row exited non-zero. A connect step exit that step 5 expects is not recorded.
   // `firstFetch`: the step is the first fetch. It counts as exit 0 when the row then reaches its target.
-  failedStep?: { firstFetch: boolean; outputTail: string; remedy: RowRemedy };
+  failedStep?: { firstFetch: boolean; outputTail: string; exitCode: number | null; remedy: RowRemedy };
 }
 
 interface RowObservation {
@@ -96,7 +96,7 @@ const result = (fields: Partial<SubmoduleRowResult>): SubmoduleRowResult => ({ r
 describe("row states (contract §12 \"Reconciliation and outcome\", first match wins)", () => {
   test("a refusal during the run gives refused with its reason, text, and remedy, before a failed step", async () => {
     const remedy = { command: null, text: "save" };
-    const { rows } = await classify({ rows: [row({ observed: seen(OLD), phase: { ...idle, fetched: true, refusal: { ...PROGRAMS, remedy }, failedStep: { firstFetch: true, outputTail: TAIL, remedy: CLONE_REMEDY } } })], stop: null });
+    const { rows } = await classify({ rows: [row({ observed: seen(OLD), phase: { ...idle, fetched: true, refusal: { ...PROGRAMS, remedy }, failedStep: { firstFetch: true, outputTail: TAIL, exitCode: 128, remedy: CLONE_REMEDY } } })], stop: null });
     expect(rows).toEqual([result({ state: "refused", newCommit: OLD, fetched: true, ...PROGRAMS, remedy })]);
   });
 
@@ -106,23 +106,28 @@ describe("row states (contract §12 \"Reconciliation and outcome\", first match 
   });
 
   test("a failed run read gives failed with the read name and no remedy or output, before a failed step", async () => {
-    const { rows } = await classify({ rows: [row({ observed: seen(OLD), phase: { ...idle, failedRead: "check", failedStep: { firstFetch: false, outputTail: TAIL, remedy: CLONE_REMEDY } } })], stop: null });
+    const { rows } = await classify({ rows: [row({ observed: seen(OLD), phase: { ...idle, failedRead: "check", failedStep: { firstFetch: false, outputTail: TAIL, exitCode: 128, remedy: CLONE_REMEDY } } })], stop: null });
     expect(rows).toEqual([result({ state: "failed", newCommit: OLD, failedRead: "check" })]);
   });
 
   test("a failed step gives failed with its outputTail and remedy, also when HEAD reached the target", async () => {
-    const { rows } = await classify({ rows: [row({ phase: { ...idle, failedStep: { firstFetch: false, outputTail: TAIL, remedy: CLONE_REMEDY } } })], stop: null });
-    expect(rows).toEqual([result({ state: "failed", outputTail: TAIL, remedy: CLONE_REMEDY })]);
+    const { rows } = await classify({ rows: [row({ phase: { ...idle, failedStep: { firstFetch: false, outputTail: TAIL, exitCode: 128, remedy: CLONE_REMEDY } } })], stop: null });
+    expect(rows).toEqual([result({ state: "failed", outputTail: TAIL, exitCode: 128, remedy: CLONE_REMEDY })]);
+  });
+
+  test("feature 004 contract Δ12: a failed step without an exit code keeps exitCode null", async () => {
+    const { rows } = await classify({ rows: [row({ phase: { ...idle, failedStep: { firstFetch: false, outputTail: TAIL, exitCode: null, remedy: CLONE_REMEDY } } })], stop: null });
+    expect(rows).toEqual([result({ state: "failed", outputTail: TAIL, exitCode: null, remedy: CLONE_REMEDY })]);
   });
 
   test("a failed first fetch of a row that reaches its target gives moved", async () => {
-    const { rows, event } = await classify({ rows: [row({ phase: { ...idle, fetched: true, failedStep: { firstFetch: true, outputTail: TAIL, remedy: CLONE_REMEDY } } })], stop: null });
+    const { rows, event } = await classify({ rows: [row({ phase: { ...idle, fetched: true, failedStep: { firstFetch: true, outputTail: TAIL, exitCode: 128, remedy: CLONE_REMEDY } } })], stop: null });
     expect({ rows, event }).toEqual({ rows: [result({ fetched: true })], event: { type: "intended-effects-confirmed" } });
   });
 
   test("a failed first fetch of a row that misses its target gives failed", async () => {
-    const { rows } = await classify({ rows: [row({ observed: seen(OLD), phase: { ...idle, fetched: true, failedStep: { firstFetch: true, outputTail: TAIL, remedy: CLONE_REMEDY } } })], stop: null });
-    expect(rows).toEqual([result({ state: "failed", newCommit: OLD, fetched: true, outputTail: TAIL, remedy: CLONE_REMEDY })]);
+    const { rows } = await classify({ rows: [row({ observed: seen(OLD), phase: { ...idle, fetched: true, failedStep: { firstFetch: true, outputTail: TAIL, exitCode: 128, remedy: CLONE_REMEDY } } })], stop: null });
+    expect(rows).toEqual([result({ state: "failed", newCommit: OLD, fetched: true, outputTail: TAIL, exitCode: 128, remedy: CLONE_REMEDY })]);
   });
 
   test("a .git entry whose show-ref --exists exits 2 gives clone-interrupted with its folder path and text", async () => {
@@ -197,7 +202,7 @@ describe("operation outcome (contract §12 \"Reconciliation and outcome\", first
     ["a Cancel after a fetch", [row({ planned: "moved", observed: seen(OLD), phase: { ...idle, fetched: true } })], "canceled"],
     ["a Cancel after a connect step", [cancelable(), row({ rowId: ID2, path: "mid", planned: "cloned", oldCommit: null, observed: seen(null), phase: { ...idle, connected: true } })], "canceled"],
     ["a deadline after a moved row", [row(), row({ rowId: ID2, path: "mid", planned: "moved", observed: seen(OLD) })], "deadline"],
-    ["a failed row beside a moved row", [row(), row({ rowId: ID2, path: "mid", observed: seen(OLD), phase: { ...idle, failedStep: { firstFetch: false, outputTail: TAIL, remedy: CLONE_REMEDY } } })], null],
+    ["a failed row beside a moved row", [row(), row({ rowId: ID2, path: "mid", observed: seen(OLD), phase: { ...idle, failedStep: { firstFetch: false, outputTail: TAIL, exitCode: 128, remedy: CLONE_REMEDY } } })], null],
     ["a failed read beside a cloned row", [row({ planned: "cloned", oldCommit: null }), row({ rowId: ID2, path: "mid", observed: seen(OLD), phase: { ...idle, failedRead: "level" } })], null],
   ] as const) {
     test(`${label} gives failed-with-effects`, async () => {
@@ -209,18 +214,18 @@ describe("operation outcome (contract §12 \"Reconciliation and outcome\", first
   // research.md R14 S37: a failed clone step registers the row and leaves no `.git` entry.
   test("a failed clone of an unregistered row registers it, so the outcome is failed-with-effects", async () => {
     const { event, rows } = await classify({
-      rows: [row({ planned: "cloned", oldCommit: null, baseline: {}, observed: seen(null, KEYS), phase: { ...idle, connected: true, failedStep: { firstFetch: false, outputTail: TAIL, remedy: CLONE_REMEDY } } })],
+      rows: [row({ planned: "cloned", oldCommit: null, baseline: {}, observed: seen(null, KEYS), phase: { ...idle, connected: true, failedStep: { firstFetch: false, outputTail: TAIL, exitCode: 128, remedy: CLONE_REMEDY } } })],
       stop: null,
     });
     expect({ event, rows }).toEqual({
       event: { type: "failed-with-effects" },
-      rows: [result({ state: "failed", oldCommit: null, newCommit: null, connected: true, registered: true, outputTail: TAIL, remedy: CLONE_REMEDY })],
+      rows: [result({ state: "failed", oldCommit: null, newCommit: null, connected: true, registered: true, outputTail: TAIL, exitCode: 128, remedy: CLONE_REMEDY })],
     });
   });
 
   // research.md R14 S38: an unmapped entry with a refused `update` value fails every `submodule` step before a write.
   // Contract §12 "Refusals": the started clone step still sets `connected`, which is an effect.
-  const failed = { ...idle, failedStep: { firstFetch: false, outputTail: TAIL, remedy: CLONE_REMEDY } };
+  const failed = { ...idle, failedStep: { firstFetch: false, outputTail: TAIL, exitCode: 128, remedy: CLONE_REMEDY } };
   const register = row({ rowId: ID2, path: "mid", planned: "unchanged", oldCommit: null, observed: seen(null), phase: failed });
   test("a failed clone step and a failed register step without a key give failed-with-effects", async () => {
     const { event } = await classify({ rows: [row({ planned: "cloned", oldCommit: null, baseline: {}, observed: seen(null, {}), phase: { ...failed, connected: true } }), register], stop: null });
@@ -233,7 +238,7 @@ describe("operation outcome (contract §12 \"Reconciliation and outcome\", first
   });
 
   test("a refused row after a failed first fetch counts as a failed process, so the outcome is failed-with-effects, not completed-with-effects", async () => {
-    const { event } = await classify({ rows: [row({ observed: seen(OLD), phase: { ...idle, fetched: true, refusal: PROGRAMS, failedStep: { firstFetch: true, outputTail: TAIL, remedy: CLONE_REMEDY } } })], stop: null });
+    const { event } = await classify({ rows: [row({ observed: seen(OLD), phase: { ...idle, fetched: true, refusal: PROGRAMS, failedStep: { firstFetch: true, outputTail: TAIL, exitCode: 128, remedy: CLONE_REMEDY } } })], stop: null });
     expect(event).toEqual({ type: "failed-with-effects" });
   });
 

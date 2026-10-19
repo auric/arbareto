@@ -158,6 +158,6 @@ describe("Commit and push (FR-038)", () => {
     await settle();
     expect(text(document.querySelector('[data-slot="notice-band"]')!)).toContain("Push rejected.");
     expect(double.names().filter((n) => n === "commit")).toHaveLength(1);
-    expect(double.names().filter((n) => !["readWorkspace", "readRefs", "readTracking", "readBranches", "readWorktrees", "readSyncSettings", "openHistory", "loadHistory", "readHistoryRows", "closeHistory", "readTrust", "listRecentRepositories", "readComparison"].includes(n))).toEqual(["reviewCommit", "commit", "reviewSync", "sync"]);
+    expect(double.names().filter((n) => !["readWorkspace", "readRefs", "readTracking", "readBranches", "readWorktrees", "readSyncSettings", "openHistory", "loadHistory", "readHistoryRows", "closeHistory", "readTrust", "listRecentRepositories", "readComparison", "reviewSubmodules"].includes(n))).toEqual(["reviewCommit", "commit", "reviewSync", "sync"]);
   });
 });

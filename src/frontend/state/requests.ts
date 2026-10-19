@@ -473,7 +473,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     mutationEnded(operation: string, response: BridgeResponse): Promise<void> {
       set({ outcomes: [...state.outcomes, response] });
       if (APPROVAL_OPERATIONS.has(operation) && response.code !== undefined && APPROVAL_ENDED.has(response.code) && state.selection) requestComparison(state.selection.entryId);
-      // Contract §9: an expired submodule token starts no Git process. The review dialog answers it with a new `reviewSubmodules`, which a read would race.
+      // Contract §9: an expired submodule token starts no Git process. The Submodules group answers it with a new `reviewSubmodules`, which a read would race.
       if (operation === "updateSubmodules" && response.state === "rejected" && response.code === "APPROVAL_EXPIRED") return Promise.resolve(update({}));
       return new Promise((resolve) => {
         reconciling = readWorkspace(false, "full", false, resolve) ?? null;

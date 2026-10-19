@@ -1,18 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// T234: the submodule notice, the submodule review, and the submodule copy of the status area.
-// plan.md "Notice band", "Required visible states" (Submodule notice, Submodule review, Updating submodules), "Status area", "Dialog sizes",
-// "Keyboard and focus" (Submodule review dialog row), and the Update submodules row of "Task flow and command placement". Contract §12 "Plan", "Refusals", "Progress", and "Reconciliation and outcome".
+// T234: the submodule notice and the submodule copy of the status area. Feature 004 T073 removed the review dialog. `workbench-submodules.test.tsx` covers the Submodules group.
+// plan.md "Notice band", "Required visible states" (Submodule notice, Updating submodules), and "Status area". Contract §12 "Progress" and "Reconciliation and outcome".
 //
-// The props below are the interface that T235 and T236 build:
 // - `SubmoduleNotice` ({ count, onUpdate }): the submodule row of the notice band.
-// - `SubmoduleReview` ({ open, bridge, target, snapshotId, review, client, finalFocus, startFocus, onCancel, onOperation }):
-//   `review` is the `reviewSubmodules` result value. `finalFocus` gives the opener, or the nearest surviving logical control.
-//   `startFocus` gives Cancel in the status bar. `onOperation` gets each `trackOperation` report of the `updateSubmodules` request.
-//   `current` gives the snapshot ID and generation of the current read. A new review after `APPROVAL_EXPIRED` names them.
-//   Contract §2: the `accepted` event comes before the approval checks, and a `rejected` response can follow it.
-//   Data-model §7: a mutation goes to `running` only after those checks pass. So the dialog closes at the first event after `accepted`, and a rejection keeps it open.
 // - `OperationStatus`: a `StatusOperation` of kind `updateSubmodules` carries `submoduleRows`, the plan rows of its review.
 //   Each outcome row icon carries `data-icon` "added", "warning", or "removed".
 // The stall notice of a submodule step is a T257 case in `stall-notice.test.tsx`.
@@ -38,17 +30,9 @@ async function submoduleNotice(): Promise<{ SubmoduleNotice: (props: Props) => R
   printOrigin(`../../src/frontend/submodules/${module}.tsx`, import.meta.dir);
   return await import(`../../src/frontend/submodules/${module}.tsx`);
 }
-async function submoduleReview(): Promise<{ SubmoduleReview: (props: Props) => ReactNode }> {
-  const module = "SubmoduleReview";
-  printOrigin(`../../src/frontend/submodules/${module}.tsx`, import.meta.dir);
-  return await import(`../../src/frontend/submodules/${module}.tsx`);
-}
 
 // ---- Texts (plan.md "Required visible states" and contract §12). ----
 const NOTICE = (n: number) => `Some submodules are not initialized or not at their recorded commit. Count: ${n}.`;
-const DISCLOSURE = "Git connects to each URL. Your credential helper can show its own window.";
-const PROGRAMS = "Programs from submodule settings and hooks that Git can run";
-const UNCHECKED = "Arbareto cannot check this file before the run.";
 const INACTIVITY = "Git sent no output and transferred no data for 5 minutes, so Arbareto stopped it.";
 const FLAGS = {
   fetched: "Git fetched in this submodule.",
@@ -64,9 +48,6 @@ const ELSEWHERE = "3333333333333333333333333333333333333333";
 const short = (oid: string) => oid.slice(0, 12);
 const id = () => crypto.randomUUID();
 const OPERATION_ID = "6f9619ff-8b86-4011-b42d-00cf4fc964ff";
-const TARGET = { repositoryId: id(), repositoryGeneration: 3 };
-const SNAPSHOT = id();
-const CLIENT = { width: 1280, height: 800 };
 const ROOT = "C:\\work\\super";
 
 const ROW_A = id();
@@ -99,12 +80,8 @@ const FETCH_ROW = planRow({
   ],
   notes: ["Git fetches in this submodule before the checkout."],
 });
-const PROGRAM = { rowId: ROW_B, key: "core.fsmonitor", scope: "local", origin: "C:\\work\\super\\.git\\modules\\libs\\b\\config", program: "fsmon.exe", digest: "unchecked" };
-const review = (fields: Record<string, unknown> = {}) => ({ generation: 3, rows: [CLONE_ROW, FETCH_ROW], programs: [PROGRAM], refusals: [], submoduleReviewToken: id(), ...fields });
 const UNSAVED_TEXT = "Submodule libs/b is at commit 111111111111, which the update can leave without a branch, tag, or other ref. Save it with the command, then use Refresh.";
 const UNSAVED_COMMAND = `& 'C:\\Git\\cmd\\git.exe' --no-lazy-fetch -C 'C:\\work\\super\\libs\\b' --git-dir=.git branch 'arbareto-saved-111111111111' '${OLD}'`;
-const NOT_EMPTY_TEXT = "Submodule libs/a has no Git link, but its folder is not empty. Git would overwrite those files. Move the folder out of the repository, then use Refresh.";
-const refusal = (reason: string, path: string, text: string, command: string | null) => ({ code: "UNSUPPORTED_SUBMODULE", reason, path, text, remedy: command === null ? null : { command } });
 
 // ---- DOM helpers. ----
 const text = (element: Element | null | undefined) => (element?.textContent ?? "").replace(/\s+/g, " ").trim();
@@ -114,7 +91,6 @@ const button = (label: string, root: ParentNode = document) => {
   expect(found).toHaveLength(1);
   return found[0]!;
 };
-const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]');
 const click = (element: HTMLElement) => act(async () => element.click());
 const settle = () => act(async () => await new Promise((resolve) => setImmediate(resolve)));
 const describedText = (element: Element) =>
@@ -174,406 +150,6 @@ describe("submodule notice", () => {
     expect(text(document.body)).toContain(reason);
     await click(update);
     expect(updates).toEqual([]);
-  });
-});
-
-// ---- Submodule review (T236). ----
-type Call = { name: string; target: unknown; payload: unknown; onProgress?: (event: unknown) => void; resolve(response: unknown): void };
-function reviewBridge() {
-  const calls: Call[] = [];
-  const call = (name: string) => (target: unknown, payload: unknown, onProgress?: (event: unknown) => void) =>
-    new Promise((resolve) => void calls.push({ name, target, payload, onProgress, resolve }));
-  const bridge = { reviewSubmodules: call("reviewSubmodules"), updateSubmodules: call("updateSubmodules") };
-  return { bridge: contractChecked(bridge), calls, of: (name: string) => calls.filter((c) => c.name === name) };
-}
-
-async function mountReview(value = review(), props: Props = {}) {
-  const { SubmoduleReview } = await submoduleReview();
-  const double = reviewBridge();
-  const operations: { progress: unknown; response: unknown }[] = [];
-  const status = statusBridge();
-  let setOpen!: (open: boolean) => void;
-  // The controls outside the dialog are plain DOM nodes, so a case can remove the opener without breaking the React unmount.
-  const outside = document.body.appendChild(document.createElement("div"));
-  for (const [role, label] of [["opener", "Update submodules"], ["status-cancel", "Cancel"], ["fallback", "Refresh"]] as const) {
-    const control = outside.appendChild(document.createElement("button"));
-    control.type = "button";
-    control.dataset.double = role;
-    control.textContent = label;
-  }
-  unmounts.push(async () => outside.remove());
-  const opener = () => document.querySelector<HTMLElement>('[data-double="opener"]');
-  // The status region owns the outcome focus, so the review and the status region mount together, as in the workbench.
-  function Harness() {
-    const [open, set] = useState(true);
-    const [op, setOp] = useState<Operation | null>(null);
-    setOpen = set;
-    return (
-      <>
-        <textarea data-double="message" />
-        <OperationStatus
-          bridge={status.bridge}
-          operation={op}
-          worktreeRoot={ROOT}
-          head={null}
-          trusted={false}
-          panel="details"
-          modalOpen={false}
-          refusal={null}
-          onFocusMessageField={() => {}}
-          onClearMessage={() => {}}
-          onRefresh={() => {}}
-          declinedFocus={opener}
-        />
-        <SubmoduleReview
-          open={open}
-          bridge={double.bridge}
-          target={TARGET}
-          snapshotId={SNAPSHOT}
-          review={value}
-          client={CLIENT}
-          finalFocus={opener}
-          startFocus={() => document.querySelector<HTMLElement>('[data-double="status-cancel"]')}
-          onCancel={() => set(false)}
-          onOperation={(next: Operation) => {
-            operations.push(next);
-            setOp(next);
-          }}
-          current={() => ({ repositoryGeneration: TARGET.repositoryGeneration, snapshotId: SNAPSHOT })}
-          {...props}
-        />
-      </>
-    );
-  }
-  await render(<Harness />);
-  await settle();
-  return { ...double, operations, setOpen, statusCalls: status.calls, opener: () => opener()! };
-}
-// Contract §2: the accepted event. A `rejected` response can follow it.
-const acceptedEvent = (call: Call) => act(async () => call.onProgress?.({ requestId: id(), operationId: OPERATION_ID, state: "accepted", counters: {} }));
-// Data-model §7: the first event after the approval checks passed. The service sends it with phase `preflight`.
-const admitted = (call: Call) =>
-  act(async () => {
-    call.onProgress?.({ requestId: id(), operationId: OPERATION_ID, state: "accepted", counters: {} });
-    call.onProgress?.({ requestId: id(), operationId: OPERATION_ID, state: "running", phase: "preflight", counters: {}, stalled: false });
-  });
-const answer = (call: Call, response: unknown) => act(async () => call.resolve({ requestId: id(), operationId: OPERATION_ID, ...(response as object) }));
-
-describe("submodule review", () => {
-  test(`the dialog lists each row with its path, redacted URL in the code font, action text, and notes, and the program list ${NEEDS}`, async () => {
-    await mountReview();
-    const root = dialog()!;
-    expect(root).not.toBeNull();
-    expect(text(root.querySelector("h1, h2, h3"))).toBe("Update submodules");
-    const [rows, programs] = [...root.querySelectorAll<HTMLElement>('[role="listbox"]')];
-    const options = [...rows!.querySelectorAll('[role="option"]')];
-    expect(options).toHaveLength(2);
-    expect(text(options[0])).toContain("libs/a");
-    expect([...options[0]!.querySelectorAll("code")].map(text)).toContain("https://example.invalid/a.git");
-    expect(text(options[0])).toContain("Clone");
-    expect(text(options[0])).toContain("Git registers the URL in the repository settings.");
-    expect(text(options[1])).toContain("libs/b");
-    expect(text(options[1])).toContain(`Fetch, then move from ${short(OLD)} to ${short(NEW)}`);
-    expect(text(options[1])).toContain("Git fetches in this submodule before the checkout.");
-    expect(text(root)).toContain(DISCLOSURE);
-    expect(text(root)).toContain(PROGRAMS);
-    expect(text(programs)).toContain("core.fsmonitor");
-    expect(text(programs)).toContain("fsmon.exe");
-    // plan.md "Task flow and command placement", Update submodules: the `unchecked` program text.
-    expect(text(programs)).toContain(UNCHECKED);
-  });
-
-  test(`a fetching row lists each redacted remote URL, with (default) after the default remote only ${NEEDS}`, async () => {
-    await mountReview();
-    const row = [...dialog()!.querySelectorAll('[role="option"]')].find((o) => text(o).includes("libs/b"))!;
-    expect(text(row)).toContain("https://example.invalid/b.git (default)");
-    expect(text(row)).toContain("https://mirror.invalid/b.git");
-    expect(text(row)).not.toContain("https://mirror.invalid/b.git (default)");
-  });
-
-  test(`the reuse and checkout actions read their plan.md texts ${NEEDS}`, async () => {
-    const reuse = planRow({ path: "libs/c", url: "https://example.invalid/c.git", action: "reuse" });
-    const checkout = planRow({ path: "libs/d", url: "https://example.invalid/d.git", head: OLD, action: "checkout" });
-    const none = planRow({ path: "libs/e", url: "https://example.invalid/e.git", head: NEW, action: "none" });
-    const skip = planRow({ path: "libs/f", url: "https://example.invalid/f.git", action: "skip" });
-    await mountReview(review({ rows: [reuse, checkout, none, skip], programs: [] }));
-    const options = [...dialog()!.querySelectorAll('[role="option"]')].map(text);
-    expect(options[0]).toContain("Reuse the existing Git folder");
-    expect(options[1]).toContain(`Check out ${short(NEW)}`);
-    expect(options[2]).toContain("No change");
-    expect(options[3]).toContain("Skip");
-  });
-
-  test("a review without rows shows the plan.md text in place of the submodule list", async () => {
-    await mountReview(review({ rows: [], programs: [] }));
-    expect(text(dialog())).toContain("No submodules found.");
-    expect(dialog()!.querySelectorAll('[role="listbox"]')).toHaveLength(0);
-  });
-
-  test("a nested row names its parent path only when the parent row exists", async () => {
-    const parent = planRow({ path: "mid", url: "https://example.invalid/mid.git", action: "none", head: NEW });
-    const leaf = planRow({ path: "mid/leaf", url: "https://example.invalid/leaf.git", action: "clone", depth: 1, parentRowId: parent.rowId });
-    const orphan = planRow({ path: "x/y", url: "https://example.invalid/y.git", action: "clone", depth: 1, parentRowId: id() });
-    await mountReview(review({ rows: [parent, leaf, orphan], programs: [] }));
-    const options = [...dialog()!.querySelectorAll('[role="option"]')].map(text);
-    expect(options[1]).toStartWith("mid/leaf, in mid");
-    expect(options[2]).not.toContain(", in");
-  });
-
-  test(`a refusal disables Start update, which stays focusable with the refusal as its accessible description ${NEEDS}`, async () => {
-    await mountReview(review({ refusals: [refusal("unsaved-commits", "libs/b", UNSAVED_TEXT, UNSAVED_COMMAND)] }));
-    const start = button("Start update", dialog()!);
-    expect(start.getAttribute("aria-disabled")).toBe("true");
-    expect(start.hasAttribute("disabled")).toBe(false);
-    expect(start.tabIndex).toBe(0);
-    expect(describedText(start)).toContain(UNSAVED_TEXT);
-    expect(text(dialog())).toContain(UNSAVED_TEXT);
-  });
-
-  test(`each refusal offers Copy command or Copy path, and the refusals keep the service order ${NEEDS}`, async () => {
-    stubClipboard();
-    const modeText = "Submodule libs/a uses the update mode merge. Arbareto updates only submodules that Git checks out. Use the command in a terminal.";
-    const modeCommand = "& 'C:\\Git\\cmd\\git.exe' --no-lazy-fetch -C 'C:\\work\\super' submodule update --init --recursive -- 'libs/a'";
-    await mountReview(
-      review({
-        refusals: [refusal("unsaved-commits", "libs/b", UNSAVED_TEXT, UNSAVED_COMMAND), refusal("folder-not-empty", "libs/a", NOT_EMPTY_TEXT, null), refusal("update-mode", "libs/a", modeText, modeCommand)],
-      }),
-    );
-    const content = text(dialog());
-    expect(content.indexOf(UNSAVED_TEXT)).toBeLessThan(content.indexOf(NOT_EMPTY_TEXT));
-    expect(content.indexOf(NOT_EMPTY_TEXT)).toBeLessThan(content.indexOf(modeText));
-    const commands = buttons("Copy command", dialog()!);
-    expect(commands).toHaveLength(2);
-    await click(commands[0]!);
-    await click(button("Copy path", dialog()!));
-    await click(commands[1]!);
-    expect(written).toEqual([UNSAVED_COMMAND, "libs/a", modeCommand]);
-    expect(button("Start update", dialog()!).getAttribute("aria-disabled")).toBe("true");
-  });
-
-  test(`initial focus is on the dialog heading, never on Start update ${NEEDS}`, async () => {
-    await mountReview();
-    const heading = dialog()!.querySelector<HTMLElement>("h1, h2, h3")!;
-    expect(document.activeElement === heading).toBe(true);
-    expect(document.activeElement === button("Start update", dialog()!)).toBe(false);
-  });
-
-  test(`the Tab stops are the submodule list, the program list, Cancel, and Start update, and the heading takes focus only from code ${NEEDS}`, async () => {
-    await mountReview();
-    const root = dialog()!;
-    const heading = root.querySelector<HTMLElement>("h1, h2, h3")!;
-    expect(heading.getAttribute("tabindex")).toBe("-1");
-    const stops = [...root.querySelectorAll<HTMLElement>("button, [tabindex], input, textarea, select, a[href]")].filter((e) => e.tabIndex >= 0 && !e.hasAttribute("disabled"));
-    const lists = [...root.querySelectorAll('[role="listbox"]')];
-    const named = stops.map((e) => ["list:submodules", "list:programs"][lists.indexOf(e.closest('[role="listbox"]')!)] ?? text(e));
-    expect(named).toEqual(["list:submodules", "list:programs", "Cancel", "Start update"]);
-  });
-
-  test(`Enter outside a button sends nothing, because the dialog has no default button ${NEEDS}`, async () => {
-    const t = await mountReview();
-    const root = dialog()!;
-    for (const target of [root.querySelector<HTMLElement>("h1, h2, h3")!, root.querySelector<HTMLElement>('[role="listbox"]')!]) {
-      await act(async () => void target.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, cancelable: true })));
-    }
-    expect(t.of("updateSubmodules")).toHaveLength(0);
-  });
-
-  test(`Start update sends one updateSubmodules with the review token, and a second activation sends nothing ${NEEDS}`, async () => {
-    const value = review();
-    const t = await mountReview(value);
-    const start = button("Start update", dialog()!);
-    await click(start);
-    await click(start);
-    expect(t.of("updateSubmodules").map((c) => [c.target, c.payload])).toEqual([[TARGET, { submoduleReviewToken: value.submoduleReviewToken, start: true }]]);
-  });
-
-  test(`Start update closes the dialog at acceptance and moves focus to Cancel in the status bar ${NEEDS}`, async () => {
-    const t = await mountReview();
-    await click(button("Start update", dialog()!));
-    await admitted(t.of("updateSubmodules")[0]!);
-    await settle();
-    expect(dialog()).toBeNull();
-    expect(document.activeElement === document.querySelector('[data-double="status-cancel"]')).toBe(true);
-    expect(t.operations.length).toBeGreaterThan(0);
-  });
-
-  test(`an expired token makes one new reviewSubmodules and keeps the dialog open; Start update then uses the new token ${NEEDS}`, async () => {
-    const t = await mountReview();
-    await click(button("Start update", dialog()!));
-    await answer(t.of("updateSubmodules")[0]!, { state: "rejected", code: "APPROVAL_EXPIRED" });
-    await settle();
-    expect(dialog()).not.toBeNull();
-    expect(t.of("reviewSubmodules").map((c) => [c.target, c.payload])).toEqual([[TARGET, { snapshotId: SNAPSHOT }]]);
-    const fresh = review();
-    await answer(t.of("reviewSubmodules")[0]!, { state: "succeeded", result: fresh });
-    await settle();
-    expect(t.of("reviewSubmodules")).toHaveLength(1);
-    await click(button("Start update", dialog()!));
-    expect(t.of("updateSubmodules")).toHaveLength(2);
-    expect(t.of("updateSubmodules").at(-1)!.payload).toEqual({ submoduleReviewToken: fresh.submoduleReviewToken, start: true });
-  });
-
-  test("B4-1: after a read between the review and Start update, an expired token after the accepted event reviews the current snapshot and generation", async () => {
-    const newer = id();
-    let now = { repositoryGeneration: TARGET.repositoryGeneration, snapshotId: SNAPSHOT };
-    const t = await mountReview(review(), { current: () => now });
-    // Contract §8: each full read gives a new snapshot ID, and a changed observation gives a new generation.
-    now = { repositoryGeneration: TARGET.repositoryGeneration + 1, snapshotId: newer };
-    await click(button("Start update", dialog()!));
-    const call = t.of("updateSubmodules")[0]!;
-    await acceptedEvent(call);
-    await settle();
-    expect(dialog()).not.toBeNull();
-    await answer(call, { state: "rejected", code: "APPROVAL_EXPIRED" });
-    await settle();
-    expect(dialog()).not.toBeNull();
-    const current = { ...TARGET, repositoryGeneration: TARGET.repositoryGeneration + 1 };
-    expect(t.of("reviewSubmodules").map((c) => [c.target, c.payload])).toEqual([[current, { snapshotId: newer }]]);
-    const fresh = review({ generation: current.repositoryGeneration });
-    await answer(t.of("reviewSubmodules")[0]!, { state: "succeeded", result: fresh });
-    await settle();
-    await click(button("Start update", dialog()!));
-    expect(t.of("updateSubmodules").at(-1)!.target).toEqual(current);
-    expect(t.of("updateSubmodules").at(-1)!.payload).toEqual({ submoduleReviewToken: fresh.submoduleReviewToken, start: true });
-  });
-
-  test("B4-2: a blocking workbench state disables Start update, which stays focusable with the reason as its accessible description", async () => {
-    const reason = "A Git operation is running. Wait for its result, or select Cancel.";
-    const t = await mountReview(review(), { blockedReason: reason });
-    const start = button("Start update", dialog()!);
-    expect(start.getAttribute("aria-disabled")).toBe("true");
-    expect(start.tabIndex).toBe(0);
-    expect(describedText(start)).toBe(reason);
-    expect(text(dialog())).toContain(reason);
-    await click(start);
-    expect(t.of("updateSubmodules")).toHaveLength(0);
-  });
-
-  test("B4-7: the current option of each list carries aria-selected true, and the others false", async () => {
-    await mountReview();
-    const list = dialog()!.querySelector<HTMLElement>('[role="listbox"]')!;
-    const selected = () => [...list.querySelectorAll('[role="option"]')].map((o) => o.getAttribute("aria-selected"));
-    expect(selected()).toEqual(["true", "false"]);
-    await act(async () => void list.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", code: "ArrowDown", bubbles: true, cancelable: true })));
-    expect(selected()).toEqual(["false", "true"]);
-    const programs = [...dialog()!.querySelectorAll('[role="listbox"]')][1]!;
-    expect(programs.querySelector('[role="option"]')!.getAttribute("aria-selected")).toBe("true");
-  });
-
-  test("B4-8: a program whose rowId names no plan row shows that row ID in the code font, not an empty path", async () => {
-    const unknown = id();
-    await mountReview(review({ programs: [{ ...PROGRAM, rowId: unknown }] }));
-    const programs = [...dialog()!.querySelectorAll('[role="listbox"]')][1]!;
-    expect([...programs.querySelectorAll("code")].map(text)).toContain(unknown);
-  });
-
-  test("a failed new review after an expired token shows its code and keeps Start update disabled", async () => {
-    const t = await mountReview();
-    await click(button("Start update", dialog()!));
-    await answer(t.of("updateSubmodules")[0]!, { state: "rejected", code: "APPROVAL_EXPIRED" });
-    await settle();
-    await answer(t.of("reviewSubmodules")[0]!, { state: "failed", code: "DEADLINE" });
-    await settle();
-    const text0 = "Submodule review did not complete: DEADLINE";
-    expect(text(dialog())).toContain(text0);
-    // T369: the failure text after a user action is an alert, as the Select Git failure is.
-    expect([...dialog()!.querySelectorAll('[role="alert"]')].map(text)).toEqual([text0]);
-    const start = button("Start update", dialog()!);
-    expect(start.getAttribute("aria-disabled")).toBe("true");
-    expect(describedText(start)).toContain(text0);
-    await click(start);
-    expect(t.of("updateSubmodules")).toHaveLength(1);
-  });
-
-  test("T369: a rejection other than APPROVAL_EXPIRED shows Update submodules did not start: <code> as an alert in the dialog, keeps Start update enabled, and a new Start clears the text", async () => {
-    const t = await mountReview();
-    await click(button("Start update", dialog()!));
-    await acceptedEvent(t.of("updateSubmodules")[0]!);
-    await answer(t.of("updateSubmodules")[0]!, { state: "rejected", code: "REPOSITORY_CHANGED" });
-    await settle();
-    expect(dialog()).not.toBeNull();
-    const shown = () => [...dialog()!.querySelectorAll("p")].filter((p) => text(p).startsWith("Update submodules did not start"));
-    expect(shown().map(text)).toEqual(["Update submodules did not start: REPOSITORY_CHANGED"]);
-    expect(shown()[0]!.getAttribute("role")).toBe("alert");
-    expect([...shown()[0]!.querySelectorAll("code")].map(text)).toEqual(["REPOSITORY_CHANGED"]);
-    // Contract §9: only APPROVAL_EXPIRED makes a new review.
-    expect(t.of("reviewSubmodules")).toHaveLength(0);
-    const start = button("Start update", dialog()!);
-    expect(start.getAttribute("aria-disabled")).not.toBe("true");
-    await click(start);
-    expect(t.of("updateSubmodules")).toHaveLength(2);
-    expect(t.of("updateSubmodules")[1]!.payload).toEqual(t.of("updateSubmodules")[0]!.payload);
-    expect(shown()).toHaveLength(0);
-  });
-
-  test("T369: an expired token shows no Update submodules did not start text", async () => {
-    const t = await mountReview();
-    await click(button("Start update", dialog()!));
-    await answer(t.of("updateSubmodules")[0]!, { state: "rejected", code: "APPROVAL_EXPIRED" });
-    await settle();
-    expect(text(dialog())).not.toContain("did not start");
-  });
-
-  test("Escape and Cancel after Start update and before acceptance keep the dialog open", async () => {
-    const t = await mountReview();
-    await click(button("Start update", dialog()!));
-    await click(button("Cancel", dialog()!));
-    await act(async () => void dialog()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true })));
-    await settle();
-    expect(dialog()).not.toBeNull();
-    await admitted(t.of("updateSubmodules")[0]!);
-    await settle();
-    expect(dialog()).toBeNull();
-  });
-
-  test("after a Cancel from the status bar, a canceled outcome keeps focus in the message field", async () => {
-    const t = await mountReview();
-    await click(button("Start update", dialog()!));
-    const call = t.of("updateSubmodules")[0]!;
-    await admitted(call);
-    await settle();
-    await click(button("Cancel", document.querySelector("footer")!));
-    expect(t.statusCalls).toEqual(["cancel"]);
-    const field = document.querySelector<HTMLTextAreaElement>('[data-double="message"]')!;
-    await act(async () => field.focus());
-    await answer(call, { state: "canceled", result: {} });
-    await settle();
-    expect(document.activeElement === field).toBe(true);
-  });
-
-  test("after a Cancel from the status bar, a canceled outcome moves focus to the area heading, not to the opener", async () => {
-    const t = await mountReview();
-    await click(button("Start update", dialog()!));
-    const call = t.of("updateSubmodules")[0]!;
-    await admitted(call);
-    await settle();
-    await click(button("Cancel", document.querySelector("footer")!));
-    await answer(call, { state: "canceled", result: {} });
-    await settle();
-    expect(document.activeElement === area()?.querySelector("h2")).toBe(true);
-  });
-
-  test(`a canceled outcome after a declined Run confirmation returns focus to the opener ${NEEDS}`, async () => {
-    const t = await mountReview();
-    await click(button("Start update", dialog()!));
-    const call = t.of("updateSubmodules")[0]!;
-    await admitted(call);
-    await answer(call, { state: "canceled", result: {} });
-    await settle();
-    expect(document.activeElement === t.opener()).toBe(true);
-  });
-
-  test(`without the opener, a canceled outcome moves focus to the control that finalFocus gives ${NEEDS}`, async () => {
-    const t = await mountReview();
-    await click(button("Start update", dialog()!));
-    const call = t.of("updateSubmodules")[0]!;
-    await admitted(call);
-    t.opener().remove();
-    const fallback = document.querySelector<HTMLElement>('[data-double="fallback"]')!;
-    fallback.setAttribute("data-double", "opener");
-    await answer(call, { state: "canceled", result: {} });
-    await settle();
-    expect(document.activeElement === fallback).toBe(true);
   });
 });
 

@@ -123,6 +123,7 @@
     "tests/contracts/workbench-mount.test.tsx",
     "tests/contracts/workbench-parsers.test.ts",
     "tests/contracts/workbench-settings.test.tsx",
+    "tests/contracts/workbench-submodules.test.tsx",
     "tests/contracts/workbench-trust.test.tsx",
     "tests/contracts/workbench-views.test.tsx",
     "tests/contracts/workbench-worktrees.test.tsx",

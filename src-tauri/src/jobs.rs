@@ -809,6 +809,16 @@ impl Supervisor {
             .unwrap_or_default()
     }
 
+    /// Test hook: the count of answer lines of the anchor of the Job.
+    #[cfg(test)]
+    pub fn anchor_answers(&self, operation_id: &str) -> u64 {
+        self.shared
+            .state()
+            .jobs
+            .get(operation_id)
+            .map_or(0, |entry| entry.wsl.line_facts().1)
+    }
+
     /// Test hook: drops every `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` message while set.
     #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
     pub fn drop_zero_messages(&self, drop: bool) {
@@ -1837,7 +1847,11 @@ pub(crate) mod tests {
         supervisor.ended("op-missed", false);
         assert!(supervisor.is_lingering("op-missed"), "the Job lingers");
         grandchildren.clear();
-        std::thread::sleep(Duration::from_millis(1500));
+        let job = Arc::clone(&supervisor.shared.state().jobs["op-missed"].job);
+        assert!(
+            eventually(WAIT, || matches!(job.active_processes(), Ok(0))),
+            "the lingering Job is empty"
+        );
         supervisor.open("op-next").expect("open");
         let (_next, _) = child_in_job(&supervisor, "op-next", 0, "exit");
         supervisor.ended("op-next", false);
@@ -2189,7 +2203,11 @@ pub(crate) mod tests {
         assert!(recorded[1].0 - start >= Duration::from_millis(4500));
         supervisor.untrack("op-activity", &tracker);
         let _ = child.child.wait();
-        std::thread::sleep(Duration::from_millis(1500));
+        // Only the port thread clones a tracked `Arc`. So no sample can reach the sink when the test holds the last one.
+        assert!(
+            eventually(WAIT, || Arc::strong_count(&tracker) == 1),
+            "no sample holds the tracker"
+        );
         assert_eq!(kinds(&events).len(), 2, "no event after untrack");
         assert!(!tracker.expired());
         supervisor.shutdown();
@@ -2214,7 +2232,8 @@ pub(crate) mod tests {
             elapsed >= Duration::from_millis(1500) && elapsed < Duration::from_millis(3000),
             "{elapsed:?}"
         );
-        std::thread::sleep(Duration::from_millis(1500));
+        // One more sample pass of the port thread code, after the expiry.
+        supervisor.shared.sample();
         assert_eq!(kinds(&events), [Event::Inactivity]);
         assert!(tracker.expired());
         supervisor.close("op-idle");

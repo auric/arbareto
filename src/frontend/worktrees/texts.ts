@@ -5,6 +5,7 @@ import type { BridgeResponse } from "../bridge";
 import { refusalText as branchRefusal, T as B } from "../branches/texts";
 import { TEXTS } from "../integrate/texts";
 import { isObject } from "../lib/utils";
+import { trustGate } from "../trust/ask";
 
 // Feature 004 plan.md D15 "Worktree texts", D10, spec FR-049 to FR-057, contract Δ3 and Δ9.
 
@@ -18,6 +19,8 @@ export const W = {
   empty: "No worktrees",
   noMatch: "No worktree matches the filter.",
   listFailed: (code: string) => `Arbareto cannot read the worktrees: ${code}.`,
+  // Plan D15 "Malformed result": the item name of a succeeded read without entries.
+  listName: "Worktree list",
   WORKTREE_RECORDS: "This repository has more than 1,000 worktrees. This version does not list them.",
   WORKTREE_LISTING_BYTES: "The worktree list is larger than this version can show.",
   add: "Add worktree…",
@@ -54,6 +57,10 @@ export const W = {
   deleteBranch: "Also delete the branch",
   removeButton: "Remove worktree",
   removeForce: "Remove worktree and changes",
+  // Without changes, a remove that needs force only for submodules names them.
+  removeSubmodules: "Remove worktree and submodules",
+  // Plan O-20: the target worktree gate refuses. Only an approval in that worktree opens it.
+  targetTrust: (path: string) => `To trust the worktree ${path}, open it and trust it there.`,
   // Add worktree panel (spec FR-052, plan D15 "Docked panel").
   addTitle: "Add worktree",
   closeAdd: "Close add worktree panel",
@@ -106,13 +113,17 @@ const DESTINATION: Record<string, string> = {
 
 /**
  * The D15 text of a refused worktree review. `worktree` is the record path of a remove. `branch` is the short branch name of the request.
- * Contract gap: the own gate and the target gate (plan O-20) both give TRUST_REQUIRED, so the remove text names both.
+ * A trust refusal names its gate (plan O-20). A remove refusal without a known gate names both gates.
  */
 export function worktreeRefusal(response: BridgeResponse, action: "worktree-add" | "worktree-remove" | "worktree-prune", worktree: string, branch: string): string {
   const r = isObject(response.result) ? response.result : {};
   const code = response.code ?? response.state;
   const reason = typeof r.reason === "string" ? r.reason : null;
-  if (code === "TRUST_REQUIRED" || code === "TRUST_CHANGED") return action === "worktree-remove" ? `${TEXTS.trust} To trust the worktree ${worktree}, open it and trust it there.` : TEXTS.trust;
+  if (code === "TRUST_REQUIRED" || code === "TRUST_CHANGED") {
+    const gate = trustGate(response);
+    if (gate === "target") return W.targetTrust(worktree);
+    return gate === null && action === "worktree-remove" ? `${TEXTS.trust} ${W.targetTrust(worktree)}` : TEXTS.trust;
+  }
   if (code === "REPOSITORY_UNAVAILABLE" && typeof r.path === "string") return `Arbareto cannot read the folder ${r.path}.`;
   if (code === "DESTINATION_NOT_EMPTY" && reason !== null && reason in DESTINATION) return DESTINATION[reason]!;
   if (code === "UNKNOWN_TARGET") return "Arbareto cannot match this worktree with a fresh worktree list.";

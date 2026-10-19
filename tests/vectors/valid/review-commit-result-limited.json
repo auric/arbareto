@@ -1,0 +1,5 @@
+{
+  "schema": "review-commit-result",
+  "expected": "valid",
+  "text": "{\"completeness\":{\"state\":\"limited\",\"code\":\"OUTPUT_LIMIT\",\"reason\":\"STATUS_LISTING_RECORDS\"}}"
+}

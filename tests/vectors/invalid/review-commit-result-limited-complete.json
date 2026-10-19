@@ -1,0 +1,11 @@
+{
+  "schema": "review-commit-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"completeness\":{\"state\":\"complete\"}}",
+  "repair": {
+    "completeness": {
+      "state": "limited",
+      "code": "WORKTREE_CHANGING"
+    }
+  }
+}

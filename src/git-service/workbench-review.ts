@@ -251,7 +251,8 @@ export function createWorkbench(o: WorkbenchOptions) {
     if (!listed.ok) return "stop" in listed ? { stop: listed.stop } : { code: listed.code };
     const cls = classOf(payload.action);
     const gate = cls === null ? null : ctx.trust.gate(ctx.workspace, listed.listing, ctx.installation, cls);
-    if (gate !== null) return { refused: gate };
+    // Plan.md O-20: a trust refusal names its gate. `worktrees.ts` gives the gate `target`.
+    if (gate !== null) return { refused: gate, result: { trustGate: "repository" } };
     const head = await settled(ctx.signal, captureHead(ctx.runner, ctx));
     if (isStop(head) || "code" in head) return head;
     if ("failed" in head) return { code: head.failed };

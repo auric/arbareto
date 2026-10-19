@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, type ReactNode } from "react";
 // Type-only imports keep zod out of the renderer bundle.
 import type { z } from "zod";
 import type { ReadWorktreesResult, ReviewWorkbenchResult } from "../../contracts/envelope";
+import { unknownFormText } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { OUTCOME, T as B } from "../branches/texts";
 import { Button } from "../components/ui/button";
@@ -33,7 +34,7 @@ type RemoveOverlay = { entry: WorktreeEntry; force: boolean; deleteBranch: boole
 
 export type WorktreeActionsOptions = {
   bridge: Pick<Bridge, "readWorktrees" | "reviewWorkbench" | "runWorkbench" | "chooseWorktreeFolder">;
-  /** Plan D12 "Ask". Contract gap: a remove refusal does not tell this repository from the target worktree (plan O-20). So it asks for this repository only. */
+  /** Plan D12 "Ask". It asks only for the gate of this repository. A refusal of the target worktree gate asks nothing (plan O-20). */
   askTrust?: AskTrust;
   target(): Target | null;
   /** The open repository. A new one reads the worktrees. */
@@ -82,7 +83,7 @@ function listOf(repositoryId: string, response: BridgeResponse): List {
   const result = isObject(response.result) ? response.result : {};
   if (response.state === "succeeded" && Array.isArray(result.entries)) return { repositoryId, entries: result.entries as WorktreeEntry[], failure: null };
   const reason = typeof result.reason === "string" ? result.reason : null;
-  const failure = reason === "WORKTREE_RECORDS" || reason === "WORKTREE_LISTING_BYTES" ? W[reason] : W.listFailed(response.code ?? response.state);
+  const failure = reason === "WORKTREE_RECORDS" || reason === "WORKTREE_LISTING_BYTES" ? W[reason] : response.state === "succeeded" ? unknownFormText(W.listName) : W.listFailed(response.code ?? response.state);
   return { repositoryId, entries: null, failure };
 }
 
@@ -341,7 +342,7 @@ function RemoveConfirm({ overlay: o, onChange, onCancel, onConfirm }: { overlay:
             Cancel
           </Button>
           <Button className="danger-button" disabled={!ready} focusableWhenDisabled onClick={() => ready && onConfirm()}>
-            {needsForce ? W.removeForce : W.removeButton}
+            {dirty ? W.removeForce : submodules ? W.removeSubmodules : W.removeButton}
           </Button>
         </div>
       </DialogContent>

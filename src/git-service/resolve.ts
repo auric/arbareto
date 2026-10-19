@@ -129,7 +129,18 @@ async function sideName(ctx: WorkbenchContext, oid: string | null): Promise<Fact
   return refs.length > REF_LISTING_RECORDS ? { code: "OUTPUT_LIMIT", reason: "REF_LISTING_RECORDS" } : { value: { oid, refs } };
 }
 
-// Contract Δ3 reads of `choose-side` and `mergetool`, in this order: the entry, the tool, the command-line bound, the stages, the working file, and the side names.
+// Plan.md D7: ours is HEAD, and theirs is the commit of `theirsOf`.
+async function namesOf(ctx: WorkbenchContext, common: Common): Promise<Fact<{ ours: { oid: string; refs: string[] } | null; theirs: { oid: string; refs: string[] } | null }>> {
+  const ours = await sideName(ctx, common.head.state === "unborn" ? null : common.head.oid);
+  if (!("value" in ours)) return ours;
+  const theirsAt = await theirsOf(ctx, common.operationState);
+  if (!("value" in theirsAt)) return theirsAt;
+  const theirs = await sideName(ctx, theirsAt.value);
+  if (!("value" in theirs)) return theirs;
+  return { value: { ours: ours.value, theirs: theirs.value } };
+}
+
+// Contract Δ3 reads of `choose-side` and `mergetool`, in this order: the entry, the tool, the command-line bound, the stages, the working file, and the side names. A stage refusal reads the side names right after the stages.
 async function observeResolve(ctx: WorkbenchContext, p: ResolvePayload, common: Common): Promise<Observation<ResolveBound>> {
   const w = ctx.workspace;
   const found = ctx.reader.entry(w.repositoryId, w.generation, p.snapshotId, p.entryId);
@@ -154,18 +165,18 @@ async function observeResolve(ctx: WorkbenchContext, p: ResolvePayload, common: 
   // Spec FR-092: the action binds the stages of the shown read. Another stage set asks for a refresh.
   if (!Bun.deepEquals(stages.value, shownStages(e), true)) return { refused: "STALE_SELECTION" };
   const refused = side === null ? refusalOf(stages.value, [2, 3], "stages-missing") : refusalOf(stages.value, [SIDE_STAGE[side]], "side-missing");
-  if (refused !== null) return refused;
+  // Contract Δ3: a stage refusal carries the side names. Every review of a DD conflict refuses, so only the refusal can name its sides.
+  if (refused !== null) {
+    const names = await namesOf(ctx, common);
+    return "value" in names ? { refused: refused.refused, result: { ...refused.result, names: names.value } } : names;
+  }
   // Feature 003 data-model §9 binding of Mark resolved: existence, type, mode, size, and raw digest. `changed`: the read could not bind the file.
   const working = await settled(ctx.signal, wholeWorking(ctx, bytes));
   if ("changed" in working) return { refused: "STALE_SELECTION" };
   if (!("value" in working)) return working;
-  const ours = await sideName(ctx, common.head.state === "unborn" ? null : common.head.oid);
-  if (!("value" in ours)) return ours;
-  const theirsAt = await theirsOf(ctx, common.operationState);
-  if (!("value" in theirsAt)) return theirsAt;
-  const theirs = await sideName(ctx, theirsAt.value);
-  if (!("value" in theirs)) return theirs;
-  const plan = { path: e.pathBytes, kind: { xy: e.xy!, text: kind }, stages: stages.value, names: { ours: ours.value, theirs: theirs.value }, operation: common.operationState };
+  const names = await namesOf(ctx, common);
+  if (!("value" in names)) return names;
+  const plan = { path: e.pathBytes, kind: { xy: e.xy!, text: kind }, stages: stages.value, names: names.value, operation: common.operationState };
   const bound: ResolveBound = { path, bytes, stages: stages.value, working: working.value, tool };
   return { bound, plan: tool === null ? { ...plan, side } : { ...plan, tool: { name: tool.name, scope: tool.scope, origin: tool.origin } } };
 }

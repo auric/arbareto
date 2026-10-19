@@ -494,7 +494,8 @@ caseTest("T060", "plan.md O-20: worktree-remove takes the trust listing of the t
     const r = await open(service, f.repo);
     expect((await service.readTrust(r.repositoryId)).result!.approvalRequired.workbench).toBe(false);
     const from = service.runner.calls.length;
-    expect(outcome(await review(service, r, removePayload(target, false, false)))).toEqual({ state: "failed", code: "TRUST_REQUIRED" });
+    // Contract Δ3: the refusal names the gate of that worktree, so the renderer asks nothing for this repository.
+    expect(refused(await review(service, r, removePayload(target, false, false)))).toEqual({ state: "failed", code: "TRUST_REQUIRED", result: { trustGate: "target" } });
     expect(service.runner.calls.slice(from).some((c) => c.arguments.includes("status"))).toBe(false);
     expect(existsSync(log)).toBe(false);
     // That worktree as its own workspace: its listing names the monitor, and its approval binds its own folders.
@@ -509,6 +510,21 @@ caseTest("T060", "plan.md O-20: worktree-remove takes the trust listing of the t
     expect(outcome(response)).toEqual(SUCCEEDED);
     expect(response.result!.worktrees).not.toContain(target);
   });
+}, TIMEOUT_MS);
+
+caseTest("T060", "plan.md O-20: a monitor in this repository's configuration refuses worktree-remove with TRUST_REQUIRED and the gate repository before any worktree read, and the canary does not run", SHELL, async () => {
+  const f = build();
+  const log = canary(f.root, "o20-own-monitor");
+  git(f, ["config", "core.fsmonitor", log.command]);
+  const target = recordPath(f, "wt with spaces");
+  await withSync("t060-o20-own", async (service) => {
+    const r = await service.register(native(f.repo));
+    expect((await service.readTrust(r.repositoryId)).result!.approvalRequired.workbench).toBe(true);
+    const from = service.runner.calls.length;
+    expect(refused(await review(service, r, removePayload(target, false, false)))).toEqual({ state: "failed", code: "TRUST_REQUIRED", result: { trustGate: "repository" } });
+    expect(service.runner.calls.slice(from).some((c) => c.arguments.includes("worktree"))).toBe(false);
+  });
+  expect(existsSync(log.log)).toBe(false);
 }, TIMEOUT_MS);
 
 // git-worktree(1) `remove`: "Unclean worktrees or ones with submodules can be removed with --force." builtin/worktree.c `validate_no_submodules` refuses

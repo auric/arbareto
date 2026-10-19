@@ -3,6 +3,7 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { act, useState } from "react";
+import { ReviewCommitResult } from "../../src/contracts/envelope";
 import type { BridgeResponse } from "../../src/frontend/bridge";
 import type { Amend } from "../../src/frontend/state/workbench";
 import { registerDom } from "../dom";
@@ -29,16 +30,17 @@ const SHORT = "1".repeat(12);
 const ok = (result: unknown): BridgeResponse => ({ requestId: fixtureId(0x100), operationId: fixtureId(0x101), state: "succeeded", result }) as BridgeResponse;
 const report = (state = "untrusted") => ({ generation: 1, programs: {}, state, persistence: "stored", approvalRequired: { reads: false, commit: false, sync: false, workbench: false, mergetool: false }, entries: [], hooks: [] });
 type AmendPart = { headOid?: string; upstream?: { name: string | null; present: boolean } | null; rewritesUpstream?: boolean | "unknown" };
-/** Contract Δ3: an amend review result. `approvalRequired` is the review disclosure. */
-const review = (part: AmendPart = {}, disclosure: { approvalRequired: boolean; trust: string } = { approvalRequired: false, trust: "untrusted" }) => ({
+/** Contract Δ3: an amend review result. `approvalRequired` is the review disclosure. `raw` builds any shape, and `review` passes the result schema. */
+const raw = (part: AmendPart = {}, disclosure: { approvalRequired: boolean; trust: string } = { approvalRequired: false, trust: "untrusted" }) => ({
   generation: 1,
-  head: HEAD,
+  head: { ...HEAD, oid: part.headOid ?? HEAD.oid },
   scope: [],
   disclosure,
-  limitations: [],
+  limitations: ["Git will run approved hooks. They or other Git tools can change the result during execution."],
   reviewToken: TOKEN,
   amend: { headOid: HEAD.oid, message: "Add login form", upstream: null, rewritesUpstream: false, ...part },
 });
+const review = (...args: Parameters<typeof raw>) => ReviewCommitResult.parse(raw(...args));
 const flush = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 0))));
 
 const unmounts: (() => Promise<void>)[] = [];
@@ -158,7 +160,8 @@ describe("Amend last commit box (FR-098)", () => {
 
   for (const [name, result] of [
     ["without the amend part", { ...review(), amend: undefined }],
-    ["with an amend part of another shape", review({ rewritesUpstream: "maybe" as never })],
+    ["with an amend part of another shape", raw({ rewritesUpstream: "maybe" as never })],
+    ["with an upstream fact that breaks the schema", raw({ upstream: { name: "refs/remotes/origin/main", present: true }, rewritesUpstream: "unknown" })],
   ] as const) {
     test(`a succeeded review ${name} leaves the box clear and names the unknown form`, async () => {
       const t = await mount();
@@ -237,6 +240,17 @@ describe("Commit with Amend last commit (FR-099, FR-100)", () => {
 });
 
 describe("Amend trust (contract Δ3 disclosure)", () => {
+  test("a commit review whose disclosure breaks the result schema names the unknown form, asks no trust, and sends no commit", async () => {
+    const t = await mount();
+    await t.check();
+    const result = { ...review(), disclosure: { approvalRequired: "yes", trust: "untrusted" } };
+    expect(ReviewCommitResult.safeParse(result).success).toBe(false);
+    await t.commitWith(result);
+    expect(t.trustRequests.length).toBe(0);
+    expect(t.pending("commit")).toEqual([]);
+    expect(t.host.querySelector('[role="status"]')!.textContent).toBe("Commit did not complete: the result has an unknown form.");
+  });
+
   test("the amend review disclosure asks for approval even when readTrust needs none for commit, and a refused approval sends no commit", async () => {
     const t = await mount();
     await t.check();

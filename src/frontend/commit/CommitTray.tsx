@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode, type Ref } from "react";
-import type { WorkspaceSnapshot } from "../../contracts/envelope";
+import type { ReviewCommitResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { TerminalState } from "../../contracts/errors";
 import { COMMIT_MESSAGE_BYTES } from "../../contracts/limits";
 import { codeText, failureText, unknownFormText } from "../app/RepositoryStates";
@@ -16,6 +16,7 @@ import { shortRef } from "../refs/ReferencesSidebar";
 import type { createDrafts } from "../state/drafts";
 import type { Amend } from "../state/workbench";
 import { shortId, trackOperation, type StatusOperation } from "../status/OperationStatus";
+import { isObject } from "../lib/utils";
 import { GuideLines, guideStyle, SummaryCounter } from "./MessageGuide";
 import { isTrustReport, trustBeforeReview, trustFailureCode, type TrustReport } from "../trust/TrustChip";
 
@@ -68,19 +69,27 @@ export const AMEND_LABEL = "Amend last commit";
 const AMEND_UNBORN = "The branch has no commits yet.";
 const AMEND_OPERATION = "A merge or a rebase is in progress.";
 export const amendStatement = (oid: string) => `Commit replaces commit ${shortId(oid)}.`;
-// Contract Δ3 `reviewCommit` with `amend`: the result adds `amend`. `reviewCommit` has no result schema (contract Δ3 gap), so the reads stay typed loosely.
-type AmendReview = { headOid: string; message: string; upstream: { name: string | null; present: boolean } | null; rewritesUpstream: boolean | "unknown" };
-const amendOf = (result: unknown) => {
-  const a = (result as { amend?: AmendReview } | undefined)?.amend;
-  const u = a?.upstream;
-  const upstream = u === null || (typeof u === "object" && (u.name === null || typeof u.name === "string") && typeof u.present === "boolean");
-  return typeof a?.headOid === "string" && typeof a.message === "string" && upstream && [true, false, "unknown"].includes(a.rewritesUpstream) ? a : null;
-};
+// Contract Δ3 `reviewCommit` with `amend` (src/contracts/envelope.ts `ReviewCommitResult`). The renderer bundle holds no zod, so this check reads the fields that the tray uses.
+type CommitReview = Extract<ReviewCommitResult, { disclosure: unknown }>;
+type AmendReview = NonNullable<CommitReview["amend"]>;
+const TRUST_STATES: readonly unknown[] = ["untrusted", "approved", "changed", "revoked"];
+function amendOf(a: unknown): AmendReview | null | undefined {
+  if (a === undefined) return undefined;
+  if (!isObject(a) || typeof a.headOid !== "string" || typeof a.message !== "string") return null;
+  const u = a.upstream;
+  const r = a.rewritesUpstream;
+  if (u === null) return r === false ? (a as AmendReview) : null;
+  if (!isObject(u) || (u.name !== null && typeof u.name !== "string") || typeof u.present !== "boolean") return null;
+  return (u.present ? u.name !== null && typeof r === "boolean" : r === "unknown") ? (a as AmendReview) : null;
+}
+/** The parsed result of a `succeeded` review, or null for a result of another form. */
+function commitReviewOf(result: unknown): CommitReview | null {
+  if (!isObject(result) || !isObject(result.disclosure) || typeof result.disclosure.approvalRequired !== "boolean" || !TRUST_STATES.includes(result.disclosure.trust)) return null;
+  if (result.reviewToken !== undefined && typeof result.reviewToken !== "string") return null;
+  return amendOf(result.amend) === null ? null : (result as CommitReview);
+}
 // Contract Δ3: the review disclosure states the approval need of an amend, which also runs `post-rewrite`.
-const amendNeedsTrust = (result: unknown) => {
-  const d = (result as { disclosure?: { approvalRequired?: unknown; trust?: unknown } } | undefined)?.disclosure;
-  return d?.approvalRequired !== false && d?.trust !== "approved";
-};
+const amendNeedsTrust = (r: CommitReview) => r.disclosure.approvalRequired && r.disclosure.trust !== "approved";
 /** D15: a null name reads "the upstream branch". A present ref is local, so it takes its short name. An absent one names the remote-side ref in full. */
 const upstreamName = (u: AmendReview["upstream"]) => (u?.name == null ? "the upstream branch" : u.present ? shortRef(u.name) : `the upstream branch ${u.name}`);
 /** FR-100: the confirmation text for `rewritesUpstream` true, and for `unknown`. */
@@ -175,27 +184,30 @@ export function CommitTray(props: CommitTrayProps) {
       let current = shown();
       if (current === null) return focusField();
       let review = await bridge.reviewCommit(current.reviewed, amended ? { snapshotId: current.snapshotId, amend: true } : { snapshotId: current.snapshotId });
-      if (amended && review.state === "succeeded" && amendNeedsTrust(review.result)) {
+      let parsed = review.state === "succeeded" ? commitReviewOf(review.result) : null;
+      if (amended && parsed !== null && amendNeedsTrust(parsed)) {
         if (!(await trusted(() => true))) return focusField();
         // The approval runs a new full read, so the review names the snapshot that shows then.
         current = shown();
         if (current === null) return focusField();
         review = await bridge.reviewCommit(current.reviewed, { snapshotId: current.snapshotId, amend: true });
+        parsed = review.state === "succeeded" ? commitReviewOf(review.result) : null;
       }
       const { reviewed } = current;
       const amend = current.now.amend?.value ?? null;
-      const token = review.state === "succeeded" ? (review.result as { reviewToken?: unknown } | undefined)?.reviewToken : undefined;
-      if (typeof token !== "string") {
+      const token = parsed?.reviewToken;
+      if (token === undefined) {
         // Contract §3 `reviewCommit`: a result without `reviewToken` reviewed an empty staged scope, so the shown Staged list is stale.
-        setNotice(review.state === "succeeded" || review.code === "STALE_REVIEW" ? STALE_TEXT : codeText("Commit did not start: ", review.code ?? review.state));
+        const malformed = review.state === "succeeded" && parsed === null;
+        setNotice(malformed ? unknownFormText("Commit") : review.state === "succeeded" || review.code === "STALE_REVIEW" ? STALE_TEXT : codeText("Commit did not start: ", review.code ?? review.state));
         props.onEnded?.(review);
         return focusField();
       }
       let response: BridgeResponse;
       if (amend !== null) {
         // FR-099: the amend binds to the HEAD commit whose message the box loaded. A moved HEAD refuses and asks for a refresh.
-        const reviewedAmend = amendOf(review.result);
-        // Only a succeeded review has a token here, so a result without a valid amend part has an unknown form.
+        const reviewedAmend = parsed!.amend ?? null;
+        // An amend review always carries the amend part, so a result without it has an unknown form.
         if (reviewedAmend === null || reviewedAmend.headOid !== amend.headOid) {
           setNotice(reviewedAmend === null ? unknownFormText("Commit") : STALE_TEXT);
           props.onEnded?.(review);
@@ -239,7 +251,7 @@ export function CommitTray(props: CommitTrayProps) {
     setNotice(null);
     try {
       const review = await bridge.reviewCommit(target, { snapshotId, amend: true });
-      const loaded = review.state === "succeeded" ? amendOf(review.result) : null;
+      const loaded = review.state === "succeeded" ? (commitReviewOf(review.result)?.amend ?? null) : null;
       if (loaded === null) return setNotice(failureText(AMEND_LABEL, review, undefined, `${AMEND_LABEL} did not start: `));
       live.current.amend?.onChange({ headOid: loaded.headOid, message: loaded.message, text: loaded.message });
     } finally {

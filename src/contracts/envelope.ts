@@ -1397,11 +1397,14 @@ const WorktreePrunePlan = z
 // Data-model §11 and plan.md D7. `stages` holds the unmerged stages of the path. A side names the refs at its commit, and a side without a commit fact is null.
 const ResolveStage = z.strictObject({ stage: z.int().min(1).max(3), mode: FileMode, oid: ObjectId }).meta({ title: "ResolveStage" });
 const SideName = z.strictObject({ oid: ObjectId, refs: z.array(FullRef).max(REF_LISTING_RECORDS) }).meta({ title: "SideName" }).nullable();
+const SideNames = z.strictObject({ ours: SideName, theirs: SideName }).meta({ title: "SideNames" });
+// Contract Δ3: the stage refusals of `choose-side` and `mergetool` carry the side names, so a DD conflict shows them too.
+const SIDE_REFUSALS: readonly string[] = ["side-missing", "stages-missing", "side-not-regular"];
 const resolvePlan = {
   path: z.base64().min(1),
   kind: z.strictObject({ xy: z.enum(["UU", "AA", "AU", "UA", "DU", "UD", "DD"]), text: Text.min(1) }).meta({ title: "ConflictKind" }),
   stages: z.array(ResolveStage).min(1).max(3),
-  names: z.strictObject({ ours: SideName, theirs: SideName }).meta({ title: "SideNames" }),
+  names: SideNames,
   operation: WorkspaceOperationState,
 };
 const ChooseSidePlan = z.strictObject({ ...resolvePlan, side: z.enum(["ours", "theirs"]) }).meta({ title: "ChooseSidePlan" });
@@ -1460,6 +1463,9 @@ export const ReviewWorkbenchResult = z
         unmerged: Count.optional(),
         // The REPOSITORY_UNAVAILABLE refusal of `worktree-add`: the bound path that the shell could not read (contract Δ3).
         path: Text.min(1).optional(),
+        // Plan.md O-20: the gate of a TRUST_REQUIRED or TRUST_CHANGED refusal. `target` is the listing of the worktree that `worktree-remove` names.
+        trustGate: z.enum(["repository", "target"]).optional(),
+        names: SideNames.optional(),
       })
       .refine(
         (r) =>
@@ -1469,11 +1475,50 @@ export const ReviewWorkbenchResult = z
           (r.paths !== undefined) === (r.reason === "untracked-in-way") &&
           (r.paths !== undefined) === (r.more !== undefined) &&
           (r.unmerged === undefined || r.reason === undefined) &&
-          (r.path === undefined || r.reason === undefined),
+          (r.path === undefined || r.reason === undefined) &&
+          (r.trustGate === undefined || Object.keys(r).length === 1) &&
+          (r.names === undefined || (r.reason !== undefined && SIDE_REFUSALS.includes(r.reason))),
       )
       .meta({ title: "WorkbenchRefused" }),
   ])
   .meta({ title: "ReviewWorkbenchResult" });
+
+// Feature 004 contract Δ3 `reviewCommit` with `amend`. Without an upstream, nothing is rewritten. A present upstream gives a fact, and an absent one `unknown`.
+const AmendReview = z
+  .strictObject({
+    headOid: ObjectId,
+    message: z.string(),
+    upstream: z.strictObject({ name: Text.min(1).nullable(), present: z.boolean() }).meta({ title: "AmendUpstream" }).nullable(),
+    rewritesUpstream: z.union([z.boolean(), z.literal("unknown")]),
+  })
+  .refine((a) => (a.upstream === null ? a.rewritesUpstream === false : a.upstream.present ? a.upstream.name !== null && a.rewritesUpstream !== "unknown" : a.rewritesUpstream === "unknown"))
+  .meta({ title: "AmendReview" });
+// Contract §3 `reviewCommit` and data-model §6 "Commit review". An empty staged scope gets a token only for an amend, and the amend names the HEAD commit.
+export const ReviewCommitResult = z
+  .union([
+    z
+      .strictObject({
+        generation: Generation,
+        head: Head,
+        scope: z
+          .array(z.strictObject({ status: z.enum(["A", "D", "M", "T", "U"]), path: z.string(), pathBytes: z.base64().min(1) }).meta({ title: "CommitScopeEntry" }))
+          .max(limits.STATUS_LISTING_RECORDS),
+        disclosure: z.strictObject({ approvalRequired: z.boolean(), trust: z.enum(["untrusted", "approved", "changed", "revoked"]) }).meta({ title: "CommitDisclosure" }),
+        limitations: z.array(Text.min(1)).min(1),
+        reviewToken: Identifier.optional(),
+        amend: AmendReview.optional(),
+      })
+      .refine((r) => (r.reviewToken !== undefined) === (r.scope.length > 0 || r.amend !== undefined) && (r.amend === undefined || (r.head.state !== "unborn" && r.amend.headOid === r.head.oid)))
+      .meta({ title: "CommitReviewed" }),
+    // Contract Δ3: an amend of an unborn HEAD gives WORKBENCH_UNAVAILABLE.
+    z.strictObject({ reason: z.literal("unborn") }).meta({ title: "CommitReviewUnborn" }),
+    z
+      .strictObject({ completeness: Completeness })
+      .refine((r) => r.completeness.state === "limited")
+      .meta({ title: "CommitReviewLimited" }),
+  ])
+  .meta({ title: "ReviewCommitResult" });
+export type ReviewCommitResult = z.infer<typeof ReviewCommitResult>;
 
 // Data-model §1 `readBranches`. Only a remote entry maps to a local name, and only a local entry is current or holds a tracking entry.
 // `invalidUtf8`: the ref bytes are no valid UTF-8, so `ref` is display text only.

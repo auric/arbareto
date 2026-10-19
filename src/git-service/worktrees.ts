@@ -254,7 +254,7 @@ async function targetTrust(ctx: ObserveContext, record: WorktreeRecord, root: Lo
   const listed = await ctx.trust.listTrust({ operationId: ctx.operationId, signal: ctx.signal, workspace: target, at: record.path });
   if (!listed.ok) return "stop" in listed ? { stop: listed.stop } : { code: listed.code };
   const gate = ctx.trust.gate(target, listed.listing, ctx.installation, "workbench");
-  if (gate !== null) return { refused: gate };
+  if (gate !== null) return { refused: gate, result: { trustGate: "target" } };
   return { value: { trust: { required: listed.listing.approvalRequired.workbench, fingerprint: listed.listing.fingerprint }, folders: { top: lines[0]!, admin: lines[1]! } } };
 }
 

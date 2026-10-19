@@ -1103,6 +1103,7 @@ mod tests {
         "review-workbench-result",
         "run-workbench-result",
         "choose-worktree-folder-result",
+        "review-commit-result",
     ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.

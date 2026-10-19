@@ -3,10 +3,11 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { act } from "react";
+import { ReviewCommitResult } from "../../src/contracts/envelope";
 import type { BridgeResponse } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
-import { contractChecked } from "./bridge-contract";
+import { commitReviewed, contractChecked } from "./bridge-contract";
 
 // tasks.md T239. plan.md "Task flow and command placement" (Compose a commit, Commit, Commit outcome) and "Keyboard and focus" (Message, Unavailable control).
 
@@ -132,7 +133,7 @@ describe("commit flow", () => {
   }
   async function runToCommit(t: Awaited<ReturnType<typeof ready>>) {
     await t.answer("readTrust", ok(report(false)));
-    await t.answer("reviewCommit", ok({ reviewToken: TOKEN }));
+    await t.answer("reviewCommit", ok(commitReviewed(TOKEN)));
   }
 
   test("one Commit activation sends one reviewCommit with the shown snapshot ID, then one commit with its token and confirmFullScope true", async () => {
@@ -223,7 +224,7 @@ describe("commit flow", () => {
     const t = await ready();
     await act(async () => t.commit.click());
     await t.answer("readTrust", ok(report(false)));
-    await t.answer("reviewCommit", ok({}));
+    await t.answer("reviewCommit", ok(commitReviewed(null)));
     expect(t.ops()).toEqual(["readTrust", "reviewCommit"]);
     expect(t.host.textContent).toContain(STALE_TEXT);
     expect(t.ended).toHaveLength(1);
@@ -265,13 +266,25 @@ describe("commit flow", () => {
     expect(t.host.querySelector('[role="status"]')?.textContent).toBe("Trust review did not complete: OUTPUT_LIMIT TRUST_REPORT_ENTRIES");
   });
 
+  test("a succeeded review that breaks the result schema shows the unknown-form text, not the Stale text, and sends no commit", async () => {
+    for (const result of [commitReviewed(TOKEN), commitReviewed(null)]) expect(ReviewCommitResult.safeParse(result).success).toBe(true);
+    const malformed = { reviewToken: TOKEN };
+    expect(ReviewCommitResult.safeParse(malformed).success).toBe(false);
+    const t = await ready();
+    await act(async () => t.commit.click());
+    await t.answer("readTrust", ok(report(false)));
+    await t.answer("reviewCommit", ok(malformed));
+    expect(t.ops()).toEqual(["readTrust", "reviewCommit"]);
+    expect(t.host.querySelector('[role="status"]')!.textContent).toBe("Commit did not complete: the result has an unknown form.");
+  });
+
   test("the live element stays mounted and only its text changes", async () => {
     const t = await ready();
     const live = t.host.querySelector('[role="status"]');
     expect(live?.textContent).toBe("");
     await act(async () => t.commit.click());
     await t.answer("readTrust", ok(report(false)));
-    await t.answer("reviewCommit", ok({}));
+    await t.answer("reviewCommit", ok(commitReviewed(null)));
     expect(t.host.querySelector('[role="status"]')).toBe(live);
     expect(live?.textContent).toBe(STALE_TEXT);
   });

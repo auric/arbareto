@@ -237,7 +237,7 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 - Policies: 004 mutation steps use the 003 policy `integrate`. New policy `mergetool`: the `integrate` remove list, prefixes, and preserve list, `set {GIT_TERMINAL_PROMPT: "0", GIT_EDITOR: ":"}`, no index variable.
 - Trust discovery adds `merge.<driver>.driver` and `merge.<driver>.recursive`, and the merge tool keys `merge.tool`, `mergetool.<tool>.cmd`, and `mergetool.<tool>.path`. The value display list adds them.
 - `approvalRequired` adds `workbench` and `mergetool` (plan D12). Each is true when any listed integration is repository-controlled by the 001 "Repository-controlled resolution" rule.
-- The `readTrust` result schema changes with the trust tasks: T033 adds the `workbench` and `mergetool` flags, and T057 adds `programs`, the version 2 record, and `approveTrust {trustId, action}`.
+- The `readTrust` result schema changes with the trust tasks: T033 adds the `workbench` and `mergetool` flags, and T057 adds `programs`, the version 2 record, and the `approveTrust` payload `{action}`.
 - "Program file digests" goes. Phase 1 `fileFacts` stays for the hook listing. No phase 2 runs. The bounds `file-count`, `file-bytes`, and `total-bytes` and the session-only approval of a bound go. The 001 §5 row "Trust program file digests" goes.
 - Until T057 removes trust phase 2, `src/contracts/limits.ts` keeps `TRUST_DIGEST_FILES`, `TRUST_DIGEST_FILE_BYTES`, and `TRUST_DIGEST_TOTAL_BYTES`. `trust.ts` and the fileFacts test doubles read them.
 - "Protected programs that change trust" changes: a program that installs hooks during a read changes `approvalRequired`, not an approval. The next action that needs approval asks once.

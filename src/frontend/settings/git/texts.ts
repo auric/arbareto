@@ -98,7 +98,7 @@ export const TEXTS = {
   cancel: "Cancel",
   // Plan D15 "Close with changes": Esc or Close while Git setting changes wait for Save.
   discardTitle: "Discard the Git setting changes that you did not save?",
-  discard: "Discard changes",
+  discard: "Discard setting changes",
   keepEditing: "Keep editing",
   save: "Save",
   saving: "Arbareto saves the Git settings.",

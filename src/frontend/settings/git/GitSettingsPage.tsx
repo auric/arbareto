@@ -5,7 +5,7 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 
 // Type-only imports keep zod out of the renderer bundle.
 import type { z } from "zod";
 import type { ReadGitSettingsResult } from "../../../contracts/envelope";
-import { codeText, OutputTail, unknownFormText } from "../../app/RepositoryStates";
+import { codeText, OutputTail, unknownFormText, unknownReadText } from "../../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../../bridge";
 import { RUNNING_REASON, RunningTooltip } from "../../components/running-tooltip";
 import { matches } from "../../components/switcher-popover";
@@ -40,7 +40,7 @@ const TOOL_SECTIONS: Record<string, string> = { "diff.tool": "difftool.", "merge
 
 /** Pending changes of one scope: the new value, or null to unset. */
 type Pending = Record<string, string | null>;
-type Read = { state: "loading" } | { state: "loaded"; value: GitSettings } | { state: "failed"; code: string };
+type Read = { state: "loading" } | { state: "loaded"; value: GitSettings } | { state: "failed"; text: ReactNode };
 
 export type GitSettingsProps = {
   bridge: GitBridge;
@@ -75,7 +75,7 @@ export function useGitSettings({ bridge, target, operationRunning, onOperation, 
       if (mine !== seq.current) return;
       const result = response.result as Partial<GitSettings> | undefined;
       const ok = response.state === "succeeded" && Array.isArray(result?.values) && isObject(result?.files);
-      setRead(ok ? { state: "loaded", value: result as GitSettings } : { state: "failed", code: response.code ?? response.state });
+      setRead(ok ? { state: "loaded", value: result as GitSettings } : { state: "failed", text: response.state === "succeeded" ? unknownReadText("The Git settings") : codeText(TEXTS.loadFailed, response.code ?? response.state) });
       setEpoch((e) => e + 1);
     });
   }, [bridge, repositoryId]);
@@ -390,7 +390,7 @@ export function GitPage({ name, scope, query, settings }: { name: string; scope:
   const { read, pending, message, saving, operationRunning, epoch, change, cancel, save } = settings;
   const reason = useId();
   if (read.state === "loading") return <p className="text-muted-text">{TEXTS.loading}</p>;
-  if (read.state === "failed") return <p role="alert">{codeText(TEXTS.loadFailed, read.code)}</p>;
+  if (read.state === "failed") return <p role="alert">{read.text}</p>;
   const { values, files } = read.value;
   const scoped: Pending = writable(scope) ? pending[scope] : {};
   const count = Object.keys(scoped).length;

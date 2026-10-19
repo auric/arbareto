@@ -5,7 +5,7 @@ import { Copy01Icon, Delete02Icon, GitBranchIcon, GitCompareArrowsIcon, GitMerge
 import type { IconSvgElement } from "@hugeicons/react";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
-import { useCopy } from "../app/RepositoryStates";
+import { unknownReadText, useCopy } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { ActionMenu, type ActionItem } from "../components/action-menu";
 import { ConfirmPopover } from "../components/confirm-popover";
@@ -423,8 +423,8 @@ export function useBranchActions(options: BranchActionsOptions) {
   return {
     /** The newest `readBranches` entries of the open repository, or null while they load or after a failed read. */
     entries,
-    /** The code of a failed `readBranches`. */
-    failure: branches !== null && branches.repositoryId === repositoryId && branches.entries === null ? branches.code : null,
+    /** The text of a failed `readBranches`. */
+    failure: branches !== null && branches.repositoryId === repositoryId && branches.entries === null ? (branches.code === null ? unknownReadText("The branches") : T.listFailed(branches.code)) : null,
     entryOf,
     /** A pick in the toolbar list. */
     pick: (entry: BranchEntry, anchor: Element | null) => startSwitch(entry, anchor, false),

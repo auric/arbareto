@@ -624,6 +624,11 @@ describe("Add worktree (FR-052, FR-053)", () => {
   test("a folder of the other route states the 001 mixed-location text", () => browseRefusal("UNSUPPORTED_REPOSITORY", "The worktree and its Git directories must all lie inside one WSL distro, or all on Windows."));
   test("a failed picker states that Browse can run again", () => browseRefusal("PICKER_FAILED", "The folder picker failed. Select Browse… again."));
   test("another code is no folder", () => browseRefusal("SERVICE_UNAVAILABLE", "Arbareto cannot use the folder picker: SERVICE_UNAVAILABLE."));
+  test("a succeeded picker without a path names the unknown form, not the state (plan D15)", async () => {
+    const { panel } = await browseWith(succeeded({}));
+    expect(folderField(panel).value).toBe("C:\\repo-login");
+    expect(text(panel.querySelector('[role="alert"]')!)).toBe("Browse did not complete: the result has an unknown form.");
+  });
 
   test("Escape restores the earlier dock content", async () => {
     await openAdd();

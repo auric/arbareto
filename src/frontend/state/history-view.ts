@@ -34,6 +34,7 @@ export type SearchState = {
   matches: number;
   settled: number;
   shallow: boolean;
+  /** Absent on `failed`: a `succeeded` response with a result of unknown form (feature 004 plan.md D15 "Malformed result"). */
   code?: string;
   reason?: string;
   /** `filter-text.ts` names the refused characters. */
@@ -50,7 +51,8 @@ export type HistoryState = {
   /** The `nextRequestSeq()` value when the `openHistory` response arrived. Only reads sent later can be newer than the view (contract Δ8). */
   openedSeq: number;
   opening: boolean;
-  openFailure: { code: string; reason?: string; remedy?: Remedy } | null;
+  /** `code` null: a `succeeded` response with a result of unknown form (feature 004 plan.md D15 "Malformed result"). */
+  openFailure: { code: string | null; reason?: string; remedy?: Remedy } | null;
   /** The rows that the view holds (contract Δ3 `rowCount`). */
   viewRows: number;
   complete: boolean;
@@ -80,7 +82,8 @@ export type HistoryState = {
 
 type Page = { rows: ViewRow[]; bytes: number; settled: boolean };
 /** A details read: the row of a `found` target, another contract Δ3 target, a canceled read, a failure code, or a view that ended. */
-export type Details = { state: "found"; row: ViewRow } | { state: "none" | "unknown" | "canceled" | "ended" } | { state: "failed"; code: string };
+/** A failed `code` null: a `succeeded` response with a result of unknown form (feature 004 plan.md D15 "Malformed result"). */
+export type Details = { state: "found"; row: ViewRow } | { state: "none" | "unknown" | "canceled" | "ended" } | { state: "failed"; code: string | null };
 
 const INITIAL: Omit<HistoryState, "scope"> = {
   view: null,
@@ -433,7 +436,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     if (mine !== epoch) return;
     const result = response.result as (Opened & Refusal) | undefined;
     if (response.state !== "succeeded" || result?.viewId === undefined) {
-      set({ opening: false, openFailure: { code: response.code ?? response.state, reason: result?.reason, remedy: result?.remedy } });
+      set({ opening: false, openFailure: { code: response.state === "succeeded" ? null : (response.code ?? response.state), reason: result?.reason, remedy: result?.remedy } });
       return;
     }
     // Contract Δ3: an empty repository gives a view with `startCount` 0. It has no commit to load.
@@ -481,7 +484,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     if (response.state === "canceled") return endSearch({ ...search, state: "stopped" });
     if (stale(response)) return endSearch({ ...search, state: "stopped" });
     const refused = response.code === "UNSUPPORTED_FILTER_TEXT" || response.code === "SEARCH_UNSUPPORTED" || response.code === "OUTPUT_LIMIT";
-    await endSearch({ ...search, state: refused ? "refused" : "failed", code: response.code ?? response.state, reason: result?.reason, remedy: result?.remedy });
+    await endSearch({ ...search, state: refused ? "refused" : "failed", code: response.state === "succeeded" ? undefined : (response.code ?? response.state), reason: result?.reason, remedy: result?.remedy });
   }
 
   /** Contract Δ3: an ended search ends its `searchId`. The full list returns with the selected commit. */
@@ -626,7 +629,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     }
     if (response.state === "canceled") return { state: "canceled" };
     stale(response);
-    return { state: "failed", code: response.code ?? response.state };
+    return { state: "failed", code: response.state === "succeeded" ? null : (response.code ?? response.state) };
   }
 
   /** Contract Δ8: after a service restart no view resumes. */

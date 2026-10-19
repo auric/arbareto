@@ -4,6 +4,7 @@
 import { FolderAddIcon } from "@hugeicons/core-free-icons";
 import { useId, useRef, useState, useSyncExternalStore } from "react";
 import { branchNameRefusal } from "../../contracts/branch-name";
+import { unknownFormText } from "../app/RepositoryStates";
 import type { BridgeResponse } from "../bridge";
 import { DockedPanel } from "../components/docked-panel";
 import { RUNNING_REASON } from "../components/running-tooltip";
@@ -97,7 +98,8 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
         const name = splitPath(suggestFolder(worktreeRoot, branchText), WINDOWS_SEPARATORS)[1];
         // Contract §6: a Windows path and a WSL UNC path both take `\`.
         setEdited(`${parent.replace(/[\\/]+$/, "")}\\${name}`);
-      } else if (response.state !== "canceled") setError(browseRefusal(response.code ?? response.state));
+      } else if (response.state === "succeeded") setError(unknownFormText("Browse"));
+      else if (response.state !== "canceled") setError(browseRefusal(response.code ?? response.state));
     } finally {
       setBrowsing(false);
       folderField.current?.focus();

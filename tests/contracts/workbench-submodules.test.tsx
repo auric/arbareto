@@ -209,6 +209,21 @@ describe("rows at rest (FR-077)", () => {
     await mount({ listed: { requestId: fixtureId(30), state: "failed", code: "DEADLINE" } });
     expect(text(group().querySelector('[data-slot="list-failure"]')!)).toBe("Arbareto cannot read the submodules: DEADLINE.");
   });
+
+  // Plan D15 "Malformed result": a succeeded review without the fields that the group reads.
+  const UNKNOWN_FORM = "The submodules did not load: the result has an unknown form.";
+  test("a succeeded list review of unknown form names the unknown form", async () => {
+    await mount({ listed: { requestId: fixtureId(31), state: "succeeded", result: {} } });
+    expect(text(group().querySelector('[data-slot="list-failure"]')!)).toBe(UNKNOWN_FORM);
+  });
+
+  test("a succeeded Update review of unknown form names the unknown form and starts no update", async () => {
+    const view = await mount();
+    await click(button("Update submodules", group()));
+    await answer(view.double.pending("reviewSubmodules"), { requestId: fixtureId(32), state: "succeeded", result: { rows: [] } });
+    expect(text(group().querySelector('[data-slot="list-failure"]')!)).toBe(UNKNOWN_FORM);
+    expect(view.double.pending("updateSubmodules")).toBeUndefined();
+  });
 });
 
 describe("one click (FR-076)", () => {

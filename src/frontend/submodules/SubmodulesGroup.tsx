@@ -4,7 +4,7 @@
 import { FolderSyncIcon } from "@hugeicons/core-free-icons";
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { SubmoduleHost, SubmoduleHostLine, SubmodulePlanRow, SubmoduleProgram, SubmoduleRefusalReason, SubmoduleRowResult } from "../../contracts/submodules";
-import { CopyButton, useCopy } from "../app/RepositoryStates";
+import { CopyButton, unknownReadText, useCopy } from "../app/RepositoryStates";
 import type { createBridge, ProgressEvent } from "../bridge";
 import { ActionMenu, type ActionItem } from "../components/action-menu";
 import { IconButton } from "../components/icon-button";
@@ -19,6 +19,9 @@ import { ReadsTrustNotice } from "../trust/TrustChip";
 export type SubmoduleRefusal = { code: "UNSUPPORTED_SUBMODULE"; reason: SubmoduleRefusalReason; path: string; text: string; remedy: { command: string | null; text?: string } | null };
 /** The `reviewSubmodules` result value (contract §12 "Plan", Δ12). */
 type SubmoduleReviewValue = { generation: number; rows: SubmodulePlanRow[]; programs: SubmoduleProgram[]; refusals: SubmoduleRefusal[]; hosts: SubmoduleHostLine[]; submoduleReviewToken: string };
+// The fields that the group reads. Feature 004 plan.md D15 "Malformed result": a `succeeded` result without them has an unknown form.
+const isReviewValue = (result: unknown): result is SubmoduleReviewValue =>
+  isObject(result) && Array.isArray(result.rows) && Array.isArray(result.refusals) && Array.isArray(result.hosts) && typeof result.submoduleReviewToken === "string";
 type Bridge = Pick<ReturnType<typeof createBridge>, "reviewSubmodules" | "updateSubmodules">;
 type Target = { repositoryId: string; repositoryGeneration: number };
 
@@ -37,8 +40,8 @@ type GroupState = {
   summary: Summary | null;
   /** A list-only review is pending. */
   listing: boolean;
-  /** The code of the last list-only review that did not succeed. */
-  listFailure: string | null;
+  /** The last review that did not list the rows. `code` null: a `succeeded` result of unknown form. */
+  listFailure: { code: string | null } | null;
   /** A new host line or refusal waits for focus. */
   attention: boolean;
 };
@@ -121,7 +124,8 @@ export function useSubmoduleUpdate(options: SubmoduleUpdateOptions): SubmoduleUp
       if (scope !== null && response.code === "UNKNOWN_TARGET") list();
       return;
     }
-    const value = response.result as SubmoduleReviewValue;
+    const value = response.result;
+    if (!isReviewValue(value)) return patch(target, (s) => ({ ...s, listFailure: { code: null } }));
     patch(target, (s) => ({ ...s, rows: scope === null || s.rows === null ? value.rows : s.rows, refusals: value.refusals, hosts: null, listFailure: null }));
     if (value.refusals.length > 0) return attention(target);
     if (value.hosts.length > 0) {
@@ -143,8 +147,9 @@ export function useSubmoduleUpdate(options: SubmoduleUpdateOptions): SubmoduleUp
       .reviewSubmodules(target, { snapshotId })
       .then((response) => {
         if (!same(target)) return;
-        if (response.state === "succeeded") patch(target, (s) => ({ ...s, rows: (response.result as SubmoduleReviewValue).rows, listFailure: null }));
-        else patch(target, (s) => ({ ...s, listFailure: response.code ?? response.state }));
+        const value = response.result;
+        if (response.state === "succeeded") patch(target, (s) => (isReviewValue(value) ? { ...s, rows: value.rows, listFailure: null } : { ...s, listFailure: { code: null } }));
+        else patch(target, (s) => ({ ...s, listFailure: { code: response.code ?? response.state } }));
       })
       .finally(() => {
         listingNow.current = false;
@@ -453,7 +458,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
         {summary === null || summary.registered === 0 ? null : (
           <p data-slot="registration-line" className="px-2">{`Git changed the repository settings of ${plural(summary.registered, "submodule", "submodules")}.`}</p>
         )}
-        {update.listFailure !== null && TRUST_CODES.has(update.listFailure) ? (
+        {update.listFailure?.code != null && TRUST_CODES.has(update.listFailure.code) ? (
           <div data-slot="list-failure">
             <ReadsTrustNotice
               onTrust={() => {
@@ -464,7 +469,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
             />
           </div>
         ) : update.listFailure !== null ? (
-          <p data-slot="list-failure" className="px-2">{`Arbareto cannot read the submodules: ${update.listFailure}.`}</p>
+          <p data-slot="list-failure" className="px-2">{update.listFailure.code === null ? unknownReadText("The submodules") : `Arbareto cannot read the submodules: ${update.listFailure.code}.`}</p>
         ) : rows === null ? (
           <p data-slot="list-loading" className="px-2 text-muted-text">
             {LOADING}

@@ -79,6 +79,13 @@ describe("toolbar controls (FR-039)", () => {
     expect(reasonOf(document.querySelector<HTMLElement>('button[data-slot="pull-main"]')!)).toContain("The default pull action is still loading…");
   });
 
+  test("a succeeded readSyncSettings without a default pull action names the unknown form (feature 004 plan D15)", async () => {
+    await open({ answers: { readSyncSettings: () => succeeded({}) } });
+    const reason = reasonOf(document.querySelector<HTMLElement>('button[data-slot="pull-main"]')!);
+    expect(reason).toContain("The default pull action did not load: the result has an unknown form.");
+    expect(reason).not.toContain("succeeded");
+  });
+
   test("a menu beside Fetch offers Fetch all remotes, and its item sends reviewSync fetch-all", async () => {
     const { double } = await open();
     const trigger = button("Fetch options");

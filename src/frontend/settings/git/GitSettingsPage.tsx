@@ -293,8 +293,9 @@ function TextControl({ value, scope, locked, pending, onChange, label }: RowProp
   );
 }
 
-function PresetControl(props: RowProps & { presets: readonly Preset[] }) {
-  const { value, scope, locked, pending, onChange, presets } = props;
+function PresetControl(props: RowProps & { presets: readonly Preset[]; wsl: boolean }) {
+  const { value, scope, locked, pending, onChange, wsl } = props;
+  const presets = wsl ? [] : props.presets;
   const entry = own(value, scope);
   const next = value.key in pending ? pending[value.key] : undefined;
   const current = next !== undefined ? next : entry === undefined ? null : shownValue(entry);
@@ -324,12 +325,13 @@ function PresetControl(props: RowProps & { presets: readonly Preset[] }) {
       </select>
       {selected === "custom" ? <TextControl {...props} label={`${TEXTS.label(value.key)}, ${TEXTS.custom}`} /> : null}
       {current !== null && selected !== "" ? <span className="text-muted-text">{TEXTS.writesPreset(value.key, current)}</span> : null}
+      {wsl ? <span className="text-muted-text">{TEXTS.wslPresets}</span> : null}
     </div>
   );
 }
 
 /** One key in the selected scope. Effective and System show the entries only (FR-058). */
-function KeyRow({ value, scope, files, pending, onChange }: { value: ConfigValue; scope: Scope; files: GitSettings["files"]; pending: Pending; onChange(next: string | null): void }) {
+function KeyRow({ value, scope, files, pending, wsl, onChange }: { value: ConfigValue; scope: Scope; files: GitSettings["files"]; pending: Pending; wsl: boolean; onChange(next: string | null): void }) {
   const label = TEXTS.label(value.key);
   let body: ReactNode;
   if (scope === "effective") body = <Entries entries={value.effective === null ? [] : [value.effective]} />;
@@ -340,7 +342,7 @@ function KeyRow({ value, scope, files, pending, onChange }: { value: ConfigValue
     const props: RowProps = { value, scope, locked: reason !== null || files[scope] === null, pending, onChange };
     const presets = PRESETS.get(value.key);
     const control =
-      reason === "multi-value" ? null : value.type.kind === "bool" ? <BoolControl {...props} /> : value.type.kind === "enum" ? <EnumControl {...props} /> : presets !== undefined ? <PresetControl {...props} presets={presets} /> : <TextControl {...props} />;
+      reason === "multi-value" ? null : value.type.kind === "bool" ? <BoolControl {...props} /> : value.type.kind === "enum" ? <EnumControl {...props} /> : presets !== undefined ? <PresetControl {...props} presets={presets} wsl={wsl} /> : <TextControl {...props} />;
     const entry = entries[0];
     body = (
       <>
@@ -387,7 +389,7 @@ function pageValues(name: string, values: readonly ConfigValue[]): ConfigValue[]
 }
 
 /** One Git configuration page in the selected scope, with the pending changes and Save (FR-064, FR-065). */
-export function GitPage({ name, scope, query, settings }: { name: string; scope: Scope; query: string; settings: GitSettingsState }) {
+export function GitPage({ name, scope, query, settings, wsl }: { name: string; scope: Scope; query: string; settings: GitSettingsState; wsl: boolean }) {
   const { read, pending, message, saving, operationRunning, epoch, change, cancel, save } = settings;
   const reason = useId();
   if (read.state === "loading") return <p className="text-muted-text">{TEXTS.loading}</p>;
@@ -402,7 +404,7 @@ export function GitPage({ name, scope, query, settings }: { name: string; scope:
       {pageValues(name, values)
         .filter((value) => keyMatches(value.key, query))
         .map((value) => (
-        <KeyRow key={`${scope}:${value.key}:${epoch}`} value={value} scope={scope} files={files} pending={scoped} onChange={(next) => writable(scope) && change(scope, value, next)} />
+        <KeyRow key={`${scope}:${value.key}:${epoch}`} value={value} scope={scope} files={files} pending={scoped} wsl={wsl} onChange={(next) => writable(scope) && change(scope, value, next)} />
       ))}
       <div role="status" className="flex flex-col gap-1 pt-2">
         {message}

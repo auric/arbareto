@@ -27,6 +27,8 @@ export type SettingsViewProps = {
   bridge: SettingsBridge & GitBridge & Pick<ReturnType<typeof createBridge>, "setDefaultPullAction" | "setSwitchChoice">;
   /** The open repository and its generation, or null. Without it, the Git pages need an open repository (plan D15). */
   target: { repositoryId: string; repositoryGeneration: number } | null;
+  /** True when the workspace snapshot has `location.kind` "wsl". The editor and tool presets are Windows commands (plan D15). */
+  wsl: boolean;
   /** The open repository: its `worktreeKey` and the `readTrust` key file proposals. Null without a repository. */
   repository: { worktreeKey: string; proposals: KeyProposal[] } | null;
   /** True while a Git operation runs (plan D15 running rule). */
@@ -68,7 +70,7 @@ function AppChoice<T extends string>({ slot, heading, note, options, value, onCh
 }
 
 /** The Settings view, a full view inside the main window (FR-068). It holds the Git configuration pages and the app pages. */
-export function SettingsView({ bridge, target, repository, operationRunning, onOperation, onEnded, onSettings, page: initialPage, onClose }: SettingsViewProps) {
+export function SettingsView({ bridge, target, wsl, repository, operationRunning, onOperation, onEnded, onSettings, page: initialPage, onClose }: SettingsViewProps) {
   const heading = useId();
   const [page, setPage] = useState(initialPage ?? (target === null ? "SSH" : "User"));
   const [scope, setScope] = useState<Scope>("local");
@@ -122,7 +124,7 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
 
   const app = (render: (settings: SyncSettings) => ReactNode) =>
     read.state === "loading" ? <p className="text-muted-text">The settings are still loading…</p> : read.state === "failed" ? <p role="alert">{read.text}</p> : render(read.value);
-  const gitPage = (name: string) => (target === null ? <p>{TEXTS.needsRepository}</p> : <GitPage name={name} scope={scope} query={query} settings={git} />);
+  const gitPage = (name: string) => (target === null ? <p>{TEXTS.needsRepository}</p> : <GitPage name={name} scope={scope} query={query} settings={git} wsl={wsl} />);
   // Plan D15 "Find a setting": a query keeps only the Git pages with a matching key. The app pages hold no Git key.
   const values = git.read.state === "loaded" ? git.read.value.values : null;
   const shown = query === "" ? PAGES : GIT_PAGES.map((p) => p.name).filter((name) => pageKeys(name, values).some((key) => keyMatches(key, query)));

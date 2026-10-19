@@ -67,7 +67,7 @@ async function renderSettings(current = base(), repository: { worktreeKey: strin
   const root = createRoot(host);
   // Feature 004 O-7: the sections are the Settings view pages "SSH" and "Clone". Without a target, the view opens on "SSH" and reads no Git settings.
   await act(async () =>
-    root.render(<SettingsView bridge={double.bridge as never} target={null} repository={repository} operationRunning={false} onOperation={() => {}} onEnded={() => {}} onClose={() => void (closed += 1)} />),
+    root.render(<SettingsView bridge={double.bridge as never} target={null} wsl={false} repository={repository} operationRunning={false} onOperation={() => {}} onEnded={() => {}} onClose={() => void (closed += 1)} />),
   );
   unmounts.push(async () => {
     await act(async () => root.unmount());

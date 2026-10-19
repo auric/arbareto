@@ -81,7 +81,7 @@ const roots: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const unmount of roots.splice(0)) await unmount();
 });
-type Options = { git?: unknown; app?: unknown; target?: typeof TARGET | null; page?: string };
+type Options = { git?: unknown; app?: unknown; target?: typeof TARGET | null; page?: string; wsl?: boolean };
 async function render(options: Options = {}) {
   const double = createDouble(options.git ?? gitSettings(), options.app ?? sync());
   const operations: StatusOperation[] = [];
@@ -95,6 +95,7 @@ async function render(options: Options = {}) {
       <SettingsView
         bridge={double.bridge}
         target={target}
+        wsl={options.wsl ?? false}
         repository={target === null ? null : { worktreeKey: "a".repeat(64), proposals: [] }}
         operationRunning={false}
         onOperation={(op) => void operations.push(op)}
@@ -297,6 +298,22 @@ describe("pages and controls (FR-060 to FR-062, FR-067)", () => {
     await scope("local");
     expect(row("core.editor").querySelector("select")!.value).toBe("custom");
     expect(row("core.editor").querySelector<HTMLInputElement>("input")!.value).toBe("code -w");
+  });
+
+  test("a WSL workspace offers no Windows presets: the editor and tool rows show Not set and Custom with the D15 note (FR-006, FR-062)", async () => {
+    await render({ wsl: true, git: gitSettings({ "core.editor": configValue("core.editor", [local("code --wait")]) }) });
+    await page("Editor and tools");
+    await scope("local");
+    for (const key of ["core.editor", "diff.tool", "merge.tool"]) {
+      const select = row(key).querySelector("select")!;
+      expect([...select.querySelectorAll("option")].map((o) => [o.textContent, o.value])).toEqual([
+        ["Not set", ""],
+        ["Custom", "custom"],
+      ]);
+      expect(text(row(key))).toContain("Presets are Windows commands. A WSL repository needs a command for its distro.");
+    }
+    expect(row("core.editor").querySelector("select")!.value).toBe("custom");
+    expect(row("core.editor").querySelector<HTMLInputElement>("input")!.value).toBe("code --wait");
   });
 
   test("values show as plain text (FR-067)", async () => {

@@ -11,7 +11,7 @@ description: "Task list for the Workbench UX feature"
 
 **Tests**: The spec (SC-001 to SC-016) and plan.md "Steps" require tests. Each step writes its tests first (plan.md "Steps (riskiest proof first)"). A failing-test task comes before each implementation task. No test passes by default.
 
-**Organization**: Phases follow the eight batches of plan.md "Phases": (0) fixtures and facts P0.1 to P0.4, (1) pure logic, contracts, and shell P1 to P3, (2) P1 service P4, (3) P1 frontend P5, (4) P2 service and trust shell P6 and P7, (5) P2 frontend P8, (6) spell check P10, (7) qualification P9. Story phases carry `[USn]` labels. Batches 0, 1, and 7 carry no label.
+**Organization**: Phases follow the eight batches of plan.md "Phases": (0) fixtures and facts P0.1 to P0.4, (1) pure logic, contracts, and shell P1 to P3, (2) P1 service P4, (3) P1 frontend P5, (4) P2 service and trust shell P6 and P7, (5) P2 frontend P8, (6) spell check P10, moved to a later feature, (7) qualification P9. Story phases carry `[USn]` labels. Batches 0, 1, and 7 carry no label.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -295,7 +295,7 @@ description: "Task list for the Workbench UX feature"
 - [ ] T083 [P] Write `tests/windows/workbench-perf.test.ts` (P9, WP28). `Local: package`. SC-007 with 100,000 untracked files: open the commit view, scroll, expand Untracked, and stage one file. 95% of inputs within 100 ms, and every input within 500 ms, cold and warm. Record CPU and process-tree memory. Record the time of a 10,000-file action (plan.md D8). Blocked by 001 T165, T180, T240, T242, and T244. Add the file to `tests/groups.json` `serial`. Spec: SC-007, FR-088. Depends on T076.
 - [ ] T084 Review the requirement-to-test map of the "Coverage" section (quickstart.md Q27). Record in research.md that no outcome depends on Git message text, timing, or a name pattern, or list each finding. Spec: SC-013. Depends on T081 to T083.
 - [ ] T085 Run the batch 7 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, then `bun run build:service` and `bun run test:windows`. `Local: Rust`. `Local: WSL`. `Local: package`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every record into research.md "Results". Control mutation: in `tests/windows/workbench-perf.test.ts`, lower the 500 ms bound to 1 ms. The test must fail. Undo the edit and rerun green. Spec: SC-003, SC-007, SC-010, SC-014. Depends on T081 to T084.
-- [ ] T086 Run `/speckit-converge` and record the result. Spec: all. Depends on T085.
+- [ ] T086 Run `/speckit-converge` and record the result. Spec: all, except the moved FR-083, FR-084, and SC-012. Depends on T085.
 
 ---
 

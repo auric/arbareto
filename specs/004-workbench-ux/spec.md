@@ -463,7 +463,7 @@ FR-083 and FR-084 move to a later feature (Clarifications, 2026-10-19). Feature 
 #### Visible controls and keyboard
 
 - **FR-085**: Every new control MUST have an icon or a text label, a tooltip that names the action and its shortcut, an accessible name, and visible focus. The accessible name of a menu item MUST be its label only. The menu item MUST give its shortcut in `aria-keyshortcuts`, and its visible shortcut text MUST be hidden from assistive technology. Selectable text and editable fields MUST keep the built-in menu with Copy, unless the element has its own action menu. Unavailable controls MUST state their reason. Destructive actions MUST use explicit labels and MUST stay apart from routine primary actions.
-- **FR-086**: The branch list, the worktree list, and the file lists MUST create elements only for the rows near the visible area, as 002 FR-055 requires for the sidebar. The Submodules group needs no virtualization, because the 001 contract §5 "Submodule review" bound caps it at 256 rows.
+- **FR-086**: The branch list, the worktree list, and the file lists MUST create elements only for the rows near the visible area, as 002 FR-055 requires for the sidebar. The worktree list is the list of the worktree button. The sidebar Worktrees group shows at most 1,000 records. The Submodules group needs no virtualization, because the 001 contract §5 "Submodule review" bound caps it at 256 rows.
 - **FR-087**: Single-letter shortcuts MUST act only while their region has focus. A new single-letter shortcut MUST NOT act globally.
 - **FR-088**: The window MUST keep the feature 001 SC-005 response targets during every operation of this feature.
 

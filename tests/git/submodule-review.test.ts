@@ -24,6 +24,7 @@ import {
   fixtureGit,
   gitLocation,
   globalEnv,
+  insideSubmodule,
   invalidGitFolder,
   isReviewRead,
   moduleDirOf,
@@ -871,6 +872,48 @@ describe("token (contract §12 \"Update protocol\" step 2, §9)", () => {
           const from = service.runner.calls.length;
           const response = await updateSubmodules(service, repositoryId, r);
           expect({ code: response.code, steps: updateSteps(service, from).map((c) => c.arguments), canaries: ranCanaries(b) }).toEqual({ code: "STALE_REVIEW", steps: [], canaries: [] });
+        },
+        { watchHints: false },
+      );
+    });
+  }
+
+  // 001 contract §7 "Shared listing": a review after the second read of a generation takes the listing of that read. The first read shares none.
+  const LISTING = "config list --show-scope --show-origin -z";
+  const superReads = (service: Service, sup: string, from: number) => callsSince(service, from).filter((c) => !insideSubmodule(sup, c.arguments)).map((c) => commandOf(c.arguments).join(" "));
+  for (const kind of ["no submodule", "F27 base"] as const) {
+    reviewCase(`${kind}: a review after the second read of its generation runs no own trust listing, and its rows and token equal those of a review with its own listing`, () => {
+      const b = buildF27(gitPath(), `t222-token-shared-${kind.replaceAll(" ", "-").toLowerCase()}`, "base");
+      let dir = superOf(b);
+      if (kind === "no submodule") {
+        dir = join(b.root, "plain");
+        mkdirSync(dir);
+        fixtureGit(b, dir, ["init", "-q", "-b", "main"]);
+        put(dir, "a.txt", "a\n");
+        fixtureGit(b, dir, ["add", "--", "a.txt"]);
+        fixtureGit(b, dir, ["commit", "-q", "-m", "a"]);
+      }
+      return withFixture(
+        b,
+        `t222-token-shared-${kind}`,
+        async (service) => {
+          await review();
+          const { repositoryId } = await service.register(dir);
+          const first = await readOk(service, repositoryId);
+          let from = service.runner.calls.length;
+          const own = await reviewSubmodules(service, repositoryId, first);
+          const ownReads = superReads(service, dir, from);
+          const second = await readOk(service, repositoryId);
+          from = service.runner.calls.length;
+          const shared = await reviewSubmodules(service, repositoryId, second);
+          const sharedReads = superReads(service, dir, from);
+          console.log(`PROCESSES ${kind}: own listing ${ownReads.length} [${ownReads.join(" | ")}], shared listing ${sharedReads.length} [${sharedReads.join(" | ")}]`);
+          expect({ own: own.response.state, shared: shared.response.state, rows: shared.rows.length }).toEqual({ own: "succeeded", shared: "succeeded", rows: kind === "no submodule" ? 0 : 2 });
+          expect(ownReads.filter((c) => c === LISTING).length).toBe(1);
+          expect(sharedReads.filter((c) => c === LISTING)).toEqual([]);
+          expect(sharedReads.length).toBeLessThan(ownReads.length);
+          const strip = (r: SubmoduleReview) => r.rows.map((row) => ({ ...row, rowId: undefined, parentRowId: undefined }));
+          expect({ rows: strip(shared), programs: shared.programs }).toEqual({ rows: strip(own), programs: own.programs });
         },
         { watchHints: false },
       );

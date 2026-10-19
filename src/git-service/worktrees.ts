@@ -5,12 +5,12 @@
 // Plan.md D10, data-model §2 and §8, and spec FR-049 to FR-057. Git's own refusal stays the second guard of each step.
 
 import { IdentityReply } from "../contracts/channel";
-import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, IDENTITY_PATHS, STATUS_LISTING_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
+import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, IDENTITY_PATHS, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import { deleteFacts, deleteSteps, nameRefusal, newName, type DeleteFacts } from "./branch-ops";
 import { isObjectId, isRefName, type ObjectFormat } from "./commands";
 import { RunnerRefusal, stepUnits, type EnvironmentPolicy, type GitRunner, type ProcessContext, type SyncRunner } from "./git-runner";
-import type { Fact, ObserveContext } from "./hunk-publish";
+import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { NO_FILE, sameIdentity, type PhysicalIdentity } from "./identity";
 import { contextOf, latin1, strictUtf8 } from "./read-steps";
 import type { Workspace } from "./registration";
@@ -259,22 +259,82 @@ async function targetTrust(ctx: ObserveContext, record: WorktreeRecord, root: Lo
 }
 
 // git-ls-files(1) `--stage -z`: `<mode> SP <object> SP <stage> TAB <path> NUL`. Mode 160000 is a gitlink (gitformat-index(5)).
-// A path that is no valid UTF-8 gives null. Null for the whole list: the output breaks that form.
-function gitlinks(bytes: Uint8Array, objectFormat: ObjectFormat): (string | null)[] | null {
-  const text = latin1(bytes);
-  if (text !== "" && !text.endsWith("\0")) return null;
+// The stream keeps only gitlink paths, within STATUS_LISTING_RECORDS records and STATUS_LISTING_BYTES path bytes. Other paths are counted, not kept.
+// A record that breaks the form sets `broken`. A broken record or a reached bound sets `limited`, and that stops Git.
+export function gitlinkStream(objectFormat: ObjectFormat) {
+  const NUL = 0;
+  const width = 6 + 1 + (objectFormat === "sha1" ? 40 : 64) + 1 + 1 + 1;
+  // A path that is no valid UTF-8 gives null.
   const paths: (string | null)[] = [];
-  for (const record of text === "" ? [] : text.slice(0, -1).split("\0")) {
-    const m = /^([0-7]{6}) ([0-9a-f]+) ([0-3])\t([\s\S]+)$/.exec(record);
-    if (m === null || !isObjectId(m[2]!, objectFormat)) return null;
-    if (m[1] !== "160000") continue;
-    try {
-      paths.push(strictUtf8.decode(Buffer.from(m[4]!, "latin1")));
-    } catch {
-      paths.push(null);
-    }
-  }
-  return paths;
+  let header: number[] = [];
+  let inPath = false;
+  let pathBytes = 0;
+  let kept: Uint8Array[] | null = null;
+  let keptBytes = 0;
+  let bytes = 0;
+  let broken = false;
+  let bound: "STATUS_LISTING_BYTES" | "STATUS_LISTING_RECORDS" | null = null;
+  return {
+    push(chunk: Uint8Array): void {
+      bytes += chunk.length;
+      for (let at = 0; at < chunk.length && !broken && bound === null; ) {
+        if (!inPath) {
+          const end = Math.min(chunk.length, at + width - header.length);
+          for (; at < end; at++) {
+            if (chunk[at] === NUL) return void (broken = true);
+            header.push(chunk[at]!);
+          }
+          if (header.length < width) return;
+          const m = /^([0-7]{6}) ([0-9a-f]+) [0-3]\t$/.exec(latin1(Uint8Array.from(header)));
+          if (m === null || !isObjectId(m[2]!, objectFormat)) return void (broken = true);
+          inPath = true;
+          pathBytes = 0;
+          kept = m[1] === "160000" ? [] : null;
+          continue;
+        }
+        const nul = chunk.indexOf(NUL, at);
+        const end = nul === -1 ? chunk.length : nul;
+        pathBytes += end - at;
+        if (kept !== null && end > at) {
+          keptBytes += end - at;
+          if (keptBytes > STATUS_LISTING_BYTES) return void (bound = "STATUS_LISTING_BYTES");
+          kept.push(new Uint8Array(chunk.subarray(at, end)));
+        }
+        if (nul === -1) return;
+        at = nul + 1;
+        if (pathBytes === 0) return void (broken = true);
+        if (kept !== null) {
+          if (paths.length >= STATUS_LISTING_RECORDS) return void (bound = "STATUS_LISTING_RECORDS");
+          try {
+            paths.push(strictUtf8.decode(Buffer.concat(kept)));
+          } catch {
+            paths.push(null);
+          }
+        }
+        inPath = false;
+        header = [];
+        kept = null;
+      }
+    },
+    get bytes() {
+      return bytes;
+    },
+    records: 0,
+    get limited() {
+      return broken || bound !== null;
+    },
+    get bound() {
+      return bound;
+    },
+    get broken() {
+      return broken;
+    },
+    // A partial record at the end of the stream.
+    get partial() {
+      return inPath || header.length > 0;
+    },
+    paths,
+  };
 }
 
 // git-worktree(1): a worktree with submodules needs `--force`. builtin/worktree.c `validate_no_submodules` refuses when `<administration folder>/modules`
@@ -282,12 +342,14 @@ function gitlinks(bytes: Uint8Array, objectFormat: ObjectFormat): (string | null
 // Any existing entry counts, and so does a path without an identity form. So these facts hold Git's check, and the box comes first.
 async function submodulesOf(ctx: ObserveContext, record: WorktreeRecord, folders: { top: string; admin: string }): Promise<Fact<boolean>> {
   const w = ctx.workspace;
-  const read = await readOut(ctx, worktreeIndexArgs(record.path), STATUS_LISTING_BYTES);
-  if ("limited" in read) return { code: "OUTPUT_LIMIT", reason: "STATUS_LISTING_BYTES" };
-  if (!("value" in read)) return read;
-  const links = gitlinks(read.value, w.objectFormat);
-  if (links === null) return { code: "MALFORMED_GIT_OUTPUT" };
-  const paths = [`${folders.admin}/modules`, ...links.map((path) => (path === null ? null : `${folders.top}/${path}/.git`))];
+  const out = gitlinkStream(w.objectFormat);
+  const step = await stepOf(ctx, worktreeIndexArgs(record.path), out);
+  if (!("exit" in step)) return step;
+  if (out.bound !== null) return { code: "OUTPUT_LIMIT", reason: out.bound };
+  if (out.broken) return { code: "MALFORMED_GIT_OUTPUT" };
+  if (step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
+  if (out.partial) return { code: "MALFORMED_GIT_OUTPUT" };
+  const paths = [`${folders.admin}/modules`, ...out.paths.map((path) => (path === null ? null : `${folders.top}/${path}/.git`))];
   // Contract §11: an identity request names the UNC form of a Linux path.
   const forms = paths.map((path) => (path === null ? null : w.wsl === undefined ? path : wslIdentityPath(w.wsl.distro, path)));
   if (forms.some((path) => path === null)) return { value: true };

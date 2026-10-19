@@ -775,6 +775,20 @@ The Windows SDK is present. On 2026-09-29, the x64 `kernel32.Lib` exists for SDK
 
 The selected SDK x64 `kernel32.Lib` exists at `C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\um\x64\kernel32.Lib`. The probe linked `fn main(){}` with `rustc --target x86_64-pc-windows-msvc -C link-arg=/VERBOSE:LIB` in the session scratch directory, and the link exited with code 0. The probe wrote nothing into the repository.
 
+**Build minimum check, 2026-10-19.** The check used main `e0cf66e` in the worktree `C:\Projects\arbareto-l8` on the current reference host. It installed nothing and changed no tool. The host has Visual Studio Enterprise 2022 `17.14.36221.1` as its only installation, with MSVC toolsets `14.29.30133` and `14.44.35207`. `Windows Kits\10\Lib` and `Windows Kits\10\Include` hold only `10.0.19041.0`. Result: nothing in the build needs a newer toolset or SDK, so plan.md sets the minimums to these versions.
+
+- Probe method: rustc 1.99.0 prints no linker output, so `/VERBOSE:LIB` alone gives no `Searching` lines. The wrapper is a `.cmd` script passed as `-C linker=`. It writes `%LIB%`, the `link.exe` that `PATH` resolves, and the linker output to one new log folder for each call, then runs `link.exe %*`. A shared log file fails under parallel Cargo links.
+- T001 probe: `rustc 1.99.0 (b940084d7 2026-09-28)` linked `fn main(){}` with `-C linker=<wrapper> -C link-arg=/VERBOSE:LIB` and exited with code 0. The linker was `C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\link.exe`, banner `14.44.35211.0`. The `Searching` paths were `...\MSVC\14.44.35207\lib\x64\msvcrt.lib` and `vcruntime.lib`, `...\Windows Kits\10\lib\10.0.19041.0\um\x64\kernel32.lib`, `ntdll.lib`, `userenv.lib`, `ws2_32.lib`, and `dbghelp.lib`, and `...\10.0.19041.0\ucrt\x64\ucrt.lib`.
+- Shell link: `cargo build --release --target x86_64-pc-windows-msvc --locked` in `src-tauri` with the same wrapper and `RUSTFLAGS=-C link-arg=/VERBOSE` exited with code 0. All 56 link calls used the `14.44.35207` `link.exe` and exited with code 0. The `arbareto.exe` link printed no `LNK` error or warning, so no symbol stayed unresolved.
+- Libraries that the `arbareto.exe` link searched outside the Rust rlibs: SDK `10.0.19041.0` `um\x64` `advapi32.lib` (7 symbols), `kernel32.lib` (83), `ntdll.lib` (5), `userenv.lib` (3), `ws2_32.lib` (27), `dbghelp.lib` (unused), `uuid.lib` (unused), and `ole32.lib` (unused). SDK `ucrt\x64\ucrt.lib` (66). MSVC `14.44.35207` `lib\x64\libcmt.lib` (39) and `libvcruntime.lib` (22). Tauri sets the static CRT with `/DEFAULTLIB:libcmt.lib`, `libvcruntime.lib`, and `ucrt.lib`, and with `/NODEFAULTLIB:msvcrt.lib`. 91 of 139 searched rlibs supplied symbols.
+- Most Windows API imports bypass the SDK libraries. The rlibs of `windows-sys` (179 `__imp_` symbols), `windows` (80), `windows-core`, `windows-strings`, `windows-result`, `windows-version`, `parking_lot_core`, `getrandom` (`ProcessPrng`), and `std` (`WaitOnAddress`, `WakeByAddressAll`) supply them through `windows-link` raw-dylib. No target link searched a `windows_x86_64_msvc` import library.
+- `/DELAYLOAD`: none. The `arbareto.exe` import table has no delay-load section.
+- C and C++ builds: `vswhom-sys` 0.1.3 compiles `ext/vswhom.cpp` with `cc` 1.5.1 for the host build script of `embed-resource` 3.0.11 (through `tauri-winres`). Its only extra flag is `/Zm2000`; it sets no `/std:` flag. The shipped binaries do not contain it. `embed-resource` compiles the shell resources with `C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64\rc.exe` (file version `10.0.19041.5609`), the only x64 `rc.exe`. No crate uses `cmake`. `webview2-com-sys` builds its loader as Rust code, so the link searched no `WebView2LoaderStatic.lib`.
+- `src-tauri/Cargo.toml`, `src-tauri/build.rs`, and `src-tauri/src` pin no SDK or toolset and contain no `#[link]` attribute or raw-dylib. No `.cargo/config*` file and no `rust-toolchain` file exists in the repository or in `~/.cargo`.
+- `dumpbin /imports` of the new `arbareto.exe`: 368 named imports from 26 DLLs, no ordinal import. The list equals the import list of the installed T154 `arbareto.exe`. The headers give linker version 14.44 and operating system version 6.00.
+- Windows versions of the shell imports: 367 of the 368 names occur as `__imp_` symbols in the SDK `10.0.19041.0` `um\x64` or `ucrt\x64` import libraries, so Windows 10 version 2004 or earlier provides each of them. The last one, `ProcessPrng` in `bcryptprimitives.dll`, comes through raw-dylib. Microsoft Learn states Windows 8 as its minimum client ([ProcessPrng](https://learn.microsoft.com/windows/win32/seccng/processprng)).
+- Sidecar `arbareto-git.exe`: `bun build --compile` writes it from the Bun 1.4.3 runtime, so the local toolset and SDK do not build it. Its headers give linker version 14.00. Its import table has 11 delay-load DLLs, among them `WSOCK32.dll` by ordinal. All its named imports except `ProcessPrng` occur in the SDK `10.0.19041.0` import libraries.
+
 **Batch 1 observations, 2026-10-03.** T065 copied these test and task records.
 
 - T057, 2026-10-03: build 26200, product type 1 (`VER_NT_WORKSTATION`), native machine `0x8664`, scope `qualification-target`.
@@ -2042,6 +2056,22 @@ Earlier attempt at `71a5bb0`, 2026-10-13: the parallel step exited 1. One case f
 - Build-time downloads: the build log shows no download. The NSIS tools were already in `%LOCALAPPDATA%\tauri\NSIS`. End-user prerequisites: Git and a preinstalled WebView2 runtime. The installer does not install WebView2 (`webviewInstallMode` `skip`).
 - SC-011: `unverified`. The entry name clause holds. This run did not check the "Unsigned local test package" boot-view label, because that check needs the app started. The release clause depends on B-RELEASE and T176.
 - T154 stays open. The tool versions do not meet the minimums, and the T001 probe gave no toolset or SDK value.
+
+**T154 clause check, 2026-10-19.** plan.md now sets the minimums to MSVC toolset `14.44.35207` and Windows SDK `10.0.19041.0` (R6 "Build minimum check, 2026-10-19"). The values in the table above meet them. T154 still stays open, because one clause fails.
+
+| T154 clause | Result |
+| --- | --- |
+| Clean tree before the build | holds |
+| T001 link probe in the same shell, and build tool versions under the test harness rules | fails. The rules take the toolset and SDK from the probe `Searching` paths. The probe in the T154 shell printed no `Searching` line. The R6 wrapper probe ran later in another shell, and the host has two MSVC toolsets (`14.29.30133` and `14.44.35207`). So the probe of another shell does not prove the toolset of the T154 build. |
+| Build command, installer name, bytes, and SHA-256 | holds |
+| `dumpbin /dependents` of `arbareto.exe` and the sidecar | holds |
+| Windows Apps entry "Arbareto (Unsigned local test package)" after a current-user install | holds |
+| Git and WebView2 versions, build identity, entry name, and installed `arbareto.exe` SHA-256 | holds |
+| SC-011 result recorded | holds. T154 asks for the result, and the result is `unverified`. SC-011 becomes `pass` only after the boot-view label check and T176. |
+| No Node executable, development server, or native build tool, and the runtime assets present | holds |
+| Build-time downloads apart from end-user prerequisites, and WebView2 as a preinstalled requirement | holds |
+
+- Remedy: repeat the T154 build on a clean tree, with the wrapper probe in the same shell before the build.
 
 ### Scenario records
 

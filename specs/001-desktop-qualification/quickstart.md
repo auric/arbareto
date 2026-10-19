@@ -29,11 +29,11 @@ rustc --version
 cargo --version
 ```
 
-Compare them with the minimum versions in `plan.md` Technical Context; Bun must be exactly `1.4.3`. Find the MSVC toolset and Windows SDK versions with the Rust link probe in `research.md` R6. Check the selected Git path separately through application setup after implementation.
+Compare them with the minimum versions in `plan.md` Technical Context; Bun must be exactly `1.4.3`. Find the MSVC toolset and Windows SDK versions with the T001 link probe in `research.md` R6. Run it through the `-C linker=` wrapper script, and read the `Searching` library paths from the wrapper log. Check the selected Git path separately through application setup after implementation.
 
 Before building, verify:
 
-- Bun exactly `1.4.3`. For a Tauri Windows build (`TAURI_ENV_PLATFORM`), native cargo-tauri exactly `2.12.0`, because the notices check pins the NSIS version. At least the `plan.md` minimum versions: Rust/Cargo `1.98.0`, MSVC toolset `14.51.36231`, and Windows SDK `10.0.26100.0`.
+- Bun exactly `1.4.3`. For a Tauri Windows build (`TAURI_ENV_PLATFORM`), native cargo-tauri exactly `2.12.0`, because the notices check pins the NSIS version. At least the `plan.md` minimum versions: Rust/Cargo `1.98.0`, MSVC toolset `14.44.35207`, and Windows SDK `10.0.19041.0`.
 - Minimum-version dependency declarations, an exact Bun version, and committed Bun/Cargo lockfiles.
 - Selected SDK version, native imports, development-only Node requirements, and third-party notice obligations.
 - Frontend build compatibility under Bun, without an accidental Node shebang fallback.

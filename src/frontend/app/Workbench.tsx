@@ -91,6 +91,7 @@ import { useSync } from "../sync/useSync";
 import { suppressPageMenu } from "../components/action-menu";
 import { DockRegion } from "../components/docked-panel";
 import { IntegratePanel, type IntegrateRequest } from "../integrate/IntegratePanel";
+import { ResolveView } from "../resolve/ResolveView";
 import { Segmented } from "../components/segmented";
 import { createWorkbench, type View, type Workbench as WorkbenchStore } from "../state/workbench";
 import { BranchButton } from "../branches/BranchButton";
@@ -148,7 +149,7 @@ export type WorkbenchBridge = RequestBridge &
   >;
 /** The hunk and file staging facts that the workbench gives the changes pane and the comparison view (T145, T202). */
 export type Staging = {
-  bridge: Pick<Bridge, "applyHunk" | "applyFile" | "applyFiles" | "reviewWorkbench" | "runWorkbench" | "revealPath">;
+  bridge: Pick<Bridge, "applyHunk" | "applyFile" | "applyFiles" | "reviewWorkbench" | "runWorkbench" | "revealPath" | "cancel">;
   /** The repository and the generation of the current capability, or null. */
   target: StagingTarget | null;
   blocked: Blocked;
@@ -443,8 +444,8 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
 const PatchPool = lazy(() => import("../changes/PatchPool"));
 
 /** The T134 comparison view of the selected entry, with the T145 hunk controls in its heading. */
-export function ComparisonViewMount({ state, requests, staging }: WorkbenchPaneProps) {
-  const { entry, target } = shownComparison(state, staging);
+export function ComparisonViewMount({ state, requests, staging, workbench, onStatus }: WorkbenchPaneProps) {
+  const { entry, target, comparison } = shownComparison(state, staging);
   const response = entry !== null && state.comparison?.entryId === entry.entryId ? state.comparison : null;
   const [pool, setPool] = useState(false);
   if (!pool && showsDiff(resultOf(response))) setPool(true);
@@ -508,7 +509,7 @@ export function ComparisonViewMount({ state, requests, staging }: WorkbenchPaneP
           />
         );
   const failed = staging?.fileFailure?.file === file ? staging.fileFailure.response : null;
-  const view = (
+  const diff = (
     <Comparison
       entry={entry}
       response={response}
@@ -520,6 +521,27 @@ export function ComparisonViewMount({ state, requests, staging }: WorkbenchPaneP
       notice={failed === null ? undefined : <FileFailure response={failed} />}
     />
   );
+  // Feature 004 plan.md D15 "P2 regions": the resolve view replaces the diff of a selected Conflicted entry.
+  const view =
+    entry?.category === "conflicted" && staging !== undefined && state.workspace !== null ? (
+      <ResolveView
+        entry={entry}
+        snapshotId={state.workspace.snapshotId}
+        comparison={comparison}
+        bridge={staging.bridge}
+        target={staging.target}
+        blocked={staging.blocked}
+        trust={staging.trust}
+        eligibility={staging.eligibility}
+        onOperation={staging.onOperation}
+        onEnded={(response) => workbench.ended("runWorkbench", response)}
+        onFileEnded={(response) => staging.onEnded("applyFile", response)}
+        onStatus={onStatus}
+        onOpenSettings={() => workbench.setView(state.repository?.worktreeKey ?? "", "settings")}
+      />
+    ) : (
+      diff
+    );
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1">

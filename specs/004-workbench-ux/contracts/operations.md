@@ -249,6 +249,7 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 - Mutation trust: `runWorkbench` checks the class of its action before any process. `mergetool` uses class `mergetool`. `ignore` and `config-save` use no class, because they run no repository program. Every other action uses class `workbench`. A class flag that is true without approval gives `TRUST_REQUIRED`. State `changed` gives `TRUST_CHANGED`. `applyFiles` and line staging keep the 001 `applyHunk` and `applyFile` rule: approval only when their reads need it.
 - Until T034 adds the class `workbench`, the `workbench-review.ts` dispatcher gates every action with the 003 class `sync`. It lists every merge and rebase hook event and `merge.<driver>.driver` (ll-merge.c `ll_ext_merge`), so a repository merge driver runs only after approval (T023).
 - An action that runs Git in another worktree (`worktree-remove`) checks the trust state of that worktree.
+- "Shared listing" extends its list of readers. Besides `readHistory` and `readRefs`, these reviews may reuse the shared listing by the same rules: the 003 `reviewSync` (003 Δ3 `reviewSync` read 1), the 004 `reviewWorkbench` (Δ3 `reviewWorkbench`, the review reads), and the 004 `reviewSubmodules`, also the list-only review (Δ12 "Trust listing"). The `updateSubmodules` preflight and every run (`sync`, `runWorkbench`, `updateSubmodules`) keep their own fresh listing.
 - Logs: kinds, IDs, codes, reasons, and counts only. No ref name, path, or message.
 
 ## Δ8 Freshness, cancellation, and outcome (001 §8)

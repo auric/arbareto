@@ -18,6 +18,11 @@ export class UiaError extends Error {
 }
 
 export const MAX_WAIT_MS = 10_000;
+// `IUIAutomation2` bounds of one call. A call to a provider that does not answer fails with UIA_E_TIMEOUT after the bound. Both stay below MAX_WAIT_MS.
+const CONNECTION_TIMEOUT_MS = 2_000;
+const TRANSACTION_TIMEOUT_MS = 5_000;
+// A poll can pass its bound by one call.
+export const MAX_CALL_MS = Math.max(CONNECTION_TIMEOUT_MS, TRANSACTION_TIMEOUT_MS);
 const POLL_MS = 1;
 
 const { ptr: P, u32, i32 } = FFIType;
@@ -66,8 +71,9 @@ function lib(): ReturnType<typeof open> {
 }
 
 // Windows SDK 10.0.26100.0 `UIAutomationClient.h`: GUIDs, IDs, and the C vtable slot of each method.
-const CLSID_CUIAutomation = "ff48dba4-60ef-4201-aa87-54103eef594e";
-const IID_IUIAutomation = "30cbe57d-d9d0-452a-ab13-7ac5ac4825ee";
+// The Windows 7 `CUIAutomation` has no connection bound, so `ElementFromHandle` on a stuck window thread can block for more than 60 s.
+const CLSID_CUIAutomation8 = "e22ad333-b25f-460c-83d0-0581107395c9";
+const IID_IUIAutomation2 = "34723aff-0c9d-49d0-9896-7ab52df8cd8a";
 const IID_IUIAutomationInvokePattern = "fb377fbe-8ea6-46d5-9c73-6499642d3059";
 const IID_IUIAutomationTextPattern = "32eba289-3583-42c9-9c59-3b6d9a1e9b6a";
 const IID_IUIAutomationSelectionItemPattern = "a8efa66a-0fda-421a-9194-38021f3578ea";
@@ -90,6 +96,9 @@ const SLOT = {
   get_RawViewWalker: 16,
   CreateTrueCondition: 21,
   CreatePropertyCondition: 23,
+  // IUIAutomation2
+  put_ConnectionTimeout: 61,
+  put_TransactionTimeout: 63,
   // IUIAutomationTreeWalker
   GetParentElement: 3,
   // IUIAutomationElement
@@ -180,12 +189,21 @@ function uia(): Pointer {
   const init = ole32.CoInitializeEx(null, COINIT_MULTITHREADED);
   if (init < 0 && init >>> 0 !== RPC_E_CHANGED_MODE) hr("CoInitializeEx", init);
   const out = new BigUint64Array(1);
-  hr("CoCreateInstance", ole32.CoCreateInstance(ptr(guid(CLSID_CUIAutomation)), null, CLSCTX_INPROC_SERVER, ptr(guid(IID_IUIAutomation)), ptr(out)));
-  automation = Number(out[0]) as Pointer;
+  hr("CoCreateInstance", ole32.CoCreateInstance(ptr(guid(CLSID_CUIAutomation8)), null, CLSCTX_INPROC_SERVER, ptr(guid(IID_IUIAutomation2)), ptr(out)));
+  // `IUIAutomation2` extends `IUIAutomation`, so the same pointer serves both vtables.
+  const created = Number(out[0]) as Pointer;
+  try {
+    hr("put_ConnectionTimeout", slotCall(created, SLOT.put_ConnectionTimeout, [u32], [CONNECTION_TIMEOUT_MS]));
+    hr("put_TransactionTimeout", slotCall(created, SLOT.put_TransactionTimeout, [u32], [TRANSACTION_TIMEOUT_MS]));
+  } catch (error) {
+    release(created);
+    throw error;
+  }
+  automation = created;
   return automation;
 }
 
-// Releases the CUIAutomation object. A later call creates a new one.
+// Releases the CUIAutomation8 object. A later call creates a new one.
 export function close(): void {
   release(automation);
   automation = null;

@@ -36,10 +36,9 @@ export interface InstalledApp {
 export type Discovery = { app: InstalledApp } | { skip: string };
 
 // Bounds of the PowerShell probes.
-const PROBE_TIMEOUT_MS = 30_000;
+export const PROBE_TIMEOUT_MS = 30_000;
 const PROBE_MAX_BYTES = 16 * 1024 * 1024;
 export const WAIT_MS = 10_000;
-const EXIT_POLL_MS = 10;
 
 function powershellJson(script: string): unknown {
   const root = process.env.SystemRoot;
@@ -192,6 +191,7 @@ export interface OwnedProcess {
 export function spawnOwned(argv: string[], cwd: string, env: Record<string, string>): OwnedProcess {
   const proc = Bun.spawn(argv, { cwd, env, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
   const tree = ownTree(proc.pid);
+  const created = processCreationTime(proc.pid);
   let open = true;
   return {
     pid: proc.pid,
@@ -199,14 +199,19 @@ export function spawnOwned(argv: string[], cwd: string, env: Record<string, stri
     stop() {
       if (!open) return;
       open = false;
-      const members = [proc.pid, ...descendants(proc.pid).map((r) => r.pid)].map((pid) => ({ pid, created: processCreationTime(pid) }));
-      tree.end();
-      tree.close();
       // Microsoft Learn "Terminating a Process": the process object is signaled only after the system closes its handles. A file of the tree is free only then.
-      const running = () => members.filter((m) => m.created !== null && processCreationTime(m.pid) === m.created);
-      for (const end = performance.now() + WAIT_MS; running().length > 0 && performance.now() < end; ) Bun.sleepSync(EXIT_POLL_MS);
-      const left = running();
-      if (left.length > 0) throw new Error(`processes of the owned tree still run ${WAIT_MS} ms after the end: ${left.map((m) => m.pid).join(", ")}`);
+      let left: number[];
+      try {
+        left = tree.endAndWait(WAIT_MS);
+      } finally {
+        tree.close();
+      }
+      if (left.length > 0) throw new Error(`processes of the owned Job still run ${WAIT_MS} ms after the end: ${left.join(", ")}`);
+      // Audit for a child that escaped the Job (see `ownTree`). The root is gone, so its record comes from the start. CIM keeps microseconds only.
+      if (created === null) return;
+      const root: ProcessRecord = { pid: proc.pid, parent: 0, name: "", commandLine: null, created: ((created / 10n) * 10n).toString() };
+      const escaped = descendants(proc.pid, [root, ...processRecords().filter((r) => r.pid !== proc.pid)]);
+      if (escaped.length > 0) throw new Error(`processes outside the owned Job still run: ${escaped.map((r) => `${r.pid} ${r.name}`).join(", ")}`);
     },
   };
 }

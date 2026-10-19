@@ -1993,6 +1993,86 @@
           "type": "string",
           "minLength": 1,
           "pattern": "^[^\\u0000]*$"
+        },
+        "trustGate": {
+          "type": "string",
+          "enum": [
+            "repository",
+            "target"
+          ]
+        },
+        "names": {
+          "type": "object",
+          "properties": {
+            "ours": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "oid": {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    },
+                    "refs": {
+                      "maxItems": 10000,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000]*$"
+                      }
+                    }
+                  },
+                  "required": [
+                    "oid",
+                    "refs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "SideName"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "theirs": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "oid": {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    },
+                    "refs": {
+                      "maxItems": 10000,
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000]*$"
+                      }
+                    }
+                  },
+                  "required": [
+                    "oid",
+                    "refs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "SideName"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "ours",
+            "theirs"
+          ],
+          "additionalProperties": false,
+          "title": "SideNames"
         }
       },
       "additionalProperties": false,

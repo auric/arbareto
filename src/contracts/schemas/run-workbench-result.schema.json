@@ -835,6 +835,23 @@
     {
       "type": "object",
       "properties": {
+        "trustGate": {
+          "type": "string",
+          "enum": [
+            "repository",
+            "target"
+          ]
+        }
+      },
+      "required": [
+        "trustGate"
+      ],
+      "additionalProperties": false,
+      "title": "WorkbenchTrustRefused"
+    },
+    {
+      "type": "object",
+      "properties": {
         "operationId": {
           "type": "string",
           "maxLength": 64,

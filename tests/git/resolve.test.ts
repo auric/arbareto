@@ -33,7 +33,7 @@ const SHELL = ["shell-double"] as const;
 const L = "--no-lazy-fetch";
 const SUCCEEDED = { state: "succeeded", code: undefined };
 const outcome = (r: { state: string; code?: string }) => ({ state: r.state, code: r.code });
-const unavailable = (reason: string) => ({ state: "failed", code: "WORKBENCH_UNAVAILABLE", result: { reason } });
+const unavailable = (reason: string, extra: object = {}) => ({ state: "failed", code: "WORKBENCH_UNAVAILABLE", result: { reason, ...extra } });
 const refused = (response: ServiceResponse<unknown>) => ({ ...outcome(response), result: response.result });
 
 // The entries of the conflict fixtures (`workbench-fixtures.ts` `buildConflict`) with their porcelain v2 XY code and the data-model §11 text.
@@ -143,7 +143,7 @@ const operationOf = (variant: Variant) => (variant === "merge" ? "merging" : "re
 for (const variant of ["merge", "rebase"] as const) {
   caseTest(
     TASK,
-    `FR-089 to FR-092 and quickstart Q13 (${variant}): each kind gives its text and the side names; Choose ours and Choose theirs equal Git's own checkout on a copy and keep the path unmerged; a side that Git refuses gives side-missing, and a link stage gives side-not-regular`,
+    `FR-089 to FR-092 and quickstart Q13 (${variant}): each kind gives its text and the side names; Choose ours and Choose theirs equal Git's own checkout on a copy and keep the path unmerged; a side that Git refuses gives side-missing, and a link stage gives side-not-regular; each refusal, also of DD, carries the side names`,
     SHELL,
     async () => {
       for (const side of ["ours", "theirs"] as const) {
@@ -157,12 +157,12 @@ for (const variant of ["merge", "rebase"] as const) {
             const response = await review(service, r, path, { action: "choose-side", side });
             // FR-092: a link stage is no regular file. Git's own checkout would write it, so the copy gets no command.
             if (path === "link") {
-              expect({ path, ...refused(response) }).toEqual({ path, ...unavailable("side-not-regular") });
+              expect({ path, ...refused(response) }).toEqual({ path, ...unavailable("side-not-regular", { names: names(f) }) });
               continue;
             }
             // Git's own command on the copy decides whether the side exists.
             if (git(o, ["--literal-pathspecs", "checkout", `--${side}`, "--", path], "any").exitCode !== 0) {
-              expect({ path, ...refused(response) }).toEqual({ path, ...unavailable("side-missing") });
+              expect({ path, ...refused(response) }).toEqual({ path, ...unavailable("side-missing", { names: names(f) }) });
               continue;
             }
             expect({ path, ...outcome(response) }).toEqual({ path, ...SUCCEEDED });
@@ -257,7 +257,7 @@ caseTest(TASK, "SC-015 and FR-089: the working text decides nothing; a file with
 for (const variant of ["merge", "rebase"] as const) {
   caseTest(
     TASK,
-    `FR-093 to FR-096 and quickstart Q13 (${variant}): Open in merge tool equals Git's own mergetool on a copy under the policy mergetool with empty stdin and the ceiling alone; the fresh read says Git staged the path; the .orig backup stays; the delete forms give stages-missing and a link stage side-not-regular`,
+    `FR-093 to FR-096 and quickstart Q13 (${variant}): Open in merge tool equals Git's own mergetool on a copy under the policy mergetool with empty stdin and the ceiling alone; the fresh read says Git staged the path; the .orig backup stays; the delete forms give stages-missing and a link stage side-not-regular, each with the side names`,
     SHELL,
     () =>
       withGlobal([["merge.tool", "fixture"]], async () => {
@@ -270,12 +270,12 @@ for (const variant of ["merge", "rebase"] as const) {
             const stages = stagesOf(f, path);
             const response = await review(service, r, path, { action: "mergetool" });
             if (path === "link") {
-              expect({ path, ...refused(response) }).toEqual({ path, ...unavailable("side-not-regular") });
+              expect({ path, ...refused(response) }).toEqual({ path, ...unavailable("side-not-regular", { names: names(f) }) });
               continue;
             }
             // FR-094: Git's mergetool asks on its terminal for a delete conflict, so only stages 2 and 3 of regular files pass.
             if (path !== "uu.txt" && path !== "aa.txt") {
-              expect({ path, ...refused(response) }).toEqual({ path, ...unavailable("stages-missing") });
+              expect({ path, ...refused(response) }).toEqual({ path, ...unavailable("stages-missing", { names: names(f) }) });
               continue;
             }
             const [xy, kind] = KINDS[path];

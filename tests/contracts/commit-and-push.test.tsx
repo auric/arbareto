@@ -8,7 +8,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { answer, button, click, createWorld, mountWorkbench, oid, settle, snapshot, succeeded, text, unmountAll } from "./sync-fake";
-import { contractChecked, fixtureId } from "./bridge-contract";
+import { commitReviewed, contractChecked, fixtureId } from "./bridge-contract";
 
 // tasks.md T061 (feature 003). Spec FR-038. Plan D12 "Commit and push".
 
@@ -76,7 +76,7 @@ describe("Commit and push (FR-038)", () => {
     const t = await tray();
     await click(button("Commit and push", t.host));
     await t.reply("readTrust", ok(REPORT));
-    await t.reply("reviewCommit", ok({ reviewToken: fixtureId(0x106) }));
+    await t.reply("reviewCommit", ok(commitReviewed(fixtureId(0x106))));
     expect(t.pushes).toEqual([]);
     await t.reply("commit", ok({ commitOid: oid(7) }));
     expect(t.pushes).toEqual([1]);
@@ -87,7 +87,7 @@ describe("Commit and push (FR-038)", () => {
       const t = await tray();
       await click(button("Commit and push", t.host));
       await t.reply("readTrust", ok(REPORT));
-      await t.reply("reviewCommit", ok({ reviewToken: fixtureId(0x106) }));
+      await t.reply("reviewCommit", ok(commitReviewed(fixtureId(0x106))));
       await t.reply("commit", { requestId: "r", operationId: fixtureId(0x201), state, code: state === "unknown" ? "STATE_UNKNOWN" : undefined, result: { commitOid: oid(7) } } as BridgeResponse);
       expect(t.pushes).toEqual([]);
       });
@@ -97,7 +97,7 @@ describe("Commit and push (FR-038)", () => {
     const t = await tray();
     await click(button("Commit (Ctrl+Enter)", t.host));
     await t.reply("readTrust", ok(REPORT));
-    await t.reply("reviewCommit", ok({ reviewToken: fixtureId(0x106) }));
+    await t.reply("reviewCommit", ok(commitReviewed(fixtureId(0x106))));
     await t.reply("commit", ok({ commitOid: oid(7) }));
     expect(t.pushes).toEqual([]);
   });
@@ -122,7 +122,7 @@ describe("Commit and push (FR-038)", () => {
     await typeInto(document.querySelector("textarea")!, "Fix the parser");
     await click(button("Commit and push"));
     await answer(double.pending("readTrust"), ok(REPORT));
-    await answer(double.pending("reviewCommit"), ok({ reviewToken: fixtureId(0x106) }));
+    await answer(double.pending("reviewCommit"), ok(commitReviewed(fixtureId(0x106))));
     // Contract §8 "Token invalidation": the reconcile read records the new HEAD and advances the generation.
     world.answers.readWorkspace = undefined;
     await answer(double.pending("commit"), ok({ commitOid: oid(7) }));
@@ -143,7 +143,7 @@ describe("Commit and push (FR-038)", () => {
     await typeInto(field, "Fix the parser");
     await click(button("Commit and push"));
     await answer(double.pending("readTrust"), ok(REPORT));
-    await answer(double.pending("reviewCommit"), ok({ reviewToken: fixtureId(0x106) }));
+    await answer(double.pending("reviewCommit"), ok(commitReviewed(fixtureId(0x106))));
     await answer(double.pending("commit"), ok({ commitOid: oid(7) }));
     expect(double.pending("reviewSync")!.args[1]).toEqual({ action: "push" });
     const destination = { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "u", setUpstream: false, source: "push-default-branch" };

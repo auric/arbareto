@@ -177,6 +177,16 @@ describe("worktree button and list (FR-049)", () => {
     expect(options()).toHaveLength(0);
   });
 
+  test("a succeeded read without entries shows the unknown-form text, not its state", async () => {
+    const world = worktreeWorld();
+    world.answers.readWorktrees = () => succeeded({});
+    await mountWorkbench(workbench, world);
+    await openList();
+    expect(text(document.body)).toContain("Worktree list did not complete: the result has an unknown form.");
+    expect(text(document.body)).not.toContain("succeeded");
+    expect(options()).toHaveLength(0);
+  });
+
   test("Delete on the active record removes it only with the caret at the end of the filter, and the main worktree states why not", async () => {
     const double = await mountWorkbench(workbench, worktreeWorld());
     await openList();
@@ -362,14 +372,14 @@ describe("Remove (FR-054 to FR-056)", () => {
     expect(text(d)).toContain("This worktree has submodules. Git removes it only with its force option.");
     expect(text(d)).not.toContain("uncommitted change");
     expect(checkbox("Delete my uncommitted changes too", d)).toBeNull();
-    // The remove needs force for its submodules, so the button takes the force label.
-    expect(isOff(button("Remove worktree and changes", d))).toBe(true);
+    // The remove needs force for its submodules only, so the button names them (plan D15).
+    expect(isOff(button("Remove worktree and submodules", d))).toBe(true);
     expect([...d.querySelectorAll("button")].map((x) => text(x))).not.toContain("Remove worktree");
-    await click(button("Remove worktree and changes", d));
+    await click(button("Remove worktree and submodules", d));
     expect(double.count("runWorkbench")).toBe(0);
     await check(checkbox("Delete the worktree with its submodules too", d)!);
     expect(reviews(double).at(-1)).toEqual({ action: "worktree-remove", worktree: "C:/wt/repo-hotfix", force: true, deleteBranch: false });
-    await click(button("Remove worktree and changes", dialog()!));
+    await click(button("Remove worktree and submodules", dialog()!));
     expect(double.count("runWorkbench")).toBe(1);
   });
 
@@ -525,6 +535,30 @@ describe("the ask of the worktree actions (FR-069, plan D12 \"Ask\", O-20)", () 
     expect(approvals(double)).toEqual([[{ repositoryId: fixtureId(1) }, { action: "worktree" }]]);
     expect(reviews(double)).toHaveLength(2);
     expect(double.count("runWorkbench")).toBe(1);
+  });
+
+  test("a refusal of the target worktree gate asks nothing for this repository and shows only the O-20 text", async () => {
+    const double = await mountWorkbench(workbench, askWorld([refused("TRUST_REQUIRED", { trustGate: "target" })]));
+    await rowMenu("repo-hotfix");
+    await click(menuItem("Remove worktree…")!);
+    await until(() => text(dialog()!).includes("To trust the worktree"));
+    expect(approvals(double)).toEqual([]);
+    expect(reviews(double)).toHaveLength(1);
+    expect(text(dialog()!)).toContain("To trust the worktree C:/wt/repo-hotfix, open it and trust it there.");
+    expect(text(dialog()!)).not.toContain("Trust the repository first");
+    expect(double.count("runWorkbench")).toBe(0);
+  });
+
+  test("a refusal of the repository gate asks for this repository and, after Not now, names only this repository", async () => {
+    const world = askWorld([refused("TRUST_REQUIRED", { trustGate: "repository" })]);
+    world.answers.approveTrust = () => NOT_NOW;
+    const double = await mountWorkbench(workbench, world);
+    await rowMenu("repo-hotfix");
+    await click(menuItem("Remove worktree…")!);
+    await until(() => text(dialog()!).includes("Trust the repository first"));
+    expect(approvals(double)).toEqual([[{ repositoryId: fixtureId(1) }, { action: "worktree" }]]);
+    expect(text(dialog()!)).toContain("This action runs programs of this repository. Trust the repository first with the trust chip in the status bar.");
+    expect(text(dialog()!)).not.toContain("To trust the worktree");
   });
 
   test("Prune asks once and shows the trust text after Not now", async () => {

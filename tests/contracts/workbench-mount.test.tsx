@@ -8,7 +8,7 @@ import type { OnProgress } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { contractChecked, fixtureId } from "./bridge-contract";
+import { commitReviewed, contractChecked, fixtureId } from "./bridge-contract";
 
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
 // Pierre and its worker need the Vite build (T160). The doubles count the pool provider mounts.
@@ -1415,7 +1415,7 @@ describe("mounted staging and commit", () => {
     await act(async () => button("Commit (Ctrl+Enter)").click());
     await settle();
     await resolve(latest(double, "readTrust"), succeeded(trustReport(false)));
-    await resolve(latest(double, "reviewCommit"), succeeded({ reviewToken: crypto.randomUUID() }));
+    await resolve(latest(double, "reviewCommit"), succeeded(commitReviewed(crypto.randomUUID())));
     const effects = { head: true, index: true, workingFiles: false, operationState: false };
     await resolve(latest(double, "commit"), { ...succeeded({ commitOid: "2".repeat(40), effects, lingeringDescendants: 0 }), state: "completed-with-effects" });
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
@@ -1482,7 +1482,7 @@ describe("mounted staging and commit", () => {
     const after = snapshot({ entries: [{ ...entry, entryId: crypto.randomUUID() }], entryCount: 1 });
     await resolve(latest(double, "readWorkspace"), succeeded(after));
     expect(latest(double, "reviewCommit").args[1]).toEqual({ snapshotId: after.snapshotId });
-    await resolve(latest(double, "reviewCommit"), succeeded({ reviewToken: crypto.randomUUID() }));
+    await resolve(latest(double, "reviewCommit"), succeeded(commitReviewed(crypto.randomUUID())));
     await resolve(latest(double, "commit"), succeeded({ commitOid: "2".repeat(40) }));
     const status = () => [...document.querySelectorAll('footer [role="status"]')].map((s) => s.textContent).join(" | ");
     expect(status()).toContain("Committed 222222222222 to main");

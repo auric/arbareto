@@ -116,6 +116,7 @@ Each section names its source. Field names are contract names. "001 data-model Â
 
 - `path` bytes, `kind` (the porcelain v2 XY code and its text), `stages` (1 to 3, each with mode and OID), `side` (`ours` or `theirs`) or `tool` (the effective `merge.tool` with its scope and origin), `names` (`ours` and `theirs` labels by plan D7), `working` (existence, identity, SHA-256), `operation` (`merging` or `rebasing`).
 - Kind texts: UU "Both modified", AA "Both added", AU "Added by us", UA "Added by them", DU "Deleted by us", UD "Deleted by them", DD "Both deleted".
+- Stage refusal: reason `side-missing`, `stages-missing`, or `side-not-regular` carries `names` with the same form as the plan field (contract Î”3). The service reads them right after the stages. A DD conflict refuses every review, so only this field names its sides. A side without a commit fact is null.
 
 ## 12. Submodule row state (renderer)
 

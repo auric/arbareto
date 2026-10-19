@@ -1,0 +1,8 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"reason\":\"limit\",\"trustGate\":\"target\"}",
+  "repair": {
+    "reason": null
+  }
+}

@@ -40,12 +40,12 @@ const STAGES = [
   { stage: 2, mode: "100644", oid: oid(6) },
   { stage: 3, mode: "100644", oid: oid(7) },
 ];
-type Xy = "UU" | "UD" | "DU";
-const KIND: Record<Xy, string> = { UU: "Both modified", UD: "Deleted by them", DU: "Deleted by us" };
+type Xy = "UU" | "UD" | "DU" | "DD";
+const KIND: Record<Xy, string> = { UU: "Both modified", UD: "Deleted by them", DU: "Deleted by us", DD: "Both deleted" };
 
 function conflicted(xy: Xy = "UU"): ChangeEntry {
-  const modes = xy === "UU" ? ["100644", "100644", "100644", "100644"] : xy === "UD" ? ["100644", "100644", "000000", "100644"] : ["100644", "000000", "100644", "100644"];
-  const oids = [oid(5), xy === "DU" ? oid(0) : oid(6), xy === "UD" ? oid(0) : oid(7)];
+  const modes = xy === "DD" ? ["100644", "000000", "000000", "000000"] : xy === "UU" ? ["100644", "100644", "100644", "100644"] : xy === "UD" ? ["100644", "100644", "000000", "100644"] : ["100644", "000000", "100644", "100644"];
+  const oids = [oid(5), xy === "DU" || xy === "DD" ? oid(0) : oid(6), xy === "UD" || xy === "DD" ? oid(0) : oid(7)];
   return { entryId: fixtureId(30), category: "conflicted", path: PATH, pathBytes: B64, xy, modes, oids } as ChangeEntry;
 }
 const plan = (xy: Xy, names: { ours: unknown; theirs: unknown } = { ours: MAIN, theirs: LOGIN }) => ({
@@ -64,8 +64,8 @@ function tooled(name = "vscode", xy: Xy = "UU") {
   const result = ReviewWorkbenchResult.parse({ action: "mergetool", plan: { ...plan(xy), tool: { name, scope: "global", origin: "file:C:/Users/me/.gitconfig" } }, workbenchToken: TOKEN });
   return { requestId: fixtureId(20), operationId: fixtureId(21), state: "succeeded", repositoryGeneration: 1, result };
 }
-function refused(code: string, reason?: string) {
-  const result = reason === undefined ? {} : { reason };
+function refused(code: string, reason?: string, extra: Record<string, unknown> = {}) {
+  const result = reason === undefined ? {} : { reason, ...extra };
   ReviewWorkbenchResult.parse(result);
   return { requestId: fixtureId(20), state: code === "WORKBENCH_UNAVAILABLE" ? "failed" : "rejected", code, result };
 }
@@ -192,6 +192,25 @@ describe("Unavailable items (FR-092 to FR-094)", () => {
     await answerReviews(double, refused("WORKBENCH_UNAVAILABLE", "side-not-regular"), chosen("theirs"), refused("WORKBENCH_UNAVAILABLE", "side-not-regular"));
     expect(described(button("Choose ours (main)", view()))).toBe("This side is not a regular file in the index.");
     expect(described(button("Open in merge tool", view()))).toBe("A side is not a regular file in the index.");
+  });
+
+  test("a DD conflict refuses every review, and the side names of the refusals show in the rows and the labels", async () => {
+    const { double } = await mount({ entry: conflicted("DD") });
+    expect(text(view())).toContain("Both deleted");
+    const names = { names: { ours: MAIN, theirs: LOGIN } };
+    await answerReviews(double, refused("WORKBENCH_UNAVAILABLE", "side-missing", names), refused("WORKBENCH_UNAVAILABLE", "side-missing", names), refused("WORKBENCH_UNAVAILABLE", "stages-missing", names));
+    const rows = [...view().querySelectorAll("dd")].map((d) => text(d));
+    expect(rows).toEqual(["Both deleted", "main", "feature/login"]);
+    expect(disabled(button("Choose ours (main)", view()))).toBe(true);
+    expect(disabled(button("Choose theirs (feature/login)", view()))).toBe(true);
+    expect(text(view())).not.toContain("Not known");
+  });
+
+  test("a DD refusal without side names shows Not known for both sides", async () => {
+    const { double } = await mount({ entry: conflicted("DD") });
+    await answerReviews(double, refused("WORKBENCH_UNAVAILABLE", "side-missing"), refused("WORKBENCH_UNAVAILABLE", "side-missing"), refused("WORKBENCH_UNAVAILABLE", "stages-missing"));
+    expect([...view().querySelectorAll("dd")].map((d) => text(d))).toEqual(["Both deleted", "Not known", "Not known"]);
+    expect(buttons("Choose ours", view())).toHaveLength(1);
   });
 
   test("without merge.tool the item gives the spec reason and offers the page Editor and tools", async () => {

@@ -108,6 +108,8 @@ const IN_PROGRESS_ALLOWED: ReadonlySet<string> = new Set(["choose-side", "merget
 // Every other action takes the class `workbench`.
 const CLASSLESS: ReadonlySet<string> = new Set(["ignore", "config-save"]);
 const classOf = (action: string): "workbench" | "mergetool" | null => (CLASSLESS.has(action) ? null : action === "mergetool" ? "mergetool" : "workbench");
+// Plan.md O-20: the result of a trust refusal by the trust listing of this repository.
+const REPOSITORY_GATE = { trustGate: "repository" } as const;
 
 // ---- Shared reads ----
 
@@ -251,7 +253,8 @@ export function createWorkbench(o: WorkbenchOptions) {
     if (!listed.ok) return "stop" in listed ? { stop: listed.stop } : { code: listed.code };
     const cls = classOf(payload.action);
     const gate = cls === null ? null : ctx.trust.gate(ctx.workspace, listed.listing, ctx.installation, cls);
-    if (gate !== null) return { refused: gate };
+    // Plan.md O-20: a trust refusal names its gate. `worktrees.ts` gives the gate `target`.
+    if (gate !== null) return { refused: gate, result: { ...REPOSITORY_GATE } };
     const head = await settled(ctx.signal, captureHead(ctx.runner, ctx));
     if (isStop(head) || "code" in head) return head;
     if ("failed" in head) return { code: head.failed };
@@ -266,14 +269,14 @@ export function createWorkbench(o: WorkbenchOptions) {
     return "bound" in observed ? { common, bound: observed.bound, plan: observed.plan } : observed;
   }
 
-  // Data-model §2: a trust difference gives TRUST_REQUIRED or TRUST_CHANGED, and any other difference STALE_REVIEW.
+  // Data-model §2: a trust difference gives TRUST_REQUIRED or TRUST_CHANGED, and any other difference STALE_REVIEW. A trust code keeps its gate (plan.md O-20).
   function staleOf(e: Issued, again: Full | Refused | Failure | Stop, generation: number): { code: ErrorCode; result?: unknown } | Stop | null {
     if (isStop(again) || "code" in again) return again;
     if ("refused" in again) {
-      if (again.refused === "TRUST_REQUIRED" || again.refused === "TRUST_CHANGED") return { code: again.refused };
+      if (again.refused === "TRUST_REQUIRED" || again.refused === "TRUST_CHANGED") return { code: again.refused, result: again.result };
       return again.refused === "CONFLICTED" ? { code: "CONFLICTED", result: again.result } : { code: "STALE_REVIEW" };
     }
-    if ((e.trust.required || required(e.payload.action, again.common.listing)) && again.common.listing.fingerprint !== e.trust.fingerprint) return { code: "TRUST_CHANGED" };
+    if ((e.trust.required || required(e.payload.action, again.common.listing)) && again.common.listing.fingerprint !== e.trust.fingerprint) return { code: "TRUST_CHANGED", result: REPOSITORY_GATE };
     const same = generation === e.generation && Bun.deepEquals({ head: e.head, state: e.operationState, bound: e.bound }, { head: again.common.head, state: again.common.operationState, bound: again.bound }, true);
     return same ? null : { code: "STALE_REVIEW" };
   }
@@ -412,7 +415,7 @@ export function createWorkbench(o: WorkbenchOptions) {
       // Contract Δ7 "Mutation trust": the reviewed listing decides before any process.
       const cls = classOf(e.payload.action);
       const gate = cls === null ? null : o.trust.gate(w, { approvalRequired: { [cls]: e.trust.required }, inputLimited: false }, installation, cls);
-      if (gate !== null) return void registry.apply(operationId, { type: "invalid-approval", code: gate });
+      if (gate !== null) return void registry.apply(operationId, { type: "invalid-approval", code: gate }, REPOSITORY_GATE);
       // Contract §2: the token is in use before the first await. A run that ends before the consumption leaves it to a later run (data-model §2).
       e.running = operationId;
       void execute(w, installation, operationId, signal, token, e).finally(() => {

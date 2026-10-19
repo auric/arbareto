@@ -49,7 +49,7 @@ type Reviewed = Extract<z.infer<typeof ReviewWorkbenchResult>, { workbenchToken:
 type Plan = Extract<Reviewed, { action: "choose-side" | "mergetool" }>["plan"];
 type SideName = Plan["names"]["ours"];
 type Item = Side | "mergetool";
-type Review = { state: string; token: string | null; plan: Plan | null; code: string | null; reason: string | null };
+type Review = { state: string; token: string | null; plan: Plan | null; code: string | null; reason: string | null; names: Plan["names"] | null };
 type Active = { item: Item; tool: string | null; operationId: string | null; cancelRequested: boolean };
 const ITEMS: readonly Item[] = ["ours", "theirs", "mergetool"];
 
@@ -57,7 +57,9 @@ function reviewOf(response: BridgeResponse): Review {
   const result = isObject(response.result) ? response.result : {};
   const token = response.state === "succeeded" && typeof result.workbenchToken === "string" ? result.workbenchToken : null;
   const plan = token !== null && isObject(result.plan) ? (result.plan as Plan) : null;
-  return { state: response.state, token, plan, code: token === null ? (response.code ?? response.state) : null, reason: typeof result.reason === "string" ? result.reason : null };
+  // Contract Δ3: a stage refusal also carries the side names, so a DD conflict shows them.
+  const names = plan?.names ?? (token === null && isObject(result.names) ? (result.names as Plan["names"]) : null);
+  return { state: response.state, token, plan, code: token === null ? (response.code ?? response.state) : null, reason: typeof result.reason === "string" ? result.reason : null, names };
 }
 
 /** Plan.md D7: the refs at the side's commit, else its short ID. A side without a commit fact has no name. */
@@ -135,7 +137,7 @@ export function ResolveView(props: ResolveViewProps) {
   const value = shown.key === key ? shown.value : {};
   const plans = ITEMS.map((item) => value[item]?.plan ?? null);
   const plan = plans.find((p) => p !== null) ?? null;
-  const names = plan?.names ?? null;
+  const names = ITEMS.map((item) => value[item]?.names ?? null).find((n) => n !== null) ?? null;
   const kind = (entry.xy === undefined ? undefined : KIND_TEXTS[entry.xy]) ?? plan?.kind.text ?? null;
   const pending = ITEMS.some((item) => value[item] === undefined);
   const tool = value.mergetool?.plan !== null && value.mergetool?.plan !== undefined && "tool" in value.mergetool.plan ? value.mergetool.plan.tool.name : null;

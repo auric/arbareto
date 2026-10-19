@@ -1070,7 +1070,7 @@ mod tests {
     /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, sync review, sync, clone, branch, worktree, Git settings, and workbench results in `Response.result` and reads no field of them.
     /// The shell writes the settings result of the shell-only settings operations and never reads it.
     /// The same holds for the `chooseWorktreeFolder` result.
-    const NOT_READ: [&str; 31] = [
+    const NOT_READ: [&str; 32] = [
         "service-envelope",
         "open-recent-repository-result",
         "recent-repositories-result",
@@ -1103,6 +1103,7 @@ mod tests {
         "review-workbench-result",
         "run-workbench-result",
         "choose-worktree-folder-result",
+        "review-commit-result",
     ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.

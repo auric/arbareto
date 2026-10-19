@@ -956,6 +956,44 @@ Capture sources: [DuplicateOutput](https://learn.microsoft.com/windows/win32/api
 - The folder picker and the Git task dialog are descendants of the main window.
 - A `role="status"` region has an empty Name and LiveSetting Polite. So `findLiveRegions` finds the status regions by LiveSetting.
 
+**T241 names, 2026-10-20.** `bun test tests/windows/uia.test.ts` ran three times against the installed T154 package, SHA-256 `6dca247ebdd07d35b1543bce67994ac5c5c2d9f34b86e9b144dc894ab8d4a563`. The case "T241: opens a fixture repository through UIA patterns and resolves the workbench names" passed in each run. It used no keyboard or pointer input. Each row gives the Name, the ControlType that `find` required, and the pattern that the test called.
+
+| Name | ControlType | Pattern and result |
+|---|---|---|
+| `Select Git` | Button | Invoke. The Git task dialog opened. |
+| `Use this Git` | any | Invoke. The start page opened. |
+| `Open folder… (Ctrl+O)` | any | Invoke. The folder picker opened. |
+| `Folder:` | Edit | Value `SetValue` with the fixture folder. |
+| `Select Folder` | Button | Invoke. The repository opened. |
+| `<folder name>, <Git worktree root>` | Button | Found. The switcher label of `RepositorySwitcher.tsx`. The root is the `git rev-parse --show-toplevel` output. |
+| `References` | Tree | Found. |
+| `Working directory, 1 working change` | any | SelectionItem `Select`. `CurrentIsSelected` became true. |
+| `Commit (Ctrl+Enter)` | Button | Found. |
+| `Commit message` | Edit | Value `SetValue`. `CurrentValue` then held the new text. The Text pattern returns the placeholder, not the value. |
+| `a.txt` | any | Invoke. `CurrentIsSelected` became true, and the file view opened. |
+| `Stage file (Space)` | Button | Found. |
+| `Next hunk` | Button | Invoke after `CurrentIsEnabled` became true. |
+| `Stage selected hunk` | Button | Invoke after `CurrentIsEnabled` became true. The status regions read `Staging hunk in repo…`, then `Hunk staged`. |
+| `Fetch` | Button | Invoke after `CurrentIsEnabled` became true. The fetch went to a local `git://` listener that never answers. |
+| `Cancel` | Button | Invoke. The status regions read `Fetching from origin…`, then `Fetch canceled`. The toolbar control has the Name `Cancel fetch`, so this Name is the status bar control. |
+| `Repository` | MenuItem | ExpandCollapse `Expand`, and after the Revoke trust check `Collapse`. The menu then left the tree. |
+| `Revoke trust` | MenuItem | Found while the menu was open. |
+
+- `find` with ControlType is necessary in the folder picker. The label `Folder:` and the edit have the same Name, and the dialog window has the Name `Select Folder`.
+- A render can replace an element. A held element then fails with `UIA_E_ELEMENTNOTAVAILABLE` (`0x80040201`). So each state wait finds the element again on each poll and stops at 10 seconds.
+- One run read `State unknown` between `Staging hunk in repo…` and `Hunk staged`.
+- The focus cases skipped in these runs with capability `foreground`. A process that the test cannot open (error 5) owned the foreground.
+
+**Scriptable inspect equivalent.** `inspect.exe` is a GUI tool, so the test does not run it. A scratch PowerShell script `dump.ps1` reads the same tree through the .NET `System.Windows.Automation` client. It loads `UIAutomationClient`, `UIAutomationTypes`, and `UIAutomationClientsideProviders`. It finds the top-level elements whose `ProcessId` is the app, walks them with `TreeWalker.ControlViewWalker`, and writes ControlType, Name, AutomationId, ClassName, and `GetSupportedPatterns()` for each element. The test does not use the script, so it stays outside `tests/windows/`. Its output on 2026-10-20 for the same names:
+
+- Button: `Commit (Ctrl+Enter)`, `Fetch`, `Next hunk`, `Stage file (Space)`, and `Stage selected hunk` with Invoke. `Cancel` with Invoke while the fetch ran. The switcher `repo, <root>` with ExpandCollapse.
+- Edit: `Commit message` with Value and Text.
+- ListItem: `Working directory, 1 working change`, `a.txt`, and `Open folder… (Ctrl+O)` with Invoke and SelectionItem.
+- Tree: `References` with Selection. A Group and a Text also have the Name `References`.
+- MenuItem: `Repository` with ExpandCollapse. With the menu open, `Revoke trust` with Invoke. The menu item for the folder picker has the Name `Open folder… Ctrl+O`.
+- Folder picker: the .NET client shows `Folder:`, `Select Folder`, and `Cancel` as Pane elements with no pattern. The native client of `uia.ts` finds `Folder:` as an Edit with Value and `Select Folder` as a Button with Invoke. The two clients differ only here.
+- The script did not read the boot view, so `Select Git` and `Use this Git` have only the driver result.
+
 Driver sources: [WebView2 accessibility tree](https://learn.microsoft.com/microsoft-edge/webview2/concepts/overview-features-apis#rendering-webview2-using-composition), [ARIA and UI Automation in Microsoft Edge](https://learn.microsoft.com/microsoft-edge/accessibility/build/aria-and-ui-automation), [UI Automation overview](https://learn.microsoft.com/windows/win32/winauto/uiauto-uiautomationoverview).
 
 Use the same capture method for baseline and candidate. An elevated trace collector does not qualify elevated application behavior. Run the application and installer as a standard user.

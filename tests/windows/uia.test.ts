@@ -11,7 +11,7 @@ import { withProbe } from "./probe-window";
 import { fixtureDir, fixtureGit, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { appEnv, findInstalledApp, PROBE_TIMEOUT_MS, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
-import { close, ControlType, find, findLiveRegions, focus, foregroundSkip, inputDesktopSkip, invoke, isEnabled, isSelected, MAX_CALL_MS, MAX_WAIT_MS, readText, readValue, select, setValue, UiaError, waitFocus, type Element } from "./uia";
+import { close, collapse, ControlType, expand, find, findLiveRegions, focus, foregroundSkip, inputDesktopSkip, invoke, isEnabled, isSelected, MAX_CALL_MS, MAX_WAIT_MS, readText, readValue, select, setValue, UiaError, waitFocus, type Element } from "./uia";
 
 const UIA = printOrigin("./uia.ts", import.meta.dir);
 const TEST_TIMEOUT_MS = 60_000;
@@ -24,8 +24,8 @@ const APP_TEST_TIMEOUT_MS = APP_WAITS * (MAX_WAIT_MS + MAX_CALL_MS) + 2 * PROBE_
 const PROCESS_SUSPEND_RESUME = 0x0800;
 // `UIAutomationCoreApi.h`: the element is gone.
 const UIA_E_ELEMENTNOTAVAILABLE = 0x8004_0201;
-// The T241 case runs 10 UIA waits, 6 state waits, and 2 status-text waits, plus the same probes and waits as the case above.
-const T241_WAITS = 18;
+// The T241 case runs 13 UIA waits, a menu-close wait, 6 state waits, and 2 status-text waits, plus the same probes and waits as the case above.
+const T241_WAITS = 22;
 const T241_TEST_TIMEOUT_MS = T241_WAITS * (MAX_WAIT_MS + MAX_CALL_MS) + 2 * PROBE_TIMEOUT_MS + 2 * WAIT_MS;
 const OPEN_FOLDER = "Open folder… (Ctrl+O)";
 
@@ -312,6 +312,15 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
           // The sync toolbar Cancel is named "Cancel fetch", so "Cancel" is the status bar control.
           await found("Cancel", ControlType.Button, invoke);
           console.log(`STATUS_TEXT ${JSON.stringify(await waitStatus(app.pid, "Fetch canceled"))}`);
+          // `RepositoryMenu.tsx`: the menu holds Revoke trust. The Base UI menu exists in the tree only while it is open.
+          await found("Repository", ControlType.MenuItem, expand);
+          await found("Revoke trust", ControlType.MenuItem);
+          await found("Repository", ControlType.MenuItem, collapse);
+          // A single probe with a zero bound gives TIMEOUT once the closed menu leaves the tree.
+          for (const end = performance.now() + MAX_WAIT_MS; ; await Bun.sleep(10)) {
+            if ((await code(async () => (await find(app.pid, "Revoke trust", 0, ControlType.MenuItem)).release())) === "TIMEOUT") break;
+            if (performance.now() >= end) throw new Error(`the Repository menu stays open ${MAX_WAIT_MS} ms after collapse`);
+          }
         } finally {
           app.stop();
           silent.stop(true);

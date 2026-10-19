@@ -83,29 +83,47 @@ async function render(node: ReactNode) {
   });
 }
 
-async function mount(options: { runningReason?: string | null; blockedReason?: string | null } = {}) {
+// The list-only review of the first read (FR-077). `listed: null` leaves it pending.
+async function mount(options: { runningReason?: string | null; blockedReason?: string | null; listed?: unknown | null } = {}) {
   const double = createDouble();
   const operations: StatusOperation[] = [];
   const failures: string[] = [];
   let cancels = 0;
+  let attentions = 0;
+  let snapshot = SNAPSHOT;
+  let setShown!: (id: string) => void;
+  const handle: { update: ReturnType<typeof useSubmoduleUpdate> | null } = { update: null };
   function Harness() {
     const [op, setOp] = useState<StatusOperation | null>(null);
+    const [shown, set] = useState(SNAPSHOT);
+    setShown = set;
     const update = useSubmoduleUpdate({
       bridge: double.bridge as never,
       repositoryId: TARGET.repositoryId,
-      current: () => ({ target: TARGET, snapshotId: SNAPSHOT }),
+      snapshotId: shown,
+      current: () => ({ target: TARGET, snapshotId: snapshot }),
       onOperation: (next: StatusOperation) => {
         operations.push(next);
         setOp(next);
       },
       onReviewFailed: (code: string) => void failures.push(code),
+      onAttention: () => void attentions++,
     });
+    handle.update = update;
     const own = op !== null && op.response === null ? RUNNING_REASON : null;
     return <SubmodulesGroup update={update} runningReason={options.runningReason ?? own} blockedReason={options.blockedReason ?? null} onCancel={() => void cancels++} />;
   }
   await render(<Harness />);
   await settle();
-  return { double, operations, failures, cancels: () => cancels };
+  const listed = options.listed === undefined ? reviewed({ submoduleReviewToken: fixtureId(14) }) : options.listed;
+  if (listed !== null) await answer(double.pending("reviewSubmodules"), listed);
+  /** A new read with a new snapshot ID (contract §8). */
+  const read = async (id: string) => {
+    snapshot = id;
+    await act(async () => setShown(id));
+    await settle();
+  };
+  return { double, operations, failures, cancels: () => cancels, attentions: () => attentions, read, handle };
 }
 
 const group = () => document.querySelector<HTMLElement>('[data-slot="submodules-group"]')!;
@@ -127,17 +145,71 @@ async function started() {
   return view;
 }
 
-describe("one click (FR-076)", () => {
-  test("before a review, the group states how it lists the submodules", async () => {
-    await mount();
-    expect(text(group())).toContain("Arbareto lists the submodules after Update submodules.");
+describe("rows at rest (FR-077)", () => {
+  test("the first read lists the rows with one review that starts no update, and the group shows the loading text while it waits", async () => {
+    const { double } = await mount({ listed: null });
+    expect(double.of("reviewSubmodules").map((c) => c.args.slice(0, 2))).toEqual([[TARGET, { snapshotId: SNAPSHOT }]]);
+    expect(text(group().querySelector('[data-slot="list-loading"]')!)).toBe("Arbareto reads the submodules.");
     expect(rows()).toHaveLength(0);
+    await answer(double.pending("reviewSubmodules"), reviewed());
+    expect(rows().map((r) => r.dataset.path)).toEqual(["libs/a", "libs/a/deps/c", "vendor/b"]);
+    expect(group().querySelector('[data-slot="list-loading"]')).toBeNull();
+    expect(double.of("updateSubmodules")).toHaveLength(0);
   });
 
+  test("a list review keeps refusals and host lines away, and starts no update", async () => {
+    const hosts = [{ path: "vendor/b", fetch: { kind: "host", name: "git.example.net" }, settings: { kind: "host", name: "github.com" } }];
+    const refusals = [{ code: "UNSUPPORTED_SUBMODULE", reason: "inactive", path: "libs/a", text: "Submodule libs/a is not active.", remedy: null }];
+    const view = await mount({ listed: reviewed({ hosts, refusals }) });
+    expect(group().querySelector('[data-slot="host-line"], [data-slot="refusal-line"]')).toBeNull();
+    expect(view.attentions()).toBe(0);
+    expect(view.double.of("updateSubmodules")).toHaveLength(0);
+  });
+
+  test("a read without a run or a Refresh lists nothing; the read after a run lists the rows again", async () => {
+    const view = await mount();
+    await view.read(fixtureId(3));
+    expect(view.double.of("reviewSubmodules")).toHaveLength(1);
+    await click(button("Update submodules", group()));
+    await answer(view.double.pending("reviewSubmodules"), reviewed());
+    await answer(view.double.pending("updateSubmodules"), ended("succeeded", [rowResult({ rowId: ROW_A, path: "libs/a", state: "moved", oldCommit: OLD, newCommit: NEW })]));
+    expect(view.double.of("reviewSubmodules")).toHaveLength(2);
+    await view.read(fixtureId(4));
+    expect(payloads(view.double, "reviewSubmodules")).toEqual([{ snapshotId: SNAPSHOT }, { snapshotId: fixtureId(3) }, { snapshotId: fixtureId(4) }]);
+    await answer(view.double.pending("reviewSubmodules"), reviewed({ rows: [A, B] }));
+    expect(rows().map((r) => r.dataset.path)).toEqual(["libs/a", "vendor/b"]);
+    expect(view.double.of("updateSubmodules")).toHaveLength(1);
+  });
+
+  test("the read after a Refresh lists the rows again", async () => {
+    const view = await mount();
+    await act(async () => view.handle.update!.refreshed());
+    await view.read(fixtureId(5));
+    expect(payloads(view.double, "reviewSubmodules")).toEqual([{ snapshotId: SNAPSHOT }, { snapshotId: fixtureId(5) }]);
+    expect(view.double.of("updateSubmodules")).toHaveLength(0);
+  });
+
+  test("a list that needs trust shows the trust reason in the group and reports nothing to the status bar", async () => {
+    const view = await mount({ listed: { requestId: fixtureId(30), state: "failed", code: "TRUST_REQUIRED" } });
+    expect(text(group().querySelector('[data-slot="list-failure"]')!)).toBe("Arbareto reads no changes until you trust this repository.");
+    expect(view.failures).toEqual([]);
+    expect(text(group())).not.toContain("Arbareto reads the submodules.");
+  });
+
+  test("another list failure names its code", async () => {
+    await mount({ listed: { requestId: fixtureId(30), state: "failed", code: "DEADLINE" } });
+    expect(text(group().querySelector('[data-slot="list-failure"]')!)).toBe("Arbareto cannot read the submodules: DEADLINE.");
+  });
+});
+
+describe("one click (FR-076)", () => {
   test("Update submodules sends reviewSubmodules for the shown snapshot, then updateSubmodules with the token at once, and no dialog opens", async () => {
     const { double } = await mount();
     await click(button("Update submodules", group()));
-    expect(double.of("reviewSubmodules").map((c) => c.args.slice(0, 2))).toEqual([[TARGET, { snapshotId: SNAPSHOT }]]);
+    expect(double.of("reviewSubmodules").map((c) => c.args.slice(0, 2))).toEqual([
+      [TARGET, { snapshotId: SNAPSHOT }],
+      [TARGET, { snapshotId: SNAPSHOT }],
+    ]);
     await answer(double.pending("reviewSubmodules"), reviewed());
     expect(payloads(double, "updateSubmodules")).toEqual([{ submoduleReviewToken: TOKEN, start: true }]);
     expect(document.querySelector('[role="dialog"]')).toBeNull();
@@ -198,7 +270,7 @@ describe("results (FR-081, FR-082)", () => {
         [
           rowResult({ rowId: ROW_A, path: "libs/a", state: "moved", oldCommit: OLD, newCommit: NEW, fetched: true }),
           rowResult({ rowId: ROW_A1, path: "libs/a/deps/c", state: "cloned", newCommit: NEW, connected: true, registered: true }),
-          rowResult({ rowId: ROW_B, path: "vendor/b", state: "failed", fetched: true, outputTail: tail }),
+          rowResult({ rowId: ROW_B, path: "vendor/b", state: "failed", fetched: true, outputTail: tail, exitCode: 128 }),
         ],
         "GIT_FAILED",
       ),
@@ -213,10 +285,23 @@ describe("results (FR-081, FR-082)", () => {
     expect(rowState("libs/a/deps/c")).toBe("Done");
     expect(text(row("libs/a/deps/c"))).toContain(`Cloned, at ${short(NEW)}`);
     expect(rowState("vendor/b")).toBe("Failed");
+    expect(text(row("vendor/b").querySelector('[data-slot="exit-code"]')!)).toBe("Git exit code 128.");
     expect(text(group().querySelector('[data-slot="group-header"]')!)).toContain("2 updated, 1 failed");
     const info = [...group().querySelectorAll('[data-slot="registration-line"]')];
     expect(info.map((e) => text(e))).toEqual(["Git changed the repository settings of 1 submodule."]);
     expect(buttons("Update anyway")).toHaveLength(0);
+  });
+
+  test("a failed step without an exit code says so and never shows a number", async () => {
+    const view = await started();
+    await answer(view.double.pending("updateSubmodules"), ended("failed", [rowResult({ rowId: ROW_B, path: "vendor/b", state: "failed", outputTail: "", exitCode: null })], "GIT_FAILED"));
+    expect(text(row("vendor/b").querySelector('[data-slot="exit-code"]')!)).toBe("Git gave no exit code for this step.");
+  });
+
+  test("a failed read shows no exit code line", async () => {
+    const view = await started();
+    await answer(view.double.pending("updateSubmodules"), ended("failed", [rowResult({ rowId: ROW_B, path: "vendor/b", state: "failed", failedRead: "check" })], "GIT_FAILED"));
+    expect(row("vendor/b").querySelector('[data-slot="exit-code"]')).toBeNull();
   });
 
   test("Show output shows the bounded output tail as plain text", async () => {
@@ -306,7 +391,7 @@ describe("refusals (FR-078)", () => {
   const refusal = (reason: string, path: string, text: string, remedy: unknown) => ({ code: "UNSUPPORTED_SUBMODULE", reason, path, text, remedy });
 
   test("each refusal shows as one line with its text, Show remedy reveals the remedy, and no update starts", async () => {
-    const { double } = await mount();
+    const { double, attentions } = await mount();
     await click(button("Update submodules", group()));
     await answer(
       double.pending("reviewSubmodules"),
@@ -321,6 +406,9 @@ describe("refusals (FR-078)", () => {
     expect(double.of("updateSubmodules")).toHaveLength(0);
     const lines = [...group().querySelectorAll<HTMLElement>('[data-slot="refusal-line"]')];
     expect(lines.map((l) => text(l.querySelector("p")!))).toEqual([UNSAVED, PARENT, INACTIVE]);
+    // A refusal never waits unseen: the first line takes focus, and the workbench hears of it.
+    expect(attentions()).toBe(1);
+    expect(document.activeElement === lines[0]).toBe(true);
     expect(buttons("Show remedy", lines[1]!)).toHaveLength(0);
     const show = button("Show remedy", lines[2]!);
     expect(show.getAttribute("aria-expanded")).toBe("false");
@@ -348,8 +436,10 @@ describe("host lines (FR-079)", () => {
   }
 
   test("one line names both hosts of each row before Git starts", async () => {
-    const { double } = await withHosts();
+    const { double, attentions } = await withHosts();
     expect(double.of("updateSubmodules")).toHaveLength(0);
+    expect(attentions()).toBe(1);
+    expect(document.activeElement === hostLine()).toBe(true);
     expect([...hostLine()!.querySelectorAll("li")].map((e) => text(e))).toEqual([
       "vendor/b will fetch from git.example.net. The repository settings name github.com.",
       "libs/a will fetch from this computer. The repository settings name a host that Arbareto cannot name.",
@@ -387,7 +477,8 @@ describe("running rule (plan D15)", () => {
     expect(describedText(update)).toBe(RUNNING_REASON);
     expect(document.getElementById(update.getAttribute("aria-describedby")!)!.classList.contains("sr-only")).toBe(true);
     await click(update);
-    expect(double.calls).toHaveLength(0);
+    // Only the list review of the first read went out.
+    expect(double.calls.map((c) => c.operation)).toEqual(["reviewSubmodules"]);
   });
 
   test("another blocking reason shows as a visible line", async () => {
@@ -398,6 +489,7 @@ describe("running rule (plan D15)", () => {
     expect(describedText(update)).toBe(reason);
     expect(document.getElementById(update.getAttribute("aria-describedby")!)!.classList.contains("sr-only")).toBe(false);
     await click(update);
-    expect(double.calls).toHaveLength(0);
+    // Only the list review of the first read went out.
+    expect(double.calls.map((c) => c.operation)).toEqual(["reviewSubmodules"]);
   });
 });

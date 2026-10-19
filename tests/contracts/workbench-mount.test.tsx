@@ -337,7 +337,7 @@ describe("submodule update mount", () => {
     const reads = double.calls.filter((c) => c.operation === "readWorkspace").length;
     await resolve(update, { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "rejected", code: "APPROVAL_EXPIRED" });
     expect(dialog()).toBeNull();
-    expect(double.calls.filter((c) => c.operation === "reviewSubmodules")).toHaveLength(2);
+    expect(double.calls.filter((c) => c.operation === "reviewSubmodules")).toHaveLength(3);
     expect(latest(double, "reviewSubmodules").args.slice(0, 2)).toEqual([{ repositoryId: REGISTRATION.repositoryId, repositoryGeneration: 2 }, { snapshotId: later.snapshotId }]);
     // Contract §9: an expired token starts no Git process. The new review answers it, so no read follows it.
     expect(double.calls.filter((c) => c.operation === "readWorkspace")).toHaveLength(reads);
@@ -371,7 +371,7 @@ describe("submodule update mount", () => {
     await resolve(update, { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "rejected", code: "REPOSITORY_CHANGED" });
     const after = double.calls.filter((c) => c.operation === "readWorkspace").slice(reads);
     expect(after.map((c) => c.args[1])).toEqual([{ refresh: false, check: "full" }]);
-    expect(double.calls.filter((c) => c.operation === "reviewSubmodules")).toHaveLength(1);
+    expect(double.calls.filter((c) => c.operation === "reviewSubmodules")).toHaveLength(2);
   });
 
   test("B4-2: while a mutation runs, the band button and the menu item stay focusable, show the running reason as their description, and send nothing", async () => {
@@ -461,6 +461,29 @@ describe("submodule update mount", () => {
     await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
     expect(dialog()).toBeNull();
     expect(double.calls.filter((c) => c.operation === "updateSubmodules")).toHaveLength(1);
+  });
+
+  test("feature 004 FR-078: in the Commit view, a refusal switches to the History view and focuses its line in the Submodules group", async () => {
+    await sized(1600, 900, async () => {
+      const double = await mount(succeeded(REGISTRATION));
+      await serveHistory(double);
+      await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
+      await openCommitView();
+      expect(document.querySelector(COMMIT_VIEW)).not.toBeNull();
+      // The History view stays mounted but hidden, so the group is out of sight.
+      expect(document.querySelector<HTMLElement>('[data-view="history"]')!.hidden).toBe(true);
+      await act(async () => bandButton()!.click());
+      await settle();
+      const refusal = "Submodule a is not active, and Arbareto does not activate submodules. Activate it with the command, then update it again.";
+      await resolve(latest(double, "reviewSubmodules"), succeeded({ ...REVIEW(), refusals: [{ code: "UNSUPPORTED_SUBMODULE", reason: "inactive", path: "a", text: refusal, remedy: null }] }));
+      await settle();
+      expect(document.querySelector(COMMIT_VIEW)).toBeNull();
+      expect(document.querySelector<HTMLElement>('[data-view="history"]')!.hidden).toBe(false);
+      const line =document.querySelector<HTMLElement>('[data-slot="submodules-group"] [data-slot="refusal-line"]');
+      expect(line?.textContent).toContain(refusal);
+      expect(document.activeElement === line).toBe(true);
+      expect(double.calls.filter((c) => c.operation === "updateSubmodules")).toHaveLength(0);
+    });
   });
 
   test("a failed review shows its code in the status bar and opens no dialog", async () => {

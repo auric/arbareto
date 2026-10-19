@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { FolderSyncIcon } from "@hugeicons/core-free-icons";
-import { useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { SubmoduleHost, SubmoduleHostLine, SubmodulePlanRow, SubmoduleProgram, SubmoduleRefusalReason, SubmoduleRowResult } from "../../contracts/submodules";
 import { CopyButton, useCopy } from "../app/RepositoryStates";
 import type { createBridge, ProgressEvent } from "../bridge";
@@ -34,18 +34,28 @@ type GroupState = {
   refusals: SubmoduleRefusal[];
   hosts: HostWait | null;
   summary: Summary | null;
+  /** A list-only review is pending. */
+  listing: boolean;
+  /** The code of the last list-only review that did not succeed. */
+  listFailure: string | null;
+  /** A new host line or refusal waits for focus. */
+  attention: boolean;
 };
-const empty = (repositoryId: string | null): GroupState => ({ repositoryId, rows: null, results: new Map(), run: null, refusals: [], hosts: null, summary: null });
+const empty = (repositoryId: string | null): GroupState => ({ repositoryId, rows: null, results: new Map(), run: null, refusals: [], hosts: null, summary: null, listing: false, listFailure: null, attention: false });
 
 export type SubmoduleUpdateOptions = {
   bridge: Bridge;
   repositoryId: string | null;
+  /** The snapshot ID of the shown read, or null without one. A new value after a run or a Refresh lists the rows again. */
+  snapshotId: string | null;
   /** The target and the snapshot ID of the shown read, or null without one. */
   current(): { target: Target; snapshotId: string } | null;
   /** Each `trackOperation` report of an `updateSubmodules` request. */
   onOperation(op: StatusOperation): void;
-  /** The code of a review that did not succeed. */
+  /** The code of a review from a user action that did not succeed. */
   onReviewFailed(code: string): void;
+  /** A host line or a refusal waits for the user. */
+  onAttention?(): void;
 };
 export type SubmoduleUpdate = Omit<GroupState, "repositoryId" | "hosts"> & {
   hosts: SubmoduleHostLine[] | null;
@@ -54,6 +64,10 @@ export type SubmoduleUpdate = Omit<GroupState, "repositoryId" | "hosts"> & {
   /** Update anyway: the same token with `confirmHosts`. */
   confirmHosts(): void;
   dismissHosts(): void;
+  /** A Refresh: the next read lists the rows again. */
+  refreshed(): void;
+  /** The group moved focus to the line that waits. */
+  attended(): void;
 };
 
 // Contract Δ12: a scope row and the rows nested under it. A malformed parent chain ends after `rows.length` steps.
@@ -81,28 +95,82 @@ export function useSubmoduleUpdate(options: SubmoduleUpdateOptions): SubmoduleUp
   if (state.repositoryId !== options.repositoryId) setState(empty(options.repositoryId));
   const latest = useRef(options);
   latest.current = options;
-  // One review or update at a time. The click that waits for a response starts nothing.
+  // One user review or update at a time. The click that waits for a response starts nothing.
   const busy = useRef(false);
+  // One list-only review at a time. A list that a run delays waits in `queued`.
+  const listingNow = useRef(false);
+  const queued = useRef(false);
+  // The snapshot ID after which the next read lists the rows again. Undefined: no list waits.
+  const listAfter = useRef<string | null | undefined>(undefined);
+  const listedFor = useRef<string | null>(null);
 
   const same = (target: Target) => latest.current.current()?.target.repositoryId === target.repositoryId;
   const patch = (target: Target, change: (s: GroupState) => GroupState) => setState((s) => (s.repositoryId === target.repositoryId ? change(s) : s));
+  const attention = (target: Target) => {
+    patch(target, (s) => ({ ...s, attention: true }));
+    latest.current.onAttention?.();
+  };
 
-  async function review(target: Target, snapshotId: string, scope: string | null, listOnly: boolean, retried: boolean): Promise<void> {
+  async function review(target: Target, snapshotId: string, scope: string | null, retried: boolean): Promise<void> {
     const response = await latest.current.bridge.reviewSubmodules(target, scope === null ? { snapshotId } : { snapshotId, scope: { path: scope } });
     if (!same(target)) return;
     if (response.state !== "succeeded") {
       latest.current.onReviewFailed(response.code ?? response.state);
       // Contract Δ12: UNKNOWN_TARGET of a scoped review means a stale row list.
-      const now = latest.current.current();
-      if (scope !== null && response.code === "UNKNOWN_TARGET" && now !== null) await review(now.target, now.snapshotId, null, true, retried);
+      if (scope !== null && response.code === "UNKNOWN_TARGET") list();
       return;
     }
     const value = response.result as SubmoduleReviewValue;
-    patch(target, (s) => ({ ...s, rows: scope === null || s.rows === null ? value.rows : s.rows, refusals: value.refusals, hosts: null }));
-    if (listOnly || value.refusals.length > 0) return;
-    if (value.hosts.length > 0) return patch(target, (s) => ({ ...s, hosts: { value, target, scope } }));
+    patch(target, (s) => ({ ...s, rows: scope === null || s.rows === null ? value.rows : s.rows, refusals: value.refusals, hosts: null, listFailure: null }));
+    if (value.refusals.length > 0) return attention(target);
+    if (value.hosts.length > 0) {
+      patch(target, (s) => ({ ...s, hosts: { value, target, scope } }));
+      return attention(target);
+    }
     await start(value, target, scope, false, retried);
   }
+
+  // A review that only lists the rows. It never starts an update, and it keeps the refusal and host lines of the last user review.
+  function list() {
+    const now = latest.current.current();
+    if (now === null) return;
+    if (busy.current || listingNow.current) return void (queued.current = true);
+    listingNow.current = true;
+    const { target, snapshotId } = now;
+    patch(target, (s) => ({ ...s, listing: true }));
+    void latest.current.bridge
+      .reviewSubmodules(target, { snapshotId })
+      .then((response) => {
+        if (!same(target)) return;
+        if (response.state === "succeeded") patch(target, (s) => ({ ...s, rows: (response.result as SubmoduleReviewValue).rows, listFailure: null }));
+        else patch(target, (s) => ({ ...s, listFailure: response.code ?? response.state }));
+      })
+      .finally(() => {
+        listingNow.current = false;
+        patch(target, (s) => ({ ...s, listing: false }));
+        drain();
+      });
+  }
+  const drain = () => {
+    if (!queued.current || busy.current || listingNow.current) return;
+    queued.current = false;
+    list();
+  };
+
+  // FR-077: the rows show at rest. The first read of a registration lists them, and so does the first read after a run or a Refresh.
+  const { repositoryId, snapshotId } = options;
+  useEffect(() => {
+    if (repositoryId === null || snapshotId === null) return;
+    if (listedFor.current !== repositoryId) {
+      listedFor.current = repositoryId;
+      listAfter.current = undefined;
+      return list();
+    }
+    if (listAfter.current !== undefined && listAfter.current !== snapshotId) {
+      listAfter.current = undefined;
+      list();
+    }
+  }, [repositoryId, snapshotId]);
 
   async function start(value: SubmoduleReviewValue, target: Target, scope: string | null, confirmHosts: boolean, retried: boolean): Promise<void> {
     const inScope = scopeSet(value.rows, scope);
@@ -124,11 +192,16 @@ export function useSubmoduleUpdate(options: SubmoduleUpdateOptions): SubmoduleUp
     if (response.state === "rejected") {
       const now = latest.current.current();
       // Contract §9: an expired token starts no Git process. One new review answers it.
-      if (response.code === "APPROVAL_EXPIRED" && !retried && now !== null) return review(now.target, now.snapshotId, scope, false, true);
+      if (response.code === "APPROVAL_EXPIRED" && !retried && now !== null) return review(now.target, now.snapshotId, scope, true);
       // Contract Δ12: the token stays unconsumed, so the same line can send it again.
-      if (response.code === "STALE_REVIEW" && isObject(response.result) && response.result.reason === "hosts") patch(target, (s) => ({ ...s, hosts: { value, target, scope } }));
+      if (response.code === "STALE_REVIEW" && isObject(response.result) && response.result.reason === "hosts") {
+        patch(target, (s) => ({ ...s, hosts: { value, target, scope } }));
+        attention(target);
+      }
       return;
     }
+    // The read after the run gives a new snapshot ID. That read lists the rows again.
+    listAfter.current = latest.current.current()?.snapshotId ?? null;
     // Contract Δ12: rows above the scope row keep their state. A found row has no plan row.
     const planned = new Set(value.rows.map((row) => row.rowId));
     const kept = resultRows(response.result).filter((row) => inScope.has(row.path) || !planned.has(row.rowId));
@@ -148,7 +221,10 @@ export function useSubmoduleUpdate(options: SubmoduleUpdateOptions): SubmoduleUp
   const guarded = (work: () => Promise<void>) => {
     if (busy.current) return;
     busy.current = true;
-    void work().finally(() => (busy.current = false));
+    void work().finally(() => {
+      busy.current = false;
+      drain();
+    });
   };
   const shown = state.repositoryId === options.repositoryId ? state : empty(options.repositoryId);
   return {
@@ -158,10 +234,15 @@ export function useSubmoduleUpdate(options: SubmoduleUpdateOptions): SubmoduleUp
     refusals: shown.refusals,
     hosts: shown.hosts?.value.hosts ?? null,
     summary: shown.summary,
+    listing: shown.listing,
+    listFailure: shown.listFailure,
+    attention: shown.attention,
     update: (scope) => {
       const now = latest.current.current();
-      if (now !== null) guarded(() => review(now.target, now.snapshotId, scope ?? null, false, false));
+      if (now !== null) guarded(() => review(now.target, now.snapshotId, scope ?? null, false));
     },
+    refreshed: () => void (listAfter.current = latest.current.current()?.snapshotId ?? null),
+    attended: () => setState((s) => (s.attention ? { ...s, attention: false } : s)),
     confirmHosts: () => {
       const wait = shown.hosts;
       if (wait === null) return;
@@ -175,13 +256,18 @@ export function useSubmoduleUpdate(options: SubmoduleUpdateOptions): SubmoduleUp
 }
 
 // Plan D15 "Submodules group" texts.
-const BEFORE_REVIEW = "Arbareto lists the submodules after Update submodules.";
+const LOADING = "Arbareto reads the submodules.";
 const NO_ROWS = "No submodules found.";
+// Plan D12 "Reads": a read that needs approval.
+const TRUST_READ = "Arbareto reads no changes until you trust this repository.";
+const TRUST_CODES: ReadonlySet<string> = new Set(["TRUST_REQUIRED", "TRUST_CHANGED"]);
+const listFailureText = (code: string) => (TRUST_CODES.has(code) ? TRUST_READ : `Arbareto cannot read the submodules: ${code}.`);
+const exitText = (code: number | null) => (code === null ? "Git gave no exit code for this step." : `Git exit code ${code}.`);
 const FAILED_READ = "Arbareto could not read this submodule. Use Refresh, then try again.";
 const hostText = (host: SubmoduleHost) => (host.kind === "host" ? host.name : host.kind === "local" ? "this computer" : "a host that Arbareto cannot name");
 // The quoted word keeps the boot-view scan for network APIs clear (tests/contracts/boot-view.test.tsx).
 const hostSentence = ({ path, "fetch": from, settings }: SubmoduleHostLine) => `${path} will ${"fetch"} from ${hostText(from)}. The repository settings name ${hostText(settings)}.`;
-const plural =(n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 const RESULT_LABEL: Record<SubmoduleRowResult["state"], string> = {
   cloned: "Done",
@@ -243,6 +329,14 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
   const list: GroupRow[] = rows === null ? [] : [...rows.map((row) => ({ path: row.path, depth: row.depth, head: row.head })), ...found.map((row) => ({ path: row.path, depth: 0, head: null }))];
   const at = Math.min(active, Math.max(0, list.length - 1));
   const counters = run?.event?.counters;
+  const lines = useRef<HTMLDivElement>(null);
+  // A host line or a refusal never waits unseen: it takes focus when it shows.
+  const { attention, attended } = update;
+  useEffect(() => {
+    if (!attention) return;
+    lines.current?.querySelector<HTMLElement>('[data-slot="host-line"], [data-slot="refusal-line"]')?.focus();
+    attended();
+  }, [attention, attended]);
   const toggle = <T,>(set: ReadonlySet<T>, value: T) => {
     const next = new Set(set);
     if (!next.delete(value)) next.add(value);
@@ -306,9 +400,9 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
           {reason}
         </p>
       )}
-      <div className="flex min-h-0 flex-col gap-1 overflow-y-auto overscroll-contain">
+      <div ref={lines} className="flex min-h-0 flex-col gap-1 overflow-y-auto overscroll-contain">
         {update.hosts === null ? null : (
-          <div data-slot="host-line" className="flex flex-col gap-1 px-2 py-1">
+          <div data-slot="host-line" tabIndex={-1} className="flex flex-col gap-1 px-2 py-1">
             <ul>
               {update.hosts.map((line) => (
                 <li key={line.path} className="break-all">
@@ -330,7 +424,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
           const open = remedies.has(i);
           const remedy = refusal.remedy;
           return (
-            <div key={`${refusal.reason}:${refusal.path}`} data-slot="refusal-line" className="flex flex-col gap-1 px-2 py-1">
+            <div key={`${refusal.reason}:${refusal.path}`} data-slot="refusal-line" tabIndex={-1} className="flex flex-col gap-1 px-2 py-1">
               <p className="break-words">{refusal.text}</p>
               {remedy === null ? null : (
                 <div>
@@ -358,7 +452,17 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
         {summary === null || summary.registered === 0 ? null : (
           <p data-slot="registration-line" className="px-2">{`Git changed the repository settings of ${plural(summary.registered, "submodule", "submodules")}.`}</p>
         )}
-        {rows === null ? <p className="px-2 text-muted-text">{BEFORE_REVIEW}</p> : rows.length === 0 && found.length === 0 ? <p className="px-2 text-muted-text">{NO_ROWS}</p> : null}
+        {update.listFailure !== null ? (
+          <p data-slot="list-failure" className="px-2">
+            {listFailureText(update.listFailure)}
+          </p>
+        ) : rows === null ? (
+          <p data-slot="list-loading" className="px-2 text-muted-text">
+            {LOADING}
+          </p>
+        ) : rows.length === 0 && found.length === 0 ? (
+          <p className="px-2 text-muted-text">{NO_ROWS}</p>
+        ) : null}
         {list.length === 0 ? null : (
           <div role="tree" aria-labelledby={headingId} className="flex flex-col">
             {list.map((row, index) => {
@@ -396,6 +500,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
                   </div>
                   {line === null ? null : <p className="text-muted-text">{line}</p>}
                   {failed && result.failedRead !== undefined ? <p>{FAILED_READ}</p> : null}
+                  {failed && result.exitCode !== undefined ? <p data-slot="exit-code">{exitText(result.exitCode)}</p> : null}
                   {failed ? (
                     <div className="flex flex-wrap gap-2 py-0.5">
                       <Button

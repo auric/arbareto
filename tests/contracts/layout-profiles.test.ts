@@ -485,7 +485,6 @@ describe("status area height", () => {
 describe("dialog sizes", () => {
   const DEFAULTS = {
     trust: { width: 560, height: 440 },
-    updateSubmodules: { width: 800, height: 600 },
     about: { width: 560, height: 480 },
   } as const;
 
@@ -496,7 +495,7 @@ describe("dialog sizes", () => {
   test("each side is the smaller of the default and the client side minus 32 DIPs", () => {
     const client = { width: 720, height: 480 };
     expect(dialogSize("trust", client)).toEqual({ width: 560, height: 440 });
-    expect(dialogSize("updateSubmodules", client)).toEqual({ width: 688, height: 448 });
+    expect(dialogSize("trust", { width: 500, height: 400 })).toEqual({ width: 468, height: 368 });
     expect(dialogSize("about", client)).toEqual({ width: 560, height: 448 });
     for (const kind of Object.keys(DEFAULTS)) {
       const size = dialogSize(kind as keyof typeof DEFAULTS, client);

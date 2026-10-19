@@ -281,7 +281,6 @@ export function statusAreaHeight(input: { content: number; client: Size; textSca
 
 export const DIALOG_DEFAULTS = {
   trust: { width: 560, height: 440 },
-  updateSubmodules: { width: 800, height: 600 },
   about: { width: 560, height: 480 },
 } as const;
 

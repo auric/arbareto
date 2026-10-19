@@ -799,7 +799,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const panel = panelOf(kept);
   // A row selection docks its panel at once (plan.md "Change the docked panel"). The history list reports each new selection once.
   const onSelectRow = (id: string) => setRow((r) => (r.repository === state.repository && r.id === id ? r : { repository: state.repository, id, epoch: r.epoch + 1 }));
-  const refresh = () => requests.refresh();
+  // A Refresh also lists the submodule rows again after its read (spec FR-077).
+  const refresh = () => {
+    submoduleUpdate.refreshed();
+    requests.refresh();
+  };
 
   const statusStop = operation !== null || starting !== null;
   // Plan.md D15 F6 order: each view has its own order.
@@ -1057,7 +1061,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       if (!action) return;
       if (action.type === "selectHunk") return void stepRef.current?.(action.direction);
       if (action.type === "focusMenuBar") menubar.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
-      else if (action.type === "refresh") requests.refresh();
+      else if (action.type === "refresh") refresh();
       else if (action.type === "openFolder") void openRepository();
       else if (action.type === "openSwitcher") {
         setSwitcherInstant(true);
@@ -1117,7 +1121,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       setOperation(op);
       if (op.response !== null) onEnded("updateSubmodules", op.response);
     },
+    snapshotId: workspace?.snapshotId ?? null,
     onReviewFailed: (code) => setNotice(codeText("Submodule review did not complete: ", code)),
+    // A host line or a refusal never waits unseen. Only the History view shows the sidebar, so the group takes focus there.
+    onAttention: () => void (store.view(viewKey) === "history" || store.setView(viewKey, "history")),
   });
   const updateSubmodules = (from: "notice" | "menu" | "group") => {
     reviewOpener.current = from;
@@ -1838,7 +1845,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             refusal={paneStatus}
             onFocusMessageField={() => messageField.current?.focus()}
             onClearMessage={() => worktreeKey !== null && void drafts.clear(worktreeKey)}
-            onRefresh={() => requests.refresh()}
+            onRefresh={refresh}
             declinedFocus={submoduleOpener}
             areaMaxHeight={statusAreaMax}
             notice={statusText}

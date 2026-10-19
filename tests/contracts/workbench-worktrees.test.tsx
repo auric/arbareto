@@ -43,6 +43,12 @@ type Plan = Record<string, unknown>;
 const removePlan = (fields: Plan = {}): Plan => ({ worktree: "C:/wt/repo-hotfix", branch: "refs/heads/fix/crash", head: oid(4), tracked: 0, untracked: 0, force: false, deleteBranch: null, submodules: false, ...fields });
 const reviewed = (action: string, plan: Plan) => succeeded({ action, plan, workbenchToken: TOKEN });
 const refused = (code: string, result: Record<string, unknown> = {}) => ({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "failed", code, repositoryGeneration: 1, result });
+const NOT_NOW = { requestId: fixtureId(0x602), state: "canceled" };
+const APPROVED = { trustId: fixtureId(0x601), persistence: "stored", saveFailed: false };
+const CLASSES = { reads: false, commit: false, sync: false, workbench: true, mergetool: false };
+const NONE = { names: [], more: 0 };
+// Contract §3 `readTrust`, data-model §10.
+const trustReport = (state: string) => ({ generation: 1, state, persistence: "stored", ...(state === "approved" ? { trustId: fixtureId(0x601) } : {}), approvalRequired: CLASSES, entries: [], hooks: [], programs: { hooks: NONE, filters: NONE, monitors: NONE, mergeDrivers: NONE, mergeTools: NONE, signing: NONE, other: NONE } });
 const worktreeRun = (action: string, worktrees: string[]) => succeeded({ action, head: { state: "branch", target: "refs/heads/signup", oid: oid(1) }, refs: [], worktrees });
 
 function worktreeWorld(entries: Entry[] = ALL, review: (payload: Record<string, unknown>) => unknown = () => reviewed("worktree-remove", removePlan()), fields: Partial<World> = {}): World {
@@ -51,6 +57,8 @@ function worktreeWorld(entries: Entry[] = ALL, review: (payload: Record<string, 
   world.answers.readBranches = () => succeeded({ entries: BRANCHES });
   world.answers.reviewWorkbench = (args) => review(args[1] as Record<string, unknown>);
   world.answers.runWorkbench = () => worktreeRun("worktree-remove", ["C:/repo", "C:/wt/repo-signup"]);
+  // Plan D12 "Ask": the shell task dialog ends Not now unless a test approves.
+  world.answers.approveTrust = () => NOT_NOW;
   return world;
 }
 
@@ -335,10 +343,13 @@ describe("Remove (FR-054 to FR-056)", () => {
   });
 
   test("a trust refusal tells the user to trust the worktree in that worktree", async () => {
-    await mountWorkbench(workbench, worktreeWorld(ALL, () => refused("TRUST_REQUIRED")));
+    const double = await mountWorkbench(workbench, worktreeWorld(ALL, () => refused("TRUST_REQUIRED")));
     await rowMenu("repo-hotfix");
     await click(menuItem("Remove worktree…")!);
     expect(text(dialog()!)).toContain("To trust the worktree C:/wt/repo-hotfix, open it and trust it there.");
+    // Not now keeps the first refusal.
+    expect(double.count("approveTrust")).toBe(1);
+    expect(reviews(double)).toHaveLength(1);
   });
 
   test("other-worktree and current-branch refusals of the branch delete show their texts", async () => {
@@ -359,6 +370,78 @@ describe("Remove (FR-054 to FR-056)", () => {
 
 const buttons = (label: string, from: ParentNode) => [...from.querySelectorAll<HTMLElement>("button")].filter((b) => (b.getAttribute("aria-label") ?? text(b)) === label);
 const isOff = (b: HTMLElement) => b.hasAttribute("disabled") || b.getAttribute("aria-disabled") === "true";
+
+describe("the ask of the worktree actions (FR-069, plan D12 \"Ask\", O-20)", () => {
+  /** A world whose reviews answer `answers` in turn. An approval makes `readTrust` approved. */
+  function askWorld(answers: unknown[]) {
+    const queue = [...answers];
+    const world = worktreeWorld(ALL, () => queue.shift() ?? refused("STALE_REVIEW"));
+    world.answers.readTrust = () => succeeded(trustReport("untrusted"));
+    world.answers.approveTrust = () => {
+      world.answers.readTrust = () => succeeded(trustReport("approved"));
+      return succeeded(APPROVED);
+    };
+    return world;
+  }
+  const approvals = (double: Double) => double.calls.filter((c) => c.operation === "approveTrust").map((c) => c.args);
+  /** The ask chain spans several bridge answers. The wait stops after 100 settles (3 s), and the assertions after it decide. */
+  async function until(check: () => boolean) {
+    for (let i = 0; i < 100 && !check(); i++) await settle();
+    await settle();
+  }
+  const reviewsDone = (double: Double, n: number) => () => double.calls.filter((c) => c.operation === "reviewWorkbench" && c.done).length === n;
+
+  test("a Remove review that needs trust asks for this repository with the worktree action, then reviews once more and runs the new token", async () => {
+    const double = await mountWorkbench(workbench, askWorld([refused("TRUST_REQUIRED"), reviewed("worktree-remove", removePlan())]));
+    await rowMenu("repo-hotfix");
+    await click(menuItem("Remove worktree…")!);
+    await until(reviewsDone(double, 2));
+    expect(approvals(double)).toEqual([[{ repositoryId: fixtureId(1) }, { action: "worktree" }]]);
+    expect(reviews(double)).toHaveLength(2);
+    expect(reviews(double)[1]).toEqual({ action: "worktree-remove", worktree: "C:/wt/repo-hotfix", force: false, deleteBranch: false });
+    expect(text(dialog()!)).not.toContain("To trust the worktree");
+    await click(button("Remove worktree", dialog()!));
+    await until(() => double.count("runWorkbench") === 1);
+    expect(double.calls.filter((c) => c.operation === "runWorkbench").map((c) => c.args[1])).toEqual([{ workbenchToken: TOKEN, start: true }]);
+  });
+
+  test("a repeated Remove refusal after the approval keeps the text that names this repository and the target worktree", async () => {
+    const double = await mountWorkbench(workbench, askWorld([refused("TRUST_REQUIRED"), refused("TRUST_REQUIRED")]));
+    await rowMenu("repo-hotfix");
+    await click(menuItem("Remove worktree…")!);
+    await until(reviewsDone(double, 2));
+    expect(approvals(double)).toHaveLength(1);
+    expect(reviews(double)).toHaveLength(2);
+    expect(text(dialog()!)).toContain("To trust the worktree C:/wt/repo-hotfix, open it and trust it there.");
+    expect(double.count("runWorkbench")).toBe(0);
+  });
+
+  test("an Add review that ends TRUST_CHANGED asks, then reviews once more and runs", async () => {
+    const world = askWorld([refused("TRUST_CHANGED"), reviewed("worktree-add", { branch: { new: "feat/login", start: oid(1) }, path: "C:\\repo-login", destination: "absent" })]);
+    world.answers.runWorkbench = () => worktreeRun("worktree-add", ["C:/repo", "C:/wt/repo-signup", "C:/repo-login"]);
+    const double = await mountWorkbench(workbench, world);
+    await openList();
+    await click(options().find((o) => itemLabel(o) === "Add worktree…")!);
+    await type(addPanel()!.querySelector<HTMLInputElement>('input[aria-label="New branch name"]')!, "feat/login");
+    await click(button("Add worktree (Ctrl+Enter)", addPanel()!));
+    await until(() => double.count("runWorkbench") === 1);
+    expect(approvals(double)).toEqual([[{ repositoryId: fixtureId(1) }, { action: "worktree" }]]);
+    expect(reviews(double)).toHaveLength(2);
+    expect(double.count("runWorkbench")).toBe(1);
+  });
+
+  test("Prune asks once and shows the trust text after Not now", async () => {
+    const world = askWorld([refused("TRUST_REQUIRED")]);
+    world.answers.approveTrust = () => NOT_NOW;
+    const double = await mountWorkbench(workbench, world);
+    await openList();
+    await click(options().at(-1)!);
+    await until(() => text(document.body).includes("Trust the repository first"));
+    expect(approvals(double)).toEqual([[{ repositoryId: fixtureId(1) }, { action: "worktree" }]]);
+    expect(reviews(double)).toHaveLength(1);
+    expect(text(document.body)).toContain("Trust the repository first with the trust chip in the status bar.");
+  });
+});
 
 describe("Prune missing worktrees (FR-057)", () => {
   test("without a prunable record it states No worktree is missing and starts nothing", async () => {

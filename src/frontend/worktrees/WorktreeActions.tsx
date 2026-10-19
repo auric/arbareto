@@ -14,6 +14,7 @@ import { isObject } from "../lib/utils";
 import { shortRef } from "../refs/ReferencesSidebar";
 import type { Workbench } from "../state/workbench";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
+import { reviewWithTrust, WORKBENCH_TRUST, type AskTrust } from "../trust/ask";
 import { AddWorktreePanel, type AddRequest } from "./AddWorktreePanel";
 import { RUN_TEXTS, W, worktreeRefusal } from "./texts";
 
@@ -32,6 +33,8 @@ type RemoveOverlay = { entry: WorktreeEntry; force: boolean; deleteBranch: boole
 
 export type WorktreeActionsOptions = {
   bridge: Pick<Bridge, "readWorktrees" | "reviewWorkbench" | "runWorkbench">;
+  /** Plan D12 "Ask". Contract gap: a remove refusal does not tell this repository from the target worktree (plan O-20). So it asks for this repository only. */
+  askTrust?: AskTrust;
   target(): Target | null;
   /** The open repository. A new one reads the worktrees. */
   repositoryId: string | null;
@@ -85,7 +88,7 @@ function listOf(repositoryId: string, response: BridgeResponse): List {
 
 /** The worktree list of the top bar and the sidebar, and the Open, Remove, Prune, and Add actions. */
 export function useWorktreeActions(options: WorktreeActionsOptions) {
-  const { bridge, target, repositoryId, refsDigest, workbench, worktreeRoot, start, blockedReason, running, onOperation, onNotice, onOpen, onDock } = options;
+  const { bridge, target, repositoryId, refsDigest, workbench, worktreeRoot, start, blockedReason, running, onOperation, onNotice, onOpen, onDock, askTrust } = options;
   const [list, setList] = useState<List | null>(null);
   const [remove, setRemove] = useState<RemoveOverlay | null>(null);
   const [add, setAdd] = useState<{ repositoryId: string; opener: Element | null } | null>(null);
@@ -137,7 +140,8 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
 
   async function review(payload: Parameters<Bridge["reviewWorkbench"]>[1]) {
     const t = target();
-    return t === null ? null : bridge.reviewWorkbench(t, payload);
+    // The second review takes the generation of the full read after the approval.
+    return t === null ? null : reviewWithTrust(() => bridge.reviewWorkbench(target() ?? t, payload), WORKBENCH_TRUST[payload.action], askTrust);
   }
 
   /** Runs one reviewed token and reports it in the status bar. It gives the response. */

@@ -1305,6 +1305,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // Feature 004 WP21 (spec FR-049 to FR-057): the worktree button, the sidebar Worktrees group, and the Add worktree panel.
   const worktrees = useWorktreeActions({
     bridge,
+    askTrust,
     target: requests.target,
     repositoryId,
     refsDigest,

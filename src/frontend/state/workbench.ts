@@ -16,7 +16,7 @@ type Target = { repositoryId: string; repositoryGeneration: number };
 /** The newest `readBranches` result of one repository generation. `code` is the response code or state of a failed read. */
 export type Branches = { repositoryId: string; repositoryGeneration: number; entries: BranchEntry[] | null; code: string | null };
 /** Contract Δ3 `reviewCommit` with `amend`: the HEAD commit and its message at the check, and the text that the editor shows while the box is checked. */
-export type Amend = { headOid: string; message: string; text: string; upstream: string | null; rewritesUpstream: boolean };
+export type Amend = { headOid: string; message: string; text: string };
 /** Data-model §14: the Commit view state of one worktree for the window session. */
 export type CommitViewState = { layout: Layout; untrackedOpen: boolean; amend: Amend | null };
 const COMMIT_VIEW: CommitViewState = { layout: "tree", untrackedOpen: false, amend: null };

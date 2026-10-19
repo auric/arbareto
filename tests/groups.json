@@ -115,6 +115,7 @@
     "tests/contracts/vectors.test.ts",
     "tests/contracts/view-context.test.ts",
     "tests/contracts/view-switch.test.tsx",
+    "tests/contracts/workbench-amend.test.tsx",
     "tests/contracts/workbench-branches.test.tsx",
     "tests/contracts/workbench-commands.test.ts",
     "tests/contracts/workbench-contract.test.ts",

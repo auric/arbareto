@@ -20,11 +20,12 @@ import { createBunRunner, createTrustStore, type BunRunner, type CallMatch, type
 import { FIXTURE_ROOT, fixtureDir, fixtureEnv, serviceEnv } from "./fixture-root";
 import { GIT } from "./git-binary";
 import { gitOpenssl } from "./http-401";
+import { sshTools } from "../support/ssh-server";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
-export type Capability = "shell-double" | "windows-path-rules" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository" | "read-denial" | "symlink" | "fifo" | "pwsh" | "windows-powershell" | "disposable-volume" | "restart-keeps-lingering" | "openssh" | "openssl" | "ssh-server" | "ssh-key";
+export type Capability = "shell-double" | "windows-path-rules" | "powershell" | "ntfs-junction" | "git-for-windows" | "other-account-owner" | "no-enclosing-repository" | "read-denial" | "symlink" | "fifo" | "pwsh" | "windows-powershell" | "disposable-volume" | "restart-keeps-lingering" | "openssh" | "openssl" | "ssh-server" | "ssh-key" | "local-ssh-server";
 
 const WINDOWS = process.platform === "win32";
 const LINUX = process.platform === "linux";
@@ -135,6 +136,8 @@ const PRESENT: Record<Capability, boolean> = {
   // T224 SSH cases: a test SSH server and a passphrase key for it, named by the environment.
   "ssh-server": Boolean(process.env.ARBARETO_TEST_SSH_URL),
   "ssh-key": Boolean(process.env.ARBARETO_TEST_SSH_KEY),
+  // T010: `tests/support/ssh-server.ts` finds `ssh` and `ssh-keygen` (`sshTools`).
+  "local-ssh-server": GIT !== null && sshTools(GIT) !== null,
 };
 
 export function missingCapability(...needs: Capability[]): Capability | null {

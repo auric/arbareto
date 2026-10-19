@@ -1535,9 +1535,8 @@ const BranchEntry = z
     heldBy: Text.min(1).nullable(),
     current: z.boolean(),
     localName: Text.min(1).nullable(),
-    hasLocal: z.boolean(),
   })
-  .refine((e) => (e.kind === "local" ? e.localName === null && !e.hasLocal : !e.current && e.tracking === null) && (e.localName !== null || !e.hasLocal))
+  .refine((e) => (e.kind === "local" ? e.localName === null : !e.current && e.tracking === null))
   .meta({ title: "BranchEntry" });
 // Contract Δ3 `readBranches`: the entries, or the `readRefs` refusal form for a bound or a failed read. At most one entry is current.
 export const ReadBranchesResult = z
@@ -1607,8 +1606,8 @@ export const ReadGitSettingsResult = z
   })
   .meta({ title: "ReadGitSettingsResult" });
 
-// The refs whose values differ between the listings before and after the steps. Null: the ref is absent on that side.
-const RefChange = z.strictObject({ ref: FullRef, oldObjectId: ObjectId.nullable(), newObjectId: ObjectId.nullable() }).meta({ title: "RefChange" });
+// A ref whose value differs between the listings before and after the steps.
+const RefChange = z.strictObject({ ref: FullRef }).meta({ title: "RefChange" });
 const RefChanges = z.array(RefChange).max(SYNC_REFS_RECORDS);
 // Data-model §3 `stash.state`: `dropped`, or `kept-` with the contract Δ9 STASH_KEPT reason.
 const STASH_STATES = ["dropped", ...STASH_KEPT_REASONS.map((reason) => `kept-${reason}` as const)] as const;
@@ -1644,8 +1643,7 @@ export const RunWorkbenchResult = z
       })
       .meta({ title: "MergeRebaseRun" }),
     z.strictObject({ action: z.literal("ignore"), reason: z.literal("ignore-not-regular").optional() }).meta({ title: "IgnoreRun" }),
-    // `worktrees`: the record paths of the fresh list after the steps.
-    z.strictObject({ action: z.enum(WORKTREE_ACTIONS), head: Head, refs: RefChanges, worktrees: z.array(Text.min(1)).max(WORKTREE_RECORDS), outputTail: OutputTail.optional() }).meta({ title: "WorktreeRun" }),
+    z.strictObject({ action: z.enum(WORKTREE_ACTIONS), head: Head, refs: RefChanges, outputTail: OutputTail.optional() }).meta({ title: "WorktreeRun" }),
     // Spec FR-096: `staged` comes from the fresh index read. It is true when the path has no stage above 0.
     z.strictObject({ action: z.enum(RESOLVE_ACTIONS), staged: z.boolean(), operationState: WorkspaceOperationState, outputTail: OutputTail.optional() }).meta({ title: "ResolveRun" }),
     // Plan.md D11: `written` comes from the fresh listing. `failed` names the stopped key, `stale` a key whose entries changed before its write.

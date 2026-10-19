@@ -13,7 +13,6 @@ Each section names its source. Field names are contract names. "001 data-model ย
 - `heldBy`: the worktree path whose record has `branch <ref>`, or null.
 - `current`: true for the `*` record of `%(HEAD)`.
 - `localName`: for a remote ref, the D3 refspec mapping result, or null when zero or several refspecs map it.
-- `hasLocal`: for a remote ref, true when `localName` names an existing local branch.
 - Validation: the 003 `readTracking` record checks, plus the worktree record checks of ยง8.
 - Order: local entries first, then remote entries, each by `ref` bytes (spec FR-008).
 

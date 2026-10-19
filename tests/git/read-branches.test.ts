@@ -29,7 +29,6 @@ interface Entry {
   heldBy: string | null;
   current: boolean;
   localName: string | null;
-  hasLocal: boolean;
 }
 
 let builds = 0;
@@ -96,7 +95,7 @@ describe("readBranches (contract Δ3, data-model §1)", () => {
       expect(held.tracking).toMatchObject({ upstreamObjectId: out(f, ["rev-parse", "refs/remotes/origin/held"]).trim(), track: { state: "counts", ahead: 0, behind: 0 } });
       // Plan.md D3: the one fetch refspec of `origin` maps the remote ref to `held`, and that local branch exists.
       const remote = entries.find((e) => e.ref === "refs/remotes/origin/held")!;
-      expect({ localName: remote.localName, hasLocal: remote.hasLocal, tracking: remote.tracking }).toEqual({ localName: "held", hasLocal: true, tracking: null });
+      expect({ localName: remote.localName, tracking: remote.tracking }).toEqual({ localName: "held", tracking: null });
     }),
     TIMEOUT_MS,
   );
@@ -129,8 +128,8 @@ describe("readBranches (contract Δ3, data-model §1)", () => {
       const r = await service.register(f.repo);
       const response = await readBranches(service, r);
       expect(outcome(response)).toEqual({ state: "succeeded", code: undefined });
-      const names = Object.fromEntries(response.result!.entries.filter((e) => e.kind === "remote").map((e) => [e.ref, [e.localName, e.hasLocal]]));
-      expect(names).toEqual({ "refs/remotes/one/topic": ["topic", false], "refs/remotes/two/x/topic": [null, false], "refs/remotes/zero/topic": [null, false] });
+      const names = Object.fromEntries(response.result!.entries.filter((e) => e.kind === "remote").map((e) => [e.ref, e.localName]));
+      expect(names).toEqual({ "refs/remotes/one/topic": "topic", "refs/remotes/two/x/topic": null, "refs/remotes/zero/topic": null });
     }),
     TIMEOUT_MS,
   );

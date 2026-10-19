@@ -15,7 +15,7 @@ import { isObject } from "../lib/utils";
 import { shortRef } from "../refs/ReferencesSidebar";
 import type { Workbench } from "../state/workbench";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
-import { reviewWithTrust, WORKBENCH_TRUST, type AskTrust } from "../trust/ask";
+import { needsTrust, reviewWithTrust, trustGate, WORKBENCH_TRUST, type AskTrust } from "../trust/ask";
 import { AddWorktreePanel, type AddRequest } from "./AddWorktreePanel";
 import { RUN_TEXTS, W, worktreeRefusal } from "./texts";
 
@@ -145,15 +145,16 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
     return t === null ? null : reviewWithTrust(() => bridge.reviewWorkbench(target() ?? t, payload), WORKBENCH_TRUST[payload.action], askTrust);
   }
 
-  /** Runs one reviewed token and reports it in the status bar. It gives the response. */
-  async function run(token: string, action: WorktreeAction): Promise<BridgeResponse | null> {
+  /** Runs one reviewed token and reports it in the status bar. It gives the response. `worktree` is the record path of a remove, else null. */
+  async function run(token: string, action: WorktreeAction, worktree: string | null): Promise<BridgeResponse | null> {
     const t = target();
     if (t === null) return null;
     onNotice(null);
     const response = await trackOperation("runWorkbench", undefined, (onProgress) => bridge.runWorkbench({ repositoryId: t.repositoryId }, { workbenchToken: token, start: true }, onProgress), (op) => onOperation({ ...op, texts: RUN_TEXTS[action] }));
     workbench.ended("runWorkbench", response);
     read();
-    if (response.state !== "succeeded") onNotice(OUTCOME.failed(RUN_TEXTS[action][0], response.code ?? response.state));
+    // Plan O-20: a run refusal of the target gate asks nothing and names the worktree, as the review refusal does.
+    if (response.state !== "succeeded") onNotice(worktree !== null && needsTrust(response) && trustGate(response) === "target" ? W.targetTrust(worktree) : OUTCOME.failed(RUN_TEXTS[action][0], response.code ?? response.state));
     return response;
   }
 
@@ -203,7 +204,7 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
     const token = o.token;
     setRemove(null);
     void once(async () => {
-      const response = await run(token, "worktree-remove");
+      const response = await run(token, "worktree-remove", o.entry.path);
       if (response?.state !== "succeeded") return;
       const branch = o.deleteBranch ? short(o.plan?.deleteBranch?.ref ?? null) : null;
       onNotice(branch === null ? W.removed(o.entry.path) : W.removedBranch(o.entry.path, branch));
@@ -219,7 +220,7 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
       const token = tokenOf(response);
       const plan = planOf(response);
       if (token === null || plan === null || !Array.isArray(plan.prunable)) return onNotice(worktreeRefusal(response, "worktree-prune", "", ""));
-      const done = await run(token, "worktree-prune");
+      const done = await run(token, "worktree-prune", null);
       if (done?.state === "succeeded") onNotice(W.pruned(plan.prunable.length));
     });
   }
@@ -242,7 +243,7 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
       const plan = planOf(response);
       const display = "new" in request.branch ? request.branch.new : shortRef(request.branch.existing);
       if (token === null || plan === null || typeof plan.path !== "string") return void (error = worktreeRefusal(response, "worktree-add", request.path, display));
-      const done = await run(token, "worktree-add");
+      const done = await run(token, "worktree-add", null);
       if (done?.state !== "succeeded") return;
       setAdd(null);
       onNotice(W.added(plan.path));

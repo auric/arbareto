@@ -1,0 +1,9 @@
+{
+  "schema": "run-workbench-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"action\":\"delete-branch\",\"head\":{\"state\":\"branch\",\"target\":\"refs/heads/target\",\"oid\":\"0123456789abcdef0123456789abcdef01234567\"},\"refs\":[{\"ref\":\"refs/heads/unmerged\",\"oldObjectId\":\"89abcdef0123456789abcdef0123456789abcdef\",\"newObjectId\":null}]}",
+  "repair": {
+    "refs.0.oldObjectId": null,
+    "refs.0.newObjectId": null
+  }
+}

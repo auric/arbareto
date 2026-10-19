@@ -10,7 +10,7 @@ import { headRefExistsArgs, isObjectId, isRefName } from "./commands";
 import { createCollector } from "./git-runner";
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import type { Head } from "./snapshot";
-import { changes } from "./sync";
+import { changedRefs, changes } from "./sync";
 import { observe } from "./sync-integrate";
 import { readOut, refKey } from "./sync-review";
 import { parseConfigListing, type ConfigEntry, type TrustListing } from "./trust";
@@ -84,7 +84,7 @@ async function settle(r: WorkbenchRun, action: string, ends: StepEnd[], expect: 
   const o = await observe(r.q, killed(ends));
   if (!("value" in o)) return r.unknown(o, { action });
   const { refs, head, state, lock } = o.value;
-  const result = { action, head, refs: changes(r.before.refs, refs) };
+  const result = { action, head, refs: changedRefs(r.before.refs, refs) };
   const sameState = state === r.common.operationState;
   conclude(
     r,

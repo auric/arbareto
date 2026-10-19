@@ -36,8 +36,8 @@ afterEach(async () => {
 const TOKEN = fixtureId(0x500);
 type Entry = Record<string, unknown>;
 // Data-model §1 entries. The service orders local entries first, each kind by `ref` bytes.
-const local = (name: string, fields: Entry = {}): Entry => ({ ref: `refs/heads/${name}`, kind: "local", name, invalidUtf8: false, oid: oid(4), upstream: null, tracking: null, heldBy: null, current: false, localName: null, hasLocal: false, ...fields });
-const remote = (name: string, fields: Entry = {}): Entry => ({ ref: `refs/remotes/${name}`, kind: "remote", name, invalidUtf8: false, oid: oid(9), upstream: null, tracking: null, heldBy: null, current: false, localName: null, hasLocal: false, ...fields });
+const local = (name: string, fields: Entry = {}): Entry => ({ ref: `refs/heads/${name}`, kind: "local", name, invalidUtf8: false, oid: oid(4), upstream: null, tracking: null, heldBy: null, current: false, localName: null, ...fields });
+const remote = (name: string, fields: Entry = {}): Entry => ({ ref: `refs/remotes/${name}`, kind: "remote", name, invalidUtf8: false, oid: oid(9), upstream: null, tracking: null, heldBy: null, current: false, localName: null, ...fields });
 const MAIN = local("main", { oid: oid(1), upstream: "refs/remotes/origin/main", current: true });
 const LOGIN = local("login-form");
 const SIGNUP = local("signup", { heldBy: "C:\\wt\\sample-signup", upstream: "refs/remotes/origin/signup" });

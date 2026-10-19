@@ -1,8 +1,0 @@
-{
-  "schema": "run-workbench-result",
-  "expected": "INVALID_REQUEST",
-  "text": "{\"action\":\"worktree-remove\",\"head\":{\"state\":\"branch\",\"target\":\"refs/heads/main\",\"oid\":\"0123456789abcdef0123456789abcdef01234567\"},\"refs\":[]}",
-  "repair": {
-    "worktrees": ["C:/repos/main"]
-  }
-}

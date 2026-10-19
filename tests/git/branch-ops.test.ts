@@ -38,7 +38,7 @@ interface Reviewed {
 interface BranchResult {
   action: string;
   head: { state: string; target?: string; oid?: string };
-  refs: { ref: string; oldObjectId: string | null; newObjectId: string | null }[];
+  refs: { ref: string }[];
   outputTail?: string;
 }
 
@@ -96,7 +96,8 @@ caseTest(TASK, "FR-015 and quickstart Q9: Create branch here with and without Sw
       const from = service.runner.calls.length;
       const response = await service.response<BranchResult>(sendRun(service, r, rv.workbenchToken));
       expect(outcome(response)).toEqual(SUCCEEDED);
-      expect(response.result!.refs).toEqual([{ ref: `refs/heads/${name}`, oldObjectId: null, newObjectId: start }]);
+      expect(response.result!.refs).toEqual([{ ref: `refs/heads/${name}` }]);
+      expect(oid(f, `refs/heads/${name}`)).toBe(start);
       expect(response.result!.head).toEqual(switchTo ? { state: "branch", target: `refs/heads/${name}`, oid: start } : { state: "branch", target: "refs/heads/main", oid: f.oids.main });
       expect(steps(service, from)).toEqual([switchTo ? ["--no-lazy-fetch", "checkout", "--no-recurse-submodules", "-b", name, start, "--"] : ["--no-lazy-fetch", "branch", "--end-of-options", name, start]]);
     });
@@ -213,7 +214,7 @@ caseTest(TASK, "FR-019 and SC-004: a branch that moved after the review is never
     const response = await service.response<BranchResult>(requestId);
     // The fresh reads see the external move as an effect, and `update-ref` exited nonzero, so the delete failed.
     expect(outcome(response)).toEqual({ state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" });
-    expect(response.result!.refs).toEqual([{ ref: "refs/heads/unmerged", oldObjectId: g.oids.unmerged, newObjectId: g.oids.tagged }]);
+    expect(response.result!.refs).toEqual([{ ref: "refs/heads/unmerged" }]);
     expect(service.runner.calls.find((c) => c.arguments[1] === "update-ref")!.exit!.exitCode).not.toBe(0);
     expect(steps(service).map((a) => a[1])).toEqual(["update-ref"]);
     expect(stateOf(g)).toEqual(before);
@@ -231,7 +232,7 @@ caseTest(TASK, "research.md R21 F9: Delete equals Git's own branch -D in refs, r
       const from = service.runner.calls.length;
       const response = await run(service, r, { action: "delete-branch", ref: `refs/heads/${branch}` });
       expect(outcome(response)).toEqual(SUCCEEDED);
-      expect(response.result!.refs).toEqual([{ ref: `refs/heads/${branch}`, oldObjectId: tip, newObjectId: null }]);
+      expect(response.result!.refs).toEqual([{ ref: `refs/heads/${branch}` }]);
       const config = branch === "unmerged" ? [["--no-lazy-fetch", "config", "--local", "--remove-section", `branch.${branch}`]] : [];
       expect(steps(service, from)).toEqual([["--no-lazy-fetch", "update-ref", "--no-deref", "-d", `refs/heads/${branch}`, tip], ...config]);
     });

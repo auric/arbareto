@@ -14,7 +14,7 @@ import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { NO_FILE, sameIdentity, type PhysicalIdentity } from "./identity";
 import { contextOf, latin1, strictUtf8 } from "./read-steps";
 import type { Workspace } from "./registration";
-import { changes } from "./sync";
+import { changedRefs, changes } from "./sync";
 import { observe } from "./sync-integrate";
 import { readOut, refKey } from "./sync-review";
 import { worktreeAddExistingArgs, worktreeAddNewArgs, worktreeIndexArgs, worktreeLayoutArgs, worktreePruneArgs, worktreeRemoveArgs, worktreeStatusArgs } from "./workbench-commands";
@@ -121,7 +121,7 @@ async function settle(r: WorkbenchRun, action: string, ends: StepEnd[], expect: 
   if (!("value" in list)) return r.unknown(list, { action });
   const { refs, head, state, lock } = o.value;
   const took = expect.took(list.value.records);
-  const result = { action, head, refs: changes(r.before.refs, refs), worktrees: list.value.records.map((x) => x.path) };
+  const result = { action, head, refs: changedRefs(r.before.refs, refs) };
   const same = Bun.deepEquals(head, r.common.head, true) && state === r.common.operationState;
   conclude(
     r,

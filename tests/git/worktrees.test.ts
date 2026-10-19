@@ -49,8 +49,7 @@ interface Reviewed {
 interface WorktreeRun {
   action: string;
   head: { state: string; target?: string; oid?: string };
-  refs: { ref: string; oldObjectId: string | null; newObjectId: string | null }[];
-  worktrees: string[];
+  refs: { ref: string }[];
   outputTail?: string;
 }
 
@@ -217,9 +216,8 @@ caseTest(TASK, "FR-052, FR-053, and SC-008: Add worktree with a new branch and w
       expect(outcome(response)).toEqual(SUCCEEDED);
       const run = service.runner.calls.slice(from).filter((c) => c.environmentPolicy === "integrate");
       expect(run.map((c) => [c.contextKind, ...c.arguments])).toEqual([variant === "new" ? ["worktreeAdd", L, "worktree", "add", "-b", "new-b", "--", dest, start] : ["worktreeAdd", L, "worktree", "add", "--", dest, "free"]]);
-      expect(response.result!.refs).toEqual(variant === "new" ? [{ ref: "refs/heads/new-b", oldObjectId: null, newObjectId: start }] : []);
+      expect(response.result!.refs).toEqual(variant === "new" ? [{ ref: "refs/heads/new-b" }] : []);
       expect(response.result!.head).toEqual({ state: "branch", target: "refs/heads/main", oid: start });
-      expect(response.result!.worktrees).toEqual(recordsOf(f).map((x) => valueOf(x, "worktree")!));
     });
     git(o, variant === "new" ? ["worktree", "add", "-q", "-b", "new-b", "--", folder(o, "wt-new"), start] : ["worktree", "add", "-q", "--", folder(o, "wt-new"), "free"]);
     expect(stateOf(f)).toEqual(stateOf(o));
@@ -301,7 +299,7 @@ caseTest(TASK, "FR-055 and SC-008: a dirty worktree states both counts and needs
     const response = await service.response<WorktreeRun>(sendRun(service, r, rv.workbenchToken));
     expect(outcome(response)).toEqual(SUCCEEDED);
     expect(steps(service, from)).toEqual([[L, "worktree", "remove", "--force", "--", dirty]]);
-    expect(response.result!.worktrees).not.toContain(dirty);
+    expect(recordsOf(f).map((x) => valueOf(x, "worktree"))).not.toContain(dirty);
   });
   git(o, ["worktree", "remove", "--force", "--", recordPath(o, "wt-dirty")]);
   expect(stateOf(f)).toEqual(stateOf(o));
@@ -373,7 +371,7 @@ caseTest(TASK, "FR-056, FR-018, and SC-008: Also delete the branch runs the D4 d
       const removeAt = calls.findIndex((c) => c.includes("worktree remove"));
       const listAt = calls.findIndex((c, i) => i > removeAt && c.endsWith("worktree list --porcelain -z"));
       expect(removeAt < listAt && listAt < calls.findIndex((c) => c.includes("update-ref"))).toBe(true);
-      expect(response.result!.refs).toEqual([{ ref: "refs/heads/spaces-b", oldObjectId: tip, newObjectId: null }]);
+      expect(response.result!.refs).toEqual([{ ref: "refs/heads/spaces-b" }]);
     });
     git(o, ["worktree", "remove", "--", recordPath(o, "wt with spaces")]);
     git(o, ["branch", "-D", "--end-of-options", "spaces-b"]);
@@ -508,7 +506,7 @@ caseTest("T060", "plan.md O-20: worktree-remove takes the trust listing of the t
     expect(existsSync(log)).toBe(true);
     const response = await service.response<WorktreeRun>(sendRun(service, r, rv.workbenchToken));
     expect(outcome(response)).toEqual(SUCCEEDED);
-    expect(response.result!.worktrees).not.toContain(target);
+    expect(recordsOf(f).map((x) => valueOf(x, "worktree"))).not.toContain(target);
   });
 }, TIMEOUT_MS);
 

@@ -36,7 +36,7 @@ const GONE = wt("C:/wt/repo-gone", { head: oid(5), detached: true, prunable: { r
 const ALL = [MAIN, SIGNUP, HOTFIX, LOCKED, GONE];
 
 // Data-model §1 entries for the existing-branch list of Add worktree.
-const local = (name: string, fields: Entry = {}): Entry => ({ ref: `refs/heads/${name}`, kind: "local", name, invalidUtf8: false, oid: oid(4), upstream: null, tracking: null, heldBy: null, current: false, localName: null, hasLocal: false, ...fields });
+const local = (name: string, fields: Entry = {}): Entry => ({ ref: `refs/heads/${name}`, kind: "local", name, invalidUtf8: false, oid: oid(4), upstream: null, tracking: null, heldBy: null, current: false, localName: null, ...fields });
 const BRANCHES = [local("@"), local("fix/crash", { heldBy: "C:/wt/repo-hotfix" }), local("login"), local("main", { heldBy: "C:/repo" }), local("signup", { current: true })];
 
 type Plan = Record<string, unknown>;
@@ -49,14 +49,14 @@ const CLASSES = { reads: false, commit: false, sync: false, workbench: true, mer
 const NONE = { names: [], more: 0 };
 // Contract §3 `readTrust`, data-model §10.
 const trustReport = (state: string) => ({ generation: 1, state, persistence: "stored", ...(state === "approved" ? { trustId: fixtureId(0x601) } : {}), approvalRequired: CLASSES, entries: [], hooks: [], programs: { hooks: NONE, filters: NONE, monitors: NONE, mergeDrivers: NONE, mergeTools: NONE, signing: NONE, other: NONE } });
-const worktreeRun = (action: string, worktrees: string[]) => succeeded({ action, head: { state: "branch", target: "refs/heads/signup", oid: oid(1) }, refs: [], worktrees });
+const worktreeRun = (action: string) => succeeded({ action, head: { state: "branch", target: "refs/heads/signup", oid: oid(1) }, refs: [] });
 
 function worktreeWorld(entries: Entry[] = ALL, review: (payload: Record<string, unknown>) => unknown = () => reviewed("worktree-remove", removePlan()), fields: Partial<World> = {}): World {
   const world = createWorld({ head: { state: "branch", target: "refs/heads/signup", oid: oid(1) }, ...fields });
   world.answers.readWorktrees = () => succeeded({ entries });
   world.answers.readBranches = () => succeeded({ entries: BRANCHES });
   world.answers.reviewWorkbench = (args) => review(args[1] as Record<string, unknown>);
-  world.answers.runWorkbench = () => worktreeRun("worktree-remove", ["C:/repo", "C:/wt/repo-signup"]);
+  world.answers.runWorkbench = () => worktreeRun("worktree-remove");
   // Plan D12 "Ask": the shell task dialog ends Not now unless a test approves.
   world.answers.approveTrust = () => NOT_NOW;
   return world;
@@ -525,7 +525,7 @@ describe("the ask of the worktree actions (FR-069, plan D12 \"Ask\", O-20)", () 
 
   test("an Add review that ends TRUST_CHANGED asks, then reviews once more and runs", async () => {
     const world = askWorld([refused("TRUST_CHANGED"), reviewed("worktree-add", { branch: { new: "feat/login", start: oid(1) }, path: "C:\\repo-login", destination: "absent" })]);
-    world.answers.runWorkbench = () => worktreeRun("worktree-add", ["C:/repo", "C:/wt/repo-signup", "C:/repo-login"]);
+    world.answers.runWorkbench = () => worktreeRun("worktree-add");
     const double = await mountWorkbench(workbench, world);
     await openList();
     await click(options().find((o) => itemLabel(o) === "Add worktree…")!);
@@ -547,6 +547,22 @@ describe("the ask of the worktree actions (FR-069, plan D12 \"Ask\", O-20)", () 
     expect(text(dialog()!)).toContain("To trust the worktree C:/wt/repo-hotfix, open it and trust it there.");
     expect(text(dialog()!)).not.toContain("Trust the repository first");
     expect(double.count("runWorkbench")).toBe(0);
+  });
+
+  test.each([
+    ["target", "To trust the worktree C:/wt/repo-hotfix, open it and trust it there."],
+    ["repository", "Remove worktree did not complete: TRUST_CHANGED."],
+  ])("a Remove run refusal of the %s gate asks nothing and shows %p", async (gate, shown) => {
+    const world = worktreeWorld();
+    world.answers.runWorkbench = () => refused("TRUST_CHANGED", { trustGate: gate });
+    const double = await mountWorkbench(workbench, world);
+    await rowMenu("repo-hotfix");
+    await click(menuItem("Remove worktree…")!);
+    await click(button("Remove worktree", dialog()!));
+    await until(() => text(document.body).includes(shown));
+    expect(double.count("runWorkbench")).toBe(1);
+    expect(text(document.body)).toContain(shown);
+    expect(approvals(double)).toEqual([]);
   });
 
   test("a refusal of the repository gate asks for this repository and, after Not now, names only this repository", async () => {
@@ -588,7 +604,7 @@ describe("Prune missing worktrees (FR-057)", () => {
 
   test("with a prunable record it reviews and runs Git's worktree prune", async () => {
     const world = worktreeWorld(ALL, () => reviewed("worktree-prune", { prunable: [{ path: "C:/wt/repo-gone", reason: "gitdir file points to non-existent location" }] }));
-    world.answers.runWorkbench = () => worktreeRun("worktree-prune", ["C:/repo", "C:/wt/repo-signup", "C:/wt/repo-hotfix", "C:/wt/repo-locked"]);
+    world.answers.runWorkbench = () => worktreeRun("worktree-prune");
     const double = await mountWorkbench(workbench, world);
     await openList();
     await click(options().at(-1)!);
@@ -625,7 +641,7 @@ describe("Add worktree (FR-052, FR-053)", () => {
 
   test("Add reviews the new branch and the folder, runs the token, and opens the worktree when the box is checked", async () => {
     const world = worktreeWorld(ALL, () => reviewed("worktree-add", { branch: { new: "feat/login", start: oid(1) }, path: "C:\\repo-login", destination: "absent" }));
-    world.answers.runWorkbench = () => worktreeRun("worktree-add", ["C:/repo", "C:/wt/repo-signup", "C:/repo-login"]);
+    world.answers.runWorkbench = () => worktreeRun("worktree-add");
     const double = await openAdd(world);
     const panel = addPanel()!;
     await type(panel.querySelector<HTMLInputElement>('input[aria-label="New branch name"]')!, "feat/login");

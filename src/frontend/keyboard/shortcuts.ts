@@ -126,16 +126,16 @@ export function createShortcutHandler() {
   };
 }
 
-/** Feature 004 plan.md D15 keyboard map, Ctrl+F: the filter of the active view. History keeps the 002 history filter. The Settings view has no filter. */
-export function filterTarget(view: "history" | "commit" | "settings"): "history" | "files" | null {
-  return view === "history" ? "history" : view === "commit" ? "files" : null;
+/** Feature 004 plan.md D15 keyboard map, Ctrl+F: the filter of the active view. History keeps the 002 history filter. Settings has "Find a setting". */
+export function filterTarget(view: "history" | "commit" | "settings"): "history" | "files" | "settings" {
+  return view === "history" ? "history" : view === "commit" ? "files" : "settings";
 }
 
 // Feature 004 plan.md D15 keyboard map. A region calls `scopedAction` from its own key handler, so each key acts only there (spec FR-087).
 
 /** The focused region of a scoped key. */
-export type KeyScope = "localBranchRow" | "remoteBranchRow" | "historyRow" | "diff" | "fileList" | "message" | "panel";
-export type ScopedAction = "switch" | "merge" | "rebase" | "createBranch" | "rename" | "delete" | "stageLines" | "unstageLines" | "stageEntry" | "previousHunk" | "nextHunk" | "primary";
+export type KeyScope = "localBranchRow" | "remoteBranchRow" | "historyRow" | "diff" | "fileList" | "message" | "panel" | "settingsView";
+export type ScopedAction = "switch" | "merge" | "rebase" | "createBranch" | "rename" | "delete" | "stageLines" | "unstageLines" | "stageEntry" | "previousHunk" | "nextHunk" | "primary" | "save";
 const BRANCH_ROWS: readonly KeyScope[] = ["localBranchRow", "remoteBranchRow"];
 /** `aria` is the `aria-keyshortcuts` value, `text` is the visible key text. */
 export const KEYS: Record<ScopedAction, { aria: string; text: string; scopes: readonly KeyScope[] }> = {
@@ -151,6 +151,7 @@ export const KEYS: Record<ScopedAction, { aria: string; text: string; scopes: re
   previousHunk: { aria: "Alt+ArrowUp", text: "Alt+Up", scopes: ["diff"] },
   nextHunk: { aria: "Alt+ArrowDown", text: "Alt+Down", scopes: ["diff"] },
   primary: { aria: "Control+Enter", text: "Ctrl+Enter", scopes: ["message", "panel"] },
+  save: { aria: "Control+S", text: "Ctrl+S", scopes: ["settingsView"] },
 };
 const BY_KEY = new Map(Object.entries(KEYS).flatMap(([action, k]) => k.scopes.map((scope) => [`${scope} ${k.aria}`, action as ScopedAction] as const)));
 

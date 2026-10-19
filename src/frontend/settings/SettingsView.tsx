@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { Tabs } from "@base-ui/react/tabs";
-import { Cancel01Icon, Settings02Icon } from "@hugeicons/core-free-icons";
+import { Cancel01Icon, Search01Icon, Settings02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { IconButton } from "../components/icon-button";
-import { TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
+import { scopedAction } from "../keyboard/shortcuts";
 import type { StatusOperation } from "../status/OperationStatus";
 import { PULL_ACTIONS } from "../sync/PullSplitButton";
 import { puttyUnavailableText } from "./ConnectTerminal";
-import { GIT_PAGES, GitPage, ScopePicker, useGitSettings, type GitBridge } from "./git/GitSettingsPage";
+import { GIT_PAGES, GitPage, keyMatches, pageKeys, ScopePicker, useGitSettings, type GitBridge } from "./git/GitSettingsPage";
 import { TEXTS, type Scope } from "./git/texts";
 import { CloneFolderSettings, KeyFileSettings, SshClientSettings, syncSettingsOf, type Change, type KeyProposal, type SettingsBridge, type SyncSettings } from "./SettingsDialog";
 
@@ -67,6 +68,7 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
   const heading = useId();
   const [page, setPage] = useState(target === null ? "SSH" : "User");
   const [scope, setScope] = useState<Scope>("local");
+  const [query, setQuery] = useState("");
   const git = useGitSettings({ bridge, target, operationRunning, onOperation, onEnded });
   const [read, setRead] = useState<Read>({ state: "loading" });
   const [failure, setFailure] = useState<ReactNode>(null);
@@ -112,7 +114,11 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
 
   const app = (render: (settings: SyncSettings) => ReactNode) =>
     read.state === "loading" ? <p className="text-muted-text">The settings are still loading…</p> : read.state === "failed" ? <p role="alert">{`The settings did not load: ${read.code}.`}</p> : render(read.value);
-  const gitPage = (name: string) => (target === null ? <p>{TEXTS.needsRepository}</p> : <GitPage name={name} scope={scope} settings={git} />);
+  const gitPage = (name: string) => (target === null ? <p>{TEXTS.needsRepository}</p> : <GitPage name={name} scope={scope} query={query} settings={git} />);
+  // Plan D15 "Find a setting": a query keeps only the Git pages with a matching key. The app pages hold no Git key.
+  const values = git.read.state === "loaded" ? git.read.value.values : null;
+  const shown = query === "" ? PAGES : GIT_PAGES.map((p) => p.name).filter((name) => pageKeys(name, values).some((key) => keyMatches(key, query)));
+  const active = shown.includes(page) ? page : (shown[0] ?? null);
   function content(name: string): ReactNode {
     if (name === "SSH")
       return app((settings) => (
@@ -139,7 +145,7 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
     if (name === "Pull and push")
       return (
         <>
-          {app((settings) => (
+          {query !== "" ? null : app((settings) => (
             <AppChoice
               slot="pull-default"
               heading={TEXTS.pullDefault}
@@ -163,7 +169,13 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
       aria-labelledby={heading}
       className="flex min-h-0 flex-1 flex-col"
       onKeyDown={(event) => {
-        if (event.key !== "Escape" || event.defaultPrevented) return;
+        if (event.defaultPrevented) return;
+        if (scopedAction(event.nativeEvent, "settingsView") === "save") {
+          event.preventDefault();
+          if (scope === "local" || scope === "global") void git.save(scope);
+          return;
+        }
+        if (event.key !== "Escape") return;
         event.preventDefault();
         onClose();
       }}
@@ -177,11 +189,31 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
         <span className="flex-1" />
         <IconButton icon={Cancel01Icon} label={TEXTS.close} keys={{ aria: "Escape", text: "Esc" }} onClick={onClose} />
       </div>
-      {/* The shadcn `Tabs` wrapper does not pass `orientation` to Base UI, so the arrow keys need the Base UI root. */}
-      <Tabs.Root orientation="vertical" value={page} onValueChange={(value) => setPage(String(value))} className="group/tabs flex min-h-0 flex-1">
-        <div data-section="pageList" className="w-48 shrink-0 overflow-y-auto border-r border-divider p-1">
+      <Tabs orientation="vertical" value={active} onValueChange={(value) => setPage(String(value))} className="min-h-0 flex-1 gap-0">
+        <div data-section="pageList" className="flex w-52 shrink-0 flex-col gap-1 overflow-y-auto border-r border-divider p-1">
+          <div className="relative flex shrink-0 items-center">
+            <HugeiconsIcon icon={Search01Icon} strokeWidth={2} aria-hidden="true" className="pointer-events-none absolute left-2 size-(--icon-size) text-muted-text" />
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <input
+                    type="text"
+                    aria-label={TEXTS.find}
+                    aria-keyshortcuts="Control+F"
+                    placeholder={TEXTS.find}
+                    spellCheck={false}
+                    autoComplete="off"
+                    className="h-(--h-button) w-full rounded-sm border border-control-border bg-surface pr-2 pl-7"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                  />
+                }
+              />
+              <TooltipContent>{TEXTS.findTooltip}</TooltipContent>
+            </Tooltip>
+          </div>
           <TabsList variant="line" activateOnFocus aria-label={TEXTS.pages} className="w-full items-stretch">
-            {PAGES.map((name) => (
+            {shown.map((name) => (
               <TabsTrigger key={name} value={name} className="justify-start px-2">
                 {name}
               </TabsTrigger>
@@ -189,12 +221,16 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
           </TabsList>
         </div>
         <div data-section="pageContent" className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-2">
-          <TabsContent value={page} className="flex max-w-[880px] flex-col gap-3">
-            {failure === null ? null : <p role="alert">{failure}</p>}
-            {content(page)}
-          </TabsContent>
+          {failure === null ? null : <p role="alert">{failure}</p>}
+          {active === null ? (
+            <p className="text-muted-text">{TEXTS.noMatch}</p>
+          ) : (
+            <TabsContent value={active} className="flex max-w-[880px] flex-col gap-3">
+              {content(active)}
+            </TabsContent>
+          )}
         </div>
-      </Tabs.Root>
+      </Tabs>
     </section>
   );
 }

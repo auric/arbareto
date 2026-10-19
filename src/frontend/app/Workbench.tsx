@@ -1076,6 +1076,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         const target = filterTarget(live.current.view);
         if (target === "history") filterRef.current?.focus();
         else if (target === "files") sections.current?.querySelector<HTMLElement>('section[aria-label="Commit view"] input[aria-label="Filter files"]')?.focus();
+        else sections.current?.querySelector<HTMLElement>('[data-view="settings"] input[aria-label="Find a setting"]')?.focus();
       }
       else if (action.type === "match") void historyView.match(action.direction);
       else if (action.type === "sync") runSync.current(action.control);

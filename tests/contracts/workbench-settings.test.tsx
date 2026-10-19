@@ -228,12 +228,23 @@ describe("pages and controls (FR-060 to FR-062, FR-067)", () => {
     expect(text(row("push.autosetupremote"))).toContain("Not set here. No other scope sets it, so Git uses its default.");
   });
 
-  test("an enumerated key offers Not set and each documented value, and push.default names tracking as the old name (FR-061)", async () => {
-    await render();
+  test("an enumerated key offers Not set and each documented value with a readable label and the exact Git value (FR-061)", async () => {
+    const r = await render();
     await page("Pull and push");
     await scope("local");
-    const options = [...row("push.default").querySelectorAll("option")].map((o) => [o.value, text(o)]);
-    expect(options).toEqual([["", "Not set"], ["nothing", "nothing"], ["current", "current"], ["upstream", "upstream"], ["simple", "simple"], ["matching", "matching"], ["tracking", "tracking (old name of upstream)"]]);
+    expect([...row("push.default").querySelectorAll("label")].map((l) => text(l))).toEqual([
+      "Not set",
+      "Push nothing without a named branch (nothing)",
+      "Current branch to a branch of the same name (current)",
+      "Current branch to its upstream branch (upstream)",
+      "Current branch to its upstream branch of the same name (simple)",
+      "All branches with a remote branch of the same name (matching)",
+      "Old name of upstream (tracking)",
+    ]);
+    expect(row("pull.rebase").querySelector('label span span[class*="muted"]')?.textContent).toBe("(true)");
+    await click(labelInput(row("pull.rebase"), "Rebase (true)"));
+    await click(button("Save (Ctrl+S)"));
+    expect(r.double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "config-save", scope: "local", changes: [{ key: "pull.rebase", value: "true" }] });
   });
 
   test("the merge and diff tools offer the Git mergetools presets with the exact value, plus Custom; the editor offers Custom only (FR-062, O-10)", async () => {
@@ -257,6 +268,34 @@ describe("pages and controls (FR-060 to FR-062, FR-067)", () => {
     await scope("effective");
     expect(text(row("user.name"))).toContain("<b>Ada</b>");
     expect(row("user.name").querySelector("b")).toBeNull();
+  });
+});
+
+describe("Find a setting (plan D15)", () => {
+  const find = () => section("pageList").querySelector<HTMLInputElement>('input[aria-label="Find a setting"]')!;
+  test("the filter keeps the pages and rows whose label or Git key holds the text, without regard to letter case", async () => {
+    await render();
+    expect(find().getAttribute("aria-keyshortcuts")).toBe("Control+F");
+    await type(find(), "PRUNE");
+    expect(pageNames()).toEqual(["Fetch"]);
+    expect([...content().querySelectorAll<HTMLElement>("[data-key]")].map((e) => e.dataset.key)).toEqual(["fetch.prune"]);
+    await type(find(), "user email");
+    expect(pageNames()).toEqual(["User"]);
+    expect([...content().querySelectorAll<HTMLElement>("[data-key]")].map((e) => e.dataset.key)).toEqual(["user.email"]);
+    await type(find(), "autostash");
+    expect(pageNames()).toEqual(["Merge and rebase"]);
+    expect([...content().querySelectorAll<HTMLElement>("[data-key]")].map((e) => e.dataset.key)).toEqual(["merge.autostash", "rebase.autostash"]);
+    await type(find(), "no such setting");
+    expect(pageNames()).toEqual([]);
+    expect(text(content())).toContain("No setting matches the filter.");
+    await type(find(), "");
+    expect(pageNames().length).toBe(11);
+  });
+
+  test("the filter takes the text literally", async () => {
+    await render();
+    await type(find(), "user.*");
+    expect(pageNames()).toEqual([]);
   });
 });
 
@@ -292,7 +331,7 @@ describe("Save and Cancel (FR-064, FR-065)", () => {
     expect(text(content())).toContain("1 change. Save writes it to This repository only.");
     expect(r.double.writes()).toEqual([]);
     const reads = r.double.of("readGitSettings").length;
-    await click(button("Save"));
+    await click(button("Save (Ctrl+S)"));
     expect(r.double.pending("reviewWorkbench")!.args).toEqual([TARGET, { action: "config-save", scope: "local", changes: [{ key: "fetch.prune", value: "true" }] }]);
     await answer(r.double.pending("reviewWorkbench"), reviewed("local", [{ key: "fetch.prune", value: "true", earlier: { origin: `file:${LOCAL}`, value: "false" } }]));
     expect(r.double.pending("runWorkbench")!.args.slice(0, 2)).toEqual([{ repositoryId: TARGET.repositoryId }, { workbenchToken: TOKEN, start: true }]);
@@ -303,6 +342,29 @@ describe("Save and Cancel (FR-064, FR-065)", () => {
     expect(r.double.of("readGitSettings").length).toBe(reads + 1);
     expect(labelInput(row("fetch.prune"), "On").checked).toBe(true);
     expect(text(row("fetch.prune"))).not.toContain("Changed");
+  });
+
+  test("Ctrl+S in the view saves the pending changes with the same review", async () => {
+    const r = await render();
+    await scope("local");
+    const field = row("user.name").querySelector("input")!;
+    await type(field, "Bob");
+    await press(field, "s", { ctrlKey: true });
+    expect(r.double.pending("reviewWorkbench")!.args).toEqual([TARGET, { action: "config-save", scope: "local", changes: [{ key: "user.name", value: "Bob" }] }]);
+    expect(button("Save (Ctrl+S)").getAttribute("aria-keyshortcuts")).toBe("Control+S");
+  });
+
+  test("Cancel closes an open Custom tool field", async () => {
+    await render();
+    await page("Editor and tools");
+    await scope("local");
+    await choose(row("merge.tool").querySelector("select")!, "custom");
+    const field = row("merge.tool").querySelector<HTMLInputElement>("input")!;
+    await type(field, "mytool");
+    expect(text(row("merge.tool"))).toContain("Changed");
+    await click(button("Cancel"));
+    expect(row("merge.tool").querySelector("input")).toBeNull();
+    expect(row("merge.tool").querySelector("select")!.value).toBe("");
   });
 
   test("Cancel writes nothing and restores the read values", async () => {
@@ -320,7 +382,7 @@ describe("Save and Cancel (FR-064, FR-065)", () => {
     const r = await render();
     await scope("global");
     await type(row("user.name").querySelector("input")!, "Bob");
-    await click(button("Save"));
+    await click(button("Save (Ctrl+S)"));
     await answer(r.double.pending("reviewWorkbench"), reviewed("global", [{ key: "user.name", value: "Bob", earlier: null }]));
     await answer(r.double.pending("runWorkbench"), ran("failed", { scope: "global", failed: { key: "user.name", exitCode: 4, reason: "cannot-write" }, outputTail: "error: could not lock config file" }, "GIT_FAILED"));
     expect(text(content())).toContain("Git did not write user.name: cannot-write (exit 4).");
@@ -331,7 +393,7 @@ describe("Save and Cancel (FR-064, FR-065)", () => {
     const r = await render();
     await scope("local");
     await type(row("user.name").querySelector("input")!, "Bob");
-    await click(button("Save"));
+    await click(button("Save (Ctrl+S)"));
     await answer(r.double.pending("reviewWorkbench"), reviewed("local", [{ key: "user.name", value: "Bob", earlier: null }]));
     const reads = r.double.of("readGitSettings").length;
     await answer(r.double.pending("runWorkbench"), { requestId: fixtureId(22), state: "rejected", code: "STALE_REVIEW" });
@@ -343,7 +405,7 @@ describe("Save and Cancel (FR-064, FR-065)", () => {
     const r = await render();
     await scope("local");
     await type(row("user.name").querySelector("input")!, "Bob");
-    await click(button("Save"));
+    await click(button("Save (Ctrl+S)"));
     await answer(r.double.pending("reviewWorkbench"), reviewed("local", [{ key: "user.name", value: "Bob", earlier: { origin: `file:${LOCAL}`, value: "Eve" } }]));
     expect(r.double.of("runWorkbench").length).toBe(0);
     expect(text(content())).toContain("A setting changed after Arbareto read it. Arbareto read the values again. Check them, then save again.");

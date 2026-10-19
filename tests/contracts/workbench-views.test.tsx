@@ -143,6 +143,9 @@ describe("views (FR-033, FR-068, data-model §14)", () => {
     expect(shown(commitView())).toBe(false);
     expect(shown(header())).toBe(true);
     expect(shown(document.querySelector("footer"))).toBe(true);
+    // Plan D15 keyboard map: Ctrl+F focuses Find a setting in the Settings view.
+    await press(window, "f", { ctrlKey: true });
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Find a setting");
     await click(button("Close settings"));
     expect(document.querySelector('[data-section="pageContent"]')).toBeNull();
     expect(shown(commitView())).toBe(true);

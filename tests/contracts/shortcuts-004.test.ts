@@ -23,8 +23,9 @@ const D15: [ScopedAction, string, string, KeyScope[]][] = [
   ["previousHunk", "Alt+ArrowUp", "Alt+Up", ["diff"]],
   ["nextHunk", "Alt+ArrowDown", "Alt+Down", ["diff"]],
   ["primary", "Control+Enter", "Ctrl+Enter", ["message", "panel"]],
+  ["save", "Control+S", "Ctrl+S", ["settingsView"]],
 ];
-const SCOPES: KeyScope[] = ["localBranchRow", "remoteBranchRow", "historyRow", "diff", "fileList", "message", "panel"];
+const SCOPES: KeyScope[] = ["localBranchRow", "remoteBranchRow", "historyRow", "diff", "fileList", "message", "panel", "settingsView"];
 
 type Init = { key: string; ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean; metaKey?: boolean; isComposing?: boolean };
 /** A keydown with the modifiers and the key of an `aria-keyshortcuts` value. */
@@ -103,10 +104,10 @@ describe("window keys and collisions (FR-014, SC-014)", () => {
 });
 
 describe("Ctrl+F per view (FR-101, plan D15 keyboard map, T092)", () => {
-  test("Ctrl+F focuses the filter of the active view: the history filter in History, Filter files in Commit, and nothing in Settings", () => {
+  test("Ctrl+F focuses the filter of the active view: the history filter in History, Filter files in Commit, and Find a setting in Settings", () => {
     expect(filterTarget("history")).toBe("history");
     expect(filterTarget("commit")).toBe("files");
-    expect(filterTarget("settings")).toBeNull();
+    expect(filterTarget("settings")).toBe("settings");
   });
 
   test("Ctrl+F acts in the window and in an editable field, so it leaves the message field for the filter", () => {

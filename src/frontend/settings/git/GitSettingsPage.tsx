@@ -8,11 +8,13 @@ import type { ReadGitSettingsResult } from "../../../contracts/envelope";
 import { codeText, OutputTail } from "../../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../../bridge";
 import { RUNNING_REASON, RunningTooltip } from "../../components/running-tooltip";
+import { matches } from "../../components/switcher-popover";
 import { Button } from "../../components/ui/button";
+import { KEYS } from "../../keyboard/shortcuts";
 import { isObject } from "../../lib/utils";
 import { trackOperation, type StatusOperation } from "../../status/OperationStatus";
 import { PRESET_KEYS, TOOL_PRESETS } from "./presets";
-import { TEXTS, type EntryScope, type Scope } from "./texts";
+import { ENUM_LABELS, TEXTS, type EntryScope, type Scope } from "./texts";
 
 // Feature 004 spec FR-058 to FR-065 and FR-067, plan.md D11 and D15 "Settings", contract Δ3 `readGitSettings` and `config-save`, data-model §2 and §9.
 
@@ -60,6 +62,8 @@ export function useGitSettings({ bridge, target, operationRunning, onOperation, 
   const [pending, setPending] = useState<Record<Writable, Pending>>({ local: {}, global: {} });
   const [message, setMessage] = useState<ReactNode>(null);
   const [saving, setSaving] = useState(false);
+  // Cancel and each new read remount the rows, so a row drops its local state, such as an open Custom field.
+  const [epoch, setEpoch] = useState(0);
   const seq = useRef(0);
   const repositoryId = target?.repositoryId ?? null;
   const repositoryGeneration = target?.repositoryGeneration ?? null;
@@ -72,6 +76,7 @@ export function useGitSettings({ bridge, target, operationRunning, onOperation, 
       const result = response.result as Partial<GitSettings> | undefined;
       const ok = response.state === "succeeded" && Array.isArray(result?.values) && isObject(result?.files);
       setRead(ok ? { state: "loaded", value: result as GitSettings } : { state: "failed", code: response.code ?? response.state });
+      setEpoch((e) => e + 1);
     });
   }, [bridge, repositoryId]);
   useEffect(() => reload(), [reload, repositoryGeneration]);
@@ -89,10 +94,11 @@ export function useGitSettings({ bridge, target, operationRunning, onOperation, 
   const cancel = (scope: Writable) => {
     setPending((p) => ({ ...p, [scope]: {} }));
     setMessage(null);
+    setEpoch((e) => e + 1);
   };
 
   async function save(scope: Writable) {
-    if (target === null || repositoryId === null || read.state !== "loaded" || saving) return;
+    if (target === null || repositoryId === null || read.state !== "loaded" || saving || operationRunning) return;
     const shown = read.value;
     const scoped = pending[scope];
     const changes = Object.entries(scoped).map(([key, value]) => ({ key, value }));
@@ -151,7 +157,7 @@ export function useGitSettings({ bridge, target, operationRunning, onOperation, 
     reload();
   }
 
-  return { read, pending, message, saving, operationRunning, change, cancel, save };
+  return { read, pending, message, saving, operationRunning, epoch, change, cancel, save };
 }
 export type GitSettingsState = ReturnType<typeof useGitSettings>;
 
@@ -240,22 +246,32 @@ function BoolControl({ value, scope, locked, pending, onChange }: RowProps) {
 }
 
 function EnumControl({ value, scope, locked, pending, onChange }: RowProps) {
+  const name = useId();
   const entry = own(value, scope);
   const values = value.type.kind === "enum" ? value.type.values : [];
   const next = value.key in pending ? pending[value.key] : undefined;
   const current = next !== undefined ? (next ?? "") : entry === undefined ? "" : (entry.reading ?? shownValue(entry));
   // A value that Git cannot read for the key keeps its own option, so the control shows it unchanged.
   const extra = current !== "" && !values.includes(current) ? current : null;
+  const options: [string, ReactNode][] = [
+    ["", TEXTS.notSet],
+    ...values.map((v): [string, ReactNode] => [
+      v,
+      <>
+        {ENUM_LABELS[value.key]?.[v] ?? v} <span className="text-muted-text">({v})</span>
+      </>,
+    ]),
+    ...(extra === null ? [] : [[extra, <Code key="extra">{extra}</Code>] as [string, ReactNode]]),
+  ];
   return (
-    <select aria-label={TEXTS.label(value.key)} disabled={locked} value={current} onChange={(e) => onChange(e.target.value === "" ? null : e.target.value)} className="h-(--h-row) w-56 rounded-sm border border-control-border bg-surface px-1">
-      <option value="">{TEXTS.notSet}</option>
-      {values.map((v) => (
-        <option key={v} value={v}>
-          {value.key === "push.default" && v === "tracking" ? TEXTS.tracking : v}
-        </option>
+    <div role="radiogroup" aria-label={TEXTS.label(value.key)} className="flex flex-col gap-0.5">
+      {options.map(([v, label]) => (
+        <label key={v} className="flex items-center gap-1.5">
+          <input type="radio" name={name} value={v} checked={current === v} disabled={locked} onChange={() => onChange(v === "" ? null : v)} />
+          <span>{label}</span>
+        </label>
       ))}
-      {extra === null ? null : <option value={extra}>{extra}</option>}
-    </select>
+    </div>
   );
 }
 
@@ -349,6 +365,15 @@ function KeyRow({ value, scope, files, pending, onChange }: { value: ConfigValue
   );
 }
 
+/** Plan D15 "Find a setting": the 001 switcher rule over the key label and the Git key name. */
+export const keyMatches = (key: string, query: string) => query === "" || matches(TEXTS.label(key), query) || matches(key, query);
+
+/** The keys of one FR-060 page in page order. Without a read, the page has no tool keys. */
+export function pageKeys(name: string, values: readonly ConfigValue[] | null): string[] {
+  const keys = GIT_PAGES.find((p) => p.name === name)?.keys ?? [];
+  return values === null ? keys : pageValues(name, values).map((v) => v.key);
+}
+
 /** The keys of one FR-060 page, with the tool keys after their tool. */
 function pageValues(name: string, values: readonly ConfigValue[]): ConfigValue[] {
   const keys = GIT_PAGES.find((p) => p.name === name)?.keys ?? [];
@@ -361,8 +386,8 @@ function pageValues(name: string, values: readonly ConfigValue[]): ConfigValue[]
 }
 
 /** One Git configuration page in the selected scope, with the pending changes and Save (FR-064, FR-065). */
-export function GitPage({ name, scope, settings }: { name: string; scope: Scope; settings: GitSettingsState }) {
-  const { read, pending, message, saving, operationRunning, change, cancel, save } = settings;
+export function GitPage({ name, scope, query, settings }: { name: string; scope: Scope; query: string; settings: GitSettingsState }) {
+  const { read, pending, message, saving, operationRunning, epoch, change, cancel, save } = settings;
   const reason = useId();
   if (read.state === "loading") return <p className="text-muted-text">{TEXTS.loading}</p>;
   if (read.state === "failed") return <p role="alert">{codeText(TEXTS.loadFailed, read.code)}</p>;
@@ -373,8 +398,10 @@ export function GitPage({ name, scope, settings }: { name: string; scope: Scope;
   return (
     <div className="flex flex-col">
       {writable(scope) && files[scope] !== null ? <p className="text-muted-text">{TEXTS.emptyRemoves}</p> : null}
-      {pageValues(name, values).map((value) => (
-        <KeyRow key={`${scope}:${value.key}`} value={value} scope={scope} files={files} pending={scoped} onChange={(next) => writable(scope) && change(scope, value, next)} />
+      {pageValues(name, values)
+        .filter((value) => keyMatches(value.key, query))
+        .map((value) => (
+        <KeyRow key={`${scope}:${value.key}:${epoch}`} value={value} scope={scope} files={files} pending={scoped} onChange={(next) => writable(scope) && change(scope, value, next)} />
       ))}
       <div role="status" className="flex flex-col gap-1 pt-2">
         {message}
@@ -386,8 +413,8 @@ export function GitPage({ name, scope, settings }: { name: string; scope: Scope;
             {TEXTS.cancel}
           </Button>
           <RunningTooltip reason={quiet}>
-            <Button disabled={quiet !== null} focusableWhenDisabled aria-describedby={quiet === null ? undefined : reason} onClick={() => quiet === null && void save(scope)}>
-              {TEXTS.save}
+            <Button disabled={quiet !== null} focusableWhenDisabled aria-keyshortcuts={KEYS.save.aria} aria-describedby={quiet === null ? undefined : reason} onClick={() => quiet === null && void save(scope)}>
+              {`${TEXTS.save} (${KEYS.save.text})`}
             </Button>
           </RunningTooltip>
           {quiet === null ? null : (

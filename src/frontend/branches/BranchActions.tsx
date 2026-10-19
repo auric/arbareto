@@ -277,6 +277,7 @@ export function useBranchActions(options: BranchActionsOptions) {
       previousHunk: null,
       nextHunk: null,
       primary: null,
+      save: null,
     };
   }
 

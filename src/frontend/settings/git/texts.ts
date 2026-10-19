@@ -37,6 +37,21 @@ const LABELS: Record<string, string> = {
   "rerere.autoupdate": "Stage reused resolutions",
 };
 
+/** Spec FR-061 and plan D11 enumerations: a readable label for each exact Git value. The option shows the value after the label. */
+export const ENUM_LABELS: Record<string, Record<string, string>> = {
+  "core.autocrlf": { true: "Windows style: check out CRLF, commit LF", false: "No conversion", input: "Commit with LF only" },
+  "pull.rebase": { true: "Rebase", false: "Merge", merges: "Rebase and keep merge commits", interactive: "Interactive rebase" },
+  "pull.ff": { true: "Fast-forward when possible", false: "Always create a merge commit", only: "Fast-forward only" },
+  "push.default": {
+    nothing: "Push nothing without a named branch",
+    current: "Current branch to a branch of the same name",
+    upstream: "Current branch to its upstream branch",
+    simple: "Current branch to its upstream branch of the same name",
+    matching: "All branches with a remote branch of the same name",
+    tracking: "Old name of upstream",
+  },
+};
+
 export const TEXTS = {
   heading: "Settings",
   close: "Close settings",
@@ -49,6 +64,10 @@ export const TEXTS = {
   noGlobalFile: "Arbareto cannot name the global Git configuration file, so Global is read only.",
   noLocalFile: "Arbareto cannot name the repository configuration file, so This repository is read only.",
   pages: "Settings pages",
+  // Plan D15 "Find a setting".
+  find: "Find a setting",
+  findTooltip: "Find a setting (Ctrl+F)",
+  noMatch: "No setting matches the filter.",
   needsRepository: "Git settings need an open repository.",
   loading: "The Git settings are still loading…",
   loadFailed: "The Git settings did not load: ",
@@ -61,7 +80,6 @@ export const TEXTS = {
   on: "On",
   off: "Off",
   custom: "Custom",
-  tracking: "tracking (old name of upstream)",
   from: (scope: EntryScope, origin: string) => `from ${SCOPE_NAMES[scope]} (${origin})`,
   notSetOther: (value: string, scope: EntryScope) => `Not set here. Git then uses ${value} from ${SCOPE_NAMES[scope]}.`,
   notSetDefault: "Not set here. No other scope sets it, so Git uses its default.",

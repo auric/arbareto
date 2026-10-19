@@ -345,7 +345,6 @@ mod tests {
 
     use std::os::windows::io::AsRawHandle;
     use std::path::PathBuf;
-    use std::time::Duration;
 
     use windows::Win32::Foundation::{
         DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, HANDLE_FLAG_INHERIT, SetHandleInformation,
@@ -355,7 +354,7 @@ mod tests {
     use windows::Win32::System::Threading::{
         CREATE_NEW_CONSOLE, CREATE_NO_WINDOW, CREATE_SUSPENDED, DETACHED_PROCESS,
         GetCurrentProcess, OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
-        QueryFullProcessImageNameW,
+        QueryFullProcessImageNameW, SuspendThread,
     };
     use windows::core::BOOL;
 
@@ -561,7 +560,15 @@ mod tests {
             member.as_bool(),
             "the Job holds the child from its creation, before the resume"
         );
-        std::thread::sleep(Duration::from_secs(1));
+        // `SuspendThread` returns the suspend count before its own increment. A thread that ran had count 0.
+        // SAFETY: `suspended` keeps the primary thread handle open for both calls.
+        let count = unsafe { SuspendThread(raw(&suspended.thread)) };
+        // SAFETY: as above.
+        let _ = unsafe { ResumeThread(raw(&suspended.thread)) };
+        assert_eq!(
+            count, 1,
+            "the primary thread is still suspended from its creation"
+        );
         assert!(
             !started.exists(),
             "the child runs no code before the resume"

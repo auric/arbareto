@@ -78,8 +78,10 @@ const IID_IUIAutomationInvokePattern = "fb377fbe-8ea6-46d5-9c73-6499642d3059";
 const IID_IUIAutomationTextPattern = "32eba289-3583-42c9-9c59-3b6d9a1e9b6a";
 const IID_IUIAutomationSelectionItemPattern = "a8efa66a-0fda-421a-9194-38021f3578ea";
 const IID_IUIAutomationValuePattern = "a94cd8b1-0844-4cd6-9d2d-640537ab39e9";
+const IID_IUIAutomationExpandCollapsePattern = "619be086-1f4e-4ee4-bafa-210128738730";
 const UIA_InvokePatternId = 10000;
 const UIA_ValuePatternId = 10002;
+const UIA_ExpandCollapsePatternId = 10005;
 const UIA_SelectionItemPatternId = 10010;
 const UIA_TextPatternId = 10014;
 const UIA_ControlTypePropertyId = 30003;
@@ -88,7 +90,7 @@ const UIA_LiveSettingPropertyId = 30135;
 // `UIAutomationCore.h` enum LiveSetting.
 const Polite = 1;
 // `UIAutomationClient.h` control type IDs for the `controlType` argument of `find`.
-export const ControlType = { Button: 50000, Edit: 50004, Tree: 50023 } as const;
+export const ControlType = { Button: 50000, Edit: 50004, MenuItem: 50011, Tree: 50023 } as const;
 const TreeScope_Descendants = 0x4;
 const SLOT = {
   // IUnknown
@@ -121,6 +123,9 @@ const SLOT = {
   // IUIAutomationSelectionItemPattern
   Select: 3,
   get_CurrentIsSelected: 6,
+  // IUIAutomationExpandCollapsePattern
+  Expand: 3,
+  Collapse: 4,
   // IUIAutomationValuePattern
   SetValue: 3,
   get_CurrentValue: 4,
@@ -395,6 +400,14 @@ function withPattern<T>(element: Element, id: number, iid: string, label: string
 
 export function invoke(element: Element): void {
   withPattern(element, UIA_InvokePatternId, IID_IUIAutomationInvokePattern, "Invoke", (self) => hr("Invoke", slotCall(self, SLOT.Invoke, [], [])));
+}
+
+export function expand(element: Element): void {
+  withPattern(element, UIA_ExpandCollapsePatternId, IID_IUIAutomationExpandCollapsePattern, "ExpandCollapse", (self) => hr("Expand", slotCall(self, SLOT.Expand, [], [])));
+}
+
+export function collapse(element: Element): void {
+  withPattern(element, UIA_ExpandCollapsePatternId, IID_IUIAutomationExpandCollapsePattern, "ExpandCollapse", (self) => hr("Collapse", slotCall(self, SLOT.Collapse, [], [])));
 }
 
 export function focus(element: Element): void {

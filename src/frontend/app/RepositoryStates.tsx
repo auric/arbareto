@@ -63,6 +63,14 @@ export function codeText(text: string, code: string): ReactNode {
   );
 }
 
+/** Feature 004 plan.md D15 "Malformed result": a `succeeded` response whose result lacks a field that the renderer needs. */
+export const unknownFormText = (item: string) => `${item} did not complete: the result has an unknown form.`;
+
+/** `<lead><code>` for a failed response. A `succeeded` response never shows its state as a code (plan.md D15 "Malformed result"). */
+export function failureText(item: string, response: { state: string; code?: string }, code = response.code ?? response.state, lead = `${item} did not complete: `): ReactNode {
+  return response.state === "succeeded" ? unknownFormText(item) : codeText(lead, code);
+}
+
 export function CommandRemedy({ remedy }: { remedy: Remedy | undefined }) {
   if (!remedy) return null;
   return (

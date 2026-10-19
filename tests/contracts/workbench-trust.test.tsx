@@ -10,7 +10,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { contractChecked, fixtureId } from "./bridge-contract";
-import { answer, button, buttons, click, createWorld, itemLabel, keyboardFocus, menuItem, mountWorkbench, settle, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
+import { answer, button, buttons, click, createWorld, itemLabel, keyboardFocus, menuItem, mountWorkbench, settle, snapshot, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
 
 // tasks.md T066 (feature 004, WP23). Story US7. Spec FR-069 to FR-075. Plan D12, D14, D15.
 
@@ -209,6 +209,25 @@ describe("the ask (FR-069, FR-070, FR-072)", () => {
     expect(text()).not.toContain(COMMIT_TEXT);
   });
 
+  test("a second ask while the read after an approval runs sends nothing, and the first caller still settles", async () => {
+    const { world, double } = await mount(report(), { entries: STAGED as never });
+    await openCommit();
+    await click(button("Commit (Ctrl+Enter)"));
+    // The full read after the approval waits for the test. The trust read stays untrusted, so the chip still offers Trust.
+    world.answers.readWorkspace = undefined;
+    await answer(double.pending("approveTrust"), succeeded(APPROVED));
+    const read = double.pending("readWorkspace")!;
+    expect(read).toBeDefined();
+    await click(chip()!);
+    await click(menuItem("Trust this repository…"));
+    expect(double.count("approveTrust")).toBe(1);
+    world.answers.readTrust = () => succeeded(report({ state: "approved" }));
+    delete world.answers.readWorkspace;
+    await answer(read, succeeded(snapshot(world)));
+    await settle();
+    expect(double.count("reviewCommit")).toBe(1);
+  });
+
   test("a read that needs trust states the FR-072 text with Trust…, and never prompts by itself", async () => {
     const { world, double } = await mount(report({ approvalRequired: { reads: true } }), {
       answers: { readWorkspace: () => ({ requestId: fixtureId(0x504), operationId: fixtureId(0x505), state: "rejected", code: "TRUST_REQUIRED" }) },
@@ -231,6 +250,21 @@ describe("the ask (FR-069, FR-070, FR-072)", () => {
     await click(menuItem("Trust this repository…"));
     await answer(double.pending("approveTrust"), { requestId: fixtureId(0x506), state: "failed", code: "DEADLINE" });
     expect(statusText()).toContain("Trust approval did not complete: DEADLINE");
+  });
+
+  test("a succeeded approval without a trust ID and a succeeded Stop trusting without a count name the unknown form (plan D15)", async () => {
+    const { double } = await mount(report({ state: "approved" }));
+    await click(chip()!);
+    await click(menuItem("Stop trusting this repository"));
+    await answer(double.pending("revokeTrust"), succeeded({}));
+    expect(statusText()).toContain("Stop trusting did not complete: the result has an unknown form.");
+    await unmountAll();
+    const untrusted = await mount(report());
+    await click(chip()!);
+    await click(menuItem("Trust this repository…"));
+    await answer(untrusted.double.pending("approveTrust"), succeeded({}));
+    expect(statusText()).toContain("Trust approval did not complete: the result has an unknown form.");
+    expect(statusText()).not.toContain(": succeeded");
   });
 });
 

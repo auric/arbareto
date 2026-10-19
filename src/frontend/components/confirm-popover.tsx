@@ -14,6 +14,8 @@ export type ConfirmPopoverProps = {
   title: string;
   children?: ReactNode;
   confirmLabel: string;
+  /** The label of the Cancel button. The default is "Cancel". */
+  cancelLabel?: string;
   /** A destructive confirmation uses the filled danger button (D16). */
   danger?: boolean;
   /** Without it, the popover shows Cancel only, such as for a refusal. */
@@ -25,7 +27,7 @@ export type ConfirmPopoverProps = {
 };
 
 /** A modal Base UI popover next to its row. Cancel has the first focus. */
-export function ConfirmPopover({ open, anchor, title, children, confirmLabel, danger = false, onConfirm, onCancel, initialFocus }: ConfirmPopoverProps) {
+export function ConfirmPopover({ open, anchor, title, children, confirmLabel, cancelLabel = "Cancel", danger = false, onConfirm, onCancel, initialFocus }: ConfirmPopoverProps) {
   const cancel = useRef<HTMLButtonElement>(null);
   return (
     <PopoverPrimitive.Root open={open} modal onOpenChange={(next) => !next && onCancel()}>
@@ -40,7 +42,7 @@ export function ConfirmPopover({ open, anchor, title, children, confirmLabel, da
             {children}
             <div className="flex items-center justify-end gap-2">
               <Button ref={cancel} variant="outline" onClick={onCancel}>
-                Cancel
+                {cancelLabel}
               </Button>
               {onConfirm === undefined ? null : (
                 <Button className={danger ? "danger-button" : undefined} onClick={onConfirm}>

@@ -7,7 +7,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, type InputHTMLAttr
 import type { z } from "zod";
 import type { ReviewWorkbenchResult } from "../../contracts/envelope";
 import { MERGE_MESSAGE_BYTES } from "../../contracts/limits";
-import { codeText } from "../app/RepositoryStates";
+import { codeText, unknownFormText } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { DockedPanel } from "../components/docked-panel";
 import { isObject } from "../lib/utils";
@@ -63,6 +63,7 @@ const factsOf = (plan: MergePlan | RebasePlan | null) =>
 /** The D15 text of a refused review. `source` is the short name of the source or onto branch. Unmapped codes and reasons show the code. */
 function refusalText(review: Review, action: "Merge" | "Rebase", current: string, source: string, plan: MergePlan | RebasePlan | null): string {
   const ff = plan !== null && "facts" in plan ? plan.facts.mergeFf.source : "default";
+  if (review.response?.state === "succeeded") return unknownFormText(action);
   if (review.code === "TRUST_REQUIRED" || review.code === "TRUST_CHANGED") return TEXTS.trust;
   if (review.code === "CONFLICTED" && review.unmerged !== null) return TEXTS.conflicted(review.unmerged);
   if (review.code === "OPERATION_IN_PROGRESS") return TEXTS.operationInProgress;

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 
 // Type-only imports keep zod out of the renderer bundle.
 import type { z } from "zod";
 import type { ReadGitSettingsResult } from "../../../contracts/envelope";
-import { codeText, OutputTail } from "../../app/RepositoryStates";
+import { codeText, OutputTail, unknownFormText } from "../../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../../bridge";
 import { RUNNING_REASON, RunningTooltip } from "../../components/running-tooltip";
 import { matches } from "../../components/switcher-popover";
@@ -111,7 +111,7 @@ export function useGitSettings({ bridge, target, operationRunning, onOperation, 
     if (token === null) {
       setSaving(false);
       const reason = typeof reviewed.reason === "string" ? reviewed.reason : null;
-      setMessage(codeText(TEXTS.unavailable, reason ?? review.code ?? review.state));
+      setMessage(review.state === "succeeded" ? unknownFormText(TEXTS.save) : codeText(TEXTS.unavailable, reason ?? review.code ?? review.state));
       if (reason !== null) reload();
       return;
     }

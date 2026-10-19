@@ -7,7 +7,7 @@ import { useState, type ReactNode } from "react";
 import type { z } from "zod";
 import type { ReadTrustResult } from "../../contracts/envelope";
 import type { BridgeResponse } from "../bridge";
-import { codeText } from "../app/RepositoryStates";
+import { failureText } from "../app/RepositoryStates";
 import { ActionMenu } from "../components/action-menu";
 import { RUNNING_REASON } from "../components/running-tooltip";
 import { Button } from "../components/ui/button";
@@ -45,7 +45,7 @@ export function trustBeforeReview(report: TrustReport): boolean {
 }
 
 /** Contract §7: an input-limited listing never passes a gate, so Git runs no repository program then. */
-export const isTrusted = (report: TrustReport) => report.state === "approved" && report.inputLimited !== true;
+const isTrusted = (report: TrustReport) => report.state === "approved" && report.inputLimited !== true;
 
 /** Spec FR-073: the chip shows when the listing names a repository-controlled program, or when a class needs approval. */
 export function showsChip(report: TrustReport): boolean {
@@ -61,7 +61,7 @@ export function stoppedText(response: BridgeResponse): ReactNode {
     return `${STOPPED} It stopped ${ended === 1 ? "1 program that was" : `${ended} programs that were`} still running.`;
   }
   if (response.state === "failed" && response.code === "DEADLINE") return `${STOPPED} Arbareto does not know how many programs it stopped, because Stop trusting reached its deadline.`;
-  return codeText("Stop trusting did not complete: ", response.code ?? response.state);
+  return failureText("Stop trusting", response);
 }
 
 /** Spec FR-072: the changes area while reads need trust. It never prompts by itself. */

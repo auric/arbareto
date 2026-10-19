@@ -81,7 +81,7 @@ const roots: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const unmount of roots.splice(0)) await unmount();
 });
-type Options = { git?: unknown; app?: unknown; target?: typeof TARGET | null };
+type Options = { git?: unknown; app?: unknown; target?: typeof TARGET | null; page?: string };
 async function render(options: Options = {}) {
   const double = createDouble(options.git ?? gitSettings(), options.app ?? sync());
   const operations: StatusOperation[] = [];
@@ -99,6 +99,7 @@ async function render(options: Options = {}) {
         operationRunning={false}
         onOperation={(op) => void operations.push(op)}
         onEnded={(response) => void ended.push(response)}
+        page={options.page}
         onClose={() => void (closed += 1)}
       />,
     ),
@@ -271,11 +272,21 @@ describe("pages and controls (FR-060 to FR-062, FR-067)", () => {
   });
 });
 
+describe("Open on a page (spec FR-093)", () => {
+  test("the page option opens the view on Editor and tools and focuses the view heading", async () => {
+    await render({ page: "Editor and tools" });
+    const selected = section("pageList").querySelector('[role="tab"][aria-selected="true"]')!;
+    expect(text(selected)).toBe("Editor and tools");
+    expect(document.activeElement).toBe(view().querySelector("h2"));
+  });
+});
+
 describe("Find a setting (plan D15)", () => {
   const find = () => section("pageList").querySelector<HTMLInputElement>('input[aria-label="Find a setting"]')!;
   test("the filter keeps the pages and rows whose label or Git key holds the text, without regard to letter case", async () => {
     await render();
     expect(find().getAttribute("aria-keyshortcuts")).toBe("Control+F");
+    expect(find().getAttribute("placeholder")).toBe("Find a setting…");
     await type(find(), "PRUNE");
     expect(pageNames()).toEqual(["Fetch"]);
     expect([...content().querySelectorAll<HTMLElement>("[data-key]")].map((e) => e.dataset.key)).toEqual(["fetch.prune"]);
@@ -442,16 +453,36 @@ describe("app settings (FR-066, FR-068, O-7)", () => {
     expect(text(content())).toContain("Default clone folder");
   });
 
-  test("Close returns without a write, also with a pending change", async () => {
+  test("Close and Escape return without a write when no change waits", async () => {
     const r = await render();
-    await scope("local");
-    await type(row("user.name").querySelector("input")!, "Bob");
     await click(button("Close settings"));
     expect(r.closed()).toBe(1);
-    expect(r.double.writes()).toEqual([]);
     await press(view(), "Escape");
     expect(r.closed()).toBe(2);
+    expect(document.querySelector('[data-slot="popover-content"]')).toBeNull();
   });
+
+  for (const how of ["Close", "Escape"] as const) {
+    test(`${how} with a pending change asks first, with Keep editing focused, and Discard changes returns without a write`, async () => {
+      const r = await render();
+      await scope("local");
+      await type(row("user.name").querySelector("input")!, "Bob");
+      const close = () => (how === "Close" ? click(button("Close settings")) : press(view(), "Escape"));
+      await close();
+      expect(r.closed()).toBe(0);
+      const popover = document.querySelector<HTMLElement>('[data-slot="popover-content"]')!;
+      expect(text(popover)).toContain("Discard the Git setting changes that you did not save?");
+      expect(document.activeElement).toBe(button("Keep editing", popover));
+      await click(button("Keep editing", popover));
+      expect(document.querySelector('[data-slot="popover-content"]')).toBeNull();
+      expect(r.closed()).toBe(0);
+      expect(row("user.name").querySelector("input")!.value).toBe("Bob");
+      await close();
+      await click(button("Discard changes", document.querySelector<HTMLElement>('[data-slot="popover-content"]')!));
+      expect(r.closed()).toBe(1);
+      expect(r.double.writes()).toEqual([]);
+    });
+  }
 });
 
 describe("F6 order (plan D15)", () => {

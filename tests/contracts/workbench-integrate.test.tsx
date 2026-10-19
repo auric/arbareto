@@ -242,6 +242,13 @@ describe("Refusal texts (plan D15)", () => {
     });
   }
 
+  test("a succeeded review without a token names the unknown form (plan D15)", async () => {
+    const { double } = await mount("merge");
+    await answer(double.pending("reviewWorkbench"), { requestId: fixtureId(0x5f0), state: "succeeded", repositoryGeneration: 1, result: {} });
+    expect(text(panel())).toContain("Merge did not complete: the result has an unknown form.");
+    expect(text(panel())).not.toContain("succeeded");
+  });
+
   test("apply-backend names the scope and file, and Autosquash selects the merge backend", async () => {
     const { double } = await mount("rebase");
     await answer(double.pending("reviewWorkbench"), refused("WORKBENCH_UNAVAILABLE", { reason: "apply-backend" }));

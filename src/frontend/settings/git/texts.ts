@@ -66,6 +66,7 @@ export const TEXTS = {
   pages: "Settings pages",
   // Plan D15 "Find a setting".
   find: "Find a setting",
+  findPlaceholder: "Find a setting…",
   findTooltip: "Find a setting (Ctrl+F)",
   noMatch: "No setting matches the filter.",
   needsRepository: "Git settings need an open repository.",
@@ -95,6 +96,10 @@ export const TEXTS = {
   },
   pending: (n: number, scope: EntryScope) => (n === 1 ? `1 change. Save writes it to ${SCOPE_NAMES[scope]} only.` : `${plural(n, "change", "changes")}. Save writes them to ${SCOPE_NAMES[scope]} only.`),
   cancel: "Cancel",
+  // Plan D15 "Close with changes": Esc or Close while Git setting changes wait for Save.
+  discardTitle: "Discard the Git setting changes that you did not save?",
+  discard: "Discard changes",
+  keepEditing: "Keep editing",
   save: "Save",
   saving: "Arbareto saves the Git settings.",
   // Status bar names of a run (plan.md D15 "Status bar names" form).

@@ -94,13 +94,12 @@ afterEach(async () => {
   for (const unmount of roots.splice(0)) await unmount();
   await unmountAll();
 });
-type Mount = { double: Double; ops: StatusOperation[]; ended: unknown[]; fileEnded: unknown[]; statuses: (string | null)[]; settings: number[] };
+type Mount = { double: Double; ops: StatusOperation[]; ended: unknown[]; fileEnded: unknown[]; statuses: (string | null)[]; settings: number[]; rerender(next: Partial<ResolveViewProps>): Promise<void> };
 async function mount(fields: Partial<ResolveViewProps> = {}): Promise<Mount> {
   const double = createDouble();
-  const m: Mount = { double, ops: [], ended: [], fileEnded: [], statuses: [], settings: [] };
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
-  await act(async () =>
+  const draw = (props: Partial<ResolveViewProps>) =>
     root.render(
       <ResolveView
         entry={conflicted()}
@@ -114,10 +113,11 @@ async function mount(fields: Partial<ResolveViewProps> = {}): Promise<Mount> {
         onFileEnded={(r) => m.fileEnded.push(r)}
         onStatus={(t) => m.statuses.push(t)}
         onOpenSettings={() => m.settings.push(1)}
-        {...fields}
+        {...props}
       />,
-    ),
-  );
+    );
+  const m: Mount = { double, ops: [], ended: [], fileEnded: [], statuses: [], settings: [], rerender: (next) => act(async () => draw({ ...fields, ...next })) };
+  await act(async () => draw(fields));
   roots.push(async () => {
     await act(async () => root.unmount());
     host.remove();
@@ -348,12 +348,96 @@ describe("Mark resolved in the resolve view (FR-089, FR-096)", () => {
     expect(m.fileEnded).toHaveLength(1);
   });
 
+  test("a refusing file-action decision shows Mark resolved unavailable with its reason before any request", async () => {
+    const m = await mount({ comparison: { ...COMPARISON, fileAction: "missing" } as never });
+    await answerReviews(m.double, chosen("ours"), chosen("theirs"), tooled());
+    const b = button("Mark resolved", view());
+    expect(disabled(b)).toBe(true);
+    expect(described(b)).toBe("The working file of this conflicted path is missing.");
+    // FR-089: the item stays in the view, and its label shows once.
+    expect(text(view()).split("Mark resolved")).toHaveLength(2);
+    await click(b);
+    expect(m.double.of("applyFile")).toHaveLength(0);
+  });
+
   test("without a comparison, Mark resolved states that the comparison still loads", async () => {
     const m = await mount({ comparison: null });
     await answerReviews(m.double, chosen("ours"), chosen("theirs"), tooled());
     const b = button("Mark resolved", view());
     expect(disabled(b)).toBe(true);
     expect(described(b)).toBe("Its comparison is still loading.");
+  });
+});
+
+describe("Trust ask of the resolve items (plan D12 \"Ask\", spec US6 scenario 5)", () => {
+  const TOKEN2 = fixtureId(11);
+  const withToken = (response: ReturnType<typeof tooled>) => ({ ...response, result: { ...response.result, workbenchToken: TOKEN2 } });
+
+  test("a trust refusal keeps the merge tool available; the click asks before the tool starts and runs with the token of the new review", async () => {
+    const asks: string[] = [];
+    const m = await mount({ askTrust: async (action) => (asks.push(action), true) });
+    await answerReviews(m.double, chosen("ours"), chosen("theirs"), refused("TRUST_REQUIRED"));
+    const tool = button("Open in merge tool", view());
+    expect(disabled(tool)).toBe(false);
+    await click(tool);
+    await answer(m.double.pending("reviewWorkbench"), refused("TRUST_REQUIRED"));
+    expect(asks).toEqual(["mergetool"]);
+    expect(m.double.of("runWorkbench")).toHaveLength(0);
+    expect(reviews(m.double).at(-1)).toEqual({ action: "mergetool", snapshotId: SNAPSHOT, entryId: fixtureId(30) });
+    await answer(m.double.pending("reviewWorkbench"), withToken(tooled()));
+    expect(m.double.pending("runWorkbench")!.args[1]).toEqual({ workbenchToken: TOKEN2, start: true });
+  });
+
+  test("Choose ours asks with the action resolve, and the second review takes the snapshot of the full read", async () => {
+    const asks: string[] = [];
+    const NEW_TARGET = { ...TARGET, repositoryGeneration: 2 };
+    let approve: (approved: boolean) => void = () => {};
+    const m = await mount({
+      askTrust: (action) => {
+        asks.push(action);
+        return new Promise((resolve) => void (approve = resolve));
+      },
+    });
+    await answerReviews(m.double, chosen("ours"), chosen("theirs"), tooled());
+    await click(button("Choose ours (main)", view()));
+    await answer(m.double.pending("reviewWorkbench"), refused("TRUST_CHANGED"));
+    expect(asks).toEqual(["resolve"]);
+    // The full read after the approval shows the same entry in a new snapshot and generation.
+    await m.rerender({ snapshotId: fixtureId(41), entry: { ...conflicted(), entryId: fixtureId(31) }, target: NEW_TARGET });
+    await act(async () => approve(true));
+    await settle();
+    const second = m.double.of("reviewWorkbench").at(-1)!;
+    expect(second.args.slice(0, 2)).toEqual([NEW_TARGET, { action: "choose-side", snapshotId: fixtureId(41), entryId: fixtureId(31), side: "ours" }]);
+    await answer(second, chosen("ours"));
+    expect(text(document.querySelector('[role="dialog"]')!)).toContain("Replace");
+  });
+
+  test("Not now keeps the D15 trust text and starts no run", async () => {
+    const m = await mount({ askTrust: async () => false });
+    await answerReviews(m.double, chosen("ours"), chosen("theirs"), refused("TRUST_REQUIRED"));
+    await click(button("Open in merge tool", view()));
+    await answer(m.double.pending("reviewWorkbench"), refused("TRUST_REQUIRED"));
+    expect(m.double.pending("reviewWorkbench")).toBeUndefined();
+    expect(m.double.of("runWorkbench")).toHaveLength(0);
+    expect(text(view())).toContain("This action runs programs of this repository. Trust the repository first with the trust chip in the status bar.");
+  });
+});
+
+describe("Malformed results (plan D15 \"Malformed result\")", () => {
+  test("a succeeded review without a token names the unknown form, never the state", async () => {
+    const { double } = await mount();
+    await answerReviews(double, chosen("ours"), chosen("theirs"), { requestId: fixtureId(20), state: "succeeded", repositoryGeneration: 1, result: {} });
+    expect(described(button("Open in merge tool", view()))).toBe("Open in merge tool did not complete: the result has an unknown form.");
+  });
+
+  test("a succeeded merge tool run without the staged fact names the unknown form", async () => {
+    const m = await mount();
+    await answerReviews(m.double, chosen("ours"), chosen("theirs"), tooled());
+    await click(button("Open in merge tool", view()));
+    await answer(m.double.pending("reviewWorkbench"), tooled());
+    await answer(m.double.pending("runWorkbench"), { requestId: fixtureId(22), operationId: fixtureId(23), state: "succeeded", repositoryGeneration: 1, result: { action: "mergetool" } });
+    expect(text(view())).toContain("Merge tool did not complete: the result has an unknown form.");
+    expect(text(view())).not.toContain("succeeded");
   });
 });
 
@@ -375,5 +459,26 @@ describe("Resolve view mount (FR-089, plan D15 P2 regions)", () => {
     const review = d.pending("reviewWorkbench")!;
     expect((review.args[1] as Record<string, unknown>).action).toBe("choose-side");
     expect((review.args[1] as Record<string, unknown>).entryId).toBe(file.entryId);
+  });
+
+  test("Open Editor and tools opens Settings on that page and focuses the view heading", async () => {
+    const file = conflicted();
+    const world = createWorld({ operationState: "merging", entries: [file] });
+    world.answers.readComparison = (args) => {
+      const payload = args[1] as { snapshotId: string; entryId: string };
+      return { ...succeeded({ ...COMPARISON, comparisonId: crypto.randomUUID(), snapshotId: payload.snapshotId, entryId: payload.entryId }), entryId: payload.entryId };
+    };
+    const d = await mountWorkbench(workbench, world);
+    await click(button("Commit", document.querySelector('header nav[aria-label="Views"]')!));
+    await click(document.querySelector<HTMLElement>(`[role="treeitem"][data-entry-id="${file.entryId}"]`)!);
+    await settle();
+    await answer(d.pending("reviewWorkbench"), chosen("ours"));
+    await answer(d.pending("reviewWorkbench"), chosen("theirs"));
+    await answer(d.pending("reviewWorkbench"), refused("WORKBENCH_UNAVAILABLE", "no-merge-tool"));
+    await click(button("Open Editor and tools", document.querySelector('[data-section="comparison"]')!));
+    await settle();
+    const settings = document.querySelector<HTMLElement>('[data-view="settings"]')!;
+    expect(text(settings.querySelector('[role="tab"][aria-selected="true"]')!)).toBe("Editor and tools");
+    expect(document.activeElement).toBe(settings.querySelector("h2"));
   });
 });

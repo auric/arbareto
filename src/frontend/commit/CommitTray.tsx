@@ -5,7 +5,7 @@ import { useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import type { TerminalState } from "../../contracts/errors";
 import { COMMIT_MESSAGE_BYTES } from "../../contracts/limits";
-import { codeText } from "../app/RepositoryStates";
+import { codeText, failureText, unknownFormText } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { BLOCKED_TEXT, STALE_TEXT, type Blocked, type StagingTarget } from "../changes/HunkControls";
 import { Button } from "../components/ui/button";
@@ -160,7 +160,7 @@ export function CommitTray(props: CommitTrayProps) {
       const trusted = async (needed: (report: TrustReport) => boolean) => {
         const trust = await bridge.readTrust({ repositoryId: target.repositoryId });
         if (trust.state === "succeeded" && isTrustReport(trust.result)) return !needed(trust.result) || (await props.requestTrust(trust.result));
-        setNotice(codeText("Trust review did not complete: ", trustFailureCode(trust)));
+        setNotice(failureText("Trust review", trust, trustFailureCode(trust)));
         return false;
       };
       // The awaits can change the workspace, the staged list, the message, or the box. The disable rules apply again.
@@ -195,9 +195,9 @@ export function CommitTray(props: CommitTrayProps) {
       if (amend !== null) {
         // FR-099: the amend binds to the HEAD commit whose message the box loaded. A moved HEAD refuses and asks for a refresh.
         const reviewedAmend = amendOf(review.result);
-        // A result without a valid amend part shows its state as the code, as the trust and status checks do.
+        // Only a succeeded review has a token here, so a result without a valid amend part has an unknown form.
         if (reviewedAmend === null || reviewedAmend.headOid !== amend.headOid) {
-          setNotice(reviewedAmend === null ? codeText("Commit did not start: ", review.code ?? review.state) : STALE_TEXT);
+          setNotice(reviewedAmend === null ? unknownFormText("Commit") : STALE_TEXT);
           props.onEnded?.(review);
           return focusField();
         }
@@ -240,8 +240,7 @@ export function CommitTray(props: CommitTrayProps) {
     try {
       const review = await bridge.reviewCommit(target, { snapshotId, amend: true });
       const loaded = review.state === "succeeded" ? amendOf(review.result) : null;
-      // A succeeded result without a valid amend part shows its state as the code, as the trust and status checks do.
-      if (loaded === null) return setNotice(codeText(`${AMEND_LABEL} did not start: `, review.code ?? review.state));
+      if (loaded === null) return setNotice(failureText(AMEND_LABEL, review, undefined, `${AMEND_LABEL} did not start: `));
       live.current.amend?.onChange({ headOid: loaded.headOid, message: loaded.message, text: loaded.message });
     } finally {
       checking.current = false;

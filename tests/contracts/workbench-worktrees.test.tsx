@@ -290,13 +290,38 @@ describe("Remove (FR-054 to FR-056)", () => {
     expect(text(d)).toContain("This worktree has submodules. Git removes it only with its force option.");
     expect(text(d)).not.toContain("uncommitted change");
     expect(checkbox("Delete my uncommitted changes too", d)).toBeNull();
-    expect(isOff(button("Remove worktree", d))).toBe(true);
-    await click(button("Remove worktree", d));
+    // The remove needs force for its submodules, so the button takes the force label.
+    expect(isOff(button("Remove worktree and changes", d))).toBe(true);
+    expect([...d.querySelectorAll("button")].map((x) => text(x))).not.toContain("Remove worktree");
+    await click(button("Remove worktree and changes", d));
     expect(double.count("runWorkbench")).toBe(0);
     await check(checkbox("Delete the worktree with its submodules too", d)!);
     expect(reviews(double).at(-1)).toEqual({ action: "worktree-remove", worktree: "C:/wt/repo-hotfix", force: true, deleteBranch: false });
+    await click(button("Remove worktree and changes", dialog()!));
+    expect(double.count("runWorkbench")).toBe(1);
+  });
+
+  test("while a worktree run runs, Remove, Prune, and Open start nothing and show no running reason in the status bar (plan D15 running rule)", async () => {
+    const world = worktreeWorld();
+    // The run waits for the test, so an operation runs.
+    world.answers.runWorkbench = undefined;
+    const double = await mountWorkbench(workbench, world);
+    await rowMenu("repo-hotfix");
+    await click(menuItem("Remove worktree…")!);
     await click(button("Remove worktree", dialog()!));
     expect(double.count("runWorkbench")).toBe(1);
+    const before = reviews(double).length;
+    const footer = () => text(document.querySelector("footer")!);
+    await rowMenu("repo-hotfix");
+    await click(menuItem("Remove worktree…")!);
+    await press(document.activeElement ?? document.body, "Escape");
+    await openList();
+    await click(options().find((o) => itemLabel(o).startsWith("Prune missing worktrees"))!);
+    await press(document.activeElement ?? document.body, "Escape");
+    await doubleClick(await groupRow("repo-hotfix"));
+    expect(reviews(double)).toHaveLength(before);
+    expect(opened(double)).toHaveLength(0);
+    expect(footer()).not.toContain("A Git operation is running.");
   });
 
   test("submodules with changes show both facts and the changes label", async () => {

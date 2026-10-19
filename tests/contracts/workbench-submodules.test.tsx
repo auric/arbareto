@@ -90,6 +90,7 @@ async function mount(options: { runningReason?: string | null; blockedReason?: s
   const failures: string[] = [];
   let cancels = 0;
   let attentions = 0;
+  let trusts = 0;
   let snapshot = SNAPSHOT;
   let setShown!: (id: string) => void;
   const handle: { update: ReturnType<typeof useSubmoduleUpdate> | null } = { update: null };
@@ -111,7 +112,7 @@ async function mount(options: { runningReason?: string | null; blockedReason?: s
     });
     handle.update = update;
     const own = op !== null && op.response === null ? RUNNING_REASON : null;
-    return <SubmodulesGroup update={update} runningReason={options.runningReason ?? own} blockedReason={options.blockedReason ?? null} onCancel={() => void cancels++} />;
+    return <SubmodulesGroup update={update} runningReason={options.runningReason ?? own} blockedReason={options.blockedReason ?? null} onCancel={() => void cancels++} onTrustReads={() => void trusts++} />;
   }
   await render(<Harness />);
   await settle();
@@ -123,7 +124,7 @@ async function mount(options: { runningReason?: string | null; blockedReason?: s
     await act(async () => setShown(id));
     await settle();
   };
-  return { double, operations, failures, cancels: () => cancels, attentions: () => attentions, read, handle };
+  return { double, operations, failures, cancels: () => cancels, attentions: () => attentions, trusts: () => trusts, read, handle };
 }
 
 const group = () => document.querySelector<HTMLElement>('[data-slot="submodules-group"]')!;
@@ -189,11 +190,19 @@ describe("rows at rest (FR-077)", () => {
     expect(view.double.of("updateSubmodules")).toHaveLength(0);
   });
 
-  test("a list that needs trust shows the trust reason in the group and reports nothing to the status bar", async () => {
-    const view = await mount({ listed: { requestId: fixtureId(30), state: "failed", code: "TRUST_REQUIRED" } });
-    expect(text(group().querySelector('[data-slot="list-failure"]')!)).toBe("Arbareto reads no changes until you trust this repository.");
-    expect(view.failures).toEqual([]);
-    expect(text(group())).not.toContain("Arbareto reads the submodules.");
+  test("a list that needs trust shows the reads text with Trust…, which asks and lists again at the next read", async () => {
+    for (const code of ["TRUST_REQUIRED", "TRUST_CHANGED"]) {
+      const view = await mount({ listed: { requestId: fixtureId(30), state: "failed", code } });
+      const failure = group().querySelector<HTMLElement>('[data-slot="list-failure"]')!;
+      expect(text(failure.querySelector("p")!)).toBe("Arbareto reads no changes until you trust this repository.");
+      expect(view.failures).toEqual([]);
+      expect(text(group())).not.toContain("Arbareto reads the submodules.");
+      await click(button("Trust…", failure));
+      expect(view.trusts()).toBe(1);
+      await view.read(fixtureId(6));
+      expect(payloads(view.double, "reviewSubmodules")).toEqual([{ snapshotId: SNAPSHOT }, { snapshotId: fixtureId(6) }]);
+      for (const unmount of roots.splice(0)) await unmount();
+    }
   });
 
   test("another list failure names its code", async () => {

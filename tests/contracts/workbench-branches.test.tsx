@@ -535,6 +535,8 @@ describe("refusal texts (contract Δ9, plan D3, D4, D15)", () => {
     expect(refused("WORKBENCH_UNAVAILABLE", { reason: "other-worktree", worktree: "C:\\wt\\x" })).toBe("The worktree C:\\wt\\x holds this branch. Open that worktree, or remove it first.");
     expect(refused("WORKBENCH_UNAVAILABLE", { reason: "name-exists", ref: "refs/heads/login-form" })).toBe("The branch login-form exists. Use another name.");
     expect(refused("STALE_REVIEW", {})).toBe("The action did not start: STALE_REVIEW.");
+    // Plan D15 "Malformed result": a succeeded review without a token never shows its state as a code.
+    expect(refusalText({ requestId: fixtureId(0x5ff), state: "succeeded", result: {} } as never, "login-form")).toBe("The action did not complete: the result has an unknown form.");
     expect(refused("CONFLICTED", { unmerged: 1 })).toBe("Resolve the 1 conflicted file first.");
     expect(refused("CONFLICTED", { unmerged: 1200 })).toBe("Resolve the 1,200 conflicted files first.");
   });

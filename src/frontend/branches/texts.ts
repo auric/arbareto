@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import { unknownFormText } from "../app/RepositoryStates";
 import type { BridgeResponse } from "../bridge";
 import { TEXTS } from "../integrate/texts";
 import { isObject } from "../lib/utils";
@@ -109,6 +110,7 @@ export function refusalText(response: BridgeResponse, branch: string): string {
   if (code === "CONFLICTED" && typeof r.unmerged === "number") return TEXTS.conflicted(r.unmerged);
   const reason = typeof r.reason === "string" ? r.reason : null;
   if (code === "WORKBENCH_UNAVAILABLE" && reason !== null && reason in REASONS) return REASONS[reason]!(r, branch);
+  if (response.state === "succeeded") return unknownFormText("The action");
   return `The action did not start: ${code}${reason === null ? "" : ` ${reason}`}.`;
 }
 

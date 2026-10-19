@@ -67,12 +67,12 @@ import { createDraftStore } from "../state/draft-store";
 import { OperationStatus, SYNC_NAMES, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
 import { SubmodulesGroup, useSubmoduleUpdate } from "../submodules/SubmodulesGroup";
-import { needsTrust } from "../trust/ask";
+import { needsTrust, type AskTrust } from "../trust/ask";
 import { isTrustReport, READS_TRUST_TEXT, ReadsTrustNotice, SaveFailedNotice, showsChip, stoppedText, trustBeforeReview, TrustChip, trustFailureCode, COMMIT_TRUST_TEXT, type TrustReport } from "../trust/TrustChip";
 import type { TrustAction } from "../../contracts/channel";
 import { blockingText, hasRecoveryRow, NoticeBand } from "./NoticeBand";
 import { MENU_CONTENT, MenuKey, RepositoryMenu } from "./RepositoryMenu";
-import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
+import { codeText, COPY_FAILED_TEXT, failureText, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
 import { folderName, RepositorySwitcher } from "./RepositorySwitcher";
 import { hasMarkers, RecoveryMarkers } from "../boot/BootView";
 import { COUNTS_TOOLTIP, isTrackingList, NO_BRANCH, trackingLabels, type TrackingEntry, type TrackLabel } from "../state/tracking";
@@ -204,6 +204,8 @@ export type WorkbenchPaneProps = {
   workbench: WorkbenchStore;
   /** Feature 004 spec FR-072: Trust… of a read that needs trust. */
   onTrustReads?(): void;
+  /** Feature 004 plan.md D12 "Ask": the resolve actions ask at their first use. */
+  askTrust?: AskTrust;
   /** The feature 004 branch actions (spec FR-014): the history labels and Create branch here on a history row. */
   branches?: ReturnType<typeof useBranchActions>;
 };
@@ -444,7 +446,7 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
 const PatchPool = lazy(() => import("../changes/PatchPool"));
 
 /** The T134 comparison view of the selected entry, with the T145 hunk controls in its heading. */
-export function ComparisonViewMount({ state, requests, staging, workbench, onStatus }: WorkbenchPaneProps) {
+export function ComparisonViewMount({ state, requests, staging, workbench, onStatus, askTrust }: WorkbenchPaneProps) {
   const { entry, target, comparison } = shownComparison(state, staging);
   const response = entry !== null && state.comparison?.entryId === entry.entryId ? state.comparison : null;
   const [pool, setPool] = useState(false);
@@ -533,11 +535,12 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
         blocked={staging.blocked}
         trust={staging.trust}
         eligibility={staging.eligibility}
+        askTrust={askTrust}
         onOperation={staging.onOperation}
         onEnded={(response) => workbench.ended("runWorkbench", response)}
         onFileEnded={(response) => staging.onEnded("applyFile", response)}
         onStatus={onStatus}
-        onOpenSettings={() => workbench.setView(state.repository?.worktreeKey ?? "", "settings")}
+        onOpenSettings={() => workbench.setView(state.repository?.worktreeKey ?? "", "settings", { page: "Editor and tools" })}
       />
     ) : (
       diff
@@ -910,7 +913,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     let current = true;
     void bridge.readTrust({ repositoryId }).then((response) => {
       if (!current) return;
-      if (response.state !== "succeeded" || !isTrustReport(response.result)) return setNotice(codeText("Trust review did not complete: ", trustFailureCode(response)));
+      if (response.state !== "succeeded" || !isTrustReport(response.result)) return setNotice(failureText("Trust review", response, trustFailureCode(response)));
       setTrust({ report: response.result });
     });
     return () => void (current = false);
@@ -1136,24 +1139,27 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // True after an approval and the full read that follows it.
   async function approveTrust(action: TrustAction): Promise<boolean> {
     if (repositoryId === null || approving.current) return false;
+    // One ask at a time, until the full read after the approval ends. A second ask in that time returns false.
     approving.current = true;
+    const end = (approved: boolean) => ((approving.current = false), approved);
     const response = await bridge.approveTrust({ repositoryId }, { action });
-    approving.current = false;
-    if (requests.state().repository?.repositoryId !== repositoryId) return false;
+    if (requests.state().repository?.repositoryId !== repositoryId) return end(false);
     if (response.state === "canceled") {
       setDeclined(action);
-      return false;
+      return end(false);
     }
     const result = response.result as { trustId?: unknown; saveFailed?: unknown } | undefined;
     if (response.state !== "succeeded" || typeof result?.trustId !== "string") {
-      setNotice(codeText("Trust approval did not complete: ", responseCode(response)));
-      return false;
+      setNotice(failureText("Trust approval", response, responseCode(response)));
+      return end(false);
     }
     setDeclined(null);
     setSaveFailed(result.saveFailed === true);
     setTrustRead((n) => n + 1);
     return new Promise<boolean>((resolve) => {
-      approvalRead.current = resolve;
+      // A waiting caller never stays unsettled.
+      approvalRead.current?.(false);
+      approvalRead.current = (approved) => resolve(end(approved));
       void requests.trustApproved().then(() => setApprovalEnds((n) => n + 1));
     });
   }
@@ -1410,6 +1416,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     workbench: store,
     branches,
     onTrustReads: () => void approveTrust("read"),
+    askTrust,
   };
   const laneBounds = paneBounds("fileLane", { width: client.width - sideWidth - m.splitter, available: workArea, density: preferences.density, textScale });
   const lane = Math.min(Math.max(panes.fileLane, laneBounds.min), laneBounds.max);
@@ -1576,6 +1583,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             runningReason={running ? RUNNING_REASON : null}
             blockedReason={stateBlocked === null ? null : BLOCKED_TEXT[stateBlocked]}
             onCancel={() => statusRegion.current?.requestCancel()}
+            onTrustReads={() => void approveTrust("read")}
           />
         </div>
       </div>
@@ -1877,6 +1885,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               onOperation={setOperation}
               onEnded={(response) => store.ended("runWorkbench", response)}
               onSettings={(response) => setSyncSettings(settingsOf(response))}
+              page={store.settingsPage(viewKey)}
               onClose={() => store.closeSettings(viewKey)}
             />
           ) : null}

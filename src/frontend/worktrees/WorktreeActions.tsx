@@ -167,6 +167,8 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
   }
 
   function open(e: WorktreeEntry) {
+    // Plan D15 running rule: the running reason shows only in the tooltip, never as status bar text.
+    if (running) return;
     const reason = openReason(e);
     if (e.current) return;
     if (reason !== null) return onNotice(reason);
@@ -189,6 +191,7 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
   }
 
   function startRemove(e: WorktreeEntry) {
+    if (running) return;
     const reason = removeReason(e);
     if (reason !== null) return onNotice(reason);
     void reviewRemove({ entry: e, force: false, deleteBranch: false, plan: null, token: null, pending: true, error: null });
@@ -207,6 +210,7 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
   }
 
   function prune() {
+    if (running) return;
     if (pruneReason !== null) return onNotice(pruneReason);
     void once(async () => {
       const response = await review({ action: "worktree-prune" });
@@ -337,7 +341,7 @@ function RemoveConfirm({ overlay: o, onChange, onCancel, onConfirm }: { overlay:
             Cancel
           </Button>
           <Button className="danger-button" disabled={!ready} focusableWhenDisabled onClick={() => ready && onConfirm()}>
-            {dirty ? W.removeForce : W.removeButton}
+            {needsForce ? W.removeForce : W.removeButton}
           </Button>
         </div>
       </DialogContent>

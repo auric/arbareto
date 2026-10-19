@@ -11,13 +11,14 @@ import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import { isObject } from "../lib/utils";
 import { shortId, trackOperation, type StatusOperation } from "../status/OperationStatus";
+import { ReadsTrustNotice } from "../trust/TrustChip";
 
 // Feature 004 spec FR-076 to FR-082, plan D13 and D15 (Submodules group texts), contract Δ12. The 001 review dialog is gone.
 
 // Contract §9 `UNSUPPORTED_SUBMODULE` as the review lists it.
 export type SubmoduleRefusal = { code: "UNSUPPORTED_SUBMODULE"; reason: SubmoduleRefusalReason; path: string; text: string; remedy: { command: string | null; text?: string } | null };
 /** The `reviewSubmodules` result value (contract §12 "Plan", Δ12). */
-export type SubmoduleReviewValue = { generation: number; rows: SubmodulePlanRow[]; programs: SubmoduleProgram[]; refusals: SubmoduleRefusal[]; hosts: SubmoduleHostLine[]; submoduleReviewToken: string };
+type SubmoduleReviewValue = { generation: number; rows: SubmodulePlanRow[]; programs: SubmoduleProgram[]; refusals: SubmoduleRefusal[]; hosts: SubmoduleHostLine[]; submoduleReviewToken: string };
 type Bridge = Pick<ReturnType<typeof createBridge>, "reviewSubmodules" | "updateSubmodules">;
 type Target = { repositoryId: string; repositoryGeneration: number };
 
@@ -259,9 +260,7 @@ export function useSubmoduleUpdate(options: SubmoduleUpdateOptions): SubmoduleUp
 const LOADING = "Arbareto reads the submodules.";
 const NO_ROWS = "No submodules found.";
 // Plan D12 "Reads": a read that needs approval.
-const TRUST_READ = "Arbareto reads no changes until you trust this repository.";
 const TRUST_CODES: ReadonlySet<string> = new Set(["TRUST_REQUIRED", "TRUST_CHANGED"]);
-const listFailureText = (code: string) => (TRUST_CODES.has(code) ? TRUST_READ : `Arbareto cannot read the submodules: ${code}.`);
 const exitText = (code: number | null) => (code === null ? "Git gave no exit code for this step." : `Git exit code ${code}.`);
 const FAILED_READ = "Arbareto could not read this submodule. Use Refresh, then try again.";
 const hostText = (host: SubmoduleHost) => (host.kind === "host" ? host.name : host.kind === "local" ? "this computer" : "a host that Arbareto cannot name");
@@ -309,10 +308,12 @@ export type SubmodulesGroupProps = {
   blockedReason: string | null;
   /** Cancel of the running update. The status bar Cancel shares its request guard. */
   onCancel(): void;
+  /** Trust… of a list that needs trust: the `approveTrust("read")` path of `ReadsTrustNotice` (plan D12 "Reads"). */
+  onTrustReads(): void;
 };
 
 /** The Submodules group of the references sidebar. One Tab stop for the rows, with roving focus (D16). */
-export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel }: SubmodulesGroupProps) {
+export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel, onTrustReads }: SubmodulesGroupProps) {
   const headingId = useId();
   const reasonId = useId();
   const [active, setActive] = useState(0);
@@ -452,10 +453,18 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
         {summary === null || summary.registered === 0 ? null : (
           <p data-slot="registration-line" className="px-2">{`Git changed the repository settings of ${plural(summary.registered, "submodule", "submodules")}.`}</p>
         )}
-        {update.listFailure !== null ? (
-          <p data-slot="list-failure" className="px-2">
-            {listFailureText(update.listFailure)}
-          </p>
+        {update.listFailure !== null && TRUST_CODES.has(update.listFailure) ? (
+          <div data-slot="list-failure">
+            <ReadsTrustNotice
+              onTrust={() => {
+                // The full read after the approval lists the rows again.
+                update.refreshed();
+                onTrustReads();
+              }}
+            />
+          </div>
+        ) : update.listFailure !== null ? (
+          <p data-slot="list-failure" className="px-2">{`Arbareto cannot read the submodules: ${update.listFailure}.`}</p>
         ) : rows === null ? (
           <p data-slot="list-loading" className="px-2 text-muted-text">
             {LOADING}

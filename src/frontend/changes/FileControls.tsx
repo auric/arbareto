@@ -49,7 +49,7 @@ const LABEL: Record<Direction, Decision["label"]> = { stage: "Stage file", unsta
 const OUTCOME: Record<Direction, string> = { stage: "File staged", unstage: "File unstaged", resolve: "File marked resolved" };
 
 /** The file-action decision of the comparison (contract §4, feature 003 contract Δ4), then the workspace and trust state. */
-function decide(props: Omit<FileControlsProps, "reasonId">): Decision {
+export function decide(props: Omit<FileControlsProps, "reasonId">): Decision {
   const { comparison, category } = props;
   const action = comparison.fileAction;
   const accepted = action === "stage" || action === "unstage" || action === "resolve";

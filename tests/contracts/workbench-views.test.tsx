@@ -102,6 +102,13 @@ describe("views (FR-033, FR-068, data-model §14)", () => {
     store.setView("b", "settings");
     store.closeSettings("b");
     expect(store.view("b")).toBe("history");
+    // Spec FR-093: the resolve view opens Settings on the page Editor and tools. A later open has no page.
+    store.setView("a", "settings", { page: "Editor and tools" });
+    expect(store.settingsPage("a")).toBe("Editor and tools");
+    store.closeSettings("a");
+    expect(store.settingsPage("a")).toBeUndefined();
+    store.setView("a", "settings");
+    expect(store.settingsPage("a")).toBeUndefined();
   });
 
   test("the History and Commit control switches the view, has no key, and every view keeps the top bar and the status bar", async () => {

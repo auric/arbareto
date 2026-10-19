@@ -160,14 +160,14 @@ describe("Amend last commit box (FR-098)", () => {
     ["without the amend part", { ...review(), amend: undefined }],
     ["with an amend part of another shape", review({ rewritesUpstream: "maybe" as never })],
   ] as const) {
-    test(`a succeeded review ${name} leaves the box clear and shows the state as the code`, async () => {
+    test(`a succeeded review ${name} leaves the box clear and names the unknown form`, async () => {
       const t = await mount();
       await t.type("My draft");
       await t.click(t.box);
       await t.answer("reviewCommit", ok(result));
       expect(t.box.checked).toBe(false);
       expect(t.field.value).toBe("My draft");
-      expect(t.host.querySelector('[role="status"]')!.textContent).toBe("Amend last commit did not start: succeeded");
+      expect(t.host.querySelector('[role="status"]')!.textContent).toBe("Amend last commit did not complete: the result has an unknown form.");
     });
   }
 
@@ -219,12 +219,12 @@ describe("Commit with Amend last commit (FR-099, FR-100)", () => {
     });
   }
 
-  test("a commit review without a valid amend part shows the state as the code, not the Stale text, and sends no commit", async () => {
+  test("a commit review without a valid amend part names the unknown form, not the Stale text, and sends no commit", async () => {
     const t = await mount();
     await t.check();
     await t.commitWith({ ...review(), amend: undefined });
     expect(t.pending("commit")).toEqual([]);
-    expect(t.host.querySelector('[role="status"]')!.textContent).toBe("Commit did not start: succeeded");
+    expect(t.host.querySelector('[role="status"]')!.textContent).toBe("Commit did not complete: the result has an unknown form.");
   });
 
   test("a review with a moved HEAD refuses with the Stale text and sends no commit", async () => {

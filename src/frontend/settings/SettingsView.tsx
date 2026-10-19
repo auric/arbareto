@@ -5,6 +5,7 @@ import { Cancel01Icon, Search01Icon, Settings02Icon } from "@hugeicons/core-free
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import type { BridgeResponse, createBridge } from "../bridge";
+import { ConfirmPopover } from "../components/confirm-popover";
 import { IconButton } from "../components/icon-button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
@@ -33,6 +34,8 @@ export type SettingsViewProps = {
   onEnded(response: BridgeResponse): void;
   /** Each response that carries new app settings. */
   onSettings?(response: BridgeResponse): void;
+  /** The page to open on, such as "Editor and tools" (spec FR-093). Without it, the view opens on its D15 first page. */
+  page?: string;
   /** Returns to the earlier view without a write (FR-068). */
   onClose(): void;
 };
@@ -64,9 +67,9 @@ function AppChoice<T extends string>({ slot, heading, note, options, value, onCh
 }
 
 /** The Settings view, a full view inside the main window (FR-068). It holds the Git configuration pages and the app pages. */
-export function SettingsView({ bridge, target, repository, operationRunning, onOperation, onEnded, onSettings, onClose }: SettingsViewProps) {
+export function SettingsView({ bridge, target, repository, operationRunning, onOperation, onEnded, onSettings, page: initialPage, onClose }: SettingsViewProps) {
   const heading = useId();
-  const [page, setPage] = useState(target === null ? "SSH" : "User");
+  const [page, setPage] = useState(initialPage ?? (target === null ? "SSH" : "User"));
   const [scope, setScope] = useState<Scope>("local");
   const [query, setQuery] = useState("");
   const git = useGitSettings({ bridge, target, operationRunning, onOperation, onEnded });
@@ -74,6 +77,10 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
   const [failure, setFailure] = useState<ReactNode>(null);
   const busy = useRef(false);
   const section = useRef<HTMLElement>(null);
+  const scopeBar = useRef<HTMLDivElement>(null);
+  const [closing, setClosing] = useState(false);
+  // Esc and Close never drop Git setting changes without a confirmation.
+  const close = () => (Object.keys(git.pending.local).length + Object.keys(git.pending.global).length > 0 ? setClosing(true) : onClose());
   useEffect(() => {
     let current = true;
     void bridge.readSyncSettings().then((response) => {
@@ -175,19 +182,19 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
           if (scope === "local" || scope === "global") void git.save(scope);
           return;
         }
-        if (event.key !== "Escape") return;
+        if (event.key !== "Escape" || closing) return;
         event.preventDefault();
-        onClose();
+        close();
       }}
     >
-      <div data-section="scopeBar" className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-divider px-2 py-1" style={{ minHeight: "var(--h-pane-heading)" }}>
+      <div ref={scopeBar} data-section="scopeBar" className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-divider px-2 py-1" style={{ minHeight: "var(--h-pane-heading)" }}>
         <HugeiconsIcon icon={Settings02Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
         <h2 id={heading} tabIndex={-1} className="font-semibold">
           {TEXTS.heading}
         </h2>
         {target === null ? null : <ScopePicker scope={scope} onScope={setScope} files={git.read.state === "loaded" ? git.read.value.files : null} />}
         <span className="flex-1" />
-        <IconButton icon={Cancel01Icon} label={TEXTS.close} keys={{ aria: "Escape", text: "Esc" }} onClick={onClose} />
+        <IconButton icon={Cancel01Icon} label={TEXTS.close} keys={{ aria: "Escape", text: "Esc" }} onClick={close} />
       </div>
       <Tabs orientation="vertical" value={active} onValueChange={(value) => setPage(String(value))} className="min-h-0 flex-1 gap-0">
         <div data-section="pageList" className="flex w-52 shrink-0 flex-col gap-1 overflow-y-auto border-r border-divider p-1">
@@ -200,7 +207,7 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
                     type="text"
                     aria-label={TEXTS.find}
                     aria-keyshortcuts="Control+F"
-                    placeholder={TEXTS.find}
+                    placeholder={TEXTS.findPlaceholder}
                     spellCheck={false}
                     autoComplete="off"
                     className="h-(--h-button) w-full rounded-sm border border-control-border bg-surface pr-2 pl-7"
@@ -231,6 +238,19 @@ export function SettingsView({ bridge, target, repository, operationRunning, onO
           )}
         </div>
       </Tabs>
+      <ConfirmPopover
+        open={closing}
+        anchor={scopeBar.current}
+        title={TEXTS.discardTitle}
+        confirmLabel={TEXTS.discard}
+        cancelLabel={TEXTS.keepEditing}
+        danger
+        onConfirm={() => {
+          setClosing(false);
+          onClose();
+        }}
+        onCancel={() => setClosing(false)}
+      />
     </section>
   );
 }

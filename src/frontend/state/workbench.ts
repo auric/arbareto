@@ -21,8 +21,8 @@ export type Amend = { headOid: string; message: string; text: string };
 export type CommitViewState = { layout: Layout; untrackedOpen: boolean; amend: Amend | null };
 const COMMIT_VIEW: CommitViewState = { layout: "tree", untrackedOpen: false, amend: null };
 export type WorkbenchState = {
-  /** Per worktree key: the shown view, and the view that Settings returns to. */
-  views: Readonly<Record<string, { view: View; before: View }>>;
+  /** Per worktree key: the shown view, the view that Settings returns to, and the Settings page that the view opens on. */
+  views: Readonly<Record<string, { view: View; before: View; page?: string }>>;
   branches: Branches | null;
   commit: Readonly<Record<string, CommitViewState>>;
 };
@@ -48,10 +48,11 @@ export function createWorkbench({ bridge, target, mutationEnded, refreshHistory 
   let branchSeq = 0;
   const shown = (key: string) => state.views[key] ?? { view: "history" as View, before: "history" as View };
 
-  function setView(key: string, view: View) {
+  /** `page` names the Settings page to open on, such as "Editor and tools" (spec FR-093). Without it, Settings opens on its first page. */
+  function setView(key: string, view: View, options: { page?: string } = {}) {
     const current = shown(key);
     if (current.view === view) return;
-    set({ views: { ...state.views, [key]: { view, before: view === "settings" ? current.view : current.before } } });
+    set({ views: { ...state.views, [key]: { view, before: view === "settings" ? current.view : current.before, ...(options.page === undefined ? {} : { page: options.page }) } } });
   }
 
   function readBranches() {
@@ -75,6 +76,8 @@ export function createWorkbench({ bridge, target, mutationEnded, refreshHistory 
     },
     getState: () => state,
     view: (key: string) => shown(key).view,
+    /** The Settings page of the last `setView`, or undefined. */
+    settingsPage: (key: string) => shown(key).page,
     setView,
     /** Spec FR-068: Close returns to the view before Settings. */
     closeSettings(key: string) {

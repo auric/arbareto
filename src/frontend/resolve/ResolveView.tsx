@@ -5,9 +5,9 @@
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import type { z } from "zod";
 import type { ChangeEntry, Comparison, ReviewWorkbenchResult } from "../../contracts/envelope";
-import { codeText } from "../app/RepositoryStates";
+import { codeText, failureText, unknownFormText } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
-import { runFileAction, type FileControlsProps } from "../changes/FileControls";
+import { decide, runFileAction, type FileControlsProps } from "../changes/FileControls";
 import { BLOCKED_TEXT, type Blocked, type StagingTarget } from "../changes/HunkControls";
 import { RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
 import { Button } from "../components/ui/button";
@@ -15,6 +15,7 @@ import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { isObject } from "../lib/utils";
 import { shortRef } from "../refs/ReferencesSidebar";
 import { shortId, trackOperation, type StatusOperation } from "../status/OperationStatus";
+import { reviewWithTrust, WORKBENCH_TRUST, type AskTrust } from "../trust/ask";
 import { KIND_TEXTS, TEXTS, type Side } from "./texts";
 
 // Feature 004 spec FR-089 to FR-096, plan.md D7 and D15 "P2 regions" and "Resolve view texts", contract Δ3 `choose-side` and `mergetool`, data-model §11.
@@ -31,6 +32,8 @@ export type ResolveViewProps = {
   blocked: Blocked;
   trust?: FileControlsProps["trust"];
   eligibility?: FileControlsProps["eligibility"];
+  /** Plan.md D12 "Ask": a trust refusal of a click review asks once (contract Δ7). */
+  askTrust?: AskTrust;
   onOperation(op: StatusOperation): void;
   /** The store's `ended("runWorkbench", response)`. */
   onEnded(response: BridgeResponse): void;
@@ -46,7 +49,7 @@ type Reviewed = Extract<z.infer<typeof ReviewWorkbenchResult>, { workbenchToken:
 type Plan = Extract<Reviewed, { action: "choose-side" | "mergetool" }>["plan"];
 type SideName = Plan["names"]["ours"];
 type Item = Side | "mergetool";
-type Review = { token: string | null; plan: Plan | null; code: string | null; reason: string | null };
+type Review = { state: string; token: string | null; plan: Plan | null; code: string | null; reason: string | null };
 type Active = { item: Item; tool: string | null; operationId: string | null; cancelRequested: boolean };
 const ITEMS: readonly Item[] = ["ours", "theirs", "mergetool"];
 
@@ -54,7 +57,7 @@ function reviewOf(response: BridgeResponse): Review {
   const result = isObject(response.result) ? response.result : {};
   const token = response.state === "succeeded" && typeof result.workbenchToken === "string" ? result.workbenchToken : null;
   const plan = token !== null && isObject(result.plan) ? (result.plan as Plan) : null;
-  return { token, plan, code: token === null ? (response.code ?? response.state) : null, reason: typeof result.reason === "string" ? result.reason : null };
+  return { state: response.state, token, plan, code: token === null ? (response.code ?? response.state) : null, reason: typeof result.reason === "string" ? result.reason : null };
 }
 
 /** Plan.md D7: the refs at the side's commit, else its short ID. A side without a commit fact has no name. */
@@ -64,6 +67,7 @@ const labelOf = (item: Item, names: Plan["names"] | null) => (item === "mergetoo
 /** The D15 text of a refused review. Unmapped codes and reasons show the code. */
 function refusalText(item: Item, review: Review): ReactNode {
   const label = item === "mergetool" ? TEXTS.openTool : TEXTS.verb(item);
+  if (review.state === "succeeded") return unknownFormText(label);
   if (review.code === "TRUST_REQUIRED" || review.code === "TRUST_CHANGED") return TEXTS.trust;
   if (review.code === "STALE_SELECTION" || review.code === "STALE_REVIEW") return TEXTS.stale;
   if (review.code === "WORKBENCH_UNAVAILABLE" && review.reason !== null) {
@@ -101,6 +105,9 @@ function ItemRow({ label, reason, quiet, onRun, children }: { label: string; rea
 /** The resolve view of one Conflicted entry. It replaces the diff (plan.md D15 "P2 regions"). */
 export function ResolveView(props: ResolveViewProps) {
   const { entry, snapshotId, comparison, bridge, target, blocked, onOperation, onEnded, onStatus, onOpenSettings } = props;
+  // The second review after an approval takes the target and the snapshot of the full read.
+  const live = useRef(props);
+  live.current = props;
   const key = `${snapshotId}:${entry.entryId}`;
   // The display reviews of the shown entry, by item. A token here never starts a run: each run reviews again (contract Δ3).
   const [shown, setShown] = useState<{ key: string; value: Partial<Record<Item, Review>> }>({ key, value: {} });
@@ -139,7 +146,10 @@ export function ResolveView(props: ResolveViewProps) {
     if (quiet) return RUNNING_REASON;
     if (stateReason !== null) return stateReason;
     const review = value[item];
-    return review === undefined ? TEXTS.pending : review.token === null ? refusalText(item, review) : null;
+    if (review === undefined) return TEXTS.pending;
+    // Spec FR-069: an action asks at its first use, so a trust refusal keeps the item available while an ask exists.
+    if (review.token === null && (review.code === "TRUST_REQUIRED" || review.code === "TRUST_CHANGED") && props.askTrust !== undefined) return null;
+    return review.token === null ? refusalText(item, review) : null;
   };
   const say = (text: ReactNode, status: string | null) => {
     setLine({ path: entry.pathBytes, text });
@@ -148,7 +158,13 @@ export function ResolveView(props: ResolveViewProps) {
 
   async function review(item: Item): Promise<Review | null> {
     if (target === null) return null;
-    const again = reviewOf(await bridge.reviewWorkbench(target, payloadOf(item, snapshotId, entry.entryId)));
+    const send = () => {
+      const now = live.current;
+      // A changed selection keeps the IDs of this entry, so the review refuses as stale.
+      const same = now.entry.pathBytes === entry.pathBytes;
+      return bridge.reviewWorkbench(now.target ?? target, payloadOf(item, same ? now.snapshotId : snapshotId, same ? now.entry.entryId : entry.entryId));
+    };
+    const again = reviewOf(await reviewWithTrust(send, WORKBENCH_TRUST[payloadOf(item, snapshotId, entry.entryId).action], props.askTrust));
     if (again.token === null) say(refusalText(item, again), null);
     return again.token === null ? null : again;
   }
@@ -194,7 +210,7 @@ export function ResolveView(props: ResolveViewProps) {
       const text = TEXTS.chosen(path, name ?? item);
       return say(text, text);
     }
-    say(codeText(TEXTS.failed(texts[0]), response.code ?? response.state), null);
+    say(failureText(texts[0], response), null);
   }
 
   function cancelRun() {
@@ -215,7 +231,8 @@ export function ResolveView(props: ResolveViewProps) {
     }
   }
 
-  const markReason: ReactNode = quiet ? RUNNING_REASON : comparison === null ? TEXTS.comparisonPending : stateReason;
+  // FR-089 keeps the item in the view. The stage bar decision gives its reason before any request.
+  const markReason: ReactNode = quiet ? RUNNING_REASON : comparison === null ? TEXTS.comparisonPending : decide({ ...props, comparison, category: "conflicted" }).reason;
   const toolReason = reasonOf("mergetool");
   const shownLine = line !== null && line.path === entry.pathBytes ? line.text : null;
   return (

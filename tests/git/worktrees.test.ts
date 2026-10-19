@@ -512,6 +512,27 @@ caseTest("T060", "plan.md O-20: worktree-remove takes the trust listing of the t
   });
 }, TIMEOUT_MS);
 
+caseTest("T060", "plan.md O-20: a target worktree approval that ends between the review and the run refuses the run with TRUST_REQUIRED and the gate target, and the worktree stays", SHELL, async () => {
+  const f = build();
+  const log = canary(f.root, "o20-run-monitor");
+  git(f, ["config", "extensions.worktreeConfig", "true"]);
+  git(f, ["config", "--worktree", "core.fsmonitor", log.command], [0], folder(f, "wt with spaces"));
+  const target = recordPath(f, "wt with spaces");
+  await withSync("t060-o20-run", async (service) => {
+    const r = await open(service, f.repo);
+    const own = await service.register(native(folder(f, "wt with spaces")));
+    const approved = await service.approveTrust(own.repositoryId, "worktree");
+    expect(approved.state).toBe("succeeded");
+    const rv = await reviewed(service, r, removePayload(target, false, false));
+    expect((await service.revokeTrust(own.repositoryId, (approved.result as { trustId: string }).trustId)).state).toBe("succeeded");
+    const from = service.runner.calls.length;
+    const response = await service.response(sendRun(service, r, rv.workbenchToken));
+    expect(refused(response)).toEqual({ state: "failed", code: "TRUST_REQUIRED", result: { trustGate: "target" } });
+    expect(steps(service, from)).toEqual([]);
+  });
+  expect(recordsOf(f).some((rec) => valueOf(rec, "worktree") === target)).toBe(true);
+}, TIMEOUT_MS);
+
 caseTest("T060", "plan.md O-20: a monitor in this repository's configuration refuses worktree-remove with TRUST_REQUIRED and the gate repository before any worktree read, and the canary does not run", SHELL, async () => {
   const f = build();
   const log = canary(f.root, "o20-own-monitor");

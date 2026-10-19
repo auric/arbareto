@@ -1664,6 +1664,8 @@ export const RunWorkbenchResult = z
       .meta({ title: "ConfigSaveRun" }),
     z.strictObject({ action: z.enum(RUN_ACTIONS) }).meta({ title: "WorkbenchUnread" }),
     z.strictObject({ unmerged: Count }).meta({ title: "WorkbenchConflicted" }),
+    // Plan.md O-20: a TRUST_REQUIRED or TRUST_CHANGED run refusal names its gate, as the review refusal does.
+    z.strictObject({ trustGate: z.enum(["repository", "target"]) }).meta({ title: "WorkbenchTrustRefused" }),
     OperationResult.meta({ title: "WorkbenchRepeat" }),
   ])
   .meta({ title: "RunWorkbenchResult" });

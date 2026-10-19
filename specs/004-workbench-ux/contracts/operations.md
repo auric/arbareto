@@ -133,6 +133,7 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
   - `worktree-prune`: `worktree prune`.
   - `config-save`: per change, the listing again, then `config set --<scope> -- <key> <value>` or `config unset --<scope> -- <key>`.
 - Results: data-model §3 for `switch`. Other actions return the 001 outcome state with the observed effects. These are the refs before and after, HEAD, the stash entry, the worktree list, and the written keys. A failed step adds its `outputTail` (001 §9 rules).
+- A `TRUST_REQUIRED` or `TRUST_CHANGED` run refusal carries `{trustGate}`, as the review refusal does (plan O-20). The acceptance gate and a changed listing of this repository give `repository`. The step 2 reads of `worktree-remove` give `target` when the target worktree trust changes after the review. The renderer asks only around a review, never after a run response, so a run refusal shows its code and asks nothing.
 - Git exit codes that decide: `merge-base --is-ancestor` (0, 1), `show-ref --exists` (0, 2), `config set` and `unset` (1 to 6, git-config(1)), `check-ref-format` (0 or non-zero). Every other exit only marks a step as failed; fresh reads decide the outcome.
 
 ### `reviewCommit` and `commit` (001 §3, §4 "Commit validation and handoff")

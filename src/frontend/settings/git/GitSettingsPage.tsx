@@ -13,7 +13,7 @@ import { Button } from "../../components/ui/button";
 import { KEYS } from "../../keyboard/shortcuts";
 import { isObject } from "../../lib/utils";
 import { trackOperation, type StatusOperation } from "../../status/OperationStatus";
-import { PRESET_KEYS, TOOL_PRESETS } from "./presets";
+import { PRESETS, type Preset } from "./presets";
 import { ENUM_LABELS, TEXTS, type EntryScope, type Scope } from "./texts";
 
 // Feature 004 spec FR-058 to FR-065 and FR-067, plan.md D11 and D15 "Settings", contract Δ3 `readGitSettings` and `config-save`, data-model §2 and §9.
@@ -293,12 +293,12 @@ function TextControl({ value, scope, locked, pending, onChange, label }: RowProp
   );
 }
 
-function PresetControl(props: RowProps) {
-  const { value, scope, locked, pending, onChange } = props;
+function PresetControl(props: RowProps & { presets: readonly Preset[] }) {
+  const { value, scope, locked, pending, onChange, presets } = props;
   const entry = own(value, scope);
   const next = value.key in pending ? pending[value.key] : undefined;
   const current = next !== undefined ? next : entry === undefined ? null : shownValue(entry);
-  const isPreset = current !== null && (TOOL_PRESETS as readonly string[]).includes(current);
+  const isPreset = current !== null && presets.some((p) => p.value === current);
   const [custom, setCustom] = useState(current !== null && !isPreset);
   const selected = custom ? "custom" : current === null ? "" : isPreset ? current : "custom";
   return (
@@ -315,9 +315,9 @@ function PresetControl(props: RowProps) {
         className="h-(--h-row) w-56 rounded-sm border border-control-border bg-surface px-1"
       >
         <option value="">{TEXTS.notSet}</option>
-        {TOOL_PRESETS.map((p) => (
-          <option key={p} value={p}>
-            {p}
+        {presets.map((p) => (
+          <option key={p.value} value={p.value}>
+            {p.label}
           </option>
         ))}
         <option value="custom">{TEXTS.custom}</option>
@@ -338,8 +338,9 @@ function KeyRow({ value, scope, files, pending, onChange }: { value: ConfigValue
     const reason = value.readOnly[scope];
     const entries = value.scopes[scope];
     const props: RowProps = { value, scope, locked: reason !== null || files[scope] === null, pending, onChange };
+    const presets = PRESETS.get(value.key);
     const control =
-      reason === "multi-value" ? null : value.type.kind === "bool" ? <BoolControl {...props} /> : value.type.kind === "enum" ? <EnumControl {...props} /> : PRESET_KEYS.has(value.key) ? <PresetControl {...props} /> : <TextControl {...props} />;
+      reason === "multi-value" ? null : value.type.kind === "bool" ? <BoolControl {...props} /> : value.type.kind === "enum" ? <EnumControl {...props} /> : presets !== undefined ? <PresetControl {...props} presets={presets} /> : <TextControl {...props} />;
     const entry = entries[0];
     body = (
       <>

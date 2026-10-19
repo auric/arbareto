@@ -248,7 +248,7 @@ describe("pages and controls (FR-060 to FR-062, FR-067)", () => {
     expect(r.double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "config-save", scope: "local", changes: [{ key: "pull.rebase", value: "true" }] });
   });
 
-  test("the merge and diff tools offer the Git mergetools presets with the exact value, plus Custom; the editor offers Custom only (FR-062, O-10)", async () => {
+  test("the merge and diff tools offer the Git mergetools presets with the exact value, plus Custom (FR-062)", async () => {
     await render();
     await page("Editor and tools");
     await scope("local");
@@ -260,8 +260,43 @@ describe("pages and controls (FR-060 to FR-062, FR-067)", () => {
     await choose(select, "kdiff3");
     expect(text(row("merge.tool"))).toContain("Writes merge.tool=kdiff3.");
     expect(row("diff.tool").querySelector("select")).not.toBeNull();
-    expect(row("core.editor").querySelector("select")).toBeNull();
-    expect(row("core.editor").querySelector("input")).not.toBeNull();
+  });
+
+  test("the editor offers the D15 editor presets, each with the exact core.editor command, plus Custom (FR-062, O-10)", async () => {
+    const NPP = '"C:/Program Files/Notepad++/notepad++.exe" -multiInst -notabbar -nosession -noPlugin';
+    const SUBL = '"C:/Program Files/Sublime Text/subl.exe" -w';
+    const r = await render();
+    await page("Editor and tools");
+    await scope("local");
+    const select = row("core.editor").querySelector("select")!;
+    expect([...select.querySelectorAll("option")].map((o) => [o.textContent, o.value])).toEqual([
+      ["Not set", ""],
+      ["VS Code", "code --wait"],
+      ["Notepad++", NPP],
+      ["Sublime Text", SUBL],
+      ["Notepad", "notepad"],
+      ["Custom", "custom"],
+    ]);
+    await choose(select, NPP);
+    expect(text(row("core.editor"))).toContain(`Writes core.editor=${NPP}.`);
+    await click(button("Save (Ctrl+S)"));
+    expect(r.double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "config-save", scope: "local", changes: [{ key: "core.editor", value: NPP }] });
+  });
+
+  test("a stored editor command that equals a preset selects that preset; another command opens Custom (FR-062)", async () => {
+    await render({ git: gitSettings({ "core.editor": configValue("core.editor", [local("code --wait")]) }) });
+    await page("Editor and tools");
+    await scope("local");
+    expect(row("core.editor").querySelector("select")!.value).toBe("code --wait");
+    expect(row("core.editor").querySelector("input")).toBeNull();
+  });
+
+  test("a stored editor command that no preset holds shows Custom with the command in the text field (FR-062)", async () => {
+    await render({ git: gitSettings({ "core.editor": configValue("core.editor", [local("code -w")]) }) });
+    await page("Editor and tools");
+    await scope("local");
+    expect(row("core.editor").querySelector("select")!.value).toBe("custom");
+    expect(row("core.editor").querySelector<HTMLInputElement>("input")!.value).toBe("code -w");
   });
 
   test("values show as plain text (FR-067)", async () => {

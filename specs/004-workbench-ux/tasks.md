@@ -364,13 +364,13 @@ Then WP10:     T033 -> T034 -> T035
 
 | Requirement | Tasks |
 | --- | --- |
-| FR-001 to FR-006 | T016, T017, T021, T027, T033, T034 |
+| FR-001 to FR-006 | T016, T017, T021, T027, T033, T034, T103 (moved to a later feature) |
 | FR-007 to FR-013 (US1) | T011, T015, T021, T027, T040, T043, T088 |
 | FR-014 to FR-020 (US2) | T010, T022, T028, T038, T040, T044, T089 |
 | FR-021 to FR-028 (US3) | T007, T023, T029, T041, T045, T090 |
 | FR-029 to FR-048 (US4) | T009, T010, T024 to T026, T030 to T032, T042, T046, T047, T091, T092 |
 | FR-049 to FR-057 (US5) | T049, T055, T060, T064, T070, T094 (FR-052 Browse) |
-| FR-058 to FR-068 (US6) | T050, T056, T060, T065, T071 |
+| FR-058 to FR-068 (US6) | T050, T056, T060, T065, T071, T102 |
 | FR-069 to FR-075 (US7) | T033, T051, T057, T066, T072 |
 | FR-076 to FR-082 (US8) | T052, T057, T058, T067, T073 |
 | FR-083 to FR-084 (US10) | Moved to a later feature (T077 to T080) |
@@ -417,3 +417,8 @@ Then WP10:     T033 -> T034 -> T035
 - [ ] T091 [P] [US4] Change `src/frontend/changes/ChangesPane.tsx` and `src/frontend/views/CommitView.tsx` (P5, WP14): remove the sidebar help line and keep it only in the diff empty state, color the status letters by D16, and start the Staged list directly below the splitter. Add the cases to `tests/contracts/workbench-commit.test.tsx`. Gap: partial. Spec: FR-029, FR-030. Plan: D15 "Commit view texts", D16 "Geometry". Depends on T048.
 - [ ] T092 [US4] Add Filter files to `src/frontend/changes/ChangesPane.tsx` and `src/frontend/views/CommitView.tsx` (P5, WP14). Add Ctrl+F to `src/frontend/keyboard/shortcuts.ts` as a key of the active view: the history filter in History, Filter files in Commit. Write the failing cases in `tests/contracts/workbench-commit.test.tsx` and `tests/contracts/shortcuts-004.test.ts` first: Ctrl+F focuses Filter files in the Commit view and the history filter in the History view, the literal case-insensitive match of the display path, Stage all changes and Stage folder with their full scope under a filter, a hidden row that leaves the selection, the counts of the status read, "No file matches the filter.", and no rows for a collapsed Untracked section of 100,000 files. Quickstart Q29. Gap: missing. Spec: FR-101, FR-030, FR-086, FR-087. Plan: D15 "Filter files" and the keyboard map. Depends on T091.
 - [ ] T093 [US1] Run the batch 3 follow-up verification: `bun run build`, `bun run typecheck`, `bun run test:contracts`, and `bun run test:all`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Take new screenshots of the branch list, the branch menu, the merge panel, and the commit view with `bun run dev` and `ARBARETO_PROFILE_ROOT` set to a scratch folder, and record them in research.md against plan.md D15 and D16. Control mutation: in `src/frontend/changes/ChangesPane.tsx`, let Stage all changes take only the filtered rows. `tests/contracts/workbench-commit.test.tsx` must fail. Undo the edit and rerun green. The task passes only after one independent review of T087 to T092 is recorded in research.md, with `web-design-guidelines` for the UI diff. Spec: all IDs of T087 to T092. Depends on T087 to T092.
+
+## Phase 10: Convergence
+
+- [ ] T102 [US6] Add the `core.editor` presets VS Code, Notepad++, Sublime Text, and Notepad (P8, WP22; user decision 2026-10-19). Write the failing cases in `tests/contracts/workbench-settings.test.tsx` first: the editor options with the plan.md D15 labels and exact commands in D15 order, then Custom; "Writes core.editor=<command>."; Save sends the exact command; a stored command that equals a preset selects that preset; another command selects Custom with the command in the text field. Then add the presets to `src/frontend/settings/git/presets.ts` and use them in `src/frontend/settings/git/GitSettingsPage.tsx` with the diff and merge tool mechanism. Control mutation: in `presets.ts`, remove `-w` from the Sublime Text command. `tests/contracts/workbench-settings.test.tsx` must fail. Undo the edit and rerun green. Gap: missing. Spec: FR-062. Plan: D11, D15 "Presets", O-10. Depends on T071.
+- [ ] T103 [US4] **Moved to a later feature** (user decision, 2026-10-19; spec Clarifications). Make the ignore actions (US4) and the Global Git settings save (US6) work on a WSL repository. Gap: a WSL `ignore` review refuses with `WORKBENCH_UNAVAILABLE` reason `unreadable`, because no working-file byte crosses from the distro (001 §11), so the line checks have no input. The `globalConfig` context has no WSL form, so a WSL `global` save gives `INVALID_REQUEST` (contracts/operations.md gaps). Feature 004 keeps both refusal texts. Spec: FR-006, FR-045, FR-058.

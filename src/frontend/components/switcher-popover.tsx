@@ -93,13 +93,21 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
   const rows: (number | { heading: string })[] = [];
   const rowAt: number[] = [];
   const groupAt: (string | null)[] = [];
+  // A virtual list holds only some options, so each option states its set as the full list gives it: its group run, else the options outside a group.
+  const setSizes: number[] = [];
+  const setAt: { set: number; pos: number }[] = [];
+  let outside = -1;
   let group: string | undefined;
   for (let index = 0; index < count; index++) {
     const next = index < shown.length ? itemGroup?.(shown[index]!) : undefined;
     if (next !== undefined && next !== group) {
       rows.push({ heading: next });
       groupAt.push(next);
+      setSizes.push(0);
     }
+    if (next === undefined && outside < 0) outside = setSizes.push(0) - 1;
+    const set = next === undefined ? outside : setSizes.length - 1;
+    setAt.push({ set, pos: ++setSizes[set]! });
     group = next;
     rowAt.push(rows.length);
     rows.push(index);
@@ -166,6 +174,8 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
         id={optionId(index)}
         role="option"
         aria-selected={index === active}
+        aria-posinset={setAt[index]!.pos}
+        aria-setsize={setSizes[setAt[index]!.set]}
         aria-label={end === null ? itemLabel(item!) : end.keys === undefined ? (end.note === undefined ? undefined : `${end.label}, ${end.note}`) : `${end.label} (${end.keys.text})`}
         aria-keyshortcuts={end === null ? (onItemDelete === undefined ? undefined : "Delete") : end.keys?.aria}
         className={`list-row flex min-w-0 items-center gap-2 px-2 ${index === active ? "bg-hover-fill" : ""}`}

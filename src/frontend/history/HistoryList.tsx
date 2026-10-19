@@ -137,10 +137,13 @@ type Label = ViewRow["labels"][number];
 /** Feature 004 spec FR-014: the branch menu of a local or remote-tracking branch label. */
 type LabelMenu = (label: Label, anchor: HTMLElement) => void;
 
-function LabelChip({ label, tracking, onMenu }: { label: Label; tracking?: Tracking; onMenu?: LabelMenu }) {
+/** Feature 004 plan.md D15 "History labels": the labels that have a branch menu. */
+const hasMenu = (label: Label) => label.kind === "branch" || label.kind === "remote";
+
+function LabelChip({ label, tracking, onMenu, active = false }: { label: Label; tracking?: Tracking; onMenu?: LabelMenu; active?: boolean }) {
   const count = countOf(label, tracking);
   const menu =
-    onMenu !== undefined && (label.kind === "branch" || label.kind === "remote")
+    onMenu !== undefined && hasMenu(label)
       ? (event: { preventDefault(): void; stopPropagation(): void; currentTarget: HTMLElement }) => {
           event.preventDefault();
           event.stopPropagation();
@@ -148,7 +151,7 @@ function LabelChip({ label, tracking, onMenu }: { label: Label; tracking?: Track
         }
       : undefined;
   return (
-    <span data-kind={label.kind} className="chip flex shrink-0 items-center gap-1" onContextMenu={menu}>
+    <span data-kind={label.kind} data-label-active={active ? "" : undefined} className="chip flex shrink-0 items-center gap-1" onContextMenu={menu}>
       <HugeiconsIcon icon={LABEL_KINDS.find((k) => k.kind === label.kind)!.icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
       <span data-chip-name className="max-w-[160px] truncate">
         {label.name}
@@ -159,7 +162,7 @@ function LabelChip({ label, tracking, onMenu }: { label: Label; tracking?: Track
 }
 
 /** The labels of one row. A hidden copy measures each label, so the shown labels take at most half of the subject cell. */
-function RowLabels({ labels, tracking, onMenu }: { labels: ViewRow["labels"]; tracking?: Tracking; onMenu?: LabelMenu }) {
+function RowLabels({ labels, tracking, onMenu, active = null }: { labels: ViewRow["labels"]; tracking?: Tracking; onMenu?: LabelMenu; active?: Label | null }) {
   const measure = useRef<HTMLSpanElement>(null);
   const [count, setCount] = useState(labels.length);
   useLayoutEffect(() => {
@@ -180,12 +183,17 @@ function RowLabels({ labels, tracking, onMenu }: { labels: ViewRow["labels"]; tr
     return () => observer.disconnect();
   }, [labels, tracking]);
   const hidden = labels.length - count;
+  const shown = labels.slice(0, count);
   return (
     <>
-      {labels.slice(0, count).map((l) => (
-        <LabelChip key={`${l.kind}:${l.name}`} label={l} tracking={tracking} onMenu={onMenu} />
+      {shown.map((l) => (
+        <LabelChip key={`${l.kind}:${l.name}`} label={l} tracking={tracking} onMenu={onMenu} active={active !== null && l.kind === active.kind && l.name === active.name} />
       ))}
-      {hidden > 0 ? <span className="chip shrink-0">+{hidden}</span> : null}
+      {hidden > 0 ? (
+        <span data-label-active={active !== null && !shown.some((l) => l.kind === active.kind && l.name === active.name) ? "" : undefined} className="chip shrink-0">
+          +{hidden}
+        </span>
+      ) : null}
       <span ref={measure} aria-hidden="true" className="invisible absolute flex gap-1">
         {labels.map((l) => {
           const count = countOf(l, tracking);
@@ -291,6 +299,8 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   const written = useRef<number | null>(null);
   const [active, setActive] = useState(0);
   const [focused, setFocused] = useState(false);
+  // Plan D15 "History labels": the label that Left or Right moved to, for the row `oid`.
+  const [labelAt, setLabelAt] = useState<{ oid: string; index: number } | null>(null);
 
   const scrollTo = (top: number) => {
     const element = list.current;
@@ -373,6 +383,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   function go(item: number) {
     const to = Math.max(0, Math.min(lastItem, item));
     setActive(to);
+    setLabelAt(null);
     scrollTo(revealTop(to, box.top, rowHeight, list.current?.clientHeight ?? 0, total));
     // plan.md "Keyboard and focus", History list row: selection follows each navigation key.
     if (to === 0) view.select(WORKING_ROW, null, undefined, false);
@@ -390,10 +401,10 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
       event.preventDefault();
       return onCreateBranch(selectedOid, event.currentTarget);
     }
-    // Feature 004 spec FR-014: Shift+F10 and the Menu key open the branch menu of the first branch or remote-tracking label of the selected row.
+    // Feature 004 spec FR-014, plan D15 "History labels": Shift+F10 and the Menu key open the branch menu of the active label of the selected row.
     const menuKey = (event.key === "F10" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) || (event.key === "ContextMenu" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey);
     if (menuKey && onLabelMenu !== undefined && selectedOid !== undefined && !event.nativeEvent.isComposing) {
-      const label = view.row(selection!.index!)?.labels.find((l) => l.kind === "branch" || l.kind === "remote");
+      const label = menuLabels[labelIndex];
       if (label === undefined) return;
       event.preventDefault();
       const option = document.getElementById(optionId(selection!.index! + SPECIAL_ROWS));
@@ -401,6 +412,11 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
       return onLabelMenu(label, chip ?? option ?? event.currentTarget);
     }
     if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
+    if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && onLabelMenu !== undefined && selectedRow !== undefined && menuLabels.length > 0) {
+      event.preventDefault();
+      const index = Math.max(0, Math.min(menuLabels.length - 1, labelIndex + (event.key === "ArrowRight" ? 1 : -1)));
+      return setLabelAt({ oid: selectedRow.oid, index });
+    }
     const page = Math.max(1, Math.floor(height / rowHeight));
     const moves: Record<string, () => void> = {
       ArrowDown: () => go(active + 1),
@@ -441,6 +457,13 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   const setSize = more ? -1 : total;
   const search = state.search;
   const listMode = filter ? "filter" : "full";
+  const selectedRow = state.selection?.mode === listMode && state.selection.index !== null ? view.row(state.selection.index) : undefined;
+  const menuLabels = selectedRow?.labels.filter(hasMenu) ?? [];
+  const moved = labelAt !== null && labelAt.oid === selectedRow?.oid;
+  const labelIndex = moved ? Math.min(labelAt.index, menuLabels.length - 1) : 0;
+  // The active label shows only after Left or Right, and only while the list has focus.
+  const activeLabel = moved && focused ? (menuLabels[labelIndex] ?? null) : null;
+  const labelText = activeLabel === null ? null : `${activeLabel.name}, ${activeLabel.kind === "branch" ? "branch" : "remote-tracking"} label ${labelIndex + 1} of ${menuLabels.length}.`;
   const isSelected = (item: number) =>
     item < SPECIAL_ROWS ? selectedId === (item === 0 ? WORKING_ROW : INDEX_ROW) : state.selection?.index === item - SPECIAL_ROWS && state.selection.mode === listMode;
 
@@ -505,7 +528,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
           {row.checkout || row.labels.length > 0 ? (
             <span data-slot="row-labels" title={row.labels.map((l) => l.name).join(", ")} className="relative flex min-w-0 max-w-[50%] shrink-0 items-center gap-1 overflow-hidden">
               {row.checkout ? <span className="badge shrink-0">{head?.state === "detached" ? "HEAD, detached" : "HEAD"}</span> : null}
-              <RowLabels labels={row.labels} tracking={tracking} onMenu={onLabelMenu} />
+              <RowLabels labels={row.labels} tracking={tracking} onMenu={onLabelMenu} active={row.oid === selectedRow?.oid ? activeLabel : null} />
             </span>
           ) : null}
           {row.match === true ? <HugeiconsIcon icon={Search01Icon} strokeWidth={2} aria-hidden="true" data-slot="match-mark" className="size-(--icon-size) shrink-0 text-accent-role" /> : null}
@@ -693,6 +716,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
     search?.state === "finished" && search.matches === 0 ? NO_MATCH : null,
     waiting,
     matchEnd,
+    labelText,
   ]
     .filter((t) => t !== null)
     .join(" ");

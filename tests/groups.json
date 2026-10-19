@@ -2,7 +2,7 @@
   "roots": ["tests/contracts", "tests/git", "tests/wsl"],
   "serial": {
     "tests/contracts/workbench-commit.test.tsx": "renders 100,000 rows",
-    "tests/git/bun-runner.test.ts": "asserts call wall time (durationMs) and LINGER_MS - 1000 bounds",
+    "tests/git/bun-runner.test.ts": "asserts LINGER_MS - 1000 bounds",
     "tests/git/clone.test.ts": "asserts reconciliation within 5 s",
     "tests/git/commit.test.ts": "asserts a commit outcome within 2000 ms of the Git exit",
     "tests/git/external-changes.test.ts": "asserts watcher hints within HINT_BUDGET_MS",

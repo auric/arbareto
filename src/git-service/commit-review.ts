@@ -9,12 +9,12 @@ import { APPROVAL_LIFETIME_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COM
 import type { Approvals } from "./approvals";
 import { emptyTreeArgs, headRefExistsArgs, isObjectId, isRefName, stagedNameStatusArgs } from "./commands";
 import { createCollector, RunnerRefusal, type GitExit, type GitRunner, type WslIndexResult, type WslRunner } from "./git-runner";
-import { contextOf, latin1, runRead, type ReadTarget } from "./read-steps";
+import { contextOf, latin1, runRead, strictUtf8, type ReadTarget } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { ChangeSnapshot, Completeness, Head, IndexEntry, ReadInstallation } from "./snapshot";
 import { readRawIndex } from "./status";
 import { displayPath } from "./status-parser";
-import { rewriteHooks, type Trust, type TrustState } from "./trust";
+import { rewriteHooks, type ConfigEntry, type Trust, type TrustState } from "./trust";
 import { commitObjectArgs, headIsAncestorArgs, upstreamOfArgs } from "./workbench-commands";
 
 // Plan.md "Commit review": the disclosure beside Commit staged changes.
@@ -34,11 +34,11 @@ export interface ScopeEntry {
 }
 
 // Feature 004 contract Δ3 `reviewCommit` with `amend`. `upstream` names the full ref, or null. `present: false`: the repository holds no such ref,
-// so no fact tells whether the remote holds HEAD, and `rewritesUpstream` is `unknown`.
+// so no fact tells whether the remote holds HEAD, and `rewritesUpstream` is `unknown`. An untracked upstream names its `branch.<name>.merge` value, or null.
 export interface AmendValue {
   headOid: string;
   message: string;
-  upstream: { name: string; present: boolean } | null;
+  upstream: { name: string | null; present: boolean } | null;
   rewritesUpstream: boolean | "unknown";
 }
 
@@ -77,7 +77,6 @@ async function readStep(runner: GitRunner, t: ReadTarget, args: string[], maxByt
 // Git utf8.c `is_encoding_utf8`: `utf-8` and `utf8` with `strcasecmp`, which folds only ASCII letters. Without the `u` flag, `i` folds no other letter to ASCII.
 export const isUtf8Name = (name: string): boolean => /^utf-?8$/i.test(name);
 
-const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 // Plan.md D8: `cat-file commit <HEAD>`. gitformat-commit: the header lines end at the first empty line, and a continuation line starts with a space.
 // The message is the bytes after that line. Git uses the first `encoding` header (commit.c `find_commit_header`).
@@ -101,9 +100,19 @@ async function headCommit(runner: GitRunner, t: ReadTarget, oid: string): Promis
   }
 }
 
+// remote.c `branch_get_upstream`: `%(upstream)` is empty also for a `branch.<name>.merge` value that no fetch refspec stores as a remote-tracking branch.
+// remote.c `handle_config` keeps the values in order, and the first one is the upstream. No local ref holds it, so whether it holds HEAD is unknown.
+function untracked(entries: readonly ConfigEntry[], target: string): Pick<AmendValue, "upstream" | "rewritesUpstream"> {
+  const key = `branch.${target.slice("refs/heads/".length)}.merge`;
+  const merge = entries.find((e) => e.key === key && e.value !== null);
+  if (merge === undefined) return { upstream: null, rewritesUpstream: false };
+  return { upstream: { name: merge.exact && merge.value !== "" ? merge.value : null, present: false }, rewritesUpstream: "unknown" };
+}
+
 // Plan.md D8: the upstream U of the HEAD branch, `show-ref --exists <U>`, then `merge-base --is-ancestor HEAD <U>`. git-show-ref(1): exit 0 for an existing ref,
 // exit 2 for a missing one. git-merge-base(1): exit 0 true, exit 1 false. Another exit gives GIT_FAILED. A detached HEAD has no branch, so it has no upstream.
-export async function readRewrite(runner: GitRunner, t: ReadTarget, head: Exclude<Head, { state: "unborn" }>): Promise<Pick<AmendValue, "upstream" | "rewritesUpstream"> | Failed> {
+// `entries`: the configuration listing that the review or the preflight read.
+export async function readRewrite(runner: GitRunner, t: ReadTarget, head: Exclude<Head, { state: "unborn" }>, entries: readonly ConfigEntry[]): Promise<Pick<AmendValue, "upstream" | "rewritesUpstream"> | Failed> {
   if (head.state === "detached") return { upstream: null, rewritesUpstream: false };
   const read = await readStep(runner, t, upstreamOfArgs(head.target), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
   if ("result" in read) return read;
@@ -113,7 +122,7 @@ export async function readRewrite(runner: GitRunner, t: ReadTarget, head: Exclud
   const text = latin1(read.bytes);
   const upstream = text.endsWith("\n") && !text.slice(0, -1).includes("\n") ? text.slice(0, -1) : null;
   if (upstream === null || (upstream !== "" && !(upstream.startsWith("refs/") && isRefName(upstream)))) return { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
-  if (upstream === "") return { upstream: null, rewritesUpstream: false };
+  if (upstream === "") return untracked(entries, head.target);
   const exists = await readStep(runner, t, headRefExistsArgs(upstream), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
   if ("result" in exists) return exists;
   if (exists.exit.exitCode === 2) return { upstream: { name: upstream, present: false }, rewritesUpstream: "unknown" };
@@ -270,7 +279,7 @@ export function createCommitReviewer({ runner, trust, approvals, now = () => per
     if (amend && s.head.state !== "unborn") {
       const commit = await headCommit(runner, t, s.head.oid);
       if ("result" in commit) return commit;
-      const rewrite = await readRewrite(runner, t, s.head);
+      const rewrite = await readRewrite(runner, t, s.head, listing.entries);
       if ("result" in rewrite) return rewrite;
       facts = { parents: commit.parents, value: { headOid: s.head.oid, message: commit.message, ...rewrite } };
     }

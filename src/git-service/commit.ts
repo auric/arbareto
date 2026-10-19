@@ -175,9 +175,9 @@ export function preflightRefusal(
 
 // Feature 004 data-model §2: an amend token binds `rewritesUpstream`, so the preflight reads it again. A difference gives STALE_REVIEW.
 // The preflight compared HEAD with the review before this read, so HEAD is the reviewed commit.
-async function rewriteRefusal(ctx: ObserveContext, b: CommitBinding): Promise<Refusal | Stop | null> {
+async function rewriteRefusal(ctx: ObserveContext, b: CommitBinding, entries: readonly ConfigEntry[]): Promise<Refusal | Stop | null> {
   if (b.amend === undefined || b.head.state === "unborn") return null;
-  const now = await readRewrite(ctx.runner, ctx, b.head);
+  const now = await readRewrite(ctx.runner, ctx, b.head, entries);
   if (!("result" in now)) return now.rewritesUpstream === b.amend.rewritesUpstream ? null : STALE;
   return now.result === "failed" ? refusalOf(failureOf(now.code)) : now.result === "deadline" ? DEADLINE : CANCELED;
 }
@@ -315,7 +315,7 @@ export function createCommitter(o: CommitterOptions) {
       // Feature 004: an amend also runs `post-rewrite`, so a repository-controlled one needs the approval too (githooks(5)).
       const policy = binding.amend !== undefined && "listing" in observed && observed.gate === null && rewriteHooks(observed.listing) ? { ...observed, gate: o.trust.gate(w, { approvalRequired: { commit: true }, inputLimited: false }, installation, "commit") } : observed;
       const reviewed = policyFingerprint({ attributes: EMPTY, trust: binding.trust, configurationFingerprint: binding.disclosure, git: installation });
-      const refused = preflightRefusal(binding, reviewed, policy, state, tip, a.review.wslIndex) ?? (await rewriteRefusal(ctx, binding)) ?? (await identityRefusal(ctx));
+      const refused = preflightRefusal(binding, reviewed, policy, state, tip, a.review.wslIndex) ?? (await rewriteRefusal(ctx, binding, "listing" in policy ? policy.listing.entries : [])) ?? (await identityRefusal(ctx));
       if (refused !== null) return refused;
       kept.tip = (tip as { value: ReflogRecord | null }).value;
       if (signal.aborted) return CANCELED;

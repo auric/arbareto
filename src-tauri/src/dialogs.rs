@@ -454,8 +454,22 @@ const DETAIL_KINDS: [(&str, &str, &str); 7] = [
     ("other", "Other program", "Other programs"),
 ];
 
+/// Plan D14: an `unlisted` hooks item names a folder that the listing cannot read.
+fn unlisted(item: &Value) -> bool {
+    item["unlisted"].as_bool() == Some(true)
+}
+
 /// The name and the group of one `details` item. A monitor item names only its scope.
 fn detail_item(item: &Value) -> (String, String) {
+    if unlisted(item) {
+        return (
+            "the hooks folder cannot be listed".to_string(),
+            format!(
+                "folder {}",
+                shown(item["folder"].as_str().unwrap_or_default())
+            ),
+        );
+    }
     let name = ["event", "driver", "tool", "key"]
         .iter()
         .find_map(|field| item[*field].as_str())
@@ -491,7 +505,8 @@ fn detail_line(kind: &Value, one: &str, many: &str) -> Option<String> {
         let joint = if text.is_empty() { "" } else { ", and " };
         text.push_str(&format!("{joint}{more} more"));
     }
-    let label = if names.len() as u64 + more == 1 {
+    // An unlisted folder can hold several hooks, so its line takes the plural label.
+    let label = if names.len() as u64 + more == 1 && !names.iter().any(unlisted) {
         one
     } else {
         many
@@ -1602,6 +1617,23 @@ pub(crate) mod tests {
                 "{action}"
             );
         }
+    }
+
+    #[test]
+    fn an_unlisted_hooks_folder_is_named_so_the_dialog_never_names_no_program() {
+        let mut details = no_details();
+        details["hooks"] = json!({ "names": [{ "folder": "C:\\repo\\.git\\hooks", "unlisted": true }], "more": 0 });
+        let shown = trust_confirmation(&trust_request("C:\\repo", "commit", details))
+            .details
+            .expect("details");
+        assert_eq!(
+            shown.lines().collect::<Vec<_>>(),
+            [
+                "Folder: C:\\repo",
+                "Hooks: the hooks folder cannot be listed (folder C:\\repo\\.git\\hooks)",
+                "Arbareto remembers your choice for this folder.",
+            ]
+        );
     }
 
     #[test]

@@ -5,7 +5,7 @@
 // The shell double records each `trust` `confirm` frame in `runner.frames` with `callsBefore`, the count of Git calls before the frame.
 
 import { describe, expect } from "bun:test";
-import { appendFileSync, existsSync, renameSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, renameSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
@@ -492,3 +492,29 @@ describe("trust option (d) (spec FR-069 to FR-075, plan.md D12)", () => {
     TIMEOUT_MS,
   );
 });
+
+// Plan.md D14: approval can be needed only because the listing cannot read the hooks folder, such as a junction to a folder outside the roots
+// (`folderUnlisted`). The details then name that folder, so the dialog never says "This repository has its own programs." without a program.
+caseTest(
+  "T060",
+  "plan.md D14: a hooks folder that the listing cannot read is named as unlisted in readTrust programs and in the confirm details",
+  [...W, "ntfs-junction"],
+  () =>
+    withService({ name: "t060-unlisted-hooks" }, async (service) => {
+      const built = buildF02(gitPath(), "t060-unlisted-hooks");
+      const repo = repoOf(built);
+      const hooks = gitPathOf(repo, "hooks");
+      const outside = join(built.root, "outside-hooks");
+      mkdirSync(outside, { recursive: true });
+      rmSync(hooks, { recursive: true, force: true });
+      symlinkSync(outside, hooks, "junction");
+      const { repositoryId } = await service.register(repo);
+      const trust = await trustOf(service, repositoryId);
+      expect(trust.approvalRequired.commit).toBe(true);
+      const unlisted = (names: Record<string, unknown>[]): unknown[] => names.map((n) => ({ ...n, folder: samePath(n.folder) }));
+      expect({ hooks: unlisted(trust.programs.hooks!.names), more: trust.programs.hooks!.more } as unknown).toEqual({ hooks: [{ folder: samePath(hooks), unlisted: true }], more: 0 });
+      expect((await approveTrust(service, repositoryId, "commit")).state).toBe("succeeded");
+      expect(unlisted(confirms(service).at(-1)!.details.hooks!.names)).toEqual([{ folder: samePath(hooks), unlisted: true }]);
+    }),
+  TIMEOUT_MS,
+);

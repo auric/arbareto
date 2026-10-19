@@ -52,6 +52,7 @@ const READS: [string, string[], string[]][] = [
   ["worktree-remove status", wb.worktreeStatusArgs("D:\\src\\wt"), [...R, "-C", "D:\\src\\wt", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--ignore-submodules=dirty"]],
   ["worktree-remove trust listing of that worktree (plan.md O-20)", wb.worktreeConfigListArgs("D:\\src\\wt"), [...R, "-C", "D:\\src\\wt", "config", "list", "--show-scope", "--show-origin", "-z"]],
   ["worktree-remove hooks folder of that worktree", wb.worktreeHooksPathArgs("D:\\src\\wt"), [...R, "-C", "D:\\src\\wt", "rev-parse", "--git-path", "hooks"]],
+  ["worktree-remove index of that worktree", wb.worktreeIndexArgs("D:\\src\\wt"), [...R, "-C", "D:\\src\\wt", "ls-files", "-z", "--stage"]],
   ["worktree-remove folders of that worktree", wb.worktreeLayoutArgs("D:\\src\\wt"), [...R, "-C", "D:\\src\\wt", "rev-parse", "--show-toplevel", "--absolute-git-dir", "--path-format=absolute", "--git-common-dir"]],
   ["amend message", wb.commitObjectArgs(A, "sha1"), [...R, "cat-file", "commit", A]],
   ["amend upstream", wb.upstreamOfArgs("refs/heads/main"), [...R, "for-each-ref", "--format=%(upstream)", "refs/heads/main"]],
@@ -251,7 +252,7 @@ describe("refused inputs", () => {
     throws(() => wb.mergetoolArgs("", "uu.txt"));
     throws(() => wb.worktreeRemoveArgs("", false));
     throws(() => wb.worktreeStatusArgs(""));
-    for (const args of [wb.worktreeConfigListArgs, wb.worktreeHooksPathArgs, wb.worktreeLayoutArgs]) for (const path of ["", "a\0b"]) throws(() => args(path));
+    for (const args of [wb.worktreeConfigListArgs, wb.worktreeHooksPathArgs, wb.worktreeLayoutArgs, wb.worktreeIndexArgs]) for (const path of ["", "a\0b"]) throws(() => args(path));
     throws(() => wb.configSetArgs("local", "", "x"));
     throws(() => wb.configSetArgs("local", "user.name", "a\0b"));
     throws(() => wb.stashPushArgs(""));

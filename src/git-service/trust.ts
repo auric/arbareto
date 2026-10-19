@@ -328,12 +328,12 @@ function submoduleRegistration(p: KeyParts, value: string | null): boolean {
 // `toolcmd`: git-mergetool--lib `setup_user_tool` runs `( eval $merge_tool_cmd )` (`toolCommandProgram`).
 type ProgramForm = "shell" | "monitor" | "pathname" | "split" | "credential" | "direct" | "proxy" | "helper" | "toolcmd";
 
-// The unquoted expansion splits the value into fields at IFS and expands each pattern (XCU 2.6.5, 2.6.6). So a `*`, `?`, or `[` can bring
-// repository file names into the text that `eval` reads, and a set IFS gives fields that the service cannot know. Without either, `eval` reads
-// the fields joined by spaces. Git sets `$BASE`, `$LOCAL`, `$REMOTE`, and `$MERGED` for the command (git-mergetool(1)), so parameters pass.
-function toolCommandProgram(value: string, defaultIfs: boolean): string | null {
-  const fields = value.split(/[ \t\n]+/).filter((field) => field !== "");
-  return defaultIfs && !fields.some((field) => /[*?[]/.test(field)) ? shellProgram(fields.join(" "), true) : null;
+// git-mergetool--lib line 5 sets IFS to one newline for the whole script. So the unquoted expansion splits the value into fields at newlines only
+// and expands each pattern (XCU 2.6.5, 2.6.6), and `eval` reads the fields joined by spaces. A `*`, `?`, or `[` can bring repository file names into
+// that text. Git sets `$BASE`, `$LOCAL`, `$REMOTE`, and `$MERGED` for the command (git-mergetool(1)), so parameters pass.
+function toolCommandProgram(value: string): string | null {
+  const fields = value.split(/\n+/).filter((field) => field !== "");
+  return fields.some((field) => /[*?[]/.test(field)) ? null : shellProgram(fields.join(" "), true);
 }
 
 // transport.c `transport_get` (Git 2.56) takes the first match: a `<name>::` prefix (`is_urlschemechar`), `rsync:` (no helper), a local bundle file,
@@ -422,10 +422,10 @@ function proxyCommand(value: string): string {
 
 export type Program = { kind: "path"; text: string } | { kind: "bare"; name: string } | { kind: "unresolved" };
 
-function programOf(form: ProgramForm, value: string, home: string | undefined, rules: Rules, defaultIfs: boolean): Program {
+function programOf(form: ProgramForm, value: string, home: string | undefined, rules: Rules): Program {
   let word: string | null;
   if (form === "shell") word = shellProgram(value);
-  else if (form === "toolcmd") word = toolCommandProgram(value, defaultIfs);
+  else if (form === "toolcmd") word = toolCommandProgram(value);
   else if (form === "credential") word = value.startsWith("!") ? shellProgram(value.slice(1)) : rules.isAbsolute(value) ? shellProgram(value) : "git";
   else if (form === "split") word = splitCmdlineProgram(value);
   else if (form === "direct") word = value;
@@ -451,8 +451,6 @@ interface Layout {
   pathEntries: string[];
   relativeEntries: string[];
   home: string | undefined;
-  // The Git child gets no IFS, so its shell splits fields at space, TAB, and LF (XCU 2.5.3).
-  defaultIfs: boolean;
 }
 
 const resolveIn = (layout: Layout, path: string) => layout.rules.path.resolve(layout.root, path);
@@ -517,7 +515,6 @@ interface View {
   roots: Record<RootName, string>;
   path: string | undefined;
   home: string | undefined;
-  defaultIfs: boolean;
   // Contract §6 "Process fields": an identity request names a Windows path. Null: the path has no such form.
   identityPath: (path: string) => string | null;
 }
@@ -525,12 +522,9 @@ interface View {
 // Contract §11 "Trust and environment": a WSL workspace lists with the POSIX rules on the Linux paths of its distro, because Linux Git prints those.
 // Its roots hold the `wslIdentityPath` form `\\wsl.localhost\<distro>\<name>…`, so the Linux path is `/` and the names after the distro.
 // The bare-name rule takes the `PATH` of the Git probe. The probe reads no `HOME`, so a `~/` value stays unresolved.
-// The probe reads no IFS either, so the IFS of a WSL Git child stays unknown.
 function viewOf(w: Workspace, environment: ServiceEnvironment): View {
   const roots = { worktreeRoot: w.worktreeRoot, gitDirectory: w.gitDirectory, commonDirectory: w.commonDirectory };
-  if (w.wsl === undefined) {
-    return { rules: NATIVE, roots, path: environmentValue(environment, "PATH"), home: environmentValue(environment, "HOME"), defaultIfs: environmentValue(environment, "IFS") === undefined, identityPath: (path) => path };
-  }
+  if (w.wsl === undefined) return { rules: NATIVE, roots, path: environmentValue(environment, "PATH"), home: environmentValue(environment, "HOME"), identityPath: (path) => path };
   const { distro, pathEnv } = w.wsl;
   const linux = (unc: string) => `/${unc.split("\\").slice(4).join("/")}`;
   return {
@@ -538,7 +532,6 @@ function viewOf(w: Workspace, environment: ServiceEnvironment): View {
     roots: { worktreeRoot: linux(roots.worktreeRoot), gitDirectory: linux(roots.gitDirectory), commonDirectory: linux(roots.commonDirectory) },
     path: pathEnv,
     home: undefined,
-    defaultIfs: false,
     identityPath: (path) => wslIdentityPath(distro, path),
   };
 }
@@ -1237,7 +1230,6 @@ async function buildListing(
     pathEntries: path === undefined || path === "" ? [] : path.split(rules.path.delimiter),
     relativeEntries: relativePathEntries(path, rules),
     home: view.home,
-    defaultIfs: view.defaultIfs,
   };
   // Contract §7: resolve the printed directory against the directory where Git ran.
   const hooksDirectory = hooksText === null ? null : resolveIn(layout, hooksText);
@@ -1282,7 +1274,7 @@ async function buildListing(
     if (kind.form === "helper" && !selectsHelper(parts!, entry.value)) continue;
     // fsmonitor-settings.c: a boolean `core.fsmonitor` names the built-in daemon, not a command (contract §7).
     if (kind.form === "monitor" && parseMaybeBool(entry.value) !== -1) continue;
-    const program = entry.exact ? programOf(kind.form, entry.value, layout.home, rules, layout.defaultIfs) : ({ kind: "unresolved" } as const);
+    const program = entry.exact ? programOf(kind.form, entry.value, layout.home, rules) : ({ kind: "unresolved" } as const);
     programs.push({ entry, kind, program, controlled: entryControlled(entry) });
   }
   const hooksPath = last.get("core.hookspath");
@@ -1491,7 +1483,7 @@ async function buildListing(
       fingerprint: digest.hex(),
       inputLimited,
       approvalRequired,
-      programs: programNames(activeHooks, hooksDirectory, integrations, [...(hooksPathControlled ? [hooksPath!] : []), ...protocolEntries]),
+      programs: programNames(activeHooks, hooksDirectory, integrations, [...(hooksPathControlled ? [hooksPath!] : []), ...protocolEntries], folderUnlisted),
       changeFiles: { configPaths: config.paths, programFiles: reader.programFiles, complete: config.complete },
       files: { integrations: integrationFiles, folder: folderFiles },
       ...(hooksOutside ? { hooksOutside: true as const } : {}),
@@ -1516,11 +1508,13 @@ export const shownName = (text: string, exact = true): string => (!exact || text
 // Feature 004 data-model §10 `programs` and contract Δ6 `details`: each repository-controlled program by name and scope, never a value.
 // Every text is redacted (contract §7 "URL user information") and passes `shownName`. A kind lists at most 20 names, then the count of the others.
 // `keys`: the repository-controlled `core.hooksPath` and `protocol.allow` entries, which need approval without a program of their own.
+// `folderUnlisted`: plan.md D14. The listing cannot read the hooks folder, which then needs approval without a named hook.
 function programNames(
   hooks: readonly ((ConfiguredHook & { repositoryControlled: boolean }) | (FolderHook & { repositoryControlled: boolean }))[],
   hooksDirectory: string | null,
   integrations: readonly ProgramIntegration[],
   keys: readonly ConfigEntry[],
+  folderUnlisted: boolean,
 ): TrustDetails {
   const kinds = {
     hooks: [] as TrustDetails["hooks"]["names"],
@@ -1537,8 +1531,10 @@ function programNames(
     const key = JSON.stringify([kind, item, exact]);
     if (seen.has(key)) return;
     seen.add(key);
-    (kinds[kind] as unknown[]).push(Object.fromEntries(Object.entries(item).map(([field, text]) => [field, field === "scope" ? text : shownName(text as string, exact)])));
+    (kinds[kind] as unknown[]).push(Object.fromEntries(Object.entries(item).map(([field, text]) => [field, field === "scope" || typeof text !== "string" ? text : shownName(text, exact)])));
   };
+  // `folderUnlisted` needs a folder walk, so the listing holds the hooks folder text.
+  if (folderUnlisted) add("hooks", { folder: redactUrlUserInfo(hooksDirectory!), unlisted: true }, true);
   for (const hook of hooks) {
     if (!hook.repositoryControlled) continue;
     // `listTrust` refuses a hooks folder text that is no valid UTF-8, and `HOOK_EVENTS` holds ASCII names only.

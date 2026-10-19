@@ -93,15 +93,18 @@ describeGit("bun runner", (git) => {
     expect(await runner.run(failed)).toEqual({ exitCode: 1, activeDescendants: 0 });
   });
 
+  // The record of each call holds the time from its run request to its exit. The child prints `performance.now()`, its own run time from its process start,
+  // and its process lives inside that interval. The test measures the time around the call, which holds the interval. So no timing bound decides.
   test("each recorded call keeps its wall time from the request to the exit", async () => {
-    const nap = `alias.nap=!"${slash(process.execPath)}" -e 'setTimeout(() => {}, 200)'`;
-    const slow = call({ arguments: ["--no-lazy-fetch", "-c", nap, "nap"] });
-    expect(await runner.run(slow)).toEqual({ exitCode: 0, activeDescendants: 0 });
-    const fast = call();
-    expect(await runner.run(fast)).toEqual({ exitCode: 0, activeDescendants: 0 });
-    const durationMs = (c: GitCall) => runner.calls.find((r) => r.operationId === c.operationId)?.durationMs ?? Number.NaN;
-    expect(durationMs(slow)).toBeGreaterThanOrEqual(150);
-    expect(durationMs(fast)).toBeLessThan(150);
+    const child = (body: string) => call({ arguments: ["--no-lazy-fetch", "-c", `alias.t=!"${slash(process.execPath)}" -e '${body}'`, "t"] });
+    for (const c of [child("setTimeout(() => console.log(performance.now()), 200)"), child("console.log(performance.now())")]) {
+      const start = performance.now();
+      expect(await runner.run(c)).toEqual({ exitCode: 0, activeDescendants: 0 });
+      const elapsed = performance.now() - start;
+      const own = Number(text(c.stdout).trim());
+      const recorded = runner.calls.find((r) => r.operationId === c.operationId)?.durationMs ?? Number.NaN;
+      expect({ own: own > 0, ownWithin: own <= recorded, recordedWithin: recorded <= elapsed }).toEqual({ own: true, ownWithin: true, recordedWithin: true });
+    }
   });
 
   test("gitProbe runs only the version probe, and an array without --no-lazy-fetch is refused", async () => {

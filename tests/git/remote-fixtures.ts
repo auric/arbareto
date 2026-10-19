@@ -498,6 +498,8 @@ export interface PushVariant {
   name: string;
   branch: "topic" | "renamed" | "noup";
   config: readonly (readonly [string, string])[];
+  // Git commands that run after the checkout and before the configuration.
+  git?: readonly (readonly string[])[];
 }
 
 export const PUSH_DEFAULTS = ["simple", "unset", "current", "matching", "upstream", "tracking", "nothing", "bogus"] as const;
@@ -514,6 +516,8 @@ export const PUSH_VARIANTS: PushVariant[] = [
   { name: "unconfigured-push-remote/topic", branch: "topic", config: [["branch.topic.pushRemote", "nowhere"]] },
 ];
 
+const SINGLE_REMOTE_UP = [["remote", "remove", "second"], ["remote", "rename", "origin", "up"]] as const;
+
 // T089 variants for fact (d) only. The service matrix in `sync-push.test.ts` does not hold them.
 export const PUSH_FACT_VARIANTS: PushVariant[] = [
   // T089, T091: builtin/push.c `get_upstream_ref` takes `refs/heads/<branch>` for a branch without `branch.<name>.merge` under `push.autoSetupRemote`.
@@ -529,6 +533,11 @@ export const PUSH_FACT_VARIANTS: PushVariant[] = [
   { name: "remote-without-url/topic", branch: "topic", config: [["branch.topic.remote", "nourl"], ["remote.nourl.fetch", "+refs/heads/*:refs/remotes/nourl/*"]] },
   { name: "remote-without-url+insteadOf/topic", branch: "topic", config: [["branch.topic.remote", "nourl"], ["remote.nourl.fetch", "+refs/heads/*:refs/remotes/nourl/*"], ["url.{second}.insteadOf", "nourl"]] },
   { name: "push-remote-dot/topic", branch: "topic", config: [["branch.topic.pushRemote", "."]] },
+  // remote.c `remotes_remote_for_branch`: without `branch.<name>.remote`, the only remote, else `origin`.
+  ...["current", "simple", "upstream"].map((value): PushVariant => ({ name: `single-remote-up+${value}/noup`, branch: "noup", config: [["push.default", value]], git: SINGLE_REMOTE_UP })),
+  { name: "single-remote-up+autoSetupRemote/noup", branch: "noup", config: [["push.autoSetupRemote", "true"]], git: SINGLE_REMOTE_UP },
+  { name: "two-remotes-without-origin+current/noup", branch: "noup", config: [["push.default", "current"]], git: [["remote", "rename", "origin", "up"]] },
+  { name: "two-remotes-with-origin+current/noup", branch: "noup", config: [["push.default", "current"]] },
 ];
 
 export interface PushFixture {
@@ -553,6 +562,7 @@ export function pushVariant(h: GitHost, f: PushFixture, v: PushVariant, to: stri
   h.copy(f.clone, to);
   // An invalid `push.default` makes most commands die, so the checkout runs first.
   gitRun(h, to, ["checkout", "-q", v.branch]);
+  for (const args of v.git ?? []) gitRun(h, to, [...args]);
   const fill = (value: string) => value.replace("{origin}", f.origin).replace("{second}", f.second);
   setConfig(h, to, v.config.map(([k, value]) => [fill(k), fill(value)] as const));
   return to;

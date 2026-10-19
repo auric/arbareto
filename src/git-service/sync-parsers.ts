@@ -317,8 +317,11 @@ const PANEL: PushDecision = { kind: "panel", prefill: null };
 
 const severalMergeRefs = (config: readonly ConfigValue[], branch: string): boolean => config.filter((e) => e.key === `branch.${branch}.merge`).length > 1;
 
-// remote.c `remote_for_branch`: a push without an explicit remote goes to `origin` (git-push(1)).
-const DEFAULT_REMOTE = "origin";
+// remote.c `remotes_remote_for_branch` (Git 2.56.0, lines 673 to 687): `branch.<name>.remote`, else the only remote, else `origin`.
+// `remotes` is the `git remote` listing, which holds the same remotes as `remotes_nr`. Fetch and push use this default.
+export function defaultRemote(branchRemote: string | null | undefined, remotes: readonly string[]): string {
+  return branchRemote ?? (remotes.length === 1 ? remotes[0]! : "origin");
+}
 
 // builtin/push.c `git_push_config` (Git 2.56.0, lines 504 to 506) reads every `push.autoSetupRemote` entry with `git_config_bool`.
 // A true entry sets the flag, and no entry clears it. Null: a value that stops `git push` with exit 128.
@@ -334,7 +337,10 @@ export function autoSetupRemote(config: readonly ConfigValue[]): boolean | null 
 }
 
 function destinationSteps(r: PushRecord, remotes: readonly string[], config: readonly ConfigValue[]): PushDecision {
-  const remote = r.pushRemote === "" ? DEFAULT_REMOTE : r.pushRemote;
+  const fetchRemoteEntry = lastEntry(config, `branch.${r.branch}.remote`);
+  const fetchRemote = defaultRemote(fetchRemoteEntry?.value, remotes);
+  // `%(push:remotename)` is empty when no remote is explicit (remote.c `remotes_pushremote_for_branch`).
+  const remote = r.pushRemote === "" ? defaultRemote(undefined, remotes) : r.pushRemote;
   if (r.pushRemote === "" && !remotes.includes(remote)) return PANEL;
   // Git pushes into the repository itself. The app refuses on purpose (research R16 d).
   if (remote === ".") return { kind: "refused", reason: "local-push-remote" };
@@ -352,8 +358,6 @@ function destinationSteps(r: PushRecord, remotes: readonly string[], config: rea
   if (mode === "current") return to(branchRef, "push-default-branch");
   // builtin/push.c `get_upstream_ref` stops on more than one `branch.<name>.merge` value.
   const severalMerges = severalMergeRefs(config, r.branch);
-  const fetchRemoteEntry = lastEntry(config, `branch.${r.branch}.remote`);
-  const fetchRemote = fetchRemoteEntry?.value ?? DEFAULT_REMOTE;
   // builtin/push.c `get_upstream_ref` (lines 200 to 203): with the flag and `merge_nr` 0, the upstream is `refs/heads/<branch>`.
   // remote.c `set_merge` (line 1786) sets `merge_nr` to 0 without `branch.<name>.remote`.
   const autoUpstream = autoSetupRemote(config) === true && (fetchRemoteEntry === undefined || !config.some((e) => e.key === `branch.${r.branch}.merge`));

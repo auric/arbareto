@@ -46,7 +46,7 @@ Label rule (renderer):
 
 | Field | Rule |
 |---|---|
-| `remote` | `%(push:remotename)`, else `origin` (plan.md D4 step 1), or the panel choice. Must be in `git remote`. |
+| `remote` | `%(push:remotename)`, else the only remote, else `origin` (plan.md D4 step 1), or the panel choice. Must be in `git remote`. |
 | `ref` | Full remote ref name (plan.md D4), or `refs/heads/<panel name>`. |
 | `trackingRef` | `%(push)`, or null for a panel destination and a `push-default-triangular` destination. Null gives `no-lease` for Force push with lease. |
 | `url` | The one push URL, redacted for display. |

@@ -249,7 +249,9 @@ function d4(h: GitHost, repo: string, branch: string): D4Result {
   const hasMerge = configValue(h, repo, ["--get", `branch.${branch}.remote`]) !== null && run(h, repo, ["config", "--get-all", `branch.${branch}.merge`]).exitCode === 0;
   const autoUpstream = stdoutLines(auto).includes("true") && !hasMerge;
   const remotes = gitOut(h, repo, ["remote"]).split("\n").filter((r) => r !== "");
-  const R = pushRemote === "" ? "origin" : pushRemote!;
+  // remote.c `remotes_remote_for_branch`: the only remote, else `origin`.
+  const fallback = remotes.length === 1 ? remotes[0]! : "origin";
+  const R = pushRemote === "" ? fallback : pushRemote!;
   if (pushRemote === "" && !remotes.includes(R)) return none(null, true);
   if (R === ".") return none("local-push-remote", panel, "local-push-remote");
   if (!remotes.includes(R)) return none("remote-missing", panel);
@@ -258,9 +260,9 @@ function d4(h: GitHost, repo: string, branch: string): D4Result {
   const mode = configValue(h, repo, ["--get", "push.default"]) ?? "simple";
   if (pushRef !== "") dst = pushRef!;
   else if (mode === "current") dst = ref;
-  else if (mode === "simple") dst = (configValue(h, repo, ["--get", `branch.${branch}.remote`]) ?? "origin") !== R || push !== "" || autoUpstream ? ref : null;
+  else if (mode === "simple") dst = (configValue(h, repo, ["--get", `branch.${branch}.remote`]) ?? fallback) !== R || push !== "" || autoUpstream ? ref : null;
   else if ((mode === "upstream" || mode === "tracking") && autoUpstream) {
-    if ((configValue(h, repo, ["--get", `branch.${branch}.remote`]) ?? "origin") !== R) return none("push-remote-differs", panel);
+    if ((configValue(h, repo, ["--get", `branch.${branch}.remote`]) ?? fallback) !== R) return none("push-remote-differs", panel);
     dst = ref;
   } else if (mode === "upstream" || mode === "tracking") {
     if (upRemote !== R) return none("push-remote-differs", panel);

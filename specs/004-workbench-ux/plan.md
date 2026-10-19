@@ -22,7 +22,7 @@ Six facts drive the design (research R2 to R15):
 
 **Language/Version**: The 001 to 003 versions stay: TypeScript `7.0.2`, Bun `1.4.3` (exact), Rust/Cargo `1.98.0`.
 
-**Primary Dependencies**: No new runtime dependency for P1 and P2. React `19.3.0`, `@base-ui/react` `^1.8.0`, `@tanstack/react-virtual` `^3.14.13`, `@pierre/diffs` `^1.5.1` (its `enableLineSelection` and `controlledSelection` options), and Tauri `2.12.0` as installed. P3 spell check adds `nspell` and `dictionary-en` after the D17 license and bundle check.
+**Primary Dependencies**: No new runtime dependency for P1 and P2. React `19.3.0`, `@base-ui/react` `^1.8.0`, `@tanstack/react-virtual` `^3.14.13`, `@pierre/diffs` `^1.5.1` (its `enableLineSelection` and `controlledSelection` options), and Tauri `2.12.0` as installed. P3 spell check, moved to a later feature, adds `nspell` and `dictionary-en` after the D17 license and bundle check.
 
 **Storage**: Shell settings gain the preselected switch choice (D3). The trust record changes to version 2 (D12). Repository writes happen only at explicit user actions: Git's own writes during an operation, the Git settings Save (D11), and the ignore line (D9).
 
@@ -135,7 +135,7 @@ tests/
 | P7 Trust shell | `src-tauri/src/{dialogs,settings,service}.rs`, `src/contracts/channel.ts` | The task dialog with main instruction, content, collapsed details, and Not now as default. The record version 2. The run confirmation text. | Cargo tests for the dialog model, the button IDs, the record round trip. N1 packaged check. | Local only. |
 | P8 Frontend P2 | new `worktrees/*`, `settings/git/*`, `resolve/*`, `trust/TrustChip.tsx`; `submodules/*`, `commit/*` (amend), `app/Workbench.tsx` (mount points only) | Worktree button and panels, Settings view, trust chip and inline reasons, Submodules group, resolve view, Amend last commit. | Component tests per FR. | The 003 settings dialog moves into the Settings view (O-7). |
 | P9 Qualification | `tests/windows/{workbench-packaged,workbench-perf}.test.ts`, `tests/wsl/workbench-wsl.test.ts` | None (tests). | SC-003, SC-007 (cold and warm, CPU, process-tree memory), SC-010 prompt counts, SC-014 keyboard and contrast, N1 to N6 in the package, WSL rows. | The open 001 measurement tools (001 T165, T180, T240, T242, T244). |
-| P10 Spell check | new `src/frontend/commit/spelling.ts`, `package.json`, `bun.lock`, notices | US10. | SC-012 with the fixture message; no network request during the session (the 003 no-network harness). | Dictionary bundle size and license (D17). |
+| P10 Spell check (moved to a later feature) | new `src/frontend/commit/spelling.ts`, `package.json`, `bun.lock`, notices | US10. | SC-012 with the fixture message; no network request during the session (the 003 no-network harness). | Dictionary bundle size and license (D17). |
 
 Each phase writes its tests first. P0.2 to P0.4 are the riskiest proofs and run first.
 
@@ -224,7 +224,7 @@ Each phase writes its tests first. P0.2 to P0.4 are the riskiest proofs and run 
 - Review reads: `rev-list --count --right-only --cherry-pick --no-merges <oid>...HEAD` for the moved count. That is the walk of sequencer.c `sequencer_make_script`: `right_only`, `cherry_mark`, and `max_parents=1` (research R8). With `rebase.rebaseMerges` true, `--no-merges` goes.
 - Rewritten range: `rev-list --count <oid>..HEAD`. Held count: that count minus `rev-list --count <oid>..HEAD --not --remotes`.
 - Force note (spec FR-024, O-2): the 003 push destination (003 D4) of the current branch can have a tracking ref T. The note shows when `rev-list --count <oid>..HEAD --not <T>` is below the rewritten count. It reads "The rebase rewrites commits that <T> holds, so the next push needs Force push with lease."
-- Moved branches: with `rebase.updateRefs` true, the list follows the `update-ref` lines of Git's todo list (sequencer.c `todo_list_add_update_ref_commands`):
+- Moved branches: with `rebase.updateRefs` true, Git moves the branches of the `update-ref` lines of its todo list (sequencer.c `todo_list_add_update_ref_commands`). The review does not read that todo list. It rebuilds the same selection from its own reads:
   - Git adds one line for each local branch whose ref value is a commit of the todo list (`add_decorations_to_list`). It skips the HEAD branch and each branch that branch.c `branch_checked_out` names.
   - The todo list holds the commits of sequencer.c `sequencer_make_script`: the walk `<oid>...HEAD` with `right_only`, `cherry_mark`, and `max_parents=1` without `rebase.rebaseMerges`. Git skips a patch-same commit unless it is empty (`is_original_commit_empty`), because builtin/rebase.c sets `keep_empty`. With `rebase.rebaseMerges`, each merge commit gets a `merge -C` line, which carries the commit.
   - Reads: the `refs/heads` listing (`%(objectname)`, the ref value), `readWorktrees`, and `rev-list --right-only --cherry-mark [--no-merges] --parents <oid>...HEAD`. For a patch-same commit at a listed branch, `cat-file --batch-command -Z` with `info <commit>^{tree}` for it and its first parent decides empty. A root commit compares with the empty tree.
@@ -536,9 +536,9 @@ Source: the 004 design standard of 2026-10-16 (consistency audit a052af1c, decis
   - Status letters in the file lists: M in Warning text, A and ? in Added text, D in Removed text. Other letters use Text. The letter is text, so the meaning never depends on color only.
   - Commit view sidebar: the Staged list starts directly below the Changes and Staged splitter, with no empty band.
 - Copy: "Label (Key)" on text buttons and tooltips. "…" only when a further step follows. Fixed phrases: "Switch to <branch>?", "Keep changes", "Stash and reapply", "Discard changes", "<n> working changes", "<n> staged", "Not trusted", "Trusted", "Mark resolved", "Selected commit".
-- Type and spacing: Segoe UI Variable 12/18, headings 14, Cascadia Code for IDs and keys, spacing 4/8/12/16 only.
+- Type and spacing: Segoe UI Variable 12/18, headings 14, Cascadia Code for IDs and keys. Spacing uses the steps 4/8/12/16. Layout spacing and tree indents may also use multiples of 4 built from these steps, such as 8 px + 16 px per tree level (design standard).
 
-### D17 Spell check (P3)
+### D17 Spell check (P3, moved to a later feature)
 
 - Library: `nspell` (MIT) with `dictionary-en` (Hunspell en-US from SCOWL). Both run in the renderer without network. The P10 task checks the license text, the bundle size, and the browser load of the `.aff` and `.dic` files before it adds them (O-14).
 - Marks: a wavy underline. The wave shape is the non-color cue, and the accessible description of the field states the count of marked words. The chip reads "Spelling: English".
@@ -597,7 +597,7 @@ Source: the 004 design standard of 2026-10-16 (consistency audit a052af1c, decis
 - **O-11 Working directory row.** Selection docks a summary; Enter switches to the Commit view.
 - **O-12 Switch verb.** D-S1 amends the FR-014 wording. Resolved: spec FR-014 says Switch.
 - **O-13 Light values** of the new tokens wait for the design pass.
-- **O-14 Spell check package check** before P10.
+- **O-14 Spell check package check** before P10. Moved to a later feature with P10.
 - **O-15 FR-016 list.** The spec allows only Abort, Continue, Skip, Mark resolved, Fetch, and Fetch all remotes during a merge or rebase. The resolve actions Choose ours, Choose theirs, and Open in merge tool must also run then. The plan allows them. Resolved: the spec 001 FR-016 change lists them.
 - **O-16 FR-033 mode shortcuts.** Feature 001 defines no view or mode shortcut (`src/frontend/keyboard/shortcuts.ts`). The plan adds no key for the view switch. Resolved: spec FR-033 states it.
 - **O-17 Batch blob proof.** Resolved: on 2026-10-18 the user chose parallel exact proofs. Each file of a file set keeps the single-file proof A, then proof B after a failed proof A (D8). No `hash-object --stdin-paths` check runs. It does not meet 001 §4 "Blob proof", because Git reads the working file itself, so the hashed bytes are not the verified bytes (research R21 F31). The proofs run with `MULTI_FILE_PROOF_CONCURRENCY` 8. The `update-index` step and the step 7 status reads get `GIT_PROCESS_DEADLINE_MS` plus `MULTI_FILE_STEP_MS_PER_FILE` 15 ms for each file. The measured `update-index` cost was at most 4.6 ms for each file, so 15 ms gives a margin above 3. Research R21 "Results" holds the measurements.
@@ -618,10 +618,10 @@ Source: the 004 design standard of 2026-10-16 (consistency audit a052af1c, decis
 | 3 | P5 | WP11 alone first. Then A: WP12. B: WP13. C: WP14. | P1 frontend. |
 | 4 | P6, P7 | A: WP15. B: WP16. C: WP18. D: WP19. WP17 (local, Rust) beside them. Then WP20 alone. | P2 service and the trust shell. |
 | 5 | P8 | A: WP21. B: WP22. C: WP23. D: WP24. E: WP25. F: WP29. | P2 frontend. |
-| 6 | P10 | WP26. | P3 spell check. |
+| 6 | P10 | None. WP26 moves to a later feature (spec Clarifications, 2026-10-19). | P3 spell check, postponed by the user. |
 | 7 | P9 | WP27 (WSL, alone). WP28 (packaged). | Qualification. |
 
-User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 and US11 (batches 4 and 5). P3 is US10 (batch 6).
+User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 and US11 (batches 4 and 5). P3 is US10 (batch 6), which moves to a later feature.
 
 ### Work packages, in run order
 
@@ -650,11 +650,11 @@ User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 a
 | WP20 | implementer | `src/git-service/session.ts`, `src/git-service/trust.ts` (class `mergetool`), `src/git-service/{commit-review,commit}.ts` (amend), `tests/git/commit-amend.test.ts` | P6 wiring and the US11 service part. After WP15 to WP19. |
 | WP21 | frontend-implementer | new `src/frontend/worktrees/*`, tests | P8: US5 |
 | WP22 | frontend-implementer | new `src/frontend/settings/git/*`, `src/frontend/settings/SettingsView.tsx`, tests | P8: US6 |
-| WP23 | frontend-implementer | new `src/frontend/trust/TrustChip.tsx`, remove `src/frontend/trust/TrustDialog.tsx`, `src/frontend/app/RepositoryMenu.tsx`, tests | P8: US7 |
+| WP23 | frontend-implementer | new `src/frontend/trust/TrustChip.tsx`, remove `src/frontend/trust/TrustDialog.tsx`, `src/frontend/app/RepositoryMenu.tsx`, `src-tauri/src/{dialogs,schema}.rs`, `src/contracts/channel.ts`, `src/contracts/schemas/{renderer-envelope,service-envelope,trust-request}.schema.json`, `tests/vectors/` (action `repository`), new `src/frontend/trust/ask.ts`, the sync, branch, and integrate hooks (`src/frontend/sync/useSync.ts`, `src/frontend/branches/BranchActions.tsx`, `src/frontend/integrate/IntegratePanel.tsx`), the History mount (`src/frontend/history/{HistoryView,HistoryList}.tsx`, `src/frontend/app/Workbench.tsx`), tests | P8: US7. WP23 and WP17 both edit `src-tauri/src/dialogs.rs`. |
 | WP24 | frontend-implementer | `src/frontend/submodules/*`, tests | P8: US8 |
 | WP25 | frontend-implementer | new `src/frontend/resolve/*`, tests | P8: US9 |
 | WP29 | frontend-implementer | `src/frontend/commit/*` (Amend last commit), `tests/contracts/workbench-amend.test.tsx` | P8: US11. After WP14 and WP20. |
-| WP26 | frontend-implementer | new `src/frontend/commit/spelling.ts`, `package.json`, `bun.lock`, the notices inventory, tests | P10: US10 |
+| WP26 | frontend-implementer | new `src/frontend/commit/spelling.ts`, `package.json`, `bun.lock`, the notices inventory, tests | P10: US10. Moved to a later feature (2026-10-19). |
 | WP27 | implementer; runs by scout, alone | `tests/wsl/workbench-wsl.test.ts` | P9 WSL |
 | WP28 | implementer; runs by scout | `tests/windows/{workbench-packaged,workbench-perf}.test.ts` | P9 packaged |
 
@@ -663,7 +663,7 @@ Parallel tracks use disjoint files. These packages are not file-disjoint:
 - `src/frontend/app/Workbench.tsx`: WP11 owns it. WP12 to WP14 and WP21 to WP25 fill the mount points that WP11 creates.
 - `src/frontend/refs/ReferencesSidebar.tsx`: WP12, then WP21 and WP24 add their groups through WP11 mount points.
 - `tests/groups.json`: every WP appends its lines. The orchestrator resolves merge conflicts.
-- Rust: WP6 and WP17 run one at a time, locally.
+- Rust: WP6 and WP17 run one at a time, locally. WP23 also edits `src-tauri/src/dialogs.rs` after WP17 (the `repository` sentence).
 - `src/contracts/envelope.ts` and `src/contracts/schemas/`: WP5 owns them in batch 1. The WP4 decision constants (`MERGE_MESSAGE_BYTES`, `message-size`, `unreadable`, `new-file`) follow, and WP6 adds `switchChoice` to the `readSyncSettings` result. The orchestrator merges them in turn.
 
 Dependencies on feature 003 (branch `f003-spec`, not merged into main):

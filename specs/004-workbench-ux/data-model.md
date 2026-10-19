@@ -9,7 +9,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 - `name`: the short name. Display text only; actions send `ref`.
 - `oid`: the commit of the ref.
 - `upstream`: the full upstream ref, or null. From `%(upstream)`.
-- `tracking`: the 003 data-model §1 entry when its `oid` and upstream OID equal the ref values of this read, else null (003 FR-021 pairing rule). The pairing compares the ref values, not the peeled commits (contract Δ3).
+- `tracking`: the 003 data-model §1 entry when three facts hold, else null (003 FR-021 pairing rule). Its `objectId` equals the `%(objectname)` ref value of this ref in this read. Its `upstream` equals this entry's `upstream`. Its `upstreamObjectId` equals the `%(objectname)` ref value of that upstream ref in this read, or both are null. The pairing compares the ref values, not the peeled `oid` (contract Δ3).
 - `heldBy`: the worktree path whose record has `branch <ref>`, or null.
 - `current`: true for the `*` record of `%(HEAD)`.
 - `localName`: for a remote ref, the D3 refspec mapping result, or null when zero or several refspecs map it.
@@ -119,8 +119,8 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 ## 12. Submodule row state (renderer)
 
-- `path`, `depth`, `state` (`waiting`, `fetching`, `updating`, `done`, `failed`, `refused`, `skipped`), `percent` (from the 001 progress counter, or null), `observed` (the 001 row result), `exitCode` and `outputTail` for a failure.
-- Host line: `{rows: [path], hosts: [{fetch, settings}]}` from the review, with Update anyway. Each host has the contract Δ12 form: `{kind: "host", name}`, `{kind: "local"}`, or `{kind: "unknown"}`.
+- `path`, `depth`, `state` (`waiting`, `fetching`, `updating`, `done`, `failed`, `refused`), `percent` (from the 001 progress counter, or null), `observed` (the 001 row result), `exitCode` and `outputTail` for a failure.
+- Host line: the review `hosts` list, with one `{path, fetch, settings}` entry for each row (contract Δ12), and Update anyway. `fetch` and `settings` each have the contract Δ12 form: `{kind: "host", name}`, `{kind: "local"}`, or `{kind: "unknown"}`.
 
 ## 13. Shell settings additions
 
@@ -130,5 +130,5 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 ## 14. View state (renderer, not stored)
 
-- Per worktree for the window session: `view` (`history`, `commit`, `settings`), `settingsScope`, `settingsPage`, `commitLayout` (`tree` or `flat` per list), `untrackedExpanded` (false at open), the multi-selection per list, the line selection of the shown diff, and `amend` (false at open) with the draft that the HEAD message replaced (spec FR-098).
+- Per worktree for the window session: `view` (`history`, `commit`, `settings`), `settingsScope`, `settingsPage`, `commitLayout` (`tree` or `flat` per list), `untrackedExpanded` (false at open), the multi-selection per list, the line selection of the shown diff, and `amend` (null at open). While the box is checked, `amend` is `{headOid, message, text}`: the HEAD commit, the HEAD message from the review, and the editor text. The draft that the HEAD message replaced stays in the drafts store, and clearing the box restores it (spec FR-098).
 - A new snapshot keeps the selection of entries whose IDs still exist, and drops the others.

@@ -168,7 +168,7 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 
 ### D3 Fetch
 
-- The remote of Fetch is `branch.<branch>.remote` when it is set. Otherwise it is `origin`, as git-fetch(1) documents. Without a branch (detached HEAD), it is `origin`.
+- The remote of Fetch is the default remote of remote.c `remotes_remote_for_branch`: `branch.<branch>.remote`, else the only remote of `git remote` when exactly one exists, else `origin` (research R16 d). builtin/fetch.c takes it through `remote_get(NULL)`. Without a branch (detached HEAD), it is the only remote, else `origin`.
 - A remote that `git remote` does not list gives `SYNC_UNAVAILABLE` reason `remote-missing`, and no Git process starts.
 - The value `.` gives reason `local-upstream`.
 - A merge or a rebase in progress does not refuse Fetch or Fetch all remotes (spec "Changes to feature 001 requirements", 001 FR-016).
@@ -183,13 +183,16 @@ Each phase writes its tests first. P0.2 and P0.3 are the riskiest proofs and run
 - Review read: `for-each-ref --format=%(refname)%00%(objectname)%00%(upstream)%00%(upstream:remotename)%00%(upstream:remoteref)%00%(push)%00%(push:remotename)%00%(push:remoteref) refs/heads/<branch>`. The pattern matches by prefix, so the service keeps only the record whose refname equals `refs/heads/<branch>`.
 - Destination rule (builtin/push.c `setup_default_push_refspecs`, remote.c `branch_get_push_1`; research R2, R16 d). The rule follows Git's own push of the current branch (FR-014). "Panel" means no destination, so the FR-016 panel shows. When `%(upstream)` is not empty, the panel shows the current upstream and shows Set upstream not selected.
   0. `%(upstream)` empty: the panel shows. It is pre-filled with the steps 1 to 5 destination when one exists.
-  1. R = `%(push:remotename)`. Empty: R = `origin`, as git-push(1) documents for a push without an explicit remote. No `origin` in `git remote`: panel.
-  2. R not in `git remote`: reason `remote-missing`. `remote.<R>.mirror` true: reason `mirror`. Git pushes to a mirror remote; the app refuses on purpose (R16 d). An invalid remote value or a string key without a value refuses every action before any process (contract Δ3 `reviewSync`, research R16 m).
+  1. R = `%(push:remotename)`. Empty: no remote is explicit, so R is the only remote when exactly one exists, else `origin` (remote.c `remotes_remote_for_branch`, research R16 d). R not in `git remote`: panel.
+  2. R is `.`: reason `local-push-remote`. Git pushes into the repository itself; the app refuses on purpose (R16 d). R not in `git remote`: reason `remote-missing`. `remote.<R>.mirror` true: reason `mirror`. Git pushes to a mirror remote; the app refuses on purpose (R16 d). An invalid remote value or a string key without a value refuses every action before any process (contract Δ3 `reviewSync`, research R16 m).
   3. dst = `%(push:remoteref)` when it is filled, which is the `remote.<R>.push` case. Source `remote-push-refspec`.
-  4. Else, by the last `push.default` value. Git checks every entry, so one invalid entry stops each Git read before this rule (contract "Contract gaps"). F is the fetch remote: `branch.<branch>.remote`, else `origin` (remote.c `remote_for_branch`).
+  4. Else, by the last `push.default` value. Git checks every entry, so one invalid entry stops each Git read before this rule (contract "Contract gaps"). F is the fetch remote: the default remote of remote.c `remotes_remote_for_branch`: `branch.<branch>.remote`, else the only remote of `git remote` when exactly one exists, else `origin` (research R16 d).
+     - A is the auto upstream: some `push.autoSetupRemote` entry is true, and the branch has no `branch.<branch>.merge` entry or no `branch.<branch>.remote` entry (builtin/push.c `git_push_config` and `get_upstream_ref`, remote.c `set_merge`; R16 d). A false entry does not clear a true entry. An invalid entry gives reason `invalid-config` for every push, because `git push` exits 128 on it.
      - `current`: dst = `refs/heads/<branch>`.
      - `simple` or unset, R differs from F (triangular): dst = `refs/heads/<branch>`, because Git's push treats it like `current`. Source `push-default-triangular`.
+     - `simple` or unset, R equals F, and A: dst = `refs/heads/<branch>`. Git's push also sets the upstream, so the panel pre-fills this destination with Set upstream selected (FR-014, FR-016).
      - `simple` or unset, R equals F: `%(push)` empty means that Git cannot resolve one destination, so panel. Else dst = `refs/heads/<branch>`.
+     - `upstream` or `tracking` with A: needs F = R, else reason `push-remote-differs`. dst = `refs/heads/<branch>`, source `push-default-upstream`, pre-filled as for `simple`.
      - `upstream` or `tracking`: needs `%(upstream:remotename)` = R, else reason `push-remote-differs`. `%(upstream)` empty: panel. Else dst = `%(upstream:remoteref)`.
      - More than one `branch.<branch>.merge` entry gives reason `several-merge-refs` for `simple` or unset with R equal to F, and for `upstream` or `tracking` after the R check. Git's push stops there with exit 128 (builtin/push.c `get_upstream_ref`).
      - `matching`: panel. Git pushes the branch only when the remote advertises a branch of the same name at push time. The review contacts no remote (R2).

@@ -12,7 +12,7 @@ const patchView = readFileSync(printOrigin("../../src/frontend/changes/PatchView
 
 /** The declarations of the first rule whose selector list is exactly `selectors`. */
 function rule(...selectors: string[]): Record<string, string> {
-  const head = new RegExp(`(?<!,\\s*)(?<![\\w-])${selectors.map((s) => s.replace(/[[\]*]/g, "\\$&")).join(",\\s*")}\\s*\\{([^{}]*)\\}`);
+  const head = new RegExp(`(?<!,\\s*)(?<![\\w-])${selectors.map((s) => s.replace(/[[\]*().]/g, "\\$&")).join(",\\s*")}\\s*\\{([^{}]*)\\}`);
   const match = css.match(head);
   expect(match, selectors.join(", ")).not.toBeNull();
   const body = match![1]!.replace(/\/\*[\s\S]*?\*\//g, "");
@@ -25,7 +25,11 @@ describe("static frame", () => {
   });
 
   test("a pane scroll never chains to an outer pane or to the root", () => {
-    expect(rule("*")).toMatchObject({ "overscroll-behavior": "contain" });
+    expect(rule(":where(.overflow-auto, .overflow-y-auto, .overflow-x-auto, .overflow-scroll, .overflow-y-scroll, .overflow-x-scroll, textarea)")).toMatchObject({ "overscroll-behavior": "contain" });
+  });
+
+  test("a wheel over a clipped span still scrolls the list under it", () => {
+    expect(rule("*")).not.toHaveProperty("overscroll-behavior");
   });
 
   test("app chrome is not selectable, inputs stay selectable, and images and links do not drag", () => {

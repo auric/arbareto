@@ -775,6 +775,20 @@ The Windows SDK is present. On 2026-09-29, the x64 `kernel32.Lib` exists for SDK
 
 The selected SDK x64 `kernel32.Lib` exists at `C:\Program Files (x86)\Windows Kits\10\Lib\10.0.26100.0\um\x64\kernel32.Lib`. The probe linked `fn main(){}` with `rustc --target x86_64-pc-windows-msvc -C link-arg=/VERBOSE:LIB` in the session scratch directory, and the link exited with code 0. The probe wrote nothing into the repository.
 
+**Build minimum check, 2026-10-19.** The check used main `e0cf66e` in the worktree `C:\Projects\arbareto-l8` on the current reference host. It installed nothing and changed no tool. The host has Visual Studio Enterprise 2022 `17.14.36221.1` as its only installation, with MSVC toolsets `14.29.30133` and `14.44.35207`. `Windows Kits\10\Lib` and `Windows Kits\10\Include` hold only `10.0.19041.0`. Result: nothing in the build needs a newer toolset or SDK, so plan.md sets the minimums to these versions.
+
+- Probe method: rustc 1.99.0 prints no linker output, so `/VERBOSE:LIB` alone gives no `Searching` lines. The wrapper is a `.cmd` script passed as `-C linker=`. It writes `%LIB%`, the `link.exe` that `PATH` resolves, and the linker output to one new log folder for each call, then runs `link.exe %*`. A shared log file fails under parallel Cargo links.
+- T001 probe: `rustc 1.99.0 (b940084d7 2026-09-28)` linked `fn main(){}` with `-C linker=<wrapper> -C link-arg=/VERBOSE:LIB` and exited with code 0. The linker was `C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\link.exe`, banner `14.44.35211.0`. The `Searching` paths were `...\MSVC\14.44.35207\lib\x64\msvcrt.lib` and `vcruntime.lib`, `...\Windows Kits\10\lib\10.0.19041.0\um\x64\kernel32.lib`, `ntdll.lib`, `userenv.lib`, `ws2_32.lib`, and `dbghelp.lib`, and `...\10.0.19041.0\ucrt\x64\ucrt.lib`.
+- Shell link: `cargo build --release --target x86_64-pc-windows-msvc --locked` in `src-tauri` with the same wrapper and `RUSTFLAGS=-C link-arg=/VERBOSE` exited with code 0. All 56 link calls used the `14.44.35207` `link.exe` and exited with code 0. The `arbareto.exe` link printed no `LNK` error or warning, so no symbol stayed unresolved.
+- Libraries that the `arbareto.exe` link searched outside the Rust rlibs: SDK `10.0.19041.0` `um\x64` `advapi32.lib` (7 symbols), `kernel32.lib` (83), `ntdll.lib` (5), `userenv.lib` (3), `ws2_32.lib` (27), `dbghelp.lib` (unused), `uuid.lib` (unused), and `ole32.lib` (unused). SDK `ucrt\x64\ucrt.lib` (66). MSVC `14.44.35207` `lib\x64\libcmt.lib` (39) and `libvcruntime.lib` (22). Tauri sets the static CRT with `/DEFAULTLIB:libcmt.lib`, `libvcruntime.lib`, and `ucrt.lib`, and with `/NODEFAULTLIB:msvcrt.lib`. 91 of 139 searched rlibs supplied symbols.
+- Most Windows API imports bypass the SDK libraries. The rlibs of `windows-sys` (179 `__imp_` symbols), `windows` (80), `windows-core`, `windows-strings`, `windows-result`, `windows-version`, `parking_lot_core`, `getrandom` (`ProcessPrng`), and `std` (`WaitOnAddress`, `WakeByAddressAll`) supply them through `windows-link` raw-dylib. No target link searched a `windows_x86_64_msvc` import library.
+- `/DELAYLOAD`: none. The `arbareto.exe` import table has no delay-load section.
+- C and C++ builds: `vswhom-sys` 0.1.3 compiles `ext/vswhom.cpp` with `cc` 1.5.1 for the host build script of `embed-resource` 3.0.11 (through `tauri-winres`). Its only extra flag is `/Zm2000`; it sets no `/std:` flag. The shipped binaries do not contain it. `embed-resource` compiles the shell resources with `C:\Program Files (x86)\Windows Kits\10\bin\10.0.19041.0\x64\rc.exe` (file version `10.0.19041.5609`), the only x64 `rc.exe`. No crate uses `cmake`. `webview2-com-sys` builds its loader as Rust code, so the link searched no `WebView2LoaderStatic.lib`.
+- `src-tauri/Cargo.toml`, `src-tauri/build.rs`, and `src-tauri/src` pin no SDK or toolset and contain no `#[link]` attribute or raw-dylib. No `.cargo/config*` file and no `rust-toolchain` file exists in the repository or in `~/.cargo`.
+- `dumpbin /imports` of the new `arbareto.exe`: 368 named imports from 26 DLLs, no ordinal import. The list equals the import list of the installed T154 `arbareto.exe`. The headers give linker version 14.44 and operating system version 6.00.
+- Windows versions of the shell imports: 367 of the 368 names occur as `__imp_` symbols in the SDK `10.0.19041.0` `um\x64` or `ucrt\x64` import libraries, so Windows 10 version 2004 or earlier provides each of them. The last one, `ProcessPrng` in `bcryptprimitives.dll`, comes through raw-dylib. Microsoft Learn states Windows 8 as its minimum client ([ProcessPrng](https://learn.microsoft.com/windows/win32/seccng/processprng)).
+- Sidecar `arbareto-git.exe`: `bun build --compile` writes it from the Bun 1.4.3 runtime, so the local toolset and SDK do not build it. Its headers give linker version 14.00. Its import table has 11 delay-load DLLs, among them `WSOCK32.dll` by ordinal. All its named imports except `ProcessPrng` occur in the SDK `10.0.19041.0` import libraries.
+
 **Batch 1 observations, 2026-10-03.** T065 copied these test and task records.
 
 - T057, 2026-10-03: build 26200, product type 1 (`VER_NT_WORKSTATION`), native machine `0x8664`, scope `qualification-target`.
@@ -941,6 +955,44 @@ Capture sources: [DuplicateOutput](https://learn.microsoft.com/windows/win32/api
 - The web elements belong to the process `msedgewebview2.exe`, not to the app process. So `waitFocus` checks the process of the top-level window.
 - The folder picker and the Git task dialog are descendants of the main window.
 - A `role="status"` region has an empty Name and LiveSetting Polite. So `findLiveRegions` finds the status regions by LiveSetting.
+
+**T241 names, 2026-10-20.** `bun test tests/windows/uia.test.ts` ran three times against the installed T154 package, SHA-256 `6dca247ebdd07d35b1543bce67994ac5c5c2d9f34b86e9b144dc894ab8d4a563`. The case "T241: opens a fixture repository through UIA patterns and resolves the workbench names" passed in each run. It used no keyboard or pointer input. Each row gives the Name, the ControlType that `find` required, and the pattern that the test called.
+
+| Name | ControlType | Pattern and result |
+|---|---|---|
+| `Select Git` | Button | Invoke. The Git task dialog opened. |
+| `Use this Git` | any | Invoke. The start page opened. |
+| `Open folder… (Ctrl+O)` | any | Invoke. The folder picker opened. |
+| `Folder:` | Edit | Value `SetValue` with the fixture folder. |
+| `Select Folder` | Button | Invoke. The repository opened. |
+| `<folder name>, <Git worktree root>` | Button | Found. The switcher label of `RepositorySwitcher.tsx`. The root is the `git rev-parse --show-toplevel` output. |
+| `References` | Tree | Found. |
+| `Working directory, 1 working change` | any | SelectionItem `Select`. `CurrentIsSelected` became true. |
+| `Commit (Ctrl+Enter)` | Button | Found. |
+| `Commit message` | Edit | Value `SetValue`. `CurrentValue` then held the new text. The Text pattern returns the placeholder, not the value. |
+| `a.txt` | any | Invoke. `CurrentIsSelected` became true, and the file view opened. |
+| `Stage file (Space)` | Button | Found. |
+| `Next hunk` | Button | Invoke after `CurrentIsEnabled` became true. |
+| `Stage selected hunk` | Button | Invoke after `CurrentIsEnabled` became true. The status regions read `Staging hunk in repo…`, then `Hunk staged`. |
+| `Fetch` | Button | Invoke after `CurrentIsEnabled` became true. The fetch went to a local `git://` listener that never answers. |
+| `Cancel` | Button | Invoke. The status regions read `Fetching from origin…`, then `Fetch canceled`. The toolbar control has the Name `Cancel fetch`, so this Name is the status bar control. |
+| `Repository` | MenuItem | ExpandCollapse `Expand`, and after the Revoke trust check `Collapse`. The menu then left the tree. |
+| `Revoke trust` | MenuItem | Found while the menu was open. |
+
+- `find` with ControlType is necessary in the folder picker. The label `Folder:` and the edit have the same Name, and the dialog window has the Name `Select Folder`.
+- A render can replace an element. A held element then fails with `UIA_E_ELEMENTNOTAVAILABLE` (`0x80040201`). So each state wait finds the element again on each poll and stops at 10 seconds.
+- One run read `State unknown` between `Staging hunk in repo…` and `Hunk staged`.
+- The focus cases skipped in these runs with capability `foreground`. A process that the test cannot open (error 5) owned the foreground.
+
+**Scriptable inspect equivalent.** `inspect.exe` is a GUI tool, so the test does not run it. A scratch PowerShell script `dump.ps1` reads the same tree through the .NET `System.Windows.Automation` client. It loads `UIAutomationClient`, `UIAutomationTypes`, and `UIAutomationClientsideProviders`. It finds the top-level elements whose `ProcessId` is the app, walks them with `TreeWalker.ControlViewWalker`, and writes ControlType, Name, AutomationId, ClassName, and `GetSupportedPatterns()` for each element. The test does not use the script, so it stays outside `tests/windows/`. Its output on 2026-10-20 for the same names:
+
+- Button: `Commit (Ctrl+Enter)`, `Fetch`, `Next hunk`, `Stage file (Space)`, and `Stage selected hunk` with Invoke. `Cancel` with Invoke while the fetch ran. The switcher `repo, <root>` with ExpandCollapse.
+- Edit: `Commit message` with Value and Text.
+- ListItem: `Working directory, 1 working change`, `a.txt`, and `Open folder… (Ctrl+O)` with Invoke and SelectionItem.
+- Tree: `References` with Selection. A Group and a Text also have the Name `References`.
+- MenuItem: `Repository` with ExpandCollapse. With the menu open, `Revoke trust` with Invoke. The menu item for the folder picker has the Name `Open folder… Ctrl+O`.
+- Folder picker: the .NET client shows `Folder:`, `Select Folder`, and `Cancel` as Pane elements with no pattern. The native client of `uia.ts` finds `Folder:` as an Edit with Value and `Select Folder` as a Button with Invoke. The two clients differ only here.
+- The script did not read the boot view, so `Select Git` and `Use this Git` have only the driver result.
 
 Driver sources: [WebView2 accessibility tree](https://learn.microsoft.com/microsoft-edge/webview2/concepts/overview-features-apis#rendering-webview2-using-composition), [ARIA and UI Automation in Microsoft Edge](https://learn.microsoft.com/microsoft-edge/accessibility/build/aria-and-ui-automation), [UI Automation overview](https://learn.microsoft.com/windows/win32/winauto/uiauto-uiautomationoverview).
 
@@ -2043,6 +2095,70 @@ Earlier attempt at `71a5bb0`, 2026-10-13: the parallel step exited 1. One case f
 - SC-011: `unverified`. The entry name clause holds. This run did not check the "Unsigned local test package" boot-view label, because that check needs the app started. The release clause depends on B-RELEASE and T176.
 - T154 stays open. The tool versions do not meet the minimums, and the T001 probe gave no toolset or SDK value.
 
+**T154 clause check, 2026-10-19.** plan.md now sets the minimums to MSVC toolset `14.44.35207` and Windows SDK `10.0.19041.0` (R6 "Build minimum check, 2026-10-19"). The values in the table above meet them. T154 still stays open, because one clause fails.
+
+| T154 clause | Result |
+| --- | --- |
+| Clean tree before the build | holds |
+| T001 link probe in the same shell, and build tool versions under the test harness rules | fails. The rules take the toolset and SDK from the probe `Searching` paths. The probe in the T154 shell printed no `Searching` line. The R6 wrapper probe ran later in another shell, and the host has two MSVC toolsets (`14.29.30133` and `14.44.35207`). So the probe of another shell does not prove the toolset of the T154 build. |
+| Build command, installer name, bytes, and SHA-256 | holds |
+| `dumpbin /dependents` of `arbareto.exe` and the sidecar | holds |
+| Windows Apps entry "Arbareto (Unsigned local test package)" after a current-user install | holds |
+| Git and WebView2 versions, build identity, entry name, and installed `arbareto.exe` SHA-256 | holds |
+| SC-011 result recorded | holds. T154 asks for the result, and the result is `unverified`. SC-011 becomes `pass` only after the boot-view label check and T176. |
+| No Node executable, development server, or native build tool, and the runtime assets present | holds |
+| Build-time downloads apart from end-user prerequisites, and WebView2 as a preinstalled requirement | holds |
+
+- Remedy: repeat the T154 build on a clean tree, with the wrapper probe in the same shell before the build.
+
+**T154 rerun, 2026-10-19.** The build used main `7cfdbfc39d6c2bd61fd7055c11d54073d555ada5` in the main checkout `C:\Projects\arbareto`. `git --no-optional-locks status --porcelain --untracked-files=all` printed nothing before `bun install --frozen-lockfile`, after it, and after the build. One PowerShell script ran all steps in one session. It entered the Visual Studio 2022 developer shell with `Launch-VsDevShell.ps1 -Arch amd64 -HostArch amd64`. It then ran the T001 wrapper probe, the process gate, and `cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis -- --locked`. The gate counted 0 busy processes. The build exited with code 0 in 4 minutes.
+
+| Tool | Source | Value | Minimum | Result |
+| --- | --- | --- | --- | --- |
+| Rust | `rustc --version` | `rustc 1.99.0 (b940084d7 2026-09-28)` | `1.98.0` | pass |
+| Cargo | `cargo --version` | `cargo 1.99.0 (5f94df478 2026-08-27)` | `1.98.0` | pass |
+| Tauri CLI | `cargo tauri --version` | `tauri-cli 2.12.0` | `2.12.0` | pass |
+| Bun | `bun --version` | `1.4.3` | exactly `1.4.3` | pass |
+| MSVC toolset | `Searching` paths of the T001 wrapper probe and of all 57 build links | `14.44.35207` | `14.44.35207` | pass |
+| Windows SDK | `Searching` paths of the T001 wrapper probe and of all 57 build links | `10.0.19041.0` | `10.0.19041.0` | pass |
+| NSIS | `makensis.exe /VERSION` in `%LOCALAPPDATA%\tauri\NSIS`, in PowerShell after the build | `v3.11` | `3.11` | pass |
+| Git | `git version --build-options` | `git version 2.56.0.windows.2` at `C:\Program Files\Git\cmd\git.exe`, built from commit `cc4dbf752a05efdc0e04e71fd3e8110d11bdd35c` | `2.55.0.windows.3` | pass |
+| WebView2 | Registry value `pv` of `HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}` | `155.0.4283.62` | `154.0.4258.37` | pass |
+
+- A first attempt stopped before the build. The CIM query failed, and the gate counted that as busy.
+- Probe: `rustc --target x86_64-pc-windows-msvc -C linker=<wrapper> -C link-arg=/VERBOSE:LIB` linked `fn main(){}` and exited with code 0. The wrapper ran `...\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\link.exe`. The probe searched only MSVC `14.44.35207` and SDK `10.0.19041.0` libraries.
+- Build links: `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` named a wrapper that adds `/VERBOSE:LIB` and keeps the linker output. All 57 link calls ran the same `link.exe` and exited with code 0. Each call searched only MSVC `14.44.35207` and SDK `10.0.19041.0` libraries. One of the 57 calls links `target\x86_64-pc-windows-msvc\release\deps\arbareto`.
+- Installer: `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\Arbareto_0.1.0_x64-setup.exe`, 38020390 bytes, SHA-256 `47db7ce8a3a896bf421f11dcca855047da892bcc0d1d92097d485818318d5317`.
+- `dumpbin /dependents` (MSVC 14.44.35207) of `arbareto.exe`: bcryptprimitives, ntdll, advapi32, kernel32, user32, ole32, combase, comctl32, gdi32, dwmapi, shlwapi, version, shell32, api-ms-win-core-synch-l1-2-0, bcrypt, imm32, oleaut32, api-ms-win-core-winrt-l1-1-0, api-ms-win-core-winrt-error-l1-1-0, ADVAPI32, KERNEL32, and api-ms-win-crt-{math,string,convert,runtime,stdio,locale,heap}-l1-1-0.
+- `dumpbin /dependents` of the sidecar `arbareto-git.exe`: ntdll, KERNEL32, api-ms-win-core-synch-l1-2-0, and bcryptprimitives. Delay-load: WSOCK32, CRYPT32, WS2_32, dbghelp, USERENV, USER32, ADVAPI32, ole32, SHELL32, OLEAUT32, and IPHLPAPI. This list equals the 2026-10-19 release package record.
+- Two names in each case: `dumpbin /imports` of the installed `arbareto.exe` shows 28 import descriptors with 368 named imports. `advapi32.dll` (5 imports) and `kernel32.dll` (71 imports) carry hint 0 on every import. `ADVAPI32.dll` (4 imports: `EventRegister`, `EventSetInformation`, `EventUnregister`, `EventWriteTransfer`) and `KERNEL32.dll` (58 imports) carry nonzero hints.
+- Source of the lower-case descriptors: `windows-link` 0.2.1 `link!` declares `kind = "raw-dylib", modifiers = "+verbatim"`. `windows-sys` 0.61.2 calls it with the literal `"advapi32.dll"`, for example for `RegOpenKeyExW`. Raw-dylib imports get their own descriptor with the literal name.
+- Source of the upper-case descriptors: the import headers of the SDK `10.0.19041.0` `um\x64` libraries give `DLL name : KERNEL32.dll` for `RtlUnwindEx` (hint 1251) and `DLL name : ADVAPI32.dll` for `EventWriteTransfer` (hint 297). The binary holds the same hints (`0x4E3` and `0x129`).
+- Earlier binary: the earlier `t154` evidence holds no saved `dumpbin` output. The `arbareto.exe` from the earlier installer (SHA-256 `2dec410b6f566ce91211b534c1ec72ad2bf37b95a0b4499baa7e1767ea977ae1`) was decoded from its NSIS LZMA stream without an install. Its SHA-256 equals the earlier installed digest `a638418a021d2f4ae4a2996ffa3a83b9cdba7eb42e14b20eba5a80756beb8aed`. The same decoder applied to this installer gives the installed digest below. The `dumpbin /dependents` and `dumpbin /imports` output of the earlier binary equals the output of this binary, apart from the file name line. So the earlier binary also had both pairs. The 2026-10-19 release package record names each pair once. The binary did not change in its imports. `src-tauri` and `Cargo.lock` have no change between `62e6e2a` and `7cfdbfc`.
+- Install: the installer ran as the current user with `/S` over the earlier install and exited with code 0. It needed no input.
+- The entry `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Arbareto` has `DisplayName` "Arbareto (Unsigned local test package)" and `DisplayVersion` `0.1.0`. `InstallLocation` is `C:\Users\user\AppData\Local\Arbareto`. The registry value holds it in double quotes.
+- Installed files: `arbareto.exe` (14557696 bytes), `arbareto-git.exe` (97416704 bytes), and `uninstall.exe` (79348 bytes). No Node executable, development server, or native build tool is present. Tauri embeds the frontend assets in `arbareto.exe`.
+- Installed `arbareto.exe` SHA-256: `6dca247ebdd07d35b1543bce67994ac5c5c2d9f34b86e9b144dc894ab8d4a563`. The target file has SHA-256 `3aff76c497c987c8416fdd87f47780c100b316f0fb7e71fd3e752939f400dd01`. The files differ only in the 3 bundle-type marker bytes at offsets `0xAC165A` to `0xAC165C` (`UNK` in the target, `NSS` when installed). The build log shows "Patching ... with bundle type information: nsis". The cause is in the 2026-10-19 release package record.
+- Installed `arbareto-git.exe` SHA-256 equals the target file: `a315c9d6401dcc155af509880a8ca44c349faa542b2f3328c8a0332cebf631ec`.
+- Build identity: a byte search of the installed `arbareto.exe` found `7cfdbfc39d6c2bd61fd7055c11d54073d555ada5` once and no `-dirty` string.
+- Boot-view label: the installed app started with `ARBARETO_PROFILE_ROOT` set to a new scratch folder. The `tests/windows/uia.ts` `find` call found an element with the exact name "Unsigned local test package". WM_CLOSE went only to the unowned `Tauri Window` titled `Arbareto`. The app exited with code 0. No input was sent. A first label run stopped before the search, because its `find` timeout of 20000 ms is above the driver limit of 10000 ms.
+- Build-time downloads: the build log shows no download. The NSIS tools were already in `%LOCALAPPDATA%\tauri\NSIS`. End-user prerequisites: Git and a preinstalled WebView2 runtime. The installer does not install WebView2 (`webviewInstallMode` `skip`).
+
+| T154 clause | Result |
+| --- | --- |
+| Clean tree before the build | holds. The status was empty before and after `bun install` and after the build. |
+| T001 link probe in the same shell, and build tool versions under the test harness rules | holds. The wrapper probe ran in the build session before the build. Its `Searching` paths and those of all 57 build links give MSVC `14.44.35207` and SDK `10.0.19041.0`. |
+| Build command, installer name, bytes, and SHA-256 | holds |
+| `dumpbin /dependents` of `arbareto.exe` and the sidecar | holds |
+| Windows Apps entry "Arbareto (Unsigned local test package)" after a current-user install | holds |
+| Git and WebView2 versions, build identity, entry name, and installed `arbareto.exe` SHA-256 | holds |
+| SC-011 result recorded | holds. The result is `unverified`. |
+| No Node executable, development server, or native build tool, and the runtime assets present | holds |
+| Build-time downloads apart from end-user prerequisites, and WebView2 as a preinstalled requirement | holds |
+
+- SC-011: `unverified`. The label clause holds: the entry name and the boot-view label both read "Unsigned local test package". The release clause waits on B-RELEASE and T176.
+- T154: every clause holds on this record. T154 stays open, because batch 5 depends on T149 (tasks.md "Phase dependencies"), and T149 is open. A full run cannot tick T154 early, because `test:all` does not verify it.
+
 ### Scenario records
 
 This table holds one record for each qualification scenario: SC-001 to SC-019 (spec.md "Success Criteria"), F01 to F33 (plan.md fixture register), and UI-01 to UI-22 (plan.md UI scenarios). Each record holds the data-model §8 fields. A result is only `pass`, `fail`, or `unverified`. A record whose only evidence is source inspection stays `unverified`, and its evidence cell names `source-inspected`. An empty cell means that no fact exists yet. Record results as numbers and observations. Redact secrets before you keep evidence.
@@ -2227,6 +2343,7 @@ Open items and reasons:
 | S2: NSIS version | `NSIS_VERSION` in `src/frontend/build/notices.ts` came from the tauri-bundler 2.10.0 source, but no check tied it to the CLI that runs. The bundler reuses a cached `%LOCALAPPDATA%\tauri\NSIS` folder whatever its version. | Fixed (T375). For a Tauri Windows build (`TAURI_ENV_PLATFORM`), `build:notices` refuses a `cargo tauri --version` stdout other than `tauri-cli 2.12.0\n`. tauri-cli 2.12.0 pins `tauri-bundler = "=2.10.0"`. It also refuses a reused `makensis.exe /VERSION` stdout other than `v3.11`. Tests: the tauri-cli and makensis cases in `tests/contracts/notices.test.ts`. Control mutation: `tauriCliProblem` that always returns `[]` turned the tauri-cli case red. |
 | T240 focus | Found in the T149 runs, not by the review. `tests/windows/uia.test.ts` invoked the start page option "Open folder… (Ctrl+O)". The filter combobox "Filter recent repositories" holds DOM focus and names the option through `aria-activedescendant`, so Invoke cannot focus the option. After the picker Cancel, focus returned to the document, and `waitFocus` timed out on every run. | Fixed (T376). The test focuses the combobox and confirms with `waitFocus` that UIA reports the option as focused before the invoke. Test: `bun test tests/windows/uia.test.ts` alone passed 7 of 7 against the installed main e951ad2 app. Control: the test without the two lines failed in two earlier runs. |
 | T380 static frame | User report, 2026-10-16: a two-finger touchpad swipe moved the whole view sideways. wry 0.57.0 `set_webview_settings` already sets `IsSwipeNavigationEnabled` ([ICoreWebView2Settings6](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2settings6)) and `IsPinchZoomEnabled` ([ICoreWebView2Settings5](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2settings5)) to false, and `IsZoomControlEnabled` ([ICoreWebView2Settings](https://learn.microsoft.com/microsoft-edge/webview2/reference/win32/icorewebview2settings)) to false through `zoom_hotkeys_enabled(false)`. Both swipe and pinch changes apply only after the next navigation. | Fixed in CSS (T380). The root gets `overflow: hidden` and `overscroll-behavior: none`, and each pane gets `overscroll-behavior: contain`. The shell does not change. A packaged touchpad check stays open. |
+| T380 wheel over a clipped span | User report, 2026-10-20: the wheel did not scroll a list while the pointer was over a truncated text. A `truncate` or `overflow-hidden` element is a scroll container. Chromium starts the wheel scroll there, and `contain` on `*` stopped the chain to the list. Headless Edge with CDP wheel input scrolled 0 over such a span and 120 over a plain span. | Fixed in CSS. Only the `overflow-auto`, `overflow-scroll`, and axis variants, and `textarea`, get `overscroll-behavior: contain`. The `*` rule sets no `overscroll-behavior`. With this rule, every probed case scrolled 120. |
 
 Open item from the 004 batch 0 review (S3), 2026-10-17: `acquireLock` in `tests/windows/perf-fixtures.ts` decides a stale lock by its age, and it checks the owner by PID without a creation time. A reused PID keeps a dead lock until the age bound. A live builder that runs longer than the bound can lose its lock. Not changed.
 

@@ -105,6 +105,7 @@ describe("contract Δ9 codes", () => {
       "remote-missing",
       "no-remotes",
       "local-upstream",
+      "local-push-remote",
       "several-merge-refs",
       "push-urls",
       "mirror",

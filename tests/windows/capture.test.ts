@@ -11,7 +11,7 @@ import { printOrigin } from "../origin";
 import { CFunction, FFIType, ptr, read, type Pointer } from "bun:ffi";
 import { FIXTURE_ROOT, fixtureDir, fixtureGit, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
-import { appEnv, findInstalledApp, startInstalledApp, waitExit } from "./installed-app";
+import { appEnv, findInstalledApp, startInstalledApp, waitExit, type OwnedProcess } from "./installed-app";
 import { find, inputDesktopSkip, invoke, MAX_WAIT_MS, waitFocus, type Element } from "./uia";
 import { qpc, qpcFrequency } from "./inject";
 import {
@@ -271,6 +271,9 @@ describe.skipIf(process.platform !== "win32")("T242 capture.ts live", () => {
   );
 
   describe("installed app", () => {
+    // Bun 1.4.3 runs `afterAll` hooks in declaration order, also when a test timeout leaves its body running. This hook must come before the fixture root removal.
+    let owned: OwnedProcess | undefined;
+    afterAll(() => owned?.stop());
     useFixtureRoot();
     const found = findInstalledApp();
     const app = "app" in found ? found.app : null;
@@ -296,20 +299,20 @@ describe.skipIf(process.platform !== "win32")("T242 capture.ts live", () => {
             e.release();
           }
         };
-        const owned = startInstalledApp(app!, appEnv(fixtureDir("app"), false));
+        const launched = (owned = startInstalledApp(app!, appEnv(fixtureDir("app"), false)));
         let dup: Duplication | null = null;
         try {
-          await using(find(owned.pid, "Select Git", MAX_WAIT_MS), invoke);
-          await using(find(owned.pid, "Use this Git", MAX_WAIT_MS), invoke);
-          await using(find(owned.pid, "Open folder… (Ctrl+O)", MAX_WAIT_MS), invoke);
+          await using(find(launched.pid, "Select Git", MAX_WAIT_MS), invoke);
+          await using(find(launched.pid, "Use this Git", MAX_WAIT_MS), invoke);
+          await using(find(launched.pid, "Open folder… (Ctrl+O)", MAX_WAIT_MS), invoke);
           // The Folder box name of the Windows folder picker. T180 confirms it.
-          await waitFocus(owned.pid, "Folder:", MAX_WAIT_MS);
+          await waitFocus(launched.pid, "Folder:", MAX_WAIT_MS);
           inject(`text:${repo}`, "Enter");
-          await using(find(owned.pid, "Working directory, 1 working change", MAX_WAIT_MS), () => {});
+          await using(find(launched.pid, "Working directory, 1 working change", MAX_WAIT_MS), () => {});
           // T241 fallback: the T240 driver has no focus method. Four F6 presses move from the history list to the composer (plan.md "Keyboard and focus").
           inject("Home", "F6", "F6", "F6", "F6");
-          await waitFocus(owned.pid, "Commit message", MAX_WAIT_MS);
-          const region = await using(find(owned.pid, "Commit message", MAX_WAIT_MS), boundingRect);
+          await waitFocus(launched.pid, "Commit message", MAX_WAIT_MS);
+          const region = await using(find(launched.pid, "Commit message", MAX_WAIT_MS), boundingRect);
           console.log(`REGION ${JSON.stringify(region)}`);
           const reopened = tryOpen(region);
           if ("skip" in reopened) throw new Error(`desktop duplication: ${reopened.skip}`);
@@ -347,8 +350,8 @@ describe.skipIf(process.platform !== "win32")("T242 capture.ts live", () => {
           expect(seconds).toBeLessThanOrEqual(1);
         } finally {
           dup?.close();
-          owned.stop();
-          expect(await waitExit(owned)).not.toBeNull();
+          launched.stop();
+          expect(await waitExit(launched)).not.toBeNull();
         }
       },
       120_000,

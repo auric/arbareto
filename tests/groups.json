@@ -195,6 +195,7 @@
     "tests/git/reveal-path.test.ts",
     "tests/git/service-harness.test.ts",
     "tests/git/snapshot.test.ts",
+    "tests/git/ssh-server.test.ts",
     "tests/git/stall.test.ts",
     "tests/git/status-parser.test.ts",
     "tests/git/status.test.ts",

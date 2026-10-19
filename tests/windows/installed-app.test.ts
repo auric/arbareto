@@ -5,8 +5,9 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
-import { FIXED_IDENTITY, fixtureDir, useFixtureRoot } from "../git/fixture-root";
+import { FIXED_IDENTITY, fixtureDir, removeTree, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
+import { terminateRecorded } from "../git/win32";
 import {
   appEnv,
   descendants,
@@ -26,6 +27,7 @@ printOrigin("./installed-app.ts", import.meta.dir);
 
 const TEST_TIMEOUT_MS = 30_000;
 const READY_MS = 10_000;
+const REPO = join(import.meta.dir, "..", "..");
 
 const refusal = (body: () => unknown) => {
   try {
@@ -154,6 +156,43 @@ describe.skipIf(process.platform !== "win32")("T151 installed-app helper", () =>
       }
       expect(await waitExit(owned)).not.toBeNull();
       expect(survivingRecords(records)).toEqual([]);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a test timeout runs the hooks early, and the owned Job still ends before the fixture root removal",
+    () => {
+      const root = fixtureDir("early-hook");
+      const records = join(root, "records");
+      mkdirSync(records);
+      const ready = join(root, "ready");
+      const child = Bun.spawnSync([process.execPath, "test", "./tests/windows/early-hook-fixture.ts"], {
+        cwd: REPO,
+        env: { ...process.env, ARBARETO_EARLY_HOOK: `${records}|${ready}` },
+        stdin: "ignore",
+        stdout: "pipe",
+        stderr: "pipe",
+        timeout: TEST_TIMEOUT_MS - 5_000,
+      });
+      const output = `${child.stdout.toString()}${child.stderr.toString()}`;
+      console.log(output.replace(/^/gm, "child> "));
+      // `createFixtureRoot` prints the line.
+      const childRoot = /^FIXTURE_ROOT (.+)$/m.exec(output)?.[1]?.trim();
+      try {
+        // The child test fails by its timeout.
+        expect(child.exitCode).toBe(1);
+        expect(childRoot).toBeDefined();
+        expect(existsSync(childRoot!)).toBe(false);
+        expect(readdirSync(records)).toHaveLength(1);
+        expect(survivingRecords(records)).toEqual([]);
+      } finally {
+        for (const name of survivingRecords(records)) {
+          const [pid, created] = name.split("-");
+          terminateRecorded(Number(pid), BigInt(created!));
+        }
+        if (childRoot !== undefined && existsSync(childRoot)) removeTree(childRoot);
+      }
     },
     TEST_TIMEOUT_MS,
   );

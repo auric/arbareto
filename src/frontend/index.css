@@ -264,7 +264,9 @@
 @layer base {
   * {
     @apply border-border outline-ring;
-    /* A pane scroll never chains to an outer pane or to the root. */
+  }
+  /* A pane scroll never chains to an outer pane or to the root. Only scrollers get it: on a clipped span, `contain` stops the wheel before it reaches the list. */
+  :where(.overflow-auto, .overflow-y-auto, .overflow-x-auto, .overflow-scroll, .overflow-y-scroll, .overflow-x-scroll, textarea) {
     overscroll-behavior: contain;
   }
   /* The window is a static frame: the root never scrolls, pans, or bounces. Each pane scrolls by itself. */

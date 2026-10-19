@@ -31,6 +31,8 @@ const open = () =>
     TerminateJobObject: { args: [P, u32], returns: i32 },
     QueryInformationJobObject: { args: [P, i32, P, u32, P], returns: i32 },
     SetInformationJobObject: { args: [P, i32, P, u32], returns: i32 },
+    IsProcessInJob: { args: [P, P, P], returns: i32 },
+    WaitForMultipleObjects: { args: [u32, P, i32, u32], returns: u32 },
   }).symbols;
 let symbols: ReturnType<typeof open> | undefined;
 
@@ -184,10 +186,19 @@ const JOB_EXTENDED_LIMIT_CLASS = 9;
 const JOB_EXTENDED_LIMIT_BYTES = 144;
 const JOB_LIMIT_FLAGS_OFFSET = 16;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
+// Microsoft Learn `JOBOBJECT_BASIC_PROCESS_ID_LIST`: two DWORD counts, then one ULONG_PTR per PID from byte 8 on x64.
+const JOB_PID_LIST_CLASS = 3;
+const JOB_PID_LIST_OFFSET = 8;
+const ERROR_MORE_DATA = 234;
+// Microsoft Learn `WaitForMultipleObjects`.
+const MAXIMUM_WAIT_OBJECTS = 64;
+const WAIT_FAILED = 0xffff_ffff;
 
 export interface ProcessTree {
   // Ends every process of the tree and waits a bounded time for their exits.
   end(): void;
+  // Ends the Job and waits on the process handles of its members until the Job lists none. Returns the PIDs that the Job still lists at the bound.
+  endAndWait(timeoutMs: number): number[];
   close(): void;
 }
 
@@ -222,10 +233,50 @@ export function ownTree(pid: number, killOnClose = false): ProcessTree {
     if (!kernel32().QueryInformationJobObject(job, JOB_ACCOUNTING_CLASS, ptr(info), JOB_ACCOUNTING_BYTES, null)) return 0;
     return new DataView(info.buffer).getUint32(JOB_ACTIVE_OFFSET, true);
   };
+  const listed = (): number[] => {
+    for (let capacity = MAXIMUM_WAIT_OBJECTS; ; ) {
+      const info = new BigUint64Array(1 + capacity);
+      if (kernel32().QueryInformationJobObject(job, JOB_PID_LIST_CLASS, ptr(info), info.byteLength, null)) {
+        const count = new DataView(info.buffer).getUint32(4, true);
+        return [...info.subarray(JOB_PID_LIST_OFFSET / 8, JOB_PID_LIST_OFFSET / 8 + count)].map(Number);
+      }
+      const error = kernel32().GetLastError();
+      if (error !== ERROR_MORE_DATA) throw new Error(`QueryInformationJobObject failed: ${error}`);
+      capacity = new DataView(info.buffer).getUint32(0, true);
+    }
+  };
   return {
     end() {
       if (!kernel32().TerminateJobObject(job, 1)) return;
       for (const until = performance.now() + TERMINATE_WAIT_MS; active() > 0 && performance.now() < until; ) Bun.sleepSync(JOB_POLL_MS);
+    },
+    endAndWait(timeoutMs) {
+      if (!kernel32().TerminateJobObject(job, 1)) throw new Error(`TerminateJobObject failed: ${kernel32().GetLastError()}`);
+      const until = performance.now() + timeoutMs;
+      for (let pids = listed(); pids.length > 0; pids = listed()) {
+        const left = until - performance.now();
+        if (left <= 0) return pids;
+        // A listed PID can name a process that already left, or a newer process. `IsProcessInJob` checks the handle.
+        const handles: Pointer[] = [];
+        try {
+          for (const pid of pids.slice(0, MAXIMUM_WAIT_OBJECTS)) {
+            const handle = openProcess(pid, 0);
+            if (handle === null) continue;
+            const member = new Int32Array(1);
+            if (kernel32().IsProcessInJob(handle, job, ptr(member)) && member[0] !== 0) handles.push(handle);
+            else kernel32().CloseHandle(handle);
+          }
+          if (handles.length === 0) {
+            Bun.sleepSync(JOB_POLL_MS);
+            continue;
+          }
+          const result = kernel32().WaitForMultipleObjects(handles.length, ptr(new BigUint64Array(handles.map(BigInt))), 1, Math.ceil(left));
+          if (result === WAIT_FAILED) throw new Error(`WaitForMultipleObjects failed: ${kernel32().GetLastError()}`);
+        } finally {
+          for (const handle of handles) kernel32().CloseHandle(handle);
+        }
+      }
+      return [];
     },
     close() {
       kernel32().CloseHandle(job);

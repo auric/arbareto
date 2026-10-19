@@ -3,12 +3,15 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { dlopen, FFIType } from "bun:ffi";
+import { writeFileSync } from "node:fs";
+import { basename, join } from "node:path";
 import { printOrigin } from "../origin";
 import { srcImportHits } from "./src-imports";
 import { withProbe } from "./probe-window";
-import { fixtureDir, useFixtureRoot } from "../git/fixture-root";
+import { fixtureDir, fixtureGit, useFixtureRoot } from "../git/fixture-root";
+import { GIT } from "../git/git-binary";
 import { appEnv, findInstalledApp, PROBE_TIMEOUT_MS, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
-import { close, find, findLiveRegions, focus, foregroundSkip, inputDesktopSkip, invoke, isSelected, MAX_CALL_MS, MAX_WAIT_MS, readText, select, setValue, UiaError, waitFocus, type Element } from "./uia";
+import { close, ControlType, find, findLiveRegions, focus, foregroundSkip, inputDesktopSkip, invoke, isEnabled, isSelected, MAX_CALL_MS, MAX_WAIT_MS, readText, readValue, select, setValue, UiaError, waitFocus, type Element } from "./uia";
 
 const UIA = printOrigin("./uia.ts", import.meta.dir);
 const TEST_TIMEOUT_MS = 60_000;
@@ -19,6 +22,11 @@ const APP_WAITS = 9;
 const APP_TEST_TIMEOUT_MS = APP_WAITS * (MAX_WAIT_MS + MAX_CALL_MS) + 2 * PROBE_TIMEOUT_MS + 2 * WAIT_MS;
 // Microsoft Learn "Process Security and Access Rights".
 const PROCESS_SUSPEND_RESUME = 0x0800;
+// `UIAutomationCoreApi.h`: the element is gone.
+const UIA_E_ELEMENTNOTAVAILABLE = 0x8004_0201;
+// The T241 case runs 10 UIA waits, 6 state waits, and 2 status-text waits, plus the same probes and waits as the case above.
+const T241_WAITS = 18;
+const T241_TEST_TIMEOUT_MS = T241_WAITS * (MAX_WAIT_MS + MAX_CALL_MS) + 2 * PROBE_TIMEOUT_MS + 2 * WAIT_MS;
 const OPEN_FOLDER = "Open folder… (Ctrl+O)";
 
 const code = async (body: () => unknown) => {
@@ -41,6 +49,16 @@ async function focusedOrSkip(label: string, processId: number, name: string, tim
     console.log(`SKIP ${label}: ${skip}`);
     return null;
   }
+}
+
+// Polls the live regions until one reads `text`, and returns the texts that each poll read.
+async function waitStatus(processId: number, text: string): Promise<string[]> {
+  const seen = new Set<string>();
+  for (const until = performance.now() + MAX_WAIT_MS; performance.now() < until; await Bun.sleep(50)) {
+    for (const region of await findLiveRegions(processId, Math.max(0, Math.ceil(until - performance.now())))) seen.add(await using(region, readText));
+    if (seen.has(text)) return [...seen];
+  }
+  throw new Error(`no status region reads ${JSON.stringify(text)} after ${MAX_WAIT_MS} ms: ${JSON.stringify([...seen])}`);
 }
 
 // Releases each element after the body.
@@ -133,6 +151,7 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
         await using(await find(pid, "Probe field", MAX_WAIT_MS), (field) => {
           setValue(field, "new text");
           expect(readText(field)).toBe("new text");
+          expect(readValue(field)).toBe("new text");
         });
       }),
     TEST_TIMEOUT_MS,
@@ -177,8 +196,10 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
 
   describe("installed app", () => {
     // Bun 1.4.3 runs `afterAll` hooks in declaration order, also when a test timeout leaves its body running. This hook must come before the fixture root removal.
-    let owned: OwnedProcess | undefined;
-    afterAll(() => owned?.stop());
+    const owned = new Set<OwnedProcess>();
+    afterAll(() => {
+      for (const app of owned) app.stop();
+    });
     useFixtureRoot();
     const found = findInstalledApp();
     const live = "app" in found ? found.app : null;
@@ -188,7 +209,8 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
     test.skipIf(reason !== null)(
       "selects Git, opens and cancels the folder picker, and reads the status regions",
       async () => {
-        const app = (owned = startInstalledApp(live!, appEnv(fixtureDir("app"), false)));
+        const app = startInstalledApp(live!, appEnv(fixtureDir("app"), false));
+        owned.add(app);
         try {
           // A new profile holds no Git selection, so the boot view offers Select Git. Its task dialog names the Git that the host finds.
           const label = "selects Git, opens and cancels the folder picker";
@@ -215,6 +237,88 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
         }
       },
       APP_TEST_TIMEOUT_MS,
+    );
+
+    // T241 needs no keyboard focus, so a locked session does not skip it.
+    const repoReason = live === null ? (found as { skip: string }).skip : GIT === null ? "Git executable absent" : null;
+    if (repoReason !== null) console.log(`SKIP T241 names: ${repoReason}`);
+
+    test.skipIf(repoReason !== null)(
+      "T241: opens a fixture repository through UIA patterns and resolves the workbench names",
+      async () => {
+        const repo = fixtureDir("repo");
+        fixtureGit(GIT!, repo, ["init", "-q"]);
+        writeFileSync(join(repo, "a.txt"), "one\ntwo\nthree\n");
+        fixtureGit(GIT!, repo, ["add", "a.txt"]);
+        fixtureGit(GIT!, repo, ["commit", "-q", "-m", "first"]);
+        writeFileSync(join(repo, "a.txt"), "one\nTWO\nthree\n");
+        // A git:// remote that accepts and never answers keeps a fetch running until Cancel.
+        const sockets: unknown[] = [];
+        const silent = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { open: (socket) => void sockets.push(socket), data() {} } });
+        fixtureGit(GIT!, repo, ["remote", "add", "origin", `git://127.0.0.1:${silent.port}/silent`]);
+        const top = fixtureGit(GIT!, repo, ["rev-parse", "--show-toplevel"]).trimEnd();
+        const app = startInstalledApp(live!, appEnv(fixtureDir("t241-app"), false));
+        owned.add(app);
+        const found = async (name: string, controlType?: number, body: (element: Element) => unknown = () => {}) => {
+          await using(await find(app.pid, name, MAX_WAIT_MS, controlType), body);
+          console.log(`T241_NAME ${JSON.stringify(name)} found`);
+        };
+        // A render can replace an element, so each poll finds it again. `act` runs until `done` holds.
+        const actUntil = async (name: string, controlType: number | undefined, done: (element: Element) => boolean, act: (element: Element) => void) => {
+          for (const end = performance.now() + MAX_WAIT_MS; ; await Bun.sleep(10)) {
+            const element = await find(app.pid, name, Math.max(0, Math.ceil(end - performance.now())), controlType);
+            try {
+              if (done(element)) return console.log(`T241_NAME ${JSON.stringify(name)} found`);
+              act(element);
+            } catch (error) {
+              if (!(error instanceof UiaError && error.hresult === UIA_E_ELEMENTNOTAVAILABLE)) throw error;
+            } finally {
+              element.release();
+            }
+            if (performance.now() >= end) throw new Error(`${JSON.stringify(name)} did not reach its state after ${MAX_WAIT_MS} ms`);
+          }
+        };
+        // Each hunk control and Fetch stay disabled until their data arrives.
+        const invokeEnabled = (name: string) => {
+          let invoked = false;
+          return actUntil(name, ControlType.Button, () => invoked, (button) => {
+            if (!isEnabled(button)) return;
+            invoke(button);
+            invoked = true;
+          });
+        };
+        try {
+          await found("Select Git", ControlType.Button, invoke);
+          await found("Use this Git", undefined, invoke);
+          await found(OPEN_FOLDER, undefined, invoke);
+          // The Windows folder picker: the Edit has the Name of its label, and its dialog window has the Name of the OK button.
+          await found("Folder:", ControlType.Edit, (field) => setValue(field, repo));
+          await found("Select Folder", ControlType.Button, invoke);
+          // `RepositorySwitcher.tsx`: the trigger label is the folder name and the Git worktree root.
+          await found(`${basename(top)}, ${top}`, ControlType.Button);
+          await found("References", ControlType.Tree);
+          // React sets `aria-selected` after the select event, so the property changes later.
+          await actUntil("Working directory, 1 working change", undefined, isSelected, select);
+          await found("Commit (Ctrl+Enter)", ControlType.Button);
+          // The renderer applies the value after the call returns.
+          await actUntil("Commit message", ControlType.Edit, (field) => readValue(field) === "T241 message", (field) => setValue(field, "T241 message"));
+          // A row click shows the file. Invoke runs the click.
+          await actUntil("a.txt", undefined, isSelected, invoke);
+          await found("Stage file (Space)", ControlType.Button);
+          await invokeEnabled("Next hunk");
+          await invokeEnabled("Stage selected hunk");
+          console.log(`STATUS_TEXT ${JSON.stringify(await waitStatus(app.pid, "Hunk staged"))}`);
+          await invokeEnabled("Fetch");
+          // The sync toolbar Cancel is named "Cancel fetch", so "Cancel" is the status bar control.
+          await found("Cancel", ControlType.Button, invoke);
+          console.log(`STATUS_TEXT ${JSON.stringify(await waitStatus(app.pid, "Fetch canceled"))}`);
+        } finally {
+          app.stop();
+          silent.stop(true);
+          expect(await waitExit(app)).not.toBeNull();
+        }
+      },
+      T241_TEST_TIMEOUT_MS,
     );
   });
 });

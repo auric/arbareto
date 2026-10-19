@@ -70,7 +70,7 @@ function lib(): ReturnType<typeof open> {
   return (dlls ??= open());
 }
 
-// Windows SDK 10.0.26100.0 `UIAutomationClient.h`: GUIDs, IDs, and the C vtable slot of each method.
+// Windows SDK 10.0.19041.0 `UIAutomationClient.h`: GUIDs, IDs, and the C vtable slot of each method.
 // The Windows 7 `CUIAutomation` has no connection bound, so `ElementFromHandle` on a stuck window thread can block for more than 60 s.
 const CLSID_CUIAutomation8 = "e22ad333-b25f-460c-83d0-0581107395c9";
 const IID_IUIAutomation2 = "34723aff-0c9d-49d0-9896-7ab52df8cd8a";
@@ -82,10 +82,13 @@ const UIA_InvokePatternId = 10000;
 const UIA_ValuePatternId = 10002;
 const UIA_SelectionItemPatternId = 10010;
 const UIA_TextPatternId = 10014;
+const UIA_ControlTypePropertyId = 30003;
 const UIA_NamePropertyId = 30005;
 const UIA_LiveSettingPropertyId = 30135;
 // `UIAutomationCore.h` enum LiveSetting.
 const Polite = 1;
+// `UIAutomationClient.h` control type IDs for the `controlType` argument of `find`.
+export const ControlType = { Button: 50000, Edit: 50004, Tree: 50023 } as const;
 const TreeScope_Descendants = 0x4;
 const SLOT = {
   // IUnknown
@@ -96,6 +99,7 @@ const SLOT = {
   get_RawViewWalker: 16,
   CreateTrueCondition: 21,
   CreatePropertyCondition: 23,
+  CreateAndCondition: 25,
   // IUIAutomation2
   put_ConnectionTimeout: 61,
   put_TransactionTimeout: 63,
@@ -108,6 +112,7 @@ const SLOT = {
   GetCurrentPatternAs: 14,
   get_CurrentProcessId: 20,
   get_CurrentName: 23,
+  get_CurrentIsEnabled: 28,
   // IUIAutomationElementArray
   get_Length: 3,
   GetElement: 4,
@@ -118,6 +123,7 @@ const SLOT = {
   get_CurrentIsSelected: 6,
   // IUIAutomationValuePattern
   SetValue: 3,
+  get_CurrentValue: 4,
   // IUIAutomationTextPattern
   get_DocumentRange: 7,
   // IUIAutomationTextRange
@@ -169,7 +175,7 @@ function release(self: Pointer | null): void {
   if (self !== null) slotCall(self, SLOT.Release, [], []);
 }
 
-function bstr(name: "get_CurrentName" | "GetText", self: Pointer, args: FFIType[], values: unknown[]): string {
+function bstr(name: "get_CurrentName" | "GetText" | "get_CurrentValue", self: Pointer, args: FFIType[], values: unknown[]): string {
   const text = outCall(self, name, args, values);
   if (text === null) return "";
   try {
@@ -318,19 +324,32 @@ function eachWindow<T>(processId: number, search: (window: Pointer) => T | null)
   return null;
 }
 
-// The first descendant in tree order whose Name equals `name`. UI Automation also shows an owned dialog as a descendant of its owner window.
-export async function find(processId: number, name: string, timeoutMs: number): Promise<Element> {
+// The first descendant in tree order whose Name equals `name`, and whose control type equals `controlType` when given. UI Automation also shows an owned dialog as a descendant of its owner window.
+export async function find(processId: number, name: string, timeoutMs: number, controlType?: number): Promise<Element> {
   checkArgs(processId, name, timeoutMs);
+  if (controlType !== undefined && !Object.values(ControlType).includes(controlType as never)) throw new UiaError("BAD_ARGUMENT", `controlType ${controlType}`);
   const byName = propertyCondition(UIA_NamePropertyId, name);
+  let condition = byName;
+  if (controlType !== undefined) {
+    let byType: Pointer | null = null;
+    try {
+      byType = propertyCondition(UIA_ControlTypePropertyId, controlType);
+      condition = outCall(uia(), "CreateAndCondition", [P, P], [byName, byType])!;
+    } finally {
+      // The And condition holds its own references.
+      release(byType);
+      release(byName);
+    }
+  }
   try {
     return await poll(timeoutMs, `no element named ${JSON.stringify(name)} in process ${processId}`, () =>
       eachWindow(processId, (window) => {
-        const found = outCall(window, "FindFirst", [i32, P], [TreeScope_Descendants, byName]);
+        const found = outCall(window, "FindFirst", [i32, P], [TreeScope_Descendants, condition]);
         return found === null ? null : new Element(found);
       }),
     );
   } finally {
-    release(byName);
+    release(condition);
   }
 }
 
@@ -404,6 +423,17 @@ export function setValue(element: Element, text: string): void {
       lib().oleaut32.SysFreeString(value);
     }
   });
+}
+
+// Chromium maps `disabled` and `aria-disabled="true"` to IsEnabled false.
+export function isEnabled(element: Element): boolean {
+  const value = new Int32Array(1);
+  hr("get_CurrentIsEnabled", slotCall(element.self, SLOT.get_CurrentIsEnabled, [P], [ptr(value)]));
+  return value[0] !== 0;
+}
+
+export function readValue(element: Element): string {
+  return withPattern(element, UIA_ValuePatternId, IID_IUIAutomationValuePattern, "Value", (self) => bstr("get_CurrentValue", self, [], []));
 }
 
 // The Text pattern text, or else the Names of all descendants in tree order, joined without a separator.

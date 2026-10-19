@@ -242,17 +242,27 @@ function d4(h: GitHost, repo: string, branch: string): D4Result {
   if (record === undefined) return none("no-record", false);
   const [, , upstream, upRemote, upRef, push, pushRemote, pushRef] = record as string[];
   const panel = upstream === "";
+  // builtin/push.c `git_push_config` reads each `push.autoSetupRemote` entry with `git_config_bool`; `--type=bool` exits 128 on the same values.
+  const auto = run(h, repo, ["config", "--type=bool", "--get-all", "push.autoSetupRemote"]);
+  if (auto.exitCode !== 0 && auto.exitCode !== 1) return none("invalid-config", panel);
+  // remote.c `set_merge` keeps the merge entries only with `branch.<name>.remote`.
+  const hasMerge = configValue(h, repo, ["--get", `branch.${branch}.remote`]) !== null && run(h, repo, ["config", "--get-all", `branch.${branch}.merge`]).exitCode === 0;
+  const autoUpstream = stdoutLines(auto).includes("true") && !hasMerge;
   const remotes = gitOut(h, repo, ["remote"]).split("\n").filter((r) => r !== "");
   const R = pushRemote === "" ? "origin" : pushRemote!;
   if (pushRemote === "" && !remotes.includes(R)) return none(null, true);
+  if (R === ".") return none("local-push-remote", panel, "local-push-remote");
   if (!remotes.includes(R)) return none("remote-missing", panel);
   if (configValue(h, repo, ["--type=bool", "--get", `remote.${R}.mirror`]) === "true") return none("mirror", panel, "mirror");
   let dst: string | null;
   const mode = configValue(h, repo, ["--get", "push.default"]) ?? "simple";
   if (pushRef !== "") dst = pushRef!;
   else if (mode === "current") dst = ref;
-  else if (mode === "simple") dst = (configValue(h, repo, ["--get", `branch.${branch}.remote`]) ?? "origin") !== R || push !== "" ? ref : null;
-  else if (mode === "upstream" || mode === "tracking") {
+  else if (mode === "simple") dst = (configValue(h, repo, ["--get", `branch.${branch}.remote`]) ?? "origin") !== R || push !== "" || autoUpstream ? ref : null;
+  else if ((mode === "upstream" || mode === "tracking") && autoUpstream) {
+    if ((configValue(h, repo, ["--get", `branch.${branch}.remote`]) ?? "origin") !== R) return none("push-remote-differs", panel);
+    dst = ref;
+  } else if (mode === "upstream" || mode === "tracking") {
     if (upRemote !== R) return none("push-remote-differs", panel);
     dst = upstream === "" ? null : upRef!;
   } else if (mode === "matching") return none(null, true, "matching");

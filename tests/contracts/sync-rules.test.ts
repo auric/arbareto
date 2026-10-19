@@ -174,6 +174,52 @@ describe("D4 push destination", () => {
     });
   });
 
+  // T005 (d) `push.autoSetupRemote+<mode>/noup` on 2.56.0.windows.2: Git pushes refs/heads/noup to origin and would set the upstream, except under matching and nothing.
+  describe("push.autoSetupRemote (builtin/push.c get_upstream_ref)", () => {
+    const at = (config: Config, over: Partial<PushRecord> = {}) => decidePushDestination(record({ branch: "noup", upstream: "", upstreamRemote: "", upstreamRemoteRef: "", push: "", pushRemote: "", ...over }), REMOTES, cfg(config));
+    const prefill = (source: PushDestination["source"], trackingRef: string | null = null): PushDecision => ({ kind: "panel", prefill: { remote: "origin", ref: "refs/heads/noup", trackingRef, source } });
+    const on: Config = [["push.autosetupremote", "true"]];
+
+    test("simple, unset, upstream, and tracking pre-fill refs/heads/<branch> on the push remote", () => {
+      expect(at(on)).toEqual(prefill("push-default-branch"));
+      expect(at([...on, ["push.default", "simple"]])).toEqual(prefill("push-default-branch"));
+      for (const value of ["upstream", "tracking"]) expect(at([...on, ["push.default", value]])).toEqual(prefill("push-default-upstream"));
+      expect(at([...on, ["push.default", "current"]], { push: "refs/remotes/origin/noup" })).toEqual(prefill("push-default-branch", "refs/remotes/origin/noup"));
+    });
+
+    test("matching gives the panel and nothing gives no pre-fill", () => {
+      expect(at([...on, ["push.default", "matching"]])).toEqual({ kind: "panel", prefill: null });
+      expect(at([...on, ["push.default", "nothing"]])).toEqual({ kind: "panel", prefill: null });
+    });
+
+    test("any true entry sets the flag, and a false entry does not clear it", () => {
+      expect(at([["push.autosetupremote", "true"], ["push.autosetupremote", "false"]])).toEqual(prefill("push-default-branch"));
+      expect(at([["push.autosetupremote", "false"], ["push.autosetupremote", null]])).toEqual(prefill("push-default-branch"));
+      expect(at([["push.autosetupremote", "false"]])).toEqual({ kind: "panel", prefill: null });
+    });
+
+    test("an invalid value gives invalid-config, also with an upstream", () => {
+      const invalid: PushDecision = { kind: "refused", reason: "invalid-config" };
+      expect(at([["push.autosetupremote", "maybe"]])).toEqual(invalid);
+      expect(decide({}, [["push.autosetupremote", "true"], ["push.autosetupremote", "maybe"]])).toEqual(invalid);
+    });
+
+    test("merge entries count only with branch.<name>.remote (remote.c set_merge)", () => {
+      expect(at([...on, ["branch.noup.merge", "refs/heads/noup"]])).toEqual(prefill("push-default-branch"));
+      expect(at([...on, ["branch.noup.remote", "origin"], ["branch.noup.merge", "refs/heads/gone"]])).toEqual({ kind: "panel", prefill: null });
+    });
+
+    test("upstream and tracking compare the push remote with the fetch remote", () => {
+      expect(at([...on, ["push.default", "upstream"]], { pushRemote: "fork" })).toEqual({ kind: "panel", prefill: null });
+      expect(at([...on, ["push.default", "upstream"], ["branch.noup.remote", "fork"]], { pushRemote: "fork" })).toEqual({ kind: "panel", prefill: { remote: "fork", ref: "refs/heads/noup", trackingRef: null, source: "push-default-upstream" } });
+    });
+  });
+
+  test("a push remote . gives local-push-remote (R16 d)", () => {
+    expect(decide({ pushRemote: "." })).toEqual({ kind: "refused", reason: "local-push-remote" });
+    expect(decide({ pushRemote: "." }, [], [".", "origin"])).toEqual({ kind: "refused", reason: "local-push-remote" });
+  });
+
   test("an empty %(upstream) gives the panel, pre-filled with the destination", () => {
     expect(decide({ upstream: "", upstreamRemote: "", upstreamRemoteRef: "" }, [["push.default", "current"]])).toEqual({ kind: "panel", prefill: branchDest.destination });
     expect(decide({ upstream: "", upstreamRemote: "", upstreamRemoteRef: "", push: "", pushRemote: "" })).toEqual({ kind: "panel", prefill: null });

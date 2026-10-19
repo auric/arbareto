@@ -516,9 +516,15 @@ export const PUSH_VARIANTS: PushVariant[] = [
 
 // T089 variants for fact (d) only. The service matrix in `sync-push.test.ts` does not hold them.
 export const PUSH_FACT_VARIANTS: PushVariant[] = [
-  // T089: builtin/push.c `get_upstream_ref` takes `refs/heads/<branch>` for a branch without `branch.<name>.merge` under `push.autoSetupRemote`.
-  { name: "push.autoSetupRemote/noup", branch: "noup", config: [["push.autoSetupRemote", "true"]] },
-  { name: "push.autoSetupRemote+upstream/noup", branch: "noup", config: [["push.autoSetupRemote", "true"], ["push.default", "upstream"]] },
+  // T089, T091: builtin/push.c `get_upstream_ref` takes `refs/heads/<branch>` for a branch without `branch.<name>.merge` under `push.autoSetupRemote`.
+  ...["unset", "simple", "upstream", "tracking", "current", "matching", "nothing"].map((value): PushVariant => ({ name: `push.autoSetupRemote+${value}/noup`, branch: "noup", config: [["push.autoSetupRemote", "true"], ...(value === "unset" ? [] : [["push.default", value] as const])] })),
+  // builtin/push.c `git_push_config`: a false entry does not clear the flag that a true entry set.
+  { name: "push.autoSetupRemote=true,false/noup", branch: "noup", config: [["push.autoSetupRemote", "true"], ["push.autoSetupRemote", "false"]] },
+  { name: "push.autoSetupRemote=maybe/noup", branch: "noup", config: [["push.autoSetupRemote", "maybe"]] },
+  // remote.c `set_merge` drops the merge entries of a branch without `branch.<name>.remote`.
+  { name: "push.autoSetupRemote+merge-without-remote/noup", branch: "noup", config: [["push.autoSetupRemote", "true"], ["branch.noup.merge", "refs/heads/noup"]] },
+  { name: "push.autoSetupRemote+remote-and-merge/noup", branch: "noup", config: [["push.autoSetupRemote", "true"], ["branch.noup.remote", "origin"], ["branch.noup.merge", "refs/heads/gone"]] },
+  { name: "push.autoSetupRemote+upstream+push-remote/noup", branch: "noup", config: [["push.autoSetupRemote", "true"], ["push.default", "upstream"], ["branch.noup.pushRemote", "second"]] },
   // remote.c `remotes_remote_get_1` uses the name of a remote without a URL as its URL (`add_url_alias`).
   { name: "remote-without-url/topic", branch: "topic", config: [["branch.topic.remote", "nourl"], ["remote.nourl.fetch", "+refs/heads/*:refs/remotes/nourl/*"]] },
   { name: "remote-without-url+insteadOf/topic", branch: "topic", config: [["branch.topic.remote", "nourl"], ["remote.nourl.fetch", "+refs/heads/*:refs/remotes/nourl/*"], ["url.{second}.insteadOf", "nourl"]] },

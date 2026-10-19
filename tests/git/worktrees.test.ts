@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type { ProcessContext } from "../../src/git-service/git-runner";
 import type { ObserveContext } from "../../src/git-service/hunk-publish";
 import type { Workspace } from "../../src/git-service/registration";
+import { STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, removeTree, useFixtureRoot } from "./fixture-root";
 import { put } from "./fixtures";
@@ -549,4 +550,52 @@ caseTest("T060", "FR-055 and git-worktree(1): a clean worktree with an initializ
   });
   git(o, ["worktree", "remove", "--force", "--", recordPath(o, "wt with spaces")]);
   expect(stateOf(f)).toEqual(stateOf(o));
+}, TIMEOUT_MS);
+
+// Contract Δ3 `worktree-remove` "Submodules": the gitlink stream of `ls-files -z --stage`. The records come in chunks of one to seven bytes.
+caseTest("T060", "the gitlink stream keeps only the gitlinks in any chunk split, gives null for a path that is no UTF-8, and marks each record that breaks the form", [], async () => {
+  const A = "a".repeat(40);
+  const rec = (mode: string, path: Uint8Array | string, oid = A, stage = "0") => Buffer.concat([Buffer.from(`${mode} ${oid} ${stage}\t`), Buffer.from(path), Buffer.of(0)]);
+  const feed = (bytes: Uint8Array, step: number) => {
+    const s = worktrees.gitlinkStream("sha1");
+    for (let at = 0; at < bytes.length && !s.limited; at += step) s.push(bytes.subarray(at, at + step));
+    return { paths: s.paths, broken: s.broken, partial: s.partial, bound: s.bound };
+  };
+  const good = Buffer.concat([rec("100644", "f.txt"), rec("160000", "lib"), rec("120000", "l"), rec("160000", Buffer.of(0x73, 0xff)), rec("160000", "ü/x")]);
+  for (const step of [1, 2, 3, 7, good.length]) expect(feed(good, step)).toEqual({ paths: ["lib", null, "ü/x"], broken: false, partial: false, bound: null });
+  const broken: [string, Uint8Array][] = [
+    ["mode", rec("16000x", "lib")],
+    ["short object ID", rec("160000", "lib", "a".repeat(39))],
+    ["stage", rec("160000", "lib", A, "4")],
+    ["empty path", rec("160000", "")],
+    ["NUL in the fields", Buffer.from(`160000 ${A}\0`)],
+  ];
+  for (const [what, bytes] of broken) for (const step of [1, 5, bytes.length]) expect({ what, ...feed(Buffer.concat([rec("100644", "f"), bytes, rec("160000", "z")]), step) }).toMatchObject({ what, broken: true, bound: null });
+  expect(feed(good.subarray(0, good.length - 1), 4)).toMatchObject({ broken: false, partial: true });
+  // STATUS_LISTING_RECORDS gitlinks fit. One more stops the stream.
+  const many = (n: number) => Buffer.concat(Array.from({ length: n }, (_, i) => rec("160000", `m${i}`)));
+  expect(feed(many(STATUS_LISTING_RECORDS), 1 << 20)).toMatchObject({ broken: false, partial: false, bound: null });
+  expect(feed(many(STATUS_LISTING_RECORDS + 1), 1 << 20)).toMatchObject({ bound: "STATUS_LISTING_RECORDS" });
+}, TIMEOUT_MS);
+
+// An `ls-files -z --stage` listing above STATUS_LISTING_BYTES keeps no non-gitlink record. The entries have the skip-worktree bit, so the worktree stays clean without files.
+caseTest("T060", "FR-055: a clean worktree whose index listing is larger than STATUS_LISTING_BYTES gets a plan with submodules: false and a token", SHELL, async () => {
+  const f = build();
+  const dir = folder(f, "wt with spaces");
+  const blob = wb(repoOf(f, dir), ["hash-object", "-w", "--stdin"], { input: "x\n" }).stdout.toString("utf8").trim();
+  const pad = "p".repeat(1000);
+  const paths = Array.from({ length: 34_000 }, (_, i) => `big/${String(i).padStart(5, "0")}-${pad}`);
+  wb(repoOf(f, dir), ["update-index", "-z", "--index-info"], { input: paths.map((p) => `100644 ${blob}\t${p}\0`).join("") });
+  wb(repoOf(f, dir), ["update-index", "-z", "--skip-worktree", "--stdin"], { input: paths.map((p) => `${p}\0`).join("") });
+  git(f, ["commit", "-q", "-m", "big index"], [0], dir);
+  const listed = wb(repoOf(f, dir), ["ls-files", "-z", "--stage"]).stdout.length;
+  expect(listed).toBeGreaterThan(STATUS_LISTING_BYTES);
+  expect(statusCounts(f, dir)).toEqual({ tracked: 0, untracked: 0 });
+  const target = recordPath(f, "wt with spaces");
+  await withSync("t060-remove-large-index", async (service) => {
+    const r = await open(service, f.repo);
+    const rv = await reviewed(service, r, removePayload(target, false, false));
+    expect(rv.plan).toEqual({ worktree: target, branch: "refs/heads/spaces-b", head: oid(f, "refs/heads/spaces-b"), tracked: 0, untracked: 0, force: false, deleteBranch: null, submodules: false });
+    expect(steps(service)).toEqual([]);
+  });
 }, TIMEOUT_MS);

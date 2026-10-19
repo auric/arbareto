@@ -64,6 +64,7 @@ import {
 } from "./commands";
 import { unquote } from "./diff-parser";
 import { createCollector, stepUnits, type GitRunner, type WalkStop } from "./git-runner";
+import { sharedListing, type HistoryReaderOptions } from "./history";
 import { isMissing, runRead } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { ChangeSnapshot, Completeness, Head, IndexEntry, ReadInstallation } from "./snapshot";
@@ -81,6 +82,7 @@ import {
   type ConfigEntry,
   type FactEntry,
   type FileState,
+  type ListingOutcome,
   type ServiceEnvironment,
   type Trust,
   type TrustListing,
@@ -229,6 +231,8 @@ export interface ObserveTarget {
 
 export interface SubmoduleReviewTarget extends ObserveTarget {
   snapshot: ChangeSnapshot;
+  // The request generation. It selects the shared trust listing (001 contract §7 "Shared listing").
+  generation: number;
   // Feature 004 contract Δ12: the review covers this row and its nested rows.
   scope?: { path: string };
 }
@@ -503,7 +507,7 @@ export interface Observed {
   hosts: SubmoduleHostLine[];
 }
 
-export interface SubmoduleReviewerOptions {
+export interface SubmoduleReviewerOptions extends Pick<HistoryReaderOptions, "listingTuple"> {
   runner: GitRunner;
   trust: Trust;
   approvals: Approvals;
@@ -511,7 +515,7 @@ export interface SubmoduleReviewerOptions {
   now?: () => number;
 }
 
-export function createSubmoduleReviewer({ runner, trust, approvals, environment, now = () => performance.now() }: SubmoduleReviewerOptions) {
+export function createSubmoduleReviewer({ runner, trust, approvals, environment, listingTuple, now = () => performance.now() }: SubmoduleReviewerOptions) {
   const retained = new Map<string, RetainedSubmoduleReview>();
   const prune = () => {
     for (const [token, r] of retained) if (now() - r.issuedAt > APPROVAL_LIFETIME_MS) retained.delete(token);
@@ -525,7 +529,8 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
       return c.state === "limited" ? { result: "limited", code: c.code, value: { completeness: c } } : { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
     }
     const scope = t.scope === undefined ? null : new TextEncoder().encode(t.scope.path);
-    const o = observe(t, undefined, scope);
+    // Feature 004 contract Δ12: the review takes the trust listing own or shared. The update preflight always runs its own listing.
+    const o = observe(t, undefined, scope, () => sharedListing({ trust, listingTuple }, t));
     const read = await o.top({ head: s.head, indexEntries: s.indexEntries });
     if ("stop" in read) return { result: read.stop };
     if (!("value" in read)) return { result: "failed", code: read.code, ...(read.path === undefined ? {} : { value: { path: read.path } }) };
@@ -549,7 +554,13 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
 
   // One run of the review reads. `rowIds` maps base64 path bytes to retained row IDs. A row without one gets a new ID and `found`.
   // `scope`: the UTF-8 path bytes of the contract Δ12 scope row, or null for every row.
-  function observe(t: ObserveTarget, rowIds?: ReadonlyMap<string, string>, scope: Uint8Array | null = null) {
+  // `list`: the source of the superproject trust listing.
+  function observe(
+    t: ObserveTarget,
+    rowIds?: ReadonlyMap<string, string>,
+    scope: Uint8Array | null = null,
+    list: () => Promise<ListingOutcome> = () => trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: t.workspace }),
+  ) {
     const { workspace: w, installation } = t;
     const objectFormat = w.objectFormat;
     const forms = pathForms(w, installation);
@@ -562,7 +573,7 @@ export function createSubmoduleReviewer({ runner, trust, approvals, environment,
     // Contract §3: trust gating follows the read rule of §7, before any Git process inside a submodule.
     const superTrust = async (): Promise<TrustListing> => {
       if (cachedListing === null) {
-        const r = await trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
+        const r = await list();
         if (!r.ok) throw new Halt("stop" in r ? { stop: r.stop } : { code: r.code });
         cachedListing = r.listing;
       }

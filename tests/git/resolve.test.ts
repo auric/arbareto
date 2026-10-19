@@ -511,15 +511,17 @@ caseTest("T060", "plan.md D12: the class mergetool holds a repository merge.tool
       });
     }
   });
-  // XCU 2.5.3: with IFS in the service environment, the fields of the evaluated text are unknown, so the same global tool needs approval.
-  await withGlobal([["merge.tool", "global"], ["mergetool.global.cmd", `${program} "$MERGED"`]], () =>
-    withSync(
-      "t060-class-ifs",
-      async (service) => {
-        const r = await open(service, f);
-        expect((await service.readTrust(r.repositoryId)).result!.approvalRequired.mergetool).toBe(true);
-      },
-      { environment: nativeEnv({ IFS: " \t\n" }) },
-    ),
+  // git-mergetool--lib line 5 sets IFS to a newline for the whole script, so `( eval $merge_tool_cmd )` keeps a run of blanks in a quoted program path.
+  // The repository folder is `a b`, and the tool lies in the sibling folder `a  b`. A split at the blanks would name a program inside the repository.
+  const parent = fixtureDir("t060-blanks");
+  const blank: WbRepo = { git: gitExe(), dir: join(parent, "a b"), env: {} };
+  mkdirSync(blank.dir, { recursive: true });
+  git(blank, ["init", "-q", "-b", "main"]);
+  const tool = put(join(parent, "a  b"), "tool.sh", "#!/bin/sh\nexit 0\n").replaceAll("\\", "/");
+  await withGlobal([["merge.tool", "blanks"], ["mergetool.blanks.cmd", `'${tool}' "$MERGED"`]], () =>
+    withSync("t060-class-blanks", async (service) => {
+      const r = await open(service, blank);
+      expect((await service.readTrust(r.repositoryId)).result!.approvalRequired.mergetool).toBe(false);
+    }),
   );
 }, TIMEOUT_MS);

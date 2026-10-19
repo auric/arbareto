@@ -44,8 +44,10 @@ interface Reviewed {
 }
 
 // `holds`: the upstream ref points at HEAD. `behind`: it points at the parent of HEAD. `absent`: the configuration names an upstream, and no such ref exists.
-// `none`: the branch has no upstream.
-type Upstream = "holds" | "behind" | "absent" | "none";
+// `untracked`: `branch.main.merge` is set, and no fetch refspec stores it as a remote-tracking branch, so `%(upstream)` is empty. `none`: the branch has no upstream.
+type Upstream = "holds" | "behind" | "absent" | "untracked" | "none";
+// The `branch.main.merge` value: the branch on the remote.
+const MERGE = "refs/heads/main";
 
 const git = (r: WbRepo, args: string[], allowExit: readonly number[] = [0], input?: string) => wb(r, args, { allowExit, ...(input === undefined ? {} : { input }) });
 const text = (r: WbRepo, args: string[]) => git(r, args).stdout.toString("utf8");
@@ -67,10 +69,10 @@ function build(tag: string, upstream: Upstream = "none"): WbRepo {
   if (upstream !== "none") {
     // `%(upstream)` maps `branch.main.merge` through the fetch refspec of the remote (git-for-each-ref(1)). No fetch runs.
     git(r, ["config", "remote.origin.url", "https://host.invalid/origin.git"]);
-    git(r, ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]);
+    if (upstream !== "untracked") git(r, ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"]);
     git(r, ["config", "branch.main.remote", "origin"]);
-    git(r, ["config", "branch.main.merge", "refs/heads/main"]);
-    if (upstream !== "absent") git(r, ["update-ref", UPSTREAM, upstream === "holds" ? "HEAD" : "HEAD~1"]);
+    git(r, ["config", "branch.main.merge", MERGE]);
+    if (upstream === "holds" || upstream === "behind") git(r, ["update-ref", UPSTREAM, upstream === "holds" ? "HEAD" : "HEAD~1"]);
   }
   return r;
 }
@@ -124,11 +126,12 @@ const RECHECK = [...READ, "rev-parse", "--is-bare-repository", "--is-inside-git-
 const reviewSteps = (service: Service, from: number) => argsOf(service, from).filter((a) => !Bun.deepEquals(a, RECHECK));
 const amendReads = (service: Service, from: number) => argsOf(service, from).filter((a) => a.includes("--format=%(upstream)") || a.includes(UPSTREAM));
 // The upstream facts of a review: the full ref and whether the repository holds it.
-const upstreamOf = (upstream: Upstream) => (upstream === "none" ? null : { name: UPSTREAM, present: upstream !== "absent" });
-const REWRITES: Record<Upstream, boolean | "unknown"> = { holds: true, behind: false, absent: "unknown", none: false };
+// An untracked upstream has no local ref, so its name is the `branch.main.merge` value.
+const upstreamOf = (upstream: Upstream) => (upstream === "none" ? null : upstream === "untracked" ? { name: MERGE, present: false } : { name: UPSTREAM, present: upstream !== "absent" });
+const REWRITES: Record<Upstream, boolean | "unknown"> = { holds: true, behind: false, absent: "unknown", untracked: "unknown", none: false };
 
 caseTest(TASK, "FR-098 and contract Δ3: reviewCommit with amend returns the HEAD message from cat-file commit, the upstream, and rewritesUpstream from show-ref --exists and merge-base --is-ancestor; an empty staged scope still gets a token", SHELL, async () => {
-  for (const upstream of ["none", "behind", "holds", "absent"] as const) {
+  for (const upstream of ["none", "behind", "holds", "absent", "untracked"] as const) {
     const f = build(`review-${upstream}`, upstream);
     await withSync(`t054-review-${upstream}`, async (service) => {
       const reg = await open(service, f);
@@ -146,8 +149,8 @@ caseTest(TASK, "FR-098 and contract Δ3: reviewCommit with amend returns the HEA
       // git-show-ref(1) `--exists`: exit 2 for a missing ref, so no merge-base read follows.
       const reads = [
         [...READ, "for-each-ref", "--format=%(upstream)", "refs/heads/main"],
-        ...(upstream === "none" ? [] : [[...READ, "show-ref", "--exists", UPSTREAM]]),
-        ...(upstream === "none" || upstream === "absent" ? [] : [[...READ, "merge-base", "--is-ancestor", "HEAD", UPSTREAM]]),
+        ...(upstream === "none" || upstream === "untracked" ? [] : [[...READ, "show-ref", "--exists", UPSTREAM]]),
+        ...(upstream === "holds" || upstream === "behind" ? [[...READ, "merge-base", "--is-ancestor", "HEAD", UPSTREAM]] : []),
       ];
       expect({ upstream, reads: amendReads(service, from) }).toEqual({ upstream, reads });
     });
@@ -221,6 +224,24 @@ caseTest(TASK, "FR-100 and contract Δ3: an upstream ref that show-ref --exists 
     expect(again.result.amend?.rewritesUpstream).toBe("unknown");
     expect(outcome(await commit(service, reg, again, NEW_MESSAGE, { amend: true, confirmRewrite: true }))).toEqual(SUCCEEDED);
     expect(commitCalls(service)).toEqual([[L, "commit", "--quiet", "--amend", "--file=-"]]);
+  });
+  git(o, ["commit", "--quiet", "--amend", "--file=-"], [0], NEW_MESSAGE);
+  expect(stateOf(f)).toEqual(stateOf(o));
+}, TIMEOUT_MS);
+
+// remote.c `branch_get_upstream`: `%(upstream)` is empty also for a `branch.main.merge` value that no fetch refspec stores as a remote-tracking branch.
+// The branch still has an upstream on the remote, which can hold HEAD, so the review must not report "no upstream".
+caseTest(TASK, "FR-100: an upstream that Git does not store as a remote-tracking branch gives rewritesUpstream unknown with the branch.main.merge name, and the amend needs confirmRewrite: true", SHELL, async () => {
+  const f = build("untracked", "untracked");
+  const o = build("untracked", "untracked");
+  expect(text(f, ["for-each-ref", "--format=%(upstream)", "refs/heads/main"])).toBe("\n");
+  await withSync("t054-untracked", async (service) => {
+    const reg = await open(service, f);
+    const r = await reviewed(service, reg);
+    expect(r.result.amend).toMatchObject({ upstream: { name: MERGE, present: false }, rewritesUpstream: "unknown" });
+    expect(outcome(await commit(service, reg, r, NEW_MESSAGE))).toEqual({ state: "rejected", code: "INVALID_REQUEST" });
+    expect(commitCalls(service)).toEqual([]);
+    expect(outcome(await commit(service, reg, r, NEW_MESSAGE, { amend: true, confirmRewrite: true }))).toEqual(SUCCEEDED);
   });
   git(o, ["commit", "--quiet", "--amend", "--file=-"], [0], NEW_MESSAGE);
   expect(stateOf(f)).toEqual(stateOf(o));

@@ -1378,8 +1378,10 @@ const WorktreeRemovePlan = z
     untracked: Count,
     force: z.boolean(),
     deleteBranch: z.strictObject({ ref: FullRef, oid: ObjectId, onlyHere: Count, reflogKeeps: z.boolean() }).meta({ title: "WorktreeBranchDelete" }).nullable(),
+    // git-worktree(1): a worktree with submodules needs `--force`, as one with changes does.
+    submodules: z.boolean(),
   })
-  .refine((p) => (p.deleteBranch === null || p.deleteBranch.ref === p.branch) && (!p.force || p.tracked + p.untracked > 0))
+  .refine((p) => (p.deleteBranch === null || p.deleteBranch.ref === p.branch) && (!p.force || p.tracked + p.untracked > 0 || p.submodules))
   .meta({ title: "WorktreeRemovePlan" });
 // Spec FR-057. `reason` is Git's untrusted text.
 const WorktreePrunePlan = z

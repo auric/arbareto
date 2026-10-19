@@ -290,7 +290,7 @@ caseTest(TASK, "FR-055 and SC-008: a dirty worktree states both counts and needs
   const files = workingFileDigests(folder(f, "wt-dirty"));
   await withSync("t049-remove-dirty", async (service) => {
     const r = await open(service, f.repo);
-    const plan = { worktree: dirty, branch: "refs/heads/dirty-b", head: f.oids.base, ...counts, force: false, deleteBranch: null };
+    const plan = { worktree: dirty, branch: "refs/heads/dirty-b", head: f.oids.base, ...counts, force: false, deleteBranch: null, submodules: false };
     expect(refused(await review(service, r, removePayload(dirty, false, false)))).toEqual(unavailable("dirty-tree", { plan }));
     expect(workingFileDigests(folder(f, "wt-dirty"))).toEqual(files);
     expect(steps(service)).toEqual([]);
@@ -508,4 +508,45 @@ caseTest("T060", "plan.md O-20: worktree-remove takes the trust listing of the t
     expect(outcome(response)).toEqual(SUCCEEDED);
     expect(response.result!.worktrees).not.toContain(target);
   });
+}, TIMEOUT_MS);
+
+// git-worktree(1) `remove`: "Unclean worktrees or ones with submodules can be removed with --force." builtin/worktree.c `validate_no_submodules` refuses
+// a worktree whose administration folder holds `modules`, or whose index holds a gitlink of a populated submodule.
+caseTest("T060", "FR-055 and git-worktree(1): a clean worktree with an initialized submodule states it in the plan and needs force: true; then the remove equals Git's own worktree remove --force on a copy", SHELL, async () => {
+  const withSubmodule = (x: WbFixture) => {
+    const origin = join(x.root, "sub-origin");
+    mkdirSync(origin, { recursive: true });
+    git(x, ["init", "-q", "-b", "main"], [0], origin);
+    put(origin, "s.txt", "sub\n");
+    git(x, ["add", "--", "s.txt"], [0], origin);
+    git(x, ["commit", "-q", "-m", "sub"], [0], origin);
+    const dir = folder(x, "wt with spaces");
+    // git-submodule(1): without a remote, a relative URL resolves against the working folder, so both builds write the same `.gitmodules`.
+    git(x, ["-c", "protocol.file.allow=always", "submodule", "add", "--quiet", "--", "../sub-origin", "lib"], [0], dir);
+    git(x, ["commit", "-q", "-m", "add lib"], [0], dir);
+    // The local configuration holds the absolute URL of each build. Git's submodule check reads no such key.
+    git(x, ["config", "--remove-section", "submodule.lib"]);
+  };
+  const f = build();
+  const o = build();
+  for (const x of [f, o]) withSubmodule(x);
+  expect(statusCounts(f, folder(f, "wt with spaces"))).toEqual({ tracked: 0, untracked: 0 });
+  // Git's own remove without --force refuses on the copy, and the worktree stays.
+  expect(wb(repoOf(o), ["worktree", "remove", "--", recordPath(o, "wt with spaces")], { allowExit: "any" }).exitCode).not.toBe(0);
+  expect(existsSync(folder(o, "wt with spaces"))).toBe(true);
+  const target = recordPath(f, "wt with spaces");
+  await withSync("t060-remove-submodule", async (service) => {
+    const r = await open(service, f.repo);
+    const plan = { worktree: target, branch: "refs/heads/spaces-b", head: oid(f, "refs/heads/spaces-b"), tracked: 0, untracked: 0, force: false, deleteBranch: null, submodules: true };
+    expect(refused(await review(service, r, removePayload(target, false, false)))).toEqual(unavailable("dirty-tree", { plan }));
+    expect(steps(service)).toEqual([]);
+    const rv = await reviewed(service, r, removePayload(target, true, false));
+    expect(rv.plan).toEqual({ ...plan, force: true });
+    const from = service.runner.calls.length;
+    const response = await service.response<WorktreeRun>(sendRun(service, r, rv.workbenchToken));
+    expect(outcome(response)).toEqual(SUCCEEDED);
+    expect(steps(service, from)).toEqual([[L, "worktree", "remove", "--force", "--", target]]);
+  });
+  git(o, ["worktree", "remove", "--force", "--", recordPath(o, "wt with spaces")]);
+  expect(stateOf(f)).toEqual(stateOf(o));
 }, TIMEOUT_MS);

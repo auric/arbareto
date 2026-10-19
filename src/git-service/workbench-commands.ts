@@ -99,6 +99,11 @@ export function worktreeHooksPathArgs(path: string): string[] {
   return read("-C", item(path), "rev-parse", "--git-path", "hooks");
 }
 
+// git-worktree(1) `remove`: the index entries of another worktree, for its gitlinks.
+export function worktreeIndexArgs(path: string): string[] {
+  return read("-C", item(path), "ls-files", "-z", "--stage");
+}
+
 // git-rev-parse(1): the top level, the administration folder, and the common folder of another worktree, one line each. It loads no index.
 export function worktreeLayoutArgs(path: string): string[] {
   return read("-C", item(path), "rev-parse", "--show-toplevel", "--absolute-git-dir", "--path-format=absolute", "--git-common-dir");

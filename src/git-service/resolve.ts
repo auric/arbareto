@@ -9,7 +9,7 @@ import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, REF_LISTING_BYTES, REF_LISTING_RE
 import { isObjectId } from "./commands";
 import { createCollector, stepUnits } from "./git-runner";
 import { settled, stepOf, wholeWorking, type Fact } from "./hunk-publish";
-import { latin1 } from "./read-steps";
+import { latin1, strictUtf8 } from "./read-steps";
 import type { OperationState, WorkingVersion } from "./snapshot";
 import { changes } from "./sync";
 import { observe } from "./sync-integrate";
@@ -28,7 +28,6 @@ const REGULAR = new Set(["100644", "100755"]);
 // git-checkout(1) `--ours` and `--theirs`: stage 2 and stage 3.
 const SIDE_STAGE = { ours: 2, theirs: 3 } as const;
 const MALFORMED = { code: "MALFORMED_GIT_OUTPUT" } as const;
-const UTF8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 // Display text only: a ref name can hold bytes that are no valid UTF-8 (git-check-ref-format(1)).
 const DISPLAY = new TextDecoder("utf-8", { ignoreBOM: true });
 const read = (...args: string[]): string[] => ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs", ...args];
@@ -144,7 +143,7 @@ async function observeResolve(ctx: WorkbenchContext, p: ResolvePayload, common: 
   const bytes = new Uint8Array(Buffer.from(e.pathBytes, "base64"));
   let path: string;
   try {
-    path = UTF8.decode(bytes);
+    path = strictUtf8.decode(bytes);
   } catch {
     return unavailable("path");
   }

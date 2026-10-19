@@ -106,6 +106,25 @@
                         ],
                         "additionalProperties": false,
                         "title": "ConfiguredHookName"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "folder": {
+                            "type": "string",
+                            "pattern": "^[^\\u0000]*$"
+                          },
+                          "unlisted": {
+                            "type": "boolean",
+                            "const": true
+                          }
+                        },
+                        "required": [
+                          "folder",
+                          "unlisted"
+                        ],
+                        "additionalProperties": false,
+                        "title": "UnlistedHooksFolder"
                       }
                     ]
                   }

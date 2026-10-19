@@ -149,18 +149,23 @@ describe("WSL reads (T208)", () => {
     CASE_TIMEOUT_MS,
   );
 
+  // Feature 004 spec FR-071 and contract Δ7 (trust version 2): an approval binds the folders and the selected Git, not the program bytes,
+  // and a repository listing sends phase-1 `fileFacts` requests only. Only a submodule listing reads digests.
   wslTest(
-    "program-file digests come from the WSL fileFacts probe, and an edit gives TRUST_CHANGED",
+    "a repository listing reads the program file with phase-1 fileFacts only, and an edit of the program keeps the approval",
     NEEDS,
     async (host) => {
       const f25 = buildF25(host);
-      const { s } = setup(host);
+      const { runner, s } = setup(host);
       const w = await register(s, uncPath(host, f25.filter.dir));
       expect(await read(s, w, "readWorkspace", { refresh: false, check: "full" })).toMatchObject({ code: "TRUST_REQUIRED" });
       await approve(s, w);
       expect(await read(s, w, "readWorkspace", { refresh: false, check: "full" })).toMatchObject({ state: "succeeded" });
       writeLinux(host, `${f25.filter.dir}/clean.sh`, "#!/bin/sh\nexec cat\n", "755");
-      expect(await read(s, w, "readWorkspace", { refresh: false, check: "full" })).toMatchObject({ code: "TRUST_CHANGED" });
+      expect(await read(s, w, "readWorkspace", { refresh: false, check: "full" })).toMatchObject({ state: "succeeded" });
+      const calls = runner.fileFactCalls.filter((c) => c.repositoryId === w.repositoryId);
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.filter((c) => c.digest)).toEqual([]);
     },
     CASE_TIMEOUT_MS,
   );

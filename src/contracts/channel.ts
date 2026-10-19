@@ -765,8 +765,13 @@ const dialogNames = <T extends z.ZodType>(item: T) => z.strictObject({ names: z.
 // `other` names each other program key and the keys `core.hooksPath` and `protocol.allow`. Contract Δ6 lists no kind for them.
 export const TrustDetails = z
   .strictObject({
+    // Plan.md D14: `unlisted` names a hooks folder that the listing cannot read, so approval is needed without a named hook.
     hooks: dialogNames(
-      z.union([z.strictObject({ event: Text, folder: Text }).meta({ title: "FolderHookName" }), z.strictObject({ event: Text, scope: ConfigScope }).meta({ title: "ConfiguredHookName" })]),
+      z.union([
+        z.strictObject({ event: Text, folder: Text }).meta({ title: "FolderHookName" }),
+        z.strictObject({ event: Text, scope: ConfigScope }).meta({ title: "ConfiguredHookName" }),
+        z.strictObject({ folder: Text, unlisted: z.literal(true) }).meta({ title: "UnlistedHooksFolder" }),
+      ]),
     ),
     filters: dialogNames(z.strictObject({ driver: Text, scope: ConfigScope })),
     monitors: dialogNames(z.strictObject({ scope: ConfigScope })),

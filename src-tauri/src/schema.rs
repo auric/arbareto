@@ -166,7 +166,8 @@ pub fn trust_request(
         ],
     )?;
     match &request {
-        // typify drops the `policyVersion: 2` constant, the 20-name bound of each `details` kind, and the `more` range (feature 004 contract Δ5 and Δ6).
+        // typify drops the `policyVersion: 2` constant, the 20-name bound of each `details` kind, the `more` range, and the `unlisted: true`
+        // constant of a hooks item (feature 004 contract Δ5 and Δ6, plan D14).
         TrustRequest::Confirm { .. }
             if value["policyVersion"].as_u64() != Some(2)
                 || !value["details"].as_object().is_some_and(|kinds| {
@@ -176,7 +177,15 @@ pub fn trust_request(
                             .is_some_and(|names| names.len() <= TRUST_DIALOG_NAMES)
                             && kind["more"].as_u64().is_some()
                     })
-                }) =>
+                })
+                || value["details"]["hooks"]["names"]
+                    .as_array()
+                    .is_some_and(|names| {
+                        names.iter().any(|name| {
+                            name.get("unlisted")
+                                .is_some_and(|unlisted| unlisted != &Value::Bool(true))
+                        })
+                    }) =>
         {
             Err(invalid)
         }
@@ -1204,9 +1213,10 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         // Feature 004 T017 adds 25 vectors, and `fileAppend` and `reveal` add 3 (contract Δ10).
         // T057 replaces 5 `confirm` vectors with 8 version 2 vectors and adds 4 version 2 record vectors (contract Δ6).
+        // The `unlisted` hooks item of plan D14 adds 2 `confirm` vectors.
         assert_eq!(
             checked,
-            if cfg!(windows) { 173 } else { 168 },
+            if cfg!(windows) { 175 } else { 170 },
             "shell-read vectors"
         );
     }

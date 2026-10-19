@@ -11,9 +11,12 @@ import { printOrigin } from "../origin";
 import { fixtureDir, useFixtureRoot } from "./fixture-root";
 import { put } from "./fixtures";
 import { workingFileDigests } from "./git-oracle";
-import { caseTest, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
-import { gitExe, native, TIMEOUT_MS, withSync } from "./sync-harness";
+import { caseTest, keepConfigs, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { gitExe, native, TIMEOUT_MS, withSync as syncService } from "./sync-harness";
 import { buildWorkbench, canary, repoOf, wb, type WbRepo } from "./workbench-fixtures";
+
+// SC-009 (T096): each case keeps the bytes of every configuration file of the repositories that it registers.
+const withSync = (name: string, body: (service: Service) => Promise<void>, options?: Parameters<typeof syncService>[2]) => syncService(name, (service) => keepConfigs(service, body), options);
 
 for (const module of ["commit-review", "commit", "reconcile", "attribution", "session"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 useFixtureRoot();

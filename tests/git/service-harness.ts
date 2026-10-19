@@ -4,8 +4,8 @@
 // The in-process service of the batch 2 tests: `createSession` with the `bun-runner.ts` shell double.
 // Its imports must load off Windows without `dlopen` (tests/git/portable-imports.test.ts).
 
-import { spyOn, test } from "bun:test";
-import { chmodSync, closeSync, existsSync, lstatSync, mkdtempSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { expect, spyOn, test } from "bun:test";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -18,7 +18,7 @@ import { createSession, type SessionOptions } from "../../src/git-service/sessio
 import { FrameBoundError, type Frame } from "../../src/git-service/transport";
 import { printOrigin } from "../origin";
 import { createBunRunner, createTrustStore, type BunRunner, type CallMatch, type TrustStore } from "./bun-runner";
-import { FIXTURE_ROOT, fixtureDir, fixtureEnv, serviceEnv } from "./fixture-root";
+import { FIXTURE_GLOBAL_CONFIG, FIXTURE_HOME, FIXTURE_ROOT, fixtureDir, fixtureEnv, serviceEnv } from "./fixture-root";
 import { GIT } from "./git-binary";
 import { gitOpenssl } from "./http-401";
 
@@ -151,6 +151,36 @@ export function caseTest(task: string, name: string, needs: readonly Capability[
   if (GIT !== null && missing === null) return void test(name, body, timeoutMs);
   console.log(GIT === null ? `SKIP ${task} ${name}: Git executable absent` : `SKIP ${task} ${name}: missing capability ${missing} (unverified)`);
   test.skip(name, body, timeoutMs);
+}
+
+const digestOf = (file: string) => (existsSync(file) ? new Bun.CryptoHasher("sha256").update(readFileSync(file)).digest("hex") : "absent");
+
+// SC-009: the SHA-256 of each configuration file that the owned environment gives a Git of `dir`, or "absent".
+// The files are the common `config`, the worktree `config.worktree`, the owned global file, and the owned system file of `remote-fixtures.ts`.
+export function configDigests(dir: string): Record<string, string> {
+  if (GIT === null) throw new Error("Git executable absent");
+  const proc = Bun.spawnSync([GIT, "rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir"], { cwd: dir, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+  const lines = proc.stdout.toString("utf8").split("\n");
+  if (proc.exitCode !== 0 || lines.length !== 3 || lines[2] !== "") throw new Error(`git rev-parse in ${dir} exited ${proc.exitCode}: ${proc.stderr.toString()}`);
+  const files = [join(lines[0]!, "config"), join(lines[1]!, "config.worktree"), FIXTURE_GLOBAL_CONFIG, join(FIXTURE_HOME, "system.gitconfig")];
+  return Object.fromEntries(files.map((file) => [file, digestOf(file)]));
+}
+
+// SC-009: every configuration file of each repository that `body` registers keeps its bytes from the first registration to the end of `body`.
+export async function keepConfigs(service: Service, body: (service: Service) => Promise<void>): Promise<void> {
+  const before: Record<string, string> = {};
+  const register = service.register;
+  service.register = (path) => {
+    for (const [file, digest] of Object.entries(configDigests(path))) before[file] ??= digest;
+    return register(path);
+  };
+  try {
+    await body(service);
+  } finally {
+    service.register = register;
+  }
+  const after = Object.fromEntries(Object.keys(before).map((file) => [file, digestOf(file)]));
+  expect(after).toEqual(before);
 }
 
 // Matches only the first call that `match` accepts. The double passes the same call object at each check of that call.

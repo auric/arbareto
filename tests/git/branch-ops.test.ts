@@ -273,3 +273,46 @@ caseTest(TASK, "FR-014: a remote-tracking branch offers no Rename and no Delete"
     }
   });
 }, TIMEOUT_MS);
+
+// ---- Cancel (FR-003, T098) ----
+
+// HEAD as the result states it, from Git's own reads.
+const headOf = (f: WbFixture) => {
+  const target = git(f, ["symbolic-ref", "-q", "HEAD"], [0, 1]).trim();
+  return target === "" ? { state: "detached", oid: oid(f, "HEAD") } : { state: "branch", target, oid: oid(f, "HEAD") };
+};
+const isDeleteRef = (call: { arguments: readonly string[] }) => call.arguments[1] === "update-ref";
+const isRemoveSection = (call: { arguments: readonly string[] }) => call.arguments[1] === "config" && call.arguments.includes("--remove-section");
+
+caseTest("T098", "FR-003: Cancel while a branch delete waits at its update-ref or at its remove-section step stops there, and the result states the refs and HEAD that Git shows", SHELL, async () => {
+  for (const [at, match] of [["update-ref", isDeleteRef], ["remove-section", isRemoveSection]] as const) {
+    const f = build();
+    const o = build();
+    const tip = f.refs["refs/heads/unmerged"]!;
+    await withSync(`t098-delete-${at}`, async (service) => {
+      const r = await open(service, f.repo);
+      const rv = await reviewed(service, r, { action: "delete-branch", ref: "refs/heads/unmerged" });
+      const release = service.runner.holdStart(match);
+      const requestId = sendRun(service, r, rv.workbenchToken);
+      try {
+        await until(() => service.runner.calls.some(match), `held ${at}`);
+        await service.cancel(await service.operationId(requestId));
+      } finally {
+        release();
+      }
+      const response = await service.response<BranchResult>(requestId);
+      const held = service.runner.calls.find(match)!;
+      expect({ at, exit: held.exit?.exitCode ?? null }).toEqual({ at, exit: null });
+      if (at === "update-ref") {
+        expect({ at, ...outcome(response), refs: response.result!.refs }).toEqual({ at, state: "canceled", code: "CANCELED", refs: [] });
+        expect(steps(service).map((a) => a[1])).toEqual(["update-ref"]);
+      } else {
+        // The ref delete ran, so the branch is gone and its section stays.
+        expect({ at, ...outcome(response), refs: response.result!.refs }).toEqual({ at, state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", refs: [{ ref: "refs/heads/unmerged", oldObjectId: tip, newObjectId: null }] });
+        git(o, ["update-ref", "--no-deref", "-d", "refs/heads/unmerged", tip]);
+      }
+      expect({ at, head: response.result!.head }).toEqual({ at, head: headOf(f) });
+    });
+    expect({ at, state: stateOf(f) }).toEqual({ at, state: stateOf(o) });
+  }
+}, TIMEOUT_MS);

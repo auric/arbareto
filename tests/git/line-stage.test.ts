@@ -9,9 +9,12 @@ import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { put } from "./fixtures";
 import { indexEntries, workingFileDigests } from "./git-oracle";
-import { applyHunk, blobBytes, blobOf, compare, git, gitPath, gitText, hunksOf, outcome, patchOf, resultOf, scriptedPatch, selectHunks, subcommand, SUCCEEDED, TIMEOUT_MS, withoutPath, withService, type Comparison, type Direction } from "./hunk-harness";
-import { caseTest, type Capability, type Service } from "./service-harness";
+import { applyHunk, blobBytes, blobOf, compare, git, gitPath, gitText, hunksOf, outcome, patchOf, resultOf, scriptedPatch, selectHunks, subcommand, SUCCEEDED, TIMEOUT_MS, withoutPath, withService as hunkService, type Comparison, type Direction } from "./hunk-harness";
+import { caseTest, keepConfigs, type Capability, type Service } from "./service-harness";
 import { buildWorkbench } from "./workbench-fixtures";
+
+// SC-009 (T096): each case keeps the bytes of every configuration file of the repositories that it registers.
+const withService = (options: Parameters<typeof hunkService>[0], body: (service: Service) => Promise<void>) => hunkService(options, (service) => keepConfigs(service, body));
 
 const TASK = "T025";
 const SHELL: Capability[] = ["shell-double"];

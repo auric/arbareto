@@ -314,6 +314,7 @@ description: "Task list for the Workbench UX feature"
 - Batch 6 (T077–T080): moved to a later feature (spec Clarifications, 2026-10-19).
 - Batch 7 (T081–T086): after T076. T083 needs the open 001 measurement tasks.
 - Batch 3 follow-up (T087–T093): after T048. Batch 4 does not wait for it.
+- Convergence (T096–T099): after T061.
 
 ### Feature 003 parts that 004 uses (plan.md "Dependencies on feature 003")
 
@@ -347,6 +348,7 @@ description: "Task list for the Workbench UX feature"
 - Batch 2: WP7 (T021, T022, T027, T028), WP8 (T023, T029), and WP9 (T024–T026, T030–T032). Then WP10 (T033, T034) alone.
 - Batch 3: T036, then WP11 (T037–T039) alone. Then WP12 (T040, T043, T044), WP13 (T041, T045), and WP14 (T042, T046, T047).
 - Batch 3 follow-up: T087, T088, T090, and T091 in parallel. T089 after T088, and T092 after T091. Then T093 alone.
+- Convergence: T096 to T099 in parallel.
 - Batch 4: WP15 (T049, T055), WP16 (T050, T056), WP18 (T052, T058), WP19 (T053, T059), and WP17 (T051, T057, local Rust). Then WP20 (T054, T060, T061) alone.
 - Batch 5: WP21 (T064, T070), WP22 (T065, T071), WP23 (T066, T072), WP24 (T067, T073), WP25 (T068, T074), and WP29 (T069, T075).
 - Batch 7: WP27 (T081) alone. WP28 (T082, T083).
@@ -365,10 +367,10 @@ Then WP10:     T033 -> T034 -> T035
 
 | Requirement | Tasks |
 | --- | --- |
-| FR-001 to FR-006 | T016, T017, T021, T027, T033, T034, T103 (moved to a later feature) |
+| FR-001 to FR-006 | T016, T017, T021, T027, T033, T034, T097 to T099, T103 (moved to a later feature) |
 | FR-007 to FR-013 (US1) | T011, T015, T021, T027, T040, T043, T088 |
 | FR-014 to FR-020 (US2) | T010, T022, T028, T038, T040, T044, T089 |
-| FR-021 to FR-028 (US3) | T007, T023, T029, T041, T045, T090 |
+| FR-021 to FR-028 (US3) | T007, T023, T029, T041, T045, T090, T098, T099 |
 | FR-029 to FR-048 (US4) | T009, T010, T024 to T026, T030 to T032, T042, T046, T047, T091, T092 |
 | FR-049 to FR-057 (US5) | T049, T055, T060, T064, T070, T094 (FR-052 Browse), T095 (O-20 trust gate, Remove label) |
 | FR-058 to FR-068 (US6) | T050, T056, T060, T065, T071, T102 |
@@ -382,11 +384,11 @@ Then WP10:     T033 -> T034 -> T035
 | SC-001, SC-002 | T021, T035 |
 | SC-003 | T040, T082 |
 | SC-004 | T022, T035 |
-| SC-005 | T023 |
+| SC-005 | T023, T098 |
 | SC-006 | T004, T024, T025 |
 | SC-007 | T004, T083 |
-| SC-008 | T049 |
-| SC-009 | T021, T022, T050 |
+| SC-008 | T049, T098 |
+| SC-009 | T021, T022, T050, T096 |
 | SC-010 | T051, T082 |
 | SC-011 | T052 |
 | SC-012 | Moved to a later feature (T078) |
@@ -423,6 +425,10 @@ Then WP10:     T033 -> T034 -> T035
 
 **Source**: the `/speckit-converge` dry run on f004-impl 3e25b8f (2026-10-19). Scope: T001 to T076 and T087 to T094. The moved spell check (T077 to T080) and batch 7 (T081 to T086) are out of scope.
 
+- [ ] T096 [P] [US3] Record the configuration bytes before and after each case in `tests/git/merge-rebase.test.ts`, `tests/git/multi-stage.test.ts`, `tests/git/line-stage.test.ts`, `tests/git/ignore.test.ts`, `tests/git/resolve.test.ts`, and `tests/git/commit-amend.test.ts` (P4 and P6, WP8, WP9, WP19, WP20). Use the `sha256` pattern of `tests/git/switch.test.ts` `stateOf`. Every configuration file of the fixture stays byte-identical. Control mutation: let one merge case run `git config merge.log true` in the repository after the run; the case must fail. Undo and rerun green. Gap: partial. Spec: SC-009. Test harness rule "Every fixture test records the configuration files byte for byte". Depends on T061.
+- [ ] T097 [P] [US1] Write the BUSY cases for the feature 004 mutations (P4, WP10). In one new file `tests/git/workbench-busy.test.ts`, hold a `runWorkbench` merge at a checkpoint, then send a second `runWorkbench` (switch), an `applyFiles`, and a `commit` for the same repository, and the reverse order. Each second mutation gives `BUSY`, starts no mutating Git process, and changes no ref, index entry, or working byte. An `applyFiles` starts only its read steps before the refusal. Add the file to `tests/groups.json` `parallel`. Gap: partial (code without test). Spec: FR-001. Depends on T061.
+- [ ] T098 [P] [US3] Write the Cancel cases for merge, rebase, the branch actions, and the worktree actions in `tests/git/merge-rebase.test.ts`, `tests/git/branch-ops.test.ts`, and `tests/git/worktrees.test.ts` (P4 and P6, WP7, WP8, WP15). Cancel each run at its first Git step and after it. Hold each step on an exact signal: a held process start of the runner double or a blocking hook with a release file, as the feature 003 tests do. The result states the observed HEAD, refs, operation state, and worktree list from a fresh read. They equal Git's own reads of the repository, and a step that never started leaves the state of an untouched copy. Gap: partial (code without test). Spec: FR-003, SC-005, SC-008. Depends on T061.
+- [ ] T099 [P] [US3] Write the signing case of a merge commit in `tests/git/merge-rebase.test.ts` (P4, WP8). Use the signer canary of `tests/git/sync-pull.test.ts` with `commit.gpgSign=true` and an owned `gpg.program`. The merge commit carries the signature, the canary runs only after approval, and the commit equals Git's own `merge` on a copy. Gap: partial (code without test). Spec: FR-023, FR-005. Depends on T061.
 - [ ] T100 [P] [US1] Write the virtual list cases of the branch list and the worktree list in `tests/contracts/workbench-branches.test.tsx` and `tests/contracts/workbench-worktrees.test.tsx`, and give the options of `src/frontend/components/switcher-popover.tsx` their `aria-posinset` and `aria-setsize` (P5 and P8, WP12, WP21). Each list virtualizes above 200 rows. With more than 200 items, the open list creates only a bounded number of option elements, the arrow keys reach the last item, the active option stays mounted, and each option states its position and set size as a full DOM would: within its group heading, else among the options outside a group. Control mutation: remove `aria-setsize` from the options; the cases must fail. Gap: partial (code without test). Spec: FR-086, SC-007. Depends on T094.
 - [ ] T101 [US2] Let the keyboard reach the branch menu of each branch label on a History row with several labels, in `src/frontend/history/HistoryList.tsx` (P5, WP12). The list stays one Tab stop. Left and Right move the active label of the selected row, as roving focus on the labels, and Shift+F10 or the Menu key opens the menu of the active label. Record the keys and the announcement in plan.md D15. Write the failing case in `tests/contracts/workbench-branches.test.tsx` first: a row with labels `main` and `feature/login` opens the menu of each label by keyboard alone. Control mutation: let Right do nothing; the case must fail. Gap: partial. Spec: FR-014, SC-014. Research: batch 3 review "Open" item. Depends on T089.
 - [ ] T102 [US6] Add the `core.editor` presets VS Code, Notepad++, Sublime Text, and Notepad (P8, WP22; user decision 2026-10-19). Write the failing cases in `tests/contracts/workbench-settings.test.tsx` first: the editor options with the plan.md D15 labels and exact commands in D15 order, then Custom; "Writes core.editor=<command>."; Save sends the exact command; a stored command that equals a preset selects that preset; another command selects Custom with the command in the text field. A workspace with `location.kind` "wsl" offers only Not set and Custom for the editor and tool keys, with the plan.md D15 WSL note. Then add the presets to `src/frontend/settings/git/presets.ts` and use them in `src/frontend/settings/git/GitSettingsPage.tsx` with the diff and merge tool mechanism. Control mutation: in `presets.ts`, remove `-w` from the Sublime Text command. `tests/contracts/workbench-settings.test.tsx` must fail. Undo the edit and rerun green. Gap: missing. Spec: FR-062. Plan: D11, D15 "Presets", O-10. Depends on T071.

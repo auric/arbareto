@@ -10,11 +10,14 @@ import { MERGE_MESSAGE_BYTES } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
-import { commit, compare, outcome, reviewOk, SUCCEEDED } from "./hunk-harness";
-import { fc, gitOut, gitPaths, gitRun, importStream, markers, refMap, revParse, type GitHost } from "./remote-fixtures";
-import { caseTest, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
-import { ANY_EXIT, gitExe, hostFor, INTEGRATE_ENV, refreshIndex, register, repoShape, reviewed, subcommandOf, sync, TIMEOUT_MS, withSync } from "./sync-harness";
+import { barrier, commit, compare, outcome, reviewOk, SUCCEEDED } from "./hunk-harness";
+import { fc, gitOut, gitPaths, gitRun, importStream, markers, refMap, revParse, stageEntries, type GitHost } from "./remote-fixtures";
+import { caseTest, keepConfigs, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
+import { ANY_EXIT, gitExe, hostFor, INTEGRATE_ENV, refreshIndex, register, repoShape, reviewed, subcommandOf, sync, TIMEOUT_MS, until, withSync as syncService } from "./sync-harness";
 import { buildWorkbench, repoOf, wb, type WbFixture, type WbFixtureName } from "./workbench-fixtures";
+
+// SC-009 (T096): each case keeps the bytes of every configuration file of the repositories that it registers.
+const withSync = (name: string, body: (service: Service) => Promise<void>, options?: Parameters<typeof syncService>[2]) => syncService(name, (service) => keepConfigs(service, body), options);
 
 for (const module of ["merge-rebase", "workbench-review"]) {
   try {
@@ -833,5 +836,123 @@ describeGit("merge and rebase (T023)", () => {
     own(h, git.repo, ["merge", "--no-edit", "topic"]);
     const runs = (h.read(log)?.toString("utf8") ?? "").split("\n").filter((l) => l !== "").length;
     expect({ runs, state: stateOf(h, app.repo) }).toEqual({ runs: 1, state: stateOf(h, git.repo) });
+  }, TIMEOUT_MS);
+
+  // ---- Cancel (FR-003, T098) ----
+
+  // The result fields from fresh Git reads: HEAD, the ref changes against `before`, and the unmerged count.
+  const observed = (h: GitHost, repo: string, before: Record<string, string>) => {
+    const target = gitRun(h, repo, ["symbolic-ref", "-q", "HEAD"], { allowExit: [0, 1] });
+    const oid = revParse(h, repo, "HEAD");
+    const after = refMap(h, repo);
+    const refs = [...new Set([...Object.keys(before), ...Object.keys(after)])]
+      .filter((ref) => before[ref] !== after[ref])
+      .sort()
+      .map((ref) => ({ ref, oldObjectId: before[ref] ?? null, newObjectId: after[ref] ?? null }));
+    const unmerged = new Set(stageEntries(h, repo).filter((e) => e.stage > 0).map((e) => e.path)).size;
+    return { head: target.exitCode === 0 ? { state: "branch", target: target.stdout.toString("utf8").trim(), oid } : { state: "detached", oid }, refs, unmerged };
+  };
+  const reported = (result: RunResult) => ({ head: result.head, refs: [...result.refs].sort((a, b) => (a.ref < b.ref ? -1 : 1)), unmerged: result.unmerged });
+  const sendWb = (service: Service, r: RegistrationResult, token: string) => service.send("runWorkbench", { workbenchToken: token, start: true }, { repositoryId: r.repositoryId });
+  const CANCELED = { state: "canceled", code: "CANCELED" };
+  const CANCEL_CASES = [["merge-diverged", MERGE("refs/heads/topic")], ["rebase-mix", REBASE("refs/heads/up")]] as const;
+
+  caseTest("T098", "FR-003: Cancel while the merge or rebase step waits to start gives canceled, starts no step process, and the result equals Git's state of an untouched copy", SHELL, async () => {
+    const h = hostFor("t098-before");
+    for (const [name, payload] of CANCEL_CASES) {
+      const [app, git] = pair(name, "cancel-before");
+      const before = refMap(h, app.repo);
+      await withSync(`t098-before-${builds}`, async (service) => {
+        const r = await register(service, app.repo);
+        const token = (await tokenOf(service, r, payload)).workbenchToken;
+        const isStep = (c: { arguments: readonly string[] }) => ["merge", "rebase"].includes(subcommandOf(c.arguments) ?? "");
+        const release = service.runner.holdStart(isStep);
+        const requestId = sendWb(service, r, token);
+        try {
+          await until(() => service.runner.calls.some(isStep), "held step");
+          await service.cancel(await service.operationId(requestId));
+        } finally {
+          release();
+        }
+        const response = await service.response<RunResult>(requestId);
+        expect({ name, ...outcome(response) }).toEqual({ name, ...CANCELED });
+        expect({ name, exits: integrateCalls(service).map((c) => c.exit?.exitCode ?? null) }).toEqual({ name, exits: [null] });
+        expect({ name, operationState: response.result!.operationState, ...reported(response.result!) }).toEqual({ name, operationState: "normal", ...observed(h, app.repo, before) });
+      });
+      expect({ name, state: stateOf(h, app.repo) }).toEqual({ name, state: stateOf(h, git.repo) });
+    }
+  }, TIMEOUT_MS);
+
+  // builtin/merge.c runs `pre-merge-commit` after it writes the merged index and files and before MERGE_HEAD.
+  // sequencer.c `checkout_onto` runs `post-checkout` after it writes rebase-merge/ and detaches HEAD at the onto commit.
+  caseTest("T098", "FR-003: Cancel while the merge or rebase step runs a blocked hook ends the step, re-reads HEAD, refs, the index, and the operation state, and reports what Git shows", SHELL, async () => {
+    const h = hostFor("t098-during");
+    const hooks = { "merge-diverged": ["pre-merge-commit", "normal", []], "rebase-mix": ["post-checkout", "rebasing", ["rebase-merge"]] } as const;
+    for (const [name, payload] of CANCEL_CASES) {
+      const [event, operationState, marks] = hooks[name];
+      const [app] = pair(name, "cancel-during");
+      const b = barrier(app.root, event);
+      h.write(`${app.repo}/.git/hooks/${event}`, `#!/bin/sh\n${b.body}exit 0\n`);
+      const before = refMap(h, app.repo);
+      try {
+        await withSync(`t098-during-${builds}`, async (service) => {
+          const r = await register(service, app.repo);
+          expect((await service.readTrust(r.repositoryId)).result!.approvalRequired.workbench).toBe(true);
+          expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
+          const requestId = sendWb(service, r, (await tokenOf(service, r, payload)).workbenchToken);
+          await b.reached();
+          await service.cancel(await service.operationId(requestId));
+          const response = await service.response<RunResult>(requestId);
+          expect({ name, exits: integrateCalls(service).map((c) => (c.exit === undefined ? "running" : c.exit.exitCode)) }).toEqual({ name, exits: [null] });
+          expect({ name, ...outcome(response) }).toEqual({ name, ...WITH_EFFECTS });
+          expect({ name, markers: markers(h, app.repo) }).toEqual({ name, markers: [...marks] });
+          expect({ name, operationState: response.result!.operationState, ...reported(response.result!) }).toEqual({ name, operationState, ...observed(h, app.repo, before) });
+        });
+      } finally {
+        b.release();
+      }
+    }
+  }, TIMEOUT_MS);
+
+  // ---- Signing (FR-023, T099) ----
+
+  caseTest("T099", "FR-023 and FR-005: with commit.gpgSign=true and a repository gpg.program, the merge needs approval, the signer runs only after it, and the signed merge commit equals Git's own merge on a copy", SHELL, async () => {
+    const h = hostFor("t099-sign");
+    const signer = `${h.root}/signer.sh`;
+    const ran = `${h.root}/signer.ran`;
+    // gpg-interface.c `sign_buffer_gpg` reads `[GNUPG:] SIG_CREATED` from the status descriptor 2 and takes the signature from stdout.
+    h.write(signer, `#!/bin/sh\ncat > /dev/null\n: > '${ran}'\nprintf '\\n[GNUPG:] SIG_CREATED D 1 8 00 0 0\\n' >&2\nprintf -- '-----BEGIN PGP SIGNATURE-----\\n\\nZmFrZQ==\\n-----END PGP SIGNATURE-----\\n'\n`);
+    const [app, git] = pair("merge-diverged", "sign", (f) => {
+      gitRun(h, f.repo, ["config", "commit.gpgSign", "true"]);
+      gitRun(h, f.repo, ["config", "gpg.program", signer]);
+    });
+    await withSync("t099-sign", async (service) => {
+      const r = await register(service, app.repo);
+      const refused = await reviewWb(service, r, MERGE("refs/heads/topic"));
+      expect({ ...outcome(refused), token: refused.result?.workbenchToken }).toEqual({ state: "failed", code: "TRUST_REQUIRED", token: undefined });
+      expect({ calls: integrations(service), ran: h.read(ran) }).toEqual({ calls: [], ran: null });
+      expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
+      expect(outcome(await reviewAndRun(service, r, MERGE("refs/heads/topic")))).toEqual(SUCCEEDED);
+    });
+    expect(h.read(ran)).not.toBeNull();
+    // The copy signs nothing, so the commit object IDs differ. The signature header, the tree, the parents, and the message decide.
+    own(h, git.repo, ["-c", "commit.gpgSign=false", "merge", "--no-edit", "topic"]);
+    const headers = (repo: string) => {
+      const raw = gitOut(h, repo, ["cat-file", "commit", "HEAD"]);
+      return raw.slice(0, raw.indexOf("\n\n")).split("\n");
+    };
+    // git-commit-tree(1): a header value continues on the lines that start with one space.
+    const split = (repo: string) => {
+      const lines = headers(repo);
+      const at = lines.findIndex((l) => l.startsWith("gpgsig "));
+      if (at < 0) return { signature: null, other: lines };
+      let end = at + 1;
+      while (end < lines.length && lines[end]!.startsWith(" ")) end++;
+      const signature = [lines[at]!.slice("gpgsig ".length), ...lines.slice(at + 1, end).map((l) => l.slice(1))].join("\n");
+      return { signature, other: [...lines.slice(0, at), ...lines.slice(end)] };
+    };
+    const signed = split(app.repo);
+    expect(signed.signature).toBe("-----BEGIN PGP SIGNATURE-----\n\nZmFrZQ==\n-----END PGP SIGNATURE-----");
+    expect({ headers: signed.other, message: messageOf(h, app.repo) }).toEqual({ headers: split(git.repo).other, message: messageOf(h, git.repo) });
   }, TIMEOUT_MS);
 });

@@ -156,6 +156,21 @@ describe("Amend last commit box (FR-098)", () => {
     expect(t.host.textContent).toContain("Amend last commit did not start: COMMIT_ENCODING_UNSUPPORTED");
   });
 
+  for (const [name, result] of [
+    ["without the amend part", { ...review(), amend: undefined }],
+    ["with an amend part of another shape", review({ rewritesUpstream: "maybe" as never })],
+  ] as const) {
+    test(`a succeeded review ${name} leaves the box clear and shows the state as the code`, async () => {
+      const t = await mount();
+      await t.type("My draft");
+      await t.click(t.box);
+      await t.answer("reviewCommit", ok(result));
+      expect(t.box.checked).toBe(false);
+      expect(t.field.value).toBe("My draft");
+      expect(t.host.querySelector('[role="status"]')!.textContent).toBe("Amend last commit did not start: succeeded");
+    });
+  }
+
   test("no renderer state for a review without the amend part remains", async () => {
     expect((await Bun.file(trayPath).text()).includes("The review result holds no HEAD message.")).toBe(false);
   });
@@ -188,7 +203,8 @@ describe("Commit with Amend last commit (FR-099, FR-100)", () => {
   });
 
   for (const [name, upstream, shown] of [
-    ["an upstream that the repository does not hold", { name: "refs/remotes/origin/gone", present: false }, "refs/remotes/origin/gone"],
+    ["an upstream that the repository does not hold", { name: "refs/remotes/origin/gone", present: false }, "the upstream branch refs/remotes/origin/gone"],
+    ["an untracked upstream with its remote-side ref", { name: "refs/heads/main", present: false }, "the upstream branch refs/heads/main"],
     ["an untracked upstream without an exact name", { name: null, present: false }, "the upstream branch"],
   ] as const) {
     test(`rewritesUpstream unknown with ${name} needs the same confirmation with the unknown text`, async () => {
@@ -202,6 +218,14 @@ describe("Commit with Amend last commit (FR-099, FR-100)", () => {
       expect(t.pending("commit").map((c) => c.payload.confirmRewrite)).toEqual([true]);
     });
   }
+
+  test("a commit review without a valid amend part shows the state as the code, not the Stale text, and sends no commit", async () => {
+    const t = await mount();
+    await t.check();
+    await t.commitWith({ ...review(), amend: undefined });
+    expect(t.pending("commit")).toEqual([]);
+    expect(t.host.querySelector('[role="status"]')!.textContent).toBe("Commit did not start: succeeded");
+  });
 
   test("a review with a moved HEAD refuses with the Stale text and sends no commit", async () => {
     const t = await mount();

@@ -4,6 +4,7 @@
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
 import { act, useState, type ReactNode } from "react";
 import type { ChangeEntry } from "../../src/contracts/envelope";
+import type { Amend } from "../../src/frontend/state/workbench";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
@@ -779,12 +780,12 @@ describe("message editor (FR-047) and Amend last commit (FR-098)", () => {
   });
 
   test("checking the box sends reviewCommit with amend, and a checked box states Commit replaces commit <short ID> and shows its text, not the draft", async () => {
-    let value: { headOid: string; message: string; text: string; upstream: string | null; rewritesUpstream: boolean } | null = null;
+    let value: Amend | null = null;
     const t = await tray({ amend: { value, onChange: (v: typeof value) => void (value = v) } });
     await t.type("My draft");
     await act(async () => t.host.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click());
     expect(t.calls.at(-1)).toEqual({ operation: "reviewCommit", args: [{ repositoryId: fixtureId(1), repositoryGeneration: 1 }, { snapshotId: fixtureId(2), amend: true }] });
-    const checked = await tray({ amend: { value: { headOid: "e".repeat(40), message: "Add login form", text: "Add login form", upstream: null, rewritesUpstream: false }, onChange: () => {} } });
+    const checked = await tray({ amend: { value: { headOid: "e".repeat(40), message: "Add login form", text: "Add login form" } satisfies Amend, onChange: () => {} } });
     expect(checked.field.value).toBe("Add login form");
     expect(text(checked.host)).toContain(`Commit replaces commit ${"e".repeat(12)}.`);
   });

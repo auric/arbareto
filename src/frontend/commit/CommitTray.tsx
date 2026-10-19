@@ -70,15 +70,17 @@ export const amendStatement = (oid: string) => `Commit replaces commit ${shortId
 type AmendReview = { headOid: string; message: string; upstream: { name: string | null; present: boolean } | null; rewritesUpstream: boolean | "unknown" };
 const amendOf = (result: unknown) => {
   const a = (result as { amend?: AmendReview } | undefined)?.amend;
-  return typeof a?.headOid === "string" && typeof a.message === "string" ? a : null;
+  const u = a?.upstream;
+  const upstream = u === null || (typeof u === "object" && (u.name === null || typeof u.name === "string") && typeof u.present === "boolean");
+  return typeof a?.headOid === "string" && typeof a.message === "string" && upstream && [true, false, "unknown"].includes(a.rewritesUpstream) ? a : null;
 };
 // Contract Δ3: the review disclosure states the approval need of an amend, which also runs `post-rewrite`.
 const amendNeedsTrust = (result: unknown) => {
   const d = (result as { disclosure?: { approvalRequired?: unknown; trust?: unknown } } | undefined)?.disclosure;
   return d?.approvalRequired !== false && d?.trust !== "approved";
 };
-/** D15: a null name reads "the upstream branch". A present ref is local, so it takes its short name. An absent one keeps the full name. */
-const upstreamName = (u: AmendReview["upstream"]) => (u?.name == null ? "the upstream branch" : u.present ? shortRef(u.name) : u.name);
+/** D15: a null name reads "the upstream branch". A present ref is local, so it takes its short name. An absent one names the remote-side ref in full. */
+const upstreamName = (u: AmendReview["upstream"]) => (u?.name == null ? "the upstream branch" : u.present ? shortRef(u.name) : `the upstream branch ${u.name}`);
 /** FR-100: the confirmation text for `rewritesUpstream` true, and for `unknown`. */
 export const rewriteText = (a: AmendReview) =>
   a.rewritesUpstream === true
@@ -190,8 +192,9 @@ export function CommitTray(props: CommitTrayProps) {
       if (amend !== null) {
         // FR-099: the amend binds to the HEAD commit whose message the box loaded. A moved HEAD refuses and asks for a refresh.
         const reviewedAmend = amendOf(review.result);
+        // A result without a valid amend part shows its state as the code, as the trust and status checks do.
         if (reviewedAmend === null || reviewedAmend.headOid !== amend.headOid) {
-          setNotice(STALE_TEXT);
+          setNotice(reviewedAmend === null ? codeText("Commit did not start: ", review.code ?? review.state) : STALE_TEXT);
           props.onEnded?.(review);
           return focusField();
         }
@@ -233,10 +236,10 @@ export function CommitTray(props: CommitTrayProps) {
     setNotice(null);
     try {
       const review = await bridge.reviewCommit(target, { snapshotId, amend: true });
-      if (review.state !== "succeeded") return setNotice(codeText(`${AMEND_LABEL} did not start: `, review.code ?? review.state));
-      // D15: a succeeded amend review always holds the amend part.
-      const loaded = amendOf(review.result);
-      if (loaded !== null) live.current.amend?.onChange({ headOid: loaded.headOid, message: loaded.message, text: loaded.message });
+      const loaded = review.state === "succeeded" ? amendOf(review.result) : null;
+      // A succeeded result without a valid amend part shows its state as the code, as the trust and status checks do.
+      if (loaded === null) return setNotice(codeText(`${AMEND_LABEL} did not start: `, review.code ?? review.state));
+      live.current.amend?.onChange({ headOid: loaded.headOid, message: loaded.message, text: loaded.message });
     } finally {
       checking.current = false;
     }

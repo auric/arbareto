@@ -4,7 +4,7 @@
 import { ArrowDown01Icon, ArrowRight01Icon, CancelCircleIcon, SidebarLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
-import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { RefEntry, RefsResult } from "../../contracts/envelope";
 import type { BridgeResponse } from "../bridge";
 import { IconButton } from "../components/icon-button";
@@ -79,6 +79,8 @@ export type ReferencesSidebarProps = {
    * `confirm` is a double-click, and a D15 key gives its action. Without it, only the current branch opens the 002 menu.
    */
   onBranchAction?: (entry: RefEntry, action: "menu" | "confirm" | ScopedAction, anchor: HTMLElement) => void;
+  /** Feature 004 plan.md D15 "P2 regions": the groups after the references, such as Worktrees. They scroll with the sidebar. */
+  after?: ReactNode;
 };
 
 // plan.md "Keyboard and focus", References sidebar row: the expansion lasts for the window session per repository and is not stored.
@@ -133,7 +135,7 @@ function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: 
   return any;
 }
 
-export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction }: ReferencesSidebarProps) {
+export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction, after }: ReferencesSidebarProps) {
   const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId() };
   const [query, setQuery] = useState("");
   // Null until the user changes the expansion: the default then follows the current branch of the newest result.
@@ -446,6 +448,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
           />
           <div ref={scroller} data-references-scroll="" className="min-h-0 flex-1 overflow-y-auto">
             {body()}
+            {after}
           </div>
         </>
       ) : null}

@@ -123,6 +123,7 @@
     "tests/contracts/workbench-mount.test.tsx",
     "tests/contracts/workbench-parsers.test.ts",
     "tests/contracts/workbench-views.test.tsx",
+    "tests/contracts/workbench-worktrees.test.tsx",
     "tests/contracts/wsl-files.test.ts",
     "tests/contracts/wsl-poll.test.ts",
     "tests/contracts/wsl-route.test.ts",

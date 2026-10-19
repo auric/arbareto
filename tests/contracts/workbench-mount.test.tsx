@@ -279,10 +279,10 @@ describe("mounted controls", () => {
 
 });
 
-// T235 and T148: the submodule row, the mounted T236 review, and the T138 status region across the update.
+// T235 and T148: the submodule row, the feature 004 one-click update (T073, no review dialog), and the T138 status region across the update.
 describe("submodule update mount", () => {
   const NOTICE = { submoduleNotice: { count: 2, paths: ["a", "b"], filter: "applied" as const } };
-  const REVIEW = () => ({ generation: 1, rows: [], programs: [], refusals: [], submoduleReviewToken: crypto.randomUUID() });
+  const REVIEW = () => ({ generation: 1, rows: [], programs: [], refusals: [], hosts: [], submoduleReviewToken: crypto.randomUUID() });
   const bandButton = () => document.querySelector<HTMLElement>('[data-slot="notice-band"] button');
   const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]');
   const footerButton = (label: string) => [...document.querySelectorAll<HTMLElement>("footer button")].find((b) => b.textContent === label);
@@ -295,20 +295,18 @@ describe("submodule update mount", () => {
     await act(async () => bandButton()!.click());
     await settle();
     expect(latest(double, "reviewSubmodules").args.slice(0, 2)).toEqual([{ repositoryId: REGISTRATION.repositoryId, repositoryGeneration: shown.generation }, { snapshotId: shown.snapshotId }]);
-    await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
-    expect(dialog()?.textContent).toContain("No submodules found.");
-    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Start update")!.click());
-    await settle();
+    // Feature 004 FR-076: a review without refusals and host lines starts the update at once.
+    const token = REVIEW();
+    await resolve(latest(double, "reviewSubmodules"), succeeded(token));
+    expect(dialog()).toBeNull();
     const update = latest(double, "updateSubmodules");
+    expect(update.args[1]).toEqual({ submoduleReviewToken: token.submoduleReviewToken, start: true });
     const onProgress = update.args[2] as (event: unknown) => void;
-    // Contract §2: the accepted event comes before the approval checks. Data-model §7: `running` follows only when they pass.
     await act(async () => onProgress({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "accepted", counters: {} }));
-    await settle();
-    expect(dialog()).not.toBeNull();
     await act(async () => onProgress({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "running", phase: "preflight", counters: {}, stalled: false }));
     await settle();
     expect(dialog()).toBeNull();
-    expect(document.activeElement === footerButton("Cancel")).toBe(true);
+    expect(footerButton("Cancel")).toBeDefined();
     return { double, update };
   }
   const RUNNING_TEXT = "A Git operation is running. Wait for its result, or select Cancel.";
@@ -321,50 +319,28 @@ describe("submodule update mount", () => {
     return [...document.querySelectorAll<HTMLElement>('[data-slot="menubar-content"] [role="menuitem"]')].find((e) => e.textContent === "Update submodules")!;
   };
 
-  test("B4-1: after a read while the review is open, an expired token after the accepted event reviews the current snapshot and generation, and the rejection starts no read", async () => {
+  test("B4-1: after a read during the update, an expired token after the accepted event reviews the current snapshot and generation, and the rejection starts no read", async () => {
     const double = await mount(succeeded(REGISTRATION));
     await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
     await act(async () => bandButton()!.click());
     await settle();
     await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
+    const update = latest(double, "updateSubmodules");
     // Contract §8: a full read gives a new snapshot ID. A changed observation also gives a new generation.
     await act(async () => document.querySelector<HTMLElement>('header button[aria-label="Refresh"]')!.click());
     await settle();
     const later = snapshot({ ...NOTICE, generation: 2 });
     await resolve(latest(double, "readWorkspace"), { ...succeeded(later), repositoryGeneration: 2 });
-    expect(dialog()).not.toBeNull();
-    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Start update")!.click());
-    await settle();
-    const update = latest(double, "updateSubmodules");
     await act(async () => (update.args[2] as (event: unknown) => void)({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "accepted", counters: {} }));
     await settle();
-    expect(dialog()).not.toBeNull();
     const reads = double.calls.filter((c) => c.operation === "readWorkspace").length;
     await resolve(update, { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "rejected", code: "APPROVAL_EXPIRED" });
-    expect(dialog()).not.toBeNull();
+    expect(dialog()).toBeNull();
     expect(double.calls.filter((c) => c.operation === "reviewSubmodules")).toHaveLength(2);
     expect(latest(double, "reviewSubmodules").args.slice(0, 2)).toEqual([{ repositoryId: REGISTRATION.repositoryId, repositoryGeneration: 2 }, { snapshotId: later.snapshotId }]);
     // Contract §9: an expired token starts no Git process. The new review answers it, so no read follows it.
     expect(double.calls.filter((c) => c.operation === "readWorkspace")).toHaveLength(reads);
-  });
-
-  test("B4-2: the review dialog shows no busy reason for its own pending update", async () => {
-    const double = await mount(succeeded(REGISTRATION));
-    await serveHistory(double);
-    await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
-    await act(async () => bandButton()!.click());
-    await settle();
-    await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
-    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Start update")!.click());
-    await settle();
-    const update = latest(double, "updateSubmodules");
-    await act(async () => (update.args[2] as (event: unknown) => void)({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "accepted", counters: {} }));
-    await settle();
-    expect(dialog()).not.toBeNull();
-    expect(dialog()!.textContent).not.toContain(RUNNING_TEXT);
-    // The band button outside the dialog still shows the running reason.
-    expect(describedBy(bandButton()!)).toBe(RUNNING_TEXT);
   });
 
   test("plan.md Switch repository: while a mutation runs, the switcher entries and Open folder are disabled with the running reason", async () => {
@@ -390,8 +366,6 @@ describe("submodule update mount", () => {
     await act(async () => bandButton()!.click());
     await settle();
     await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
-    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Start update")!.click());
-    await settle();
     const update = latest(double, "updateSubmodules");
     const reads = double.calls.filter((c) => c.operation === "readWorkspace").length;
     await resolve(update, { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "rejected", code: "REPOSITORY_CHANGED" });
@@ -472,7 +446,7 @@ describe("submodule update mount", () => {
     expect(document.activeElement!.closest("[data-section]")?.getAttribute("data-section")).toBe("references");
   });
 
-  test("the repository menu item sends reviewSubmodules for the shown snapshot and opens the review", async () => {
+  test("the repository menu item sends reviewSubmodules for the shown snapshot and starts the update with no dialog", async () => {
     const double = await mount(succeeded(REGISTRATION));
     const shown = snapshot();
     await resolve(double.pending("readWorkspace"), succeeded(shown));
@@ -485,7 +459,8 @@ describe("submodule update mount", () => {
     await settle();
     expect(latest(double, "reviewSubmodules").args[1]).toEqual({ snapshotId: shown.snapshotId });
     await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
-    expect(dialog()?.textContent).toContain("Update submodules");
+    expect(dialog()).toBeNull();
+    expect(double.calls.filter((c) => c.operation === "updateSubmodules")).toHaveLength(1);
   });
 
   test("a failed review shows its code in the status bar and opens no dialog", async () => {
@@ -522,7 +497,7 @@ describe("submodule update mount", () => {
 
   // plan.md "Status area", Cancel sender. The `cancel` senders in src/frontend: the status-bar Cancel (OperationStatus),
   // the WslStarting Cancel (only during a `wsl-starting` phase), and the poll cancel of a user read (requests.ts, only the poll operationId).
-  // The review dialog Cancel and Escape call `onCancel`, which sends no `cancel`.
+  // The Submodules group Cancel sends through the same status-bar request guard.
   test("T369: while an update runs, only the status-bar Cancel sends cancel with its operationId", async () => {
     const OP = crypto.randomUUID();
     const double = await mount(succeeded(REGISTRATION));
@@ -531,19 +506,11 @@ describe("submodule update mount", () => {
     await act(async () => bandButton()!.click());
     await settle();
     await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
-    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Start update")!.click());
-    await settle();
     const update = latest(double, "updateSubmodules");
     const onProgress = update.args[2] as (event: unknown) => void;
     const cancels = () => double.calls.filter((c) => c.operation === "cancel" && (c.args[0] as { operationId?: string }).operationId === OP);
     await act(async () => onProgress({ requestId: crypto.randomUUID(), operationId: OP, state: "accepted", counters: {} }));
     await settle();
-    // Before acceptance, the dialog stays open, and its Escape and Cancel stay active.
-    await act(async () => void dialog()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true })));
-    await settle();
-    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Cancel")!.click());
-    await settle();
-    expect(cancels()).toHaveLength(0);
     await act(async () => onProgress({ requestId: crypto.randomUUID(), operationId: OP, state: "running", phase: "preflight", counters: {}, stalled: false }));
     await settle();
     expect(dialog()).toBeNull();

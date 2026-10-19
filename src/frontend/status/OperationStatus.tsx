@@ -319,6 +319,8 @@ function operationText(op: StatusOperation, worktreeRoot: string, head: Head | n
   const outcome = outcomeOf(response);
   const sync = op.kind === "sync" ? syncOutcome(name, response, outcome, head) : null;
   if (sync !== null) return sync;
+  const totals = op.kind === "updateSubmodules" ? submoduleTotals(response, outcome) : null;
+  if (totals !== null) return { lead: totals, tail: "" };
   // plan.md "Status and fallback texts": the contract §9 code, or the result state without a code.
   const coded = (lead: string): Line => ({ lead, code: response.code ?? response.state, tail: outcome.reason === undefined ? "" : ` ${outcome.reason}` });
   const short = outcome.commitOid === undefined ? undefined : shortId(outcome.commitOid);
@@ -341,6 +343,15 @@ function operationText(op: StatusOperation, worktreeRoot: string, head: Head | n
   if (count === 0) return line;
   // plan.md "Required visible states", Succeeded: "<outcome>. <lingering sentence>".
   return plain(line) === "" ? { lead: lingeringSentence(count, trusted), tail: "" } : { ...line, tail: `${line.tail}. ${lingeringSentence(count, trusted)}` };
+}
+
+/** Feature 004 spec FR-082: the totals of a run that reconciled its rows. A deadline keeps its coded line. */
+function submoduleTotals(response: BridgeResponse, outcome: Outcome): string | null {
+  const rows = submoduleRowsOf(response);
+  if (rows.length === 0 || outcome.reason !== undefined || !["succeeded", "completed-with-effects", "failed-with-effects"].includes(response.state)) return null;
+  const updated = rows.filter((row) => row.state === "cloned" || row.state === "moved").length;
+  const failed = rows.filter((row) => row.state === "failed").length;
+  return `Update submodules finished. ${updated} updated, ${failed} failed.`;
 }
 
 /** Feature 003 spec FR-002: the step text of a running `sync`. The remote name comes from the review plan, because progress events carry none (contract Δ2). */

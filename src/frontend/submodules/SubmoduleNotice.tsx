@@ -11,7 +11,7 @@ import { Button } from "../components/ui/button";
 
 export type SubmoduleNoticeProps = {
   count: number;
-  /** Opens the submodule review. */
+  /** Starts the one-click update (feature 004 plan D13). */
   onUpdate(): void;
   buttonRef?: Ref<HTMLButtonElement>;
   /** The reason of a workbench state that blocks mutations, or null. The button then stays focusable and does nothing (plan.md "Unavailable control"). */

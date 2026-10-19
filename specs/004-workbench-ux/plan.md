@@ -402,6 +402,17 @@ Each phase writes its tests first. P0.2 to P0.4 are the riskiest proofs and run 
 - Row and hunk buttons (spec FR-032, FR-037): each file row shows its stage or unstage row button on hover and on focus, named "Stage file <name>". Each hunk header shows "Stage hunk" or "Unstage hunk", and the diff heading keeps Previous hunk and Next hunk (001 "Hunk toolbar layout").
 - Ignore items (spec FR-045): the menu item opens a confirm popover that shows the exact line and the target file before the write.
 - P2 regions: the resolve view replaces the diff for a selected Conflicted entry and shows "Open in <tool>" with Cancel while the tool runs (spec FR-095). The Submodules group and the Worktrees group sit in the sidebar. The Settings view has a page list and the scope bar. The trust chip sits in the status bar (D12).
+- Submodules group texts (spec FR-076 to FR-082, D13, WP24). The group sits below the references in the sidebar and scrolls inside its own region.
+  - Header: "Submodules" with the row count, and the icon button "Update submodules". During the own run: "Updating <i> of <n>" from the progress counters, and Cancel. After a run: "<n> updated, <n> failed".
+  - Before the first review: "Arbareto lists the submodules after Update submodules." No read lists the rows without a review (contract gap). A review without rows: "No submodules found." (001 text).
+  - Row states during the run: "Waiting", "Fetching" or "Updating" with " <n>%" when Git reports one, and "Waiting for the result" for a row whose steps ended. Only the row result gives "Done", "Failed", "Clone interrupted", "Changed elsewhere", or "Refused".
+  - Observed results: "Checked out <short ID>", "Cloned, at <short ID>", "No change", and "At <short ID>" for a changed-elsewhere row. A refused or interrupted row shows its result text.
+  - A failed row: "Retry" and "Show output", with the output tail and the step remedy. A failed read adds the 001 text "Arbareto could not read this submodule. Use Refresh, then try again."
+  - Host line: "<path> will fetch from <host>. The repository settings name <host>." per entry, with "Update anyway" and Cancel. `local` reads "this computer", `unknown` reads "a host that Arbareto cannot name" (contract Δ12).
+  - Refusal line: the refusal text and "Show remedy", with the remedy text, the command, and "Copy command". A refusal without a remedy has no "Show remedy".
+  - Registration line: "Git changed the repository settings of <n> submodules." ("1 submodule").
+  - Row menu: the accessible name "Actions for <path>"; items "Update", "Retry" (failed rows), "Show output" (failed rows with output), and "Copy path".
+  - Status bar (spec FR-082): "Update submodules finished. <n> updated, <n> failed." for a succeeded, completed-with-effects, or failed-with-effects run with row results and no deadline reason.
 - Message editor (spec FR-047): a plain textarea with a guide at column 72, drawn from the code font advance width. The counter counts code points of line 1. Line 2 not empty gets a Warning mark with text.
 - Commit view texts (WP14). The words in quotes are the exact texts. `<n>` is a count with thousands separators.
   - Lists: the headings "Changes" and "Staged" with the count, and the section row "Untracked" with the count. The layout buttons are "Tree layout" and "Flat layout". The sidebar shows no help line, because the visible row buttons give that hint. Only the diff empty state shows the 001 help line.

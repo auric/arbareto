@@ -526,7 +526,7 @@ Source: the 004 design standard of 2026-10-16 (consistency audit a052af1c, decis
 | Tooltip shadow | `0 4px 12px rgba(0,0,0,.45)` | Tooltips |
 | Danger button | Removed `#F09999` fill, Surface `#26292F` text | Destructive confirm buttons only (D-S5). About 6.7:1 (W3C formula, plan computation; T158 measures it). |
 
-- Danger rules (D-S5): destructive menu items use Removed text. "Abort rebase…" and "Discard changes" are destructive: Removed text on secondary buttons, the filled danger button only inside their confirmation.
+- Danger rules (D-S5): destructive menu items use Removed text. "Abort rebase…", "Discard changes", and "Discard setting changes" are destructive: Removed text on secondary buttons, the filled danger button only inside their confirmation.
 - Components: standard button 28 px, row button 24 px, nothing below 24 px. Focus: 2 px Accent outline, offset 2 px on controls and −2 px inside rows and menu items. Selection: the 2×16 px Accent marker. Chips 18 px with radius 4. Count pills radius 9. The selected-lines bar is the 3 px Accent bar on the left.
 - Geometry (T036 boards, research R25):
   - Branch list popover: 380 px wide, opened below the branch button. The filter field shows a search icon and the placeholder "Find a branch". The current branch row shows an `aria-hidden` check mark. Group headings are 26 px. "New branch… (Ctrl+B)" shows its key in a right-aligned Muted column.

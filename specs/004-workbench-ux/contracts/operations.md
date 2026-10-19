@@ -363,3 +363,8 @@ No file decision gives a line refusal, so the `readComparison` `fileAction` neve
 - The shell serves `fileFacts` only below the registered roots. So the listing of another worktree leaves each fact below its own folders unresolved, and such an entry counts as listed and found.
 - A HEAD message whose bytes are no valid UTF-8 has no exact text, so the amend review refuses it with `COMMIT_ENCODING_UNSUPPORTED`.
 - `reviewCommit` has no result schema (a 001 gap), so the `amend` part has no JSON Schema and no vectors.
+- A `config-save` refusal names no key and no file.
+- A `reviewWorkbench` refusal does not name the refusing gate: this repository or the target worktree (plan O-20). So with this repository trusted and the target not trusted, each Remove review asks for this repository until Not now. A contract field that names the gate closes this gap.
+- A DD conflict has no side names. The resolve review refuses it, and a refused review has no plan, so the view shows the sides as "Not known".
+- The resolve Cancel waits for the first progress event, because only that event gives the `operationId`.
+- Open as repository for a submodule has no bridge call. `openWorktree` opens only worktrees of the same repository.

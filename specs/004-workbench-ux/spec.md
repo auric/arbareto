@@ -39,6 +39,10 @@ Plan-driven corrections (plan O-1 to O-4, O-9, O-12, O-15, O-16, and an orchestr
 - SC-009 accepts the `branch.<name>` section writes of Git's own branch create, rename, and delete.
 - The commit workspace offers "Amend last commit" as P2 (User Story 11, FR-098 to FR-100). Amend leaves the Scope Boundaries exclusions.
 
+### Session 2026-10-19
+
+- Q: Does feature 004 deliver the commit message spell check? → A: No. The user postponed it on 2026-10-19. User Story 10, FR-083, FR-084, and SC-012 move to a later feature. Feature 004 keeps their text as the input for that feature.
+
 ## User Scenarios & Testing *(mandatory)*
 
 Feature 001 shows a read-only references sidebar and a docked commit panel. Feature 002 shows the full history of all branches. Feature 003 adds Fetch, Pull, Push, Clone, and the conflict actions Abort, Continue, Skip, and Mark resolved. This feature adds the daily branch and commit work around them: switch branches, run branch actions, merge, rebase, commit with fine staging, resolve conflicted files, and manage worktrees. It also edits Git settings, makes trust prompts calmer, and makes the submodule update a single click. Git Extensions is the reference for the functions. The design follows the mockup boards of 2026-10-16.
@@ -216,7 +220,9 @@ A merge or a rebase stops with conflicts. The developer selects a conflicted fil
 
 ---
 
-### User Story 10 - See spelling mistakes in the commit message (Priority: P3)
+### User Story 10 - See spelling mistakes in the commit message (Priority: P3, moved to a later feature)
+
+**Moved**: The user postponed this story on 2026-10-19 (Clarifications). A later feature delivers it. Feature 004 does not build it.
 
 A developer writes a commit message. Misspelled English words get a wavy underline. The context menu offers suggestions.
 
@@ -278,7 +284,7 @@ A developer checks "Amend last commit" in the commit workspace. The message of t
 - The repository folder or the Git selection changes. Trust asks again before the next repository program runs.
 - A WSL repository has hooks. The same trust rules apply through the distro's Git, as feature 001 FR-046 states.
 - A submodule update is cancelled. Each row shows its observed state from a fresh read, as feature 001 FR-023 requires.
-- Spell check has no dictionary for the message language. Only English words get marks. No mark is no proof of correct spelling.
+- Later feature (User Story 10): spell check has no dictionary for the message language. Only English words get marks. No mark is no proof of correct spelling.
 
 ## Requirements *(mandatory)*
 
@@ -286,9 +292,9 @@ A developer checks "Amend last commit" in the commit workspace. The message of t
 
 Include a branch button with a searchable branch list, double-click switch with a confirmation, a local-changes choice, and remote-branch checkout with a new tracking branch. Include a branch context menu with Switch, Merge into current branch, Rebase current branch onto, Create branch here, Rename, Delete, and Copy branch name. Push in that menu comes from feature 003. Include docked Merge and Rebase panels with their options. Include a resolve view for a conflicted file with Choose ours, Choose theirs, Open in merge tool, and the 003 Mark resolved. Include a commit workspace with an Untracked section, a tree layout, folder staging, multi-select, Stage all untracked, ignore actions, visible stage buttons, visible hunk buttons, line staging, and a message editor with a 72-column guide. Include Amend last commit as P2.
 
-Include a worktree button with a list, Open, Add, Remove, and Prune. Include a Git settings view by scope. Include the trust redesign: one native prompt, only when an action would run a repository program, and a status chip. Include the one-click submodule update with inline progress and a per-submodule Update and Retry. Include English spell check of the commit message as P3.
+Include a worktree button with a list, Open, Add, Remove, and Prune. Include a Git settings view by scope. Include the trust redesign: one native prompt, only when an action would run a repository program, and a status chip. Include the one-click submodule update with inline progress and a per-submodule Update and Retry. English spell check of the commit message moves to a later feature (Clarifications, 2026-10-19).
 
-Exclude a merge editor inside the application, the resolve of several files in one action, and rerere management. Exclude interactive rebase, reset, cherry-pick, revert, tags, and stash management other than the stash of the switch choice. Exclude Commit and push (feature 003), discard of single files, hunks, or lines, and push of other branches. Exclude remote branch delete and remote management. Exclude the dubious-ownership dialog and its `safe.directory` command (feature 001 Clarifications, 2026-10-10). Exclude dictionaries other than English, and every spell check that uses the network or AI.
+Exclude a merge editor inside the application, the resolve of several files in one action, and rerere management. Exclude interactive rebase, reset, cherry-pick, revert, tags, and stash management other than the stash of the switch choice. Exclude Commit and push (feature 003), discard of single files, hunks, or lines, and push of other branches. Exclude remote branch delete and remote management. Exclude the dubious-ownership dialog and its `safe.directory` command (feature 001 Clarifications, 2026-10-10). Exclude the commit message spell check (User Story 10). The later feature excludes dictionaries other than English, and every spell check that uses the network or AI.
 
 Already built in other tasks, and not specified here: the current branch in bold in the sidebar, and the inline copy buttons in the commit details (feature 002 tasks T067 and T068). The static app frame is the feature 001 fix T380. This feature adds no requirement for it.
 
@@ -447,7 +453,9 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-081**: A submodule row MUST offer Update in its context menu, and a failed row MUST offer Retry. Both MUST update that submodule and its nested submodules only, with the same checks and the same confirmation. They MUST also refuse a submodule whose parent is not initialized and a submodule that is not active (contract Δ12).
 - **FR-082**: After the run, each row MUST show its observed result, such as "Checked out 4e1a9c0". A failed row MUST show the reason, the Git exit code, and Show output with the bounded output tail. The status bar MUST state the totals, such as "Update submodules finished. 4 updated, 1 failed.". Registration changes MUST show as one information line, with no extra click.
 
-#### Spell check
+#### Spell check (moved to a later feature)
+
+FR-083 and FR-084 move to a later feature (Clarifications, 2026-10-19). Feature 004 does not implement them.
 
 - **FR-083**: The message editor MUST mark misspelled English words with a wavy underline and a non-color cue. The context menu of a marked word MUST offer suggestions and Ignore. The editor MUST show the chip "Spelling: English".
 - **FR-084**: Spell check MUST run on the computer without a network connection and without AI. It MUST NOT block a commit or change the text without a user selection.
@@ -455,7 +463,7 @@ This feature changes these requirements for builds that include it. The earlier 
 #### Visible controls and keyboard
 
 - **FR-085**: Every new control MUST have an icon or a text label, a tooltip that names the action and its shortcut, an accessible name, and visible focus. The accessible name of a menu item MUST be its label only. The menu item MUST give its shortcut in `aria-keyshortcuts`, and its visible shortcut text MUST be hidden from assistive technology. Selectable text and editable fields MUST keep the built-in menu with Copy, unless the element has its own action menu. Unavailable controls MUST state their reason. Destructive actions MUST use explicit labels and MUST stay apart from routine primary actions.
-- **FR-086**: The branch list, the worktree list, the file lists, and the Submodules group MUST create elements only for the rows near the visible area, as 002 FR-055 requires for the sidebar.
+- **FR-086**: The branch list, the worktree list, and the file lists MUST create elements only for the rows near the visible area, as 002 FR-055 requires for the sidebar. The Submodules group needs no virtualization, because the 001 contract §5 "Submodule review" bound caps it at 256 rows.
 - **FR-087**: Single-letter shortcuts MUST act only while their region has focus. A new single-letter shortcut MUST NOT act globally.
 - **FR-088**: The window MUST keep the feature 001 SC-005 response targets during every operation of this feature.
 
@@ -492,7 +500,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **SC-009**: In every settings fixture, a save changes only the selected keys in the selected scope file. All other bytes of every configuration file stay identical. Across all other fixtures of this feature, every Git configuration file stays byte-identical, except the `branch.<name>` sections that Git's own branch create, rename, and delete write. Those sections equal the result of Git's own branch commands on a copy.
 - **SC-010**: In a fixture without repository programs, a full session shows no trust prompt. In a fixture with hooks, the first commit shows exactly one prompt. No repository program runs before approval in any fixture.
 - **SC-011**: In every submodule fixture without a safety fact, the update starts with one click and opens no dialog. Each result equals the feature 001 result. Each FR-049 refusal case still refuses and changes nothing.
-- **SC-012**: In the spelling fixture, every listed misspelling gets a mark and no listed correct word gets one. No network connection starts.
+- **SC-012**: In the spelling fixture, every listed misspelling gets a mark and no listed correct word gets one. No network connection starts. SC-012 moves to a later feature with User Story 10.
 - **SC-013**: A review of the requirement-to-test map finds no outcome that Git message text, timing, or a name pattern decides.
 - **SC-014**: Keyboard-only users complete each P1 story. Each control has an accessible name, visible focus, and a contrast of at least 4.5:1.
 - **SC-015**: In every conflict fixture, Choose ours, Choose theirs, and Open in merge tool give the same working files and index as Git's own `git checkout --ours`, `git checkout --theirs`, and `git mergetool` with the same fixture tool on a copy. No repository-controlled merge tool runs before approval. No action reads conflict markers.
@@ -515,7 +523,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - Settings opens with or without an open repository. Without one, it shows the app pages only, and the Git configuration pages need an open repository. Global Git settings without an open repository come later.
 - `credential.helper` is a text field without a program scan. This is a reviewer default.
 - `push.autoSetupRemote` changes Git's behavior. The 003 push panel (003 FR-016) still decides what Arbareto shows. The plan checks that 003 reads the effective value. This is a reviewer default.
-- English is the first spell check language. More dictionaries come later. The dictionary source and its license are a plan decision.
+- For the later spell check feature: English is the first spell check language. More dictionaries come later. The dictionary source and its license are a plan decision.
 - Interactive rebase comes in a later feature.
 - The resolve view acts on one file at a time. The merge tool runs only on a user selection, never on its own after a conflict. This is a reviewer default.
 - The mockup boards of 2026-10-16 are the design reference: Main, BranchSwitcher, BranchContext, MergeRebase, Commit, Worktrees, Settings, Trust, and Submodules.

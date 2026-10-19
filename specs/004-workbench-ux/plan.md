@@ -528,7 +528,7 @@ Source: the 004 design standard of 2026-10-16 (consistency audit a052af1c, decis
   - Status letters in the file lists: M in Warning text, A and ? in Added text, D in Removed text. Other letters use Text. The letter is text, so the meaning never depends on color only.
   - Commit view sidebar: the Staged list starts directly below the Changes and Staged splitter, with no empty band.
 - Copy: "Label (Key)" on text buttons and tooltips. "…" only when a further step follows. Fixed phrases: "Switch to <branch>?", "Keep changes", "Stash and reapply", "Discard changes", "<n> working changes", "<n> staged", "Not trusted", "Trusted", "Mark resolved", "Selected commit".
-- Type and spacing: Segoe UI Variable 12/18, headings 14, Cascadia Code for IDs and keys, spacing 4/8/12/16 only.
+- Type and spacing: Segoe UI Variable 12/18, headings 14, Cascadia Code for IDs and keys. Spacing uses the steps 4/8/12/16. Layout spacing and tree indents may also use multiples of 4 built from these steps, such as 8 px + 16 px per tree level (design standard).
 
 ### D17 Spell check (P3)
 
@@ -610,10 +610,10 @@ Source: the 004 design standard of 2026-10-16 (consistency audit a052af1c, decis
 | 3 | P5 | WP11 alone first. Then A: WP12. B: WP13. C: WP14. | P1 frontend. |
 | 4 | P6, P7 | A: WP15. B: WP16. C: WP18. D: WP19. WP17 (local, Rust) beside them. Then WP20 alone. | P2 service and the trust shell. |
 | 5 | P8 | A: WP21. B: WP22. C: WP23. D: WP24. E: WP25. F: WP29. | P2 frontend. |
-| 6 | P10 | WP26. | P3 spell check. |
+| 6 | P10 | None. WP26 moves to a later feature (spec Clarifications, 2026-10-19). | P3 spell check, postponed by the user. |
 | 7 | P9 | WP27 (WSL, alone). WP28 (packaged). | Qualification. |
 
-User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 and US11 (batches 4 and 5). P3 is US10 (batch 6).
+User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 and US11 (batches 4 and 5). P3 is US10 (batch 6), which moves to a later feature.
 
 ### Work packages, in run order
 
@@ -642,11 +642,11 @@ User stories by priority: P1 is US1 to US4 (batches 2 and 3). P2 is US5 to US9 a
 | WP20 | implementer | `src/git-service/session.ts`, `src/git-service/trust.ts` (class `mergetool`), `src/git-service/{commit-review,commit}.ts` (amend), `tests/git/commit-amend.test.ts` | P6 wiring and the US11 service part. After WP15 to WP19. |
 | WP21 | frontend-implementer | new `src/frontend/worktrees/*`, tests | P8: US5 |
 | WP22 | frontend-implementer | new `src/frontend/settings/git/*`, `src/frontend/settings/SettingsView.tsx`, tests | P8: US6 |
-| WP23 | frontend-implementer | new `src/frontend/trust/TrustChip.tsx`, remove `src/frontend/trust/TrustDialog.tsx`, `src/frontend/app/RepositoryMenu.tsx`, tests | P8: US7 |
+| WP23 | frontend-implementer | new `src/frontend/trust/TrustChip.tsx`, remove `src/frontend/trust/TrustDialog.tsx`, `src/frontend/app/RepositoryMenu.tsx`, `src-tauri/src/{dialogs,schema}.rs`, `src/contracts/channel.ts`, `src/contracts/schemas/{renderer-envelope,service-envelope,trust-request}.schema.json`, `tests/vectors/` (action `repository`), new `src/frontend/trust/ask.ts`, the sync, branch, and integrate hooks (`src/frontend/sync/useSync.ts`, `src/frontend/branches/BranchActions.tsx`, `src/frontend/integrate/IntegratePanel.tsx`), the History mount (`src/frontend/history/{HistoryView,HistoryList}.tsx`, `src/frontend/app/Workbench.tsx`), tests | P8: US7. WP23 and WP17 both edit `src-tauri/src/dialogs.rs`. |
 | WP24 | frontend-implementer | `src/frontend/submodules/*`, tests | P8: US8 |
 | WP25 | frontend-implementer | new `src/frontend/resolve/*`, tests | P8: US9 |
 | WP29 | frontend-implementer | `src/frontend/commit/*` (Amend last commit), `tests/contracts/workbench-amend.test.tsx` | P8: US11. After WP14 and WP20. |
-| WP26 | frontend-implementer | new `src/frontend/commit/spelling.ts`, `package.json`, `bun.lock`, the notices inventory, tests | P10: US10 |
+| WP26 | frontend-implementer | new `src/frontend/commit/spelling.ts`, `package.json`, `bun.lock`, the notices inventory, tests | P10: US10. Moved to a later feature (2026-10-19). |
 | WP27 | implementer; runs by scout, alone | `tests/wsl/workbench-wsl.test.ts` | P9 WSL |
 | WP28 | implementer; runs by scout | `tests/windows/{workbench-packaged,workbench-perf}.test.ts` | P9 packaged |
 
@@ -655,7 +655,7 @@ Parallel tracks use disjoint files. These packages are not file-disjoint:
 - `src/frontend/app/Workbench.tsx`: WP11 owns it. WP12 to WP14 and WP21 to WP25 fill the mount points that WP11 creates.
 - `src/frontend/refs/ReferencesSidebar.tsx`: WP12, then WP21 and WP24 add their groups through WP11 mount points.
 - `tests/groups.json`: every WP appends its lines. The orchestrator resolves merge conflicts.
-- Rust: WP6 and WP17 run one at a time, locally.
+- Rust: WP6 and WP17 run one at a time, locally. WP23 also edits `src-tauri/src/dialogs.rs` after WP17 (the `repository` sentence).
 - `src/contracts/envelope.ts` and `src/contracts/schemas/`: WP5 owns them in batch 1. The WP4 decision constants (`MERGE_MESSAGE_BYTES`, `message-size`, `unreadable`, `new-file`) follow, and WP6 adds `switchChoice` to the `readSyncSettings` result. The orchestrator merges them in turn.
 
 Dependencies on feature 003 (branch `f003-spec`, not merged into main):

@@ -3620,7 +3620,8 @@ pub(crate) mod tests {
     use crate::bootstrap::tests::Hold;
     use crate::bootstrap::{ContextKind, read_identity};
     use crate::jobs::tests::{
-        CHILD_PREFIX, CLOSE_BOUND, Fixture, Proc, WAIT, eventually, test_exe, wait_file,
+        CHILD_PREFIX, CLOSE_BOUND, Fixture, Proc, TEST_END, WAIT, ends_by_test, eventually,
+        test_exe, wait_file,
     };
 
     /// The `register` digest of a test Git. The shell checks only its form.
@@ -5036,7 +5037,12 @@ pub(crate) mod tests {
         );
         let running = uuid();
         let run = harness.run(&running, &workspace, &["sleep", "60000"]);
-        harness.output_line(&run, "stdout", "PID");
+        let child = Proc::open(
+            harness
+                .output_line(&run, "stdout", "PID")
+                .parse()
+                .expect("pid"),
+        );
         harness.send(json!({ "type": "cancel", "callId": run, "extra": 1 }));
         assert_eq!(
             harness
@@ -5049,7 +5055,12 @@ pub(crate) mod tests {
         harness.send(json!({ "type": "release", "repositoryId": workspace.repository, "gitInstallationId": workspace.git }));
         harness.send(json!({ "type": "closeJob", "operationId": running, "extra": 1 }));
         assert!(
-            harness.exit(&run, Duration::from_secs(1)).is_none(),
+            ends_by_test(child.handle),
+            "the malformed closeJob never began to end the run"
+        );
+        assert_eq!(
+            harness.exit(&run, WAIT).expect("exit").1["exitCode"],
+            TEST_END,
             "the malformed closeJob closed nothing"
         );
         let still_bound = harness.run(&uuid(), &workspace, &["sleep", "10"]);
@@ -5060,6 +5071,8 @@ pub(crate) mod tests {
                 .1["exitCode"],
             0
         );
+        let run = harness.run(&running, &workspace, &["sleep", "60000"]);
+        harness.output_line(&run, "stdout", "PID");
         harness.send(json!({ "type": "closeJob", "operationId": running }));
         assert!(
             harness.exit(&run, CLOSE_BOUND).is_some(),
@@ -5688,10 +5701,14 @@ pub(crate) mod tests {
             "the sleeping grandchild ends"
         );
         assert!(
-            !other_child.exits_within(Duration::from_secs(1)),
-            "the other operation keeps running"
+            ends_by_test(other_child.handle),
+            "the cancel never began to end the other operation"
         );
-        assert!(harness.exit(&other, Duration::from_millis(10)).is_none());
+        assert_eq!(
+            harness.exit(&other, WAIT).expect("exit").1["exitCode"],
+            TEST_END,
+            "the cancel closed no Job of the other operation"
+        );
     }
 
     /// Contract §12 "WSL repositories": the process-end run after a Cancel or a deadline needs a new Job for the same operation.
@@ -5849,8 +5866,8 @@ pub(crate) mod tests {
         assert_eq!(harness.requests.ended(&operation, false), Ok(()));
         assert!(harness.jobs.is_lingering(&operation), "the Job lingers");
         assert!(
-            !grandchild.exits_within(Duration::from_secs(1)),
-            "the grandchild keeps running"
+            ends_by_test(grandchild.handle),
+            "ended never began to end the grandchild"
         );
     }
 
@@ -5885,11 +5902,11 @@ pub(crate) mod tests {
             child.exits_within(CLOSE_BOUND),
             "the running operation Job closes"
         );
-        assert!(
-            !grandchild.exits_within(Duration::from_secs(1)),
-            "the lingering Job stays"
-        );
         assert!(harness.jobs.is_lingering(&lingering));
+        assert!(
+            ends_by_test(grandchild.handle),
+            "the service exit never began to end the lingering Job"
+        );
     }
 
     #[test]
@@ -9464,8 +9481,10 @@ pub(crate) mod tests {
     /// A commit whose hook waits on a hidden console ends at a 5-second deadline with every descendant.
     fn assert_console_wait_ends_at_the_deadline(
         variant: &str,
+        program: &Path,
         hook_line: impl FnOnce(&Fixture) -> String,
     ) {
+        let program = read_identity(program).expect("program identity");
         let Some(git) = find_git() else { return };
         let fixture = GitFixture::new(git, |root| {
             format!(
@@ -9476,7 +9495,15 @@ pub(crate) mod tests {
         let operation = uuid();
         let start = Instant::now();
         let call = fixture.commit(&operation, 5_000);
-        std::thread::sleep(Duration::from_secs(3));
+        assert!(
+            eventually(WAIT, || fixture
+                .harness
+                .jobs
+                .process_ids(&operation)
+                .into_iter()
+                .any(|pid| image_identity(pid) == Some(program))),
+            "{variant}: the waiting program runs in the Job"
+        );
         let processes: Vec<Proc> = fixture
             .harness
             .jobs
@@ -9525,7 +9552,7 @@ pub(crate) mod tests {
         ) else {
             return;
         };
-        assert_console_wait_ends_at_the_deadline("powershell", |_| {
+        assert_console_wait_ends_at_the_deadline("powershell", &powershell, |_| {
             format!(
                 "'{}' -NoProfile -Command \"Read-Host -AsSecureString x\"",
                 sh_path(&powershell)
@@ -9539,13 +9566,43 @@ pub(crate) mod tests {
         else {
             return;
         };
-        assert_console_wait_ends_at_the_deadline("ssh-keygen", |root| {
+        assert_console_wait_ends_at_the_deadline("ssh-keygen", &keygen, |root| {
             format!(
                 "'{}' -y -f '{}'",
                 sh_path(&keygen),
                 sh_path(&passphrase_key(&keygen, root))
             )
         });
+    }
+
+    /// The file identity of the image of a process. The query handle never ends the process.
+    fn image_identity(pid: u32) -> Option<crate::bootstrap::Identity> {
+        use std::os::windows::ffi::OsStringExt;
+        use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+        use windows::Win32::System::Threading::{
+            OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+            QueryFullProcessImageNameW,
+        };
+        // SAFETY: the call returns a new handle or fails.
+        let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+        // SAFETY: OpenProcess returned a new handle that nothing else owns.
+        let handle = unsafe { OwnedHandle::from_raw_handle(handle.0) };
+        let mut buffer = vec![0u16; 32_768];
+        let mut size = buffer.len() as u32;
+        // SAFETY: `buffer` holds `size` UTF-16 units, and `handle` stays open for the call.
+        unsafe {
+            QueryFullProcessImageNameW(
+                HANDLE(handle.as_raw_handle()),
+                PROCESS_NAME_WIN32,
+                windows::core::PWSTR(buffer.as_mut_ptr()),
+                &mut size,
+            )
+        }
+        .ok()?;
+        read_identity(&PathBuf::from(OsString::from_wide(
+            &buffer[..size as usize],
+        )))
+        .ok()
     }
 
     /// Generates a passphrase key under the owned root, as plan.md F11 and F30 do.

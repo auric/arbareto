@@ -20,7 +20,7 @@ use crate::text_scale::{self, Current};
 pub const MAIN_WINDOW: &str = "main";
 
 /// Contract §3: the closed allowlist of public operations, as `src/contracts/operations.ts` lists them.
-pub const OPERATIONS: [&str; 50] = [
+pub const OPERATIONS: [&str; 51] = [
     "getEnvironment",
     "chooseGit",
     "chooseRepository",
@@ -73,11 +73,12 @@ pub const OPERATIONS: [&str; 50] = [
     "openWorktree",
     "revealPath",
     "setSwitchChoice",
+    "chooseWorktreeFolder",
 ];
 
 /// Contract §3: the shell runs these first. The shell answers `requestClose` itself and never forwards it.
 /// Feature 004 contract Δ1: only the `worktree-add` form of `reviewWorkbench` is native-first, so `submit` decides it by its action.
-const NATIVE_FIRST: [&str; 17] = [
+const NATIVE_FIRST: [&str; 18] = [
     "requestClose",
     "chooseGit",
     "chooseRepository",
@@ -97,10 +98,11 @@ const NATIVE_FIRST: [&str; 17] = [
     // Feature 004 contract Δ1.
     "openWorktree",
     "setSwitchChoice",
+    "chooseWorktreeFolder",
 ];
 
 /// Contract §3 "Recent repositories" and feature 003 and feature 004 contract Δ1: the shell answers these itself and never forwards them.
-const NATIVE_ANSWERS: [&str; 9] = [
+const NATIVE_ANSWERS: [&str; 10] = [
     "listRecentRepositories",
     "removeRecentRepository",
     "readSyncSettings",
@@ -110,6 +112,7 @@ const NATIVE_ANSWERS: [&str; 9] = [
     "clearSyncPath",
     "launchPuttygen",
     "setSwitchChoice",
+    "chooseWorktreeFolder",
 ];
 
 /// Feature 004 contract Δ1: the `reviewWorkbench` action whose path the shell binds first.
@@ -993,6 +996,21 @@ pub async fn set_switch_choice(
 }
 
 #[tauri::command]
+pub async fn choose_worktree_folder(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(
+        webview,
+        &ipc,
+        "chooseWorktreeFolder",
+        request.body().clone(),
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn launch_puttygen(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
@@ -1588,6 +1606,30 @@ mod tests {
         assert_eq!(pending(&ipc), 0);
     }
 
+    /// Feature 004 contract Δ1 and Δ3: the shell answers `chooseWorktreeFolder` itself and never forwards it.
+    #[test]
+    fn choose_worktree_folder_is_answered_natively_and_never_forwarded() {
+        assert!(NATIVE_FIRST.contains(&"chooseWorktreeFolder"));
+        assert!(NATIVE_ANSWERS.contains(&"chooseWorktreeFolder"));
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        assert_eq!(
+            send(
+                &ipc,
+                &request(
+                    "chooseWorktreeFolder",
+                    json!({ "repositoryId": OPERATION_ID })
+                )
+            ),
+            Outcome::Answer(
+                json!({ "requestId": REQUEST_ID, "state": "succeeded", "result": { "operation": "chooseWorktreeFolder", "entries": [] } })
+            )
+        );
+        assert_eq!(*native.prepares.lock().expect("prepares"), 1);
+        assert!(native.prepared.lock().expect("prepared").is_empty());
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0);
+    }
+
     /// Feature 004 contract Δ1 and Δ3: `openWorktree` and the `worktree-add` review run their native step.
     /// The step of the review gets the `repositoryId` of the envelope. The service gets the native payload.
     #[test]
@@ -1669,6 +1711,11 @@ mod tests {
             bound,
             request("setSwitchChoice", json!({ "choice": "discard" })),
             request("setSwitchChoice", json!({})),
+            request("chooseWorktreeFolder", json!({})),
+            request(
+                "chooseWorktreeFolder",
+                json!({ "repositoryId": OPERATION_ID, "path": "C:\\src" }),
+            ),
             request(
                 "openWorktree",
                 json!({ "repositoryId": OPERATION_ID, "path": "" }),

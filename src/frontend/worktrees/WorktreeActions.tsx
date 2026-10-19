@@ -32,7 +32,7 @@ type List = { repositoryId: string; entries: WorktreeEntry[] | null; failure: st
 type RemoveOverlay = { entry: WorktreeEntry; force: boolean; deleteBranch: boolean; plan: RemovePlan | null; token: string | null; pending: boolean; error: string | null };
 
 export type WorktreeActionsOptions = {
-  bridge: Pick<Bridge, "readWorktrees" | "reviewWorkbench" | "runWorkbench">;
+  bridge: Pick<Bridge, "readWorktrees" | "reviewWorkbench" | "runWorkbench" | "chooseWorktreeFolder">;
   /** Plan D12 "Ask". Contract gap: a remove refusal does not tell this repository from the target worktree (plan O-20). So it asks for this repository only. */
   askTrust?: AskTrust;
   target(): Target | null;
@@ -252,7 +252,7 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
 
   const addPanel =
     add === null || add.repositoryId !== repositoryId ? null : (
-      <AddWorktreePanel workbench={workbench} worktreeRoot={worktreeRoot} start={start} blockedReason={blockedReason} running={running} opener={add.opener} onSubmit={submitAdd} onClose={() => setAdd(null)} />
+      <AddWorktreePanel workbench={workbench} worktreeRoot={worktreeRoot} start={start} blockedReason={blockedReason} running={running} opener={add.opener} onSubmit={submitAdd} onBrowse={() => bridge.chooseWorktreeFolder({ repositoryId: add.repositoryId })} onClose={() => setAdd(null)} />
     );
 
   const overlays =

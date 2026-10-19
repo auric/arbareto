@@ -54,6 +54,7 @@
     "allow-open-worktree",
     "allow-reveal-path",
     "allow-set-switch-choice",
+    "allow-choose-worktree-folder",
     "core:event:allow-listen"
   ]
 }

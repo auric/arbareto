@@ -892,7 +892,8 @@
             "applyFiles",
             "openWorktree",
             "revealPath",
-            "setSwitchChoice"
+            "setSwitchChoice",
+            "chooseWorktreeFolder"
           ]
         },
         "state": {

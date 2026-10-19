@@ -1,0 +1,6 @@
+{
+  "schema": "choose-worktree-folder-result",
+  "expected": "valid",
+  "platform": "windows",
+  "text": "{\"path\":\"\\\\\\\\wsl.localhost\\\\Ubuntu\\\\home\\\\u\"}"
+}

@@ -146,6 +146,7 @@ export type WorkbenchBridge = RequestBridge &
     | "revealPath"
     | "readGitSettings"
     | "setSwitchChoice"
+    | "chooseWorktreeFolder"
   >;
 /** The hunk and file staging facts that the workbench gives the changes pane and the comparison view (T145, T202). */
 export type Staging = {

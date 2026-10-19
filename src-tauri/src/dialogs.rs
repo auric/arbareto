@@ -119,6 +119,8 @@ pub trait Native {
     fn pick_executable(&self) -> Result<Option<PathBuf>, &'static str>;
     /// The folder picker. `Ok(None)` is Cancel. `Err` is a picker call failure.
     fn pick_folder(&self) -> Result<Option<PathBuf>, &'static str>;
+    /// The folder picker of `chooseWorktreeFolder`, with its own title. `Ok(None)` is Cancel.
+    fn pick_parent_folder(&self) -> Result<Option<PathBuf>, &'static str>;
     /// The file picker of one `FileKind`. `Ok(None)` is Cancel. `Err` is a picker call failure.
     fn pick_file(&self, kind: FileKind) -> Result<Option<PathBuf>, &'static str>;
     /// The button ID that `TaskDialogIndirect` returns. `None` is a call failure.
@@ -274,6 +276,41 @@ pub fn choose_clone(
         bootstrap_id,
         destination,
     }))
+}
+
+/// The distro that a WSL path names. `None` for another path.
+fn distro(path: &Path) -> Option<&str> {
+    let Some(Component::Prefix(prefix)) = path.components().next() else {
+        return None;
+    };
+    let Prefix::UNC(_, distro) = prefix.kind() else {
+        return None;
+    };
+    distro
+        .to_str()
+        .filter(|distro| is_wsl_path(path) && !distro.is_empty())
+}
+
+/// Feature 004 contract Δ3 `chooseWorktreeFolder`: the parent folder of a new worktree on the §11 route of `root`.
+/// `root` is the worktree root of the registered repository. `Ok(None)` is Cancel.
+pub fn choose_worktree_folder(
+    native: &dyn Native,
+    root: Option<&Path>,
+) -> Result<Option<String>, &'static str> {
+    let root = root.ok_or("UNKNOWN_TARGET")?;
+    let Some(folder) = native.pick_parent_folder()? else {
+        return Ok(None);
+    };
+    let text = folder.to_str().ok_or(INVALID)?;
+    native_path(text).map_err(|_| INVALID)?;
+    match (distro(root), distro(&folder)) {
+        (None, None) if !is_wsl_path(root) && !is_wsl_path(&folder) => {}
+        (Some(repository), Some(picked)) if repository.eq_ignore_ascii_case(picked) => {
+            wsl::linux_path(&folder, repository).ok_or(INVALID)?;
+        }
+        _ => return Err("UNSUPPORTED_REPOSITORY"),
+    }
+    Ok(Some(text.to_string()))
 }
 
 /// Contract §11 "Route": a WSL path names a distro, and each segment has a Linux form (reason `wsl-path`).
@@ -866,10 +903,14 @@ fn show_confirmation(
 /// The `rejected` code of a picker call that failed (contract §3).
 pub const PICKER_FAILED: &str = "PICKER_FAILED";
 
-/// What one picker shows. `Git` is the executable picker of `chooseGit`.
+/// Feature 004 plan.md D14 and D15: the title of the `chooseWorktreeFolder` picker.
+const PARENT_FOLDER_TITLE: PCWSTR = w!("Select the parent folder of the new worktree");
+
+/// What one picker shows. `Git` is the executable picker of `chooseGit`. `ParentFolder` is the folder picker of `chooseWorktreeFolder`.
 #[derive(Clone, Copy)]
 enum Picker {
     Folder,
+    ParentFolder,
     Git,
     File(FileKind),
 }
@@ -913,7 +954,7 @@ fn show(
         unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) }
             .map_err(at("CoCreateInstance"))?;
     let (picks, filter) = match picker {
-        Picker::Folder => (FOS_PICKFOLDERS, None),
+        Picker::Folder | Picker::ParentFolder => (FOS_PICKFOLDERS, None),
         Picker::Git => (FILEOPENDIALOGOPTIONS(0), Some((w!("Git"), w!("*.exe")))),
         Picker::File(kind) => (FILEOPENDIALOGOPTIONS(0), Some(kind.filter())),
     };
@@ -929,6 +970,10 @@ fn show(
         }];
         // SAFETY: the dialog copies the filter strings, which are static.
         unsafe { dialog.SetFileTypes(&filter) }.map_err(at("SetFileTypes"))?;
+    }
+    if let Picker::ParentFolder = picker {
+        // SAFETY: the dialog copies the title, which is static.
+        unsafe { dialog.SetTitle(PARENT_FOLDER_TITLE) }.map_err(at("SetTitle"))?;
     }
     // SAFETY: `owner` is null or a window handle. A destroyed owner makes `Show` fail, and that failure is no memory access.
     if let Err(error) = unsafe { dialog.Show(Some(owner)) } {
@@ -956,6 +1001,10 @@ impl Native for Dialogs {
 
     fn pick_folder(&self) -> Result<Option<PathBuf>, &'static str> {
         pick(self.owner_hwnd(), Picker::Folder)
+    }
+
+    fn pick_parent_folder(&self) -> Result<Option<PathBuf>, &'static str> {
+        pick(self.owner_hwnd(), Picker::ParentFolder)
     }
 
     fn pick_file(&self, kind: FileKind) -> Result<Option<PathBuf>, &'static str> {
@@ -1070,6 +1119,11 @@ pub(crate) mod tests {
 
         fn pick_folder(&self) -> Result<Option<PathBuf>, &'static str> {
             self.calls.borrow_mut().push("pick_folder");
+            self.pick_failure.map_or(Ok(self.folder.clone()), Err)
+        }
+
+        fn pick_parent_folder(&self) -> Result<Option<PathBuf>, &'static str> {
+            self.calls.borrow_mut().push("pick_parent_folder");
             self.pick_failure.map_or(Ok(self.folder.clone()), Err)
         }
 
@@ -2451,6 +2505,67 @@ pub(crate) mod tests {
                 .expect("context")
                 .key,
             Some(key)
+        );
+    }
+
+    /// Feature 004 contract Δ3 `chooseWorktreeFolder`: the picked parent folder takes the §11 route of the repository.
+    #[test]
+    fn the_worktree_folder_picker_keeps_the_route_of_the_repository() {
+        let windows = Path::new(r"C:\repo");
+        let wsl = Path::new(r"\\wsl.localhost\Ubuntu\home\u\repo");
+        let picked = |folder: PathBuf| Fake {
+            folder: Some(folder),
+            ..Fake::default()
+        };
+        let choose = |root: &Path, folder: &str| {
+            let native = picked(PathBuf::from(folder));
+            let chosen = choose_worktree_folder(&native, Some(root));
+            assert_eq!(native.calls(), ["pick_parent_folder"], "{folder}");
+            chosen
+        };
+        for folder in [r"D:\work", r"C:\", r"\\server\share\work"] {
+            assert_eq!(choose(windows, folder), Ok(Some(folder.to_string())));
+        }
+        for folder in [r"\\wsl$\Ubuntu\home\u", r"\\wsl.localhost\ubuntu\home\u"] {
+            assert_eq!(choose(windows, folder), Err("UNSUPPORTED_REPOSITORY"));
+            assert_eq!(choose(wsl, folder), Ok(Some(folder.to_string())));
+        }
+        for folder in [
+            r"D:\work",
+            r"\\wsl.localhost\Debian\home\u",
+            r"\\server\share\work",
+        ] {
+            assert_eq!(choose(wsl, folder), Err("UNSUPPORTED_REPOSITORY"));
+        }
+        assert_eq!(
+            choose(wsl, "\\\\wsl.localhost\\Ubuntu\\home\\u\u{f03a}"),
+            Err(INVALID),
+            "§11 reason wsl-path"
+        );
+        let lone = PathBuf::from(OsString::from_wide(&[0x43, 0x3a, 0x5c, 0xd800]));
+        let native = picked(lone);
+        assert_eq!(choose_worktree_folder(&native, Some(windows)), Err(INVALID));
+
+        assert_eq!(
+            choose_worktree_folder(&Fake::default(), Some(windows)),
+            Ok(None)
+        );
+        let failed = Fake {
+            pick_failure: Some(PICKER_FAILED),
+            ..Fake::default()
+        };
+        assert_eq!(
+            choose_worktree_folder(&failed, Some(windows)),
+            Err(PICKER_FAILED)
+        );
+        let unknown = picked(PathBuf::from(r"D:\work"));
+        assert_eq!(
+            choose_worktree_folder(&unknown, None),
+            Err("UNKNOWN_TARGET")
+        );
+        assert!(
+            unknown.calls().is_empty(),
+            "no picker for an unknown repository"
         );
     }
 }

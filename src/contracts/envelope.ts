@@ -324,6 +324,8 @@ const RevealPath = op("revealPath", {}, z.strictObject({ repositoryId: Identifie
 // Data-model §13: `discard` is no stored choice (spec FR-010).
 const SwitchChoice = z.enum(["keep", "stash"]);
 const SetSwitchChoice = op("setSwitchChoice", {}, z.strictObject({ choice: SwitchChoice }));
+// Contract Δ3: the shell checks the picked folder against the route of this repository.
+const ChooseWorktreeFolder = op("chooseWorktreeFolder", {}, z.strictObject({ repositoryId: Identifier }));
 
 export const RendererEnvelope = z.discriminatedUnion("operation", [
   GetEnvironment,
@@ -376,6 +378,7 @@ export const RendererEnvelope = z.discriminatedUnion("operation", [
   OpenWorktree,
   RevealPath,
   SetSwitchChoice,
+  ChooseWorktreeFolder,
 ]);
 export type RendererRequest = z.infer<typeof RendererEnvelope>;
 export type RequestOf<K extends OperationName> = Extract<RendererRequest, { operation: K }>;
@@ -401,6 +404,7 @@ export const NativeFirstEnvelope = z.discriminatedUnion("operation", [
   op("reviewWorkbench", snapshot, WorktreeAddRenderer),
   OpenWorktree,
   SetSwitchChoice,
+  ChooseWorktreeFolder,
 ]);
 
 // Contract §6 "Dismissal": without `bootstrapId`, the stored worktree path does not exist.
@@ -1295,6 +1299,9 @@ export const SyncSettings = z
 export const SyncSettingsResult = z.union([SyncSettings, PuttyRefused]).meta({ title: "SyncSettingsResult" });
 
 // ---- Feature 004 results (contract Δ3 and Δ10, data-model §2 to §7) ----
+
+// Contract Δ3 `chooseWorktreeFolder`: the picked parent folder.
+export const ChooseWorktreeFolderResult = z.strictObject({ path: ChannelPath }).meta({ title: "ChooseWorktreeFolderResult" });
 // T034 adds the actions of batch 2: switch, the branch actions, merge, rebase, and ignore. Later tasks add the plans of their actions.
 
 // Contract Δ5: 100 paths in a result, plus a count.

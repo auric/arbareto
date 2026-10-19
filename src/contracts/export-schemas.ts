@@ -19,6 +19,7 @@ import {
 import {
   ApproveTrustResult,
   ChooseGitResult,
+  ChooseWorktreeFolderResult,
   CloneResult,
   EnvironmentResult,
   LoadHistoryResult,
@@ -92,6 +93,7 @@ export const EXPORTED = {
   "read-git-settings-result": ReadGitSettingsResult,
   "review-workbench-result": ReviewWorkbenchResult,
   "run-workbench-result": RunWorkbenchResult,
+  "choose-worktree-folder-result": ChooseWorktreeFolderResult,
   handshake: Handshake,
   "handshake-reply": HandshakeReply,
   "trust-record": TrustRecord,

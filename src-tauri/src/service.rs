@@ -666,6 +666,14 @@ impl NativeFirst for Service {
     }
 
     fn answer(&self, operation: &str, payload: &Value) -> Result<Option<Value>, Ended> {
+        // Feature 004 contract Δ3: the picked folder takes the route of the registered worktree root.
+        if operation == "chooseWorktreeFolder" {
+            let root = payload["repositoryId"]
+                .as_str()
+                .and_then(|id| self.requests.worktree_root(id));
+            let chosen = dialogs::choose_worktree_folder(&*self.dialogs, root.as_deref())?;
+            return Ok(chosen.map(|path| json!({ "path": path })));
+        }
         let stores = self.stores.get().ok_or(UNAVAILABLE)?;
         answer(
             stores,

@@ -60,6 +60,7 @@ export const OPERATION_NAMES = [
   "openWorktree",
   "revealPath",
   "setSwitchChoice",
+  "chooseWorktreeFolder",
 ] as const;
 
 export type OperationName = (typeof OPERATION_NAMES)[number];
@@ -94,6 +95,7 @@ export const SHELL_ONLY: readonly OperationName[] = [
   "launchPuttygen",
   // Feature 004 contract Δ1.
   "setSwitchChoice",
+  "chooseWorktreeFolder",
 ];
 
 // Contract §2: UUID-shaped ASCII identifiers.

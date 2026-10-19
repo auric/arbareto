@@ -141,6 +141,7 @@ export function createBridge(onSessionChange?: () => void, onTextScale?: (value:
     openWorktree: (payload: Payload<"openWorktree">, onProgress?: OnProgress) => call("openWorktree", {}, payload, onProgress),
     revealPath: (payload: Payload<"revealPath">, onProgress?: OnProgress) => call("revealPath", {}, payload, onProgress),
     setSwitchChoice: (payload: Payload<"setSwitchChoice">, onProgress?: OnProgress) => call("setSwitchChoice", {}, payload, onProgress),
+    chooseWorktreeFolder: (payload: Payload<"chooseWorktreeFolder">, onProgress?: OnProgress) => call("chooseWorktreeFolder", {}, payload, onProgress),
   };
 }
 

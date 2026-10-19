@@ -45,7 +45,7 @@ const ok = (schema: z.ZodType, value: unknown) => schema.safeParse(value).succes
 const b64 = (text: string) => Buffer.from(text).toString("base64");
 
 const NEW_RENDERER = ["readBranches", "readWorktrees", "readGitSettings", "reviewWorkbench", "runWorkbench", "applyFiles", "openWorktree", "revealPath"];
-const NEW_SHELL = ["setSwitchChoice"];
+const NEW_SHELL = ["setSwitchChoice", "chooseWorktreeFolder"];
 const WORKBENCH_ACTIONS = ["switch", "create-branch", "rename-branch", "delete-branch", "merge", "rebase", "choose-side", "mergetool", "ignore", "worktree-add", "worktree-remove", "worktree-prune", "config-save"];
 // Contract Δ6: the close prompt names each of these.
 const STARTED_ACTIONS = [
@@ -247,6 +247,7 @@ describe("contract Δ2 envelope", () => {
     expect(check(request("openWorktree", { repositoryId: id(), path: WORKTREE }, repo()))).toBe("INVALID_REQUEST");
     expect(check(request("revealPath", { repositoryId: id(), entryId: id() }, repo()))).toBe("INVALID_REQUEST");
     expect(check(request("setSwitchChoice", { choice: "stash" }, repo()))).toBe("INVALID_REQUEST");
+    expect(check(request("chooseWorktreeFolder", { repositoryId: id() }, repo()))).toBe("INVALID_REQUEST");
   });
 });
 
@@ -531,6 +532,15 @@ describe("contract Δ3 payloads", () => {
     expect(check(request("revealPath", { repositoryId: id(), entryId: id(), path: WORKTREE }))).toBe("INVALID_REQUEST");
     for (const choice of ["keep", "stash"]) expect(check(request("setSwitchChoice", { choice }))).toBe("ok");
     for (const choice of ["discard", "Keep", "", null]) expect(check(request("setSwitchChoice", { choice }))).toBe("INVALID_REQUEST");
+  });
+
+  test("chooseWorktreeFolder names the repository only, and its result is one channel path (spec FR-052)", () => {
+    expect(check(request("chooseWorktreeFolder", { repositoryId: id() }))).toBe("ok");
+    expect(check(request("chooseWorktreeFolder", { repositoryId: id() }), "service")).toBe("UNKNOWN_OPERATION");
+    for (const payload of [{}, { repositoryId: "x" }, { repositoryId: id(), path: WORKTREE }]) expect(check(request("chooseWorktreeFolder", payload))).toBe("INVALID_REQUEST");
+    const result = (envelope as unknown as Record<string, z.ZodType>).ChooseWorktreeFolderResult!;
+    expect(ok(result, { path: WORKTREE })).toBe(true);
+    for (const value of [{}, { path: "wt" }, { path: "" }, { path: WORKTREE, name: "wt" }]) expect(ok(result, value)).toBe(false);
   });
 
   test("readBranches and readWorktrees take an empty payload", () => {

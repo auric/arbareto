@@ -67,6 +67,9 @@ export const W = {
   noFreeBranch: "Every local branch is checked out in a worktree.",
   folder: "Folder",
   folderHint: "Suggested from the branch name. The folder must not exist, or it must be empty.",
+  // Browse (spec FR-052, plan D15, contract Δ3 `chooseWorktreeFolder`).
+  browse: "Browse…",
+  browseTip: "Select the parent folder in the folder picker.",
   switchTo: "Switch to it after creating",
   enterName: "Enter a branch name.",
   // Plan D15 "Refusals" `reserved-name` and `invalid-name`.
@@ -86,6 +89,14 @@ export const RUN_TEXTS: Record<"worktree-add" | "worktree-remove" | "worktree-pr
   "worktree-remove": ["Remove worktree", "Removing worktree", "Remove worktree details"],
   "worktree-prune": ["Prune worktrees", "Pruning worktrees", "Prune worktrees details"],
 };
+
+/** The D15 text of a `chooseWorktreeFolder` response without a folder. Cancel has no text. */
+export function browseRefusal(code: string): string {
+  // Contract Δ3: the only cause of UNSUPPORTED_REPOSITORY here is a folder of the other route (001 reason `mixed-location`).
+  if (code === "UNSUPPORTED_REPOSITORY") return "The worktree and its Git directories must all lie inside one WSL distro, or all on Windows.";
+  if (code === "PICKER_FAILED") return "The folder picker failed. Select Browse… again.";
+  return `Arbareto cannot use the folder picker: ${code}.`;
+}
 
 const DESTINATION: Record<string, string> = {
   "not-empty": "The folder is not empty. Select a new or empty folder.",

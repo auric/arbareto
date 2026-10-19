@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-choose-worktree-folder"
+description = "Enables the choose_worktree_folder command without any pre-configured scope."
+commands.allow = ["choose_worktree_folder"]
+
+[[permission]]
+identifier = "deny-choose-worktree-folder"
+description = "Denies the choose_worktree_folder command without any pre-configured scope."
+commands.deny = ["choose_worktree_folder"]

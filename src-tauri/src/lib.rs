@@ -137,6 +137,7 @@ pub fn run() {
             ipc::open_worktree,
             ipc::reveal_path,
             ipc::set_switch_choice,
+            ipc::choose_worktree_folder,
         ])
         .setup(move |app| start(app, root.as_deref()))
         .on_window_event(|window, event| {

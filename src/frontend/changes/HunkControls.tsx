@@ -11,7 +11,7 @@ import { RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
 import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
-import type { TrustReport } from "../trust/TrustDialog";
+import type { TrustReport } from "../trust/TrustChip";
 import { BUSY_REASON } from "./ChangesPane";
 import type { LineState } from "./ComparisonView";
 import { changeRows, pickLines } from "./hunk-mapping";
@@ -43,7 +43,7 @@ export const BLOCKED_TEXT: Record<NonNullable<Blocked>, string> = {
 /** The block of an operation state that is not `normal`. Only `merging` and `rebasing` have the conflict row. */
 export const operationBlock = (operationState: WorkspaceSnapshot["operationState"]): Blocked =>
   operationState === "normal" ? null : operationState === "merging" || operationState === "rebasing" ? "operation" : "conflicted";
-export const TRUST_TEXT = "Reads need trust approval. Use Review repository trust in the Repository menu.";
+export const TRUST_TEXT = "Staging needs trust. Select Not trusted in the status bar.";
 // plan.md "Required visible states", Stale selection.
 export const STALE_TEXT = "The comparison or the staged scope changed. Arbareto reads it again.";
 const COMPARISON_INCOMPLETE = "The comparison is incomplete.";

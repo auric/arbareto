@@ -7,7 +7,7 @@ import { CopyButton } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { Button } from "../components/ui/button";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
-import type { TrustReport } from "../trust/TrustDialog";
+import type { TrustReport } from "../trust/TrustChip";
 import type { FileActionResult } from "./ChangesPane";
 import { BLOCKED_TEXT, STALE_TEXT, stagingReason, type Blocked, type Eligibility, type StagingTarget } from "./HunkControls";
 import { LIMITATION_TEXT } from "./limitation-text";

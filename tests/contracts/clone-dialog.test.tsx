@@ -119,12 +119,8 @@ describe("Clone entry points (FR-046)", () => {
     const host = await show(
       <Menubar>
         <RepositoryMenu
-          repositoryOpen={false}
-          trustId={null}
           onOpenRepository={() => {}}
           onSelectGit={() => {}}
-          onReviewTrust={() => {}}
-          revokeTrust={async () => ({ requestId: null, state: "succeeded" })}
           onClone={() => void opened.push("clone")}
           onOpenSettings={() => void opened.push("settings")}
         />

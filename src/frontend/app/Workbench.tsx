@@ -67,7 +67,8 @@ import { createDraftStore } from "../state/draft-store";
 import { OperationStatus, SYNC_NAMES, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
 import { passedAcceptance, SubmoduleReview, type SubmoduleReviewValue } from "../submodules/SubmoduleReview";
-import { isTrustReport, SaveFailedNotice, TrustDialog, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
+import { chipAction, isTrustReport, ReadsTrustNotice, SaveFailedNotice, showsChip, stoppedText, trustBeforeReview, TrustChip, trustFailureCode, COMMIT_TRUST_TEXT, type TrustReport } from "../trust/TrustChip";
+import type { TrustAction } from "../../contracts/channel";
 import { blockingText, hasRecoveryRow, NoticeBand } from "./NoticeBand";
 import { MENU_CONTENT, MenuKey, RepositoryMenu } from "./RepositoryMenu";
 import { codeText, COPY_FAILED_TEXT, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
@@ -193,6 +194,8 @@ export type WorkbenchPaneProps = {
   tracking?: ReadonlyMap<string, TrackLabel>;
   /** The feature 004 store (plan.md D15 "State"). */
   workbench: WorkbenchStore;
+  /** Feature 004 spec FR-072: Trust… of a read that needs trust. */
+  onTrustReads?(): void;
   /** The feature 004 branch actions (spec FR-014): the history labels and Create branch here on a history row. */
   branches?: ReturnType<typeof useBranchActions>;
 };
@@ -333,14 +336,21 @@ function noDecisionText(state: RequestState): string {
 }
 
 /** The T133 changes pane on the T132 request state, with the T202 file controls in its stage bar. */
-export function ChangesPaneMount({ state, requests, profile, density, textScale, menuOpen, modalOpen, onStatus, staging, workbench }: WorkbenchPaneProps) {
+export function ChangesPaneMount({ state, requests, profile, density, textScale, menuOpen, modalOpen, onStatus, staging, workbench, onTrustReads }: WorkbenchPaneProps) {
   const workspace = state.workspace;
   const key = state.repository?.worktreeKey ?? "";
   const view = useSyncExternalStore(
     (listener) => workbench?.subscribe(listener) ?? (() => {}),
     () => workbench?.commitView(key) ?? null,
   );
-  const failure = state.readFailure === null ? null : <ErrorState code={responseCode(state.readFailure)} result={state.readFailure.result} onRefresh={requests.refresh} />;
+  const failureCode = state.readFailure === null ? null : responseCode(state.readFailure);
+  // Contract §7: the read gate gives TRUST_REQUIRED or TRUST_CHANGED before any status read.
+  const failure =
+    failureCode === null ? null : (failureCode === "TRUST_REQUIRED" || failureCode === "TRUST_CHANGED") && onTrustReads !== undefined ? (
+      <ReadsTrustNotice onTrust={onTrustReads} />
+    ) : (
+      <ErrorState code={failureCode} result={state.readFailure!.result} onRefresh={requests.refresh} />
+    );
   if (workspace === null) return failure ?? <Loading hasContent={false} refreshing={false} />;
   const selection = state.selection === null ? null : { entryId: state.selection.entryId, comparisonId: state.capability?.comparisonId ?? null };
   const shown = shownComparison(state, staging);
@@ -682,8 +692,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // A refused `chooseRepository` or `restoreWorkspace`. The workspace stays unchanged.
   const [refusal, setRefusal] = useState<BridgeResponse | null>(null);
   const [restoring, setRestoring] = useState(restored !== undefined);
-  const [trust, setTrust] = useState<{ report: TrustReport; open: boolean } | null>(null);
+  const [trust, setTrust] = useState<{ report: TrustReport } | null>(null);
   const [trustRead, setTrustRead] = useState(0);
+  // Feature 004 spec FR-069 and FR-072: the action that Not now blocked. The registration asks no second time.
+  const [declined, setDeclined] = useState<TrustAction | null>(null);
   // A trust failure or a copy failure. It shows in the first live element of the status bar until the next notice or repository.
   const [notice, setNotice] = useState<ReactNode>(null);
   const [saveFailed, setSaveFailed] = useState(false);
@@ -727,7 +739,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     },
   });
   const pushNoticeShown = sync.notice !== null;
-  const modalOpen = trust?.open === true || submoduleReview?.open === true || sync.confirm !== null || sync.conflictConfirm !== null;
+  const modalOpen = submoduleReview?.open === true || sync.confirm !== null || sync.conflictConfirm !== null;
   const switcher = useRef<HTMLDivElement>(null);
   const menubar = useRef<HTMLDivElement>(null);
   const beforeMenu = useRef<HTMLElement | null>(null);
@@ -776,21 +788,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const reviewing = useRef(false);
   // The request ID of the `updateSubmodules` request that the review dialog sent.
   const reviewRequest = useRef<string | null>(null);
-  // The pending commit trust gate (plan.md Commit row). After an approval it waits in `approvalRead` until the read that
-  // `trustApproved` starts ends with any result, so the review names the snapshot after the approval (contract §3).
-  // Every other dialog close resolves it as canceled.
-  const trustGate = useRef<((approved: boolean) => void) | null>(null);
+  // After an approval, `approvalRead` waits until the read that `trustApproved` starts ends with any result,
+  // so the commit review names the snapshot after the approval (contract §3).
   const approvalRead = useRef<((approved: boolean) => void) | null>(null);
-  // The dialog opener for its focus return: the commit gate, or else the switcher.
-  const fromCommit = useRef(false);
-  const endGate = (approved: boolean) => {
-    trustGate.current?.(approved);
-    trustGate.current = null;
-  };
-  useEffect(() => {
-    if (trust?.open !== true) endGate(false);
-  }, [trust?.open]);
-  // The gate resolves after the commit that follows the read end, so the tray reads the props of that render.
+  const approving = useRef(false);
+  // The approval resolves after the commit that follows the read end, so the tray reads the props of that render.
   const [approvalEnds, setApprovalEnds] = useState(0);
   useEffect(() => {
     approvalRead.current?.(true);
@@ -861,24 +863,20 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     void readEnvironment();
   }, [session, requests]);
 
-  // plan.md "Required visible states", Trust required/changed: the dialog shows before the first status read when reads need approval.
-  // Only the first trust read of a registration opens the dialog by itself.
+  // Feature 004 plan.md D12: the trust read feeds the status bar chip and the inline reasons. It never prompts.
   const repositoryId = state.repository?.repositoryId ?? null;
-  const trustShown = useRef<string | null>(null);
   useEffect(() => {
     setTrust(null);
     setNotice(null);
-    endGate(false);
+    setDeclined(null);
+  }, [repositoryId]);
+  useEffect(() => {
     if (repositoryId === null) return;
     let current = true;
     void bridge.readTrust({ repositoryId }).then((response) => {
       if (!current) return;
       if (response.state !== "succeeded" || !isTrustReport(response.result)) return setNotice(codeText("Trust review did not complete: ", trustFailureCode(response)));
-      const report = response.result;
-      const first = trustShown.current !== repositoryId;
-      trustShown.current = repositoryId;
-      if (first) fromCommit.current = false;
-      setTrust({ report, open: first && report.approvalRequired.reads && report.state !== "approved" });
+      setTrust({ report: response.result });
     });
     return () => void (current = false);
   }, [bridge, repositoryId, trustRead]);
@@ -1095,14 +1093,30 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     return bridge.cancel(payload);
   };
 
-  async function reviewTrust() {
-    if (repositoryId === null) return;
-    const response = await bridge.readTrust({ repositoryId });
-    if (response.state === "succeeded" && isTrustReport(response.result)) {
-      fromCommit.current = false;
-      setTrust({ report: response.result, open: true });
+  // Feature 004 plan.md D12 "Ask": the shell shows the native task dialog. Not now ends `canceled` and stores nothing.
+  // True after an approval and the full read that follows it.
+  async function approveTrust(action: TrustAction): Promise<boolean> {
+    if (repositoryId === null || approving.current) return false;
+    approving.current = true;
+    const response = await bridge.approveTrust({ repositoryId }, { action });
+    approving.current = false;
+    if (requests.state().repository?.repositoryId !== repositoryId) return false;
+    if (response.state === "canceled") {
+      setDeclined(action);
+      return false;
     }
-    else setNotice(codeText("Trust review did not complete: ", trustFailureCode(response)));
+    const result = response.result as { trustId?: unknown; saveFailed?: unknown } | undefined;
+    if (response.state !== "succeeded" || typeof result?.trustId !== "string") {
+      setNotice(codeText("Trust approval did not complete: ", responseCode(response)));
+      return false;
+    }
+    setDeclined(null);
+    setSaveFailed(result.saveFailed === true);
+    setTrustRead((n) => n + 1);
+    return new Promise<boolean>((resolve) => {
+      approvalRead.current = resolve;
+      void requests.trustApproved().then(() => setApprovalEnds((n) => n + 1));
+    });
   }
 
   // A canceled selection keeps the current Git and shows nothing (contract §3 `chooseGit`).
@@ -1141,11 +1155,13 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (op.response !== null) onEnded("updateSubmodules", op.response);
   };
 
-  // The menu shows the outcome text. A new trust read gives the new trust state and trust ID.
-  async function revokeTrust(trustId: string) {
-    const response = await bridge.revokeTrust({ repositoryId: repositoryId! }, { trustId });
+  // Spec FR-074: the status bar states the result. A new trust read gives the new trust state and trust ID.
+  async function stopTrusting(trustId: string) {
+    if (repositoryId === null) return;
+    const response = await bridge.revokeTrust({ repositoryId }, { trustId });
+    if (requests.state().repository?.repositoryId !== repositoryId) return;
+    setNotice(stoppedText(response));
     setTrustRead((n) => n + 1);
-    return response;
   }
 
   // Focus returns to the control that had it before the menu bar (plan.md "Keyboard and focus", Menu bar row).
@@ -1330,6 +1346,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     tracking: labels,
     workbench: store,
     branches,
+    onTrustReads: () => void approveTrust("read"),
   };
   const laneBounds = paneBounds("fileLane", { width: client.width - sideWidth - m.splitter, available: workArea, density: preferences.density, textScale });
   const lane = Math.min(Math.max(panes.fileLane, laneBounds.min), laneBounds.max);
@@ -1400,14 +1417,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             // Plan.md D15 "Limited status": a cut inside the untracked records keeps Commit available, because its review reads the staged scope.
             status={loading ? "loading" : workspace.completeness.state !== "complete" && workspace.cut !== "untracked" ? "incomplete" : null}
             blocked={blocked}
-            requestTrust={(report) =>
-              new Promise<boolean>((resolve) => {
-                endGate(false);
-                trustGate.current = resolve;
-                fromCommit.current = true;
-                setTrust({ report, open: true });
-              })
-            }
+            requestTrust={(report) => {
+              setTrust({ report });
+              return approveTrust("commit");
+            }}
+            trustReason={declined !== null && trust !== null && trustBeforeReview(trust.report) ? COMMIT_TRUST_TEXT : null}
             onOperation={setOperation}
             onEnded={(response) => onEnded("commit", response)}
             fieldRef={messageField}
@@ -1594,8 +1608,6 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               <RepositoryMenu
                 key={repositoryId}
                 triggerRef={repositoryTrigger}
-                repositoryOpen={path !== null}
-                trustId={trust?.report.trustId ?? null}
                 onOpenRepository={() => void openRepository()}
                 onOpenRecent={() => {
                   setSwitcherInstant(false);
@@ -1604,8 +1616,6 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 onSelectGit={() => void selectGit()}
                 onClone={() => setMainPanel("clone")}
                 onOpenSettings={openSettings}
-                onReviewTrust={() => void reviewTrust()}
-                revokeTrust={revokeTrust}
                 onUpdateSubmodules={workspace === null ? undefined : () => void reviewSubmodules("menu")}
                 updateSubmodulesReason={blockedReason}
                 onOpenChange={onMenuOpen("repository")}
@@ -1832,30 +1842,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             areaMaxHeight={statusAreaMax}
             notice={statusText}
           >
+            {trust === null || state.repository === null || !showsChip(trust.report) ? null : (
+              <TrustChip report={trust.report} running={running} onTrust={() => void approveTrust(chipAction(trust.report, declined))} onStop={(trustId) => void stopTrusting(trustId)} />
+            )}
             {gitVersion === null ? null : <GitSegment version={gitVersion} distro={wslGit === null ? null : distro} scope={environment?.platformScope} />}
           </OperationStatus>
         </div>
-        {trust === null || state.repository === null ? null : (
-          <TrustDialog
-            open={trust.open}
-            report={trust.report}
-            action={fromCommit.current ? "commit" : "read"}
-            repositoryId={state.repository.repositoryId}
-            bridge={bridge}
-            client={client}
-            finalFocus={() => (fromCommit.current ? messageField.current : switcher.current?.querySelector<HTMLElement>("button")) ?? null}
-            onCancel={() => setTrust({ ...trust, open: false })}
-            onApproved={(result) => {
-              approvalRead.current = trustGate.current;
-              trustGate.current = null;
-              setTrust({ ...trust, open: false });
-              setSaveFailed(result.saveFailed);
-              void requests.trustApproved().then(() => setApprovalEnds((n) => n + 1));
-              setTrustRead((n) => n + 1);
-            }}
-            onFailed={(response) => setNotice(codeText("Trust approval did not complete: ", responseCode(response)))}
-          />
-        )}
         {sync.confirm === null || pushBranch === null ? null : (
           <ForcePushConfirm plan={sync.confirm.plan} branch={pushBranch} onConfirm={sync.confirmForce} onCancel={sync.cancelForce} />
         )}

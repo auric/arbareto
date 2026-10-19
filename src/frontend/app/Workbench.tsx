@@ -82,7 +82,8 @@ import { PushNoticeRow } from "../sync/PushNoticeRow";
 import { PushPanel } from "../sync/PushPanel";
 import { CloneDialog } from "../clone/CloneDialog";
 import { ConnectNoticeRow } from "../settings/ConnectTerminal";
-import { SettingsDialog, type KeyProposal } from "../settings/SettingsDialog";
+import type { KeyProposal } from "../settings/SettingsDialog";
+import { SettingsView } from "../settings/SettingsView";
 import { actionReason, RUNNING_REASON, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
 import { useSync } from "../sync/useSync";
 import { suppressPageMenu } from "../components/action-menu";
@@ -97,7 +98,6 @@ import { WorktreesGroup } from "../worktrees/WorktreesGroup";
 import { useBranchActions } from "../branches/BranchActions";
 import { CommitView } from "../views/CommitView";
 import { HistoryView as HistoryFrame } from "../views/HistoryView";
-import { SettingsView } from "../views/SettingsView";
 import { shortRef } from "../refs/ReferencesSidebar";
 
 // plan.md "Chosen layout: one view", "Chosen layout, sizes, and DPI", "Dock region", "Keyboard and focus", and "Required visible states".
@@ -141,6 +141,8 @@ export type WorkbenchBridge = RequestBridge &
     | "runWorkbench"
     | "openWorktree"
     | "revealPath"
+    | "readGitSettings"
+    | "setSwitchChoice"
   >;
 /** The hunk and file staging facts that the workbench gives the changes pane and the comparison view (T145, T202). */
 export type Staging = {
@@ -1081,6 +1083,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         const target = filterTarget(live.current.view);
         if (target === "history") filterRef.current?.focus();
         else if (target === "files") sections.current?.querySelector<HTMLElement>('section[aria-label="Commit view"] input[aria-label="Filter files"]')?.focus();
+        else sections.current?.querySelector<HTMLElement>('[data-view="settings"] input[aria-label="Find a setting"]')?.focus();
       }
       else if (action.type === "match") void historyView.match(action.direction);
       else if (action.type === "sync") runSync.current(action.control);
@@ -1804,14 +1807,16 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             />
           ) : null}
           {mainPanel === null && view === "settings" ? (
-            <SettingsView>
-              <SettingsDialog
-                bridge={bridge}
-                repository={worktreeKey === null ? null : { worktreeKey, proposals: keyProposals(trust?.report) }}
-                onSettings={(response) => setSyncSettings(settingsOf(response))}
-                onClose={() => store.closeSettings(viewKey)}
-              />
-            </SettingsView>
+            <SettingsView
+              bridge={bridge}
+              target={state.repository !== null && workspace !== null ? { repositoryId: state.repository.repositoryId, repositoryGeneration: workspace.generation } : null}
+              repository={worktreeKey === null ? null : { worktreeKey, proposals: keyProposals(trust?.report) }}
+              operationRunning={running}
+              onOperation={setOperation}
+              onEnded={(response) => store.ended("runWorkbench", response)}
+              onSettings={(response) => setSyncSettings(settingsOf(response))}
+              onClose={() => store.closeSettings(viewKey)}
+            />
           ) : null}
           <div hidden={mainPanel !== null || view === "settings"} className="contents">
             {refusal === null ? null : <RepositoryRefused code={responseCode(refusal)} result={refusal.result as RegistrationResult | undefined} onOpenRepository={() => void openRepository()} />}

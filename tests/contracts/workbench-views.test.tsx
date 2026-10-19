@@ -138,10 +138,14 @@ describe("views (FR-033, FR-068, data-model §14)", () => {
     await closeMenus();
     const page = document.querySelector('[data-section="pageContent"]');
     expect(shown(page)).toBe(true);
-    expect(page!.querySelector("h2")).not.toBeNull();
+    // WP22: the view heading sits in the scope bar, the first Settings section (plan D15 F6 order).
+    expect(document.querySelector('[data-view="settings"] [data-section="scopeBar"] h2')).not.toBeNull();
     expect(shown(commitView())).toBe(false);
     expect(shown(header())).toBe(true);
     expect(shown(document.querySelector("footer"))).toBe(true);
+    // Plan D15 keyboard map: Ctrl+F focuses Find a setting in the Settings view.
+    await press(window, "f", { ctrlKey: true });
+    expect(document.activeElement?.getAttribute("aria-label")).toBe("Find a setting");
     await click(button("Close settings"));
     expect(document.querySelector('[data-section="pageContent"]')).toBeNull();
     expect(shown(commitView())).toBe(true);

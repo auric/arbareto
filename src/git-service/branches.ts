@@ -30,7 +30,6 @@ export interface BranchEntry {
   heldBy: string | null;
   current: boolean;
   localName: string | null;
-  hasLocal: boolean;
 }
 
 export type BranchesOutcome =
@@ -113,7 +112,6 @@ export function createBranchesReader({ runner, trust, reader, listingTuple }: Pi
         const exact = records.filter((r) => !r.invalidUtf8);
         // The feature 003 tracking listing names each ref value, so the pairing compares ref values, not peeled commits.
         const values = new Map(exact.map((r) => [r.ref, r.object]));
-        const locals = new Set(exact.filter((r) => r.kind === "local").map((r) => r.ref));
         const tracked = new Map(trackingEntries.filter((e) => !e.invalidUtf8).map((e) => [`${HEADS}${e.name}`, e]));
         // Data-model §1 `heldBy`: the first worktree record with `branch <ref>`. The main worktree is the first record (git-worktree(1)).
         const holders = new Map<string, string>();
@@ -136,7 +134,6 @@ export function createBranchesReader({ runner, trust, reader, listingTuple }: Pi
             heldBy: holders.get(r.ref) ?? null,
             current: r.current,
             localName,
-            hasLocal: localName !== null && locals.has(`${HEADS}${localName}`),
           };
         });
         const value = { entries };

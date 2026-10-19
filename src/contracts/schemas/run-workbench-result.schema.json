@@ -85,34 +85,10 @@
                 "type": "string",
                 "minLength": 1,
                 "pattern": "^[^\\u0000]*$"
-              },
-              "oldObjectId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "newObjectId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
               }
             },
             "required": [
-              "ref",
-              "oldObjectId",
-              "newObjectId"
+              "ref"
             ],
             "additionalProperties": false,
             "title": "RefChange"
@@ -287,34 +263,10 @@
                 "type": "string",
                 "minLength": 1,
                 "pattern": "^[^\\u0000]*$"
-              },
-              "oldObjectId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "newObjectId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
               }
             },
             "required": [
-              "ref",
-              "oldObjectId",
-              "newObjectId"
+              "ref"
             ],
             "additionalProperties": false,
             "title": "RefChange"
@@ -420,34 +372,10 @@
                 "type": "string",
                 "minLength": 1,
                 "pattern": "^[^\\u0000]*$"
-              },
-              "oldObjectId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "newObjectId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
               }
             },
             "required": [
-              "ref",
-              "oldObjectId",
-              "newObjectId"
+              "ref"
             ],
             "additionalProperties": false,
             "title": "RefChange"
@@ -614,46 +542,13 @@
                 "type": "string",
                 "minLength": 1,
                 "pattern": "^[^\\u0000]*$"
-              },
-              "oldObjectId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
-              },
-              "newObjectId": {
-                "anyOf": [
-                  {
-                    "type": "string",
-                    "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
-                  },
-                  {
-                    "type": "null"
-                  }
-                ]
               }
             },
             "required": [
-              "ref",
-              "oldObjectId",
-              "newObjectId"
+              "ref"
             ],
             "additionalProperties": false,
             "title": "RefChange"
-          }
-        },
-        "worktrees": {
-          "maxItems": 1000,
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1,
-            "pattern": "^[^\\u0000]*$"
           }
         },
         "outputTail": {
@@ -664,8 +559,7 @@
       "required": [
         "action",
         "head",
-        "refs",
-        "worktrees"
+        "refs"
       ],
       "additionalProperties": false,
       "title": "WorktreeRun"

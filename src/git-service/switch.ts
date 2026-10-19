@@ -12,7 +12,7 @@ import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { latin1 } from "./read-steps";
 import type { Head } from "./snapshot";
 import { discardCandidates, ignoreRead, inTheWay, sortFacts, untrackedOf } from "./switch-check";
-import { changes } from "./sync";
+import { changedRefs, changes } from "./sync";
 import { observe } from "./sync-integrate";
 import { indexState, readOut, refKey } from "./sync-review";
 import { isComponent, requestFacts } from "./trust";
@@ -340,7 +340,7 @@ registerWorkbenchAction("switch", {
     } else if (p.choice !== "keep" && now !== b.stash) stash = { oid: now, state: "kept-stash-changed" };
     // Data-model §3 `remedy`: the stash holds changes that are not in the working files.
     const remedy = stash?.state === "kept-failed-apply" || stash?.state === "kept-failed-checkout" ? r.remedy("& {git} --no-lazy-fetch -C {root} stash apply {oid}", { oid: { kind: "commitId", text: stashed! } }) : undefined;
-    const result = { action: "switch", head: o.head, refs: changes(r.before.refs, o.refs), stash, conflicted: o.index.unmerged, ...(remedy === undefined ? {} : { remedy: { text: STASH_REMEDY_TEXT, command: remedy } }) };
+    const result = { action: "switch", head: o.head, refs: changedRefs(r.before.refs, o.refs), stash, conflicted: o.index.unmerged, ...(remedy === undefined ? {} : { remedy: { text: STASH_REMEDY_TEXT, command: remedy } }) };
     const intendedHead: Head = "detach" in t ? { state: "detached", oid: b.target } : { state: "branch", target: `${HEADS}${name}`, oid: b.target };
     const expected = new Map(r.before.refs);
     if ("track" in t) expected.set(refKey(`${HEADS}${name}`), b.target);

@@ -64,7 +64,7 @@ interface Review<P> {
 interface RunResult {
   action: string;
   head: { state: string; target?: string; oid?: string };
-  refs: { ref: string; oldObjectId: string | null; newObjectId: string | null }[];
+  refs: { ref: string }[];
   operationState: string;
   unmerged: number;
   stash: { oid: string } | null;

@@ -15,6 +15,8 @@ import { FILE_ACTION_REASONS } from "../../src/contracts/file-action";
 import * as limits from "../../src/contracts/limits";
 import { isWindows } from "../../src/contracts/native-path";
 import * as operations from "../../src/contracts/operations";
+import readBranchesSchema from "../../src/contracts/schemas/read-branches-result.schema.json";
+import runWorkbenchSchema from "../../src/contracts/schemas/run-workbench-result.schema.json";
 
 printOrigin("../../src/contracts/channel.ts", import.meta.dir);
 printOrigin("../../src/contracts/envelope.ts", import.meta.dir);
@@ -24,6 +26,8 @@ printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/contracts/operations.ts", import.meta.dir);
 printOrigin("../../src/contracts/git-environment.json", import.meta.dir);
 printOrigin("../../src/contracts/wsl-process.json", import.meta.dir);
+printOrigin("../../src/contracts/schemas/read-branches-result.schema.json", import.meta.dir);
+printOrigin("../../src/contracts/schemas/run-workbench-result.schema.json", import.meta.dir);
 
 // The module namespaces give `undefined` for a missing export, so each case fails on its own before T017.
 const L = limits as unknown as Record<string, number>;
@@ -545,6 +549,22 @@ describe("contract Δ3 payloads", () => {
 
   test("readBranches and readWorktrees take an empty payload", () => {
     for (const name of ["readBranches", "readWorktrees"]) expect(check(request(name, { pattern: "refs/heads" }, gen()))).toBe("INVALID_REQUEST");
+  });
+
+  // T105: the renderer and the shell read none of these fields, so the strict results refuse them.
+  test("a branch entry has no hasLocal, a ref change names only its ref, and a worktree run has no worktree list", () => {
+    const entry = { ref: "refs/remotes/origin/main", kind: "remote", name: "origin/main", invalidUtf8: false, oid: OID, upstream: null, tracking: null, heldBy: null, current: false, localName: "main" };
+    expect(ok(envelope.ReadBranchesResult, { entries: [entry] })).toBe(true);
+    expect(ok(envelope.ReadBranchesResult, { entries: [{ ...entry, hasLocal: true }] })).toBe(false);
+    const head = { state: "branch", target: "refs/heads/main", oid: OID };
+    const branch = { action: "delete-branch", head, refs: [{ ref: "refs/heads/old" }] };
+    expect(ok(envelope.RunWorkbenchResult, branch)).toBe(true);
+    for (const ids of [{ oldObjectId: OID, newObjectId: null }, { oldObjectId: OID }, { newObjectId: null }]) expect(ok(envelope.RunWorkbenchResult, { ...branch, refs: [{ ref: "refs/heads/old", ...ids }] })).toBe(false);
+    const worktree = { action: "worktree-prune", head, refs: [] };
+    expect(ok(envelope.RunWorkbenchResult, worktree)).toBe(true);
+    expect(ok(envelope.RunWorkbenchResult, { ...worktree, worktrees: [REPO] })).toBe(false);
+    const exported = JSON.stringify([readBranchesSchema, runWorkbenchSchema]);
+    for (const field of ["hasLocal", "oldObjectId", "newObjectId", "worktrees"]) expect(exported).not.toContain(`"${field}"`);
   });
 });
 

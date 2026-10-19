@@ -1,0 +1,8 @@
+{
+  "schema": "read-branches-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"entries\":[{\"ref\":\"refs/remotes/origin/main\",\"kind\":\"remote\",\"name\":\"origin/main\",\"invalidUtf8\":false,\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\",\"upstream\":null,\"tracking\":null,\"heldBy\":null,\"current\":false,\"localName\":\"main\",\"hasLocal\":true}]}",
+  "repair": {
+    "entries.0.hasLocal": null
+  }
+}

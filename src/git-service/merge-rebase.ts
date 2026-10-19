@@ -10,7 +10,7 @@ import { createCollector, stepUnits } from "./git-runner";
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { latin1 } from "./read-steps";
 import type { Head } from "./snapshot";
-import { changes } from "./sync";
+import { changedRefs } from "./sync";
 import { pushRecordArgs } from "./sync-commands";
 import { count, mergePreview, observe, parentsOf, previewItem, type Observed } from "./sync-integrate";
 import { decidePushDestination, invalidRemoteValue, parseAheadBehind, parsePushRecord } from "./sync-parsers";
@@ -326,7 +326,7 @@ export async function runMergeRebase(r: WorkbenchRun, p: MergeRebasePayload, b: 
   const before = r.before.refs;
   const stash = o.refs.get(STASH) !== undefined && o.refs.get(STASH) !== before.get(STASH) ? { oid: o.refs.get(STASH)! } : null;
   // Contract Δ3 "Results": the observed effects. `conclude` adds the output tail of a failed step.
-  const result = { action, head: o.head, refs: changes(before, o.refs), operationState: o.state, unmerged: o.index.unmerged, stash };
+  const result = { action, head: o.head, refs: changedRefs(before, o.refs), operationState: o.state, unmerged: o.index.unmerged, stash };
   const changed = result.refs.length > 0 || !Bun.deepEquals(o.head, head, true) || o.state !== r.before.state || o.index.fingerprint !== r.before.index.fingerprint || o.lock;
   // Git ended the step: no rebase stop remains. A merge with Don't commit keeps MERGE_HEAD, and a failed autostash reapply keeps unmerged entries.
   const done = end.exit?.exitCode === 0 && (o.state === "normal" || o.state === "conflicted" || (action === "merge" && o.state === "merging"));

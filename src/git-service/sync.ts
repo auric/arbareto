@@ -129,6 +129,9 @@ export function changes(before: Refs, after: Refs): { ref: string; oldObjectId: 
   return keys.map((k) => ({ ref: refText(k), oldObjectId: before.get(k) ?? null, newObjectId: after.get(k) ?? null }));
 }
 
+// Feature 004 contract Δ3 `runWorkbench` `refs`: the names of the changed refs only.
+export const changedRefs = (before: Refs, after: Refs) => changes(before, after).map(({ ref }) => ({ ref }));
+
 // Data-model §4 `observed`: the listing after against the listing before with every porcelain line applied.
 export function fetchObserved(before: Refs, all: readonly FetchUpdate[], after: Refs): ReturnType<typeof changes> {
   const expected = new Map(before);

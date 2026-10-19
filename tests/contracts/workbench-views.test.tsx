@@ -577,7 +577,7 @@ describe("refresh after a 004 outcome (contract Δ8, 002 FR-005 change)", () => 
       mutationEnded: async () => {},
       refreshHistory: () => {},
     });
-    const entry = (name: string) => ({ ref: `refs/heads/${name}`, kind: "local", name, invalidUtf8: false, oid: oid(1), upstream: null, tracking: null, heldBy: null, current: false, localName: null, hasLocal: false });
+    const entry = (name: string) => ({ ref: `refs/heads/${name}`, kind: "local", name, invalidUtf8: false, oid: oid(1), upstream: null, tracking: null, heldBy: null, current: false, localName: null });
     store.readBranches();
     store.readBranches();
     pending[1]!(succeeded({ entries: [entry("new")] }));

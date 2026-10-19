@@ -183,9 +183,6 @@
                     "type": "null"
                   }
                 ]
-              },
-              "hasLocal": {
-                "type": "boolean"
               }
             },
             "required": [
@@ -198,8 +195,7 @@
               "tracking",
               "heldBy",
               "current",
-              "localName",
-              "hasLocal"
+              "localName"
             ],
             "additionalProperties": false,
             "title": "BranchEntry"

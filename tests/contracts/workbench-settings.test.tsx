@@ -1,0 +1,411 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 Ihor Lifanov
+
+import { afterEach, describe, expect, test } from "bun:test";
+import { act } from "react";
+import { ReadGitSettingsResult, ReviewWorkbenchResult, RunWorkbenchResult, SyncSettings } from "../../src/contracts/envelope";
+import { sectionOrder } from "../../src/frontend/keyboard/shortcuts";
+import { registerDom } from "../dom";
+import { printOrigin } from "../origin";
+import { contractChecked, fixtureId } from "./bridge-contract";
+import { button, click, press, settings, settle, text, type Call } from "./sync-fake";
+import type { SettingsViewProps } from "../../src/frontend/settings/SettingsView";
+import type { StatusOperation } from "../../src/frontend/status/OperationStatus";
+
+// tasks.md T065 (feature 004, WP22). Story US6. Spec FR-058 to FR-068. Plan D11, D15, O-7, O-10. Contract Δ3 `readGitSettings`, `config-save`, `setSwitchChoice`, Δ14. Data-model §9, §13.
+
+printOrigin("../../src/frontend/settings/SettingsView.tsx", import.meta.dir);
+printOrigin("../../src/frontend/settings/git/GitSettingsPage.tsx", import.meta.dir);
+printOrigin("../../src/frontend/settings/git/presets.ts", import.meta.dir);
+registerDom();
+const { createRoot } = await import("react-dom/client");
+const { SettingsView } = await import("../../src/frontend/settings/SettingsView");
+
+const TARGET = { repositoryId: fixtureId(1), repositoryGeneration: 1 };
+const TOKEN = fixtureId(10);
+const LOCAL = "C:/Repos/sample/.git/config";
+const GLOBAL = "C:/Users/a/.gitconfig";
+const SYSTEM = "C:/Program Files/Git/etc/gitconfig";
+const FR060 = ["user.name", "user.email", "core.editor", "commit.template", "credential.helper", "diff.tool", "merge.tool", "core.autocrlf", "i18n.filesencoding", "pull.rebase", "fetch.prune", "merge.autostash", "rebase.autostash", "rebase.autosquash", "rebase.updaterefs", "rerere.enabled", "rerere.autoupdate", "pull.ff", "push.default", "push.autosetupremote"];
+const BOOLS = new Set(["fetch.prune", "merge.autostash", "rebase.autostash", "rebase.autosquash", "rebase.updaterefs", "rerere.enabled", "rerere.autoupdate", "push.autosetupremote"]);
+const ENUMS: Record<string, string[]> = { "core.autocrlf": ["true", "false", "input"], "pull.rebase": ["true", "false", "merges", "interactive"], "pull.ff": ["true", "false", "only"], "push.default": ["nothing", "current", "upstream", "simple", "matching", "tracking"] };
+
+type Entry = { scope: "system" | "global" | "local" | "worktree" | "command"; origin: string; value: string | null; reading?: string | null };
+type ReadOnly = "multi-value" | "included" | "unreadable-value" | null;
+function configValue(key: string, entries: Entry[] = [], readOnly: { local?: ReadOnly; global?: ReadOnly } = {}) {
+  const full = entries.map((e) => ({ scope: e.scope, origin: e.origin, value: e.value, reading: e.reading === undefined ? e.value : e.reading }));
+  const type = BOOLS.has(key) ? { kind: "bool" } : ENUMS[key] ? { kind: "enum", values: ENUMS[key] } : { kind: "text" };
+  const scopes = Object.fromEntries((["system", "global", "local", "worktree", "command"] as const).map((s) => [s, full.filter((e) => e.scope === s)]));
+  return { key, type, entries: full, effective: full.at(-1) ?? null, scopes, readOnly: { local: readOnly.local ?? null, global: readOnly.global ?? null } };
+}
+const local = (value: string | null, reading?: string | null): Entry => ({ scope: "local", origin: `file:${LOCAL}`, value, reading });
+const global = (value: string | null, reading?: string | null): Entry => ({ scope: "global", origin: `file:${GLOBAL}`, value, reading });
+const system = (value: string | null): Entry => ({ scope: "system", origin: `file:${SYSTEM}`, value });
+
+type Values = Record<string, ReturnType<typeof configValue>>;
+function gitSettings(over: Values = {}, files: Partial<Record<"local" | "global" | "system", string | null>> = {}) {
+  const values = [...FR060.map((key) => over[key] ?? configValue(key)), ...Object.keys(over).filter((k) => !FR060.includes(k)).map((k) => over[k]!)];
+  const result = ReadGitSettingsResult.parse({ values, files: { local: LOCAL, global: GLOBAL, system: SYSTEM, ...files } });
+  return { requestId: fixtureId(30), operationId: fixtureId(31), state: "succeeded", repositoryGeneration: 1, result };
+}
+const sync = (fields: Record<string, unknown> = {}) => ({ requestId: fixtureId(32), state: "succeeded", result: SyncSettings.parse({ ...settings("pull"), ...fields }) });
+function reviewed(scope: "local" | "global", changes: { key: string; value: string | null; earlier: { origin: string; value: string | null } | null }[]) {
+  const result = ReviewWorkbenchResult.parse({ action: "config-save", plan: { scope, changes }, workbenchToken: TOKEN });
+  return { requestId: fixtureId(20), operationId: fixtureId(21), state: "succeeded", repositoryGeneration: 1, result };
+}
+function ran(state: string, fields: Record<string, unknown>, code?: string) {
+  const result = RunWorkbenchResult.parse({ action: "config-save", scope: "local", written: [], ...fields });
+  return { requestId: fixtureId(22), operationId: fixtureId(23), state, ...(code === undefined ? {} : { code }), repositoryGeneration: 1, result };
+}
+
+// `readSyncSettings` and `readGitSettings` answer from the fixtures. Every other call waits for the test.
+function createDouble(git: unknown, app: unknown) {
+  const calls: Call[] = [];
+  const make =
+    (operation: string) =>
+    (...args: unknown[]) =>
+      new Promise((resolve) => {
+        const call: Call = { operation, args, done: false, resolve: (r) => void ((call.done = true), resolve(r)) };
+        calls.push(call);
+        if (operation === "readSyncSettings") setTimeout(() => call.resolve(app), 0);
+        if (operation === "readGitSettings") setTimeout(() => call.resolve(double.git), 0);
+      });
+  const names = ["readSyncSettings", "setSshClient", "chooseSyncPath", "clearSyncPath", "launchPuttygen", "setDefaultPullAction", "setSwitchChoice", "readGitSettings", "reviewWorkbench", "runWorkbench"];
+  const bridge = contractChecked(Object.fromEntries(names.map((n) => [n, make(n)]))) as unknown as SettingsViewProps["bridge"];
+  const of = (operation: string) => calls.filter((c) => c.operation === operation);
+  const double = { bridge, calls, git, of, pending: (operation: string) => of(operation).find((c) => !c.done), writes: () => calls.filter((c) => !c.operation.startsWith("read")).map((c) => c.operation) };
+  return double;
+}
+
+const roots: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const unmount of roots.splice(0)) await unmount();
+});
+type Options = { git?: unknown; app?: unknown; target?: typeof TARGET | null };
+async function render(options: Options = {}) {
+  const double = createDouble(options.git ?? gitSettings(), options.app ?? sync());
+  const operations: StatusOperation[] = [];
+  const ended: unknown[] = [];
+  let closed = 0;
+  const host = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(host);
+  const target = options.target === undefined ? TARGET : options.target;
+  await act(async () =>
+    root.render(
+      <SettingsView
+        bridge={double.bridge}
+        target={target}
+        repository={target === null ? null : { worktreeKey: "a".repeat(64), proposals: [] }}
+        operationRunning={false}
+        onOperation={(op) => void operations.push(op)}
+        onEnded={(response) => void ended.push(response)}
+        onClose={() => void (closed += 1)}
+      />,
+    ),
+  );
+  roots.push(async () => {
+    await act(async () => root.unmount());
+    host.remove();
+  });
+  await settle();
+  return { double, operations, ended, closed: () => closed };
+}
+
+const view = () => document.querySelector<HTMLElement>('[data-view="settings"]')!;
+const section = (name: string) => document.querySelector<HTMLElement>(`[data-section="${name}"]`)!;
+const pageNames = () => [...section("pageList").querySelectorAll('[role="tab"]')].map((t) => text(t));
+const content = () => section("pageContent");
+const row = (key: string) => {
+  const found = content().querySelector<HTMLElement>(`[data-key="${key}"]`);
+  if (found === null) throw new Error(`no row for ${key}: ${text(content())}`);
+  return found;
+};
+const labelInput = (scope: Element, label: string) => {
+  const found = [...scope.querySelectorAll<HTMLLabelElement>("label")].find((l) => text(l) === label);
+  if (found === undefined) throw new Error(`no label "${label}" in: ${text(scope)}`);
+  return (found.control ?? found.querySelector("input")) as HTMLInputElement;
+};
+async function page(name: string) {
+  const tab = [...section("pageList").querySelectorAll<HTMLElement>('[role="tab"]')].find((t) => text(t) === name);
+  if (tab === undefined) throw new Error(`no page "${name}": ${pageNames().join(" | ")}`);
+  await click(tab);
+}
+async function scope(value: "effective" | "local" | "global" | "system") {
+  await click(section("scopeBar").querySelector<HTMLInputElement>(`input[name="scope"][value="${value}"]`)!);
+}
+async function choose(select: HTMLSelectElement, value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(select, value);
+    select.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  await settle();
+}
+async function type(input: HTMLInputElement, value: string) {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await settle();
+}
+async function answer(call: Call | undefined, response: unknown) {
+  if (call === undefined) throw new Error("no pending call");
+  await act(async () => call.resolve(response));
+  await settle();
+}
+
+describe("scopes and sources (FR-058, FR-059)", () => {
+  test("the scope bar offers Effective, This repository, Global, and System, with Effective and System read-only", async () => {
+    await render({ git: gitSettings({ "fetch.prune": configValue("fetch.prune", [global("true")]) }) });
+    const bar = section("scopeBar");
+    expect([...bar.querySelectorAll<HTMLInputElement>('input[name="scope"]')].map((i) => i.value)).toEqual(["effective", "local", "global", "system"]);
+    expect(text(bar)).toContain("Effective read only");
+    expect(text(bar)).toContain("System read only");
+    await page("Fetch");
+    await scope("effective");
+    expect([...row("fetch.prune").querySelectorAll("input, select")].every((c) => (c as HTMLInputElement).disabled || (c as HTMLInputElement).readOnly)).toBe(true);
+    await scope("system");
+    expect([...row("fetch.prune").querySelectorAll("input, select")].every((c) => (c as HTMLInputElement).disabled || (c as HTMLInputElement).readOnly)).toBe(true);
+  });
+
+  test("Effective shows the value with its scope and source file, and This repository names the file that a save writes", async () => {
+    await render({ git: gitSettings({ "user.name": configValue("user.name", [system("Sys"), global("Ada")]) }) });
+    await scope("effective");
+    expect(text(row("user.name"))).toContain("Ada");
+    expect(text(row("user.name"))).toContain(`from Global (file:${GLOBAL})`);
+    await scope("local");
+    expect(text(section("scopeBar"))).toContain(`Writes to ${LOCAL}`);
+    await scope("global");
+    expect(text(section("scopeBar"))).toContain(`Writes to ${GLOBAL}`);
+    await scope("system");
+    expect(text(row("user.name"))).toContain("Sys");
+    expect(text(row("user.name"))).toContain(`file:${SYSTEM}`);
+  });
+
+  test("a global file that the service cannot name makes Global read-only", async () => {
+    await render({ git: gitSettings({}, { global: null }) });
+    await scope("global");
+    expect(text(section("scopeBar"))).toContain("Arbareto cannot name the global Git configuration file, so Global is read only.");
+    expect((row("user.name").querySelector("input") as HTMLInputElement).readOnly).toBe(true);
+  });
+
+  test("without a repository, Settings shows the app pages, and the Git pages need an open repository", async () => {
+    const r = await render({ target: null });
+    expect(r.double.of("readGitSettings").length).toBe(0);
+    expect(pageNames()).toEqual(["User", "Editor and tools", "Line endings", "Pull and push", "Fetch", "Merge and rebase", "Credentials", "Advanced", "SSH", "Clone", "Branch switch"]);
+    expect(text(content())).toContain("SSH client");
+    await page("User");
+    expect(text(content())).toContain("Git settings need an open repository.");
+    await page("Pull and push");
+    expect(text(content())).toContain("Git settings need an open repository.");
+    expect(text(content())).toContain("Pull button default");
+  });
+});
+
+describe("pages and controls (FR-060 to FR-062, FR-067)", () => {
+  test("the FR-060 pages hold every FR-060 key and the tool keys of the effective tools", async () => {
+    const git = gitSettings({ "merge.tool": configValue("merge.tool", [global("bc")]), "mergetool.bc.path": configValue("mergetool.bc.path"), "mergetool.bc.cmd": configValue("mergetool.bc.cmd") });
+    await render({ git });
+    expect(pageNames().slice(0, 8)).toEqual(["User", "Editor and tools", "Line endings", "Pull and push", "Fetch", "Merge and rebase", "Credentials", "Advanced"]);
+    const seen = new Set<string>();
+    for (const name of pageNames().slice(0, 8)) {
+      await page(name);
+      for (const r of content().querySelectorAll<HTMLElement>("[data-key]")) seen.add(r.dataset.key!);
+    }
+    expect([...seen].sort()).toEqual([...FR060, "mergetool.bc.path", "mergetool.bc.cmd"].sort());
+  });
+
+  test("a boolean key offers Not set, On, and Off, and Not set states the effective value and its scope (FR-061)", async () => {
+    await render({ git: gitSettings({ "push.autosetupremote": configValue("push.autosetupremote", [global("true")]) }) });
+    await page("Pull and push");
+    await scope("local");
+    const r = row("push.autosetupremote");
+    expect(labelInput(r, "Not set").checked).toBe(true);
+    expect(labelInput(r, "On").checked).toBe(false);
+    expect(labelInput(r, "Off").checked).toBe(false);
+    expect(text(r)).toContain("Not set here. Git then uses true from Global.");
+    await scope("global");
+    expect(labelInput(row("push.autosetupremote"), "On").checked).toBe(true);
+    expect(text(row("push.autosetupremote"))).toContain("Not set here. No other scope sets it, so Git uses its default.");
+  });
+
+  test("an enumerated key offers Not set and each documented value, and push.default names tracking as the old name (FR-061)", async () => {
+    await render();
+    await page("Pull and push");
+    await scope("local");
+    const options = [...row("push.default").querySelectorAll("option")].map((o) => [o.value, text(o)]);
+    expect(options).toEqual([["", "Not set"], ["nothing", "nothing"], ["current", "current"], ["upstream", "upstream"], ["simple", "simple"], ["matching", "matching"], ["tracking", "tracking (old name of upstream)"]]);
+  });
+
+  test("the merge and diff tools offer the Git mergetools presets with the exact value, plus Custom; the editor offers Custom only (FR-062, O-10)", async () => {
+    await render();
+    await page("Editor and tools");
+    await scope("local");
+    const select = row("merge.tool").querySelector("select")!;
+    const values = [...select.querySelectorAll("option")].map((o) => o.value);
+    expect(values).toContain("kdiff3");
+    expect(values).toContain("vscode");
+    expect(values.at(-1)).toBe("custom");
+    await choose(select, "kdiff3");
+    expect(text(row("merge.tool"))).toContain("Writes merge.tool=kdiff3.");
+    expect(row("diff.tool").querySelector("select")).not.toBeNull();
+    expect(row("core.editor").querySelector("select")).toBeNull();
+    expect(row("core.editor").querySelector("input")).not.toBeNull();
+  });
+
+  test("values show as plain text (FR-067)", async () => {
+    await render({ git: gitSettings({ "user.name": configValue("user.name", [global("<b>Ada</b>")]) }) });
+    await scope("effective");
+    expect(text(row("user.name"))).toContain("<b>Ada</b>");
+    expect(row("user.name").querySelector("b")).toBeNull();
+  });
+});
+
+describe("read-only keys (FR-063)", () => {
+  test("multi-value lists the values with the reason; included names the file; unreadable-value states the reason", async () => {
+    const git = gitSettings({
+      "user.email": configValue("user.email", [local("a@x.invalid"), local("b@x.invalid")], { local: "multi-value" }),
+      "user.name": configValue("user.name", [{ scope: "local", origin: "file:C:/Repos/sample/.git/extra.inc", value: "Inc" }], { local: "included" }),
+      "fetch.prune": configValue("fetch.prune", [local("maybe", null)], { local: "unreadable-value" }),
+    });
+    await render({ git });
+    await scope("local");
+    expect(text(row("user.email"))).toContain("a@x.invalid");
+    expect(text(row("user.email"))).toContain("b@x.invalid");
+    expect(text(row("user.email"))).toContain("This scope sets user.email more than once. Arbareto cannot save one value.");
+    expect(text(row("user.name"))).toContain("This value comes from file:C:/Repos/sample/.git/extra.inc. Change it in that file.");
+    expect([...row("user.email").querySelectorAll("input")].every((i) => i.readOnly || i.disabled)).toBe(true);
+    await page("Fetch");
+    expect(text(row("fetch.prune"))).toContain("maybe");
+    expect(text(row("fetch.prune"))).toContain("Git cannot read this value as on or off.");
+    expect([...row("fetch.prune").querySelectorAll("input")].every((i) => i.disabled)).toBe(true);
+  });
+});
+
+describe("Save and Cancel (FR-064, FR-065)", () => {
+  test("a change shows Changed with the earlier value; Save reviews and runs only the changed keys, then reads again", async () => {
+    const r = await render({ git: gitSettings({ "fetch.prune": configValue("fetch.prune", [local("false")]) }) });
+    await page("Fetch");
+    await scope("local");
+    await click(labelInput(row("fetch.prune"), "On"));
+    expect(text(row("fetch.prune"))).toContain("Changed");
+    expect(text(row("fetch.prune"))).toContain("Was: false");
+    expect(text(content())).toContain("1 change. Save writes it to This repository only.");
+    expect(r.double.writes()).toEqual([]);
+    const reads = r.double.of("readGitSettings").length;
+    await click(button("Save"));
+    expect(r.double.pending("reviewWorkbench")!.args).toEqual([TARGET, { action: "config-save", scope: "local", changes: [{ key: "fetch.prune", value: "true" }] }]);
+    await answer(r.double.pending("reviewWorkbench"), reviewed("local", [{ key: "fetch.prune", value: "true", earlier: { origin: `file:${LOCAL}`, value: "false" } }]));
+    expect(r.double.pending("runWorkbench")!.args.slice(0, 2)).toEqual([{ repositoryId: TARGET.repositoryId }, { workbenchToken: TOKEN, start: true }]);
+    expect(r.operations.at(-1)?.kind).toBe("runWorkbench");
+    r.double.git = gitSettings({ "fetch.prune": configValue("fetch.prune", [local("true")]) });
+    await answer(r.double.pending("runWorkbench"), ran("succeeded", { written: ["fetch.prune"] }));
+    expect(r.ended.length).toBe(1);
+    expect(r.double.of("readGitSettings").length).toBe(reads + 1);
+    expect(labelInput(row("fetch.prune"), "On").checked).toBe(true);
+    expect(text(row("fetch.prune"))).not.toContain("Changed");
+  });
+
+  test("Cancel writes nothing and restores the read values", async () => {
+    const r = await render();
+    await scope("local");
+    await type(row("user.name").querySelector("input")!, "Bob");
+    expect(text(row("user.name"))).toContain("Was: not set");
+    await click(button("Cancel"));
+    expect(r.double.writes()).toEqual([]);
+    expect(row("user.name").querySelector("input")!.value).toBe("");
+    expect(text(row("user.name"))).not.toContain("Changed");
+  });
+
+  test("a failed write names the key and shows the bounded end of Git's output", async () => {
+    const r = await render();
+    await scope("global");
+    await type(row("user.name").querySelector("input")!, "Bob");
+    await click(button("Save"));
+    await answer(r.double.pending("reviewWorkbench"), reviewed("global", [{ key: "user.name", value: "Bob", earlier: null }]));
+    await answer(r.double.pending("runWorkbench"), ran("failed", { scope: "global", failed: { key: "user.name", exitCode: 4, reason: "cannot-write" }, outputTail: "error: could not lock config file" }, "GIT_FAILED"));
+    expect(text(content())).toContain("Git did not write user.name: cannot-write (exit 4).");
+    expect(text(content())).toContain("error: could not lock config file");
+  });
+
+  test("STALE_REVIEW reads the values again and asks for a new save", async () => {
+    const r = await render();
+    await scope("local");
+    await type(row("user.name").querySelector("input")!, "Bob");
+    await click(button("Save"));
+    await answer(r.double.pending("reviewWorkbench"), reviewed("local", [{ key: "user.name", value: "Bob", earlier: null }]));
+    const reads = r.double.of("readGitSettings").length;
+    await answer(r.double.pending("runWorkbench"), { requestId: fixtureId(22), state: "rejected", code: "STALE_REVIEW" });
+    expect(text(content())).toContain("A setting changed after the review. Arbareto read the values again. Check them, then save again.");
+    expect(r.double.of("readGitSettings").length).toBe(reads + 1);
+  });
+
+  test("a review whose earlier value differs from the shown value runs nothing and reads again", async () => {
+    const r = await render();
+    await scope("local");
+    await type(row("user.name").querySelector("input")!, "Bob");
+    await click(button("Save"));
+    await answer(r.double.pending("reviewWorkbench"), reviewed("local", [{ key: "user.name", value: "Bob", earlier: { origin: `file:${LOCAL}`, value: "Eve" } }]));
+    expect(r.double.of("runWorkbench").length).toBe(0);
+    expect(text(content())).toContain("A setting changed after Arbareto read it. Arbareto read the values again. Check them, then save again.");
+  });
+});
+
+describe("app settings (FR-066, FR-068, O-7)", () => {
+  test("Pull and push shows the 003 Pull button default as an Arbareto setting, and a choice sends setDefaultPullAction", async () => {
+    const r = await render({ app: sync({ defaultPullAction: "pull-rebase" }) });
+    await page("Pull and push");
+    const app = content().querySelector<HTMLElement>('[data-slot="pull-default"]')!;
+    expect(text(app)).toContain("Arbareto setting for all repositories. Not stored in Git configuration.");
+    expect(labelInput(app, "Pull with rebase").checked).toBe(true);
+    for (const label of ["Pull (use Git's configuration)", "Pull with merge", "Fetch", "Fetch all remotes"]) expect(labelInput(app, label).checked).toBe(false);
+    await click(labelInput(app, "Fetch all remotes"));
+    expect(r.double.pending("setDefaultPullAction")!.args[0]).toEqual({ action: "fetch-all" });
+  });
+
+  test("Branch switch preselects the stored switch choice and writes a new one with setSwitchChoice", async () => {
+    const r = await render({ target: null, app: sync({ switchChoice: "stash" }) });
+    await page("Branch switch");
+    expect(labelInput(content(), "Stash and reapply").checked).toBe(true);
+    expect(text(content())).toContain("Arbareto setting for all repositories. Not stored in Git configuration.");
+    await click(labelInput(content(), "Keep changes"));
+    expect(r.double.pending("setSwitchChoice")!.args[0]).toEqual({ choice: "keep" });
+  });
+
+  test("the 003 pages SSH and Clone hold the SSH client and the default clone folder", async () => {
+    await render();
+    await page("SSH");
+    expect(text(content())).toContain("SSH client");
+    expect(text(content())).toContain("Key files for this repository");
+    await page("Clone");
+    expect(text(content())).toContain("Default clone folder");
+  });
+
+  test("Close returns without a write, also with a pending change", async () => {
+    const r = await render();
+    await scope("local");
+    await type(row("user.name").querySelector("input")!, "Bob");
+    await click(button("Close settings"));
+    expect(r.closed()).toBe(1);
+    expect(r.double.writes()).toEqual([]);
+    await press(view(), "Escape");
+    expect(r.closed()).toBe(2);
+  });
+});
+
+describe("F6 order (plan D15)", () => {
+  test("the view holds the scope bar, the page list, and the page content in the D15 order", async () => {
+    await render();
+    expect(sectionOrder("settings")).toEqual(["header", "noticeHeading", "scopeBar", "pageList", "pageContent", "statusRegion"]);
+    expect([...view().querySelectorAll<HTMLElement>("[data-section]")].map((e) => e.dataset.section)).toEqual(["scopeBar", "pageList", "pageContent"]);
+  });
+
+  test("the page list is one Tab stop, and an arrow key shows the next page at once", async () => {
+    await render();
+    const tabs = [...section("pageList").querySelectorAll<HTMLElement>('[role="tab"]')];
+    expect(tabs.filter((t) => t.tabIndex === 0).length).toBe(1);
+    await act(async () => tabs[0]!.focus());
+    await press(tabs[0]!, "ArrowDown");
+    expect(text(content())).toContain("Editor");
+  });
+});
+

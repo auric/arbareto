@@ -165,6 +165,15 @@ describe("D4 push destination", () => {
     expect(recorded("push.default=upstream/renamed", "renamed", [["branch.renamed.remote", "origin"], ["push.default", "upstream"]])).toEqual({ kind: "destination", destination: at("origin", "refs/heads/other-name", "refs/remotes/origin/other-name", "push-default-upstream") });
   });
 
+  // T005 (d) `remote-without-url+insteadOf/topic`: Git's push goes to refs/heads/topic of `nourl` (Git 2.56.0.windows.2).
+  test("a remote without a URL is a remote of git remote, and its destination follows the steps", () => {
+    const nourl = { upstream: "refs/remotes/nourl/topic", upstreamRemote: "nourl", push: "refs/remotes/nourl/topic", pushRemote: "nourl" };
+    expect(decide(nourl, [["branch.topic.remote", "origin"], ["branch.topic.remote", "nourl"]], ["nourl", "origin"])).toEqual({
+      kind: "destination",
+      destination: { remote: "nourl", ref: "refs/heads/topic", trackingRef: "refs/remotes/nourl/topic", source: "push-default-branch" },
+    });
+  });
+
   test("an empty %(upstream) gives the panel, pre-filled with the destination", () => {
     expect(decide({ upstream: "", upstreamRemote: "", upstreamRemoteRef: "" }, [["push.default", "current"]])).toEqual({ kind: "panel", prefill: branchDest.destination });
     expect(decide({ upstream: "", upstreamRemote: "", upstreamRemoteRef: "", push: "", pushRemote: "" })).toEqual({ kind: "panel", prefill: null });

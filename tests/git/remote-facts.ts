@@ -25,6 +25,7 @@ import {
   markers,
   PULL_ROWS,
   pullRowCopy,
+  PUSH_FACT_VARIANTS,
   PUSH_VARIANTS,
   pushVariant,
   refMap,
@@ -264,7 +265,7 @@ function d4(h: GitHost, repo: string, branch: string): D4Result {
 
 function factD(h: GitHost): Observation[] {
   const f = once(h, "push", () => buildPush(h));
-  return PUSH_VARIANTS.map((v) => {
+  return [...PUSH_VARIANTS, ...PUSH_FACT_VARIANTS].map((v) => {
     const repo = pushVariant(h, f, v, `${h.root}/copy-${++copies}`);
     const rule = d4(h, repo, v.branch);
     const dry = run(h, repo, ["--no-lazy-fetch", "push", "--dry-run", "--porcelain", "--no-recurse-submodules", "--no-follow-tags"]);
@@ -487,6 +488,7 @@ const M_COMMANDS = {
   "fetch-all": ["--no-lazy-fetch", "fetch", "--all", "--no-recurse-submodules"],
   "fetch-r1": ["--no-lazy-fetch", "fetch", "--no-recurse-submodules", "--", "r1"],
   "push-r1": ["--no-lazy-fetch", "push", "--porcelain", "--no-recurse-submodules", "--no-follow-tags", "--", "r1", "refs/heads/src:refs/heads/DST"],
+  "push-dry-run-r1": ["--no-lazy-fetch", "push", "--dry-run", "--porcelain", "--no-recurse-submodules", "--no-follow-tags", "--", "r1", "refs/heads/src:refs/heads/DST"],
   remote: ["remote"],
   "push-record": ["--no-lazy-fetch", "for-each-ref", "--format=%(push)", "refs/heads"],
 } as const;
@@ -495,6 +497,8 @@ type MCommand = keyof typeof M_COMMANDS;
 const M_BOOLEAN_COMMANDS: MCommand[] = ["fetch-all", "fetch-r1", "push-r1", "remote"];
 // A key line without `=`. `git config` writes no such line, so the case appends it to the file.
 const M_VALUELESS = '[branch "src"]\n\tpushremote\n';
+// T090: an empty branch subsection, appended to the file in the same way.
+const M_EMPTY_BRANCH = '[branch ""]\n\tremote = o\n';
 
 // A fixture copy with `refs/heads/src` from r1 and no remote-tracking ref, so a passing fetch or push changes a ref.
 function factMBase(h: GitHost): { repo: string; bare: string } {
@@ -529,6 +533,7 @@ function factM(h: GitHost): Observation[] {
     "fetch-r1": { exit: 0, localChanged: true, remoteChanged: false },
     // Push updates the remote-tracking ref of the pushed ref (git-push(1)).
     "push-r1": { exit: 0, localChanged: true, remoteChanged: true },
+    "push-dry-run-r1": { exit: 0, localChanged: false, remoteChanged: false },
     remote: { exit: 0, localChanged: false, remoteChanged: false },
     "push-record": { exit: 0, localChanged: false, remoteChanged: false },
   };
@@ -540,6 +545,8 @@ function factM(h: GitHost): Observation[] {
   out.push(asserted("m.r1-mirror-maybe.push-r1", stopped, factMCase(h, base, ["remote.r1.mirror", "maybe"], "push-r1")));
   // remote.c `handle_config` reads `branch.<name>.pushremote` with `git_config_string`, which refuses a missing value.
   for (const c of ["remote", "push-record", "push-r1"] as const) out.push(asserted(`m.src-pushremote-valueless.${c}`, stopped, factMCase(h, base, M_VALUELESS, c)));
+  // remote.c `handle_config` refuses an empty branch subsection for every variable (research R16 m). The fetch names r1, because `o` is no remote.
+  for (const c of ["remote", "push-record", "fetch-r1", "push-dry-run-r1"] as const) out.push(asserted(`m.empty-branch-subsection.${c}`, stopped, factMCase(h, base, M_EMPTY_BRANCH, c)));
   return out;
 }
 
@@ -589,6 +596,6 @@ export const FACTS: Fact[] = [
   { id: "j", title: "%(upstream) is empty for an unconfigured remote", run: factJ },
   { id: "k", title: "fetch --all remote set with skipFetchAll and skipDefaultUpdate", run: factK },
   { id: "l", title: "rebase --skip leaves the index and files equal to HEAD", run: factL },
-  { id: "m", title: "non-boolean mirror, skipFetchAll, skipDefaultUpdate, prune, and pruneTags values, and a valueless pushRemote", run: factM },
+  { id: "m", title: "non-boolean mirror, skipFetchAll, skipDefaultUpdate, prune, and pruneTags values, a valueless pushRemote, and an empty branch subsection", run: factM },
 ];
 

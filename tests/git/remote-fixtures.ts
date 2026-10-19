@@ -514,6 +514,17 @@ export const PUSH_VARIANTS: PushVariant[] = [
   { name: "unconfigured-push-remote/topic", branch: "topic", config: [["branch.topic.pushRemote", "nowhere"]] },
 ];
 
+// T089 variants for fact (d) only. The service matrix in `sync-push.test.ts` does not hold them.
+export const PUSH_FACT_VARIANTS: PushVariant[] = [
+  // T089: builtin/push.c `get_upstream_ref` takes `refs/heads/<branch>` for a branch without `branch.<name>.merge` under `push.autoSetupRemote`.
+  { name: "push.autoSetupRemote/noup", branch: "noup", config: [["push.autoSetupRemote", "true"]] },
+  { name: "push.autoSetupRemote+upstream/noup", branch: "noup", config: [["push.autoSetupRemote", "true"], ["push.default", "upstream"]] },
+  // remote.c `remotes_remote_get_1` uses the name of a remote without a URL as its URL (`add_url_alias`).
+  { name: "remote-without-url/topic", branch: "topic", config: [["branch.topic.remote", "nourl"], ["remote.nourl.fetch", "+refs/heads/*:refs/remotes/nourl/*"]] },
+  { name: "remote-without-url+insteadOf/topic", branch: "topic", config: [["branch.topic.remote", "nourl"], ["remote.nourl.fetch", "+refs/heads/*:refs/remotes/nourl/*"], ["url.{second}.insteadOf", "nourl"]] },
+  { name: "push-remote-dot/topic", branch: "topic", config: [["branch.topic.pushRemote", "."]] },
+];
+
 export interface PushFixture {
   origin: string;
   second: string;
@@ -537,7 +548,7 @@ export function pushVariant(h: GitHost, f: PushFixture, v: PushVariant, to: stri
   // An invalid `push.default` makes most commands die, so the checkout runs first.
   gitRun(h, to, ["checkout", "-q", v.branch]);
   const fill = (value: string) => value.replace("{origin}", f.origin).replace("{second}", f.second);
-  setConfig(h, to, v.config.map(([k, value]) => [k, fill(value)] as const));
+  setConfig(h, to, v.config.map(([k, value]) => [fill(k), fill(value)] as const));
   return to;
 }
 

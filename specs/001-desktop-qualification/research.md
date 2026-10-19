@@ -2073,6 +2073,54 @@ Earlier attempt at `71a5bb0`, 2026-10-13: the parallel step exited 1. One case f
 
 - Remedy: repeat the T154 build on a clean tree, with the wrapper probe in the same shell before the build.
 
+**T154 rerun, 2026-10-19.** The build used main `7cfdbfc39d6c2bd61fd7055c11d54073d555ada5` in the main checkout `C:\Projects\arbareto`. `git --no-optional-locks status --porcelain --untracked-files=all` printed nothing before `bun install --frozen-lockfile`, after it, and after the build. One PowerShell script ran all steps in one session. It entered the Visual Studio 2022 developer shell with `Launch-VsDevShell.ps1 -Arch amd64 -HostArch amd64`. It then ran the T001 wrapper probe, the process gate, and `cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis -- --locked`. The gate counted 0 busy processes. The build exited with code 0 in 4 minutes.
+
+| Tool | Source | Value | Minimum | Result |
+| --- | --- | --- | --- | --- |
+| Rust | `rustc --version` | `rustc 1.99.0 (b940084d7 2026-09-28)` | `1.98.0` | pass |
+| Cargo | `cargo --version` | `cargo 1.99.0 (5f94df478 2026-08-27)` | `1.98.0` | pass |
+| Tauri CLI | `cargo tauri --version` | `tauri-cli 2.12.0` | `2.12.0` | pass |
+| Bun | `bun --version` | `1.4.3` | exactly `1.4.3` | pass |
+| MSVC toolset | `Searching` paths of the T001 wrapper probe and of all 57 build links | `14.44.35207` | `14.44.35207` | pass |
+| Windows SDK | `Searching` paths of the T001 wrapper probe and of all 57 build links | `10.0.19041.0` | `10.0.19041.0` | pass |
+| NSIS | `makensis.exe /VERSION` in `%LOCALAPPDATA%\tauri\NSIS`, in PowerShell after the build | `v3.11` | `3.11` | pass |
+| Git | `git version --build-options` | `git version 2.56.0.windows.2` at `C:\Program Files\Git\cmd\git.exe`, built from commit `cc4dbf752a05efdc0e04e71fd3e8110d11bdd35c` | `2.55.0.windows.3` | pass |
+| WebView2 | Registry value `pv` of `HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}` | `155.0.4283.62` | `154.0.4258.37` | pass |
+
+- A first attempt stopped before the build. The CIM query failed, and the gate counted that as busy.
+- Probe: `rustc --target x86_64-pc-windows-msvc -C linker=<wrapper> -C link-arg=/VERBOSE:LIB` linked `fn main(){}` and exited with code 0. The wrapper ran `...\2022\Enterprise\VC\Tools\MSVC\14.44.35207\bin\Hostx64\x64\link.exe`. The probe searched only MSVC `14.44.35207` and SDK `10.0.19041.0` libraries.
+- Build links: `CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER` named a wrapper that adds `/VERBOSE:LIB` and keeps the linker output. All 57 link calls ran the same `link.exe` and exited with code 0. Each call searched only MSVC `14.44.35207` and SDK `10.0.19041.0` libraries. One of the 57 calls links `target\x86_64-pc-windows-msvc\release\deps\arbareto`.
+- Installer: `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\Arbareto_0.1.0_x64-setup.exe`, 38020390 bytes, SHA-256 `47db7ce8a3a896bf421f11dcca855047da892bcc0d1d92097d485818318d5317`.
+- `dumpbin /dependents` (MSVC 14.44.35207) of `arbareto.exe`: bcryptprimitives, ntdll, advapi32, kernel32, user32, ole32, combase, comctl32, gdi32, dwmapi, shlwapi, version, shell32, api-ms-win-core-synch-l1-2-0, bcrypt, imm32, oleaut32, api-ms-win-core-winrt-l1-1-0, api-ms-win-core-winrt-error-l1-1-0, ADVAPI32, KERNEL32, and api-ms-win-crt-{math,string,convert,runtime,stdio,locale,heap}-l1-1-0.
+- `dumpbin /dependents` of the sidecar `arbareto-git.exe`: ntdll, KERNEL32, api-ms-win-core-synch-l1-2-0, and bcryptprimitives. Delay-load: WSOCK32, CRYPT32, WS2_32, dbghelp, USERENV, USER32, ADVAPI32, ole32, SHELL32, OLEAUT32, and IPHLPAPI. This list equals the 2026-10-19 release package record.
+- Two names in each case: `dumpbin /imports` of the installed `arbareto.exe` shows 28 import descriptors with 368 named imports. `advapi32.dll` (5 imports) and `kernel32.dll` (71 imports) carry hint 0 on every import. `ADVAPI32.dll` (4 imports: `EventRegister`, `EventSetInformation`, `EventUnregister`, `EventWriteTransfer`) and `KERNEL32.dll` (58 imports) carry nonzero hints.
+- Source of the lower-case descriptors: `windows-link` 0.2.1 `link!` declares `kind = "raw-dylib", modifiers = "+verbatim"`. `windows-sys` 0.61.2 calls it with the literal `"advapi32.dll"`, for example for `RegOpenKeyExW`. Raw-dylib imports get their own descriptor with the literal name.
+- Source of the upper-case descriptors: the import headers of the SDK `10.0.19041.0` `um\x64` libraries give `DLL name : KERNEL32.dll` for `RtlUnwindEx` (hint 1251) and `DLL name : ADVAPI32.dll` for `EventWriteTransfer` (hint 297). The binary holds the same hints (`0x4E3` and `0x129`).
+- Earlier binary: the earlier `t154` evidence holds no saved `dumpbin` output. The `arbareto.exe` from the earlier installer (SHA-256 `2dec410b6f566ce91211b534c1ec72ad2bf37b95a0b4499baa7e1767ea977ae1`) was decoded from its NSIS LZMA stream without an install. Its SHA-256 equals the earlier installed digest `a638418a021d2f4ae4a2996ffa3a83b9cdba7eb42e14b20eba5a80756beb8aed`. The same decoder applied to this installer gives the installed digest below. The `dumpbin /dependents` and `dumpbin /imports` output of the earlier binary equals the output of this binary, apart from the file name line. So the earlier binary also had both pairs. The 2026-10-19 release package record names each pair once. The binary did not change in its imports. `src-tauri` and `Cargo.lock` have no change between `62e6e2a` and `7cfdbfc`.
+- Install: the installer ran as the current user with `/S` over the earlier install and exited with code 0. It needed no input.
+- The entry `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Arbareto` has `DisplayName` "Arbareto (Unsigned local test package)" and `DisplayVersion` `0.1.0`. `InstallLocation` is `C:\Users\user\AppData\Local\Arbareto`. The registry value holds it in double quotes.
+- Installed files: `arbareto.exe` (14557696 bytes), `arbareto-git.exe` (97416704 bytes), and `uninstall.exe` (79348 bytes). No Node executable, development server, or native build tool is present. Tauri embeds the frontend assets in `arbareto.exe`.
+- Installed `arbareto.exe` SHA-256: `6dca247ebdd07d35b1543bce67994ac5c5c2d9f34b86e9b144dc894ab8d4a563`. The target file has SHA-256 `3aff76c497c987c8416fdd87f47780c100b316f0fb7e71fd3e752939f400dd01`. The files differ only in the 3 bundle-type marker bytes at offsets `0xAC165A` to `0xAC165C` (`UNK` in the target, `NSS` when installed). The build log shows "Patching ... with bundle type information: nsis". The cause is in the 2026-10-19 release package record.
+- Installed `arbareto-git.exe` SHA-256 equals the target file: `a315c9d6401dcc155af509880a8ca44c349faa542b2f3328c8a0332cebf631ec`.
+- Build identity: a byte search of the installed `arbareto.exe` found `7cfdbfc39d6c2bd61fd7055c11d54073d555ada5` once and no `-dirty` string.
+- Boot-view label: the installed app started with `ARBARETO_PROFILE_ROOT` set to a new scratch folder. The `tests/windows/uia.ts` `find` call found an element with the exact name "Unsigned local test package". WM_CLOSE went only to the unowned `Tauri Window` titled `Arbareto`. The app exited with code 0. No input was sent. A first label run stopped before the search, because its `find` timeout of 20000 ms is above the driver limit of 10000 ms.
+- Build-time downloads: the build log shows no download. The NSIS tools were already in `%LOCALAPPDATA%\tauri\NSIS`. End-user prerequisites: Git and a preinstalled WebView2 runtime. The installer does not install WebView2 (`webviewInstallMode` `skip`).
+
+| T154 clause | Result |
+| --- | --- |
+| Clean tree before the build | holds. The status was empty before and after `bun install` and after the build. |
+| T001 link probe in the same shell, and build tool versions under the test harness rules | holds. The wrapper probe ran in the build session before the build. Its `Searching` paths and those of all 57 build links give MSVC `14.44.35207` and SDK `10.0.19041.0`. |
+| Build command, installer name, bytes, and SHA-256 | holds |
+| `dumpbin /dependents` of `arbareto.exe` and the sidecar | holds |
+| Windows Apps entry "Arbareto (Unsigned local test package)" after a current-user install | holds |
+| Git and WebView2 versions, build identity, entry name, and installed `arbareto.exe` SHA-256 | holds |
+| SC-011 result recorded | holds. The result is `unverified`. |
+| No Node executable, development server, or native build tool, and the runtime assets present | holds |
+| Build-time downloads apart from end-user prerequisites, and WebView2 as a preinstalled requirement | holds |
+
+- SC-011: `unverified`. The label clause holds: the entry name and the boot-view label both read "Unsigned local test package". The release clause waits on B-RELEASE and T176.
+- T154: every clause holds on this record. T154 stays open, because batch 5 depends on T149 (tasks.md "Phase dependencies"), and T149 is open. A full run cannot tick T154 early, because `test:all` does not verify it.
+
 ### Scenario records
 
 This table holds one record for each qualification scenario: SC-001 to SC-019 (spec.md "Success Criteria"), F01 to F33 (plan.md fixture register), and UI-01 to UI-22 (plan.md UI scenarios). Each record holds the data-model §8 fields. A result is only `pass`, `fail`, or `unverified`. A record whose only evidence is source inspection stays `unverified`, and its evidence cell names `source-inspected`. An empty cell means that no fact exists yet. Record results as numbers and observations. Redact secrets before you keep evidence.

@@ -17,7 +17,7 @@ import type { createDrafts } from "../state/drafts";
 import type { Amend } from "../state/workbench";
 import { shortId, trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { GuideLines, guideStyle, SummaryCounter } from "./MessageGuide";
-import { isTrustReport, trustBeforeReview, trustFailureCode, type TrustReport } from "../trust/TrustDialog";
+import { isTrustReport, trustBeforeReview, trustFailureCode, type TrustReport } from "../trust/TrustChip";
 
 // plan.md "Task flow and command placement" (Compose a commit, Commit, Commit outcome) and "Keyboard and focus" (Message, Unavailable control).
 // Feature 004 spec FR-047 (message guide), FR-098 to FR-100 (Amend last commit), plan.md D8 "Amend last commit", and D15 (running rule, texts).
@@ -46,8 +46,10 @@ export type CommitTrayProps = {
   status: "incomplete" | "loading" | null;
   /** A workspace state that blocks the commit, such as a running operation. */
   blocked?: Blocked;
-  /** Opens the Trust dialog. Resolves true after an approval. */
+  /** Asks for trust through the shell (feature 004 plan.md D12). Resolves true after an approval. */
   requestTrust(report: TrustReport): Promise<boolean>;
+  /** Feature 004 spec FR-072: the inline reason after Not now, or null. Commit is then unavailable. */
+  trustReason?: string | null;
   onOperation?(op: StatusOperation): void;
   /** A terminal `commit` response, or a refused `reviewCommit`. The read after it reconciles the view (contract §3). It can resolve when that read ends. */
   onEnded?(response: BridgeResponse): void | Promise<void>;
@@ -99,6 +101,7 @@ function disableReason(props: CommitTrayProps, composing: boolean): string | nul
   const text = messageOf(props);
   return (
     (runningBlock(blocked) ? RUNNING_REASON : blocked ? BLOCKED_TEXT[blocked] : null) ??
+    props.trustReason ??
     (status === "incomplete" ? BLOCKED_TEXT.incomplete : null) ??
     (status === "loading" || snapshotId === null || target === null ? BLOCKED_TEXT.loading : null) ??
     (staged === 0 && props.amend?.value == null ? "The Staged list is empty." : null) ??

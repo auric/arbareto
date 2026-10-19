@@ -1048,7 +1048,8 @@
                 "resolve",
                 "mergetool",
                 "worktree",
-                "submodules"
+                "submodules",
+                "repository"
               ]
             }
           },

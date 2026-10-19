@@ -278,7 +278,7 @@ function outcomeOf(response: BridgeResponse | null | undefined): Outcome {
 /** plan.md "Required visible states", Succeeded, and "Long text" (singular count). */
 export function lingeringSentence(count: number, trusted: boolean): string {
   const runs = count === 1 ? "1 process that Git or a hook started still runs." : `${count} processes that Git or a hook started still run.`;
-  return `${runs} Closing Arbareto ends them.${trusted ? " Revoke trust also ends them." : ""}`;
+  return `${runs} Closing Arbareto ends them.${trusted ? " Stop trusting this repository also ends them." : ""}`;
 }
 
 /** plan.md Commit outcome row: where focus goes at a commit outcome. `from` is the focus when the outcome arrives. */

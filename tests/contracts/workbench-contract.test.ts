@@ -657,7 +657,7 @@ describe("contract Δ6 private requests", () => {
 
     test("the frame names the folders, the Git, the action, and the details", () => {
       expect(confirm(v2)).toBe(true);
-      const actions = ["commit", "read", "fetch", "pull", "push", "switch", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "submodules"];
+      const actions = ["commit", "read", "fetch", "pull", "push", "switch", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "submodules", "repository"];
       expect<string[]>([...(P.TRUST_ACTIONS ?? [])]).toEqual(actions);
       for (const action of actions) expect(confirm({ ...v2, action })).toBe(true);
       expect(confirm({ ...v2, action: "clone" })).toBe(false);

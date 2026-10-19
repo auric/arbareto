@@ -1,0 +1,5 @@
+{
+  "schema": "trust-request",
+  "expected": "valid",
+  "text": "{\"type\":\"confirm\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000007\",\"worktreeRoot\":\"//host/repo\",\"adminDirectory\":\"//host/repo/.git\",\"commonDirectory\":\"//host/repo/.git\",\"gitSelectedPath\":\"//host/Program Files/Git/cmd/git.exe\",\"policyVersion\":2,\"action\":\"repository\",\"details\":{\"hooks\":{\"names\":[{\"event\":\"pre-commit\",\"folder\":\"//host/repo/.git/hooks\"}],\"more\":0},\"filters\":{\"names\":[{\"driver\":\"canary\",\"scope\":\"local\"}],\"more\":0},\"monitors\":{\"names\":[],\"more\":0},\"mergeDrivers\":{\"names\":[],\"more\":0},\"mergeTools\":{\"names\":[],\"more\":0},\"signing\":{\"names\":[],\"more\":0},\"other\":{\"names\":[{\"key\":\"url.https://<redacted>@host.example/.insteadof\",\"scope\":\"global\"}],\"more\":0}}}"
+}

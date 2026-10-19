@@ -752,8 +752,8 @@ export const MutationReply = z.xor([StartedReply.meta({ title: "StartedGroup" })
 
 // ---- `trust` frames (contract §7 "Trust approval store", feature 004 contract Δ6) ----
 
-// Contract Δ6: the action that the dialog names.
-export const TRUST_ACTIONS = ["commit", "read", "fetch", "pull", "push", "switch", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "submodules"] as const;
+// Contract Δ6: the action that the dialog names. `repository` names no Git action: the status bar chip sends it (plan D12).
+export const TRUST_ACTIONS = ["commit", "read", "fetch", "pull", "push", "switch", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "submodules", "repository"] as const;
 export type TrustAction = (typeof TRUST_ACTIONS)[number];
 // Contract Δ5 "Trust dialog names per kind". It is no output bound, so `limits.ts` does not list it.
 export const TRUST_DIALOG_NAMES = 20;

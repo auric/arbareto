@@ -19,8 +19,9 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 export type Counted = { category: ChangeEntry["category"] };
 
 /** plan.md "History graph design": the visible parts of the Working directory and Index rows. Null parts show Loading. */
-export function specialParts(entries: readonly Counted[] | null): { working: string[]; conflicted: string | null; index: string[] } {
-  if (entries === null) return { working: ["Working directory", LOADING], conflicted: null, index: ["Index", LOADING] };
+export function specialParts(entries: readonly Counted[] | null, unread: string | null = null): { working: string[]; conflicted: string | null; index: string[] } {
+  // Feature 004 spec FR-072: a read that the trust gate refused is no load in progress.
+  if (entries === null) return { working: ["Working directory", unread ?? LOADING], conflicted: null, index: ["Index", unread ?? LOADING] };
   let conflicted = 0;
   let working = 0;
   let staged = 0;

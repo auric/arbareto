@@ -258,10 +258,12 @@ export type HistoryListProps = {
   onLabelMenu?: LabelMenu;
   /** Feature 004 plan.md D15: Ctrl+B on the selected commit row opens Create branch here. */
   onCreateBranch?: (oid: string, anchor: HTMLElement) => void;
+  /** Feature 004 spec FR-072: the reason that no workspace read ran, in place of Loading…, or null. */
+  unread?: string | null;
 };
 
 /** The feature 002 history list: a fixed-height window over the service view (plan.md D6). One listbox, one Tab stop, focus on the list. */
-export function HistoryList({ view, entries, density, profile, textScale = 1, dateFormat = LOCAL_DATE, onSelect, onScope, filterRef, tracking, onLabelMenu, onCreateBranch }: HistoryListProps) {
+export function HistoryList({ view, entries, density, profile, textScale = 1, dateFormat = LOCAL_DATE, onSelect, onScope, filterRef, tracking, onLabelMenu, onCreateBranch, unread = null }: HistoryListProps) {
   const state = useSyncExternalStore(view.subscribe, view.getState);
   const ids = { heading: useId(), count: useId(), notes: useId(), list: useId() };
   const list = useRef<HTMLDivElement>(null);
@@ -432,7 +434,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   const row0 = view.row(0);
   // plan.md D6: the dotted lead-in shows only when HEAD is row 0.
   const line = !filter && row0?.checkout === true;
-  const special = specialParts(entries);
+  const special = specialParts(entries, unread);
   const lanes = state.lanes;
   const optionId = (item: number) => `${ids.list}-${item}`;
   const setSize = more ? -1 : total;

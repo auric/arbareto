@@ -412,11 +412,8 @@ describe("submodule update mount", () => {
     const item = await openRepositoryMenu();
     expect(item.getAttribute("aria-disabled")).toBe("true");
     expect(describedBy(item)).toBe(RUNNING_TEXT);
-    // Base UI MenuGroupLabel names its group and hides itself. A reason or a status must not become a group name.
+    // Base UI MenuGroupLabel names its group and hides itself. A reason must not become a group name.
     expect(item.closest('[role="group"]')!.hasAttribute("aria-labelledby")).toBe(false);
-    const status = document.querySelector<HTMLElement>('[data-slot="menubar-content"] [role="status"]')!;
-    expect(status.closest('[role="group"]')!.hasAttribute("aria-labelledby")).toBe(false);
-    expect(status.closest('[aria-hidden="true"]')).toBeNull();
     await act(async () => item.click());
     await settle();
     expect(double.calls.filter((c) => c.operation === "reviewSubmodules")).toHaveLength(reviews);
@@ -595,10 +592,12 @@ describe("trust", () => {
     hooks: [],
   });
 
-  test("the Trust required dialog opens when reads need an approval", async () => {
+  // Feature 004 spec FR-072: a read that needs trust never prompts by itself.
+  test("no dialog and no approval start when reads need an approval", async () => {
     const double = await mount(succeeded(REGISTRATION));
     await resolve(double.pending("readTrust"), succeeded(report("untrusted", true)));
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Trust required");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(double.calls.some((c) => c.operation === "approveTrust")).toBe(false);
   });
 
   test("no dialog opens when reads need no approval", async () => {
@@ -782,9 +781,10 @@ describe("history selection", () => {
 });
 
 describe("repository menu", () => {
-  test("the revoke result text leaves when another repository opens", async () => {
+  // Feature 004 plan.md D12: Stop trusting sits in the status bar chip.
+  test("the Stop trusting result text leaves when another repository opens", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    const report = { generation: 1, programs: {}, trustId: crypto.randomUUID(), state: "approved", persistence: "stored", approvalRequired: { reads: false, commit: false }, entries: [], hooks: [] };
+    const report = { generation: 1, programs: {}, trustId: crypto.randomUUID(), state: "approved", persistence: "stored", approvalRequired: { reads: false, commit: true }, entries: [], hooks: [] };
     await resolve(latest(double, "readTrust"), succeeded(report));
     const openMenu = async () => {
       const trigger = [...document.querySelectorAll<HTMLElement>('[role="menubar"] [role="menuitem"]')].find((e) => e.textContent === "Repository")!;
@@ -793,17 +793,19 @@ describe("repository menu", () => {
       await settle();
     };
     const item = (label: string) => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((e) => e.textContent === label)!;
-    await openMenu();
-    await act(async () => item("Revoke trust").click());
+    await act(async () => document.querySelector<HTMLElement>('footer [data-slot="trust-chip"]')!.click());
+    await settle();
+    await act(async () => item("Stop trusting this repository").click());
     await settle();
     await resolve(latest(double, "revokeTrust"), succeeded({ endedProcesses: 0 }));
-    expect(text()).toContain("Trust revoked.");
+    expect(text()).toContain("Arbareto no longer trusts this repository.");
+    await openMenu();
     await act(async () => item("Open folder…Ctrl+O").click());
     await settle();
     await resolve(latest(double, "chooseRepository"), succeeded({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "b".repeat(64) }));
     await openMenu();
     expect(document.querySelector('[role="menu"]')).not.toBeNull();
-    expect(text()).not.toContain("Trust revoked.");
+    expect(text()).not.toContain("Arbareto no longer trusts this repository.");
   });
 });
 
@@ -1343,7 +1345,7 @@ describe("menus", () => {
     const items = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')];
     const label = (e: HTMLElement) => [...e.childNodes].filter((n) => !(n instanceof HTMLElement && n.dataset.slot === "menubar-shortcut")).map((n) => n.textContent).join("").trim();
     // Feature 003 plan.md D12 adds Clone… and Settings….
-    expect(items.map(label)).toEqual(["Open folder…", "Recent repositories", "Clone…", "Select Git", "Settings…", "Review repository trust", "Revoke trust", "Update submodules"]);
+    expect(items.map(label)).toEqual(["Open folder…", "Recent repositories", "Clone…", "Select Git", "Settings…", "Update submodules"]);
     const keys = [...menu.querySelectorAll<HTMLElement>('[data-slot="menubar-shortcut"]')];
     expect(keys.map((k) => k.textContent)).toEqual(["Ctrl+O", "Ctrl+R"]);
     for (const k of keys) expect(k.className.split(/\s+/)).toEqual(expect.arrayContaining(["ml-auto", "whitespace-nowrap", "text-muted-text"]));
@@ -1413,8 +1415,6 @@ describe("mounted staging and commit", () => {
     await act(async () => button("Commit (Ctrl+Enter)").click());
     await settle();
     await resolve(latest(double, "readTrust"), succeeded(trustReport(true)));
-    await act(async () => button("Approve").click());
-    await settle();
     await resolve(latest(double, "approveTrust"), succeeded({ trustId: crypto.randomUUID(), persistence: "stored", saveFailed: false }));
   }
 
@@ -1461,8 +1461,6 @@ describe("mounted staging and commit", () => {
     await act(async () => button("Commit (Ctrl+Enter)").click());
     await settle();
     await resolve(latest(double, "readTrust"), succeeded(trustReport(true)));
-    await act(async () => button("Approve").click());
-    await settle();
     await resolve(latest(double, "approveTrust"), succeeded({ trustId: crypto.randomUUID(), persistence: "stored", saveFailed: false }));
     const own = latest(double, "readWorkspace");
     expect(own).not.toBe(before);
@@ -1487,9 +1485,8 @@ describe("mounted staging and commit", () => {
     await act(async () => button("Commit (Ctrl+Enter)").click());
     await settle();
     await resolve(latest(double, "readTrust"), succeeded(trustReport(true)));
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Trust required");
-    await act(async () => button("Approve").click());
-    await settle();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(latest(double, "approveTrust").args[1]).toEqual({ action: "commit" });
     await resolve(latest(double, "approveTrust"), succeeded({ trustId: crypto.randomUUID(), persistence: "stored", saveFailed: false }));
     expect(double.calls.some((c) => c.operation === "reviewCommit")).toBe(false);
     const after = snapshot({ entries: [{ ...entry, entryId: crypto.randomUUID() }], entryCount: 1 });
@@ -1505,21 +1502,18 @@ describe("mounted staging and commit", () => {
     expect(status()).toContain("Committed 222222222222 to main");
   });
 
-  test("a trust read that closes the gate dialog cancels the gate, so the next Commit starts again", async () => {
-    const { double } = await openCommitPanel();
+  test("a late first trust read keeps the pending commit approval, and the approval continues the commit", async () => {
+    const { double, shown } = await openCommitPanel();
     const initial = latest(double, "readTrust");
     await act(async () => button("Commit (Ctrl+Enter)").click());
     await settle();
     await resolve(latest(double, "readTrust"), succeeded(trustReport(true)));
-    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-    // The first trust read of the registration arrives late and closes the dialog.
     await resolve(initial, succeeded(trustReport(false)));
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
-    const reads = double.calls.filter((c) => c.operation === "readTrust").length;
-    await act(async () => button("Commit (Ctrl+Enter)").click());
-    await settle();
-    expect(double.calls.filter((c) => c.operation === "readTrust")).toHaveLength(reads + 1);
+    expect(double.calls.filter((c) => c.operation === "approveTrust")).toHaveLength(1);
     expect(double.calls.some((c) => c.operation === "reviewCommit")).toBe(false);
+    await resolve(latest(double, "approveTrust"), succeeded({ trustId: crypto.randomUUID(), persistence: "stored", saveFailed: false }));
+    await resolve(latest(double, "readWorkspace"), succeeded(shown));
+    expect(latest(double, "reviewCommit").args[1]).toEqual({ snapshotId: shown.snapshotId });
   });
 
   test("a failed Stage file shows its output below the comparison heading, also after the next read issues a new comparison ID", async () => {

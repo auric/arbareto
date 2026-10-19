@@ -4,7 +4,7 @@
 import { ArrowDown01Icon, ArrowRight01Icon, Folder01Icon, ListIcon, ListTreeIcon, MinusSignIcon, PlusSignIcon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
-import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
+import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref } from "react";
 import type { ChangeEntry } from "../../contracts/envelope";
 import { useCopy } from "../app/RepositoryStates";
 import { ActionMenu, type ActionItem } from "../components/action-menu";
@@ -59,6 +59,10 @@ export type ChangesPaneProps = {
   selection: PaneSelection;
   /** Selects an entry and starts its comparison read. */
   onSelect(entryId: string): void;
+  /** Clears the selection, so the diff shows its empty state (spec FR-101). */
+  onClearSelection?(): void;
+  /** The Filter files field. Ctrl+F focuses it in the Commit view (plan D15 keyboard map). */
+  filterRef?: Ref<HTMLInputElement>;
   /** The T202 `runFileAction`. */
   onFileAction(action: FileAction): Promise<FileActionResult>;
   /** Feeds the T145 reason line. Null clears it. */
@@ -160,6 +164,9 @@ export function ChangesPane(props: ChangesPaneProps) {
   const shownMarks = marked === null ? null : { ...marked, ids: new Set([...marked.ids].filter((id) => alive.has(id) && (query === "" || matches(alive.get(id)!.path, query)))) };
   const onQuery = (next: string) => {
     setQuery(next);
+    // Spec FR-101: a row that the filter hides leaves the selection. No other file gets selected.
+    const selected = live.current.selection === null ? undefined : alive.get(live.current.selection.entryId);
+    if (next !== "" && selected !== undefined && !matches(selected.path, next)) live.current.onClearSelection?.();
     if (next !== "") setMarked((m) => (m === null ? m : { ...m, ids: new Set([...m.ids].filter((id) => !alive.has(id) || matches(alive.get(id)!.path, next))) }));
   };
 
@@ -422,7 +429,7 @@ export function ChangesPane(props: ChangesPaneProps) {
 
   // The no-match line shows only when no hidden row can match: a collapsed Untracked section creates no rows (spec FR-030).
   const collapsed = rows.changes.some((r) => r.kind === "section" && !r.expanded);
-  const noMatch = query !== "" && !collapsed && rows.staged.length === 0 && rows.changes.every((r) => r.kind === "section");
+  const noMatch = query !== "" && entries.length > 0 && !collapsed && rows.staged.length === 0 && rows.changes.every((r) => r.kind === "section");
 
   return (
     <div ref={root} data-slot="changes-workspace" className="flex h-full min-h-0 flex-1 flex-col" onFocus={onFocus} onBlur={onBlur}>
@@ -433,6 +440,7 @@ export function ChangesPane(props: ChangesPaneProps) {
           <TooltipTrigger
             render={
               <input
+                ref={props.filterRef}
                 type="text"
                 aria-label={FILTER_FILES}
                 aria-keyshortcuts="Control+F"

@@ -14,8 +14,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 const VIRTUAL_MIN = 200;
 // 001 RecentList loading text.
 const LOADING_TEXT = "Loading…";
-// Plan D16 "Geometry": group headings are 26 px.
-const HEADING_HEIGHT = 26;
 const fmt = new Intl.NumberFormat("en-US");
 
 export type SwitcherPopoverProps<T> = {
@@ -30,6 +28,8 @@ export type SwitcherPopoverProps<T> = {
   listLabel: string;
   /** The row height in DIPs (`metrics(...).row`). */
   rowHeight: number;
+  /** The group heading height in DIPs (`metrics(...).subgroupHeading`, 26 in the compact density at 100% text, plan D16 "Geometry"). */
+  headingHeight: number;
   /** Null while the list loads. */
   items: readonly T[] | null;
   /** The visible state of a failed read. It replaces the list. */
@@ -59,7 +59,7 @@ export function SwitcherPopover<T>({ open, onOpenChange, trigger, children, tool
         <TooltipTrigger render={<PopoverTrigger render={trigger} />}>{children}</TooltipTrigger>
         <TooltipContent>{tooltip}</TooltipContent>
       </Tooltip>
-      {/* Plan D16 "Geometry": 380 DIPs wide and aligned to the end of the button. 001 plan.md "Dialog sizes": at most 60% of the client height. */}
+      {/* Plan D16 "Geometry": 380 DIPs wide, opened below the button and aligned to its end. 001 plan.md "Dialog sizes": at most 60% of the client height. */}
       <PopoverContent align="end" className="max-h-[min(60vh,calc(100vh-32px))] w-[min(380px,calc(100vw-32px))]">
         {open ? <SwitcherList {...list} /> : null}
       </PopoverContent>
@@ -67,7 +67,7 @@ export function SwitcherPopover<T>({ open, onOpenChange, trigger, children, tool
   );
 }
 
-function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, itemKey, itemText, itemLabel = itemText, itemGroup, renderItem, onPick, footer, emptyText, noMatchText }: Omit<SwitcherPopoverProps<T>, "open" | "onOpenChange" | "trigger" | "children" | "tooltip">) {
+function SwitcherList<T>({ rowHeight, headingHeight, filterLabel, listLabel, items, failure, itemKey, itemText, itemLabel = itemText, itemGroup, renderItem, onPick, footer, emptyText, noMatchText }: Omit<SwitcherPopoverProps<T>, "open" | "onOpenChange" | "trigger" | "children" | "tooltip">) {
   const ids = { list: useId(), option: useId() };
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -106,7 +106,7 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
     count: rows.length,
     enabled: virtual,
     getScrollElement: () => scroller.current,
-    estimateSize: (at) => (typeof rows[at] === "number" ? rowHeight : HEADING_HEIGHT),
+    estimateSize: (at) => (typeof rows[at] === "number" ? rowHeight : headingHeight),
     overscan: 8,
     useFlushSync: false,
     // The active option stays mounted, so `aria-activedescendant` names an element.
@@ -138,7 +138,7 @@ function SwitcherList<T>({ rowHeight, filterLabel, listLabel, items, failure, it
     if (typeof r === "number") return option(r, style);
     // The group element carries the heading and the count as its name, so the heading row stays out of the accessibility tree.
     return (
-      <div key={`heading:${r.heading}`} data-slot="list-heading" role="presentation" aria-hidden="true" className="flex items-center gap-2 px-2 text-muted-text" style={{ height: HEADING_HEIGHT, ...style }}>
+      <div key={`heading:${r.heading}`} data-slot="list-heading" role="presentation" aria-hidden="true" className="flex items-center gap-2 px-2 text-muted-text" style={{ height: headingHeight, ...style }}>
         <span className="font-semibold text-text">{r.heading}</span>{" "}
         <span data-slot="list-count" className="num text-muted-text">
           {fmt.format(totals.get(r.heading) ?? 0)}

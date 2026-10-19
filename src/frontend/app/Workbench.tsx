@@ -185,6 +185,8 @@ export type WorkbenchPaneProps = {
   history: HistoryStore;
   /** The filter text box. Ctrl+F focuses it (feature 002 plan.md D6). */
   filterRef: RefObject<HTMLInputElement | null>;
+  /** The Filter files field of the Commit view. Ctrl+F focuses it (feature 004 plan.md D15 keyboard map). */
+  filesFilterRef?: RefObject<HTMLInputElement | null>;
   /** Docks the panel of a history row. It starts no Git read. */
   onSelectRow(id: string): void;
   /** Absent in a mount without staging controls. */
@@ -333,7 +335,7 @@ function noDecisionText(state: RequestState): string {
 }
 
 /** The T133 changes pane on the T132 request state, with the T202 file controls in its stage bar. */
-export function ChangesPaneMount({ state, requests, profile, density, textScale, menuOpen, modalOpen, onStatus, staging, workbench }: WorkbenchPaneProps) {
+export function ChangesPaneMount({ state, requests, profile, density, textScale, menuOpen, modalOpen, onStatus, staging, workbench, filesFilterRef }: WorkbenchPaneProps) {
   const workspace = state.workspace;
   const key = state.repository?.worktreeKey ?? "";
   const view = useSyncExternalStore(
@@ -390,6 +392,8 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
         entries={state.entries}
         selection={selection}
         onSelect={requests.selectEntry}
+        onClearSelection={requests.clearSelection}
+        filterRef={filesFilterRef}
         onFileAction={onFileAction}
         onReason={staging?.onPaneReason}
         onStatus={onStatus}
@@ -669,6 +673,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const view: View = useSyncExternalStore(store.subscribe, () => store.view(viewKey), () => store.view(viewKey));
   const commitState = useSyncExternalStore(store.subscribe, () => store.commitView(viewKey), () => store.commitView(viewKey));
   const filterRef = useRef<HTMLInputElement>(null);
+  const filesFilterRef = useRef<HTMLInputElement>(null);
   const [preferences, setPreferences] = useState(storedPreferences);
   const client = useClientSize();
   const profile: Profile = chooseProfile(client, textScale, preferences.density);
@@ -1073,7 +1078,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       else if (action.type === "focusFilter") {
         const target = filterTarget(live.current.view);
         if (target === "history") filterRef.current?.focus();
-        else if (target === "files") sections.current?.querySelector<HTMLElement>('section[aria-label="Commit view"] input[aria-label="Filter files"]')?.focus();
+        else if (target === "files") filesFilterRef.current?.focus();
       }
       else if (action.type === "match") void historyView.match(action.direction);
       else if (action.type === "sync") runSync.current(action.control);
@@ -1327,6 +1332,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     staging,
     history: historyView,
     filterRef,
+    filesFilterRef,
     tracking: labels,
     workbench: store,
     branches,
@@ -1566,7 +1572,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           )}
           {workspace === null ? null : (
             // plan.md "Header layout": the branch button takes only the width that the other items leave, so it never moves them to another row.
-            <BranchButton head={workspace.head} operationState={workspace.operationState} counts={currentLabel} tracking={labels} actions={branches} blockedReason={mutationReason} rowHeight={m.row} />
+            <BranchButton head={workspace.head} operationState={workspace.operationState} counts={currentLabel} tracking={labels} actions={branches} blockedReason={mutationReason} rowHeight={m.row} headingHeight={m.subgroupHeading} />
           )}
           {state.repository === null ? null : (
             // The 004 design standard: the Fetch, Pull, and Push group follows the branch. Feature 004 adds its branch and worktree buttons before it.

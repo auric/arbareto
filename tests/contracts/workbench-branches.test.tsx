@@ -21,7 +21,7 @@ mock.module("../../src/frontend/changes/PatchView", () => ({ default: ({ patch }
 registerDom();
 const workbench = await import("../../src/frontend/app/Workbench");
 const { refusalText } = await import("../../src/frontend/branches/texts");
-const { workAreaHeight } = await import("../../src/frontend/layout/profiles");
+const { metrics, workAreaHeight } = await import("../../src/frontend/layout/profiles");
 
 let restoreLayout: () => void = () => {};
 beforeAll(() => void (restoreLayout = stubLayout(800)));
@@ -148,6 +148,33 @@ describe("branch list (FR-008, FR-009, FR-013, SC-003)", () => {
     const main = options()[1]!;
     expect(main.querySelector(".font-semibold")?.textContent).toBe("main");
     expect(text(main)).not.toContain("Current");
+  });
+
+  test("the option of the current branch states current after the branch name (plan D15 Branch list)", async () => {
+    await mountWorkbench(workbench, branchWorld());
+    await openList();
+    const names = options().map((o) => o.getAttribute("aria-label"));
+    expect(names[1]!.startsWith("main, current, local branch, 2 ahead, 3 behind")).toBe(true);
+    expect(names.filter((n) => n?.includes(", current,"))).toHaveLength(1);
+  });
+
+  test("the group headings scale with the text size and the density, as the rows do, also in the virtual list (225% text)", async () => {
+    const m = metrics("compact", 2.25);
+    await mountWorkbench(workbench, branchWorld(), undefined, { textScale: 2.25 });
+    await openList();
+    const headings = [...document.querySelectorAll<HTMLElement>('[data-slot="list-heading"]')];
+    expect(headings).toHaveLength(2);
+    for (const heading of headings) expect(heading.style.height).toBe(`${m.subgroupHeading}px`);
+    await unmountAll();
+    // Above 200 rows the list is virtual. Its size estimate counts each heading at the heading height and each option at the row height.
+    const many = Array.from({ length: 260 }, (_, i) => local(`topic/${String(i).padStart(3, "0")}`));
+    const world = branchWorld();
+    world.answers.readBranches = () => succeeded({ entries: [MAIN, ...many, ORIGIN_MAIN] });
+    await mountWorkbench(workbench, world, undefined, { textScale: 2.25 });
+    await openList();
+    const total = document.querySelector<HTMLElement>('[role="listbox"][aria-label="Branches"] > [role="presentation"]')!;
+    // Two headings, 262 branches, and New branch….
+    expect(total.style.height).toBe(`${2 * m.subgroupHeading + 263 * m.row}px`);
   });
 
   test("the list follows the D16 geometry: search icon and placeholder, Muted group counts, the current mark, the key column, and 380 px aligned to the button's end (T088)", async () => {
@@ -349,6 +376,15 @@ describe("keys during IME composition and the keyboard path to the history label
       await press(row.closest('[role="listbox"]')!, init.key, init);
       expect(openMenuItems().map(itemLabel)[0]).toBe("Switch");
       expect(document.querySelector('[data-slot="dropdown-menu-content"]')!.getAttribute("aria-label")).toBe(`Actions for ${text(chip.querySelector("[data-chip-name]")!)}`);
+    });
+
+    test(`${name} on a sidebar branch row moves the focus to the first menu item, so the focus outline shows (D16)`, async () => {
+      await mountWorkbench(workbench, branchWorld());
+      const row = await sidebarRow("login-form");
+      await act(async () => row.focus());
+      await press(row, init.key, init);
+      await settle();
+      expect(document.activeElement).toBe(openMenuItems()[0]!);
     });
   }
 });

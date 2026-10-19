@@ -189,6 +189,22 @@ describe("views (FR-033, FR-068, data-model §14)", () => {
     await keyboardFocus(repository);
     expect(tooltipText()).toContain(root);
   });
+
+  test("the repository tooltip stacks the path over its key text, and a path without break points wraps anywhere (T087 review)", async () => {
+    const root = `C:\${"x".repeat(300)}\sample-repo`;
+    const world = createWorld();
+    world.answers.readWorkspace = () => {
+      const shot = snapshot(world);
+      return succeeded({ ...shot, identity: { ...shot.identity, worktreeRoot: root } });
+    };
+    await mountWorkbench(workbench, world);
+    await keyboardFocus(header().querySelector<HTMLElement>('[aria-keyshortcuts="Control+R"]')!);
+    const content = document.querySelector<HTMLElement>('[data-slot="tooltip-content"]')!;
+    expect(content.className.split(/\s+/)).toEqual(expect.arrayContaining(["flex-col", "items-start"]));
+    const path = [...content.querySelectorAll("span")].find((e) => e.textContent === root)!;
+    expect(path.className.split(/\s+/)).toContain("[overflow-wrap:anywhere]");
+    expect(text(content)).toBe(`${root} Recent repositories (Ctrl+R)`);
+  });
 });
 
 describe("switcher popover (plan.md D15)", () => {
@@ -204,6 +220,7 @@ describe("switcher popover (plan.md D15)", () => {
         filterLabel="Filter branches"
         listLabel="Branches"
         rowHeight={26}
+        headingHeight={26}
         items={ITEMS}
         itemKey={(item) => item}
         itemText={(item) => item}
@@ -316,8 +333,32 @@ describe("action menu (FR-014, FR-085, plan.md D15, D16)", () => {
     expect(reason.getAttribute("aria-hidden")).toBe("true");
     const key = item.querySelector('[data-slot="dropdown-menu-shortcut"]')!;
     expect(reason.compareDocumentPosition(key) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    // The reason never wraps to a line of its own.
-    expect(reason.className.split(/\s+/)).toContain("whitespace-nowrap");
+    // The reason stays on the item line. It wraps only beyond the menu width cap.
+    expect(reason.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-0", "whitespace-normal"]));
+  });
+
+  test("a 120-character branch name keeps the label and the reason inside the menu: the menu caps its width, and the texts wrap (D16, T089 review)", async () => {
+    const name = `feature/${"x".repeat(112)}`;
+    expect(name).toHaveLength(120);
+    await render(
+      <ActionMenu
+        label={`Actions for ${name}`}
+        open
+        onOpenChange={() => {}}
+        trigger={<Button>Actions</Button>}
+        groups={[[{ label: `Rebase current branch (${name}) onto ${name}…`, reason: `${name} is the current branch. Select another branch to rebase onto.`, onSelect: () => {} }]]}
+      />,
+    );
+    const content = document.querySelector<HTMLElement>('[data-slot="dropdown-menu-content"]')!;
+    expect(content.className.split(/\s+/)).toContain("max-w-[calc(100vw-32px)]");
+    const item = openItems()[0]!;
+    const reason = item.querySelector<HTMLElement>('[data-slot="menu-reason"]')!;
+    const label = item.querySelector<HTMLElement>('[data-slot="menu-label"]')!;
+    for (const part of [label, reason]) {
+      const classes = part.className.split(/\s+/);
+      expect(classes).toEqual(expect.arrayContaining(["min-w-0", "whitespace-normal", "[overflow-wrap:anywhere]"]));
+      expect(classes).not.toContain("whitespace-nowrap");
+    }
   });
 
   test("the focus outline marks only the focused item, 2 px inside it, and never the whole menu (D16, T089)", () => {

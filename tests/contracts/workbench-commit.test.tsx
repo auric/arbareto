@@ -1087,6 +1087,31 @@ describe("Filter files (FR-101, Q29)", () => {
     expect(items("Changes").filter((i) => i.getAttribute("aria-selected") === "true").map((i) => i.getAttribute("aria-label"))).toEqual(["keep-1.ts", "keep-2.ts"]);
   });
 
+  test("a filter that hides the selected file clears the selection: the diff shows its empty state, and no other file gets selected (review)", async () => {
+    const files = ["login.ts", "menu.ts"].map((p) => entry("unstaged", p, ".M"));
+    const double = await openCommitView(createWorld({ entries: files }));
+    await click(item("Changes", "menu.ts"));
+    expect(item("Changes", "menu.ts").getAttribute("aria-selected")).toBe("true");
+    const reads = double.count("readComparison");
+    await typeIn(filesField()!, "login");
+    expect(items("Changes").filter((i) => i.getAttribute("aria-selected") === "true")).toHaveLength(0);
+    const diff = commitView()!.querySelector('[data-section="comparison"]')!;
+    expect(text(diff)).toContain(HELP_LINE);
+    expect(double.count("readComparison")).toBe(reads);
+    // A filter that keeps the selected file keeps the selection.
+    await typeIn(filesField()!, "");
+    await click(item("Changes", "login.ts"));
+    await typeIn(filesField()!, "LOG");
+    expect(item("Changes", "login.ts").getAttribute("aria-selected")).toBe("true");
+  });
+
+  test("a clean tree shows Working tree clean and no no-match line under a filter (review)", async () => {
+    const host = await render(<ChangesPane entries={[]} selection={null} onSelect={() => {}} onFileAction={() => new Promise(() => {})} complete />);
+    await typeIn(host.querySelector<HTMLInputElement>('input[aria-label="Filter files"]')!, "x");
+    expect(text(host)).toContain("Working tree clean");
+    expect(text(host)).not.toContain("No file matches the filter.");
+  });
+
   test("a collapsed Untracked section of 100,000 files creates no rows under a filter", async () => {
     const untracked = Array.from({ length: 100_000 }, (_, i) => entry("untracked", `out/f${i}.bin`));
     const entries = [entry("unstaged", "a.ts", ".M"), ...untracked];

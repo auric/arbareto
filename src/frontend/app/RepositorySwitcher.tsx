@@ -294,8 +294,8 @@ export function RepositorySwitcher({ worktreeRoot, open, instant = false, onOpen
           )}
           <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
         </TooltipTrigger>
-        <TooltipContent>
-          {worktreeRoot === null ? null : <span className="block">{worktreeRoot}</span>} Recent repositories (Ctrl+R)
+        <TooltipContent className="flex-col items-start">
+          {worktreeRoot === null ? null : <span className="[overflow-wrap:anywhere]">{worktreeRoot}</span>} Recent repositories (Ctrl+R)
         </TooltipContent>
       </Tooltip>
       {/* plan.md "Dialog sizes": at most 480 DIPs wide and 60% of the client height, inside the client area less 16 DIPs on each side. */}

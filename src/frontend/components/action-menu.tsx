@@ -44,7 +44,7 @@ export function ActionMenu({ label, groups, open, onOpenChange, trigger, anchor,
     <DropdownMenu open={open} onOpenChange={(next) => onOpenChange(next)}>
       {trigger === undefined ? null : <DropdownMenuTrigger render={trigger} />}
       {/* D16 "Geometry": a row menu opens beside its row, so the row stays visible. */}
-      <DropdownMenuContent aria-label={label} anchor={anchor ?? undefined} side={anchor ? "inline-end" : "bottom"} sideOffset={2} finalFocus={finalFocus} className="w-auto min-w-[220px]">
+      <DropdownMenuContent aria-label={label} anchor={anchor ?? undefined} side={anchor ? "inline-end" : "bottom"} sideOffset={2} finalFocus={finalFocus} className="w-auto max-w-[calc(100vw-32px)] min-w-[220px]">
         {groups.map((group, index) => (
           <Fragment key={index}>
             {index === 0 ? null : <DropdownMenuSeparator />}
@@ -60,7 +60,7 @@ export function ActionMenu({ label, groups, open, onOpenChange, trigger, anchor,
   );
 }
 
-/** D16 "Geometry": icon, label, the Muted reason of an unavailable item, then the key column, all on one line. */
+/** D16 "Geometry": icon, label, the Muted reason of an unavailable item, then the key column, on one line. The texts wrap only beyond the menu width cap. */
 function Item({ item }: { item: ActionItem }) {
   const reasonId = useId();
   const reason = item.reason ?? null;
@@ -77,9 +77,11 @@ function Item({ item }: { item: ActionItem }) {
       <span data-slot="menu-icon" aria-hidden="true" className="flex size-4 shrink-0 items-center">
         {item.icon === undefined ? null : <HugeiconsIcon icon={item.icon} strokeWidth={2} className="size-4" />}
       </span>
-      <span className="whitespace-nowrap">{item.label}</span>
+      <span data-slot="menu-label" className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
+        {item.label}
+      </span>
       {reason === null ? null : (
-        <span id={reasonId} data-slot="menu-reason" aria-hidden="true" hidden={quiet} className="ml-auto pl-4 text-xs whitespace-nowrap text-muted-text">
+        <span id={reasonId} data-slot="menu-reason" aria-hidden="true" hidden={quiet} className="ml-auto min-w-0 pl-4 text-xs whitespace-normal text-muted-text [overflow-wrap:anywhere]">
           {reason}
         </span>
       )}

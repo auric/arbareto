@@ -25,6 +25,7 @@ export const T = {
   // The list adds the key column " (Ctrl+B)" (plan D15 "Branch list", D16 "Geometry").
   newBranch: "New branch…",
   noUpstream: "No upstream",
+  current: "current",
   localNoun: "local branch",
   remoteNoun: "remote-tracking branch",
   open: (worktree: string) => `Open ${worktree}`,

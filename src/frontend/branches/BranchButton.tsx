@@ -17,6 +17,8 @@ import { T } from "./texts";
 // Feature 004 spec FR-007, FR-008, FR-013, plan.md D15 "Branch button" and "Switcher popover", the BranchSwitcher board.
 
 export type BranchButtonProps = {
+  /** The group heading height in DIPs (`metrics(...).subgroupHeading`). */
+  headingHeight: number;
   head: WorkspaceSnapshot["head"];
   operationState: WorkspaceSnapshot["operationState"];
   /** The 003 count label of the current branch. */
@@ -37,7 +39,7 @@ function buttonText(head: WorkspaceSnapshot["head"], operationState: WorkspaceSn
   return head.state === "unborn" ? `${branchName(head.target)}, no commits yet` : branchName(head.target);
 }
 
-export function BranchButton({ head, operationState, counts, tracking, actions, blockedReason, rowHeight }: BranchButtonProps) {
+export function BranchButton({ headingHeight, head, operationState, counts, tracking, actions, blockedReason, rowHeight }: BranchButtonProps) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const text = buttonText(head, operationState);
@@ -45,7 +47,7 @@ export function BranchButton({ head, operationState, counts, tracking, actions, 
   const failure = blockedReason !== null ? <p>{blockedReason}</p> : actions.failure !== null ? <p role="alert">{actions.failure}</p> : undefined;
   // Spec FR-008: "No upstream" shows in the list. A held branch offers Open instead of a switch (FR-013).
   const note = (e: BranchEntry) => (e.heldBy !== null && !e.current ? T.open(e.heldBy) : e.kind === "local" && e.upstream === null ? T.noUpstream : e.kind === "local" ? (tracking.get(e.name)?.text ?? null) : null);
-  const label = (e: BranchEntry) => [e.name, e.kind === "local" ? T.localNoun : T.remoteNoun, ...(e.kind === "local" && e.upstream !== null ? [tracking.get(e.name)?.label] : []), note(e)].filter((part) => part != null).join(", ");
+  const label = (e: BranchEntry) => [e.name, ...(e.current ? [T.current] : []), e.kind === "local" ? T.localNoun : T.remoteNoun, ...(e.kind === "local" && e.upstream !== null ? [tracking.get(e.name)?.label] : []), note(e)].filter((part) => part != null).join(", ");
   const pick = (run: () => void) => {
     setOpen(false);
     run();
@@ -71,6 +73,7 @@ export function BranchButton({ head, operationState, counts, tracking, actions, 
       filterLabel={T.filter}
       listLabel={T.list}
       rowHeight={rowHeight}
+      headingHeight={headingHeight}
       items={actions.entries}
       failure={failure}
       itemKey={(e) => e.ref}
@@ -81,7 +84,7 @@ export function BranchButton({ head, operationState, counts, tracking, actions, 
         const n = note(e);
         return (
           <>
-            {/* Plan D16: the current branch shows a check mark. The option name states the branch, so the mark stays hidden. */}
+            {/* Plan D16: the current branch shows a check mark. The option name states "current", so the mark stays hidden. */}
             <span data-slot="current-mark" aria-hidden="true" className="flex size-4 shrink-0 items-center text-accent-role">
               {e.current ? <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" /> : null}
             </span>

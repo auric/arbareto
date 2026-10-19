@@ -15,9 +15,11 @@ export type WorktreeButtonProps = {
   /** The open worktree root. Its folder name shows until the list loads. */
   worktreeRoot: string | null;
   rowHeight: number;
+  /** The group heading height in DIPs (`metrics(...).subgroupHeading`). */
+  headingHeight: number;
 };
 
-export function WorktreeButton({ actions, worktreeRoot, rowHeight }: WorktreeButtonProps) {
+export function WorktreeButton({ actions, worktreeRoot, rowHeight, headingHeight }: WorktreeButtonProps) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const entries = actions.entries;
@@ -47,6 +49,7 @@ export function WorktreeButton({ actions, worktreeRoot, rowHeight }: WorktreeBut
       filterLabel={W.filter}
       listLabel={W.list}
       rowHeight={rowHeight}
+      headingHeight={headingHeight}
       items={entries}
       failure={actions.failure === null ? undefined : <p role="alert">{actions.failure}</p>}
       itemKey={(e) => e.path}

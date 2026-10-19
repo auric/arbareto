@@ -176,7 +176,7 @@ export async function unmountAll() {
 }
 
 /** Mounts the Workbench with a restored registration of `world`. The caller registers the DOM and imports the module first. */
-export async function mountWorkbench(module: WorkbenchModule, world: World, HistoryView: WorkbenchModule["HistoryViewMount"] = module.HistoryViewMount) {
+export async function mountWorkbench(module: WorkbenchModule, world: World, HistoryView: WorkbenchModule["HistoryViewMount"] = module.HistoryViewMount, props: { textScale?: number } = {}) {
   const { createRoot } = await import("react-dom/client");
   const double = createSyncBridge(world);
   const host = document.body.appendChild(document.createElement("div"));
@@ -190,6 +190,7 @@ export async function mountWorkbench(module: WorkbenchModule, world: World, Hist
         ComparisonView={module.ComparisonViewMount}
         HistoryView={HistoryView}
         clock={NO_POLL}
+        {...props}
       />,
     ),
   );

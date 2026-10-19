@@ -464,6 +464,13 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
       requestComparison(entryId);
     },
 
+    /** Feature 004 spec FR-101: a filter hid the selected row. The diff shows its empty state, and a pending comparison read shows nothing. */
+    clearSelection() {
+      shown = null;
+      latestSelectionId = null;
+      update({ selection: null, comparison: null, selectedHunk: null });
+    },
+
     selectHunk(hunkId: string | null) {
       const hunks = comparisonFields(state.comparison?.result)?.hunks ?? [];
       if (hunkId === null || hunks.some((h) => h.hunkId === hunkId)) set({ selectedHunk: hunkId });

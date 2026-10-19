@@ -410,6 +410,7 @@ fn action_sentence(action: &str) -> Option<&'static str> {
         "mergetool" => "Git runs them when you open the merge tool.",
         "worktree" => "Git runs them when you add or remove a worktree.",
         "submodules" => "Git runs them when you update submodules.",
+        "repository" => "Git runs them for the actions that need them.",
         _ => return None,
     })
 }
@@ -1586,6 +1587,10 @@ pub(crate) mod tests {
                 "Git runs them when you add or remove a worktree.",
             ),
             ("submodules", "Git runs them when you update submodules."),
+            (
+                "repository",
+                "Git runs them for the actions that need them.",
+            ),
         ] {
             let confirmation = trust_confirmation(&trust_request("C:\\repo", action, no_details()));
             assert!(

@@ -5,7 +5,6 @@ import { ShieldCheckIcon, ShieldOffIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useState, type ReactNode } from "react";
 import type { z } from "zod";
-import type { TrustAction } from "../../contracts/channel";
 import type { ReadTrustResult } from "../../contracts/envelope";
 import type { BridgeResponse } from "../bridge";
 import { codeText } from "../app/RepositoryStates";
@@ -18,7 +17,6 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/toolti
 
 // Type-only imports keep zod out of the renderer bundle.
 export type TrustReport = Exclude<z.infer<typeof ReadTrustResult>, { remedy: unknown } | { reason: unknown }>;
-type Classes = TrustReport["approvalRequired"];
 
 export const SAVE_FAILED_TEXT = "Arbareto could not save this approval. This approval lasts until Arbareto closes or its Git service restarts.";
 export const COMMIT_TRUST_TEXT = "Commit needs trust. Select Not trusted in the status bar to trust this repository.";
@@ -53,19 +51,6 @@ export const isTrusted = (report: TrustReport) => report.state === "approved" &&
 export function showsChip(report: TrustReport): boolean {
   const named = Object.values(report.programs).some((kind) => kind.names.length > 0 || kind.more > 0);
   return named || Object.values(report.approvalRequired).some(Boolean);
-}
-
-// Contract Δ6 names one action per dialog, and the chip has none (contract gap). It names the first class that needs approval.
-const CLASS_ACTIONS: readonly (readonly [keyof Classes, TrustAction])[] = [
-  ["reads", "read"],
-  ["commit", "commit"],
-  ["sync", "fetch"],
-  ["workbench", "switch"],
-  ["mergetool", "mergetool"],
-];
-/** The action that the chip's approval names: the action that Not now blocked, else the first class that needs approval. */
-export function chipAction(report: TrustReport, blocked: TrustAction | null): TrustAction {
-  return blocked ?? CLASS_ACTIONS.find(([cls]) => report.approvalRequired[cls])?.[1] ?? "read";
 }
 
 /** Spec FR-074: the Stop trusting result. Contract §5 "Deadline outcomes": after a `revoke` deadline, the revocation stays and the count is unknown. */
@@ -111,6 +96,7 @@ export function TrustChip({ report, running, onTrust, onStop }: TrustChipProps) 
       label: "Stop trusting this repository",
       icon: ShieldOffIcon,
       reason: trustId === undefined ? "Not trusted now" : running ? RUNNING_REASON : null,
+      running: trustId !== undefined && running,
       onSelect: () => trustId !== undefined && onStop(trustId),
     },
   ];

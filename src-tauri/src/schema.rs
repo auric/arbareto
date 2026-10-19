@@ -1204,9 +1204,10 @@ mod tests {
         assert!(wrong.is_empty(), "{wrong:#?}");
         // Feature 004 T017 adds 25 vectors, and `fileAppend` and `reveal` add 3 (contract Δ10).
         // T057 replaces 5 `confirm` vectors with 8 version 2 vectors and adds 4 version 2 record vectors (contract Δ6).
+        // WP23 adds 2 `confirm` vectors for the `repository` action (contract Δ6).
         assert_eq!(
             checked,
-            if cfg!(windows) { 173 } else { 168 },
+            if cfg!(windows) { 175 } else { 170 },
             "shell-read vectors"
         );
     }

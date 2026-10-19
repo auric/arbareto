@@ -67,7 +67,8 @@ import { createDraftStore } from "../state/draft-store";
 import { OperationStatus, SYNC_NAMES, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
 import { passedAcceptance, SubmoduleReview, type SubmoduleReviewValue } from "../submodules/SubmoduleReview";
-import { chipAction, isTrustReport, ReadsTrustNotice, SaveFailedNotice, showsChip, stoppedText, trustBeforeReview, TrustChip, trustFailureCode, COMMIT_TRUST_TEXT, type TrustReport } from "../trust/TrustChip";
+import { needsTrust } from "../trust/ask";
+import { isTrustReport, READS_TRUST_TEXT, ReadsTrustNotice, SaveFailedNotice, showsChip, stoppedText, trustBeforeReview, TrustChip, trustFailureCode, COMMIT_TRUST_TEXT, type TrustReport } from "../trust/TrustChip";
 import type { TrustAction } from "../../contracts/channel";
 import { blockingText, hasRecoveryRow, NoticeBand } from "./NoticeBand";
 import { MENU_CONTENT, MenuKey, RepositoryMenu } from "./RepositoryMenu";
@@ -346,7 +347,7 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
   const failureCode = state.readFailure === null ? null : responseCode(state.readFailure);
   // Contract §7: the read gate gives TRUST_REQUIRED or TRUST_CHANGED before any status read.
   const failure =
-    failureCode === null ? null : (failureCode === "TRUST_REQUIRED" || failureCode === "TRUST_CHANGED") && onTrustReads !== undefined ? (
+    failureCode === null ? null : needsTrust(state.readFailure!) && onTrustReads !== undefined ? (
       <ReadsTrustNotice onTrust={onTrustReads} />
     ) : (
       <ErrorState code={failureCode} result={state.readFailure!.result} onRefresh={requests.refresh} />
@@ -533,6 +534,7 @@ export function HistoryViewMount({ state, history, density, profile, textScale, 
   const entries = state.workspace?.completeness.state === "complete" ? state.entries : null;
   return (
     <HistoryList
+      unread={state.readFailure !== null && needsTrust(state.readFailure) ? READS_TRUST_TEXT : null}
       view={history}
       entries={entries}
       density={density}
@@ -696,6 +698,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [trustRead, setTrustRead] = useState(0);
   // Feature 004 spec FR-069 and FR-072: the action that Not now blocked. The registration asks no second time.
   const [declined, setDeclined] = useState<TrustAction | null>(null);
+  const declinedNow = useRef(declined);
+  declinedNow.current = declined;
   // A trust failure or a copy failure. It shows in the first live element of the status bar until the next notice or repository.
   const [notice, setNotice] = useState<ReactNode>(null);
   const [saveFailed, setSaveFailed] = useState(false);
@@ -718,6 +722,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // Feature 003 FR-004, FR-013, FR-040, and contract Δ8: the reads after each `sync` outcome. A new view keeps the selected commit and shows no refs-changed notice.
   const sync = useSync({
     bridge,
+    askTrust,
     target: requests.target,
     repositoryId: state.repository?.repositoryId ?? null,
     headTarget: state.workspace === null ? undefined : state.workspace.head.state === "detached" ? null : state.workspace.head.target,
@@ -1093,6 +1098,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     return bridge.cancel(payload);
   };
 
+  // Spec FR-069: an action asks at its first use. After Not now, no action asks again. The chip and Trust… still ask.
+  function askTrust(action: TrustAction): Promise<boolean> {
+    return declinedNow.current !== null ? Promise.resolve(false) : approveTrust(action);
+  }
   // Feature 004 plan.md D12 "Ask": the shell shows the native task dialog. Not now ends `canceled` and stores nothing.
   // True after an approval and the full read that follows it.
   async function approveTrust(action: TrustAction): Promise<boolean> {
@@ -1268,6 +1277,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const mutationReason = running ? RUNNING_REASON : blockedReason;
   const branches = useBranchActions({
     bridge,
+    askTrust,
     target: requests.target,
     repositoryId,
     refsDigest,
@@ -1419,7 +1429,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             blocked={blocked}
             requestTrust={(report) => {
               setTrust({ report });
-              return approveTrust("commit");
+              return askTrust("commit");
             }}
             trustReason={declined !== null && trust !== null && trustBeforeReview(trust.report) ? COMMIT_TRUST_TEXT : null}
             onOperation={setOperation}
@@ -1458,6 +1468,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       panel={
         !docked ? null : (
           <IntegratePanel
+            askTrust={askTrust}
             request={integrate.request}
             current={pushBranch}
             bridge={bridge}
@@ -1843,7 +1854,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             notice={statusText}
           >
             {trust === null || state.repository === null || !showsChip(trust.report) ? null : (
-              <TrustChip report={trust.report} running={running} onTrust={() => void approveTrust(chipAction(trust.report, declined))} onStop={(trustId) => void stopTrusting(trustId)} />
+              <TrustChip report={trust.report} running={running} onTrust={() => void approveTrust("repository")} onStop={(trustId) => void stopTrusting(trustId)} />
             )}
             {gitVersion === null ? null : <GitSegment version={gitVersion} distro={wslGit === null ? null : distro} scope={environment?.platformScope} />}
           </OperationStatus>

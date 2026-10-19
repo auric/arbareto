@@ -23,7 +23,7 @@ type Handle = { entry(): HTMLElement | null; cancel(): HTMLElement | null; reque
 const COMMITTED = "Committed 0123456789ab to main";
 const OID = "0123456789abcdef0123456789abcdef01234567";
 const lingering = (n: number) => (n === 1 ? "1 process that Git or a hook started still runs." : `${n} processes that Git or a hook started still run.`) + " Closing Arbareto ends them.";
-const REVOKE = "Revoke trust also ends them.";
+const REVOKE = "Stop trusting this repository also ends them.";
 const STALL_SENTENCE = "Git may be waiting for input.";
 const STALL_NOTICE = "Git may be waiting for a prompt that Arbareto cannot show, or for a sign-in window. To answer a hidden prompt, select Cancel and run this command in a terminal.";
 const STALL_REMEDY = { command: "& 'C:\\Git\\cmd\\git.exe' --no-lazy-fetch -C 'C:\\repo' hook run --ignore-missing pre-commit", text: "This command runs only the pre-commit hook and does not commit. It cannot repeat a prompt from another hook or from signing." };
@@ -161,7 +161,7 @@ describe("lingering sentence and the details toggle", () => {
     expect(text(area())).toContain(sentence);
   });
 
-  test("a count of 1 takes the singular, and a current trust ID adds the Revoke trust sentence", async () => {
+  test("a count of 1 takes the singular, and a current trust ID adds the Stop trusting sentence", async () => {
     const op = running();
     const view = await mount({ operation: op, trusted: true });
     await view.update({ operation: respond(op, "succeeded", { commitOid: OID, lingeringDescendants: 1 }) });

@@ -9,7 +9,7 @@ import { ReadTrustResult } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { fixtureId } from "./bridge-contract";
+import { contractChecked, fixtureId } from "./bridge-contract";
 import { answer, button, buttons, click, createWorld, itemLabel, keyboardFocus, menuItem, mountWorkbench, settle, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
 
 // tasks.md T066 (feature 004, WP23). Story US7. Spec FR-069 to FR-075. Plan D12, D14, D15.
@@ -17,10 +17,16 @@ import { answer, button, buttons, click, createWorld, itemLabel, keyboardFocus, 
 printOrigin("../../src/frontend/trust/TrustChip.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/RepositoryMenu.tsx", import.meta.dir);
+printOrigin("../../src/frontend/trust/ask.ts", import.meta.dir);
+printOrigin("../../src/frontend/integrate/IntegratePanel.tsx", import.meta.dir);
 mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ children }: { children: ReactNode }) => <>{children}</> }));
 mock.module("../../src/frontend/changes/PatchView", () => ({ default: ({ patch }: { patch: string }) => <pre>{patch}</pre> }));
 registerDom();
 const workbench = await import("../../src/frontend/app/Workbench");
+const { TrustChip } = await import("../../src/frontend/trust/TrustChip");
+const { IntegratePanel } = await import("../../src/frontend/integrate/IntegratePanel");
+const { reviewWithTrust } = await import("../../src/frontend/trust/ask");
+const { createRoot } = await import("react-dom/client");
 
 let restoreLayout: () => void = () => {};
 beforeAll(() => void (restoreLayout = stubLayout(800)));
@@ -125,12 +131,12 @@ describe("trust chip (FR-073)", () => {
     expect(unavailable(menuItem("Stop trusting this repository"))).toBe(false);
   });
 
-  test("Trust this repository… sends approveTrust with only the repository ID and the action, and a success reads again", async () => {
-    const { double } = await mount(report());
+  test("Trust this repository… sends approveTrust with only the repository ID and the neutral chip action, and a success reads again", async () => {
+    const { double } = await mount(report({ approvalRequired: { sync: true } }));
     const reads = double.count("readTrust");
     await click(chip()!);
     await click(menuItem("Trust this repository…"));
-    expect(double.pending("approveTrust")!.args).toEqual([{ repositoryId: REPOSITORY }, { action: "commit" }]);
+    expect(double.pending("approveTrust")!.args).toEqual([{ repositoryId: REPOSITORY }, { action: "repository" }]);
     expect(document.querySelector('[role="dialog"]') === null).toBe(true);
     await answer(double.pending("approveTrust"), succeeded(APPROVED));
     expect(double.count("readTrust")).toBe(reads + 1);
@@ -207,6 +213,9 @@ describe("the ask (FR-069, FR-070, FR-072)", () => {
     const { world, double } = await mount(report({ approvalRequired: { reads: true } }), {
       answers: { readWorkspace: () => ({ requestId: fixtureId(0x504), operationId: fixtureId(0x505), state: "rejected", code: "TRUST_REQUIRED" }) },
     });
+    // The History view: the Working directory and Index rows state the reason in place of Loading….
+    const rows = [...document.querySelectorAll('[role="option"]')].filter((o) => /^(Working directory|Index)/.test(text(o)));
+    expect(rows.map((o) => text(o))).toEqual([`Working directory${READS_TEXT}`, `Index${READS_TEXT}`]);
     await click(button("Commit", document.querySelector('header nav[aria-label="Views"]')!));
     expect(text()).toContain(READS_TEXT);
     expect(double.count("approveTrust")).toBe(0);
@@ -239,5 +248,126 @@ describe("the old trust surface is gone (001 FR-025 UI change)", () => {
     expect(labels).toContain("Open folder…");
     expect(labels.filter((l) => /trust/i.test(l))).toEqual([]);
     expect(buttons("Approve")).toHaveLength(0);
+  });
+});
+
+const RUNNING = "A Git operation is running. Its progress and Cancel are in the status bar.";
+const TRUST_REFUSED = { requestId: fixtureId(0x507), state: "rejected", code: "TRUST_REQUIRED" };
+const rendered: (() => Promise<void>)[] = [];
+afterEach(async () => {
+  for (const unmount of rendered.splice(0)) await unmount();
+});
+async function render(node: ReactNode) {
+  const host = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(host);
+  await act(async () => root.render(node));
+  rendered.push(async () => {
+    await act(async () => root.unmount());
+    host.remove();
+  });
+  await settle();
+  return host;
+}
+
+describe("the ask at first use (FR-069, plan D12 \"Ask\")", () => {
+  const SYNC = { commit: false, sync: true };
+
+  test("a Fetch review that needs trust asks with the fetch action, then reviews once more after the approval and the full read", async () => {
+    const { world, double } = await mount(report({ approvalRequired: SYNC }));
+    await click(button("Fetch"));
+    expect((double.pending("reviewSync")!.args[1] as { action: string }).action).toBe("fetch");
+    await answer(double.pending("reviewSync"), TRUST_REFUSED);
+    expect(double.pending("approveTrust")!.args).toEqual([{ repositoryId: REPOSITORY }, { action: "fetch" }]);
+    expect(double.count("reviewSync")).toBe(1);
+    world.answers.readTrust = () => succeeded(report({ state: "approved", approvalRequired: SYNC }));
+    await answer(double.pending("approveTrust"), succeeded(APPROVED));
+    await settle();
+    expect(double.calls.filter((c) => c.operation === "readWorkspace").at(-1)!.args[1]).toEqual({ refresh: false, check: "full" });
+    expect(double.count("reviewSync")).toBe(2);
+    expect((double.pending("reviewSync")!.args[1] as { action: string }).action).toBe("fetch");
+  });
+
+  test("after Not now, the Fetch refusal stays, and the next Fetch asks no second time", async () => {
+    const { double } = await mount(report({ approvalRequired: SYNC }));
+    await click(button("Fetch"));
+    await answer(double.pending("reviewSync"), TRUST_REFUSED);
+    await answer(double.pending("approveTrust"), CANCELED);
+    expect(double.count("reviewSync")).toBe(1);
+    expect(statusText()).toContain("TRUST_REQUIRED");
+    await click(button("Fetch"));
+    await answer(double.pending("reviewSync"), TRUST_REFUSED);
+    expect(double.count("approveTrust")).toBe(1);
+    expect(double.count("reviewSync")).toBe(2);
+  });
+
+  // The workbench review of the WP13 Merge panel. The shared helper serves the branch actions in the same way.
+  function panelDouble() {
+    const calls: { operation: string; args: unknown[]; resolve(response: unknown): void }[] = [];
+    const make = (operation: string) => (...args: unknown[]) => new Promise((resolve) => calls.push({ operation, args, resolve }));
+    return { calls, bridge: contractChecked({ reviewWorkbench: make("reviewWorkbench"), runWorkbench: make("runWorkbench") }) };
+  }
+  async function mergePanel(ask: (action: string) => Promise<boolean>) {
+    const double = panelDouble();
+    await render(
+      <IntegratePanel
+        request={{ action: "merge", ref: "refs/heads/feature/login", name: "feature/login" }}
+        current="main"
+        bridge={double.bridge as never}
+        target={{ repositoryId: REPOSITORY, repositoryGeneration: 1 }}
+        blockedReason={null}
+        operationRunning={false}
+        onOperation={() => {}}
+        onEnded={() => {}}
+        onClose={() => {}}
+        askTrust={ask as never}
+      />,
+    );
+    const reviews = () => double.calls.filter((c) => c.operation === "reviewWorkbench");
+    return { reviews };
+  }
+
+  test("a Merge review that needs trust asks with the merge action, then reviews once more with the same payload", async () => {
+    const asked: string[] = [];
+    const { reviews } = await mergePanel(async (action) => (asked.push(action), true));
+    await act(async () => reviews()[0]!.resolve(TRUST_REFUSED));
+    await settle();
+    expect(asked).toEqual(["merge"]);
+    expect(reviews()).toHaveLength(2);
+    expect(reviews()[1]!.args).toEqual(reviews()[0]!.args);
+  });
+
+  test("after Not now, the Merge panel keeps its D15 trust reason and reviews no second time", async () => {
+    const { reviews } = await mergePanel(async () => false);
+    await act(async () => reviews()[0]!.resolve(TRUST_REFUSED));
+    await settle();
+    expect(reviews()).toHaveLength(1);
+    expect(text()).toContain("This action runs programs of this repository. Trust the repository first with the trust chip in the status bar.");
+  });
+
+  test("the shared helper asks only for a trust refusal and an action with a class", async () => {
+    const asked: string[] = [];
+    const ask = async (action: string) => (asked.push(action), true);
+    let sent = 0;
+    const review = (response: unknown) => async () => (sent++, response as never);
+    expect(await reviewWithTrust(review({ state: "rejected", code: "STALE_REVIEW" }), "merge", ask as never)).toEqual({ state: "rejected", code: "STALE_REVIEW" } as never);
+    expect(await reviewWithTrust(review(TRUST_REFUSED), null, ask as never)).toEqual(TRUST_REFUSED as never);
+    expect(asked).toEqual([]);
+    expect(sent).toBe(2);
+    await reviewWithTrust(review({ ...TRUST_REFUSED, code: "TRUST_CHANGED" }), "switch", ask as never);
+    expect(asked).toEqual(["switch"]);
+    expect(sent).toBe(4);
+  });
+});
+
+describe("the running rule on the chip menu (plan D15)", () => {
+  test("while a mutation runs, Stop trusting shows the running reason only in its tooltip and accessible description", async () => {
+    const host = await render(<TrustChip report={report({ state: "approved" }) as never} running onTrust={() => {}} onStop={() => {}} />);
+    await click(host.querySelector('[data-slot="trust-chip"]')!);
+    const item = menuItem("Stop trusting this repository");
+    expect(unavailable(item)).toBe(true);
+    expect(item.querySelector<HTMLElement>('[data-slot="menu-reason"]')!.hidden).toBe(true);
+    expect(document.getElementById(item.getAttribute("aria-describedby")!)!.textContent).toBe(RUNNING);
+    await keyboardFocus(item);
+    expect(tooltipText()).toBe(RUNNING);
   });
 });

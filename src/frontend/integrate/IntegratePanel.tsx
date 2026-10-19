@@ -13,6 +13,7 @@ import { DockedPanel } from "../components/docked-panel";
 import { isObject } from "../lib/utils";
 import { shortRef } from "../refs/ReferencesSidebar";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
+import { reviewWithTrust, WORKBENCH_TRUST, type AskTrust } from "../trust/ask";
 import { TEXTS, type ConfigSource } from "./texts";
 
 // Feature 004 spec FR-021 to FR-028, plan.md D5, D6, D15 "Docked panel", contract Δ3 `reviewWorkbench` and `runWorkbench` merge and rebase.
@@ -41,6 +42,8 @@ export type IntegratePanelProps = {
   /** The control that opened the panel. Close returns the focus to it. */
   opener?: Element | null;
   onClose(): void;
+  /** Feature 004 plan.md D12 "Ask": a review that needs trust asks once, then runs again. */
+  askTrust?: AskTrust;
 };
 
 const utf8Bytes = (text: string) => new TextEncoder().encode(text).length;
@@ -82,14 +85,21 @@ function refusalText(review: Review, action: "Merge" | "Rebase", current: string
 
 type Keyed = { key: string; value: Review };
 /** Latest wins: each new payload key sends one review, and an older response is dropped. */
-function useReview(bridge: IntegratePanelProps["bridge"], target: IntegratePanelProps["target"], key: string, setReview: (review: Keyed) => void) {
+function useReview(bridge: IntegratePanelProps["bridge"], target: IntegratePanelProps["target"], key: string, setReview: (review: Keyed) => void, askTrust: AskTrust | undefined) {
   const seq = useRef(0);
+  // The second review after an approval takes the generation of the full read.
+  const latest = useRef(target);
+  latest.current = target;
+  const ask = useRef(askTrust);
+  ask.current = askTrust;
   const repositoryId = target?.repositoryId ?? null;
   const generation = target?.repositoryGeneration ?? null;
   useEffect(() => {
     if (repositoryId === null || generation === null) return;
     const mine = ++seq.current;
-    void bridge.reviewWorkbench({ repositoryId, repositoryGeneration: generation }, JSON.parse(key)).then((response) => {
+    const payload = JSON.parse(key) as Parameters<IntegratePanelProps["bridge"]["reviewWorkbench"]>[1];
+    const send = () => bridge.reviewWorkbench(latest.current ?? { repositoryId, repositoryGeneration: generation }, payload);
+    void reviewWithTrust(send, WORKBENCH_TRUST[payload.action], ask.current).then((response) => {
       if (mine === seq.current) setReview({ key, value: reviewOf(response) });
     });
   }, [bridge, repositoryId, generation, key, setReview]);
@@ -151,7 +161,7 @@ export function IntegratePanel(props: IntegratePanelProps) {
     ? { action: "merge" as const, ref: request.ref, result, noFastForward: !squash && (noFf || locked), noCommit: !squash && noCommit, message: null }
     : { action: "rebase" as const, ref: request.ref, autostash: effectiveAutostash, autosquash };
   const key = JSON.stringify(payload);
-  useReview(bridge, target, key, setReview);
+  useReview(bridge, target, key, setReview, props.askTrust);
 
   // The editor bound (contract Δ5): an edited message above MERGE_MESSAGE_BYTES or without text is never sent.
   const messageBytes = text === null ? 0 : utf8Bytes(text);

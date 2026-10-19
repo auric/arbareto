@@ -4,6 +4,7 @@
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { Fragment, useId, type ComponentProps, type ReactElement } from "react";
 import { isEditable } from "../keyboard/shortcuts";
+import { RunningTooltip } from "./running-tooltip";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "./ui/dropdown-menu";
 
 // Feature 004 plan.md D15 "Action menu", D16 danger rules, spec FR-014 and FR-085.
@@ -16,6 +17,8 @@ export type ActionItem = {
   keys?: { aria: string; text: string };
   /** The unavailable reason. The item then stays focusable and runs nothing. */
   reason?: string | null;
+  /** Plan D15 running rule: the reason goes only into the tooltip and the accessible description. */
+  running?: boolean;
   /** A destructive item uses the Removed text (D16). */
   danger?: boolean;
   onSelect(): void;
@@ -61,7 +64,8 @@ export function ActionMenu({ label, groups, open, onOpenChange, trigger, anchor,
 function Item({ item }: { item: ActionItem }) {
   const reasonId = useId();
   const reason = item.reason ?? null;
-  return (
+  const quiet = reason !== null && item.running === true;
+  const element = (
     <DropdownMenuItem
       disabled={reason !== null}
       aria-keyshortcuts={item.keys?.aria}
@@ -75,7 +79,7 @@ function Item({ item }: { item: ActionItem }) {
       </span>
       <span className="whitespace-nowrap">{item.label}</span>
       {reason === null ? null : (
-        <span id={reasonId} data-slot="menu-reason" aria-hidden="true" className="ml-auto pl-4 text-xs whitespace-nowrap text-muted-text">
+        <span id={reasonId} data-slot="menu-reason" aria-hidden="true" hidden={quiet} className="ml-auto pl-4 text-xs whitespace-nowrap text-muted-text">
           {reason}
         </span>
       )}
@@ -86,6 +90,7 @@ function Item({ item }: { item: ActionItem }) {
       )}
     </DropdownMenuItem>
   );
+  return <RunningTooltip reason={quiet ? reason : null}>{element}</RunningTooltip>;
 }
 
 /**

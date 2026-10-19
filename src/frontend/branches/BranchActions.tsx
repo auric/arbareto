@@ -17,6 +17,7 @@ import { SHOW_BRANCH_HISTORY, shortRef } from "../refs/ReferencesSidebar";
 import { isObject } from "../lib/utils";
 import type { BranchEntry, Workbench } from "../state/workbench";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
+import { reviewWithTrust, WORKBENCH_TRUST, type AskTrust } from "../trust/ask";
 import { OUTCOME, refusalText, STASH, T } from "./texts";
 
 // Feature 004 spec FR-009 to FR-020, plan.md D3, D4, D15, D16, data-model §3 and §4, contract Δ3 and Δ14.
@@ -62,6 +63,8 @@ export type BranchActionsOptions = {
   /** The WP13 Merge and Rebase panels. Without one, its item states that it cannot start here. `opener` is the row or label that started the action. */
   onMerge?(entry: BranchEntry, opener: Element | null): void;
   onRebase?(entry: BranchEntry, opener: Element | null): void;
+  /** Feature 004 plan.md D12 "Ask": a review that needs trust asks once, then runs again. */
+  askTrust?: AskTrust;
 };
 
 const isRefused = (response: BridgeResponse) => response.state !== "succeeded";
@@ -77,7 +80,7 @@ const RUN_TEXTS: Record<string, [string, string, string]> = {
 
 /** The branch actions of the toolbar list, the references sidebar, and the history labels. It returns the actions and their overlays. */
 export function useBranchActions(options: BranchActionsOptions) {
-  const { bridge, target, repositoryId, refsDigest, onOperation, workbench, head, blockedReason, onNotice, onOpenWorktree, push, onShowBranchHistory, onMerge, onRebase } = options;
+  const { bridge, target, repositoryId, refsDigest, onOperation, workbench, head, blockedReason, onNotice, onOpenWorktree, push, onShowBranchHistory, onMerge, onRebase, askTrust } = options;
   const snapshot = () => workbench.getState().branches;
   const branches = useSyncExternalStore(workbench.subscribe, snapshot, snapshot);
   const [overlay, setOverlay] = useState<Overlay | null>(null);
@@ -118,7 +121,8 @@ export function useBranchActions(options: BranchActionsOptions) {
 
   async function review(payload: Parameters<Bridge["reviewWorkbench"]>[1]): Promise<BridgeResponse | null> {
     const t = target();
-    return t === null ? null : bridge.reviewWorkbench(t, payload);
+    // The second review takes the generation of the full read after the approval.
+    return t === null ? null : reviewWithTrust(() => bridge.reviewWorkbench(target() ?? t, payload), WORKBENCH_TRUST[payload.action], askTrust);
   }
 
   async function run(token: string, action: string, display: string) {

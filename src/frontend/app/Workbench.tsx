@@ -42,6 +42,7 @@ import { isObject } from "../lib/utils";
 import {
   chooseProfile,
   clampPanes,
+  commitViewProfile,
   dockBounds,
   headerRows,
   historyFit,
@@ -98,6 +99,7 @@ import { BranchButton } from "../branches/BranchButton";
 import { useWorktreeActions } from "../worktrees/WorktreeActions";
 import { WorktreeButton } from "../worktrees/WorktreeButton";
 import { WorktreesGroup } from "../worktrees/WorktreesGroup";
+import { W } from "../worktrees/texts";
 import { useBranchActions } from "../branches/BranchActions";
 import { CommitView } from "../views/CommitView";
 import { HistoryView as HistoryFrame } from "../views/HistoryView";
@@ -1092,6 +1094,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (!menubar.current?.contains(target) && !target.closest('[role="menu"]')) lastOutside.current = target;
   };
 
+  // Contract `openWorktree`: UNKNOWN_TARGET comes before the 001 registration flow, so it takes the plan D15 worktree text.
+  const openedWorktree = (response: BridgeResponse) => (responseCode(response) === "UNKNOWN_TARGET" ? setNotice(W.unknownTarget) : registered(response));
+
   async function openRepository() {
     registered(endStart(await bridge.chooseRepository(onStart)));
   }
@@ -1335,7 +1340,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     onNotice: setNotice,
     onMerge: (entry, opener) => openIntegrate({ action: "merge", ref: entry.ref, name: entry.name }, opener),
     onRebase: (entry, opener) => openIntegrate({ action: "rebase", ref: entry.ref, name: entry.name }, opener),
-    onOpenWorktree: (path) => void (repositoryId === null ? undefined : bridge.openWorktree({ repositoryId, path }).then(registered)),
+    onOpenWorktree: (path) => void (repositoryId === null ? undefined : bridge.openWorktree({ repositoryId, path }).then(openedWorktree)),
     push: { reason: reasons.pushReason, run: () => runSync.current("push") },
     onShowBranchHistory: () => void historyView.setScope("current"),
   });
@@ -1353,7 +1358,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     running,
     onOperation: setOperation,
     onNotice: setNotice,
-    onOpen: (worktree) => void (repositoryId === null ? undefined : bridge.openWorktree({ repositoryId, path: worktree }).then(registered)),
+    onOpen: (worktree) => void (repositoryId === null ? undefined : bridge.openWorktree({ repositoryId, path: worktree }).then(openedWorktree)),
     onDock: () => {
       setIntegrate(null);
       store.setView(viewKey, "history");
@@ -1427,18 +1432,20 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     onTrustReads: () => void approveTrust("read"),
     askTrust,
   };
-  const laneBounds = paneBounds("fileLane", { width: client.width - sideWidth - m.splitter, available: workArea, density: preferences.density, textScale });
+  // Feature 004 plan.md D16 "Geometry": the Commit view holds the commit workspace without the references sidebar.
+  const commitProfile = commitViewProfile(profile, client.width);
+  const laneBounds = paneBounds("fileLane", { width: client.width, available: workArea, density: preferences.density, textScale });
   const lane = Math.min(Math.max(panes.fileLane, laneBounds.min), laneBounds.max);
   const trayHeight = clamped.tray;
   const bandHeight = clamped.fileBand ?? band.default;
   const grid: CSSProperties =
-    profile === "wide"
+    commitProfile === "wide"
       ? {
           gridTemplateColumns: `${lane}px ${m.splitter}px minmax(0, 1fr)`,
           gridTemplateRows: `${flexible} ${m.splitter}px ${trayHeight}px`,
           gridTemplateAreas: '"lane laneSplit comparison" "lane laneSplit traySplit" "lane laneSplit tray"',
         }
-      : profile === "narrow"
+      : commitProfile === "narrow"
         ? {
             gridTemplateColumns: "minmax(0, 1fr)",
             gridTemplateRows: `${bandHeight}px ${m.splitter}px ${flexible} ${m.splitter}px ${trayHeight}px`,
@@ -1466,16 +1473,16 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     <div ref={commitPanelRef} hidden={pushPanel !== null} className="flex h-full min-h-0 flex-col">
       <div className="grid min-h-0 flex-1" style={grid}>
         <div data-section="workingChanges" className="min-h-0 overflow-auto" style={{ gridArea: "lane" }}>
-          <ChangesPane {...pane} />
+          <ChangesPane {...pane} profile={commitProfile} />
         </div>
         <Splitter
-          label={profile === "wide" ? "Resize file lane" : "Resize file band"}
-          orientation={profile === "wide" ? "vertical" : "horizontal"}
-          value={profile === "wide" ? lane : bandHeight}
-          min={profile === "wide" ? laneBounds.min : band.min}
-          max={profile === "wide" ? laneBounds.max : band.max}
-          onChange={resize(profile === "wide" ? "fileLane" : "fileBand")}
-          onCommit={keepPane(profile === "wide" ? "fileLane" : "fileBand")}
+          label={commitProfile === "wide" ? "Resize file lane" : "Resize file band"}
+          orientation={commitProfile === "wide" ? "vertical" : "horizontal"}
+          value={commitProfile === "wide" ? lane : bandHeight}
+          min={commitProfile === "wide" ? laneBounds.min : band.min}
+          max={commitProfile === "wide" ? laneBounds.max : band.max}
+          onChange={resize(commitProfile === "wide" ? "fileLane" : "fileBand")}
+          onCommit={keepPane(commitProfile === "wide" ? "fileLane" : "fileBand")}
           className={resizable ? "[grid-area:laneSplit]" : "hidden"}
         />
         <div ref={comparisonPane} data-section="comparison" className="min-h-0 overflow-auto" style={{ gridArea: "comparison" }}>

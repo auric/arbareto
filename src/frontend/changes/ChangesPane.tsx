@@ -456,7 +456,10 @@ export function ChangesPane(props: ChangesPaneProps) {
           <TooltipContent>{`${FILTER_FILES} (Ctrl+F)`}</TooltipContent>
         </Tooltip>
       </div>
-      {noMatch ? <p className="shrink-0 px-2 pt-1 text-muted-text">{NO_FILE_MATCH}</p> : null}
+      {/* A live region announces only a change of its content, so the region stays while the text comes and goes. */}
+      <p role="status" className={`shrink-0 px-2 text-muted-text ${noMatch ? "pt-1" : ""}`}>
+        {noMatch ? NO_FILE_MATCH : null}
+      </p>
       <div ref={body} data-slot="changes-pane" className={`flex min-h-0 flex-1 ${sideBySide ? "flex-row" : "flex-col"}`}>
         <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto">
           <ListHeading level={2} label="Changes" count={working} rowHeight={rowHeight}>

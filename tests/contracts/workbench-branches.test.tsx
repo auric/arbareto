@@ -259,6 +259,16 @@ describe("branch list (FR-008, FR-009, FR-013, SC-003)", () => {
     expect(double.count("reviewWorkbench")).toBe(0);
   });
 
+  test("an Open <worktree> that ends UNKNOWN_TARGET shows the D15 worktree text, not the raw code", async () => {
+    const world = branchWorld();
+    world.answers.openWorktree = () => ({ requestId: fixtureId(0x5fe), state: "failed", code: "UNKNOWN_TARGET", result: {} });
+    await mountWorkbench(workbench, world);
+    await openList();
+    await click(options()[2]!);
+    expect(text(document.body)).toContain("Arbareto cannot match this worktree with a fresh worktree list.");
+    expect(text(document.body)).not.toContain("UNKNOWN_TARGET");
+  });
+
   test("a remote branch opens the panel with Create local branch and its refspec name, and Check out the commit only", async () => {
     const double = await mountWorkbench(workbench, branchWorld((p) => reviewed("switch", switchPlan({ target: p.target, choice: p.choice }))));
     await openList();

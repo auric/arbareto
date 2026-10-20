@@ -211,6 +211,33 @@ describe("sidebar Worktrees group (FR-050, FR-051)", () => {
     expect(opened(double)).toHaveLength(1);
   });
 
+  test("an Open that ends UNKNOWN_TARGET shows the D15 worktree text, not the raw code", async () => {
+    const world = worktreeWorld();
+    world.answers.openWorktree = () => refused("UNKNOWN_TARGET");
+    const double = await mountWorkbench(workbench, world);
+    await doubleClick(await groupRow("repo-hotfix"));
+    expect(opened(double)).toHaveLength(1);
+    expect(text(document.body)).toContain("Arbareto cannot match this worktree with a fresh worktree list.");
+    expect(text(document.body)).not.toContain("UNKNOWN_TARGET");
+  });
+
+  test("each row has the tooltip with its full accessible name, so a cut branch text stays readable", async () => {
+    await mountWorkbench(workbench, worktreeWorld());
+    const row = await groupRow("repo");
+    expect(row.getAttribute("data-slot")).toBe("tooltip-trigger");
+    // Base UI opens a tooltip on mouse enter after its 600 ms open delay (TooltipTrigger OPEN_DELAY).
+    await act(async () => {
+      row.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+      row.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      row.dispatchEvent(new MouseEvent("mouseenter"));
+      row.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    });
+    await act(async () => void (await new Promise((done) => setTimeout(done, 700))));
+    await settle();
+    expect(tooltipText()).toBe(row.getAttribute("aria-label"));
+    expect(tooltipText()).toBe("repo, main, C:/repo, Main worktree");
+  });
+
   test("the group is one Tab stop, and Enter opens the active row", async () => {
     const double = await mountWorkbench(workbench, worktreeWorld());
     await groupRow("repo");

@@ -1017,8 +1017,8 @@ describe("pane scrolling", () => {
         const sections = [...changes.querySelectorAll('[role="tree"]')].map((box) => box.closest("section:not([aria-label])"));
         expect(new Set(sections).size).toBe(2);
         for (const section of sections) expect(scrolls(section!)).toBe(true);
-        // The narrow and constrained file band holds both sections side by side ("Chosen layout, sizes, and DPI").
-        expect(sections[0]!.parentElement!.className.split(/\s+/)).toContain(profile === "wide" ? "flex-col" : "flex-row");
+        // The constrained file band holds both sections side by side ("Chosen layout, sizes, and DPI"). The narrow Commit view uses the list column (004 plan D16 "Geometry").
+        expect(sections[0]!.parentElement!.className.split(/\s+/)).toContain(profile === "constrained" ? "flex-row" : "flex-col");
 
         await switchView("History");
         const history = document.querySelector('section[aria-label="History"]')!;

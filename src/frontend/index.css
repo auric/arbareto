@@ -463,6 +463,10 @@
     background: Highlight;
     color: HighlightText;
   }
+  /* The selected scope fills with Highlight, so its focus outline uses CanvasText. */
+  [data-slot="scope-picker"] label:has(input:focus-visible) {
+    outline-color: CanvasText;
+  }
   .list-row[data-active] {
     outline-color: Highlight;
   }

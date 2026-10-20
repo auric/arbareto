@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 
 // Feature 003 plan.md D12 and feature 004 plan.md D15 running rule.
@@ -10,8 +10,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 export const RUNNING_REASON = "A Git operation is running. Its progress and Cancel are in the status bar.";
 
 /** Gives `children`, an unavailable control, the tooltip `reason`. The caller hides its own reason element. A null reason adds no tooltip. */
-export function RunningTooltip({ reason, children }: { reason: string | null; children: ReactElement }) {
-  if (reason === null) return children;
+export function RunningTooltip({ reason, children }: { reason: ReactNode; children: ReactElement }) {
+  if (reason == null) return children;
   return (
     <Tooltip>
       <TooltipTrigger render={children} />

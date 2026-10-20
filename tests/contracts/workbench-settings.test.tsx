@@ -508,6 +508,23 @@ describe("Save and Cancel (FR-064, FR-065)", () => {
     expect(r.double.of("readGitSettings").length).toBe(reads + 1);
   });
 
+  test("after a failed new read, Save is unavailable with the read failure as its reason, and Ctrl+S sends nothing (tasks.md T113)", async () => {
+    const r = await render();
+    await scope("local");
+    const field = row("user.name").querySelector("input")!;
+    await type(field, "Bob");
+    await click(button("Save (Ctrl+S)"));
+    r.double.git = { requestId: fixtureId(33), state: "failed", code: "GIT_FAILED" };
+    await answer(r.double.pending("reviewWorkbench"), { requestId: fixtureId(20), operationId: fixtureId(21), state: "succeeded", repositoryGeneration: 1, result: { action: "config-save", plan: { scope: "local" }, workbenchToken: TOKEN } });
+    expect(text(content())).toContain("The Git settings did not load: GIT_FAILED");
+    const save = button("Save (Ctrl+S)");
+    expect(save.getAttribute("aria-disabled")).toBe("true");
+    expect(text(document.getElementById(save.getAttribute("aria-describedby")!)!)).toBe("The Git settings did not load: GIT_FAILED");
+    await click(save);
+    await press(save, "s", { ctrlKey: true });
+    expect(r.double.of("reviewWorkbench")).toHaveLength(1);
+  });
+
   test("a review whose earlier value differs from the shown value runs nothing and reads again", async () => {
     const r = await render();
     await scope("local");
@@ -639,6 +656,15 @@ describe("T076 board fixes (tasks.md T111, plan D16 \"Geometry\")", () => {
     await act(async () => void (await new Promise((done) => setTimeout(done, 700))));
     await settle();
     expect(tooltipText()).toBe(`Writes to ${LOCAL}`);
+  });
+
+  test("the selected scope radio has the full file line as its accessible description (tasks.md T113)", async () => {
+    await render();
+    await scope("local");
+    const radios = [...section("scopeBar").querySelectorAll<HTMLInputElement>('input[name="scope"]')];
+    const described = radios.filter((r) => r.hasAttribute("aria-describedby"));
+    expect(described.map((r) => r.value)).toEqual(["local"]);
+    expect(text(document.getElementById(described[0]!.getAttribute("aria-describedby")!)!)).toBe(`Writes to ${LOCAL}`);
   });
 
   test("the selected page shows the selected-row fill and the start marker (D16 \"Selection\")", async () => {

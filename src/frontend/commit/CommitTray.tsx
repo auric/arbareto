@@ -118,12 +118,15 @@ const runningBlock = (blocked: Blocked | undefined) => blocked === "running" || 
 /** A text of the amend column. It adds no content width, so the button row sets the column width and the text wraps to it. */
 const COLUMN_TEXT = { contain: "inline-size" } as const;
 
+/** The reason of a block. It comes before the trust reason. */
+const blockReason = (blocked: Blocked | undefined): string | null => (runningBlock(blocked) ? RUNNING_REASON : blocked ? BLOCKED_TEXT[blocked] : null);
+
 /** plan.md Commit row: the visible reason that disables Commit, or null. An amend without staged changes changes only the message (FR-099). */
 function disableReason(props: CommitTrayProps, composing: boolean): string | null {
   const { blocked = null, status, snapshotId, target, staged } = props;
   const text = messageOf(props);
   return (
-    (runningBlock(blocked) ? RUNNING_REASON : blocked ? BLOCKED_TEXT[blocked] : null) ??
+    blockReason(blocked) ??
     props.trustReason ??
     (status === "incomplete" ? BLOCKED_TEXT.incomplete : null) ??
     (status === "loading" || snapshotId === null || target === null ? BLOCKED_TEXT.loading : null) ??
@@ -273,10 +276,12 @@ export function CommitTray(props: CommitTrayProps) {
 
   const shownReason = busy ? null : reason;
   const pushReason = busy ? null : (reason ?? props.pushReason ?? null);
+  // The Commit reason also blocks Commit and push. Its line then serves both buttons.
+  const pushSharesReason = shownReason !== null;
   // Plan.md D15: a reason because an operation runs shows only in the tooltip and the accessible description.
   const hideReason = runningBlock(props.blocked);
   // Plan.md D15 "Trust texts": the Commit trust reason shows beside Commit, after the shield icon.
-  const trustShown = shownReason !== null && shownReason === props.trustReason;
+  const trustShown = shownReason !== null && blockReason(props.blocked) === null && props.trustReason != null;
   const commitButton = (
     <Button aria-keyshortcuts="Control+Enter" disabled={disabled} focusableWhenDisabled aria-describedby={shownReason === null ? undefined : reasonId} onClick={() => void activate()}>
       Commit (Ctrl+Enter)
@@ -333,7 +338,7 @@ export function CommitTray(props: CommitTrayProps) {
               variant="outline"
               disabled={disabled || pushReason !== null}
               focusableWhenDisabled
-              aria-describedby={pushReason === null ? undefined : pushReason === shownReason ? reasonId : `${reasonId}-push`}
+              aria-describedby={pushReason === null ? undefined : pushSharesReason ? reasonId : `${reasonId}-push`}
               onClick={() => void (pushReason === null && activate(true))}
             >
               Commit and push
@@ -352,7 +357,7 @@ export function CommitTray(props: CommitTrayProps) {
             {shownReason}
           </p>
         )}
-        {pushReason === null || pushReason === shownReason ? null : (
+        {pushReason === null || pushSharesReason ? null : (
           <p id={`${reasonId}-push`} className="truncate text-muted-text">
             {`Commit and push: ${pushReason}`}
           </p>

@@ -15,7 +15,7 @@ printOrigin("../../src/frontend/commit/CommitTray.tsx", import.meta.dir);
 registerDom();
 const { createRoot } = await import("react-dom/client");
 const { CommitTray, HOOK_DISCLOSURE } = await import("../../src/frontend/commit/CommitTray");
-const { STALE_TEXT } = await import("../../src/frontend/changes/HunkControls");
+const { BLOCKED_TEXT, STALE_TEXT } = await import("../../src/frontend/changes/HunkControls");
 const { createDrafts } = await import("../../src/frontend/state/drafts");
 
 type Call = { operation: string; target: Record<string, unknown>; payload: Record<string, unknown>; resolve(response: BridgeResponse): void };
@@ -115,6 +115,34 @@ describe("tray", () => {
       expect(t.calls).toEqual([]);
     });
   }
+
+  test("the reason kind places the reason: a block reason with the trust reason text stays under the editor, without the shield (tasks.md T113)", async () => {
+    const shared = BLOCKED_TEXT.operation;
+    const t = await mount({ blocked: "operation", trustReason: shared });
+    await t.type("Message");
+    const line = document.getElementById(t.commit.getAttribute("aria-describedby")!)!;
+    expect(line.textContent).toBe(shared);
+    expect(line.querySelector("svg")).toBeNull();
+    expect(line.parentElement!.contains(t.commit)).toBe(false);
+    const trust = await mount({ trustReason: shared });
+    await trust.type("Message");
+    const trustLine = document.getElementById(trust.commit.getAttribute("aria-describedby")!)!;
+    expect(trustLine.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    expect(trustLine.parentElement!.contains(trust.commit)).toBe(true);
+  });
+
+  test("the reason kind places the Commit and push reason, also when both reasons share one text (tasks.md T113)", async () => {
+    const shared = "The Staged list is empty.";
+    const push = (host: HTMLElement) => [...host.querySelectorAll("button")].find((b) => b.textContent === "Commit and push")!;
+    const both = await mount({ staged: 0, pushReason: shared, onPush: () => {} });
+    await both.type("Message");
+    expect(push(both.host).getAttribute("aria-describedby")).toBe(both.commit.getAttribute("aria-describedby"));
+    expect(both.host.textContent).not.toContain(`Commit and push: ${shared}`);
+    const own = await mount({ pushReason: shared, onPush: () => {} });
+    await own.type("Message");
+    expect(own.commit.getAttribute("aria-describedby")).toBeNull();
+    expect(reason(push(own.host))).toBe(`Commit and push: ${shared}`);
+  });
 
   test("Enter inserts no commit, and the draft text stays in the draft store", async () => {
     const t = await mount();

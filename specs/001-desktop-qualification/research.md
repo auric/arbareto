@@ -2168,6 +2168,54 @@ Earlier attempt at `71a5bb0`, 2026-10-13: the parallel step exited 1. One case f
 - SC-011: `unverified`. The label clause holds: the entry name and the boot-view label both read "Unsigned local test package". The release clause waits on B-RELEASE and T176.
 - T154: every clause holds on this record. T154 stays open, because batch 5 depends on T149 (tasks.md "Phase dependencies"), and T149 is open. A full run cannot tick T154 early, because `test:all` does not verify it.
 
+**T149 run, 2026-10-20.** The run used main `9a077993f7709f32a18b733c64cc1fef3e6c64c8` on branch `main-t149` in the worktree `C:\Projects\arbareto-l3`. This is the final main HEAD after T373 to T376 that the 2026-10-13 record asks for. `git --no-optional-locks status --porcelain --untracked-files=all` printed nothing before and after the run. Each test step ran after the process gate counted 0 busy processes.
+
+- `bun install --frozen-lockfile`, `bun run build:notices`, and `bunx --bun tsc --noEmit` exited with code 0.
+- `bun run test:all` with 6 workers and the WSL distro `Ubuntu-26.04` ran from 10:23:20 to 12:27:09 local time and exited with code 0. It reported 190 of 190 files and 5,836 tests. Parallel step: 164 files, 5,395 pass, 37 skip, 0 fail, 3,932.0 s. Serial step: 26 files, 395 pass, 9 skip, 0 fail, 3,496.6 s.
+- Each of the 73 Git blocks printed `C:\Program Files\Git\cmd\git.exe` and `git version 2.56.0.windows.2`. No test skipped for an absent Git. The WSL distro printed Git 2.55.0 and `scope=0 noexpand=0 verbatim=0`.
+- 1,513 `ORIGIN` lines, all under `C:\Projects\arbareto-l3`.
+- Skips with a reason line: `ssh-server` 3, `disposable-volume` 2, `other-account-owner` 2, `history-fixture-h1m` 2, `distro-git-below-2.55` 2, `fifo` 1, `restart-keeps-lingering` 1, `two-test-distros` 1, `empty-locpath-hides-c-utf8` 1. The other 31 skips print no reason line.
+- Free memory stayed at or above 11,862 MB in `test:all`. The guard at 4,500 MB did not stop a step.
+- `bun run build` exited with code 0. `cargo test --locked --manifest-path src-tauri/Cargo.toml -- --show-output`: 504 passed, 0 failed, 4 ignored.
+- `cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis -- --locked` exited with code 0. Cargo time: 1m 24s. The log shows no download.
+- `bun test tests/windows` ran before the install: 112 pass, 5 skip, 1 fail. The failed case is "T241: opens a fixture repository through UIA patterns and resolves the workbench names" in `tests/windows/uia.test.ts`, with "no status region reads "Hunk staged" after 10000 ms". Its `ORIGIN` line names the installed `arbareto.exe` with SHA-256 `6dca247e…`, the T154 rerun build of 2026-10-19. T149 runs the tests before it builds and installs the package. After the install below, `bun test tests/windows/uia.test.ts` passed 9 of 9 against the new build (`ORIGIN` SHA-256 `d39f9131…`). Skips: live input 2, `history-fixture-h1m` 2, `display-off` 1.
+- `bun test tests/wsl/registration.test.ts` on `Ubuntu-24.04` with Git 2.43.0: 39 pass, 4 skip (`distro-git-2.55`), 0 fail.
+
+| Tool | Source | Value |
+| --- | --- | --- |
+| Git | Run log, 73 Git blocks | `git version 2.56.0.windows.2` at `C:\Program Files\Git\cmd\git.exe`, built from commit `cc4dbf752a05efdc0e04e71fd3e8110d11bdd35c` |
+| WebView2 | Registry value `pv` of `HKLM\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}` | `155.0.4283.62` |
+| Bun | `bun test v1.4.3 (c6da4a4d3)` in the run log | `1.4.3` |
+| Rust | `rustc --version` | `rustc 1.99.0 (b940084d7 2026-09-28)` |
+| Cargo | `cargo --version` | `cargo 1.99.0 (5f94df478 2026-08-27)` |
+| Tauri CLI | `cargo tauri --version` | `tauri-cli 2.12.0` |
+| NSIS | `makensis.exe -VERSION` in `%LOCALAPPDATA%\tauri\NSIS` | `v3.11` |
+
+- This run did not probe the MSVC toolset and the Windows SDK. The T154 rerun record holds them for this host.
+
+Notices. `bun run build:notices` wrote 209 entries. The first list holds 49 names: the source-map package names of `bunx --bun vite build --sourcemap`, 37 maps, plus `tailwindcss`, `tw-animate-css`, and `shadcn` from `src/frontend/index.css`. The second list is the T149 `cargo tree` command: 130 crates without `arbareto`. Each name on either list has an inventory entry. These 30 entries are on neither list. They are the same 30 entries as in the 2026-10-13 record, and its reasons apply: `@ungap/structured-clone` 1.4.0, `@babel/runtime` 7.29.7, `@shikijs/engine-oniguruma` 4.5.0, `@types/hast` 3.0.5, `@types/mdast` 4.0.4, `@types/unist` 3.0.3, `dequal` 2.0.3, `devlop` 1.1.0, `mdast-util-to-hast` 13.2.1, `micromark-util-character` 2.1.1, `micromark-util-encode` 2.0.1, `micromark-util-sanitize-uri` 2.0.1, `micromark-util-symbol` 2.0.1, `micromark-util-types` 2.0.3, `reselect` 5.3.0, `shiki` 4.5.0, `tm-grammars` 1.32.22, `tm-themes` 1.12.12, `trim-lines` 3.0.1, `unist-util-is` 6.0.1, `unist-util-position` 5.0.0, `unist-util-stringify-position` 4.0.0, `unist-util-visit` 5.1.0, `unist-util-visit-parents` 6.0.2, `vfile` 6.0.3, `vfile-message` 4.0.3, `zod` 4.6.5, `@pierre/theme` 2.0.0, "Bun runtime and linked components" 1.4.3, and NSIS.
+
+Install and F02.
+
+- Installer: `src-tauri\target\x86_64-pc-windows-msvc\release\bundle\nsis\Arbareto_0.1.0_x64-setup.exe`, 38020824 bytes, SHA-256 `7fe43d5913ee0f119ac5963b677eb35da0741d76f92148cb47410940d84a1330`.
+- The installer ran as the current user with `/S` over the 2026-10-19 install and exited with code 0.
+- The entry `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Arbareto` has `DisplayName` "Arbareto (Unsigned local test package)" and `DisplayVersion` `0.1.0`.
+- Installed `arbareto.exe`: 14556160 bytes, FileVersion `0.1.0`, SHA-256 `d39f91312d6c6a3be84a039bbc69d08681e537d7f946d2133e9c49948abfb4f3`. The target file has SHA-256 `5daab8209d1e1e0b9be10fac0a192519680653d0aa987b99ffdafdf70dc1507e`. The files differ only in the 3 bundle-type marker bytes at offsets `0xAC10BA` to `0xAC10BC` (`UNK` in the target, `NSS` when installed). The build log shows "Patching ... with bundle type information: nsis". The cause is in the 2026-10-19 release package record.
+- Installed `arbareto-git.exe` SHA-256 equals the target file: `9054f5a82f9b824fba28c03f9da3a1183d77484b5dfa6dc661e19374660cee7d`.
+- `bun tests/windows/make-fixture.ts F02` built the fixture. `bun tests/windows/installed-app.ts --launch <root>` started the installed app with `GIT_CONFIG_GLOBAL`, `HOME`, `XDG_CONFIG_HOME`, and `ARBARETO_PROFILE_ROOT` under the scratch root. The app exited with code 0.
+- The F02 repository opened through T240 UIA patterns only. The view showed first, with no history row selected. The T240 `select` on the Working directory row gave `sel=True`.
+- The UIA dump then showed `multi.txt` in the list "Unstaged 1" and in the list "Staged 3". The dump reads only the Name property. The row names carry no scope label, so the dump shows no per-row scope label.
+- About window: the Overview tab shows the build `0.1.0 9a077993f7709f32a18b733c64cc1fef3e6c64c8`, equal to `git rev-parse HEAD`, with no `-dirty` marker. It shows `https://github.com/auric/arbareto` at commit `9a077993f7709f32a18b733c64cc1fef3e6c64c8`.
+
+Control mutations.
+
+- `src/frontend/state/drafts.ts` that clears a draft without the revision check turned `bun test tests/contracts` red: 3,719 pass, 30 skip, 4 fail. Three cases failed in `drafts.test.ts` (lines 75, 85, and 94). The fourth was "commit flow > a succeeded commit clears the unchanged submitted draft, and a later edit survives" (`commit-tray.test.tsx:290`). After the undo: 3,723 pass, 30 skip, 0 fail.
+- `src-tauri/src/close.rs` that interrupts and closes on `IDCANCEL`, the Escape result, turned `cargo test` red: 503 passed, 1 failed. The failed test is `close::tests::during_a_mutation_every_other_prompt_result_stays_open` (`close.rs:414`). It is a T184 decision-table test: Escape means Stay open during a mutation. Commit `32aa457` added it together with T140. After the undo: 504 passed, 0 failed, 4 ignored.
+
+Open:
+
+- "Stage one hunk with the keyboard only" and its `bun tests/windows/make-fixture.ts --snapshot <fixture path>` check did not run. They need real keyboard input on the installed app. This is a user step. T149 stays open until it passes.
+
 ### Scenario records
 
 This table holds one record for each qualification scenario: SC-001 to SC-019 (spec.md "Success Criteria"), F01 to F33 (plan.md fixture register), and UI-01 to UI-22 (plan.md UI scenarios). Each record holds the data-model §8 fields. A result is only `pass`, `fail`, or `unverified`. A record whose only evidence is source inspection stays `unverified`, and its evidence cell names `source-inspected`. An empty cell means that no fact exists yet. Record results as numbers and observations. Redact secrets before you keep evidence.

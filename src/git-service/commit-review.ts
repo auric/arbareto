@@ -312,7 +312,7 @@ export function createCommitReviewer({ runner, trust, approvals, now = () => per
         trust: { state: view.state, trustId: view.trustId ?? null },
         operationState: s.operationState,
         approvalRequired,
-        ...(facts === null ? {} : { amend: { parents: facts.parents, rewritesUpstream: facts.value.rewritesUpstream } }),
+        ...(facts === null ? {} : { amend: { parents: facts.parents, upstream: facts.value.upstream, rewritesUpstream: facts.value.rewritesUpstream } }),
       },
     });
     prune();

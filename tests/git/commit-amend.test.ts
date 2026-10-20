@@ -307,6 +307,31 @@ caseTest(TASK, "FR-099: a moved HEAD and a moved upstream after the review give 
   });
 }, TIMEOUT_MS);
 
+// Constitution I: the confirmation names the rewritten upstream. Data-model §2: the token binds its name, so another upstream that also holds HEAD refuses.
+// A configuration change gives TRUST_CHANGED first. remote.c `remote_get_1` reads `.git/remotes/<name>` for a remote without a configured URL,
+// so its `Pull:` line changes the upstream without a configuration change (Git 2.56.0.windows.2 prints the upstream of each file).
+caseTest("T108", "FR-100 and data-model §2: an upstream that changes from A to B after the review gives STALE_REVIEW, although B also holds HEAD, and no commit process starts", SHELL, async () => {
+  const f = build("renamed");
+  const other = "refs/remotes/origin/other";
+  const pull = (ref: string) => put(f.dir, ".git/remotes/origin", `URL: https://host.invalid/origin.git
+Pull: ${MERGE}:${ref}
+`);
+  git(f, ["config", "branch.main.remote", "origin"]);
+  git(f, ["config", "branch.main.merge", MERGE]);
+  pull(UPSTREAM);
+  for (const ref of [UPSTREAM, other]) git(f, ["update-ref", ref, "HEAD"]);
+  await withSync("t108-renamed", async (service) => {
+    const reg = await open(service, f);
+    const r = await reviewed(service, reg);
+    expect(r.result.amend).toMatchObject({ upstream: { name: UPSTREAM, present: true }, rewritesUpstream: true });
+    pull(other);
+    expect(text(f, ["for-each-ref", "--format=%(upstream)", "refs/heads/main"])).toBe(`${other}
+`);
+    expect(outcome(await commit(service, reg, r, NEW_MESSAGE, { amend: true, confirmRewrite: true }))).toEqual({ state: "failed", code: "STALE_REVIEW" });
+    expect(commitCalls(service)).toEqual([]);
+  });
+}, TIMEOUT_MS);
+
 caseTest(TASK, "FR-098 and contract Δ3: an unborn HEAD gives WORKBENCH_UNAVAILABLE reason unborn, a merge or a rebase gives OPERATION_IN_PROGRESS, and no Git process of the review starts", SHELL, async () => {
   const unborn: WbRepo = { git: gitExe(), dir: join(fixtureDir("t054-unborn"), "repo"), env: {} };
   mkdirSync(unborn.dir, { recursive: true });

@@ -54,8 +54,8 @@ export interface CommitBinding {
   operationState: OperationState;
   // Contract §7: the commit gate of the reviewed listing.
   approvalRequired: boolean;
-  // Feature 004 contract Δ3: an amend review binds the parents of the HEAD commit and `rewritesUpstream`.
-  amend?: { parents: string[]; rewritesUpstream: boolean | "unknown" };
+  // Feature 004 contract Δ3: an amend review binds the parents of the HEAD commit, the upstream, and `rewritesUpstream`.
+  amend?: { parents: string[]; upstream: { name: string | null; present: boolean } | null; rewritesUpstream: boolean | "unknown" };
 }
 
 // Data-model §6 "Submodule review": `review` digests the review reads, the plan, and the refusals. `programs` digests the submodule program list.

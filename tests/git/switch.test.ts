@@ -17,11 +17,7 @@ import { gitExe, native, TIMEOUT_MS, until, withSync } from "./sync-harness";
 import { buildWorkbench, repoOf, wb, type WbFixture, type WbFixtureName } from "./workbench-fixtures";
 
 for (const module of ["switch", "workbench-review", "session"]) {
-  try {
-    printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
-  } catch {
-    console.log(`ORIGIN absent src/git-service/${module}.ts`);
-  }
+  printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 }
 useFixtureRoot();
 

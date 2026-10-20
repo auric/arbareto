@@ -32,6 +32,7 @@ Each section names its source. Field names are contract names. "001 data-model �
   - `worktree-remove`: the worktree record, its status digest, the force flag, the branch delete facts;
   - `worktree-prune`: the prunable records;
   - `config-save`: each changed key with its scope, earlier entries, and new value or unset.
+- Amend review (contract Δ3 `reviewCommit` with `amend`): the 001 commit review token also binds the parents of the HEAD commit, `upstream` (`{name, present}` or null), and `rewritesUpstream`. The commit preflight reads them again. A different upstream name gives `STALE_REVIEW`, also when the new upstream holds HEAD (constitution I).
 - Consumption: only after validation, as 003 data-model §2.
 - In use: an accepted `runWorkbench` holds the token until it consumes the token or ends. Meanwhile a second `runWorkbench` with that token gets the contract §2 repeat answer with the first operation.
 

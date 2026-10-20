@@ -20,11 +20,7 @@ import { buildWorkbench, repoOf, wb, type WbFixture, type WbFixtureName } from "
 const withSync = (name: string, body: (service: Service) => Promise<void>, options?: Parameters<typeof syncService>[2]) => syncService(name, (service) => keepConfigs(service, body), options);
 
 for (const module of ["merge-rebase", "workbench-review"]) {
-  try {
-    printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
-  } catch {
-    console.log(`ORIGIN absent src/git-service/${module}.ts`);
-  }
+  printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 }
 
 useFixtureRoot();

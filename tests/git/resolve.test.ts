@@ -6,14 +6,14 @@
 
 import { expect } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
 import { SUBMODULE_UPDATE_CEILING_MS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { FIXTURE_HOME, fixtureDir, useFixtureRoot } from "./fixture-root";
 import { put } from "./fixtures";
 import { nativeEnv } from "./remote-fixtures";
 import { workingFileDigests } from "./git-oracle";
-import { caseTest, keepConfigs, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
+import { caseTest, keepConfigs, withPath, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 import { gitExe, native, TIMEOUT_MS, until, withSync as syncService } from "./sync-harness";
 import { buildWorkbench, canary, FIXTURE_MERGE_RESULT, repoOf, wb, type WbRepo } from "./workbench-fixtures";
 
@@ -21,11 +21,7 @@ import { buildWorkbench, canary, FIXTURE_MERGE_RESULT, repoOf, wb, type WbRepo }
 const withSync = (name: string, body: (service: Service) => Promise<void>, options?: Parameters<typeof syncService>[2]) => syncService(name, (service) => keepConfigs(service, body), options);
 
 for (const module of ["resolve", "workbench-review", "session"]) {
-  try {
-    printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
-  } catch {
-    console.log(`ORIGIN absent src/git-service/${module}.ts`);
-  }
+  printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 }
 printOrigin("../../src/contracts/envelope.ts", import.meta.dir);
 
@@ -527,4 +523,23 @@ caseTest("T060", "plan.md D12: the class mergetool holds a repository merge.tool
       expect((await service.readTrust(r.repositoryId)).result!.approvalRequired.mergetool).toBe(false);
     }),
   );
+}, TIMEOUT_MS);
+
+// Plan.md D12: without `mergetool.<tool>.path`, git-mergetool--lib `get_merge_tool_path` runs the program of `translate_merge_tool_path`.
+// mergetools/bc gives `bcomp` or `bcompare`, not `bc`. No table names that program, so a `PATH` entry inside the roots needs approval.
+caseTest("T108", "plan.md D12: a global merge.tool=bc without mergetool.bc.path needs the class mergetool when an absolute PATH entry lies inside the worktree, and needs none when every entry lies outside", SHELL, async () => {
+  const f = build("merge");
+  const inside = join(f.dir, "tools");
+  const outsideBin = join(f.dir, "..", "t108-outside-bin");
+  for (const bin of [inside, outsideBin]) put(bin, "bcompare.exe", "");
+  const base = nativeEnv();
+  const pathOf = (entry: string) => [entry, ...Object.entries(base).filter(([key]) => key.toUpperCase() === "PATH").map(([, value]) => value)].join(delimiter);
+  await withGlobal([["merge.tool", "bc"]], async () => {
+    for (const [entry, mergetool] of [[inside, true], [outsideBin, false]] as const) {
+      await withSync(`t108-bc-${mergetool}`, async (service) => {
+        const r = await open(service, f);
+        expect({ entry, mergetool: (await service.readTrust(r.repositoryId)).result!.approvalRequired.mergetool }).toEqual({ entry, mergetool });
+      }, { environment: withPath(base, pathOf(entry)) });
+    }
+  });
 }, TIMEOUT_MS);

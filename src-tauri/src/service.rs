@@ -531,7 +531,6 @@ impl Service {
                 stored_version,
             },
             &self.contexts,
-            Instant::now(),
         )
     }
 
@@ -824,9 +823,9 @@ fn prepare(
     let chosen = match operation {
         "chooseGit" => {
             let saved = lock(&stores.settings).git.clone();
-            dialogs::choose_git(native, saved.as_ref(), contexts, now)
+            dialogs::choose_git(native, saved.as_ref(), contexts)
         }
-        "chooseRepository" => dialogs::choose_repository(native, contexts, now),
+        "chooseRepository" => dialogs::choose_repository(native, contexts),
         "restoreWorkspace" => {
             let settings = lock(&stores.settings).clone();
             dialogs::restore_workspace(&settings, contexts, now)
@@ -856,7 +855,7 @@ fn prepare(
         }
         // Feature 003 contract Δ3 `clone`: the service payload holds no path.
         "clone" => {
-            let Some(cloned) = dialogs::choose_clone(native, contexts, payload, now)? else {
+            let Some(cloned) = dialogs::choose_clone(native, contexts, payload)? else {
                 return Ok(None);
             };
             let payload = json!({ "url": payload["url"], "bootstrapId": cloned.bootstrap_id, "cloneId": cloned.clone_id });

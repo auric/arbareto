@@ -368,6 +368,23 @@ Follow-up (T106), 2026-10-20, in `C:\Projects\arbareto-l7` on f004-t093-fu at 16
 
 Follow-up (menu focus), 2026-10-20, on f004-menu-focus at 347b89d: Shift+F10 and the Menu key on a sidebar branch, history, Worktrees, submodule, or Changes row now move the focus to the first menu item, also an unavailable one (spec FR-014). Base UI 1.8.0 focused the popup, because a menu without a trigger records no open method. A right-click keeps the Base UI popup focus.
 
+## R27 Full run, 2026-10-20
+
+Run of 2026-10-20 in `C:\Projects\arbareto-l4` on f004-impl at 8e6b82e. The run finished in two parts at this one commit. The logs are in the orchestrator scratchpad `full-004-l4b/` and `full-004-l4c/`.
+- Part 1, 06:07 to 08:37: `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`. Parallel step: exit 0, 194 files, 6,523 pass, 0 fail, 40 skip. Serial step: 28 of 30 files ran with no failure.
+- The driver timeout of 150 minutes then stopped part 1 inside `tests/wsl/submodules.test.ts`. The orchestrator sets this timeout. It is not a test failure. `bun run test:all` gave no exit code of its own.
+- Every `ORIGIN` line of part 1 is under `C:\Projects\arbareto-l4`.
+- Part 2, 08:41 to 09:10: the two serial files that part 1 did not finish ran as the serial step runs them, each in one `bun test` process with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `tests/wsl/submodules.test.ts`: 13 pass, 0 fail. `tests/wsl/sync-wsl.test.ts`: 15 pass, 0 fail.
+- `cargo test --locked` in `src-tauri`: exit 0, 553 passed, 0 failed, 4 ignored.
+- `bun test tests/wsl/registration.test.ts` with `ARBARETO_WSL_DISTRO=Ubuntu-24.04`: 39 pass, 4 skip (`distro-git-2.55`), 0 fail.
+- `bun test tests/windows`: 114 pass, 6 skip, 1 fail. The failure is `tests/windows/perf-fixtures.test.ts:88`: a cached M fixture kept its manifest but not its kept fast-import stream. This is 001 test setup, not 004 code. Main 95a9a1e fixes it (T164): such a fixture now rebuilds.
+- Reruns at 559eaeb, after the menu focus fix 6ae2f87 and the main merge with 95a9a1e (`rerun-004-l4/`): `bun run typecheck` and `bun run export:schemas --check` exit 0. `bun test tests/contracts`: 4,726 pass, 33 skip, 0 fail. `bun test tests/windows`: 116 pass, 6 skip, 0 fail, and the perf fixtures are reused.
+- Not in this run: `bun install --frozen-lockfile`, `bun run build`, `cargo check`, `bun run build:service`, `bun run dev`, and the control mutations of T062 and T076. No full run ran on 559eaeb.
+- Memory finding: two earlier runs of the day stopped at the 4,500 MB memory guard. A failing DOM `toBe` in `tests/contracts/workbench-branches.test.tsx:410` made Bun 1.4.3 format a message of about 17 GB, and Bun then reported a pass (investigator, scratchpad `diag-004-l4/`).
+- Main 8e29a33 gives DOM nodes a short inspect form in `tests/dom.ts`, so a failed DOM assertion fails fast and shows. 8950870 fixes the real defect: a key-opened row menu focuses its first item. 8e6b82e holds both commits.
+- Review: the orchestrator reports that the T093 independent review of T087 to T092 passed with follow-ups, and T106 fixes them (R26). research.md holds no record of its date, scope, or skills.
+- Ticks from this run: T099 and T106.
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.

@@ -474,6 +474,25 @@ caseTest("T060", "FR-097 and quickstart Q14: a merge tool from the repository sc
   expect(existsSync(tool.log)).toBe(false);
 }, TIMEOUT_MS);
 
+// Spec FR-097: the tool name comes from the global scope, so only the local `mergetool.<tool>.cmd` needs the class `mergetool` (T060).
+caseTest("T060", "FR-097 and quickstart Q14: a global merge.tool with a repository-scope mergetool.<tool>.cmd gives TRUST_REQUIRED before any Git process of the action, and the canary does not run", SHELL, () =>
+  withGlobal([["merge.tool", "repository"]], async () => {
+    const f = build("merge");
+    const tool = canary(join(f.dir, ".."), "repository-cmd");
+    git(f, ["config", "--local", "mergetool.repository.cmd", `${tool.command} "$MERGED"`]);
+    await withSync("t060-repository-cmd", async (service) => {
+      const r = await open(service, f);
+      const at = await shown(service, r, "uu.txt");
+      const from = service.runner.calls.length;
+      const response = await service.request("reviewWorkbench", { action: "mergetool", ...at.entry }, { repositoryId: r.repositoryId, repositoryGeneration: at.generation });
+      expect(outcome(response)).toEqual({ state: "failed", code: "TRUST_REQUIRED" });
+      expect(gitCommands(service, from)).not.toContain("ls-files");
+      expect(steps(service, from)).toEqual([]);
+    });
+    expect(existsSync(tool.log)).toBe(false);
+  }),
+TIMEOUT_MS);
+
 // Plan.md D12 class `mergetool`: the merge tool keys, each filter and the monitor (`checkout-index` and `git add`), and `post-index-change` (research.md R9).
 caseTest("T060", "plan.md D12: the class mergetool holds a repository merge.tool, mergetool.<tool>.cmd and .path, each filter, the monitor, and post-index-change; a post-checkout hook and a merge driver stay out", SHELL, async () => {
   const f = build("merge");

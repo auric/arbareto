@@ -26,6 +26,10 @@ const UNBORN = "The branch has no commits yet.";
 const NO_UPSTREAM = "The branch has no upstream.";
 
 export { RUNNING_REASON };
+// Plan D12: the reason while the reconcile read after a mutation outcome runs. A review before its result names an old generation.
+export const RECONCILING_REASON = "The status read after the last operation is still running.";
+/** Plan D12: the reason that replaces every sync reason and shows only in the tooltip and the accessible description, or null. */
+export const quietReason = (running: boolean, reconciling: boolean) => (running ? RUNNING_REASON : reconciling ? RECONCILING_REASON : null);
 
 type SyncAction = (typeof SYNC_ACTIONS)[number];
 type Slot = "fetch" | "pull" | "push";
@@ -72,15 +76,18 @@ export type SyncToolbarProps = {
   count?: ReactNode;
   /** Set while `operation !== null && response === null`. Every sync reason is then the running reason. */
   running?: SyncRunning | null;
+  /** True while the reconcile read after a mutation outcome runs. Its reason follows the running reason rule. */
+  reconciling?: boolean;
   onRun(payload: ReviewPayload): void;
   onSetDefault(action: DefaultPullAction): void;
   /** The status bar Cancel request of the running operation. */
   onCancel?(): void;
 };
 
-export function SyncToolbar({ reasons: given, defaultAction, settingsReason, count, running = null, onRun, onSetDefault, onCancel }: SyncToolbarProps) {
+export function SyncToolbar({ reasons: given, defaultAction, settingsReason, count, running = null, reconciling = false, onRun, onSetDefault, onCancel }: SyncToolbarProps) {
   const id = useId();
-  const reasons: SyncReasons = running === null ? given : { fetchReason: RUNNING_REASON, pullReason: RUNNING_REASON, pushReason: RUNNING_REASON, commitPushReason: RUNNING_REASON };
+  const quietText = quietReason(running !== null, reconciling);
+  const reasons: SyncReasons = quietText === null ? given : { fetchReason: quietText, pullReason: quietText, pushReason: quietText, commitPushReason: quietText };
   const runningId = `${id}-running`;
   const slot = running?.action == null ? undefined : SLOTS[running.action];
   const progress = (at: Slot) =>
@@ -95,7 +102,7 @@ export function SyncToolbar({ reasons: given, defaultAction, settingsReason, cou
   const pullReasons = Object.fromEntries(PULL_ACTIONS.map((a) => [a.action, actionReason(reasons, a.action)])) as Record<DefaultPullAction, string | null>;
   const mainReason = settingsReason ?? (defaultAction === null ? null : pullReasons[defaultAction]);
   // The settings reason of the Pull main part is no running reason, so it keeps its line.
-  const quiet = { Fetch: running !== null, Pull: running !== null && settingsReason === null, Push: running !== null };
+  const quiet = { Fetch: quietText !== null, Pull: quietText !== null && settingsReason === null, Push: quietText !== null };
   // One inline reason line per distinct text. Each unavailable control names its line.
   const lines = new Map<string, string[]>();
   for (const [control, reason] of [
@@ -107,12 +114,12 @@ export function SyncToolbar({ reasons: given, defaultAction, settingsReason, cou
   }
   const lineId = (reason: string | null) => (reason === null ? undefined : `${id}-${[...lines.keys()].indexOf(reason)}`);
   const describedBy = (control: keyof typeof quiet, reason: string | null) => (quiet[control] ? runningId : lineId(reason));
-  const note = (control: keyof typeof quiet) => (quiet[control] ? RUNNING_REASON : undefined);
+  const note = (control: keyof typeof quiet) => (quiet[control] ? (quietText ?? undefined) : undefined);
   return (
     <div role="group" aria-label="Remote sync" className="flex grow items-center gap-1">
-      {running === null ? null : (
+      {quietText === null ? null : (
         <span id={runningId} className="sr-only">
-          {RUNNING_REASON}
+          {quietText}
         </span>
       )}
       <div data-sync-slot="fetch" className="flex items-center">

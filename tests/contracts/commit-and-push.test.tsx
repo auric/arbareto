@@ -7,7 +7,7 @@ import type { BridgeResponse } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { answer, button, click, createWorld, mountWorkbench, oid, settle, snapshot, succeeded, text, unmountAll } from "./sync-fake";
+import { answer, button, click, createWorld, mountWorkbench, oid, press, settle, snapshot, succeeded, text, unmountAll } from "./sync-fake";
 import { commitReviewed, contractChecked, fixtureId } from "./bridge-contract";
 
 // tasks.md T061 (feature 003). Spec FR-038. Plan D12 "Commit and push".
@@ -132,6 +132,117 @@ describe("Commit and push (FR-038)", () => {
     delete world.answers.readWorkspace;
     await answer(reconcile, succeeded({ ...snapshot(world), generation: 2 }, { repositoryGeneration: 2 }));
     expect(double.pending("reviewSync")!.args[0]).toEqual({ repositoryId: fixtureId(1), repositoryGeneration: 2 });
+  });
+
+  // tasks.md T381 (feature 001). The service advances the generation before the reconcile read answers (contract §8), so a review before it gets `REPOSITORY_CHANGED`.
+  const RECONCILING = "The status read after the last operation is still running.";
+  const disabled = (control: HTMLElement) => control.hasAttribute("disabled") || control.getAttribute("aria-disabled") === "true";
+  async function syncWaitsForReconcile(double: Awaited<ReturnType<typeof mountWorkbench>>, world: ReturnType<typeof createWorld>, generation: number) {
+    const reconcile = double.pending("readWorkspace");
+    expect(reconcile).toBeDefined();
+    expect(disabled(button("Fetch"))).toBe(true);
+    // Plan D12: the reconcile reason follows the running reason rule. It shows only in the tooltip and the accessible description.
+    const shown = [...document.querySelectorAll('[role="group"][aria-label="Remote sync"] span')].filter((s) => !s.closest(".sr-only") && text(s).includes(RECONCILING)).map((s) => text(s));
+    expect(shown).toEqual([]);
+    expect(text(document.getElementById(button("Fetch").getAttribute("aria-describedby")!)!)).toBe(RECONCILING);
+    await click(button("Fetch"));
+    expect(double.count("reviewSync")).toBe(0);
+    delete world.answers.readWorkspace;
+    await answer(reconcile, succeeded({ ...snapshot(world), generation }, { repositoryGeneration: generation }));
+    expect(disabled(button("Fetch"))).toBe(false);
+    expect(text()).not.toContain(RECONCILING);
+    await click(button("Fetch"));
+    expect(double.pending("reviewSync")!.args).toEqual([{ repositoryId: fixtureId(1), repositoryGeneration: generation }, { action: "fetch" }]);
+  }
+
+  test("T381: toolbar Fetch waits for the reconcile read after a staged hunk; Commit and push does not", async () => {
+    const file = { entryId: fixtureId(0x501), category: "unstaged", path: "a.ts", pathBytes: "YS50cw==" };
+    const staged = { entryId: fixtureId(0x502), category: "staged", path: "b.ts", pathBytes: "Yi50cw==" };
+    const world = createWorld({ entries: [file, staged] as never });
+    world.answers.readComparison = (args) => {
+      const { snapshotId, entryId } = args[1] as { snapshotId: string; entryId: string };
+      const patch = Buffer.from("diff --git a/a.ts b/a.ts\nindex 1..2 100644\n--- a/a.ts\n+++ b/a.ts\n@@ -1,2 +1,3 @@\n a\n+n\n b\n").toString("base64");
+      const hunks = [{ hunkId: fixtureId(0x401), ordinal: 0, oldStart: 1, oldCount: 2, newStart: 1, newCount: 3, digest: "1".repeat(64) }];
+      return { ...succeeded({ comparisonId: fixtureId(0x402), snapshotId, entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch, hunks, support: "supported", fileAction: "stage", remedy: null }), entryId };
+    };
+    const double = await mountWorkbench(workbench, world);
+    // Feature 004 T042 (plan.md P5 risk): the Commit view replaces the docked commit panel.
+    await click(button("Commit", document.querySelector('header nav[aria-label="Views"]')!));
+    await typeInto(document.querySelector("textarea")!, "Fix the parser");
+    await click(document.querySelector(`[role="treeitem"][data-entry-id="${file.entryId}"]`)!);
+    await click(button("Next hunk"));
+    await click(button("Stage selected hunk"));
+    world.answers.readWorkspace = undefined;
+    world.entries = [{ ...file, category: "staged" }, staged] as never;
+    await answer(double.pending("applyHunk"), succeeded({ lingeringDescendants: 0 }));
+    // Commit and push waits for its own reconcile read before the push review, so the read does not block it.
+    expect(disabled(button("Commit and push"))).toBe(false);
+    expect(text(document.querySelector('[data-section="composer"]')!)).not.toContain(RECONCILING);
+    await syncWaitsForReconcile(double, world, 2);
+  });
+
+  test("T381: toolbar Fetch waits for the reconcile read after a commit", async () => {
+    const world = createWorld({ entries: [{ entryId: "e1", category: "staged", path: "a.ts", pathBytes: "YS50cw==" }] as never });
+    const double = await mountWorkbench(workbench, world);
+    // Feature 004 T042 (plan.md P5 risk): the Commit view replaces the docked commit panel.
+    await click(button("Commit", document.querySelector('header nav[aria-label="Views"]')!));
+    await typeInto(document.querySelector("textarea")!, "Fix the parser");
+    await click(button("Commit (Ctrl+Enter)"));
+    await answer(double.pending("readTrust"), ok(REPORT));
+    await answer(double.pending("reviewCommit"), ok(commitReviewed(fixtureId(0x106))));
+    world.answers.readWorkspace = undefined;
+    world.entries = [];
+    await answer(double.pending("commit"), ok({ commitOid: oid(7) }));
+    await syncWaitsForReconcile(double, world, 2);
+  });
+
+  // A band control that holds focus keeps it when the reconcile read ends, so the band does not move focus to its heading.
+  const focusAndReconcile = async (double: Awaited<ReturnType<typeof mountWorkbench>>, world: ReturnType<typeof createWorld>, control: HTMLElement) => {
+    const reconcile = double.pending("readWorkspace");
+    expect(reconcile).toBeDefined();
+    await act(async () => control.focus());
+    expect(document.activeElement === control).toBe(true);
+    delete world.answers.readWorkspace;
+    await answer(reconcile, succeeded(snapshot(world)));
+    expect(document.activeElement === control).toBe(true);
+  };
+
+  test("T381: a focused push-rejected action keeps focus when the reconcile read ends", async () => {
+    const world = createWorld();
+    const double = await mountWorkbench(workbench, world);
+    await click(button("Push"));
+    const destination = { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "u", setUpstream: false, source: "push-default-branch" };
+    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination }, syncReviewToken: fixtureId(0x101) }));
+    world.answers.readWorkspace = undefined;
+    await answer(double.pending("sync"), {
+      requestId: "r",
+      operationId: fixtureId(0x202),
+      state: "failed",
+      code: "PUSH_REJECTED",
+      result: { action: "push", push: { status: "rejected", oldObjectId: oid(9), newObjectId: oid(9), reasonText: "fetch first", lease: false, upstreamWritten: false, outputTail: "" } },
+    });
+    await focusAndReconcile(double, world, button("Fetch", document.querySelector('[data-slot="notice-band"]')!));
+  });
+
+  test("T381: a focused conflict action keeps focus when the reconcile read ends", async () => {
+    const file = { entryId: fixtureId(0x503), category: "conflicted", path: "a.txt", pathBytes: "YS50eHQ=" };
+    const world = createWorld({ operationState: "merging", entries: [file] as never });
+    world.answers.readComparison = (args) => {
+      const { snapshotId, entryId } = args[1] as { snapshotId: string; entryId: string };
+      const patch = Buffer.from("diff --cc a.txt\n").toString("base64");
+      return { ...succeeded({ comparisonId: fixtureId(0x504), snapshotId, entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch, hunks: [], support: "state", fileAction: "resolve", remedy: null }), entryId };
+    };
+    world.answers.applyFile = undefined;
+    const double = await mountWorkbench(workbench, world);
+    // Feature 004 T042 (plan.md P5 risk): the Commit view replaces the docked commit panel.
+    await click(button("Commit", document.querySelector('header nav[aria-label="Views"]')!));
+    const option = document.querySelector<HTMLElement>(`[role="treeitem"][data-entry-id="${file.entryId}"]`)!;
+    await click(option);
+    await press(option, " ");
+    world.answers.readWorkspace = undefined;
+    world.entries = [{ ...file, entryId: fixtureId(0x505), category: "staged" }] as never;
+    await answer(double.pending("applyFile"), succeeded({}));
+    await focusAndReconcile(double, world, button("Abort merge…", document.querySelector('[data-slot="conflict-row"]')!));
   });
 
   test("a rejected push after a commit keeps the commit and shows the push-rejected notice", async () => {

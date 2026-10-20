@@ -87,7 +87,7 @@ import { CloneDialog } from "../clone/CloneDialog";
 import { ConnectNoticeRow } from "../settings/ConnectTerminal";
 import type { KeyProposal } from "../settings/SettingsDialog";
 import { SettingsView } from "../settings/SettingsView";
-import { actionReason, RUNNING_REASON, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
+import { actionReason, quietReason, RUNNING_REASON, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
 import { useSync } from "../sync/useSync";
 import { suppressPageMenu } from "../components/action-menu";
 import { DockRegion } from "../components/docked-panel";
@@ -1314,9 +1314,14 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const currentHead = workspace?.head ?? null;
   const currentEntry = currentHead !== null && currentHead.state === "branch" ? (entries?.find((e) => e.current && `refs/heads/${e.name}` === currentHead.target && e.objectId === currentHead.oid) ?? null) : null;
   const currentLabel = currentEntry === null ? null : (labels.get(currentEntry.name) ?? null);
-  // The reason that blocks every sync action: a running mutation or an unknown state.
-  const syncBlock = running ? BLOCKED_TEXT.running : state.blocked ? BLOCKED_TEXT.unknown : null;
-  const reasons = syncReasons(currentHead, workspace?.operationState ?? null, currentEntry === null ? null : currentEntry.upstream === null ? "none" : "set", syncBlock);
+  // The reason that blocks every sync action: a running mutation, an unknown state, or the reconcile read after a mutation.
+  // The sync controls show the running and the reconcile reason only in the tooltip (plan.md D12).
+  const stateSyncBlock = running ? BLOCKED_TEXT.running : state.blocked ? BLOCKED_TEXT.unknown : null;
+  const syncBlock = stateSyncBlock ?? quietReason(false, state.reconciling);
+  const upstreamState = currentEntry === null ? null : currentEntry.upstream === null ? "none" : "set";
+  const reasons = syncReasons(currentHead, workspace?.operationState ?? null, upstreamState, syncBlock);
+  // Commit and push waits for its own reconcile read before the push review, so the read does not block it.
+  const commitPushReason = syncReasons(currentHead, workspace?.operationState ?? null, upstreamState, stateSyncBlock).commitPushReason;
   const runSync = useRef<(control: "fetch" | "pull" | "push") => void>(() => {});
   runSync.current = (control) => {
     if (state.repository === null) return;
@@ -1512,7 +1517,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             onEnded={(response) => onEnded("commit", response)}
             fieldRef={messageField}
             onPush={() => sync.run({ action: "push" })}
-            pushReason={reasons.commitPushReason}
+            pushReason={commitPushReason}
             operationState={workspace?.operationState}
             amend={{ value: commitState.amend, onChange: (amend) => store.setCommitView(viewKey, { amend }) }}
           />
@@ -1700,6 +1705,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 settingsReason={syncSettings.reason}
                 count={trackingCount}
                 running={running ? { action: operation.kind === "sync" ? (operation.sync?.action ?? null) : null, cancelRequested: operation.progress?.state === "cancel-requested" } : null}
+                reconciling={state.reconciling}
                 onRun={sync.run}
                 onCancel={() => statusRegion.current?.requestCancel()}
                 onSetDefault={(action) => void setDefaultPullAction(action)}
@@ -1841,10 +1847,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 recovery={recovery !== null && recovery.repositoryId === state.repository?.repositoryId ? recovery.statement : undefined}
                 pushRow={
                   sync.notice !== null ? (
-                    <PushNoticeRow notice={sync.notice} {...sync.noticeActions} reason={reasons.pullReason} fetchReason={reasons.fetchReason} running={running} bindControl={bindBandControl} />
+                    <PushNoticeRow notice={sync.notice} {...sync.noticeActions} reason={reasons.pullReason} fetchReason={reasons.fetchReason} running={running} reconciling={state.reconciling} bindControl={bindBandControl} />
                   ) : undefined
                 }
-                pullModeRow={sync.modeChoice ? <PullModeChoice onChoose={sync.chooseMode} onCancel={sync.cancelMode} reason={syncBlock} running={running} bindControl={bindBandControl} /> : undefined}
+                pullModeRow={sync.modeChoice ? <PullModeChoice onChoose={sync.chooseMode} onCancel={sync.cancelMode} reason={syncBlock} running={running} reconciling={state.reconciling} bindControl={bindBandControl} /> : undefined}
                 conflictRow={
                   workspace.operationState === "merging" || workspace.operationState === "rebasing" ? (
                     // A new operation state or HEAD is a new stop, so the row forgets the refusals of the last stop.
@@ -1854,6 +1860,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                       conflicted={conflicted}
                       reason={syncBlock}
                       running={running}
+                      reconciling={state.reconciling}
                       loading={loading}
                       onAction={sync.conflictAction}
                       bindControl={bindBandControl}

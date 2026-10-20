@@ -18,7 +18,7 @@ export class UiaError extends Error {
 }
 
 export const MAX_WAIT_MS = 10_000;
-// `IUIAutomation2` bounds of one call. A call to a provider that does not answer fails with UIA_E_TIMEOUT after the bound. Both stay below MAX_WAIT_MS.
+// `IUIAutomation2` bounds of one call. A call to a provider that does not answer fails with UIA_E_TIMEOUT or HRESULT_FROM_WIN32(ERROR_TIMEOUT) after the bound. Both stay below MAX_WAIT_MS.
 const CONNECTION_TIMEOUT_MS = 2_000;
 const TRANSACTION_TIMEOUT_MS = 5_000;
 // A poll can pass its bound by one call.
@@ -137,8 +137,10 @@ const SLOT = {
 const CLSCTX_INPROC_SERVER = 0x1;
 const COINIT_MULTITHREADED = 0x0;
 const RPC_E_CHANGED_MODE = 0x8001_0106;
-// `UIAutomationCoreApi.h`: the element is gone, or the provider did not answer in time. A poll treats both as no match yet.
-const RETRY = new Set([0x8004_0201, 0x8013_1505]);
+// `UIAutomationCoreApi.h`: the element is gone, or the provider did not answer in time. A poll treats all three codes as no match yet.
+// UI Automation does not document 0x800705b4 (HRESULT_FROM_WIN32(ERROR_TIMEOUT)) for `ElementFromHandle`. The 004 verification run of 2026-10-20 got it from the app while its main thread waited for the service handshake.
+// shortcut: no case can produce it on demand; add one when a reproducible trigger is known.
+const RETRY = new Set([0x8004_0201, 0x8013_1505, 0x8007_05b4]);
 const VT_I4 = 3;
 const VT_BSTR = 8;
 // x64 VARIANT: `vt` at offset 0, the value at offset 8. A by-value VARIANT goes as a pointer to a copy (x64 ABI, size above 8 bytes).

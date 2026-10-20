@@ -975,7 +975,7 @@ Capture sources: [DuplicateOutput](https://learn.microsoft.com/windows/win32/api
 | `Next hunk` | Button | Invoke after `CurrentIsEnabled` became true. |
 | `Stage selected hunk` | Button | Invoke after `CurrentIsEnabled` became true. The status regions read `Staging hunk in repo…`, then `Hunk staged`. |
 | `Fetch` | Button | Invoke after `CurrentIsEnabled` became true. The fetch went to a local `git://` listener that never answers. |
-| `Cancel` | Button | Invoke. The status regions read `Fetching from origin…`, then `Fetch canceled`. The toolbar control has the Name `Cancel fetch`, so this Name is the status bar control. |
+| `Cancel` | Button | Invoke. The status regions read `Fetching from origin…`, then `Fetch canceled`. The toolbar control has the Name `Cancel Fetch`, so this Name is the status bar control. |
 | `Repository` | MenuItem | ExpandCollapse `Expand`, and after the Revoke trust check `Collapse`. The menu then left the tree. |
 | `Revoke trust` | MenuItem | Found while the menu was open. |
 

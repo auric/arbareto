@@ -1,0 +1,34 @@
+<Configuration>
+  <Networking>Disable</Networking>
+  <MemoryInMB>8192</MemoryInMB>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>{{CHECKOUT}}</HostFolder>
+      <SandboxFolder>C:\arbareto\checkout</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>{{PUTTY_DIR}}</HostFolder>
+      <SandboxFolder>C:\arbareto\putty</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>{{BUN_DIR}}</HostFolder>
+      <SandboxFolder>C:\arbareto\bun</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>{{GIT_INSTALLER_DIR}}</HostFolder>
+      <SandboxFolder>C:\arbareto\git-installer</SandboxFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>{{OUT}}</HostFolder>
+      <SandboxFolder>C:\arbareto\out</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -NoExit -ExecutionPolicy Bypass -File C:\arbareto\checkout\scripts\windows\putty-tests-prepare.ps1 -InSandbox -GitInstallerName "{{GIT_INSTALLER_NAME}}"</Command>
+  </LogonCommand>
+</Configuration>

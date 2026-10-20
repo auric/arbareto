@@ -2404,6 +2404,8 @@ Open items and reasons:
 
 Open item from the 004 batch 0 review (S3), 2026-10-17: `acquireLock` in `tests/windows/perf-fixtures.ts` decides a stale lock by its age, and it checks the owner by PID without a creation time. A reused PID keeps a dead lock until the age bound. A live builder that runs longer than the bound can lose its lock. Not changed.
 
+**T381 review, 2026-10-20.** Independent reviewer at cb1a0f3 and f0bc552 (main merge a45de0b, 004 merge f8faa3f). The reconcile block is correct, and band controls keep focus. The 001 plan "visible reason text" rule does not point to its 003 D12 exceptions. Menus show the reconcile reason as visible text. During a reconcile read, the toolbar hides a visible unknown-state reason. No case covers Pull, Push, or the branch menu. 004 T114 fixes them (6cede43).
+
 ### Dependency reviews
 
 After T003 and T006, each dependency change gets one record here (plan.md, Tool and runtime boundaries). A record names the task and each added, removed, or changed package. It gives the old and new resolved versions, the licence, the reason, the reviewer, and the findings. It also lists the qualification checks that ran again.

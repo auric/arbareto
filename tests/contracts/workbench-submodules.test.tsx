@@ -567,6 +567,17 @@ describe("T076 board fixes (tasks.md T111, Submodules board)", () => {
     expect(rows()).toHaveLength(3);
   });
 
+  test("a collapsed group keeps the host line visible (plan D15 \"Header\", tasks.md T113)", async () => {
+    const view = await mount();
+    await click(button("Update submodules", group()));
+    await answer(view.double.pending("reviewSubmodules"), reviewed({ hosts: [SubmoduleHostLine.parse({ path: "vendor/b", fetch: { kind: "host", name: "git.example.net" }, settings: { kind: "host", name: "github.com" } })] }));
+    await click(group().querySelector<HTMLButtonElement>("h3 button")!);
+    expect(rows()).toHaveLength(0);
+    const line = group().querySelector<HTMLElement>('[data-slot="host-line"]');
+    expect(line).not.toBeNull();
+    expect(text(line!)).toContain("vendor/b will fetch from git.example.net.");
+  });
+
   test("each row shows the submodule icon before its path", async () => {
     await mount();
     for (const r of rows()) expect(r.querySelector('[data-slot="row-icon"] svg[aria-hidden="true"]')).not.toBeNull();

@@ -176,6 +176,7 @@ export type GitSettingsState = ReturnType<typeof useGitSettings>;
 /** The scope part of the scope bar: the four scopes and the file of the selected one (FR-058, FR-059). */
 export function ScopePicker({ scope, onScope, files }: { scope: Scope; onScope(scope: Scope): void; files: GitSettings["files"] | null }) {
   const legend = useId();
+  const fileId = useId();
   const options: { value: Scope; label: string; readOnly: boolean }[] = [
     { value: "effective", label: "Effective", readOnly: true },
     { value: "local", label: TEXTS.scopeName("local"), readOnly: false },
@@ -191,7 +192,7 @@ export function ScopePicker({ scope, onScope, files }: { scope: Scope; onScope(s
         </legend>
         {options.map((o) => (
           <label key={o.value} className="flex items-center gap-1.5 px-3 has-checked:bg-selected-row has-checked:font-semibold has-focus-visible:outline-2 has-focus-visible:outline-accent-role" style={{ height: "var(--h-button)" }}>
-            <input type="radio" name="scope" value={o.value} checked={scope === o.value} onChange={() => onScope(o.value)} className="sr-only" />
+            <input type="radio" name="scope" value={o.value} checked={scope === o.value} onChange={() => onScope(o.value)} aria-describedby={scope === o.value && file !== null ? fileId : undefined} className="sr-only" />
             {o.label}
             {o.readOnly ? " " : null}
             {o.readOnly ? <span className="font-normal text-muted-text">{TEXTS.readOnlyMark}</span> : null}
@@ -201,7 +202,7 @@ export function ScopePicker({ scope, onScope, files }: { scope: Scope; onScope(s
       {file === null ? null : (
         // Plan D16 "Geometry": the scope bar keeps one row, so a long file line ends with an ellipsis.
         <Tooltip>
-          <TooltipTrigger data-slot="scope-file" render={<span className="min-w-0 truncate text-muted-text" />}>
+          <TooltipTrigger data-slot="scope-file" render={<span id={fileId} className="min-w-0 truncate text-muted-text" />}>
             {file}
           </TooltipTrigger>
           <TooltipContent>{file}</TooltipContent>
@@ -435,11 +436,12 @@ export function GitPage({ name, scope, query, settings, wsl }: { name: string; s
 
 /** The save row of the selected scope. Plan D16 "Geometry": the view shows it as a full-width footer. */
 export function SaveRow({ scope, settings }: { scope: Scope; settings: GitSettingsState }) {
-  const { pending, saving, operationRunning, cancel, save } = settings;
+  const { read, pending, saving, operationRunning, cancel, save } = settings;
   const reason = useId();
   const count = writable(scope) ? Object.keys(pending[scope]).length : 0;
   if (!writable(scope) || count === 0) return null;
-  const quiet = saving ? TEXTS.saving : operationRunning ? RUNNING_REASON : null;
+  // `save` refuses without a loaded read, so Save states the read state as its reason.
+  const quiet = saving ? TEXTS.saving : operationRunning ? RUNNING_REASON : read.state === "loading" ? TEXTS.loading : read.state === "failed" ? read.text : null;
   return (
     <div data-slot="settings-save" className="flex shrink-0 flex-wrap items-center gap-2 border-t border-divider bg-canvas px-3 py-2">
       <span className="flex-1">{TEXTS.pending(count, scope)}</span>

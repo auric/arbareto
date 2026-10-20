@@ -766,15 +766,29 @@ describe("programs (contract §12 \"Trust\")", () => {
   });
 
   // The task names a test-injected walk. No seam lowers the §5 bound, so the copy holds one folder more than SUBMODULE_REVIEW_SUBMODULES under `modules`.
-  reviewCase(`a modules walk above ${SUBMODULE_REVIEW_SUBMODULES} folders gives limit`, () => {
-    const b = buildF27(gitPath(), "t222-programs-walk", "base");
+  const walkLimit = (name: string, readDeadlineMs?: number) => {
+    const b = buildF27(gitPath(), name, "base");
     const modules = join(superOf(b), ".git", "modules", "walk");
     for (let i = 0; i <= SUBMODULE_REVIEW_SUBMODULES; i++) mkdirSync(join(modules, `f${i}`), { recursive: true });
-    return withFixture(b, "t222-programs-walk", async (service) => {
-      const { r } = await reviewed(service, b);
-      expect(r.refusals.map((x) => ({ reason: x.reason, text: x.text }))).toEqual([{ reason: "limit", text: TEXTS.limit }]);
-    });
-  });
+    return withFixture(
+      b,
+      name,
+      async (service) => {
+        const start = performance.now();
+        const { r } = await reviewed(service, b);
+        const elapsed = performance.now() - start;
+        // A review inside the injected deadline proves nothing about the missing total timer.
+        if (readDeadlineMs !== undefined) expect({ premise: "review outlasts the injected read deadline", readDeadlineMs, elapsed, ok: elapsed > readDeadlineMs }).toEqual({ premise: "review outlasts the injected read deadline", readDeadlineMs, elapsed, ok: true });
+        expect({ state: r.response.state, code: r.response.code, refusals: r.refusals.map((x) => ({ reason: x.reason, text: x.text })) }).toEqual({ state: "succeeded", code: undefined, refusals: [{ reason: "limit", text: TEXTS.limit }] });
+      },
+      readDeadlineMs === undefined ? {} : { readDeadlineMs },
+    );
+  };
+
+  reviewCase(`a modules walk above ${SUBMODULE_REVIEW_SUBMODULES} folders gives limit`, () => walkLimit("t222-programs-walk"));
+
+  // Contract §5 "Ordinary read deadline": `reviewSubmodules` has no total read deadline.
+  reviewCase(`T382: a modules walk above ${SUBMODULE_REVIEW_SUBMODULES} folders gives limit after the read deadline passes`, () => walkLimit("t382-programs-walk", 3_000));
 
   reviewCase(`F29 base: inside submodules, the runner sees only the review reads, each with --no-lazy-fetch --no-optional-locks first`, () => {
     const b = buildF29(gitPath(), "t222-programs-reads", "base");

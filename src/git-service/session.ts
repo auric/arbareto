@@ -419,6 +419,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       repositoryId: request.repositoryId,
       signal,
       ...(selection === undefined ? {} : { selection }),
+      ...(request.operation === "reviewSubmodules" ? { deadline: false as const } : {}),
       run: (work) => run({ operationId, signal: work }).catch(() => failed),
       failed: (outcome) => outcome.result === "failed" || outcome.result === "deadline",
       reread: (target) => reread(target).catch(() => null),

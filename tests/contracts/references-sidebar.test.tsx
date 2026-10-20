@@ -302,6 +302,35 @@ describe("tree keys", () => {
     expect(text(host.querySelector(`#${CSS.escape(outside.getAttribute("aria-describedby")!)}`))).toBe("Not in the loaded history rows");
     expect(main.hasAttribute("aria-describedby")).toBe(false);
   });
+
+  // Plan.md D15 "Action menu" and spec FR-014: a key-opened row menu focuses its first item; a right-click keeps the focus on the menu.
+  const menuSettle = () =>
+    act(async () => {
+      for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  for (const [name, init] of [
+    ["Shift+F10", { key: "F10", shiftKey: true }],
+    ["the Menu key", { key: "ContextMenu" }],
+  ] as const)
+    test(`${name} on the current branch row moves the focus to the first item of its menu`, async () => {
+      const { host } = await sidebar({ onShowBranchHistory: () => {} });
+      const main = item(host, "main,");
+      await act(async () => main.focus());
+      await act(async () => void main.dispatchEvent(new KeyboardEvent("keydown", { ...init, code: init.key, bubbles: true, cancelable: true })));
+      await menuSettle();
+      const first = document.querySelector<HTMLElement>('[role="menu"] [role="menuitem"]');
+      expect(text(first)).toStartWith("Show only this branch's history");
+      expect(document.activeElement === first).toBe(true);
+    });
+
+  test("a right-click on the current branch row keeps the focus on the menu, not on its first item", async () => {
+    const { host } = await sidebar({ onShowBranchHistory: () => {} });
+    await act(async () => void item(host, "main,").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    await menuSettle();
+    const menu = document.querySelector<HTMLElement>('[role="menu"]');
+    expect(menu === null).toBe(false);
+    expect(document.activeElement === menu!.querySelector('[role="menuitem"]')).toBe(false);
+  });
 });
 
 describe("states", () => {

@@ -8,7 +8,7 @@ import { pushNoticeText, WarningIcon, type PushNotice } from "../app/NoticeBand"
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
-import { RUNNING_REASON } from "./SyncToolbar";
+import { quietReason } from "./SyncToolbar";
 
 // Feature 003 spec FR-023 to FR-026 and plan.md D5. Destructive actions show an icon and text and never fold into a More menu (plan.md D12).
 
@@ -23,14 +23,17 @@ export type PushNoticeActions = {
   fetchReason: string | null;
   /** True while `operation !== null && response === null`. The running reason then replaces both reasons without a visible line (plan.md D12). */
   running?: boolean;
+  /** True while the reconcile read after a mutation outcome runs. Its reason follows the running reason rule. */
+  reconciling?: boolean;
   /** Each band control registers here, so focus moves to the band heading when it leaves (plan.md "Notice band"). */
   bindControl?: (element: HTMLButtonElement) => () => void;
 };
 
-export function PushNoticeRow({ notice, running = false, ...a }: { notice: PushNotice } & PushNoticeActions) {
+export function PushNoticeRow({ notice, running = false, reconciling = false, ...a }: { notice: PushNotice } & PushNoticeActions) {
   const reasonId = useId();
-  const pullReason = running ? RUNNING_REASON : a.reason;
-  const fetchReason = running ? RUNNING_REASON : a.fetchReason;
+  const quiet = quietReason(running, reconciling);
+  const pullReason = quiet ?? a.reason;
+  const fetchReason = quiet ?? a.fetchReason;
   const action = (label: string, icon: IconSvgElement, run: () => void, reason: string | null, danger = false) => {
     const control = (
       <Button
@@ -48,13 +51,12 @@ export function PushNoticeRow({ notice, running = false, ...a }: { notice: PushN
         {label}
       </Button>
     );
-    return running ? (
-      <Tooltip key={label}>
+    // A stable trigger keeps the focus of a control when the quiet reason ends.
+    return (
+      <Tooltip key={label} disabled={quiet === null}>
         <TooltipTrigger render={control} />
-        <TooltipContent>{RUNNING_REASON}</TooltipContent>
+        <TooltipContent>{quiet}</TooltipContent>
       </Tooltip>
-    ) : (
-      control
     );
   };
   const actions =
@@ -77,7 +79,7 @@ export function PushNoticeRow({ notice, running = false, ...a }: { notice: PushN
         {actions}
       </div>
       {reason === null ? null : (
-        <span id={reasonId} className={running ? "sr-only" : "text-muted-text"}>
+        <span id={reasonId} className={quiet !== null ? "sr-only" : "text-muted-text"}>
           {reason}
         </span>
       )}

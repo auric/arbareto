@@ -13,7 +13,7 @@ import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { isObject } from "../lib/utils";
 import { shortId, SYNC_NAMES } from "../status/OperationStatus";
-import { RUNNING_REASON } from "./SyncToolbar";
+import { quietReason } from "./SyncToolbar";
 
 // Feature 003 spec FR-030, FR-042 to FR-045, plan.md D7 and D12, contract Δ3 `reviewSync` abort, continue, and skip.
 // Destructive actions show an icon and text and never fold into a More menu (plan.md D12).
@@ -37,6 +37,8 @@ export type ConflictRowProps = {
   reason: string | null;
   /** True while `operation !== null && response === null`. The running reason then replaces `reason` without a visible line (plan.md D12). */
   running?: boolean;
+  /** True while the reconcile read after a mutation outcome runs. Its reason follows the running reason rule. */
+  reconciling?: boolean;
   /** True while entry pages of the status read are missing, so the unmerged count is not known yet. */
   loading?: boolean;
   /** Runs the review of the action. Resolves with the refused review response, or null. */
@@ -54,8 +56,9 @@ function refusalOf(response: BridgeResponse | null): Refusal | null {
  * The conflict row of a merge or a rebase in progress. A refused review hides the refused actions for this stop.
  * The caller keys the row by the operation state and HEAD, so a new stop shows every action again.
  */
-export function ConflictRow({ operationState, conflicted, reason: given, running = false, loading = false, onAction, bindControl }: ConflictRowProps) {
-  const reason = running ? RUNNING_REASON : given;
+export function ConflictRow({ operationState, conflicted, reason: given, running = false, reconciling = false, loading = false, onAction, bindControl }: ConflictRowProps) {
+  const quiet = quietReason(running, reconciling);
+  const reason = quiet ?? given;
   const reasonId = useId();
   const continueId = useId();
   const [refusals, setRefusals] = useState<Partial<Record<ConflictAction, Refusal>>>({});
@@ -86,19 +89,17 @@ export function ConflictRow({ operationState, conflicted, reason: given, running
       {label}
     </Button>
   );
-  const runningLine = running ? <span className="block">{RUNNING_REASON}</span> : null;
-  const tip = (key: ConflictAction, control: ReactElement, text: string | null) =>
-    text === null && runningLine === null ? (
-      control
-    ) : (
-      <Tooltip key={key}>
-        <TooltipTrigger render={control} />
-        <TooltipContent>
-          {text}
-          {runningLine}
-        </TooltipContent>
-      </Tooltip>
-    );
+  const runningLine = quiet !== null ? <span className="block">{quiet}</span> : null;
+  // A stable trigger keeps the focus of a control when the quiet reason ends.
+  const tip = (key: ConflictAction, control: ReactElement, text: string | null) => (
+    <Tooltip key={key} disabled={text === null && runningLine === null}>
+      <TooltipTrigger render={control} />
+      <TooltipContent>
+        {text}
+        {runningLine}
+      </TooltipContent>
+    </Tooltip>
+  );
   const skip = tip("skip", action("skip", "Skip…", NextIcon, reason, reasonId), SKIP_TOOLTIP);
   // Refusals other than `rebase-exec` and `unknown-operation` name their action and reason.
   const lines = (Object.entries(refusals) as [ConflictAction, Refusal][]).filter(([, r]) => r.reason !== "rebase-exec" && r.reason !== "unknown-operation");
@@ -114,7 +115,7 @@ export function ConflictRow({ operationState, conflicted, reason: given, running
         </div>
       )}
       {reason === null ? null : (
-        <span id={reasonId} className={running ? "sr-only" : "text-muted-text"}>
+        <span id={reasonId} className={quiet !== null ? "sr-only" : "text-muted-text"}>
           {reason}
         </span>
       )}

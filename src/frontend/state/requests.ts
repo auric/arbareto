@@ -67,6 +67,8 @@ export type RequestState = {
   refsSeq: number;
   /** The HEAD of the newest `readWorkspace` result, and the `nextRequestSeq()` value when its request was sent. */
   headRead: { head: Head; seq: number } | null;
+  /** True while the reconcile read of `mutationEnded` runs. Its result carries the generation that the next review names (contract §8). */
+  reconciling: boolean;
 };
 
 const POLL_MS = 1000;
@@ -93,6 +95,7 @@ const INITIAL: RequestState = {
   historyEpoch: 0,
   refsSeq: 0,
   headRead: null,
+  reconciling: false,
 };
 
 // Contract §3: a `WorkspaceSnapshot` has `snapshotId`, and a `WorkspaceRefusal` has none.
@@ -177,7 +180,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
   }
   const update = (patch: Partial<RequestState>) => {
     const next = { ...state, ...patch };
-    set({ ...patch, blocked: blocked(next.workspace), capability: capability(next) });
+    set({ ...patch, blocked: blocked(next.workspace), capability: capability(next), reconciling: reconciling !== null });
   };
 
   /** `onEnd` runs once when this read ends with any result, also after a newer open drops it. */

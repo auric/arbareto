@@ -7,7 +7,7 @@ import { useCallback, useEffect, useId, useRef, type KeyboardEvent } from "react
 import { WarningIcon } from "../app/NoticeBand";
 import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
-import { RUNNING_REASON } from "./SyncToolbar";
+import { quietReason } from "./SyncToolbar";
 
 // Feature 003 spec FR-027 and FR-057, plan.md D6 and D12, data-model §7 `mode-required`.
 
@@ -22,12 +22,15 @@ export type PullModeChoiceProps = {
   reason: string | null;
   /** True while `operation !== null && response === null`. The running reason then replaces `reason` without a visible line (plan.md D12). */
   running?: boolean;
+  /** True while the reconcile read after a mutation outcome runs. Its reason follows the running reason rule. */
+  reconciling?: boolean;
   bindControl?: (element: HTMLButtonElement) => () => void;
 };
 
 /** The notice band row of a pull that needs a mode. The first choice takes focus, and Escape cancels. */
-export function PullModeChoice({ onChoose, onCancel, reason: given, running = false, bindControl }: PullModeChoiceProps) {
-  const reason = running ? RUNNING_REASON : given;
+export function PullModeChoice({ onChoose, onCancel, reason: given, running = false, reconciling = false, bindControl }: PullModeChoiceProps) {
+  const quiet = quietReason(running, reconciling);
+  const reason = quiet ?? given;
   const reasonId = useId();
   const first = useRef<HTMLButtonElement | null>(null);
   // plan.md D12: the question takes focus only when no editable field holds it.
@@ -64,13 +67,12 @@ export function PullModeChoice({ onChoose, onCancel, reason: given, running = fa
         {mode === "rebase" ? "Rebase" : "Merge"}
       </Button>
     );
-    return running ? (
-      <Tooltip>
+    // The row mounts while the reconcile read runs, and the first choice takes focus then. A stable trigger keeps that focus when the read ends.
+    return (
+      <Tooltip disabled={quiet === null}>
         <TooltipTrigger render={control} />
-        <TooltipContent>{RUNNING_REASON}</TooltipContent>
+        <TooltipContent>{quiet}</TooltipContent>
       </Tooltip>
-    ) : (
-      control
     );
   };
   return (
@@ -85,7 +87,7 @@ export function PullModeChoice({ onChoose, onCancel, reason: given, running = fa
         </Button>
       </div>
       {reason === null ? null : (
-        <span id={reasonId} className={running ? "sr-only" : "text-muted-text"}>
+        <span id={reasonId} className={quiet !== null ? "sr-only" : "text-muted-text"}>
           {reason}
         </span>
       )}

@@ -24,8 +24,8 @@ const APP_TEST_TIMEOUT_MS = APP_WAITS * (MAX_WAIT_MS + MAX_CALL_MS) + 2 * PROBE_
 const PROCESS_SUSPEND_RESUME = 0x0800;
 // `UIAutomationCoreApi.h`: the element is gone.
 const UIA_E_ELEMENTNOTAVAILABLE = 0x8004_0201;
-// The T241 case runs 13 UIA waits, a menu-close wait, 6 state waits, and 2 status-text waits, plus the same probes and waits as the case above.
-const T241_WAITS = 22;
+// The T241 case runs 14 UIA waits, a menu-close wait, 6 state waits, and 3 status-text waits, plus the same probes and waits as the case above.
+const T241_WAITS = 24;
 const T241_TEST_TIMEOUT_MS = T241_WAITS * (MAX_WAIT_MS + MAX_CALL_MS) + 2 * PROBE_TIMEOUT_MS + 2 * WAIT_MS;
 const OPEN_FOLDER = "Open folder… (Ctrl+O)";
 
@@ -308,8 +308,12 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
           await invokeEnabled("Next hunk");
           await invokeEnabled("Stage selected hunk");
           console.log(`STATUS_TEXT ${JSON.stringify(await waitStatus(app.pid, "Hunk staged"))}`);
+          // `specialParts` in `HistoryView.tsx`: the Index row name. The renderer takes it and the new generation from the same reconcile read (T381).
+          await found("Index, 1 staged");
           await invokeEnabled("Fetch");
-          // The sync toolbar Cancel is named "Cancel fetch", so "Cancel" is the status bar control.
+          // A refused review starts no fetch. The wait error then holds the status texts.
+          console.log(`STATUS_TEXT ${JSON.stringify(await waitStatus(app.pid, "Fetching from origin…"))}`);
+          // The sync toolbar Cancel is named "Cancel Fetch", so "Cancel" is the status bar control.
           await found("Cancel", ControlType.Button, invoke);
           console.log(`STATUS_TEXT ${JSON.stringify(await waitStatus(app.pid, "Fetch canceled"))}`);
           // `RepositoryMenu.tsx`: the menu holds Revoke trust. The Base UI menu exists in the tree only while it is open.

@@ -138,38 +138,29 @@ fn context(contexts: &Contexts, kind: ContextKind, path: PathBuf, now: Instant) 
 }
 
 /// A picker call failure is a refusal, not a Cancel.
+/// The context age starts when the picker returns (contract §6 "Context rules").
 fn picked(
     pick: Result<Option<PathBuf>, &'static str>,
     contexts: &Contexts,
     kind: ContextKind,
-    now: Instant,
 ) -> Chosen {
     match pick {
-        Ok(Some(path)) => context(contexts, kind, path, now),
+        Ok(Some(path)) => context(contexts, kind, path, Instant::now()),
         Ok(None) => Chosen::Canceled,
         Err(code) => Chosen::Refused(code),
     }
 }
 
-fn pick_git(native: &dyn Native, contexts: &Contexts, now: Instant) -> Chosen {
-    picked(
-        native.pick_executable(),
-        contexts,
-        ContextKind::GitProbe,
-        now,
-    )
+fn pick_git(native: &dyn Native, contexts: &Contexts) -> Chosen {
+    picked(native.pick_executable(), contexts, ContextKind::GitProbe)
 }
 
 /// Creates a `gitProbe` context for the contract §3 "Git proposal" candidate: the saved selected path,
 /// then the `PATH` search result, then `%ProgramFiles%\Git\cmd\git.exe`. Without a candidate, it opens the picker.
 /// A path whose identity cannot be read is no candidate.
-pub fn choose_git(
-    native: &dyn Native,
-    saved: Option<&SavedGit>,
-    contexts: &Contexts,
-    now: Instant,
-) -> Chosen {
-    let probe = |path: PathBuf| match context(contexts, ContextKind::GitProbe, path, now) {
+pub fn choose_git(native: &dyn Native, saved: Option<&SavedGit>, contexts: &Contexts) -> Chosen {
+    let probe = |path: PathBuf| match context(contexts, ContextKind::GitProbe, path, Instant::now())
+    {
         chosen @ Chosen::Context { .. } => Some(chosen),
         _ => None,
     };
@@ -181,16 +172,15 @@ pub fn choose_git(
                 .program_files()
                 .and_then(|folder| probe(folder.join(r"Git\cmd\git.exe")))
         })
-        .unwrap_or_else(|| pick_git(native, contexts, now))
+        .unwrap_or_else(|| pick_git(native, contexts))
 }
 
 /// Opens the folder picker and creates a `repositoryDiscovery` context.
-pub fn choose_repository(native: &dyn Native, contexts: &Contexts, now: Instant) -> Chosen {
+pub fn choose_repository(native: &dyn Native, contexts: &Contexts) -> Chosen {
     picked(
         native.pick_folder(),
         contexts,
         ContextKind::RepositoryDiscovery,
-        now,
     )
 }
 
@@ -233,7 +223,6 @@ pub fn choose_clone(
     native: &dyn Native,
     contexts: &Contexts,
     payload: &Value,
-    now: Instant,
 ) -> Result<Option<Cloned>, &'static str> {
     let (Some(url), Some(destination), Some(key_file)) = (
         payload["url"].as_str(),
@@ -255,7 +244,7 @@ pub fn choose_clone(
         },
         _ => return Err(INVALID),
     };
-    let (clone_id, bootstrap_id) = contexts.create_clone(&destination, url, key, now);
+    let (clone_id, bootstrap_id) = contexts.create_clone(&destination, url, key, Instant::now());
     Ok(Some(Cloned {
         clone_id,
         bootstrap_id,
@@ -337,16 +326,11 @@ impl Registered {
 }
 
 /// Shows the Git selection confirmation. Choose another Git opens the executable picker.
-pub fn confirm_git(
-    native: &dyn Native,
-    proposal: &Proposal,
-    contexts: &Contexts,
-    now: Instant,
-) -> Registered {
+pub fn confirm_git(native: &dyn Native, proposal: &Proposal, contexts: &Contexts) -> Registered {
     let confirmation = git_confirmation(proposal);
     match native.confirm(&confirmation) {
         Some(id) if id == confirmation.accept_button => Registered::Approved,
-        Some(ANOTHER) => match pick_git(native, contexts, now) {
+        Some(ANOTHER) => match pick_git(native, contexts) {
             Chosen::Context { bootstrap_id, path } => Registered::Another {
                 bootstrap_id,
                 executable_path: path,
@@ -778,11 +762,12 @@ pub(crate) mod tests {
     use super::*;
 
     use std::cell::RefCell;
+    use std::time::Duration;
 
     use serde_json::json;
     use windows::Win32::UI::WindowsAndMessaging::IDCANCEL;
 
-    use crate::bootstrap::{ContextKind, read_identity};
+    use crate::bootstrap::{CONTEXT_LIFETIME, ContextKind, read_identity};
     use crate::jobs::tests::Fixture;
 
     const SESSION: &str = "11111111-1111-4111-8111-111111111111";
@@ -824,6 +809,8 @@ pub(crate) mod tests {
         pub(crate) file: Option<PathBuf>,
         /// A picker call failure code. It overrides `executable`, `folder`, and `file`.
         pub(crate) pick_failure: Option<&'static str>,
+        /// The time that each picker blocks, as a user in the dialog.
+        pub(crate) pick_wait: Duration,
         pub(crate) presses: RefCell<Vec<Press>>,
         pub(crate) calls: RefCell<Vec<&'static str>>,
     }
@@ -844,11 +831,13 @@ pub(crate) mod tests {
     impl Native for Fake {
         fn pick_executable(&self) -> Result<Option<PathBuf>, &'static str> {
             self.calls.borrow_mut().push("pick_executable");
+            std::thread::sleep(self.pick_wait);
             self.pick_failure.map_or(Ok(self.executable.clone()), Err)
         }
 
         fn pick_folder(&self) -> Result<Option<PathBuf>, &'static str> {
             self.calls.borrow_mut().push("pick_folder");
+            std::thread::sleep(self.pick_wait);
             self.pick_failure.map_or(Ok(self.folder.clone()), Err)
         }
 
@@ -857,6 +846,7 @@ pub(crate) mod tests {
                 FileKind::Plink => "pick_file plink",
                 FileKind::Key => "pick_file key",
             });
+            std::thread::sleep(self.pick_wait);
             self.pick_failure.map_or(Ok(self.file.clone()), Err)
         }
 
@@ -971,7 +961,7 @@ pub(crate) mod tests {
             search: Some(file(&fixture, "path\\git.exe")),
             ..Fake::default()
         };
-        let chosen = choose_git(&native, Some(&saved(&saved_git)), &contexts, Instant::now());
+        let chosen = choose_git(&native, Some(&saved(&saved_git)), &contexts);
         assert_eq!(
             context(&contexts, &chosen),
             (ContextKind::GitProbe, saved_git)
@@ -993,7 +983,7 @@ pub(crate) mod tests {
             ..saved(&file(&fixture, "Git\\mingw64\\libexec\\git-core\\git.exe"))
         };
         let native = Fake::default();
-        let chosen = choose_git(&native, Some(&saved_git), &contexts, Instant::now());
+        let chosen = choose_git(&native, Some(&saved_git), &contexts);
         assert_eq!(
             context(&contexts, &chosen),
             (ContextKind::GitProbe, wrapper)
@@ -1011,7 +1001,7 @@ pub(crate) mod tests {
             ..Fake::default()
         };
         file(&fixture, "pf\\Git\\cmd\\git.exe");
-        let chosen = choose_git(&native, None, &contexts, Instant::now());
+        let chosen = choose_git(&native, None, &contexts);
         assert_eq!(context(&contexts, &chosen), (ContextKind::GitProbe, found));
         assert!(!native.calls().contains(&"pick_executable"));
     }
@@ -1025,7 +1015,7 @@ pub(crate) mod tests {
             program_files: Some(fixture.path("pf")),
             ..Fake::default()
         };
-        let chosen = choose_git(&native, None, &contexts, Instant::now());
+        let chosen = choose_git(&native, None, &contexts);
         assert_eq!(
             context(&contexts, &chosen),
             (ContextKind::GitProbe, program_files_git)
@@ -1044,7 +1034,7 @@ pub(crate) mod tests {
             program_files: Some(folder(&fixture, "pf-without-git")),
             ..Fake::default()
         };
-        let chosen = choose_git(&native, None, &contexts, Instant::now());
+        let chosen = choose_git(&native, None, &contexts);
         assert_eq!(context(&contexts, &chosen), (ContextKind::GitProbe, picked));
         assert_eq!(
             native
@@ -1060,15 +1050,9 @@ pub(crate) mod tests {
     fn a_canceled_picker_returns_canceled() {
         let contexts = Contexts::new(SESSION);
         let native = Fake::default();
-        assert_eq!(
-            choose_git(&native, None, &contexts, Instant::now()),
-            Chosen::Canceled
-        );
+        assert_eq!(choose_git(&native, None, &contexts), Chosen::Canceled);
         assert!(native.calls().contains(&"pick_executable"));
-        assert_eq!(
-            choose_repository(&native, &contexts, Instant::now()),
-            Chosen::Canceled
-        );
+        assert_eq!(choose_repository(&native, &contexts), Chosen::Canceled);
         assert!(native.calls().contains(&"pick_folder"));
     }
 
@@ -1080,11 +1064,11 @@ pub(crate) mod tests {
             ..Fake::default()
         };
         assert_eq!(
-            choose_repository(&native, &contexts, Instant::now()),
+            choose_repository(&native, &contexts),
             Chosen::Refused(PICKER_FAILED)
         );
         assert_eq!(
-            choose_git(&native, None, &contexts, Instant::now()),
+            choose_git(&native, None, &contexts),
             Chosen::Refused(PICKER_FAILED),
             "a failed executable pick"
         );
@@ -1099,7 +1083,7 @@ pub(crate) mod tests {
             folder: Some(repository.clone()),
             ..Fake::default()
         };
-        let chosen = choose_repository(&native, &contexts, Instant::now());
+        let chosen = choose_repository(&native, &contexts);
         assert_eq!(
             context(&contexts, &chosen),
             (ContextKind::RepositoryDiscovery, repository)
@@ -1190,13 +1174,13 @@ pub(crate) mod tests {
         };
         let native = Fake::pressing(&[Press::Label("Use this Git")]);
         assert_eq!(
-            confirm_git(&native, &proposal, &contexts, Instant::now()),
+            confirm_git(&native, &proposal, &contexts),
             Registered::Approved
         );
         for press in CANCELS {
             let native = Fake::pressing(&[press]);
             assert_eq!(
-                confirm_git(&native, &proposal, &contexts, Instant::now()),
+                confirm_git(&native, &proposal, &contexts),
                 Registered::Declined
             );
             assert!(!native.calls().contains(&"pick_executable"));
@@ -1246,7 +1230,7 @@ pub(crate) mod tests {
             executable: Some(picked.clone()),
             ..Fake::pressing(&[Press::Label("Choose another Git")])
         };
-        let registered = confirm_git(&native, &proposal, &contexts, Instant::now());
+        let registered = confirm_git(&native, &proposal, &contexts);
         let Registered::Another {
             bootstrap_id,
             executable_path,
@@ -1281,7 +1265,7 @@ pub(crate) mod tests {
         };
         let native = Fake::pressing(&[Press::Label("Choose another Git")]);
         assert_eq!(
-            confirm_git(&native, &proposal, &contexts, Instant::now()),
+            confirm_git(&native, &proposal, &contexts),
             Registered::Declined
         );
         assert!(native.calls().contains(&"pick_executable"));
@@ -1525,7 +1509,7 @@ pub(crate) mod tests {
         };
         file(&fixture, "pf\\Git\\cmd\\git.exe");
         let missing = saved(&fixture.path("moved\\git.exe"));
-        let chosen = choose_git(&native, Some(&missing), &contexts, Instant::now());
+        let chosen = choose_git(&native, Some(&missing), &contexts);
         assert_eq!(context(&contexts, &chosen), (ContextKind::GitProbe, found));
         assert!(!native.calls().contains(&"pick_executable"));
     }
@@ -1541,11 +1525,11 @@ pub(crate) mod tests {
             ..Fake::default()
         };
         assert_eq!(
-            choose_repository(&native, &contexts, Instant::now()),
+            choose_repository(&native, &contexts),
             Chosen::Refused("UNSUPPORTED_REPOSITORY")
         );
         assert_eq!(
-            choose_git(&native, None, &contexts, Instant::now()),
+            choose_git(&native, None, &contexts),
             Chosen::Refused("GIT_UNAVAILABLE")
         );
     }
@@ -1763,14 +1747,9 @@ pub(crate) mod tests {
         let native = Fake::default();
         let destination = fixture.path(r"absent\repo");
         let text = destination.to_str().expect("path");
-        let cloned = choose_clone(
-            &native,
-            &contexts,
-            &clone_payload(text, "none"),
-            Instant::now(),
-        )
-        .expect("checked")
-        .expect("contexts");
+        let cloned = choose_clone(&native, &contexts, &clone_payload(text, "none"))
+            .expect("checked")
+            .expect("contexts");
         assert!(native.calls().is_empty(), "no picker without a key file");
         assert_eq!(cloned.destination, destination);
         let now = Instant::now();
@@ -1798,7 +1777,6 @@ pub(crate) mod tests {
             &native,
             &contexts,
             &clone_payload(r"\\wsl$\Ubuntu-24.04\home\u\new", "none"),
-            now,
         )
         .expect("a WSL route")
         .expect("contexts");
@@ -1824,12 +1802,7 @@ pub(crate) mod tests {
             r"\\wsl.localhost\",
         ] {
             assert_eq!(
-                choose_clone(
-                    &native,
-                    &contexts,
-                    &clone_payload(destination, "picked"),
-                    Instant::now()
-                ),
+                choose_clone(&native, &contexts, &clone_payload(destination, "picked"),),
                 Err("INVALID_REQUEST"),
                 "{destination}"
             );
@@ -1844,17 +1817,14 @@ pub(crate) mod tests {
         let destination = fixture.path("repo");
         let payload = clone_payload(destination.to_str().expect("path"), "picked");
         let canceled = Fake::default();
-        assert_eq!(
-            choose_clone(&canceled, &contexts, &payload, Instant::now()),
-            Ok(None)
-        );
+        assert_eq!(choose_clone(&canceled, &contexts, &payload), Ok(None));
         assert_eq!(canceled.calls(), ["pick_file key"]);
         let failed = Fake {
             pick_failure: Some(PICKER_FAILED),
             ..Fake::default()
         };
         assert_eq!(
-            choose_clone(&failed, &contexts, &payload, Instant::now()),
+            choose_clone(&failed, &contexts, &payload),
             Err(PICKER_FAILED)
         );
         let key = fixture.path("id.ppk");
@@ -1862,7 +1832,7 @@ pub(crate) mod tests {
             file: Some(key.clone()),
             ..Fake::default()
         };
-        let cloned = choose_clone(&picked, &contexts, &payload, Instant::now())
+        let cloned = choose_clone(&picked, &contexts, &payload)
             .expect("checked")
             .expect("contexts");
         assert_eq!(
@@ -1872,5 +1842,65 @@ pub(crate) mod tests {
                 .key,
             Some(key)
         );
+    }
+
+    // ---- context age ----
+
+    /// Contract §6 "Context rules": a live context is younger than 60 seconds, counted from its creation after the pick.
+    #[test]
+    fn a_picked_context_lives_60_seconds_from_the_pick_not_from_the_call() {
+        let fixture = Fixture::new();
+        let contexts = Contexts::new(SESSION);
+        let path = file(&fixture, "path\\git.exe");
+        let proposal = Proposal {
+            selected_path: &path,
+            executable_path: &path,
+            version: "2.55.0.windows.3",
+            stored_version: None,
+        };
+        let native = Fake {
+            executable: Some(file(&fixture, "picked\\git.exe")),
+            folder: Some(folder(&fixture, "repo")),
+            file: Some(fixture.path("id.ppk")),
+            pick_wait: Duration::from_millis(5),
+            ..Fake::pressing(&[Press::Label("Choose another Git")])
+        };
+        let payload = clone_payload(fixture.path("clone").to_str().expect("path"), "picked");
+        let called = Instant::now();
+        let Chosen::Context {
+            bootstrap_id: git, ..
+        } = choose_git(&native, None, &contexts)
+        else {
+            panic!("chooseGit context");
+        };
+        let Chosen::Context {
+            bootstrap_id: repository,
+            ..
+        } = choose_repository(&native, &contexts)
+        else {
+            panic!("chooseRepository context");
+        };
+        let Registered::Another {
+            bootstrap_id: another,
+            ..
+        } = confirm_git(&native, &proposal, &contexts)
+        else {
+            panic!("Choose another Git context");
+        };
+        let cloned = choose_clone(&native, &contexts, &payload)
+            .expect("checked")
+            .expect("contexts");
+        for (name, id) in [
+            ("chooseGit", git),
+            ("chooseRepository", repository),
+            ("Choose another Git", another),
+            ("clone", cloned.clone_id),
+            ("clone discovery", cloned.bootstrap_id),
+        ] {
+            assert!(
+                contexts.get(&id, called + CONTEXT_LIFETIME).is_ok(),
+                "{name}: live 60 s after the call"
+            );
+        }
     }
 }

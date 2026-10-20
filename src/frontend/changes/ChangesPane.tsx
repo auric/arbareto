@@ -127,7 +127,7 @@ export function ChangesPane(props: ChangesPaneProps) {
   const setUntrackedOpen = (next: boolean) => (props.onUntrackedOpen ? props.onUntrackedOpen(next) : setOwnOpen(next));
   const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());
   const [marked, setMarked] = useState<Marked | null>(null);
-  const [menu, setMenu] = useState<{ row: TreeRow; list: ListName; anchor: HTMLElement } | null>(null);
+  const [menu, setMenu] = useState<{ row: TreeRow; list: ListName; anchor: HTMLElement; byKey: boolean } | null>(null);
   const [ignore, setIgnore] = useState<{ review: Extract<IgnoreReview, { ok: true }>; anchor: HTMLElement } | null>(null);
   const copy = useCopy();
   // Spec FR-101: Filter files filters only the shown rows. The derived actions and every count keep the status read.
@@ -394,7 +394,7 @@ export function ChangesPane(props: ChangesPaneProps) {
         return copy;
       });
     },
-    onMenu: (row: TreeRow, anchor: HTMLElement) => setMenu({ row, list, anchor }),
+    onMenu: (row: TreeRow, anchor: HTMLElement, byKey = false) => setMenu({ row, list, anchor, byKey }),
     onRowAction: (row: TreeRow) => {
       if (row.kind === "file") actOnEntry(row.entry);
       else if (row.kind === "folder") void runFiles(folderRequest(row, list), folderLabel(list));
@@ -524,7 +524,7 @@ export function ChangesPane(props: ChangesPaneProps) {
         </section>
       </div>
       {menu === null ? null : (
-        <ActionMenu label={menu.row.kind === "file" ? menu.row.entry.path : menu.row.kind === "folder" ? menu.row.path : "Untracked"} groups={menuGroups(menu.row, menu.list, menu.anchor)} open anchor={menu.anchor} onOpenChange={(open) => !open && setMenu(null)} finalFocus={() => menu.anchor} />
+        <ActionMenu label={menu.row.kind === "file" ? menu.row.entry.path : menu.row.kind === "folder" ? menu.row.path : "Untracked"} groups={menuGroups(menu.row, menu.list, menu.anchor)} open anchor={menu.anchor} byKey={menu.byKey} onOpenChange={(open) => !open && setMenu(null)} finalFocus={() => menu.anchor} />
       )}
       {ignore === null ? null : (
         <ConfirmPopover
@@ -616,7 +616,7 @@ type TreeListProps = {
   onMark(entry: ChangeEntry, mode: "toggle" | "range", visible: readonly ChangeEntry[]): void;
   onSpace(row: TreeRow, list: ListName, event: ReactKeyboardEvent): void;
   onToggle(row: TreeRow, open?: boolean): void;
-  onMenu(row: TreeRow, anchor: HTMLElement): void;
+  onMenu(row: TreeRow, anchor: HTMLElement, byKey?: boolean): void;
   onRowAction(row: TreeRow): void;
 };
 
@@ -686,7 +686,7 @@ function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedI
     }
     if ((event.key === "F10" && event.shiftKey && !event.ctrlKey && !event.altKey) || (event.key === "ContextMenu" && !event.shiftKey)) {
       event.preventDefault();
-      return onMenu(row, item!);
+      return onMenu(row, item!, true);
     }
     if (event.ctrlKey || event.altKey || event.metaKey) return;
     if (event.shiftKey && event.key !== "ArrowDown" && event.key !== "ArrowUp") return;

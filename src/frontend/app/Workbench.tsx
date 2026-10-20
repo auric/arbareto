@@ -583,7 +583,7 @@ export function HistoryViewMount({ state, history, density, profile, textScale, 
       onScope={(scope) => void history.setScope(scope)}
       filterRef={filterRef}
       tracking={tracking}
-      onLabelMenu={branches === undefined ? undefined : (label, anchor) => branches.onRef(label.kind as "branch" | "remote", label.name, "menu", anchor)}
+      onLabelMenu={branches === undefined ? undefined : (label, anchor, byKey) => branches.onRef(label.kind as "branch" | "remote", label.name, "menu", anchor, byKey)}
       onCreateBranch={branches?.create}
     />
   );
@@ -1582,7 +1582,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       repository={state.repository?.worktreeKey ?? ""}
       onShowBranchHistory={() => void historyView.setScope("current")}
       tracking={labels}
-      onBranchAction={branches.entries === null ? undefined : (entry, action, anchor) => branches.onRef(entry.kind as "branch" | "remote", entry.name, action, anchor)}
+      onBranchAction={branches.entries === null ? undefined : (entry, action, anchor, byKey) => branches.onRef(entry.kind as "branch" | "remote", entry.name, action, anchor, byKey)}
       after={state.repository === null ? null : <WorktreesGroup actions={worktrees} rowHeight={m.row} />}
     />
   );

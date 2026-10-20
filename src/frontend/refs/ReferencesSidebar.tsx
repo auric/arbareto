@@ -80,7 +80,7 @@ export type ReferencesSidebarProps = {
    * Feature 004 spec FR-009 and FR-014: the branch actions of a local or remote-tracking branch row. `menu` opens the context menu,
    * `confirm` is a double-click, and a D15 key gives its action. Without it, only the current branch opens the 002 menu.
    */
-  onBranchAction?: (entry: RefEntry, action: "menu" | "confirm" | ScopedAction, anchor: HTMLElement) => void;
+  onBranchAction?: (entry: RefEntry, action: "menu" | "confirm" | ScopedAction, anchor: HTMLElement, byKey?: boolean) => void;
   /** Feature 004 plan.md D15 "P2 regions": the groups after the references, such as Worktrees. They scroll with the sidebar. */
   after?: ReactNode;
 };
@@ -246,13 +246,13 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   const isCurrent = (row: Row) => row.kind === "branch" && row.node.entry !== undefined && refs?.current?.name === row.node.entry.name;
   // Feature 004: a branch row without a symbolic target has the branch actions.
   const actionable = (row: Row) => onBranchAction !== undefined && (row.kind === "branch" || row.kind === "remote") && row.node.entry !== undefined && row.node.entry.symref === null;
-  const branchAction = (row: Row, action: "menu" | "confirm" | ScopedAction) => {
+  const branchAction = (row: Row, action: "menu" | "confirm" | ScopedAction, byKey = false) => {
     const element = elements.current.get(row.node.key);
-    if (element !== undefined) onBranchAction!(row.node.entry!, action, element);
+    if (element !== undefined) onBranchAction!(row.node.entry!, action, element, byKey);
   };
   // Spec FR-049: the item shows only on the current branch, so no other row opens a menu.
-  const openMenu = (row: Row) => {
-    if (actionable(row)) branchAction(row, "menu");
+  const openMenu = (row: Row, byKey = false) => {
+    if (actionable(row)) branchAction(row, "menu", byKey);
     else if (onShowBranchHistory !== undefined && isCurrent(row)) setMenu(row.node.key);
   };
 
@@ -268,7 +268,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     // Windows sends Shift+F10 and the Menu key to the focused element.
     if ((event.key === "F10" && event.shiftKey) || event.key === "ContextMenu") {
       event.preventDefault();
-      return openMenu(row);
+      return openMenu(row, true);
     }
     if (event.shiftKey) return;
     const branch = row.node.entry === undefined;

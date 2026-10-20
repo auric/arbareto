@@ -375,6 +375,19 @@ describe("results (FR-081, FR-082)", () => {
     expect(document.querySelector('[role="menu"]')!.getAttribute("aria-label")).toBe("Actions for vendor/b");
   });
 
+  for (const [name, init] of [
+    ["Shift+F10", { key: "F10", shiftKey: true }],
+    ["the Menu key", { key: "ContextMenu" }],
+  ] as const)
+    test(`${name} on a focused row moves the focus to the first menu item, so the focus outline shows (D16)`, async () => {
+      await finished();
+      await act(async () => row("vendor/b").focus());
+      await press(row("vendor/b"), init.key, init);
+      const first = document.querySelector<HTMLElement>('[data-slot="dropdown-menu-content"] [role="menuitem"]');
+      expect(first).not.toBeNull();
+      expect(document.activeElement).toBe(first!);
+    });
+
   test("UNKNOWN_TARGET of a scoped review reads the rows again and starts no update", async () => {
     const { double, failures } = await finished();
     await click(button("Retry", row("vendor/b")));

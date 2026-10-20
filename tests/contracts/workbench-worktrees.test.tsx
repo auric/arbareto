@@ -250,6 +250,20 @@ describe("sidebar Worktrees group (FR-050, FR-051)", () => {
     await press(list, "Enter");
     expect(opened(double)).toEqual([{ repositoryId: fixtureId(1), path: "C:/wt/repo-hotfix" }]);
   });
+
+  for (const [name, init] of [
+    ["Shift+F10", { key: "F10", shiftKey: true }],
+    ["the Menu key", { key: "ContextMenu" }],
+  ] as const)
+    test(`${name} on the active row moves the focus to the first menu item, so the focus outline shows (D16)`, async () => {
+      await mountWorkbench(workbench, worktreeWorld());
+      await groupRow("repo");
+      const list = document.querySelector<HTMLElement>('[data-slot="worktrees-group"] [role="listbox"]')!;
+      await act(async () => list.focus());
+      await press(list, init.key, init);
+      expect(menuItems().length).toBeGreaterThan(0);
+      expect(document.activeElement).toBe(menuItems()[0]!);
+    });
 });
 
 describe("the draft of each worktree across Open (FR-051, 001 FR-034, T104)", () => {

@@ -531,6 +531,19 @@ describe("Untracked menu and ignore items (FR-045, FR-046, plan D9)", () => {
     await click(menuItem("Show in Explorer"));
     expect(double.pending("revealPath")!.args[0]).toEqual({ repositoryId: fixtureId(1), entryId: all.find((e) => e.path === "notes.txt")!.entryId });
   });
+
+  for (const [name, init] of [
+    ["Shift+F10", { key: "F10", shiftKey: true }],
+    ["the Menu key", { key: "ContextMenu" }],
+  ] as const)
+    test(`${name} on a focused row moves the focus to the first menu item, so the focus outline shows (D16)`, async () => {
+      await openCommitView(createWorld({ entries: board().all }));
+      const row = item("Changes", "src");
+      await act(async () => row.focus());
+      await press(row, init.key, init);
+      expect(menuItems().length).toBeGreaterThan(0);
+      expect(document.activeElement).toBe(menuItems()[0]!);
+    });
 });
 
 // --- Hunks and lines --------------------------------------------------------------------------------------------------

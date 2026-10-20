@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { describeGit } from "../git/git-binary";
 import { FIXTURE_ROOT, fixtureDir, ownedGit, removeTree, useFixtureRoot } from "../git/fixture-root";
@@ -10,6 +10,7 @@ import { sha256 } from "../git/git-oracle";
 import { builderDigest, buildPerfRepo, C8_PATH, copyPerfFixture, copyPerfMD, ensurePerfFixture, hasCommitGraph, MD_PATH, MIXED_PATH, PERF_CACHE_ROOT, PERF_L, PERF_M, PERF_SEED, semanticDigest, type PerfFacts, type PerfSpec } from "./perf-fixtures";
 
 // This file imports no `src/` module, so it prints no ORIGIN line for `src/`.
+console.log(`ORIGIN ${Bun.resolveSync("./perf-fixtures.ts", import.meta.dir)}`);
 
 const MiB = 1024 * 1024;
 const paths = (out: Buffer) => out.toString("utf8").split("\0").filter((p) => p !== "").sort();
@@ -213,6 +214,28 @@ describeGit("performance fixtures", (git) => {
       expect([afterGraph.reused, afterGraph.manifest.facts.semanticDigest]).toEqual([false, digest]);
 
       expect(ensurePerfFixture(git, spec).reused).toBe(true);
+    } finally {
+      removeTree(first.folder);
+    }
+  }, 120_000);
+
+  test("reuse refuses a cached fixture whose kept stream is missing or is not a regular file", () => {
+    const spec: PerfSpec = { name: `stream-${process.pid}`, files: 300, commits: 120, refs: 8, largeText: false };
+    const first = ensurePerfFixture(git, spec, true, true);
+    try {
+      const digest = first.manifest.facts.semanticDigest;
+      expect([first.reused, existsSync(first.stream!)]).toEqual([false, true]);
+
+      rmSync(first.stream!);
+      const afterRemove = ensurePerfFixture(git, spec, true, true);
+      expect([afterRemove.reused, afterRemove.manifest.facts.semanticDigest, statSync(afterRemove.stream!).isFile()]).toEqual([false, digest, true]);
+
+      rmSync(afterRemove.stream!);
+      mkdirSync(afterRemove.stream!);
+      const afterDir = ensurePerfFixture(git, spec, true, true);
+      expect([afterDir.reused, afterDir.manifest.facts.semanticDigest, statSync(afterDir.stream!).isFile()]).toEqual([false, digest, true]);
+
+      expect(ensurePerfFixture(git, spec, true, true).reused).toBe(true);
     } finally {
       removeTree(first.folder);
     }

@@ -503,6 +503,13 @@ describe("host lines (FR-079)", () => {
     expect(document.activeElement).toBe(button("Update submodules", group()));
   });
 
+  test("Update anyway moves the focus to Update submodules, so the focus never drops to the page", async () => {
+    await withHosts();
+    await click(button("Update anyway", hostLine()!));
+    expect(hostLine()).toBeNull();
+    expect(document.activeElement).toBe(button("Update submodules", group()));
+  });
+
   test("Update anyway sends the same token with confirmHosts; STALE_REVIEW reason hosts shows the line again", async () => {
     const { double } = await withHosts();
     await click(button("Update anyway", hostLine()!));

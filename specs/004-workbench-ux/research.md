@@ -414,3 +414,5 @@ Open: the merge tool start stall (plan O-19, R21 N3). bd077e1 adds its diagnosti
 **Batch 5 start exception, 2026-10-19.** Batch 5 started before T062, because the batch 4 service contracts were merged and stable. T062 still gates the ticks.
 
 **Batch 5, 2026-10-19.** Independent batch 5 review, reviewer agent, 2026-10-19, at 32e7771. Scope: WP21 to WP25 and WP29 (T064 to T075). Verdict: approve after fixes. No Critical or High finding. 5 Medium and 6 Low findings. The integration pass fixes them.
+
+**Menu focus follow-up, 2026-10-20.** The 002 current-branch menu of `refs/ReferencesSidebar.tsx` now uses `ActionMenu`, so Shift+F10 and the Menu key focus its first item (plan D15 "Action menu"). The other key-opened row menus already pass `byKey`.

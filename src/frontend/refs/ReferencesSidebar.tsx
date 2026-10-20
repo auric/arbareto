@@ -8,11 +8,11 @@ import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, 
 import type { RefEntry, RefsResult } from "../../contracts/envelope";
 import { unknownReadText } from "../app/RepositoryStates";
 import type { BridgeResponse } from "../bridge";
+import { ActionMenu } from "../components/action-menu";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import { COUNTS_TOOLTIP, type TrackLabel } from "../state/tracking";
 import { scopedAction, type ScopedAction } from "../keyboard/shortcuts";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuShortcut } from "../components/ui/dropdown-menu";
 
 // FR-057. plan.md "References sidebar", "Long text", "Keyboard and focus" (References sidebar row), "Task flow and command placement" (Browse references),
 // "Required visible states" (References), and "Status and fallback texts" (Sidebar texts). Contract §3 "References result". The sidebar is read-only.
@@ -148,8 +148,8 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   // The toggle state lasts for the window session and is not stored (plan.md "References sidebar").
   const [shown, setShown] = useState(!collapsible);
   const [activeKey, setActiveKey] = useState<string | null>(null);
-  // The key of the row whose context menu is open.
-  const [menu, setMenu] = useState<string | null>(null);
+  // The row whose context menu is open, and whether Shift+F10 or the Menu key opened it.
+  const [menu, setMenu] = useState<{ key: string; byKey: boolean } | null>(null);
   // The commits whose last selection gave no row, with the read target.
   const [missing, setMissing] = useState<ReadonlyMap<string, "none" | "unknown">>(new Map());
   const elements = useRef(new Map<string, HTMLElement>());
@@ -253,7 +253,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   // Spec FR-049: the item shows only on the current branch, so no other row opens a menu.
   const openMenu = (row: Row, byKey = false) => {
     if (actionable(row)) branchAction(row, "menu", byKey);
-    else if (onShowBranchHistory !== undefined && isCurrent(row)) setMenu(row.node.key);
+    else if (onShowBranchHistory !== undefined && isCurrent(row)) setMenu({ key: row.node.key, byKey });
   };
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>, index: number) {
@@ -427,7 +427,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     );
   };
 
-  const anchor = menu === null ? undefined : elements.current.get(menu);
+  const anchor = menu === null ? undefined : elements.current.get(menu.key);
   return (
     <section aria-labelledby={ids.heading} className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-1 px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
@@ -455,20 +455,16 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
         </>
       ) : null}
       {onShowBranchHistory === undefined ? null : (
-        <DropdownMenu open={anchor !== undefined} onOpenChange={(next) => (next ? undefined : setMenu(null))}>
-          <DropdownMenuContent anchor={anchor} sideOffset={2} finalFocus={{ current: anchor ?? null }} className="w-auto">
-            <DropdownMenuItem
-              aria-keyshortcuts="Control+Shift+B"
-              onClick={() => {
-                setMenu(null);
-                onShowBranchHistory();
-              }}
-            >
-              {SHOW_BRANCH_HISTORY}
-              <DropdownMenuShortcut aria-hidden="true">Ctrl+Shift+B</DropdownMenuShortcut>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        // Plan.md D15 "Branch menu": the accessible name is "Actions for <branch>".
+        <ActionMenu
+          label={`Actions for ${refs?.current?.name ?? ""}`}
+          groups={[[{ label: SHOW_BRANCH_HISTORY, keys: { aria: "Control+Shift+B", text: "Ctrl+Shift+B" }, onSelect: () => (setMenu(null), onShowBranchHistory()) }]]}
+          open={anchor !== undefined}
+          onOpenChange={(next) => void (next || setMenu(null))}
+          anchor={anchor}
+          byKey={menu?.byKey}
+          finalFocus={{ current: anchor ?? null }}
+        />
       )}
     </section>
   );

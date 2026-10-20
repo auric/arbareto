@@ -5,6 +5,7 @@ import { ArrowDown01Icon, ArrowRight01Icon, Delete02Icon, FolderOpenIcon, Folder
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { ActionMenu } from "../components/action-menu";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { KEYS } from "../keyboard/shortcuts";
 import { entryLabel, folderOf, type WorktreeActions, type WorktreeEntry } from "./WorktreeActions";
 import { WorktreeRow } from "./WorktreeButton";
@@ -83,24 +84,31 @@ export function WorktreesGroup({ actions, rowHeight }: { actions: WorktreeAction
       ) : (
         <div role="listbox" aria-labelledby={ids.heading} tabIndex={0} aria-activedescendant={rowId(at)} className="flex flex-col" onKeyDown={onKeyDown}>
           {entries.map((entry, index) => (
-            <div
-              key={entry.path}
-              id={rowId(index)}
-              role="option"
-              aria-selected={index === at}
-              aria-label={entryLabel(entry)}
-              className={`list-row flex min-w-0 items-center gap-1 pr-2 pl-4 ${index === at ? "bg-hover-fill" : ""}`}
-              style={{ height: rowHeight }}
-              onClick={() => setActive(index)}
-              onDoubleClick={() => actions.open(entry)}
-              onContextMenu={(event) => {
-                event.preventDefault();
-                setActive(index);
-                openMenu(index);
-              }}
-            >
-              <WorktreeRow entry={entry} />
-            </div>
+            // The row cuts its branch and path text, so the tooltip gives the full accessible name (arbareto-ux truncation rule).
+            <Tooltip key={entry.path}>
+              <TooltipTrigger
+                id={rowId(index)}
+                render={
+                  <div
+                    role="option"
+                    aria-selected={index === at}
+                    aria-label={entryLabel(entry)}
+                    className={`list-row flex min-w-0 items-center gap-1 pr-2 pl-4 ${index === at ? "bg-hover-fill" : ""}`}
+                    style={{ height: rowHeight }}
+                    onClick={() => setActive(index)}
+                    onDoubleClick={() => actions.open(entry)}
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      setActive(index);
+                      openMenu(index);
+                    }}
+                  />
+                }
+              >
+                <WorktreeRow entry={entry} />
+              </TooltipTrigger>
+              <TooltipContent>{entryLabel(entry)}</TooltipContent>
+            </Tooltip>
           ))}
         </div>
       )}

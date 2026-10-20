@@ -41,6 +41,8 @@ export const W = {
   lockedReason: "The worktree is locked. Git removes a locked worktree only after git worktree unlock.",
   prunableReason: "The worktree folder is missing. Use Prune to remove its record.",
   isOpen: "This worktree is open.",
+  // Contract Δ9 `UNKNOWN_TARGET`, also of `openWorktree`.
+  unknownTarget: "Arbareto cannot match this worktree with a fresh worktree list.",
   bareReason: "This record is a bare repository. It has no worktree folder.",
   invalidUtf8: "The worktree path is not valid UTF-8, so Arbareto cannot use it.",
   // Remove confirmation (spec FR-054 to FR-056).
@@ -126,7 +128,7 @@ export function worktreeRefusal(response: BridgeResponse, action: "worktree-add"
   }
   if (code === "REPOSITORY_UNAVAILABLE" && typeof r.path === "string") return `Arbareto cannot read the folder ${r.path}.`;
   if (code === "DESTINATION_NOT_EMPTY" && reason !== null && reason in DESTINATION) return DESTINATION[reason]!;
-  if (code === "UNKNOWN_TARGET") return "Arbareto cannot match this worktree with a fresh worktree list.";
+  if (code === "UNKNOWN_TARGET") return W.unknownTarget;
   if (code === "WORKBENCH_UNAVAILABLE") {
     if (reason === "main-worktree") return W.mainReason;
     if (reason === "current-worktree") return W.currentReason;

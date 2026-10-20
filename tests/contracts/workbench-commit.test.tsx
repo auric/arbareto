@@ -192,6 +192,29 @@ describe("commit view layout (FR-029, FR-033)", () => {
       happy.setInnerHeight(before.height);
     }
   });
+
+  test("at 960 DIPs (narrow), the Commit view has no sidebar, so the lists sit left of the diff and the lane keeps its D16 bounds (plan D15, D16 Geometry)", async () => {
+    const happy = (window as unknown as { happyDOM: { setInnerWidth(n: number): void; setInnerHeight(n: number): void } }).happyDOM;
+    const before = { width: window.innerWidth, height: window.innerHeight };
+    happy.setInnerWidth(960);
+    happy.setInnerHeight(900);
+    try {
+      await openCommitView(createWorld({ entries: board().all }));
+      const view = commitView()!;
+      const grid = view.querySelector<HTMLElement>('[data-section="workingChanges"]')!.parentElement!;
+      expect(document.querySelector("[data-profile]")!.getAttribute("data-profile")).toBe("narrow");
+      expect(grid.style.gridTemplateAreas).toBe('"lane laneSplit comparison" "lane laneSplit traySplit" "lane laneSplit tray"');
+      // Changes stand above Staged in the list column.
+      expect(view.querySelector('[data-slot="changes-pane"]')!.className.split(/\s+/)).toContain("flex-col");
+      const lane = view.querySelector<HTMLElement>('[role="separator"][aria-label="Resize file lane"]')!;
+      expect(lane !== null).toBe(true);
+      // The 520 DIP diff and the 8 DIP splitter beside the lane in the 960 DIP view: max = min(400, 960 - 528).
+      expect([lane.getAttribute("aria-valuemin"), lane.getAttribute("aria-valuemax"), lane.getAttribute("aria-valuenow")]).toEqual(["240", "400", "280"]);
+    } finally {
+      happy.setInnerWidth(before.width);
+      happy.setInnerHeight(before.height);
+    }
+  });
 });
 
 // --- Lists ----------------------------------------------------------------------------------------------------------
@@ -1057,6 +1080,20 @@ describe("Filter files (FR-101, Q29)", () => {
     expect(text(commitView()!)).toContain("No file matches the filter.");
     await typeIn(filesField()!, "");
     expect(labels("Changes")).toEqual(["a.ts", "axts", "dir/A.TS"]);
+  });
+
+  test("the no-match line is an always-present status region that holds the text only when nothing matches", async () => {
+    await openCommitView(createWorld({ entries: [entry("unstaged", "a.ts", ".M")] }));
+    const region = () => commitView()!.querySelector('[data-slot="changes-workspace"] > [role="status"]');
+    const first = region();
+    expect(first !== null).toBe(true);
+    expect(text(first!)).toBe("");
+    await typeIn(filesField()!, "zz");
+    expect(region() === first).toBe(true);
+    expect(text(first!)).toBe("No file matches the filter.");
+    await typeIn(filesField()!, "a");
+    expect(region() === first).toBe(true);
+    expect(text(first!)).toBe("");
   });
 
   test("Stage folder and Unstage all keep their full scope under a filter", async () => {

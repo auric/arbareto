@@ -102,7 +102,8 @@ type Env = Record<string, string | undefined>;
 function ownedEnv(base: Env, extra: Env): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
-    if (value === undefined || removedByT043(key) || REDIRECTED.includes(key.toUpperCase())) continue;
+    // Git for Windows adds its own folders to PATH only when MSYSTEM is unset (compat/mingw.c).
+    if (value === undefined || removedByT043(key) || REDIRECTED.includes(key.toUpperCase()) || key.toUpperCase() === "MSYSTEM") continue;
     env[key] = value;
   }
   Object.assign(env, {

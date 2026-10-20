@@ -211,6 +211,14 @@ describe("sidebar Worktrees group (FR-050, FR-051)", () => {
     expect(opened(double)).toHaveLength(1);
   });
 
+  test("the group header writes the count with a thousands separator, as the worktree button does", async () => {
+    const many = Array.from({ length: 1000 }, (_, i) => (i === 0 ? MAIN : wt(`C:/wt/repo-${String(i).padStart(4, "0")}`, { branch: `refs/heads/b${i}`, current: i === 1 })));
+    await mountWorkbench(workbench, worktreeWorld(many));
+    await groupRow("repo");
+    const header = document.querySelector<HTMLElement>('[data-slot="worktrees-group"] > button[aria-expanded]')!;
+    expect(text(header.querySelector(".num")!)).toBe("1,000");
+  });
+
   test("an Open that ends UNKNOWN_TARGET shows the D15 worktree text, not the raw code", async () => {
     const world = worktreeWorld();
     world.answers.openWorktree = () => refused("UNKNOWN_TARGET");
@@ -466,6 +474,18 @@ describe("Remove (FR-054 to FR-056)", () => {
     expect(text(d)).not.toContain("submodules");
     expect([...d.querySelectorAll('input[type="checkbox"]')]).toHaveLength(1);
     expect(isOff(button("Remove worktree", d))).toBe(false);
+  });
+
+  test("a succeeded review with a token and no plan names the unknown form, and Remove stays unavailable (plan D15 Malformed result)", async () => {
+    const double = await mountWorkbench(workbench, worktreeWorld(ALL, () => succeeded({ action: "worktree-remove", workbenchToken: TOKEN })));
+    await rowMenu("repo-hotfix");
+    await click(menuItem("Remove worktree…")!);
+    const d = dialog()!;
+    expect(text(d.querySelector('[role="alert"]')!)).toBe("Remove worktree did not complete: the result has an unknown form.");
+    const remove = button("Remove worktree", d);
+    expect(isOff(remove)).toBe(true);
+    await click(remove);
+    expect(double.count("runWorkbench")).toBe(0);
   });
 
   test("Also delete the branch states the commits that only this branch holds and the reflog fact", async () => {
@@ -760,6 +780,23 @@ describe("Add worktree (FR-052, FR-053)", () => {
     await type(panel.querySelector<HTMLInputElement>('input[aria-label="New branch name"]')!, "feat/other");
     expect(folder.value).toBe("D:\\work\\repo-login");
     await type(folder, "D:\\work\\mine");
+    expect(folder.value).toBe("D:\\work\\mine");
+  });
+
+  test("Browse before a branch name keeps the parent, and the folder follows the name until an edit (spec FR-052, plan D15)", async () => {
+    const double = await openAdd();
+    const panel = addPanel()!;
+    const folder = folderField(panel);
+    await click(browse(panel)!);
+    await answer(double.pending("chooseWorktreeFolder"), succeeded({ path: "D:\\work\\" }));
+    expect(folder.value).toBe("");
+    const name = panel.querySelector<HTMLInputElement>('input[aria-label="New branch name"]')!;
+    await type(name, "feat/login");
+    expect(folder.value).toBe("D:\\work\\repo-login");
+    await type(name, "feat/other");
+    expect(folder.value).toBe("D:\\work\\repo-other");
+    await type(folder, "D:\\work\\mine");
+    await type(name, "feat/third");
     expect(folder.value).toBe("D:\\work\\mine");
   });
 

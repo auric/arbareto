@@ -182,12 +182,13 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
     setRemove({ ...o, token: null, pending: true, error: null });
     const response = await review({ action: "worktree-remove", worktree: o.entry.path, force: o.force, deleteBranch: o.deleteBranch });
     if (response === null) return;
-    const token = tokenOf(response);
     const plan = planOf(response) as RemovePlan | null;
+    // Plan D15 "Malformed result": a token without a plan never makes Remove available.
+    const token = plan === null ? null : tokenOf(response);
     const r = isObject(response.result) ? response.result : {};
     // Spec FR-055: a `dirty-tree` refusal carries the counts. Remove waits for the check box.
     const dirty = response.code === "WORKBENCH_UNAVAILABLE" && r.reason === "dirty-tree" && plan !== null;
-    const error = token !== null || dirty ? null : worktreeRefusal(response, "worktree-remove", o.entry.path, short(o.entry.branch) ?? "");
+    const error = token !== null || dirty ? null : response.state === "succeeded" ? unknownFormText(W.removeButton) : worktreeRefusal(response, "worktree-remove", o.entry.path, short(o.entry.branch) ?? "");
     // A later check box change replaces this review.
     setRemove((now) => (now !== null && now.entry.path === o.entry.path && now.force === o.force && now.deleteBranch === o.deleteBranch ? { ...now, plan: plan ?? now.plan, token, pending: false, error } : now));
   }

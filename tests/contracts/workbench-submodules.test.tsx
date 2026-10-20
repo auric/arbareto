@@ -281,6 +281,12 @@ describe("rows and progress (FR-077)", () => {
     await click(button("Cancel", group()));
     expect(view.cancels()).toBe(1);
   });
+
+  test("the header writes the row counters with a thousands separator, as the worktree button does", async () => {
+    const view = await started();
+    await sendProgress(view.double, { ...progress("fetch", "libs/a", 1), counters: { rowIndex: 1000, rowCount: 1200 } });
+    expect(text(group().querySelector('[data-slot="group-header"]')!)).toContain("Updating 1,000 of 1,200");
+  });
 });
 
 describe("results (FR-081, FR-082)", () => {
@@ -489,6 +495,12 @@ describe("host lines (FR-079)", () => {
     await click(button("Cancel", hostLine()!));
     expect(hostLine()).toBeNull();
     expect(double.of("updateSubmodules")).toHaveLength(0);
+  });
+
+  test("Cancel moves the focus to Update submodules, so the focus never drops to the page", async () => {
+    await withHosts();
+    await click(button("Cancel", hostLine()!));
+    expect(document.activeElement).toBe(button("Update submodules", group()));
   });
 
   test("Update anyway sends the same token with confirmHosts; STALE_REVIEW reason hosts shows the line again", async () => {

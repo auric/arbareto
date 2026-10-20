@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { workingFileDigests } from "./git-oracle";
-import { commitPayload, entryOf, readOk, reviewOk, subcommand } from "./hunk-harness";
+import { commitPayload, entryOf, isCommitCall, readOk, reviewOk, subcommand } from "./hunk-harness";
 import { caseTest, keepConfigs, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 import { gitExe, native, TIMEOUT_MS, until, withSync } from "./sync-harness";
 import { buildWorkbench, repoOf, wb, type WbFixture } from "./workbench-fixtures";
@@ -71,6 +71,7 @@ const MERGE = { action: "merge", ref: "refs/heads/topic", result: "merge", noFas
 const SWITCH = { action: "switch", target: { ref: "refs/heads/other" }, choice: "keep" };
 const isMerge = (call: { arguments: readonly string[] }) => subcommand(call.arguments) === "merge";
 const isUpdateIndex = (call: { arguments: readonly string[] }) => subcommand(call.arguments) === "update-index";
+const isCheckout = (call: { arguments: readonly string[] }) => subcommand(call.arguments) === "checkout";
 
 // The second request gives BUSY and changes nothing. `reads`: the Git subcommands that it starts before the exclusion refuses it.
 async function refused(service: Service, f: WbFixture, send: () => Promise<ServiceResponse<unknown>>, label: string, reads: string[] = []): Promise<void> {
@@ -129,6 +130,49 @@ caseTest(TASK, "FR-001: while an applyFiles runs, a runWorkbench of the same rep
       }
       expect(outcome(await service.response(requestId))).toEqual(SUCCEEDED);
       expect(git(f, ["ls-files", "--", "new.txt"])).toBe("new.txt\n");
+    }),
+  );
+}, TIMEOUT_MS);
+
+caseTest(TASK, "FR-001: while a commit runs, a runWorkbench merge of the same repository gives BUSY and starts no Git process", SHELL, async () => {
+  const f = build();
+  await withSync("t097-commit-first", (s) =>
+    keepConfigs(s, async (service) => {
+      const r = await open(service, f);
+      const read = await readOk(service, r.repositoryId);
+      const commit = await reviewOk(service, r.repositoryId, read);
+      const token = await tokenOf(service, r, MERGE);
+      const release = service.runner.holdStart(isCommitCall);
+      const requestId = service.send("commit", commitPayload(commit, "first\n"), { repositoryId: r.repositoryId, repositoryGeneration: read.generation });
+      try {
+        await until(() => service.runner.calls.some(isCommitCall), "held commit");
+        await refused(service, f, () => service.response(sendRun(service, r, token)), "runWorkbench");
+      } finally {
+        release();
+      }
+      expect(outcome(await service.response(requestId))).toEqual(SUCCEEDED);
+      expect(git(f, ["log", "-1", "--format=%s"])).toBe("first\n");
+    }),
+  );
+}, TIMEOUT_MS);
+
+caseTest(TASK, "FR-001: while a runWorkbench switch runs, a runWorkbench merge of the same repository gives BUSY and starts no Git process", SHELL, async () => {
+  const f = build();
+  await withSync("t097-switch-first", (s) =>
+    keepConfigs(s, async (service) => {
+      const r = await open(service, f);
+      const second = await tokenOf(service, r, MERGE);
+      const first = await tokenOf(service, r, SWITCH);
+      const release = service.runner.holdStart(isCheckout);
+      const requestId = sendRun(service, r, first);
+      try {
+        await until(() => service.runner.calls.some(isCheckout), "held checkout");
+        await refused(service, f, () => service.response(sendRun(service, r, second)), "runWorkbench");
+      } finally {
+        release();
+      }
+      expect(outcome(await service.response(requestId))).toEqual(SUCCEEDED);
+      expect(git(f, ["symbolic-ref", "HEAD"])).toBe("refs/heads/other\n");
     }),
   );
 }, TIMEOUT_MS);

@@ -20,7 +20,7 @@ description: "Task list for the Workbench UX feature"
 - **WP**: Each task names its plan.md work package. The orchestrator dispatches one WP per agent, with the agent that plan.md "Work packages" names.
 - **Local tags**: `Local: Rust` needs the local Rust toolchain. `Local: Windows` needs the Windows reference host. `Local: package` needs the packaged Windows build. `Local: WSL` needs the `Ubuntu-26.04` distro with Git 2.55. Cloud sessions do not run these tasks (CLAUDE.md "Tool boundaries"). A skip never counts as a pass.
 - **Blocked by 003**: Batch 2 starts only after 003 WP6 to WP8 (003 batches 2 and 3) are merged into main. Batch 3 starts only after 003 WP10 and WP11 are merged. Batch 5 WP22 needs 003 WP12 for the moved settings pages (plan.md O-7). The list of 003 parts is in "Dependencies & Execution Order".
-- **Blocked by 001 (user environment)**: 001 T165, T180, T240, T242, and T244 are open. T090 needs them for SC-007. Batch 7 cannot finish before them.
+- **Blocked by 001 (user environment)**: 001 T165, T180, T240, T242, and T244 are open. T083 needs them for SC-007. Batch 7 cannot finish before them.
 - **Earlier specs**: The 001, 002, and 003 texts stay unchanged in their own specs (spec.md "Changes to earlier requirements"). Tasks implement the changes and cite the changed requirement. No task edits `specs/001-desktop-qualification/` or `specs/002-full-history/`.
 
 ## Path Conventions
@@ -315,6 +315,7 @@ description: "Task list for the Workbench UX feature"
 - Batch 7 (T081–T086): after T076. T083 needs the open 001 measurement tasks.
 - Batch 3 follow-up (T087–T093): after T048. Batch 4 does not wait for it.
 - Convergence (T096–T099): after T061.
+- Convergence (T100–T106): T100 after T094, T101 after T089, T102 after T071, T104 after T070, T105 after T095, and T106 after T093. T103 moved to a later feature.
 
 ### Feature 003 parts that 004 uses (plan.md "Dependencies on feature 003")
 
@@ -371,8 +372,8 @@ Then WP10:     T033 -> T034 -> T035
 | FR-007 to FR-013 (US1) | T011, T015, T021, T027, T040, T043, T088 |
 | FR-014 to FR-020 (US2) | T010, T022, T028, T038, T040, T044, T089 |
 | FR-021 to FR-028 (US3) | T007, T023, T029, T041, T045, T090, T098, T099 |
-| FR-029 to FR-048 (US4) | T009, T010, T024 to T026, T030 to T032, T042, T046, T047, T091, T092 |
-| FR-049 to FR-057 (US5) | T049, T055, T060, T064, T070, T094 (FR-052 Browse), T095 (O-20 trust gate, Remove label) |
+| FR-029 to FR-048 (US4) | T009, T010, T024 to T026, T030 to T032, T042, T046, T047, T091, T092, T106 |
+| FR-049 to FR-057 (US5) | T049, T055, T060, T064, T070, T094 (FR-052 Browse), T095 (O-20 trust gate, Remove label), T106 (FR-050, FR-051) |
 | FR-058 to FR-068 (US6) | T050, T056, T060, T065, T071, T102 |
 | FR-069 to FR-075 (US7) | T033, T051, T057, T066, T072 |
 | FR-076 to FR-082 (US8) | T052, T057, T058, T067, T073 |
@@ -380,7 +381,7 @@ Then WP10:     T033 -> T034 -> T035
 | FR-085 to FR-088 | T037 to T039, T082, T083, T087 to T089 |
 | FR-089 to FR-097 (US9) | T053, T059, T060, T068, T074 |
 | FR-098 to FR-100 (US11) | T054, T061, T069, T075 |
-| FR-101 (US4) | T092, T093 |
+| FR-101 (US4) | T092, T093, T106 |
 | SC-001, SC-002 | T021, T035 |
 | SC-003 | T040, T082 |
 | SC-004 | T022, T035 |
@@ -423,7 +424,7 @@ Then WP10:     T033 -> T034 -> T035
 
 ## Phase 10: Convergence
 
-**Source**: the `/speckit-converge` dry run on f004-impl 3e25b8f (2026-10-19). Scope: T001 to T076 and T087 to T094. The moved spell check (T077 to T080) and batch 7 (T081 to T086) are out of scope.
+**Source**: the `/speckit-converge` dry run on f004-impl 3e25b8f (2026-10-19). Scope: T001 to T076 and T087 to T094. The moved spell check (T077 to T080) and batch 7 (T081 to T086) are out of scope. T106 comes from the T093 review (research.md "Batch reviews").
 
 - [ ] T096 [P] [US3] Record the configuration bytes before and after each case in `tests/git/merge-rebase.test.ts`, `tests/git/multi-stage.test.ts`, `tests/git/line-stage.test.ts`, `tests/git/ignore.test.ts`, `tests/git/resolve.test.ts`, and `tests/git/commit-amend.test.ts` (P4 and P6, WP8, WP9, WP19, WP20). Use the `sha256` pattern of `tests/git/switch.test.ts` `stateOf`. Every configuration file of the fixture stays byte-identical. Control mutation: let one merge case run `git config merge.log true` in the repository after the run; the case must fail. Undo and rerun green. Gap: partial. Spec: SC-009. Test harness rule "Every fixture test records the configuration files byte for byte". Depends on T061.
 - [ ] T097 [P] [US1] Write the BUSY cases for the feature 004 mutations (P4, WP10). In one new file `tests/git/workbench-busy.test.ts`, hold a `runWorkbench` merge at a checkpoint, then send a second `runWorkbench` (switch), an `applyFiles`, and a `commit` for the same repository, and the reverse order. Each second mutation gives `BUSY`, starts no mutating Git process, and changes no ref, index entry, or working byte. An `applyFiles` starts only its read steps before the refusal. Add the file to `tests/groups.json` `parallel`. Gap: partial (code without test). Spec: FR-001. Depends on T061.

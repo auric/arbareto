@@ -353,7 +353,7 @@ Run of 2026-10-20 in `C:\Projects\arbareto-l7` on f004-impl at 180dbce.
 - `bun run build` and `bun run typecheck`: exit 0.
 - `bun run test:contracts`: exit 0. 4,708 pass, 33 skip, 0 fail. All 291 `ORIGIN` lines are under `C:\Projects\arbareto-l7`.
 - Control mutation: in `src/frontend/changes/ChangesPane.tsx`, Stage all changes took only the rows that match the filter. `tests/contracts/workbench-commit.test.tsx` failed: 64 pass, 1 fail ("login shows only the rows whose path holds it, and Stage all changes still stages every change"). After the undo, 65 of 65 passed.
-- Open: `bun run test:all` and the independent review of T087 to T092.
+- Later: R27 records `bun run test:all`. "Batch reviews" records the independent review of T087 to T092 ("T093 review").
 
 Screenshots: the R25 method. `bun run dev` ran with `ARBARETO_PROFILE_ROOT` in a scratch folder and a scratch fixture repository. UI Automation patterns, `IUIAutomationElement3::ShowContextMenu`, and window messages drove the app, with no input. `PrintWindow(PW_RENDERFULLCONTENT)` made the images. The display scale is 125%, so 1 DIP is 1.25 image pixels. The files are in the orchestrator scratchpad `t093-l7/shots/`. Results against plan.md D15 and D16:
 - Top bar (`0-main.png`, `5-960-history.png`): one 40 DIP row at 1280 and at 960 DIPs width. The repository button shows "work". Its accessible name holds the full path. All R25 top bar differences are gone, except the ↑/↓ chips: the button shows "=", because the fixture branch has no ahead or behind commits.
@@ -382,7 +382,7 @@ Run of 2026-10-20 in `C:\Projects\arbareto-l4` on f004-impl at 8e6b82e. The run 
 - Not in this run: `bun install --frozen-lockfile`, `bun run build`, `cargo check`, `bun run build:service`, `bun run dev`, and the control mutations of T062 and T076. No full run ran on 559eaeb.
 - Memory finding: two earlier runs of the day stopped at the 4,500 MB memory guard. A failing DOM `toBe` in `tests/contracts/workbench-branches.test.tsx:410` made Bun 1.4.3 format a message of about 17 GB, and Bun then reported a pass (investigator, scratchpad `diag-004-l4/`).
 - Main 8e29a33 gives DOM nodes a short inspect form in `tests/dom.ts`, so a failed DOM assertion fails fast and shows. 8950870 fixes the real defect: a key-opened row menu focuses its first item. 8e6b82e holds both commits.
-- Review: the orchestrator reports that the T093 independent review of T087 to T092 passed with follow-ups, and T106 fixes them (R26). research.md holds no record of its date, scope, or skills.
+- Review: "Batch reviews" records the T093 independent review of T087 to T092 ("T093 review"). It passed with follow-ups, and T106 fixes them (R26).
 - Ticks from this run: T099 and T106.
 
 ## Batch reviews
@@ -431,5 +431,14 @@ Open: the merge tool start stall (plan O-19, R21 N3). bd077e1 adds its diagnosti
 **Batch 5 start exception, 2026-10-19.** Batch 5 started before T062, because the batch 4 service contracts were merged and stable. T062 still gates the ticks.
 
 **Batch 5, 2026-10-19.** Independent batch 5 review, reviewer agent, 2026-10-19, at 32e7771. Scope: WP21 to WP25 and WP29 (T064 to T075). Verdict: approve after fixes. No Critical or High finding. 5 Medium and 6 Low findings. The integration pass fixes them.
+
+**T093 review, 2026-10-20.** Independent T093 review, reviewer agent, 2026-10-20. The review was read-only and ran no command. Scope: T087 to T093 on f004-impl at 16faf8a. It covers the fidelity merges 118821a (fd5b63d) and 37226cf (89fb32c), their callers in `Workbench.tsx`, `profiles.ts`, `requests.ts`, `WorktreeButton.tsx`, and `WorktreesGroup.tsx`, and the T093 screenshots at 1280 and 960 DIPs (R26). Skills: `ponytail-review` (no must-fix item), `web-design-guidelines` (the `src/frontend` changes of these merges), and a manual correctness, security, no-heuristics, keyboard, and accessibility review. Verdict: pass with follow-ups. No finding blocked the ticks of T087 to T093.
+- Medium: a picker context counted its 60 s age from a time before the picker opened (`src-tauri/src/service.rs`, `dialogs.rs`). Main a747ed7 fixes it (001 T060).
+- Medium: at 960 DIPs, the Commit view showed about two file rows. T106 fixes it.
+- Low, fixed in T106: an `openWorktree` refusal `UNKNOWN_TARGET` showed the raw code. A cut sidebar Worktrees row had no tooltip. "No file matches the filter." was not a status region. D16 did not state the fallback of the branch list alignment.
+- Lean, not done: the DOM lookup of the Ctrl+F "Find a setting" field, and `filterTarget`.
+- Suspicions checked in T106: F6 on Filter files is not a defect, because D15 names the stop "Changes". The filter does not stay after a repository switch.
+- Not checked: a row menu beside a full-width row.
+- Later fact: the test at `tests/contracts/workbench-branches.test.tsx:404-411` failed, but Bun reported a pass (R27 memory finding). The review could not see this failure. 8950870 and 6ae2f87 fix the menu focus.
 
 **Menu focus follow-up, 2026-10-20.** The 002 current-branch menu of `refs/ReferencesSidebar.tsx` now uses `ActionMenu`, so Shift+F10 and the Menu key focus its first item (plan D15 "Action menu"). The other key-opened row menus already pass `byKey`.

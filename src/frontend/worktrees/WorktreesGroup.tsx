@@ -69,7 +69,7 @@ export function WorktreesGroup({ actions, rowHeight }: { actions: WorktreeAction
         <span aria-hidden="true">{W.list}</span>
         {count === null ? null : (
           <span aria-hidden="true" className="num ml-auto shrink-0 font-normal text-muted-text">
-            {count}
+            {count.toLocaleString("en-US")}
           </span>
         )}
       </button>

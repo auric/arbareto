@@ -464,6 +464,18 @@ describe("Save and Cancel (FR-064, FR-065)", () => {
     expect(r.double.of("readGitSettings").length).toBe(reads + 1);
   });
 
+  test("a succeeded review with a token and no plan changes names the unknown form, runs nothing, and reads again (plan D15 Malformed result)", async () => {
+    const r = await render();
+    await scope("local");
+    await type(row("user.name").querySelector("input")!, "Bob");
+    await click(button("Save (Ctrl+S)"));
+    const reads = r.double.of("readGitSettings").length;
+    await answer(r.double.pending("reviewWorkbench"), { requestId: fixtureId(20), operationId: fixtureId(21), state: "succeeded", repositoryGeneration: 1, result: { action: "config-save", plan: { scope: "local" }, workbenchToken: TOKEN } });
+    expect(r.double.of("runWorkbench").length).toBe(0);
+    expect(text(content())).toContain("Save did not complete: the result has an unknown form.");
+    expect(r.double.of("readGitSettings").length).toBe(reads + 1);
+  });
+
   test("a review whose earlier value differs from the shown value runs nothing and reads again", async () => {
     const r = await render();
     await scope("local");

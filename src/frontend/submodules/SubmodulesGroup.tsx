@@ -271,7 +271,8 @@ const FAILED_READ = "Arbareto could not read this submodule. Use Refresh, then t
 const hostText = (host: SubmoduleHost) => (host.kind === "host" ? host.name : host.kind === "local" ? "this computer" : "a host that Arbareto cannot name");
 // The quoted word keeps the boot-view scan for network APIs clear (tests/contracts/boot-view.test.tsx).
 const hostSentence = ({ path, "fetch": from, settings }: SubmoduleHostLine) => `${path} will ${"fetch"} from ${hostText(from)}. The repository settings name ${hostText(settings)}.`;
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+const num = (n: number) => n.toLocaleString("en-US");
+const plural = (n: number, one: string, many: string) => `${num(n)} ${n === 1 ? one : many}`;
 
 const RESULT_LABEL: Record<SubmoduleRowResult["state"], string> = {
   cloned: "Done",
@@ -326,6 +327,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
   const [remedies, setRemedies] = useState<ReadonlySet<number>>(new Set());
   const [menu, setMenu] = useState<{ path: string; anchor: HTMLElement; byKey?: boolean } | null>(null);
   const elements = useRef(new Map<string, HTMLElement>());
+  const updateButton = useRef<HTMLButtonElement>(null);
   const copy = useCopy();
   const reason = runningReason ?? blockedReason;
   const { rows, results, run, summary } = update;
@@ -379,19 +381,20 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
     <section data-slot="submodules-group" aria-labelledby={headingId} className="flex min-h-0 flex-col">
       <div data-slot="group-header" className="flex items-center gap-1 px-2 font-semibold" style={{ minHeight: "var(--h-pane-heading)" }}>
         <h3 id={headingId}>Submodules</h3>
-        {rows === null ? null : <span className="num font-normal text-muted-text">{list.length}</span>}
+        {rows === null ? null : <span className="num font-normal text-muted-text">{num(list.length)}</span>}
         {run !== null ? (
           <>
-            {counters?.rowIndex === undefined || counters.rowCount === undefined ? null : <span className="font-normal">{`Updating ${counters.rowIndex} of ${counters.rowCount}`}</span>}
+            {counters?.rowIndex === undefined || counters.rowCount === undefined ? null : <span className="font-normal">{`Updating ${num(counters.rowIndex)} of ${num(counters.rowCount)}`}</span>}
             <Button type="button" variant="outline" size="sm" onClick={onCancel}>
               Cancel
             </Button>
           </>
         ) : summary === null ? null : (
-          <span className="font-normal text-muted-text">{`${summary.updated} updated, ${summary.failed} failed`}</span>
+          <span className="font-normal text-muted-text">{`${num(summary.updated)} updated, ${num(summary.failed)} failed`}</span>
         )}
         <IconButton
           icon={FolderSyncIcon}
+          ref={updateButton}
           label="Update submodules"
           className="ml-auto"
           disabled={reason !== null}
@@ -420,7 +423,16 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
               <Button type="button" size="sm" disabled={reason !== null} focusableWhenDisabled aria-describedby={reason === null ? undefined : reasonId} onClick={() => void (reason === null && update.confirmHosts())}>
                 Update anyway
               </Button>
-              <Button type="button" variant="outline" size="sm" onClick={update.dismissHosts}>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  update.dismissHosts();
+                  // The focused line leaves the DOM. Plan D15: focus goes to Update submodules.
+                  updateButton.current?.focus();
+                }}
+              >
                 Cancel
               </Button>
             </div>

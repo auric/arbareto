@@ -116,7 +116,14 @@ export function useGitSettings({ bridge, target, operationRunning, onOperation, 
       return;
     }
     // Contract Δ3: the plan `earlier` entry shows a change between the read and the review. The run needs the shown values.
-    const plan = isObject(reviewed.plan) && Array.isArray(reviewed.plan.changes) ? (reviewed.plan.changes as { key: string; earlier: { origin: string; value: string | null } | null }[]) : [];
+    const plan = isObject(reviewed.plan) && Array.isArray(reviewed.plan.changes) ? (reviewed.plan.changes as { key: string; earlier: { origin: string; value: string | null } | null }[]) : null;
+    // Plan D15 "Malformed result": without the plan changes, the earlier check has no input.
+    if (plan === null) {
+      setSaving(false);
+      setMessage(unknownFormText(TEXTS.save));
+      reload();
+      return;
+    }
     const same = plan.every((c) => {
       const value = shown.values.find((v) => v.key === c.key);
       const entry = value === undefined ? undefined : own(value, scope);

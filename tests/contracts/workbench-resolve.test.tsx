@@ -449,6 +449,26 @@ describe("Malformed results (plan D15 \"Malformed result\")", () => {
     expect(described(button("Open in merge tool", view()))).toBe("Open in merge tool did not complete: the result has an unknown form.");
   });
 
+  const noPlan = (action: "choose-side" | "mergetool") => ({ requestId: fixtureId(20), operationId: fixtureId(21), state: "succeeded", repositoryGeneration: 1, result: { action, workbenchToken: TOKEN } });
+
+  test("a succeeded display review with a token and no plan names the unknown form, never an available item", async () => {
+    const { double } = await mount();
+    await answerReviews(double, noPlan("choose-side"), chosen("theirs"), tooled());
+    const ours = button("Choose ours (main)", view());
+    expect(disabled(ours)).toBe(true);
+    expect(described(ours)).toBe("Choose ours did not complete: the result has an unknown form.");
+  });
+
+  test("a succeeded click review with a token and no plan names the unknown form and starts nothing", async () => {
+    const m = await mount();
+    await answerReviews(m.double, chosen("ours"), chosen("theirs"), tooled());
+    await click(button("Choose ours (main)", view()));
+    await answer(m.double.pending("reviewWorkbench"), noPlan("choose-side"));
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(text(view())).toContain("Choose ours did not complete: the result has an unknown form.");
+    expect(m.double.of("runWorkbench")).toHaveLength(0);
+  });
+
   test("a succeeded merge tool run without the staged fact names the unknown form", async () => {
     const m = await mount();
     await answerReviews(m.double, chosen("ours"), chosen("theirs"), tooled());

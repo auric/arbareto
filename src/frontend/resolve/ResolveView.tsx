@@ -55,8 +55,10 @@ const ITEMS: readonly Item[] = ["ours", "theirs", "mergetool"];
 
 function reviewOf(response: BridgeResponse): Review {
   const result = isObject(response.result) ? response.result : {};
-  const token = response.state === "succeeded" && typeof result.workbenchToken === "string" ? result.workbenchToken : null;
-  const plan = token !== null && isObject(result.plan) ? (result.plan as Plan) : null;
+  const raw = response.state === "succeeded" && typeof result.workbenchToken === "string" ? result.workbenchToken : null;
+  const plan = raw !== null && isObject(result.plan) ? (result.plan as Plan) : null;
+  // Plan D15 "Malformed result": a token without a plan is no review, so the item shows the unknown form.
+  const token = plan === null ? null : raw;
   // Contract Δ3: a stage refusal also carries the side names, so a DD conflict shows them.
   const names = plan?.names ?? (token === null && isObject(result.names) ? (result.names as Plan["names"]) : null);
   return { state: response.state, token, plan, code: token === null ? (response.code ?? response.state) : null, reason: typeof result.reason === "string" ? result.reason : null, names };

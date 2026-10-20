@@ -55,6 +55,8 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
   const [existing, setExisting] = useState<string | null>(null);
   // Null until the first folder edit. Then the folder stays.
   const [edited, setEdited] = useState<string | null>(null);
+  // A parent from Browse before a suggested name. The folder follows the name in it until the first edit.
+  const [picked, setPicked] = useState<string | null>(null);
   const [switchTo, setSwitchTo] = useState(false);
   const [pending, setPending] = useState(false);
   const [browsing, setBrowsing] = useState(false);
@@ -65,7 +67,10 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
   const free = (branches?.entries ?? []).filter((e) => e.kind === "local" && !e.current && e.heldBy === null);
   const chosen = free.find((e) => e.ref === existing) ?? free[0] ?? null;
   const branchText = mode === "new" ? name : (chosen?.name ?? "");
-  const folder = edited ?? suggestFolder(worktreeRoot, branchText);
+  const suggested = suggestFolder(worktreeRoot, branchText);
+  // Contract §6: a Windows path and a WSL UNC path both take `\`.
+  const inParent = (parent: string) => `${parent.replace(/[\\/]+$/, "")}\\${splitPath(suggested, WINDOWS_SEPARATORS)[1]}`;
+  const folder = edited ?? (picked === null || suggested === "" ? suggested : inParent(picked));
 
   const nameReason = (() => {
     if (mode === "existing") return chosen === null ? W.noFreeBranch : chosen.name === "@" ? W.reservedName : null;
@@ -87,7 +92,7 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
     }
   }
 
-  /** A chosen parent gets the suggested name, and the folder then stays as after an edit. Cancel changes nothing. */
+  /** A chosen parent gets the suggested name, and the folder then stays as after an edit. Without a suggested name, the folder follows the name. Cancel changes nothing. */
   async function browse() {
     setBrowsing(true);
     setError(null);
@@ -95,9 +100,8 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
       const response = await onBrowse();
       const parent = response.state === "succeeded" && isObject(response.result) && typeof response.result.path === "string" ? response.result.path : null;
       if (parent !== null) {
-        const name = splitPath(suggestFolder(worktreeRoot, branchText), WINDOWS_SEPARATORS)[1];
-        // Contract §6: a Windows path and a WSL UNC path both take `\`.
-        setEdited(`${parent.replace(/[\\/]+$/, "")}\\${name}`);
+        if (suggested === "") setPicked(parent);
+        else setEdited(inParent(parent));
       } else if (response.state === "succeeded") setError(unknownFormText("Browse"));
       else if (response.state !== "canceled") setError(browseRefusal(response.code ?? response.state));
     } finally {

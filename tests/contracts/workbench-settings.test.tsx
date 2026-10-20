@@ -8,7 +8,7 @@ import { sectionOrder } from "../../src/frontend/keyboard/shortcuts";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
-import { button, click, press, settings, settle, text, type Call } from "./sync-fake";
+import { button, click, press, settings, settle, text, tooltipText, type Call } from "./sync-fake";
 import type { SettingsViewProps } from "../../src/frontend/settings/SettingsView";
 import type { StatusOperation } from "../../src/frontend/status/OperationStatus";
 
@@ -406,7 +406,7 @@ describe("Save and Cancel (FR-064, FR-065)", () => {
     await click(labelInput(row("fetch.prune"), "On"));
     expect(text(row("fetch.prune"))).toContain("Changed");
     expect(text(row("fetch.prune"))).toContain("Was: false");
-    expect(text(content())).toContain("1 change. Save writes it to This repository only.");
+    expect(text(view())).toContain("1 change. Save writes it to This repository only.");
     expect(r.double.writes()).toEqual([]);
     const reads = r.double.of("readGitSettings").length;
     await click(button("Save (Ctrl+S)"));
@@ -622,3 +622,44 @@ describe("F6 order (plan D15)", () => {
   });
 });
 
+describe("T076 board fixes (tasks.md T111, plan D16 \"Geometry\")", () => {
+  test("the scope bar keeps one row: the file line ends with an ellipsis, and its tooltip gives the full text", async () => {
+    await render();
+    await scope("local");
+    const bar = section("scopeBar");
+    expect(bar.className.split(" ")).not.toContain("flex-wrap");
+    const file = bar.querySelector<HTMLElement>('[data-slot="scope-file"]')!;
+    expect(file.className.split(" ")).toContain("truncate");
+    await act(async () => {
+      file.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+      file.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      file.dispatchEvent(new MouseEvent("mouseenter"));
+      file.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    });
+    await act(async () => void (await new Promise((done) => setTimeout(done, 700))));
+    await settle();
+    expect(tooltipText()).toBe(`Writes to ${LOCAL}`);
+  });
+
+  test("the selected page shows the selected-row fill and the start marker (D16 \"Selection\")", async () => {
+    await render();
+    await page("Fetch");
+    const list = section("pageList").querySelector<HTMLElement>('[role="tablist"]')!;
+    expect(list.getAttribute("data-variant")).not.toBe("line");
+    const selected = [...list.querySelectorAll<HTMLElement>('[role="tab"]')].filter((t) => t.getAttribute("aria-selected") === "true");
+    expect(selected.map((t) => text(t))).toEqual(["Fetch"]);
+    expect(selected[0]!.className.split(" ")).toContain("list-row");
+  });
+
+  test("the save row is a full-width footer of the view, outside the scrolling page content", async () => {
+    await render();
+    await scope("local");
+    await type(row("user.name").querySelector("input")!, "Bob");
+    const save = view().querySelector<HTMLElement>('[data-slot="settings-save"]')!;
+    expect(save).not.toBeNull();
+    expect(content().contains(save)).toBe(false);
+    expect(save.parentElement).toBe(view());
+    expect(save.className.split(" ")).not.toContain("sticky");
+    expect(text(save)).toContain("1 change. Save writes it to This repository only.");
+  });
+});

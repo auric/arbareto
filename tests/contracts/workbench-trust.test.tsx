@@ -412,3 +412,15 @@ describe("the running rule on the chip menu (plan D15)", () => {
     expect(tooltipText()).toBe(RUNNING);
   });
 });
+
+describe("T076 board fixes (tasks.md T111, Trust board 2a)", () => {
+  test("Not trusted keeps the Warning text at normal weight, also on hover and while its menu is open", async () => {
+    await mount(report());
+    const classes = chip()!.className.split(" ");
+    expect(classes).toContain("text-warning");
+    expect(classes).toContain("hover:text-warning");
+    expect(classes).toContain("aria-expanded:text-warning");
+    expect(classes).toContain("font-normal");
+    expect(classes.filter((c) => /text-foreground$|^font-medium$/.test(c))).toEqual([]);
+  });
+});

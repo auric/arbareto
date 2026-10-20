@@ -115,7 +115,7 @@ export function TrustChip({ report, running, onTrust, onStop }: TrustChipProps) 
                 size="sm"
                 data-slot="trust-chip"
                 aria-label={`${face.label}. ${face.tooltip}`}
-                className={`rounded-[4px] border ${trusted ? "border-control-border text-muted-text" : "border-warning text-warning"}`}
+                className={`rounded-[4px] border ${trusted ? "border-control-border text-muted-text" : "border-warning text-warning hover:text-warning aria-expanded:text-warning"} font-normal`}
               />
             }
           >

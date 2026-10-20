@@ -309,6 +309,7 @@ pub fn prompt(mutations: &[Mutation]) -> Confirmation {
         ],
         default_button: STAY_OPEN,
         accept_button: INTERRUPT,
+        shield: false,
     }
 }
 

@@ -14,7 +14,7 @@ import { scopedAction } from "../keyboard/shortcuts";
 import type { StatusOperation } from "../status/OperationStatus";
 import { PULL_ACTIONS } from "../sync/PullSplitButton";
 import { puttyUnavailableText } from "./ConnectTerminal";
-import { GIT_PAGES, GitPage, keyMatches, pageKeys, ScopePicker, useGitSettings, type GitBridge } from "./git/GitSettingsPage";
+import { GIT_PAGES, GitPage, keyMatches, pageKeys, SaveRow, ScopePicker, useGitSettings, type GitBridge } from "./git/GitSettingsPage";
 import { TEXTS, type Scope } from "./git/texts";
 import { CloneFolderSettings, KeyFileSettings, SshClientSettings, syncSettingsOf, type Change, type KeyProposal, type SettingsBridge, type SyncSettings } from "./SettingsDialog";
 
@@ -80,7 +80,7 @@ export function SettingsView({ bridge, target, wsl, repository, operationRunning
   const [failure, setFailure] = useState<ReactNode>(null);
   const busy = useRef(false);
   const section = useRef<HTMLElement>(null);
-  const scopeBar = useRef<HTMLDivElement>(null);
+  const closeButton = useRef<HTMLButtonElement>(null);
   const [closing, setClosing] = useState(false);
   // Esc and Close never drop Git setting changes without a confirmation.
   const close = () => (Object.keys(git.pending.local).length + Object.keys(git.pending.global).length > 0 ? setClosing(true) : onClose());
@@ -190,14 +190,14 @@ export function SettingsView({ bridge, target, wsl, repository, operationRunning
         close();
       }}
     >
-      <div ref={scopeBar} data-section="scopeBar" className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-divider px-2 py-1" style={{ minHeight: "var(--h-pane-heading)" }}>
-        <HugeiconsIcon icon={Settings02Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
-        <h2 id={heading} tabIndex={-1} className="font-semibold">
+      <div data-section="scopeBar" className="flex shrink-0 items-center gap-3 border-b border-divider px-2 py-1" style={{ minHeight: "var(--h-pane-heading)" }}>
+        <HugeiconsIcon icon={Settings02Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
+        <h2 id={heading} tabIndex={-1} className="shrink-0 font-semibold">
           {TEXTS.heading}
         </h2>
         {target === null ? null : <ScopePicker scope={scope} onScope={setScope} files={git.read.state === "loaded" ? git.read.value.files : null} />}
         <span className="flex-1" />
-        <IconButton icon={Cancel01Icon} label={TEXTS.close} keys={{ aria: "Escape", text: "Esc" }} onClick={close} />
+        <IconButton ref={closeButton} icon={Cancel01Icon} label={TEXTS.close} keys={{ aria: "Escape", text: "Esc" }} onClick={close} />
       </div>
       <Tabs orientation="vertical" value={active} onValueChange={(value) => setPage(String(value))} className="min-h-0 flex-1 gap-0">
         <div data-section="pageList" className="flex w-52 shrink-0 flex-col gap-1 overflow-y-auto border-r border-divider p-1">
@@ -222,9 +222,11 @@ export function SettingsView({ bridge, target, wsl, repository, operationRunning
               <TooltipContent>{TEXTS.findTooltip}</TooltipContent>
             </Tooltip>
           </div>
-          <TabsList variant="line" activateOnFocus aria-label={TEXTS.pages} className="w-full items-stretch">
+          <TabsList activateOnFocus aria-label={TEXTS.pages} className="w-full items-stretch gap-0 rounded-none bg-transparent p-0">
             {shown.map((name) => (
-              <TabsTrigger key={name} value={name} className="justify-start px-2">
+              // Plan D16 "Selection": the house list row draws the selected-row fill and the start marker.
+              // Base UI marks the active tab with `data-active`, so `outline-none` drops the history active-row outline.
+              <TabsTrigger key={name} value={name} className="list-row justify-start rounded-none px-2 outline-none text-text data-active:bg-selected-row dark:text-text dark:data-active:border-transparent dark:data-active:bg-selected-row">
                 {name}
               </TabsTrigger>
             ))}
@@ -241,9 +243,10 @@ export function SettingsView({ bridge, target, wsl, repository, operationRunning
           )}
         </div>
       </Tabs>
+      {target === null ? null : <SaveRow scope={scope} settings={git} />}
       <ConfirmPopover
         open={closing}
-        anchor={scopeBar.current}
+        anchor={closeButton.current}
         title={TEXTS.discardTitle}
         confirmLabel={TEXTS.discard}
         cancelLabel={TEXTS.keepEditing}

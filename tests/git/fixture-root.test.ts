@@ -134,6 +134,13 @@ describeGit("fixture root", (git) => {
     }
   });
 
+  test("fixture and service environments lack MSYSTEM in any case", () => {
+    const base = { ...process.env, MSYSTEM: "UCRT64", msystem: "MINGW64" };
+    for (const env of [fixtureEnv({}, base), serviceEnv({}, base)]) {
+      expect(Object.keys(env).filter((k) => k.toUpperCase() === "MSYSTEM")).toEqual([]);
+    }
+  });
+
   test("real global configuration digest is unchanged", () => {
     const after = realGlobalConfigDigests(git);
     for (const line of after) console.log(`GLOBAL_CONFIG_SHA256 in-run ${line}`);

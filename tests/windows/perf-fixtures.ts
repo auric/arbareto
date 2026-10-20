@@ -4,7 +4,7 @@
 // Performance fixtures M and L of the plan.md "Reference hardware and fixtures" table (T164).
 // Git runs with `fixtureEnv`, so a caller must hold an owned root through `useFixtureRoot`.
 
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
+import { closeSync, cpSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { FIXTURE_ROOT, fixtureEnv, fixturePath, ownedGit, ownedPath, removeTree, type OwnedGitOptions } from "../git/fixture-root";
@@ -317,11 +317,12 @@ export function acquireLock(lock: string): void {
   }
 }
 
-// Builds `spec` once per seed and variant under the cache root. Reuses it only when the seed, the builder digest, and the reuse state match.
+// Builds `spec` once per seed and variant under the cache root. Reuses it only when the seed, the builder digest, and the reuse state match, and a kept stream is a regular file.
 // `semanticDigest` is the build-time oracle. A full recheck reads every working file (about 9 minutes on L).
 // Budgets count the maintained variant, which is the default.
 // The check and the build run under the lock. A build goes into a temporary folder, so a reader never sees a partial fixture.
-export function ensurePerfFixture(git: string, spec: PerfSpec, commitGraph = true): CachedPerfFixture {
+// T245 builds W-M from the maintained M stream.
+export function ensurePerfFixture(git: string, spec: PerfSpec, commitGraph = true, keepStream = spec.name === PERF_M.name && commitGraph): CachedPerfFixture {
   mkdirSync(PERF_CACHE_ROOT, { recursive: true });
   const name = `${spec.name}-seed${PERF_SEED}-${commitGraph ? "commit-graph" : "no-commit-graph"}`;
   const folder = ownedPath(PERF_CACHE_ROOT, name);
@@ -330,8 +331,6 @@ export function ensurePerfFixture(git: string, spec: PerfSpec, commitGraph = tru
   const repo = join(folder, "repo");
   const manifestPath = join(folder, "manifest.json");
   const streamFile = `${spec.name}.fast-import`;
-  // T245 builds W-M from the maintained M stream.
-  const keepStream = spec.name === PERF_M.name && commitGraph;
   const stream = keepStream ? join(folder, streamFile) : null;
   const digest = builderDigest();
   acquireLock(lock);
@@ -339,7 +338,7 @@ export function ensurePerfFixture(git: string, spec: PerfSpec, commitGraph = tru
     writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, start: new Date().toISOString() }));
     if (existsSync(manifestPath)) {
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as PerfManifest;
-      if (manifest.seed === PERF_SEED && manifest.builderDigest === digest && manifest.facts.commitGraph === commitGraph && reuseMatches(git, repo, manifest.reuse)) {
+      if (manifest.seed === PERF_SEED && manifest.builderDigest === digest && manifest.facts.commitGraph === commitGraph && (stream === null || lstatSync(stream, { throwIfNoEntry: false })?.isFile() === true) && reuseMatches(git, repo, manifest.reuse)) {
         return { folder, repo, manifest, reused: true, stream };
       }
     }

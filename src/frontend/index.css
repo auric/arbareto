@@ -478,8 +478,12 @@
   .list-row[aria-selected="true"]::before {
     background: HighlightText;
   }
-  .list-row[aria-selected="true"] :is([data-slot="status-letter"], [data-slot="row-icon"]) {
+  .list-row[aria-selected="true"] :is([data-slot="status-letter"], [data-slot="row-icon"], .text-muted-text, .text-accent-role) {
     color: HighlightText;
+  }
+  /* Forced colors drop the ring shadow, so the dialog needs an edge against the backdrop. */
+  [data-slot="dialog-content"] {
+    outline: 1px solid CanvasText;
   }
   .selected-hunk-bar {
     forced-color-adjust: none;

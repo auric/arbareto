@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { ArrowDown01Icon, FolderGitIcon, Tick02Icon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, FolderGitIcon, FolderRemoveIcon, GitBranchIcon, PlusSignIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef, useState } from "react";
 import { SwitcherPopover } from "../components/switcher-popover";
@@ -15,11 +15,13 @@ export type WorktreeButtonProps = {
   /** The open worktree root. Its folder name shows until the list loads. */
   worktreeRoot: string | null;
   rowHeight: number;
+  /** The two-line record height in DIPs: the row plus one help line (plan.md D15 "Rows"). */
+  itemHeight: number;
   /** The group heading height in DIPs (`metrics(...).subgroupHeading`). */
   headingHeight: number;
 };
 
-export function WorktreeButton({ actions, worktreeRoot, rowHeight, headingHeight }: WorktreeButtonProps) {
+export function WorktreeButton({ actions, worktreeRoot, rowHeight, itemHeight, headingHeight }: WorktreeButtonProps) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const entries = actions.entries;
@@ -49,6 +51,7 @@ export function WorktreeButton({ actions, worktreeRoot, rowHeight, headingHeight
       filterLabel={W.filter}
       listLabel={W.list}
       rowHeight={rowHeight}
+      itemHeight={itemHeight}
       headingHeight={headingHeight}
       items={entries}
       failure={actions.failure === null ? undefined : <p role="alert">{actions.failure}</p>}
@@ -59,8 +62,8 @@ export function WorktreeButton({ actions, worktreeRoot, rowHeight, headingHeight
       onPick={(e) => (e.current ? setOpen(false) : actions.openReason(e) !== null ? actions.open(e) : pick(() => actions.open(e)))}
       onItemDelete={(e) => (actions.removeReason(e) !== null ? actions.startRemove(e) : pick(() => actions.startRemove(e)))}
       footer={[
-        { label: W.add, onPick: () => pick(() => actions.startAdd(trigger.current)) },
-        { label: W.prune, note: actions.pruneReason === W.nothingToPrune ? W.nothingToPrune : undefined, onPick: () => pick(actions.prune) },
+        { label: W.add, icon: PlusSignIcon, onPick: () => pick(() => actions.startAdd(trigger.current)) },
+        { label: W.prune, icon: FolderRemoveIcon, note: actions.pruneReason === W.nothingToPrune ? W.nothingToPrune : undefined, onPick: () => pick(actions.prune) },
       ]}
       emptyText={W.empty}
       noMatchText={W.noMatch}
@@ -79,26 +82,46 @@ export function WorktreeButton({ actions, worktreeRoot, rowHeight, headingHeight
   );
 }
 
-/** One record: the current mark, the folder name, the branch, the path, and the state marks. The option name holds the same text. */
+/** One record on two lines: the folder name and the branch, then the path. The current mark and the state marks frame them. The option name and the tooltip hold the full text. */
 export function WorktreeRow({ entry: e }: { entry: WorktreeEntry }) {
   const branch = branchText(e);
   return (
     <>
-      <span aria-hidden="true" className="flex size-4 shrink-0 items-center text-accent-role">
-        {e.current ? <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" /> : null}
+      <CurrentMark entry={e} />
+      <span data-slot="worktree-lines" title={entryLabel(e)} className="flex min-w-0 flex-1 flex-col">
+        <span className="flex min-w-0 items-center gap-2">
+          <span className={e.current ? "min-w-0 truncate font-semibold" : "min-w-0 truncate"}>{folderOf(e.path)}</span>
+          {branch === null ? null : (
+            <span className="flex min-w-0 shrink-[1000] items-center gap-1 text-muted-text">
+              {e.branch === null ? null : <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />}
+              <span className="num min-w-0 truncate">{branch}</span>
+            </span>
+          )}
+        </span>
+        <span className="min-w-0 truncate text-muted-text">{e.path}</span>
       </span>
-      <span className={e.current ? "shrink-0 font-semibold" : "shrink-0"}>{folderOf(e.path)}</span>
-      {branch === null ? null : <span className="num min-w-0 shrink truncate text-muted-text">{branch}</span>}
-      <span title={e.path} className="min-w-0 shrink-[1000] truncate text-muted-text">
-        {e.path}
-      </span>
-      <span className="ml-auto flex shrink-0 gap-1">
-        {marks(e).map((mark) => (
-          <span key={mark} className="chip whitespace-nowrap">
-            {mark}
-          </span>
-        ))}
-      </span>
+      <Marks entry={e} />
     </>
+  );
+}
+
+export function CurrentMark({ entry: e }: { entry: WorktreeEntry }) {
+  return (
+    <span aria-hidden="true" className="flex size-4 shrink-0 items-center text-accent-role">
+      {e.current ? <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" /> : null}
+    </span>
+  );
+}
+
+/** The state marks. A long mark shrinks before the row overflows. */
+export function Marks({ entry: e }: { entry: WorktreeEntry }) {
+  return (
+    <span className="ml-auto flex min-w-0 gap-1">
+      {marks(e).map((mark) => (
+        <span key={mark} className="chip min-w-0 truncate">
+          {mark}
+        </span>
+      ))}
+    </span>
   );
 }

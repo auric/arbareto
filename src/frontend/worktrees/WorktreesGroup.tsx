@@ -8,7 +8,7 @@ import { ActionMenu } from "../components/action-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { KEYS } from "../keyboard/shortcuts";
 import { entryLabel, folderOf, type WorktreeActions, type WorktreeEntry } from "./WorktreeActions";
-import { WorktreeRow } from "./WorktreeButton";
+import { CurrentMark, Marks } from "./WorktreeButton";
 import { W } from "./texts";
 
 // Feature 004 spec FR-050 and FR-051, plan.md D15 "P2 regions", the Worktrees board: the sidebar Worktrees group.
@@ -84,7 +84,7 @@ export function WorktreesGroup({ actions, rowHeight }: { actions: WorktreeAction
       ) : (
         <div role="listbox" aria-labelledby={ids.heading} tabIndex={0} aria-activedescendant={rowId(at)} className="flex flex-col" onKeyDown={onKeyDown}>
           {entries.map((entry, index) => (
-            // The row cuts its branch and path text, so the tooltip gives the full accessible name (arbareto-ux truncation rule).
+            // The row shows only the folder name and the marks, so the tooltip gives the full accessible name (arbareto-ux truncation rule).
             <Tooltip key={entry.path}>
               <TooltipTrigger
                 id={rowId(index)}
@@ -105,7 +105,9 @@ export function WorktreesGroup({ actions, rowHeight }: { actions: WorktreeAction
                   />
                 }
               >
-                <WorktreeRow entry={entry} />
+                <CurrentMark entry={entry} />
+                <span className={entry.current ? "min-w-0 truncate font-semibold" : "min-w-0 truncate"}>{folderOf(entry.path)}</span>
+                <Marks entry={entry} />
               </TooltipTrigger>
               <TooltipContent>{entryLabel(entry)}</TooltipContent>
             </Tooltip>

@@ -160,6 +160,30 @@ describe("worktree button and list (FR-049)", () => {
     expect(options()).toHaveLength(2);
   });
 
+  test("the no-match text shows in the list area before the actions, and Add and Prune show their icons (T110, the Worktrees board)", async () => {
+    await mountWorkbench(workbench, worktreeWorld());
+    await openList();
+    await type(filterField(), "x.y");
+    const note = [...document.querySelectorAll("p")].find((p) => text(p) === "No worktree matches the filter.")!;
+    expect(note.compareDocumentPosition(options()[0]!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    for (const o of options()) expect(o.querySelector("svg")).not.toBeNull();
+  });
+
+  test("each record shows two lines, the folder and the branch, then the path, and its tooltip gives the full option name (T110, plan D15 Rows)", async () => {
+    await mountWorkbench(workbench, worktreeWorld());
+    await openList();
+    const rows = options();
+    for (const [index, entry] of ALL.entries()) {
+      const lines = rows[index]!.querySelector<HTMLElement>('[data-slot="worktree-lines"]')!;
+      expect(lines.title).toBe(rows[index]!.getAttribute("aria-label")!);
+      expect(lines.children).toHaveLength(2);
+      expect(text(lines.children[1]!)).toBe(entry.path as string);
+      // The compact row (26) and one more line (18), as the density table gives them.
+      expect(rows[index]!.style.height).toBe("44px");
+    }
+    expect(rows[5]!.style.height).toBe("");
+  });
+
   test("a pick of the current worktree opens nothing", async () => {
     const double = await mountWorkbench(workbench, worktreeWorld());
     await openList();
@@ -227,6 +251,16 @@ describe("sidebar Worktrees group (FR-050, FR-051)", () => {
     expect(opened(double)).toHaveLength(1);
     expect(text(document.body)).toContain("Arbareto cannot match this worktree with a fresh worktree list.");
     expect(text(document.body)).not.toContain("UNKNOWN_TARGET");
+  });
+
+  test("each row shows one line with the folder name and the marks, and a long mark shrinks inside the sidebar (T110, plan D15 Rows)", async () => {
+    await mountWorkbench(workbench, worktreeWorld());
+    const row = await groupRow("repo-locked");
+    expect(text(row)).toContain("repo-locked");
+    expect(text(row)).toContain("Locked: on a USB disk");
+    expect(text(row)).not.toContain("C:/wt/repo-locked");
+    for (const part of row.querySelectorAll(":scope > span")) expect(part.classList.contains("shrink-0") && part.textContent !== "").toBe(false);
+    expect(row.querySelector(".chip")!.classList.contains("truncate")).toBe(true);
   });
 
   test("each row has the tooltip with its full accessible name, so a cut branch text stays readable", async () => {
@@ -396,6 +430,12 @@ describe("Remove (FR-054 to FR-056)", () => {
     const d = dialog()!;
     expect(text(d)).toContain("3 uncommitted changes and 1 untracked file.");
     expect(text(d)).toContain("They are in no commit and no stash. Removing deletes them for good.");
+    // T110, the Worktrees board: a Removed-fill notice with an icon and bold counts. The check box label uses Text.
+    const notice = d.querySelector<HTMLElement>('[data-slot="remove-notice"]')!;
+    expect(notice.classList.contains("bg-removed-fill")).toBe(true);
+    expect(notice.querySelector("svg")).not.toBeNull();
+    expect(text(notice.querySelector("strong")!)).toBe("3 uncommitted changes and 1 untracked file.");
+    expect(checkbox("Delete my uncommitted changes too", d)!.closest("label")!.querySelector(".danger-text")).toBeNull();
     const remove = button("Remove worktree and changes", d);
     expect(remove.hasAttribute("disabled") || remove.getAttribute("aria-disabled") === "true").toBe(true);
     await click(remove);

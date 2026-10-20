@@ -1689,7 +1689,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             // plan.md "Header layout": in one row, the branch button takes only the width that the other items leave, so it never moves them to another row.
             <BranchButton head={workspace.head} operationState={workspace.operationState} counts={currentLabel} tracking={labels} actions={branches} blockedReason={mutationReason} rowHeight={m.row} headingHeight={m.subgroupHeading} wraps={rows !== 1} />
           )}
-          {workspace === null ? null : <WorktreeButton actions={worktrees} worktreeRoot={path} rowHeight={m.row} headingHeight={m.subgroupHeading} />}
+          {workspace === null ? null : <WorktreeButton actions={worktrees} worktreeRoot={path} rowHeight={m.row} itemHeight={m.row + m.helpLine} headingHeight={m.subgroupHeading} />}
           {state.repository === null ? null : (
             // The 004 design standard: the Fetch, Pull, and Push group follows the branch. Feature 004 adds its branch and worktree buttons before it.
             // Plan.md D15 "Top bar row": the group grows only after the branch button reaches its text width, so its reason line takes the rest.

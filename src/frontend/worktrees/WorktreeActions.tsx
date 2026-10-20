@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import { Alert02Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 // Type-only imports keep zod out of the renderer bundle.
 import type { z } from "zod";
@@ -307,10 +309,13 @@ function RemoveConfirm({ overlay: o, onChange, onCancel, onConfirm }: { overlay:
         <DialogTitle>{W.removeTitle(o.entry.path)}</DialogTitle>
         {plan === null && o.pending ? <p className="text-muted-text">{W.reading}</p> : null}
         {dirty ? (
-          <>
-            <p>{W.counts(plan.tracked, plan.untracked)}</p>
-            <p>{W.lostNote}</p>
-          </>
+          <div data-slot="remove-notice" className="flex gap-2 rounded-sm bg-removed-fill p-2">
+            <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" className="mt-0.5 size-(--icon-size) shrink-0 text-removed" />
+            <div className="flex flex-col">
+              <strong className="font-semibold">{W.counts(plan.tracked, plan.untracked)}</strong>
+              <p>{W.lostNote}</p>
+            </div>
+          </div>
         ) : null}
         {submodules ? <p>{W.submodules}</p> : null}
         <p>{W.folderNote}</p>
@@ -318,7 +323,7 @@ function RemoveConfirm({ overlay: o, onChange, onCancel, onConfirm }: { overlay:
           <label className="flex flex-col gap-0.5">
             <span className="flex items-center gap-2">
               <input type="checkbox" checked={o.force} onChange={(event) => onChange({ ...o, force: event.target.checked })} />
-              <span className="danger-text">{dirty ? W.force : W.forceSubmodules}</span>
+              {dirty ? W.force : W.forceSubmodules}
             </span>
             {o.force ? null : <span className="ml-6 text-muted-text">{W.forceHint}</span>}
           </label>

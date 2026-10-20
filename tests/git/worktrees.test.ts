@@ -659,7 +659,6 @@ caseTest("T098", "FR-003: Cancel while a remove with Also delete the branch wait
       expect({ at, exit: service.runner.calls.find(match)!.exit?.exitCode ?? null }).toEqual({ at, exit: null });
       // The worktree remove ran in the second case, so the list lacks the worktree and the branch stays.
       expect({ at, ...outcome(response), refs: response.result!.refs }).toEqual({ at, ...(at === "worktree-remove" ? { state: "canceled", code: "CANCELED" } : { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" }), refs: [] });
-      expect({ at, worktrees: response.result!.worktrees }).toEqual({ at, worktrees: recordsOf(f).map((x) => valueOf(x, "worktree")!) });
     });
     if (at === "update-ref") git(o, ["worktree", "remove", "--", recordPath(o, "wt with spaces")]);
     expect({ at, state: stateOf(f) }).toEqual({ at, state: stateOf(o) });

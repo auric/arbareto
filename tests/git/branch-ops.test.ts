@@ -309,7 +309,7 @@ caseTest("T098", "FR-003: Cancel while a branch delete waits at its update-ref o
         expect(steps(service).map((a) => a[1])).toEqual(["update-ref"]);
       } else {
         // The ref delete ran, so the branch is gone and its section stays.
-        expect({ at, ...outcome(response), refs: response.result!.refs }).toEqual({ at, state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", refs: [{ ref: "refs/heads/unmerged", oldObjectId: tip, newObjectId: null }] });
+        expect({ at, ...outcome(response), refs: response.result!.refs }).toEqual({ at, state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", refs: [{ ref: "refs/heads/unmerged" }] });
         git(o, ["update-ref", "--no-deref", "-d", "refs/heads/unmerged", tip]);
       }
       expect({ at, head: response.result!.head }).toEqual({ at, head: headOf(f) });

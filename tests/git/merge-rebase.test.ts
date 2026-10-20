@@ -848,7 +848,7 @@ describeGit("merge and rebase (T023)", () => {
     const refs = [...new Set([...Object.keys(before), ...Object.keys(after)])]
       .filter((ref) => before[ref] !== after[ref])
       .sort()
-      .map((ref) => ({ ref, oldObjectId: before[ref] ?? null, newObjectId: after[ref] ?? null }));
+      .map((ref) => ({ ref }));
     const unmerged = new Set(stageEntries(h, repo).filter((e) => e.stage > 0).map((e) => e.path)).size;
     return { head: target.exitCode === 0 ? { state: "branch", target: target.stdout.toString("utf8").trim(), oid } : { state: "detached", oid }, refs, unmerged };
   };

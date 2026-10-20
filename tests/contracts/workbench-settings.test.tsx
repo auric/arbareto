@@ -227,7 +227,22 @@ describe("pages and controls (FR-060 to FR-062, FR-067)", () => {
     expect(text(r)).toContain("Not set here. Git then uses true from Global.");
     await scope("global");
     expect(labelInput(row("push.autosetupremote"), "On").checked).toBe(true);
-    expect(text(row("push.autosetupremote"))).toContain("Not set here. No other scope sets it, so Git uses its default.");
+    expect(text(row("push.autosetupremote"))).not.toContain("Not set here.");
+    await page("Advanced");
+    expect(text(row("rerere.enabled"))).toContain("Not set here. No other scope sets it, so Git uses its default.");
+  });
+
+  test("the Not set note shows only when the selected scope holds no entry for the key (plan D15)", async () => {
+    await render({ git: gitSettings({ "push.autosetupremote": configValue("push.autosetupremote", [global("true"), local("false")]) }) });
+    await page("Pull and push");
+    await scope("local");
+    const r = row("push.autosetupremote");
+    expect(labelInput(r, "Off").checked).toBe(true);
+    expect(text(r)).not.toContain("Not set here.");
+    expect(r.querySelector('[role="radiogroup"]')!.hasAttribute("aria-describedby")).toBe(false);
+    await scope("global");
+    expect(labelInput(row("push.autosetupremote"), "On").checked).toBe(true);
+    expect(text(row("push.autosetupremote"))).not.toContain("Not set here.");
   });
 
   test("an enumerated key offers Not set and each documented value with a readable label and the exact Git value (FR-061)", async () => {
@@ -471,6 +486,23 @@ describe("Save and Cancel (FR-064, FR-065)", () => {
     await click(button("Save (Ctrl+S)"));
     const reads = r.double.of("readGitSettings").length;
     await answer(r.double.pending("reviewWorkbench"), { requestId: fixtureId(20), operationId: fixtureId(21), state: "succeeded", repositoryGeneration: 1, result: { action: "config-save", plan: { scope: "local" }, workbenchToken: TOKEN } });
+    expect(r.double.of("runWorkbench").length).toBe(0);
+    expect(text(content())).toContain("Save did not complete: the result has an unknown form.");
+    expect(r.double.of("readGitSettings").length).toBe(reads + 1);
+  });
+
+  test.each([
+    ["no earlier field", { key: "user.name", value: "Bob" }],
+    ["an earlier value of unknown form", { key: "user.name", value: "Bob", earlier: { origin: 1, value: "Ann" } }],
+    ["no key", { value: "Bob", earlier: null }],
+    ["an entry that is not an object", null],
+  ])("a succeeded review with a plan change of %s names the unknown form, runs nothing, and reads again (plan D15 Malformed result)", async (_, entry) => {
+    const r = await render();
+    await scope("local");
+    await type(row("user.name").querySelector("input")!, "Bob");
+    await click(button("Save (Ctrl+S)"));
+    const reads = r.double.of("readGitSettings").length;
+    await answer(r.double.pending("reviewWorkbench"), { requestId: fixtureId(20), operationId: fixtureId(21), state: "succeeded", repositoryGeneration: 1, result: { action: "config-save", plan: { scope: "local", changes: [entry] }, workbenchToken: TOKEN } });
     expect(r.double.of("runWorkbench").length).toBe(0);
     expect(text(content())).toContain("Save did not complete: the result has an unknown form.");
     expect(r.double.of("readGitSettings").length).toBe(reads + 1);

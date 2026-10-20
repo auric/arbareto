@@ -55,6 +55,10 @@ export type GitSettingsProps = {
 
 const own = (value: ConfigValue, scope: Writable): ConfigEntry | undefined => value.scopes[scope][0];
 const writable = (scope: Scope): scope is Writable => scope === "local" || scope === "global";
+type PlanChange = { key: string; earlier: { origin: string; value: string | null } | null };
+// Contract Δ3: a `config-save` plan change holds `key` and `earlier`.
+const isPlanChange = (c: unknown): c is PlanChange =>
+  isObject(c) && typeof c.key === "string" && (c.earlier === null || (isObject(c.earlier) && typeof c.earlier.origin === "string" && (c.earlier.value === null || typeof c.earlier.value === "string")));
 
 /** The read, the pending changes of each writable scope, and Save. One instance lives for the open Settings view. */
 export function useGitSettings({ bridge, target, operationRunning, onOperation, onEnded }: GitSettingsProps) {
@@ -116,9 +120,9 @@ export function useGitSettings({ bridge, target, operationRunning, onOperation, 
       return;
     }
     // Contract Δ3: the plan `earlier` entry shows a change between the read and the review. The run needs the shown values.
-    const plan = isObject(reviewed.plan) && Array.isArray(reviewed.plan.changes) ? (reviewed.plan.changes as { key: string; earlier: { origin: string; value: string | null } | null }[]) : null;
-    // Plan D15 "Malformed result": without the plan changes, the earlier check has no input.
-    if (plan === null) {
+    const plan = isObject(reviewed.plan) && Array.isArray(reviewed.plan.changes) ? (reviewed.plan.changes as unknown[]) : null;
+    // Plan D15 "Malformed result": without the plan changes of known form, the earlier check has no input.
+    if (plan === null || !plan.every(isPlanChange)) {
       setSaving(false);
       setMessage(unknownFormText(TEXTS.save));
       reload();
@@ -237,7 +241,7 @@ function BoolControl({ value, scope, locked, pending, onChange }: RowProps) {
   ];
   return (
     <div className="flex flex-col gap-0.5">
-      <div role="radiogroup" aria-label={TEXTS.label(value.key)} aria-describedby={note} className="flex flex-wrap items-center gap-3">
+      <div role="radiogroup" aria-label={TEXTS.label(value.key)} aria-describedby={entry === undefined ? note : undefined} className="flex flex-wrap items-center gap-3">
         {options.map(([id, label, written]) => (
           <label key={id} className="flex items-center gap-1.5">
             <input type="radio" name={name} checked={state === id} disabled={locked} onChange={() => onChange(written)} />
@@ -245,9 +249,12 @@ function BoolControl({ value, scope, locked, pending, onChange }: RowProps) {
           </label>
         ))}
       </div>
-      <span id={note} className="text-muted-text">
-        {other === undefined ? TEXTS.notSetDefault : TEXTS.notSetOther(other.reading ?? shownValue(other), other.scope)}
-      </span>
+      {/* Plan D15: the note shows only when the read of the selected scope holds no entry for the key. */}
+      {entry !== undefined ? null : (
+        <span id={note} className="text-muted-text">
+          {other === undefined ? TEXTS.notSetDefault : TEXTS.notSetOther(other.reading ?? shownValue(other), other.scope)}
+        </span>
+      )}
     </div>
   );
 }

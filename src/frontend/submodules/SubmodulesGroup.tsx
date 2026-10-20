@@ -420,7 +420,13 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
               ))}
             </ul>
             <div className="flex flex-wrap gap-2">
-              <Button type="button" size="sm" disabled={reason !== null} focusableWhenDisabled aria-describedby={reason === null ? undefined : reasonId} onClick={() => void (reason === null && update.confirmHosts())}>
+              <Button type="button" size="sm" disabled={reason !== null} focusableWhenDisabled aria-describedby={reason === null ? undefined : reasonId} onClick={() => {
+                  if (reason !== null) return;
+                  update.confirmHosts();
+                  // The focused line leaves the DOM. Plan D15: focus goes to Update submodules.
+                  updateButton.current?.focus();
+                }}
+              >
                 Update anyway
               </Button>
               <Button
@@ -429,7 +435,6 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
                 size="sm"
                 onClick={() => {
                   update.dismissHosts();
-                  // The focused line leaves the DOM. Plan D15: focus goes to Update submodules.
                   updateButton.current?.focus();
                 }}
               >

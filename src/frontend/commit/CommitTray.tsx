@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import { ShieldAlertIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import type { ReviewCommitResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { TerminalState } from "../../contracts/errors";
@@ -113,6 +115,8 @@ export function summaryLine(head: Head, staged: number): string {
 const messageOf = (props: CommitTrayProps) => props.amend?.value?.text ?? (props.worktreeKey === null ? null : props.drafts.draft(props.worktreeKey)?.text) ?? "";
 /** Feature 004 plan.md D15: a mutation runs. Its reason goes only into the tooltip and the accessible description. */
 const runningBlock = (blocked: Blocked | undefined) => blocked === "running" || blocked === "busy";
+/** A text of the amend column. It adds no content width, so the button row sets the column width and the text wraps to it. */
+const COLUMN_TEXT = { contain: "inline-size" } as const;
 
 /** plan.md Commit row: the visible reason that disables Commit, or null. An amend without staged changes changes only the message (FR-099). */
 function disableReason(props: CommitTrayProps, composing: boolean): string | null {
@@ -271,13 +275,15 @@ export function CommitTray(props: CommitTrayProps) {
   const pushReason = busy ? null : (reason ?? props.pushReason ?? null);
   // Plan.md D15: a reason because an operation runs shows only in the tooltip and the accessible description.
   const hideReason = runningBlock(props.blocked);
+  // Plan.md D15 "Trust texts": the Commit trust reason shows beside Commit, after the shield icon.
+  const trustShown = shownReason !== null && shownReason === props.trustReason;
   const commitButton = (
     <Button aria-keyshortcuts="Control+Enter" disabled={disabled} focusableWhenDisabled aria-describedby={shownReason === null ? undefined : reasonId} onClick={() => void activate()}>
       Commit (Ctrl+Enter)
     </Button>
   );
   return (
-    <div className="grid h-full min-h-0 gap-x-2 gap-y-1" style={{ gridTemplateColumns: "minmax(0, 1fr) auto", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
+    <div className="grid h-full min-h-0 gap-x-2 gap-y-1" style={{ gridTemplateColumns: "minmax(0, 1fr) fit-content(50%)", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
       <div className="col-span-2 flex items-center gap-2">
         <span className="font-semibold">Commit message</span>
         <span className="ml-auto">
@@ -308,11 +314,18 @@ export function CommitTray(props: CommitTrayProps) {
         onCompositionStart={() => setComposing(true)}
         onCompositionEnd={() => setComposing(false)}
       />
-      <div className="flex max-w-64 flex-col items-start gap-1">
+      {/* The amend column spans the editor row and the lines below it, so the lines never run under it. */}
+      <div className="flex flex-col items-start gap-1" style={{ gridColumn: "2", gridRow: "2 / span 2" }}>
         {props.amend === undefined ? null : (
           <AmendBox checked={amending !== null} reason={amendBlock} onChange={(checked) => void toggleAmend(checked)} />
         )}
-        {amending === null ? null : <p data-slot="amend-statement">{amendStatement(amending.headOid)}</p>}
+        {amending === null ? null : <p data-slot="amend-statement" className="self-stretch" style={COLUMN_TEXT}>{amendStatement(amending.headOid)}</p>}
+        {trustShown ? (
+          <p id={reasonId} className="flex items-start gap-2 self-stretch" style={COLUMN_TEXT}>
+            <HugeiconsIcon icon={ShieldAlertIcon} strokeWidth={2} aria-hidden="true" className="mt-0.5 size-4 shrink-0 text-warning" />
+            {shownReason}
+          </p>
+        ) : null}
         <div className="flex flex-wrap gap-2">
           <RunningTooltip reason={hideReason ? shownReason : null}>{commitButton}</RunningTooltip>
           {props.onPush === undefined ? null : (
@@ -327,14 +340,18 @@ export function CommitTray(props: CommitTrayProps) {
             </Button>
           )}
         </div>
-        <p className="text-muted-text">{HOOK_DISCLOSURE}</p>
+        <p className="self-stretch text-muted-text" style={COLUMN_TEXT}>
+          {HOOK_DISCLOSURE}
+        </p>
       </div>
-      <div className="col-span-2 flex min-w-0 flex-col">
+      <div className="flex min-w-0 flex-col" style={{ gridColumn: "1" }}>
         <GuideLines id={`${reasonId}-guide`} text={text} />
         {head === null ? null : <p className="truncate">{summaryLine(head, staged)}</p>}
-        <p id={reasonId} hidden={hideReason} className="truncate text-muted-text">
-          {shownReason}
-        </p>
+        {trustShown ? null : (
+          <p id={reasonId} hidden={hideReason} className="truncate text-muted-text">
+            {shownReason}
+          </p>
+        )}
         {pushReason === null || pushReason === shownReason ? null : (
           <p id={`${reasonId}-push`} className="truncate text-muted-text">
             {`Commit and push: ${pushReason}`}
@@ -368,7 +385,7 @@ export function CommitTray(props: CommitTrayProps) {
 function AmendBox({ checked, reason, onChange }: { checked: boolean; reason: string | null; onChange(checked: boolean): void }) {
   const reasonId = useId();
   return (
-    <div className="flex flex-col gap-1">
+    <div className="flex flex-col gap-1 self-stretch">
       <label className="flex items-center gap-2">
         <input
           type="checkbox"
@@ -383,8 +400,8 @@ function AmendBox({ checked, reason, onChange }: { checked: boolean; reason: str
         {AMEND_LABEL}
       </label>
       {reason === null ? null : (
-        <p id={reasonId} className="text-muted-text">
-          {`${AMEND_LABEL} is unavailable: ${reason}`}
+        <p id={reasonId} className="text-muted-text" style={COLUMN_TEXT}>
+          {reason}
         </p>
       )}
     </div>

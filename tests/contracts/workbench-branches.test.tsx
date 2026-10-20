@@ -130,6 +130,26 @@ describe("branch button (FR-007)", () => {
     expect(double.count("reviewWorkbench")).toBe(0);
   });
 
+  test("during a merge, the inline sync reason line takes only the width that the branch button leaves (plan.md D15 Top bar row)", async () => {
+    await mountWorkbench(workbench, branchWorld(undefined, { operationState: "merging" }));
+    const group = document.querySelector<HTMLElement>('header [role="group"][aria-label="Remote sync"]')!;
+    const line = [...group.querySelectorAll<HTMLElement>("[title]")].find((e) => (e.getAttribute("title") ?? "").includes("A merge or a rebase is in progress."));
+    expect(line).toBeDefined();
+    expect(text(line!)).toBe("Pull, Push: A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.");
+    // `contain: inline-size` gives the reason no content width, so it never claims the width of the branch text. The control names stay whole.
+    const [names, reason] = [...line!.children] as HTMLElement[];
+    expect(text(names!)).toBe("Pull, Push:");
+    expect(names!.className.split(" ")).toContain("shrink-0");
+    expect(reason!.style.getPropertyValue("contain")).toBe("inline-size");
+    expect(Number(reason!.style.flexGrow)).toBeGreaterThan(0);
+    // The branch text counts in the width of the branch button: a zero flex basis gave it no width.
+    expect(document.querySelector<HTMLElement>('header [data-slot="branch-text"]')!.style.flexBasis).toBe("auto");
+    // The branch button grows first, up to its text width. The sync group takes the rest.
+    const wrapper = group.parentElement!;
+    expect(Number(wrapper.style.flexGrow)).toBeGreaterThan(0);
+    expect(Number(branchButton()!.style.flexGrow)).toBeGreaterThanOrEqual(1000 * Number(wrapper.style.flexGrow));
+  });
+
   test("a rebase shows Rebasing", async () => {
     await mountWorkbench(workbench, branchWorld(undefined, { operationState: "rebasing" }));
     expect(text(branchButton()!)).toContain("Rebasing");

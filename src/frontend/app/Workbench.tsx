@@ -1686,13 +1686,14 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             </span>
           )}
           {workspace === null ? null : (
-            // plan.md "Header layout": the branch button takes only the width that the other items leave, so it never moves them to another row.
-            <BranchButton head={workspace.head} operationState={workspace.operationState} counts={currentLabel} tracking={labels} actions={branches} blockedReason={mutationReason} rowHeight={m.row} headingHeight={m.subgroupHeading} />
+            // plan.md "Header layout": in one row, the branch button takes only the width that the other items leave, so it never moves them to another row.
+            <BranchButton head={workspace.head} operationState={workspace.operationState} counts={currentLabel} tracking={labels} actions={branches} blockedReason={mutationReason} rowHeight={m.row} headingHeight={m.subgroupHeading} wraps={rows !== 1} />
           )}
           {workspace === null ? null : <WorktreeButton actions={worktrees} worktreeRoot={path} rowHeight={m.row} headingHeight={m.subgroupHeading} />}
           {state.repository === null ? null : (
             // The 004 design standard: the Fetch, Pull, and Push group follows the branch. Feature 004 adds its branch and worktree buttons before it.
-            <span className="flex min-w-0 items-center" style={{ order: 4 }}>
+            // Plan.md D15 "Top bar row": the group grows only after the branch button reaches its text width, so its reason line takes the rest.
+            <span className="flex items-center" style={{ order: 4, flexGrow: 1 }}>
               <SyncToolbar
                 reasons={reasons}
                 defaultAction={syncSettings.action}

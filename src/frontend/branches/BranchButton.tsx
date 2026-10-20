@@ -29,6 +29,8 @@ export type BranchButtonProps = {
   /** The reason that blocks the switch, such as a merge in progress. The list then shows it instead of the branches. */
   blockedReason: string | null;
   rowHeight: number;
+  /** The header wraps into rows (001 plan.md "Header layout"). The menu bar then moves to the next row before the branch text shrinks. */
+  wraps?: boolean;
 };
 
 /** Spec FR-007: the branch, "Detached at <short ID>", or the operation in progress. An unborn branch keeps the 001 header text. */
@@ -39,7 +41,7 @@ function buttonText(head: WorkspaceSnapshot["head"], operationState: WorkspaceSn
   return head.state === "unborn" ? `${branchName(head.target)}, no commits yet` : branchName(head.target);
 }
 
-export function BranchButton({ headingHeight, head, operationState, counts, tracking, actions, blockedReason, rowHeight }: BranchButtonProps) {
+export function BranchButton({ headingHeight, head, operationState, counts, tracking, actions, blockedReason, rowHeight, wraps = false }: BranchButtonProps) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const text = buttonText(head, operationState);
@@ -65,8 +67,10 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
           type="button"
           data-slot="branch-button"
           aria-label={counts === null ? text : `${text}, ${counts.label}`}
-          className="flex h-(--h-button) min-w-0 max-w-fit items-center gap-1 rounded-sm border border-control-border px-2 hover:bg-hover-fill"
-          style={{ order: 3, flex: "1 1 0px" }}
+          className="flex h-(--h-button) min-w-0 max-w-fit items-center gap-1 overflow-hidden rounded-sm border border-control-border px-2 hover:bg-hover-fill"
+          // Plan.md D15 "Top bar row": the grow factor gives the branch text the free width before the sync reason line (grow 1).
+          // A zero basis in one row keeps the menu bar, Refresh, and Commit in that row. The text basis in wrapped rows moves them first.
+          style={{ order: 3, flex: wraps ? "1000 1 auto" : "1000 1 0px" }}
         />
       }
       tooltip={T.tooltip}
@@ -106,7 +110,7 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
     >
       <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
       {/* plan.md "Header layout": the folder part shrinks first and the last `/` segment last. The title and the hidden text hold the full name. */}
-      <span data-slot="branch-text" title={text} className="flex min-w-0 items-center whitespace-nowrap" style={{ flex: "1 1 0px" }}>
+      <span data-slot="branch-text" title={text} className="flex min-w-0 items-center whitespace-nowrap" style={{ flex: "0 1 auto" }}>
         <span className="sr-only">{text}</span>
         {folder === "" ? null : (
           <span data-branch-part="folder" aria-hidden="true" className="min-w-0 shrink-[1000] truncate">

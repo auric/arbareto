@@ -109,7 +109,7 @@ export function SyncToolbar({ reasons: given, defaultAction, settingsReason, cou
   const describedBy = (control: keyof typeof quiet, reason: string | null) => (quiet[control] ? runningId : lineId(reason));
   const note = (control: keyof typeof quiet) => (quiet[control] ? RUNNING_REASON : undefined);
   return (
-    <div role="group" aria-label="Remote sync" className="flex min-w-0 items-center gap-1">
+    <div role="group" aria-label="Remote sync" className="flex grow items-center gap-1">
       {running === null ? null : (
         <span id={runningId} className="sr-only">
           {RUNNING_REASON}
@@ -173,8 +173,13 @@ export function SyncToolbar({ reasons: given, defaultAction, settingsReason, cou
       </div>
       {count}
       {[...lines].map(([reason, controls], i) => (
-        <span key={reason} id={`${id}-${i}`} className="min-w-0 truncate text-muted-text" title={`${controls.join(", ")}: ${reason}`}>
-          {`${controls.join(", ")}: ${reason}`}
+        // Plan.md D15 "Top bar row": the line keeps its control names and an ellipsis. The reason takes only the width that the other controls leave.
+        <span key={reason} id={`${id}-${i}`} className="flex text-muted-text" style={{ flexGrow: 1 }} title={`${controls.join(", ")}: ${reason}`}>
+          <span className="shrink-0 whitespace-pre">{`${controls.join(", ")}: `}</span>
+          {/* `contain: inline-size` gives the reason no content width. */}
+          <span className="min-w-[1em] truncate" style={{ contain: "inline-size", flexGrow: 1 }}>
+            {reason}
+          </span>
         </span>
       ))}
     </div>

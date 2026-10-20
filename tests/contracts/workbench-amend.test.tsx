@@ -121,13 +121,13 @@ describe("Amend last commit box (FR-098)", () => {
   test("the box is unavailable with its reason for an unborn branch and during a merge or a rebase, and a click sends nothing", async () => {
     const unborn = await mount({ head: { state: "unborn", target: "refs/heads/main" } });
     expect(unborn.box.closest("label")!.textContent).toBe("Amend last commit");
-    expect(describedBy(unborn.box)).toBe("Amend last commit is unavailable: The branch has no commits yet.");
+    expect(describedBy(unborn.box)).toBe("The branch has no commits yet.");
     await unborn.click(unborn.box);
     expect(unborn.calls).toEqual([]);
     expect(unborn.box.checked).toBe(false);
     for (const operationState of ["merging", "rebasing"]) {
       const t = await mount({ operationState });
-      expect(describedBy(t.box)).toBe("Amend last commit is unavailable: A merge or a rebase is in progress.");
+      expect(describedBy(t.box)).toBe("A merge or a rebase is in progress.");
       await t.click(t.box);
       expect(t.calls).toEqual([]);
     }

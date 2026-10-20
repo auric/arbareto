@@ -801,17 +801,32 @@ describe("message editor (FR-047) and Amend last commit (FR-098)", () => {
     expect(t.host.querySelector('[data-slot="line-two-mark"]')).toBeNull();
   });
 
+  test("the help line and the reason lines stay in the editor column, and the amend column spans the editor and the lines below it", async () => {
+    const t = await tray({ operationState: "merging", amend: { value: null, onChange: () => {} } });
+    const cell = (e: Element) => {
+      let at: Element = e;
+      while (at.parentElement !== null && at.parentElement !== t.host.firstElementChild) at = at.parentElement;
+      return at as HTMLElement;
+    };
+    const guide = [...t.host.querySelectorAll("span")].find((s) => text(s).startsWith("Keep the summary at 72 characters"))!;
+    const commit = [...t.host.querySelectorAll("button")].find((b) => b.textContent === "Commit (Ctrl+Enter)")!;
+    expect(cell(guide).style.getPropertyValue("grid-column")).toBe("1");
+    expect(cell(commit).style.getPropertyValue("grid-column")).toBe("2");
+    expect(cell(commit).style.getPropertyValue("grid-row")).toBe("2 / span 2");
+    expect(cell(t.host.querySelector("textarea")!)).not.toBe(cell(guide));
+  });
+
   test("Amend last commit sits next to the message editor and states its reason for an unborn branch and during a merge or a rebase", async () => {
     const box = { value: null, onChange: () => {} };
     const unborn = await tray({ head: { state: "unborn", target: "refs/heads/main" }, amend: box });
     const check = unborn.host.querySelector<HTMLInputElement>('input[type="checkbox"]')!;
     expect(text(check.closest("label")!)).toBe("Amend last commit");
-    expect(describedBy(check)).toBe("Amend last commit is unavailable: The branch has no commits yet.");
+    expect(describedBy(check)).toBe("The branch has no commits yet.");
     await act(async () => check.click());
     expect(unborn.calls).toEqual([]);
     for (const operationState of ["merging", "rebasing"]) {
       const t = await tray({ operationState, amend: box });
-      expect(describedBy(t.host.querySelector('input[type="checkbox"]')!)).toBe("Amend last commit is unavailable: A merge or a rebase is in progress.");
+      expect(describedBy(t.host.querySelector('input[type="checkbox"]')!)).toBe("A merge or a rebase is in progress.");
     }
   });
 

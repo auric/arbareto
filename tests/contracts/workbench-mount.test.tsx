@@ -1372,7 +1372,9 @@ describe("toolbar branch text", () => {
       ["folder", "feature/", true],
       ["last", "ACS-10545-a-very-long-branch-name-that-goes-on-and-on-and-on", true],
     ]);
-    expect(branch.style.flex).toBe("1 1 0px");
+    // T109: the text counts in the button width. The button takes the free width (plan.md D15 "Top bar row").
+    expect(branch.style.flex).toBe("0 1 auto");
+    expect(branch.closest<HTMLElement>('[data-slot="branch-button"]')!.style.flexGrow).toBe("1000");
     expect(branch.className.split(/\s+/)).toContain("min-w-0");
   });
 });

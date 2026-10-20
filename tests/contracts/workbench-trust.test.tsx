@@ -192,6 +192,13 @@ describe("the ask (FR-069, FR-070, FR-072)", () => {
     await answer(double.pending("approveTrust"), CANCELED);
     expect(text()).toContain(COMMIT_TEXT);
     expect(unavailable(button("Commit (Ctrl+Enter)"))).toBe(true);
+    // The Trust board 2b: the reason sits beside Commit, after the shield icon, not under the message editor.
+    const commitButton = button("Commit (Ctrl+Enter)");
+    const reason = document.getElementById(commitButton.getAttribute("aria-describedby")!)!;
+    expect(text(reason)).toBe(COMMIT_TEXT);
+    expect(reason.querySelector('svg[aria-hidden="true"]') === null).toBe(false);
+    expect(reason.parentElement!.contains(commitButton)).toBe(true);
+    expect(reason.parentElement!.contains(document.querySelector("textarea"))).toBe(false);
     await click(button("Commit (Ctrl+Enter)"));
     expect(double.count("approveTrust")).toBe(1);
     expect(double.count("reviewCommit")).toBe(0);

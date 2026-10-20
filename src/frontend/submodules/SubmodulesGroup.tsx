@@ -324,7 +324,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
   const [active, setActive] = useState(0);
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   const [remedies, setRemedies] = useState<ReadonlySet<number>>(new Set());
-  const [menu, setMenu] = useState<{ path: string; anchor: HTMLElement } | null>(null);
+  const [menu, setMenu] = useState<{ path: string; anchor: HTMLElement; byKey?: boolean } | null>(null);
   const elements = useRef(new Map<string, HTMLElement>());
   const copy = useCopy();
   const reason = runningReason ?? blockedReason;
@@ -354,7 +354,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
     // Windows sends Shift+F10 and the Menu key to the focused element.
     if ((event.key === "F10" && event.shiftKey) || event.key === "ContextMenu") {
       event.preventDefault();
-      return setMenu({ path: list[index]!.path, anchor: event.currentTarget });
+      return setMenu({ path: list[index]!.path, anchor: event.currentTarget, byKey: true });
     }
     if (event.shiftKey) return;
     const last = list.length - 1;
@@ -562,7 +562,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
         )}
       </div>
       {menu === null ? null : (
-        <ActionMenu label={`Actions for ${menu.path}`} groups={menuGroups(menu.path)} open anchor={menu.anchor} finalFocus={() => menu.anchor} onOpenChange={(next) => void (next || setMenu(null))} />
+        <ActionMenu label={`Actions for ${menu.path}`} groups={menuGroups(menu.path)} open anchor={menu.anchor} byKey={menu.byKey} finalFocus={() => menu.anchor} onOpenChange={(next) => void (next || setMenu(null))} />
       )}
     </section>
   );

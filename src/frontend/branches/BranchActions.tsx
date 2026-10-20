@@ -84,7 +84,7 @@ export function useBranchActions(options: BranchActionsOptions) {
   const snapshot = () => workbench.getState().branches;
   const branches = useSyncExternalStore(workbench.subscribe, snapshot, snapshot);
   const [overlay, setOverlay] = useState<Overlay | null>(null);
-  const [menu, setMenu] = useState<{ ref: string; entry: BranchEntry; anchor: Element } | null>(null);
+  const [menu, setMenu] = useState<{ ref: string; entry: BranchEntry; anchor: Element; byKey: boolean } | null>(null);
   const busy = useRef(false);
   const field = useRef<HTMLInputElement>(null);
   // True when the selected menu item opens a panel or a popover that takes the focus. The menu then returns no focus to its row.
@@ -95,9 +95,9 @@ export function useBranchActions(options: BranchActionsOptions) {
   useEffect(() => {
     if (repositoryId !== null) workbench.readBranches();
   }, [workbench, repositoryId, refsDigest]);
-  const openMenu = (entry: BranchEntry, anchor: Element) => {
+  const openMenu = (entry: BranchEntry, anchor: Element, byKey = false) => {
     handoff.current = false;
-    setMenu({ ref: entry.ref, entry, anchor });
+    setMenu({ ref: entry.ref, entry, anchor, byKey });
     workbench.readBranches();
   };
   const [shownFor, setShownFor] = useState(repositoryId);
@@ -327,7 +327,7 @@ export function useBranchActions(options: BranchActionsOptions) {
   const overlays = (
     <>
       {menu === null ? null : (
-        <BranchMenu label={T.menu(menu.entry.name)} groups={(copy) => menuGroups(entryOf(menu.ref) ?? menu.entry, copy)} anchor={menu.anchor} handoff={handoff} onClose={() => setMenu(null)} />
+        <BranchMenu label={T.menu(menu.entry.name)} groups={(copy) => menuGroups(entryOf(menu.ref) ?? menu.entry, copy)} anchor={menu.anchor} byKey={menu.byKey} handoff={handoff} onClose={() => setMenu(null)} />
       )}
       {overlay?.kind === "switch" ? <SwitchConfirm overlay={overlay} unborn={head?.state === "unborn"} onChange={setOverlay} onConfirm={() => confirmSwitch(overlay)} onCancel={() => setOverlay(null)} /> : null}
       {overlay?.kind === "remote" ? (
@@ -435,10 +435,10 @@ export function useBranchActions(options: BranchActionsOptions) {
     /** Reads the branches again, such as when the list opens. */
     refresh: () => workbench.readBranches(),
     /** A sidebar row or a history label by its 002 kind and short name. A ref outside the newest `readBranches` result does nothing. */
-    onRef(kind: "branch" | "remote", name: string, action: "menu" | "confirm" | ScopedAction, anchor: HTMLElement) {
+    onRef(kind: "branch" | "remote", name: string, action: "menu" | "confirm" | ScopedAction, anchor: HTMLElement, byKey = false) {
       const entry = entryOf(`${kind === "branch" ? "refs/heads/" : "refs/remotes/"}${name}`);
       if (entry === null) return;
-      if (action === "menu") openMenu(entry, anchor);
+      if (action === "menu") openMenu(entry, anchor, byKey);
       else if (action === "confirm") startSwitch(entry, anchor, true);
       else act(entry, action, anchor);
     },
@@ -449,9 +449,9 @@ export function useBranchActions(options: BranchActionsOptions) {
 }
 
 /** The menu reads the copy helper inside the `CopyFailed` provider of the window. */
-function BranchMenu({ label, groups, anchor, handoff, onClose }: { label: string; groups(copy: (text: string) => void): ActionItem[][]; anchor: Element; handoff: RefObject<boolean>; onClose(): void }) {
+function BranchMenu({ label, groups, anchor, byKey, handoff, onClose }: { label: string; groups(copy: (text: string) => void): ActionItem[][]; anchor: Element; byKey: boolean; handoff: RefObject<boolean>; onClose(): void }) {
   const copy = useCopy();
-  return <ActionMenu label={label} groups={groups(copy)} open anchor={anchor} finalFocus={() => (handoff.current ? false : (anchor as HTMLElement))} onOpenChange={(next) => void (next || onClose())} />;
+  return <ActionMenu label={label} groups={groups(copy)} open anchor={anchor} byKey={byKey} finalFocus={() => (handoff.current ? false : (anchor as HTMLElement))} onOpenChange={(next) => void (next || onClose())} />;
 }
 
 function outcomeText(action: string, display: string, response: BridgeResponse): ReactNode {

@@ -366,6 +366,8 @@ Screenshots: the R25 method. `bun run dev` ran with `ARBARETO_PROFILE_ROOT` in a
 
 Follow-up (T106), 2026-10-20, in `C:\Projects\arbareto-l7` on f004-t093-fu at 16faf8a. The Commit view now takes its layout from its own width (plan.md D16 "Geometry"). At 960 DIPs, the lists sit left of the diff in a 280 DIP lane (`t093fu-l7/shots/960-commit-view.png`), and Changes and Staged show all eight rows of the fixture. An `openWorktree` refusal `UNKNOWN_TARGET` shows the D15 worktree text. Each sidebar Worktrees row has a tooltip with its full accessible name. "No file matches the filter." sits in a `role="status"` region that is always present. The six new or changed cases failed before the fixes. One control mutation per fix turned its case red, and the undo turned it green again. `bun run typecheck` and `bun run build` exit 0. `bun test tests/contracts` gives 4,713 pass, 33 skip, 0 fail. `tests/git/portable-imports.test.ts` gives 23 pass. All 292 `ORIGIN` lines are under `C:\Projects\arbareto-l7`. Open: in the 960 DIP tray, the message help line overlaps the hook note of the right column.
 
+Follow-up (menu focus), 2026-10-20, on f004-menu-focus at 347b89d: Shift+F10 and the Menu key on a sidebar branch, history, Worktrees, submodule, or Changes row now move the focus to the first menu item, also an unavailable one (spec FR-014). Base UI 1.8.0 focused the popup, because a menu without a trigger records no open method. A right-click keeps the Base UI popup focus.
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.

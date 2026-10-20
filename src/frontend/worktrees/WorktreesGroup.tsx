@@ -18,16 +18,16 @@ export function WorktreesGroup({ actions, rowHeight }: { actions: WorktreeAction
   const ids = { heading: useId(), row: useId() };
   const [expanded, setExpanded] = useState(true);
   const [active, setActive] = useState(0);
-  const [menu, setMenu] = useState<{ entry: WorktreeEntry; anchor: Element } | null>(null);
+  const [menu, setMenu] = useState<{ entry: WorktreeEntry; anchor: Element; byKey: boolean } | null>(null);
   const entries = actions.entries ?? [];
   const at = Math.min(active, Math.max(0, entries.length - 1));
   const rowId = (index: number) => `${ids.row}-${index}`;
   const anchorOf = (index: number) => document.getElementById(rowId(index));
 
-  function openMenu(index: number) {
+  function openMenu(index: number, byKey = false) {
     const anchor = anchorOf(index);
     const entry = entries[index];
-    if (anchor !== null && entry !== undefined) setMenu({ entry, anchor });
+    if (anchor !== null && entry !== undefined) setMenu({ entry, anchor, byKey });
   }
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
@@ -35,7 +35,7 @@ export function WorktreesGroup({ actions, rowHeight }: { actions: WorktreeAction
     // Windows sends Shift+F10 and the Menu key to the focused element.
     if ((event.key === "F10" && event.shiftKey) || event.key === "ContextMenu") {
       event.preventDefault();
-      return openMenu(at);
+      return openMenu(at, true);
     }
     if (event.shiftKey) return;
     const moves: Record<string, () => void> = {
@@ -117,6 +117,7 @@ export function WorktreesGroup({ actions, rowHeight }: { actions: WorktreeAction
           label={W.menu(folderOf(e.path))}
           open
           anchor={menu!.anchor}
+          byKey={menu!.byKey}
           finalFocus={() => (menu!.anchor.closest<HTMLElement>('[role="listbox"]') ?? false) as HTMLElement | false}
           onOpenChange={(next) => void (next || setMenu(null))}
           groups={[

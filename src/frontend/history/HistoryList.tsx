@@ -135,7 +135,7 @@ const countOf = (label: ViewRow["labels"][number], tracking: Tracking | undefine
 
 type Label = ViewRow["labels"][number];
 /** Feature 004 spec FR-014: the branch menu of a local or remote-tracking branch label. */
-type LabelMenu = (label: Label, anchor: HTMLElement) => void;
+type LabelMenu = (label: Label, anchor: HTMLElement, byKey?: boolean) => void;
 
 /** Feature 004 plan.md D15 "History labels": the labels that have a branch menu. */
 const hasMenu = (label: Label) => label.kind === "branch" || label.kind === "remote";
@@ -409,7 +409,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
       event.preventDefault();
       const option = document.getElementById(optionId(selection!.index! + SPECIAL_ROWS));
       const chip = [...(option?.querySelectorAll<HTMLElement>(".chip[data-kind]") ?? [])].find((c) => c.dataset.kind === label.kind && c.querySelector("[data-chip-name]")?.textContent === label.name);
-      return onLabelMenu(label, chip ?? option ?? event.currentTarget);
+      return onLabelMenu(label, chip ?? option ?? event.currentTarget, true);
     }
     if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
     if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && onLabelMenu !== undefined && selectedRow !== undefined && menuLabels.length > 0) {

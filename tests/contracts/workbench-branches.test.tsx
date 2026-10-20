@@ -409,6 +409,15 @@ describe("keys during IME composition and the keyboard path to the history label
       await settle();
       expect(document.activeElement).toBe(openMenuItems()[0]!);
     });
+
+    test(`${name} on a history row moves the focus to the first menu item, so the focus outline shows (D16)`, async () => {
+      await mountWorkbench(workbench, branchWorld());
+      const row = document.querySelector('[data-slot="row-labels"] .chip[data-kind="branch"]')!.closest<HTMLElement>('[role="option"]')!;
+      await click(row);
+      await press(row.closest('[role="listbox"]')!, init.key, init);
+      await settle();
+      expect(document.activeElement).toBe(openMenuItems()[0]!);
+    });
   }
 });
 

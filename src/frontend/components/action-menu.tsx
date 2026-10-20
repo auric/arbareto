@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { Fragment, useId, type ComponentProps, type ReactElement } from "react";
+import { Fragment, useCallback, useId, type ComponentProps, type ReactElement } from "react";
 import { isEditable } from "../keyboard/shortcuts";
 import { RunningTooltip } from "./running-tooltip";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "./ui/dropdown-menu";
@@ -35,16 +35,20 @@ export type ActionMenuProps = {
   trigger?: ReactElement;
   /** A row opens the menu by right-click, Shift+F10, or the Menu key, and the menu sits at that row. */
   anchor?: Element | null;
+  /** Shift+F10 or the Menu key opened the menu. The focus then goes to the first item, also an unavailable one (spec FR-014). A right-click keeps the Base UI popup focus. */
+  byKey?: boolean;
   finalFocus?: ComponentProps<typeof DropdownMenuContent>["finalFocus"];
 };
 
 /** The menu of D15. The accessible name of an item is its label only: the key goes to `aria-keyshortcuts`, and the key column is hidden from assistive technology. */
-export function ActionMenu({ label, groups, open, onOpenChange, trigger, anchor, finalFocus }: ActionMenuProps) {
+export function ActionMenu({ label, groups, open, onOpenChange, trigger, anchor, byKey = false, finalFocus }: ActionMenuProps) {
+  // Base UI 1.8.0 records no open method without a trigger, so it focuses the popup. The focused item becomes the highlighted item.
+  const focusFirst = useCallback((popup: HTMLDivElement | null) => void (byKey && popup?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()), [byKey]);
   return (
     <DropdownMenu open={open} onOpenChange={(next) => onOpenChange(next)}>
       {trigger === undefined ? null : <DropdownMenuTrigger render={trigger} />}
       {/* D16 "Geometry": a row menu opens beside its row, so the row stays visible. */}
-      <DropdownMenuContent aria-label={label} anchor={anchor ?? undefined} side={anchor ? "inline-end" : "bottom"} sideOffset={2} finalFocus={finalFocus} className="w-auto max-w-[calc(100vw-32px)] min-w-[220px]">
+      <DropdownMenuContent aria-label={label} anchor={anchor ?? undefined} side={anchor ? "inline-end" : "bottom"} sideOffset={2} ref={focusFirst} finalFocus={finalFocus} className="w-auto max-w-[calc(100vw-32px)] min-w-[220px]">
         {groups.map((group, index) => (
           <Fragment key={index}>
             {index === 0 ? null : <DropdownMenuSeparator />}

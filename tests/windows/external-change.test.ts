@@ -9,20 +9,24 @@ import { printOrigin } from "../origin";
 import { describeGit } from "../git/git-binary";
 import { FIXTURE_ROOT, fixtureDir, fixtureGit, useFixtureRoot } from "../git/fixture-root";
 import { indexEntries, rawIndexDigest, refState, workingFileDigests } from "../git/git-oracle";
+import { buildImported, distroGit, writeLinux, type WslRepo } from "../wsl/fixtures";
+import { useWslFolder, wslTest } from "../wsl/wsl-host";
 
 const HELPER = printOrigin("./external-change.ts", import.meta.dir);
 const TEST_BRANCH = "refs/heads/arbareto-external-change";
 const TIMEOUT_MS = 60_000;
 
-function helper(git: string, args: string[]): { exitCode: number; out: string } {
-  const proc = Bun.spawnSync([process.execPath, HELPER, ...args, "--git", git], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+function run(args: string[]): { exitCode: number; out: string } {
+  const proc = Bun.spawnSync([process.execPath, HELPER, ...args], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: TIMEOUT_MS });
   const out = proc.stdout.toString() + proc.stderr.toString();
   console.log(out.trimEnd());
   return { exitCode: proc.exitCode, out };
 }
 
-function change(git: string, kind: string, repo: string): { path: string | null } {
-  const { exitCode, out } = helper(git, [kind, repo]);
+const helper = (git: string, args: string[]) => run([...args, "--git", git]);
+
+function change(git: string, kind: string, repo: string, extra: string[] = ["--git", git]): { path: string | null } {
+  const { exitCode, out } = run([kind, repo, ...extra]);
   expect(exitCode).toBe(0);
   const line = /^EXTERNAL_CHANGE kind=(\w+) start=(\d+) end=(\d+)(?: path=(.*))?$/m.exec(out);
   expect(line).not.toBeNull();
@@ -177,3 +181,49 @@ describeGit("T244 external-change helper", (git) => {
     expect(existsSync(`${repo}.external-change.json`)).toBe(false);
   });
 });
+
+// The WSL case runs only when `ARBARETO_WSL_DISTRO` names the distro, so a plain run never starts the default distro.
+const DISTRO = process.env.ARBARETO_WSL_DISTRO;
+const WSL_NAME = "the --wsl path makes each change in the distro, and --restore returns the start state";
+if (!DISTRO) {
+  console.log(`SKIP ARBARETO_WSL_DISTRO unset: ${WSL_NAME}`);
+  test.skip(`${WSL_NAME} (SKIP: ARBARETO_WSL_DISTRO unset)`, () => {});
+} else {
+  useWslFolder();
+  // A clean file `a.txt`, a changed file `b.txt`, and an untracked file. Every read runs in the distro.
+  const STREAM = "commit refs/heads/probe\ncommitter Arbareto Fixture <fixture@arbareto.invalid> 1767225600 +0000\ndata 4\nbase\nM 100644 inline a.txt\ndata 6\nalpha\n\nM 100644 inline b.txt\ndata 2\nb\n\n";
+  const distroState = (r: WslRepo) => ({
+    status: distroGit(r, ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"]),
+    entries: distroGit(r, ["--no-optional-locks", "ls-files", "-s", "-z"]),
+    refs: distroGit(r, ["--no-optional-locks", "for-each-ref", "--format=%(refname)%00%(objectname)"]),
+    files: distroGit(r, ["hash-object", "--no-filters", "--", "a.txt", "b.txt", "untracked.txt"]),
+  });
+  wslTest(
+    WSL_NAME,
+    ["wsl-fixture-fs-id"],
+    (host) => {
+      const r = buildImported(host, "repo", Buffer.from(STREAM));
+      distroGit(r, ["reset", "-q", "--hard"]);
+      writeLinux(host, `${r.dir}/b.txt`, "b changed\n");
+      writeLinux(host, `${r.dir}/untracked.txt`, "untracked\n");
+      const before = distroState(r);
+      const head = distroGit(r, ["rev-parse", "--verify", "HEAD"]).trim();
+      const alpha = distroGit(r, ["rev-parse", "--verify", ":a.txt"]).trim();
+      const wsl = ["--wsl", host.distro];
+      expect(change("", "file", r.dir, wsl).path).toBe("a.txt");
+      expect(distroGit(r, ["hash-object", "--no-filters", "--", "a.txt"])).toBe(distroGit(r, ["hash-object", "--no-filters", "--stdin"], { input: Buffer.from("alpha\narbareto external change\n") }));
+      expect(run(["--restore", r.dir, ...wsl]).exitCode).toBe(0);
+      expect(distroState(r)).toEqual(before);
+      expect(change("", "index", r.dir, wsl).path).toBe("a.txt");
+      expect(distroGit(r, ["rev-parse", "--verify", ":a.txt"]).trim()).not.toBe(alpha);
+      expect(distroGit(r, ["hash-object", "--no-filters", "--", "a.txt", "b.txt", "untracked.txt"])).toBe(before.files);
+      expect(run(["--restore", r.dir, ...wsl]).exitCode).toBe(0);
+      expect(distroState(r)).toEqual(before);
+      expect(change("", "ref", r.dir, wsl).path).toBeNull();
+      expect(distroGit(r, ["rev-parse", "--verify", TEST_BRANCH]).trim()).toBe(head);
+      expect(run(["--restore", r.dir, ...wsl]).exitCode).toBe(0);
+      expect(distroState(r)).toEqual(before);
+    },
+    4 * TIMEOUT_MS,
+  );
+}

@@ -1571,6 +1571,21 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     </DockRegion>
   );
 
+  // Feature 004 plan D15 "P2 regions": the Submodules group sits in the sidebar below the references.
+  const submodulesGroup =
+    workspace === null ? null : (
+      <div className="flex max-h-[40%] min-h-0 shrink-0 flex-col border-t border-divider" onFocusCapture={() => void (reviewOpener.current = "group")}>
+        <SubmodulesGroup
+          update={submoduleUpdate}
+          runningReason={running ? RUNNING_REASON : null}
+          blockedReason={stateBlocked === null ? null : BLOCKED_TEXT[stateBlocked]}
+          onCancel={() => statusRegion.current?.requestCancel()}
+          onTrustReads={() => void approveTrust("read")}
+        />
+      </div>
+    );
+  // 001 plan.md "References sidebar": the constrained section collapses to its heading row, so the group scrolls with the references there.
+  const constrained = profile === "constrained";
   const refsSidebar = (
     <ReferencesSidebar
       refs={state.refs}
@@ -1579,29 +1594,29 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       onSelectCommit={(oid) => historyView.selectOid(oid)}
       onRefresh={refresh}
       collapsible={profile === "constrained"}
+      scrollMax={constrained ? m.reducedPaneMin : undefined}
       repository={state.repository?.worktreeKey ?? ""}
       onShowBranchHistory={() => void historyView.setScope("current")}
       tracking={labels}
       onBranchAction={branches.entries === null ? undefined : (entry, action, anchor, byKey) => branches.onRef(entry.kind as "branch" | "remote", entry.name, action, anchor, byKey)}
-      after={state.repository === null ? null : <WorktreesGroup actions={worktrees} rowHeight={m.row} />}
+      after={
+        state.repository === null ? null : (
+          <>
+            <WorktreesGroup actions={worktrees} rowHeight={m.row} />
+            {constrained ? submodulesGroup : null}
+          </>
+        )
+      }
     />
   );
-  // Feature 004 plan D15 "P2 regions": the Submodules group sits in the sidebar below the references. It scrolls inside its own region.
+  // Outside the constrained profile, the Submodules group scrolls inside its own region.
   const sidebar =
-    workspace === null ? (
+    submodulesGroup === null || constrained ? (
       refsSidebar
     ) : (
       <div className="flex h-full min-h-0 flex-col">
         <div className="min-h-0 flex-1">{refsSidebar}</div>
-        <div className="flex max-h-[40%] min-h-0 shrink-0 flex-col border-t border-divider" onFocusCapture={() => void (reviewOpener.current = "group")}>
-          <SubmodulesGroup
-            update={submoduleUpdate}
-            runningReason={running ? RUNNING_REASON : null}
-            blockedReason={stateBlocked === null ? null : BLOCKED_TEXT[stateBlocked]}
-            onCancel={() => statusRegion.current?.requestCancel()}
-            onTrustReads={() => void approveTrust("read")}
-          />
-        </div>
+        {submodulesGroup}
       </div>
     );
 
@@ -1609,8 +1624,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     profile === "constrained" ? (
       <div className="flex min-h-0 flex-1 flex-col">
         {/* plan.md "References sidebar": expanded, the section takes the reduced pane minimum and no more height. */}
-        <div data-section="references" className="shrink-0 border-b border-divider" style={{ height: "auto", maxHeight: m.reducedPaneMin }}>
-          {sidebar}
+        {/* plan.md "Section minima": its content keeps its own height and scrolls inside the section, so every group stays reachable. */}
+        <div data-section="references" className="shrink-0 overflow-y-auto border-b border-divider" style={{ height: "auto", maxHeight: m.reducedPaneMin }}>
+          {/* A block wrapper of content height. The sidebar height then resolves to its content, not to the section height. */}
+          <div>{sidebar}</div>
         </div>
         <section aria-label="History" data-section="historyList" className="flex min-h-0 flex-col" style={{ flex: "1 1 0" }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
           <HistoryView {...pane} />

@@ -30,7 +30,7 @@ export type BranchButtonProps = {
   blockedReason: string | null;
   rowHeight: number;
   /** The header wraps into rows (001 plan.md "Header layout"). The menu bar then moves to the next row before the branch text shrinks. */
-  wraps?: boolean;
+  wraps: boolean;
 };
 
 /** Spec FR-007: the branch, "Detached at <short ID>", or the operation in progress. An unborn branch keeps the 001 header text. */
@@ -41,7 +41,7 @@ function buttonText(head: WorkspaceSnapshot["head"], operationState: WorkspaceSn
   return head.state === "unborn" ? `${branchName(head.target)}, no commits yet` : branchName(head.target);
 }
 
-export function BranchButton({ headingHeight, head, operationState, counts, tracking, actions, blockedReason, rowHeight, wraps = false }: BranchButtonProps) {
+export function BranchButton({ headingHeight, head, operationState, counts, tracking, actions, blockedReason, rowHeight, wraps }: BranchButtonProps) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const text = buttonText(head, operationState);
@@ -121,8 +121,9 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
           {last}
         </span>
       </span>
+      {/* The counts shrink before the branch name and end with an ellipsis. The title and the accessible name hold the full counts. */}
       {counts === null ? null : (
-        <span aria-hidden="true" className="num shrink-0">
+        <span data-slot="branch-counts" aria-hidden="true" title={counts.label} className="num min-w-0 shrink-[1000] truncate">
           {counts.text}
         </span>
       )}

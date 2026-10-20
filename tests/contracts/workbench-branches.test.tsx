@@ -150,6 +150,19 @@ describe("branch button (FR-007)", () => {
     expect(Number(branchButton()!.style.flexGrow)).toBeGreaterThanOrEqual(1000 * Number(wrapper.style.flexGrow));
   });
 
+  test("a narrow branch button keeps the branch name first: the counts shrink first and end with an ellipsis, and the title and the accessible name hold the full text (T112)", async () => {
+    await mountWorkbench(workbench, branchWorld());
+    const b = branchButton()!;
+    const counts = b.querySelector<HTMLElement>('[data-slot="branch-counts"]')!;
+    expect(text(counts)).toBe("↑2 ↓3");
+    expect(counts.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-0", "truncate", "shrink-[1000]"]));
+    expect(counts.getAttribute("title")).toBe("2 ahead, 3 behind");
+    const name = b.querySelector<HTMLElement>('[data-slot="branch-text"]')!;
+    expect(name.compareDocumentPosition(counts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(name.getAttribute("title")).toBe("main");
+    expect(b.getAttribute("aria-label")).toBe("main, 2 ahead, 3 behind");
+  });
+
   test("a rebase shows Rebasing", async () => {
     await mountWorkbench(workbench, branchWorld(undefined, { operationState: "rebasing" }));
     expect(text(branchButton()!)).toContain("Rebasing");

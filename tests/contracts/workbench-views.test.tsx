@@ -218,6 +218,43 @@ describe("views (FR-033, FR-068, data-model §14)", () => {
   });
 });
 
+describe("constrained sidebar (plan.md D15 P2 regions, T112)", () => {
+  test("the Submodules group sits inside the references section, shows only while it is expanded, and the section scrolls as one region", async () => {
+    await mountWorkbench(workbench, createWorld({ operationState: "merging" }));
+    expect(document.querySelector<HTMLElement>("[data-profile]")!.dataset.profile).toBe("constrained");
+    const section = document.querySelector<HTMLElement>('[data-section="references"]')!;
+    // 001 plan.md "References sidebar": collapsed, the section holds only its heading row, so no group draws over the history list.
+    expect(document.querySelector('[data-slot="submodules-group"]')).toBeNull();
+    // 001 plan.md "Section minima": the sidebar scrolls inside its own bounds, so the heading and the filter never leave the groups at 0 height.
+    expect(section.className.split(/\s+/)).toContain("overflow-y-auto");
+    expect(section.className.split(/\s+/)).not.toContain("flex");
+    await showReferences();
+    const group = document.querySelector('[data-slot="submodules-group"]');
+    expect(group === null).toBe(false);
+    expect(group!.closest("[data-references-scroll]") === null).toBe(false);
+  });
+  test("with 5,000 branches, the expanded tree keeps a bounded scroll region, so the rendered row count stays bounded and the first rows show", async () => {
+    const head = oid(1);
+    const branches = [
+      { name: "main", objectId: head, upstream: null, upstreamObjectId: null, track: { state: "none" } as const, current: true },
+      ...Array.from({ length: 4_999 }, (_, i) => ({ name: `branch-${String(i).padStart(5, "0")}`, objectId: head, upstream: null, upstreamObjectId: null, track: { state: "none" } as const, current: false })),
+    ];
+    await mountWorkbench(workbench, createWorld({ branches }));
+    expect(document.querySelector<HTMLElement>("[data-profile]")!.dataset.profile).toBe("constrained");
+    await showReferences();
+    await settle();
+    const section = document.querySelector<HTMLElement>('[data-section="references"]')!;
+    const scroller = section.querySelector<HTMLElement>("[data-references-scroll]")!;
+    // The section scrolls the whole sidebar. The tree region keeps the section bound, so the virtualizer sees a bounded height.
+    expect(section.style.maxHeight).not.toBe("");
+    expect(scroller.style.maxHeight).toBe(section.style.maxHeight);
+    const items = [...scroller.querySelectorAll('[role="treeitem"]')];
+    expect(items.length).toBeGreaterThan(0);
+    expect(items.length).toBeLessThan(80);
+    expect(items[0]!.getAttribute("aria-label")!.startsWith("Branches")).toBe(true);
+  });
+});
+
 describe("switcher popover (plan.md D15)", () => {
   const ITEMS = ["main", "feature/Login", "fix.x", "fixAx", "release"];
   function Switcher({ onPick, startOpen = true }: { onPick(item: string): void; startOpen?: boolean }) {

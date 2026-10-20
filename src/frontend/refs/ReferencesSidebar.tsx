@@ -83,6 +83,8 @@ export type ReferencesSidebarProps = {
   onBranchAction?: (entry: RefEntry, action: "menu" | "confirm" | ScopedAction, anchor: HTMLElement, byKey?: boolean) => void;
   /** Feature 004 plan.md D15 "P2 regions": the groups after the references, such as Worktrees. They scroll with the sidebar. */
   after?: ReactNode;
+  /** The constrained profile: the outer section scrolls the whole sidebar, so the tree scroll region needs this bound to stay virtual. */
+  scrollMax?: number;
 };
 
 // plan.md "Keyboard and focus", References sidebar row: the expansion lasts for the window session per repository and is not stored.
@@ -137,7 +139,7 @@ function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: 
   return any;
 }
 
-export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction, after }: ReferencesSidebarProps) {
+export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction, after, scrollMax }: ReferencesSidebarProps) {
   const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId() };
   const [query, setQuery] = useState("");
   // Null until the user changes the expansion: the default then follows the current branch of the newest result.
@@ -448,7 +450,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
               setFiltered(null);
             }}
           />
-          <div ref={scroller} data-references-scroll="" className="min-h-0 flex-1 overflow-y-auto">
+          <div ref={scroller} data-references-scroll="" className="min-h-0 flex-1 overflow-y-auto" style={scrollMax === undefined ? undefined : { maxHeight: scrollMax }}>
             {body()}
             {after}
           </div>

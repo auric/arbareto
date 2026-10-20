@@ -118,6 +118,7 @@ pub fn confirmation(dialog: Dialog) -> Confirmation {
         ],
         default_button: ACTION,
         accept_button: ACTION,
+        shield: false,
     }
 }
 

@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { FolderSyncIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowRight01Icon, CubeIcon, FolderSyncIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import type { SubmoduleHost, SubmoduleHostLine, SubmodulePlanRow, SubmoduleProgram, SubmoduleRefusalReason, SubmoduleRowResult } from "../../contracts/submodules";
 import { CopyButton, unknownReadText, useCopy } from "../app/RepositoryStates";
@@ -323,6 +324,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
   const headingId = useId();
   const reasonId = useId();
   const [active, setActive] = useState(0);
+  const [expanded, setExpanded] = useState(true);
   const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
   const [remedies, setRemedies] = useState<ReadonlySet<number>>(new Set());
   const [menu, setMenu] = useState<{ path: string; anchor: HTMLElement; byKey?: boolean } | null>(null);
@@ -380,7 +382,12 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
   return (
     <section data-slot="submodules-group" aria-labelledby={headingId} className="flex min-h-0 flex-col">
       <div data-slot="group-header" className="flex items-center gap-1 px-2 font-semibold" style={{ minHeight: "var(--h-pane-heading)" }}>
-        <h3 id={headingId}>Submodules</h3>
+        <h3 id={headingId}>
+          <button type="button" aria-expanded={expanded} className="flex items-center gap-1" onClick={() => setExpanded((x) => !x)}>
+            <HugeiconsIcon icon={expanded ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
+            Submodules
+          </button>
+        </h3>
         {rows === null ? null : <span className="num font-normal text-muted-text">{num(list.length)}</span>}
         {run !== null ? (
           <>
@@ -475,7 +482,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
         {summary === null || summary.registered === 0 ? null : (
           <p data-slot="registration-line" className="px-2">{`Git changed the repository settings of ${plural(summary.registered, "submodule", "submodules")}.`}</p>
         )}
-        {update.listFailure?.code != null && TRUST_CODES.has(update.listFailure.code) ? (
+        {!expanded ? null : update.listFailure?.code != null && TRUST_CODES.has(update.listFailure.code) ? (
           <div data-slot="list-failure">
             <ReadsTrustNotice
               onTrust={() => {
@@ -494,7 +501,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
         ) : rows.length === 0 && found.length === 0 ? (
           <p className="px-2 text-muted-text">{NO_ROWS}</p>
         ) : null}
-        {list.length === 0 ? null : (
+        {!expanded || list.length === 0 ? null : (
           <div role="tree" aria-labelledby={headingId} className="flex flex-col">
             {list.map((row, index) => {
               const result = results.get(row.path);
@@ -524,6 +531,9 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
                   }}
                 >
                   <div className="flex min-w-0 items-center gap-2">
+                    <span data-slot="row-icon" className="flex shrink-0 text-muted-text">
+                      <HugeiconsIcon icon={CubeIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
+                    </span>
                     <span className="min-w-0 break-all">{row.path}</span>
                     <span data-slot="row-state" className={`num ml-auto shrink-0 ${failed ? "text-removed" : "text-muted-text"}`}>
                       {state}

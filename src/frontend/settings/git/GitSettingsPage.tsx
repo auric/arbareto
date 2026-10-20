@@ -10,6 +10,7 @@ import type { BridgeResponse, createBridge } from "../../bridge";
 import { RUNNING_REASON, RunningTooltip } from "../../components/running-tooltip";
 import { matches } from "../../components/switcher-popover";
 import { Button } from "../../components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "../../components/ui/tooltip";
 import { KEYS } from "../../keyboard/shortcuts";
 import { isObject } from "../../lib/utils";
 import { trackOperation, type StatusOperation } from "../../status/OperationStatus";
@@ -184,7 +185,7 @@ export function ScopePicker({ scope, onScope, files }: { scope: Scope; onScope(s
   const file = files === null ? null : scopeFile(scope, files);
   return (
     <>
-      <fieldset aria-labelledby={legend} className="flex items-center rounded-sm border border-control-border">
+      <fieldset data-slot="scope-picker" aria-labelledby={legend} className="flex shrink-0 items-center rounded-sm border border-control-border">
         <legend id={legend} className="sr-only">
           {TEXTS.scope}
         </legend>
@@ -197,7 +198,15 @@ export function ScopePicker({ scope, onScope, files }: { scope: Scope; onScope(s
           </label>
         ))}
       </fieldset>
-      {file === null ? null : <span className="min-w-0 break-all text-muted-text">{file}</span>}
+      {file === null ? null : (
+        // Plan D16 "Geometry": the scope bar keeps one row, so a long file line ends with an ellipsis.
+        <Tooltip>
+          <TooltipTrigger data-slot="scope-file" render={<span className="min-w-0 truncate text-muted-text" />}>
+            {file}
+          </TooltipTrigger>
+          <TooltipContent>{file}</TooltipContent>
+        </Tooltip>
+      )}
     </>
   );
 }
@@ -404,14 +413,11 @@ function pageValues(name: string, values: readonly ConfigValue[]): ConfigValue[]
 
 /** One Git configuration page in the selected scope, with the pending changes and Save (FR-064, FR-065). */
 export function GitPage({ name, scope, query, settings, wsl }: { name: string; scope: Scope; query: string; settings: GitSettingsState; wsl: boolean }) {
-  const { read, pending, message, saving, operationRunning, epoch, change, cancel, save } = settings;
-  const reason = useId();
+  const { read, pending, message, epoch, change } = settings;
   if (read.state === "loading") return <p className="text-muted-text">{TEXTS.loading}</p>;
   if (read.state === "failed") return <p role="alert">{read.text}</p>;
   const { values, files } = read.value;
   const scoped: Pending = writable(scope) ? pending[scope] : {};
-  const count = Object.keys(scoped).length;
-  const quiet = saving ? TEXTS.saving : operationRunning ? RUNNING_REASON : null;
   return (
     <div className="flex flex-col">
       {writable(scope) && files[scope] !== null ? <p className="text-muted-text">{TEXTS.emptyRemoves}</p> : null}
@@ -423,24 +429,33 @@ export function GitPage({ name, scope, query, settings, wsl }: { name: string; s
       <div role="status" className="flex flex-col gap-1 pt-2">
         {message}
       </div>
-      {writable(scope) && count > 0 ? (
-        <div data-slot="settings-save" className="sticky bottom-0 flex flex-wrap items-center gap-2 border-t border-divider bg-canvas py-2">
-          <span className="flex-1">{TEXTS.pending(count, scope)}</span>
-          <Button variant="outline" disabled={saving} onClick={() => cancel(scope)}>
-            {TEXTS.cancel}
-          </Button>
-          <RunningTooltip reason={quiet}>
-            <Button disabled={quiet !== null} focusableWhenDisabled aria-keyshortcuts={KEYS.save.aria} aria-describedby={quiet === null ? undefined : reason} onClick={() => quiet === null && void save(scope)}>
-              {`${TEXTS.save} (${KEYS.save.text})`}
-            </Button>
-          </RunningTooltip>
-          {quiet === null ? null : (
-            <span id={reason} hidden>
-              {quiet}
-            </span>
-          )}
-        </div>
-      ) : null}
+    </div>
+  );
+}
+
+/** The save row of the selected scope. Plan D16 "Geometry": the view shows it as a full-width footer. */
+export function SaveRow({ scope, settings }: { scope: Scope; settings: GitSettingsState }) {
+  const { pending, saving, operationRunning, cancel, save } = settings;
+  const reason = useId();
+  const count = writable(scope) ? Object.keys(pending[scope]).length : 0;
+  if (!writable(scope) || count === 0) return null;
+  const quiet = saving ? TEXTS.saving : operationRunning ? RUNNING_REASON : null;
+  return (
+    <div data-slot="settings-save" className="flex shrink-0 flex-wrap items-center gap-2 border-t border-divider bg-canvas px-3 py-2">
+      <span className="flex-1">{TEXTS.pending(count, scope)}</span>
+      <Button variant="outline" disabled={saving} onClick={() => cancel(scope)}>
+        {TEXTS.cancel}
+      </Button>
+      <RunningTooltip reason={quiet}>
+        <Button disabled={quiet !== null} focusableWhenDisabled aria-keyshortcuts={KEYS.save.aria} aria-describedby={quiet === null ? undefined : reason} onClick={() => quiet === null && void save(scope)}>
+          {`${TEXTS.save} (${KEYS.save.text})`}
+        </Button>
+      </RunningTooltip>
+      {quiet === null ? null : (
+        <span id={reason} hidden>
+          {quiet}
+        </span>
+      )}
     </div>
   );
 }

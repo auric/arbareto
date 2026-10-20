@@ -16,9 +16,9 @@ use windows::Win32::System::Com::{
     CoInitializeEx, CoTaskMemFree, CoUninitialize,
 };
 use windows::Win32::UI::Controls::{
-    TASKDIALOG_BUTTON, TASKDIALOG_NOTIFICATIONS, TASKDIALOGCONFIG, TDF_ALLOW_DIALOG_CANCELLATION,
-    TDF_POSITION_RELATIVE_TO_WINDOW, TDM_CLICK_BUTTON, TDN_CREATED, TDN_DESTROYED,
-    TaskDialogIndirect,
+    TASKDIALOG_BUTTON, TASKDIALOG_NOTIFICATIONS, TASKDIALOGCONFIG, TASKDIALOGCONFIG_0,
+    TD_SHIELD_ICON, TDF_ALLOW_DIALOG_CANCELLATION, TDF_POSITION_RELATIVE_TO_WINDOW,
+    TDM_CLICK_BUTTON, TDN_CREATED, TDN_DESTROYED, TaskDialogIndirect,
 };
 use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
 use windows::Win32::UI::Shell::{
@@ -73,6 +73,8 @@ pub struct Confirmation {
     pub buttons: Vec<Button>,
     pub default_button: i32,
     pub accept_button: i32,
+    /// Plan D14: `pszMainIcon` is `TD_SHIELD_ICON`. Only the trust dialog sets it.
+    pub shield: bool,
 }
 
 /// `extra` goes between the accept button and Cancel.
@@ -93,6 +95,7 @@ fn confirmation(text: String, accept: &'static str, extra: Option<Button>) -> Co
         buttons,
         default_button: CANCEL,
         accept_button: ACCEPT,
+        shield: false,
     }
 }
 
@@ -567,6 +570,7 @@ pub fn trust_confirmation(request: &Confirm) -> Confirmation {
         ],
         default_button: CANCEL,
         accept_button: ACCEPT,
+        shield: true,
     }
 }
 
@@ -694,6 +698,7 @@ pub fn service_stopped() -> Confirmation {
         }],
         default_button: ACCEPT,
         accept_button: ACCEPT,
+        shield: false,
     }
 }
 
@@ -863,6 +868,13 @@ fn task_config(
         cButtons: buttons.len() as u32,
         pButtons: buttons.as_ptr(),
         nDefaultButton: confirmation.default_button,
+        Anonymous1: TASKDIALOGCONFIG_0 {
+            pszMainIcon: if confirmation.shield {
+                TD_SHIELD_ICON
+            } else {
+                PCWSTR::null()
+            },
+        },
         pfCallback: Some(track),
         lpCallbackData: std::ptr::from_ref(open) as isize,
         ..Default::default()
@@ -1856,7 +1868,7 @@ pub(crate) mod tests {
 
     #[test]
     fn the_task_config_allows_cancellation_enables_no_hyperlinks_and_defaults_to_idcancel() {
-        use windows::Win32::UI::Controls::TDF_ENABLE_HYPERLINKS;
+        use windows::Win32::UI::Controls::{TD_SHIELD_ICON, TDF_ENABLE_HYPERLINKS};
         let open = Mutex::new(Vec::new());
         let confirmation = trust_confirmation(&trust_request(
             "C:\\Repos\\sample-repo",
@@ -1898,6 +1910,9 @@ pub(crate) mod tests {
             read(config.pszExpandedControlText).as_deref(),
             Some("Hide details")
         );
+        // Plan D14: the trust dialog shows the documented shield main icon.
+        // SAFETY: `TASKDIALOGCONFIG` is packed, so the union field is copied before the compare.
+        assert_eq!(unsafe { config.Anonymous1.pszMainIcon }, TD_SHIELD_ICON);
         // A confirmation without details shows no expander and no main instruction.
         let plain = service_stopped();
         let texts = TaskTexts::new(&plain);
@@ -1912,6 +1927,8 @@ pub(crate) mod tests {
         assert!({ config.pszExpandedInformation }.is_null());
         assert!({ config.pszCollapsedControlText }.is_null());
         assert!({ config.pszExpandedControlText }.is_null());
+        // SAFETY: as above.
+        assert!(unsafe { config.Anonymous1.pszMainIcon }.is_null());
     }
 
     #[test]

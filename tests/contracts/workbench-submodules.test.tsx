@@ -549,3 +549,26 @@ describe("running rule (plan D15)", () => {
     expect(double.calls.map((c) => c.operation)).toEqual(["reviewSubmodules"]);
   });
 });
+
+describe("T076 board fixes (tasks.md T111, Submodules board)", () => {
+  test("the group name is a toggle with a chevron: it hides and shows the rows, and keeps its heading", async () => {
+    await mount();
+    const heading = group().querySelector("h3")!;
+    const toggle = heading.querySelector<HTMLButtonElement>("button")!;
+    expect(toggle).not.toBeNull();
+    expect(text(toggle)).toBe("Submodules");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(toggle.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    expect(rows()).toHaveLength(3);
+    await click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(rows()).toHaveLength(0);
+    await click(toggle);
+    expect(rows()).toHaveLength(3);
+  });
+
+  test("each row shows the submodule icon before its path", async () => {
+    await mount();
+    for (const r of rows()) expect(r.querySelector('[data-slot="row-icon"] svg[aria-hidden="true"]')).not.toBeNull();
+  });
+});

@@ -456,6 +456,13 @@
     background: Highlight;
     color: HighlightText;
   }
+  /* Plan D16 "Selection": the selected settings scope. */
+  [data-slot="scope-picker"] label:has(input:checked),
+  [data-slot="scope-picker"] label:has(input:checked) span {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
   .list-row[data-active] {
     outline-color: Highlight;
   }
@@ -471,7 +478,7 @@
   .list-row[aria-selected="true"]::before {
     background: HighlightText;
   }
-  .list-row[aria-selected="true"] [data-slot="status-letter"] {
+  .list-row[aria-selected="true"] :is([data-slot="status-letter"], [data-slot="row-icon"]) {
     color: HighlightText;
   }
   .selected-hunk-bar {

@@ -315,7 +315,7 @@ description: "Task list for the Workbench UX feature"
 - Batch 7 (T081–T086): after T076. T083 needs the open 001 measurement tasks.
 - Batch 3 follow-up (T087–T093): after T048. Batch 4 does not wait for it.
 - Convergence (T096–T099): after T061. T098 after T096.
-- Convergence (T100–T106): T100 after T094, T101 after T089, T102 after T071, T104 after T070, T105 after T095, T106 after T093, and T107 after T075. T103 moved to a later feature.
+- Convergence (T100–T108): T100 after T094, T101 after T089, T102 after T071, T104 after T070, T105 after T095, T106 after T093, T107 after T075, and T108 after T060. T103 moved to a later feature.
 
 ### Feature 003 parts that 004 uses (plan.md "Dependencies on feature 003")
 
@@ -379,8 +379,8 @@ Then WP10:     T033 -> T034 -> T035
 | FR-076 to FR-082 (US8) | T052, T057, T058, T067, T073, T107 (FR-077, FR-079) |
 | FR-083 to FR-084 (US10) | Moved to a later feature (T077 to T080) |
 | FR-085 to FR-088 | T037 to T039, T082, T083, T087 to T089, T100 |
-| FR-089 to FR-097 (US9) | T053, T059, T060, T068, T074, T107 (FR-091, FR-093) |
-| FR-098 to FR-100 (US11) | T054, T061, T069, T075 |
+| FR-089 to FR-097 (US9) | T053, T059, T060, T068, T074, T107 (FR-091, FR-093), T108 (FR-097) |
+| FR-098 to FR-100 (US11) | T054, T061, T069, T075, T108 (FR-100) |
 | FR-101 (US4) | T092, T093, T106 |
 | SC-001, SC-002 | T021, T035 |
 | SC-003 | T040, T082 |
@@ -424,7 +424,7 @@ Then WP10:     T033 -> T034 -> T035
 
 ## Phase 10: Convergence
 
-**Source**: the `/speckit-converge` dry run on f004-impl 3e25b8f (2026-10-19). Scope: T001 to T076 and T087 to T094. The moved spell check (T077 to T080) and batch 7 (T081 to T086) are out of scope. T106 comes from the T093 review, and T107 from the batch 5 rerun review (research.md "Batch reviews").
+**Source**: the `/speckit-converge` dry run on f004-impl 3e25b8f (2026-10-19). Scope: T001 to T076 and T087 to T094. The moved spell check (T077 to T080) and batch 7 (T081 to T086) are out of scope. T106 comes from the T093 review, T107 from the batch 5 rerun review, and T108 from the batch 4 rerun review (research.md "Batch reviews").
 
 - [ ] T096 [P] [US3] Record the configuration bytes before and after each case in `tests/git/merge-rebase.test.ts`, `tests/git/multi-stage.test.ts`, `tests/git/line-stage.test.ts`, `tests/git/ignore.test.ts`, `tests/git/resolve.test.ts`, and `tests/git/commit-amend.test.ts` (P4 and P6, WP8, WP9, WP19, WP20). Use the `sha256` pattern of `tests/git/switch.test.ts` `stateOf`. Every configuration file of the fixture stays byte-identical. Control mutation: let one merge case run `git config merge.log true` in the repository after the run; the case must fail. Undo and rerun green. Gap: partial. Spec: SC-009. Test harness rule "Every fixture test records the configuration files byte for byte". Depends on T061.
 - [ ] T097 [P] [US1] Write the BUSY cases for the feature 004 mutations (P4, WP10). In one new file `tests/git/workbench-busy.test.ts`, hold a `runWorkbench` merge at a checkpoint, then send a second `runWorkbench` (switch), an `applyFiles`, and a `commit` for the same repository, and the reverse order. Each second mutation gives `BUSY`, starts no mutating Git process, and changes no ref, index entry, or working byte. An `applyFiles` starts only its read steps before the refusal. Add the file to `tests/groups.json` `parallel`. Gap: partial (code without test). Spec: FR-001. Depends on T061.

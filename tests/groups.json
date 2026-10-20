@@ -45,6 +45,7 @@
     "tests/contracts/comparison-view.test.tsx",
     "tests/contracts/dark-palettes.test.ts",
     "tests/contracts/diff-parser.test.ts",
+    "tests/contracts/dom-inspect.test.ts",
     "tests/contracts/draft-store.test.ts",
     "tests/contracts/drafts.test.ts",
     "tests/contracts/envelope.test.ts",

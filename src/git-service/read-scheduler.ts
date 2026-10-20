@@ -22,6 +22,8 @@ export interface ReadJob<O, S> {
   // A superseding read: a new read with the same key in the same workspace cancels each unfinished one (contract §5 "Pending reads").
   // `readComparison` and `readRefs` use their operation names as keys.
   selection?: string;
+  // False for a read that contract §5 "Ordinary read deadline" exempts: `admit` arms no total timer for it.
+  deadline?: false;
   // The read work under `operationId`. It never rejects.
   run(signal: AbortSignal): Promise<O>;
   // True for an outcome that ends the read `failed`.
@@ -129,7 +131,7 @@ export function createReadScheduler({ closeJob, cancel, readDeadlineMs = READ_DE
     };
 
     // Data-model §7: close the operation Job, re-read the relevant state, then end `failed` with DEADLINE.
-    const deadline = setTimeout(() => {
+    const deadline = job.deadline === false ? undefined : setTimeout(() => {
       if (ended) return;
       expired = true;
       work.abort();

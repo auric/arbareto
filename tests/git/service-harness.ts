@@ -268,6 +268,8 @@ export interface OpenOptions extends ServiceSeams {
   unloadedMarkers?: number;
   // Runs when the service sends a `started` mutation frame, before the double writes the marker and replies.
   onStarted?: (frame: MutationStarted) => void;
+  // The `BunRunnerOptions` fixture isolation of WSL processes: the Linux path of the owned global configuration.
+  wslGlobalConfig?: string;
 }
 
 export interface ServiceResponse<R = unknown> {
@@ -438,7 +440,7 @@ const RESULT_SCHEMAS: Readonly<Record<string, { safeParse(value: unknown): { suc
 export async function openService(options: OpenOptions): Promise<Service> {
   const trustStore = options.trustStore ?? createTrustStore();
   const environment = options.environment ?? serviceEnv();
-  const runner = createBunRunner({ git: options.git, directory: fixtureDir(options.name), environment, trustStore });
+  const runner = createBunRunner({ git: options.git, directory: fixtureDir(options.name), environment, trustStore, ...(options.wslGlobalConfig === undefined ? {} : { wslGlobalConfig: options.wslGlobalConfig }) });
   const responses: ServiceResponse[] = [];
   const progress: unknown[] = [];
   const refused: Frame[] = [];

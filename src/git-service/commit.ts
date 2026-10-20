@@ -173,12 +173,12 @@ export function preflightRefusal(
   return utf8Commits(policy.listing.entries) ? null : { code: "COMMIT_ENCODING_UNSUPPORTED" };
 }
 
-// Feature 004 data-model §2: an amend token binds `rewritesUpstream`, so the preflight reads it again. A difference gives STALE_REVIEW.
+// Feature 004 data-model §2: an amend token binds the upstream and `rewritesUpstream`, so the preflight reads them again. A difference gives STALE_REVIEW.
 // The preflight compared HEAD with the review before this read, so HEAD is the reviewed commit.
 async function rewriteRefusal(ctx: ObserveContext, b: CommitBinding, entries: readonly ConfigEntry[]): Promise<Refusal | Stop | null> {
   if (b.amend === undefined || b.head.state === "unborn") return null;
   const now = await readRewrite(ctx.runner, ctx, b.head, entries);
-  if (!("result" in now)) return now.rewritesUpstream === b.amend.rewritesUpstream ? null : STALE;
+  if (!("result" in now)) return now.rewritesUpstream === b.amend.rewritesUpstream && Bun.deepEquals(now.upstream, b.amend.upstream, true) ? null : STALE;
   return now.result === "failed" ? refusalOf(failureOf(now.code)) : now.result === "deadline" ? DEADLINE : CANCELED;
 }
 

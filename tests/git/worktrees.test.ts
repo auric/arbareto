@@ -20,11 +20,7 @@ import { gitExe, native, TIMEOUT_MS, until, withSync } from "./sync-harness";
 import { buildWorkbench, canary, repoOf, wb, type WbFixture } from "./workbench-fixtures";
 
 for (const module of ["worktrees", "workbench-review", "branch-ops", "session"]) {
-  try {
-    printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
-  } catch {
-    console.log(`ORIGIN absent src/git-service/${module}.ts`);
-  }
+  printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 }
 // The module-level cases call `worktrees.ts` directly. `session.ts` imports it too, so the session cases reach the same actions.
 const worktrees = await import("../../src/git-service/worktrees");

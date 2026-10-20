@@ -32,11 +32,7 @@ let printed = false;
 // The service gets the environment of the fixture processes: the owned global and system files, and no inherited transport variable.
 export async function withSync(name: string, body: (service: Service) => Promise<void>, options: Partial<Omit<OpenOptions, "git" | "name">> = {}): Promise<void> {
   for (const module of printed ? [] : MODULES) {
-    try {
-      printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
-    } catch {
-      console.log(`ORIGIN absent src/git-service/${module}.ts`);
-    }
+    printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
   }
   printed = true;
   const service = await openService({ git: gitExe(), name, environment: nativeEnv(), ...options });

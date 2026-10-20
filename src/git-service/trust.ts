@@ -1279,13 +1279,18 @@ async function buildListing(
   }
   const hooksPath = last.get("core.hookspath");
   const hooksPathControlled = hooksPath !== undefined && entryControlled(hooksPath);
+  // Feature 004 plan.md D12: without a `mergetool.<tool>.path` value, git-mergetool--lib runs the program of `translate_merge_tool_path`.
+  // No contract table names that program, so every `PATH` entry counts, not one file name.
+  const toolByPath = (entry: ConfigEntry, program: Program) => entry.key === "merge.tool" && program.kind === "bare" && !last.get(`mergetool.${program.name}.path`)?.value;
+  const absoluteEntries = layout.pathEntries.filter((entry) => entry !== "" && rules.isAbsolute(entry)).map((entry) => resolveIn(layout, entry));
 
   // Contract §7 "Inside and outside": each protected path outside every root by text gets an identity request.
   const protectedPaths: string[] = [];
-  for (const { program, controlled } of programs) {
+  for (const { entry, program, controlled } of programs) {
     if (controlled) continue;
     if (program.kind === "path") protectedPaths.push(resolveIn(layout, program.text));
     else if (program.kind === "bare") for (const { candidates } of bareCandidates(program.name, layout)) protectedPaths.push(...candidates.map((c) => c.path));
+    if (toolByPath(entry, program)) protectedPaths.push(...absoluteEntries);
   }
   if (hooksDirectory !== null && !hooksPathControlled) protectedPaths.push(hooksDirectory);
   const pathFailure = await places.decide(protectedPaths);
@@ -1295,7 +1300,7 @@ async function buildListing(
     key: entry.key,
     entry,
     program,
-    repositoryControlled: controlled || programControlled(program, layout, inRepository),
+    repositoryControlled: controlled || programControlled(program, layout, inRepository) || (toolByPath(entry, program) && absoluteEntries.some(inRepository)),
     reads: kind.reads,
     commit: kind.commit,
     sync: kind.sync,

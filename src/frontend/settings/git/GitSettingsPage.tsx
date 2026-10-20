@@ -440,8 +440,9 @@ export function SaveRow({ scope, settings }: { scope: Scope; settings: GitSettin
   const reason = useId();
   const count = writable(scope) ? Object.keys(pending[scope]).length : 0;
   if (!writable(scope) || count === 0) return null;
-  // `save` refuses without a loaded read, so Save states the read state as its reason.
-  const quiet = saving ? TEXTS.saving : operationRunning ? RUNNING_REASON : read.state === "loading" ? TEXTS.loading : read.state === "failed" ? read.text : null;
+  // `save` refuses without a loaded read, so Save states the read state as its reason. Only the saving and the running reasons are tooltip-only (001 plan.md "Disabled controls").
+  const quiet = saving ? TEXTS.saving : operationRunning ? RUNNING_REASON : null;
+  const blocked = quiet ?? (read.state === "loading" ? TEXTS.loading : read.state === "failed" ? read.text : null);
   return (
     <div data-slot="settings-save" className="flex shrink-0 flex-wrap items-center gap-2 border-t border-divider bg-canvas px-3 py-2">
       <span className="flex-1">{TEXTS.pending(count, scope)}</span>
@@ -449,13 +450,13 @@ export function SaveRow({ scope, settings }: { scope: Scope; settings: GitSettin
         {TEXTS.cancel}
       </Button>
       <RunningTooltip reason={quiet}>
-        <Button disabled={quiet !== null} focusableWhenDisabled aria-keyshortcuts={KEYS.save.aria} aria-describedby={quiet === null ? undefined : reason} onClick={() => quiet === null && void save(scope)}>
+        <Button disabled={blocked !== null} focusableWhenDisabled aria-keyshortcuts={KEYS.save.aria} aria-describedby={blocked === null ? undefined : reason} onClick={() => blocked === null && void save(scope)}>
           {`${TEXTS.save} (${KEYS.save.text})`}
         </Button>
       </RunningTooltip>
-      {quiet === null ? null : (
-        <span id={reason} hidden>
-          {quiet}
+      {blocked === null ? null : (
+        <span id={reason} hidden={quiet !== null} className="text-muted-text">
+          {blocked}
         </span>
       )}
     </div>

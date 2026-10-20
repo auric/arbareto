@@ -488,7 +488,7 @@ Use a two-DIP focus outline with a two-DIP offset. Reserve enough space to preve
 
 Hover never selects, focuses, or activates, and it never carries the only copy of information. Graph cells follow the hover state of their row.
 
-Disabled controls use Muted text and a Divider border, with no Accent; they are exempt from the 3:1 control threshold. Every disabled mutation control keeps its visible reason text. Use Base UI `focusableWhenDisabled` for these controls.
+Disabled controls use Muted text and a Divider border, with no Accent; they are exempt from the 3:1 control threshold. Every disabled mutation control keeps its visible reason text. 003 plan.md D12 names the only exceptions: the running reason and the reconcile read reason. Use Base UI `focusableWhenDisabled` for these controls.
 
 The 2026-09-30 numeric sRGB check passed 30 selected token pairs of the light theme and the earlier dark values, including text on the Selected row and Hover fill. Its light minimum normal-text contrast was 5.06:1 (muted text on the light Selected row). The dark palettes have their own check in "Dark palettes". Control border on the Selected row fill is outside that set, because the rule above forbids it. The selected-hunk bar (Accent on Surface) is at least 5.92:1 dark (2026-10-11) and 6.42:1 light (2026-09-30).
 

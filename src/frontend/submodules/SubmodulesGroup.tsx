@@ -402,6 +402,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
         <IconButton
           icon={FolderSyncIcon}
           ref={updateButton}
+          data-submodules-update=""
           label="Update submodules"
           className="ml-auto"
           disabled={reason !== null}

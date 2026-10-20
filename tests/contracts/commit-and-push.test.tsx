@@ -7,7 +7,7 @@ import type { BridgeResponse } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { answer, button, click, createWorld, mountWorkbench, oid, press, settle, snapshot, succeeded, text, unmountAll } from "./sync-fake";
+import { answer, button, click, createWorld, itemLabel, mountWorkbench, oid, press, settle, snapshot, succeeded, text, unmountAll } from "./sync-fake";
 import { commitReviewed, contractChecked, fixtureId } from "./bridge-contract";
 
 // tasks.md T061 (feature 003). Spec FR-038. Plan D12 "Commit and push".
@@ -243,6 +243,90 @@ describe("Commit and push (FR-038)", () => {
     world.entries = [{ ...file, entryId: fixtureId(0x505), category: "staged" }] as never;
     await answer(double.pending("applyFile"), succeeded({}));
     await focusAndReconcile(double, world, button("Abort merge…", document.querySelector('[data-slot="conflict-row"]')!));
+  });
+
+  // A rejected push leaves the reconcile read pending.
+  async function rejectedPush(world: ReturnType<typeof createWorld>) {
+    world.answers.readBranches = () =>
+      succeeded({ entries: [{ ref: "refs/heads/main", kind: "local", name: "main", invalidUtf8: false, oid: oid(1), upstream: "refs/remotes/origin/main", tracking: null, heldBy: null, current: true, localName: null }] });
+    const double = await mountWorkbench(workbench, world);
+    await click(button("Push"));
+    const destination = { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "u", setUpstream: false, source: "push-default-branch" };
+    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination }, syncReviewToken: fixtureId(0x101) }));
+    world.answers.readWorkspace = undefined;
+    await answer(double.pending("sync"), {
+      requestId: "r",
+      operationId: fixtureId(0x202),
+      state: "failed",
+      code: "PUSH_REJECTED",
+      result: { action: "push", push: { status: "rejected", oldObjectId: oid(9), newObjectId: oid(9), reasonText: "fetch first", lease: false, upstreamWritten: false, outputTail: "" } },
+    });
+    expect(double.pending("readWorkspace")).toBeDefined();
+    return double;
+  }
+  const shownWith = (from: Element, value: string) => [...from.querySelectorAll("*")].filter((e) => e.children.length === 0 && text(e) === value && e.closest("[hidden], .sr-only") === null);
+  const description = (element: Element) => text(document.getElementById(element.getAttribute("aria-describedby") ?? "") ?? document.createElement("span"));
+  const openMenu = () => document.querySelector<HTMLElement>('[data-slot="dropdown-menu-content"]')!;
+
+  test("tasks.md T114: during the reconcile read, the branch menu Push item and the Pull and Fetch menus show no visible reason line; the item description holds it", async () => {
+    await rejectedPush(createWorld());
+    const toggle = document.querySelector<HTMLElement>('button[aria-label="Show references"]');
+    if (toggle !== null && toggle.getAttribute("aria-expanded") !== "true") await click(toggle);
+    const main = [...document.querySelectorAll<HTMLElement>('[data-section="references"] [role="treeitem"]')].find((i) => (i.getAttribute("aria-label") ?? "").startsWith("main,"))!;
+    await act(async () => void main.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    await settle();
+    const push = [...openMenu().querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => itemLabel(i) === "Push")!;
+    expect(description(push)).toBe(RECONCILING);
+    expect(shownWith(openMenu(), RECONCILING).length).toBe(0);
+    await press(document.activeElement!, "Escape");
+    for (const [trigger, labels] of [
+      ["Pull options", ["Pull (use Git's configuration)", "Pull with merge", "Pull with rebase", "Fetch", "Fetch all remotes"]],
+      ["Fetch options", ["Fetch all remotes"]],
+    ] as const) {
+      await click(button(trigger));
+      const items = [...openMenu().querySelectorAll<HTMLElement>('[role="menuitem"]')].filter((i) => (labels as readonly string[]).includes(itemLabel(i)));
+      expect(items.map(itemLabel)).toEqual([...labels]);
+      for (const item of items) expect(description(item)).toBe(RECONCILING);
+      expect(shownWith(openMenu(), RECONCILING).length).toBe(0);
+      await press(document.activeElement!, "Escape");
+    }
+  });
+
+  test("tasks.md T114: during a run, the branch menu items with the running reason show no visible reason line; the item description holds it", async () => {
+    const RUNNING = "A Git operation is running. Its progress and Cancel are in the status bar.";
+    const world = createWorld();
+    world.answers.readBranches = () =>
+      succeeded({ entries: [{ ref: "refs/heads/main", kind: "local", name: "main", invalidUtf8: false, oid: oid(1), upstream: "refs/remotes/origin/main", tracking: null, heldBy: null, current: true, localName: null }] });
+    const double = await mountWorkbench(workbench, world);
+    await click(button("Push"));
+    const destination = { remote: "origin", ref: "refs/heads/main", trackingRef: "refs/remotes/origin/main", url: "u", setUpstream: false, source: "push-default-branch" };
+    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin"], destination }, syncReviewToken: fixtureId(0x101) }));
+    expect(double.pending("sync")).toBeDefined();
+    const toggle = document.querySelector<HTMLElement>('button[aria-label="Show references"]');
+    if (toggle !== null && toggle.getAttribute("aria-expanded") !== "true") await click(toggle);
+    const main = [...document.querySelectorAll<HTMLElement>('[data-section="references"] [role="treeitem"]')].find((i) => (i.getAttribute("aria-label") ?? "").startsWith("main,"))!;
+    await act(async () => void main.dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    await settle();
+    const items = [...openMenu().querySelectorAll<HTMLElement>('[role="menuitem"]')].filter((i) => ["Create branch here…", "Rename…", "Push"].includes(itemLabel(i)));
+    expect(items.map(itemLabel)).toEqual(["Create branch here…", "Rename…", "Push"]);
+    for (const item of items) expect(description(item)).toBe(RUNNING);
+    expect(shownWith(openMenu(), RUNNING).length).toBe(0);
+    // The own reason of the current branch keeps its visible line.
+    expect(shownWith(openMenu(), "main is the current branch.").length).toBe(1);
+  });
+
+  test("tasks.md T114: a state-unknown read during the reconcile read keeps the visible unknown-state line in the toolbar", async () => {
+    const world = createWorld();
+    const double = await rejectedPush(world);
+    const reconcile = double.pending("readWorkspace");
+    await press(document.body, "F5");
+    const refresh = double.pending("readWorkspace");
+    expect(refresh === reconcile).toBe(false);
+    await answer(refresh, succeeded({ ...snapshot(world), recoveryState: "unknown" }));
+    expect(reconcile!.done).toBe(false);
+    const group = document.querySelector<HTMLElement>('[role="group"][aria-label="Remote sync"]')!;
+    expect(shownWith(group, "State unknown. Select Refresh (F5) first.").length).toBe(1);
+    expect(description(button("Fetch", group))).toBe("Fetch, Pull, Push: State unknown. Select Refresh (F5) first.");
   });
 
   test("a rejected push after a commit keeps the commit and shows the push-rejected notice", async () => {

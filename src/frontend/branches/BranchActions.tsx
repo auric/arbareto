@@ -54,11 +54,13 @@ export type BranchActionsOptions = {
   head: WorkspaceSnapshot["head"] | null;
   /** The reason that blocks every branch action: an operation in progress, a running mutation, or an unknown state. */
   blockedReason: string | null;
+  /** `blockedReason` is the running reason. It then shows only in the tooltip and the accessible description (plan D15 running rule). */
+  blockedRunning?: boolean;
   /** Shows a text in the status bar. Null clears it. */
   onNotice(text: ReactNode): void;
   onOpenWorktree(path: string): void;
-  /** The 003 push of the current branch and its unavailable reason. */
-  push: { reason: string | null; run(): void };
+  /** The 003 push of the current branch and its unavailable reason. `quiet` marks the running or the reconcile reason (003 plan D12). */
+  push: { reason: string | null; quiet?: boolean; run(): void };
   onShowBranchHistory(): void;
   /** The WP13 Merge and Rebase panels. Without one, its item states that it cannot start here. `opener` is the row or label that started the action. */
   onMerge?(entry: BranchEntry, opener: Element | null): void;
@@ -80,7 +82,7 @@ const RUN_TEXTS: Record<string, [string, string, string]> = {
 
 /** The branch actions of the toolbar list, the references sidebar, and the history labels. It returns the actions and their overlays. */
 export function useBranchActions(options: BranchActionsOptions) {
-  const { bridge, target, repositoryId, refsDigest, onOperation, workbench, head, blockedReason, onNotice, onOpenWorktree, push, onShowBranchHistory, onMerge, onRebase, askTrust } = options;
+  const { bridge, target, repositoryId, refsDigest, onOperation, workbench, head, blockedReason, blockedRunning = false, onNotice, onOpenWorktree, push, onShowBranchHistory, onMerge, onRebase, askTrust } = options;
   const snapshot = () => workbench.getState().branches;
   const branches = useSyncExternalStore(workbench.subscribe, snapshot, snapshot);
   const [overlay, setOverlay] = useState<Overlay | null>(null);
@@ -263,17 +265,19 @@ export function useBranchActions(options: BranchActionsOptions) {
   }
 
   /** The unavailable reason of each action on `entry`, or null (spec FR-014, FR-017, plan D4). */
-  function reasons(entry: BranchEntry): Record<ScopedAction | "push", string | null> {
+  /** `blocked` collects the actions whose reason is `blockedReason`. */
+  function reasons(entry: BranchEntry, blocked?: Set<string>): Record<ScopedAction | "push", string | null> {
     const isCurrent = entry.kind === "local" && entry.current;
     const noCurrent = head?.state === "detached" ? T.detachedReason : head?.state === "unborn" ? T.noCommit : null;
-    const integrate = (own: string, handler: unknown) => (isCurrent ? own : (noCurrent ?? blockedReason ?? (handler === undefined ? T.noPanel : null)));
+    const block = (action: string) => (blockedReason !== null && blocked?.add(action), blockedReason);
+    const integrate = (action: string, own: string, handler: unknown) => (isCurrent ? own : (noCurrent ?? block(action) ?? (handler === undefined ? T.noPanel : null)));
     return {
-      switch: isCurrent ? T.sameBranch(entry.name) : blockedReason,
-      merge: integrate(T.mergeCurrent(entry.name), onMerge),
-      rebase: integrate(T.rebaseCurrent(entry.name), onRebase),
-      createBranch: blockedReason,
-      rename: blockedReason,
-      delete: isCurrent ? T.deleteCurrent : entry.heldBy !== null ? T.otherWorktree(entry.heldBy) : blockedReason,
+      switch: isCurrent ? T.sameBranch(entry.name) : block("switch"),
+      merge: integrate("merge", T.mergeCurrent(entry.name), onMerge),
+      rebase: integrate("rebase", T.rebaseCurrent(entry.name), onRebase),
+      createBranch: block("createBranch"),
+      rename: block("rename"),
+      delete: isCurrent ? T.deleteCurrent : entry.heldBy !== null ? T.otherWorktree(entry.heldBy) : block("delete"),
       push: isCurrent ? push.reason : T.pushOther,
       stageLines: null,
       unstageLines: null,
@@ -299,12 +303,14 @@ export function useBranchActions(options: BranchActionsOptions) {
   }
 
   function menuGroups(entry: BranchEntry, copy: (text: string) => void): ActionItem[][] {
-    const r = reasons(entry);
+    const blocked = new Set<string>();
+    const r = reasons(entry, blocked);
     const item = (label: string, action: ScopedAction | "push", icon: IconSvgElement, danger = false): ActionItem => ({
       label,
       icon,
       keys: action === "push" ? undefined : { aria: KEYS[action].aria, text: KEYS[action].text },
       reason: r[action],
+      running: action === "push" ? entry.kind === "local" && entry.current && push.quiet === true : blockedRunning && blocked.has(action),
       danger,
       onSelect: () => {
         // Base UI returns the menu focus after the new panel or popover took it, so these items keep the focus where they put it.

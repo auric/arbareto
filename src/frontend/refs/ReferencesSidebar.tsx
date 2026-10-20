@@ -83,8 +83,11 @@ export type ReferencesSidebarProps = {
   onBranchAction?: (entry: RefEntry, action: "menu" | "confirm" | ScopedAction, anchor: HTMLElement, byKey?: boolean) => void;
   /** Feature 004 plan.md D15 "P2 regions": the groups after the references, such as Worktrees. They scroll with the sidebar. */
   after?: ReactNode;
-  /** The constrained profile: the outer section scrolls the whole sidebar, so the tree scroll region needs this bound to stay virtual. */
-  scrollMax?: number;
+  /** The constrained profile: the outer section that scrolls the whole sidebar. The tree then has no scroll region of its own and stays virtual in it. */
+  scrollElement?: () => HTMLElement | null;
+  /** The expansion of a collapsible section, when the parent holds it. */
+  expanded?: boolean;
+  onExpandedChange?: (next: boolean) => void;
 };
 
 // plan.md "Keyboard and focus", References sidebar row: the expansion lasts for the window session per repository and is not stored.
@@ -139,7 +142,7 @@ function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: 
   return any;
 }
 
-export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction, after, scrollMax }: ReferencesSidebarProps) {
+export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction, after, scrollElement, expanded, onExpandedChange }: ReferencesSidebarProps) {
   const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId() };
   const [query, setQuery] = useState("");
   // Null until the user changes the expansion: the default then follows the current branch of the newest result.
@@ -148,7 +151,8 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   // Toggles while the filter has text change only this set. Clearing the filter drops it.
   const [filtered, setFiltered] = useState<{ query: string; open: ReadonlySet<string> } | null>(null);
   // The toggle state lasts for the window session and is not stored (plan.md "References sidebar").
-  const [shown, setShown] = useState(!collapsible);
+  const [ownShown, setOwnShown] = useState(!collapsible);
+  const shown = expanded ?? ownShown;
   const [activeKey, setActiveKey] = useState<string | null>(null);
   // The row whose context menu is open, and whether Shift+F10 or the Menu key opened it.
   const [menu, setMenu] = useState<{ key: string; byKey: boolean } | null>(null);
@@ -156,6 +160,9 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   const [missing, setMissing] = useState<ReadonlyMap<string, "none" | "unknown">>(new Map());
   const elements = useRef(new Map<string, HTMLElement>());
   const scroller = useRef<HTMLDivElement>(null);
+  const tree = useRef<HTMLDivElement>(null);
+  // The tree offset inside the scroll element (TanStack Virtual `scrollMargin`).
+  const [margin, setMargin] = useState(0);
   const toFocus = useRef<string | null>(null);
 
   const needle = query.toLowerCase();
@@ -197,7 +204,8 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   const virtualizer = useVirtualizer({
     count: rows.length,
     enabled: virtual,
-    getScrollElement: () => scroller.current,
+    getScrollElement: () => scrollElement?.() ?? scroller.current,
+    scrollMargin: margin,
     estimateSize: () => rowHeight,
     getItemKey: (i) => rows[i]!.node.key,
     overscan: 8,
@@ -208,6 +216,13 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
       const shownRange = defaultRangeExtractor(range);
       return shownRange.includes(activeIndex) ? shownRange : [...shownRange, activeIndex].sort((a, b) => a - b);
     },
+  });
+
+  useLayoutEffect(() => {
+    const element = scrollElement?.() ?? scroller.current;
+    if (!virtual || element === null || tree.current === null) return;
+    const next = tree.current.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop;
+    if (next !== margin) setMargin(next);
   });
 
   // plan.md D6: keyboard navigation scrolls the target row into the window before it moves focus.
@@ -384,7 +399,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     if (virtual)
       return (
         <div role="presentation" className="relative" style={{ height: virtualizer.getTotalSize() }}>
-          {virtualizer.getVirtualItems().map((item) => rowView(rows[item.index]!, item.index, { position: "absolute", top: 0, left: 0, right: 0, height: rowHeight, transform: `translateY(${item.start}px)` }))}
+          {virtualizer.getVirtualItems().map((item) => rowView(rows[item.index]!, item.index, { position: "absolute", top: 0, left: 0, right: 0, height: rowHeight, transform: `translateY(${item.start - margin}px)` }))}
         </div>
       );
     // Each group wraps its rows, so its heading row sticks only while the group scrolls.
@@ -414,7 +429,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     if (refs === null) return <p className="p-2 text-muted-text">{LOADING}</p>;
     return (
       <>
-        <div role="tree" aria-labelledby={ids.heading} className="flex flex-col px-1">
+        <div ref={tree} role="tree" aria-labelledby={ids.heading} className="flex flex-col px-1">
           {treeRows()}
         </div>
         {groups.map((g) => (g.tree.count === 0 ? <p key={g.kind} className="px-2 text-muted-text">{g.empty}</p> : null))}
@@ -436,7 +451,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
         <h2 id={ids.heading} className="mr-auto font-semibold">
           References
         </h2>
-        {collapsible ? <IconButton icon={SidebarLeftIcon} label="Show references" aria-expanded={shown} onClick={() => setShown((s) => !s)} /> : null}
+        {collapsible ? <IconButton icon={SidebarLeftIcon} label="Show references" aria-expanded={shown} onClick={() => (onExpandedChange ?? setOwnShown)(!shown)} /> : null}
       </div>
       {shown ? (
         <>
@@ -450,7 +465,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
               setFiltered(null);
             }}
           />
-          <div ref={scroller} data-references-scroll="" className="min-h-0 flex-1 overflow-y-auto" style={scrollMax === undefined ? undefined : { maxHeight: scrollMax }}>
+          <div ref={scroller} data-references-scroll={scrollElement === undefined ? "" : undefined} className={scrollElement === undefined ? "min-h-0 flex-1 overflow-y-auto" : "min-h-0 flex-1"}>
             {body()}
             {after}
           </div>

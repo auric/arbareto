@@ -87,7 +87,7 @@ import { CloneDialog } from "../clone/CloneDialog";
 import { ConnectNoticeRow } from "../settings/ConnectTerminal";
 import type { KeyProposal } from "../settings/SettingsDialog";
 import { SettingsView } from "../settings/SettingsView";
-import { actionReason, quietReason, RUNNING_REASON, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
+import { actionReason, quietReason, RECONCILING_REASON, RUNNING_REASON, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
 import { useSync } from "../sync/useSync";
 import { suppressPageMenu } from "../components/action-menu";
 import { DockRegion } from "../components/docked-panel";
@@ -829,6 +829,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (document.activeElement === element) bandFocusLost.current = true;
   });
   const repositoryTrigger = useRef<HTMLButtonElement>(null);
+  const referencesSection = useRef<HTMLDivElement>(null);
+  // The constrained references section starts collapsed. The toggle state lasts for the window session (001 plan.md "References sidebar").
+  const [referencesShown, setReferencesShown] = useState(false);
   // The opener of the submodule update. The Submodules group keeps the focused control.
   const reviewOpener = useRef<"notice" | "menu" | "group">("notice");
   // After an approval, `approvalRead` waits until the read that `trustApproved` starts ends with any result,
@@ -1198,7 +1201,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     snapshotId: workspace?.snapshotId ?? null,
     onReviewFailed: (code) => setNotice(codeText("Submodule review did not complete: ", code)),
     // A host line or a refusal never waits unseen. Only the History view shows the sidebar, so the group takes focus there.
-    onAttention: () => void (store.view(viewKey) === "history" || store.setView(viewKey, "history")),
+    // The constrained profile mounts the group only while the references section is expanded.
+    onAttention: () => {
+      setReferencesShown(true);
+      if (store.view(viewKey) !== "history") store.setView(viewKey, "history");
+    },
   });
   const updateSubmodules = (from: "notice" | "menu" | "group") => {
     reviewOpener.current = from;
@@ -1212,7 +1219,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       if (target) return target;
     }
     if (reviewOpener.current === "group") {
-      const target = document.querySelector<HTMLElement>('[data-slot="submodules-group"] button[aria-label="Update submodules"]');
+      const target = document.querySelector<HTMLElement>("[data-submodules-update]");
       if (target) return target;
     }
     return repositoryTrigger.current;
@@ -1317,7 +1324,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The reason that blocks every sync action: a running mutation, an unknown state, or the reconcile read after a mutation.
   // The sync controls show the running and the reconcile reason only in the tooltip (plan.md D12).
   const stateSyncBlock = running ? BLOCKED_TEXT.running : state.blocked ? BLOCKED_TEXT.unknown : null;
-  const syncBlock = stateSyncBlock ?? quietReason(false, state.reconciling);
+  const syncBlock = stateSyncBlock ?? (state.reconciling ? RECONCILING_REASON : null);
+  // A running mutation or a state-unknown read comes first, so the reconcile reason then is no quiet reason.
+  const reconciling = state.reconciling && stateSyncBlock === null;
+  const quietSync = quietReason(running, reconciling);
   const upstreamState = currentEntry === null ? null : currentEntry.upstream === null ? "none" : "set";
   const reasons = syncReasons(currentHead, workspace?.operationState ?? null, upstreamState, syncBlock);
   // Commit and push waits for its own reconcile read before the push review, so the read does not block it.
@@ -1342,11 +1352,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     workbench: store,
     head: currentHead,
     blockedReason: mutationReason,
+    blockedRunning: running,
     onNotice: setNotice,
     onMerge: (entry, opener) => openIntegrate({ action: "merge", ref: entry.ref, name: entry.name }, opener),
     onRebase: (entry, opener) => openIntegrate({ action: "rebase", ref: entry.ref, name: entry.name }, opener),
     onOpenWorktree: (path) => void (repositoryId === null ? undefined : bridge.openWorktree({ repositoryId, path }).then(openedWorktree)),
-    push: { reason: reasons.pushReason, run: () => runSync.current("push") },
+    push: { reason: quietSync ?? reasons.pushReason, quiet: quietSync !== null, run: () => runSync.current("push") },
     onShowBranchHistory: () => void historyView.setScope("current"),
   });
   // Feature 004 WP21 (spec FR-049 to FR-057): the worktree button, the sidebar Worktrees group, and the Add worktree panel.
@@ -1599,7 +1610,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       onSelectCommit={(oid) => historyView.selectOid(oid)}
       onRefresh={refresh}
       collapsible={profile === "constrained"}
-      scrollMax={constrained ? m.reducedPaneMin : undefined}
+      scrollElement={constrained ? () => referencesSection.current : undefined}
+      expanded={constrained ? referencesShown : undefined}
+      onExpandedChange={constrained ? setReferencesShown : undefined}
       repository={state.repository?.worktreeKey ?? ""}
       onShowBranchHistory={() => void historyView.setScope("current")}
       tracking={labels}
@@ -1630,7 +1643,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       <div className="flex min-h-0 flex-1 flex-col">
         {/* plan.md "References sidebar": expanded, the section takes the reduced pane minimum and no more height. */}
         {/* plan.md "Section minima": its content keeps its own height and scrolls inside the section, so every group stays reachable. */}
-        <div data-section="references" className="shrink-0 overflow-y-auto border-b border-divider" style={{ height: "auto", maxHeight: m.reducedPaneMin }}>
+        <div ref={referencesSection} data-section="references" data-references-scroll="" className="shrink-0 overflow-y-auto border-b border-divider" style={{ height: "auto", maxHeight: m.reducedPaneMin }}>
           {/* A block wrapper of content height. The sidebar height then resolves to its content, not to the section height. */}
           <div>{sidebar}</div>
         </div>
@@ -1722,7 +1735,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 settingsReason={syncSettings.reason}
                 count={trackingCount}
                 running={running ? { action: operation.kind === "sync" ? (operation.sync?.action ?? null) : null, cancelRequested: operation.progress?.state === "cancel-requested" } : null}
-                reconciling={state.reconciling}
+                reconciling={reconciling}
                 onRun={sync.run}
                 onCancel={() => statusRegion.current?.requestCancel()}
                 onSetDefault={(action) => void setDefaultPullAction(action)}
@@ -1864,10 +1877,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 recovery={recovery !== null && recovery.repositoryId === state.repository?.repositoryId ? recovery.statement : undefined}
                 pushRow={
                   sync.notice !== null ? (
-                    <PushNoticeRow notice={sync.notice} {...sync.noticeActions} reason={reasons.pullReason} fetchReason={reasons.fetchReason} running={running} reconciling={state.reconciling} bindControl={bindBandControl} />
+                    <PushNoticeRow notice={sync.notice} {...sync.noticeActions} reason={reasons.pullReason} fetchReason={reasons.fetchReason} running={running} reconciling={reconciling} bindControl={bindBandControl} />
                   ) : undefined
                 }
-                pullModeRow={sync.modeChoice ? <PullModeChoice onChoose={sync.chooseMode} onCancel={sync.cancelMode} reason={syncBlock} running={running} reconciling={state.reconciling} bindControl={bindBandControl} /> : undefined}
+                pullModeRow={sync.modeChoice ? <PullModeChoice onChoose={sync.chooseMode} onCancel={sync.cancelMode} reason={syncBlock} running={running} reconciling={reconciling} bindControl={bindBandControl} /> : undefined}
                 conflictRow={
                   workspace.operationState === "merging" || workspace.operationState === "rebasing" ? (
                     // A new operation state or HEAD is a new stop, so the row forgets the refusals of the last stop.
@@ -1877,7 +1890,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                       conflicted={conflicted}
                       reason={syncBlock}
                       running={running}
-                      reconciling={state.reconciling}
+                      reconciling={reconciling}
                       loading={loading}
                       onAction={sync.conflictAction}
                       bindControl={bindBandControl}

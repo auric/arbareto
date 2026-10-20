@@ -9,7 +9,7 @@ import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { MENU_CONTENT } from "../app/RepositoryMenu";
 import { BLOCKED_TEXT, operationBlock } from "../changes/HunkControls";
 import { IconButton } from "../components/icon-button";
-import { RUNNING_REASON } from "../components/running-tooltip";
+import { RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
 import { Button } from "../components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
@@ -144,11 +144,21 @@ export function SyncToolbar({ reasons: given, defaultAction, settingsReason, cou
             <TooltipContent>Fetch options</TooltipContent>
           </Tooltip>
           <DropdownMenuContent className={MENU_CONTENT}>
-            <DropdownMenuItem disabled={reasons.fetchReason !== null} onClick={reasons.fetchReason === null ? () => onRun({ action: "fetch-all" }) : undefined}>
-              <HugeiconsIcon icon={CloudDownloadIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
-              <span>Fetch all remotes</span>
-            </DropdownMenuItem>
-            {reasons.fetchReason === null ? null : <p className="px-2 pb-1 text-xs whitespace-normal text-muted-text">{reasons.fetchReason}</p>}
+            <RunningTooltip reason={quiet.Fetch ? quietText : null}>
+              <DropdownMenuItem
+                disabled={reasons.fetchReason !== null}
+                aria-describedby={reasons.fetchReason === null ? undefined : `${id}-fetch-all`}
+                onClick={reasons.fetchReason === null ? () => onRun({ action: "fetch-all" }) : undefined}
+              >
+                <HugeiconsIcon icon={CloudDownloadIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
+                <span>Fetch all remotes</span>
+              </DropdownMenuItem>
+            </RunningTooltip>
+            {reasons.fetchReason === null ? null : (
+              <p id={`${id}-fetch-all`} aria-hidden hidden={quiet.Fetch} className="px-2 pb-1 text-xs whitespace-normal text-muted-text">
+                {reasons.fetchReason}
+              </p>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
         {progress("fetch")}
@@ -160,6 +170,7 @@ export function SyncToolbar({ reasons: given, defaultAction, settingsReason, cou
           reasons={pullReasons}
           mainReasonId={describedBy("Pull", mainReason)}
           mainNote={note("Pull")}
+          quiet={quietText !== null}
           onRun={(action) => onRun(pullAction(action).payload)}
           onSetDefault={onSetDefault}
         />

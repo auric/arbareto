@@ -244,11 +244,16 @@ describe("constrained sidebar (plan.md D15 P2 regions, T112)", () => {
     await showReferences();
     await settle();
     const section = document.querySelector<HTMLElement>('[data-section="references"]')!;
-    const scroller = section.querySelector<HTMLElement>("[data-references-scroll]")!;
-    // The section scrolls the whole sidebar. The tree region keeps the section bound, so the virtualizer sees a bounded height.
+    // tasks.md T114: the section is the only scroll region of the tree. The virtual tree uses it as its scroll element, so the wheel never stops at a nested scroller.
     expect(section.style.maxHeight).not.toBe("");
-    expect(scroller.style.maxHeight).toBe(section.style.maxHeight);
-    const items = [...scroller.querySelectorAll('[role="treeitem"]')];
+    expect(section.hasAttribute("data-references-scroll")).toBe(true);
+    expect(section.querySelector("[data-references-scroll]") === null).toBe(true);
+    const tree = section.querySelector<HTMLElement>('[role="tree"]')!;
+    for (let at = tree.parentElement; at !== null && at !== section; at = at.parentElement) {
+      expect(at.className.split(/\s+/)).not.toContain("overflow-y-auto");
+      expect(at.style.maxHeight).toBe("");
+    }
+    const items = [...section.querySelectorAll('[role="treeitem"]')];
     expect(items.length).toBeGreaterThan(0);
     expect(items.length).toBeLessThan(80);
     expect(items[0]!.getAttribute("aria-label")!.startsWith("Branches")).toBe(true);

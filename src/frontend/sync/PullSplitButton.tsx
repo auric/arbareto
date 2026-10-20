@@ -7,6 +7,7 @@ import { useId } from "react";
 import type { DEFAULT_PULL_ACTIONS } from "../../contracts/envelope";
 import { MENU_CONTENT } from "../app/RepositoryMenu";
 import type { createBridge } from "../bridge";
+import { RunningTooltip } from "../components/running-tooltip";
 import { Button } from "../components/ui/button";
 import {
   DropdownMenu,
@@ -52,13 +53,15 @@ export type PullSplitButtonProps = {
   mainReasonId?: string;
   /** A second tooltip line of the main part: a reason without a visible line. */
   mainNote?: string;
+  /** Plan D12: every menu reason is the running or the reconcile reason. It then shows only in the tooltip and the accessible description. */
+  quiet?: boolean;
   onRun(action: DefaultPullAction): void;
   /** Sends `setDefaultPullAction`. It starts no Git operation (FR-056). */
   onSetDefault(action: DefaultPullAction): void;
 };
 
 /** The toolbar Pull split button. The page shortcut handler runs the main part on Ctrl+Down. */
-export function PullSplitButton({ defaultAction, settingsReason, reasons, mainReasonId, mainNote, onRun, onSetDefault }: PullSplitButtonProps) {
+export function PullSplitButton({ defaultAction, settingsReason, reasons, mainReasonId, mainNote, quiet = false, onRun, onSetDefault }: PullSplitButtonProps) {
   const reasonIds = useId();
   const main = defaultAction === null ? null : pullAction(defaultAction);
   const mainReason = settingsReason ?? (defaultAction === null ? null : reasons[defaultAction]);
@@ -105,17 +108,19 @@ export function PullSplitButton({ defaultAction, settingsReason, reasons, mainRe
             const keys = [...(a.action === defaultAction ? ["Ctrl+Down"] : []), ...(a.action === "fetch" ? ["Ctrl+Shift+Down"] : [])];
             return (
               <div key={a.action} role="none">
-                <DropdownMenuItem
-                  disabled={reason !== null}
-                  aria-describedby={reason === null ? undefined : `${reasonIds}-${i}`}
-                  onClick={reason === null ? () => onRun(a.action) : undefined}
-                >
-                  <HugeiconsIcon icon={a.icon} strokeWidth={2} aria-hidden="true" className={ICON} />
-                  <span>{a.item}</span>
-                  {keys.length === 0 ? null : <DropdownMenuShortcut className="pl-4 text-xs tracking-normal text-muted-text">{keys.join(", ")}</DropdownMenuShortcut>}
-                </DropdownMenuItem>
+                <RunningTooltip reason={quiet ? reason : null}>
+                  <DropdownMenuItem
+                    disabled={reason !== null}
+                    aria-describedby={reason === null ? undefined : `${reasonIds}-${i}`}
+                    onClick={reason === null ? () => onRun(a.action) : undefined}
+                  >
+                    <HugeiconsIcon icon={a.icon} strokeWidth={2} aria-hidden="true" className={ICON} />
+                    <span>{a.item}</span>
+                    {keys.length === 0 ? null : <DropdownMenuShortcut className="pl-4 text-xs tracking-normal text-muted-text">{keys.join(", ")}</DropdownMenuShortcut>}
+                  </DropdownMenuItem>
+                </RunningTooltip>
                 {reason === null ? null : (
-                  <p id={`${reasonIds}-${i}`} aria-hidden className="px-2 pb-1 pl-8 text-xs whitespace-normal text-muted-text">
+                  <p id={`${reasonIds}-${i}`} aria-hidden hidden={quiet} className="px-2 pb-1 pl-8 text-xs whitespace-normal text-muted-text">
                     {reason}
                   </p>
                 )}

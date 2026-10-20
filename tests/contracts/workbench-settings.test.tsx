@@ -519,7 +519,12 @@ describe("Save and Cancel (FR-064, FR-065)", () => {
     expect(text(content())).toContain("The Git settings did not load: GIT_FAILED");
     const save = button("Save (Ctrl+S)");
     expect(save.getAttribute("aria-disabled")).toBe("true");
-    expect(text(document.getElementById(save.getAttribute("aria-describedby")!)!)).toBe("The Git settings did not load: GIT_FAILED");
+    const reason = document.getElementById(save.getAttribute("aria-describedby")!)!;
+    expect(text(reason)).toBe("The Git settings did not load: GIT_FAILED");
+    // 001 plan.md "Disabled controls": only the running and the reconcile reasons are tooltip-only (tasks.md T114).
+    expect(reason.closest("[hidden], .sr-only") === null).toBe(true);
+    expect(reason.closest('[data-slot="settings-save"]') === null).toBe(false);
+    expect(reason.className.split(/\s+/)).toContain("text-muted-text");
     await click(save);
     await press(save, "s", { ctrlKey: true });
     expect(r.double.of("reviewWorkbench")).toHaveLength(1);

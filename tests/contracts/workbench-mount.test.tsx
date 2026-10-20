@@ -483,6 +483,46 @@ describe("submodule update mount", () => {
     });
   });
 
+  test("tasks.md T114: in the constrained profile, a host line from the Repository menu expands the collapsed references section and takes focus", async () => {
+    await sized(720, 480, async () => {
+      const double = await mount(succeeded(REGISTRATION));
+      await serveHistory(double);
+      await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
+      expect(document.querySelector<HTMLElement>("[data-profile]")!.dataset.profile).toBe("constrained");
+      const toggle = () => document.querySelector<HTMLElement>('[data-section="references"] button[aria-label="Show references"]')!;
+      expect(toggle().getAttribute("aria-expanded")).toBe("false");
+      expect(document.querySelector('[data-slot="submodules-group"]') === null).toBe(true);
+      const item = await openRepositoryMenu();
+      await act(async () => item.click());
+      await settle();
+      const hosts = [{ path: "a", fetch: { kind: "host", name: "git.example.net" }, settings: { kind: "unknown" } }];
+      await resolve(latest(double, "reviewSubmodules"), succeeded({ ...REVIEW(), hosts }));
+      await settle();
+      // Plan D15: a host line never waits unseen.
+      expect(toggle().getAttribute("aria-expanded")).toBe("true");
+      const line = document.querySelector<HTMLElement>('[data-section="references"] [data-slot="submodules-group"] [data-slot="host-line"]');
+      expect(line === null).toBe(false);
+      expect(document.activeElement === line).toBe(true);
+    });
+  });
+
+  test("tasks.md T114: a canceled update that the group Update submodules button started returns focus to that button", async () => {
+    await sized(1600, 900, async () => {
+      const double = await mount(succeeded(REGISTRATION));
+      await serveHistory(double);
+      await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
+      const groupButton = () => document.querySelector<HTMLElement>('[data-slot="submodules-group"] [data-slot="group-header"] button:not([aria-expanded])')!;
+      await act(async () => groupButton().focus());
+      await act(async () => groupButton().click());
+      await settle();
+      await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
+      const update = latest(double, "updateSubmodules");
+      await act(async () => bandButton()!.focus());
+      await resolve(update, { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "canceled", result: {} });
+      expect(document.activeElement === groupButton()).toBe(true);
+    });
+  });
+
   test("a failed review shows its code in the status bar and opens no dialog", async () => {
     const double = await mount(succeeded(REGISTRATION));
     await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));

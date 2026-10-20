@@ -313,3 +313,57 @@ caseTest("T098", "FR-003: Cancel while a branch delete waits at its update-ref o
     expect({ at, state: stateOf(f) }).toEqual({ at, state: stateOf(o) });
   }
 }, TIMEOUT_MS);
+
+type Call = { operationId: string; arguments: readonly string[] };
+// Each Git process that starts after the step process. The first one is a reconciliation read.
+const afterStep = (service: Service, step: (call: Call) => boolean) => (call: Call) => {
+  const calls: readonly Call[] = service.runner.calls;
+  const i = calls.findIndex(step);
+  return i >= 0 && calls.indexOf(call) > i;
+};
+// The refs whose values differ between two `for-each-ref` reads of Git, by name.
+const refValues = (f: WbFixture) => new Map(git(f, ["for-each-ref", "--format=%(refname) %(objectname)"]).trim().split("\n").map((l) => l.split(" ") as [string, string]));
+const changedNames = (before: Map<string, string>, after: Map<string, string>) => [...new Set([...before.keys(), ...after.keys()])].filter((ref) => before.get(ref) !== after.get(ref)).sort();
+
+caseTest("T098", "FR-003: Cancel while a create or a rename waits at its one Git step leaves the state of an untouched copy; Cancel after the step leaves the changed refs, HEAD, and the state of Git's own command on a copy", SHELL, async () => {
+  const actions = [
+    { name: "create", payload: (f: WbFixture) => ({ action: "create-branch", name: "new-a", start: f.oids.second!, switchTo: false }), own: (f: WbFixture) => ["branch", "--end-of-options", "new-a", f.oids.second!] },
+    { name: "create-switch", payload: (f: WbFixture) => ({ action: "create-branch", name: "new-b", start: f.oids.second!, switchTo: true }), own: (f: WbFixture) => ["checkout", "-q", "-b", "new-b", f.oids.second!, "--"] },
+    { name: "rename", payload: () => ({ action: "rename-branch", ref: "refs/heads/unmerged", name: "renamed" }), own: () => ["branch", "-m", "--end-of-options", "unmerged", "renamed"] },
+  ];
+  const isStep = (call: Call) => call.arguments[1] === "branch" || call.arguments[1] === "checkout";
+  for (const { name, payload, own } of actions) {
+    for (const at of ["step", "after"] as const) {
+      const label = `${name} ${at}`;
+      const f = build();
+      const o = build();
+      await withSync(`t098-${name}-${at}`, async (service) => {
+        const r = await open(service, f.repo);
+        const rv = await reviewed(service, r, payload(f));
+        const match = at === "step" ? isStep : afterStep(service, isStep);
+        const release = service.runner.holdStart(match);
+        const requestId = sendRun(service, r, rv.workbenchToken);
+        try {
+          await until(() => service.runner.calls.some(match), `held ${label}`);
+          await service.cancel(await service.operationId(requestId));
+        } finally {
+          release();
+        }
+        const response = await service.response<BranchResult>(requestId);
+        if (at === "step") {
+          expect({ label, exit: service.runner.calls.find(isStep)!.exit?.exitCode ?? null }).toEqual({ label, exit: null });
+          expect({ label, ...outcome(response), refs: response.result!.refs }).toEqual({ label, state: "canceled", code: "CANCELED", refs: [] });
+        } else {
+          // The step exited 0 before the Cancel, so the run keeps its effects.
+          const before = refValues(o);
+          git(o, own(o));
+          expect({ label, exit: service.runner.calls.find(isStep)!.exit?.exitCode }).toEqual({ label, exit: 0 });
+          expect({ label, ...outcome(response), refs: response.result!.refs.map((x) => x.ref).sort() }).toEqual({ label, ...SUCCEEDED, refs: changedNames(before, refValues(o)) });
+        }
+        expect({ label, steps: steps(service).length }).toEqual({ label, steps: 1 });
+        expect({ label, head: response.result!.head }).toEqual({ label, head: headOf(f) });
+      });
+      expect({ label, state: stateOf(f) }).toEqual({ label, state: stateOf(o) });
+    }
+  }
+}, TIMEOUT_MS);

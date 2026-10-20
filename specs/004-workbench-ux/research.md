@@ -385,6 +385,45 @@ Run of 2026-10-20 in `C:\Projects\arbareto-l4` on f004-impl at 8e6b82e. The run 
 - Review: "Batch reviews" records the T093 independent review of T087 to T092 ("T093 review"). It passed with follow-ups, and T106 fixes them (R26).
 - Ticks from this run: T099 and T106.
 
+## R28 Evidence records, 2026-10-20
+
+Runs of 2026-10-20 in `C:\Projects\arbareto-l5` on f004-evidence at 14104a0, with the new cases of this section. Every `ORIGIN` line is under `C:\Projects\arbareto-l5`. After each undo, `git diff` of the mutated file is empty.
+
+Control mutations:
+- T096: one merge case of `tests/git/merge-rebase.test.ts` ran `git config merge.log true` after the run. The file failed (35 pass, 1 fail): the `.git/config` digest changed. After the undo, 36 of 36 passed.
+- T100: without `aria-setsize` in `src/frontend/components/switcher-popover.tsx`, `workbench-branches.test.tsx` and `workbench-worktrees.test.tsx` failed (106 pass, 2 fail). After the undo, 108 of 108 passed.
+- T101: Right did nothing in `src/frontend/history/HistoryList.tsx`. `workbench-branches.test.tsx` failed (52 pass, 2 fail). After the undo, 54 of 54 passed.
+- T102: without `-w` in the Sublime Text command of `presets.ts`, `workbench-settings.test.tsx` failed (34 pass, 1 fail). After the undo, 35 of 35 passed.
+- T104: the message field of `src/frontend/commit/CommitTray.tsx` ignored the stored draft. `workbench-worktrees.test.tsx` failed (53 pass, 1 fail). After the undo, 54 of 54 passed.
+- T105: `src/git-service/branches.ts` kept `hasLocal`. The service harness schema check failed `tests/git/read-branches.test.ts` (1 pass, 4 fail). After the undo, 5 of 5 passed.
+
+New cases:
+- T097: `tests/git/workbench-busy.test.ts` adds the reverse order: a held `commit`, then a `runWorkbench` merge; a held `runWorkbench` switch, then a `runWorkbench` merge. Each second run gives `BUSY`, starts no Git process, and changes nothing. With the same-repository check of `src/git-service/exclusion.ts` removed, all 4 cases failed (`GIT_FAILED`, not `BUSY`). After the undo, 4 of 4 passed.
+- T098: `tests/git/branch-ops.test.ts` adds Cancel for create, create with switch, and rename. `tests/git/worktrees.test.ts` adds Cancel for add with a new branch and prune. Each run is cancelled at its one Git step and at the first read after it. At the step, the result is `canceled` with no refs, and the state equals an untouched copy. After the step, the result is `succeeded`, the refs equal the refs that Git's own command changes on a copy, and the state equals that copy.
+- T098 control mutations in `conclude` of `src/git-service/workbench-review.ts`: a canceled run reported `failed-with-effects`, and both new cases failed at the step half. A done run always reported `differing-effects`, and both new cases failed at the after half. After each undo, both passed.
+- After the new cases: `bun run typecheck` exit 0. `workbench-busy`, `branch-ops`, `worktrees`, `tests/contracts/groups.test.ts`, and `tests/git/portable-imports.test.ts`: 59 pass, 0 fail.
+
+Failing-first records:
+- The ticked batches T006, T020, T035, and T048 record control mutations only. No ticked task of batches 0 to 3 records a failing-first run. The 004 commits hold each test file and its code in one commit.
+- Method for this record: the tree of the parent commit, with `tests/` of the task commit, in a scratch folder (`git archive`). `node_modules` is a junction to the l5 copy. The l5 lock file only adds `ssh2` 1.17.0, a test dependency. Every `ORIGIN` line and every module path is under the scratch folder.
+- This shows the tests red against the code before the task commit. It does not show the first version of the tests, because the commit holds the final version.
+- T049, tests of 61e4ba6 on b424d61: `tests/git/worktrees.test.ts` fails at load. `src/git-service/worktrees` does not exist.
+- T050, cfd5e92 on 118821a: `tests/git/git-settings.test.ts` fails at load. `src/git-service/git-settings` does not exist.
+- T051, 1240846 on b424d61: `tests/git/trust-v2.test.ts` gives 0 pass, 11 fail.
+- T052, 4f9da6f on b424d61: `tests/git/submodule-scope.test.ts` gives 10 pass, 13 fail.
+- T053, 515dda1 on 118821a: `tests/git/resolve.test.ts` fails at load. `src/git-service/resolve` does not exist.
+- T054, 3b1622a on e781ee7: `tests/git/commit-amend.test.ts` fails at load, because the service harness imports `ReadGitSettingsResult`, which e781ee7 does not export. This red does not test the amend code.
+- T064, 5c1dbff on c73d655: `workbench-worktrees.test.tsx` fails at load. `src/frontend/worktrees/WorktreeActions.tsx` does not exist.
+- T065, d1cf6bd on c73d655: `workbench-settings.test.tsx` fails at load. `src/frontend/settings/SettingsView.tsx` does not exist.
+- T066, 0c32e3a on c73d655: `workbench-trust.test.tsx` fails at load. `src/frontend/trust/TrustChip.tsx` does not exist.
+- T067, 22dd93e on c73d655: `workbench-submodules.test.tsx` fails at load. `src/frontend/submodules/SubmodulesGroup.tsx` does not exist.
+- T068, 0380c82 on c73d655: `workbench-resolve.test.tsx` fails at load. `src/frontend/resolve/ResolveView.tsx` does not exist.
+- T069, c62b42c on 2d19977: `workbench-amend.test.tsx` gives 5 pass, 7 fail.
+- T092, fd5b63d on b424d61: `workbench-commit.test.tsx` and `shortcuts-004.test.ts` give 53 pass, 11 fail, 3 errors. The kept lines name 7 Filter files cases and 3 T091 cases of the same commit. They do not name the 11th failure. This tree has no short DOM form (R27), so the log grew to 1.8 GB.
+- T094, a6f318c on 5850a95, with `tests/dom.ts` of 14104a0: the five contract files and `workbench-worktrees.test.tsx` give 1,443 pass, 33 skip, 28 fail. The failures are the `chooseWorktreeFolder` and Browse cases. The cargo tests of T094 did not run.
+- T095, 516dc09 on 3e25b8f, with `tests/dom.ts` of 14104a0: the seven named files give 670 pass, 33 skip, 38 fail. The named failures are 29 vector cases, 1 DD side-name case of `workbench-resolve.test.tsx`, and 4 cases of `workbench-worktrees.test.tsx`. No case of `tests/git/worktrees.test.ts`, `tests/git/resolve.test.ts`, `workbench-amend.test.tsx`, or `commit-tray.test.tsx` is named, so this record does not show those parts red.
+- T105, 0eadd40 on b1d72af, with `tests/dom.ts` of 14104a0: `workbench-contract.test.ts` and the four `tests/git` files give 113 pass, 6 fail. The failures are the field-free contract case and five service cases that compare the results without the removed fields.
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.

@@ -347,6 +347,23 @@ Screenshots on 2f31806: `bun run dev` with a scratch profile and a scratch repos
   - The board says "Commit & push". The app says "Commit and push", which ASD-STE100 prefers.
   - The diff pane showed its empty state because no file was selected.
 
+## R26 Batch 3 follow-up verification (T093)
+
+Run of 2026-10-20 in `C:\Projects\arbareto-l7` on f004-impl at 180dbce.
+- `bun run build` and `bun run typecheck`: exit 0.
+- `bun run test:contracts`: exit 0. 4,708 pass, 33 skip, 0 fail. All 291 `ORIGIN` lines are under `C:\Projects\arbareto-l7`.
+- Control mutation: in `src/frontend/changes/ChangesPane.tsx`, Stage all changes took only the rows that match the filter. `tests/contracts/workbench-commit.test.tsx` failed: 64 pass, 1 fail ("login shows only the rows whose path holds it, and Stage all changes still stages every change"). After the undo, 65 of 65 passed.
+- Open: `bun run test:all` and the independent review of T087 to T092.
+
+Screenshots: the R25 method. `bun run dev` ran with `ARBARETO_PROFILE_ROOT` in a scratch folder and a scratch fixture repository. UI Automation patterns, `IUIAutomationElement3::ShowContextMenu`, and window messages drove the app, with no input. `PrintWindow(PW_RENDERFULLCONTENT)` made the images. The display scale is 125%, so 1 DIP is 1.25 image pixels. The files are in the orchestrator scratchpad `t093-l7/shots/`. Results against plan.md D15 and D16:
+- Top bar (`0-main.png`, `5-960-history.png`): one 40 DIP row at 1280 and at 960 DIPs width. The repository button shows "work". Its accessible name holds the full path. All R25 top bar differences are gone, except the ↑/↓ chips: the button shows "=", because the fixture branch has no ahead or behind commits.
+- Branch list (`1-branch-list.png`, `5-960-branch-list.png`): 380 DIPs wide, with a search icon and the placeholder "Find a branch". The headings "Local branches 3" and "Remote branches 2" show Muted counts and are 26 DIPs high. The current row shows a check mark. "New branch…" shows Ctrl+B in a right-aligned Muted column. The list has no "Manage branches" row. The popover starts at the button start: the end alignment does not fit left of a button that ends at 279 DIPs, so the popover moves into the window.
+- Branch menu (`2-branch-menu.png`, `2b-branch-menu-focused-item.png`): 28 DIP rows with 16 DIP icons, and separators between the three D16 groups. The Push reason is on the item line. The focus outline marks only the focused item. The menu opens beside the sidebar row, and the row stays visible.
+- Merge panel (`3-merge-panel.png`, `5-960-merge-panel.png`): the 32 DIP head shows the Accent merge glyph, the title, and Close. The foot shows Cancel, then "Merge (Ctrl+Enter)", right-aligned. The content is taller than the cap, so the dock takes 60% of the work area (544 of 907 image pixels) and the content scrolls.
+- Commit view (`4-commit-view.png`, `4b-commit-view-untracked.png`, `4c-commit-view-filter.png`, `4d-commit-view-no-match.png`, `5-960-commit-view.png`): Filter files is above the trees, with a search icon and the tooltip "Filter files (Ctrl+F)". The sidebar has no help line. The diff empty state shows it. M is Warning, A and ? are Added, and D is Removed. The Staged list starts directly below the splitter. "APP" matches `src/app` without regard to letter case. The headings and the status bar keep the counts of the status read. "zzz" shows "No file matches the filter.".
+- Board differences that T087 to T092 do not cover: the merge panel keeps the "Result" label and the `merge.ff` source line, the message box has an empty right column, and Commit is not the primary button.
+- At 960 DIPs width, the narrow file band shows about two rows, because Filter files takes one row of the 001 file band default.
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.

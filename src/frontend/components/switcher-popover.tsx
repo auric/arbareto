@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { Search01Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { Fragment, useId, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactElement, type ReactNode } from "react";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover";
@@ -16,7 +16,7 @@ const VIRTUAL_MIN = 200;
 const LOADING_TEXT = "Loading…";
 const fmt = new Intl.NumberFormat("en-US");
 
-type Footer = { label: string; keys?: { aria: string; text: string }; note?: string; onPick(): void };
+type Footer = { label: string; icon?: IconSvgElement; keys?: { aria: string; text: string }; note?: string; onPick(): void };
 
 export type SwitcherPopoverProps<T> = {
   open: boolean;
@@ -30,6 +30,8 @@ export type SwitcherPopoverProps<T> = {
   listLabel: string;
   /** The row height in DIPs (`metrics(...).row`). */
   rowHeight: number;
+  /** The height of an item row in DIPs, for items of more than one line. Footer rows keep `rowHeight`. */
+  itemHeight?: number;
   /** The group heading height in DIPs (`metrics(...).subgroupHeading`, 26 in the compact density at 100% text, plan D16 "Geometry"). */
   headingHeight: number;
   /** Null while the list loads. */
@@ -71,7 +73,7 @@ export function SwitcherPopover<T>({ open, onOpenChange, trigger, children, tool
   );
 }
 
-function SwitcherList<T>({ rowHeight, headingHeight, filterLabel, listLabel, items, failure, itemKey, itemText, itemLabel = itemText, itemGroup, renderItem, onPick, footer, onItemDelete, emptyText, noMatchText }: Omit<SwitcherPopoverProps<T>, "open" | "onOpenChange" | "trigger" | "children" | "tooltip">) {
+function SwitcherList<T>({ rowHeight, itemHeight, headingHeight, filterLabel, listLabel, items, failure, itemKey, itemText, itemLabel = itemText, itemGroup, renderItem, onPick, footer, onItemDelete, emptyText, noMatchText }: Omit<SwitcherPopoverProps<T>, "open" | "onOpenChange" | "trigger" | "children" | "tooltip">) {
   const ids = { list: useId(), option: useId() };
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -119,7 +121,10 @@ function SwitcherList<T>({ rowHeight, headingHeight, filterLabel, listLabel, ite
     count: rows.length,
     enabled: virtual,
     getScrollElement: () => scroller.current,
-    estimateSize: (at) => (typeof rows[at] === "number" ? rowHeight : headingHeight),
+    estimateSize: (at) => {
+      const r = rows[at];
+      return typeof r !== "number" ? headingHeight : r < shown.length ? (itemHeight ?? rowHeight) : rowHeight;
+    },
     overscan: 8,
     useFlushSync: false,
     // The active option stays mounted, so `aria-activedescendant` names an element.
@@ -179,7 +184,7 @@ function SwitcherList<T>({ rowHeight, headingHeight, filterLabel, listLabel, ite
         aria-label={end === null ? itemLabel(item!) : end.keys === undefined ? (end.note === undefined ? undefined : `${end.label}, ${end.note}`) : `${end.label} (${end.keys.text})`}
         aria-keyshortcuts={end === null ? (onItemDelete === undefined ? undefined : "Delete") : end.keys?.aria}
         className={`list-row flex min-w-0 items-center gap-2 px-2 ${index === active ? "bg-hover-fill" : ""}`}
-        style={style}
+        style={end === null && itemHeight !== undefined ? { height: itemHeight, ...style } : style}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => {
           setActiveIndex(index);
@@ -188,6 +193,7 @@ function SwitcherList<T>({ rowHeight, headingHeight, filterLabel, listLabel, ite
       >
         {end !== null ? (
           <>
+            {end.icon === undefined ? null : <HugeiconsIcon icon={end.icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />}
             {end.label}
             {end.note === undefined ? null : (
               <span data-slot="option-note" className="ml-auto pl-4 whitespace-nowrap text-muted-text">
@@ -262,6 +268,7 @@ function SwitcherList<T>({ rowHeight, headingHeight, filterLabel, listLabel, ite
       </div>
       {failure ?? (
         <>
+          {items === null ? <p className="px-2 text-muted-text">{LOADING_TEXT}</p> : items.length === 0 ? <p className="px-2 text-muted-text">{emptyText}</p> : shown.length === 0 ? <p className="px-2 text-muted-text">{noMatchText}</p> : null}
           <div ref={scroller} id={ids.list} role="listbox" aria-label={listLabel} className="min-h-0 overflow-y-auto">
             {virtual ? (
               <div role="presentation" className="relative" style={{ height: virtualizer.getTotalSize() }}>
@@ -271,7 +278,6 @@ function SwitcherList<T>({ rowHeight, headingHeight, filterLabel, listLabel, ite
               grouped(rows.map((_, at) => [at, undefined]))
             )}
           </div>
-          {items === null ? <p className="text-muted-text">{LOADING_TEXT}</p> : items.length === 0 ? <p className="text-muted-text">{emptyText}</p> : shown.length === 0 ? <p className="text-muted-text">{noMatchText}</p> : null}
         </>
       )}
     </div>

@@ -112,13 +112,13 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
 
   return (
     <DockedPanel title={W.addTitle} icon={FolderAddIcon} closeLabel={W.closeAdd} primary={{ label: W.addButton, reason, quiet: running, onRun: () => void submit() }} opener={opener} onClose={onClose}>
-      <fieldset className="flex flex-col gap-2" aria-describedby={ids.mode}>
-        <legend className="mb-1 font-semibold">{W.branch}</legend>
-        <label className="flex items-center gap-2">
+      <fieldset className="grid grid-cols-[minmax(140px,max-content)_minmax(0,420px)] items-start gap-x-4 gap-y-2" aria-describedby={ids.mode}>
+        <legend className="mb-2 font-semibold">{W.branch}</legend>
+        <label className="flex h-(--h-button) items-center gap-2">
           <input type="radio" name="worktree-branch" checked={mode === "new"} onChange={() => setMode("new")} />
           {W.newBranch}
         </label>
-        <div className="ml-6 flex flex-col gap-1">
+        <div className="flex min-w-0 flex-col gap-1">
           <input
             aria-label={W.branchName}
             spellCheck={false}
@@ -133,11 +133,11 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
           />
           {start === null ? null : <span className="text-muted-text">{W.start(start)}</span>}
         </div>
-        <label className="flex items-center gap-2">
+        <label className="flex h-(--h-button) items-center gap-2">
           <input type="radio" name="worktree-branch" checked={mode === "existing"} onChange={() => setMode("existing")} />
           {W.existing}
         </label>
-        <div className="ml-6 flex flex-col gap-1">
+        <div className="flex min-w-0 flex-col gap-1">
           <select
             aria-label={W.branch}
             disabled={mode !== "existing"}
@@ -159,36 +159,40 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
           </span>
         </div>
       </fieldset>
-      <div className="flex flex-col gap-1">
-        <label htmlFor={ids.folder}>{W.folder}</label>
-        <div className="flex gap-2">
-          <input
-            ref={folderField}
-            id={ids.folder}
-            aria-describedby={ids.hint}
-            spellCheck={false}
-            autoComplete="off"
-            className="h-(--h-button) min-w-0 flex-1 rounded-sm border border-control-border bg-surface px-2"
-            value={folder}
-            onChange={(event) => {
-              setEdited(event.target.value);
-              setError(null);
-            }}
-          />
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button type="button" variant="outline" className="h-(--h-button)" disabled={browsing} focusableWhenDisabled onClick={() => void browse()}>
-                  {W.browse}
-                </Button>
-              }
+      <div className="grid grid-cols-[minmax(140px,max-content)_minmax(0,420px)] items-start gap-x-4">
+        <label htmlFor={ids.folder} className="flex h-(--h-button) items-center">
+          {W.folder}
+        </label>
+        <div className="flex min-w-0 flex-col gap-1">
+          <div className="flex gap-2">
+            <input
+              ref={folderField}
+              id={ids.folder}
+              aria-describedby={ids.hint}
+              spellCheck={false}
+              autoComplete="off"
+              className="h-(--h-button) min-w-0 flex-1 rounded-sm border border-control-border bg-surface px-2"
+              value={folder}
+              onChange={(event) => {
+                setEdited(event.target.value);
+                setError(null);
+              }}
             />
-            <TooltipContent>{W.browseTip}</TooltipContent>
-          </Tooltip>
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button type="button" variant="outline" className="h-(--h-button)" disabled={browsing} focusableWhenDisabled onClick={() => void browse()}>
+                    {W.browse}
+                  </Button>
+                }
+              />
+              <TooltipContent>{W.browseTip}</TooltipContent>
+            </Tooltip>
+          </div>
+          <span id={ids.hint} className="text-muted-text">
+            {W.folderHint}
+          </span>
         </div>
-        <span id={ids.hint} className="text-muted-text">
-          {W.folderHint}
-        </span>
       </div>
       <label className="flex items-center gap-2">
         <input type="checkbox" checked={switchTo} onChange={(event) => setSwitchTo(event.target.checked)} />

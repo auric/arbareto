@@ -996,6 +996,15 @@ Capture sources: [DuplicateOutput](https://learn.microsoft.com/windows/win32/api
 
 Driver sources: [WebView2 accessibility tree](https://learn.microsoft.com/microsoft-edge/webview2/concepts/overview-features-apis#rendering-webview2-using-composition), [ARIA and UI Automation in Microsoft Edge](https://learn.microsoft.com/microsoft-edge/accessibility/build/aria-and-ui-automation), [UI Automation overview](https://learn.microsoft.com/windows/win32/winauto/uiauto-uiautomationoverview).
 
+**T244 WSL path, 2026-10-20.** The `--wsl` path of `tests/windows/external-change.ts` is verified on Ubuntu-26.04 with Git 2.55.0. `bun test tests/windows/external-change.test.ts` ran with `ARBARETO_WSL_DISTRO=Ubuntu-26.04` on main 8d62e6b: 10 pass.
+
+- The WSL case builds a fixture in an owned `$HOME/arbareto-fixtures-<UUID>/repo` folder with the distro Git. It runs the helper with `--wsl <distro>` for `file`, `index`, and `ref`, and then `--restore` for each kind.
+- The case reads every result in the distro. `file`: the `hash-object --no-filters` ID of `a.txt` equals the ID of the start bytes plus the helper line. `index`: the `:a.txt` blob changes, and the working files keep their IDs. `ref`: the test branch points at HEAD.
+- Each change prints a start value below its end value. After each `--restore`, the status, the index entries, the refs, and the file IDs equal the start state.
+- The case passed at once. A control mutation of the `--wsl` append to `cat > /dev/null` turned it red at the `file` check. The helper is unchanged.
+- Without `ARBARETO_WSL_DISTRO`, the case skips with the reason `ARBARETO_WSL_DISTRO unset`, and no distro starts. The 9 Windows cases pass.
+- With `--wsl`, the helper refuses `--snapshot` and `--restore-state` with exit 2. T244 does not require these modes for WSL.
+
 Use the same capture method for baseline and candidate. An elevated trace collector does not qualify elevated application behavior. Run the application and installer as a standard user.
 
 Sources: [WebView2 process grouping](https://learn.microsoft.com/en-us/microsoft-edge/webview2/concepts/process-model), [Windows memory accounting](https://learn.microsoft.com/en-us/windows/win32/psapi/process-memory-usage-information), [CPU accounting](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes), [WPR](https://learn.microsoft.com/en-us/windows-hardware/test/wpt/windows-performance-recorder).

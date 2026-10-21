@@ -9,7 +9,7 @@ import { configListArgs, HOOK_EVENTS, hooksPathArgs } from "../../src/git-servic
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_HOME, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, realGlobalConfigDigests, removeFixtureRoot } from "./fixture-root";
 import { put } from "./fixtures";
-import { GIT } from "./git-binary";
+import { fixtureGitPath, GIT } from "./git-binary";
 import { hookListArgs } from "./git-oracle";
 
 printOrigin("../../src/git-service/commands", import.meta.dir);
@@ -37,7 +37,7 @@ let spawned = 0;
 
 function spawn(dir: string, args: string[], extra: Record<string, string> = {}): Result {
   spawned++;
-  const p = Bun.spawnSync([git, ...args], { cwd: dir, env: fixtureEnv({ LC_ALL: "C", ...extra }), stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: DEADLINE_MS });
+  const p = Bun.spawnSync([fixtureGitPath(git), ...args], { cwd: dir, env: fixtureEnv({ LC_ALL: "C", ...extra }), stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: DEADLINE_MS });
   return { exit: p.exitCode ?? `signal ${p.signalCode}`, stdout: p.stdout.toString(), stderr: redact(p.stderr.toString()) };
 }
 

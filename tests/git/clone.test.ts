@@ -20,7 +20,7 @@ import { CloneResult } from "../../src/contracts/envelope";
 import { printOrigin } from "../origin";
 import { startHttpRemote, type HttpRemote } from "../support/http-remote";
 import { useFixtureRoot } from "./fixture-root";
-import { describeGit } from "./git-binary";
+import { describeGit, fixtureGitPath } from "./git-binary";
 import { refState, workingFileDigests } from "./git-oracle";
 import { buildCredentialRemote, buildEmptyRemote, buildFetchFlags, buildSubmodule, gitRun, HTTP_PASSWORD, HTTP_USER, nativeEnv, stageEntries, urlWithCredential, type GitHost } from "./remote-fixtures";
 import { caseTest, type Service, type ServiceResponse } from "./service-harness";
@@ -105,7 +105,7 @@ async function withHttp(h: GitHost, body: (server: HttpRemote, url: string, envi
   mkdirSync(project, { recursive: true });
   buildCredentialRemote(h, project);
   const environment = nativeEnv({ GIT_CONFIG_GLOBAL: helperGlobal(h, HTTP_USER, HTTP_PASSWORD) });
-  const server = startHttpRemote({ git: gitExe(), projectRoot: project, user: HTTP_USER, password: HTTP_PASSWORD, env: nativeEnv() });
+  const server = startHttpRemote({ git: fixtureGitPath(gitExe()), projectRoot: project, user: HTTP_USER, password: HTTP_PASSWORD, env: nativeEnv() });
   try {
     await body(server, `${server.url}/cred.git`, environment);
   } finally {

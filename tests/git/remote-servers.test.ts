@@ -7,7 +7,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { connects, startGitDaemon } from "../support/git-daemon";
 import { startHttpRemote, within } from "../support/http-remote";
-import { describeGit } from "./git-binary";
+import { describeGit, fixtureGitPath } from "./git-binary";
 import { useFixtureRoot } from "./fixture-root";
 import { buildCredentialRemote, credentialHelper, HTTP_PASSWORD, HTTP_USER, nativeEnv, nativeHost, type GitHost } from "./remote-fixtures";
 
@@ -23,7 +23,7 @@ interface Run {
 
 // The servers answer on this event loop, so Git runs asynchronously.
 function gitAsync(git: string, cwd: string, args: string[]): { proc: ReturnType<typeof Bun.spawn>; done: Promise<Run> } {
-  const proc = Bun.spawn([git, ...args], { cwd, env: nativeEnv(), stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+  const proc = Bun.spawn([fixtureGitPath(git), ...args], { cwd, env: nativeEnv(), stdin: "ignore", stdout: "pipe", stderr: "ignore" });
   const done = (async () => {
     const [stdout, exitCode] = await Promise.all([new Response(proc.stdout as ReadableStream).text(), proc.exited]);
     return { exitCode, stdout };
@@ -53,7 +53,7 @@ describeGit("local HTTP remote and git daemon (T003)", (git) => {
     const project = `${h().root}/http`;
     mkdirSync(project, { recursive: true });
     buildCredentialRemote(h(), project);
-    const server = startHttpRemote({ git, projectRoot: project, user: HTTP_USER, password: HTTP_PASSWORD, env: nativeEnv() });
+    const server = startHttpRemote({ git: fixtureGitPath(git), projectRoot: project, user: HTTP_USER, password: HTTP_PASSWORD, env: nativeEnv() });
     try {
       expect(server.hostname).toBe("127.0.0.1");
       expect(await connects("127.0.0.1", server.port)).toBe(true);
@@ -99,7 +99,7 @@ describeGit("local HTTP remote and git daemon (T003)", (git) => {
     const base = `${h().root}/daemon`;
     mkdirSync(base, { recursive: true });
     buildCredentialRemote(h(), base);
-    const daemon = await startGitDaemon({ git, basePath: base, hookFile: `${h().root}/daemon-hook.sh`, counterFile: `${h().root}/daemon-count.txt`, env: nativeEnv() });
+    const daemon = await startGitDaemon({ git: fixtureGitPath(git), basePath: base, hookFile: `${h().root}/daemon-hook.sh`, counterFile: `${h().root}/daemon-count.txt`, env: nativeEnv() });
     try {
       expect(await connects("127.0.0.2", daemon.port)).toBe(false);
       const before = daemon.accessCount();
@@ -120,7 +120,7 @@ describeGit("local HTTP remote and git daemon (T003)", (git) => {
     const base = `${h().root}/daemon-tree`;
     mkdirSync(base, { recursive: true });
     buildCredentialRemote(h(), base);
-    const daemon = await startGitDaemon({ git, basePath: base, hookFile: `${h().root}/daemon-tree-hook.sh`, counterFile: `${h().root}/daemon-tree-count.txt`, env: nativeEnv() });
+    const daemon = await startGitDaemon({ git: fixtureGitPath(git), basePath: base, hookFile: `${h().root}/daemon-tree-hook.sh`, counterFile: `${h().root}/daemon-tree-count.txt`, env: nativeEnv() });
     let members: { pid: number; name: string; created: bigint | null }[] = [];
     try {
       const fetched = await finish(gitAsync(git, h().root, ["clone", "-q", "--", `${daemon.url}/cred.git`, `${h().root}/daemon-tree-clone`]));

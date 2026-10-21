@@ -10,7 +10,7 @@ import { expect } from "bun:test";
 import { basename, relative } from "node:path";
 import { HISTORY_LOAD_MARGIN } from "../../src/contracts/limits";
 import { useFixtureRoot, fixtureEnv, FIXED_TIMESTAMPS, ownedPath } from "../git/fixture-root";
-import { describeGit } from "../git/git-binary";
+import { describeGit, fixtureGitPath } from "../git/git-binary";
 import { H1M, largeCase, largeFixture, MARKER_WORD, startPoints } from "../git/history-fixtures";
 import { searchArgs, VIEW } from "../git/history-order-facts";
 import { PERF_CACHE_ROOT } from "./perf-fixtures";
@@ -144,7 +144,7 @@ function end(watched: Map<number, Watched>): void {
 // One run. `stopAt` ends the processes at that output line. `marks` gives the ms from the start to each listed output line. The open handle keeps the counters of an exited process readable, so the last read gives the final peak.
 async function measure(git: string, repo: string, args: readonly string[], env: Record<string, string>, input: Buffer, opts: { stopAt?: number; marks?: readonly number[] } = {}): Promise<{ exit: number; rows: number; processes: Watched[]; marks: number[] }> {
   const t0 = performance.now();
-  const proc = Bun.spawn([git, ...args], { cwd: ownedPath(PERF_CACHE_ROOT, relative(PERF_CACHE_ROOT, repo)), env: fixtureEnv({ ...FIXED_TIMESTAMPS, ...env }), stdin: input, stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn([fixtureGitPath(git), ...args], { cwd: ownedPath(PERF_CACHE_ROOT, relative(PERF_CACHE_ROOT, repo)), env: fixtureEnv({ ...FIXED_TIMESTAMPS, ...env }), stdin: input, stdout: "pipe", stderr: "pipe" });
   const root = watch(proc.pid, basename(git));
   if (root === null) throw new Error(`OpenProcess failed for pid ${proc.pid}`);
   const watched = new Map([[root.pid, root]]);

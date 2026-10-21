@@ -20,7 +20,7 @@ import { FrameBoundError, type Frame } from "../../src/git-service/transport";
 import { printOrigin } from "../origin";
 import { createBunRunner, createTrustStore, type BunRunner, type CallMatch, type TrustStore } from "./bun-runner";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_HOME, FIXTURE_ROOT, fixtureDir, fixtureEnv, serviceEnv } from "./fixture-root";
-import { GIT } from "./git-binary";
+import { fixtureGitPath, GIT } from "./git-binary";
 import { gitOpenssl } from "./http-401";
 import { sshTools } from "../support/ssh-server";
 
@@ -35,7 +35,7 @@ const LINUX = process.platform === "linux";
 // Runs the test Git with the owned environment and the fixed C locale of the `probe` policy.
 function probe(args: string[], cwd?: string): { exitCode: number; stdout: string; stderr: string } | null {
   if (GIT === null) return null;
-  const proc = Bun.spawnSync([GIT, ...args], { cwd, env: fixtureEnv({ LC_ALL: "C" }), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawnSync([fixtureGitPath(GIT), ...args], { cwd, env: fixtureEnv({ LC_ALL: "C" }), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   return { exitCode: proc.exitCode, stdout: proc.stdout.toString(), stderr: proc.stderr.toString() };
 }
 
@@ -163,7 +163,7 @@ const digestOf = (file: string) => (existsSync(file) ? new Bun.CryptoHasher("sha
 // The files are the common `config`, the worktree `config.worktree`, the owned global file, and the owned system file of `remote-fixtures.ts`.
 export function configDigests(dir: string): Record<string, string> {
   if (GIT === null) throw new Error("Git executable absent");
-  const proc = Bun.spawnSync([GIT, "rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir"], { cwd: dir, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+  const proc = Bun.spawnSync([fixtureGitPath(GIT), "rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir"], { cwd: dir, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 30_000 });
   const lines = proc.stdout.toString("utf8").split("\n");
   if (proc.exitCode !== 0 || lines.length !== 3 || lines[2] !== "") throw new Error(`git rev-parse in ${dir} exited ${proc.exitCode}: ${proc.stderr.toString()}`);
   const files = [join(lines[0]!, "config"), join(lines[1]!, "config.worktree"), FIXTURE_GLOBAL_CONFIG, join(FIXTURE_HOME, "system.gitconfig")];

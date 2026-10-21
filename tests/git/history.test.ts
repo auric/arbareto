@@ -22,7 +22,7 @@ import { printOrigin } from "../origin";
 import { FIXED_IDENTITY, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { cachedF16History } from "../windows/fixture-cache";
 import { buildF01, buildF17, buildF19, F16_OBJECT_LIMIT, type Built, type F16HistoryVariant, type F19Variant } from "./fixtures";
-import { GIT } from "./git-binary";
+import { fixtureGitPath, GIT } from "./git-binary";
 import { refState } from "./git-oracle";
 import { isLoad, isTextRead, load, openView, rows, type Loaded, type Opened, type ViewRow } from "./history-view-harness";
 import { caseTest, once, openService, type Service, type ServiceResponse } from "./service-harness";
@@ -635,7 +635,7 @@ describe("missing objects (001 contract §7 \"Missing objects\")", () => {
         const ident = `${FIXED_IDENTITY.name} <${FIXED_IDENTITY.email}> 1767225600 +0000`;
         const tip = git(clone, ["hash-object", "-t", "commit", "-w", "--stdin"], `tree ${tree}\nparent ${missing}\nauthor ${ident}\ncommitter ${ident}\n\nmissing parent\n`).toString().trim();
         git(clone, ["update-ref", "refs/heads/main", tip]);
-        const catFile = () => Bun.spawnSync([gitPath(), "--no-lazy-fetch", "cat-file", "-e", missing], { cwd: clone, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" }).exitCode;
+        const catFile = () => Bun.spawnSync([fixtureGitPath(gitPath()), "--no-lazy-fetch", "cat-file", "-e", missing], { cwd: clone, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" }).exitCode;
         expect(catFile()).not.toBe(0);
         const loaded = (await checkout(service, clone)).loaded!;
         expect({ state: loaded.state, code: loaded.code, reason: loaded.result?.reason }).toEqual({ state: "failed", code: "OBJECT_MISSING", reason: "object-missing" });

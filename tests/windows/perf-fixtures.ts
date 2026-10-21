@@ -9,6 +9,7 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { FIXTURE_ROOT, fixtureEnv, fixturePath, ownedGit, ownedPath, removeTree, type OwnedGitOptions } from "../git/fixture-root";
 import { fiCommit } from "../git/fixtures";
+import { fixtureGitPath } from "../git/git-binary";
 import { indexEntries, refState, sha256, workingFileDigests } from "../git/git-oracle";
 
 // The 8.3 form of the temporary directory differs from the form that Git prints, so the root holds the long form.
@@ -121,7 +122,7 @@ export function builderDigest(source: Buffer = readFileSync(import.meta.path)): 
 
 // A single file or a split chain (git-commit-graph(1) "FILES").
 export function hasCommitGraph(git: string, repo: string): boolean {
-  const proc = Bun.spawnSync([git, "rev-parse", "--path-format=absolute", "--git-path", "objects/info/commit-graph", "--git-path", "objects/info/commit-graphs"], { cwd: repo, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawnSync([fixtureGitPath(git), "rev-parse", "--path-format=absolute", "--git-path", "objects/info/commit-graph", "--git-path", "objects/info/commit-graphs"], { cwd: repo, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   if (proc.exitCode !== 0) throw new Error(`git rev-parse --git-path exited ${proc.exitCode}: ${proc.stderr.toString()}`);
   return proc.stdout.toString().trim().split(/\r?\n/).some((p) => existsSync(p));
 }

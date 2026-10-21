@@ -13,6 +13,7 @@ import type { FileAppender, FileAppendReply, FileAppendRequest, IgnorePlan } fro
 import type { Workspace } from "../../src/git-service/registration";
 import { printOrigin } from "../origin";
 import { fixtureDir, fixtureEnv, useFixtureRoot } from "./fixture-root";
+import { fixtureGitPath } from "./git-binary";
 import { put } from "./fixtures";
 import { git, gitPath, readOk, withService as hunkService } from "./hunk-harness";
 import { caseTest, keepConfigs, type Capability, type Service, type WorkspaceResult } from "./service-harness";
@@ -85,7 +86,7 @@ function appendDouble(o: Opened, order: string[]): FileAppender & { calls: FileA
 
 // `git check-ignore -v -z` (git-check-ignore(1)): exit 0 and `<source> NUL <line> NUL <pattern> NUL <path> NUL` for an ignored path.
 function checkIgnore(repo: string, path: string): { exit: number; pattern?: string; source?: string } {
-  const result = Bun.spawnSync([gitPath(), "--no-optional-locks", "check-ignore", "-v", "-z", "--no-index", "--stdin"], { cwd: repo, env: fixtureEnv(), stdin: Buffer.from(`${path}\0`), stdout: "pipe", stderr: "pipe" });
+  const result = Bun.spawnSync([fixtureGitPath(gitPath()), "--no-optional-locks", "check-ignore", "-v", "-z", "--no-index", "--stdin"], { cwd: repo, env: fixtureEnv(), stdin: Buffer.from(`${path}\0`), stdout: "pipe", stderr: "pipe" });
   const [source, , pattern] = result.stdout.toString("utf8").split("\0");
   return { exit: result.exitCode ?? -1, ...(result.exitCode === 0 ? { pattern, source } : {}) };
 }

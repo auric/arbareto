@@ -8,7 +8,7 @@
 import { expect, test } from "bun:test";
 import { PERF_CACHE_ROOT } from "../windows/perf-fixtures";
 import { FIXED_IDENTITY, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, useFixtureRoot } from "./fixture-root";
-import { describeGit } from "./git-binary";
+import { describeGit, fixtureGitPath } from "./git-binary";
 import { buildSmallFixtures, H1M, H200K, largeCase, largeFixture, MARKER_WORD, repositoryDigest, startPoints, withCommitGraph, type LargeSpec, type SmallFixture } from "./history-fixtures";
 import { FactLog, orderFacts, searchArgs } from "./history-order-facts";
 
@@ -68,7 +68,7 @@ describeGit("history order facts", (git) => {
   test("a commit object with a repeated parent line: hash-object and rev-list --parents", () => {
     const repo = fixtureDir("t003-repeated-parent/repo");
     const run = (args: string[], input?: string) => {
-      const proc = Bun.spawnSync([git, ...args], { cwd: repo, env: fixtureEnv(), stdin: input === undefined ? "ignore" : Buffer.from(input), stdout: "pipe", stderr: "pipe" });
+      const proc = Bun.spawnSync([fixtureGitPath(git), ...args], { cwd: repo, env: fixtureEnv(), stdin: input === undefined ? "ignore" : Buffer.from(input), stdout: "pipe", stderr: "pipe" });
       return { exitCode: proc.exitCode, out: proc.stdout.toString() };
     };
     expect(run(["init", "-q", "-b", "main"]).exitCode).toBe(0);

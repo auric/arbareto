@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { afterAll, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { afterAll, expect, spyOn, test } from "bun:test";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describeGit } from "./git-binary";
@@ -14,6 +14,7 @@ import {
   fixtureGit,
   fixturePath,
   FixturePathRefusal,
+  ownedGit,
   realGlobalConfigDigests,
   removeFixtureRoot,
   serviceEnv,
@@ -132,6 +133,40 @@ describeGit("fixture root", (git) => {
       for (const key of ["HOME", "USERPROFILE", "XDG_CONFIG_HOME", "GIT_CONFIG_GLOBAL"]) expect(insideRoot(upper[key]!)).toBe(true);
       expect(upper.GIT_CONFIG_NOSYSTEM as string | undefined).toBe(name === "fixture" ? "1" : undefined);
     }
+  });
+
+  // T388: trace2 `sid` ends in `-P<pid>` in hex (api-trace2 "sid"). A launcher start writes the PID of its child.
+  test("ownedGit starts the core Git without a launcher process", () => {
+    const dir = fixtureDir("t388-pid");
+    const trace = join(dir, "trace2.json");
+    const spawn = spyOn(Bun, "spawnSync");
+    let pid: number;
+    try {
+      ownedGit(git, FIXTURE_ROOT, dir, ["version"], { env: { GIT_TRACE2_EVENT: trace } });
+      expect(spawn).toHaveBeenCalledTimes(1);
+      pid = (spawn.mock.results[0]!.value as { pid: number }).pid;
+    } finally {
+      spawn.mockRestore();
+    }
+    const sids = [...new Set(readFileSync(trace, "utf8").trimEnd().split("\n").map((line) => (JSON.parse(line) as { sid: string }).sid))];
+    console.log(`T388_SID ${sids.join(" ")} spawn_pid=${pid}`);
+    expect(sids).toHaveLength(1);
+    const hex = /^[^/]*-P([0-9a-f]+)$/.exec(sids[0]!)?.[1];
+    expect(hex).toBeDefined();
+    expect(Number.parseInt(hex!, 16)).toBe(pid);
+  });
+
+  // T388: Git for Windows adds its tool folders to PATH only when MSYSTEM is unset (compat/mingw.c `setup_windows_environment`).
+  test("ownedGit runs a sh hook and a perl shell alias", () => {
+    console.log(`T388_SH_ON_TEST_PATH ${Bun.which("sh")}`);
+    const repo = fixtureDir("t388-hook");
+    fixtureGit(git, repo, ["init", "-q"]);
+    const hook = join(repo, ".git", "hooks", "pre-commit");
+    writeFileSync(hook, "#!/bin/sh\nsh -c 'echo ran > hook-ran.txt'\n");
+    chmodSync(hook, 0o755);
+    ownedGit(git, FIXTURE_ROOT, repo, ["commit", "-q", "--allow-empty", "-m", "t388"]);
+    expect(readFileSync(join(repo, "hook-ran.txt"), "utf8").trim()).toBe("ran");
+    ownedGit(git, FIXTURE_ROOT, repo, ["-c", "alias.t388=!perl -e 1", "t388"]);
   });
 
   test("fixture and service environments lack MSYSTEM in any case", () => {

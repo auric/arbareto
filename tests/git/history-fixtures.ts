@@ -12,7 +12,7 @@ import { printOrigin } from "../origin";
 import { acquireLock, builderDigest, hasCommitGraph, PERF_CACHE_ROOT, semanticDigest } from "../windows/perf-fixtures";
 import { FIXED_TIMESTAMPS, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, ownedPath, removeTree, type OwnedGitOptions } from "./fixture-root";
 import { fiCommit } from "./fixtures";
-import { GIT } from "./git-binary";
+import { fixtureGitPath, GIT } from "./git-binary";
 import { sha256, workingFileDigests } from "./git-oracle";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
@@ -486,7 +486,7 @@ export function buildLargeRepo(git: string, root: string, repo: string, spec: La
   mkdirSync(cwd, { recursive: true });
   g(["init", "-q", "-b", "main"]);
   writeLargeStream(streamPath, spec);
-  const proc = Bun.spawnSync([git, "fast-import", "--quiet"], { cwd, env: fixtureEnv(FIXED_TIMESTAMPS), stdin: Bun.file(streamPath), stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawnSync([fixtureGitPath(git), "fast-import", "--quiet"], { cwd, env: fixtureEnv(FIXED_TIMESTAMPS), stdin: Bun.file(streamPath), stdout: "pipe", stderr: "pipe" });
   if (proc.exitCode !== 0) throw new Error(`git fast-import exited ${proc.exitCode}: ${proc.stderr.toString()}`);
   rmSync(streamPath);
   g(["reset", "-q", "--hard"]);

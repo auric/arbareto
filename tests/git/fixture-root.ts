@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import gitEnvironment from "../../src/contracts/git-environment.json";
 import { printOrigin } from "../origin";
-import { GIT } from "./git-binary";
+import { fixtureGitPath, GIT } from "./git-binary";
 
 printOrigin("../../src/contracts/git-environment.json", import.meta.dir);
 
@@ -22,7 +22,7 @@ export const FIXED_TIMESTAMPS = { GIT_AUTHOR_DATE: "2026-01-01T00:00:00+0000", G
 
 // Read-only. Git prints the global files that the real environment selects (`git var GIT_CONFIG_GLOBAL`).
 export function realGlobalConfigDigests(git: string): string[] {
-  const proc = Bun.spawnSync([git, "var", "GIT_CONFIG_GLOBAL"], { cwd: tmpdir(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawnSync([fixtureGitPath(git), "var", "GIT_CONFIG_GLOBAL"], { cwd: tmpdir(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const paths = proc.stdout.toString().trim().split(/\r?\n/).filter((p) => p !== "");
   if (proc.exitCode !== 0 || paths.length === 0) throw new Error(`git var GIT_CONFIG_GLOBAL exited ${proc.exitCode}`);
   const digest = (p: string) => (existsSync(p) ? new Bun.CryptoHasher("sha256").update(readFileSync(p)).digest("hex") : "missing");
@@ -139,7 +139,7 @@ export interface OwnedGitOptions {
 
 // `fixtureGit` with byte input and output, extra environment entries, and a working directory under `root`.
 export function ownedGit(git: string, root: string, cwd: string, args: string[], options: OwnedGitOptions = {}): Buffer {
-  const proc = Bun.spawnSync([git, ...args], {
+  const proc = Bun.spawnSync([fixtureGitPath(git), ...args], {
     cwd: ownedPath(root, relative(root, cwd)),
     env: fixtureEnv({ ...FIXED_TIMESTAMPS, ...options.env }),
     stdin: options.input === undefined ? "ignore" : options.input,

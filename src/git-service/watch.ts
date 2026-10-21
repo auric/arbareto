@@ -23,8 +23,8 @@ const GIT_FILES: ReadonlySet<string> = new Set([".gitignore", ".gitattributes", 
 const REPLACEMENT = String.fromCharCode(0xfffd);
 
 // Contract §8 "Watcher hints": the worktree-relative path of an event of the worktree watch, with `/` separators.
-// Null: no name, a name that holds a lone surrogate or U+FFFD, a Git file name, or a path inside a Git folder.
-function worktreePath(root: string, folders: readonly string[], name: unknown): string | null {
+// Null: no name, a name that holds a lone surrogate or U+FFFD, a Git file name, a path inside a Git folder, or a path outside the root.
+export function worktreePath(root: string, folders: readonly string[], name: unknown): string | null {
   if (typeof name !== "string" || name === "" || !name.isWellFormed() || name.includes(REPLACEMENT)) return null;
   const parts = name.split(NATIVE.separator);
   if (GIT_FILES.has(NATIVE.fold(parts.at(-1)!)) || (parts.length === 1 && NATIVE.fold(name) === ".git")) return null;
@@ -33,7 +33,7 @@ function worktreePath(root: string, folders: readonly string[], name: unknown): 
     const relative = NATIVE.path.relative(folder, path);
     return relative === "" || (relative.split(NATIVE.separator)[0] !== ".." && !NATIVE.path.isAbsolute(relative));
   };
-  return folders.some(inside) ? null : parts.join("/");
+  return NATIVE.path.isAbsolute(name) || !inside(root) || folders.some(inside) ? null : parts.join("/");
 }
 
 // `onHint(false, paths)` comes once per burst of changes, after the debounce. `paths`: the worktree paths of the burst. Null: one event of the burst gives no path.

@@ -14,6 +14,7 @@ import { ReadBranchesResult, ReadGitSettingsResult, ReadWorktreesResult, ReviewC
 import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
 import { isObject } from "../../src/contracts/strict-json";
 import type { HunkCheckpoint } from "../../src/git-service/hunk-publish";
+import * as registrationModule from "../../src/git-service/registration";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
 import { FrameBoundError, type Frame } from "../../src/git-service/transport";
 import { printOrigin } from "../origin";
@@ -214,6 +215,17 @@ export async function withFsCalls<T>(body: () => Promise<T>, onCall: (call: FsCa
     return { value: await body(), calls };
   } finally {
     for (const spy of spies) spy.mockRestore();
+  }
+}
+
+// The seam: the registrations of the service report an unfinished mutation in every workspace, so no registration releases a replaced worktree (contract §6 "Registration reuse and release").
+export async function withKeptWorkspaces<T>(body: () => Promise<T>): Promise<T> {
+  const real = registrationModule.createRegistrations;
+  const spy = spyOn(registrationModule, "createRegistrations").mockImplementation((options) => real({ ...options, unfinishedMutation: () => true }));
+  try {
+    return await body();
+  } finally {
+    spy.mockRestore();
   }
 }
 

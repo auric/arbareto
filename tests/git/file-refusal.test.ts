@@ -40,7 +40,7 @@ import {
   type Comparison,
   type Direction,
 } from "./hunk-harness";
-import { caseTest, openService, type Capability, type ChangeEntry, type Envelope, type HunkCheckpoint, type OpenOptions, type Refusal, type Service, type ServiceResponse } from "./service-harness";
+import { caseTest, openService, withKeptWorkspaces, type Capability, type ChangeEntry, type Envelope, type HunkCheckpoint, type OpenOptions, type Refusal, type Service, type ServiceResponse } from "./service-harness";
 
 const TASK = "T197";
 const SHELL: Capability[] = ["shell-double"];
@@ -601,21 +601,25 @@ describe("request checks (contract §4, §9)", () => {
   );
 
   caseTest(TASK, `an entry from another workspace gives UNKNOWN_TARGET`, SHELL, () =>
-    withService({ name: "t197-other-workspace" }, async (service) => {
-      const built = buildF07(gitPath(), "t197-other-workspace");
-      const a = join(built.root, "wt-a");
-      const b = join(built.root, "wt-b");
-      put(a, "shared.txt", "shared changed in a\n");
-      put(b, "shared.txt", "shared changed in b\n");
-      await underTest();
-      const wa = await service.register(a);
-      const ca = await compare(service, wa.repositoryId, "shared.txt", "unstaged");
-      // Contract §6 "Registration reuse and release": this registration releases `wa`.
-      const wb = await service.register(b);
-      const rb = await readOk(service, wb.repositoryId);
-      const response = await refused(service, b, () => service.request("applyFile", { comparisonId: ca.comparisonId, snapshotId: rb.snapshotId, direction: "stage" }, { repositoryId: wb.repositoryId, repositoryGeneration: rb.generation }));
-      expect(code(response)).toBe("UNKNOWN_TARGET");
-    }),
+    // Contract §6 "Registration reuse and release": the seam keeps `wa` registered, so its comparison stays live.
+    withKeptWorkspaces(() =>
+      withService({ name: "t197-other-workspace" }, async (service) => {
+        const built = buildF07(gitPath(), "t197-other-workspace");
+        const a = join(built.root, "wt-a");
+        const b = join(built.root, "wt-b");
+        put(a, "shared.txt", "shared changed in a\n");
+        put(b, "shared.txt", "shared changed in b\n");
+        await underTest();
+        const wa = await service.register(a);
+        const ca = await compare(service, wa.repositoryId, "shared.txt", "unstaged");
+        const wb = await service.register(b);
+        const rb = await readOk(service, wb.repositoryId);
+        expect(rb.generation).toBe(ca.read.generation);
+        // The comparison, its snapshot, and the generation all match, so only the repositoryId binding refuses.
+        const response = await refused(service, b, () => service.request("applyFile", { comparisonId: ca.comparisonId, snapshotId: ca.read.snapshotId, direction: "stage" }, { repositoryId: wb.repositoryId, repositoryGeneration: rb.generation }));
+        expect(code(response)).toBe("UNKNOWN_TARGET");
+      }),
+    ),
     TIMEOUT_MS,
   );
 

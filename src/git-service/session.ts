@@ -61,7 +61,7 @@ type Handler<K extends ServiceOperation> = (request: Extract<ServiceRequest, { o
 export interface SessionOptions {
   writer: FrameWriter;
   runner: GitRunner & WslRunner & SyncRunner & { receive(frame: Frame): boolean };
-  // Called after a failed handshake reply. The service then exits.
+  // Called after a failed handshake reply, and when a deferred workspace release throws. The service then exits.
   fail(): void;
   // Contract §5 "Other Git process deadline" bounds the startup revalidation. Tests set a shorter value.
   startupDeadlineMs?: number;
@@ -206,6 +206,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const registrations = createRegistrations({
     runner,
     unfinishedMutation: (repositoryId) => exclusion.holds(repositoryId),
+    fail,
     onRegister: (w) => {
       recovery.register(w);
       // Contract §11 "Change polling": a WSL workspace gets no watcher.

@@ -104,6 +104,11 @@ describe("read builders (contract §7)", () => {
     expect(commands.hintIgnoreArgs()).toEqual(["--no-lazy-fetch", "--no-optional-locks", "check-ignore", "-z", "--stdin"]);
   });
 
+  // Contract §8 "Watcher hints": Git refuses `--literal-pathspecs` beside `--icase-pathspecs`, so each path takes `:(literal)`.
+  test("hintCaseArgs is the exact icase ls-files read with literal paths and without --literal-pathspecs", () => {
+    expect(commands.hintCaseArgs(["build/KEEP.txt", ":a"])).toEqual(["--no-lazy-fetch", "--no-optional-locks", "--icase-pathspecs", "ls-files", "-z", "--cached", "--", ":(literal)build/KEEP.txt", ":(literal):a"]);
+  });
+
   test("hooksPathArgs is the exact rev-parse --git-path array", () => {
     expect(hooksPathArgs()).toEqual([...R, "rev-parse", "--git-path", "hooks"]);
   });

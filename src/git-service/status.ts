@@ -3,7 +3,7 @@
 
 // Contract §3 `readWorkspace` and `readEntries`, contract §5 "Status page", and contract §8 "Change check" and "Changing working file".
 
-import { stat } from "node:fs/promises";
+import { lstat, realpath, stat } from "node:fs/promises";
 import { FileIdentity, type FileFact } from "../contracts/channel";
 import type { ChangeEntry, ReadEntriesResult, WorkspaceRefusal, WorkspaceSnapshot } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
@@ -17,6 +17,7 @@ import {
   STATUS_PAGE_BYTES,
   SUBMODULE_GITMODULES_BYTES,
   SUBMODULE_REVIEW_SUBMODULES,
+  WINDOWS_COMMAND_LINE_UNITS,
 } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
@@ -24,6 +25,7 @@ import {
   batchCommandArgs,
   headOidArgs,
   headTargetArgs,
+  hintCaseArgs,
   hintIgnoreArgs,
   indexEntryArgs,
   isObjectId,
@@ -38,7 +40,7 @@ import {
   type OperationMarker,
 } from "./commands";
 import { hunkEligibility, IndexFormatError, type HunkEligibility } from "./eligibility";
-import { createCollector, isChannelPath, RunnerRefusal, type Collector, type GitExit, type GitRunner, type WalkStop } from "./git-runner";
+import { commandLineUnits, createCollector, isChannelPath, RunnerRefusal, type Collector, type GitExit, type GitRunner, type WalkStop } from "./git-runner";
 import { HEADER_BYTES, parseCommitObjects } from "./history-parser";
 import { sameIdentity } from "./identity";
 import { contextOf, encodedBytes, isMissing, latin1, objectCheckInput, objectCheckOutcome, readBounded, runRead } from "./read-steps";
@@ -64,7 +66,7 @@ import {
 import { createStatusParser, displayPath, type BranchHeaders, type StatusRecord } from "./status-parser";
 import { gitmodulesSource } from "./submodule-review";
 import { isComponent, parseMaybeBool, readProgramFiles, requestFacts, type ChangeFiles, type ConfigEntry, type ListingOutcome, type ProgramFile, type FactEntry, type Trust, type TrustListing } from "./trust";
-import { HINT_PATHS, statFiles, statWorkingFile, type TupleFile } from "./watch";
+import { HINT_PATHS, statFiles, statWorkingFile, worktreePath, type TupleFile } from "./watch";
 
 // Contract §7 "Missing objects".
 export const OBJECT_MISSING_REMEDY =
@@ -389,6 +391,30 @@ function paginate(entries: readonly ChangeEntry[], firstOverhead: number): { sta
   return { starts, kept: entries.length };
 }
 
+// git-config(1) `core.ignoreCase` is false when unset, and the last entry wins. A value that is no boolean counts as true, which only adds a check.
+function ignoreCase(entries: readonly ConfigEntry[]): boolean {
+  const entry = entries.findLast((e) => e.key === "core.ignorecase");
+  return entry !== undefined && (!entry.exact || parseMaybeBool(entry.value) !== 0);
+}
+
+// Contract §6 command-line bound: `paths` in batches whose `hintCaseArgs` fit WINDOWS_COMMAND_LINE_UNITS. `commandLineUnits` adds the units of each argument.
+function caseBatches(program: string, paths: readonly string[]): string[][] {
+  const fixed = commandLineUnits(program, hintCaseArgs([]));
+  const bare = commandLineUnits("", hintCaseArgs([]));
+  const batches: string[][] = [];
+  let units = Infinity;
+  for (const path of paths) {
+    const own = commandLineUnits("", hintCaseArgs([path])) - bare;
+    if (units + own > WINDOWS_COMMAND_LINE_UNITS) {
+      batches.push([]);
+      units = fixed;
+    }
+    batches.at(-1)!.push(path);
+    units += own;
+  }
+  return batches;
+}
+
 // Data-model §4 `policyFingerprint`.
 export function policyOf(trust: Trust, w: Workspace, listing: TrustListing, installation: ReadInstallation): string {
   const view = trust.view(w, listing, installation);
@@ -480,6 +506,47 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     const step = await run(t, objectCheckArgs(), out, objectCheckInput(oids));
     if (t.signal.aborted) return "canceled";
     return objectCheckOutcome(step, out, oids);
+  }
+
+  // Contract §8 "Watcher hints": the hinted paths as they lie on disk. `realpath` gives the long names in their on-disk letter case (`fs.realpath.native` semantics).
+  // Null: a path does not resolve, ends in a link, gives no hint path on disk (`worktreePath`), or names one of `files`.
+  async function diskPaths(w: Workspace, paths: readonly string[], files: readonly string[] | null): Promise<string[] | null> {
+    if (files === null) return null;
+    const real = (path: string) => realpath(path).catch(() => null);
+    const [root, ...folders] = await Promise.all([w.worktreeRoot, w.gitDirectory, w.commonDirectory].map(real));
+    const dirs = folders.filter((folder) => folder !== null);
+    if (root === null || dirs.length !== folders.length) return null;
+    // Each hinted path must resolve, so a file that does not resolve is none of them.
+    const read = new Set(await Promise.all(files.map(real)));
+    const found = await Promise.all(
+      paths.map(async (path) => {
+        const full = NATIVE.path.join(w.worktreeRoot, path);
+        return (await lstat(full).then((s) => s.isSymbolicLink(), () => true)) ? null : real(full);
+      }),
+    );
+    const out: string[] = [];
+    for (const path of found) {
+      const name = path === null || read.has(path) ? null : worktreePath(root, dirs, NATIVE.path.relative(root, path));
+      if (name === null) return null;
+      out.push(name);
+    }
+    return out;
+  }
+
+  // Contract §8 "Watcher hints": true only when Git reports every hinted path on disk as ignored, and, unless `core.ignoreCase` is false, no index entry matches one without letter case.
+  async function hintsIgnored(t: ReadWorkspaceTarget, listing: TrustListing, hinted: readonly string[]): Promise<boolean | "deadline"> {
+    const paths = await diskPaths(t.workspace, hinted, trust.readFiles(t.workspace, listing));
+    if (paths === null) return false;
+    const ignored = await allIgnored(t, paths);
+    if (ignored !== true || !ignoreCase(listing.entries)) return ignored;
+    for (const batch of caseBatches(t.installation.executablePath, paths)) {
+      const out = createCollector({ maxBytes: 0 });
+      const step = await run(t, hintCaseArgs(batch), out);
+      if ("refused" in step) return false;
+      if (step.exit.deadline !== undefined) return "deadline";
+      if (step.exit.exitCode !== 0 || step.exit.diagnosticLimit || out.bytes > 0) return false;
+    }
+    return true;
   }
 
   // Contract §8 "Watcher hints": true only when git-check-ignore(1) exits 0 and prints every path in input order. Its `-z` record is the stdin path as given.
@@ -987,7 +1054,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
           if (kept.hints === count) return retained();
           // The equal tuple and policy keep the listing of the last complete read valid, so it decides the read gate (contract §7).
           if (trust.gate(t.workspace, kept.listing, t.installation, "reads") === null) {
-            const ignored = await allIgnored(t, [...st.hinted.paths!]);
+            const ignored = await hintsIgnored(t, kept.listing, [...st.hinted.paths!]);
             if (t.signal.aborted) return { result: "canceled" };
             if (ignored === "deadline") return { result: "deadline" };
             if (ignored && unchanged()) {

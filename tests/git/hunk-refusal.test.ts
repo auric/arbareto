@@ -36,7 +36,7 @@ import {
   withService,
   type Comparison,
 } from "./hunk-harness";
-import { caseTest, type Capability, type HunkCheckpoint, type OpenOptions, type Refusal, type Service, type ServiceResponse } from "./service-harness";
+import { caseTest, withKeptWorkspaces, type Capability, type HunkCheckpoint, type OpenOptions, type Refusal, type Service, type ServiceResponse } from "./service-harness";
 
 const TASK = "T096";
 const SHELL: Capability[] = ["shell-double"];
@@ -446,23 +446,27 @@ describe("request checks (contract §4, §9)", () => {
   );
 
   caseTest(TASK, `a hunk ID from another workspace gives UNKNOWN_TARGET`, SHELL, () =>
-    withService({ name: "t096-other-workspace" }, async (service) => {
-      const built = buildF07(gitPath(), "t096-other-workspace");
-      const a = join(built.root, "wt-a");
-      const b = join(built.root, "wt-b");
-      put(a, "shared.txt", "shared changed in a\n");
-      put(b, "shared.txt", "shared changed in b\n");
-      await underTest("hunk-publish");
-      const wa = await service.register(a);
-      const ca = await selectHunks(service, wa.repositoryId, "shared.txt", "unstaged");
-      // Contract §6 "Registration reuse and release": this registration releases `wa`.
-      const wb = await service.register(b);
-      const rb = await readOk(service, wb.repositoryId);
-      const response = await refused(service, b, () =>
-        service.request("applyHunk", { comparisonId: ca.comparisonId, hunkId: ca.hunkIds[0], snapshotId: rb.snapshotId, direction: "stage" }, { repositoryId: wb.repositoryId, repositoryGeneration: rb.generation }),
-      );
-      expect(code(response)).toBe("UNKNOWN_TARGET");
-    }),
+    // Contract §6 "Registration reuse and release": the seam keeps `wa` registered, so its comparison stays live.
+    withKeptWorkspaces(() =>
+      withService({ name: "t096-other-workspace" }, async (service) => {
+        const built = buildF07(gitPath(), "t096-other-workspace");
+        const a = join(built.root, "wt-a");
+        const b = join(built.root, "wt-b");
+        put(a, "shared.txt", "shared changed in a\n");
+        put(b, "shared.txt", "shared changed in b\n");
+        await underTest("hunk-publish");
+        const wa = await service.register(a);
+        const ca = await selectHunks(service, wa.repositoryId, "shared.txt", "unstaged");
+        const wb = await service.register(b);
+        const rb = await readOk(service, wb.repositoryId);
+        expect(rb.generation).toBe(ca.read.generation);
+        // The comparison, its snapshot, and the generation all match, so only the repositoryId binding refuses.
+        const response = await refused(service, b, () =>
+          service.request("applyHunk", { comparisonId: ca.comparisonId, hunkId: ca.hunkIds[0], snapshotId: ca.read.snapshotId, direction: "stage" }, { repositoryId: wb.repositoryId, repositoryGeneration: rb.generation }),
+        );
+        expect(code(response)).toBe("UNKNOWN_TARGET");
+      }),
+    ),
     TIMEOUT_MS,
   );
 

@@ -45,6 +45,8 @@ export interface RegistrationOptions {
   onRelease?(workspace: Workspace, replaced: boolean): void;
   // A new workspace. A reused workspace gives no call.
   onRegister?(workspace: Workspace): void;
+  // A deferred release (`settle`) that throws calls it, because no caller waits for that release. The session then exits.
+  fail?(): void;
 }
 
 const refused = (value: DiscoveryRefusal): RegistrationOutcome => {
@@ -151,7 +153,7 @@ export async function dismissWslMarker(
   }
 }
 
-export function createRegistrations({ runner, unfinishedMutation, onRelease, onRegister }: RegistrationOptions) {
+export function createRegistrations({ runner, unfinishedMutation, onRelease, onRegister, fail }: RegistrationOptions) {
   const workspaces = new Map<string, Workspace>();
   // Contract §6 "Registration reuse and release": the replaced workspaces that wait for the end of their unfinished mutation.
   const leaving = new Set<string>();
@@ -274,10 +276,10 @@ export function createRegistrations({ runner, unfinishedMutation, onRelease, onR
     // The release runs under the registration lock. A registration in flight can reuse the workspace before it.
     settle(repositoryId: string): void {
       if (!leaving.has(repositoryId)) return;
-      void exclusive(async () => {
+      exclusive(async () => {
         const w = workspaces.get(repositoryId);
         if (w !== undefined && leaving.has(repositoryId) && !unfinishedMutation(repositoryId)) release(w, true);
-      });
+      }).catch(() => fail?.());
     },
     has: (repositoryId: string): boolean => workspaces.has(repositoryId),
     get: (repositoryId: string): Workspace | undefined => workspaces.get(repositoryId),

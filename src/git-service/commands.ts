@@ -81,6 +81,12 @@ export function hintIgnoreArgs(): string[] {
   return [NO_LAZY_FETCH, "--no-optional-locks", "check-ignore", "-z", "--stdin"];
 }
 
+// Contract §8 "Watcher hints": the index entries that match a hinted path without letter case (git(1) `--icase-pathspecs`).
+// Git refuses `--literal-pathspecs` beside any other global pathspec option (pathspec.c `get_global_magic`), so each path takes `:(literal)`.
+export function hintCaseArgs(paths: readonly string[]): string[] {
+  return [NO_LAZY_FETCH, "--no-optional-locks", "--icase-pathspecs", "ls-files", "-z", "--cached", "--", ...paths.map(literalPathspec)];
+}
+
 export function indexListArgs(): string[] {
   return read("ls-files", "-z", "--stage");
 }

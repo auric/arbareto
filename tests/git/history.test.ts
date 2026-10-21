@@ -984,7 +984,7 @@ describe("failed history steps (001 contract §7 \"Missing objects\")", () => {
           sets.mockClear();
           release();
           expect(await pending).toMatchObject({ state: "failed", code: "REPOSITORY_UNAVAILABLE" });
-          reader.hint(workspace.repositoryId, true);
+          reader.hint(workspace.repositoryId, true, null);
           expect(await reader.listingTuple(workspace, crypto.randomUUID(), signal)).toBeNull();
           const recreated = sets.mock.calls.filter(([key, value]) => key === workspace.repositoryId && typeof value === "object" && value !== null && "refFiles" in value);
           expect(recreated.length).toBe(0);

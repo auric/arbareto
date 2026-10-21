@@ -387,6 +387,63 @@ describe("registration reuse and release (contract §6)", () => {
       }),
     TIMEOUT_MS,
   );
+
+  caseTest(
+    LEFT_TASK,
+    "the open of another repository clears the kept session trust approval of a left worktree, so its next registration asks again",
+    ["shell-double"],
+    () =>
+      withService("t384-session-trust-other", async (service) => {
+        const built = buildF07(gitPath(), "t384-session-trust-other");
+        const b = await service.register(join(built.root, "wt-b"));
+        expect((await service.readTrust(b.repositoryId)).state).toBe("succeeded");
+        service.runner.inject.trustStoreFails = true;
+        expect((await service.approveTrust(b.repositoryId)).result).toMatchObject({ persistence: "session", saveFailed: true });
+        service.runner.inject.trustStoreFails = false;
+        await service.register(join(built.root, "wt-a"));
+        await service.register(join(buildF02(gitPath(), "t384-session-trust-x").root, "repo"));
+        const again = await service.register(join(built.root, "wt-b"));
+        expect((await service.readTrust(again.repositoryId)).result).toMatchObject({ state: "untrusted" });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    LEFT_TASK,
+    "a deferred release that throws calls fail once, so the failure does not stay silent",
+    ["shell-double"],
+    () =>
+      withService("t384-settle-fault", async (service) => {
+        const built = buildF07(gitPath(), "t384-settle-fault");
+        const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", gitPath()), executablePath: gitPath() });
+        if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+        const { installation } = probed;
+        let unfinished = true;
+        let failures = 0;
+        const registrations = registrationModule.createRegistrations({
+          runner: service.runner,
+          unfinishedMutation: () => unfinished,
+          onRelease: () => {
+            throw new Error("release fault");
+          },
+          fail: () => failures++,
+        });
+        const register = async (path: string) => {
+          const outcome = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", path), installation, signal: new AbortController().signal });
+          if (!outcome.ok || !("repositoryId" in outcome.result)) throw new Error(`registration failed: ${JSON.stringify(outcome)}`);
+          return outcome.result.repositoryId;
+        };
+        const left = await register(join(built.root, "wt-a"));
+        await register(join(built.root, "wt-b"));
+        expect(registrations.has(left)).toBe(true);
+        unfinished = false;
+        registrations.settle(left);
+        const end = performance.now() + WAIT_MS;
+        while (failures === 0 && performance.now() < end) await Bun.sleep(10);
+        expect({ failures, registered: registrations.has(left) }).toEqual({ failures: 1, registered: false });
+      }),
+    TIMEOUT_MS,
+  );
 });
 
 // The seam: the registrations of the service report each ID in `busy` as a workspace with an unfinished mutation, and record their `release` frames.

@@ -14,7 +14,7 @@ import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, useFixtureRo
 import { buildF27, buildF28, buildF29, put, type Built, type F27Variant, type F29Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, submoduleState, workingFileDigests, type SubmoduleUpdateResult } from "./git-oracle";
 import { gitPath, mutationFrames, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, valuesOf } from "./hunk-harness";
-import { caseTest, once, withFsCalls, type Capability, type Service, type ServiceResponse, type SubmoduleCheckpoint } from "./service-harness";
+import { caseTest, once, withFsCalls, withKeptWorkspaces, type Capability, type Service, type ServiceResponse, type SubmoduleCheckpoint } from "./service-harness";
 import {
   callsSince,
   checkoutRemedy,
@@ -1165,16 +1165,13 @@ describe("admission (contract §2, §9)", () => {
   caseTest("T231", `a bad payload, a snapshot or review of another workspace, and an old generation refuse reviewSubmodules and updateSubmodules, and no Git process starts`, SHELL, () => {
     const b = buildF27(gitPath(), "t231-admission", "base");
     const sup = superOf(b);
-    // Contract §6 "Registration reuse and release": the registration of `sup` releases `other`, so the snapshot and the review of `other` belong to another workspace.
     const other = join(b.root, "other");
     fixtureGit(b, sup, ["worktree", "add", "-q", "--detach", other]);
-    return withFixture(b, "t231-admission", async (service) => {
+    // Contract §6 "Registration reuse and release": the seam keeps `other` registered, so its review token stays live.
+    return withKeptWorkspaces(() => withFixture(b, "t231-admission", async (service) => {
       await update();
       const o = await reviewedOk(service, other);
       const a = await reviewedOk(service, sup);
-      put(sup, "super.txt", "changed\n");
-      const now = await readOk(service, a.repositoryId);
-      expect(now.generation).toBeGreaterThan(a.r.read.generation);
       const refused = async (operation: string, payload: object, generation: number) => {
         const from = service.runner.calls.length;
         const response = await service.request(operation, payload, { repositoryId: a.repositoryId, repositoryGeneration: generation });
@@ -1182,12 +1179,21 @@ describe("admission (contract §2, §9)", () => {
       };
       const token = (r: SubmoduleReview) => ({ submoduleReviewToken: r.token, start: true });
       const rejected = (code: string) => ({ state: "rejected", code, runs: 0 });
+      // Both reviews have one generation, so only the repositoryId binding refuses the snapshot and the review of `other`.
+      expect(o.r.read.generation).toBe(a.r.read.generation);
+      const others = {
+        reviewOther: await refused("reviewSubmodules", { snapshotId: o.r.read.snapshotId }, a.r.read.generation),
+        updateOther: await refused("updateSubmodules", token(o.r), a.r.read.generation),
+      };
+      put(sup, "super.txt", "changed\n");
+      const now = await readOk(service, a.repositoryId);
+      expect(now.generation).toBeGreaterThan(a.r.read.generation);
       expect({
         reviewPayload: await refused("reviewSubmodules", { snapshotId: now.snapshotId, start: true }, now.generation),
-        reviewOther: await refused("reviewSubmodules", { snapshotId: o.r.read.snapshotId }, now.generation),
+        reviewOther: others.reviewOther,
         reviewOld: await refused("reviewSubmodules", { snapshotId: a.r.read.snapshotId }, a.r.read.generation),
         updatePayload: await refused("updateSubmodules", { ...token(a.r), start: false }, now.generation),
-        updateOther: await refused("updateSubmodules", token(o.r), now.generation),
+        updateOther: others.updateOther,
         updateOld: await refused("updateSubmodules", token(a.r), a.r.read.generation),
       }).toEqual({
         reviewPayload: rejected("INVALID_REQUEST"),
@@ -1197,7 +1203,7 @@ describe("admission (contract §2, §9)", () => {
         updateOther: rejected("UNKNOWN_TARGET"),
         updateOld: rejected("REPOSITORY_CHANGED"),
       });
-    });
+    }));
   }, TIMEOUT_MS);
 
   // T115, contract §8 "Token invalidation": an equal observation keeps the generation, so acceptance sees a released token.

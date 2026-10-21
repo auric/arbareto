@@ -4,7 +4,7 @@
 import { describe, expect, jest, spyOn, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { refPathArgs } from "../../src/git-service/commands";
 import { probeGit } from "../../src/git-service/git-installation";
@@ -606,10 +606,16 @@ describe("hints inside ignored folders (contract §8 \"Watcher hints\")", () => 
 
   // Registers the repository and settles it. `emit` sends change events with the given names to the watch of the worktree root.
   // `watch.ts` starts the watches in the order worktree root, administration folder, common folder (`session.ts`).
-  async function withIgnored(name: string, body: (service: Service, repo: string, repositoryId: string, emit: (names: (string | null)[], watch?: number) => Promise<void>, first: WorkspaceResult) => Promise<void>): Promise<void> {
+  // `prepare` changes the repository before the registration.
+  async function withIgnored(
+    name: string,
+    body: (service: Service, repo: string, repositoryId: string, emit: (names: (string | null)[], watch?: number) => Promise<void>, first: WorkspaceResult) => Promise<void>,
+    prepare: (repo: string) => void = () => {},
+  ): Promise<void> {
     await withFakeWatch((fakes, spy) =>
       withService({ name }, async (service) => {
         const repo = ignoredRepo(name);
+        prepare(repo);
         const { repositoryId } = await service.register(repo);
         expect(spy.mock.calls.map((call) => realpathSync.native(String(call[0])))).toEqual([realpathSync.native(repo), realpathSync.native(join(repo, ".git"))]);
         const first = (await settled(service, repositoryId)).result;
@@ -690,8 +696,10 @@ describe("hints inside ignored folders (contract §8 \"Watcher hints\")", () => 
     `${HINT_PATHS} ignored paths after a complete read give no full read, and ${HINT_PATHS + 1} give a full read`,
     W,
     () =>
-      withIgnored("t384-bound", async (service, _repo, repositoryId, emit) => {
+      withIgnored("t384-bound", async (service, repo, repositoryId, emit) => {
         const names = (n: number, tag: string) => Array.from({ length: n }, (_, i) => join("build", `${tag}${i}.bin`));
+        // A hinted path that does not exist gives a full read, so each path of the bound exists.
+        for (const name of names(HINT_PATHS, "a")) writeFileSync(join(repo, name), "out\n");
         await emit(names(HINT_PATHS, "a"));
         expect(counts((await read(service, repositoryId, CHANGES)).calls)).toEqual({ status: 0, checkIgnore: 1 });
         await emit(names(HINT_PATHS + 1, "b"));
@@ -699,6 +707,68 @@ describe("hints inside ignored folders (contract §8 \"Watcher hints\")", () => 
       }),
     TIMEOUT_MS,
   );
+
+  caseTest(
+    "T384",
+    "with core.ignoreCase true, a write to a tracked file under the ignored folder whose name on disk differs in letter case from its index entry gives a full read",
+    W,
+    () =>
+      withIgnored(
+        "t384-case",
+        async (service, repo, repositoryId, emit, first) => {
+          renameSync(join(repo, "build", "keep.txt"), join(repo, "build", "KEEP.txt"));
+          writeFileSync(join(repo, "build", "KEEP.txt"), "keep t384 case\n");
+          // Git compares a hinted path with the index entries by exact letter case, so it reports the name on disk as ignored.
+          expect(git(repo, ["check-ignore", "--", "build/KEEP.txt"])).toBe("build/KEEP.txt\n");
+          await emit([join("build", "KEEP.txt")]);
+          const poll = await read(service, repositoryId, CHANGES);
+          expect({ status: counts(poll.calls).status, newer: poll.result.generation > first.generation }).toEqual({ status: 1, newer: true });
+        },
+        (repo) => git(repo, ["config", "core.ignorecase", "true"]),
+      ),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T384",
+    "the deletion of a tracked file under the ignored folder, with an event name that names no file, gives a full read",
+    W,
+    () =>
+      withIgnored("t384-deleted", async (service, repo, repositoryId, emit, first) => {
+        rmSync(join(repo, "build", "keep.txt"));
+        // Bun 1.4.3 on Windows reports a delete through an 8.3 short name with that name (probe of 2026-10-21). Git reports such a name as ignored.
+        expect(git(repo, ["check-ignore", "--", "build/KEEP~1.TXT"])).toBe("build/KEEP~1.TXT\n");
+        await emit([join("build", "KEEP~1.TXT")]);
+        const poll = await read(service, repositoryId, CHANGES);
+        expect({ status: counts(poll.calls).status, newer: poll.result.generation > first.generation }).toEqual({ status: 1, newer: true });
+      }),
+    TIMEOUT_MS,
+  );
+
+  for (const key of ["core.attributesFile", "core.excludesFile"]) {
+    caseTest(
+      "T384",
+      `an edit of the ${key} file inside the ignored folder gives a full read`,
+      W,
+      () =>
+        withIgnored(
+          `t384-${key.slice("core.".length).toLowerCase()}`,
+          async (service, repo, repositoryId, emit) => {
+            const file = join(repo, "build", "rules");
+            expect(git(repo, ["check-ignore", "--", "build/rules"])).toBe("build/rules\n");
+            writeFileSync(file, "*.tmp -diff\n");
+            await emit([join("build", "rules")]);
+            expect(counts((await read(service, repositoryId, CHANGES)).calls)).toEqual({ status: 1, checkIgnore: 0 });
+          },
+          (repo) => {
+            writeFileSync(join(repo, "build", "rules"), "\n");
+            // Git opens a relative value in the directory where it runs, which is the worktree root.
+            git(repo, ["config", key, "build/rules"]);
+          },
+        ),
+      TIMEOUT_MS,
+    );
+  }
 });
 
 describe("change check with suppressed hints (contract §8 \"Change check\")", () => {

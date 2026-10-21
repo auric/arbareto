@@ -76,17 +76,18 @@ Each section names its source. Field names are contract names. "001 data-model ย
 ## 7. Ignore preview
 
 - Source: plan D9.
-- Request: `target`, `text` (the editor text, LF form), `snapshotId` (the shown `readWorkspace` snapshot).
+- Request: `target`, `text` (base64 of the UTF-8 bytes of the editor text, LF form, at most 1 MiB decoded), `snapshotId` (the shown `readWorkspace` snapshot).
 - Base (service memory only, one per workspace and target):
   - `snapshotId`, `target`, the S text bytes (the file on disk at base build).
   - `tracked`: the T paths with mode, stage, and the skip-worktree tag.
-  - `untracked`: the U records, each `file` or `folder`.
+  - `untracked`: the U records, each `file`, `folder`, or `nested-repository` (an expansion that prints only `<d>/`).
   - `expansions`: per folder record, the cached expansion records.
+  - `realIgnored` and `realTracked`: the RI and RT self-check listings (plan D9).
   - `sVerdicts`: per input, ignored or not under S, with the pattern source.
   - `selfCheck`: `passed`, or the failure reason.
 - Result, one of:
   - `{preview: {newlyIgnored, noLongerIgnored, trackedMatched, notices}}`. Each group is `{count, paths}` with at most 1,000 base64 paths by `comparePaths`. `trackedMatched` is a count. `notices` holds at most 100 entries `{kind: "link" | "inside-ignored", pathBytes}` and a `more` count.
-  - `{unavailable: {reason, bound?}}` with `reason` one of `paths`, `listing`, `name-case`, `long-path`, `shadow-copy`, `self-check`, `unreadable`, `deadline`.
+  - `{unavailable: {reason, bound?}}` with `reason` one of `paths`, `listing`, `name-case`, `shadow-copy`, `self-check`, `unreadable`, `deadline`.
 - A failed Git step ends the response `failed` with its code. The renderer shows it as "Preview not available: Git failed with <code>.".
 - Verdict rule: a `check-ignore -v -n` record whose pattern field is not empty and does not start with `!` is ignored.
 - Lifetime of the base: until another `snapshotId` or target, a registration release, or a service exit.
@@ -98,8 +99,8 @@ Each section names its source. Field names are contract names. "001 data-model ย
 - `target`, `file`, `expected` (the loaded state).
 - `bytes`: the BOM when the file has one, then the text in the file's line-ending form.
 - `after`: `{size, sha256}` of `bytes`.
-- `bound`: `expected`, the repository generation, the operation markers, the conflicted count.
-- Validation: `bytes` at most 1 MiB; the text has no NUL and no lone surrogate.
+- `bound`: `expected`, the repository generation, and the Arbareto mutation markers (001 FR-015). The Git operation state and the conflicted count are not bound, because Save runs during an unfinished operation and with conflicts (spec FR-046).
+- Validation: the request text decodes from base64 to strict UTF-8 without NUL; `bytes` at most 1 MiB.
 - Result: `replaced`, or the 001 outcome with `STALE_REVIEW` `ignore-changed`, `stale`, `not-regular`, `stopped`, `interrupted`, or `error {code}`, cross-checked by the fresh target digest.
 
 ## 9. Submodule open and the parent chain
@@ -143,9 +144,9 @@ Each section names its source. Field names are contract names. "001 data-model ย
 
 - Source: plan D14, contract ฮ”6 `shadow`.
 - `shadowId`: a contract ยง2 identifier, bound to one operation.
-- Path: `<launch directory>/preview/<pid>-<creation time>-<16 hex>` on Windows, or `/tmp/arbareto-preview-<pid>-<creation time>-<16 hex>` in a WSL distro. `<pid>` and `<creation time>` name the shell process.
+- Path: `<launch directory>/preview/<pid>-<creation time>-<16 hex>` on Windows, or `/tmp/arbareto-preview-<pid>-<creation time>-<16 hex>` in a WSL distro. `<pid>` and `<creation time>` name the shell process. The launch directory is the per-user app local data folder, or the launch folder below `ARBARETO_PROFILE_ROOT` (`service.rs:108-113`). It is never the install folder.
 - Lifetime: until its operation ends, also after Cancel, `closeJob`, or a service exit. Leftovers whose owner process record does not exist go at the next create.
-- Files: the shadow `.git`, `.git/index`, `.git/exclude.index`, the ignore files, and the empty folders of the folder inputs.
+- Files: two shadow repositories, `s` (saved text) and `c` (candidate text). Each holds its `.git`, `.git/index`, `.git/exclude.index`, the ignore files, and the empty folders of the folder inputs.
 
 ## 14. View state (renderer, not stored)
 

@@ -42,3 +42,9 @@
   - Honest limits: FR-030, FR-031, and SC-003 state the known delete gaps and claim no more. FR-003 and FR-051 leave two facts for the plan to verify: the "Blame before" index load and the recent entry of a submodule open. These are plan checks, not open requirements.
   - Content quality: FR-003, FR-056, and FR-059 name Git facts (`core.fsmonitor`, hunk headers, `blame.ignoreRevsFile`) because the fact is the requirement. The items stay checked on that basis, as in the 004 spec.
   - Every FR and Clarification sentence has at most 20 words, with quoted UI text counted as one word.
+- Re-check after the plan review of 2026-10-21 (FR-031, FR-046, the new Clarification on Save, the 001 FR-016 entry, three Edge Cases, and one SC-003 sentence):
+  - Testable: FR-046 states the operation and conflict states in which Save runs, and Q23 tests Save during a merge with conflicts. FR-031 names both path-based windows of the Recycle Bin call. The long-path Edge Case gives the 260-character bound.
+  - Consistent: FR-046, the Clarification, the 001 FR-016 entry, plan D10, and contract Δ3 agree. Delete stays blocked by FR-033. The FR-031 limit, the Edge Cases, SC-003, and the contract gaps name the same windows.
+  - Honest limits: FR-031 and SC-003 claim no fixture for a change inside a path-based window.
+  - Open point outside the spec text: plan O-9. The Git 2.56 source keeps the `blame.ignoreRevsFile` values sorted, so an empty value may reset nothing. FR-059 follows the Git doc. F7 decides, and a FR-059 change then needs user approval. FR-059 stays testable as written.
+  - Every changed FR and Clarification sentence has at most 20 words. The items stay checked.

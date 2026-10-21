@@ -45,6 +45,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - `--no-lazy-fetch --no-optional-locks --literal-pathspecs diff-tree -p --no-textconv --no-ext-diff --no-relative --src-prefix=a/ --dst-prefix=b/ --ignore-submodules=dirty -M -l1000 <base> <oid> -- <paths>`.
   - `--no-lazy-fetch --no-optional-locks --literal-pathspecs diff-tree --numstat -z --no-textconv --no-ext-diff --no-relative --ignore-submodules=dirty -M -l1000 <base> <oid> -- <paths>`.
 - Parse: `parsePatch` (001 §4) with the added header lines `similarity index <n>%`, `rename from <path>`, and `rename to <path>`, in the diff.c `fill_metainfo` order. A pure rename has no hunk. `parseNumstat` with the old path for R. `-` and `-` give `binary: true`. A type change gives its fact and no patch.
+- Section filter (plan D3): a pathspec also matches the paths below `<path>/`. The service drops each patch and numstat section whose paths lie below `<path>/` or `<old path>/`. The kept sections must equal the listing entry: its status and its paths, and two sections of one path for a type change. A section with another path, a missing section, or an extra section gives `MALFORMED_GIT_OUTPUT`.
 - Bounds: `CANONICAL_DIFF_BYTES` (4 MiB) and `CANONICAL_DIFF_LINES` (20,000) per patch, with the 001 limited result. Reason: the 001 canonical diff bounds of every shown diff.
 - Deadline 30 s. Errors as `readCommitChanges`.
 - Result: data-model §2.
@@ -58,10 +59,10 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   1. `--no-lazy-fetch --no-optional-locks --literal-pathspecs ls-tree -z -l --full-tree <oid> -- <path>`. Exactly one record `<mode> SP <type> SP <oid> SP <size> TAB <path> NUL` with the exact path. `<size>` is right-aligned in at least 7 characters, or `-` for a gitlink (builtin/ls-tree.c:233). Type `commit` gives `submodule`. No record gives `no-history`. A size above `BLAME_FILE_BYTES` gives `size`.
   2. `--no-lazy-fetch --no-optional-locks --literal-pathspecs diff --numstat -z --no-textconv --no-ext-diff --no-relative --no-renames <empty tree> <oid> -- <path>`. `-` and `-` give `binary`.
   3. `--no-lazy-fetch --no-optional-locks cat-file blob <blob oid>`. More than `BLAME_FILE_LINES` lines gives `lines`.
-  4. The `blame.ignoreRevsFile` check of plan D12 step 4 on the shared configuration listing. A missing relative file gives `ignore-revs-file-missing` with `path`.
+  4. `--no-lazy-fetch --no-optional-locks config get --all --type=path -z blame.ignoreRevsFile`, cwd the worktree root. Exit 1 gives an empty list (git-config(1) `get`). Any other non-zero exit gives `GIT_FAILED`. Then the file check of plan D12 step 4. A missing file gives `ignore-revs-file-missing` with `path`.
   5. Without an effective list or with `ignoreList: false`: `--no-lazy-fetch --no-optional-locks --literal-pathspecs blame --incremental --no-textconv --encoding=none [-w] [-M] [-C] [--ignore-revs-file=] <oid> -- <path>`. `--ignore-revs-file=` comes only with an effective list and `ignoreList: false`.
   6. With an effective list and `ignoreList: true`: `--no-lazy-fetch --no-optional-locks --literal-pathspecs -c blame.markIgnoredLines=true -c blame.markUnblamableLines=true blame --porcelain --no-textconv --encoding=none [-w] [-M] [-C] <oid> -- <path>`.
-- For `{blameId, line}`, before step 1: `ls-tree` of the previous path at the previous commit and of `filename` at the line's commit, then `--no-lazy-fetch --no-optional-locks diff -U0 --no-textconv --no-ext-diff --no-color <old blob> <new blob>`. The hunk headers give the mapped line (data-model §11). Without `--exit-code`, `git diff` exits 0 with and without a difference (git-diff(1) `--exit-code`), so any other exit gives `GIT_FAILED`.
+- For `{blameId, line}`, before step 1: `ls-tree` of the previous path at the previous commit and of `filename` at the line's commit, then `--no-lazy-fetch --no-optional-locks diff -U0 --inter-hunk-context=0 --no-textconv --no-ext-diff --no-color <old blob> <new blob>`. The hunk headers give the mapped line (data-model §11). Without `--exit-code`, `git diff` exits 0 with and without a difference (git-diff(1) `--exit-code`), so any other exit gives `GIT_FAILED`.
 - Parse: data-model §10 and plan D12 "Parse". An unknown header line, a group outside 1 to N, or a gap gives `MALFORMED_GIT_OUTPUT`.
 - Bounds: file 4 MiB (`BLAME_FILE_BYTES`, the canonical diff byte bound, so one file never exceeds what a diff shows), 100,000 lines (`BLAME_FILE_LINES`, the line bound of the virtual list budget), Git output 32 MiB (`BLAME_OUTPUT_BYTES`, the status listing byte bound), encoded result 12 MiB (`BLAME_RESULT_BYTES`, so the result fits the 16 MiB pipe frame with its JSON framing), progress 4 events per second (`BLAME_PROGRESS_EVENTS_PER_SECOND`, as the history progress). Above a bound: `OUTPUT_LIMIT`.
 - Deadline: `HISTORY_PROCESS_DEADLINE_MS` (120 s) for the blame step, 30 s for the others. Cancel ends the Job (001 FR-045).
@@ -78,17 +79,17 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 ### `previewIgnore`
 
-- Payload: `{target, text, snapshotId}`. `text` is at most 1 MiB of UTF-8 after encoding, without a lone surrogate, else `INVALID_REQUEST`. One read slot. The renderer sends it 400 ms after the last edit and cancels the running one (001 §5 "Pending reads").
+- Payload: `{target, text, snapshotId}`. `text` is the base64 of the UTF-8 bytes of the editor text. The decoded bytes are at most 1 MiB, strict UTF-8, and hold no NUL, else `INVALID_REQUEST`. The renderer checks `isWellFormed()` before it encodes, because `TextEncoder` replaces a lone surrogate (plan D9). One read slot. The renderer sends it 400 ms after the last edit and cancels the running one (001 §5 "Pending reads").
 - Read gate: 001 §7 `reads`, because `ls-files` loads the index.
 - Repository commands:
   - `--no-lazy-fetch --no-optional-locks --literal-pathspecs ls-files -z --stage -v`.
   - `--no-lazy-fetch --no-optional-locks --literal-pathspecs ls-files -o -z --directory --no-empty-directory`.
-  - `--no-lazy-fetch --no-optional-locks --literal-pathspecs ls-files -o -z -- <folder>/ …` in batches that fit the 001 §6 command line.
+  - `--no-lazy-fetch --no-optional-locks --literal-pathspecs ls-files -o -z -- <folder>/ …` in batches that fit the 001 §6 command line. The one record `<folder>/` marks a nested repository (plan D9).
   - `--no-lazy-fetch --no-optional-locks cat-file --batch` with the OIDs of skip-worktree `.gitignore` entries that are absent on disk.
-  - `--no-lazy-fetch --no-optional-locks check-ignore --no-index -z --stdin -v -n` for the base self-check, with the inputs on stdin. The repository uses its own configuration here.
-  - `fileFacts` (`digest: false`) for every `.gitignore` path of the listings.
+  - The self-check listings, which read the index: `--no-lazy-fetch --no-optional-locks --literal-pathspecs ls-files -o -i --exclude-standard --directory -z` (RI) and `--no-lazy-fetch --no-optional-locks --literal-pathspecs ls-files -c -i --exclude-standard -z` (RT). The repository uses its own configuration here. Plan D9 "Self-check" defines the verdict of each input.
+  - `fileFacts` (`digest: false`) for every `.gitignore` path of the listings, and for `<folder>/.gitignore` of each folder of an input path that lists no exact `.gitignore` (plan D9 `name-case`).
 - Shadow commands: Δ6 `shadow`.
-- Parse: `ls-files -z --stage -v` gives `<tag> SP <mode> SP <oid> SP <stage> TAB <path> NUL` (git-ls-files(1) `--stage`, `-v`). `ls-files -o -z` gives `<path> NUL`. `check-ignore -z -v -n` gives `<source> NUL <line> NUL <pattern> NUL <path> NUL`, one record per input in input order (git-check-ignore(1) OUTPUT). A record count other than the input count gives `MALFORMED_GIT_OUTPUT`.
+- Parse: `ls-files -z --stage -v` gives `<tag> SP <mode> SP <oid> SP <stage> TAB <path> NUL` (git-ls-files(1) `--stage`, `-v`). `ls-files -o -z`, `ls-files -o -i -z`, and `ls-files -c -i -z` give `<path> NUL`, and a folder record ends with `/`. `check-ignore -z -v -n` gives `<source> NUL <line> NUL <pattern> NUL <path> NUL`, one record per input in input order (git-check-ignore(1) OUTPUT). A record count other than the input count gives `MALFORMED_GIT_OUTPUT`.
 - Bounds: 100,000 inputs per check (`PREVIEW_PATHS`, the SC-005 size, about 5 s on Windows); 100,000 records and 32 MiB per listing (the status listing bounds); 10,000 ignore files (`PREVIEW_IGNORE_FILES`) of at most 1 MiB each; 1,000 paths per result group (`PREVIEW_GROUP_PATHS`, spec FR-038); 100 notices plus a count. Above a bound: the result `unavailable` with its reason (data-model §7), never a partial preview.
 - Deadline: 30 s per process. The whole preview has no other deadline. Cancel ends every Job and the shadow context.
 - Errors: `TRUST_REQUIRED`, `TRUST_CHANGED`; `GIT_FAILED`, `OUTPUT_LIMIT`, `DEADLINE`, `CANCELED` of a step. The result `unavailable` is a `succeeded` response.
@@ -109,10 +110,11 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 - New payload forms:
   - `{action: "delete", snapshotId, entryIds, folder?, mode: "recycle" | "permanent"}`. `entryIds` holds 1 to 10,000 unique IDs. `folder` holds the base64 folder bytes of a folder row.
-  - `{action: "ignore-save", target, text, expected}`. `text` as `previewIgnore`. `expected` is `"absent"` or `{size, sha256}`.
+  - `{action: "ignore-save", target, text, expected}`. `text` as `previewIgnore` (base64 UTF-8 bytes). `expected` is `"absent"` or `{size, sha256}`.
 - The form `{action: "ignore", …}` goes.
-- Common refusals (004 Δ3) now apply to `delete` and `ignore-save` too: `OPERATION_IN_PROGRESS`, `unknown-operation`, and `CONFLICTED` with the count, because both count as mutations for 001 FR-015 and FR-016 (spec FR-033, FR-046).
-- `delete` reads: the snapshot entries (no Git process), then `fileFacts` with `digest: true`, 64 entries per frame. Refusals before a token: `WORKBENCH_UNAVAILABLE` with `conflicted`, `submodule`, `nested-repository`, `limit`, `no-recycle-bin`, `nothing-to-delete`, or `unreadable`; `STALE_SELECTION` for a folder set that differs from the snapshot or a fact of kind `directory` or `other`; `INVALID_REQUEST` for a `staged` entry or an entry of another snapshot.
+- Common refusals (004 Δ3) now apply to `delete` too: `OPERATION_IN_PROGRESS`, `unknown-operation`, and `CONFLICTED` with the count, because Delete counts as a mutation for 001 FR-015 and FR-016 (spec FR-033).
+- `ignore-save` keeps the 004 exception of the action `ignore`: `OPERATION_IN_PROGRESS`, `unknown-operation`, and `CONFLICTED` do not refuse it, because Save changes no Git state (spec FR-046). A running mutation gives `BUSY` (001 FR-015). The stale check stays.
+- `delete` reads: the snapshot entries (no Git process), then `fileFacts` with `digest: true`, 64 entries per frame. Refusals before a token: `WORKBENCH_UNAVAILABLE` with `conflicted`, `submodule`, `nested-repository`, `limit`, `no-recycle-bin`, `long-path` (mode `recycle` and a full Windows path of 260 or more UTF-16 units, plan D6), `nothing-to-delete`, or `unreadable`; `STALE_SELECTION` for a folder set that differs from the snapshot or a fact of kind `directory` or `other`; `INVALID_REQUEST` for a `staged` entry or an entry of another snapshot.
 - `delete` plan: data-model §4 plan fields. No trust class: the run starts no Git process before the reconcile read.
 - `ignore-save` reads: `rev-parse --git-path info/exclude` for `exclude`, then `fileFacts` with `digest: true`, and the bytes as `readIgnoreFile`. A state other than `expected` gives `STALE_REVIEW` with reason `ignore-changed`. Refusals: the `readIgnoreFile` reasons, plus `ignore-size` for new bytes above 1 MiB and `ignore-nul` for a NUL in the text.
 - `ignore-save` plan: `{target, file, size, sha256}` of the new bytes. No trust class.
@@ -141,7 +143,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 | Limit | Value |
 |---|---|
-| Public request (`PUBLIC_REQUEST_BYTES`) | 2 MiB, up from 1 MiB, so a 1 MiB editor text fits one request with its JSON escapes (plan O-6). `PUBLIC_FRAME_BODY_BYTES` follows. |
+| Public request (`PUBLIC_REQUEST_BYTES`) | 2 MiB (2,097,152 bytes), up from 1 MiB. The editor text crosses as base64, so a 1 MiB text takes 1,398,104 bytes with no JSON escape, and 699,048 bytes stay for the other fields (plan O-6). `PUBLIC_FRAME_BODY_BYTES` follows. |
 | Commit changes listing | 100,000 records and 32 MiB (`STATUS_LISTING_RECORDS`, `STATUS_LISTING_BYTES`) |
 | Commit changes result (`COMMIT_CHANGES_RESULT_BYTES`) | 8 MiB (`HISTORY_PAGE_BYTES`) |
 | Parent index | 0 to 63 (`HISTORY_PARENTS_PER_COMMIT` − 1) |
@@ -173,9 +175,9 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - New request `fileDelete {repositoryId, mode: "recycle" | "permanent", entries, folders}`.
   - `entries`: 0 to 64 of `{path, expected}`. `path` is an absolute path below the worktree root by `file_facts::below`. `expected` is the review fact: `{kind: "file", size, lastWrite, digest?}` or `{kind: "link", tag, target}`.
   - `folders`: 0 to 64 absolute folder paths below the worktree root, deepest first. One of `entries` and `folders` is not empty.
-  - Rules: the operation holds a `started` marker of kind `workbench` with action `delete-files`. Another operation gets `INVALID_REQUEST`. `recycle` in a WSL workspace gets `INVALID_REQUEST`.
-  - Windows: plan D7. WSL: `wslFiles` mode `delete` (Δ11).
-  - Reply: per entry `recycled {recycledPath}`, `deleted`, `kept {hresult}`, `stale`, `absent`, `not-regular`, `error {code}`, `stopped`, or `interrupted` (WSL); per folder `removed`, `kept`, `absent`, `not-regular`, or `error {code}`. Exactly one reply per request, also after `cancel`, `closeJob`, or a service exit.
+  - Rules: the operation holds a `started` marker of kind `workbench` with action `delete-files`. Another operation gets `INVALID_REQUEST`. `recycle` in a WSL workspace gets `INVALID_REQUEST`. A `recycle` entry whose path holds 260 or more UTF-16 units gets `INVALID_REQUEST`, because the review refuses it first (Δ3).
+  - Windows: plan D7. `PreDeleteItem` compares the `FILE_ID_INFORMATION` of the `SIGDN_FILESYSPATH` path of `psiItem`, opened as a Win32 path without following a link, with the checked handle. A failure or another ID cancels this and every later item. The folder step deletes each candidate through its held walk handle with `DELETE`, deepest first. WSL: `wslFiles` mode `delete` (Δ11).
+  - Reply: per entry `recycled {recycledPath}`, `deleted`, `kept {hresult}`, `stale`, `absent`, `not-regular`, `error {code}` (such as `access-denied` or `sharing-violation`), `stopped`, or `interrupted` (WSL); per folder `removed`, `kept`, `absent`, `not-regular`, or `error {code}`. Exactly one reply per request, also after `cancel`, `closeJob`, or a service exit.
 - New request `fileReplace {repositoryId, target: "gitignore" | "exclude", path, expected, bytes}`.
   - `path` rules: the 004 `fileAppend` path rules (`<worktree root>/.gitignore`, or `info/exclude` inside the common directory by identity).
   - `expected`: `absent` or `{size, sha256}`, with `size` at most 1 MiB. `bytes`: 0 to 1 MiB.
@@ -183,10 +185,10 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - Windows: plan D10. WSL: `wslFiles` mode `replace` (Δ11).
   - Reply: `replaced`, `stale`, `stopped`, `interrupted` (WSL), `refused {reason: "not-regular"}`, or `error {code}`.
 - New request `shadow {operationId, repositoryId, op: "create"}`.
-  - The shell creates the shadow folder (data-model §13) and binds the context `ignorePreview` to the operation. Reply `{shadowId}` or `error {code}`.
+  - The shell creates the shadow folder (data-model §13) below `<launch directory>/preview`, the per-user app local data folder of `service.rs:108-113`, and binds the context `ignorePreview` to the operation. The folder holds the shadow repositories `s` and `c`. Reply `{shadowId}` or `error {code}`.
   - Before the create, the shell removes leftover shadow folders whose owner PID and creation time match no live process record, and own folders that no live context holds.
   - The shell removes the folder when the operation ends, after Cancel, `closeJob`, or a service exit.
-  - Accepted arrays in an `ignorePreview` context, cwd the shadow folder: `--no-lazy-fetch init -q --template=`; `--no-lazy-fetch hash-object -w --no-filters --stdin-paths`; `--no-lazy-fetch hash-object -w --no-filters --stdin`; `--no-lazy-fetch hash-object --no-filters --stdin-paths`; `--no-lazy-fetch update-index -z --index-info`; `--no-lazy-fetch -c core.autocrlf=false -c core.eol=lf checkout-index -a -f`, also with `--prefix=.git/info/`; `--no-lazy-fetch -c core.ignorecase=<true|false> [-c core.excludesFile=<path>] check-ignore --no-index -z --stdin -v -n`. The request names the index: `index` or `exclude` sets `GIT_INDEX_FILE` to `<shadow>/.git/index` or `<shadow>/.git/exclude.index`. Any other array or index gives `INVALID_REQUEST`.
+  - Accepted arrays in an `ignorePreview` context, cwd `<shadow>/s` or `<shadow>/c`: `--no-lazy-fetch init -q --template=`; `--no-lazy-fetch hash-object -w --no-filters --stdin-paths`; `--no-lazy-fetch hash-object -w --no-filters --stdin`; `--no-lazy-fetch hash-object --no-filters --stdin-paths`; `--no-lazy-fetch update-index -z --index-info`; `--no-lazy-fetch -c core.autocrlf=false -c core.eol=lf checkout-index -a -f`, also with `--prefix=.git/info/`; `--no-lazy-fetch -c core.ignorecase=<true|false> [-c core.excludesFile=<path>] check-ignore --no-index -z --stdin -v -n`. On Windows, the `hash-object --stdin-paths`, `checkout-index`, and `check-ignore` arrays carry `-c core.longpaths=true` right after `--no-lazy-fetch`. The request names the repository (`s` or `c`) and the index: `index` or `exclude` sets `GIT_INDEX_FILE` to `<cwd>/.git/index` or `<cwd>/.git/exclude.index`. Any other array, cwd, or index gives `INVALID_REQUEST`.
   - Policy: the 001 `read` policy with the shadow cwd. The shell never runs a repository context command in an `ignorePreview` context.
 - `reveal` reply adds `absent` for a walk that finds no entry. The service maps it to `UNKNOWN_TARGET` with reason `absent`.
 - `fileFacts` gains `content: boolean`, WSL only, with `digest: true`, exactly one entry, and no `index`. The `file` fact then adds `bytes` (base64) for a file up to 1 MiB. A Windows request with `content` gives `INVALID_REQUEST`.
@@ -199,7 +201,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - Read gate per read: plan D2 table. `readCommitChanges`, `readCommitFile`, `previewIgnore`, and the `openSubmodule` parent read wait behind the 001 `reads` gate. `readBlame`, `readIgnoreFile`, `revealPath`, and the `delete` and `ignore-save` reviews need no gate.
 - Trust classes: `delete` and `ignore-save` use no class, because they run no repository program. Their reconcile `readWorkspace` keeps the 001 gate.
 - The submodule of `openSubmodule` gets its own trust state through the 004 D12 flow. No approval comes from the parent.
-- `-c` items: `blame.markIgnoredLines`, `blame.markUnblamableLines` (`readBlame`), and `core.autocrlf`, `core.eol`, `core.ignorecase`, `core.excludesFile` (shadow context only). Each applies to one process. No configuration file changes.
+- `-c` items: `blame.markIgnoredLines`, `blame.markUnblamableLines` (`readBlame`), and `core.autocrlf`, `core.eol`, `core.ignorecase`, `core.excludesFile`, and on Windows `core.longpaths` (shadow context only). Each applies to one process. No configuration file changes.
 - Logs: kinds, IDs, codes, reasons, and counts only. No path, editor text, blame line, or `recycledPath`.
 
 ## Δ8 Freshness, cancellation, and outcome (001 §8)
@@ -214,11 +216,12 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 |---|---|---|
 | `BLAME_UNAVAILABLE` | `no-history`, `binary`, `submodule`, `size`, `lines`, `ignore-revs-file-missing`, `no-previous` | Blame cannot run for this file. No blame process starts. |
 | `SUBMODULE_UNAVAILABLE` | `not-submodule`, `submodule-not-initialized`, `path` | The open cannot start. The parent stays open. |
-| `WORKBENCH_UNAVAILABLE` (004) | adds `conflicted`, `submodule`, `nested-repository`, `no-recycle-bin`, `nothing-to-delete`, `not-regular`, `ignore-link`, `ignore-folder`, `ignore-not-utf8`, `ignore-nul`, `mixed-line-endings`; removes `ignore-exists`, `ignore-not-text` | The action cannot run. No file changes. |
+| `WORKBENCH_UNAVAILABLE` (004) | adds `conflicted`, `submodule`, `nested-repository`, `no-recycle-bin`, `long-path`, `nothing-to-delete`, `ignore-link`, `ignore-folder`, `ignore-not-utf8`, `ignore-nul`, `mixed-line-endings`; keeps the 004 reasons `ignore-not-regular`, `ignore-size`, `limit`, `path`, and `unreadable`; removes `ignore-exists`, `ignore-not-text` | The action cannot run. No file changes. |
 | `STALE_REVIEW` (001) | adds `files-changed`, `ignore-changed` | A bound fact changed after the review. Nothing changes. |
 | `UNKNOWN_TARGET` (001) | adds `absent` | The reveal target does not exist on disk. |
 
 - `ignore-revs-file-missing` carries `path`, the value as configured.
+- `not-regular` is a per-file outcome of `fileDelete` and `fileReplace` (Δ6), not a `WORKBENCH_UNAVAILABLE` reason.
 - Reused: `BUSY`, `CONFLICTED`, `OPERATION_IN_PROGRESS`, `APPROVAL_EXPIRED`, `STALE_SELECTION`, `TRUST_REQUIRED`, `TRUST_CHANGED`, `MALFORMED_GIT_OUTPUT`, `OUTPUT_LIMIT`, `OBJECT_MISSING`, `GIT_FAILED`, `DEADLINE`, `CANCELED`, `FAILED_WITH_EFFECTS`, `REPOSITORY_CHANGED`, `INVALID_REQUEST`.
 
 ## Δ10 Required contract checks (001 §10)
@@ -233,8 +236,8 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - §11 "No working-file content crosses" changes for the ignore editor (spec FR-043). These crossings are allowed:
   - Out of the distro: the bytes of one ignore file, at most 1 MiB, through `fileFacts` `content`.
   - Into the distro: the editor text on the stdin of `hash-object --stdin` (preview) and in the `wslFiles` `replace` input (save); the preview path lists on the stdin of `check-ignore`.
-- New `wslFiles` mode `delete`: per entry, `lstat` of each folder on the way (a directory, no link), `lstat` of the target with the bound type, then the size, `st_mtime` in the `lastWrite` form, and the SHA-256 of a bound file; then `unlink`. Per folder: `rmdir`; `ENOTEMPTY` or `EEXIST` gives `kept`. A stop gives `interrupted`.
-- New `wslFiles` mode `replace`: plan D10 WSL steps. A link on the way or at the target, or `st_nlink` other than 1, gives `refused not-regular`.
+- New `wslFiles` mode `delete`: per entry, `chdir` to the worktree root, then for each folder on the way `lstat` (a directory, no link), `chdir` into it, and `stat(".")` with the device and inode of that `lstat`. Another result gives `stale`. At the target, `lstat` of the last name with the bound type, then the size, `st_mtime` in the `lastWrite` form, and the SHA-256 of a bound file through an `O_RDONLY|O_NOFOLLOW` open whose `fstat` device and inode equal the `lstat`. Then `unlink` of the last name in the working folder. Per folder: the same walk to its parent, then `rmdir` of the last name; `ENOTEMPTY` or `EEXIST` gives `kept`. A stop gives `interrupted`.
+- New `wslFiles` mode `replace`: plan D10 WSL steps, with the walk of mode `delete` to the parent folder. Each later step names the last name only. A link on the way or at the target, or `st_nlink` other than 1, gives `refused not-regular`.
 - New `wslFiles` mode `scratch`: `create` makes the shadow folder with `mkdir` mode 0700 under `/tmp` with the data-model §13 name. `remove` deletes one shadow folder depth-first with `lstat`, `unlink`, and `rmdir`, only below a name that starts with `arbareto-preview-`, and never through a link. `sweep` lists the `arbareto-preview-*` folders of the distro user for the leftover rule.
 - The shadow Git commands run inside the distro with the shadow folder as cwd.
 - `revealPath` with `folder` takes the UNC form of the folder.
@@ -266,8 +269,10 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 ## Contract gaps
 
-- The Recycle Bin call takes a path (`SHCreateItemFromParsingName`). A swap of the last path component after `PreDeleteItem` and before the move reaches the swapped item (spec FR-031).
-- The WSL `delete` and `replace` modes act by path after their `lstat` checks. A swap of the last component in that window reaches the swapped item.
+- The Recycle Bin call takes a path (`SHCreateItemFromParsingName`), and the Shell resolves it again for the move. Between `PreDeleteItem` and the move, two changes reach another item (spec FR-031). First, a swap of the last path component. Second, another program empties a folder on the path and makes it a junction. The held folder handle does not block that, because `FSCTL_SET_REPARSE_POINT` needs only `FILE_WRITE_DATA` or `FILE_WRITE_ATTRIBUTES` and an empty folder (MS-FSA 2.1.5.10.37), and share modes do not control attribute access. The `PreDeleteItem` identity compare catches both changes when they happen before it.
+- The WSL `delete` and `replace` modes hold each folder on the path as the working folder after a device and inode check, and act on the last name only. A swap of the last name between its check and the act reaches the swapped item.
+- The `fileReplace` target handle shares `DELETE`, so the rename can replace the target. Another program can rename a file over the target name between the stale check and the rename. Save then replaces that file, and the fresh digest names the outcome.
+- `name-case` needs one `fileFacts` entry per folder of an input path without an exact `.gitignore`. In WSL, each frame of 64 entries is one `wsl.exe` run, so the base build of a repository with many folders can take long. P9 measures it.
 - Files above 1 MiB bind only size and `lastWrite`. An edit that keeps both goes unnoticed (spec FR-030).
 - A Windows warning dialog of `FOF_WANTNUKEWARNING` waits for the user. It can hold the `fileDelete` reply past its deadline, because `PerformOperations` returns only after the dialog.
 - A crash between the temporary-file create and the rename of `fileReplace` leaves `.arbareto-<hex>.tmp` next to the target. The next status read shows it as an untracked file.
@@ -275,6 +280,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - `hash-object --stdin-paths` in the shadow reads each real `.gitignore` by path after its `fileFacts` check. A swap to a link in that window gives the shadow other bytes. The self-check catches it only for S inputs.
 - A preview folder below an expanded folder counts by its files, unless the base already holds it as a folder input. So "Preview not available: paths" can show earlier than the exact collapse would allow.
 - The renderer finds the parent recent entry by `current: true`. A recent entry that other opens push out of the 20 entries gives "Open the parent repository with Open repository.".
-- The `diff -U0` options of "Blame before this commit" follow the user's diff configuration, such as `diff.algorithm`. The mapped line is the line of Git's own zero-context diff under that configuration.
-- `blame.ignoreRevsFile` values with `..` or outside the worktree pass to Git unchecked. A missing file there gives `GIT_FAILED` with the output tail.
+- The `diff -U0` options of "Blame before this commit" follow the user's diff configuration, such as `diff.algorithm`. The mapped line is the line of Git's own zero-context diff under that configuration. `--inter-hunk-context=0` keeps `diff.interHunkContext` out.
+- `blame.ignoreRevsFile` values that the shell `below` rule refuses, such as a value outside the worktree or with a `..` component, pass to Git unchecked. A missing file there gives `GIT_FAILED` with the output tail. `config --type=path` removes the prefix rules but not this gap, because `fileFacts` checks only paths below the worktree root.
+- The reset rule of an empty `blame.ignoreRevsFile` value is open (plan O-9). F7 decides it.
 - `FileDispositionInfoEx` and `FileRenameInfoEx` need a file system with POSIX delete and rename support. Another file system gives `error`, and the file stays (plan O-4).

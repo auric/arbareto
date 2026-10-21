@@ -112,8 +112,9 @@ export interface BunRunnerOptions {
   // The service environment. Each policy of `src/contracts/git-environment.json` starts from it.
   environment: Record<string, string>;
   trustStore?: TrustStore;
-  // Fixture isolation for WSL processes only: the Linux path of the owned global configuration.
-  // The double forwards it and `GIT_CONFIG_NOSYSTEM=1` through `WSLENV`. The product shell forwards nothing (T205).
+  // Fixture isolation for WSL processes only: the Linux path `<home>/.gitconfig` of the owned global configuration.
+  // The double forwards it, `GIT_CONFIG_NOSYSTEM=1`, and `XDG_CONFIG_HOME=<home>/.config` through `WSLENV`. The product shell forwards nothing (T205).
+  // `wsl.exe` sets `HOME` from the distro user and ignores a `HOME` in `WSLENV`, so `XDG_CONFIG_HOME` replaces the default `core.excludesFile` and `core.attributesFile` (git-config(1)).
   wslGlobalConfig?: string;
   // Test only: the Linux `LOCPATH` of WSL processes, forwarded through `WSLENV` as `wslGlobalConfig` is. The product shell forwards nothing.
   wslLocalePath?: string;
@@ -401,6 +402,7 @@ function destinationOf(path: string): DestinationFactsReply {
 }
 
 export function createBunRunner(options: BunRunnerOptions) {
+  if (options.wslGlobalConfig !== undefined && !options.wslGlobalConfig.endsWith("/.gitconfig")) throw new Error(`wslGlobalConfig is not <home>/.gitconfig: ${options.wslGlobalConfig}`);
   const launchDirectory = join(options.directory, "launch");
   // Each `wsl.exe` starts here, as the shell starts it in its own launch folder (src-tauri/src/process_requests.rs).
   // Its `wslhost.exe` inherits the folder and lives until WSL closes the interop channel, with no bound. So no test deletes this folder.
@@ -632,10 +634,10 @@ export function createBunRunner(options: BunRunnerOptions) {
   function wslEnvironment(): Record<string, string> {
     const env: Record<string, string> = {};
     for (const [name, value] of Object.entries(options.environment)) {
-      if (!["WSL_UTF8", "WSLENV", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "LOCPATH"].includes(name.toUpperCase())) env[name] = value;
+      if (!["WSL_UTF8", "WSLENV", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_NOSYSTEM", "XDG_CONFIG_HOME", "LOCPATH"].includes(name.toUpperCase())) env[name] = value;
     }
     const forwarded: Record<string, string> = {
-      ...(options.wslGlobalConfig ? { GIT_CONFIG_GLOBAL: options.wslGlobalConfig, GIT_CONFIG_NOSYSTEM: "1" } : {}),
+      ...(options.wslGlobalConfig ? { GIT_CONFIG_GLOBAL: options.wslGlobalConfig, GIT_CONFIG_NOSYSTEM: "1", XDG_CONFIG_HOME: `${options.wslGlobalConfig.slice(0, -"/.gitconfig".length)}/.config` } : {}),
       ...(options.wslLocalePath ? { LOCPATH: options.wslLocalePath } : {}),
     };
     return { ...env, ...forwarded, WSL_UTF8: "1", WSLENV: Object.keys(forwarded).join(":") };

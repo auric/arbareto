@@ -597,7 +597,32 @@ function f1(git: string): Observation[] {
   step("mergetool", k, [...STEP, "--literal-pathspecs", "mergetool", "--tool=fixture", "--no-prompt", "--", "uu.txt"], [0], { input: "", timeoutMs: MERGETOOL_MS });
 
   step("amend.commit", repoOf(copy(git, "amend-on-upstream")), [...STEP, "commit", "--quiet", "--amend", "--file=-"], [0], { input: "Amended message\n" });
-  return out;
+  return [...out, ...colonForms(git)];
+}
+
+// research.md R21 F1: the stdin forms that name a path with a leading `:` without magic (gitglossary(7) "pathspec", pathspec.c `parse_short_magic`, `init_pathspec_item`).
+// check-ignore prints the stdin form (builtin/check-ignore.c `pathspec.items[i].original`) and refuses every magic except `top` with exit 128.
+// `check-ignore --no-index` needs no file at the path, so NTFS, which cannot hold `:`, needs none.
+function colonForms(git: string): Observation[] {
+  const f = copy(git, "switch-clean");
+  const r = repoOf(f);
+  put(f.repo, ".gitignore", "*.log\n:x.txt\n:(top)y.txt\n");
+  const read = (input: string) => {
+    const res = run(r, [...READ_IGNORE, "check-ignore", "-z", "--stdin", "--no-index"], { input });
+    return { exit: res.exitCode, paths: nulRecords(stdout(res)) };
+  };
+  const forms: [string, string, { exit: number; paths: string[] }][] = [
+    ["short-magic", ":x.txt", { exit: 0, paths: [":x.txt"] }],
+    ["dot-slash", "./:x.txt", { exit: 0, paths: ["./:x.txt"] }],
+    ["dot-slash-long-name", "./:(top)y.txt", { exit: 0, paths: ["./:(top)y.txt"] }],
+    ["top-word", ":(top):x.txt", { exit: 0, paths: [":(top):x.txt"] }],
+    ["top-word-long-name", ":(top):(top)y.txt", { exit: 0, paths: [":(top):(top)y.txt"] }],
+    ["top-mnemonic", ":/::x.txt", { exit: 0, paths: [":/::x.txt"] }],
+    ["empty-magic", ":::x.txt", { exit: 0, paths: [":::x.txt"] }],
+    ["control-empty-magic-names-x", "::x.txt", { exit: 1, paths: [] }],
+    ["control-literal-word-refused", ":(literal):x.txt", { exit: 128, paths: [] }],
+  ];
+  return forms.map(([label, input, expected]) => obs(`F1.colon.form.${label}`, expected, read(`${input}\0`)));
 }
 
 // F2: `checkout -b` with a refused switch creates no branch.

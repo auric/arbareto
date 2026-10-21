@@ -179,13 +179,12 @@ describeGit("connect in a terminal (T053)", () => {
 
   caseTest(TASK, "data-model §11: no target, a sync target without its repositoryId, a clone target with a repositoryId, and the repositoryId of another workspace give UNKNOWN_TARGET, and no terminal request goes out", WINDOWS, async () => {
     const f = fixture("t053-unknown");
-    // A linked worktree shares the common directory, so its registration keeps the first workspace (contract §6 "Registration reuse and release").
+    // A linked worktree shares the common directory. Its registration releases the first workspace (contract §6 "Registration reuse and release"), so it comes last.
     const other = `${f.h.root}/other`;
     gitRun(f.h, f.repo, ["worktree", "add", "-q", "-b", "side", "--", other]);
     await withSync("t053-unknown", async (service) => {
       service.runner.inject.sshClient = { plink: f.plink };
       const r = await register(service, f.repo);
-      const o = await register(service, other);
       const fetch = await failedFetch(service, r);
       const url = native(`${f.h.root}/missing-clone.git`);
       const ids = service.runner.addClone(native(`${f.h.root}/cloned`), url);
@@ -196,6 +195,7 @@ describeGit("connect in a terminal (T053)", () => {
       expect(outcome(await connect(service, crypto.randomUUID()))).toEqual(unknown);
       expect(outcome(await connect(service, fetch))).toEqual(unknown);
       expect(outcome(await connect(service, cloned.operationId!, r.repositoryId))).toEqual(unknown);
+      const o = await register(service, other);
       expect(outcome(await connect(service, fetch, o.repositoryId))).toEqual(unknown);
       expect(terminals(service)).toEqual([]);
       service.runner.inject.sshClient = "git";

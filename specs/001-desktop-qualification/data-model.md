@@ -41,7 +41,7 @@ Native-owned bootstrap contexts permit bounded probing before permanent IDs exis
 
 | Field | Meaning and validation |
 | --- | --- |
-| `repositoryId` | Random session identifier issued after registration. Not a path or Git revision expression. A registration of the same worktree identity and the same `gitInstallationId` returns the existing identifier. A `chooseGit` that issues a new installation releases every workspace bound to the previous one, with the full release effects. The client then registers again, and a new workspace binds the new installation. A registration of another common directory releases the previous one (contract §6 "Registration reuse and release"). |
+| `repositoryId` | Random session identifier issued after registration. Not a path or Git revision expression. A registration of the same worktree identity and the same `gitInstallationId` returns the existing identifier. A `chooseGit` that issues a new installation releases every workspace bound to the previous one, with the full release effects. The client then registers again, and a new workspace binds the new installation. A registration of another common directory releases the previous one. A registration of another worktree of the same common directory releases the left worktree at once, or when its unfinished mutation ends (contract §6 "Registration reuse and release"). |
 | `gitInstallationId` | Selected Git installation. |
 | `worktreeRoot` | Absolute working-tree path returned through Git discovery. |
 | `gitDirectory` | Git-resolved worktree administration directory. |

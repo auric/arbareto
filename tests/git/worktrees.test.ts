@@ -464,8 +464,10 @@ caseTest("T060", "FR-051 and contract Δ3 openWorktree through the session: a bo
     expect(slash(opened.result!.worktreeRoot).toLowerCase()).toBe(slash(recordPath(f, "wt with spaces")).toLowerCase());
     const list = await service.request<{ entries: { path: string; current: boolean }[] }>("readWorktrees", {}, { repositoryId: opened.result!.repositoryId, repositoryGeneration: opened.result!.generation });
     expect(list.result!.entries.filter((e) => e.current).map((e) => e.path)).toEqual([recordPath(f, "wt with spaces")]);
-    expect(outcome(await send(folder(f, "elsewhere")))).toEqual({ state: "failed", code: "UNKNOWN_TARGET" });
+    expect(outcome(await send(folder(f, "elsewhere"), opened.result!.repositoryId))).toEqual({ state: "failed", code: "UNKNOWN_TARGET" });
     expect(outcome(await send(folder(f, "wt-dirty"), crypto.randomUUID()))).toEqual({ state: "rejected", code: "UNKNOWN_TARGET" });
+    // T384, 001 contract §6 "Registration reuse and release": the open of another worktree released the left one.
+    expect(outcome(await send(folder(f, "wt-dirty")))).toEqual({ state: "rejected", code: "UNKNOWN_TARGET" });
   });
 }, TIMEOUT_MS);
 
@@ -495,14 +497,16 @@ caseTest("T060", "plan.md O-20: worktree-remove takes the trust listing of the t
     expect(service.runner.calls.slice(from).some((c) => c.arguments.includes("status"))).toBe(false);
     expect(existsSync(log)).toBe(false);
     // That worktree as its own workspace: its listing names the monitor, and its approval binds its own folders.
+    // 001 contract §6 "Registration reuse and release": each open releases the other worktree, so the review runs in a new registration of the repository.
     const own = await service.register(native(folder(f, "wt with spaces")));
     expect((await service.readTrust(own.repositoryId)).result!.approvalRequired.workbench).toBe(true);
     expect((await service.approveTrust(own.repositoryId, "worktree")).state).toBe("succeeded");
     expect(existsSync(log)).toBe(false);
-    const rv = await reviewed(service, r, removePayload(target, false, false));
+    const again = await open(service, f.repo);
+    const rv = await reviewed(service, again, removePayload(target, false, false));
     expect(rv.plan).toMatchObject({ worktree: target, tracked: 0, untracked: 0, force: false });
     expect(existsSync(log)).toBe(true);
-    const response = await service.response<WorktreeRun>(sendRun(service, r, rv.workbenchToken));
+    const response = await service.response<WorktreeRun>(sendRun(service, again, rv.workbenchToken));
     expect(outcome(response)).toEqual(SUCCEEDED);
     expect(recordsOf(f).map((x) => valueOf(x, "worktree"))).not.toContain(target);
   });
@@ -515,12 +519,15 @@ caseTest("T060", "plan.md O-20: a target worktree approval that ends between the
   git(f, ["config", "--worktree", "core.fsmonitor", log.command], [0], folder(f, "wt with spaces"));
   const target = recordPath(f, "wt with spaces");
   await withSync("t060-o20-run", async (service) => {
-    const r = await open(service, f.repo);
+    // 001 contract §6 "Registration reuse and release": each open releases the other worktree.
+    // 001 contract §7 `revoke`: Stop trusting in the repository ends the approval of every worktree of its common folder.
     const own = await service.register(native(folder(f, "wt with spaces")));
-    const approved = await service.approveTrust(own.repositoryId, "worktree");
+    expect((await service.approveTrust(own.repositoryId, "worktree")).state).toBe("succeeded");
+    const r = await open(service, f.repo);
+    const approved = await service.approveTrust(r.repositoryId);
     expect(approved.state).toBe("succeeded");
     const rv = await reviewed(service, r, removePayload(target, false, false));
-    expect((await service.revokeTrust(own.repositoryId, (approved.result as { trustId: string }).trustId)).state).toBe("succeeded");
+    expect((await service.revokeTrust(r.repositoryId, (approved.result as { trustId: string }).trustId)).state).toBe("succeeded");
     const from = service.runner.calls.length;
     const response = await service.response(sendRun(service, r, rv.workbenchToken));
     expect(refused(response)).toEqual({ state: "failed", code: "TRUST_REQUIRED", result: { trustGate: "target" } });

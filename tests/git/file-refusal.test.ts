@@ -609,8 +609,9 @@ describe("request checks (contract §4, §9)", () => {
       put(b, "shared.txt", "shared changed in b\n");
       await underTest();
       const wa = await service.register(a);
-      const wb = await service.register(b);
       const ca = await compare(service, wa.repositoryId, "shared.txt", "unstaged");
+      // Contract §6 "Registration reuse and release": this registration releases `wa`.
+      const wb = await service.register(b);
       const rb = await readOk(service, wb.repositoryId);
       const response = await refused(service, b, () => service.request("applyFile", { comparisonId: ca.comparisonId, snapshotId: rb.snapshotId, direction: "stage" }, { repositoryId: wb.repositoryId, repositoryGeneration: rb.generation }));
       expect(code(response)).toBe("UNKNOWN_TARGET");
@@ -635,12 +636,13 @@ describe("request checks (contract §4, §9)", () => {
       put(b, "shared.txt", "shared changed in b\n");
       await underTest();
       const wa = await service.register(a);
-      const wb = await service.register(b);
       const ca = await compare(service, wa.repositoryId, "shared.txt", "unstaged");
-      const cb = await compare(service, wb.repositoryId, "shared.txt", "unstaged");
       const first = applyFile(service, wa.repositoryId, ca, "stage");
       await atStep5;
       try {
+        // Contract §6 "Registration reuse and release": the running mutation keeps `wa` registered.
+        const wb = await service.register(b);
+        const cb = await compare(service, wb.repositoryId, "shared.txt", "unstaged");
         expect(code(await refused(service, b, () => applyFile(service, wb.repositoryId, cb, "stage")))).toBe("BUSY");
       } finally {
         release();

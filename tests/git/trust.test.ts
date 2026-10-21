@@ -1824,31 +1824,35 @@ describe("F07 per-worktree records (contract §7 \"Trust approval store\")", () 
         const programB = insideProgram(built, b, "tools/b.sh");
         config(b, "--worktree", "filter.wt.clean", programB.command);
 
+        // Contract §6 "Registration reuse and release": each registration of one worktree releases the other, so each step reads the worktree it just opened.
         const A = await first.register(a);
-        const B = await first.register(b);
         await approve(first, A.repositoryId);
         const recordA = structuredClone(first.trustStore.records);
         expect(recordA.length).toBe(1);
+        const B = await first.register(b);
         await approve(first, B.repositoryId);
         expect(first.trustStore.records.length).toBe(2);
         expect(first.trustStore.records.filter((r) => samePath(fieldsOf(r).worktreeRoot) === samePath(fieldsOf(recordA[0]!).worktreeRoot))).toEqual(recordA);
 
         const second = set(await nextSession(first, "t071-per-worktree-next"));
         const A2 = await second.register(a);
+        expect((await trustOf(second, A2.repositoryId)).state).toBe("approved");
         const B2 = await second.register(b);
-        expect({ a: (await trustOf(second, A2.repositoryId)).state, b: (await trustOf(second, B2.repositoryId)).state }).toEqual({ a: "approved", b: "approved" });
+        expect((await trustOf(second, B2.repositoryId)).state).toBe("approved");
         // Feature 004 spec FR-071.
         flipByte(programB.path);
-        expect({ a: (await trustOf(second, A2.repositoryId)).state, b: (await trustOf(second, B2.repositoryId)).state }).toEqual({ a: "approved", b: "approved" });
-        expect({ a: outcome(await second.readWorkspace(A2.repositoryId)), b: outcome(await second.readWorkspace(B2.repositoryId)) }).toEqual({ a: SUCCEEDED, b: SUCCEEDED });
+        expect({ b: (await trustOf(second, B2.repositoryId)).state, read: outcome(await second.readWorkspace(B2.repositoryId)) }).toEqual({ b: "approved", read: SUCCEEDED });
+        const A2again = await second.register(a);
+        expect({ a: (await trustOf(second, A2again.repositoryId)).state, read: outcome(await second.readWorkspace(A2again.repositoryId)) }).toEqual({ a: "approved", read: SUCCEEDED });
 
-        const trustIdA = (await trustOf(second, A2.repositoryId)).trustId;
+        const trustIdA = (await trustOf(second, A2again.repositoryId)).trustId;
         expect(typeof trustIdA).toBe("string");
-        expect(outcome(await second.revokeTrust(A2.repositoryId, trustIdA!))).toEqual(SUCCEEDED);
+        expect(outcome(await second.revokeTrust(A2again.repositoryId, trustIdA!))).toEqual(SUCCEEDED);
         const third = set(await nextSession(second, "t071-per-worktree-third"));
         const A3 = await third.register(a);
+        expect((await trustOf(third, A3.repositoryId)).state).toBe("untrusted");
         const B3 = await third.register(b);
-        expect({ a: (await trustOf(third, A3.repositoryId)).state, b: (await trustOf(third, B3.repositoryId)).state }).toEqual({ a: "untrusted", b: "untrusted" });
+        expect((await trustOf(third, B3.repositoryId)).state).toBe("untrusted");
       }),
     TIMEOUT_MS,
   );

@@ -1792,10 +1792,11 @@ export function createTrust({ runner, environment, configFiles = () => undefined
     },
 
     // Contract §6 "Registration reuse and release": a release clears the session approval and the trust ID of its worktree, and the shared listing of its `repositoryId`.
-    release(w: Workspace): void {
+    // `replaced`: another worktree of the same repository took its place, so the session approval stays (feature 004 `worktree-remove` gates on it).
+    release(w: Workspace, replaced = false): void {
       const t = worktrees.get(worktreeKey(w));
       if (t !== undefined) {
-        delete t.approval;
+        if (!replaced) delete t.approval;
         delete t.trustId;
       }
       shared.release(w.repositoryId);

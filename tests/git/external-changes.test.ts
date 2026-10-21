@@ -4,7 +4,7 @@
 import { describe, expect, jest, spyOn, test } from "bun:test";
 import { EventEmitter } from "node:events";
 import * as fs from "node:fs";
-import { existsSync, mkdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { refPathArgs } from "../../src/git-service/commands";
 import { probeGit } from "../../src/git-service/git-installation";
@@ -584,6 +584,123 @@ describe("hints in the service (contract §8)", () => {
   );
 });
 
+// T384: contract §8 "Watcher hints". Git decides the hinted worktree paths with one `check-ignore -z --stdin` read.
+// Fake watches give exact event names, so no NTFS last-access event of the real folders can add a hint.
+describe("hints inside ignored folders (contract §8 \"Watcher hints\")", () => {
+  // Contract §8 "Watcher hints": the bound of the hint paths after one complete read.
+  const HINT_PATHS = 1000;
+  const isCheckIgnore: CallMatch = (call) => call.arguments.includes("check-ignore");
+  const counts = (calls: RecordedCall[]) => ({ status: calls.filter(isStatus).length, checkIgnore: calls.filter(isCheckIgnore).length });
+
+  // F18 with an ignored `build` folder, a tracked `build/keep.txt`, and an ignored `notes.tmp`. The untracked `.gitignore` also ignores itself.
+  const IGNORE_RULES = "build/\n/.gitignore\n*.tmp\n";
+  function ignoredRepo(name: string): string {
+    const repo = repoOf(buildF18(gitPath(), name, "files"));
+    writeFileSync(join(repo, ".gitignore"), IGNORE_RULES);
+    writeFileSync(join(repo, "notes.tmp"), "notes\n");
+    mkdirSync(join(repo, "build"));
+    writeFileSync(join(repo, "build", "keep.txt"), "keep\n");
+    git(repo, ["add", "-f", "--", "build/keep.txt"]);
+    return repo;
+  }
+
+  // Registers the repository and settles it. `emit` sends change events with the given names to the watch of the worktree root.
+  // `watch.ts` starts the watches in the order worktree root, administration folder, common folder (`session.ts`).
+  async function withIgnored(name: string, body: (service: Service, repo: string, repositoryId: string, emit: (names: (string | null)[], watch?: number) => Promise<void>, first: WorkspaceResult) => Promise<void>): Promise<void> {
+    await withFakeWatch((fakes, spy) =>
+      withService({ name }, async (service) => {
+        const repo = ignoredRepo(name);
+        const { repositoryId } = await service.register(repo);
+        expect(spy.mock.calls.map((call) => realpathSync.native(String(call[0])))).toEqual([realpathSync.native(repo), realpathSync.native(join(repo, ".git"))]);
+        const first = (await settled(service, repositoryId)).result;
+        const emit = async (names: (string | null)[], watch = 0) => {
+          for (const event of names) fakes[watch]!.emit("change", "change", event);
+          // The debounce delivers the hint 100 ms after the last event.
+          await Bun.sleep(SETTLE_MS);
+        };
+        await body(service, repo, repositoryId, emit, first);
+      }),
+    );
+  }
+
+  caseTest(
+    "T384",
+    'writes under an ignored folder give a hint but no full read: the next check "changes" poll runs one check-ignore and keeps the snapshot, and the poll after it starts no Git process',
+    W,
+    () =>
+      withIgnored("t384-ignored", async (service, repo, repositoryId, emit, first) => {
+        const names = Array.from({ length: 20 }, (_, i) => join("build", "out", `o${i}.bin`));
+        mkdirSync(join(repo, "build", "out"));
+        for (const name of names) writeFileSync(join(repo, name), "out\n");
+        await emit(names);
+        const poll = await read(service, repositoryId, CHANGES);
+        expect({ ...counts(poll.calls), snapshotId: poll.result.snapshotId, generation: poll.result.generation }).toEqual({ status: 0, checkIgnore: 1, snapshotId: first.snapshotId, generation: first.generation });
+        expect((await read(service, repositoryId, CHANGES)).calls).toEqual([]);
+      }),
+    TIMEOUT_MS,
+  );
+
+  const FULL_READS: [string, (repo: string) => string][] = [
+    ["a write to a tracked file", (repo) => (writeFileSync(join(repo, "watched.txt"), "watched t384\n"), "watched.txt")],
+    ["a write to a tracked file inside the ignored folder", (repo) => (writeFileSync(join(repo, "build", "keep.txt"), "keep t384\n"), join("build", "keep.txt"))],
+    ["a new untracked file outside the ignored folder", (repo) => (writeFileSync(join(repo, "new.txt"), "new\n"), "new.txt")],
+    // Git reports this `.gitignore` as ignored, so only the Git file name gives the full read. The edit shows `notes.tmp` as untracked.
+    [
+      "an edit of a .gitignore that Git reports as ignored",
+      (repo) => {
+        expect(git(repo, ["check-ignore", "--", ".gitignore"])).toBe(".gitignore\n");
+        writeFileSync(join(repo, ".gitignore"), IGNORE_RULES.replace("*.tmp\n", ""));
+        return ".gitignore";
+      },
+    ],
+  ];
+  for (const [label, change] of FULL_READS) {
+    caseTest(
+      "T384",
+      `${label} beside writes under the ignored folder gives a full read`,
+      W,
+      () =>
+        withIgnored(`t384-full-${label.replaceAll(/[^a-z]+/g, "-")}`, async (service, repo, repositoryId, emit, first) => {
+          writeFileSync(join(repo, "build", "out.bin"), "out\n");
+          await emit([join("build", "out.bin"), change(repo)]);
+          const poll = await read(service, repositoryId, CHANGES);
+          expect({ status: counts(poll.calls).status, newer: poll.result.generation > first.generation }).toEqual({ status: 1, newer: true });
+        }),
+      TIMEOUT_MS,
+    );
+  }
+
+  caseTest(
+    "T384",
+    "an event without a file name, and an event of the administration folder watch, each give a full read",
+    W,
+    () =>
+      withIgnored("t384-unnamed", async (service, _repo, repositoryId, emit) => {
+        await emit([join("build", "out.bin"), null]);
+        expect(counts((await read(service, repositoryId, CHANGES)).calls)).toEqual({ status: 1, checkIgnore: 0 });
+        await settled(service, repositoryId);
+        await emit(["index"], 1);
+        expect(counts((await read(service, repositoryId, CHANGES)).calls)).toEqual({ status: 1, checkIgnore: 0 });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T384",
+    `${HINT_PATHS} ignored paths after a complete read give no full read, and ${HINT_PATHS + 1} give a full read`,
+    W,
+    () =>
+      withIgnored("t384-bound", async (service, _repo, repositoryId, emit) => {
+        const names = (n: number, tag: string) => Array.from({ length: n }, (_, i) => join("build", `${tag}${i}.bin`));
+        await emit(names(HINT_PATHS, "a"));
+        expect(counts((await read(service, repositoryId, CHANGES)).calls)).toEqual({ status: 0, checkIgnore: 1 });
+        await emit(names(HINT_PATHS + 1, "b"));
+        expect(counts((await read(service, repositoryId, CHANGES)).calls)).toEqual({ status: 1, checkIgnore: 0 });
+      }),
+    TIMEOUT_MS,
+  );
+});
+
 describe("change check with suppressed hints (contract §8 \"Change check\")", () => {
   // Each F18 files change of the stat tuple, and whether it changes HEAD or the index, so that the generation increases.
   const TUPLE_CHANGES: [string, (repo: string) => void, boolean][] = [
@@ -942,13 +1059,16 @@ describe("reftable change check with suppressed hints (contract §8 \"Change che
       withService({ name: "t075-reftable-commit", watchHints: false }, async (service) => {
         const built = buildF18(gitPath(), "t075-reftable-commit", "reftable");
         const [main, wt] = [repoOf(built), join(built.root, "wt")];
-        const ids = [(await service.register(main)).repositoryId, (await service.register(wt)).repositoryId];
-        const firsts = [await settled(service, ids[0]!), await settled(service, ids[1]!)];
-        git(main, ["commit", "-q", "--allow-empty", "--no-verify", "-m", "t075"]);
-        const mainNext = await read(service, ids[0]!, CHANGES);
-        const wtNext = await read(service, ids[1]!, CHANGES);
-        expect({ main: ranFullRead(mainNext.calls), wt: ranFullRead(wtNext.calls) }).toEqual({ main: true, wt: true });
-        expect(mainNext.result.generation).toBeGreaterThan(firsts[0]!.result.generation);
+        // Contract §6 "Registration reuse and release": the open of one worktree releases the other, so each worktree gets its own commit.
+        for (const [name, dir] of [["main", main], ["wt", wt]] as const) {
+          const { repositoryId } = await service.register(dir);
+          const first = await settled(service, repositoryId);
+          git(main, ["commit", "-q", "--allow-empty", "--no-verify", "-m", `t075 ${name}`]);
+          const next = await read(service, repositoryId, CHANGES);
+          expect({ name, full: ranFullRead(next.calls) }).toEqual({ name, full: true });
+          // The commit moves only the branch of the main worktree.
+          if (name === "main") expect(next.result.generation).toBeGreaterThan(first.result.generation);
+        }
       }),
     TIMEOUT_MS,
   );

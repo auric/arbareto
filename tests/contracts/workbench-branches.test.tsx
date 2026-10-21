@@ -144,6 +144,9 @@ describe("branch button (FR-007)", () => {
     expect(Number(reason!.style.flexGrow)).toBeGreaterThan(0);
     // The branch text counts in the width of the branch button: a zero flex basis gave it no width.
     expect(document.querySelector<HTMLElement>('header [data-slot="branch-text"]')!.style.flexBasis).toBe("auto");
+    // T115: the button itself keeps its text width in one row too. A zero basis left it 18 DIPs at 960 DIPs. The header wraps instead.
+    expect(branchButton()!.style.flexBasis).toBe("auto");
+    expect(document.querySelector("header")!.className.split(/\s+/)).toContain("flex-wrap");
     // The branch button grows first, up to its text width. The sync group takes the rest.
     const wrapper = group.parentElement!;
     expect(Number(wrapper.style.flexGrow)).toBeGreaterThan(0);
@@ -155,7 +158,8 @@ describe("branch button (FR-007)", () => {
     const b = branchButton()!;
     const counts = b.querySelector<HTMLElement>('[data-slot="branch-counts"]')!;
     expect(text(counts)).toBe("↑2 ↓3");
-    expect(counts.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-0", "truncate", "shrink-[1000]"]));
+    // T115: a zero minimum let the counts vanish without an ellipsis. One em keeps the ellipsis while the branch name shrinks.
+    expect(counts.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-[1em]", "truncate", "shrink-[1000]"]));
     expect(counts.getAttribute("title")).toBe("2 ahead, 3 behind");
     const name = b.querySelector<HTMLElement>('[data-slot="branch-text"]')!;
     expect(name.compareDocumentPosition(counts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

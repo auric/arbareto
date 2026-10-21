@@ -492,8 +492,9 @@
     color: HighlightText;
     border-color: HighlightText;
   }
-  /* Forced colors drop the ring shadow, so the dialog needs an edge against the backdrop. */
-  [data-slot="dialog-content"] {
+  /* Forced colors drop the ring shadow, so a dialog and a tooltip need an edge against the content below. */
+  [data-slot="dialog-content"],
+  [data-slot="tooltip-content"] {
     outline: 1px solid CanvasText;
   }
   .selected-hunk-bar {
@@ -530,6 +531,12 @@
     stroke: CanvasText;
   }
   :is(:disabled, [aria-disabled="true"], [data-disabled]) {
+    color: GrayText;
+    border-color: GrayText;
+  }
+  /* The selected-row button rule outranks the rule above, so a disabled button in a selected row needs its own pair. */
+  .list-row[aria-selected="true"] button:is(:disabled, [aria-disabled="true"], [data-disabled]) {
+    background: Canvas;
     color: GrayText;
     border-color: GrayText;
   }

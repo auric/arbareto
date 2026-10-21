@@ -201,13 +201,15 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   const activeIndex = Math.max(0, rows.findIndex((r) => r.node.key === activeKey));
   const anyMatch = filterOpen !== null && filterOpen.size > 0;
   const virtual = rows.length > VIRTUAL_MIN;
+  // 001 plan.md "References": an empty group shows its text below its heading.
+  const emptyText = (row: Row) => (row.level === 1 && row.node.count === 0 ? GROUPS.find((g) => g.kind === row.kind)!.empty : null);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
     enabled: virtual,
     getScrollElement: () => scrollElement?.() ?? scroller.current,
     scrollMargin: margin,
-    estimateSize: () => rowHeight,
+    estimateSize: (i) => (emptyText(rows[i]!) === null ? rowHeight : 2 * rowHeight),
     getItemKey: (i) => rows[i]!.node.key,
     overscan: 8,
     // React 19 refuses a flushSync from a layout effect, where keyboard navigation scrolls.
@@ -337,7 +339,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
           {...common}
           aria-expanded={expanded}
           aria-label={group ? `${node.label}, ${node.count}` : `${node.label}, folder, ${node.count}`}
-          aria-describedby={group && node.count === 0 && !virtual ? emptyId(kind) : undefined}
+          aria-describedby={group && node.count === 0 ? emptyId(kind) : undefined}
           className={`list-row flex min-w-0 items-center gap-1 pr-2 ${sticky} ${group ? "bg-surface font-semibold" : ""}`}
         >
           <HugeiconsIcon icon={expanded ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
@@ -401,7 +403,21 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     if (virtual)
       return (
         <div role="presentation" className="relative" style={{ height: virtualizer.getTotalSize() }}>
-          {virtualizer.getVirtualItems().map((item) => rowView(rows[item.index]!, item.index, { position: "absolute", top: 0, left: 0, right: 0, height: rowHeight, transform: `translateY(${item.start - margin}px)` }))}
+          {virtualizer.getVirtualItems().map((item) => {
+            const row = rows[item.index]!;
+            const place = { position: "absolute", top: 0, left: 0, right: 0, height: item.size, transform: `translateY(${item.start - margin}px)` } as const;
+            const empty = emptyText(row);
+            if (empty === null) return rowView(row, item.index, place);
+            // A virtual item has one fixed height, so the empty text takes one row and ends with "…" when it does not fit.
+            return (
+              <div key={row.node.key} role="none" style={place}>
+                {rowView(row, item.index, { height: rowHeight })}
+                <p id={emptyId(row.kind)} aria-hidden="true" title={empty} className="truncate pr-2 pl-4 text-muted-text" style={{ height: rowHeight, lineHeight: `${rowHeight}px` }}>
+                  {empty}
+                </p>
+              </div>
+            );
+          })}
         </div>
       );
     // Each group wraps its rows, so its heading row sticks only while the group scrolls.
@@ -440,8 +456,6 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
         <div ref={tree} role="tree" aria-labelledby={ids.heading} className="flex flex-col px-1">
           {treeRows()}
         </div>
-        {/* A virtual row has an absolute position, so the empty texts follow the tree. */}
-        {virtual ? groups.map((g) => (g.tree.count === 0 ? <p key={g.kind} className="px-2 text-muted-text">{g.empty}</p> : null)) : null}
         {needle !== "" && !anyMatch ? <p className="px-2 text-muted-text">{NO_MATCH}</p> : null}
         <span id={ids.none} hidden>
           {NOT_SHOWN.none}

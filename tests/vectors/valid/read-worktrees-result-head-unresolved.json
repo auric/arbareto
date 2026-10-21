@@ -1,0 +1,5 @@
+{
+  "schema": "read-worktrees-result",
+  "expected": "valid",
+  "text": "{\"entries\":[{\"path\":\"C:/repo\",\"invalidUtf8\":false,\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"branch\":\"refs/heads/main\",\"bare\":false,\"detached\":false,\"headUnresolved\":false,\"locked\":null,\"prunable\":null,\"main\":true,\"current\":true},{\"path\":\"C:/repo-long\",\"invalidUtf8\":false,\"head\":null,\"branch\":null,\"bare\":false,\"detached\":false,\"headUnresolved\":true,\"locked\":null,\"prunable\":null,\"main\":false,\"current\":false}]}"
+}

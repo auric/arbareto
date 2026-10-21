@@ -141,10 +141,14 @@ export async function readWorktrees(ctx: ObserveContext): Promise<Fact<{ records
   return { value: { records, digest: new Bun.CryptoHasher("sha256").update(read.value).digest("hex") } };
 }
 
-// The record of another worktree that holds `ref`. A worktree record holds one branch, so the current record holds only the HEAD branch.
-export function heldElsewhere(records: readonly WorktreeRecord[], ref: string, head: Head): WorktreeRecord | null {
+// The refusal for a `ref` that another worktree holds, or null. A worktree record holds one branch, so the current record holds only the HEAD branch.
+// Data-model §8: Git names no branch for a `headUnresolved` record, so that record can hold `ref`.
+export function heldElsewhere(records: readonly WorktreeRecord[], ref: string, head: Head): Refused | null {
   if (head.state !== "detached" && head.target === ref) return null;
-  return records.find((r) => r.branch === ref) ?? null;
+  const held = records.find((r) => r.branch === ref);
+  if (held !== undefined) return unavailable("other-worktree", { worktree: held.path });
+  const unknown = records.find((r) => r.headUnresolved);
+  return unknown === undefined ? null : unavailable("head-unresolved", { worktree: unknown.path });
 }
 
 // Contract §8: a step whose process was ended can leave `index.lock`, so the reconciliation read checks it.

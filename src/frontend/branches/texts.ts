@@ -95,6 +95,7 @@ const REASONS: Record<string, (r: Record<string, unknown>, branch: string) => st
   "config-in-include": (_, branch) => `An included configuration file sets branch.${branch}. Git cannot remove that setting here, so delete the branch in a terminal.`,
   "current-branch": () => T.deleteCurrent,
   "other-worktree": (r) => T.otherWorktree(String(r.worktree)),
+  "head-unresolved": (r) => `Git cannot read the HEAD of the worktree ${String(r.worktree)}, so Arbareto cannot tell which branch it holds. Fix or remove that worktree first.`,
   detached: () => T.detachedReason,
   unreadable: () => "Arbareto cannot read a path that the switch writes, so Discard is unavailable.",
   path: () => "A path that the switch writes starts with a colon, so Discard is unavailable.",

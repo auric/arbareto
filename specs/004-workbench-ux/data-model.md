@@ -82,13 +82,14 @@ Each section names its source. Field names are contract names. "001 data-model Â
 ## 8. Worktree entry (`readWorktrees` result)
 
 - `path`: the bytes of the `worktree` attribute.
-- `head`: the OID, or null for `bare`.
-- `branch`: the full ref, or null with `detached` true.
+- `head`: the OID, or null for `bare` and for `headUnresolved`.
+- `branch`: the full ref, or null with `detached`, `bare`, or `headUnresolved` true.
 - `bare`, `detached`: booleans.
+- `headUnresolved`: true for a record that is not `bare` and has neither `branch` nor `detached`. Git prints this form when it cannot resolve the HEAD of the worktree, such as a ref path of 260 or more UTF-16 units without `core.longpaths` (worktree.c `add_head_info`). The `HEAD` line then holds the null object ID, and the service drops it. The record lines decide this state, never the zero value. An unborn branch prints the null object ID together with `branch`, so it is no unresolved record. Such a record can hold any branch, so a check of a branch in another worktree refuses with reason `head-unresolved` (contract Î”9).
 - `locked`: null, or `{reason}` where `reason` is null or the untrusted text.
 - `prunable`: null, or `{reason}` with untrusted text.
 - `main`: true for the first record. `current`: true when the path identity equals the workspace worktree identity.
-- Record checks: the first line starts with `worktree `; each other line is one of the attribute forms; `HEAD` holds an OID of the object format; at most one of `branch` and `detached`; the record ends with an empty line. A failed check gives `MALFORMED_GIT_OUTPUT`.
+- Record checks: the first line starts with `worktree `; each other line is one of the attribute forms; `HEAD` holds an OID of the object format; at most one of `branch` and `detached`, and neither gives `headUnresolved`; the record ends with an empty line. A failed check gives `MALFORMED_GIT_OUTPUT`.
 - Bound: 1,000 records (`WORKTREE_RECORDS`) and 4 MiB (`WORKTREE_LISTING_BYTES`).
 
 ## 9. Configuration value (`readGitSettings` result)

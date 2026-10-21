@@ -190,7 +190,7 @@ registerWorkbenchAction("delete-branch", {
     const worktrees = await readWorktrees(ctx);
     if (!("value" in worktrees)) return worktrees;
     const held = heldElsewhere(worktrees.value.records, p.ref, head);
-    if (held !== null) return unavailable("other-worktree", { worktree: held.path });
+    if (held !== null) return held;
     const facts = await deleteFacts(ctx, p.ref, common.listing);
     if (!("value" in facts)) return facts;
     const bound: DeleteBound = { ...facts.value, worktrees: worktrees.value.digest };

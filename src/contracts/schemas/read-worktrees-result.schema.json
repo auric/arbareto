@@ -47,6 +47,9 @@
               "detached": {
                 "type": "boolean"
               },
+              "headUnresolved": {
+                "type": "boolean"
+              },
               "locked": {
                 "anyOf": [
                   {
@@ -107,6 +110,7 @@
               "branch",
               "bare",
               "detached",
+              "headUnresolved",
               "locked",
               "prunable",
               "main",

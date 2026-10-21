@@ -27,7 +27,7 @@ afterEach(async () => unmountAll());
 const TOKEN = fixtureId(0x600);
 type Entry = Record<string, unknown>;
 // Data-model §8 records in Git's order. Only the first is main.
-const wt = (path: string, fields: Entry = {}): Entry => ({ path, invalidUtf8: false, head: oid(1), branch: null, bare: false, detached: false, locked: null, prunable: null, main: false, current: false, ...fields });
+const wt = (path: string, fields: Entry = {}): Entry => ({ path, invalidUtf8: false, head: oid(1), branch: null, bare: false, detached: false, headUnresolved: false, locked: null, prunable: null, main: false, current: false, ...fields });
 const MAIN = wt("C:/repo", { branch: "refs/heads/main", main: true });
 const SIGNUP = wt("C:/wt/repo-signup", { branch: "refs/heads/signup", current: true });
 const HOTFIX = wt("C:/wt/repo-hotfix", { branch: "refs/heads/fix/crash", head: oid(4) });
@@ -140,6 +140,16 @@ describe("worktree button and list (FR-049)", () => {
     expect(rows[1]!.getAttribute("aria-label")).toBe("repo-signup, signup, C:/wt/repo-signup, Current");
     expect(itemLabel(rows[5]!)).toBe("Add worktree…");
     expect(itemLabel(rows[6]!)).toStartWith("Prune missing worktrees");
+  });
+
+  test("a record whose HEAD Git cannot resolve shows HEAD unknown, never Detached at", async () => {
+    const unresolved = wt("C:/wt/repo-long", { head: null, headUnresolved: true });
+    await mountWorkbench(workbench, worktreeWorld([MAIN, SIGNUP, unresolved]));
+    await openList();
+    const row = options()[2]!;
+    expect(text(row)).toContain("HEAD unknown");
+    expect(text(row)).not.toContain("Detached at");
+    expect(row.getAttribute("aria-label")).toBe("repo-long, HEAD unknown, C:/wt/repo-long");
   });
 
   test("the filter is a literal substring match without regard to case, and Enter opens the first match", async () => {

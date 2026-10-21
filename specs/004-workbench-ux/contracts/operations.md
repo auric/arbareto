@@ -37,6 +37,8 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 - Payload: `{}`. One read slot.
 - Command: `worktree list --porcelain -z` [`read`].
 - Parse: data-model §8 record checks. Bounds: `WORKTREE_RECORDS` and `WORKTREE_LISTING_BYTES` (4 MiB).
+- Unresolved record: a record that is not `bare` and has neither `branch` nor `detached` gives `headUnresolved: true` with `head` and `branch` null (data-model §8). The entry carries `headUnresolved` in every record.
+- Held branch: `switch` to a `ref` target and `delete-branch` give reason `other-worktree` with `worktree` for a record whose `branch` is the ref. Otherwise, a record with `headUnresolved` gives reason `head-unresolved` with `worktree`, the path of the first such record, because Git names no branch for it.
 - The service sends one identity request per record path (001 §6), at most 8 paths per request, to mark the current record.
 - Unidentifiable record: only the refusal `absent` proves a missing folder, and that record is not current. A record path without an exact identity form (bytes that are no valid UTF-8, or a Linux name without a UNC form), or any other identity refusal, refuses the read with `UNSUPPORTED_REPOSITORY` (001 §6 "Process fields").
 
@@ -266,7 +268,7 @@ A payload `ref` lies under `refs/heads/` for a local branch, under `refs/remotes
 
 | Code | Reasons | Meaning |
 |---|---|---|
-| `WORKBENCH_UNAVAILABLE` | `detached`, `unborn`, `current-branch`, `other-worktree`, `name-exists`, `invalid-name`, `reserved-name`, `same-branch`, `ff-only`, `dirty-tree`, `interactive`, `no-merge-tool`, `merge-tool-name`, `side-missing`, `side-not-regular`, `stages-missing`, `main-worktree`, `current-worktree`, `locked`, `prunable`, `nothing-to-prune`, `multi-value`, `limit`, `push-current-only`, `ignore-exists`, `ignore-not-text`, `ignore-not-regular`, `ignore-size`, `path`, `message-size`, `unreadable`, `no-tracking-refspec`, `several-tracking-remotes`, `squash-no-ff`, `merge-options`, `invalid-config`, `unknown-operation`, `apply-backend`, `config-in-include`, `included`, `unreadable-value` | The action cannot run. No process starts. |
+| `WORKBENCH_UNAVAILABLE` | `detached`, `unborn`, `current-branch`, `other-worktree`, `head-unresolved`, `name-exists`, `invalid-name`, `reserved-name`, `same-branch`, `ff-only`, `dirty-tree`, `interactive`, `no-merge-tool`, `merge-tool-name`, `side-missing`, `side-not-regular`, `stages-missing`, `main-worktree`, `current-worktree`, `locked`, `prunable`, `nothing-to-prune`, `multi-value`, `limit`, `push-current-only`, `ignore-exists`, `ignore-not-text`, `ignore-not-regular`, `ignore-size`, `path`, `message-size`, `unreadable`, `no-tracking-refspec`, `several-tracking-remotes`, `squash-no-ff`, `merge-options`, `invalid-config`, `unknown-operation`, `apply-backend`, `config-in-include`, `included`, `unreadable-value` | The action cannot run. No process starts. |
 | `UNTRACKED_IN_WAY` | `untracked-in-way` | Discard would overwrite these untracked files. The result lists up to 100 paths. |
 | `STASH_KEPT` | `conflicts`, `failed-apply`, `failed-checkout`, `not-found`, `stash-changed` | The switch kept the stash. The result names its commit ID and the remedy. |
 

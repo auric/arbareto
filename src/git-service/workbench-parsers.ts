@@ -83,6 +83,8 @@ export interface WorktreeRecord {
   branchKey: string | null;
   bare: boolean;
   detached: boolean;
+  // Data-model §8: Git could not resolve the HEAD of the record.
+  headUnresolved: boolean;
   // `reason` is untrusted text.
   locked: { reason: string | null } | null;
   prunable: { reason: string | null } | null;
@@ -100,7 +102,7 @@ function worktreeRecord(lines: string[], objectFormat: ObjectFormat, main: boole
   const first = lines[0]!;
   if (!first.startsWith("worktree ") || first.length === "worktree ".length) return null;
   const path = decoded(first.slice("worktree ".length));
-  const r: WorktreeRecord = { path: path.text, invalidUtf8: !path.exact, head: null, branch: null, branchKey: null, bare: false, detached: false, locked: null, prunable: null, main };
+  const r: WorktreeRecord = { path: path.text, invalidUtf8: !path.exact, head: null, branch: null, branchKey: null, bare: false, detached: false, headUnresolved: false, locked: null, prunable: null, main };
   const seen = new Set<string>();
   for (const line of lines.slice(1)) {
     const label = line.split(" ", 1)[0]!;
@@ -121,6 +123,11 @@ function worktreeRecord(lines: string[], objectFormat: ObjectFormat, main: boole
   // builtin/worktree.c `show_worktree_porcelain`: `bare`, or `HEAD` with at most one of `detached` and `branch`.
   if (r.bare === (r.head !== null) || (r.branch !== null && r.detached)) return null;
   if (r.bare && (r.branch !== null || r.detached)) return null;
+  // worktree.c `add_head_info`: Git prints neither `branch` nor `detached` when it cannot resolve HEAD, and `HEAD` then holds the null object ID.
+  if (!r.bare && r.branch === null && !r.detached) {
+    r.head = null;
+    r.headUnresolved = true;
+  }
   return r;
 }
 

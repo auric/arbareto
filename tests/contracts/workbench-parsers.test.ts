@@ -95,7 +95,7 @@ describe("worktree records (data-model §8)", () => {
     "worktree D:/w/wt-gone\0HEAD 8e2f38fb0a85f3224292830b67d5e6e2dae15cd7\0branch refs/heads/gone\0prunable gitdir file points to non-existent location\0\0" +
     "worktree D:/w/wt-locked\0HEAD 8e2f38fb0a85f3224292830b67d5e6e2dae15cd7\0branch refs/heads/locked\0locked on a USB stick\0\0";
   const H = "8e2f38fb0a85f3224292830b67d5e6e2dae15cd7";
-  const base = { invalidUtf8: false, head: H, branchKey: null, bare: false, detached: false, locked: null, prunable: null, main: false };
+  const base = { invalidUtf8: false, head: H, branchKey: null, bare: false, detached: false, headUnresolved: false, locked: null, prunable: null, main: false };
   const parse = (text: string, format: "sha1" | "sha256" = "sha1") => parseWorktrees(bytes(text), format);
 
   test("a recorded listing", () => {
@@ -118,10 +118,15 @@ describe("worktree records (data-model §8)", () => {
     ]);
   });
 
-  test("an unborn branch and a record without branch or detached", () => {
-    expect(parse(`worktree /w/a\0HEAD ${Z}\0branch refs/heads/main\0\0worktree /w/b\0HEAD ${A}\0\0`)).toEqual([
+  // worktree.c `add_head_info`: Git prints `HEAD` with the null object ID and neither `branch` nor `detached` when it cannot resolve HEAD.
+  test("a record without branch or detached is unresolved, and the unborn, detached, and bare records keep their state", () => {
+    expect(parse(`worktree C:/w\0HEAD ${Z}\0\0`)).toEqual([{ ...base, path: "C:/w", head: null, branch: null, headUnresolved: true, main: true }]);
+    // The lines decide, never the object ID value.
+    expect(parse(`worktree /w/m\0HEAD ${A}\0branch refs/heads/main\0\0worktree /w/b\0HEAD ${A}\0locked\0\0`)).toMatchObject([{ headUnresolved: false }, { head: null, branch: null, detached: false, headUnresolved: true, locked: { reason: null } }]);
+    expect(parse(`worktree /w/a\0HEAD ${Z}\0branch refs/heads/main\0\0worktree /w/d\0HEAD ${Z}\0detached\0\0worktree /w/bare\0bare\0\0`)).toEqual([
       { ...base, path: "/w/a", head: Z, branch: "refs/heads/main", branchKey: "refs/heads/main", main: true },
-      { ...base, path: "/w/b", head: A, branch: null },
+      { ...base, path: "/w/d", head: Z, branch: null, detached: true },
+      { ...base, path: "/w/bare", head: null, branch: null, bare: true },
     ]);
   });
 

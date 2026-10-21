@@ -458,7 +458,7 @@ Failing-first records:
 
 ## R29 Verification runs for T062, T076, and T093, 2026-10-20 and 2026-10-21
 
-Two runs in `C:\Projects\arbareto-l4` on f004-impl. The logs are in the orchestrator scratchpad `verify-004-l4/` and `verify2-004-l4/`. Both runs fail the T062, T076, and T093 pass condition. T062, T076, and T093 stay open.
+Three runs in `C:\Projects\arbareto-l4` on f004-impl. The logs are in the orchestrator scratchpad `verify-004-l4/`, `verify2-004-l4/`, and `verify3-004-l4/`. Runs 1 and 2 fail the T062, T076, and T093 pass condition. Run 3 at b35cdd0 passes it.
 
 Run 1, 2026-10-20, at 51f9ab2:
 - `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `bun run build:service`, and `cargo check`: exit 0.
@@ -510,7 +510,47 @@ Second board comparison (T076), at 97f4fbc. The first comparison ran at 5a3b2f2.
   - The History label "+4999" is clipped.
 - Fixes: T115, T116, and T117. Open.
 
-A final verification run at the commit after T115 to T117 is open.
+Work after run 2:
+- T081 follow-up, 5e1d243 (merge 6a77e56): the WSL double sets `XDG_CONFIG_HOME`, because `wsl.exe` ignores `HOME` in WSLENV. Q7 asserts the WSL remedy. F1: four colon forms read literally on stdin on both hosts, so the F1 gap is void. F21: Git moves `$BACKUP` over a fast tool result. R21 lists the Q8 to Q23 parts that WSL does not cover yet. R21 has the details.
+- T115 53cec58 (merge 4c0103a), T116 e9e0f1f (merge 582213b), and T117 4787e32 (merge 4a0a5af) fix the second board comparison findings.
+
+Third board comparison (T076), 2026-10-21 at about 06:45, at 4436e44 (scratchpad `t076c-l4/`):
+- Renderer proof: the page loaded `index-CSFjSzTx.js` from the l4 `dist`, build 4436e442.
+- Fixed: T115 (1), (3), (4), and (5); T116 (1) to (5); T117 (1) and (2).
+- Not reachable: T115 (2) and T112 (5), because the button always takes the full width.
+- T109 to T114: no regression. Screenshots cannot check T113 (1), (3), (4), and (5), or T114 (2) to (5), (7), and (8).
+- Contrast scan: 0 low pairs in 8 views. A control scan at threshold 21 failed, as expected.
+- N1: the header wrap order. Decision: natural wrap. T118 puts the order into D15. N2: the tooltip edge in forced colors (T118). N3: during a run, the Submodules header shows "Up…", as D15 allows.
+- Board-only differences: one more History label at 1280 (correct by 002 "Labels"), the Commit tray button order, the Submodules row icons, and the references filter placeholder.
+
+T115 to T117 review, 2026-10-21: 2 Medium findings go to T118. "Batch reviews" records the review.
+
+T118, f09c725 (merge b35cdd0): each worktree row mark keeps its first character and "…". In forced colors, a disabled button in a selected row shows GrayText on Canvas, and a tooltip gets the dialog edge. A virtual references tree shows an empty group text below its heading. Plan D15 "Top bar row" states the exact wrap order, and the 001 test title names the D15 rule.
+
+Long-path investigation, 2026-10-21 (scratchpad `longpath/`):
+- Git for Windows refuses an absolute path of 260 or more units without `core.longpaths` (mingw.c `handle_long_path`). A ref path is the root plus 17 units plus the branch name. Reads fail when the root plus the branch name is 243 or more units. Git cannot create the ref at 238 or more units.
+- Discovery: `symbolic-ref -q HEAD` exits 128, so discovery gives `REPOSITORY_UNAVAILABLE`, as 001 operations.md:522 states. This is correct. Contract gap: the refusal has no reason, and the remedy `git status` exits 0.
+- A worktree record with HEAD 000… and with neither a branch nor detached is the unresolved marker of Git. The app shows it as "Detached at 0000…". This is a defect, and T119 fixes it.
+- `for-each-ref` drops the long loose ref and writes only a warning to stderr. This is a known limit.
+
+Run 3, 2026-10-21 06:24 to 09:18, at b35cdd0, on a clean tree:
+- `bun install --frozen-lockfile`, `bun run build`, `cargo check --locked`, `bun run build:service`, `bun run typecheck`, and `bun run export:schemas --check`: exit 0.
+- `bun run test:contracts`: 4,779 pass, 33 skip, 0 fail.
+- 06:30 to 09:00: `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0 in 150 minutes. Parallel step: 194 files, 6,626 tests, 6,586 pass, 40 skip, 0 fail, in 3,416 s. Serial step: 31 files, 595 tests, 585 pass, 10 skip, 0 fail, in 5,599 s. All 225 files ran, with 7,221 tests, 0 fail, and 50 skip.
+- All 1,883 `ORIGIN` lines of `test:all` are under `C:\Projects\arbareto-l4`.
+- `bun test tests/windows`: 116 pass, 6 skip, 0 fail. Of its 28 `ORIGIN` lines, two are outside `C:\Projects\arbareto-l4`. They are the installed app `%LOCALAPPDATA%\Arbareto\arbareto.exe` (SHA d39f9131, the main 9a07799 package) and its fixture home copy (SHA b5d54c39).
+- N2: the `app-menu-by-uia-show-context-menu` line gives `menu:false` and `match=false`. This line is an observation line by design, and it ran against the main package. N1 (7 lines), N3, N4, and N5 match. N6 `plain` and `allow` give `foreground:false` and `match=false`, with `foregroundOwnerAtReady` bun.exe and an idle time of about 29,600 s. In run 2, both N6 lines matched. The failed run of 2026-10-17 in R21 N6 had the same pattern: an idle desktop, and another process held the foreground. O-8 stays open until T082.
+- `cargo test --locked`: 553 passed, 4 ignored. `bun test tests/wsl/registration.test.ts` on Ubuntu-24.04: 39 pass, 4 skip.
+- Control mutations, each red on its named case and then green after the undo, with a clean tree after each:
+  - T062 `cmd` (`trust.ts:398`): 14 pass, 2 fail. The Q14 case is red, and a D12 class case is also red. After the undo, 16 of 16 passed.
+  - T062 `rewritesUpstream` false at three exits (`commit-review.ts:109,128,133`): 5 pass, 6 fail, with the FR-100 case red. After the undo, 11 of 11 passed.
+  - T076 confirmation dialog skip (`CommitTray.tsx:225`): 14 pass, 4 fail, with the named case red. After the undo, 18 of 18 passed.
+  - T093 filtered Stage all (`ChangesPane.tsx:160-161`, `query` in the dependencies): 70 pass, 1 fail (Q29). After the undo, 71 of 71 passed.
+- Skips: one new skip against run 2. `tests/wsl/workbench-wsl.test.ts:1648`, Q20 FR-052 "Add worktree in a WSL repository", is a static `test.skip` with the SKIP reason `wsl-worktree-add-route` (T081). 0ac1739 adds the file.
+- Memory: the lowest free memory was 9,975 MB. The peak bun.exe size was 2,304 MB, in `test:contracts`. The memory guard did not stop a step.
+- Deviation: the first `test:all` start did not read the environment variables and started no test.
+- Not in this run: the `bun run dev` board comparison, screenshots, live-input steps, and reviews.
+- Verdict: the agent-runnable pass condition of T062, T076, and T093 holds at b35cdd0.
 
 Open items:
 - The Remove dialog cannot show the branch-delete note at once. The facts come only after a review with `deleteBranch` true, so this needs a contract change (T110 skip).
@@ -518,6 +558,13 @@ Open items:
 - The perf fixture stream digest gap.
 - The host-lines box of `SubmodulesGroup` keeps `overflow-y-auto`. It is not changed.
 - `tests/windows` ran against the main 9a07799 package. Batch 7 records N1 to N6 again with a 004 package.
+- F1: plan D3 can send candidates as `./<path>` or `:(top)<path>` and drop the `path` refusal for a leading `:`. This is a feature 005 leftover. The product does not change.
+- Q7: the WSL remedy text says "This command applies them again.", but the command is null (a text-only remedy). This text defect is a feature 005 leftover.
+- T081 M4: the dedupe of the 650 repeated lines of the WSL and Windows facts tests is deferred.
+- During a run, the Submodules header shows "Up…" at 1280, because Cancel takes the room. The tooltip shows the full text (T116).
+- At 720×480, the Commit message field is about 9 DIP high, and the reason lines sit inside the tray scroll. Run 2 shows the same. This is pre-existing, and the 001 constrained sizes apply.
+- Feature 005 candidates from the long-path work: a discovery refusal reason after exit 128 (`symbolic-ref --no-recurse`, `show-ref --exists`, a shell allow-list). The silent `for-each-ref` drop stays a known limit.
+- Board-only: the Submodules board shows done and running icons and a progress bar. The app shows only the submodule icon.
 
 Process deviation, 2026-10-21, at about 02:13: the board-comparison agent opened `C:\Projects\arbareto` in the dev app for about one minute. An empty picker path caused it. `git status` of that checkout stayed clean, and it had no `index.lock`. The times of `index`, `HEAD`, and `config` are older than the open. The fix preamble now requires a path check before each open.
 
@@ -619,3 +666,5 @@ Open: the merge tool start stall (plan O-19, R21 N3). bd077e1 adds its diagnosti
 **T381 merge, T112, T113 review, 2026-10-20.** Independent reviewer at 4b7cbfb (range 58cc755..4b7cbfb). Skills: `ponytail-review`, `web-design-guidelines`, `arbareto-ux`, manual review. High: in the constrained profile a collapsed References section unmounts the Submodules group, so a host line or refusal from the menu or the notice band waits unseen. Medium: plan D15 "Top bar unavailable reasons" does not name the reconcile reason; Save gives the read loading or failure reason only in the tooltip. Low: the branch, Fetch options, and Pull menus show quiet reasons as visible text; the toolbar puts the reconcile reason before the unknown-state reason; the expanded constrained section has two nested scrollers; the Submodules Update focus target is found by its English label. T114 fixes them (6cede43, merge 97f4fbc).
 
 **T081, 2026-10-21.** Independent T081 review, reviewer agent, 2026-10-21. Scope: 97f4fbc..0ac1739 (`tests/wsl/workbench-wsl.test.ts`, the `distroGitHost` move, `wslGlobalConfig` in `service-harness.ts`, R21). Skills: `ponytail-review` and a manual correctness, security, and heuristics review; `web-design-guidelines` was not used, because the diff has no UI code. Verdict: no data-safety, security, or heuristic defect, and the moves are behaviour-neutral. Medium: service WSL Git processes keep the real `HOME`, so `~/.config/git` ignore and attributes files apply; Q7 logs the WSL remedy command instead of asserting the 003 Δ3 / 001 §11 form; R21 does not list the Q5 to Q23 parts with no WSL case; F1 to F31 repeat about 650 lines of `workbench-facts.test.ts` instead of sharing a `GitHost` form. Low: the copied repositories keep `core.filemode=false`; the F21 cause rests on message text and an unverified timestamp; small duplicate helpers; a conditional trust approval in Q23; long R21 sentences. The `trustExitCode` choice is sound. Record its user-visible limit. Suspicions: `./:x.txt` or `:(top):x.txt` may be a literal stdin form, which would void the F1 gap; the tty result may not come from `setsid`; Git may restore the backup over a fast tool's result. Fixes: the T081 follow-up commit on f004-t081 after 0ac1739. M4 stays open.
+
+**T115 to T117 review, 2026-10-21.** Independent review of T115 to T117 (`bf5cd04..4436e44`), reviewer agent, 2026-10-21. Skills: `ponytail-review`, `web-design-guidelines`, `arbareto-ux`, and a manual correctness, accessibility, forced-colors, and heuristics review. Fix two Medium findings first. A worktree row with a long name clips its marks completely with no "…" (`WorktreeButton.tsx:92-106`). In forced colors, a disabled Submodules Retry in a selected row looks enabled, because `.list-row[aria-selected="true"] button` overrides the GrayText rule (`index.css:490`). Low: a virtual references tree still shows empty texts after the tree; the new cases mostly check class names; a 001 test title is stale; T115 (3) and (5) need screenshots. No heuristics and no over-engineering. Fixes: T118 (f09c725).

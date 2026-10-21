@@ -4,7 +4,7 @@
 // T049: worktrees (spec FR-049 to FR-057, SC-008, plan.md D10, contract Δ3 `readWorktrees`, `openWorktree`, and `reviewWorkbench` `worktree-add`, `worktree-remove`, `worktree-prune`, quickstart.md Q20).
 // The oracle is Git's own command on a second build of the same fixture. The fixed fixture dates make the commit object IDs of both builds equal.
 
-import { expect } from "bun:test";
+import { expect, test } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProcessContext } from "../../src/git-service/git-runner";
@@ -12,7 +12,7 @@ import type { ObserveContext } from "../../src/git-service/hunk-publish";
 import type { Workspace } from "../../src/git-service/registration";
 import { STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
-import { FIXTURE_GLOBAL_CONFIG, removeTree, useFixtureRoot } from "./fixture-root";
+import { FIXTURE_GLOBAL_CONFIG, removeTree, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { put } from "./fixtures";
 import { sha256, workingFileDigests } from "./git-oracle";
 import { caseTest, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
@@ -81,7 +81,9 @@ function oracleEntries(f: WbFixture, current: string) {
     const flag = (label: string) => valueOf(lines, label) !== undefined;
     const reason = (label: string) => (flag(label) ? { reason: valueOf(lines, label) ?? null } : null);
     const path = valueOf(lines, "worktree")!;
-    return { path, invalidUtf8: false, head: valueOf(lines, "HEAD") ?? null, branch: valueOf(lines, "branch") ?? null, bare: flag("bare"), detached: flag("detached"), locked: reason("locked"), prunable: reason("prunable"), main: i === 0, current: path === current };
+    // Data-model §8 `headUnresolved`: a record without `bare`, `branch`, and `detached`.
+    const unresolved = !flag("bare") && !flag("branch") && !flag("detached");
+    return { path, invalidUtf8: false, head: unresolved ? null : (valueOf(lines, "HEAD") ?? null), branch: valueOf(lines, "branch") ?? null, bare: flag("bare"), detached: flag("detached"), headUnresolved: unresolved, locked: reason("locked"), prunable: reason("prunable"), main: i === 0, current: path === current };
   });
 }
 
@@ -713,3 +715,69 @@ caseTest("T098", "FR-003: Cancel while an add or a prune waits at its one Git st
     }
   }
 }, TIMEOUT_MS);
+
+// T119 and data-model §8: Git prints `HEAD` with the null object ID and neither `branch` nor `detached` when it cannot resolve the HEAD of a record (worktree.c `add_head_info`).
+// Without `core.longpaths`, Git for Windows cannot open a loose ref path of 260 or more UTF-16 units. Only the setup commands pass `-c core.longpaths=true`.
+const T119 = "FR-013, FR-017, FR-049, and data-model §8: a record whose HEAD Git cannot resolve lists as headUnresolved, and Delete of a free branch gives head-unresolved";
+const longCase = process.platform === "win32" ? caseTest : (task: string, name: string) => (console.log(`SKIP ${task} ${name}: the MAX_PATH ref limit exists only on Windows`), test.skip(name, () => {}));
+// A worktrees fixture with `wt-long`, whose HEAD names a branch with a loose ref path of at least 270 UTF-16 units, and the free branch `t119-free`.
+// The effective `core.longpaths` of the service environment, which reads the system file (`serviceEnv`). git-config(1): exit 1 means no value.
+function serviceLongPaths(dir: string): { scope: string; value: string } | null {
+  const p = Bun.spawnSync([gitExe(), "config", "--show-scope", "--type=bool", "--get", "core.longpaths"], { cwd: dir, env: serviceEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  if (p.exitCode === 1) return null;
+  if (p.exitCode !== 0) throw new Error(`git config --get core.longpaths exited ${p.exitCode}`);
+  const [scope, value] = p.stdout.toString().trimEnd().split("	");
+  return { scope: scope!, value: value! };
+}
+
+async function withUnresolved(name: string, body: (f: WbFixture, path: string, service: Service, r: RegistrationResult) => Promise<void>): Promise<void> {
+  const f = build();
+  const longPaths = serviceLongPaths(f.repo);
+  if (longPaths?.value === "true") return void console.log(`SKIP T119 ${name}: the service environment sets core.longpaths=true in the ${longPaths.scope} scope, so Git resolves the long ref`);
+  // Components of 100 units each.
+  const segments = Math.ceil(Math.max(0, 270 - join(f.repo, ".git", "refs", "heads", "t119").length) / 101);
+  const branch = ["t119", ...Array.from({ length: segments }, () => "p".repeat(100))].join("/");
+  expect(join(f.repo, ".git", "refs", "heads", branch).length).toBeGreaterThanOrEqual(260);
+  const long = ["-c", "core.longpaths=true"];
+  git(f, [...long, "worktree", "add", "-q", "-b", branch, "--", folder(f, "wt-long"), f.oids.base!]);
+  git(f, ["branch", "t119-free", f.oids.base!]);
+  const path = recordPath(f, "wt-long");
+  // Git's own list without `core.longpaths`: the null object ID, and no `branch` or `detached` line.
+  expect(recordsOf(f).find((r) => valueOf(r, "worktree") === path)).toEqual([`worktree ${path}`, `HEAD ${"0".repeat(40)}`]);
+  try {
+    await withSync(name, async (service) => body(f, path, service, await open(service, f.repo)));
+  } finally {
+    git(f, [...long, "worktree", "remove", "--force", "--", folder(f, "wt-long")]);
+    git(f, [...long, "branch", "-D", branch]);
+  }
+}
+
+longCase("T119", T119, SHELL, () =>
+  withUnresolved("t119-unresolved", async (f, path, service, r) => {
+    const read = await worktrees.readWorktreeList(await moduleContext(service, r));
+    const listed = (read as { value: { entries: Record<string, unknown>[] } }).value.entries;
+    expect(listed).toEqual(oracleEntries(f, recordsOf(f).map((x) => valueOf(x, "worktree")!)[0]!));
+    expect(listed.find((e) => e.path === path)).toMatchObject({ head: null, branch: null, detached: false, bare: false, headUnresolved: true });
+    expect(refused(await review(service, r, { action: "delete-branch", ref: "refs/heads/t119-free" }))).toEqual(unavailable("head-unresolved", { worktree: path }));
+    expect(steps(service)).toEqual([]);
+  }), TIMEOUT_MS);
+
+const T119_HELD = "FR-016, FR-017, FR-026, FR-052, FR-055, and data-model §8: with a headUnresolved record, Add worktree of an existing branch, Rename, Remove with Also delete the branch, and a rebase under rebase.updateRefs give head-unresolved; the branch list names no holder it cannot prove";
+longCase("T119", T119_HELD, SHELL, () =>
+  withUnresolved("t119-held", async (f, path, service, r) => {
+    const branches = await service.request<{ entries: { ref: string; heldBy: string | null }[] }>("readBranches", {}, { repositoryId: r.repositoryId, repositoryGeneration: r.generation });
+    // Data-model §1 `heldBy`: only a `branch` line names a holder. The renderer reads `headUnresolved` from `readWorktrees`.
+    expect(branches.state).toBe("succeeded");
+    expect(branches.result!.entries.find((e) => e.ref === "refs/heads/t119-free")).toMatchObject({ heldBy: null });
+    const add = await review(service, r, addPayload({ existing: "refs/heads/t119-free" }, service.runner.addWorktreeAdd(folder(f, "wt-add"), r.repositoryId)));
+    expect(refused(add)).toEqual(unavailable("head-unresolved", { worktree: path }));
+    // builtin/branch.c `replace_each_worktree_head_symref` skips a worktree without `head_ref`, so its HEAD would keep the old name.
+    expect(refused(await review(service, r, { action: "rename-branch", ref: "refs/heads/t119-free", name: "t119-renamed" }))).toEqual(unavailable("head-unresolved", { worktree: path }));
+    expect(refused(await review(service, r, removePayload(recordPath(f, "wt with spaces"), false, true)))).toEqual(unavailable("head-unresolved", { worktree: path }));
+    expect(refused(await review(service, r, removePayload(path, false, true)))).toEqual(unavailable("head-unresolved", { worktree: path }));
+    git(f, ["config", "rebase.updateRefs", "true"]);
+    const onto = git(f, ["commit-tree", `${f.oids.base!}^{tree}`, "-p", f.oids.base!, "-m", "onto"]).trim();
+    git(f, ["branch", "t119-onto", onto]);
+    expect(refused(await review(service, r, { action: "rebase", ref: "refs/heads/t119-onto", autostash: false, autosquash: false }))).toEqual(unavailable("head-unresolved", { worktree: path }));
+    expect(steps(service)).toEqual([]);
+  }), TIMEOUT_MS);

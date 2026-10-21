@@ -10,7 +10,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 - `oid`: the commit of the ref.
 - `upstream`: the full upstream ref, or null. From `%(upstream)`.
 - `tracking`: the 003 data-model §1 entry when three facts hold, else null (003 FR-021 pairing rule). Its `objectId` equals the `%(objectname)` ref value of this ref in this read. Its `upstream` equals this entry's `upstream`. Its `upstreamObjectId` equals the `%(objectname)` ref value of that upstream ref in this read, or both are null. The pairing compares the ref values, not the peeled `oid` (contract Δ3).
-- `heldBy`: the worktree path whose record has `branch <ref>`, or null.
+- `heldBy`: the worktree path whose record has `branch <ref>`, or null. A `headUnresolved` record (§8) names no branch, so null then does not prove that the branch is free. The worktree list shows HEAD unknown, and each held-branch mutation refuses with `head-unresolved`.
 - `current`: true for the `*` record of `%(HEAD)`.
 - `localName`: for a remote ref, the D3 refspec mapping result, or null when zero or several refspecs map it.
 - Validation: the 003 `readTracking` record checks, plus the worktree record checks of §8.
@@ -82,13 +82,14 @@ Each section names its source. Field names are contract names. "001 data-model �
 ## 8. Worktree entry (`readWorktrees` result)
 
 - `path`: the bytes of the `worktree` attribute.
-- `head`: the OID, or null for `bare`.
-- `branch`: the full ref, or null with `detached` true.
+- `head`: the OID, or null for `bare` and for `headUnresolved`.
+- `branch`: the full ref, or null with `detached`, `bare`, or `headUnresolved` true.
 - `bare`, `detached`: booleans.
+- `headUnresolved`: true for a record that is not `bare` and has neither `branch` nor `detached`. Git prints this form when it cannot resolve the HEAD of the worktree, such as a ref path of 260 or more UTF-16 units without `core.longpaths` (worktree.c `add_head_info`). The `HEAD` line then holds the null object ID, and the service drops it. The record lines decide this state, never the zero value. An unborn branch prints the null object ID together with `branch`, so it is no unresolved record. Such a record can hold any branch, so a check of a branch in another worktree refuses with reason `head-unresolved` (contract Δ9). This covers Switch, Delete, Rename, Add worktree with an existing branch, Remove with Also delete the branch, and the moved-branch list of a rebase under `rebase.updateRefs`. Rename refuses because builtin/branch.c `replace_each_worktree_head_symref` skips a worktree without `head_ref`, so that HEAD would keep the old name.
 - `locked`: null, or `{reason}` where `reason` is null or the untrusted text.
 - `prunable`: null, or `{reason}` with untrusted text.
 - `main`: true for the first record. `current`: true when the path identity equals the workspace worktree identity.
-- Record checks: the first line starts with `worktree `; each other line is one of the attribute forms; `HEAD` holds an OID of the object format; at most one of `branch` and `detached`; the record ends with an empty line. A failed check gives `MALFORMED_GIT_OUTPUT`.
+- Record checks: the first line starts with `worktree `; each other line is one of the attribute forms; `HEAD` holds an OID of the object format; at most one of `branch` and `detached`, and neither gives `headUnresolved`; the record ends with an empty line. A failed check gives `MALFORMED_GIT_OUTPUT`.
 - Bound: 1,000 records (`WORKTREE_RECORDS`) and 4 MiB (`WORKTREE_LISTING_BYTES`).
 
 ## 9. Configuration value (`readGitSettings` result)

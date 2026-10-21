@@ -231,7 +231,7 @@ registerWorkbenchAction("switch", {
       const worktrees = await readWorktrees(ctx);
       if (!("value" in worktrees)) return worktrees;
       const held = heldElsewhere(worktrees.value.records, t.ref, head);
-      if (held !== null) return unavailable("other-worktree", { worktree: held.path });
+      if (held !== null) return held;
     }
     if ("track" in t) {
       // branch.c `create_branch`: Git writes the start tree before it refuses the tracking setup, so the review refuses first.

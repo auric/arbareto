@@ -19,7 +19,7 @@ import { observe } from "./sync-integrate";
 import { readOut, refKey } from "./sync-review";
 import { worktreeAddExistingArgs, worktreeAddNewArgs, worktreeIndexArgs, worktreeLayoutArgs, worktreePruneArgs, worktreeRemoveArgs, worktreeStatusArgs } from "./workbench-commands";
 import { parseWorktreeStatus, type WorktreeRecord } from "./workbench-parsers";
-import { conclude, killed, readWorktrees, refTarget, registerWorkbenchAction, unavailable, type PayloadOf, type Refused, type StepEnd, type WorkbenchRun } from "./workbench-review";
+import { conclude, heldElsewhere, killed, readWorktrees, refTarget, registerWorkbenchAction, unavailable, type PayloadOf, type Refused, type StepEnd, type WorkbenchRun } from "./workbench-review";
 
 const HEADS = "refs/heads/";
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
@@ -185,8 +185,8 @@ registerWorkbenchAction<"worktree-add", AddBound>("worktree-add", {
       if (!("value" in list)) return list;
       // FR-052: Git checks out a branch in one worktree only, also for a prunable record (builtin/worktree.c `die_if_checked_out`).
       if (common.head.state !== "detached" && common.head.target === b.existing) return unavailable("current-branch");
-      const held = list.value.records.find((r) => r.branchKey === refKey(b.existing));
-      if (held !== undefined) return unavailable("other-worktree", { worktree: held.path });
+      const held = heldElsewhere(list.value.records, b.existing, common.head);
+      if (held !== null) return held;
       oid = tip.value;
     } else {
       const fresh = await newName(ctx, b.new);
@@ -390,11 +390,12 @@ registerWorkbenchAction<"worktree-remove", RemoveBound>("worktree-remove", {
     let branch: DeleteFacts | null = null;
     if (p.deleteBranch) {
       const ref = record.branch;
-      if (ref === null) return unavailable("detached");
+      // Data-model §8: Git names no branch for a `headUnresolved` record.
+      if (ref === null) return record.headUnresolved ? unavailable("head-unresolved", { worktree: record.path }) : unavailable("detached");
       // Plan.md D4: another worktree must not hold the branch. The removal releases the branch of this record only.
       if (common.head.state !== "detached" && common.head.target === ref) return unavailable("current-branch");
-      const other = records.find((r) => r !== record && r.branchKey === record.branchKey);
-      if (other !== undefined) return unavailable("other-worktree", { worktree: other.path });
+      const other = heldElsewhere(records.filter((r) => r !== record), ref, common.head);
+      if (other !== null) return other;
       if (!ref.startsWith(HEADS) || !isRefName(ref)) return unavailable("invalid-name");
       const facts = await deleteFacts(ctx, ref, common.listing);
       if (!("value" in facts)) return facts;

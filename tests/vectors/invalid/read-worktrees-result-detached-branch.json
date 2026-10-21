@@ -1,7 +1,7 @@
 {
   "schema": "read-worktrees-result",
   "expected": "INVALID_REQUEST",
-  "text": "{\"entries\":[{\"path\":\"C:/repo\",\"invalidUtf8\":false,\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"branch\":\"refs/heads/main\",\"bare\":false,\"detached\":false,\"locked\":null,\"prunable\":null,\"main\":true,\"current\":true},{\"path\":\"C:/repo-wt\",\"invalidUtf8\":false,\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"branch\":\"refs/heads/side\",\"bare\":false,\"detached\":true,\"locked\":{\"reason\":\"fixture reason\\nwith newline\"},\"prunable\":null,\"main\":false,\"current\":false}]}",
+  "text": "{\"entries\":[{\"path\":\"C:/repo\",\"invalidUtf8\":false,\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"branch\":\"refs/heads/main\",\"bare\":false,\"detached\":false,\"headUnresolved\":false,\"locked\":null,\"prunable\":null,\"main\":true,\"current\":true},{\"path\":\"C:/repo-wt\",\"invalidUtf8\":false,\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"branch\":\"refs/heads/side\",\"bare\":false,\"detached\":true,\"headUnresolved\":false,\"locked\":{\"reason\":\"fixture reason\\nwith newline\"},\"prunable\":null,\"main\":false,\"current\":false}]}",
   "repair": {
     "entries.1.detached": false
   }

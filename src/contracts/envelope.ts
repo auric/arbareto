@@ -1469,7 +1469,7 @@ export const ReviewWorkbenchResult = z
       })
       .refine(
         (r) =>
-          (r.worktree === undefined || r.reason === "other-worktree") &&
+          (r.worktree === undefined || r.reason === "other-worktree" || r.reason === "head-unresolved") &&
           (r.ref === undefined || r.reason === "name-exists") &&
           (r.remotes === undefined || r.reason === "several-tracking-remotes") &&
           (r.paths !== undefined) === (r.reason === "untracked-in-way") &&
@@ -1558,12 +1558,13 @@ const WorktreeEntry = z
     branch: FullRef.nullable(),
     bare: z.boolean(),
     detached: z.boolean(),
+    headUnresolved: z.boolean(),
     locked: z.strictObject({ reason: z.string().nullable() }).meta({ title: "WorktreeLock" }).nullable(),
     prunable: z.strictObject({ reason: z.string().nullable() }).meta({ title: "WorktreePrunable" }).nullable(),
     main: z.boolean(),
     current: z.boolean(),
   })
-  .refine((e) => !e.detached || e.branch === null)
+  .refine((e) => (!e.detached || e.branch === null) && e.headUnresolved === (!e.bare && e.branch === null && !e.detached) && (!e.headUnresolved || e.head === null))
   .meta({ title: "WorktreeEntry" });
 // Contract Δ3 `readWorktrees`: the records in Git's order, so only the first is main, and at most one is current. A bound gives OUTPUT_LIMIT with its reason.
 export const ReadWorktreesResult = z

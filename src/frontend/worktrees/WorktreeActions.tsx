@@ -67,8 +67,8 @@ const planOf = (response: BridgeResponse) => (isObject(response.result) && isObj
 
 /** The last folder name of a record path. */
 export const folderOf = (path: string) => splitPath(path.replace(/[\\/]+$/, ""), WINDOWS_SEPARATORS)[1] || path;
-/** The branch, the detached commit, or the bare mark of a record (data-model §8). */
-export const branchText = (e: WorktreeEntry) => (e.bare ? W.bare : e.branch !== null ? shortRef(e.branch) : e.head !== null ? W.detached(e.head) : null);
+/** The branch, the detached commit, the unresolved mark, or the bare mark of a record (data-model §8). */
+export const branchText = (e: WorktreeEntry) => (e.bare ? W.bare : e.branch !== null ? shortRef(e.branch) : e.detached && e.head !== null ? W.detached(e.head) : e.headUnresolved ? W.headUnknown : null);
 /** The current, main, locked, and prunable marks (spec FR-049). */
 export function marks(e: WorktreeEntry): string[] {
   const out: string[] = [];

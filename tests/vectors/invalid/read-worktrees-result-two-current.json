@@ -1,7 +1,7 @@
 {
   "schema": "read-worktrees-result",
   "expected": "INVALID_REQUEST",
-  "text": "{\"entries\":[{\"path\":\"C:/repo\",\"invalidUtf8\":false,\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"branch\":\"refs/heads/main\",\"bare\":false,\"detached\":false,\"locked\":null,\"prunable\":null,\"main\":true,\"current\":true},{\"path\":\"C:/gone\",\"invalidUtf8\":false,\"head\":\"89abcdef0123456789abcdef0123456789abcdef\",\"branch\":\"refs/heads/gone\",\"bare\":false,\"detached\":false,\"locked\":null,\"prunable\":{\"reason\":\"gitdir file points to non-existent location\"},\"main\":false,\"current\":true}]}",
+  "text": "{\"entries\":[{\"path\":\"C:/repo\",\"invalidUtf8\":false,\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"branch\":\"refs/heads/main\",\"bare\":false,\"detached\":false,\"headUnresolved\":false,\"locked\":null,\"prunable\":null,\"main\":true,\"current\":true},{\"path\":\"C:/gone\",\"invalidUtf8\":false,\"head\":\"89abcdef0123456789abcdef0123456789abcdef\",\"branch\":\"refs/heads/gone\",\"bare\":false,\"detached\":false,\"headUnresolved\":false,\"locked\":null,\"prunable\":{\"reason\":\"gitdir file points to non-existent location\"},\"main\":false,\"current\":true}]}",
   "repair": {
     "entries.1.current": false
   }

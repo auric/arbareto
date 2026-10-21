@@ -748,6 +748,7 @@ describe("refusal texts (contract Δ9, plan D3, D4, D15)", () => {
     expect(refused("WORKBENCH_UNAVAILABLE", { reason: "config-in-include" })).toBe("An included configuration file sets branch.login-form. Git cannot remove that setting here, so delete the branch in a terminal.");
     expect(refused("WORKBENCH_UNAVAILABLE", { reason: "current-branch" })).toBe("You cannot delete the current branch. Switch to another branch first.");
     expect(refused("WORKBENCH_UNAVAILABLE", { reason: "other-worktree", worktree: "C:\\wt\\x" })).toBe("The worktree C:\\wt\\x holds this branch. Open that worktree, or remove it first.");
+    expect(refused("WORKBENCH_UNAVAILABLE", { reason: "head-unresolved", worktree: "C:\\wt\\long" })).toBe("Git cannot read the HEAD of the worktree C:\\wt\\long, so Arbareto cannot tell which branch it holds. Fix or remove that worktree first.");
     expect(refused("WORKBENCH_UNAVAILABLE", { reason: "name-exists", ref: "refs/heads/login-form" })).toBe("The branch login-form exists. Use another name.");
     expect(refused("STALE_REVIEW", {})).toBe("The action did not start: STALE_REVIEW.");
     // Plan D15 "Malformed result": a succeeded review without a token never shows its state as a code.

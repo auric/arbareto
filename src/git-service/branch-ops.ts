@@ -16,7 +16,7 @@ import { readOut, refKey } from "./sync-review";
 import { parseConfigListing, type ConfigEntry, type TrustListing } from "./trust";
 import { branchNameCheckArgs, createArgs, createSwitchArgs, deleteRefArgs, headReflogArgs, headReflogExistsArgs, localConfigArgs, removeBranchSectionArgs, renameArgs, unmergedCountArgs } from "./workbench-commands";
 import { oidList } from "./workbench-parsers";
-import { heldElsewhere, killed, readWorktrees, refTarget, registerWorkbenchAction, revCount, unavailable, conclude, type Refused, type StepEnd, type WorkbenchRun } from "./workbench-review";
+import { heldElsewhere, killed, readWorktrees, refTarget, registerWorkbenchAction, revCount, unavailable, unresolvedRefusal, conclude, type Refused, type StepEnd, type WorkbenchRun } from "./workbench-review";
 
 const HEADS = "refs/heads/";
 const short = (ref: string) => ref.slice(HEADS.length);
@@ -130,6 +130,11 @@ registerWorkbenchAction("rename-branch", {
     if (!("value" in oid)) return oid;
     const fresh = await newName(ctx, p.name);
     if (!("value" in fresh)) return fresh;
+    // builtin/branch.c `replace_each_worktree_head_symref` skips a worktree without `head_ref`, so that HEAD would keep the old name.
+    const worktrees = await readWorktrees(ctx);
+    if (!("value" in worktrees)) return worktrees;
+    const unknown = unresolvedRefusal(worktrees.value.records);
+    if (unknown !== null) return unknown;
     return { bound: { oid: oid.value }, plan: { ref: p.ref, oid: oid.value, name: p.name } };
   },
   started: () => "rename-branch",
@@ -190,7 +195,7 @@ registerWorkbenchAction("delete-branch", {
     const worktrees = await readWorktrees(ctx);
     if (!("value" in worktrees)) return worktrees;
     const held = heldElsewhere(worktrees.value.records, p.ref, head);
-    if (held !== null) return unavailable("other-worktree", { worktree: held.path });
+    if (held !== null) return held;
     const facts = await deleteFacts(ctx, p.ref, common.listing);
     if (!("value" in facts)) return facts;
     const bound: DeleteBound = { ...facts.value, worktrees: worktrees.value.digest };

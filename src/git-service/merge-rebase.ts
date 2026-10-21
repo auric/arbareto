@@ -18,7 +18,7 @@ import { indexState, listRefs, readOut, refKey, refText, remoteList } from "./sy
 import { parseMaybeBool, type ConfigEntry } from "./trust";
 import { forceNoteCountArgs, headIsAncestorArgs, heldCountArgs, mergeArgs, mergeCountsArgs, movedCountArgs, rebaseOntoArgs, rebaseStatusArgs, rebaseWalkArgs, rewrittenCountArgs } from "./workbench-commands";
 import { parseRebaseWalk, parseTrackedStatus, type WalkCommit } from "./workbench-parsers";
-import { conclude, readWorktrees, refTarget, registerWorkbenchAction, revCount, unavailable, type Common, type Observation, type PayloadOf, type Refused, type WorkbenchRun } from "./workbench-review";
+import { conclude, readWorktrees, refTarget, registerWorkbenchAction, revCount, unavailable, unresolvedRefusal, type Common, type Observation, type PayloadOf, type Refused, type WorkbenchRun } from "./workbench-review";
 
 export type MergeRebasePayload = PayloadOf<"merge" | "rebase">;
 type MergePayload = PayloadOf<"merge">;
@@ -176,12 +176,15 @@ async function emptyOf(ctx: ObserveContext, commits: readonly WalkCommit[]): Pro
 // `add_decorations_to_list` skips the HEAD branch and each branch that branch.c `branch_checked_out` names. The todo list holds the commits of
 // `sequencer_make_script`: the `rebaseWalkArgs` walk, without a patch-same commit unless it is empty, because builtin/rebase.c sets `keep_empty`.
 // Contract gap: `branch_checked_out` also names the branches that a worktree rebases or bisects, and this read sees only the `branch` attributes.
-async function updatedRefs(ctx: ObserveContext, head: Branch, onto: string, rebaseMerges: boolean, headMoves: boolean): Promise<Fact<string[]>> {
+async function updatedRefs(ctx: ObserveContext, head: Branch, onto: string, rebaseMerges: boolean, headMoves: boolean): Promise<Fact<string[]> | Refused> {
   const of = ctx.workspace.objectFormat;
   const refs = await listRefs(ctx, "refs/heads");
   if (!("value" in refs)) return refs;
   const worktrees = await readWorktrees(ctx);
   if (!("value" in worktrees)) return worktrees;
+  // Data-model §8: a `headUnresolved` record can hold any candidate, so the moved-branch list is unknown.
+  const unknown = unresolvedRefusal(worktrees.value.records);
+  if (unknown !== null) return unknown;
   const current = refKey(head.target);
   const held = new Set(worktrees.value.records.flatMap((r) => (r.branchKey === null || r.branchKey === current ? [] : [r.branchKey])));
   const candidates = [...refs.value].filter(([key]) => !held.has(key));

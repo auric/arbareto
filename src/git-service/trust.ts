@@ -1801,6 +1801,8 @@ export function createTrust({ runner, environment, configFiles = () => undefined
       shared.release(w.repositoryId);
       released.add(w.repositoryId);
     },
+    // Contract §6: true for a `repositoryId` that a release ended.
+    isReleased: (repositoryId: string): boolean => released.has(repositoryId),
     listTrust: list,
     view,
     gate,

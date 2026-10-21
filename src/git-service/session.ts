@@ -220,8 +220,9 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       reviews.release(workspace.repositoryId);
       submoduleReviews.release(workspace.repositoryId);
       syncs.release(workspace.repositoryId);
-      approvals.invalidate((a) => a.repositoryId === workspace.repositoryId);
-      workbench.invalidate(workspace.repositoryId);
+      approvals.release(workspace.repositoryId);
+      workbench.release(workspace.repositoryId);
+      for (const owners of [committer.owners, syncs.owners, updater.owners, publisher.owners]) for (const [operationId, id] of owners) if (id === workspace.repositoryId) owners.delete(operationId);
       trust.release(workspace);
       recovery.release(workspace);
     },

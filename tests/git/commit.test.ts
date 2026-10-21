@@ -3,7 +3,7 @@
 
 // T098: `reviewCommit` and `commit` (contract §3, §4 "Commit validation and handoff", §9). `commit-review.ts`, `commit.ts`, and `reconcile.ts` come with T111 to T113.
 
-import { describe, expect } from "bun:test";
+import { describe, expect, spyOn } from "bun:test";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { COMMIT_MESSAGE_BYTES, COMMIT_OUTPUT_TAIL_BYTES, COMMIT_OUTPUT_TAIL_LINES } from "../../src/contracts/limits";
@@ -533,6 +533,34 @@ describe("frames and replay (contract §2, §6 \"Recovery markers\")", () => {
       const second = await commit(service, repositoryId, r, "replay\n");
       expect({ ...outcome(second), operationId: second.operationId, runs: runsSince(service, from) }).toEqual({ ...SUCCEEDED, operationId: first.operationId, runs: 0 });
       expect(second.result).toEqual((await service.getOperation(first.operationId!)).result);
+      expect(commitCalls(service).length).toBe(1);
+    }),
+    TIMEOUT_MS,
+  );
+
+  // T386: contract §6 "Registration reuse and release". The released `repositoryId` gets UNKNOWN_TARGET before any token check, so the release frees the consumed approval and its owner entry.
+  caseTest("T386", `T386: a release frees the consumed review token and its owner entry, and a commit with that token then gets UNKNOWN_TARGET and starts no Git process`, SHELL, () =>
+    withService({ name: "t386-release" }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t386-release", "F09"));
+      const other = repoOf(buildChanged(gitPath(), "t386-release-other", "F09"));
+      await underTest("commit");
+      const { repositoryId, r } = await reviewed(service, repo);
+      const first = await commit(service, repositoryId, r, "release\n");
+      expect(outcome(first)).toEqual(SUCCEEDED);
+      const spy = spyOn(Map.prototype, "delete");
+      let deleted: unknown[] = [];
+      try {
+        // Another common directory releases the first workspace.
+        await service.register(other);
+      } finally {
+        // `mockRestore` clears the recorded calls.
+        deleted = spy.mock.calls.map((c) => c[0]);
+        spy.mockRestore();
+      }
+      expect({ approval: deleted.includes(`commit/${r.token}`), owner: deleted.includes(first.operationId) }).toEqual({ approval: true, owner: true });
+      const from = service.runner.calls.length;
+      const second = await commit(service, repositoryId, r, "release\n");
+      expect({ ...outcome(second), runs: runsSince(service, from) }).toEqual({ state: "rejected", code: "UNKNOWN_TARGET", runs: 0 });
       expect(commitCalls(service).length).toBe(1);
     }),
     TIMEOUT_MS,

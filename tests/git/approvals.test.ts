@@ -105,6 +105,30 @@ describe("approvals (T108)", () => {
     expect(store.accept(other)).toMatchObject({ ok: true });
   });
 
+  // T386: contract §6 "Registration reuse and release". A released `repositoryId` is never issued again, so no request reaches its consumed approval.
+  test("T386: a release frees every approval of its repository, also a consumed one; another repository keeps its consumed approval", async () => {
+    const store = createApprovals(clock().now);
+    const operationId = id();
+    const [released, other] = [hunk(), hunk()];
+    const ref = new WeakRef(released.binding);
+    for (const a of [released, other]) {
+      store.issue(a);
+      expect(store.consume(a, operationId)).toBe(true);
+    }
+    const unused = { ...hunk(), repositoryId: released.repositoryId };
+    store.issue(unused);
+    store.release(released.repositoryId);
+    expect(store.accept(released)).toEqual({ ok: false, code: "UNKNOWN_TARGET" });
+    expect(store.accept(unused)).toEqual({ ok: false, code: "UNKNOWN_TARGET" });
+    expect(store.accept(other)).toEqual({ ok: false, consumed: operationId });
+    // Only the store and `released` hold the binding.
+    (released as { binding: unknown }).binding = null;
+    // A WeakRef keeps its target until the current job ends (ECMA-262 ClearKeptObjects).
+    await Bun.sleep(0);
+    Bun.gc(true);
+    expect(ref.deref()).toBeUndefined();
+  });
+
   test("a hunk approval binds every value of the contract §4 list, and each change is reported", () => {
     const store = createApprovals(clock().now);
     const a = hunk();

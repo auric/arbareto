@@ -404,6 +404,8 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     }
     return found;
   };
+  // A late caller after `release` gets no state, so it recreates none (contract §6 "Registration reuse and release").
+  const liveState = (repositoryId: string): WorkspaceState | null => (trust.isReleased(repositoryId) ? null : stateOfWorkspace(repositoryId));
   // Counts the read attempts in start order.
   let started = 0;
 
@@ -1062,18 +1064,23 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     recoveryState: (w: Workspace): RecoveryState => recoveryOf(stateOfWorkspace(w.repositoryId), w),
 
     // Contract §7 "Shared listing": `openHistory` and `readRefs` read this tuple again before it reuses a listing.
-    listingTuple: (w: Workspace, operationId: string, signal: AbortSignal): Promise<string | WalkStop | null> => listingTuple(runner, w, stateOfWorkspace(w.repositoryId), operationId, signal),
+    listingTuple: (w: Workspace, operationId: string, signal: AbortSignal): Promise<string | WalkStop | null> => {
+      const st = liveState(w.repositoryId);
+      return st === null ? Promise.resolve(null) : listingTuple(runner, w, st, operationId, signal);
+    },
 
     // A watcher hint marks the workspace dirty (contract §8 "Token invalidation"). `lost`: later changes can give no hint.
     hint(repositoryId: string, lost: boolean): void {
-      const st = stateOfWorkspace(repositoryId);
+      const st = liveState(repositoryId);
+      if (st === null) return;
       st.hints++;
       st.unwatched ||= lost;
     },
 
     // Data-model §2 `unavailable`: a history read that ends REPOSITORY_UNAVAILABLE for a missing object (contract §7 "Missing objects").
     markUnavailable(repositoryId: string): void {
-      stateOfWorkspace(repositoryId).unavailable = true;
+      const st = liveState(repositoryId);
+      if (st !== null) st.unavailable = true;
     },
 
     // Data-model §4 "Status snapshot retention": a workspace release releases its snapshot.

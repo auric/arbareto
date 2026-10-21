@@ -21,7 +21,7 @@ import { openService, type ChangeEntry, type RegistrationResult, type Service, t
 import { objectsWith } from "../git/submodule-harness";
 import { ANY_EXIT, gitExe, INTEGRATE_ENV, sendSync } from "../git/sync-harness";
 import { buildWorkbench, FIXTURE_MERGE_RESULT, repoOf, wb, type WbFixture, type WbFixtureName } from "../git/workbench-fixtures";
-import { buildF31, distroGitHost, distroSubmoduleOracle, distroSubmoduleState, globalConfig } from "./fixtures";
+import { buildF31, distroGitHost, distroSubmoduleOracle, distroSubmoduleState, globalConfig, sh } from "./fixtures";
 import { inDistro, listScopes, pgrep, uncPath, useWslFolder, WSL_FILES_TEXT, wslExec, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
 for (const module of ["session", "workbench-review", "switch", "branch-ops", "merge-rebase", "resolve", "worktrees", "git-settings", "trust", "file-publish", "hunk-publish", "submodule-review", "submodule-update"]) {
@@ -61,9 +61,12 @@ const FIXED_USER = "[user]\n\tname = Arbareto Fixture\n\temail = fixture@arbaret
 
 const mergeTool = (w: WslHost) => `${w.folder}/home/fixture-merge-tool.sh`;
 // The quickstart.md fixture merge tool. A `\"` in a configuration value is a literal quote (git-config(1) "Syntax").
-// Without `trustExitCode`, git-mergetool--lib `check_unchanged` decides by `test "$MERGED" -nt "$BACKUP"`. On ext4 a tool that writes at once can leave both files the same time, so Git asks.
+// Without `trustExitCode`, git-mergetool--lib `check_unchanged` decides by `test "$MERGED" -nt "$BACKUP"`. F21 `untrusted-fixture-tool-times` observed equal `%.9Y` times for this tool, so Git asks.
 // With it, Git decides by the exit code (git-config(1) `mergetool.<tool>.trustExitCode`).
 const globalText = (w: WslHost, extra = "") => `${FIXED_USER}[mergetool "fixture"]\n\tcmd = '${mergeTool(w)}' \\"$MERGED\\"\n\ttrustExitCode = true\n${extra}`;
+
+// The default `core.excludesFile` of the owned home (git-config(1)). The oracle reads it through `HOME`, and the double through `XDG_CONFIG_HOME`.
+const XDG_IGNORED = "xdg-ignored.txt";
 
 let distroHost: GitHost | undefined;
 // One host for the file.
@@ -71,6 +74,7 @@ function ensureHost(w: WslHost): GitHost {
   if (distroHost === undefined) {
     distroHost = distroGitHost(w, "wb", globalText(w), INTEGRATE_ENV);
     distroHost.write(mergeTool(w), `#!/bin/sh\nprintf '${FIXTURE_MERGE_RESULT.replace("\n", "\\n")}' > "$1"\n`);
+    distroHost.write(`${w.folder}/home/.config/git/ignore`, `${XDG_IGNORED}\n`);
   }
   return distroHost;
 }
@@ -79,14 +83,6 @@ function hostOf(w: WslHost, extra = ""): GitHost {
   const h = ensureHost(w);
   h.write(h.globalConfig, globalText(w, extra));
   return h;
-}
-
-// One `/bin/sh` script in `dir`, with the arguments as an argument array.
-function shIn(w: WslHost, dir: string, script: string, args: string[] = [], allowExit = [0]): Buffer {
-  if (!dir.startsWith(`${w.folder}/`)) throw new Error(`outside the owned folder: ${dir}`);
-  const r = wslExec(["--distribution", w.distro, "--cd", dir, "--exec", "/bin/sh", "-c", script, "sh", ...args], { timeoutMs: 300_000 });
-  if (!allowExit.includes(r.exitCode ?? -1)) throw new Error(`sh in ${dir} exited ${r.exitCode}: ${r.stderr}`);
-  return Buffer.from(r.bytes);
 }
 
 // A fixture in the distro: the Linux paths of its root and main worktree, and the labels of its construction.
@@ -109,7 +105,7 @@ const valueOf = (lines: string[], label: string): string | null | undefined => {
 };
 
 let transfers = 0;
-// The `tar` stream of the Windows build goes to `tar -x` in the distro. Git for Windows writes `core.symlinks` and `core.ignorecase` at `init` (Windows facts), so the copy drops both.
+// The `tar` stream of the Windows build goes to `tar -x` in the distro. Git for Windows writes `core.symlinks`, `core.ignorecase`, and `core.filemode` at `init` (Windows facts), so the copy drops them.
 // The linked worktrees hold Windows paths. Each `gitdir` file of the main Git folder takes the Linux prefix, also for a removed folder (gitrepository-layout(5) `worktrees/<id>/gitdir`).
 // Then `git worktree repair` with the new paths rewrites the `.git` file of each existing linked worktree (git-worktree(1) "repair").
 function toDistro(w: WslHost, f: WbFixture): DistroFixture {
@@ -130,8 +126,8 @@ function toDistro(w: WslHost, f: WbFixture): DistroFixture {
       return `${root}/${slash(p).slice(prefix.length)}`;
     });
   const repo = `${root}/repo`;
-  for (const key of ["core.symlinks", "core.ignorecase"]) gitRun(h, repo, ["config", "--local", "--unset", key], { allowExit: [0, 5] });
-  const admin = shIn(w, repo, 'for g in .git/worktrees/*/gitdir; do [ -f "$g" ] && printf "%s\\0" "$g"; done; exit 0').toString("utf8");
+  for (const key of ["core.symlinks", "core.ignorecase", "core.filemode"]) gitRun(h, repo, ["config", "--local", "--unset", key], { allowExit: [0, 5] });
+  const admin = sh(w, 'for g in .git/worktrees/*/gitdir; do [ -f "$g" ] && printf "%s\\0" "$g"; done; exit 0', [], { cwd: repo }).stdout;
   for (const rel of nul(admin)) {
     const path = `${repo}/${rel}`;
     const content = h.read(path)!.toString("utf8");
@@ -203,6 +199,8 @@ const message = (r: Repo, rev: string) => {
 };
 const subjects = (r: Repo, range: string[]) => out(r, ["log", "--reverse", "--format=%s", ...range]).split("\n").filter((l) => l !== "");
 const count = (r: Repo, args: string[]) => Number(out(r, [...READ, "rev-list", "--count", ...args]).trim());
+// F10: the commits that a branch, tag, or remote-tracking ref reaches.
+const reachable = (r: Repo) => new Set(out(r, ["rev-list", "--branches", "--tags", "--remotes"]).split("\n").filter((l) => l !== ""));
 const stages = (r: Repo, path: string) => stageEntries(r.h, r.dir, [path]).map((e) => `${e.mode} ${e.stage}`);
 const logLines = (r: Repo, log: string) => (r.h.read(log)?.toString("utf8") ?? "").split("\n").filter((l) => l !== "");
 
@@ -210,7 +208,7 @@ const logLines = (r: Repo, log: string) => (r.h.read(log)?.toString("utf8") ?? "
 function kindsOf(r: Repo, paths: string[]): string[] {
   if (paths.length === 0) return [];
   const script = 'for p; do if [ -L "$p" ]; then echo l; elif [ -d "$p" ]; then echo d; elif [ -e "$p" ]; then echo f; else echo a; fi; done';
-  return shIn(r.w, r.dir, script, paths).toString("latin1").split("\n").slice(0, paths.length);
+  return sh(r.w, script, paths, { cwd: r.dir }).stdout.split("\n").slice(0, paths.length);
 }
 
 // The plan.md D3 in-the-way check (research.md R4), built from its text. `bytes: false` counts a file only without a stage-0 entry at its path.
@@ -376,8 +374,23 @@ function colonPaths(w: WslHost): Observation[] {
     obs("F1.colon.short-magic", { exit: 0, paths: [":x.txt"] }, read(":x.txt\0")),
     obs("F1.colon.long-magic", { exit: 0, paths: [":(top)y.txt"] }, read(":(top)y.txt\0")),
     obs("F1.colon.control-plain-names", { exit: 1, paths: [] }, read("x.txt\0y.txt\0")),
+    ...COLON_FORMS.map(([label, input, expected]) => obs(`F1.colon.form.${label}`, expected, read(`${input}\0`))),
   ];
 }
+
+// The stdin forms that name a path with a leading `:` without magic, from gitglossary(7) "pathspec" and pathspec.c `parse_short_magic`, `init_pathspec_item`.
+// A form without a leading `:` takes no magic. `:(top)` and `:/` allow only `top`, and the empty short magic ends at the second `:`.
+// check-ignore prints `pathspec.items[i].original`, the stdin form (builtin/check-ignore.c), and refuses every magic except `top` with exit 128.
+const COLON_FORMS: [string, string, { exit: number; paths: string[] }][] = [
+  ["dot-slash", "./:x.txt", { exit: 0, paths: ["./:x.txt"] }],
+  ["dot-slash-long-name", "./:(top)y.txt", { exit: 0, paths: ["./:(top)y.txt"] }],
+  ["top-word", ":(top):x.txt", { exit: 0, paths: [":(top):x.txt"] }],
+  ["top-word-long-name", ":(top):(top)y.txt", { exit: 0, paths: [":(top):(top)y.txt"] }],
+  ["top-mnemonic", ":/::x.txt", { exit: 0, paths: [":/::x.txt"] }],
+  ["empty-magic", ":::x.txt", { exit: 0, paths: [":::x.txt"] }],
+  ["control-empty-magic-names-x", "::x.txt", { exit: 1, paths: [] }],
+  ["control-literal-word-refused", ":(literal):x.txt", { exit: 128, paths: [] }],
+];
 
 function f2(w: WslHost): Observation[] {
   const o: Observation[] = [];
@@ -532,10 +545,9 @@ function f10(w: WslHost): Observation[] {
   for (const name of ["unmerged", "merged", "held", "feature/a/b"]) {
     const counted = count(at(s), [s.refs[`refs/heads/${name}`]!, "--not", `--exclude=${name}`, "--branches", "--tags", "--remotes"]);
     const r = at(copy(w, "branches"));
-    const reachable = () => new Set(out(r, ["rev-list", "--branches", "--tags", "--remotes"]).split("\n").filter((l) => l !== ""));
-    const before = reachable();
+    const before = reachable(r);
     gitRun(r.h, r.dir, ["branch", "-D", name]);
-    const after = reachable();
+    const after = reachable(r);
     o.push(obs(`F10.${name}`, [...before].filter((x) => !after.has(x)).length, counted));
   }
   return o;
@@ -677,7 +689,7 @@ function f18(w: WslHost): Observation[] {
   gitRun(f.h, f.repo, ["config", "filter.f18.clean", filter.command]);
   gitRun(f.h, f.repo, ["config", "core.fsmonitor", monitor.command]);
   // A new file time makes the status read compare the content through the clean filter.
-  shIn(w, target, "touch -d 2026-01-02T00:00:00Z -- w.txt");
+  sh(w, "touch -d 2026-01-02T00:00:00Z -- w.txt", [], { cwd: target });
   const exit = run(r, [...STEP, "worktree", "remove", "--", target]).exitCode;
   const present = new Set(f.h.existing([filter.log, monitor.log, target]));
   return [obs("F18.remove", { exit: 0, filterRan: true, monitorRan: true, removed: true }, { exit, filterRan: present.has(filter.log), monitorRan: present.has(monitor.log), removed: !present.has(target) })];
@@ -736,7 +748,21 @@ function f21(w: WslHost): Observation[] {
   // `true` leaves $MERGED unchanged, so Git's script asks on its standard input (git-mergetool--lib `check_unchanged`).
   const keepExit = mergetool(rb, ["-c", "mergetool.keep.cmd=true"], "keep");
   const keptWorking = b.h.read(`${b.repo}/uu.txt`)!.equals(working);
+  // The fixture tool without `trustExitCode`. The tool command runs in a subshell of git-mergetool, so it sees `$BACKUP` (git-mergetool--lib.sh `merge_cmd`).
+  // It records the file times and the `test -nt` result of that `/bin/sh`, which `check_unchanged` uses next.
+  const c = copy(w, "conflict-merge");
+  const rc = at(c);
+  const original = c.h.read(`${c.repo}/uu.txt`)!;
+  const log = `${c.root}/f21-times.log`;
+  const timed = `'${mergeTool(w)}' "$MERGED"; /usr/bin/stat --format=%.9Y -- "$MERGED" "$BACKUP" > '${log}'; if test "$MERGED" -nt "$BACKUP"; then echo newer; else echo not-newer; fi >> '${log}'`;
+  const timedExit = mergetool(rc, ["-c", `mergetool.timed.cmd=${timed}`, "-c", "mergetool.timed.trustExitCode=false"], "timed");
+  const [mergedTime, backupTime, nt] = (c.h.read(log)?.toString("utf8") ?? "").split("\n");
+  const timedWorking = c.h.read(`${c.repo}/uu.txt`)!;
+  const times = { exit: timedExit, mergedTime, backupTime, test: nt, stages: stages(rc, "uu.txt"), working: timedWorking.equals(original) ? "original" : timedWorking.toString("utf8") === FIXTURE_MERGE_RESULT ? "tool-result" : "other" };
+  // git-mergetool.sh `merge_file`: a failed `check_unchanged` moves `$BACKUP` over `$MERGED`. So `not-newer` gives exit 1, stages 1 to 3, and the original bytes.
+  const consistent = nt === "newer" ? timedExit === 0 && times.working === "tool-result" : nt === "not-newer" && timedExit > 0 && times.working === "original" && same(times.stages, ["100644 1", "100644 2", "100644 3"]);
   return [
+    obs("F21.untrusted-fixture-tool-times", "record", times, consistent),
     obs(
       "F21.fixture-tool",
       { exit: 0, stages: ["100644 0"], working: FIXTURE_MERGE_RESULT, backup: true },
@@ -831,6 +857,10 @@ function f30(w: WslHost): Observation[] {
 
 // Every byte as a C octal escape, so no byte of the name ends or changes the line (builtin/hash-object.c `hash_stdin_paths`).
 const cQuote = (p: string) => `"${[...Buffer.from(p, "utf8")].map((b) => `\\${b.toString(8).padStart(3, "0")}`).join("")}"`;
+const hashPaths = (r: Repo, input: string) => {
+  const res = run(r, [...READ, "hash-object", "--stdin-paths"], { input: bytes(input) });
+  return { exit: res.exitCode, ids: text(res).split("\n").filter((l) => l !== "") };
+};
 
 function f31(w: WslHost): Observation[] {
   const f = copy(w, "branches");
@@ -843,15 +873,11 @@ function f31(w: WslHost): Observation[] {
   for (const rec of nul(out(r, [...READ, "ls-files", "-z", "--stage", "--", ...paths]))) ids[rec.slice(rec.indexOf("\t") + 1)] = rec.split(" ")[1]!;
   const indexIds = paths.map((p) => ids[p] ?? null);
   const before = indexDigest(r);
-  const hash = (input: string) => {
-    const res = run(r, [...READ, "hash-object", "--stdin-paths"], { input: bytes(input) });
-    return { exit: res.exitCode, ids: text(res).split("\n").filter((l) => l !== "") };
-  };
   return [
-    obs("F31.raw-lines", { exit: 0, ids: indexIds }, hash(paths.map((p) => `${p}\n`).join(""))),
-    obs("F31.quoted-lines", { exit: 0, ids: indexIds }, hash(paths.map((p) => `${cQuote(p)}\n`).join(""))),
-    obs("F31.cr-before-lf-stripped", { exit: 0, ids: [indexIds[1]] }, hash("plain.txt\r\n")),
-    exitObs("F31.bad-quote", "nonzero", hash('"plain.txt\n').exit),
+    obs("F31.raw-lines", { exit: 0, ids: indexIds }, hashPaths(r, paths.map((p) => `${p}\n`).join(""))),
+    obs("F31.quoted-lines", { exit: 0, ids: indexIds }, hashPaths(r, paths.map((p) => `${cQuote(p)}\n`).join(""))),
+    obs("F31.cr-before-lf-stripped", { exit: 0, ids: [indexIds[1]] }, hashPaths(r, "plain.txt\r\n")),
+    exitObs("F31.bad-quote", "nonzero", hashPaths(r, '"plain.txt\n').exit),
     obs("F31.index-unchanged", before, indexDigest(r)),
     ...f31Names(w),
   ];
@@ -862,21 +888,17 @@ function f31Names(w: WslHost): Observation[] {
   const f = copy(w, "branches");
   const r = at(f);
   const names = ["lf\nname.txt", "cr\rname.txt", "tab\tname.txt"];
-  shIn(w, f.repo, 'for n in "lf\\012name.txt" "cr\\015name.txt" "tab\\011name.txt"; do p=$(printf "${n}X"); printf "%s\\n" "$n" > "${p%X}"; done');
+  sh(w, 'for n in "lf\\012name.txt" "cr\\015name.txt" "tab\\011name.txt"; do p=$(printf "${n}X"); printf "%s\\n" "$n" > "${p%X}"; done', [], { cwd: f.repo });
   gitRun(f.h, f.repo, [...STEP, "--literal-pathspecs", "add", "--pathspec-from-file=-", "--pathspec-file-nul"], { input: bytes(names.map((n) => `${n}\0`).join("")) });
   const ids: Record<string, string> = {};
   for (const rec of nul(out(r, [...READ, "ls-files", "-z", "--stage"]))) ids[rec.slice(rec.indexOf("\t") + 1)] = rec.split(" ")[1]!;
   const indexIds = names.map((n) => ids[n] ?? null);
   const before = indexDigest(r);
-  const hash = (input: string) => {
-    const res = run(r, [...READ, "hash-object", "--stdin-paths"], { input: bytes(input) });
-    return { exit: res.exitCode, ids: text(res).split("\n").filter((l) => l !== "") };
-  };
   return [
     obs("F31.names.added", true, indexIds.every((id) => id !== null)),
-    obs("F31.names.quoted-lines", { exit: 0, ids: indexIds }, hash(names.map((n) => `${cQuote(n)}\n`).join(""))),
+    obs("F31.names.quoted-lines", { exit: 0, ids: indexIds }, hashPaths(r, names.map((n) => `${cQuote(n)}\n`).join(""))),
     // A raw line cannot hold LF. A CR inside the line stays; only a CR before the LF goes.
-    obs("F31.names.raw-cr-and-tab", { exit: 0, ids: indexIds.slice(1) }, hash(names.slice(1).map((n) => `${n}\n`).join(""))),
+    obs("F31.names.raw-cr-and-tab", { exit: 0, ids: indexIds.slice(1) }, hashPaths(r, names.slice(1).map((n) => `${n}\n`).join(""))),
     obs("F31.names.index-unchanged", before, indexDigest(r)),
   ];
 }
@@ -952,7 +974,7 @@ describe("fileAppend through wslFiles mode append (T081, contract Δ6, plan.md D
     expect(f.h.read(`${common}/info/exclude`)!.toString("utf8")).toBe(`${old}/docs/\n`);
     expect(append(w, roots, 2, ["info", "exclude"], exclude ?? Buffer.alloc(0), "/again/\n")).toEqual(["stale"]);
     expect(f.h.read(`${common}/info/exclude`)!.toString("utf8")).toBe(`${old}/docs/\n`);
-    shIn(w, f.repo, "ln -s -- top.txt linked");
+    sh(w, "ln -s -- top.txt linked", [], { cwd: f.repo });
     const target = f.h.read(`${f.repo}/top.txt`)!;
     expect(append(w, roots, 0, ["linked"], target, "/y\n")).toEqual(["refused"]);
     expect(f.h.read(`${f.repo}/top.txt`)).toEqual(target);
@@ -1122,7 +1144,9 @@ describe("switch through the distro Git (quickstart.md Q5 to Q8)", () => {
       expect(outcome(failed)).toEqual(WITH_EFFECTS);
       expect(subcommands(s, next)).toEqual(["stash push", "checkout"]);
       expect(failed.result).toMatchObject({ head: { state: "branch", target: "refs/heads/main", oid: g.oids.base }, stash: { oid: stashValue(at(g)), state: "kept-failed-checkout" }, conflicted: 0 });
-      console.log(`OBSERVATION ${TASK}: Q7.remedy-command observed=${JSON.stringify((failed.result as { remedy?: { command: string | null } }).remedy?.command ?? null).replaceAll(" ", "\\u0020")}`);
+      // Feature 003 contract Δ3 `reviewSync` and `clone`: a remedy is text only for a WSL Git, so the command is null.
+      const remedy = (failed.result as { remedy?: { text: unknown; command: unknown } }).remedy;
+      expect({ text: typeof remedy?.text, command: remedy?.command }).toEqual({ text: "string", command: null });
     });
     own(o, ["stash", "push", "--quiet", "-m", MESSAGE]);
     own(o, ["checkout", "-q", "--no-guess", "target", "--"]);
@@ -1168,11 +1192,11 @@ describe("branches, merge, and rebase through the distro Git (quickstart.md Q9 t
     const o = copy(w, "branches");
     const start = f.oids.second!;
     // F10: the commits that Git's own branch -D makes unreachable.
-    const reachable = (x: DistroFixture) => new Set(out(at(x), ["rev-list", "--branches", "--tags", "--remotes"]).split("\n").filter((l) => l !== ""));
     const c = copy(w, "branches");
-    const before = reachable(c);
+    const before = reachable(at(c));
     own(c, ["branch", "-D", "--end-of-options", "feature/a/b"]);
-    const onlyHere = [...before].filter((x) => !reachable(c).has(x)).length;
+    const after = reachable(at(c));
+    const onlyHere = [...before].filter((x) => !after.has(x)).length;
     await withWsl(w, "t081-branches", async (s) => {
       const r = await open(s, w, f.repo);
       let from = s.runner.calls.length;
@@ -1475,12 +1499,18 @@ describe("staging through the distro Git (quickstart.md Q15, Q16, Q19)", () => {
     for (const [label, direction, kind, choose, oracle, addFirst] of cases) {
       const f = copy(w, "staging-tree");
       const o = copy(w, "staging-tree");
+      for (const x of [f, o]) x.h.write(`${x.repo}/${XDG_IGNORED}`, "ignored by the owned home\n");
       if (addFirst) for (const x of [f, o]) own(x, ["add", "-A"]);
       const files = f.h.digests(f.repo);
+      // git-status(1) porcelain v2: `? <path>` is an untracked record.
+      const untracked = nul(out(at(o), ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=all"])).filter((rec) => rec.startsWith("? ")).map((rec) => rec.slice(2)).sort();
+      expect(untracked).not.toContain(XDG_IGNORED);
       await withWsl(w, `t081-files-${label}`, async (s) => {
         const r = await open(s, w, f.repo);
         const read = await readOk(s, r.repositoryId);
-        const chosen = (await allEntries(s, r.repositoryId, read)).filter(choose);
+        const entries = await allEntries(s, r.repositoryId, read);
+        expect({ label, untracked: entries.filter((e) => e.category === "untracked").map((e) => e.path).sort() }).toEqual({ label, untracked });
+        const chosen = entries.filter(choose);
         expect(chosen.length).toBeGreaterThan(0);
         const response = await applyFiles(s, r.repositoryId, read, chosen.map((e) => e.entryId), direction, kind);
         expect({ label, ...outcome(response) }).toEqual({ label, ...SUCCEEDED });
@@ -1542,9 +1572,12 @@ describe("staging through the distro Git (quickstart.md Q15, Q16, Q19)", () => {
   W("Q19 FR-030 and FR-048: a read cut inside the untracked records gives cut untracked with the complete tracked and staged lists of the distro Git", async (w) => {
     const f = copy(w, "staging-tree");
     own(f, ["add", "--", "docs/d.txt"]);
-    shIn(w, f.repo, 'for d in $(seq -f %03.0f 0 99); do mkdir -p "u/$d" && seq -f "u/$d/f%04.0f.txt" 0 999 | xargs touch; done');
+    sh(w, 'for d in $(seq -f %03.0f 0 99); do mkdir -p "u/$d" && seq -f "u/$d/f%04.0f.txt" 0 999 | xargs touch; done', [], { cwd: f.repo });
     // git-status(1) porcelain v2 without untracked files: the tracked entries by category, as `readWorkspace` splits XY.
-    const tracked = nul(out(at(f), ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=no"])).filter((rec) => rec.startsWith("1 ")).flatMap((rec) => {
+    // The fixture has no rename (`2 `) or unmerged (`u `) record, so every record is an ordinary `1 ` record.
+    const records = nul(out(at(f), ["--no-optional-locks", "status", "--porcelain=v2", "-z", "--untracked-files=no"]));
+    expect(records.filter((rec) => !rec.startsWith("1 "))).toEqual([]);
+    const tracked = records.flatMap((rec) => {
       const fields = rec.split(" ");
       const path = fields.slice(8).join(" ");
       return [...(fields[1]![0] !== "." ? [`staged ${path}`] : []), ...(fields[1]![1] !== "." ? [`unstaged ${path}`] : [])];
@@ -1677,8 +1710,8 @@ describe("worktrees, settings, trust, and submodules through the distro Git (qui
     for (const [f, scope] of [[full, undefined], [scoped, "solo"]] as const) {
       await withWsl(w, `t081-submodules-${scope ?? "all"}`, async (s) => {
         const r = await open(s, w, f.sup.dir);
-        const trust = await s.readTrust(r.repositoryId);
-        if (Object.values(trust.result!.approvalRequired).some(Boolean)) expect(outcome(await s.approveTrust(r.repositoryId, "submodules"))).toEqual(SUCCEEDED);
+        // The "base" fixture holds no hook, filter, or program, so no class needs approval.
+        expect((await s.readTrust(r.repositoryId)).result!.approvalRequired).toEqual({ reads: false, commit: false, sync: false, workbench: false, mergetool: false });
         const read = await readOk(s, r.repositoryId);
         const reviewed = await request(s, "reviewSubmodules", { snapshotId: read.snapshotId, ...(scope === undefined ? {} : { scope: { path: scope } }) }, { repositoryId: r.repositoryId, repositoryGeneration: read.generation });
         expect({ scope, ...outcome(reviewed), refusals: valuesOf(reviewed.result, "reason") }).toEqual({ scope, ...SUCCEEDED, refusals: [] });

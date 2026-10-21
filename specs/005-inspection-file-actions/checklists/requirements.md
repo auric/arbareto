@@ -46,5 +46,5 @@
   - Testable: FR-046 states the operation and conflict states in which Save runs, and Q23 tests Save during a merge with conflicts. FR-031 names both path-based windows of the Recycle Bin call. The long-path Edge Case gives the 260-character bound.
   - Consistent: FR-046, the Clarification, the 001 FR-016 entry, plan D10, and contract Δ3 agree. Delete stays blocked by FR-033. The FR-031 limit, the Edge Cases, SC-003, and the contract gaps name the same windows.
   - Honest limits: FR-031 and SC-003 claim no fixture for a change inside a path-based window.
-  - Open point outside the spec text: plan O-9. The Git 2.56 source keeps the `blame.ignoreRevsFile` values sorted, so an empty value may reset nothing. FR-059 follows the Git doc. F7 decides, and a FR-059 change then needs user approval. FR-059 stays testable as written.
+  - Plan O-9 is decided (user, 2026-10-21): blame follows Git exactly. F7 showed that an empty `blame.ignoreRevsFile` value resets nothing on Git 2.56 and 2.55. FR-059 now states that every non-empty value counts. FR-059 stays testable.
   - Every changed FR and Clarification sentence has at most 20 words. The items stay checked.

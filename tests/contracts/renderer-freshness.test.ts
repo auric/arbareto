@@ -30,9 +30,12 @@ function bridgeDouble() {
   };
   // The history view participant. Its `openHistory` request goes through `track`, as the workbench sends it (feature 002 contract Δ3).
   let store: { track<T>(request: Promise<T>): Promise<T>; target(): { repositoryId: string; repositoryGeneration: number } | null } | null = null;
+  // `openedSeq` stands for `HistoryState.openedSeq` of the view.
+  const opened = { seq: 0 };
   const history = {
     open: () => store!.track(record("openHistory", store!.target() ?? {}, { scope: "all" })),
     refresh: () => store!.track(record("openHistory", store!.target() ?? {}, { scope: "all" })),
+    openedSeq: () => opened.seq,
   };
   const bind = <T extends NonNullable<typeof store>>(requests: T) => ((store = requests), requests);
   const of = (operation: string) => calls.filter((call) => call.operation === operation);
@@ -41,7 +44,7 @@ function bridgeDouble() {
     if (!found) throw new Error(`no ${operation} call`);
     return found;
   };
-  return { bridge: contractChecked(bridge), calls, of, last, history, bind };
+  return { bridge: contractChecked(bridge), calls, of, last, history, bind, opened };
 }
 
 function clockDouble() {
@@ -618,6 +621,53 @@ describe("reference reads", () => {
     await flush();
     expect(o.requests.state().refsFailure?.result).toEqual(refused);
     expect(o.requests.state().refs).toBeNull();
+    o.requests.dispose();
+  });
+});
+
+// T385: a poll that changes no field notifies no listener, so the workbench renders nothing.
+describe("no-change polls", () => {
+  const retained = (o: { first: WorkspaceSnapshot }, fields: Partial<WorkspaceSnapshot> = {}) => ({ ...o.first, readKind: "retained" as const, ...fields });
+  async function polls(o: Awaited<ReturnType<typeof shown>>, count: number, fields: Partial<WorkspaceSnapshot> = {}) {
+    let notified = 0;
+    const unsubscribe = o.requests.subscribe(() => void notified++);
+    const before = o.of("readWorkspace").length;
+    for (let i = 0; i < count; i++) {
+      await o.advance(1000);
+      workspaceResponse(o.last("readWorkspace"), retained(o, fields));
+      await flush();
+    }
+    unsubscribe();
+    expect(o.of("readWorkspace")).toHaveLength(before + count);
+    return notified;
+  }
+
+  test("10 retained polls with the same snapshotId and HEAD notify no listener and keep the state object and the capability", async () => {
+    const o = await shown();
+    const state = o.requests.state();
+    expect(state.capability).not.toBeNull();
+    expect(await polls(o, 10)).toBe(0);
+    expect(o.requests.state()).toBe(state);
+    o.requests.dispose();
+  });
+
+  test("a retained poll with a moved HEAD notifies once and records the HEAD", async () => {
+    const o = await shown();
+    const capability = o.requests.state().capability;
+    const head = { state: "branch", target: "refs/heads/main", oid: HEAD_B } as const;
+    expect(await polls(o, 1, { head })).toBe(1);
+    expect(o.requests.state().headRead?.head).toEqual(head);
+    expect(o.requests.state().capability).toBe(capability);
+    o.requests.dispose();
+  });
+
+  test("a retained poll with the same HEAD records its seq while the recorded seq is not above openedSeq", async () => {
+    const o = await shown();
+    const seq = o.requests.state().headRead!.seq;
+    o.opened.seq = seq;
+    expect(await polls(o, 1)).toBe(1);
+    expect(o.requests.state().headRead!.seq).toBeGreaterThan(seq);
+    expect(await polls(o, 3)).toBe(0);
     o.requests.dispose();
   });
 });

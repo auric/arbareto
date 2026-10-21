@@ -143,9 +143,10 @@ export async function readWorktrees(ctx: ObserveContext): Promise<Fact<{ records
 
 // The refusal for a `ref` that another worktree holds, or null. A worktree record holds one branch, so the current record holds only the HEAD branch.
 // Data-model §8: Git names no branch for a `headUnresolved` record, so that record can hold `ref`.
-export function heldElsewhere(records: readonly WorktreeRecord[], ref: string, head: Head): Refused | null {
+// `key` is the listing key of `ref`. A record key with bytes that are no valid UTF-8 differs from the key of its text.
+export function heldElsewhere(records: readonly WorktreeRecord[], ref: string, head: Head, key = refKey(ref)): Refused | null {
   if (head.state !== "detached" && head.target === ref) return null;
-  const held = records.find((r) => r.branch === ref);
+  const held = records.find((r) => r.branchKey === key);
   if (held !== undefined) return unavailable("other-worktree", { worktree: held.path });
   const unknown = records.find((r) => r.headUnresolved);
   return unknown === undefined ? null : unavailable("head-unresolved", { worktree: unknown.path });

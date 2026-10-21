@@ -11,6 +11,7 @@ import { WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { APPROVAL_LIFETIME_MS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { fixtureEnv, serviceEnv, useFixtureRoot } from "./fixture-root";
+import { fixtureGitPath } from "./git-binary";
 import { buildChanged, buildF02, buildF04, buildF04Stage, buildF05, buildF07, buildF10, buildF16StageInput, buildFileAccepted, put, type Built, type F04StageVariant, type F10Variant } from "./fixtures";
 import { indexEntries } from "./git-oracle";
 import {
@@ -569,7 +570,7 @@ describe("blob proof and Git failures (contract §4 \"Blob proof\", §9)", () =>
       const repo = repoOf(buildF04(gitPath(), "t197-safecrlf", "safecrlf"));
       // Git's own `git add` in a copy gives the refusal line. Its exit status is the oracle, never its text.
       const oracle = copyRepo(repo, "t197-safecrlf-oracle");
-      const add = Bun.spawnSync([gitPath(), "--literal-pathspecs", "add", "--", "mixed.txt"], { cwd: oracle, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      const add = Bun.spawnSync([fixtureGitPath(gitPath()), "--literal-pathspecs", "add", "--", "mixed.txt"], { cwd: oracle, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
       const stderr = add.stderr.toString("utf8").replaceAll("\r\n", "\n").split("\n").filter((line) => line !== "");
       expect({ exit: add.exitCode === 0, lines: stderr.length > 0 }).toEqual({ exit: false, lines: true });
       await underTest();

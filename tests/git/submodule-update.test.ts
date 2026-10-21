@@ -11,6 +11,7 @@ import policyFile from "../../src/contracts/git-environment.json";
 import { SUBMODULE_PROGRESS_PHASES, SubmoduleProgress } from "../../src/contracts/submodules";
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, useFixtureRoot } from "./fixture-root";
+import { fixtureGitPath } from "./git-binary";
 import { buildF27, buildF28, buildF29, put, type Built, type F27Variant, type F29Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, submoduleState, workingFileDigests, type SubmoduleUpdateResult } from "./git-oracle";
 import { gitPath, mutationFrames, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, valuesOf } from "./hunk-harness";
@@ -688,7 +689,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     const sup = superOf(b);
     // Git's own connect step in a copy: the step command that the row runs first.
     const copy = copySuper(b, "connect-copy");
-    const connect = Bun.spawnSync([gitPath(), "--no-lazy-fetch", "-c", "fetch.recurseSubmodules=no", ...CHECKOUT("solo")], { cwd: copy, env: fixtureEnv(globalEnv(b)), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const connect = Bun.spawnSync([fixtureGitPath(gitPath()), "--no-lazy-fetch", "-c", "fetch.recurseSubmodules=no", ...CHECKOUT("solo")], { cwd: copy, env: fixtureEnv(globalEnv(b)), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     expect(connect.exitCode).toBe(128);
     const connected = stateOf(b, copy);
     const oracle = oracleOf(b, "oracle-copy");
@@ -749,7 +750,7 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
     // Git's own update of each row in a copy, with the same owned global file.
     const copy = copySuper(b, "oracle-no-file");
     const noFile = { GIT_CONFIG_GLOBAL: join(b.root, b.facts.notes.globalNoFile as string) };
-    const own = (args: string[], cwd: string, env = {}) => Bun.spawnSync([gitPath(), "-c", "core.fsmonitor=false", ...args], { cwd, env: fixtureEnv({ ...noFile, ...env }), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const own = (args: string[], cwd: string, env = {}) => Bun.spawnSync([fixtureGitPath(gitPath()), "-c", "core.fsmonitor=false", ...args], { cwd, env: fixtureEnv({ ...noFile, ...env }), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     const lines = (text: string) => text.split(/\r?\n/).filter((l) => l !== "" && !l.includes(copy.replaceAll("\\", "/")) && !l.includes(copy));
     // The clone row runs Git's own `submodule update`. The fetching row runs its own fetch steps, so its tail holds the fallback fetch of Git's own update without the `submodule--helper` lines.
     // git-submodule.sh sets `GIT_PROTOCOL_FROM_USER=0` for that fetch (contract §12 "Environment and console").
@@ -1358,7 +1359,7 @@ describe("quoting (contract §4 \"Quoting rule\", §12 \"Remedies\")", () => {
     // The remote names the real `solo.git` again. Only the protocol rule stops the fetch.
     miniGit(w, sub, ["config", "remote.origin.url", w.solo.url]);
     const noFile = put(w.root, "no-file.gitconfig", readFileSync(FIXTURE_GLOBAL_CONFIG, "utf8"));
-    const own = Bun.spawnSync([gitPath(), "--no-lazy-fetch", "-C", sub, "fetch", "--no-recurse-submodules"], { env: fixtureEnv({ GIT_CONFIG_GLOBAL: noFile, GIT_PROTOCOL_FROM_USER: "0" }), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+    const own = Bun.spawnSync([fixtureGitPath(gitPath()), "--no-lazy-fetch", "-C", sub, "fetch", "--no-recurse-submodules"], { env: fixtureEnv({ GIT_CONFIG_GLOBAL: noFile, GIT_PROTOCOL_FROM_USER: "0" }), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
     expect(own.exitCode).not.toBe(0);
     const b: Built = { id: "mini", variant: "fetch-remedy", root: w.root, facts: { repos: {}, canaries: {}, disarm: [], notes: { globalConfig: "global.gitconfig", globalNoFile: "no-file.gitconfig" } } };
     return withFixture(

@@ -9,7 +9,7 @@ import { batchCommandArgs } from "../../src/git-service/commands";
 import { printOrigin } from "../origin";
 import { copyPerfFixture, ensurePerfFixture, PERF_M } from "../windows/perf-fixtures";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_HOME, FIXTURE_ROOT, fixtureEnv, ownedGit, realGlobalConfigDigests, removeFixtureRoot } from "./fixture-root";
-import { GIT } from "./git-binary";
+import { fixtureGitPath, GIT } from "./git-binary";
 
 printOrigin("../../src/git-service/commands", import.meta.dir);
 printOrigin("../windows/perf-fixtures", import.meta.dir);
@@ -29,7 +29,7 @@ let spawned = 0;
 
 function run(dir: string, args: string[], deadline = DEADLINE_MS, input?: Uint8Array) {
   spawned++;
-  const p = Bun.spawnSync([git, ...args], { cwd: dir, env: fixtureEnv({ LC_ALL: "C" }), stdin: input ?? "ignore", stdout: "pipe", stderr: "pipe", timeout: deadline });
+  const p = Bun.spawnSync([fixtureGitPath(git), ...args], { cwd: dir, env: fixtureEnv({ LC_ALL: "C" }), stdin: input ?? "ignore", stdout: "pipe", stderr: "pipe", timeout: deadline });
   return { exit: p.exitCode ?? `signal ${p.signalCode}`, stdout: p.stdout, stderr: redact(p.stderr.toString()) };
 }
 
@@ -125,7 +125,7 @@ interface Persistent {
 function persistent(dir: string, extra: Record<string, string> = {}): Persistent {
   spawned++;
   // The spawn timeout ends a probe that hangs. Each page also has its own deadline.
-  const proc = Bun.spawn([git, ...batchCommandArgs()], { cwd: dir, env: fixtureEnv({ LC_ALL: "C", ...extra }), stdin: "pipe", stdout: "pipe", stderr: "pipe", timeout: REPACK_DEADLINE_MS * 3 });
+  const proc = Bun.spawn([fixtureGitPath(git), ...batchCommandArgs()], { cwd: dir, env: fixtureEnv({ LC_ALL: "C", ...extra }), stdin: "pipe", stdout: "pipe", stderr: "pipe", timeout: REPACK_DEADLINE_MS * 3 });
   const stderr = new Response(proc.stderr).text();
   const out = proc.stdout.getReader();
   const reader = new FrameReader(async () => {

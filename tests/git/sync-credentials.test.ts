@@ -9,7 +9,7 @@ import { expect } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { startHttpRemote } from "../support/http-remote";
 import { useFixtureRoot } from "./fixture-root";
-import { describeGit } from "./git-binary";
+import { describeGit, fixtureGitPath } from "./git-binary";
 import { buildCredentialRemote, fc, gitRun, HTTP_PASSWORD, HTTP_USER, importStream, nativeEnv, urlWithCredential } from "./remote-fixtures";
 import { caseTest } from "./service-harness";
 import { gitExe, helperGlobal, hostFor, native, register, reviewed, run, sendSync, strings, TIMEOUT_MS, withSync, type SyncResult } from "./sync-harness";
@@ -39,7 +39,7 @@ describeGit("credentials stay out of every output (T037)", () => {
     const clone = `${h.root}/clone`;
     gitRun(h, h.root, ["clone", "-q", "--", bare, clone]);
     const global = helperGlobal(h, HTTP_USER, HTTP_PASSWORD);
-    const server = startHttpRemote({ git: gitExe(), projectRoot: project, user: HTTP_USER, password: HTTP_PASSWORD, env: nativeEnv() });
+    const server = startHttpRemote({ git: fixtureGitPath(gitExe()), projectRoot: project, user: HTTP_USER, password: HTTP_PASSWORD, env: nativeEnv() });
     const operations: unknown[] = [];
     try {
       const url = `${server.url}/cred.git`;

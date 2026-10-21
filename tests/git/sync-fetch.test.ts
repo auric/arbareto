@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { APPROVAL_LIFETIME_MS, RECONCILIATION_TARGET_MS, STALL_NOTICE_MS, SUBMODULE_UPDATE_CEILING_MS, SUBMODULE_UPDATE_INACTIVITY_MS, SYNC_FETCH_LISTED_REFS } from "../../src/contracts/limits";
 import { startHttpRemote, type HttpRemote } from "../support/http-remote";
 import { useFixtureRoot } from "./fixture-root";
-import { describeGit } from "./git-binary";
+import { describeGit, fixtureGitPath } from "./git-binary";
 import { operationMarkers, rawIndexDigest, workingFileDigests } from "./git-oracle";
 import { buildCredentialRemote, buildFetchAll, buildFetchFlags, buildSubmodule, configDigests, fc, FETCH_ALL_REMOTES, gitRun, HTTP_PASSWORD, HTTP_USER, importStream, nativeEnv, refMap, revParse, type GitHost } from "./remote-fixtures";
 import { caseTest, type Service } from "./service-harness";
@@ -56,7 +56,7 @@ async function withHttp(h: GitHost, body: (server: HttpRemote, clone: string, en
   gitRun(h, h.root, ["clone", "-q", "--", bare, clone]);
   importStream(h, bare, [fc({ mark: 1, ref: "refs/heads/later", message: "later\n", files: { "later.txt": "later\n" } })]);
   const global = helperGlobal(h, HTTP_USER, HTTP_PASSWORD);
-  const server = startHttpRemote({ git: gitExe(), projectRoot: project, user: HTTP_USER, password: HTTP_PASSWORD, env: nativeEnv() });
+  const server = startHttpRemote({ git: fixtureGitPath(gitExe()), projectRoot: project, user: HTTP_USER, password: HTTP_PASSWORD, env: nativeEnv() });
   try {
     gitRun(h, clone, ["remote", "set-url", "origin", `${server.url}/cred.git`]);
     await body(server, clone, nativeEnv({ GIT_CONFIG_GLOBAL: global }));

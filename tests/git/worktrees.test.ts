@@ -13,6 +13,7 @@ import type { Workspace } from "../../src/git-service/registration";
 import { STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, removeTree, serviceEnv, useFixtureRoot } from "./fixture-root";
+import { fixtureGitPath } from "./git-binary";
 import { put } from "./fixtures";
 import { sha256, workingFileDigests } from "./git-oracle";
 import { caseTest, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
@@ -730,7 +731,7 @@ const longCase = process.platform === "win32" ? caseTest : (task: string, name: 
 // A worktrees fixture with `wt-long`, whose HEAD names a branch with a loose ref path of at least 270 UTF-16 units, and the free branch `t119-free`.
 // The effective `core.longpaths` of the service environment, which reads the system file (`serviceEnv`). git-config(1): exit 1 means no value.
 function serviceLongPaths(dir: string): { scope: string; value: string } | null {
-  const p = Bun.spawnSync([gitExe(), "config", "--show-scope", "--type=bool", "--get", "core.longpaths"], { cwd: dir, env: serviceEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawnSync([fixtureGitPath(gitExe()), "config", "--show-scope", "--type=bool", "--get", "core.longpaths"], { cwd: dir, env: serviceEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   if (p.exitCode === 1) return null;
   if (p.exitCode !== 0) throw new Error(`git config --get core.longpaths exited ${p.exitCode}`);
   const [scope, value] = p.stdout.toString().trimEnd().split("	");

@@ -182,6 +182,18 @@ describe("groups and folders", () => {
     expect(text(empty.host)).toContain("No branches");
   });
 
+  test("an empty group shows its text below its own heading, and the heading names it (T116)", async () => {
+    const { host } = await sidebar({ refs: { ...REFS, refs: REFS.refs.filter((r) => r.kind === "branch") } });
+    const heading = (label: string) => host.querySelector<HTMLElement>(`[role="treeitem"][aria-label="${label}, 0"]`)!;
+    const note = (words: string) => [...host.querySelectorAll("p")].find((p) => text(p) === words)!;
+    const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    expect(after(heading("Remotes"), note("No remote-tracking branches"))).toBe(true);
+    expect(after(note("No remote-tracking branches"), heading("Tags"))).toBe(true);
+    expect(after(heading("Tags"), note("No tags"))).toBe(true);
+    expect(document.getElementById(heading("Remotes").getAttribute("aria-describedby")!)).toBe(note("No remote-tracking branches"));
+    expect(document.getElementById(heading("Tags").getAttribute("aria-describedby")!)).toBe(note("No tags"));
+  });
+
   test("no control changes a reference: the sidebar holds no button, and no context menu opens", async () => {
     const { host } = await sidebar();
     expect(host.querySelectorAll("button")).toHaveLength(0);

@@ -184,6 +184,23 @@ describe("worktree button and list (FR-049)", () => {
     expect(rows[5]!.style.height).toBe("");
   });
 
+  test("in a list row, the folder name and the branch get their width first, and the marks shrink first (T116, plan D15 Rows)", async () => {
+    await mountWorkbench(workbench, worktreeWorld());
+    await openList();
+    const row = options()[3]!;
+    const lines = row.querySelector<HTMLElement>('[data-slot="worktree-lines"]')!;
+    // The lines get their first-line width before the marks and never pass the row. The path line adds no width.
+    expect(lines.className.split(/\s+/)).toEqual(expect.arrayContaining(["shrink-0", "grow", "max-w-full"]));
+    expect(lines.children[1]!.className.split(/\s+/)).toEqual(expect.arrayContaining(["w-0", "min-w-full", "truncate"]));
+    for (const part of lines.children[0]!.querySelectorAll("span")) expect(part.className).not.toContain("shrink-[");
+    const marks = row.querySelector<HTMLElement>(".chip")!.parentElement!;
+    expect(lines.compareDocumentPosition(marks) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(marks.className.split(/\s+/)).toContain("min-w-0");
+    expect(marks.className.split(/\s+/)).not.toContain("shrink-0");
+    expect(lines.title).toBe(row.getAttribute("aria-label")!);
+    expect(row.getAttribute("aria-label")).toContain("Locked: on a USB disk");
+  });
+
   test("a pick of the current worktree opens nothing", async () => {
     const double = await mountWorkbench(workbench, worktreeWorld());
     await openList();

@@ -93,8 +93,9 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
             <HugeiconsIcon icon={e.kind === "local" ? GitBranchIcon : CloudIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
             {/* Git Extensions shows the current branch in bold. */}
             <span className={e.current ? "min-w-0 truncate font-semibold" : "min-w-0 truncate"}>{e.name}</span>
+            {/* Plan D15 "Rows": a zero basis gives the note only the width that the name leaves. */}
             {n === null ? null : (
-              <span title={n} className="num ml-auto min-w-0 shrink-[1000] truncate text-muted-text">
+              <span title={n} className="num min-w-0 flex-1 truncate text-right text-muted-text">
                 {n}
               </span>
             )}

@@ -143,7 +143,8 @@ function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: 
 }
 
 export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction, after, scrollElement, expanded, onExpandedChange }: ReferencesSidebarProps) {
-  const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId() };
+  const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId(), empty: useId() };
+  const emptyId = (kind: Kind) => `${ids.empty}-${kind}`;
   const [query, setQuery] = useState("");
   // Null until the user changes the expansion: the default then follows the current branch of the newest result.
   const [stored, setStored] = useState<{ repository: string; open: ReadonlySet<string> | null }>(() => ({ repository, open: sessionExpansion.get(repository) ?? null }));
@@ -336,6 +337,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
           {...common}
           aria-expanded={expanded}
           aria-label={group ? `${node.label}, ${node.count}` : `${node.label}, folder, ${node.count}`}
+          aria-describedby={group && node.count === 0 && !virtual ? emptyId(kind) : undefined}
           className={`list-row flex min-w-0 items-center gap-1 pr-2 ${sticky} ${group ? "bg-surface font-semibold" : ""}`}
         >
           <HugeiconsIcon icon={expanded ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
@@ -408,6 +410,12 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
       list.length === 0 ? null : (
         <div key={GROUPS[i]!.kind} role="none" className="flex flex-col">
           {list.map(({ row, index }) => rowView(row, index))}
+          {/* 001 plan.md "References": the empty text belongs to its group. The heading row names it as its description. */}
+          {list[0]!.row.node.count === 0 ? (
+            <p id={emptyId(GROUPS[i]!.kind)} aria-hidden="true" className="pr-2 pl-4 text-muted-text">
+              {GROUPS[i]!.empty}
+            </p>
+          ) : null}
         </div>
       ),
     );
@@ -432,7 +440,8 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
         <div ref={tree} role="tree" aria-labelledby={ids.heading} className="flex flex-col px-1">
           {treeRows()}
         </div>
-        {groups.map((g) => (g.tree.count === 0 ? <p key={g.kind} className="px-2 text-muted-text">{g.empty}</p> : null))}
+        {/* A virtual row has an absolute position, so the empty texts follow the tree. */}
+        {virtual ? groups.map((g) => (g.tree.count === 0 ? <p key={g.kind} className="px-2 text-muted-text">{g.empty}</p> : null)) : null}
         {needle !== "" && !anyMatch ? <p className="px-2 text-muted-text">{NO_MATCH}</p> : null}
         <span id={ids.none} hidden>
           {NOT_SHOWN.none}

@@ -99,6 +99,11 @@ describe("read builders (contract §7)", () => {
     expect(commands.refsArgs()).not.toBe(commands.refsArgs());
   });
 
+  // T384, contract §8 "Watcher hints": check-ignore loads the index and refuses `--literal-pathspecs`, so its paths go on stdin.
+  test("hintIgnoreArgs is the exact check-ignore read with stdin paths and without --literal-pathspecs", () => {
+    expect(commands.hintIgnoreArgs()).toEqual(["--no-lazy-fetch", "--no-optional-locks", "check-ignore", "-z", "--stdin"]);
+  });
+
   test("hooksPathArgs is the exact rev-parse --git-path array", () => {
     expect(hooksPathArgs()).toEqual([...R, "rev-parse", "--git-path", "hooks"]);
   });

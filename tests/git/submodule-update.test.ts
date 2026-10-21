@@ -1165,13 +1165,13 @@ describe("admission (contract §2, §9)", () => {
   caseTest("T231", `a bad payload, a snapshot or review of another workspace, and an old generation refuse reviewSubmodules and updateSubmodules, and no Git process starts`, SHELL, () => {
     const b = buildF27(gitPath(), "t231-admission", "base");
     const sup = superOf(b);
-    // Contract §6 "Registration reuse and release": only linked worktrees of one common directory stay registered together.
+    // Contract §6 "Registration reuse and release": the registration of `sup` releases `other`, so the snapshot and the review of `other` belong to another workspace.
     const other = join(b.root, "other");
     fixtureGit(b, sup, ["worktree", "add", "-q", "--detach", other]);
     return withFixture(b, "t231-admission", async (service) => {
       await update();
-      const a = await reviewedOk(service, sup);
       const o = await reviewedOk(service, other);
+      const a = await reviewedOk(service, sup);
       put(sup, "super.txt", "changed\n");
       const now = await readOk(service, a.repositoryId);
       expect(now.generation).toBeGreaterThan(a.r.read.generation);

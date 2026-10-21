@@ -420,11 +420,12 @@ describe("refusals (contract §3, §9)", () => {
       const built = buildF07(gitPath(), "t098-busy");
       await underTest("commit");
       const a = await reviewed(service, join(built.root, "wt-a"));
-      const b = await reviewed(service, join(built.root, "wt-b"));
       const release = service.runner.holdStart(isCommitCall);
       const first = commit(service, a.repositoryId, a.r, "first\n");
       try {
         await until(() => commitCalls(service).length === 1, "first commit process");
+        // Contract §6 "Registration reuse and release": the running commit keeps `a` registered.
+        const b = await reviewed(service, join(built.root, "wt-b"));
         expect((await commit(service, b.repositoryId, b.r, "second\n")).code).toBe("BUSY");
       } finally {
         release();

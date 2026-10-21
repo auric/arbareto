@@ -24,6 +24,7 @@ import {
   batchCommandArgs,
   headOidArgs,
   headTargetArgs,
+  hintIgnoreArgs,
   indexEntryArgs,
   isObjectId,
   isRefName,
@@ -63,7 +64,7 @@ import {
 import { createStatusParser, displayPath, type BranchHeaders, type StatusRecord } from "./status-parser";
 import { gitmodulesSource } from "./submodule-review";
 import { isComponent, parseMaybeBool, readProgramFiles, requestFacts, type ChangeFiles, type ConfigEntry, type ListingOutcome, type ProgramFile, type FactEntry, type Trust, type TrustListing } from "./trust";
-import { statFiles, statWorkingFile, type TupleFile } from "./watch";
+import { HINT_PATHS, statFiles, statWorkingFile, type TupleFile } from "./watch";
 
 // Contract §7 "Missing objects".
 export const OBJECT_MISSING_REMEDY =
@@ -141,6 +142,8 @@ interface LastRead {
 interface WorkspaceState {
   // The watcher hints so far. A hint marks the workspace dirty (contract §8 "Token invalidation").
   hints: number;
+  // Contract §8 "Watcher hints": the paths of the hints after hint number `base`. Null: one of these hints gave no paths, or they hold more than HINT_PATHS paths.
+  hinted: { base: number; paths: Set<string> | null };
   // A watcher lost a directory, so a missing hint proves nothing.
   unwatched: boolean;
   // HEAD of the last recorded read, or null before it. It names the branch ref file of the stat tuple.
@@ -399,7 +402,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
   const stateOfWorkspace = (repositoryId: string): WorkspaceState => {
     let found = states.get(repositoryId);
     if (found === undefined) {
-      found = { hints: 0, unwatched: false, head: null, refFiles: new Map(), kept: null, refreshing: 0, unavailable: false, changeFiles: null, markers: null, recorded: 0, parsed: null, bound: new Map() };
+      found = { hints: 0, hinted: { base: 0, paths: new Set() }, unwatched: false, head: null, refFiles: new Map(), kept: null, refreshing: 0, unavailable: false, changeFiles: null, markers: null, recorded: 0, parsed: null, bound: new Map() };
       states.set(repositoryId, found);
     }
     return found;
@@ -477,6 +480,17 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     const step = await run(t, objectCheckArgs(), out, objectCheckInput(oids));
     if (t.signal.aborted) return "canceled";
     return objectCheckOutcome(step, out, oids);
+  }
+
+  // Contract §8 "Watcher hints": true only when git-check-ignore(1) exits 0 and prints every path in input order. Its `-z` record is the stdin path as given.
+  // Without `--no-index`, Git never reports a tracked path as ignored. Each path starts with `./`, so Git reads a leading `:` as a name (feature 004 research R21 F1).
+  async function allIgnored(t: ProcessTarget, paths: readonly string[]): Promise<boolean | "deadline"> {
+    const input = Buffer.from(paths.map((path) => `./${path}\0`).join(""), "utf8");
+    const out = createCollector({ maxBytes: input.length });
+    const step = await run(t, hintIgnoreArgs(), out, input);
+    if ("refused" in step) return false;
+    if (step.exit.deadline !== undefined) return "deadline";
+    return step.exit.exitCode === 0 && !step.exit.diagnosticLimit && !out.limited && Buffer.from(out.take()).equals(input);
   }
 
   // Git can fail before it prints `# branch.oid`. git-rev-parse(1) `--verify -q`: on success, Git prints the full object ID. Other results give null.
@@ -642,6 +656,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
 
     // Contract §7 "Shared listing": the tuple comes before the listing starts. `readWorkspace` always runs its own listing.
     const hints = st.hints;
+    st.hinted = { base: hints, paths: new Set() };
     const assumed = st.head ?? w.head;
     // Contract §11 "Change polling" and "Trust and environment": a WSL read uses no stat tuple and never shares a listing, so it computes no tuple.
     const tupled = w.wsl === undefined;
@@ -953,8 +968,10 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       // Contract §8 "Change check": without a hint and with an equal tuple, the last snapshot returns and no Git process starts.
       // A trust approval or revocation changes the policy without a file change, so the policy must also be equal.
       const kept = st.kept;
+      // Contract §8 "Watcher hints": Git can decide the hints after the start of the last complete read only when all of them hold paths.
+      const decidable = () => kept !== null && (kept.hints === st.hints || (st.hinted.paths !== null && st.hinted.base <= kept.hints));
       // Contract §11 "Change polling": a WSL workspace has no watcher and uses no stat tuple, so each of its reads runs in full.
-      if (t.check === "changes" && !t.refresh && kept !== null && kept.hints === st.hints && !st.unwatched && !st.unavailable && t.workspace.wsl === undefined) {
+      if (t.check === "changes" && !t.refresh && kept !== null && decidable() && !st.unwatched && !st.unavailable && t.workspace.wsl === undefined) {
         const facts = await tupleFacts(runner, t.operationId, t.workspace, kept.files, kept.programs, t.signal);
         const bound = [...st.bound.keys()];
         const working = await workingFacts(t.workspace, [...st.bound.values()]);
@@ -962,8 +979,24 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
         // Contract §5 "Deadline outcomes": a walk deadline ends the read as a Git step deadline does, never with a full read.
         if (facts !== null && "stop" in facts) return { result: facts.stop };
         const sameWorking = working !== null && st.bound.size === bound.length && bound.every((key) => kept.working.get(key) === working.get(key));
-        const same = facts !== null && sameWorking && tupleText(kept.files, kept.programs, facts) === kept.facts && st.kept === kept && kept.hints === st.hints && !st.unavailable && !st.unwatched;
-        if (same && policyOf(trust, t.workspace, kept.listing, t.installation) === kept.policy) return { result: "succeeded", value: { ...kept.value, recoveryState: recoveryOf(st, t.workspace), readKind: "retained" } };
+        const unchanged = () => st.kept === kept && !st.unavailable && !st.unwatched;
+        const same = facts !== null && sameWorking && tupleText(kept.files, kept.programs, facts) === kept.facts && unchanged() && decidable();
+        const retained = (): ReadOutcome => ({ result: "succeeded", value: { ...kept.value, recoveryState: recoveryOf(st, t.workspace), readKind: "retained" } });
+        if (same && policyOf(trust, t.workspace, kept.listing, t.installation) === kept.policy) {
+          const count = st.hints;
+          if (kept.hints === count) return retained();
+          // The equal tuple and policy keep the listing of the last complete read valid, so it decides the read gate (contract §7).
+          if (trust.gate(t.workspace, kept.listing, t.installation, "reads") === null) {
+            const ignored = await allIgnored(t, [...st.hinted.paths!]);
+            if (t.signal.aborted) return { result: "canceled" };
+            if (ignored === "deadline") return { result: "deadline" };
+            if (ignored && unchanged()) {
+              kept.hints = count;
+              if (st.hints === count) st.hinted = { base: count, paths: new Set() };
+              return retained();
+            }
+          }
+        }
       }
       if (t.refresh) st.refreshing++;
       let running = t.refresh;
@@ -1070,11 +1103,16 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     },
 
     // A watcher hint marks the workspace dirty (contract §8 "Token invalidation"). `lost`: later changes can give no hint.
-    hint(repositoryId: string, lost: boolean): void {
+    // `paths`: the worktree paths of the hint, or null (contract §8 "Watcher hints").
+    hint(repositoryId: string, lost: boolean, paths: ReadonlySet<string> | null): void {
       const st = liveState(repositoryId);
       if (st === null) return;
       st.hints++;
       st.unwatched ||= lost;
+      const union = st.hinted.paths;
+      if (union === null) return;
+      if (paths !== null) for (const path of paths) union.add(path);
+      if (paths === null || union.size > HINT_PATHS) st.hinted.paths = null;
     },
 
     // Data-model §2 `unavailable`: a history read that ends REPOSITORY_UNAVAILABLE for a missing object (contract §7 "Missing objects").

@@ -5,6 +5,7 @@
 
 import { constants, stat, statSync, watch, type BigIntStats, type FSWatcher } from "node:fs";
 import { lstat as lstatPath, open, stat as statPath } from "node:fs/promises";
+import { NATIVE } from "../contracts/native-path";
 import { noFileId } from "./index-lock";
 import { isMissing } from "./read-steps";
 
@@ -14,26 +15,53 @@ const WATCH_DEBOUNCE_MS = 100;
 const WATCH_MAX_WAIT_MS = 1000;
 // Contract §8 "Change check": a larger `reftable/tables.list` counts as changed.
 const TABLES_LIST_BYTES = 64 * 1024;
+// Contract §8 "Watcher hints": the most hint paths after one complete read. More paths give a full read.
+export const HINT_PATHS = 1000;
+// Contract §8 "Watcher hints": the files that Git reads beside the ignore rules. gitignore(5), gitattributes(5), gitmodules(5), gitrepository-layout(5).
+const GIT_FILES: ReadonlySet<string> = new Set([".gitignore", ".gitattributes", ".gitmodules"]);
+// Node decodes a name that is no valid UTF-8 with U+FFFD, so a name with it cannot name its file.
+const REPLACEMENT = String.fromCharCode(0xfffd);
 
-// `onHint(false)` comes once per burst of changes, after the debounce. `onHint(true)`: a directory watch did not start or lost its directory, so later changes can give no hint.
-// The result stops every watch.
-export function watchWorkspace(directories: readonly string[], onHint: (lost: boolean) => void): () => void {
+// Contract §8 "Watcher hints": the worktree-relative path of an event of the worktree watch, with `/` separators.
+// Null: no name, a name that holds a lone surrogate or U+FFFD, a Git file name, or a path inside a Git folder.
+function worktreePath(root: string, folders: readonly string[], name: unknown): string | null {
+  if (typeof name !== "string" || name === "" || !name.isWellFormed() || name.includes(REPLACEMENT)) return null;
+  const parts = name.split(NATIVE.separator);
+  if (GIT_FILES.has(NATIVE.fold(parts.at(-1)!)) || (parts.length === 1 && NATIVE.fold(name) === ".git")) return null;
+  const path = NATIVE.path.join(root, name);
+  const inside = (folder: string) => {
+    const relative = NATIVE.path.relative(folder, path);
+    return relative === "" || (relative.split(NATIVE.separator)[0] !== ".." && !NATIVE.path.isAbsolute(relative));
+  };
+  return folders.some(inside) ? null : parts.join("/");
+}
+
+// `onHint(false, paths)` comes once per burst of changes, after the debounce. `paths`: the worktree paths of the burst. Null: one event of the burst gives no path.
+// `onHint(true, null)`: a directory watch did not start or lost its directory, so later changes can give no hint.
+// `directories` starts with the worktree root. Events of the other directories give no path. The result stops every watch.
+export function watchWorkspace(directories: readonly string[], onHint: (lost: boolean, paths: ReadonlySet<string> | null) => void): () => void {
+  const [root, ...folders] = [...new Set(directories)] as [string, ...string[]];
   let timer: ReturnType<typeof setTimeout> | undefined;
   let deadline: ReturnType<typeof setTimeout> | undefined;
   let closed = false;
+  let paths: Set<string> | null = new Set();
   const deliver = () => {
     clearTimeout(timer);
     clearTimeout(deadline);
     timer = deadline = undefined;
-    if (!closed) onHint(false);
+    const burst = paths;
+    paths = new Set();
+    if (!closed) onHint(false, burst);
   };
-  const changed = () => {
+  const changed = (directory: string, name: unknown) => {
+    const path = directory === root ? worktreePath(root, folders, name) : null;
+    paths = path === null || paths === null || paths.add(path).size > HINT_PATHS ? null : paths;
     clearTimeout(timer);
     timer = setTimeout(deliver, WATCH_DEBOUNCE_MS);
     deadline ??= setTimeout(deliver, WATCH_MAX_WAIT_MS);
   };
-  const lost = () => closed || onHint(true);
-  const stops = [...new Set(directories)].map((directory) => watchDirectory(directory, changed, lost));
+  const lost = () => closed || onHint(true, null);
+  const stops = [root, ...folders].map((directory) => watchDirectory(directory, (name) => changed(directory, name), lost));
   return () => {
     closed = true;
     clearTimeout(timer);
@@ -42,7 +70,7 @@ export function watchWorkspace(directories: readonly string[], onHint: (lost: bo
   };
 }
 
-function watchDirectory(directory: string, changed: () => void, lost: () => void): () => void {
+function watchDirectory(directory: string, changed: (name: unknown) => void, lost: () => void): () => void {
   let watcher: FSWatcher | undefined;
   let identity: BigIntStats;
   let check: ReturnType<typeof setTimeout> | undefined;
@@ -93,7 +121,7 @@ function watchDirectory(directory: string, changed: () => void, lost: () => void
           return;
         }
       }
-      changed();
+      changed(name);
       if (checking) recheck = true;
       else if (check === undefined) verify();
     });

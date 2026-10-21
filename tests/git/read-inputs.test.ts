@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, spyOn, test } from "bun:test";
+import * as fs from "node:fs";
 import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { REGISTERED_WORKSPACES } from "../../src/contracts/limits";
@@ -14,7 +15,7 @@ import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, fixtureGit, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { buildF02, buildF06, buildF07, put } from "./fixtures";
 import { GIT } from "./git-binary";
-import { caseTest, openService, type Refusal, type Service } from "./service-harness";
+import { caseTest, openService, type RegistrationResult, type Service } from "./service-harness";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/registration.ts", import.meta.dir);
@@ -26,6 +27,7 @@ printOrigin("../../src/git-service/watch.ts", import.meta.dir);
 const TASK = "T072";
 const RELEASE_TASK = "T321";
 const RECENT_TASK = "T343";
+const LEFT_TASK = "T384";
 const TIMEOUT_MS = 120_000;
 const ALTERNATING_TIMEOUT_MS = 600_000;
 // Task T075 and spec SC-007: a hint within 2 seconds.
@@ -55,6 +57,30 @@ async function codeAndSpawns(service: Service, request: () => Promise<{ code?: s
   return { state: response.state, code: response.code, runs: service.runner.calls.length - before };
 }
 
+// The `repositoryId` of each `release` frame that the service sent, in order.
+const releasedIds = (service: Service) => service.runner.frames.flatMap((f) => (f.type === "release" && typeof f.repositoryId === "string" ? [f.repositoryId] : []));
+
+// Real watches. `live()` gives the count of `fs.watch` watchers that are open now.
+async function withLiveWatches(body: (live: () => number) => Promise<void>): Promise<void> {
+  const open = new Set<fs.FSWatcher>();
+  const real = fs.watch;
+  const spy = spyOn(fs, "watch").mockImplementation(((...args: Parameters<typeof fs.watch>) => {
+    const watcher = real(...args);
+    open.add(watcher);
+    const close = watcher.close.bind(watcher);
+    watcher.close = () => {
+      open.delete(watcher);
+      close();
+    };
+    return watcher;
+  }) as never);
+  try {
+    await body(() => open.size);
+  } finally {
+    spy.mockRestore();
+  }
+}
+
 // Approves trust for one workspace and returns its trust ID.
 async function approve(service: Service, repositoryId: string): Promise<string> {
   const trust = await service.readTrust(repositoryId);
@@ -73,8 +99,9 @@ describe("foreign identifiers (contract §2)", () => {
       withService("t072-trust-workspace", async (service) => {
         const built = buildF07(gitPath(), "t072-trust-workspace");
         const a = await service.register(join(built.root, "wt-a"));
-        const b = await service.register(join(built.root, "wt-b"));
         const trustA = await approve(service, a.repositoryId);
+        // Contract §6 "Registration reuse and release": this registration releases `a`.
+        const b = await service.register(join(built.root, "wt-b"));
         expect(await codeAndSpawns(service, () => service.revokeTrust(b.repositoryId, trustA))).toEqual({ state: "rejected", code: "UNKNOWN_TARGET", runs: 0 });
       }),
     TIMEOUT_MS,
@@ -108,8 +135,9 @@ describe("foreign identifiers (contract §2)", () => {
       const built = buildF07(git, "t072-snapshot-workspace");
       put(join(built.root, "wt-b"), "b-change.txt", "b\n");
       const a = await service.register(join(built.root, "wt-a"));
-      const b = await service.register(join(built.root, "wt-b"));
       const readA = (await service.readWorkspace(a.repositoryId)).result!;
+      // Contract §6 "Registration reuse and release": this registration releases `a`.
+      const b = await service.register(join(built.root, "wt-b"));
       const readB = (await service.readWorkspace(b.repositoryId)).result!;
       const send = (snapshotId: string, entryId: string, generation: number) =>
         codeAndSpawns(service, () => service.request("readComparison", { snapshotId, entryId }, { repositoryId: b.repositoryId, repositoryGeneration: generation, selectionId: crypto.randomUUID() }));
@@ -292,41 +320,70 @@ describe("registration reuse and release (contract §6)", () => {
   );
 
   caseTest(
-    TASK,
-    "two linked worktrees of one common directory stay registered together",
+    LEFT_TASK,
+    "opening another worktree of the same repository releases the left one, and opening the left one again gives a new repositoryId and a full read",
     ["shell-double"],
     () =>
-      withService("t072-linked", async (service) => {
-        const built = buildF07(gitPath(), "t072-linked");
+      withService("t384-left", async (service) => {
+        const built = buildF07(gitPath(), "t384-left");
         const a = await service.register(join(built.root, "wt-a"));
+        expect((await service.readWorkspace(a.repositoryId)).state).toBe("succeeded");
         const b = await service.register(join(built.root, "wt-b"));
-        expect(a.repositoryId).not.toBe(b.repositoryId);
-        for (const id of [a.repositoryId, b.repositoryId]) expect((await service.readWorkspace(id)).state).toBe("succeeded");
+        expect(releasedIds(service)).toEqual([a.repositoryId]);
+        expect(await codeAndSpawns(service, () => service.readWorkspace(a.repositoryId))).toEqual({ state: "rejected", code: "UNKNOWN_TARGET", runs: 0 });
+        const again = await service.register(join(built.root, "wt-a"));
+        expect({ newId: again.repositoryId !== a.repositoryId, worktreeKey: again.worktreeKey, released: releasedIds(service) }).toEqual({ newId: true, worktreeKey: a.worktreeKey, released: [a.repositoryId, b.repositoryId] });
+        const read = await codeAndSpawns(service, () => service.readWorkspace(again.repositoryId));
+        expect({ state: read.state, ran: read.runs > 0 }).toEqual({ state: "succeeded", ran: true });
       }),
     TIMEOUT_MS,
   );
 
   caseTest(
-    TASK,
-    `a ninth registration of distinct linked worktrees of one common directory gives WORKSPACE_LIMIT naming the ${REGISTERED_WORKSPACES}-workspace limit`,
+    LEFT_TASK,
+    `opening ${REGISTERED_WORKSPACES + 1} linked worktrees of one repository in turn gives no WORKSPACE_LIMIT and leaves one registered workspace with 3 live directory watches`,
     ["shell-double"],
     () =>
-      withService("t072-limit", async (service) => {
-        const git = gitPath();
-        const built = buildF07(git, "t072-limit");
-        const main = join(built.root, "main");
-        const names = ["main", "wt-a", "wt-b"];
-        // F07 holds three worktrees. The limit needs one more than REGISTERED_WORKSPACES.
-        for (let n = names.length; n <= REGISTERED_WORKSPACES; n++) {
-          fixtureGit(git, main, ["worktree", "add", "-q", "-b", `wt-${n}`, `../wt-${n}`]);
-          names.push(`wt-${n}`);
-        }
-        expect(names.length).toBe(REGISTERED_WORKSPACES + 1);
-        const ids: string[] = [];
-        for (const name of names.slice(0, REGISTERED_WORKSPACES)) ids.push((await service.register(join(built.root, name))).repositoryId);
-        expect(new Set(ids).size).toBe(REGISTERED_WORKSPACES);
-        const ninth = await service.chooseRepository(join(built.root, names[REGISTERED_WORKSPACES]!));
-        expect({ refused: ninth.state !== "succeeded", code: ninth.code, limit: (ninth.result as Refusal | undefined)?.limit }).toEqual({ refused: true, code: "WORKSPACE_LIMIT", limit: REGISTERED_WORKSPACES });
+      withLiveWatches((live) =>
+        withService("t384-turns", async (service) => {
+          const git = gitPath();
+          const built = buildF07(git, "t384-turns");
+          const names = ["wt-a", "wt-b"];
+          // F07 holds two linked worktrees. The old limit needs one more than REGISTERED_WORKSPACES.
+          for (let n = names.length; n <= REGISTERED_WORKSPACES; n++) {
+            fixtureGit(git, join(built.root, "main"), ["worktree", "add", "-q", "-b", `wt-${n}`, `../wt-${n}`]);
+            names.push(`wt-${n}`);
+          }
+          expect(names.length).toBe(REGISTERED_WORKSPACES + 1);
+          const ids: string[] = [];
+          for (const name of names) {
+            const response = await service.chooseRepository(join(built.root, name));
+            expect({ name, state: response.state, code: response.code }).toEqual({ name, state: "succeeded", code: undefined });
+            ids.push((response.result as RegistrationResult).repositoryId);
+          }
+          const released = new Set(releasedIds(service));
+          // A linked worktree has 3 watched folders: the worktree, its administration folder, and the common folder.
+          expect({ registered: ids.filter((id) => !released.has(id)), watches: live() }).toEqual({ registered: ids.slice(-1), watches: 3 });
+        }),
+      ),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    LEFT_TASK,
+    "the session trust approval of the left worktree stays for its next registration, because feature 004 worktree-remove checks the trust of that worktree",
+    ["shell-double"],
+    () =>
+      withService("t384-session-trust", async (service) => {
+        const built = buildF07(gitPath(), "t384-session-trust");
+        const b = await service.register(join(built.root, "wt-b"));
+        expect((await service.readTrust(b.repositoryId)).state).toBe("succeeded");
+        service.runner.inject.trustStoreFails = true;
+        expect((await service.approveTrust(b.repositoryId)).result).toMatchObject({ persistence: "session", saveFailed: true });
+        await service.register(join(built.root, "wt-a"));
+        const again = await service.register(join(built.root, "wt-b"));
+        expect(again.repositoryId).not.toBe(b.repositoryId);
+        expect((await service.readTrust(again.repositoryId)).result).toMatchObject({ state: "approved", persistence: "session" });
       }),
     TIMEOUT_MS,
   );
@@ -373,9 +430,10 @@ describe("unfinished mutations and release effects (contract §6 \"Registration 
         const git = gitPath();
         const built = buildF07(git, "t321-busy-repository");
         const a = await service.register(join(built.root, "wt-a"));
+        // Contract §6 "Registration reuse and release": `a` has an unfinished mutation, so the registration of `b` keeps it.
+        seam.busy.add(a.repositoryId);
         const b = await service.register(join(built.root, "wt-b"));
         const other = join(buildF02(git, "t321-busy-repository-other").root, "repo");
-        seam.busy.add(a.repositoryId);
         const response = await service.chooseRepository(other);
         expect({ state: response.state, code: response.code, releases: seam.releases }).toEqual({ state: "failed", code: "BUSY", releases: [] });
         for (const { repositoryId } of [a, b]) {
@@ -470,9 +528,9 @@ describe("unfinished mutations and release effects (contract §6 \"Registration 
       const spy = spyOn(watchModule, "watchWorkspace").mockImplementation((directories, onHint) => {
         const record = { hints: 0 };
         watched.push(record);
-        return real(directories, (lost) => {
+        return real(directories, (lost, paths) => {
           record.hints++;
-          onHint(lost);
+          onHint(lost, paths);
         });
       });
       try {

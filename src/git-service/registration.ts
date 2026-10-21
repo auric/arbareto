@@ -41,7 +41,8 @@ export interface RegistrationOptions {
   // Contract §6 "Registration reuse and release": true while a mutation of that workspace is `running`, `cancel-requested`, or `reconciling`.
   unfinishedMutation(repositoryId: string): boolean;
   // Data-model §4 "Status snapshot retention": a workspace release releases its retained state.
-  onRelease?(workspace: Workspace): void;
+  // `replaced`: another worktree of the same repository took the place of the workspace (contract §6).
+  onRelease?(workspace: Workspace, replaced: boolean): void;
   // A new workspace. A reused workspace gives no call.
   onRegister?(workspace: Workspace): void;
 }
@@ -152,6 +153,8 @@ export async function dismissWslMarker(
 
 export function createRegistrations({ runner, unfinishedMutation, onRelease, onRegister }: RegistrationOptions) {
   const workspaces = new Map<string, Workspace>();
+  // Contract §6 "Registration reuse and release": the replaced workspaces that wait for the end of their unfinished mutation.
+  const leaving = new Set<string>();
   // The reuse, limit, and release decision and the `register` frame run one registration at a time.
   let tail: Promise<unknown> = Promise.resolve();
   const exclusive = <T>(body: () => Promise<T>): Promise<T> => {
@@ -160,10 +163,21 @@ export function createRegistrations({ runner, unfinishedMutation, onRelease, onR
     return next;
   };
 
-  const release = (w: Workspace) => {
+  const release = (w: Workspace, replaced = false) => {
     workspaces.delete(w.repositoryId);
+    leaving.delete(w.repositoryId);
     runner.release({ repositoryId: w.repositoryId });
-    onRelease?.(w);
+    onRelease?.(w, replaced);
+  };
+
+  // Contract §6: `current` replaces every other workspace of its common identity. A workspace with an unfinished mutation goes when that mutation ends.
+  const replace = (current: Workspace) => {
+    leaving.delete(current.repositoryId);
+    for (const w of [...workspaces.values()]) {
+      if (w === current || !sameIdentity(w.commonIdentity, current.commonIdentity)) continue;
+      if (unfinishedMutation(w.repositoryId)) leaving.add(w.repositoryId);
+      else release(w, true);
+    }
   };
 
   // Contract §6 "Registration reuse and release". The caller holds `exclusive`.
@@ -175,7 +189,10 @@ export function createRegistrations({ runner, unfinishedMutation, onRelease, onR
     const same = all.find(
       (w) => w.gitInstallationId === target.installation.gitInstallationId && sameIdentity(w.worktreeIdentity[0], rootIdentity) && sameIdentity(w.worktreeIdentity[1], gitIdentity),
     );
-    if (same) return registered(same);
+    if (same) {
+      replace(same);
+      return registered(same);
+    }
     const released = all.filter((w) => !sameIdentity(w.commonIdentity, commonIdentity));
     if (released.some((w) => unfinishedMutation(w.repositoryId))) return { ok: false, code: "BUSY" };
     if (all.length - released.length >= REGISTERED_WORKSPACES) return { ok: false, code: "WORKSPACE_LIMIT", result: { limit: REGISTERED_WORKSPACES } };
@@ -208,6 +225,7 @@ export function createRegistrations({ runner, unfinishedMutation, onRelease, onR
       ...(wsl ? { wsl } : {}),
     };
     workspaces.set(repositoryId, workspace);
+    replace(workspace);
     onRegister?.(workspace);
     return registered(workspace);
   }
@@ -251,6 +269,15 @@ export function createRegistrations({ runner, unfinishedMutation, onRelease, onR
       } catch (error) {
         return runnerRefused(error);
       }
+    },
+    // Contract §6 "Registration reuse and release": the end of a mutation releases its workspace when another worktree replaced it.
+    // The release runs under the registration lock. A registration in flight can reuse the workspace before it.
+    settle(repositoryId: string): void {
+      if (!leaving.has(repositoryId)) return;
+      void exclusive(async () => {
+        const w = workspaces.get(repositoryId);
+        if (w !== undefined && leaving.has(repositoryId) && !unfinishedMutation(repositoryId)) release(w, true);
+      });
     },
     has: (repositoryId: string): boolean => workspaces.has(repositoryId),
     get: (repositoryId: string): Workspace | undefined => workspaces.get(repositoryId),

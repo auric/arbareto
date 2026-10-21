@@ -454,8 +454,9 @@ describe("request checks (contract §4, §9)", () => {
       put(b, "shared.txt", "shared changed in b\n");
       await underTest("hunk-publish");
       const wa = await service.register(a);
-      const wb = await service.register(b);
       const ca = await selectHunks(service, wa.repositoryId, "shared.txt", "unstaged");
+      // Contract §6 "Registration reuse and release": this registration releases `wa`.
+      const wb = await service.register(b);
       const rb = await readOk(service, wb.repositoryId);
       const response = await refused(service, b, () =>
         service.request("applyHunk", { comparisonId: ca.comparisonId, hunkId: ca.hunkIds[0], snapshotId: rb.snapshotId, direction: "stage" }, { repositoryId: wb.repositoryId, repositoryGeneration: rb.generation }),
@@ -483,12 +484,13 @@ describe("request checks (contract §4, §9)", () => {
       put(b, "shared.txt", "shared changed in b\n");
       await underTest("hunk-publish");
       const wa = await service.register(a);
-      const wb = await service.register(b);
       const ca = await selectHunks(service, wa.repositoryId, "shared.txt", "unstaged");
-      const cb = await selectHunks(service, wb.repositoryId, "shared.txt", "unstaged");
       const first = applyHunk(service, wa.repositoryId, ca, ca.hunkIds[0]!, "stage");
       await atStep5;
       try {
+        // Contract §6 "Registration reuse and release": the running mutation keeps `wa` registered.
+        const wb = await service.register(b);
+        const cb = await selectHunks(service, wb.repositoryId, "shared.txt", "unstaged");
         expect(code(await refused(service, b, () => applyHunk(service, wb.repositoryId, cb, cb.hunkIds[0]!, "stage")))).toBe("BUSY");
       } finally {
         release();

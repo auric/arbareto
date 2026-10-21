@@ -75,6 +75,12 @@ export function statusArgs(): string[] {
   return read("status", "--porcelain=v2", "-z", "--branch", "--untracked-files=all", "--find-renames", "--ignore-submodules=dirty");
 }
 
+// Contract §8 "Watcher hints": git-check-ignore(1) reads the paths on stdin and loads the index. It refuses `--literal-pathspecs` with exit 128
+// (builtin/check-ignore.c `parse_pathspec` allows no magic except `top`; feature 004 research R21 F1).
+export function hintIgnoreArgs(): string[] {
+  return [NO_LAZY_FETCH, "--no-optional-locks", "check-ignore", "-z", "--stdin"];
+}
+
 export function indexListArgs(): string[] {
   return read("ls-files", "-z", "--stage");
 }

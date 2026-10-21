@@ -18,7 +18,7 @@ import { indexState, listRefs, readOut, refKey, refText, remoteList } from "./sy
 import { parseMaybeBool, type ConfigEntry } from "./trust";
 import { forceNoteCountArgs, headIsAncestorArgs, heldCountArgs, mergeArgs, mergeCountsArgs, movedCountArgs, rebaseOntoArgs, rebaseStatusArgs, rebaseWalkArgs, rewrittenCountArgs } from "./workbench-commands";
 import { parseRebaseWalk, parseTrackedStatus, type WalkCommit } from "./workbench-parsers";
-import { conclude, readWorktrees, refTarget, registerWorkbenchAction, revCount, unavailable, type Common, type Observation, type PayloadOf, type Refused, type WorkbenchRun } from "./workbench-review";
+import { conclude, readWorktrees, refTarget, registerWorkbenchAction, revCount, unavailable, unresolvedRefusal, type Common, type Observation, type PayloadOf, type Refused, type WorkbenchRun } from "./workbench-review";
 
 export type MergeRebasePayload = PayloadOf<"merge" | "rebase">;
 type MergePayload = PayloadOf<"merge">;
@@ -183,8 +183,8 @@ async function updatedRefs(ctx: ObserveContext, head: Branch, onto: string, reba
   const worktrees = await readWorktrees(ctx);
   if (!("value" in worktrees)) return worktrees;
   // Data-model §8: a `headUnresolved` record can hold any candidate, so the moved-branch list is unknown.
-  const unknown = worktrees.value.records.find((r) => r.headUnresolved);
-  if (unknown !== undefined) return unavailable("head-unresolved", { worktree: unknown.path });
+  const unknown = unresolvedRefusal(worktrees.value.records);
+  if (unknown !== null) return unknown;
   const current = refKey(head.target);
   const held = new Set(worktrees.value.records.flatMap((r) => (r.branchKey === null || r.branchKey === current ? [] : [r.branchKey])));
   const candidates = [...refs.value].filter(([key]) => !held.has(key));

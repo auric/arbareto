@@ -394,7 +394,7 @@ registerWorkbenchAction<"worktree-remove", RemoveBound>("worktree-remove", {
       if (ref === null) return record.headUnresolved ? unavailable("head-unresolved", { worktree: record.path }) : unavailable("detached");
       // Plan.md D4: another worktree must not hold the branch. The removal releases the branch of this record only.
       if (common.head.state !== "detached" && common.head.target === ref) return unavailable("current-branch");
-      const other = heldElsewhere(records.filter((r) => r !== record), ref, common.head, record.branchKey!);
+      const other = heldElsewhere(records.filter((r) => r !== record), ref, common.head);
       if (other !== null) return other;
       if (!ref.startsWith(HEADS) || !isRefName(ref)) return unavailable("invalid-name");
       const facts = await deleteFacts(ctx, ref, common.listing);

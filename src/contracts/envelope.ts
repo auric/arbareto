@@ -1564,7 +1564,7 @@ const WorktreeEntry = z
     main: z.boolean(),
     current: z.boolean(),
   })
-  .refine((e) => (!e.detached || e.branch === null) && (!e.headUnresolved || (e.head === null && e.branch === null && !e.detached && !e.bare)))
+  .refine((e) => (!e.detached || e.branch === null) && e.headUnresolved === (!e.bare && e.branch === null && !e.detached) && (!e.headUnresolved || e.head === null))
   .meta({ title: "WorktreeEntry" });
 // Contract Δ3 `readWorktrees`: the records in Git's order, so only the first is main, and at most one is current. A bound gives OUTPUT_LIMIT with its reason.
 export const ReadWorktreesResult = z

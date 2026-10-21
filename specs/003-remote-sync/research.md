@@ -400,6 +400,38 @@ Probe of 2026-10-19 in a scratch folder outside the checkout. Host: Windows 11 P
   - The `--ignore-scripts` flag and `install.ignoreScripts` in `bunfig.toml` also stop all lifecycle scripts. They are not used, because the flag must be on every install, and the repository has no `bunfig.toml`. **documented** (same page)
   - Today no installed package of the repository declares a `preinstall`, `install`, or `postinstall` script. So the empty list blocks no script that the repository uses. **experiment** (`node_modules` listing of the main checkout at e0cf66e, 2026-10-19)
   - T011 check: after `bun install`, `node_modules/cpu-features/build` does not exist.
+- **T007 rerun, 2026-10-21**: a second probe in a scratch folder outside the checkout passed. Bun 1.4.3. `ssh2` 1.17.0, the newest npm release, published 2025-08-20. Git 2.56.0.windows.2. Client `OpenSSH_10.5p1, OpenSSL 3.5.9`. **experiment**
+  - Install: `bun add ssh2@1.17.0` with `"trustedDependencies": []` exited 0. Bun printed "Blocked 2 postinstalls", and `node_modules/cpu-features/build` does not exist. So no lifecycle script ran, and `ssh2` uses its JavaScript crypto.
+  - Fetch: the server on 127.0.0.1 had a generated ed25519 host key and checked the client key signature. Git's `ssh.exe` used `-F none`, `IdentitiesOnly=yes`, `IdentityAgent=none`, an owned `UserKnownHostsFile`, `GlobalKnownHostsFile=none`, `StrictHostKeyChecking=yes`, and `BatchMode=yes`. Each of the client key types ed25519, rsa-3072 (sha256 signature), and ecdsa-p256 fetched 3 of 3 times with exit 0, so 9 of 9 fetches passed. `FETCH_HEAD` equals the seed commit.
+  - Refusals: a known-hosts file with another host key gave exit 128. A client key that the server does not accept gave exit 128. `~/.ssh/known_hosts` did not change.
+  - Exit status: with `child.stdout.pipe(channel)`, every fetch exited 1, although the pack arrived. The pipe ends the channel before `channel.exit(code)` sends the exit status, so `ssh` exits 255. The server must pipe with `{ end: false }` and send `exit(code)`, then `end()`, on the `close` event of the child. `tests/support/ssh-server.ts` (lines 197 to 204) does this.
+  - Not checked: an SSH agent, Pageant, `.ppk` keys, plink, and keys with a passphrase.
+- **O-5 result (T008)**: the T007 rerun confirms the record above. The test devDependency stays `ssh2` 1.17.0, installed without lifecycle scripts. T007 and T008 tick together with T010.
+
+## R22 Main full run 5 (fc48588)
+
+Run of 2026-10-21 in `C:\Projects\arbareto-l3` at fc48588, clean tree. Main 8d862ae is fc48588 plus documents. `bun run test:all` exited 0: 7,230 tests, 0 fail, 50 skip. `cargo test --locked` exited 0: 553 pass, 4 ignored. Every `ORIGIN` line in the two logs is under `C:\Projects\arbareto-l3`. The JUnit reports are `parallel.xml` and `serial.xml` of that run.
+
+- T089: `tests/git/remote-facts.test.ts` "(d) D4 destination equals push --dry-run --porcelain" and `tests/wsl/sync-wsl.test.ts` "(d) D4 destination equals push --dry-run --porcelain" pass. Each prints `match=true` for every `d.push.autoSetupRemote*` and `d.remote-without-url+insteadOf` line. `d.remote-without-url` and `d.push-remote-dot` print `match=false`, as R16 (d) accepts and decides.
+- T090: `tests/git/remote-facts.test.ts` and `tests/wsl/sync-wsl.test.ts` "(m) non-boolean mirror, skipFetchAll, skipDefaultUpdate, prune, and pruneTags values, a valueless pushRemote, and an empty branch subsection" pass. The `m.empty-branch-subsection.remote`, `.push-record`, `.fetch-r1`, and `.push-dry-run-r1` lines print `match=true` on Windows and in the distro. `tests/contracts/sync-rules.test.ts` "an empty branch subsection refuses for every variable and value" passes.
+- T091: the (d) fact lines of the 12 `push.autoSetupRemote` variants and of `single-remote-up`, `two-remotes-without-origin`, and `two-remotes-with-origin` print `match=true` on Windows and in the distro. Only `matching`, `mirror`, `two-push-urls`, and `push-remote-dot` differ, and each carries its `deliberate` reason. `tests/contracts/sync-rules.test.ts` passes "simple, unset, upstream, and tracking pre-fill refs/heads/<branch> on the push remote", "matching gives the panel and nothing gives no pre-fill", "any true entry sets the flag, and a false entry does not clear it", "an invalid value gives invalid-config, also with an upstream", "merge entries count only with branch.<name>.remote (remote.c set_merge)", "upstream and tracking compare the push remote with the fetch remote", "a push remote . gives local-push-remote (R16 d)", "the default remote is the branch remote, else the only remote, else origin", and "a single remote is the push and the fetch remote without branch.<name>.remote". `tests/contracts/sync-contract.test.ts` passes with the reason `local-push-remote`.
+
+Ticks: T089, T090, and T091 cite this run. T027 and T030 stay open: cargo captures the `SKIP sandbox` and `SKIP putty` lines, so no record shows that their Sandbox and PuTTY cases ran.
+
+## R23 SC-010 mapping review (T081)
+
+Review of 2026-10-21 at 8d862ae. Read only. Scope: the Coverage rows of FR-005 and SC-010, the outcome assertions of `tests/git/sync-fetch.test.ts`, `sync-push.test.ts`, `sync-rejected.test.ts`, `sync-trust.test.ts`, `sync-pull.test.ts`, `tracking.test.ts`, and `clone.test.ts`, and the code that decides each outcome in `src/git-service/sync.ts`, `sync-review.ts`, `sync-parsers.ts`, `sync-integrate.ts`, `tracking.ts`, `clone.ts`, and `resolve.ts`.
+
+- Exit codes: `GIT_FAILED`, the fetch state of each remote, a clone, and Continue come from exit status 0 or not 0. `no-skip-commit` and the theirs side of a conflict come from exit 2 of `git show-ref --exists` (git-show-ref(1)).
+- Machine-readable output: push states, `PUSH_REJECTED` reasons `rejected` and `remote-rejected`, and created, updated, and deleted refs come from the `--porcelain` flag and summary fields (sync-parsers.ts `PUSHED`, `REFUSED`, the fetch flags). `stale-lease` is a `[rejected]` status of a push with a lease (contract Δ3, Δ9). The D4 destination comes from `for-each-ref` `%(push)` and `config -z` entries. `MALFORMED_GIT_OUTPUT` is any record outside the contract Δ3 grammar.
+- Repository reads: `completed-with-effects`, the observed list, `STALE_REVIEW`, and the pull decision come from ref listings, `rev-list --left-right --count`, HEAD, and the operation state read after each process.
+- OS facts: `canceled` needs a process without an exit status, and `destinationFacts` and the PuTTY version come from OS reads.
+- Tests: every `toContain` on `outputTail` checks shown text or redaction beside an asserted code. No test outcome comes from a text match.
+- Contract time limits: `DEADLINE`, the stall notice, and the Pageant `not-ready` reply come from the contract bounds `PROCESS_LIMITS` and 30 s. These are contract values, not a classification. The effects after them come from repository reads.
+- Finding: `readTracking` takes `gone` and the counts from `%(upstream:track,nobracket)`. ref-filter.c translates these words (`msgs`), and only `LC_ALL=C` keeps them English. A translated word fails the `TRACK` grammar and gives `MALFORMED_GIT_OUTPUT`, so no wrong state results. The translation proof R16 (c) stays **unverified**. The counts equal `rev-list --left-right --count` in `tracking.test.ts` (SC-003).
+- No outcome comes from a message text, a remote text, or a timing measurement.
+
+T081 stays open: it depends on T074, which waits for the manual check (R20).
 
 ## Batch reviews
 

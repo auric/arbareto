@@ -442,6 +442,23 @@ describe("virtual tree", () => {
     expect(focused()).toBe("Branches, 9995");
   });
 
+  test("an empty group shows its text below its own heading, and the heading names it (T118)", async () => {
+    const all = many(1_000);
+    const { host } = await sidebar({ refs: { ...all, refs: all.refs.filter((r) => r.kind !== "tag") } });
+    await settle();
+    await act(async () => item(host, "Branches").focus());
+    // End moves to the Tags heading, and the focused row stays mounted.
+    await key(item(host, "Branches"), "End");
+    await settle();
+    const heading = item(host, "Tags, 0");
+    const note = [...host.querySelectorAll("p")].find((p) => text(p) === "No tags")!;
+    expect(heading.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(host.querySelector('[role="tree"]')!.contains(note)).toBe(true);
+    expect(document.getElementById(heading.getAttribute("aria-describedby")!)).toBe(note);
+    // The heading and the text share one virtual item of two rows, so the next item starts below the text.
+    expect(note.parentElement!.style.height).toBe(`${2 * parseFloat(heading.style.height)}px`);
+  });
+
   test("the filter and the expanded state cover refs outside the window", async () => {
     const { host } = await sidebar({ refs: many(10_000) });
     await settle();

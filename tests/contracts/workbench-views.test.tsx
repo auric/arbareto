@@ -420,6 +420,14 @@ describe("action menu (FR-014, FR-085, plan.md D15, D16)", () => {
     expect(items?.body).toBe("outline-offset: calc(-1 * var(--focus-width));");
   });
 
+  test("in forced colors, a tooltip has a 1 px CanvasText edge like a dialog (D16, T118)", () => {
+    const css = readFileSync(printOrigin("../../src/frontend/index.css", import.meta.dir), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const forced = css.slice(css.indexOf("@media (forced-colors: active)"));
+    const rules = [...forced.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.replace(/\s+/g, " ").trim(), body: m[2]!.replace(/\s+/g, " ").trim() }));
+    const edge = rules.find((r) => r.selector.split(",").map((s) => s.trim()).includes('[data-slot="tooltip-content"]'));
+    expect(edge?.body).toBe("outline: 1px solid CanvasText;");
+  });
+
   test("a row opens its menu beside the row, so the row stays visible (D16, T089)", async () => {
     function RowMenu() {
       const [row, setRow] = useState<HTMLElement | null>(null);

@@ -338,7 +338,7 @@ describe("results (FR-081, FR-082)", () => {
     expect(status.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
   });
 
-  test("in forced colors, a selected row shows its state text and its buttons in HighlightText on Highlight (T116, plan D16)", () => {
+  test("in forced colors, a selected row shows its state text and its buttons in HighlightText on Highlight, and a disabled button in GrayText on Canvas (T116, T118, plan D16)", () => {
     const css = readFileSync(printOrigin("../../src/frontend/index.css", import.meta.dir), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
     const forced = css.slice(css.indexOf("@media (forced-colors: active)"));
     const rules = [...forced.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.replace(/\s+/g, " ").trim(), body: m[2]!.replace(/\s+/g, " ").trim() }));
@@ -346,6 +346,10 @@ describe("results (FR-081, FR-082)", () => {
     expect(state?.body).toBe("color: HighlightText;");
     const controls = rules.find((r) => r.selector === '.list-row[aria-selected="true"] button');
     expect(controls?.body).toBe("background: Highlight; color: HighlightText; border-color: HighlightText;");
+    // T118: a disabled button in a selected row needs a later rule, because the selected-row rule outranks the GrayText rule.
+    const disabled = rules.findIndex((r) => r.selector === '.list-row[aria-selected="true"] button:is(:disabled, [aria-disabled="true"], [data-disabled])');
+    expect(rules[disabled]?.body).toBe("background: Canvas; color: GrayText; border-color: GrayText;");
+    expect(disabled).toBeGreaterThan(rules.indexOf(controls!));
   });
 
   test("a failed step without an exit code says so and never shows a number", async () => {

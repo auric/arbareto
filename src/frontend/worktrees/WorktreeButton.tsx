@@ -88,10 +88,10 @@ export function WorktreeRow({ entry: e }: { entry: WorktreeEntry }) {
   return (
     <>
       <CurrentMark entry={e} />
-      {/* Plan D15 "Rows": the lines take their first-line width before the marks. The marks shrink first. */}
-      <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
-        <span data-slot="worktree-lines" title={entryLabel(e)} className="flex max-w-full shrink-0 grow flex-col">
-          <span className="flex min-w-0 items-center gap-2">
+      {/* Plan D15 "Rows": the first line takes its width before the marks. The marks shrink first, but not below their minimum. The path takes the full row width. */}
+      <span className="grid min-w-0 flex-1 grid-cols-[minmax(0,max-content)_minmax(min-content,1fr)] items-center gap-x-2 overflow-hidden">
+        <span data-slot="worktree-lines" title={entryLabel(e)} className="contents">
+          <span className="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
             <span className={e.current ? "min-w-0 truncate font-semibold" : "min-w-0 truncate"}>{folderOf(e.path)}</span>
             {branch === null ? null : (
               <span className="flex min-w-0 items-center gap-1 text-muted-text">
@@ -100,10 +100,12 @@ export function WorktreeRow({ entry: e }: { entry: WorktreeEntry }) {
               </span>
             )}
           </span>
-          {/* A zero width with a full minimum: the path fills the lines but adds no width to them. */}
-          <span className="w-0 min-w-full truncate text-muted-text">{e.path}</span>
+          {/* A zero width with a full minimum: the path fills the row but adds no width to the columns. */}
+          <span className="col-span-2 row-start-2 w-0 min-w-full truncate text-muted-text">{e.path}</span>
         </span>
-        <Marks entry={e} />
+        <span className="col-start-2 row-start-1 flex justify-end">
+          <Marks entry={e} />
+        </span>
       </span>
     </>
   );
@@ -120,10 +122,14 @@ export function CurrentMark({ entry: e }: { entry: WorktreeEntry }) {
 /** The state marks. A long mark shrinks before the row overflows. */
 export function Marks({ entry: e }: { entry: WorktreeEntry }) {
   return (
-    <span className="ml-auto flex min-w-0 gap-1">
+    <span className="ml-auto flex justify-end gap-1">
       {marks(e).map((mark) => (
-        <span key={mark} className="chip min-w-0 truncate">
-          {mark}
+        <span key={mark} className="chip grid grid-cols-[minmax(auto,max-content)]">
+          <span className="col-start-1 row-start-1 min-w-0 truncate">{mark}</span>
+          {/* The minimum width of a cut mark. Chromium keeps the first character before the "…". */}
+          <span aria-hidden="true" className="invisible col-start-1 row-start-1">
+            {mark.slice(0, 1)}…
+          </span>
         </span>
       ))}
     </span>

@@ -1401,7 +1401,7 @@ describe("menus", () => {
 // T362: plan.md "Header layout" and "Long text": the branch text of a very long branch name.
 describe("toolbar branch text", () => {
   const LONG = "feature/ACS-10545-a-very-long-branch-name-that-goes-on-and-on-and-on";
-  test("it shows a middle ellipsis, holds the full name in its tooltip and accessible text, and takes only the width that the other items leave", async () => {
+  test('it shows a middle ellipsis, holds the full name in its tooltip and accessible text, and the branch button takes the free width (004 plan.md D15 "Top bar row")', async () => {
     const double = await mount(succeeded(REGISTRATION));
     await resolve(double.pending("readWorkspace"), succeeded(snapshot({ head: { state: "branch", target: `refs/heads/${LONG}`, oid: HEAD } })));
     const branch = document.querySelector<HTMLElement>('header [data-slot="branch-text"]')!;

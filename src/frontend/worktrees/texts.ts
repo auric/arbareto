@@ -32,6 +32,7 @@ export const W = {
   prunable: "Folder missing",
   bare: "Bare repository",
   detached: B.detached,
+  headUnknown: "HEAD unknown",
   open: "Open",
   remove: "Remove worktree…",
   menu: (name: string) => `Actions for ${name}`,

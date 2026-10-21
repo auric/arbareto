@@ -126,6 +126,7 @@ describe("contract Δ9 codes", () => {
       "unborn",
       "current-branch",
       "other-worktree",
+      "head-unresolved",
       "name-exists",
       "invalid-name",
       "reserved-name",

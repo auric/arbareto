@@ -1604,7 +1604,9 @@ describe("worktrees, settings, trust, and submodules through the distro Git (qui
       const flag = (label: string) => valueOf(lines, label) !== undefined;
       const reason = (label: string) => (flag(label) ? { reason: valueOf(lines, label) ?? null } : null);
       const path = valueOf(lines, "worktree")!;
-      return { path, invalidUtf8: false, head: valueOf(lines, "HEAD") ?? null, branch: valueOf(lines, "branch") ?? null, bare: flag("bare"), detached: flag("detached"), locked: reason("locked"), prunable: reason("prunable"), main: i === 0, current: path === current };
+      // Data-model §8 `headUnresolved`: a record without `bare`, `branch`, and `detached`.
+      const unresolved = !flag("bare") && !flag("branch") && !flag("detached");
+      return { path, invalidUtf8: false, head: unresolved ? null : (valueOf(lines, "HEAD") ?? null), branch: valueOf(lines, "branch") ?? null, bare: flag("bare"), detached: flag("detached"), headUnresolved: unresolved, locked: reason("locked"), prunable: reason("prunable"), main: i === 0, current: path === current };
     });
   }
   // SC-008: the worktree list with the fixture root as `<root>`, the refs, and HEAD.

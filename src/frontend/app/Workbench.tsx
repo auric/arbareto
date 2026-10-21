@@ -645,7 +645,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     let view: HistoryStore | null = null;
     const requests = createRequests({
       clock,
-      history: { open: () => void view!.open(view!.getState().scope, false), refresh: () => void view!.refresh() },
+      history: { open: () => void view!.open(view!.getState().scope, false), refresh: () => void view!.refresh(), openedSeq: () => view!.getState().openedSeq },
       bridge: {
         restoreWorkspace: () => bridge.restoreWorkspace(onStart).then(endStart),
         readEntries: (target, payload) => bridge.readEntries(target, payload),

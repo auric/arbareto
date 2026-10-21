@@ -32,6 +32,7 @@ function bridgeDouble() {
   const history = {
     open: () => store!.track(record("openHistory", store!.target() ?? {}, { scope: "all" })),
     refresh: () => store!.track(record("openHistory", store!.target() ?? {}, { scope: "all" })),
+    openedSeq: () => 0,
   };
   const bind = <T extends NonNullable<typeof store>>(requests: T) => ((store = requests), requests);
   const of = (operation: string) => calls.filter((call) => call.operation === operation);

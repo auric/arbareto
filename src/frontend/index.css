@@ -376,8 +376,9 @@
     border-color: var(--control-border);
     color: var(--text);
   }
-  /* plan.md "Reference chips": local branches use Accent; remote and tag chips use Text for the name, icon, and outline. */
-  .chip {
+  /* plan.md "Reference chips": local branches use Accent; remote and tag chips use Text for the name, icon, and outline. The hidden label measure copy uses the same box. */
+  .chip,
+  .chip-measure {
     height: var(--h-badge);
     padding-inline: 4px;
     border: 1px solid var(--text);

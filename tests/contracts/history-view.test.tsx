@@ -264,6 +264,19 @@ describe("row labels", () => {
     expect(fitChips([50, 50, 50], 20, 30)).toBe(0);
   });
 
+  test("the label fit counts the gap between labels, so the +<n> chip never clips its count", () => {
+    expect(fitChips([50, 50, 50], 158, 30, 4)).toBe(3);
+    expect(fitChips([50, 50, 50], 154, 30, 4)).toBe(2);
+    expect(fitChips([50, 50, 50], 137, 30, 4)).toBe(1);
+  });
+
+  test("the label measure copy gives each label and the +<n> chip the chip box", async () => {
+    const { host } = await mount({ text: labels });
+    const copy = commits(host)[0]!.querySelector<HTMLElement>('[data-slot="row-labels"] > [aria-hidden="true"].invisible')!;
+    expect([...copy.children].map((c) => c.classList.contains("chip-measure"))).toEqual([true, true, true, true, true]);
+    expect(copy.querySelectorAll(".chip").length).toBe(0);
+  });
+
   test("the labels share one region that takes at most half of the subject cell and clips at its edge", async () => {
     const long = (i: number) => (i === 0 ? { subject: "Change 1", labels: [{ kind: "branch" as const, name: LONG, invalidUtf8: false }, { kind: "remote" as const, name: `origin/${LONG}`, invalidUtf8: false }] } : {});
     const { host } = await mount({ total: 1, loaded: 1, text: long, head: { state: "branch", target: `refs/heads/${LONG}`, oid: oid(0) } });

@@ -116,14 +116,14 @@ const LABEL_KINDS: { kind: ViewRow["labels"][number]["kind"]; label: string; ico
   { kind: "stash", label: "stash", icon: Archive01Icon },
 ];
 
-/** 001 plan.md "History graph design": how many labels fit in `room`, half of the subject cell. Without room for all, the shown labels leave room for the "+<n>" chip. */
-export function fitChips(widths: readonly number[], room: number, plus: number): number {
-  if (widths.reduce((a, b) => a + b, 0) <= room) return widths.length;
+/** 001 plan.md "History graph design": how many labels fit in `room`, half of the subject cell. Without room for all, the shown labels leave room for the "+<n>" chip. `gap` separates two neighbor labels. */
+export function fitChips(widths: readonly number[], room: number, plus: number, gap = 0): number {
+  if (widths.reduce((a, b) => a + gap + b, -gap) <= room) return widths.length;
   let used = plus;
   let count = 0;
   for (const width of widths) {
-    if (used + width > room) break;
-    used += width;
+    if (used + gap + width > room) break;
+    used += gap + width;
     count++;
   }
   return count;
@@ -174,8 +174,9 @@ function RowLabels({ labels, tracking, onMenu, active = null }: { labels: ViewRo
     const fit = () => {
       const parts = [...copy.children].map((c) => c.getBoundingClientRect().width);
       const plus = parts.pop() ?? 0;
-      const badges = [...region.querySelectorAll(":scope > .badge")].reduce((sum, b) => sum + b.getBoundingClientRect().width, 0);
-      setCount(fitChips(parts, Math.max(0, cell.clientWidth / 2 - badges), plus));
+      const gap = parseFloat(getComputedStyle(region).columnGap) || 0;
+      const badges = [...region.querySelectorAll(":scope > .badge")].reduce((sum, b) => sum + b.getBoundingClientRect().width + gap, 0);
+      setCount(fitChips(parts, Math.max(0, cell.clientWidth / 2 - badges), plus, gap));
     };
     fit();
     const observer = new ResizeObserver(fit);
@@ -198,14 +199,14 @@ function RowLabels({ labels, tracking, onMenu, active = null }: { labels: ViewRo
         {labels.map((l) => {
           const count = countOf(l, tracking);
           return (
-            <span key={`${l.kind}:${l.name}`} className="flex items-center gap-1">
+            <span key={`${l.kind}:${l.name}`} className="chip-measure flex items-center gap-1">
               <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} className="size-(--icon-size)" />
               <span className="max-w-[160px] truncate">{l.name}</span>
-              {count === null ? null : <span>{count.text}</span>}
+              {count === null ? null : <span className="num">{count.text}</span>}
             </span>
           );
         })}
-        <span>+{labels.length}</span>
+        <span className="chip-measure">+{labels.length}</span>
       </span>
     </>
   );

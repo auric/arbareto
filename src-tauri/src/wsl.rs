@@ -4808,10 +4808,15 @@ mod tests {
             "OBSERVATION T387: mutation returned after {:?}, anchor count {count:?}, Job images {images:?}",
             started.elapsed()
         );
-        assert_eq!(
-            count,
-            Some(0),
-            "the sleep runs outside the operation scopes"
+        // The shell returns before `systemd-run` moves the background job into its own scope.
+        let mut last = count;
+        let outside = eventually(PREMISE_WAIT, || {
+            last = supervisor.active_descendants(&operation, None);
+            last == Some(0)
+        });
+        assert!(
+            outside,
+            "the sleep runs outside the operation scopes within {PREMISE_WAIT:?}: first {count:?}, last {last:?}"
         );
         supervisor.ended(&operation, false);
         let held = supervisor.process_ids(&operation).len();
@@ -4834,6 +4839,9 @@ mod tests {
 
     /// The sleep outlives the mutation run, the anchor exit, and the checks.
     const LINGER_SECONDS: u64 = 10;
+
+    /// The bound for the sleep to leave the operation scopes. It stays well below `LINGER_SECONDS`.
+    const PREMISE_WAIT: Duration = Duration::from_secs(5);
 
     /// The units `arbareto-<operation>-*` that remain after at most 5 seconds.
     fn units_left(reference: &Reference, inst: &Installation, operation: &str) -> String {

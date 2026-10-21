@@ -431,6 +431,71 @@ Failing-first records:
 - T095, 516dc09 on 3e25b8f, with `tests/dom.ts` of 14104a0: the seven named files give 670 pass, 33 skip, 38 fail. The named failures are 29 vector cases, 1 DD side-name case of `workbench-resolve.test.tsx`, and 4 cases of `workbench-worktrees.test.tsx`. No case of `tests/git/worktrees.test.ts`, `tests/git/resolve.test.ts`, `workbench-amend.test.tsx`, or `commit-tray.test.tsx` is named, so this record does not show those parts red.
 - T105, 0eadd40 on b1d72af, with `tests/dom.ts` of 14104a0: `workbench-contract.test.ts` and the four `tests/git` files give 113 pass, 6 fail. The failures are the field-free contract case and five service cases that compare the results without the removed fields.
 
+## R29 Verification runs for T062, T076, and T093, 2026-10-20 and 2026-10-21
+
+Two runs in `C:\Projects\arbareto-l4` on f004-impl. The logs are in the orchestrator scratchpad `verify-004-l4/` and `verify2-004-l4/`. Both runs fail the T062, T076, and T093 pass condition. T062, T076, and T093 stay open.
+
+Run 1, 2026-10-20, at 51f9ab2:
+- `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `bun run build:service`, and `cargo check`: exit 0.
+- `bun run test:contracts`: 4,740 pass, 33 skip, 0 fail.
+- `bun run test:all`: exit 0 in 124 minutes. Parallel step: 6,547 pass. Serial step: 535 pass.
+- `cargo test`: 553 passed. `bun test tests/wsl/registration.test.ts` on Ubuntu-24.04: 39 pass.
+- Every `ORIGIN` repository root is under `C:\Projects\arbareto-l4`.
+- `bun test tests/windows`: 115 pass, 6 skip, 1 fail. In the native facts, N2 failed: `ElementFromHandle` returned 0x800705B4, `HRESULT_FROM_WIN32(ERROR_TIMEOUT)`. The file alone then gave 4 pass, 0 fail.
+- T062 `cmd` mutation: 14 pass, 1 fail. The red case was a D12 class case, not a Q14 case. Thus the run did not show the Q14 check red.
+- T062 `rewritesUpstream` false: 5 pass, 6 fail; after the undo, 11 of 11 passed. T076 confirmation dialog skip: 17 pass, 1 fail; after the undo, 18 of 18 passed.
+- T093 filtered Stage all: the first mutation form left 69 of 69 green. A second form gave 68 pass, 1 fail. After the undo, 69 of 69 passed.
+- Memory: the bun.exe private-bytes samples are invalid, because each sample is 0.
+- Verdict: fail, because of the N2 failure in `tests/windows` and the T062 `cmd` red on a D12 case.
+- Fixes: main f0bc552 adds 0x800705B4 to the UIA retry set. f23aab9 adds a Q14 `cmd` case, and 2c507ca merges it.
+
+Run 2, 2026-10-20 21:50 to 2026-10-21 about 01:30, at 97f4fbc, on a clean tree:
+- `bun install --frozen-lockfile`, `bun run build`, `bun run build:service`, `bun run typecheck`, `bun run export:schemas --check`, and `cargo check`: exit 0.
+- `bun run test:contracts`: 4,768 pass, 33 skip, 0 fail.
+- 21:56 to 00:32: `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 1. Parallel step: 194 files, 6,574 pass, 40 skip, 1 fail. Serial step: 30 files, 536 pass, 9 skip, 0 fail. All 224 files ran, with 7,160 tests.
+- All 1,865 `ORIGIN` lines of `test:all` are under `C:\Projects\arbareto-l4`.
+- The failure: `tests/git/submodule-review.test.ts:775`, "a modules walk above 256 folders gives limit", after 45.5 s. It expected one `limit` refusal and received `[]`. The file alone then gave 76 pass, 0 fail.
+- `bun test tests/windows`: 116 pass, 6 skip, 0 fail. Of its 28 `ORIGIN` lines, two are outside `C:\Projects\arbareto-l4`. They are the installed app `%LOCALAPPDATA%\Arbareto\arbareto.exe` (SHA d39f9131, the main 9a07799 package) and its fixture home copy (SHA b5d54c39).
+- N1: 7 lines match. N2: the `app-menu-by-uia-show-context-menu` line gives `menu:false` and `match=false`. This line is an observation line by design, and it ran against the main package. N3, N4 (conhost seen), N5, and N6 match.
+- `cargo test --locked`: 553 passed, 4 ignored. `bun test tests/wsl/registration.test.ts` on Ubuntu-24.04: 39 pass, 4 skip (`distro-git-2.55`).
+- Skips in `test:all`: 15 skips print a SKIP reason. They are ssh-server 3, disposable-volume 2, history-fixture-h1m 2, other-account-owner 2, distro-git-below-2.55 2, fifo 1, restart-keeps-lingering 1, empty-locpath-hides-c-utf8 1, and two-test-distros 1. 34 skips print no reason line. Skips in `tests/windows`: display-off, live input 2, WSL distro unset 1, and history-fixture-h1m 2.
+- Skip trace (scout, scratchpad `skips97.txt` and `skips51.txt`): all 49 skips have a cause, and 51f9ab2 has the same set. 36 platform skips print no SKIP line: 33 other-platform golden vectors (`vectors.test.ts:89`), 2 POSIX trust cases (`trust.test.ts:1730`, `:1799`), and 1 Linux pipe case (`bun-runner.test.ts:159`). 13 capability or WSL skips print SKIP lines. Two F15 SKIP lines are fixture notes, not skipped tests.
+- Skip-count gap: 33 other-platform golden vectors skip. The 001 record (001 research.md:1902) and the 002 record (002 research.md:390) say 29. Thus 4 skips have no count in those records.
+- Control mutations, each red and then green after the undo, with a clean tree after each:
+  - T062 `cmd` (`trust.ts:398`): 14 pass, 2 fail. The Q14 case is red, and a D12 class case is also red. After the undo, 16 of 16 passed.
+  - T062 `rewritesUpstream` false at three exits (`commit-review.ts:109,128,133`): 5 pass, 6 fail, with the FR-100 case red. After the undo, 11 of 11 passed.
+  - T076 confirmation dialog skip (`CommitTray.tsx:225`, `confirmRewrite` kept): 14 pass, 4 fail. After the undo, 18 of 18 passed.
+  - T093 filtered Stage all (`ChangesPane.tsx:160-161`, `query` in the dependencies): 69 pass, 1 fail (Q29). After the undo, 70 of 70 passed.
+- Memory: the lowest free memory was 9,551 MB. The peak bun.exe size was 2,268 MB. The memory guard did not stop a step.
+- Overlap: at 00:59, after `test:all`, the T081 agent ran `tests/wsl/workbench-wsl.test.ts`. The verifier gate waited for it.
+- Verdict: fail, because `bun run test:all` gave exit 1.
+- Cause (investigator, scratchpad `modwalk/`): a product defect. `reviewSubmodules` ran on the read scheduler with the 30 s total read deadline. 001 contracts operations.md:435 exempts it from that deadline. Under load, the walk review took more than 30 s and ended `failed` with `DEADLINE`. The test checked only the refusals, so it received `[]`. `readDeadlineMs: 3000` gives the same result.
+- Fix: 001 T382, 294db02. Main 40818b3 merges it, and 0baf5ea merges main into f004-impl.
+
+Second board comparison (T076), at 97f4fbc. The first comparison ran at 5a3b2f2.
+- Fixed: T110, T111, and T114.
+- T109 item (1) regressed. T112 item (5) is not fixed.
+- 7 new blockers:
+  - The top bar branch button at 960 and at 1024 DIPs.
+  - At 960 DIPs in the Comfortable density, the sync reason overlaps History.
+  - The Commit reason is cut, and it has no tooltip.
+  - The worktree row branch is 0 px wide.
+  - A branch row that another worktree holds cuts the branch name.
+  - In forced colors, Submodules row 1 fails with a contrast of 1.48:1.
+  - The History label "+4999" is clipped.
+- Fixes: T115, T116, and T117. Open.
+
+A final verification run at the commit after T115 to T117 is open.
+
+Open items:
+- The Remove dialog cannot show the branch-delete note at once. The facts come only after a review with `deleteBranch` true, so this needs a contract change (T110 skip).
+- FR-061: a pending "Not set" choice for a key that the scope sets shows no note until Save.
+- The perf fixture stream digest gap.
+- The host-lines box of `SubmodulesGroup` keeps `overflow-y-auto`. It is not changed.
+- `tests/windows` ran against the main 9a07799 package. Batch 7 records N1 to N6 again with a 004 package.
+
+Process deviation, 2026-10-21, at about 02:13: the board-comparison agent opened `C:\Projects\arbareto` in the dev app for about one minute. An empty picker path caused it. `git status` of that checkout stayed clean, and it had no `index.lock`. The times of `index`, `HEAD`, and `config` are older than the open. The fix preamble now requires a path check before each open.
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.

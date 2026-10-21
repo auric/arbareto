@@ -2406,6 +2406,8 @@ Open item from the 004 batch 0 review (S3), 2026-10-17: `acquireLock` in `tests/
 
 **T381 review, 2026-10-20.** Independent reviewer at cb1a0f3 and f0bc552 (main merge a45de0b, 004 merge f8faa3f). The reconcile block is correct, and band controls keep focus. The 001 plan "visible reason text" rule does not point to its 003 D12 exceptions. Menus show the reconcile reason as visible text. During a reconcile read, the toolbar hides a visible unknown-state reason. No case covers Pull, Push, or the branch menu. 004 T114 fixes them (6cede43).
 
+**T382, 2026-10-21.** Found in the 004 full run at 97f4fbc (004 research.md R29). Cause: the read scheduler gave `reviewSubmodules` the 30 s total read deadline. Contract §5 (`contracts/operations.md:435`) exempts it. Under load, the walk review ended `failed` with `DEADLINE`. The test checked only the refusals, so it showed `[]`. Fix: 294db02 adds `deadline: false` to `ReadJob`, and `scheduleRead` sets it only for `reviewSubmodules`. Main 40818b3 merges it. Failing-first case: "T382: a modules walk above 256 folders gives limit after the read deadline passes" with `readDeadlineMs: 3000`. The walk case now also expects `succeeded`. Control mutation: without `deadline: false` in `scheduleRead`, the T382 case is red.
+
 ### Dependency reviews
 
 After T003 and T006, each dependency change gets one record here (plan.md, Tool and runtime boundaries). A record names the task and each added, removed, or changed package. It gives the old and new resolved versions, the licence, the reason, the reviewer, and the findings. It also lists the qualification checks that ran again.

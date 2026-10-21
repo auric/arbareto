@@ -41,3 +41,13 @@ export function contractChecked<T extends object>(bridge: T): T {
     },
   });
 }
+
+/** A `reviewCommit` result that passes `ReviewCommitResult`: one staged file and `reviewToken`, or with null an empty scope without a token (feature 004 contract Δ3). */
+export const commitReviewed = (reviewToken: string | null) => ({
+  generation: 1,
+  head: { state: "branch", target: "refs/heads/main", oid: "1".repeat(40) },
+  scope: [{ status: "M", path: "a.txt", pathBytes: Buffer.from("a.txt").toString("base64") }],
+  disclosure: { approvalRequired: false, trust: "untrusted" },
+  limitations: ["Git will run approved hooks. They or other Git tools can change the result during execution."],
+  ...(reviewToken === null ? { scope: [] } : { reviewToken }),
+});

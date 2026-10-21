@@ -4,7 +4,7 @@
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { useEffect, useId, useState, useSyncExternalStore } from "react";
 import type { HistoryRow } from "../../contracts/envelope";
-import { useCopy } from "../app/RepositoryStates";
+import { unknownReadText, useCopy } from "../app/RepositoryStates";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import type { Details, HistoryView } from "../state/history-view";
@@ -58,7 +58,8 @@ const LABEL_WORD = { branch: "branch", remote: "remote-tracking branch", tag: "t
 function absentText(details: Details): string {
   if (details.state === "none") return "This commit is not in the history list.";
   if (details.state === "unknown") return "This commit is not in the loaded history rows.";
-  return `Arbareto cannot read this commit: ${(details as { code: string }).code}.`;
+  const code = (details as { code: string | null }).code;
+  return code === null ? unknownReadText("The commit") : `Arbareto cannot read this commit: ${code}.`;
 }
 
 export type ViewCommitDetailsProps = {

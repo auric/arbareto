@@ -116,7 +116,12 @@ interface StatusSnapshot extends ChangeSnapshot {
   pages: Map<string, number>;
   // The digest of the entries without their `entryId`. A changed listing is an accepted state change, so it advances the generation.
   entriesDigest: string;
+  // Feature 004 contract Δ4 "Status cut". Null for a complete read.
+  cut: StatusCut;
 }
+
+// Feature 004 contract Δ4: `untracked` keeps every tracked, unmerged, and staged entry. `other` keeps the 001 rules.
+export type StatusCut = "untracked" | "other" | null;
 
 type RecoveryState = WorkspaceSnapshot["recoveryState"];
 
@@ -865,12 +870,17 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       readKind: "full" as const,
     };
     const pageLimit: Completeness = { state: "limited", code: "OUTPUT_LIMIT", reason: "STATUS_PAGE_BYTES" };
-    // The first page carries the final completeness. Only a complete result can become `pageLimit`.
-    const { starts, kept: keptEntries } = paginate(entries, encodedBytes({ ...summary, completeness: completeness.state === "complete" ? pageLimit : completeness }));
+    // The first page carries the final completeness. Only a complete result can become `pageLimit`. `cut` takes its longest value.
+    const { starts, kept: keptEntries } = paginate(entries, encodedBytes({ ...summary, cut: "untracked", completeness: completeness.state === "complete" ? pageLimit : completeness }));
+    // Contract Δ4 "Status cut" and research.md R18: porcelain v2 prints changed and unmerged records before untracked records (wt-status.c `wt_porcelain_v2_print`).
+    // So a status bound after a `?` record keeps every other record. The index listing, the fingerprint, and the pages must keep theirs too.
+    const untrackedCut =
+      statusReason !== null && indexReason === null && fingerprintLimit === null && !changed && workingLimit === null && parsed.records.at(-1)?.kind === "untracked" && entries.slice(keptEntries).every((e) => e.category === "untracked");
     if (keptEntries < entries.length) {
       entries.length = keptEntries;
       if (completeness.state === "complete") completeness = pageLimit;
     }
+    const cut: StatusCut = completeness.state === "complete" ? null : untrackedCut ? "untracked" : "other";
     const cursors = starts.map((_, i) => (i === 0 ? "" : crypto.randomUUID()));
     const observation: Observation = {
       repositoryId: w.repositoryId,
@@ -886,13 +896,14 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     };
     // Contract §2 and §8: a read that ends after a newer read records nothing and keeps its start generation, so the caller can discard it.
     // When the newer read recorded an equal observation, the late read returns the first page of that retained snapshot.
-    let snapshot: Pick<StatusSnapshot, "generation" | "snapshotId" | "completeness" | "entries" | "starts" | "cursors"> = {
+    let snapshot: Pick<StatusSnapshot, "generation" | "snapshotId" | "completeness" | "entries" | "starts" | "cursors" | "cut"> = {
       generation: startGeneration,
       snapshotId: crypto.randomUUID(),
       completeness,
       entries,
       starts,
       cursors,
+      cut,
     };
     if (t.signal.aborted) return end({ result: "canceled" });
     const recorded = st.recorded < sequence;
@@ -905,7 +916,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       // Contract §8: an advance invalidates every token of the old generation, so its bound paths leave the observation.
       const dropped = advance && t.bound === undefined;
       if (dropped) st.bound.clear();
-      snapshot = snapshots.record(dropped ? { ...observation, workingVersions: [] } : observation, { entries, starts, cursors, pages: new Map(cursors.slice(1).map((cursor, i) => [cursor, i + 1])), entriesDigest }, advance);
+      snapshot = snapshots.record(dropped ? { ...observation, workingVersions: [] } : observation, { entries, starts, cursors, pages: new Map(cursors.slice(1).map((cursor, i) => [cursor, i + 1])), entriesDigest, cut }, advance);
       st.recorded = sequence;
       w.generation = snapshot.generation;
       ownerGeneration ??= snapshot.generation;
@@ -917,6 +928,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       generation: snapshot.generation,
       snapshotId: snapshot.snapshotId,
       completeness: snapshot.completeness,
+      cut: snapshot.cut,
       entryCount: snapshot.entries.length,
       entries: snapshot.entries.slice(0, snapshot.starts[1] ?? snapshot.entries.length),
       cursor: snapshot.cursors[1] ?? null,
@@ -989,8 +1001,19 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       return entry === undefined ? { ok: false, code: "UNKNOWN_TARGET" } : { ok: true, snapshot: found.snapshot, entry };
     },
 
+    // Feature 004 contract Δ3 `revealPath`: an entry of the retained read, which the store holds for the current generation. No Git process starts.
+    currentEntry(repositoryId: string, entryId: string): ChangeEntry | null {
+      return snapshots.retained(repositoryId)?.entries.find((e) => e.entryId === entryId) ?? null;
+    },
+
     // Contract §3 `reviewCommit`: the generation, then the snapshot. No Git process starts.
     snapshot(repositoryId: string, generation: number, snapshotId: string): { ok: true; snapshot: ChangeSnapshot } | { ok: false; code: "REPOSITORY_CHANGED" | "UNKNOWN_TARGET" } {
+      snapshots.register(repositoryId);
+      return snapshots.lookup(repositoryId, generation, snapshotId);
+    },
+
+    // Feature 004 contract Δ2 and Δ4 `applyFiles`: the retained snapshot with its entries and its cut. No Git process starts.
+    selection(repositoryId: string, generation: number, snapshotId: string): { ok: true; snapshot: ChangeSnapshot & Pick<StatusSnapshot, "entries" | "cut"> } | { ok: false; code: "REPOSITORY_CHANGED" | "UNKNOWN_TARGET" } {
       snapshots.register(repositoryId);
       return snapshots.lookup(repositoryId, generation, snapshotId);
     },

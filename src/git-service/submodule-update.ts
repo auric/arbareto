@@ -16,6 +16,7 @@ import {
   type SubmodulePlanRow,
   type SubmoduleProgressPhase,
   type SubmoduleRemedyRequest,
+  type SubmoduleStaleReviewReason,
 } from "../contracts/submodules";
 import type { Acceptance, ApprovalKey, Approvals, SubmoduleReview } from "./approvals";
 import {
@@ -97,11 +98,11 @@ type RowRemedy = NonNullable<NonNullable<UpdatePhase["refusal"]>["remedy"]>;
 
 // Contract §2, §9, and §12 "Refusals": the acceptance checks after the accepted event, in this order. Memory only, so no Git process starts.
 export function admitUpdate(
-  request: Pick<UpdateRequest, "repositoryId" | "repositoryGeneration">,
+  request: Pick<UpdateRequest, "repositoryId" | "repositoryGeneration" | "payload">,
   w: Pick<Workspace, "generation">,
   accepted: Acceptance,
   retained: (token: string) => RetainedSubmoduleReview | undefined,
-): UpdateAdmission | { code: ErrorCode; result?: { refusals: SubmoduleRefusal[] } } {
+): UpdateAdmission | { code: ErrorCode; result?: { refusals: SubmoduleRefusal[] } | { reason: SubmoduleStaleReviewReason } } {
   if (request.repositoryGeneration !== w.generation) return { code: "REPOSITORY_CHANGED" };
   if (!accepted.ok) return { code: "code" in accepted ? accepted.code : "UNKNOWN_TARGET" };
   const approval = accepted.approval;
@@ -110,6 +111,8 @@ export function admitUpdate(
   if (review === undefined || review.repositoryId !== request.repositoryId) return { code: "UNKNOWN_TARGET" };
   // The update refuses while a review refusal holds. The token stays unconsumed.
   if (review.value.refusals.length > 0) return { code: "UNSUPPORTED_SUBMODULE", result: { refusals: review.value.refusals } };
+  // Feature 004 contract Δ12: one "Update anyway" covers every host line of the review. The token stays unconsumed for it.
+  if (review.value.hosts.length > 0 && request.payload.confirmHosts !== true) return { code: "STALE_REVIEW", result: { reason: "hosts" } };
   return { approval, review };
 }
 
@@ -280,7 +283,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
     if ("failed" in captured) return { code: captured.failed };
     const index = await listingOf(ctx, indexEntryArgs(), (bytes) => parseIndexListing(bytes, w.objectFormat));
     if (!("value" in index)) return isStop(index) ? index : { code: index.code };
-    const observer = o.reviews.observe(t, rowIds);
+    const observer = o.reviews.observe(t, rowIds, a.review.scope);
     const read = await observer.top({ head: captured, indexEntries: index.value });
     if ("stop" in read) return read;
     const bound = observer.binding();
@@ -347,7 +350,9 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
     const planned = new Map<string, { bytes: Uint8Array; parent: string | null }>();
     const visitable = (p: ObservedRow) => p.row.refusal === null && (p.row.action !== "skip" || p.register);
     const pathOf = new Map(read.rows.map((p) => [p.row.rowId, p.row.pathBytes]));
-    for (const p of read.rows) if (visitable(p)) planned.set(p.row.pathBytes, { bytes: p.pathBytes, parent: p.row.parentRowId === null ? null : (pathOf.get(p.row.parentRowId) ?? null) });
+    // Contract Δ12: a row above the scope row runs no step, so `<n>` and `<i>` leave it out.
+    const counted = (p: ObservedRow) => visitable(p) && !p.above;
+    for (const p of read.rows) if (counted(p)) planned.set(p.row.pathBytes, { bytes: p.pathBytes, parent: p.row.parentRowId === null ? null : (pathOf.get(p.row.parentRowId) ?? null) });
     const below = (bytes: Uint8Array, parent: Uint8Array) => bytes.length > parent.length && bytes[parent.length] === SLASH && Buffer.compare(bytes.subarray(0, parent.length), parent) === 0;
     const dropBelow = (bytes: Uint8Array) => {
       for (const [key, e] of planned) if (below(e.bytes, bytes)) planned.delete(key);
@@ -476,7 +481,9 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
         const built = buildSubmoduleRemedy(remedy);
         return built.command === null ? { text: built.text } : { command: built.command, text: built.text };
       });
-      const fail = () => void (r.facts.phase.failedStep = { firstFetch, outputTail: stderr.outputTail(), remedy: buildSubmoduleRemedy(remedy) });
+      // The runner end gives the exit code. A refusal after the start request gives none.
+      let exitCode: number | null = null;
+      const fail = () => void (r.facts.phase.failedStep = { firstFetch, outputTail: stderr.outputTail(), exitCode, remedy: buildSubmoduleRemedy(remedy) });
       let exit: GitExit;
       try {
         exit = await o.runner.run({
@@ -502,6 +509,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
       }
       // Contract §6 "Lingering Jobs": the count never changes the outcome, so an exit without a count shows no lingering sentence.
       lastDescendants = exit.activeDescendants ?? 0;
+      exitCode = exit.exitCode;
       if (exit.deadline !== undefined) throw new Halted({ deadline: exit.deadline });
       if (signal.aborted) throw new Halted("canceled");
       if (exit.diagnosticLimit) {
@@ -648,8 +656,10 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
 
     const visit = async (r: RunRow): Promise<void> => {
       if (!visitable(r.p)) return;
-      planned.delete(r.p.row.pathBytes);
-      r.index = ++visited;
+      if (counted(r.p)) {
+        planned.delete(r.p.row.pathBytes);
+        r.index = ++visited;
+      }
       let reached = false;
       try {
         reached = await steps(r);
@@ -730,7 +740,7 @@ export function createSubmoduleUpdater(o: SubmoduleUpdaterOptions) {
           child.facts.phase.refusal = end;
           planned.delete(child.p.row.pathBytes);
           dropBelow(child.p.pathBytes);
-        } else if (visitable(child.p)) planned.set(child.p.row.pathBytes, { bytes: child.p.pathBytes, parent: r.p.row.pathBytes });
+        } else if (counted(child.p)) planned.set(child.p.row.pathBytes, { bytes: child.p.pathBytes, parent: r.p.row.pathBytes });
       }
       for (const child of children) if (child.facts.phase.refusal === undefined) await visit(child);
     };

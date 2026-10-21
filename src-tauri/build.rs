@@ -47,6 +47,16 @@ const COMMANDS: &[&str] = &[
     "choose_sync_path",
     "clear_sync_path",
     "launch_puttygen",
+    "read_branches",
+    "read_worktrees",
+    "read_git_settings",
+    "review_workbench",
+    "run_workbench",
+    "apply_files",
+    "open_worktree",
+    "reveal_path",
+    "set_switch_choice",
+    "choose_worktree_folder",
 ];
 
 /// The exported JSON Schema files of the values that the shell reads (contract §1 "Schemas").

@@ -1,0 +1,8 @@
+{
+  "schema": "review-commit-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"generation\":3,\"head\":{\"state\":\"branch\",\"target\":\"refs/heads/main\",\"oid\":\"0123456789abcdef0123456789abcdef01234567\"},\"scope\":[{\"status\":\"M\",\"path\":\"src/a.txt\",\"pathBytes\":\"c3JjL2EudHh0\"}],\"disclosure\":{\"approvalRequired\":false,\"trust\":\"untrusted\"},\"limitations\":[\"Git will run approved hooks. They or other Git tools can change the result during execution.\"],\"reviewToken\":\"6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b\",\"amend\":{\"headOid\":\"0123456789abcdef0123456789abcdef01234567\",\"message\":\"Last commit\\n\",\"upstream\":{\"name\":\"refs/remotes/origin/main\",\"present\":true},\"rewritesUpstream\":\"unknown\"}}",
+  "repair": {
+    "amend.rewritesUpstream": false
+  }
+}

@@ -9,6 +9,7 @@ import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { MENU_CONTENT } from "../app/RepositoryMenu";
 import { BLOCKED_TEXT, operationBlock } from "../changes/HunkControls";
 import { IconButton } from "../components/icon-button";
+import { RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
 import { Button } from "../components/ui/button";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "../components/ui/dropdown-menu";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
@@ -23,8 +24,8 @@ type OperationState = WorkspaceSnapshot["operationState"];
 const DETACHED = "No branch checked out.";
 const UNBORN = "The branch has no commits yet.";
 const NO_UPSTREAM = "The branch has no upstream.";
-// Plan D12: the reason while an operation runs. It goes only into the tooltip and the accessible description.
-export const RUNNING_REASON = "A Git operation is running. Its progress and Cancel are in the status bar.";
+
+export { RUNNING_REASON };
 // Plan D12: the reason while the reconcile read after a mutation outcome runs. A review before its result names an old generation.
 export const RECONCILING_REASON = "The status read after the last operation is still running.";
 /** Plan D12: the reason that replaces every sync reason and shows only in the tooltip and the accessible description, or null. */
@@ -115,7 +116,7 @@ export function SyncToolbar({ reasons: given, defaultAction, settingsReason, cou
   const describedBy = (control: keyof typeof quiet, reason: string | null) => (quiet[control] ? runningId : lineId(reason));
   const note = (control: keyof typeof quiet) => (quiet[control] ? (quietText ?? undefined) : undefined);
   return (
-    <div role="group" aria-label="Remote sync" className="flex min-w-0 items-center gap-1">
+    <div role="group" aria-label="Remote sync" className="flex grow items-center gap-1">
       {quietText === null ? null : (
         <span id={runningId} className="sr-only">
           {quietText}
@@ -143,11 +144,21 @@ export function SyncToolbar({ reasons: given, defaultAction, settingsReason, cou
             <TooltipContent>Fetch options</TooltipContent>
           </Tooltip>
           <DropdownMenuContent className={MENU_CONTENT}>
-            <DropdownMenuItem disabled={reasons.fetchReason !== null} onClick={reasons.fetchReason === null ? () => onRun({ action: "fetch-all" }) : undefined}>
-              <HugeiconsIcon icon={CloudDownloadIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
-              <span>Fetch all remotes</span>
-            </DropdownMenuItem>
-            {reasons.fetchReason === null ? null : <p className="px-2 pb-1 text-xs whitespace-normal text-muted-text">{reasons.fetchReason}</p>}
+            <RunningTooltip reason={quiet.Fetch ? quietText : null}>
+              <DropdownMenuItem
+                disabled={reasons.fetchReason !== null}
+                aria-describedby={reasons.fetchReason === null ? undefined : `${id}-fetch-all`}
+                onClick={reasons.fetchReason === null ? () => onRun({ action: "fetch-all" }) : undefined}
+              >
+                <HugeiconsIcon icon={CloudDownloadIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
+                <span>Fetch all remotes</span>
+              </DropdownMenuItem>
+            </RunningTooltip>
+            {reasons.fetchReason === null ? null : (
+              <p id={`${id}-fetch-all`} aria-hidden hidden={quiet.Fetch} className="px-2 pb-1 text-xs whitespace-normal text-muted-text">
+                {reasons.fetchReason}
+              </p>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
         {progress("fetch")}
@@ -159,6 +170,7 @@ export function SyncToolbar({ reasons: given, defaultAction, settingsReason, cou
           reasons={pullReasons}
           mainReasonId={describedBy("Pull", mainReason)}
           mainNote={note("Pull")}
+          quiet={quietText !== null}
           onRun={(action) => onRun(pullAction(action).payload)}
           onSetDefault={onSetDefault}
         />
@@ -179,8 +191,13 @@ export function SyncToolbar({ reasons: given, defaultAction, settingsReason, cou
       </div>
       {count}
       {[...lines].map(([reason, controls], i) => (
-        <span key={reason} id={`${id}-${i}`} className="min-w-0 truncate text-muted-text" title={`${controls.join(", ")}: ${reason}`}>
-          {`${controls.join(", ")}: ${reason}`}
+        // Plan.md D15 "Top bar row": the line keeps its control names and an ellipsis. The reason takes only the width that the other controls leave.
+        <span key={reason} id={`${id}-${i}`} className="flex text-muted-text" style={{ flexGrow: 1 }} title={`${controls.join(", ")}: ${reason}`}>
+          <span className="shrink-0 whitespace-pre">{`${controls.join(", ")}: `}</span>
+          {/* `contain: inline-size` gives the reason no content width. */}
+          <span className="min-w-[1em] truncate" style={{ contain: "inline-size", flexGrow: 1 }}>
+            {reason}
+          </span>
         </span>
       ))}
     </div>

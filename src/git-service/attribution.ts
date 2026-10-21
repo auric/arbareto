@@ -125,12 +125,13 @@ const oidOf = (head: Head) => (head.state === "unborn" ? null : head.oid);
 
 // Contract §8 "Attribution window": only a window of exactly one record identifies a commit. Its commit must be the observed HEAD `h1`.
 // `parents` are the parents of that commit and must equal the reviewed HEAD `h0`. Null `parents`: no parents were read.
-export function attribute(window: Window, h0: Head, h1: Head, parents: readonly string[] | null): Attribution {
+// `amended`: feature 004 contract Δ3. `commit --amend` gives the new commit the parents of `h0`, so they take its place.
+export function attribute(window: Window, h0: Head, h1: Head, parents: readonly string[] | null, amended: readonly string[] | null = null): Attribution {
   if ("evidenceLimit" in window) return { unknown: "evidence-limit" };
   const [record, ...more] = window.records;
   if (record === undefined) return oidOf(h1) === oidOf(h0) ? { none: true } : AMBIGUOUS;
   const reviewed = oidOf(h0);
-  const expected = reviewed === null ? [] : [reviewed];
+  const expected = amended ?? (reviewed === null ? [] : [reviewed]);
   if (more.length > 0 || record.oid !== oidOf(h1) || parents === null || !Bun.deepEquals(parents, expected, true)) return AMBIGUOUS;
   return { identified: record.oid };
 }

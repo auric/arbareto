@@ -1,0 +1,6 @@
+{
+  "schema": "choose-worktree-folder-result",
+  "expected": "valid",
+  "platform": "posix",
+  "text": "{\"path\":\"/home/u\"}"
+}

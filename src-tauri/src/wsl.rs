@@ -22,7 +22,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::num::NonZeroU64;
 use std::os::windows::ffi::OsStringExt;
 use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -38,10 +38,12 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::{HSTRING, PWSTR, w};
 
+use crate::file_append::{AppendResult, IGNORE_TARGET_BYTES};
+use crate::file_facts::{is_component, is_wsl_path};
 use crate::jobs::Supervisor;
 use crate::process_requests::{BOOTSTRAP_DEADLINE_MS, Code, Destination, is_identifier};
 use crate::schema::process_reply::{
-    FileFactErrorCode, FileFactFileBound, FileFactLinkTag, FileFactLinkTarget,
+    FileAppendErrorCode, FileFactErrorCode, FileFactFileBound, FileFactLinkTag, FileFactLinkTarget,
     FileFactsReplyFactsItem as Fact, IdentityRefusedReason, WslExit,
     WslFilesResultsResultsItem as FileResult, WslIndexPart, WslIndexResult,
 };
@@ -361,6 +363,8 @@ pub enum Mode {
     Remote,
     /// Feature 003 contract Δ11: `GIT_EDITOR=:`.
     Integrate,
+    /// Feature 004 contract Δ11: `GIT_EDITOR=:`.
+    Mergetool,
 }
 
 impl Mode {
@@ -373,6 +377,7 @@ impl Mode {
             Mode::Search => "search",
             Mode::Remote => "remote",
             Mode::Integrate => "integrate",
+            Mode::Mergetool => "mergetool",
         }
     }
 }
@@ -420,6 +425,32 @@ pub fn linux_path(path: &Path, distro: &str) -> Option<String> {
         }
     }
     Some(format!("/{}", segments.join("/")))
+}
+
+/// Feature 004 contract Δ11 `openWorktree`: the UNC form of an absolute Linux path under the server and distro of `root`.
+/// `None`: `root` is no WSL path, or a segment is empty, `.`, `..`, or breaks the Windows component rule or the §11 route.
+pub fn unc_path(root: &Path, linux: &str) -> Option<PathBuf> {
+    let Some(Component::Prefix(prefix)) = root.components().next() else {
+        return None;
+    };
+    let Prefix::UNC(server, distro) = prefix.kind() else {
+        return None;
+    };
+    let segments: Vec<&str> = linux.strip_prefix('/')?.split('/').collect();
+    if !is_wsl_path(root)
+        || distro.is_empty()
+        || !segments.iter().all(|segment| is_component(segment))
+    {
+        return None;
+    }
+    let mut path = format!(r"\\{}\{}", server.to_str()?, distro.to_str()?);
+    for segment in segments {
+        path.push('\\');
+        path.push_str(segment);
+    }
+    // The §11 route back to Linux also refuses a segment with a character in U+F000 to U+F0FF (reason `wsl-path`).
+    let path = PathBuf::from(path);
+    (linux_path(&path, distro.to_str()?).as_deref() == Some(linux)).then_some(path)
 }
 
 /// The bootstrap Git probe. It runs without the wrapper (contract §11 "Git per distro").
@@ -1499,6 +1530,85 @@ pub fn destination_reply(output: Option<Output>) -> Destination {
     parsed.unwrap_or(Destination::Error("other-error"))
 }
 
+// ---- Feature 004 `fileAppend` (contract Δ6, Δ11) ----
+
+/// The stdout cap of mode `append` after the start byte: one record of a result or of an error code.
+pub const APPEND_OUTPUT_BYTES: usize = 64;
+
+/// One `fileAppend` below a root: the root index, the name components, the expected size and SHA-256, and the bytes.
+pub struct Append {
+    pub root: usize,
+    pub path: Vec<String>,
+    /// `None` is `absent`.
+    pub expected: Option<(u64, String)>,
+    pub bytes: Vec<u8>,
+}
+
+/// The `wslFiles` text in mode `append` through the wrapper in `probe` mode, with the three Linux roots.
+/// Stdin holds the bound, the root index, the component count and names, the expected state, and the bytes in hex, each ended by NUL.
+pub fn append_command(
+    installation: &Installation,
+    unit: &str,
+    roots: &[String; 3],
+    append: &Append,
+    base: &[(OsString, OsString)],
+) -> Command {
+    let mut tokens = vec![
+        IGNORE_TARGET_BYTES.to_string(),
+        append.root.to_string(),
+        append.path.len().to_string(),
+    ];
+    tokens.extend(append.path.iter().cloned());
+    match &append.expected {
+        None => tokens.push("absent".to_string()),
+        Some((size, sha256)) => tokens.extend([size.to_string(), sha256.clone()]),
+    }
+    tokens.push(crate::settings::hex(&append.bytes));
+    let mut input = Vec::new();
+    for token in &tokens {
+        input.extend_from_slice(token.as_bytes());
+        input.push(0);
+    }
+    let mut arguments = strings(&["-e", &texts().wsl_files, "--", "append"]);
+    arguments.extend(roots.iter().cloned());
+    arguments.push(installation.git.clone());
+    arguments.push(installation.sha256sum.clone());
+    wrapped(
+        installation,
+        Mode::Probe,
+        unit,
+        None,
+        PERL,
+        &arguments,
+        base,
+        Stdin::Bytes(input),
+    )
+}
+
+/// The one record of mode `append`. A failed check, an exit status other than 0, no start byte,
+/// or another form gives `error` with `other-error`, as for each `wslFiles` mode. The shell never parses stderr.
+pub fn append_reply(output: Option<Output>) -> AppendResult {
+    let parsed = output
+        .filter(|out| out.exit_code == Some(0))
+        .and_then(|out| {
+            let bytes = started(&out.stdout).filter(|bytes| bytes.len() <= APPEND_OUTPUT_BYTES)?;
+            let mut records = Records { bytes, at: 0 };
+            let result = match records.token()? {
+                "appended" => AppendResult::Appended,
+                "stale" => AppendResult::Stale,
+                "refused" => AppendResult::NotRegular,
+                "error" => {
+                    records.number::<usize>()?;
+                    let code: FileAppendErrorCode = code_token(&mut records)?.parse().ok()?;
+                    AppendResult::Error(code)
+                }
+                _ => return None,
+            };
+            (records.at == bytes.len()).then_some(result)
+        });
+    parsed.unwrap_or(AppendResult::Error(FileAppendErrorCode::OtherError))
+}
+
 // ---- The mutation anchor ----
 
 /// One anchor answer: the process count and the CPU-time sum. `None` in a part is unknown.
@@ -2200,6 +2310,129 @@ mod tests {
         assert_eq!(destination_reply(None), other, "no end");
     }
 
+    /// Feature 004 contract Δ6 and Δ11: mode `append` gets the bound, the walked entry, the expected state, and the bytes in hex.
+    #[test]
+    fn the_append_mode_takes_the_entry_and_the_expected_state_on_stdin_and_reads_one_record() {
+        let roots = [
+            "/home/u/repo".to_string(),
+            "/home/u/repo/.git".to_string(),
+            "/home/u/repo/.git".to_string(),
+        ];
+        let unit = unit_name(OPERATION, 3).expect("unit");
+        let present = Append {
+            root: 2,
+            path: strings(&["info", "exclude"]),
+            expected: Some((12, "a".repeat(64))),
+            bytes: b"\n/build/\n".to_vec(),
+        };
+        let command = append_command(&installation(), &unit, &roots, &present, &base());
+        let start = command
+            .arguments
+            .iter()
+            .position(|argument| argument == "-e")
+            .expect("Perl text");
+        assert_eq!(command.arguments[start + 1], texts().wsl_files);
+        assert_eq!(
+            command.arguments[start + 2..],
+            [
+                "--",
+                "append",
+                "/home/u/repo",
+                "/home/u/repo/.git",
+                "/home/u/repo/.git",
+                "/usr/local/bin/git",
+                "/usr/bin/sha256sum"
+            ]
+        );
+        let stdin = |command: &Command| match &command.stdin {
+            Stdin::Bytes(bytes) => bytes.clone(),
+            other => panic!("stdin bytes, not {other:?}"),
+        };
+        assert_eq!(
+            stdin(&command),
+            format!(
+                "1048576\x002\x002\x00info\x00exclude\x0012\x00{}\x000a2f6275696c642f0a\x00",
+                "a".repeat(64)
+            )
+            .into_bytes()
+        );
+        let absent = Append {
+            root: 0,
+            path: strings(&[".gitignore"]),
+            expected: None,
+            bytes: b"/a\n".to_vec(),
+        };
+        let command = append_command(&installation(), &unit, &roots, &absent, &base());
+        assert_eq!(
+            stdin(&command),
+            b"1048576\x000\x001\x00.gitignore\x00absent\x002f610a\x00"
+        );
+        use crate::schema::process_reply::FileAppendErrorCode as E;
+        for (stdout, expected) in [
+            ("Sappended\0", AppendResult::Appended),
+            ("Sstale\0", AppendResult::Stale),
+            ("Srefused\0", AppendResult::NotRegular),
+            (
+                "Serror\x002\0access-denied\0",
+                AppendResult::Error(E::AccessDenied),
+            ),
+            ("Serror\x000\0io-error\0", AppendResult::Error(E::IoError)),
+        ] {
+            assert_eq!(append_reply(output(0, stdout)), expected, "{stdout:?}");
+        }
+        let other = AppendResult::Error(E::OtherError);
+        for stdout in [
+            "appended\0",
+            "Sappended",
+            "Sappended\0stale\0",
+            "Sfile\0",
+            "Serror\x000\0sharing-violation\0",
+            "Serror\x00x\0io-error\0",
+        ] {
+            assert_eq!(append_reply(output(0, stdout)), other, "{stdout:?}");
+        }
+        assert_eq!(append_reply(output(3, "Sappended\0")), other, "exit 3");
+        assert_eq!(append_reply(None), other, "no end");
+    }
+
+    /// Feature 004 contract Δ11 `openWorktree`: a Linux record path maps to the UNC form under the server and distro of the root.
+    #[test]
+    fn a_linux_worktree_path_maps_under_the_unc_prefix_of_its_repository() {
+        let root = Path::new(r"\\wsl.localhost\Ubuntu-24.04\home\u\repo");
+        assert_eq!(
+            unc_path(root, "/home/u/repo-wt"),
+            Some(PathBuf::from(
+                r"\\wsl.localhost\Ubuntu-24.04\home\u\repo-wt"
+            ))
+        );
+        assert_eq!(
+            unc_path(Path::new(r"\\WSL$\ubuntu-24.04\r"), "/srv/a b/c"),
+            Some(PathBuf::from(r"\\WSL$\ubuntu-24.04\srv\a b\c"))
+        );
+        for linux in [
+            "",
+            "/",
+            "home/u/wt",
+            "/home//wt",
+            "/home/./wt",
+            "/home/../wt",
+            "/home/u/",
+            r"/home/a\b",
+            "/home/a:b",
+            "/home/a\u{f03a}b",
+        ] {
+            assert_eq!(unc_path(root, linux), None, "{linux:?}");
+        }
+        for root in [r"C:\repo", r"\\host\share\repo", r"\\wsl.localhost"] {
+            assert_eq!(unc_path(Path::new(root), "/home/u/wt"), None, "{root}");
+        }
+        let mapped = unc_path(root, "/home/u/wt").expect("mapped");
+        assert_eq!(
+            linux_path(&mapped, "Ubuntu-24.04").as_deref(),
+            Some("/home/u/wt")
+        );
+    }
+
     /// Answers each `run` with the next scripted output and records the command.
     struct FakeHost {
         outputs: RefCell<VecDeque<Option<Output>>>,
@@ -2778,6 +3011,7 @@ mod tests {
             (Mode::Search, "search"),
             (Mode::Remote, "remote"),
             (Mode::Integrate, "integrate"),
+            (Mode::Mergetool, "mergetool"),
         ] {
             let command = git_command(
                 &inst,
@@ -2815,6 +3049,7 @@ mod tests {
             Mode::Search,
             Mode::Remote,
             Mode::Integrate,
+            Mode::Mergetool,
         ] {
             assert_eq!(
                 git_command(
@@ -2873,6 +3108,8 @@ mod tests {
         // Feature 003 contract Δ11: `remote` exports nothing more, and `integrate` exports `GIT_EDITOR=:`.
         assert!(lines.contains(&"read | mutation | remote) ;;"));
         assert!(lines.contains(&"integrate) export GIT_EDITOR=: ;;"));
+        // Feature 004 contract Δ11: `mergetool` exports `GIT_EDITOR=:`.
+        assert!(lines.contains(&"mergetool) export GIT_EDITOR=: ;;"));
         assert!(lines.contains(&"case $mode in probe | read | search) end ;; esac"));
         assert!(
             !json_text("anchor").contains("setsid"),
@@ -4596,6 +4833,123 @@ mod tests {
             assert_eq!(destination_reply(ended.output), expected, "{name}");
         }
         assert_eq!(shell(9, "rm -rf -- \"$1\""), Some(0));
+    }
+
+    /// Feature 004 contract Δ11: mode `append` creates an absent file, appends once after the size and SHA-256 compare,
+    /// and refuses a link at the file or on the way, and a file with a second link.
+    #[test]
+    fn the_real_append_mode_compares_then_appends_and_refuses_a_link() {
+        let Some(reference) = reference() else {
+            return;
+        };
+        let Some(inst) = probed(&reference) else {
+            return;
+        };
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let operation = format!("0f0f0f0f-0000-4000-8004-{:012x}", std::process::id());
+        let host = reference.host();
+        let root = format!("/tmp/arbareto-append-{}", std::process::id());
+        let n = std::cell::Cell::new(0);
+        let unit = || {
+            n.set(n.get() + 1);
+            unit_name(&operation, n.get()).expect("unit")
+        };
+        let shell = |script: &str| {
+            let arguments = strings(&["-c", script, "sh", &root]);
+            let command = wrapped(
+                &inst,
+                Mode::Read,
+                &unit(),
+                None,
+                "/bin/sh",
+                &arguments,
+                &environment,
+                Stdin::Closed,
+            );
+            host.run(&command).expect("shell").exit_code
+        };
+        let made = "rm -rf -- \"$1\" && mkdir -p -- \"$1/repo/.git/info\" \"$1/outside\" && ln -s ../../outside \"$1/repo/.git/linked\" && : > \"$1/outside/x\" && ln -s ../outside/x \"$1/repo/link\" && : > \"$1/outside/h\" && ln \"$1/outside/h\" \"$1/repo/hard\"";
+        assert_eq!(shell(made), Some(0));
+        let roots = [
+            format!("{root}/repo"),
+            format!("{root}/repo/.git"),
+            format!("{root}/repo/.git"),
+        ];
+        let append = |root: usize, path: &[&str], expected: Option<(u64, String)>, bytes: &[u8]| {
+            let request = Append {
+                root,
+                path: strings(path),
+                expected,
+                bytes: bytes.to_vec(),
+            };
+            let command = append_command(&inst, &unit(), &roots, &request, &environment);
+            let ended = host.run_until(&command, APPEND_OUTPUT_BYTES + 2, PROBE_DEADLINE);
+            append_reply(ended.output)
+        };
+        let digest = |bytes: &[u8]| crate::settings::hex(&crate::settings::sha256(bytes));
+        let empty = || Some((0, digest(b"")));
+        assert_eq!(
+            append(0, &[".gitignore"], None, b"/a\n"),
+            AppendResult::Appended
+        );
+        assert_eq!(
+            append(0, &[".gitignore"], None, b"/a\n"),
+            AppendResult::Stale,
+            "exists"
+        );
+        let first = Some((3, digest(b"/a\n")));
+        assert_eq!(
+            append(0, &[".gitignore"], first.clone(), b"/b\n"),
+            AppendResult::Appended
+        );
+        assert_eq!(
+            append(0, &[".gitignore"], first, b"/c\n"),
+            AppendResult::Stale,
+            "size"
+        );
+        let same_size = Some((6, digest(b"/a\n/c\n")));
+        assert_eq!(
+            append(0, &[".gitignore"], same_size, b"/c\n"),
+            AppendResult::Stale,
+            "SHA-256"
+        );
+        assert_eq!(
+            append(2, &["info", "exclude"], empty(), b"/d\n"),
+            AppendResult::Stale,
+            "absent"
+        );
+        assert_eq!(
+            append(2, &["info", "exclude"], None, b"/d\n"),
+            AppendResult::Appended
+        );
+        assert_eq!(
+            append(0, &["link"], empty(), b"/e\n"),
+            AppendResult::NotRegular,
+            "a file link"
+        );
+        assert_eq!(
+            append(2, &["linked", "x"], empty(), b"/e\n"),
+            AppendResult::NotRegular,
+            "a folder link"
+        );
+        assert_eq!(
+            append(2, &["linked", "y"], None, b"/e\n"),
+            AppendResult::NotRegular,
+            "a new file below a link"
+        );
+        assert_eq!(
+            append(2, &["info"], empty(), b"/e\n"),
+            AppendResult::NotRegular,
+            "a folder"
+        );
+        assert_eq!(
+            append(0, &["hard"], empty(), b"/e\n"),
+            AppendResult::NotRegular,
+            "a second link"
+        );
+        let check = "test \"$(cat \"$1/repo/.gitignore\")\" = \"$(printf '/a\n/b')\" && test \"$(cat \"$1/repo/.git/info/exclude\")\" = /d && test ! -s \"$1/outside/x\" && test ! -e \"$1/outside/y\" && test ! -s \"$1/outside/h\"";
+        assert_eq!(shell(check), Some(0), "the file bytes");
+        assert_eq!(shell("rm -rf -- \"$1\""), Some(0));
     }
 
     /// T378: systemd 258 and later expand `${NAME}`, `$$`, and a whole `$NAME` argument of a `--scope` command, and drop an unset one.

@@ -204,6 +204,14 @@ describe("spec FR-032 to FR-035: filter mode", () => {
     expect(text(host)).toContain(`Search is not available here. ${remedy.text}`);
   });
 
+  test("a succeeded search of unknown form names the unknown form, not the state (feature 004 plan D15)", async () => {
+    const { input, host, view } = await mount({ total: 30, loaded: 30, searchResponse: () => ({ requestId: "r", state: "succeeded", result: {} }) });
+    await type(input, "fix");
+    await key(input, "Enter");
+    expect(view.getState().search?.state).toBe("failed");
+    expect(text(host)).toContain("Search did not complete: the result has an unknown form.");
+  });
+
   test("a service UNSUPPORTED_FILTER_TEXT refusal carries only its reason, and the reason names the character (contract Δ9)", async () => {
     expect(SearchHistoryResult.safeParse({ reason: "quote-end" }).success).toBe(true);
     expect(SearchHistoryResult.safeParse({ reason: "quote-end", found: "\\E" }).success).toBe(false);

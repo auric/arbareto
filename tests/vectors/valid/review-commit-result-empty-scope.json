@@ -1,0 +1,5 @@
+{
+  "schema": "review-commit-result",
+  "expected": "valid",
+  "text": "{\"generation\":3,\"head\":{\"state\":\"branch\",\"target\":\"refs/heads/main\",\"oid\":\"0123456789abcdef0123456789abcdef01234567\"},\"scope\":[],\"disclosure\":{\"approvalRequired\":false,\"trust\":\"untrusted\"},\"limitations\":[\"Git will run approved hooks. They or other Git tools can change the result during execution.\"]}"
+}

@@ -68,7 +68,9 @@
               "applyFile",
               "commit",
               "updateSubmodules",
-              "sync"
+              "sync",
+              "workbench",
+              "applyFiles"
             ]
           },
           "startedAt": {
@@ -178,147 +180,296 @@
       "maxItems": 256,
       "type": "array",
       "items": {
-        "type": "object",
-        "properties": {
-          "commonDirectory": {
-            "type": "string",
-            "maxLength": 32767,
-            "pattern": "^[^\\u0000]*$"
-          },
-          "commonIdentity": {
-            "anyOf": [
-              {
-                "type": "object",
-                "properties": {
-                  "volumeSerial": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{16}$"
-                  },
-                  "fileId": {
-                    "type": "string",
-                    "pattern": "^[0-9a-f]{32}$"
-                  }
-                },
-                "required": [
-                  "volumeSerial",
-                  "fileId"
-                ],
-                "additionalProperties": false,
-                "title": "FileIdentity"
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "commonDirectory": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
               },
-              {
-                "type": "object",
-                "properties": {
-                  "distroGuid": {
-                    "type": "string",
-                    "pattern": "^\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}$"
+              "commonIdentity": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "volumeSerial": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{16}$"
+                      },
+                      "fileId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{32}$"
+                      }
+                    },
+                    "required": [
+                      "volumeSerial",
+                      "fileId"
+                    ],
+                    "additionalProperties": false,
+                    "title": "FileIdentity"
                   },
-                  "fileSystemId": {
-                    "type": "string",
-                    "pattern": "^[1-9a-f][0-9a-f]{0,15}$"
-                  },
-                  "inode": {
-                    "type": "string",
-                    "pattern": "^[1-9][0-9]{0,19}$"
+                  {
+                    "type": "object",
+                    "properties": {
+                      "distroGuid": {
+                        "type": "string",
+                        "pattern": "^\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}$"
+                      },
+                      "fileSystemId": {
+                        "type": "string",
+                        "pattern": "^[1-9a-f][0-9a-f]{0,15}$"
+                      },
+                      "inode": {
+                        "type": "string",
+                        "pattern": "^[1-9][0-9]{0,19}$"
+                      }
+                    },
+                    "required": [
+                      "distroGuid",
+                      "fileSystemId",
+                      "inode"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslIdentity"
                   }
-                },
-                "required": [
-                  "distroGuid",
-                  "fileSystemId",
-                  "inode"
-                ],
-                "additionalProperties": false,
-                "title": "WslIdentity"
-              }
-            ]
-          },
-          "worktreeRoot": {
-            "type": "string",
-            "maxLength": 32767,
-            "pattern": "^[^\\u0000]*$"
-          },
-          "gitDirectory": {
-            "type": "string",
-            "maxLength": 32767,
-            "pattern": "^[^\\u0000]*$"
-          },
-          "worktreeIdentity": {
-            "minItems": 2,
-            "maxItems": 2,
-            "type": "array",
-            "items": {
-              "anyOf": [
-                {
-                  "type": "object",
-                  "properties": {
-                    "volumeSerial": {
-                      "type": "string",
-                      "pattern": "^[0-9a-f]{16}$"
+                ]
+              },
+              "worktreeRoot": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              },
+              "gitDirectory": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              },
+              "worktreeIdentity": {
+                "minItems": 2,
+                "maxItems": 2,
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "volumeSerial": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{16}$"
+                        },
+                        "fileId": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{32}$"
+                        }
+                      },
+                      "required": [
+                        "volumeSerial",
+                        "fileId"
+                      ],
+                      "additionalProperties": false,
+                      "title": "FileIdentity"
                     },
-                    "fileId": {
-                      "type": "string",
-                      "pattern": "^[0-9a-f]{32}$"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "distroGuid": {
+                          "type": "string",
+                          "pattern": "^\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}$"
+                        },
+                        "fileSystemId": {
+                          "type": "string",
+                          "pattern": "^[1-9a-f][0-9a-f]{0,15}$"
+                        },
+                        "inode": {
+                          "type": "string",
+                          "pattern": "^[1-9][0-9]{0,19}$"
+                        }
+                      },
+                      "required": [
+                        "distroGuid",
+                        "fileSystemId",
+                        "inode"
+                      ],
+                      "additionalProperties": false,
+                      "title": "WslIdentity"
                     }
-                  },
-                  "required": [
-                    "volumeSerial",
-                    "fileId"
-                  ],
-                  "additionalProperties": false,
-                  "title": "FileIdentity"
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "distroGuid": {
-                      "type": "string",
-                      "pattern": "^\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}$"
-                    },
-                    "fileSystemId": {
-                      "type": "string",
-                      "pattern": "^[1-9a-f][0-9a-f]{0,15}$"
-                    },
-                    "inode": {
-                      "type": "string",
-                      "pattern": "^[1-9][0-9]{0,19}$"
-                    }
-                  },
-                  "required": [
-                    "distroGuid",
-                    "fileSystemId",
-                    "inode"
-                  ],
-                  "additionalProperties": false,
-                  "title": "WslIdentity"
+                  ]
                 }
-              ]
-            }
+              },
+              "configurationFingerprint": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "approvedAt": {
+                "type": "string",
+                "pattern": "^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(\\.\\d+)?Z$"
+              },
+              "gitSelectedPath": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "required": [
+              "commonDirectory",
+              "commonIdentity",
+              "worktreeRoot",
+              "gitDirectory",
+              "worktreeIdentity",
+              "configurationFingerprint",
+              "approvedAt",
+              "gitSelectedPath"
+            ],
+            "additionalProperties": false,
+            "title": "TrustRecordV1"
           },
-          "configurationFingerprint": {
-            "type": "string",
-            "pattern": "^[0-9a-f]{64}$"
-          },
-          "approvedAt": {
-            "type": "string",
-            "pattern": "^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(\\.\\d+)?Z$"
-          },
-          "gitSelectedPath": {
-            "type": "string",
-            "maxLength": 32767,
-            "pattern": "^[^\\u0000]*$"
+          {
+            "type": "object",
+            "properties": {
+              "policyVersion": {
+                "type": "number",
+                "const": 2
+              },
+              "commonDirectory": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              },
+              "commonIdentity": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "volumeSerial": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{16}$"
+                      },
+                      "fileId": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{32}$"
+                      }
+                    },
+                    "required": [
+                      "volumeSerial",
+                      "fileId"
+                    ],
+                    "additionalProperties": false,
+                    "title": "FileIdentity"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "distroGuid": {
+                        "type": "string",
+                        "pattern": "^\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}$"
+                      },
+                      "fileSystemId": {
+                        "type": "string",
+                        "pattern": "^[1-9a-f][0-9a-f]{0,15}$"
+                      },
+                      "inode": {
+                        "type": "string",
+                        "pattern": "^[1-9][0-9]{0,19}$"
+                      }
+                    },
+                    "required": [
+                      "distroGuid",
+                      "fileSystemId",
+                      "inode"
+                    ],
+                    "additionalProperties": false,
+                    "title": "WslIdentity"
+                  }
+                ]
+              },
+              "worktreeRoot": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              },
+              "adminDirectory": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              },
+              "worktreeIdentity": {
+                "minItems": 2,
+                "maxItems": 2,
+                "type": "array",
+                "items": {
+                  "anyOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "volumeSerial": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{16}$"
+                        },
+                        "fileId": {
+                          "type": "string",
+                          "pattern": "^[0-9a-f]{32}$"
+                        }
+                      },
+                      "required": [
+                        "volumeSerial",
+                        "fileId"
+                      ],
+                      "additionalProperties": false,
+                      "title": "FileIdentity"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "distroGuid": {
+                          "type": "string",
+                          "pattern": "^\\{[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\}$"
+                        },
+                        "fileSystemId": {
+                          "type": "string",
+                          "pattern": "^[1-9a-f][0-9a-f]{0,15}$"
+                        },
+                        "inode": {
+                          "type": "string",
+                          "pattern": "^[1-9][0-9]{0,19}$"
+                        }
+                      },
+                      "required": [
+                        "distroGuid",
+                        "fileSystemId",
+                        "inode"
+                      ],
+                      "additionalProperties": false,
+                      "title": "WslIdentity"
+                    }
+                  ]
+                }
+              },
+              "gitSelectedPath": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              },
+              "approvedAt": {
+                "type": "string",
+                "pattern": "^(\\d{4})-(\\d{2})-(\\d{2})T(\\d{2}):(\\d{2}):(\\d{2})(\\.\\d+)?Z$"
+              }
+            },
+            "required": [
+              "policyVersion",
+              "commonDirectory",
+              "commonIdentity",
+              "worktreeRoot",
+              "adminDirectory",
+              "worktreeIdentity",
+              "gitSelectedPath",
+              "approvedAt"
+            ],
+            "additionalProperties": false,
+            "title": "TrustRecordV2"
           }
-        },
-        "required": [
-          "commonDirectory",
-          "commonIdentity",
-          "worktreeRoot",
-          "gitDirectory",
-          "worktreeIdentity",
-          "configurationFingerprint",
-          "approvedAt",
-          "gitSelectedPath"
-        ],
-        "additionalProperties": false
+        ]
       }
     },
     "savedGit": {

@@ -2,15 +2,16 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { Handshake } from "../contracts/channel";
-import { validateRequest, type Response, type ServiceRequest } from "../contracts/envelope";
+import { validateRequest, type ChangeEntry, type Response, type ServiceRequest } from "../contracts/envelope";
 import { codeFitsState, type ErrorCode } from "../contracts/errors";
 import { GIT_PROCESS_DEADLINE_MS, HISTORY_VIEW_COMMITS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, RECORDED_REQUEST_IDS } from "../contracts/limits";
 import { isIdentifier } from "../contracts/operations";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "../contracts/strict-json";
-import { isWindows } from "../contracts/native-path";
+import { isWindows, NATIVE } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import { RunnerRefusal, type GitRunner, type SyncRunner, type WslRunner } from "./git-runner";
 import { createApprovals } from "./approvals";
+import { createBranchesReader } from "./branches";
 import { createCloner, type RouteTarget } from "./clone";
 import { createCommitter } from "./commit";
 import { createCommitReviewer } from "./commit-review";
@@ -18,6 +19,7 @@ import { createComparisonReader } from "./comparison";
 import { getEnvironment } from "./environment";
 import { createExclusion } from "./exclusion";
 import { createFilePublisher, fileApproval } from "./file-publish";
+import { createMultiPublisher } from "./multi-publish";
 import { failure, probeGit, revalidateSavedGit, type GitProbeResult } from "./git-installation";
 import type { ProbeRun } from "./history-search";
 import { createHistoryViews } from "./history-view";
@@ -38,6 +40,14 @@ import { createTrackingReader } from "./tracking";
 import { FrameBoundError, isFrameKind, type Frame, type FrameWriter, type Incoming } from "./transport";
 import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust";
 import { watchWorkspace } from "./watch";
+import { createWorkbench } from "./workbench-review";
+import type { Fact } from "./hunk-publish";
+import "./switch";
+import "./branch-ops";
+import "./merge-rebase";
+import "./resolve";
+import { readGitSettings as readSettings } from "./git-settings";
+import { openWorktreeTarget, readWorktreeList } from "./worktrees";
 import { approveWslGit, probeWslGit, routeRegistration, type WslGit } from "./wsl";
 
 export type { Handshake } from "../contracts/channel";
@@ -82,6 +92,20 @@ type ReadResult =
   | { result: "succeeded" | "limited" | "failed"; code?: ErrorCode; value?: unknown; cause?: DiagnosticCause }
   | { result: "canceled" }
   | { result: "deadline" };
+
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+
+// Feature 004 contract Δ3 `revealPath`: the native path of an entry below the worktree root. A WSL root is its UNC form. Null: the path bytes are no valid UTF-8.
+function revealTarget(w: Workspace, entry: ChangeEntry): string | null {
+  let text: string;
+  try {
+    text = strictUtf8.decode(Buffer.from(entry.pathBytes, "base64"));
+  } catch {
+    return null;
+  }
+  // git-status(1): a folder record ends with `/`.
+  return NATIVE.path.join(w.worktreeRoot, ...(text.endsWith("/") ? text.slice(0, -1) : text).split("/"));
+}
 
 export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns }: SessionOptions) {
   let sessionId: string | null = null;
@@ -153,12 +177,13 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   });
   const refs = createRefsReader({ runner, trust, listingTuple: reader.listingTuple });
   const tracking = createTrackingReader({ runner, trust, listingTuple: reader.listingTuple });
+  const branches = createBranchesReader({ runner, trust, reader, listingTuple: reader.listingTuple });
   const views = createHistoryViews({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable, registry, viewCommits: historyViewCommits, ...(historyProbeRuns === undefined ? {} : { probeRuns: historyProbeRuns }), reject: (requestId, code) => reject(requestId, code) });
   const approvals = createApprovals(approvalClock);
   // Contract §5: comparison eviction invalidates its approvals.
   const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
   const reviews = createCommitReviewer({ runner, trust, approvals, now: approvalClock });
-  const submoduleReviews = createSubmoduleReviewer({ runner, trust, approvals, environment, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
+  const submoduleReviews = createSubmoduleReviewer({ runner, trust, approvals, environment, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
   // The registry sends `ended` or `closeJob` at the terminal response (operations.ts), so the exclusion sends neither.
   // A release of a workspace with an unfinished mutation gives BUSY, so the workspace of a settled mutation is still registered.
   const exclusion = createExclusion(
@@ -168,10 +193,12 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const publisher = createHunkPublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   // Contract §5 and §8: both publishers keep their retained digests and approval owners in one store, because recovery (T114) reads it.
   const files = createFilePublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, retained: publisher.retained, owners: publisher.owners, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
+  const fileSets = createMultiPublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, retained: publisher.retained, owners: publisher.owners, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   const committer = createCommitter({ runner, trust, reader, reviews, approvals, registry, exclusion, respond });
   const updater = createSubmoduleUpdater({ runner, trust, reader, reviews: submoduleReviews, approvals, registry, exclusion, respond, ...(submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint }) });
   const syncReviews = createSyncReviewer({ runner, trust, reader, approvals, listingTuple: reader.listingTuple });
   const syncs = createSyncer({ runner, trust, reader, approvals, registry, exclusion, respond });
+  const workbench = createWorkbench({ runner, trust, reader, registry, exclusion, respond, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
   const recovery = createRecovery({ runner, registry, trust, reader, publications: publisher.retained, commits: committer.retained, updates: updater.retained });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();
@@ -194,6 +221,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       submoduleReviews.release(workspace.repositoryId);
       syncs.release(workspace.repositoryId);
       approvals.invalidate((a) => a.repositoryId === workspace.repositoryId);
+      workbench.invalidate(workspace.repositoryId);
       trust.release(workspace);
       recovery.release(workspace);
     },
@@ -290,21 +318,23 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     }
   }
 
+  const registrationEnd = (operationId: string) => (outcome: RegistrationOutcome) => {
+    if (registry.get(operationId)?.state === "cancel-requested") return registry.apply(operationId, { type: "processes-stopped" });
+    // Cancel in the WSL Git confirmation: the registration ends `canceled` (contract §11 "Git per distro").
+    if (!outcome.ok && outcome.code === "CANCELED") {
+      registry.apply(operationId, { type: "cancel" });
+      return registry.apply(operationId, { type: "processes-stopped" });
+    }
+    if (outcome.ok) return registry.apply(operationId, { type: "read-complete", result: "succeeded" }, outcome.result);
+    registry.apply(operationId, { type: "read-complete", result: "failed", code: outcome.code }, outcome.result);
+  };
+
   const register = (request: Extract<ServiceRequest, { operation: "chooseRepository" | "restoreWorkspace" }>) => {
     // Contract §11 "Route": only a Windows service routes WSL paths.
     if (!isWindows && !git?.ok) return reject(request.requestId, gitCode());
     const { operationId, signal } = registry.start(request.operation, request.requestId);
     registry.apply(operationId, { type: "valid-read" });
-    const finish = (outcome: RegistrationOutcome) => {
-      if (registry.get(operationId)?.state === "cancel-requested") return registry.apply(operationId, { type: "processes-stopped" });
-      // Cancel in the WSL Git confirmation: the registration ends `canceled` (contract §11 "Git per distro").
-      if (!outcome.ok && outcome.code === "CANCELED") {
-        registry.apply(operationId, { type: "cancel" });
-        return registry.apply(operationId, { type: "processes-stopped" });
-      }
-      if (outcome.ok) return registry.apply(operationId, { type: "read-complete", result: "succeeded" }, outcome.result);
-      registry.apply(operationId, { type: "read-complete", result: "failed", code: outcome.code }, outcome.result);
-    };
+    const finish = registrationEnd(operationId);
     const target = { operationId, bootstrapId: request.payload.bootstrapId, signal };
     (isWindows ? registerRouted(target, windowsRegistration(target)) : windowsRegistration(target)()).then(finish, () => finish({ ok: false, code: "GIT_FAILED" }));
   };
@@ -371,7 +401,11 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Contract §5 "Concurrent reads" and "Pending reads". A read that can neither start nor wait gets BUSY before admission. Contract §5 names no code for it.
   // `failed` is the outcome of a `run` that throws.
   const scheduleRead = (
-    request: { requestId: string; operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules" | "readTracking" | "reviewSync"; repositoryId: string },
+    request: {
+      requestId: string;
+      operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules" | "readTracking" | "reviewSync" | "reviewWorkbench" | "readBranches" | "readWorktrees" | "readGitSettings";
+      repositoryId: string;
+    },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
     reread: (target: RereadTarget) => Promise<ReadResult | null>,
     failed: ReadResult,
@@ -399,7 +433,10 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     const installation = installationOf(workspace);
     if (installation === null) return reject(request.requestId, gitCode());
     // Contract §8 "Token invalidation": a refresh invalidates every dependent token before its result arrives.
-    if (request.payload.refresh) approvals.invalidate((a) => a.repositoryId === request.repositoryId);
+    if (request.payload.refresh) {
+      approvals.invalidate((a) => a.repositoryId === request.repositoryId);
+      workbench.invalidate(request.repositoryId);
+    }
     scheduleRead(
       request,
       async (t) => {
@@ -469,6 +506,121 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       (t) => tracking.readTracking({ ...t, installation, workspace, generation: request.repositoryGeneration }),
       async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" } } }),
       { result: "failed", code: "GIT_FAILED", value: { completeness: { state: "failed", code: "GIT_FAILED" } } },
+    );
+  };
+
+  // Feature 004 contract Δ3 `readBranches`: one read slot, and the generation decides at acceptance as for `readRefs`.
+  const readBranches: Handler<"readBranches"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    if (request.repositoryGeneration !== workspace.generation) {
+      const { operationId } = registry.start("readBranches", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+    }
+    scheduleRead(
+      request,
+      (t) => branches.readBranches({ ...t, installation, workspace, generation: request.repositoryGeneration }),
+      async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE", value: { completeness: { state: "failed", code: "REPOSITORY_UNAVAILABLE" } } }),
+      { result: "failed", code: "GIT_FAILED", value: { completeness: { state: "failed", code: "GIT_FAILED" } } },
+    );
+  };
+
+  // The read outcome of a service fact. `value` maps the fact to the response result.
+  const factResult = <T>(fact: Fact<T>, value: (v: T) => unknown): ReadResult =>
+    "value" in fact ? { result: "succeeded", value: value(fact.value) } : "stop" in fact ? { result: fact.stop } : { result: "failed", code: fact.code, ...(fact.reason === undefined ? {} : { value: { reason: fact.reason } }) };
+  // The end of a read that takes no read slot. A Cancel that the registry holds ends it as the scheduler does.
+  const settleRead = (operationId: string, outcome: ReadResult) =>
+    endRead(operationId, registry.get(operationId)?.state === "cancel-requested" ? (outcome.result === "deadline" ? { kind: "deadline" } : { kind: "canceled" }) : { kind: "outcome", outcome, reread: null });
+
+  // Feature 004 contract Δ3 `readWorktrees`: one read slot, and the generation decides at acceptance as for `readRefs`. `worktree list` loads no index and runs no program.
+  const readWorktrees: Handler<"readWorktrees"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    if (request.repositoryGeneration !== workspace.generation) {
+      const { operationId } = registry.start("readWorktrees", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+    }
+    scheduleRead(
+      request,
+      async (t) => factResult(await readWorktreeList({ runner, trust, reader, ...t, workspace, installation }), (v) => ({ entries: v.entries })),
+      async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
+      { result: "failed", code: "GIT_FAILED" },
+    );
+  };
+
+  // Feature 004 contract Δ3 `readGitSettings`. The listing runs no program, so the 001 read gate does not apply. With `repositoryId`, it takes one read slot.
+  // Without it, the listing runs in the `globalConfig` context of the selected Git (contract Δ6), and no workspace holds a read slot.
+  const readGitSettings: Handler<"readGitSettings"> = (request) => {
+    const { repositoryId } = request;
+    if (repositoryId !== undefined) {
+      const workspace = workspaceOf(repositoryId);
+      if (installationOf(workspace) === null) return reject(request.requestId, gitCode());
+      return scheduleRead(
+        { requestId: request.requestId, operation: "readGitSettings", repositoryId },
+        async (t) => factResult(await readSettings({ runner, ...t, gitInstallationId: workspace.gitInstallationId, environment, workspace }), (v) => v),
+        async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
+        { result: "failed", code: "GIT_FAILED" },
+      );
+    }
+    if (!git?.ok) return reject(request.requestId, gitCode());
+    const { gitInstallationId } = git.installation;
+    const { operationId, signal } = registry.start("readGitSettings", request.requestId);
+    registry.apply(operationId, { type: "valid-read" });
+    readSettings({ runner, operationId, signal, gitInstallationId, environment, workspace: null }).then(
+      (fact) => settleRead(operationId, factResult(fact, (v) => v)),
+      () => settleRead(operationId, { result: "failed", code: "GIT_FAILED" }),
+    );
+  };
+
+  // Feature 004 contract Δ3 `openWorktree`: the shell bound the path in a `repositoryDiscovery` context. Its identity must equal a record of a fresh list of
+  // `repositoryId`, else UNKNOWN_TARGET. Then the 001 registration flow runs with the same `bootstrapId`. Only `wslDistros` names the bound path (contract §6).
+  const openWorktree: Handler<"openWorktree"> = (request) => {
+    const { repositoryId, bootstrapId } = request.payload;
+    if (!registrations.has(repositoryId)) return reject(request.requestId, "UNKNOWN_TARGET");
+    const workspace = workspaceOf(repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const { operationId, signal } = registry.start("openWorktree", request.requestId);
+    registry.apply(operationId, { type: "valid-read" });
+    const finish = registrationEnd(operationId);
+    const target = { operationId, bootstrapId, signal };
+    const open = async (): Promise<RegistrationOutcome> => {
+      const routed = await routeGit(target);
+      if (!routed.ok) return routed;
+      const windows = routed.wsl === undefined ? (git?.ok ? git.installation : null) : null;
+      if (routed.wsl === undefined && windows === null) return { ok: false, code: gitCode() };
+      const gitInstallationId = routed.wsl?.git.gitInstallationId ?? windows!.gitInstallationId;
+      const bound = { context: { contextKind: "repositoryDiscovery" as const, bootstrapId, gitInstallationId }, path: routed.wsl?.identityPath ?? routed.path };
+      const found = await openWorktreeTarget({ runner, trust, reader, operationId, signal, workspace, installation }, bound);
+      if ("stop" in found) return { ok: false, code: found.stop === "deadline" ? "DEADLINE" : "CANCELED" };
+      if (!("value" in found)) return { ok: false, code: "refused" in found ? found.refused : found.code };
+      return routed.wsl === undefined ? registrations.register({ ...target, installation: windows! }) : registrations.registerWsl(target, routed.wsl.git);
+    };
+    open()
+      .catch((error: unknown) => refusedRoute(error, signal))
+      .then(finish, () => finish({ ok: false, code: "GIT_FAILED" }));
+  };
+
+  // Feature 004 contract Δ3 `revealPath`: the entry of the current read, then the private `reveal` request. It takes no read slot and starts no Git process.
+  // `repositoryId` sits in the payload. An unknown repository or entry, and path bytes that are no valid UTF-8, give UNKNOWN_TARGET before any request.
+  const revealPath: Handler<"revealPath"> = (request) => {
+    const { repositoryId, entryId } = request.payload;
+    if (!registrations.has(repositoryId)) return reject(request.requestId, "UNKNOWN_TARGET");
+    const workspace = workspaceOf(repositoryId);
+    const { operationId, signal } = registry.start("revealPath", request.requestId);
+    const entry = reader.currentEntry(repositoryId, entryId);
+    const path = entry === null ? null : revealTarget(workspace, entry);
+    if (path === null) return void registry.apply(operationId, { type: "invalid-approval", code: "UNKNOWN_TARGET" });
+    registry.apply(operationId, { type: "valid-read" });
+    const finish = (code: ErrorCode | null) => {
+      if (registry.get(operationId)?.state === "cancel-requested") return registry.apply(operationId, { type: "processes-stopped" });
+      registry.apply(operationId, code === null ? { type: "read-complete", result: "succeeded" } : { type: "read-complete", result: "failed", code });
+    };
+    runner.reveal({ operationId, repositoryId, path }, signal).then(
+      (reply) => finish(reply === "shown" ? null : reply.stop === "deadline" ? "DEADLINE" : "CANCELED"),
+      (error: unknown) => finish(error instanceof RunnerRefusal ? error.code : "GIT_FAILED"),
     );
   };
 
@@ -552,7 +704,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     }
     scheduleRead(
       request,
-      (t) => reviews.reviewCommit({ ...t, installation, workspace, snapshot: found.snapshot }),
+      (t) => reviews.reviewCommit({ ...t, installation, workspace, snapshot: found.snapshot }, request.payload.amend === true),
       async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
       { result: "failed", code: "GIT_FAILED" },
     );
@@ -570,7 +722,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     }
     scheduleRead(
       request,
-      (t) => submoduleReviews.reviewSubmodules({ ...t, installation, workspace, snapshot: found.snapshot }),
+      (t) => submoduleReviews.reviewSubmodules({ ...t, installation, workspace, generation: request.repositoryGeneration, snapshot: found.snapshot, ...(request.payload.scope === undefined ? {} : { scope: request.payload.scope }) }),
       async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
       { result: "failed", code: "GIT_FAILED" },
     );
@@ -675,26 +827,19 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     },
     approveTrust: (request) => {
       const workspace = workspaceOf(request.repositoryId);
-      const { fingerprint } = request.payload;
       trustOperation(
         request,
-        () => trust.acceptApprove(request.repositoryId, fingerprint, request.repositoryGeneration),
-        (t) => trust.approveTrust({ ...t, workspace }, fingerprint),
+        () => null,
+        (t) => trust.approveTrust({ ...t, workspace }, request.payload.action),
       );
     },
     revokeTrust: (request) => {
       const workspace = workspaceOf(request.repositoryId);
       trustOperation(
         request,
-        () => trust.acceptRevoke(workspace, request.payload.trustId),
-        (t) => {
-          // Contract §6 "Lingering Jobs": a revoke after `started` sets `endProcesses` on the `ended` frame of each unfinished mutation of that common directory.
-          for (const operationId of exclusion.running(workspace.commonIdentity)) {
-            const state = registry.get(operationId)?.state;
-            if (state === "running" || state === "cancel-requested" || state === "reconciling") registry.apply(operationId, { type: "revoke-trust" });
-          }
-          return trust.revokeTrust({ ...t, workspace });
-        },
+        // Feature 004 plan.md D12: Stop trusting is unavailable while a mutation of that common directory runs, because revocation never cancels running work.
+        () => trust.acceptRevoke(workspace, request.payload.trustId) ?? (exclusion.running(workspace.commonIdentity).length > 0 ? "BUSY" : null),
+        (t) => trust.revokeTrust({ ...t, workspace }),
       );
     },
     applyHunk: (request) => {
@@ -741,6 +886,48 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     },
     clone: (request) => cloner.clone(request),
     connectInTerminal,
+    readBranches,
+    readWorktrees,
+    readGitSettings,
+    // Feature 004 contract Δ3: one read slot. An action without a registered handler gets SERVICE_UNAVAILABLE.
+    reviewWorkbench: (request) => {
+      const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
+      if (!workbench.handles(request.payload.action)) return reject(request.requestId, "SERVICE_UNAVAILABLE");
+      if (request.repositoryGeneration !== workspace.generation) {
+        const { operationId } = registry.start("reviewWorkbench", request.requestId);
+        return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+      }
+      // Contract Δ3: a name such as `@` refuses before any Git process, so the refusal takes no read slot and no re-read.
+      const refused = workbench.precheck(request.payload, workspace);
+      if (refused !== null) {
+        if (refused.refused === "INVALID_REQUEST") return reject(request.requestId, "INVALID_REQUEST");
+        const { operationId } = registry.start("reviewWorkbench", request.requestId);
+        registry.apply(operationId, { type: "valid-read" });
+        return void registry.apply(operationId, { type: "read-complete", result: "failed", code: refused.refused }, refused.result);
+      }
+      scheduleRead(
+        request,
+        (t) => workbench.review({ ...t, installation, workspace, generation: request.repositoryGeneration }, request.payload),
+        async (t) => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" }),
+        { result: "failed", code: "GIT_FAILED" },
+      );
+    },
+    runWorkbench: (request) => {
+      const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
+      workbench.run(request, workspace, installation);
+    },
+    applyFiles: (request) => {
+      const workspace = workspaceOf(request.repositoryId);
+      const installation = installationOf(workspace);
+      if (installation === null) return reject(request.requestId, gitCode());
+      fileSets.applyFiles(request, workspace, installation);
+    },
+    openWorktree,
+    revealPath,
   };
 
   function receiveHandshake(frame: Fields) {

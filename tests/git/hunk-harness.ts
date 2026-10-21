@@ -48,7 +48,7 @@ export async function withService(options: Omit<OpenOptions, "git">, body: (serv
 export async function approve(service: Service, repositoryId: string): Promise<void> {
   const trust = await service.readTrust(repositoryId);
   expect(trust.state).toBe("succeeded");
-  expect((await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation)).state).toBe("succeeded");
+  expect((await service.approveTrust(repositoryId)).state).toBe("succeeded");
 }
 
 // Every value under `key` at any depth. Data-model §5 names the fields, and the result nesting stays free (as in `trust.test.ts`).

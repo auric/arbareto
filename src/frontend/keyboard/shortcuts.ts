@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// plan.md "Keyboard and focus". Only Ctrl+Enter in the message field commits, and no single-letter key or Space maps to an action.
+// plan.md "Keyboard and focus". Only Ctrl+Enter in the message field commits, and the page handler maps no single-letter key or Space.
 
-/** The docked panel below the history list (plan.md "Dock region"). */
-export type Panel = "commit" | "details";
+/** The docked panel below the history list (plan.md "Dock region"), or the feature 004 Settings view (plan.md D15 F6 order). */
+export type Panel = "commit" | "details" | "settings";
 export type Section =
   | "header"
   | "noticeHeading"
@@ -15,6 +15,9 @@ export type Section =
   | "comparison"
   | "composer"
   | "commitDetails"
+  | "scopeBar"
+  | "pageList"
+  | "pageContent"
   | "statusRegion";
 
 export type ShortcutAction =
@@ -123,6 +126,46 @@ export function createShortcutHandler() {
   };
 }
 
+/** Feature 004 plan.md D15 keyboard map, Ctrl+F: the filter of the active view. History keeps the 002 history filter. Settings has "Find a setting". */
+export function filterTarget(view: "history" | "commit" | "settings"): "history" | "files" | "settings" {
+  return view === "history" ? "history" : view === "commit" ? "files" : "settings";
+}
+
+// Feature 004 plan.md D15 keyboard map. A region calls `scopedAction` from its own key handler, so each key acts only there (spec FR-087).
+
+/** The focused region of a scoped key. */
+export type KeyScope = "localBranchRow" | "remoteBranchRow" | "historyRow" | "diff" | "fileList" | "message" | "panel" | "settingsView";
+export type ScopedAction = "switch" | "merge" | "rebase" | "createBranch" | "rename" | "delete" | "stageLines" | "unstageLines" | "stageEntry" | "previousHunk" | "nextHunk" | "primary" | "save";
+const BRANCH_ROWS: readonly KeyScope[] = ["localBranchRow", "remoteBranchRow"];
+/** `aria` is the `aria-keyshortcuts` value, `text` is the visible key text. */
+export const KEYS: Record<ScopedAction, { aria: string; text: string; scopes: readonly KeyScope[] }> = {
+  switch: { aria: "Control+.", text: "Ctrl+.", scopes: BRANCH_ROWS },
+  merge: { aria: "Control+M", text: "Ctrl+M", scopes: BRANCH_ROWS },
+  rebase: { aria: "Control+Shift+E", text: "Ctrl+Shift+E", scopes: BRANCH_ROWS },
+  createBranch: { aria: "Control+B", text: "Ctrl+B", scopes: [...BRANCH_ROWS, "historyRow"] },
+  rename: { aria: "F2", text: "F2", scopes: ["localBranchRow"] },
+  delete: { aria: "Delete", text: "Del", scopes: ["localBranchRow"] },
+  stageLines: { aria: "S", text: "S", scopes: ["diff"] },
+  unstageLines: { aria: "U", text: "U", scopes: ["diff"] },
+  stageEntry: { aria: "Space", text: "Space", scopes: ["fileList"] },
+  previousHunk: { aria: "Alt+ArrowUp", text: "Alt+Up", scopes: ["diff"] },
+  nextHunk: { aria: "Alt+ArrowDown", text: "Alt+Down", scopes: ["diff"] },
+  primary: { aria: "Control+Enter", text: "Ctrl+Enter", scopes: ["message", "panel"] },
+  save: { aria: "Control+S", text: "Ctrl+S", scopes: ["settingsView"] },
+};
+const BY_KEY = new Map(Object.entries(KEYS).flatMap(([action, k]) => k.scopes.map((scope) => [`${scope} ${k.aria}`, action as ScopedAction] as const)));
+
+// The browser KeyboardEvent, not the React event: React events carry no `isComposing`.
+export type ScopedKeyEvent = Pick<KeyboardEvent, "key" | "ctrlKey" | "shiftKey" | "altKey" | "metaKey" | "isComposing">;
+
+/** The D15 action of a key in `scope`, or null. A single letter matches without regard to Caps Lock. */
+export function scopedAction(event: ScopedKeyEvent, scope: KeyScope): ScopedAction | null {
+  if (event.isComposing) return null;
+  const key = event.key === " " ? "Space" : event.key.length === 1 ? event.key.toUpperCase() : event.key;
+  const aria = [event.ctrlKey && "Control", event.shiftKey && "Shift", event.altKey && "Alt", event.metaKey && "Meta", key].filter(Boolean).join("+");
+  return BY_KEY.get(`${scope} ${aria}`) ?? null;
+}
+
 export type SectionState = {
   panel: Panel;
   hidden: readonly Section[];
@@ -133,6 +176,7 @@ export type SectionState = {
 const ORDERS: Record<Panel, readonly Section[]> = {
   commit: ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "statusRegion"],
   details: ["header", "noticeHeading", "references", "historyList", "commitDetails", "statusRegion"],
+  settings: ["header", "noticeHeading", "scopeBar", "pageList", "pageContent", "statusRegion"],
 };
 
 /** The F6 order. It is the same in every profile. */

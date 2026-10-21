@@ -11,7 +11,9 @@ import { printOrigin } from "../origin";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
 import type { BunRunner } from "../git/bun-runner";
 import { FIXTURE_ROOT, fixtureDir, ownedGit } from "../git/fixture-root";
-import { inDistro, uncPath, wslExec, type WslHost } from "./wsl-host";
+import { sha256 } from "../git/git-oracle";
+import type { GitHost } from "../git/remote-fixtures";
+import { inDistro, uncPath, wslExec, type WslHost, type WslResult } from "./wsl-host";
 
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 
@@ -37,6 +39,90 @@ function gitEnv(host: WslHost): string[] {
     `GIT_AUTHOR_DATE=${FIXED.date}`,
     `GIT_COMMITTER_DATE=${FIXED.date}`,
   ];
+}
+
+// One `/bin/sh` script in `cwd`, with the arguments as an argument array. It throws on an exit outside `allowExit`.
+export function sh(w: WslHost, script: string, args: string[] = [], options: { cwd?: string; input?: Uint8Array; allowExit?: number[] } = {}): WslResult {
+  const cwd = options.cwd ?? "/";
+  if (cwd !== "/" && !cwd.startsWith(`${w.folder}/`)) throw new Error(`outside the owned folder: ${cwd}`);
+  const r = wslExec(["--distribution", w.distro, "--cd", cwd, "--exec", "/bin/sh", "-c", script, "sh", ...args], { input: options.input, timeoutMs: 300_000 });
+  if (!(options.allowExit ?? [0]).includes(r.exitCode ?? -1)) throw new Error(`sh in ${cwd} exited ${r.exitCode}: ${r.stderr}`);
+  return r;
+}
+
+// A `GitHost` (tests/git/remote-fixtures.ts) for the distro under `<owned folder>/<name>`. It writes `globalText` into the owned global file.
+// Each call is one `wsl.exe --exec` with an argument array; `env -i` starts the program with only the listed variables and `env`.
+export function distroGitHost(w: WslHost, name: string, globalText: string, env: Record<string, string> = {}): GitHost {
+  const git = w.probe.paths.git;
+  if (!git) throw new Error("no distro Git");
+  const root = `${w.folder}/${name}`;
+  const home = `${w.folder}/home`;
+  const globalConfig = `${home}/.gitconfig`;
+  const systemConfig = `${home}/system.gitconfig`;
+  const owned = (path: string) => {
+    if (!path.startsWith(`${w.folder}/`)) throw new Error(`outside the owned folder: ${path}`);
+    return path;
+  };
+  const write = (path: string, content: string | Uint8Array) => {
+    const bytes = Buffer.from(content);
+    const script = 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1" && if [ "$2" = x ]; then chmod 755 -- "$1"; fi';
+    sh(w, script, [owned(path), bytes.subarray(0, 2).toString("latin1") === "#!" ? "x" : "-"], { input: bytes });
+  };
+  sh(w, 'mkdir -p -- "$1" "$2"', [owned(root), owned(home)]);
+  write(globalConfig, globalText);
+  write(systemConfig, "");
+  return {
+    label: w.distro,
+    root,
+    systemConfig,
+    globalConfig,
+    run(cwd, args, options = {}) {
+      const vars: Record<string, string> = {
+        HOME: home,
+        PATH: "/usr/local/bin:/usr/bin:/bin",
+        GIT_CONFIG_GLOBAL: globalConfig,
+        GIT_CONFIG_SYSTEM: systemConfig,
+        GIT_CONFIG_NOSYSTEM: "1",
+        GIT_TERMINAL_PROMPT: "0",
+        GIT_AUTHOR_DATE: FIXED.date,
+        GIT_COMMITTER_DATE: FIXED.date,
+        ...env,
+      };
+      for (const [key, value] of Object.entries(options.env ?? {})) {
+        if (value === undefined) delete vars[key];
+        else vars[key] = value;
+      }
+      const list = Object.entries(vars).map(([k, v]) => `${k}=${v}`);
+      const r = wslExec(["--distribution", w.distro, "--cd", owned(cwd), "--exec", "/usr/bin/env", "-i", ...list, git, ...args], { input: options.input, timeoutMs: options.timeoutMs ?? 120_000 });
+      return { exitCode: r.exitCode ?? -1, stdout: Buffer.from(r.bytes), stderr: Buffer.from(r.stderr) };
+    },
+    write,
+    read(path) {
+      const r = sh(w, '[ -e "$1" ] || exit 3; cat -- "$1"', [owned(path)], { allowExit: [0, 3] });
+      return r.exitCode === 3 ? null : Buffer.from(r.bytes);
+    },
+    existing(paths) {
+      const r = sh(w, 'for p; do [ -e "$p" ] && printf \'%s\\0\' "$p"; done; exit 0', paths.map(owned));
+      return Buffer.from(r.bytes).toString("utf8").split("\0").filter((p) => p !== "");
+    },
+    copy(from, to) {
+      sh(w, 'cp -a -- "$1" "$2"', [owned(from), owned(to)]);
+    },
+    digests(worktree) {
+      const digests: Record<string, string> = {};
+      // GNU sha256sum -z ends each record with NUL and turns off file name escaping.
+      const files = sh(w, 'cd -- "$1" && find . -path ./.git -prune -o -type f -print0 | xargs -0 -r sha256sum -z --', [owned(worktree)]);
+      for (const record of Buffer.from(files.bytes).toString("utf8").split("\0")) {
+        if (record === "") continue;
+        const m = /^([0-9a-f]{64}) [ *]\.\/([\s\S]+)$/.exec(record);
+        if (m === null) throw new Error(`sha256sum record refused: ${JSON.stringify(record)}`);
+        digests[m[2]!] = m[1]!;
+      }
+      const links = Buffer.from(sh(w, 'cd -- "$1" && find . -path ./.git -prune -o -type l -printf \'%P\\0%l\\0\'', [owned(worktree)]).bytes).toString("utf8").split("\0");
+      for (let i = 0; i + 1 < links.length; i += 2) digests[links[i]!] = `link:${sha256(Buffer.from(links[i + 1]!))}`;
+      return Object.fromEntries(Object.entries(digests).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
+    },
+  };
 }
 
 // Writes bytes to a Linux file through `dd`, so no shell parses the path.

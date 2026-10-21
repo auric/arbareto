@@ -45,6 +45,16 @@
     "allow-choose-sync-path",
     "allow-clear-sync-path",
     "allow-launch-puttygen",
+    "allow-read-branches",
+    "allow-read-worktrees",
+    "allow-read-git-settings",
+    "allow-review-workbench",
+    "allow-run-workbench",
+    "allow-apply-files",
+    "allow-open-worktree",
+    "allow-reveal-path",
+    "allow-set-switch-choice",
+    "allow-choose-worktree-folder",
     "core:event:allow-listen"
   ]
 }

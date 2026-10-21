@@ -43,7 +43,7 @@ function bridgeDouble(answers: Record<string, unknown> = {}) {
 const settingsOf = (fields: Record<string, unknown> = {}) => ({
   requestId: "s",
   state: "succeeded",
-  result: { sshClient: "git", defaultPullAction: "pull", plinkPath: null, programs: [], remoteKeyFiles: [], defaultCloneFolder: null, lastCloneParent: "D:\\src", ...fields },
+  result: { sshClient: "git", defaultPullAction: "pull", switchChoice: "keep", plinkPath: null, programs: [], remoteKeyFiles: [], defaultCloneFolder: null, lastCloneParent: "D:\\src", ...fields },
 });
 const PLINK = { sshClient: "plink", plinkPath: "C:\\PuTTY\\plink.exe" };
 const URL = "https://example.test/team/tool.git";
@@ -119,12 +119,8 @@ describe("Clone entry points (FR-046)", () => {
     const host = await show(
       <Menubar>
         <RepositoryMenu
-          repositoryOpen={false}
-          trustId={null}
           onOpenRepository={() => {}}
           onSelectGit={() => {}}
-          onReviewTrust={() => {}}
-          revokeTrust={async () => ({ requestId: null, state: "succeeded" })}
           onClone={() => void opened.push("clone")}
           onOpenSettings={() => void opened.push("settings")}
         />
@@ -180,6 +176,12 @@ describe("clone panel destination (FR-054)", () => {
   test("a failed settings read names its code", async () => {
     await renderClone({ requestId: "s", state: "rejected", code: "SERVICE_UNAVAILABLE" });
     expect(text(panel())).toContain("The clone settings did not load: SERVICE_UNAVAILABLE.");
+  });
+
+  test("a succeeded settings read of unknown form names the unknown form, not the state (feature 004 plan D15)", async () => {
+    await renderClone({ requestId: "s", state: "succeeded", result: {} });
+    expect(text(panel())).toContain("The clone settings did not load: the result has an unknown form.");
+    expect(text(panel())).not.toContain("succeeded");
   });
 
   test("Escape closes the panel", async () => {

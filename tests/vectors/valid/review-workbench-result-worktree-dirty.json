@@ -1,0 +1,5 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"dirty-tree\",\"plan\":{\"worktree\":\"C:/repos/wt-topic\",\"branch\":null,\"head\":\"0123456789abcdef0123456789abcdef01234567\",\"tracked\":0,\"untracked\":4,\"force\":false,\"deleteBranch\":null,\"submodules\":false}}"
+}

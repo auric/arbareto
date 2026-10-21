@@ -9,6 +9,7 @@ import {
   DIAGNOSTIC_RETAINED_BYTES_PER_STREAM,
   INLINE_PROCESS_INPUT_BYTES,
   NATIVE_CHUNK_BYTES,
+  SUBMODULE_UPDATE_CEILING_MS,
   UNACKNOWLEDGED_INPUT_CHUNKS,
   UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION,
   WINDOWS_COMMAND_LINE_UNITS,
@@ -16,7 +17,7 @@ import {
 import { MATCHING_PROBE_GREPS, MATCHING_PROBE_STREAM, MATCHING_PROBE_TIP, MATCHING_PROBE_WSL_FOLDER } from "../../src/contracts/matching-probe";
 import { isWindows } from "../../src/contracts/native-path";
 import { probeScriptArgs } from "../../src/git-service/commands";
-import { createCollector, createDiagnosticCounter, PROCESS_LIMITS, type GitCall, type IdentityReply, type ProcessContext, type TrustRecord, type TrustRequest } from "../../src/git-service/git-runner";
+import { createCollector, createDiagnosticCounter, PROCESS_LIMITS, RunnerRefusal, type GitCall, type IdentityReply, type ProcessContext, type TrustRecord, type TrustRequest } from "../../src/git-service/git-runner";
 import { createNativeRunner } from "../../src/git-service/native-runner";
 
 printOrigin("../../src/contracts/channel.ts", import.meta.dir);
@@ -37,16 +38,19 @@ const REPO = isWindows ? "C:\\repo" : "/repo";
 const GIT_DIR = isWindows ? "C:\\repo\\.git" : "/repo/.git";
 const GIT_PATH = isWindows ? "C:\\Program Files\\Git\\cmd\\git.exe" : "/usr/bin/git";
 const IDENTITY = { volumeSerial: "0123456789abcdef", fileId: "0123456789abcdef0123456789abcdef" };
+// Feature 004 data-model §10: the version 2 record of a stored approval.
 const RECORD: TrustRecord = {
+  policyVersion: 2,
   commonDirectory: GIT_DIR,
   commonIdentity: IDENTITY,
   worktreeRoot: REPO,
-  gitDirectory: GIT_DIR,
+  adminDirectory: GIT_DIR,
   worktreeIdentity: [IDENTITY, IDENTITY],
-  configurationFingerprint: "a".repeat(64),
-  approvedAt: "2026-10-02T08:00:00Z",
   gitSelectedPath: GIT_PATH,
+  approvedAt: "2026-10-02T08:00:00Z",
 };
+const NO_NAMES = { names: [], more: 0 };
+const DETAILS = { hooks: NO_NAMES, filters: { names: [{ driver: "lfs", scope: "local" as const }], more: 0 }, monitors: NO_NAMES, mergeDrivers: NO_NAMES, mergeTools: NO_NAMES, signing: NO_NAMES, other: NO_NAMES };
 
 // The shell end of the private channel. It sends contract §6 replies and never invents Git output beyond the bytes a test sets.
 function createChannelDouble() {
@@ -819,7 +823,7 @@ describe("native runner frame walks", () => {
   test("a confirm or confirmRun reply with deadline fails the call, because neither is a walk", async () => {
     const channel = createChannelDouble();
     const requests: TrustRequest[] = [
-      { type: "confirm", worktreeRoot: REPO, gitDirectory: GIT_DIR, commonDirectory: GIT_DIR, gitSelectedPath: GIT_PATH, fingerprint: "a".repeat(64), persist: true },
+      { type: "confirm", worktreeRoot: REPO, adminDirectory: GIT_DIR, commonDirectory: GIT_DIR, gitSelectedPath: GIT_PATH, policyVersion: 2, action: "commit", details: DETAILS },
       { type: "confirmRun", worktreeRoot: REPO, submodulePaths: [isWindows ? "C:\\repo\\sub" : "/repo/sub"], programCount: 1, uncheckedCount: 0 },
     ];
     for (const request of requests) {
@@ -869,17 +873,19 @@ describe("native runner mutation and trust frames", () => {
     ]);
   });
 
+  // Feature 004 contract Δ6: the version 2 frame.
   const confirm = {
     type: "confirm",
     worktreeRoot: REPO,
-    gitDirectory: GIT_DIR,
+    adminDirectory: GIT_DIR,
     commonDirectory: GIT_DIR,
     gitSelectedPath: GIT_PATH,
-    fingerprint: "a".repeat(64),
-    persist: true,
+    policyVersion: 2,
+    action: "commit",
+    details: DETAILS,
   } as const;
 
-  test("confirm carries bound only with persist false, and approved carries stored and record", async () => {
+  test("confirm version 2 carries the action and the details, and approved carries stored and a version 2 record", async () => {
     const channel = createChannelDouble();
     const stored = channel.runner.trust(confirm);
     const request = channel.last("confirm");
@@ -892,11 +898,6 @@ describe("native runner mutation and trust frames", () => {
     channel.reply("trust", { type: "confirm", callId: channel.last("confirm").callId, result: "approved", stored: false });
     expect(await failedWrite).toEqual({ result: "approved", stored: false });
 
-    const session = channel.runner.trust({ ...confirm, persist: false, bound: "file-count" });
-    expect(channel.last("confirm")).toMatchObject({ persist: false, bound: "file-count" });
-    channel.reply("trust", { type: "confirm", callId: channel.last("confirm").callId, result: "approved", stored: false });
-    expect(await session).toEqual({ result: "approved", stored: false });
-
     const declined = channel.runner.trust(confirm);
     channel.reply("trust", { type: "confirm", callId: channel.last("confirm").callId, result: "declined" });
     expect(await declined).toEqual({ result: "declined" });
@@ -906,17 +907,25 @@ describe("native runner mutation and trust frames", () => {
       { result: "approved", stored: true },
       { result: "approved", stored: false, record: RECORD },
       { result: "approved", stored: true, record: { ...RECORD, approvedAt: "yesterday" } },
+      // Plan.md O-5: the shell never stores a version 1 record.
+      { result: "approved", stored: true, record: { ...RECORD, policyVersion: undefined, adminDirectory: undefined, gitDirectory: GIT_DIR, configurationFingerprint: "a".repeat(64) } },
       { result: "declined", stored: false },
     ]) {
       const bad = channel.runner.trust(confirm);
-      expect(channel.reply("trust", { type: "confirm", callId: channel.last("confirm").callId, ...reply })).toBe(false);
+      expect(channel.reply("trust", { type: "confirm", callId: channel.last("confirm").callId, ...JSON.parse(JSON.stringify(reply)) })).toBe(false);
       await expect(bad).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
     }
-    const sessionOnly = channel.runner.trust({ ...confirm, persist: false, bound: "total-bytes" });
-    expect(channel.reply("trust", { type: "confirm", callId: channel.last("confirm").callId, result: "approved", stored: true, record: RECORD })).toBe(false);
-    await expect(sessionOnly).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
 
-    for (const bad of [{ ...confirm, persist: false }, { ...confirm, bound: "file-count" }, { ...confirm, persist: false, bound: "files" }, { ...confirm, fingerprint: "A".repeat(64) }]) {
+    const { adminDirectory: _a, policyVersion: _p, action: _c, details: _d, ...v1 } = confirm;
+    for (const bad of [
+      { ...v1, gitDirectory: GIT_DIR, fingerprint: "a".repeat(64), persist: true },
+      { ...confirm, fingerprint: "a".repeat(64) },
+      { ...confirm, persist: true },
+      { ...confirm, bound: "file-count" },
+      { ...confirm, policyVersion: 1 },
+      { ...confirm, action: "clone" },
+      { ...confirm, details: { ...DETAILS, filters: { names: Array.from({ length: 21 }, () => ({ driver: "lfs", scope: "local" })), more: 0 } } },
+    ]) {
       await expect(channel.runner.trust(bad as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     }
   });
@@ -1070,5 +1079,135 @@ describe("native runner matching probe script", () => {
     }
     void channel.runner.run(script({ arguments: length("1", 1) }));
     expect(channel.bodies("run").length).toBe(1);
+  });
+});
+
+// Feature 004 contract Δ6 (T034): the `globalConfig` and `worktreeAdd` contexts, the policy `mergetool`, the `worktreeAdd` form of `destinationFacts`, and `fileAppend`.
+describe("native runner feature 004 requests", () => {
+  const globalConfig: ProcessContext = { contextKind: "globalConfig", gitInstallationId: id() };
+  const worktreeAdd: ProcessContext = { contextKind: "worktreeAdd", gitInstallationId: id(), repositoryId: id(), bootstrapId: id() };
+  const LIST = ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs", "config", "list", "--show-scope", "--show-origin", "-z"];
+  const WORKTREE = isWindows ? "C:\\wt" : "/wt";
+  const OID = "0".repeat(40);
+  const integrate = { environmentPolicy: "integrate" as const, limits: PROCESS_LIMITS.network };
+  const CEILING = { ceilingMs: SUBMODULE_UPDATE_CEILING_MS };
+  // The check runs before the first await, so an admitted call has sent its frame when `run` returns. The case then fails at once and waits for no reply.
+  const refusedRun = async (channel: ReturnType<typeof createChannelDouble>, c: GitCall) => {
+    const before = channel.sent.length;
+    const result = channel.runner.run(c).catch((error: unknown) => error);
+    expect({ arguments: c.arguments, policy: c.environmentPolicy, sent: channel.sent.length }).toEqual({ arguments: c.arguments, policy: c.environmentPolicy, sent: before });
+    expect(await result).toMatchObject({ code: "INVALID_REQUEST" });
+  };
+
+  test("globalConfig takes only its three arrays under the policy of each step, worktreeAdd takes only worktree add under integrate, and a registered run never runs worktree add or clone", async () => {
+    const channel = createChannelDouble();
+    const admitted = [
+      call({ context: globalConfig, arguments: LIST }),
+      call({ context: globalConfig, arguments: ["--no-lazy-fetch", "config", "set", "--global", "--", "core.autocrlf", "false"], ...integrate }),
+      call({ context: globalConfig, arguments: ["--no-lazy-fetch", "config", "unset", "--global", "--", "core.autocrlf"], ...integrate }),
+      call({ context: worktreeAdd, arguments: ["--no-lazy-fetch", "worktree", "add", "--", WORKTREE, OID], ...integrate }),
+      call({ context: worktreeAdd, arguments: ["--no-lazy-fetch", "worktree", "add", "-b", "new", "--", WORKTREE, OID], ...integrate }),
+    ];
+    for (const c of admitted) {
+      void channel.runner.run(c);
+      expect(channel.last("run")).toMatchObject({ ...c.context, environmentPolicy: c.environmentPolicy, arguments: [...c.arguments] });
+    }
+    const refused = [
+      call({ context: globalConfig, arguments: LIST, ...integrate }),
+      call({ context: globalConfig, arguments: ["--no-lazy-fetch", "config", "set", "--local", "--", "core.autocrlf", "false"], ...integrate }),
+      call({ context: globalConfig, arguments: ["--no-lazy-fetch", "config", "set", "--global", "--", "core.autocrlf", "false"] }),
+      call({ context: globalConfig, arguments: ["--no-lazy-fetch", "status"] }),
+      call({ context: worktreeAdd, arguments: ["--no-lazy-fetch", "worktree", "add", "--", WORKTREE, OID] }),
+      call({ context: worktreeAdd, arguments: ["--no-lazy-fetch", "worktree", "list"], ...integrate }),
+      call({ arguments: ["--no-lazy-fetch", "-C", "x", "worktree", "add", "--", WORKTREE, OID], ...integrate }),
+      call({ arguments: ["--no-lazy-fetch", "clone", "--", "https://host.invalid/x.git", WORKTREE], environmentPolicy: "remote", limits: PROCESS_LIMITS.network }),
+    ];
+    for (const c of refused) await refusedRun(channel, c);
+  });
+
+  test("the policy mergetool takes the ceiling limits alone and no input", async () => {
+    const channel = createChannelDouble();
+    const tool = ["--no-lazy-fetch", "--literal-pathspecs", "mergetool", "--tool=fixture", "--no-prompt", "--", "a.txt"];
+    void channel.runner.run(call({ arguments: tool, environmentPolicy: "mergetool", limits: CEILING }));
+    expect(channel.last("run")).toMatchObject({ environmentPolicy: "mergetool", limits: CEILING });
+    const refused = [
+      call({ arguments: tool, environmentPolicy: "mergetool", limits: PROCESS_LIMITS.network }),
+      call({ arguments: tool, environmentPolicy: "mergetool", limits: PROCESS_LIMITS.git }),
+      call({ arguments: tool, environmentPolicy: "mergetool", limits: CEILING, input: new Uint8Array([0x61]) }),
+      call({ arguments: tool, environmentPolicy: "integrate", limits: CEILING }),
+    ];
+    for (const c of refused) await refusedRun(channel, c);
+  });
+
+  test("destinationFacts of a worktreeAdd binding replies with the path, the clone form without it, and another form breaks the reply", async () => {
+    const channel = createChannelDouble();
+    const operationId = id();
+    const replyTo = (fields: Body) => channel.reply("process", { type: "destinationFacts", callId: channel.last("destinationFacts").callId, ...fields });
+    const worktree = channel.runner.destinationFacts({ operationId, bootstrapId: id() });
+    expect(replyTo({ result: "absent", path: WORKTREE })).toBe(true);
+    expect(await worktree).toEqual({ result: "absent", path: WORKTREE });
+    const clone = channel.runner.destinationFacts({ operationId, cloneId: id() });
+    expect(replyTo({ result: "empty" })).toBe(true);
+    expect(await clone).toEqual({ result: "empty" });
+    const missing = channel.runner.destinationFacts({ operationId, bootstrapId: id() });
+    expect(replyTo({ result: "absent" })).toBe(false);
+    await expect(missing).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
+    const extra = channel.runner.destinationFacts({ operationId, cloneId: id() });
+    expect(replyTo({ result: "absent", path: WORKTREE })).toBe(false);
+    await expect(extra).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
+  });
+
+  test("fileAppend sends its frame and maps each reply form; a refused frame throws RunnerRefusal; an abort sends cancel and waits for the reply", async () => {
+    const channel = createChannelDouble();
+    const request = { operationId: id(), repositoryId: id(), target: "gitignore" as const, path: isWindows ? "C:\\repo\\.gitignore" : "/repo/.gitignore", expected: "absent" as const, bytes: Buffer.from("/build/\n").toString("base64") };
+    for (const reply of [{ result: "appended" }, { result: "stale" }, { result: "stopped" }, { result: "interrupted" }, { result: "refused", reason: "not-regular" }, { result: "error", code: "io-error" }]) {
+      const appended = channel.runner.fileAppend(request, SIGNAL);
+      const body = channel.last("fileAppend");
+      expect(body).toEqual({ type: "fileAppend", callId: body.callId, ...request });
+      expect(channel.reply("process", { type: "fileAppend", callId: body.callId, ...reply })).toBe(true);
+      expect(await appended).toEqual(reply as Awaited<typeof appended>);
+    }
+    const refused = channel.runner.fileAppend(request, SIGNAL);
+    channel.reply("process", { type: "refused", callId: channel.last("fileAppend").callId, code: "INVALID_REQUEST" });
+    const error = await refused.catch((e: unknown) => e);
+    expect({ refusal: error instanceof RunnerRefusal, code: (error as RunnerRefusal).code }).toEqual({ refusal: true, code: "INVALID_REQUEST" });
+    // A call that settled at the abort keeps its first value. So the reply value proves that the call waited for the reply.
+    for (const result of ["stopped", "appended"] as const) {
+      const abort = new AbortController();
+      const canceled = channel.runner.fileAppend(request, abort.signal);
+      const { callId } = channel.last("fileAppend");
+      abort.abort();
+      expect(channel.last("cancel")).toEqual({ type: "cancel", callId });
+      expect(channel.reply("process", { type: "fileAppend", callId, result })).toBe(true);
+      expect(await canceled).toEqual({ result });
+    }
+    const before = channel.sent.length;
+    const empty = channel.runner.fileAppend({ ...request, bytes: "" }, SIGNAL).catch((error: unknown) => error);
+    expect(channel.sent.length).toBe(before);
+    expect(await empty).toMatchObject({ code: "INVALID_REQUEST" });
+  });
+
+  test("reveal sends its frame and maps the reply to shown; a refused frame throws RunnerRefusal with UNKNOWN_TARGET; an abort sends cancel", async () => {
+    const channel = createChannelDouble();
+    const request = { operationId: id(), repositoryId: id(), path: isWindows ? "C:\\repo\\src\\a.txt" : "/repo/src/a.txt" };
+    const shown = channel.runner.reveal(request, SIGNAL);
+    const body = channel.last("reveal");
+    expect(body).toEqual({ type: "reveal", callId: body.callId, ...request });
+    expect(channel.reply("process", { type: "reveal", callId: body.callId })).toBe(true);
+    expect(await shown).toBe("shown");
+    const refused = channel.runner.reveal(request, SIGNAL);
+    channel.reply("process", { type: "refused", callId: channel.last("reveal").callId, code: "UNKNOWN_TARGET" });
+    const error = await refused.catch((e: unknown) => e);
+    expect({ refusal: error instanceof RunnerRefusal, code: (error as RunnerRefusal).code }).toEqual({ refusal: true, code: "UNKNOWN_TARGET" });
+    const abort = new AbortController();
+    const canceled = channel.runner.reveal(request, abort.signal);
+    const { callId } = channel.last("reveal");
+    abort.abort();
+    expect(await canceled).toEqual({ stop: "canceled" });
+    expect(channel.last("cancel")).toEqual({ type: "cancel", callId });
+    const before = channel.sent.length;
+    const relative = channel.runner.reveal({ ...request, path: "src/a.txt" }, SIGNAL).catch((e: unknown) => e);
+    expect(channel.sent.length).toBe(before);
+    expect(await relative).toMatchObject({ code: "INVALID_REQUEST" });
   });
 });

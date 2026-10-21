@@ -5,16 +5,17 @@
 // Read-only inspection: no `write-tree`, no trial commit, and no index write.
 
 import type { ErrorCode } from "../contracts/errors";
-import { APPROVAL_LIFETIME_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../contracts/limits";
+import { APPROVAL_LIFETIME_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../contracts/limits";
 import type { Approvals } from "./approvals";
-import { emptyTreeArgs, isObjectId, stagedNameStatusArgs } from "./commands";
-import { createCollector, RunnerRefusal, type GitRunner, type WslIndexResult, type WslRunner } from "./git-runner";
-import { contextOf, runRead } from "./read-steps";
+import { emptyTreeArgs, headRefExistsArgs, isObjectId, isRefName, stagedNameStatusArgs } from "./commands";
+import { createCollector, RunnerRefusal, type GitExit, type GitRunner, type WslIndexResult, type WslRunner } from "./git-runner";
+import { contextOf, latin1, runRead, strictUtf8, type ReadTarget } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { ChangeSnapshot, Completeness, Head, IndexEntry, ReadInstallation } from "./snapshot";
 import { readRawIndex } from "./status";
 import { displayPath } from "./status-parser";
-import type { Trust, TrustState } from "./trust";
+import { rewriteHooks, type ConfigEntry, type Trust, type TrustState } from "./trust";
+import { commitObjectArgs, headIsAncestorArgs, upstreamOfArgs } from "./workbench-commands";
 
 // Plan.md "Commit review": the disclosure beside Commit staged changes.
 export const REVIEW_LIMITATION = "Git will run approved hooks. They or other Git tools can change the result during execution.";
@@ -32,6 +33,15 @@ export interface ScopeEntry {
   pathBytes: string;
 }
 
+// Feature 004 contract Δ3 `reviewCommit` with `amend`. `upstream` names the full ref, or null. `present: false`: the repository holds no such ref,
+// so no fact tells whether the remote holds HEAD, and `rewritesUpstream` is `unknown`. An untracked upstream names its `branch.<name>.merge` value, or null.
+export interface AmendValue {
+  headOid: string;
+  message: string;
+  upstream: { name: string | null; present: boolean } | null;
+  rewritesUpstream: boolean | "unknown";
+}
+
 export interface ReviewValue {
   generation: number;
   head: Head;
@@ -39,16 +49,89 @@ export interface ReviewValue {
   // Plan.md "Trust required/changed": the review shows the trust state only when `approvalRequired` is true.
   disclosure: { approvalRequired: boolean; trust: TrustState };
   limitations: string[];
-  // Contract §3: an empty staged scope gets no token.
+  // Contract §3: an empty staged scope gets no token. Feature 004 contract Δ3: an amend review gets one also then.
   reviewToken?: string;
+  amend?: AmendValue;
 }
 
 export type ReviewOutcome =
   | { result: "succeeded"; value: ReviewValue }
   | { result: "limited"; code: "OUTPUT_LIMIT" | "OBJECT_MISSING" | "WORKTREE_CHANGING"; value: { completeness: Completeness } }
-  | { result: "failed"; code: ErrorCode }
+  | { result: "failed"; code: ErrorCode; value?: { reason: "unborn" } }
   | { result: "canceled" }
   | { result: "deadline" };
+
+type Failed = Exclude<ReviewOutcome, { result: "succeeded" | "limited" }>;
+
+// One read with bounded stdout. A refusal, a stop, and the diagnostic bound end it.
+async function readStep(runner: GitRunner, t: ReadTarget, args: string[], maxBytes: number): Promise<{ exit: GitExit; bytes: Uint8Array; limited: boolean } | Failed> {
+  const out = createCollector({ maxBytes });
+  const step = await runRead(runner, t, args, out);
+  if (t.signal.aborted) return { result: "canceled" };
+  if ("refused" in step) return { result: "failed", code: step.refused };
+  if (step.exit.deadline !== undefined) return { result: "deadline" };
+  if (step.exit.diagnosticLimit) return { result: "failed", code: "OUTPUT_LIMIT" };
+  return { exit: step.exit, bytes: out.take(), limited: out.limited };
+}
+
+// Git utf8.c `is_encoding_utf8`: `utf-8` and `utf8` with `strcasecmp`, which folds only ASCII letters. Without the `u` flag, `i` folds no other letter to ASCII.
+export const isUtf8Name = (name: string): boolean => /^utf-?8$/i.test(name);
+
+
+// Plan.md D8: `cat-file commit <HEAD>`. gitformat-commit: the header lines end at the first empty line, and a continuation line starts with a space.
+// The message is the bytes after that line. Git uses the first `encoding` header (commit.c `find_commit_header`).
+async function headCommit(runner: GitRunner, t: ReadTarget, oid: string): Promise<{ parents: string[]; message: string } | Failed> {
+  const read = await readStep(runner, t, commitObjectArgs(oid, t.workspace.objectFormat), HISTORY_COMMIT_OBJECT_BYTES);
+  if ("result" in read) return read;
+  if (read.limited) return { result: "failed", code: "OUTPUT_LIMIT" };
+  if (read.exit.exitCode !== 0) return { result: "failed", code: "GIT_FAILED" };
+  const raw = Buffer.from(read.bytes);
+  const end = raw.indexOf("\n\n");
+  const headers = end < 0 ? [] : latin1(raw.subarray(0, end)).split("\n");
+  const parents = headers.filter((h) => h.startsWith("parent ")).map((h) => h.slice("parent ".length));
+  if (!headers[0]?.startsWith("tree ") || !parents.every((p) => isObjectId(p, t.workspace.objectFormat))) return { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
+  const encoding = headers.find((h) => h.startsWith("encoding "));
+  // Contract Δ3 gives COMMIT_ENCODING_UNSUPPORTED for another encoding. Bytes that are no valid UTF-8 have no exact text either (contract gap).
+  if (encoding !== undefined && !isUtf8Name(encoding.slice("encoding ".length))) return { result: "failed", code: "COMMIT_ENCODING_UNSUPPORTED" };
+  try {
+    return { parents, message: strictUtf8.decode(raw.subarray(end + 2)) };
+  } catch {
+    return { result: "failed", code: "COMMIT_ENCODING_UNSUPPORTED" };
+  }
+}
+
+// remote.c `branch_get_upstream`: `%(upstream)` is empty also for a `branch.<name>.merge` value that no fetch refspec stores as a remote-tracking branch.
+// remote.c `handle_config` keeps the values in order, and the first one is the upstream. No local ref holds it, so whether it holds HEAD is unknown.
+function untracked(entries: readonly ConfigEntry[], target: string): Pick<AmendValue, "upstream" | "rewritesUpstream"> {
+  const key = `branch.${target.slice("refs/heads/".length)}.merge`;
+  const merge = entries.find((e) => e.key === key && e.value !== null);
+  if (merge === undefined) return { upstream: null, rewritesUpstream: false };
+  return { upstream: { name: merge.exact && merge.value !== "" ? merge.value : null, present: false }, rewritesUpstream: "unknown" };
+}
+
+// Plan.md D8: the upstream U of the HEAD branch, `show-ref --exists <U>`, then `merge-base --is-ancestor HEAD <U>`. git-show-ref(1): exit 0 for an existing ref,
+// exit 2 for a missing one. git-merge-base(1): exit 0 true, exit 1 false. Another exit gives GIT_FAILED. A detached HEAD has no branch, so it has no upstream.
+// `entries`: the configuration listing that the review or the preflight read.
+export async function readRewrite(runner: GitRunner, t: ReadTarget, head: Exclude<Head, { state: "unborn" }>, entries: readonly ConfigEntry[]): Promise<Pick<AmendValue, "upstream" | "rewritesUpstream"> | Failed> {
+  if (head.state === "detached") return { upstream: null, rewritesUpstream: false };
+  const read = await readStep(runner, t, upstreamOfArgs(head.target), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+  if ("result" in read) return read;
+  if (read.limited) return { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
+  if (read.exit.exitCode !== 0) return { result: "failed", code: "GIT_FAILED" };
+  // git-for-each-ref(1): one line for the one matching ref. An empty line names no upstream.
+  const text = latin1(read.bytes);
+  const upstream = text.endsWith("\n") && !text.slice(0, -1).includes("\n") ? text.slice(0, -1) : null;
+  if (upstream === null || (upstream !== "" && !(upstream.startsWith("refs/") && isRefName(upstream)))) return { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
+  if (upstream === "") return untracked(entries, head.target);
+  const exists = await readStep(runner, t, headRefExistsArgs(upstream), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+  if ("result" in exists) return exists;
+  if (exists.exit.exitCode === 2) return { upstream: { name: upstream, present: false }, rewritesUpstream: "unknown" };
+  if (exists.exit.exitCode !== 0) return { result: "failed", code: "GIT_FAILED" };
+  const ancestor = await readStep(runner, t, headIsAncestorArgs(upstream, t.workspace.objectFormat), DIAGNOSTIC_RETAINED_BYTES_PER_STREAM);
+  if ("result" in ancestor) return ancestor;
+  const code = ancestor.exit.exitCode;
+  return code === 0 || code === 1 ? { upstream: { name: upstream, present: true }, rewritesUpstream: code === 0 } : { result: "failed", code: "GIT_FAILED" };
+}
 
 export interface ReviewTarget {
   operationId: string;
@@ -149,13 +232,17 @@ export function createCommitReviewer({ runner, trust, approvals, now = () => per
     return same ? { rawIndex: null, wslIndex: r } : changed;
   }
 
-  async function reviewCommit(t: ReviewTarget): Promise<ReviewOutcome> {
+  // `amend`: feature 004 contract Δ3 `reviewCommit` with `amend: true` and plan.md D8 "Amend last commit".
+  async function reviewCommit(t: ReviewTarget, amend = false): Promise<ReviewOutcome> {
     const { snapshot: s, workspace: w } = t;
     // Contract §5: a mutation needs a complete index snapshot.
     if (s.indexFingerprint === null || s.policyFingerprint === null) {
       const c = s.completeness;
       return c.state === "limited" ? { result: "limited", code: c.code, value: { completeness: c } } : { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
     }
+    // Contract Δ3: the shown snapshot decides before any Git process. The states that the 001 commit acceptance refuses with OPERATION_IN_PROGRESS refuse here too.
+    if (amend && s.head.state === "unborn") return { result: "failed", code: "WORKBENCH_UNAVAILABLE", value: { reason: "unborn" } };
+    if (amend && s.operationState !== "normal" && s.operationState !== "conflicted" && s.operationState !== "unknown") return { result: "failed", code: "OPERATION_IN_PROGRESS" };
 
     // Contract §7: `diff-index` loads the index, so the read gate decides first.
     const listed = await trust.listTrust({ operationId: t.operationId, signal: t.signal, workspace: w });
@@ -187,15 +274,28 @@ export function createCommitReviewer({ runner, trust, approvals, now = () => per
     if ("result" in index) return index;
     if (t.signal.aborted) return { result: "canceled" };
 
+    // Plan.md D8: the HEAD message, its parents, and the upstream facts. An amend also runs `post-rewrite` (githooks(5)).
+    let facts: { parents: string[]; value: AmendValue } | null = null;
+    if (amend && s.head.state !== "unborn") {
+      const commit = await headCommit(runner, t, s.head.oid);
+      if ("result" in commit) return commit;
+      const rewrite = await readRewrite(runner, t, s.head, listing.entries);
+      if ("result" in rewrite) return rewrite;
+      facts = { parents: commit.parents, value: { headOid: s.head.oid, message: commit.message, ...rewrite } };
+    }
+    const approvalRequired = listing.approvalRequired.commit || (facts !== null && rewriteHooks(listing));
+
     const view = trust.view(w, listing, t.installation);
     const value: ReviewValue = {
       generation: s.generation,
       head: s.head,
       scope: records.map((r) => ({ status: r.status, path: displayPath(r.path), pathBytes: Buffer.from(r.path).toString("base64") })),
-      disclosure: { approvalRequired: listing.approvalRequired.commit, trust: view.state },
+      disclosure: { approvalRequired, trust: view.state },
       limitations: [REVIEW_LIMITATION],
+      ...(facts === null ? {} : { amend: facts.value }),
     };
-    if (records.length === 0) return { result: "succeeded", value };
+    // Contract Δ3: a message-only amend is valid, so an amend review gets a token for an empty staged scope.
+    if (records.length === 0 && facts === null) return { result: "succeeded", value };
 
     const reviewToken = crypto.randomUUID();
     approvals.issue({
@@ -211,7 +311,8 @@ export function createCommitReviewer({ runner, trust, approvals, now = () => per
         disclosure: listing.fingerprint,
         trust: { state: view.state, trustId: view.trustId ?? null },
         operationState: s.operationState,
-        approvalRequired: listing.approvalRequired.commit,
+        approvalRequired,
+        ...(facts === null ? {} : { amend: { parents: facts.parents, upstream: facts.value.upstream, rewritesUpstream: facts.value.rewritesUpstream } }),
       },
     });
     prune();

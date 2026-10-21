@@ -875,7 +875,7 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
           git(repo, ["config", "filter.t075.clean", "./tools/clean.sh"]);
           const { repositoryId } = await service.register(repo);
           const trust = await service.readTrust(repositoryId);
-          expect((await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation)).state).toBe("succeeded");
+          expect((await service.approveTrust(repositoryId)).state).toBe("succeeded");
           await settled(service, repositoryId);
           const idle = await read(service, repositoryId, CHANGES);
           expect(idle.calls.length).toBe(0);
@@ -899,7 +899,7 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
         git(repo, ["config", "filter.t088.clean", "./tools/clean.sh"]);
         const { repositoryId } = await service.register(repo);
         const trust = await service.readTrust(repositoryId);
-        const approved = await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation);
+        const approved = await service.approveTrust(repositoryId);
         expect(approved.state).toBe("succeeded");
         await settled(service, repositoryId);
         expect((await read(service, repositoryId, CHANGES)).calls.length).toBe(0);

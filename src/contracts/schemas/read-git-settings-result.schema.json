@@ -1,0 +1,579 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "properties": {
+    "values": {
+      "minItems": 1,
+      "maxItems": 24,
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000]*$"
+          },
+          "type": {
+            "oneOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "bool"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false,
+                "title": "ConfigBool"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "enum"
+                  },
+                  "values": {
+                    "minItems": 1,
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000]*$"
+                    }
+                  }
+                },
+                "required": [
+                  "kind",
+                  "values"
+                ],
+                "additionalProperties": false,
+                "title": "ConfigEnum"
+              },
+              {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "type": "string",
+                    "const": "text"
+                  }
+                },
+                "required": [
+                  "kind"
+                ],
+                "additionalProperties": false,
+                "title": "ConfigText"
+              }
+            ],
+            "title": "ConfigType"
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "scope": {
+                  "type": "string",
+                  "enum": [
+                    "system",
+                    "global",
+                    "local",
+                    "worktree",
+                    "command",
+                    "submodule",
+                    "unknown"
+                  ]
+                },
+                "origin": {
+                  "type": "string",
+                  "pattern": "^[^\\u0000]*$"
+                },
+                "value": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "reading": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "scope",
+                "origin",
+                "value",
+                "reading"
+              ],
+              "additionalProperties": false,
+              "title": "ConfigValueEntry"
+            }
+          },
+          "effective": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "scope": {
+                    "type": "string",
+                    "enum": [
+                      "system",
+                      "global",
+                      "local",
+                      "worktree",
+                      "command",
+                      "submodule",
+                      "unknown"
+                    ]
+                  },
+                  "origin": {
+                    "type": "string",
+                    "pattern": "^[^\\u0000]*$"
+                  },
+                  "value": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[^\\u0000]*$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  },
+                  "reading": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "pattern": "^[^\\u0000]*$"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ]
+                  }
+                },
+                "required": [
+                  "scope",
+                  "origin",
+                  "value",
+                  "reading"
+                ],
+                "additionalProperties": false,
+                "title": "ConfigValueEntry"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scopes": {
+            "type": "object",
+            "properties": {
+              "system": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "system",
+                        "global",
+                        "local",
+                        "worktree",
+                        "command",
+                        "submodule",
+                        "unknown"
+                      ]
+                    },
+                    "origin": {
+                      "type": "string",
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    "value": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "reading": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "origin",
+                    "value",
+                    "reading"
+                  ],
+                  "additionalProperties": false,
+                  "title": "ConfigValueEntry"
+                }
+              },
+              "global": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "system",
+                        "global",
+                        "local",
+                        "worktree",
+                        "command",
+                        "submodule",
+                        "unknown"
+                      ]
+                    },
+                    "origin": {
+                      "type": "string",
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    "value": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "reading": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "origin",
+                    "value",
+                    "reading"
+                  ],
+                  "additionalProperties": false,
+                  "title": "ConfigValueEntry"
+                }
+              },
+              "local": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "system",
+                        "global",
+                        "local",
+                        "worktree",
+                        "command",
+                        "submodule",
+                        "unknown"
+                      ]
+                    },
+                    "origin": {
+                      "type": "string",
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    "value": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "reading": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "origin",
+                    "value",
+                    "reading"
+                  ],
+                  "additionalProperties": false,
+                  "title": "ConfigValueEntry"
+                }
+              },
+              "worktree": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "system",
+                        "global",
+                        "local",
+                        "worktree",
+                        "command",
+                        "submodule",
+                        "unknown"
+                      ]
+                    },
+                    "origin": {
+                      "type": "string",
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    "value": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "reading": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "origin",
+                    "value",
+                    "reading"
+                  ],
+                  "additionalProperties": false,
+                  "title": "ConfigValueEntry"
+                }
+              },
+              "command": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "system",
+                        "global",
+                        "local",
+                        "worktree",
+                        "command",
+                        "submodule",
+                        "unknown"
+                      ]
+                    },
+                    "origin": {
+                      "type": "string",
+                      "pattern": "^[^\\u0000]*$"
+                    },
+                    "value": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    },
+                    "reading": {
+                      "anyOf": [
+                        {
+                          "type": "string",
+                          "pattern": "^[^\\u0000]*$"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "required": [
+                    "scope",
+                    "origin",
+                    "value",
+                    "reading"
+                  ],
+                  "additionalProperties": false,
+                  "title": "ConfigValueEntry"
+                }
+              }
+            },
+            "required": [
+              "system",
+              "global",
+              "local",
+              "worktree",
+              "command"
+            ],
+            "additionalProperties": false,
+            "title": "ConfigScopes"
+          },
+          "readOnly": {
+            "type": "object",
+            "properties": {
+              "local": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "multi-value",
+                      "included",
+                      "unreadable-value"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "global": {
+                "anyOf": [
+                  {
+                    "type": "string",
+                    "enum": [
+                      "multi-value",
+                      "included",
+                      "unreadable-value"
+                    ]
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "local",
+              "global"
+            ],
+            "additionalProperties": false,
+            "title": "ConfigReadOnly"
+          }
+        },
+        "required": [
+          "key",
+          "type",
+          "entries",
+          "effective",
+          "scopes",
+          "readOnly"
+        ],
+        "additionalProperties": false,
+        "title": "ConfigValue"
+      }
+    },
+    "files": {
+      "type": "object",
+      "properties": {
+        "local": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "global": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "system": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "local",
+        "global",
+        "system"
+      ],
+      "additionalProperties": false,
+      "title": "ConfigFiles"
+    }
+  },
+  "required": [
+    "values",
+    "files"
+  ],
+  "additionalProperties": false,
+  "title": "ReadGitSettingsResult"
+}

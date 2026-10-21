@@ -4,13 +4,15 @@
 import { ArrowDown01Icon, ArrowRight01Icon, CancelCircleIcon, SidebarLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
-import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { RefEntry, RefsResult } from "../../contracts/envelope";
+import { unknownReadText } from "../app/RepositoryStates";
 import type { BridgeResponse } from "../bridge";
+import { ActionMenu } from "../components/action-menu";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import { COUNTS_TOOLTIP, type TrackLabel } from "../state/tracking";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuShortcut } from "../components/ui/dropdown-menu";
+import { scopedAction, type ScopedAction } from "../keyboard/shortcuts";
 
 // FR-057. plan.md "References sidebar", "Long text", "Keyboard and focus" (References sidebar row), "Task flow and command placement" (Browse references),
 // "Required visible states" (References), and "Status and fallback texts" (Sidebar texts). Contract §3 "References result". The sidebar is read-only.
@@ -25,6 +27,8 @@ const GROUPS: { kind: Exclude<Kind, "stash">; label: string; empty: string; noun
 ];
 const LOADING = "Loading references…";
 const NO_MATCH = "No reference matches the filter.";
+// Feature 003 data-model §1 label text.
+const NO_UPSTREAM = "No upstream";
 // Contract Δ3 `readHistoryRows` targets other than `found`.
 const NOT_SHOWN = { none: "Not in this history list", unknown: "Not in the loaded history rows" } as const;
 const REFUSAL: Record<string, string> = {
@@ -47,6 +51,7 @@ export const shortRef = (name: string) => {
 const upstreamText = (entry: RefEntry) => (entry.upstream === null ? null : `→ ${shortRef(entry.upstream)}${entry.upstreamPresent ? "" : ", not present"}`);
 
 function refusalText(response: BridgeResponse): string {
+  if (response.state === "succeeded") return unknownReadText("The references");
   const completeness = (response.result as { completeness?: { code?: string; reason?: string } } | undefined)?.completeness;
   const reason = completeness?.reason;
   if (reason !== undefined && reason in REFUSAL) return REFUSAL[reason]!;
@@ -71,6 +76,18 @@ export type ReferencesSidebarProps = {
   onShowBranchHistory?: () => void;
   /** Feature 003 FR-019: the count label of each local branch by name (`state/tracking.ts`). */
   tracking?: ReadonlyMap<string, TrackLabel>;
+  /**
+   * Feature 004 spec FR-009 and FR-014: the branch actions of a local or remote-tracking branch row. `menu` opens the context menu,
+   * `confirm` is a double-click, and a D15 key gives its action. Without it, only the current branch opens the 002 menu.
+   */
+  onBranchAction?: (entry: RefEntry, action: "menu" | "confirm" | ScopedAction, anchor: HTMLElement, byKey?: boolean) => void;
+  /** Feature 004 plan.md D15 "P2 regions": the groups after the references, such as Worktrees. They scroll with the sidebar. */
+  after?: ReactNode;
+  /** The constrained profile: the outer section that scrolls the whole sidebar. The tree then has no scroll region of its own and stays virtual in it. */
+  scrollElement?: () => HTMLElement | null;
+  /** The expansion of a collapsible section, when the parent holds it. */
+  expanded?: boolean;
+  onExpandedChange?: (next: boolean) => void;
 };
 
 // plan.md "Keyboard and focus", References sidebar row: the expansion lasts for the window session per repository and is not stored.
@@ -125,8 +142,9 @@ function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: 
   return any;
 }
 
-export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking }: ReferencesSidebarProps) {
-  const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId() };
+export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction, after, scrollElement, expanded, onExpandedChange }: ReferencesSidebarProps) {
+  const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId(), empty: useId() };
+  const emptyId = (kind: Kind) => `${ids.empty}-${kind}`;
   const [query, setQuery] = useState("");
   // Null until the user changes the expansion: the default then follows the current branch of the newest result.
   const [stored, setStored] = useState<{ repository: string; open: ReadonlySet<string> | null }>(() => ({ repository, open: sessionExpansion.get(repository) ?? null }));
@@ -134,14 +152,18 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   // Toggles while the filter has text change only this set. Clearing the filter drops it.
   const [filtered, setFiltered] = useState<{ query: string; open: ReadonlySet<string> } | null>(null);
   // The toggle state lasts for the window session and is not stored (plan.md "References sidebar").
-  const [shown, setShown] = useState(!collapsible);
+  const [ownShown, setOwnShown] = useState(!collapsible);
+  const shown = expanded ?? ownShown;
   const [activeKey, setActiveKey] = useState<string | null>(null);
-  // The key of the row whose context menu is open.
-  const [menu, setMenu] = useState<string | null>(null);
+  // The row whose context menu is open, and whether Shift+F10 or the Menu key opened it.
+  const [menu, setMenu] = useState<{ key: string; byKey: boolean } | null>(null);
   // The commits whose last selection gave no row, with the read target.
   const [missing, setMissing] = useState<ReadonlyMap<string, "none" | "unknown">>(new Map());
   const elements = useRef(new Map<string, HTMLElement>());
   const scroller = useRef<HTMLDivElement>(null);
+  const tree = useRef<HTMLDivElement>(null);
+  // The tree offset inside the scroll element (TanStack Virtual `scrollMargin`).
+  const [margin, setMargin] = useState(0);
   const toFocus = useRef<string | null>(null);
 
   const needle = query.toLowerCase();
@@ -179,12 +201,15 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   const activeIndex = Math.max(0, rows.findIndex((r) => r.node.key === activeKey));
   const anyMatch = filterOpen !== null && filterOpen.size > 0;
   const virtual = rows.length > VIRTUAL_MIN;
+  // 001 plan.md "References": an empty group shows its text below its heading.
+  const emptyText = (row: Row) => (row.level === 1 && row.node.count === 0 ? GROUPS.find((g) => g.kind === row.kind)!.empty : null);
 
   const virtualizer = useVirtualizer({
     count: rows.length,
     enabled: virtual,
-    getScrollElement: () => scroller.current,
-    estimateSize: () => rowHeight,
+    getScrollElement: () => scrollElement?.() ?? scroller.current,
+    scrollMargin: margin,
+    estimateSize: (i) => (emptyText(rows[i]!) === null ? rowHeight : 2 * rowHeight),
     getItemKey: (i) => rows[i]!.node.key,
     overscan: 8,
     // React 19 refuses a flushSync from a layout effect, where keyboard navigation scrolls.
@@ -194,6 +219,13 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
       const shownRange = defaultRangeExtractor(range);
       return shownRange.includes(activeIndex) ? shownRange : [...shownRange, activeIndex].sort((a, b) => a - b);
     },
+  });
+
+  useLayoutEffect(() => {
+    const element = scrollElement?.() ?? scroller.current;
+    if (!virtual || element === null || tree.current === null) return;
+    const next = tree.current.getBoundingClientRect().top - element.getBoundingClientRect().top + element.scrollTop;
+    if (next !== margin) setMargin(next);
   });
 
   // plan.md D6: keyboard navigation scrolls the target row into the window before it moves focus.
@@ -232,18 +264,31 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   }
 
   const isCurrent = (row: Row) => row.kind === "branch" && row.node.entry !== undefined && refs?.current?.name === row.node.entry.name;
+  // Feature 004: a branch row without a symbolic target has the branch actions.
+  const actionable = (row: Row) => onBranchAction !== undefined && (row.kind === "branch" || row.kind === "remote") && row.node.entry !== undefined && row.node.entry.symref === null;
+  const branchAction = (row: Row, action: "menu" | "confirm" | ScopedAction, byKey = false) => {
+    const element = elements.current.get(row.node.key);
+    if (element !== undefined) onBranchAction!(row.node.entry!, action, element, byKey);
+  };
   // Spec FR-049: the item shows only on the current branch, so no other row opens a menu.
-  const openMenu = (row: Row) => {
-    if (onShowBranchHistory !== undefined && isCurrent(row)) setMenu(row.node.key);
+  const openMenu = (row: Row, byKey = false) => {
+    if (actionable(row)) branchAction(row, "menu", byKey);
+    else if (onShowBranchHistory !== undefined && isCurrent(row)) setMenu({ key: row.node.key, byKey });
   };
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>, index: number) {
-    if (event.ctrlKey || event.altKey || event.metaKey || event.nativeEvent.isComposing) return;
     const row = rows[index]!;
+    // Feature 004 plan.md D15 keyboard map: the branch keys act only on the focused branch row.
+    const scoped = actionable(row) ? scopedAction(event.nativeEvent, row.kind === "branch" ? "localBranchRow" : "remoteBranchRow") : null;
+    if (scoped !== null) {
+      event.preventDefault();
+      return branchAction(row, scoped);
+    }
+    if (event.ctrlKey || event.altKey || event.metaKey || event.nativeEvent.isComposing) return;
     // Windows sends Shift+F10 and the Menu key to the focused element.
     if ((event.key === "F10" && event.shiftKey) || event.key === "ContextMenu") {
       event.preventDefault();
-      return openMenu(row);
+      return openMenu(row, true);
     }
     if (event.shiftKey) return;
     const branch = row.node.entry === undefined;
@@ -279,6 +324,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
         openMenu(row);
       },
       onClick: () => activate(row),
+      onDoubleClick: actionable(row) ? () => branchAction(row, "confirm") : undefined,
       style: { paddingLeft: 4 + (level - 1) * 12, ...style },
     };
     const entry = node.entry;
@@ -293,6 +339,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
           {...common}
           aria-expanded={expanded}
           aria-label={group ? `${node.label}, ${node.count}` : `${node.label}, folder, ${node.count}`}
+          aria-describedby={group && node.count === 0 ? emptyId(kind) : undefined}
           className={`list-row flex min-w-0 items-center gap-1 pr-2 ${sticky} ${group ? "bg-surface font-semibold" : ""}`}
         >
           <HugeiconsIcon icon={expanded ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
@@ -310,14 +357,19 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     const upstream = upstreamText(entry);
     const notShown = entry.commitId === null ? undefined : missing.get(entry.commitId);
     const track = kind === "branch" ? (tracking?.get(entry.name) ?? null) : null;
-    const name = entry.symref === null ? [entry.name, noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream]), ...(track === null ? [] : [track.label])].join(", ") : `${entry.name}, ${noun}, → ${shortRef(entry.symref)}`;
+    // Feature 004 spec FR-008 and the 003 FR-020 change: "No upstream" is part of the name of a local branch row, never visible text.
+    const noUpstream = kind === "branch" && entry.upstream === null;
+    const name =
+      entry.symref === null
+        ? [entry.name, noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream]), ...(noUpstream ? [NO_UPSTREAM] : track === null ? [] : [track.label])].join(", ")
+        : `${entry.name}, ${noun}, → ${shortRef(entry.symref)}`;
     return (
       <div
         key={node.key}
         {...common}
         aria-label={name}
         aria-describedby={notShown === undefined ? undefined : ids[notShown]}
-        aria-haspopup={current && onShowBranchHistory !== undefined ? "menu" : undefined}
+        aria-haspopup={actionable(row) || (current && onShowBranchHistory !== undefined) ? "menu" : undefined}
         aria-current={current ? "true" : undefined}
         className="list-row flex min-w-0 items-center gap-2 pr-2"
       >
@@ -332,7 +384,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
                 {upstream}
               </span>
             )}
-            {track === null ? null : (
+            {track === null || noUpstream ? null : (
               <span aria-hidden="true" title={`${track.label}. ${COUNTS_TOOLTIP}`} className="num ml-auto shrink-0 whitespace-nowrap">
                 {track.text}
               </span>
@@ -351,7 +403,21 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     if (virtual)
       return (
         <div role="presentation" className="relative" style={{ height: virtualizer.getTotalSize() }}>
-          {virtualizer.getVirtualItems().map((item) => rowView(rows[item.index]!, item.index, { position: "absolute", top: 0, left: 0, right: 0, height: rowHeight, transform: `translateY(${item.start}px)` }))}
+          {virtualizer.getVirtualItems().map((item) => {
+            const row = rows[item.index]!;
+            const place = { position: "absolute", top: 0, left: 0, right: 0, height: item.size, transform: `translateY(${item.start - margin}px)` } as const;
+            const empty = emptyText(row);
+            if (empty === null) return rowView(row, item.index, place);
+            // A virtual item has one fixed height, so the empty text takes one row and ends with "…" when it does not fit.
+            return (
+              <div key={row.node.key} role="none" style={place}>
+                {rowView(row, item.index, { height: rowHeight })}
+                <p id={emptyId(row.kind)} aria-hidden="true" title={empty} className="truncate pr-2 pl-4 text-muted-text" style={{ height: rowHeight, lineHeight: `${rowHeight}px` }}>
+                  {empty}
+                </p>
+              </div>
+            );
+          })}
         </div>
       );
     // Each group wraps its rows, so its heading row sticks only while the group scrolls.
@@ -360,6 +426,12 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
       list.length === 0 ? null : (
         <div key={GROUPS[i]!.kind} role="none" className="flex flex-col">
           {list.map(({ row, index }) => rowView(row, index))}
+          {/* 001 plan.md "References": the empty text belongs to its group. The heading row names it as its description. */}
+          {list[0]!.row.node.count === 0 ? (
+            <p id={emptyId(GROUPS[i]!.kind)} aria-hidden="true" className="pr-2 pl-4 text-muted-text">
+              {GROUPS[i]!.empty}
+            </p>
+          ) : null}
         </div>
       ),
     );
@@ -381,10 +453,9 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     if (refs === null) return <p className="p-2 text-muted-text">{LOADING}</p>;
     return (
       <>
-        <div role="tree" aria-labelledby={ids.heading} className="flex flex-col px-1">
+        <div ref={tree} role="tree" aria-labelledby={ids.heading} className="flex flex-col px-1">
           {treeRows()}
         </div>
-        {groups.map((g) => (g.tree.count === 0 ? <p key={g.kind} className="px-2 text-muted-text">{g.empty}</p> : null))}
         {needle !== "" && !anyMatch ? <p className="px-2 text-muted-text">{NO_MATCH}</p> : null}
         <span id={ids.none} hidden>
           {NOT_SHOWN.none}
@@ -396,14 +467,14 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     );
   };
 
-  const anchor = menu === null ? undefined : elements.current.get(menu);
+  const anchor = menu === null ? undefined : elements.current.get(menu.key);
   return (
     <section aria-labelledby={ids.heading} className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-1 px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
         <h2 id={ids.heading} className="mr-auto font-semibold">
           References
         </h2>
-        {collapsible ? <IconButton icon={SidebarLeftIcon} label="Show references" aria-expanded={shown} onClick={() => setShown((s) => !s)} /> : null}
+        {collapsible ? <IconButton icon={SidebarLeftIcon} label="Show references" aria-expanded={shown} onClick={() => (onExpandedChange ?? setOwnShown)(!shown)} /> : null}
       </div>
       {shown ? (
         <>
@@ -417,26 +488,23 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
               setFiltered(null);
             }}
           />
-          <div ref={scroller} data-references-scroll="" className="min-h-0 flex-1 overflow-y-auto">
+          <div ref={scroller} data-references-scroll={scrollElement === undefined ? "" : undefined} className={scrollElement === undefined ? "min-h-0 flex-1 overflow-y-auto" : "min-h-0 flex-1"}>
             {body()}
+            {after}
           </div>
         </>
       ) : null}
       {onShowBranchHistory === undefined ? null : (
-        <DropdownMenu open={anchor !== undefined} onOpenChange={(next) => (next ? undefined : setMenu(null))}>
-          <DropdownMenuContent anchor={anchor} sideOffset={2} finalFocus={{ current: anchor ?? null }} className="w-auto">
-            <DropdownMenuItem
-              aria-keyshortcuts="Control+Shift+B"
-              onClick={() => {
-                setMenu(null);
-                onShowBranchHistory();
-              }}
-            >
-              {SHOW_BRANCH_HISTORY}
-              <DropdownMenuShortcut>Ctrl+Shift+B</DropdownMenuShortcut>
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
+        // Plan.md D15 "Branch menu": the accessible name is "Actions for <branch>".
+        <ActionMenu
+          label={`Actions for ${refs?.current?.name ?? ""}`}
+          groups={[[{ label: SHOW_BRANCH_HISTORY, keys: { aria: "Control+Shift+B", text: "Ctrl+Shift+B" }, onSelect: () => (setMenu(null), onShowBranchHistory()) }]]}
+          open={anchor !== undefined}
+          onOpenChange={(next) => void (next || setMenu(null))}
+          anchor={anchor}
+          byKey={menu?.byKey}
+          finalFocus={{ current: anchor ?? null }}
+        />
       )}
     </section>
   );

@@ -6,9 +6,12 @@
 import { isUtf8 } from "node:buffer";
 import { WHOLE_FILE_STAGE_INPUT_BYTES } from "./limits";
 
+// Feature 004 contract Δ4 and Δ9: the refusals of a line selection. Data-model §6: no file decision gives them.
+export const LINE_ACTION_REASONS = ["context-only", "several-hunks", "deleted-file", "new-file", "eof-newline"] as const;
 // Feature 003 contract Δ4: only `resolve` gives `missing`.
-export const FILE_ACTION_REASONS = ["type", "symlink", "submodule", "index-flag", "path", "rename", "filter", "LFS", "size", "blob-proof", "missing"] as const;
+export const FILE_ACTION_REASONS = ["type", "symlink", "submodule", "index-flag", "path", "rename", "filter", "LFS", "size", "blob-proof", "missing", ...LINE_ACTION_REASONS] as const;
 export type FileActionReason = (typeof FILE_ACTION_REASONS)[number];
+export type LineActionReason = (typeof LINE_ACTION_REASONS)[number];
 
 export type FileActionCategory = "staged" | "unstaged" | "untracked" | "conflicted";
 
@@ -184,7 +187,7 @@ export function decideFileAction(input: FileActionInput): FileActionDecision {
 }
 
 // Contract Δ4 and data-model §9: Mark resolved.
-export type ResolveReason = Exclude<FileActionReason, "index-flag" | "rename" | "blob-proof">;
+export type ResolveReason = Exclude<FileActionReason, "index-flag" | "rename" | "blob-proof" | LineActionReason>;
 
 // `mode` is the `mW` of the `u` record: the `update-index --index-info` mode of the stage-0 entry (research R16 i).
 export interface ResolvePath {

@@ -42,6 +42,7 @@ export const TRUST_INPUT_BYTES = 4 * MIB;
 // Contract §5 "Trust report rows": the `readTrust` report rows that the Trust dialog renders. Above either bound, `readTrust` refuses the whole report.
 export const TRUST_REPORT_ENTRIES = 4096;
 export const TRUST_REPORT_HOOKS = 256;
+// Feature 004 contract Δ7 removes the 001 row "Trust program file digests" for a repository listing. Only the contract §12 submodule listing still digests program files within these bounds.
 export const TRUST_DIGEST_FILES = 64;
 export const TRUST_DIGEST_FILE_BYTES = 1 * MIB;
 export const TRUST_DIGEST_TOTAL_BYTES = 8 * MIB;
@@ -136,3 +137,23 @@ export const PAGEANT_READY_MS = 30 * SECOND_MS;
 export const CLONE_URL_BYTES = 4096;
 // Key file entries in the shell settings.
 export const KEY_FILE_ENTRIES = 256;
+
+// Feature 004 contract Δ5 "Finite bounds". The 001 and 003 bounds above stay in force.
+// Files and working bytes of one `applyFiles` action.
+export const MULTI_FILE_ACTION_FILES = 10_000;
+export const MULTI_FILE_ACTION_BYTES = STREAMED_PROCESS_INPUT_BYTES;
+// Plan.md O-17: the per-file blob proofs and working-file digests of one `applyFiles` action that run at once.
+export const MULTI_FILE_PROOF_CONCURRENCY = 8;
+// Plan.md O-17: the `update-index` step and each step 7 status read of `applyFiles` get GIT_PROCESS_DEADLINE_MS plus this time per file, at most REGISTERED_DEADLINE_CAP_MS.
+export const MULTI_FILE_STEP_MS_PER_FILE = 15;
+// The `check-attr` output of one `applyFiles` action.
+export const MULTI_FILE_ATTRIBUTE_BYTES = 64 * MIB;
+// Candidate paths of the plan D3 Discard check.
+export const DISCARD_CHECK_PATHS = 20_000;
+// The `worktree list --porcelain -z` output.
+export const WORKTREE_RECORDS = 1000;
+export const WORKTREE_LISTING_BYTES = 4 * MIB;
+// Entries of one stash or HEAD reflog read.
+export const REFLOG_SCAN_ENTRIES = 10_000;
+// The `-m` item of the merge argv. Plan D5: 2 × 8,192 + 3 units leave 16,380 of the 32,767 command-line units.
+export const MERGE_MESSAGE_BYTES = 8 * KIB;

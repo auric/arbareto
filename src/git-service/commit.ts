@@ -12,7 +12,7 @@ import { buildWslRemedy, routeWslPath } from "../contracts/wsl-route";
 import type { Acceptance, ApprovalKey, Approvals, CommitBinding, CommitReview } from "./approvals";
 import { readTip, type ReflogRecord } from "./attribution";
 import { authorIdentArgs, commitArgs, committerIdentArgs } from "./commands";
-import type { CommitReviewer, RetainedReview } from "./commit-review";
+import { isUtf8Name, readRewrite, type CommitReviewer, type RetainedReview } from "./commit-review";
 import { createTailCollector } from "./discovery";
 import type { Entered, Exclusion, NotEntered } from "./exclusion";
 import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit, type GitRunner, type WslIndexResult, type WslRunner } from "./git-runner";
@@ -48,7 +48,8 @@ import type { Workspace } from "./registration";
 import { policyFingerprint, type ReadInstallation } from "./snapshot";
 import { trackStall } from "./stall";
 import type { WorkspaceReader } from "./status";
-import { keyParts, type ConfigEntry, type Trust } from "./trust";
+import { keyParts, rewriteHooks, type ConfigEntry, type Trust } from "./trust";
+import { amendArgs } from "./workbench-commands";
 import type { WslGit } from "./wsl";
 import { processEnd, wslLock, type UnknownLock, type WslIndexFacts, type WslLockResult } from "./wsl-files";
 
@@ -97,7 +98,6 @@ function hookRemedy(built: RemedyCommand, values: Record<string, string>, count:
 }
 
 // Contract §4: Git takes the last `i18n.commitEncoding` value. Git `is_encoding_utf8` (utf8.c) treats an unset value, `utf-8`, and `utf8` in any ASCII case as UTF-8.
-// Without the `u` flag, the `i` flag folds no non-ASCII character to an ASCII one (ECMA-262 Canonicalize).
 export function utf8Commits(entries: readonly ConfigEntry[]): boolean {
   const last = entries
     .filter((e) => {
@@ -107,7 +107,7 @@ export function utf8Commits(entries: readonly ConfigEntry[]): boolean {
     .at(-1);
   if (last === undefined) return true;
   // A key without a value fails Git's configuration read. Inexact bytes are not the text that Git compares.
-  return last.value !== null && last.exact && /^utf-?8$/i.test(last.value);
+  return last.value !== null && last.exact && isUtf8Name(last.value);
 }
 
 type CommitRequest = Extract<ServiceRequest, { operation: "commit" }>;
@@ -115,7 +115,7 @@ export type CommitAdmission = { approval: CommitReview; review: RetainedReview }
 
 // Contract §2, §7 "Mutation trust", and §9: the acceptance checks after the accepted event. Memory only, so no Git process starts.
 export function admitCommit(
-  request: Pick<CommitRequest, "repositoryId" | "repositoryGeneration">,
+  request: Pick<CommitRequest, "repositoryId" | "repositoryGeneration"> & { payload?: Pick<CommitRequest["payload"], "amend" | "confirmRewrite"> },
   w: Pick<Workspace, "generation">,
   accepted: Acceptance,
   retained: (reviewToken: string) => RetainedReview | undefined,
@@ -128,6 +128,9 @@ export function admitCommit(
   // T111 drops kept review data older than 60 seconds at its next issue, so the admission keeps this reference.
   const review = retained(approval.reviewToken);
   if (review === undefined || review.repositoryId !== request.repositoryId) return { code: "UNKNOWN_TARGET" };
+  // Feature 004 contract Δ3: `amend` equals the review. A review that rewrites the upstream, or cannot know it, needs `confirmRewrite: true`.
+  const amend = approval.binding.amend;
+  if ((request.payload?.amend === true) !== (amend !== undefined) || (amend !== undefined && amend.rewritesUpstream !== false && request.payload?.confirmRewrite !== true)) return { code: "INVALID_REQUEST" };
   // Contract §9: an unfinished operation refuses at acceptance, before the trust gate. `unknown` decides at the preflight.
   const state = approval.binding.operationState;
   if (state === "conflicted") return { code: "CONFLICTED" };
@@ -168,6 +171,15 @@ export function preflightRefusal(
   // Contract §9: every tip failure gives GIT_FAILED, except an OUTPUT_LIMIT bound.
   if (!("value" in tip)) return (tip as Failure).code === "OUTPUT_LIMIT" ? refusalOf(tip as Failure) : { code: "GIT_FAILED" };
   return utf8Commits(policy.listing.entries) ? null : { code: "COMMIT_ENCODING_UNSUPPORTED" };
+}
+
+// Feature 004 data-model §2: an amend token binds the upstream and `rewritesUpstream`, so the preflight reads them again. A difference gives STALE_REVIEW.
+// The preflight compared HEAD with the review before this read, so HEAD is the reviewed commit.
+async function rewriteRefusal(ctx: ObserveContext, b: CommitBinding, entries: readonly ConfigEntry[]): Promise<Refusal | Stop | null> {
+  if (b.amend === undefined || b.head.state === "unborn") return null;
+  const now = await readRewrite(ctx.runner, ctx, b.head, entries);
+  if (!("result" in now)) return now.rewritesUpstream === b.amend.rewritesUpstream && Bun.deepEquals(now.upstream, b.amend.upstream, true) ? null : STALE;
+  return now.result === "failed" ? refusalOf(failureOf(now.code)) : now.result === "deadline" ? DEADLINE : CANCELED;
 }
 
 // Contract §9: `git var` checks identity last. Git documents no exit status for a missing identity, so a nonzero exit gives GIT_FAILED with the tail of its stderr.
@@ -299,9 +311,11 @@ export function createCommitter(o: CommitterOptions) {
 
       registry.progress(operationId, "preflight");
       // Contract §4 "WSL index publication": a WSL preflight reads the index bytes only after a changed digest.
-      const [policy, state, tip] = await Promise.all([observePolicy(ctx, null, "commit"), observeState(ctx, EMPTY, false, canonicalIndex(ctx, binding.reviewedIndex)), readTip(ctx, binding.head)]);
+      const [observed, state, tip] = await Promise.all([observePolicy(ctx, null, "commit"), observeState(ctx, EMPTY, false, canonicalIndex(ctx, binding.reviewedIndex)), readTip(ctx, binding.head)]);
+      // Feature 004: an amend also runs `post-rewrite`, so a repository-controlled one needs the approval too (githooks(5)).
+      const policy = binding.amend !== undefined && "listing" in observed && observed.gate === null && rewriteHooks(observed.listing) ? { ...observed, gate: o.trust.gate(w, { approvalRequired: { commit: true }, inputLimited: false }, installation, "commit") } : observed;
       const reviewed = policyFingerprint({ attributes: EMPTY, trust: binding.trust, configurationFingerprint: binding.disclosure, git: installation });
-      const refused = preflightRefusal(binding, reviewed, policy, state, tip, a.review.wslIndex) ?? (await identityRefusal(ctx));
+      const refused = preflightRefusal(binding, reviewed, policy, state, tip, a.review.wslIndex) ?? (await rewriteRefusal(ctx, binding, "listing" in policy ? policy.listing.entries : [])) ?? (await identityRefusal(ctx));
       if (refused !== null) return refused;
       kept.tip = (tip as { value: ReflogRecord | null }).value;
       if (signal.aborted) return CANCELED;
@@ -362,7 +376,8 @@ export function createCommitter(o: CommitterOptions) {
         exit = await rec.run({
           operationId,
           context: contextOf(w),
-          arguments: commitArgs(),
+          // Feature 004 contract Δ3: this payload alone changes the 001 §4 rule that forbids `--amend`.
+          arguments: binding.amend === undefined ? commitArgs() : amendArgs(),
           input: new TextEncoder().encode(request.payload.message),
           environmentPolicy: "mutation",
           limits: PROCESS_LIMITS.commit,
@@ -406,7 +421,7 @@ export function createCommitter(o: CommitterOptions) {
     }
     const { operationId, signal } = registry.start("commit", request.requestId);
     // Contract §7 "Mutation trust": the reviewed listing decides before any process starts. A bound review never has an input-limited listing.
-    const gate = (b: CommitBinding) => o.trust.gate(w, { approvalRequired: { reads: false, commit: b.approvalRequired }, fingerprint: b.disclosure, inputLimited: false }, installation, "commit");
+    const gate = (b: CommitBinding) => o.trust.gate(w, { approvalRequired: { reads: false, commit: b.approvalRequired }, inputLimited: false }, installation, "commit");
     const admitted = admitCommit(request, w, approvals.accept(key), o.reviews.retained, gate);
     if ("code" in admitted) return void registry.apply(operationId, { type: "invalid-approval", code: admitted.code });
     void execute(request, w, installation, operationId, signal, key, admitted);

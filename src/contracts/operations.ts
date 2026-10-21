@@ -50,6 +50,17 @@ export const OPERATION_NAMES = [
   "chooseSyncPath",
   "clearSyncPath",
   "launchPuttygen",
+  // Feature 004 contract Δ1.
+  "readBranches",
+  "readWorktrees",
+  "readGitSettings",
+  "reviewWorkbench",
+  "runWorkbench",
+  "applyFiles",
+  "openWorktree",
+  "revealPath",
+  "setSwitchChoice",
+  "chooseWorktreeFolder",
 ] as const;
 
 export type OperationName = (typeof OPERATION_NAMES)[number];
@@ -61,9 +72,11 @@ export function isOperationName(value: unknown): value is OperationName {
 
 // Contract §2: these operations carry a one-use approval as their repeat key.
 // Feature 003 contract Δ2: `sync` carries its `syncReviewToken`.
-const MUTATION_NAMES = ["applyHunk", "applyFile", "commit", "updateSubmodules", "sync"] as const;
+// Feature 004 contract Δ2: `runWorkbench` carries its `workbenchToken`, and `applyFiles` its approval key.
+const MUTATION_NAMES = ["applyHunk", "applyFile", "commit", "updateSubmodules", "sync", "runWorkbench", "applyFiles"] as const;
 export const MUTATIONS: readonly OperationName[] = MUTATION_NAMES;
-export const MutationKind = z.enum(MUTATION_NAMES);
+// Contract §6 "Recovery markers": the marker kinds. Feature 004 contract Δ6: a `runWorkbench` marker has kind `workbench`.
+export const MutationKind = z.enum(["applyHunk", "applyFile", "commit", "updateSubmodules", "sync", "workbench", "applyFiles"]);
 
 // Contract §3: the shell answers these natively and never forwards them to the service.
 // The shell forwards `openRecentRepository` as `restoreWorkspace`, so the service never gets that name.
@@ -80,6 +93,9 @@ export const SHELL_ONLY: readonly OperationName[] = [
   "chooseSyncPath",
   "clearSyncPath",
   "launchPuttygen",
+  // Feature 004 contract Δ1.
+  "setSwitchChoice",
+  "chooseWorktreeFolder",
 ];
 
 // Contract §2: UUID-shaped ASCII identifiers.
@@ -131,15 +147,38 @@ export const PHASES = [
   "sync-continue",
   "clone",
   "pageant",
+  // Feature 004 contract Δ2.
+  "switch-stash",
+  "switch-checkout",
+  "switch-reapply",
+  "switch-drop",
+  "branch",
+  "merge",
+  "rebase",
+  "resolve",
+  "mergetool",
+  "worktree",
+  "config",
+  "ignore",
+  "stage-files",
 ] as const;
 export const Phase = z.enum(PHASES);
 export type Phase = z.infer<typeof Phase>;
-// Feature 003 contract Δ2: these phases carry only these counters.
-const SYNC_PHASES: readonly string[] = ["sync-fetch", "sync-merge", "sync-rebase", "sync-push", "sync-continue", "clone", "pageant"];
-const SYNC_COUNTERS: readonly string[] = ["percent", "remoteIndex", "remoteCount"];
+// Feature 003 and feature 004 contract Δ2: these phases carry only these counters. A workbench phase without counters carries none.
+const SYNC_COUNTERS = ["percent", "remoteIndex", "remoteCount"];
+const PHASE_COUNTERS: Readonly<Record<string, readonly string[]>> = {
+  ...Object.fromEntries(["sync-fetch", "sync-merge", "sync-rebase", "sync-push", "sync-continue", "clone", "pageant"].map((phase) => [phase, SYNC_COUNTERS])),
+  ...Object.fromEntries(["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "ignore"].map((phase) => [phase, []])),
+  config: ["keyIndex", "keyCount"],
+  "stage-files": ["fileIndex", "fileCount"],
+};
 
 // Contract §11 "Distro checks": a name that `wsl.exe --list --quiet` prints holds no control character.
 export const DistroName = z.string().min(1).regex(/^[^\u0000-\u001f\u007f-\u009f]+$/);
+
+// Git `config.c` `config_scope_name`: the scopes that `config list --show-scope` prints.
+export const ConfigScope = z.enum(["system", "global", "local", "worktree", "command", "submodule", "unknown"]);
+export type ConfigScope = z.infer<typeof ConfigScope>;
 
 // Contract §3 `applyHunk` and `applyFile`.
 export const Direction = z.enum(["stage", "unstage"]);
@@ -164,7 +203,10 @@ export const ProgressEvent = ProgressFields.extend({ distro: DistroName.optional
   .refine((e) => (e.phase === "wsl-starting") === (e.distro !== undefined))
   .refine((e) => (e.phase === "fetch" || e.phase === "update") === (e.path !== undefined))
   // zod can run a refinement on a value whose fields failed.
-  .refine((e) => !SYNC_PHASES.includes(e.phase ?? "") || (typeof e.counters === "object" && e.counters !== null && Object.keys(e.counters).every((k) => SYNC_COUNTERS.includes(k))));
+  .refine((e) => {
+    const allowed = Object.hasOwn(PHASE_COUNTERS, e.phase ?? "") ? PHASE_COUNTERS[e.phase!]! : null;
+    return allowed === null || (typeof e.counters === "object" && e.counters !== null && Object.keys(e.counters).every((k) => allowed.includes(k)));
+  });
 export type ProgressEvent = z.infer<typeof ProgressEvent>;
 
 // Contract §9 "Commit failure output": an output tail stays within 16 KiB and 100 lines.

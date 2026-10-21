@@ -59,7 +59,7 @@ export interface CommitReconciliation {
   markerId: string;
   ctx: PublishContext;
   review: RetainedReview;
-  binding: Pick<CommitBinding, "head" | "reviewedIndex" | "operationState">;
+  binding: Pick<CommitBinding, "head" | "reviewedIndex" | "operationState" | "amend">;
   // The preflight tip (contract §8 "Attribution window").
   tip: ReflogRecord | null;
   // Null: the commit process gave no exit reply.
@@ -215,7 +215,7 @@ async function decide(q: ObserveContext, r: CommitReconciliation, observed: Obse
     candidate === null ? null : listingOf(q, commitTreeArgs(candidate, objectFormat), (bytes) => parseTree(bytes, objectFormat)),
   ]);
   if (parents !== null && !("value" in parents)) return unknownOf(parents);
-  const attribution = early ?? attribute(window, h0, h1, parents!.value);
+  const attribution = early ?? attribute(window, h0, h1, parents!.value, r.binding.amend?.parents ?? null);
   if ("unknown" in attribution) return undetermined(attribution.unknown);
   if (!("value" in index)) return unknownOf(index);
   if (tree !== null && !("value" in tree)) return unknownOf(tree);
@@ -297,7 +297,8 @@ export interface UpdatePhase {
   refusal?: { reason: NonNullable<SubmoduleRowResult["reason"]>; text: string; remedy?: RowRemedy };
   failedRead?: SubmoduleFailedRead;
   // The last step of the row exited non-zero. A connect step exit that step 5 expects is not recorded.
-  failedStep?: { firstFetch: boolean; outputTail: string; remedy: RowRemedy };
+  // `exitCode` is null when the step ended without an exit code, such as after a kill.
+  failedStep?: { firstFetch: boolean; outputTail: string; exitCode: number | null; remedy: RowRemedy };
 }
 
 export interface RowObservation {
@@ -355,7 +356,7 @@ function rowOf(r: UpdateRowFacts, o: RowObservation): { result: SubmoduleRowResu
     result = { ...base, state: "failed", failedRead: p.failedRead };
     failing = true;
   } else if (step !== undefined && !(step.firstFetch && r.target !== null && o.head === r.target)) {
-    result = { ...base, state: "failed", outputTail: step.outputTail, remedy: step.remedy };
+    result = { ...base, state: "failed", outputTail: step.outputTail, exitCode: step.exitCode, remedy: step.remedy };
     failing = true;
   } else if (o.gitEntry && !o.refs) {
     result = { ...base, state: "clone-interrupted", folderPath: r.path, text: REFUSAL_TEXTS.cloneInterrupted(r.path) };

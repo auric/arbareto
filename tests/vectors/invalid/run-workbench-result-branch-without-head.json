@@ -1,0 +1,12 @@
+{
+  "schema": "run-workbench-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"action\":\"create-branch\",\"refs\":[]}",
+  "repair": {
+    "head": {
+      "state": "branch",
+      "target": "refs/heads/target",
+      "oid": "0123456789abcdef0123456789abcdef01234567"
+    }
+  }
+}

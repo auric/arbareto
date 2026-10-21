@@ -13,10 +13,11 @@ use std::time::{Duration, Instant};
 use serde_json::{Map, Value, json};
 use tauri::{AppHandle, Emitter, Manager};
 
-use crate::bootstrap::{Contexts, PhysicalIdentity};
+use crate::bootstrap::{ContextKind, Contexts, PhysicalIdentity};
 use crate::close::{self, Decision, Mutation, Owner, Running};
 use crate::dialogs::{self, Chosen, Dialogs, Native, Proposal, Registered, WslProposal};
 use crate::env_sanitize::sanitize;
+use crate::file_facts::is_wsl_path;
 use crate::framing::{FrameError, read_frame, write_frame};
 use crate::ipc::{
     Ended, FrameSink, Ipc, MAIN_WINDOW, NativeFirst, Prepared, ToRenderer, renderer_message,
@@ -25,7 +26,7 @@ use crate::jobs::{Job, Supervisor};
 use crate::lifecycle::{self, Action, Event, Host};
 use crate::process_requests::{
     CHUNK_BYTES, Config, ConfirmedGit, Owned, ProcessRequests, ReplySink, WALK_DEADLINE_MS,
-    decode_strict, is_identifier, path, wait,
+    decode_strict, is_identifier, native_path, path, wait,
 };
 use crate::putty;
 use crate::schema::mutation_reply::RefusedCode as MutationCode;
@@ -34,9 +35,10 @@ use crate::schema::trust_reply::ConfirmRunReplyResult;
 use crate::schema::{self, reply, trust_request::TrustRequest};
 use crate::settings::{
     self, Confirm, Damaged, Marker, Markers, SavedGit, Settings, Started, StartedReply,
-    SyncSettings, Trust,
+    SwitchChoice, SyncSettings, Trust,
 };
 use crate::spawn::{Input, SpawnRequest, spawn};
+use crate::wsl;
 
 /// tauri-build copies `externalBin` next to the application executable without the target triple (tauri-build lib.rs:140-167).
 /// The NSIS bundle installs it beside `arbareto.exe` too.
@@ -404,25 +406,23 @@ impl Service {
         let Some(call_id) = call_id(request) else {
             return;
         };
+        let fields = request;
         let handled = schema::trust_request(request).map(|request| match request {
             TrustRequest::Confirm {
                 worktree_root,
-                git_directory,
+                admin_directory,
                 common_directory,
                 git_selected_path,
-                fingerprint,
-                persist,
-                bound,
                 ..
             } => self.confirm_trust(
                 Confirm {
                     worktree_root: PathBuf::from(worktree_root.as_str()),
-                    git_directory: PathBuf::from(git_directory.as_str()),
+                    admin_directory: PathBuf::from(admin_directory.as_str()),
                     common_directory: PathBuf::from(common_directory.as_str()),
                     git_selected_path: PathBuf::from(git_selected_path.as_str()),
-                    fingerprint: fingerprint.to_string(),
-                    persist,
-                    bound: bound.map(|bound| bound.to_string()),
+                    // `trust_request` checked both values against the frame schema.
+                    action: fields["action"].as_str().unwrap_or_default().to_string(),
+                    details: fields["details"].clone(),
                 },
                 call_id,
             ),
@@ -441,15 +441,17 @@ impl Service {
                 }
             }
             TrustRequest::ConfirmRun {
+                worktree_root,
                 submodule_paths,
                 program_count,
                 unchecked_count,
                 ..
             } => {
+                let root = PathBuf::from(worktree_root.as_str());
                 let paths = submodule_paths.into_iter().map(String::from).collect();
                 // `trust_request` refused a negative count.
                 let unchecked = u64::try_from(unchecked_count).unwrap_or(0);
-                self.confirm_run(paths, program_count.get(), unchecked, call_id);
+                self.confirm_run(root, paths, program_count.get(), unchecked, call_id);
             }
         });
         if let Err(code) = handled {
@@ -483,6 +485,7 @@ impl Service {
     /// A service exit closes the dialog as Cancel, and its result goes nowhere.
     fn confirm_run(
         self: &Arc<Self>,
+        root: PathBuf,
         paths: Vec<String>,
         program_count: u64,
         unchecked_count: u64,
@@ -494,7 +497,7 @@ impl Service {
         std::thread::spawn(move || {
             let current = || me.exits.load(Ordering::SeqCst) == exits;
             let approved =
-                dialogs::confirm_run(&*me.dialogs, &paths, program_count, unchecked_count);
+                dialogs::confirm_run(&*me.dialogs, &root, &paths, program_count, unchecked_count);
             let result = if approved && current() {
                 ConfirmRunReplyResult::Approved
             } else {
@@ -651,10 +654,25 @@ impl Host for Arc<Service> {
 impl NativeFirst for Service {
     fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Prepared>, Ended> {
         let stores = self.stores.get().ok_or(UNAVAILABLE)?;
-        prepare(stores, &*self.dialogs, &self.contexts, operation, payload)
+        prepare(
+            stores,
+            &*self.dialogs,
+            &self.contexts,
+            &self.requests,
+            operation,
+            payload,
+        )
     }
 
     fn answer(&self, operation: &str, payload: &Value) -> Result<Option<Value>, Ended> {
+        // Feature 004 contract Δ3: the picked folder takes the route of the registered worktree root.
+        if operation == "chooseWorktreeFolder" {
+            let root = payload["repositoryId"]
+                .as_str()
+                .and_then(|id| self.requests.worktree_root(id));
+            let chosen = dialogs::choose_worktree_folder(&*self.dialogs, root.as_deref())?;
+            return Ok(chosen.map(|path| json!({ "path": path })));
+        }
         let stores = self.stores.get().ok_or(UNAVAILABLE)?;
         answer(
             stores,
@@ -673,6 +691,7 @@ impl NativeFirst for Service {
             stores,
             &*self.dialogs,
             &self.requests,
+            &self.contexts,
             operation,
             prepared,
             response,
@@ -739,10 +758,10 @@ fn release_workspaces(stores: Option<&Stores>) -> String {
 
 /// The `worktreeRoot` of a `succeeded` registration (contract §3 "Recent repositories").
 fn registered_root(operation: &str, response: &Value) -> Option<PathBuf> {
-    // Feature 003 contract Δ3 `clone`: a cloned repository ends with the `chooseRepository` result.
+    // Feature 003 contract Δ3 `clone` and feature 004 contract Δ3 `openWorktree` end with the `chooseRepository` result.
     let registers = matches!(
         operation,
-        "chooseRepository" | "restoreWorkspace" | "openRecentRepository" | "clone"
+        "chooseRepository" | "restoreWorkspace" | "openRecentRepository" | "clone" | "openWorktree"
     );
     (registers && response["state"] == "succeeded")
         .then(|| path(&response["result"]["worktreeRoot"]).ok())
@@ -751,6 +770,7 @@ fn registered_root(operation: &str, response: &Value) -> Option<PathBuf> {
 
 /// The native answer of `listRecentRepositories` and `removeRecentRepository` (contract §3). No folder check and no process.
 /// Feature 003 contract Δ3: the six settings operations. `Ok(None)` is a canceled picker.
+/// Feature 004 contract Δ3: `setSwitchChoice` stores data-model §13 `switchChoice` and answers the same settings result.
 fn answer(
     stores: &Stores,
     native: &dyn Native,
@@ -758,6 +778,17 @@ fn answer(
     operation: &str,
     payload: &Value,
 ) -> Result<Option<Value>, Ended> {
+    if operation == "setSwitchChoice" {
+        let choice = match payload["choice"].as_str() {
+            Some("keep") => SwitchChoice::Keep,
+            Some("stash") => SwitchChoice::Stash,
+            _ => return Err(INVALID.into()),
+        };
+        let mut settings = lock(&stores.settings);
+        settings.switch_choice = choice;
+        let _ = settings::save(&stores.settings_path, &settings);
+        return Ok(Some(settings_result(&settings)));
+    }
     if !matches!(
         operation,
         "listRecentRepositories" | "removeRecentRepository"
@@ -773,7 +804,7 @@ fn answer(
             merge(&mut settings.sync, &before, after);
             let _ = settings::save(&stores.settings_path, &settings);
         }
-        return Ok(Some(putty::settings_result(&settings.sync)));
+        return Ok(Some(settings_result(&settings)));
     }
     let mut settings = lock(&stores.settings);
     if operation == "removeRecentRepository" {
@@ -787,6 +818,13 @@ fn answer(
         &settings,
         lock(&stores.current).as_deref(),
     )))
+}
+
+/// The `readSyncSettings` result (feature 003 contract Δ3) with `switchChoice` (feature 004 contract Δ14).
+fn settings_result(settings: &Settings) -> Value {
+    let mut result = putty::settings_result(&settings.sync);
+    result["switchChoice"] = json!(settings.switch_choice.text());
+    result
 }
 
 /// Writes each field that `after` changed from `before` into `current`.
@@ -816,11 +854,43 @@ fn prepare(
     stores: &Stores,
     native: &dyn Native,
     contexts: &Contexts,
+    requests: &ProcessRequests,
     operation: &str,
     payload: &Value,
 ) -> Result<Option<Prepared>, Ended> {
     let now = Instant::now();
     let chosen = match operation {
+        // Feature 004 contract Δ3 `openWorktree`: the record path of a WSL repository is a Linux path,
+        // which maps by the §11 route under the UNC prefix of the repository. The service gets only the IDs.
+        "openWorktree" => {
+            let repository_id = payload["repositoryId"].as_str().ok_or(INVALID)?;
+            let text = payload["path"].as_str().ok_or(INVALID)?;
+            let root = requests
+                .worktree_root(repository_id)
+                .ok_or("UNKNOWN_TARGET")?;
+            let path = if is_wsl_path(&root) {
+                wsl::unc_path(&root, text).ok_or(INVALID)?
+            } else {
+                native_path(text).map_err(|_| INVALID)?
+            };
+            let bootstrap_id = contexts.create(ContextKind::RepositoryDiscovery, &path, now)?;
+            return Ok(Some(Prepared {
+                payload: json!({ "repositoryId": repository_id, "bootstrapId": bootstrap_id }),
+                path: Some(path),
+            }));
+        }
+        // Feature 004 contract Δ1 and Δ6: the `worktree-add` review binds its path and the envelope `repositoryId`.
+        // The service gets the action, the branch, and the `bootstrapId` without the path.
+        "reviewWorkbench" => {
+            let repository_id = payload["repositoryId"].as_str().ok_or(INVALID)?;
+            let path =
+                native_path(payload["path"].as_str().ok_or(INVALID)?).map_err(|_| INVALID)?;
+            let bootstrap_id = contexts.create_worktree_add(&path, repository_id, now);
+            return Ok(Some(Prepared {
+                payload: json!({ "action": payload["action"], "branch": payload["branch"], "bootstrapId": bootstrap_id }),
+                path: Some(path),
+            }));
+        }
         "chooseGit" => {
             let saved = lock(&stores.settings).git.clone();
             dialogs::choose_git(native, saved.as_ref(), contexts)
@@ -900,10 +970,21 @@ fn finish(
     stores: &Stores,
     native: &dyn Native,
     requests: &ProcessRequests,
+    contexts: &Contexts,
     operation: &str,
     prepared: &Prepared,
     response: Value,
 ) -> Value {
+    // Feature 004 contract Δ6: the review result binds its `worktreeAdd` context to the `workbenchToken`, or ends it.
+    if operation == "reviewWorkbench"
+        && let Some(bootstrap_id) = prepared.payload["bootstrapId"].as_str()
+    {
+        let token = response["state"] == "succeeded"
+            && response["result"]["workbenchToken"]
+                .as_str()
+                .is_some_and(is_identifier);
+        contexts.bind_review(bootstrap_id, token, Instant::now());
+    }
     if response["state"] != "succeeded" {
         return response;
     }
@@ -923,7 +1004,7 @@ fn finish(
             response
         }
         // Data-model §1: the settings keep the last explicitly opened repository, from the native context.
-        "chooseRepository" | "openRecentRepository" => {
+        "chooseRepository" | "openRecentRepository" | "openWorktree" => {
             if let Some(path) = &prepared.path {
                 let mut settings = lock(&stores.settings);
                 settings.last_repository = Some(path.clone());
@@ -1070,8 +1151,9 @@ fn mutation(
                         worktree_root: &worktree,
                         common_directory: &common,
                     };
-                    let (reply, marked) =
-                        self::started(&markers, requests, &started, &call, epoch, identity);
+                    let (reply, marked) = self::started(
+                        &markers, requests, &started, mutation, &call, epoch, identity,
+                    );
                     if marked {
                         running.started(&operation, mutation);
                     }
@@ -1137,6 +1219,7 @@ fn started(
     markers: &Markers,
     requests: &ProcessRequests,
     started: &Started,
+    mutation: Mutation,
     call_id: &str,
     epoch: u64,
     identity: Option<PhysicalIdentity>,
@@ -1144,7 +1227,7 @@ fn started(
     let reply = markers.started_with(started, epoch, &|_| identity.clone());
     // The tag is the identity that named the mutex (contract §6 "Lingering Jobs").
     let marked = if let StartedReply::Marker { identity, .. } = &reply {
-        requests.tag(started.operation_id, started.kind, identity.clone());
+        requests.tag(started.operation_id, mutation, identity.clone());
         true
     } else {
         false
@@ -1323,7 +1406,14 @@ mod tests {
             operation: &str,
             payload: Value,
         ) -> Result<Option<Prepared>, Ended> {
-            prepare(&self.stores, native, &self.contexts, operation, &payload)
+            prepare(
+                &self.stores,
+                native,
+                &self.contexts,
+                &self.requests,
+                operation,
+                &payload,
+            )
         }
 
         fn finish(
@@ -1337,6 +1427,7 @@ mod tests {
                 &self.stores,
                 native,
                 &self.requests,
+                &self.contexts,
                 operation,
                 prepared,
                 response,
@@ -2201,16 +2292,15 @@ mod tests {
     }
 
     /// Writes a stored trust record of the worktree with that common directory.
-    fn approve(shell: &Shell, worktree: &Path, git_directory: &Path, common: &Path) {
+    fn approve(shell: &Shell, worktree: &Path, admin_directory: &Path, common: &Path) {
         let confirmed = shell.stores.trust.confirm_with(
             &Confirm {
                 worktree_root: worktree.to_path_buf(),
-                git_directory: git_directory.to_path_buf(),
+                admin_directory: admin_directory.to_path_buf(),
                 common_directory: common.to_path_buf(),
                 git_selected_path: shell.fixture.path("git.exe"),
-                fingerprint: "a".repeat(64),
-                persist: true,
-                bound: None,
+                action: "commit".to_string(),
+                details: json!({}),
             },
             &crate::bootstrap::native_identity,
             |_| true,
@@ -2346,7 +2436,7 @@ mod tests {
         assert_eq!(
             read,
             Ok(Some(json!({
-                "sshClient": "git", "defaultPullAction": "pull", "plinkPath": null, "programs": [],
+                "sshClient": "git", "defaultPullAction": "pull", "switchChoice": "keep", "plinkPath": null, "programs": [],
                 "remoteKeyFiles": [], "defaultCloneFolder": null, "lastCloneParent": null,
             })))
         );
@@ -2385,6 +2475,243 @@ mod tests {
                 .sync
                 .default_clone_folder,
             Some(folder)
+        );
+    }
+
+    // ---- Feature 004 native steps (contract Δ1, Δ3, data-model §13) ----
+
+    /// Registers the test binary as Git and `root` as a repository in the process requests of `shell`. Returns the `repositoryId`.
+    fn register_repository(shell: &Shell, root: &Path) -> String {
+        let send = |mut body: Value| -> Value {
+            let call = uuid();
+            body["type"] = json!("register");
+            body["callId"] = json!(call);
+            body["operationId"] = json!(uuid());
+            shell
+                .requests
+                .handle(&json!({ "kind": "process", "process": body }).to_string());
+            shell.take_sent(&call).expect("register reply")["process"].clone()
+        };
+        let git = uuid();
+        let startup = shell
+            .contexts
+            .create_startup(&crate::jobs::tests::test_exe(), Instant::now())
+            .expect("startup context");
+        let reply = send(
+            json!({ "bootstrapId": startup, "gitInstallationId": git, "version": "2.55.0.windows.3", "digest": KEY, "confirm": false }),
+        );
+        assert_eq!(reply["result"], "approved", "{reply}");
+        let discovery = shell
+            .contexts
+            .create(ContextKind::RepositoryDiscovery, root, Instant::now())
+            .expect("discovery context");
+        let repository = uuid();
+        let git_directory = root.join(".git");
+        let reply = send(
+            json!({ "bootstrapId": discovery, "gitInstallationId": git, "repositoryId": repository, "worktreeRoot": root, "gitDirectory": git_directory, "commonDirectory": git_directory }),
+        );
+        assert_eq!(reply["result"], "approved", "{reply}");
+        repository
+    }
+
+    /// Feature 004 contract Δ3 `openWorktree`: the native step binds a discovery context for the record path,
+    /// by the Windows rules for a Windows repository, and forwards only the IDs. A registration names the window.
+    #[test]
+    fn open_worktree_binds_a_discovery_context_for_the_record_path_and_forwards_only_the_ids() {
+        let shell = Shell::new();
+        let root = shell.folder(r"repo\.git");
+        let root = root.parent().expect("worktree root").to_path_buf();
+        let linked = shell.folder("repo-wt");
+        let repository = register_repository(&shell, &root);
+        let prepared = shell
+            .prepare(
+                &Fake::default(),
+                "openWorktree",
+                json!({ "repositoryId": repository, "path": linked }),
+            )
+            .expect("bound")
+            .expect("context");
+        let payload = prepared.payload.as_object().expect("payload");
+        let mut keys: Vec<&String> = payload.keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["bootstrapId", "repositoryId"], "no path");
+        assert_eq!(payload["repositoryId"], json!(repository));
+        let context = shell
+            .contexts
+            .get(payload["bootstrapId"].as_str().expect("ID"), Instant::now())
+            .expect("context");
+        assert_eq!(
+            (context.kind, context.path),
+            (ContextKind::RepositoryDiscovery, linked.clone())
+        );
+        assert_eq!(prepared.path, Some(linked.clone()));
+        assert!(registered_root("openWorktree", &registered("C:/repo-wt", KEY)).is_some());
+        for (payload, code) in [
+            (
+                json!({ "repositoryId": repository, "path": "/home/u/repo-wt" }),
+                "INVALID_REQUEST",
+            ),
+            (
+                json!({ "repositoryId": repository, "path": "repo-wt" }),
+                "INVALID_REQUEST",
+            ),
+            (
+                json!({ "repositoryId": uuid(), "path": linked }),
+                "UNKNOWN_TARGET",
+            ),
+            (
+                json!({ "repositoryId": repository, "path": shell.fixture.path("absent") }),
+                "UNSUPPORTED_REPOSITORY",
+            ),
+        ] {
+            assert_eq!(
+                shell.prepare(&Fake::default(), "openWorktree", payload.clone()),
+                Err(Ended::Rejected(code)),
+                "{payload}"
+            );
+        }
+    }
+
+    /// Feature 004 contract Δ1 and Δ6: the `worktree-add` review binds the path and the repository to a `worktreeAdd`
+    /// context, and the service gets the action, the branch, and the `bootstrapId` without the path.
+    #[test]
+    fn the_worktree_add_review_binds_the_path_and_forwards_the_bootstrap_id_without_the_path() {
+        let shell = Shell::new();
+        let path = shell.fixture.path(r"worktrees\wt");
+        let branch = json!({ "new": "wt", "start": "0123456789abcdef0123456789abcdef01234567" });
+        let prepared = shell
+            .prepare(
+                &Fake::default(),
+                "reviewWorkbench",
+                json!({ "action": "worktree-add", "branch": branch, "path": path, "repositoryId": REPOSITORY }),
+            )
+            .expect("bound")
+            .expect("context");
+        let payload = prepared.payload.as_object().expect("payload");
+        let mut keys: Vec<&String> = payload.keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["action", "bootstrapId", "branch"], "no path");
+        assert_eq!(payload["action"], "worktree-add");
+        assert_eq!(payload["branch"], branch);
+        let context = shell
+            .contexts
+            .get(payload["bootstrapId"].as_str().expect("ID"), Instant::now())
+            .expect("context");
+        assert_eq!(
+            (context.kind, context.path, context.repository.as_deref()),
+            (ContextKind::WorktreeAdd, path.clone(), Some(REPOSITORY))
+        );
+        assert_eq!(prepared.path, Some(path.clone()));
+        assert_eq!(
+            shell.prepare(
+                &Fake::default(),
+                "reviewWorkbench",
+                json!({ "action": "worktree-add", "branch": branch, "path": "wt", "repositoryId": REPOSITORY }),
+            ),
+            Err(Ended::Rejected("INVALID_REQUEST")),
+            "a relative path"
+        );
+        // The review result binds the context to the `workbenchToken`. A result without a token ends it.
+        let review = || {
+            shell
+                .prepare(
+                    &Fake::default(),
+                    "reviewWorkbench",
+                    json!({ "action": "worktree-add", "branch": branch, "path": path, "repositoryId": REPOSITORY }),
+                )
+                .expect("bound")
+                .expect("context")
+        };
+        let id = |prepared: &Prepared| {
+            prepared.payload["bootstrapId"]
+                .as_str()
+                .expect("ID")
+                .to_string()
+        };
+        let first = id(&prepared);
+        let second = review();
+        assert!(
+            shell.contexts.get(&first, Instant::now()).is_err(),
+            "a new review of the repository replaces the binding"
+        );
+        let issued = json!({ "requestId": CALL, "state": "succeeded", "result": { "action": "worktree-add", "plan": {}, "workbenchToken": FIRST } });
+        let reviewed = Instant::now();
+        assert_eq!(
+            shell.finish(&Fake::default(), "reviewWorkbench", &second, issued.clone()),
+            issued
+        );
+        let context = shell
+            .contexts
+            .get(&id(&second), reviewed)
+            .expect("bound to its token");
+        assert!(context.expires_at >= reviewed + crate::bootstrap::REVIEW_TOKEN_LIFETIME);
+        for response in [
+            json!({ "requestId": CALL, "state": "rejected", "code": "WORKBENCH_UNAVAILABLE" }),
+            json!({ "requestId": CALL, "state": "succeeded", "result": { "action": "worktree-add", "plan": {} } }),
+            json!({ "requestId": CALL, "state": "unknown", "code": "STATE_UNKNOWN" }),
+        ] {
+            let prepared = review();
+            assert_eq!(
+                shell.finish(
+                    &Fake::default(),
+                    "reviewWorkbench",
+                    &prepared,
+                    response.clone()
+                ),
+                response
+            );
+            assert!(
+                shell.contexts.get(&id(&prepared), Instant::now()).is_err(),
+                "{response}"
+            );
+        }
+    }
+
+    /// Feature 004 data-model §13 and contract Δ14: `setSwitchChoice` stores `keep` or `stash`.
+    /// It answers the `readSyncSettings` result, and that result carries the stored choice.
+    #[test]
+    fn set_switch_choice_stores_the_choice_and_answers_the_settings_result() {
+        let shell = Shell::new();
+        for choice in ["stash", "keep"] {
+            let set = answer(
+                &shell.stores,
+                &Fake::default(),
+                &[],
+                "setSwitchChoice",
+                &json!({ "choice": choice }),
+            );
+            let read = answer(
+                &shell.stores,
+                &Fake::default(),
+                &[],
+                "readSyncSettings",
+                &json!({}),
+            );
+            assert_eq!(set, read);
+            let read = read.expect("answer").expect("settings");
+            assert_eq!(
+                (
+                    read["switchChoice"].clone(),
+                    read["defaultPullAction"].clone()
+                ),
+                (json!(choice), json!("pull"))
+            );
+            assert_eq!(
+                settings::load(&shell.stores.settings_path)
+                    .switch_choice
+                    .text(),
+                choice
+            );
+        }
+        assert_eq!(
+            answer(
+                &shell.stores,
+                &Fake::default(),
+                &[],
+                "setSwitchChoice",
+                &json!({ "choice": "discard" })
+            ),
+            Err(Ended::Rejected("INVALID_REQUEST"))
         );
     }
 

@@ -5,7 +5,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, closeSync, existsSync, lstatSync, mkdirSync, openSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { basename, delimiter, dirname, join, relative, resolve } from "node:path";
-import type { FileFact } from "../../src/contracts/channel";
+import type { FileFact, TrustAction } from "../../src/contracts/channel";
 import { foldAscii } from "../../src/contracts/fold-ascii";
 import { NATIVE, PATH_RULES } from "../../src/contracts/native-path";
 import { RECONCILIATION_TARGET_MS, TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_FILES, TRUST_DIGEST_TOTAL_BYTES, TRUST_INPUT_BYTES, TRUST_LINK_HOPS, TRUST_REPORT_ENTRIES, TRUST_REPORT_HOOKS } from "../../src/contracts/limits";
@@ -19,11 +19,14 @@ import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, serviceEnv, 
 import { buildF02, buildF07, buildF08, buildF17, put, type Built } from "./fixtures";
 import { GIT } from "./git-binary";
 import { hookListArgs, sha256 } from "./git-oracle";
+import { applyHunk, entryOf, hunksOf, patchOf, readOk, resultOf, selectHunks } from "./hunk-harness";
 import { caseTest, once, openService, withFsCalls, withPath, type ApproveResult, type Capability, type OpenOptions, type Service, type ServiceResponse, type TrustResult } from "./service-harness";
+import { buildWorkbench, canary as wbCanary, repoOf as wbRepoOf, wb, type WbFixture, type WbFixtureName } from "./workbench-fixtures";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/commands.ts", import.meta.dir);
 printOrigin("../../src/git-service/trust.ts", import.meta.dir);
+printOrigin("../../src/git-service/workbench-review.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-installation.ts", import.meta.dir);
 printOrigin("../../src/git-service/registration.ts", import.meta.dir);
 printOrigin("../../src/git-service/status.ts", import.meta.dir);
@@ -39,8 +42,8 @@ const TRUST_REQUIRED = { code: "TRUST_REQUIRED", succeeded: false };
 const TRUST_CHANGED = { code: "TRUST_CHANGED", succeeded: false };
 // Contract §7 "Missing objects".
 const OBJECT_MISSING_REMEDY = "This partial clone lacks objects that Git needs here. Arbareto never downloads objects. Download them in a terminal, for example with git backfill, then use Refresh.";
-// Contract §6 "Startup handshake" `trustRecords` and §7 "Trust approval store".
-const RECORD_FIELDS = ["approvedAt", "commonDirectory", "commonIdentity", "configurationFingerprint", "gitDirectory", "gitSelectedPath", "worktreeIdentity", "worktreeRoot"];
+// Contract §6 "Startup handshake" `trustRecords` and feature 004 data-model §10: the version 2 record.
+const RECORD_FIELDS = ["adminDirectory", "approvedAt", "commonDirectory", "commonIdentity", "gitSelectedPath", "policyVersion", "worktreeIdentity", "worktreeRoot"];
 // An identity reply that no fixture path has. Contract §6 refuses only all-zero and all-ones file IDs.
 const OTHER_IDENTITY = { volumeSerial: "00000000000000a7", fileId: "000000000000000000000000000071a7" };
 
@@ -218,11 +221,25 @@ async function trustOf(service: Service, repositoryId: string): Promise<TrustRes
   return response.result!;
 }
 
-async function approve(service: Service, repositoryId: string, issued?: TrustResult): Promise<ApproveResult> {
-  const trust = issued ?? (await trustOf(service, repositoryId));
-  const response = await service.approveTrust(repositoryId, trust.fingerprint, trust.generation);
+// Feature 004 contract Δ7 `approveTrust {action}`. The action names only the dialog sentence.
+async function approve(service: Service, repositoryId: string, action: TrustAction = "read"): Promise<ApproveResult> {
+  const response = await service.approveTrust(repositoryId, action);
   expect(outcome(response)).toEqual(SUCCEEDED);
   return response.result!;
+}
+
+// The `trust` `confirm` frames that the shell double received.
+const confirms = (service: Service) => service.runner.frames.filter((f) => f.type === "confirm").length;
+
+// The listing fingerprint, which the policy fingerprint and the review tokens bind (data-model §4). Feature 004: `readTrust` no longer carries it.
+// `environment` must be the service environment of the case, because the listing takes `PATH` and `HOME` from it.
+async function listingFingerprint(service: Service, repo: string, environment: Record<string, string> = serviceEnv()): Promise<string> {
+  const installation = await admitted(service);
+  const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+  const workspace = registrations.get(await registerIn(registrations, service, repo, installation))!;
+  const listed = await createTrust({ runner: service.runner, environment }).listTrust({ operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace });
+  if (!listed.ok) throw new Error(`listing: ${JSON.stringify(listed)}`);
+  return listed.listing.fingerprint;
 }
 
 // The 001 history read on the feature 002 operations: `openHistory`, a load to the end, and one text read.
@@ -781,7 +798,7 @@ describe("approval required for reads and for commit (contract §7 \"Mutation tr
         const hook = outsideProgram(built, "pre-commit");
         chmodSync(put(repo, ".git/hooks/pre-commit", `#!/bin/sh\nexec ${hook.command}\n`), 0o755);
         const { repositoryId, generation } = await service.register(repo);
-        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true });
+        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false, mergetool: false });
         const { workspace, history } = await readBoth(service, repositoryId, generation);
         expect({ workspace: outcome(workspace), history: outcome(history) }).toEqual({ workspace: SUCCEEDED, history: SUCCEEDED });
         expect(ran([hook.log])).toEqual([]);
@@ -804,7 +821,8 @@ describe("approval required for reads and for commit (contract §7 \"Mutation tr
         expect(configListing(repo).filter((e) => e.key === "user.signingkey")).toEqual([]);
         const { repositoryId } = await service.register(repo);
         const trust = await trustOf(service, repositoryId);
-        expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true });
+        // Feature 004 plan.md D12: a signing program joins the class `workbench`.
+        expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: true, mergetool: false });
         expect(trust.entries.filter((e) => e.key === "gpg.ssh.defaultkeycommand").map((e) => e.value)).toEqual([program.command]);
         expect(ran([program.log])).toEqual([]);
       }),
@@ -825,7 +843,7 @@ describe("approval required for reads and for commit (contract §7 \"Mutation tr
       const { environment } = ownGlobal(built, [["core.hooksPath", ".githooks"]]);
       await withService({ name: "t071-global-hooks-path", environment }, async (service) => {
         const { repositoryId, generation } = await service.register(repo);
-        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true });
+        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false, mergetool: false });
         const { workspace } = await readBoth(service, repositoryId, generation);
         expect(outcome(workspace)).toEqual(SUCCEEDED);
         expect(ran([canary.log])).toEqual([]);
@@ -848,7 +866,7 @@ describe("approval required for reads and for commit (contract §7 \"Mutation tr
       ]);
       await withService({ name: "t071-global-hook-command", environment }, async (service) => {
         const { repositoryId, generation } = await service.register(repo);
-        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true });
+        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false, mergetool: false });
         const { workspace } = await readBoth(service, repositoryId, generation);
         expect(outcome(workspace)).toEqual(SUCCEEDED);
         expect(ran([program.log])).toEqual([]);
@@ -859,25 +877,21 @@ describe("approval required for reads and for commit (contract §7 \"Mutation tr
 });
 
 describe("trust state (data-model §3)", () => {
+  // Feature 004 plan.md D12 "State": `changed` comes from the records only (see "trust approval store").
   caseTest(
     TASK,
-    "trust state is untrusted, approved, changed, or revoked",
+    "trust state is untrusted, approved, or revoked, and a configuration change keeps the approval (feature 004 spec FR-071)",
     W,
     () =>
       withService({ name: "t071-states" }, async (service) => {
         const built = buildF17(gitPath(), "t071-states", "trust");
         const repo = repoOf(built);
         const { repositoryId } = await service.register(repo);
-        const first = await trustOf(service, repositoryId);
-        expect(first.state).toBe("untrusted");
-        const approved = await approve(service, repositoryId, first);
+        expect((await trustOf(service, repositoryId)).state).toBe("untrusted");
+        const approved = await approve(service, repositoryId);
         expect((await trustOf(service, repositoryId)).state).toBe("approved");
         config(repo, "filter.canary.clean", "./tools/clean.sh --t071");
-        const changed = await trustOf(service, repositoryId);
-        expect({ state: changed.state, same: changed.fingerprint === first.fingerprint }).toEqual({ state: "changed", same: false });
-        // The original value gives the approved fingerprint again.
-        config(repo, "filter.canary.clean", "./tools/clean.sh");
-        expect(await trustOf(service, repositoryId)).toMatchObject({ state: "approved", fingerprint: first.fingerprint });
+        expect((await trustOf(service, repositoryId)).state).toBe("approved");
         expect(outcome(await service.revokeTrust(repositoryId, approved.trustId))).toEqual(SUCCEEDED);
         expect((await trustOf(service, repositoryId)).state).toBe("revoked");
       }),
@@ -886,24 +900,19 @@ describe("trust state (data-model §3)", () => {
 
   caseTest(
     TASK,
-    "a configuration change after approval gives TRUST_CHANGED, and the approval of the old fingerprint no longer applies",
+    "a configuration change after approval keeps the approval: reads run, and no second confirm frame follows (feature 004 spec FR-071)",
     W,
     () =>
       withService({ name: "t071-config-change" }, async (service) => {
         const built = buildF17(gitPath(), "t071-config-change", "trust");
         const repo = repoOf(built);
         const { repositoryId, generation } = await service.register(repo);
-        const issued = await trustOf(service, repositoryId);
-        await approve(service, repositoryId, issued);
+        await approve(service, repositoryId);
         expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
         config(repo, "filter.canary.clean", "./tools/clean.sh --t071");
         const { workspace, history } = await readBoth(service, repositoryId, generation);
-        expect({ workspace: gate(workspace), history: gate(history) }).toEqual({ workspace: TRUST_CHANGED, history: TRUST_CHANGED });
-        expect((await trustOf(service, repositoryId)).state).toBe("changed");
-        // Contract §9: an approveTrust fingerprint-generation mismatch gives TRUST_CHANGED.
-        const persists = service.trustStore.persists.length;
-        expect(gate(await service.approveTrust(repositoryId, issued.fingerprint, issued.generation))).toEqual(TRUST_CHANGED);
-        expect(service.trustStore.persists.length).toBe(persists);
+        expect({ workspace: outcome(workspace), history: outcome(history) }).toEqual({ workspace: SUCCEEDED, history: SUCCEEDED });
+        expect({ state: (await trustOf(service, repositoryId)).state, confirms: confirms(service) }).toEqual({ state: "approved", confirms: 1 });
       }),
     TIMEOUT_MS,
   );
@@ -931,32 +940,7 @@ describe("trust state (data-model §3)", () => {
 
   caseTest(
     TASK,
-    "with required approval, only an approval of the new fingerprint clears TRUST_CHANGED",
-    W,
-    () =>
-      withService({ name: "t071-new-fingerprint" }, async (service) => {
-        const built = buildF17(gitPath(), "t071-new-fingerprint", "trust");
-        const repo = repoOf(built);
-        const { repositoryId } = await service.register(repo);
-        const old = await trustOf(service, repositoryId);
-        await approve(service, repositoryId, old);
-        config(repo, "filter.canary.clean", "./tools/clean.sh --t071");
-        expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_CHANGED);
-        expect(gate(await service.readWorkspace(repositoryId, { refresh: true, check: "full" }))).toEqual(TRUST_CHANGED);
-        expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_CHANGED);
-        expect(gate(await service.approveTrust(repositoryId, old.fingerprint, old.generation))).toEqual(TRUST_CHANGED);
-        const current = await trustOf(service, repositoryId);
-        expect({ state: current.state, reads: current.approvalRequired.reads }).toEqual({ state: "changed", reads: true });
-        await approve(service, repositoryId, current);
-        expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
-        expect((await trustOf(service, repositoryId)).state).toBe("approved");
-      }),
-    TIMEOUT_MS,
-  );
-
-  caseTest(
-    TASK,
-    "without required approval, a changed fingerprint blocks no read: readTrust reports changed with both approvalRequired flags false, and the next readWorkspace runs",
+    "without required approval, a configuration change blocks no read: readTrust reports approved with every approvalRequired flag false, and the next readWorkspace runs",
     W,
     () =>
       withService({ name: "t071-not-required" }, async (service) => {
@@ -965,11 +949,11 @@ describe("trust state (data-model §3)", () => {
         config(repo, "diff.external", outsideProgram(built, "diff-external-a").command);
         const { repositoryId, generation } = await service.register(repo);
         const first = await trustOf(service, repositoryId);
-        expect(first.approvalRequired).toEqual({ reads: false, commit: false, sync: false });
-        await approve(service, repositoryId, first);
+        expect(first.approvalRequired).toEqual({ reads: false, commit: false, sync: false, workbench: false, mergetool: false });
+        await approve(service, repositoryId);
         config(repo, "diff.external", outsideProgram(built, "diff-external-b").command);
         const changed = await trustOf(service, repositoryId);
-        expect({ state: changed.state, approvalRequired: changed.approvalRequired }).toEqual({ state: "changed", approvalRequired: { reads: false, commit: false, sync: false } });
+        expect({ state: changed.state, approvalRequired: changed.approvalRequired }).toEqual({ state: "approved", approvalRequired: { reads: false, commit: false, sync: false, workbench: false, mergetool: false } });
         const { workspace, history } = await readBoth(service, repositoryId, generation);
         expect({ workspace: outcome(workspace), history: outcome(history) }).toEqual({ workspace: SUCCEEDED, history: SUCCEEDED });
         expect(service.trustStore.records.length).toBe(1);
@@ -1014,9 +998,10 @@ describe("trust approval store (contract §7 \"Trust approval store\")", () => {
         const built = buildF17(gitPath(), "t071-declined", "trust");
         const { repositoryId } = await service.register(repoOf(built));
         const trust = await trustOf(service, repositoryId);
+        expect(trust.state).toBe("untrusted");
         service.runner.inject.confirmResult = "declined";
-        expect(outcome(await service.approveTrust(repositoryId, trust.fingerprint, trust.generation))).toEqual({ state: "canceled", code: "CANCELED" });
-        expect({ persists: service.trustStore.persists, records: service.trustStore.records }).toEqual({ persists: [true], records: [] });
+        expect(outcome(await service.approveTrust(repositoryId))).toEqual({ state: "canceled", code: "CANCELED" });
+        expect({ confirms: confirms(service), records: service.trustStore.records }).toEqual({ confirms: 1, records: [] });
         expect((await trustOf(service, repositoryId)).state).toBe("untrusted");
         expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_REQUIRED);
       }),
@@ -1032,31 +1017,30 @@ describe("trust approval store (contract §7 \"Trust approval store\")", () => {
         const built = buildF17(gitPath(), "t071-stored", "trust");
         const repo = repoOf(built);
         const { repositoryId } = await first.register(repo);
-        const trust = await trustOf(first, repositoryId);
-        expect(await approve(first, repositoryId, trust)).toMatchObject({ persistence: "stored", saveFailed: false });
-        expect(first.trustStore.persists).toEqual([true]);
+        expect(await approve(first, repositoryId)).toMatchObject({ persistence: "stored", saveFailed: false });
+        expect(confirms(first)).toBe(1);
         expect(first.trustStore.records.length).toBe(1);
         const record = fieldsOf(first.trustStore.records[0]!);
         const paths = gitPaths(repo);
         expect(Object.keys(record).sort()).toEqual(RECORD_FIELDS);
         expect({
-          fingerprint: record.configurationFingerprint,
+          policyVersion: record.policyVersion,
           git: record.gitSelectedPath,
           worktreeRoot: samePath(record.worktreeRoot),
-          gitDirectory: samePath(record.gitDirectory),
+          adminDirectory: samePath(record.adminDirectory),
           commonDirectory: samePath(record.commonDirectory),
         }).toEqual({
-          fingerprint: trust.fingerprint,
+          policyVersion: 2,
           git: gitPath(),
           worktreeRoot: samePath(paths.worktreeRoot),
-          gitDirectory: samePath(paths.gitDirectory),
+          adminDirectory: samePath(paths.gitDirectory),
           commonDirectory: samePath(paths.commonDirectory),
         });
 
         const second = set(await nextSession(first, "t071-stored-next"));
         const next = await second.register(repo);
         const stored = await trustOf(second, next.repositoryId);
-        expect({ state: stored.state, persistence: stored.persistence, fingerprint: stored.fingerprint }).toEqual({ state: "approved", persistence: "stored", fingerprint: trust.fingerprint });
+        expect({ state: stored.state, persistence: stored.persistence }).toEqual({ state: "approved", persistence: "stored" });
         const { workspace, history } = await readBoth(second, next.repositoryId, next.generation);
         expect({ workspace: outcome(workspace), history: outcome(history) }).toEqual({ workspace: SUCCEEDED, history: SUCCEEDED });
       }),
@@ -1065,7 +1049,7 @@ describe("trust approval store (contract §7 \"Trust approval store\")", () => {
 
   caseTest(
     TASK,
-    "a changed fingerprint gives TRUST_CHANGED in a new service session",
+    "a configuration change keeps the stored approval in a new service session (feature 004 spec FR-071)",
     W,
     () =>
       withSessions("t071-changed-fingerprint", {}, async (first, set) => {
@@ -1075,8 +1059,8 @@ describe("trust approval store (contract §7 \"Trust approval store\")", () => {
         const second = set(await nextSession(first, "t071-changed-fingerprint-next"));
         config(repo, "filter.canary.clean", "./tools/clean.sh --t071");
         const { repositoryId } = await second.register(repo);
-        expect((await trustOf(second, repositoryId)).state).toBe("changed");
-        expect(gate(await second.readWorkspace(repositoryId))).toEqual(TRUST_CHANGED);
+        expect((await trustOf(second, repositoryId)).state).toBe("approved");
+        expect(outcome(await second.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
       }),
     TIMEOUT_MS,
   );
@@ -1288,13 +1272,15 @@ describe("trust approval store (contract §7 \"Trust approval store\")", () => {
         writeFileSync(file, `${readFileSync(file, "utf8")}[t071]\n${Array.from({ length: Math.ceil(TRUST_INPUT_BYTES / value.length) + 1 }, (_, i) => `\tk${i} = ${value}\n`).join("")}`);
         const listing = git(repo, ["--no-optional-locks", "config", "list", "--show-scope", "--show-origin", "-z"]);
         expect(Buffer.byteLength(listing)).toBeGreaterThan(TRUST_INPUT_BYTES);
-        const { repositoryId, generation } = await service.register(repo);
+        const { repositoryId } = await service.register(repo);
         const trust = await service.readTrust(repositoryId);
         // Contract §9: an over-bound read ends `limited` with OUTPUT_LIMIT.
         expect(outcome(trust)).toEqual({ state: "limited", code: "OUTPUT_LIMIT" });
-        const approved = await service.approveTrust(repositoryId, trust.result?.fingerprint ?? "0".repeat(64), trust.result?.generation ?? generation);
-        expect(approved.state).not.toBe("succeeded");
-        expect({ persists: service.trustStore.persists, records: service.trustStore.records }).toEqual({ persists: [], records: [] });
+        // T033: the 001 condition `inputLimited` sets the class flag `workbench` too (plan.md D12).
+        expect(trust.result?.approvalRequired.workbench).toBe(true);
+        const approved = await service.approveTrust(repositoryId);
+        expect(outcome(approved)).toEqual({ state: "failed", code: "OUTPUT_LIMIT" });
+        expect({ confirms: confirms(service), records: service.trustStore.records }).toEqual({ confirms: 0, records: [] });
       }),
     TIMEOUT_MS,
   );
@@ -1320,10 +1306,14 @@ describe("trust approval store (contract §7 \"Trust approval store\")", () => {
     }), TIMEOUT_MS);
 });
 
-describe("program file digests (contract §7 \"Program file digests\")", () => {
+// Feature 004 contract Δ7: "Program file digests" goes. Phase 1 `fileFacts` stays for the hook listing, and no phase 2 runs.
+describe("program files without digests (feature 004 contract Δ7)", () => {
+  // Phase 2 was the only `fileFacts` request with `digest: true` of a trust listing.
+  const digestRequests = (service: Service, from: number) => service.runner.fileFactCalls.slice(from).filter((c) => c.digest).length;
+
   caseTest(
     TASK,
-    "F17: one changed byte of an approved pre-commit hook gives state changed with commit approval required, restoring it in a new session matches the stored approval, and one changed byte of the clean filter program gives TRUST_CHANGED",
+    "F17: one changed byte of an approved pre-commit hook or of the clean filter program keeps the approval in the session and in a new session (spec FR-071)",
     W,
     () =>
       withSessions("t071-hook-byte", {}, async (first, set) => {
@@ -1334,22 +1324,22 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
         const { repositoryId } = await first.register(repo);
         await approve(first, repositoryId);
         flipByte(hook);
-        const changed = await trustOf(first, repositoryId);
-        expect({ state: changed.state, commit: changed.approvalRequired.commit }).toEqual({ state: "changed", commit: true });
+        const kept = await trustOf(first, repositoryId);
+        expect({ state: kept.state, commit: kept.approvalRequired.commit }).toEqual({ state: "approved", commit: true });
 
-        flipByte(hook);
         const second = set(await nextSession(first, "t071-hook-byte-next"));
         const next = await second.register(repo);
         expect((await trustOf(second, next.repositoryId)).state).toBe("approved");
         expect(outcome(await second.readWorkspace(next.repositoryId))).toEqual(SUCCEEDED);
         flipByte(clean);
         const { workspace, history } = await readBoth(second, next.repositoryId, next.generation);
-        expect({ workspace: gate(workspace), history: gate(history) }).toEqual({ workspace: TRUST_CHANGED, history: TRUST_CHANGED });
+        expect({ workspace: outcome(workspace), history: outcome(history) }).toEqual({ workspace: SUCCEEDED, history: SUCCEEDED });
+        expect(confirms(second)).toBe(0);
       }),
     TIMEOUT_MS,
   );
 
-  // Each over-bound fixture with the `bound` name of contract §7.
+  // Each fixture above a bound of the feature 001 digest phase.
   const OVER: [bound: "file-bytes" | "file-count" | "total-bytes", label: string, build: (name: string) => string][] = [
     [
       "file-bytes",
@@ -1379,47 +1369,29 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
   for (const [bound, label, build] of OVER) {
     caseTest(
       TASK,
-      `${label} makes readTrust report bound ${bound} and persistence session; approveTrust sends confirm with persist false, the store writes no record, and reads run in that session`,
+      `${label} needs no session-only approval: readTrust names no ${bound} bound, the approval is stored, reads run, and no listing asks for a digest`,
       W,
       () =>
         withService({ name: `t071-over-${bound}` }, async (service) => {
           const repo = build(`t071-over-${bound}`);
           const { repositoryId, generation } = await service.register(repo);
           expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_REQUIRED);
+          const from = service.runner.fileFactCalls.length;
           const trust = await trustOf(service, repositoryId);
-          expect({ bound: trust.bound, persistence: trust.persistence, state: trust.state }).toEqual({ bound, persistence: "session", state: "untrusted" });
-          expect(await approve(service, repositoryId, trust)).toMatchObject({ persistence: "session", saveFailed: false });
-          expect({ persists: service.trustStore.persists, records: service.trustStore.records }).toEqual({ persists: [false], records: [] });
+          expect({ bound: "bound" in trust, persistence: trust.persistence, state: trust.state }).toEqual({ bound: false, persistence: "stored", state: "untrusted" });
+          expect(await approve(service, repositoryId)).toMatchObject({ persistence: "stored", saveFailed: false });
+          expect({ confirms: confirms(service), records: service.trustStore.records.length, digests: digestRequests(service, from) }).toEqual({ confirms: 1, records: 1, digests: 0 });
           const { workspace, history } = await readBoth(service, repositoryId, generation);
           expect({ workspace: outcome(workspace), history: outcome(history) }).toEqual({ workspace: SUCCEEDED, history: SUCCEEDED });
-          expect(await trustOf(service, repositoryId)).toMatchObject({ state: "approved", persistence: "session" });
+          expect(await trustOf(service, repositoryId)).toMatchObject({ state: "approved", persistence: "stored" });
         }),
       TIMEOUT_MS,
     );
   }
 
   caseTest(
-    TASK,
-    `${TRUST_DIGEST_FILES} program files, and ${TRUST_DIGEST_TOTAL_BYTES / TRUST_DIGEST_FILE_BYTES} files of 1 MiB each, stay within the bounds: no bound, and persistence stored`,
-    W,
-    () =>
-      withService({ name: "t071-at-bounds" }, async (service) => {
-        for (const [label, repo] of [
-          ["file-count", withPrograms("t071-at-file-count", TRUST_DIGEST_FILES)],
-          ["total-bytes", withPrograms("t071-at-total-bytes", TRUST_DIGEST_TOTAL_BYTES / TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_FILE_BYTES)],
-        ] as const) {
-          const { repositoryId } = await service.register(repo);
-          const trust = await trustOf(service, repositoryId);
-          expect({ label, bound: trust.bound, persistence: trust.persistence }).toEqual({ label, bound: undefined, persistence: "stored" });
-        }
-      }),
-    TIMEOUT_MS,
-  );
-
-  // Contract §7 "Program file digests": the 64-file bound counts only `file` facts. An absent program takes no slot.
-  caseTest(
     "T309",
-    `${TRUST_DIGEST_FILES + 6} absent program paths and one program file stay within the bounds: no bound, persistence stored, and an edit of the file gives TRUST_CHANGED`,
+    `${TRUST_DIGEST_FILES + 6} absent program paths and one program file: persistence stored, and an edit of the file keeps the approval`,
     W,
     () =>
       withService({ name: "t309-absent-slots" }, async (service) => {
@@ -1429,29 +1401,11 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
         const program = insideProgram(built, repo, "tools/present.sh");
         config(repo, "filter.present.clean", program.command);
         const { repositoryId } = await service.register(repo);
-        const trust = await trustOf(service, repositoryId);
-        expect({ bound: trust.bound, persistence: trust.persistence }).toEqual({ bound: undefined, persistence: "stored" });
-        await approve(service, repositoryId, trust);
+        expect((await trustOf(service, repositoryId)).persistence).toBe("stored");
+        await approve(service, repositoryId);
         flipByte(program.path);
-        expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_CHANGED);
-      }),
-    TIMEOUT_MS,
-  );
-
-  caseTest(
-    TASK,
-    "an edit of an unchecked program file keeps the session approval",
-    W,
-    () =>
-      withService({ name: "t071-unchecked-edit" }, async (service) => {
-        const repo = OVER[0]![2]("t071-unchecked-edit");
-        const clean = join(repo, "tools", "clean.sh");
-        const { repositoryId } = await service.register(repo);
-        const trust = await trustOf(service, repositoryId);
-        await approve(service, repositoryId, trust);
-        flipByte(clean, Math.floor(TRUST_DIGEST_FILE_BYTES / 2));
-        expect(await trustOf(service, repositoryId)).toMatchObject({ state: "approved", persistence: "session", fingerprint: trust.fingerprint });
         expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
+        expect((await trustOf(service, repositoryId)).state).toBe("approved");
       }),
     TIMEOUT_MS,
   );
@@ -1459,17 +1413,17 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
   for (const restarted of [false, true]) {
     caseTest(
       TASK,
-      `after an over-bound session approval, a new service session with a handshake of restarted: ${restarted}${restarted ? " (Restart service)" : ""} reports untrusted and gives TRUST_REQUIRED again`,
+      `an approval with a program file above 1 MiB is stored, so a new service session with a handshake of restarted: ${restarted}${restarted ? " (Restart service)" : ""} reports approved`,
       W,
       () =>
         withSessions(`t071-session-only-${restarted}`, {}, async (first, set) => {
           const repo = OVER[0]![2](`t071-session-only-${restarted}`);
           await approve(first, (await first.register(repo)).repositoryId);
           const second = set(restarted ? await first.restart() : await nextSession(first, `t071-session-only-${restarted}-next`));
-          expect(second.trustStore.records).toEqual([]);
+          expect(second.trustStore.records.length).toBe(1);
           const { repositoryId } = await second.register(repo);
-          expect((await trustOf(second, repositoryId)).state).toBe("untrusted");
-          expect(gate(await second.readWorkspace(repositoryId))).toEqual(TRUST_REQUIRED);
+          expect((await trustOf(second, repositoryId)).state).toBe("approved");
+          expect(outcome(await second.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
         }),
       TIMEOUT_MS,
     );
@@ -1477,21 +1431,18 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
 
   caseTest(
     TASK,
-    "an over-bound approval after an earlier stored approval deletes that stale record, so the next session reports untrusted, not changed",
+    "a failed record store keeps a session approval: persistence session and saveFailed true, and the next session reports untrusted",
     W,
     () =>
-      withSessions("t071-stale-over-bound", {}, async (first, set) => {
-        const built = buildF17(gitPath(), "t071-stale-over-bound", "trust");
-        const repo = repoOf(built);
+      withSessions("t071-store-failed", {}, async (first, set) => {
+        const repo = repoOf(buildF17(gitPath(), "t071-store-failed", "trust"));
         const { repositoryId } = await first.register(repo);
-        await approve(first, repositoryId);
-        expect(first.trustStore.records.length).toBe(1);
-        padTo(join(repo, "tools", "clean.sh"), TRUST_DIGEST_FILE_BYTES + 1);
-        const over = await trustOf(first, repositoryId);
-        expect({ bound: over.bound, persistence: over.persistence }).toEqual({ bound: "file-bytes", persistence: "session" });
-        await approve(first, repositoryId, over);
-        expect({ persists: first.trustStore.persists, records: first.trustStore.records }).toEqual({ persists: [true, false], records: [] });
-        const second = set(await nextSession(first, "t071-stale-over-bound-next"));
+        first.runner.inject.trustStoreFails = true;
+        expect(await approve(first, repositoryId)).toMatchObject({ persistence: "session", saveFailed: true });
+        expect(await trustOf(first, repositoryId)).toMatchObject({ state: "approved", persistence: "session" });
+        expect(outcome(await first.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
+        expect(first.trustStore.records).toEqual([]);
+        const second = set(await nextSession(first, "t071-store-failed-next"));
         expect((await trustOf(second, (await second.register(repo)).repositoryId)).state).toBe("untrusted");
       }),
     TIMEOUT_MS,
@@ -1499,7 +1450,7 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
 
   caseTest(
     TASK,
-    "a listed in-repository program path that is absent or not a regular file enters the fingerprint as absent, and creating that file gives TRUST_CHANGED",
+    "a listed in-repository program path that is absent or not a regular file enters the listing fingerprint as absent; creating that file changes the fingerprint and keeps the approval",
     W,
     () =>
       withService({ name: "t071-absent" }, async (service) => {
@@ -1509,22 +1460,23 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
         config(repo, "filter.t071.clean", "./tools/program.sh");
         expect(existsSync(program)).toBe(false);
         const { repositoryId } = await service.register(repo);
-        const absent = await trustOf(service, repositoryId);
-        await approve(service, repositoryId, absent);
+        const absent = await listingFingerprint(service, repo);
+        await approve(service, repositoryId);
         mkdirSync(program, { recursive: true });
-        expect(await trustOf(service, repositoryId)).toMatchObject({ state: "approved", fingerprint: absent.fingerprint });
+        expect(await listingFingerprint(service, repo)).toBe(absent);
         expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
         rmdirSync(program);
         writeFileSync(program, "#!/bin/sh\nexec cat\n");
-        expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_CHANGED);
-        expect((await trustOf(service, repositoryId)).fingerprint).not.toBe(absent.fingerprint);
+        expect(await listingFingerprint(service, repo)).not.toBe(absent);
+        expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
+        expect((await trustOf(service, repositoryId)).state).toBe("approved");
       }),
     TIMEOUT_MS,
   );
 
   caseTest(
     TASK,
-    "a local filter program with an absolute owned-root path outside the repository gets no digest, and an edit of that file keeps the fingerprint",
+    "a local filter program with an absolute owned-root path outside the repository: an edit of that file keeps the listing fingerprint and the approval",
     W,
     () =>
       withService({ name: "t071-outside-program" }, async (service) => {
@@ -1533,12 +1485,12 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
         const program = outsideProgram(built, "outside-clean");
         config(repo, "filter.t071.clean", program.command);
         const { repositoryId } = await service.register(repo);
-        const trust = await trustOf(service, repositoryId);
-        expect(trust.approvalRequired.reads).toBe(true);
-        await approve(service, repositoryId, trust);
+        expect((await trustOf(service, repositoryId)).approvalRequired.reads).toBe(true);
+        const before = await listingFingerprint(service, repo);
+        await approve(service, repositoryId);
         flipByte(program.path);
-        expect(await trustOf(service, repositoryId)).toMatchObject({ state: "approved", fingerprint: trust.fingerprint });
-        expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
+        expect(await listingFingerprint(service, repo)).toBe(before);
+        expect((await trustOf(service, repositoryId)).state).toBe("approved");
         expect(ran([program.log])).toEqual([]);
       }),
     TIMEOUT_MS,
@@ -1557,14 +1509,14 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
         const hook = put(repo, ".git/hooks/pre-commit", "#!/bin/sh\nexit 0\n");
         chmodSync(hook, 0o755);
         const { repositoryId } = await service.register(repo);
-        const issued = await trustOf(service, repositoryId);
+        expect((await trustOf(service, repositoryId)).approvalRequired.commit).toBe(true);
         denyRead(hook);
         try {
           // Oracle: the test process cannot open the hook for reading. Contract §6 "File facts": EACCES and ERROR_ACCESS_DENIED give `access-denied`.
           expect(errnoOf(() => closeSync(openSync(hook, "r")))).not.toBeNull();
           const expected: ListingRefusal = { state: "failed", code: "REPOSITORY_UNAVAILABLE", text: { path: samePath(hook), errno: "access-denied" } };
           expect(refusal(await service.readTrust(repositoryId))).toEqual(expected);
-          expect(refusal(await service.approveTrust(repositoryId, issued.fingerprint, issued.generation))).toEqual(expected);
+          expect(refusal(await service.approveTrust(repositoryId, "commit"))).toEqual(expected);
         } finally {
           allowRead(hook);
         }
@@ -1576,7 +1528,7 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
   // The service sends no `fileFacts` entry for it, so the case needs no file system premise.
   caseTest(
     TASK,
-    "a local filter program path with a component that breaks the component rule gives bound name and persistence session, never a failed listing, and no fileFacts entry names it",
+    "a local filter program path with a component that breaks the component rule needs reads approval with persistence stored, never a failed listing, and no fileFacts entry names it",
     W,
     () =>
       withService({ name: "t071-bad-component" }, async (service) => {
@@ -1586,7 +1538,7 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
           config(repo, "filter.t071.clean", `./tools/${name}`);
           const factFrom = service.runner.fileFactCalls.length;
           const trust = await trustOf(service, repositoryId);
-          expect({ name, bound: trust.bound, persistence: trust.persistence, reads: trust.approvalRequired.reads }).toEqual({ name, bound: "name", persistence: "session", reads: true });
+          expect({ name, bound: "bound" in trust, persistence: trust.persistence, reads: trust.approvalRequired.reads }).toEqual({ name, bound: false, persistence: "stored", reads: true });
           expect(entriesSince(service, factFrom).filter((entry) => entry.path.includes(name))).toEqual([]);
           expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_REQUIRED);
         }
@@ -1596,7 +1548,7 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
 
   caseTest(
     TASK,
-    "a .git/hooks/pre-commit directory enters the fingerprint as absent, and readTrust succeeds",
+    "a .git/hooks/pre-commit directory is listed, a file inside it keeps the listing fingerprint, and readTrust succeeds",
     W,
     () =>
       withService({ name: "t071-hook-directory" }, async (service) => {
@@ -1607,16 +1559,17 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
         const { repositoryId } = await service.register(repo);
         const trust = await trustOf(service, repositoryId);
         expect(trust.hooks.filter((h) => h.event === "pre-commit").map((h) => samePath(h.path))).toEqual([samePath(folder)]);
+        const before = await listingFingerprint(service, repo);
         writeFileSync(join(folder, "inside"), "t071\n");
-        expect((await trustOf(service, repositoryId)).fingerprint).toBe(trust.fingerprint);
+        expect(await listingFingerprint(service, repo)).toBe(before);
       }),
     TIMEOUT_MS,
   );
 
-  // Contract §7 "Program file digests": an absolute link target inside the worktree resolves to a new phase-1 entry, and phase 2 digests the script.
+  // Contract §7 fact table: an absolute link target inside the worktree resolves to a new phase-1 entry. Feature 004 contract Δ7: no phase 2 digests the script.
   caseTest(
     TASK,
-    "a .git/hooks/pre-commit symbolic link to a worktree script resolves to the script: no bound, persistence stored, and approveTrust stores a record",
+    "a .git/hooks/pre-commit symbolic link to a worktree script resolves to the script: persistence stored, no digest request, and approveTrust stores a record",
     W,
     () =>
       withService({ name: "t071-hook-link" }, async (service) => {
@@ -1633,10 +1586,11 @@ describe("program file digests (contract §7 \"Program file digests\")", () => {
         }
         expect(lstatSync(hook).isSymbolicLink()).toBe(true);
         const { repositoryId } = await service.register(repo);
+        const from = service.runner.fileFactCalls.length;
         const trust = await trustOf(service, repositoryId);
-        expect({ bound: trust.bound, persistence: trust.persistence, commit: trust.approvalRequired.commit }).toEqual({ bound: undefined, persistence: "stored", commit: true });
-        expect(await approve(service, repositoryId, trust)).toMatchObject({ persistence: "stored", saveFailed: false });
-        expect({ persists: service.trustStore.persists, records: service.trustStore.records.length }).toEqual({ persists: [true], records: 1 });
+        expect({ persistence: trust.persistence, commit: trust.approvalRequired.commit, digests: digestRequests(service, from) }).toEqual({ persistence: "stored", commit: true, digests: 0 });
+        expect(await approve(service, repositoryId, "commit")).toMatchObject({ persistence: "stored", saveFailed: false });
+        expect({ confirms: confirms(service), records: service.trustStore.records.length }).toEqual({ confirms: 1, records: 1 });
         expect(ran([target.log])).toEqual([]);
       }),
     TIMEOUT_MS,
@@ -1694,18 +1648,21 @@ describe("bare-name lookup (contract §7 \"Program file digests\")", () => {
   }
   const program = "#!/bin/sh\nexec cat\n# t071\n";
 
+  // Feature 004 spec FR-071: the found candidate enters only the listing fingerprint, never the trust state.
   caseTest(
     TASK,
-    "without tools\\cleaner.exe and tools\\cleaner the fingerprint records absent for tools, and creating tools\\cleaner gives TRUST_CHANGED",
+    "without tools\\cleaner.exe and tools\\cleaner, creating tools\\cleaner changes the listing fingerprint and keeps the approval",
     [...W, "windows-path-rules"],
     async () => {
       const { repo, environment } = bareName("t071-bare-absent");
       await withService({ name: "t071-bare-absent", environment }, async (service) => {
         const { repositoryId } = await service.register(repo);
         await approve(service, repositoryId);
+        const before = await listingFingerprint(service, repo, environment);
         put(repo, "tools/cleaner", program);
-        expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_CHANGED);
-        expect((await trustOf(service, repositoryId)).state).toBe("changed");
+        expect(await listingFingerprint(service, repo, environment)).not.toBe(before);
+        expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
+        expect((await trustOf(service, repositoryId)).state).toBe("approved");
       });
     },
     TIMEOUT_MS,
@@ -1713,7 +1670,7 @@ describe("bare-name lookup (contract §7 \"Program file digests\")", () => {
 
   caseTest(
     TASK,
-    "after approval, one changed byte of tools\\cleaner gives TRUST_CHANGED",
+    "after approval, one changed byte of tools\\cleaner keeps the listing fingerprint and the approval",
     [...W, "windows-path-rules"],
     async () => {
       const { repo, environment } = bareName("t071-bare-byte");
@@ -1721,8 +1678,10 @@ describe("bare-name lookup (contract §7 \"Program file digests\")", () => {
       await withService({ name: "t071-bare-byte", environment }, async (service) => {
         const { repositoryId } = await service.register(repo);
         await approve(service, repositoryId);
+        const before = await listingFingerprint(service, repo, environment);
         flipByte(cleaner);
-        expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_CHANGED);
+        expect(await listingFingerprint(service, repo, environment)).toBe(before);
+        expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
       });
     },
     TIMEOUT_MS,
@@ -1730,20 +1689,18 @@ describe("bare-name lookup (contract §7 \"Program file digests\")", () => {
 
   caseTest(
     TASK,
-    "with both tools\\cleaner.exe and tools\\cleaner present, the digest covers tools\\cleaner.exe, as Git for Windows tries .exe first",
+    "with tools\\cleaner present, a new tools\\cleaner.exe changes the listing fingerprint, as Git for Windows tries .exe first",
     ["shell-double", "git-for-windows"],
     async () => {
       const { repo, environment } = bareName("t071-bare-exe");
-      const cleaner = put(repo, "tools/cleaner", program);
-      const exe = put(repo, "tools/cleaner.exe", program);
+      put(repo, "tools/cleaner", program);
       await withService({ name: "t071-bare-exe", environment }, async (service) => {
-        const { repositoryId } = await service.register(repo);
-        const trust = await trustOf(service, repositoryId);
-        await approve(service, repositoryId, trust);
-        flipByte(cleaner);
-        expect(await trustOf(service, repositoryId)).toMatchObject({ state: "approved", fingerprint: trust.fingerprint });
+        const before = await listingFingerprint(service, repo, environment);
+        const exe = put(repo, "tools/cleaner.exe", program);
+        const withExe = await listingFingerprint(service, repo, environment);
+        expect(withExe).not.toBe(before);
         flipByte(exe);
-        expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_CHANGED);
+        expect(await listingFingerprint(service, repo, environment)).toBe(withExe);
       });
     },
     TIMEOUT_MS,
@@ -1751,17 +1708,18 @@ describe("bare-name lookup (contract §7 \"Program file digests\")", () => {
 
   caseTest(
     TASK,
-    "a file in the absolute owned bin directory gets no digest",
+    "a file in the absolute owned bin directory: an edit keeps the listing fingerprint and the approval",
     [...W, "windows-path-rules"],
     async () => {
       const { repo, bin, environment } = bareName("t071-bare-bin");
       const owned = put(bin, "cleaner", program);
       await withService({ name: "t071-bare-bin", environment }, async (service) => {
         const { repositoryId } = await service.register(repo);
-        const trust = await trustOf(service, repositoryId);
-        await approve(service, repositoryId, trust);
+        await approve(service, repositoryId);
+        const before = await listingFingerprint(service, repo, environment);
         flipByte(owned);
-        expect(await trustOf(service, repositoryId)).toMatchObject({ state: "approved", fingerprint: trust.fingerprint });
+        expect(await listingFingerprint(service, repo, environment)).toBe(before);
+        expect((await trustOf(service, repositoryId)).state).toBe("approved");
       });
     },
     TIMEOUT_MS,
@@ -1772,19 +1730,17 @@ describe("bare-name lookup (contract §7 \"Program file digests\")", () => {
   describe.skipIf(process.platform === "win32")("POSIX", () => {
     caseTest(
       "T309",
-      "POSIX: a tools/cleaner candidate with mode 0010 does not count, so the fingerprint stays the same; the owner execute bit gives TRUST_CHANGED",
+      "POSIX: a tools/cleaner candidate with mode 0010 does not count, so the listing fingerprint stays the same; the owner execute bit changes it",
       W,
       async () => {
         const { repo, environment } = bareName("t309-bare-owner-bit");
         await withService({ name: "t309-bare-owner-bit", environment }, async (service) => {
-          const { repositoryId } = await service.register(repo);
-          const trust = await trustOf(service, repositoryId);
-          await approve(service, repositoryId, trust);
+          const before = await listingFingerprint(service, repo, environment);
           const cleaner = put(repo, "tools/cleaner", program);
           chmodSync(cleaner, 0o010);
-          expect(await trustOf(service, repositoryId)).toMatchObject({ state: "approved", fingerprint: trust.fingerprint });
+          expect(await listingFingerprint(service, repo, environment)).toBe(before);
           chmodSync(cleaner, 0o710);
-          expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_CHANGED);
+          expect(await listingFingerprint(service, repo, environment)).not.toBe(before);
         });
       },
       TIMEOUT_MS,
@@ -1857,7 +1813,7 @@ describe("empty child PATH entry with a global bare-name filter (contract §7 \"
 describe("F07 per-worktree records (contract §7 \"Trust approval store\")", () => {
   caseTest(
     TASK,
-    "with extensions.worktreeConfig=true, approvals of linked worktrees A and B keep separate records; a changed byte of the B program changes B only; revokeTrust from A makes both untrusted in the next session",
+    "with extensions.worktreeConfig=true, approvals of linked worktrees A and B keep separate records; a changed byte of the B program keeps both approvals; revokeTrust from A makes both untrusted in the next session",
     W,
     () =>
       withSessions("t071-per-worktree", {}, async (first, set) => {
@@ -1881,9 +1837,10 @@ describe("F07 per-worktree records (contract §7 \"Trust approval store\")", () 
         const A2 = await second.register(a);
         const B2 = await second.register(b);
         expect({ a: (await trustOf(second, A2.repositoryId)).state, b: (await trustOf(second, B2.repositoryId)).state }).toEqual({ a: "approved", b: "approved" });
+        // Feature 004 spec FR-071.
         flipByte(programB.path);
-        expect({ a: (await trustOf(second, A2.repositoryId)).state, b: (await trustOf(second, B2.repositoryId)).state }).toEqual({ a: "approved", b: "changed" });
-        expect({ a: outcome(await second.readWorkspace(A2.repositoryId)), b: gate(await second.readWorkspace(B2.repositoryId)) }).toEqual({ a: SUCCEEDED, b: TRUST_CHANGED });
+        expect({ a: (await trustOf(second, A2.repositoryId)).state, b: (await trustOf(second, B2.repositoryId)).state }).toEqual({ a: "approved", b: "approved" });
+        expect({ a: outcome(await second.readWorkspace(A2.repositoryId)), b: outcome(await second.readWorkspace(B2.repositoryId)) }).toEqual({ a: SUCCEEDED, b: SUCCEEDED });
 
         const trustIdA = (await trustOf(second, A2.repositoryId)).trustId;
         expect(typeof trustIdA).toBe("string");
@@ -1906,7 +1863,7 @@ describe("stale record (contract §7 \"Mutation trust\")", () => {
 
   caseTest(
     TASK,
-    "approve F17, then remove every repository-controlled integration: the stored record keeps state changed, approvalRequired is false for reads and commit, and reads run",
+    "approve F17, then remove every repository-controlled integration: the stored record keeps state approved, every approvalRequired flag is false, and reads run",
     W,
     () =>
       withService({ name: "t071-stale-record" }, async (service) => {
@@ -1916,7 +1873,7 @@ describe("stale record (contract §7 \"Mutation trust\")", () => {
         await approve(service, repositoryId);
         removeIntegrations(repo);
         const trust = await trustOf(service, repositoryId);
-        expect({ state: trust.state, approvalRequired: trust.approvalRequired }).toEqual({ state: "changed", approvalRequired: { reads: false, commit: false, sync: false } });
+        expect({ state: trust.state, approvalRequired: trust.approvalRequired }).toEqual({ state: "approved", approvalRequired: { reads: false, commit: false, sync: false, workbench: false, mergetool: false } });
         expect(service.trustStore.records.length).toBe(1);
         const { workspace, history } = await readBoth(service, repositoryId, generation);
         expect({ workspace: outcome(workspace), history: outcome(history) }).toEqual({ workspace: SUCCEEDED, history: SUCCEEDED });
@@ -1969,7 +1926,7 @@ describe("hook classification (contract §7 \"Hook registrations\")", () => {
         expect(hooks.map((h) => ({ name: h.name, scope: h.scope, commandScope: h.commandScope, repositoryControlled: h.repositoryControlled }))).toEqual([
           { name: "t080", scope: "global", commandScope: "local", repositoryControlled: true },
         ]);
-        expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true });
+        expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false, mergetool: false });
       });
       expect(ran([canary.log])).toEqual([]);
     },
@@ -2088,7 +2045,7 @@ describe("shared listing (contract §7 \"Shared listing\")", () => {
 describe("absent candidate configuration files (contract §8 \"Change check\")", () => {
   caseTest(
     "T080",
-    "after approval with extensions.worktreeConfig, a new config.worktree and then a missing include.path target that gets a command-valued core.fsmonitor canary each make the next check: \"changes\" read list again and refuse with TRUST_CHANGED, and no canary runs",
+    "after approval with extensions.worktreeConfig, a new config.worktree and then a missing include.path target that gets a command-valued core.fsmonitor canary each make the next check: \"changes\" read list again, and the approval stays (feature 004 spec FR-071)",
     W,
     async () => {
       const built = buildF02(gitPath(), "t080-candidates");
@@ -2117,7 +2074,7 @@ describe("absent candidate configuration files (contract §8 \"Change check\")",
         // Oracle: Git reads the new file with worktree scope.
         expect(configListing(repo).filter((e) => e.key === "core.fsmonitor").map((e) => e.scope)).toEqual(["worktree"]);
         let before = configLists(service);
-        expect(gate(await service.readWorkspace(repositoryId, { refresh: false, check: "changes" }))).toEqual(TRUST_CHANGED);
+        expect(gate(await service.readWorkspace(repositoryId, { refresh: false, check: "changes" }))).toEqual({ code: undefined, succeeded: true });
         expect(configLists(service)).toBeGreaterThan(before);
 
         rmSync(worktreeConfig);
@@ -2128,10 +2085,10 @@ describe("absent candidate configuration files (contract §8 \"Change check\")",
           { scope: "local", origin: samePath(target) },
         ]);
         before = configLists(service);
-        expect(gate(await service.readWorkspace(repositoryId, { refresh: false, check: "changes" }))).toEqual(TRUST_CHANGED);
+        expect(gate(await service.readWorkspace(repositoryId, { refresh: false, check: "changes" }))).toEqual({ code: undefined, succeeded: true });
         expect(configLists(service)).toBeGreaterThan(before);
+        expect((await trustOf(service, repositoryId)).state).toBe("approved");
       });
-      expect(ran([canary.log])).toEqual([]);
     },
     TIMEOUT_MS,
   );
@@ -2178,7 +2135,7 @@ describe("inside and outside (contract §7 \"Inside and outside\")", () => {
       expect(service.runner.calls.slice(from).map((c) => c.arguments.join(" ")).sort()).toEqual([configListArgs().join(" "), hooksPathArgs().join(" ")].sort());
       const hooks = (trust.hooks as ClassifiedHook[]).filter((h) => h.event === "pre-commit");
       expect(hooks.map((h) => ({ folder: h.path !== undefined, repositoryControlled: h.repositoryControlled }))).toEqual([{ folder: true, repositoryControlled: true }]);
-      expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true });
+      expect(trust.approvalRequired).toEqual({ reads: false, commit: true, sync: true, workbench: false, mergetool: false });
       // A hooks-folder hook blocks no read (contract §7 "Mutation trust").
       expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
     });
@@ -2232,11 +2189,11 @@ async function registerIn(registrations: ReturnType<typeof createRegistrations>,
 }
 
 describe("workspace release (contract §6 \"Registration reuse and release\")", () => {
-  // An F17 copy whose clean filter program is above the file bound, so an approval is session-only.
-  function sessionOnly(name: string): string {
-    const built = buildF17(gitPath(), name, "trust");
-    padTo(join(repoOf(built), "tools", "clean.sh"), TRUST_DIGEST_FILE_BYTES + 1);
-    return repoOf(built);
+  // Contract §7 "Trust approval store": a failed record store gives a session approval.
+  async function sessionApproval(service: Service, repositoryId: string): Promise<void> {
+    service.runner.inject.trustStoreFails = true;
+    expect(await approve(service, repositoryId)).toMatchObject({ persistence: "session", saveFailed: true });
+    service.runner.inject.trustStoreFails = false;
   }
 
   caseTest(
@@ -2245,9 +2202,9 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
     W,
     () =>
       withService({ name: "t071-release" }, async (service) => {
-        const repo = sessionOnly("t071-release");
+        const repo = repoOf(buildF17(gitPath(), "t071-release", "trust"));
         const first = await service.register(repo);
-        await approve(service, first.repositoryId);
+        await sessionApproval(service, first.repositoryId);
         expect(outcome(await service.readWorkspace(first.repositoryId))).toEqual(SUCCEEDED);
         await service.register(repoOf(buildF02(gitPath(), "t071-release-other")));
         expect(outcome(await service.readWorkspace(first.repositoryId))).toEqual({ state: "rejected", code: "UNKNOWN_TARGET" });
@@ -2293,9 +2250,9 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
     W,
     () =>
       withService({ name: "t071-choose-git" }, async (service) => {
-        const repo = sessionOnly("t071-choose-git");
+        const repo = repoOf(buildF17(gitPath(), "t071-choose-git", "trust"));
         const first = await service.register(repo);
-        await approve(service, first.repositoryId);
+        await sessionApproval(service, first.repositoryId);
         expect(outcome(await service.readWorkspace(first.repositoryId))).toEqual(SUCCEEDED);
         const chosen = await service.request("chooseGit", { bootstrapId: service.runner.addContext("gitProbe", gitPath()), executablePath: gitPath() });
         expect(chosen.state).toBe("succeeded");
@@ -2303,7 +2260,7 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
         const second = await service.register(repo);
         expect(second.repositoryId).not.toBe(first.repositoryId);
         expect(gate(await service.readWorkspace(second.repositoryId))).toEqual(TRUST_REQUIRED);
-        await approve(service, second.repositoryId);
+        await sessionApproval(service, second.repositoryId);
         expect(outcome(await service.readWorkspace(second.repositoryId))).toEqual(SUCCEEDED);
       }),
     TIMEOUT_MS,
@@ -2398,7 +2355,7 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
         const read = await trust.readTrust(target(registrations.get(id)!), 0);
         if (read.result !== "succeeded") throw new Error(`readTrust: ${JSON.stringify(read)}`);
         expect(read.value.state).toBe("untrusted");
-        const approving = trust.approveTrust(target(registrations.get(id)!), read.value.fingerprint);
+        const approving = trust.approveTrust(target(registrations.get(id)!), "read");
         await waitFor("confirm request", () => asked);
         await registerIn(registrations, service, repoOf(buildF02(gitPath(), "t071-approve-release-other")), installation);
         expect(registrations.has(id)).toBe(false);
@@ -2414,7 +2371,7 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
   // Contract §6 "Registration reuse and release": a read that a release cancels issues nothing.
   caseTest(
     TASK,
-    "a readTrust whose signal aborts during its file facts issues no fingerprint for approveTrust",
+    "a readTrust whose signal aborts during its file facts ends canceled",
     W,
     () =>
       withService({ name: "t071-read-trust-abort" }, async (service) => {
@@ -2434,9 +2391,6 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
         const trust = createTrust({ runner, environment: serviceEnv() });
         const value = await trust.readTrust({ operationId: crypto.randomUUID(), signal: controller.signal, workspace, installation }, 0);
         expect(value).toEqual({ result: "canceled" });
-        const listed = await trust.listTrust({ operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace });
-        if (!listed.ok) throw new Error(`listing: ${JSON.stringify(listed)}`);
-        expect(trust.acceptApprove(workspace.repositoryId, listed.listing.fingerprint, 0)).toBe("TRUST_CHANGED");
       }),
     TIMEOUT_MS,
   );
@@ -2497,7 +2451,7 @@ describe("workspace release (contract §6 \"Registration reuse and release\")", 
           value: { remedy: { text: "The Git path /opt/a:b/git in Ubuntu-24.04 holds a name that Windows cannot show. Install Git in another folder of the distro, then approve again." } },
         } as const;
         expect(await trust.readTrust(target, 0)).toEqual(refused);
-        expect(await trust.approveTrust(target, "0".repeat(64))).toEqual(refused);
+        expect(await trust.approveTrust(target, "read")).toEqual(refused);
       }),
     TIMEOUT_MS,
   );
@@ -2746,7 +2700,7 @@ describe("hooks folder links (contract §7 \"Hook registrations\")", () => {
 
   caseTest(
     "T080",
-    "a .git/hooks folder that is a link to the UNC share lists no hook, needs commit approval with bound link, and no file call or identity request reaches below the link",
+    "a .git/hooks folder that is a link to the UNC share lists no hook, needs commit approval with persistence stored, and no file call or identity request reaches below the link",
     W,
     () =>
       withService({ name: "t080-hooks-folder-link" }, async (service) => {
@@ -2757,9 +2711,9 @@ describe("hooks folder links (contract §7 \"Hook registrations\")", () => {
         const { repositoryId } = await service.register(repo);
         const from = service.runner.identityCalls.length;
         const { value: trust, calls } = await withFsCalls(() => trustOf(service, repositoryId));
-        expect({ commit: trust.approvalRequired.commit, bound: trust.bound, folder: (trust.hooks as ClassifiedHook[]).filter((h) => h.path !== undefined) }).toEqual({
+        expect({ commit: trust.approvalRequired.commit, persistence: trust.persistence, folder: (trust.hooks as ClassifiedHook[]).filter((h) => h.path !== undefined) }).toEqual({
           commit: true,
-          bound: "link",
+          persistence: "stored",
           folder: [],
         });
         const paths = [...calls.map((c) => c.path), ...service.runner.identityCalls.slice(from).flatMap((c) => c.paths)];
@@ -2770,7 +2724,7 @@ describe("hooks folder links (contract §7 \"Hook registrations\")", () => {
 
   caseTest(
     "T080",
-    "a .git/hooks/pre-commit entry that is a link to the UNC share is listed with bound link, needs commit approval, and the service makes no file call there",
+    "a .git/hooks/pre-commit entry that is a link to the UNC share is listed, needs commit approval with persistence stored, and the service makes no file call there",
     W,
     () =>
       withService({ name: "t080-hook-entry-link" }, async (service) => {
@@ -2781,9 +2735,9 @@ describe("hooks folder links (contract §7 \"Hook registrations\")", () => {
         const { value: trust, calls } = await withFsCalls(() => trustOf(service, repositoryId));
         expect({
           commit: trust.approvalRequired.commit,
-          bound: trust.bound,
+          persistence: trust.persistence,
           folder: (trust.hooks as ClassifiedHook[]).filter((h) => h.path !== undefined).map((h) => ({ event: h.event, path: samePath(h.path) })),
-        }).toEqual({ commit: true, bound: "link", folder: [{ event: "pre-commit", path: samePath(hook) }] });
+        }).toEqual({ commit: true, persistence: "stored", folder: [{ event: "pre-commit", path: samePath(hook) }] });
         expect(calls.filter((c) => below(c.path, hook))).toEqual([]);
       }),
     TIMEOUT_MS,
@@ -2978,7 +2932,7 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
 
   caseTest(
     "T307",
-    "a .git/hooks folder link to //nonexistent.invalid/share needs commit approval and lists no folder hook; phase 1 reads the link through fileFacts, nothing reaches the share, and a new link target text changes the fingerprint",
+    "a .git/hooks folder link to //nonexistent.invalid/share needs commit approval and lists no folder hook; phase 1 reads the link through fileFacts, nothing reaches the share, and a new link target text changes the listing fingerprint",
     [...W, "symlink"],
     () =>
       withService({ name: "t307-hooks-folder-link" }, async (service) => {
@@ -2995,17 +2949,18 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
         // Phase 1 reads the hooks folder (contract §7 "Program file digests"). The shell reports the link and never follows it.
         expect(factsSince(service, factFrom).filter((f) => f.kind === "link").length).toBeGreaterThan(0);
         expect(entryBreaks(service, factFrom, repo, repositoryId, NONEXISTENT_SHARE)).toEqual([]);
-        expect((await trustOf(service, repositoryId)).fingerprint).toBe(first.fingerprint);
+        const before = await listingFingerprint(service, repo);
+        expect(await listingFingerprint(service, repo)).toBe(before);
         // Contract §7 fact table: the fingerprint holds each hop's target text.
         relink("//nonexistent.invalid/other", hooks, "dir");
-        expect((await trustOf(service, repositoryId)).fingerprint).not.toBe(first.fingerprint);
+        expect(await listingFingerprint(service, repo)).not.toBe(before);
       }),
     TIMEOUT_MS,
   );
 
   caseTest(
     "T307",
-    "a hook link .git/hooks/pre-commit -> ../../scripts/h.sh resolves inside the worktree: commit approval is required, the approval is stored, and one changed byte of scripts/h.sh gives state changed and TRUST_CHANGED",
+    "a hook link .git/hooks/pre-commit -> ../../scripts/h.sh resolves inside the worktree: commit approval is required, the approval is stored, no digest request reads the script, and one changed byte of scripts/h.sh keeps the approval",
     [...W, "symlink"],
     async () => {
       const built = buildF02(gitPath(), "t307-hook-link-inside");
@@ -3023,19 +2978,17 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
         const trust = await trustOf(service, repositoryId);
         expect({
           commit: trust.approvalRequired.commit,
-          bound: trust.bound,
           persistence: trust.persistence,
           folder: folderHooks(trust).map((h) => h.event),
-        }).toEqual({ commit: true, bound: undefined, persistence: "stored", folder: ["pre-commit"] });
-        // Phase 2 digests the resolved file below the worktree root.
-        expect(factsSince(service, factFrom).some((f) => f.kind === "file" && f.digest === sha256(readFileSync(script)))).toBe(true);
+        }).toEqual({ commit: true, persistence: "stored", folder: ["pre-commit"] });
+        // Phase 1 finds the resolved file below the worktree root. Feature 004 contract Δ7: no phase 2 digests it.
+        expect(factsSince(service, factFrom).some((f) => f.kind === "file" && f.digest === undefined && f.size === readFileSync(script).length)).toBe(true);
+        expect(service.runner.fileFactCalls.slice(factFrom).filter((c) => c.digest)).toEqual([]);
         expect(entryBreaks(service, factFrom, repo, repositoryId, NONEXISTENT_SHARE)).toEqual([]);
-        expect(await approve(service, repositoryId, trust)).toMatchObject({ persistence: "stored" });
+        expect(await approve(service, repositoryId, "commit")).toMatchObject({ persistence: "stored" });
         flipByte(script);
-        const changed = await trustOf(service, repositoryId);
-        expect({ state: changed.state, commit: changed.approvalRequired.commit }).toEqual({ state: "changed", commit: true });
-        // Contract §9: the approval of the old fingerprint gives TRUST_CHANGED.
-        expect(gate(await service.approveTrust(repositoryId, trust.fingerprint, trust.generation))).toEqual(TRUST_CHANGED);
+        const kept = await trustOf(service, repositoryId);
+        expect({ state: kept.state, commit: kept.approvalRequired.commit }).toEqual({ state: "approved", commit: true });
       });
       expect(ran([log])).toEqual([]);
     },
@@ -3045,7 +2998,7 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
   // Contract §7 "Program file digests": a relative target with `..` after a normal component cannot be resolved.
   caseTest(
     "T307",
-    "a hook link with the target x/../h.sh is listed with bound link and persistence session, and a new target text y/../h.sh changes the fingerprint",
+    "a hook link with the target x/../h.sh is listed with persistence stored, and a new target text y/../h.sh changes the listing fingerprint",
     [...W, "symlink"],
     () =>
       withService({ name: "t307-hook-link-dotdot" }, async (service) => {
@@ -3061,13 +3014,13 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
         expect(entryBreaks(service, factFrom, repo, repositoryId, NONEXISTENT_SHARE)).toEqual([]);
         expect({
           commit: trust.approvalRequired.commit,
-          bound: trust.bound,
           persistence: trust.persistence,
           folder: folderHooks(trust).map((h) => h.event),
-        }).toEqual({ commit: true, bound: "link", persistence: "session", folder: ["pre-commit"] });
+        }).toEqual({ commit: true, persistence: "stored", folder: ["pre-commit"] });
         // Contract §7 fact table: an unresolved link enters the fingerprint with each hop's target text.
+        const before = await listingFingerprint(service, repo);
         relink("y/../h.sh", hook, "file");
-        expect((await trustOf(service, repositoryId)).fingerprint).not.toBe(trust.fingerprint);
+        expect(await listingFingerprint(service, repo)).not.toBe(before);
       }),
     TIMEOUT_MS,
   );
@@ -3075,7 +3028,7 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
   // The identity request maps the alias to the worktree root. The service then reads the hook only through `fileFacts` below that root.
   caseTest(
     "T307",
-    "a global core.hooksPath through a junction or symlink alias of the worktree maps to the worktree root: the tracked hook needs commit approval, fileFacts gives its digest, and the service makes no file call below the worktree or the alias",
+    "a global core.hooksPath through a junction or symlink alias of the worktree maps to the worktree root: the tracked hook needs commit approval, fileFacts gives its file fact, and the service makes no file call below the worktree or the alias",
     [...W, ALIAS_LINK],
     async () => {
       const built = buildF08(gitPath(), "t307-alias-hooks", "sha1");
@@ -3099,7 +3052,7 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
         const hooks = (trust.hooks as ClassifiedHook[]).filter((h) => h.event === "pre-commit");
         expect(hooks.map((h) => ({ folder: h.path !== undefined, repositoryControlled: h.repositoryControlled }))).toEqual([{ folder: true, repositoryControlled: true }]);
         expect(trust.approvalRequired.commit).toBe(true);
-        expect(factsSince(service, factFrom).some((f) => f.kind === "file" && f.digest === sha256(readFileSync(tracked)))).toBe(true);
+        expect(factsSince(service, factFrom).some((f) => f.kind === "file" && f.size === readFileSync(tracked).length)).toBe(true);
         // The alias maps to the worktree root, so no entry names a path below the alias.
         expect(entryBreaks(service, factFrom, repo, repositoryId, alias)).toEqual([]);
         expect(calls.filter((c) => below(c.path, repo) || below(c.path, alias))).toEqual([]);
@@ -3111,7 +3064,7 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
 
   caseTest(
     "T307",
-    "a global core.hooksPath folder outside every root keeps its location only: no folder hook, no commit approval, no file call or fileFacts fact for it, and a changed hook byte there keeps the fingerprint",
+    "a global core.hooksPath folder outside every root keeps its location only: no folder hook, no commit approval, no file call or fileFacts fact for it, and a changed hook byte there keeps the listing fingerprint",
     W,
     async () => {
       const built = buildF02(gitPath(), "t307-outside-global-hooks");
@@ -3130,8 +3083,9 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
         expect({ commit: trust.approvalRequired.commit, folder: folderHooks(trust) }).toEqual({ commit: false, folder: [] });
         expect(calls.filter((c) => below(c.path, folder))).toEqual([]);
         expect({ entries: entriesSince(service, factFrom), facts: factsSince(service, factFrom) }).toEqual({ entries: [], facts: [] });
+        const before = await listingFingerprint(service, repo, environment);
         flipByte(hook);
-        expect((await trustOf(service, repositoryId)).fingerprint).toBe(trust.fingerprint);
+        expect(await listingFingerprint(service, repo, environment)).toBe(before);
       });
       expect(ran([canary.log])).toEqual([]);
     },
@@ -3141,7 +3095,7 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
   // Contract §7 fact table: a link that resolves outside the roots is listed, and the fingerprint keeps its location and hop text only.
   caseTest(
     "T307",
-    "a hook link .git/hooks/pre-commit to a file outside the roots is listed by location: commit approval is required, the approval is stored, an edit of the target keeps the fingerprint, and a new target changes it",
+    "a hook link .git/hooks/pre-commit to a file outside the roots is listed by location: commit approval is required, the approval is stored, an edit of the target keeps the listing fingerprint, and a new target changes it",
     [...W, "symlink"],
     async () => {
       const built = buildF02(gitPath(), "t307-hook-link-outside");
@@ -3159,17 +3113,18 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
         const { value: trust, calls } = await withFsCalls(() => trustOf(service, repositoryId));
         expect({
           commit: trust.approvalRequired.commit,
-          bound: trust.bound,
           persistence: trust.persistence,
           folder: folderHooks(trust).map((h) => h.event),
-        }).toEqual({ commit: true, bound: undefined, persistence: "stored", folder: ["pre-commit"] });
+        }).toEqual({ commit: true, persistence: "stored", folder: ["pre-commit"] });
         expect(calls.filter((c) => below(c.path, target.path))).toEqual([]);
         expect(entryBreaks(service, factFrom, repo, repositoryId, dirname(target.path))).toEqual([]);
-        expect(await approve(service, repositoryId, trust)).toMatchObject({ persistence: "stored" });
+        expect(await approve(service, repositoryId, "commit")).toMatchObject({ persistence: "stored" });
+        const before = await listingFingerprint(service, repo);
         flipByte(target.path);
-        expect(await trustOf(service, repositoryId)).toMatchObject({ state: "approved", fingerprint: trust.fingerprint });
+        expect(await listingFingerprint(service, repo)).toBe(before);
+        expect((await trustOf(service, repositoryId)).state).toBe("approved");
         relink(other.path, hook, "file");
-        expect((await trustOf(service, repositoryId)).fingerprint).not.toBe(trust.fingerprint);
+        expect(await listingFingerprint(service, repo)).not.toBe(before);
       });
       expect(ran([target.log, other.log])).toEqual([]);
     },
@@ -3179,7 +3134,7 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
   // Contract §5 and §7: link resolution follows at most 8 hops. A junction stores an absolute `\??\` target, and `symlinkSync` off Windows stores the absolute path.
   caseTest(
     "T307",
-    `a program path through ${TRUST_LINK_HOPS} chained folder links resolves to the file and gets its digest; ${TRUST_LINK_HOPS + 1} links give bound link and persistence session`,
+    `a program path through ${TRUST_LINK_HOPS} chained folder links resolves to the file; ${TRUST_LINK_HOPS + 1} links leave it unresolved; both keep persistence stored`,
     [...W, ALIAS_LINK],
     () =>
       withService({ name: "t307-link-hops" }, async (service) => {
@@ -3189,15 +3144,19 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
         // l1 -> l2 -> ... -> l9 -> real.
         for (let n = TRUST_LINK_HOPS + 1; n >= 1; n--) symlinkSync(join(repo, n > TRUST_LINK_HOPS ? "real" : `l${n + 1}`), join(repo, `l${n}`), "junction");
         const { repositoryId } = await service.register(repo);
+        const reachesFile = (from: number) => entriesSince(service, from).some((e) => e.root === "worktreeRoot" && e.path.join("/") === "real/clean.sh");
         config(repo, "filter.hops.clean", "./l2/clean.sh");
-        const resolved = await trustOf(service, repositoryId);
-        expect({ bound: resolved.bound, persistence: resolved.persistence }).toEqual({ bound: undefined, persistence: "stored" });
+        let from = service.runner.fileFactCalls.length;
+        expect((await trustOf(service, repositoryId)).persistence).toBe("stored");
+        expect(reachesFile(from)).toBe(true);
+        const eight = await listingFingerprint(service, repo);
         flipByte(program.path);
-        expect((await trustOf(service, repositoryId)).fingerprint).not.toBe(resolved.fingerprint);
-        flipByte(program.path);
+        expect(await listingFingerprint(service, repo)).toBe(eight);
         config(repo, "filter.hops.clean", "./l1/clean.sh");
-        const capped = await trustOf(service, repositoryId);
-        expect({ bound: capped.bound, persistence: capped.persistence }).toEqual({ bound: "link", persistence: "session" });
+        from = service.runner.fileFactCalls.length;
+        expect((await trustOf(service, repositoryId)).persistence).toBe("stored");
+        // The ninth hop is past the bound, so the walk never asks for the file.
+        expect(reachesFile(from)).toBe(false);
       }),
     TIMEOUT_MS,
   );
@@ -3205,7 +3164,7 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
   // Contract §7 "Program file digests": a link whose target is exactly a root gives a `directory` fact. Git then reads hooks from that root.
   caseTest(
     "T309",
-    "a .git/hooks folder link to .. resolves to the worktree root: its pre-commit hook is listed with a digest, no bound, and one changed byte gives state changed",
+    "a .git/hooks folder link to .. resolves to the worktree root: its pre-commit hook is listed with persistence stored, and one changed byte keeps the approval",
     [...W, ALIAS_LINK],
     async () => {
       const built = buildF02(gitPath(), "t309-hooks-root-link");
@@ -3225,13 +3184,12 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
         const trust = await trustOf(service, repositoryId);
         expect({
           commit: trust.approvalRequired.commit,
-          bound: trust.bound,
           persistence: trust.persistence,
           folder: folderHooks(trust).map((h) => h.event),
-        }).toEqual({ commit: true, bound: undefined, persistence: "stored", folder: ["pre-commit"] });
-        await approve(service, repositoryId, trust);
+        }).toEqual({ commit: true, persistence: "stored", folder: ["pre-commit"] });
+        await approve(service, repositoryId, "commit");
         flipByte(hook);
-        expect((await trustOf(service, repositoryId)).state).toBe("changed");
+        expect((await trustOf(service, repositoryId)).state).toBe("approved");
       });
       expect(ran([log])).toEqual([]);
     },
@@ -3241,7 +3199,7 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
   // Contract §6 "File facts": the Windows walk opens each component case-insensitively. `factKey` folds ASCII letters, so both texts share one entry.
   caseTest(
     "T309",
-    "program paths ./TOOLS/CLEAN.SH and ./tools/clean.sh name one file: each phase sends one entry in the first spelling, the walk finds the file, and one changed byte gives TRUST_CHANGED",
+    "program paths ./TOOLS/CLEAN.SH and ./tools/clean.sh name one file: phase 1 sends one entry in the first spelling, the walk finds the file, no digest request follows, and one changed byte keeps the approval",
     [...W, "windows-path-rules"],
     () =>
       withService({ name: "t309-ascii-case" }, async (service) => {
@@ -3253,19 +3211,187 @@ describe("file facts for hooks (contract §7 \"Inside and outside\", \"Program f
         const { repositoryId } = await service.register(repo);
         const factFrom = service.runner.fileFactCalls.length;
         const trust = await trustOf(service, repositoryId);
-        expect({ bound: trust.bound, persistence: trust.persistence }).toEqual({ bound: undefined, persistence: "stored" });
+        expect(trust.persistence).toBe("stored");
         const sent = service.runner.fileFactCalls
           .slice(factFrom)
           .map((call) => ({ digest: call.digest, paths: call.files.filter((e) => foldAscii(e.path.join("/")) === "tools/clean.sh").map((e) => e.path.join("/")) }));
-        expect(sent).toEqual([
-          { digest: false, paths: ["TOOLS/CLEAN.SH"] },
-          { digest: true, paths: ["TOOLS/CLEAN.SH"] },
-        ]);
-        expect(factsSince(service, factFrom).some((f) => f.kind === "file" && f.digest === sha256(readFileSync(program.path)))).toBe(true);
-        await approve(service, repositoryId, trust);
+        expect(sent).toEqual([{ digest: false, paths: ["TOOLS/CLEAN.SH"] }]);
+        expect(factsSince(service, factFrom).some((f) => f.kind === "file" && f.size === readFileSync(program.path).length)).toBe(true);
+        await approve(service, repositoryId);
         flipByte(program.path);
-        expect(gate(await service.readWorkspace(repositoryId))).toEqual(TRUST_CHANGED);
+        expect(outcome(await service.readWorkspace(repositoryId))).toEqual(SUCCEEDED);
       }),
     TIMEOUT_MS,
+  );
+});
+
+// ---- T033: the trust class `workbench` (feature 004 plan.md D12, contract Δ7, spec FR-005, FR-069, SC-010) ----
+// A canary program writes its log when it runs. No refused case may write it.
+
+describe("trust class workbench (T033)", () => {
+  const T033 = "T033";
+  // Plan.md D12 `workbench`: the hook events that switch, the branch actions, merge, and rebase can run.
+  const WORKBENCH_EVENTS = ["post-checkout", "post-merge", "pre-merge-commit", "prepare-commit-msg", "commit-msg", "post-commit", "pre-rebase", "post-rewrite", "reference-transaction", "post-index-change", "pre-auto-gc"];
+  const SWITCH = { action: "switch", target: { ref: "refs/heads/target" }, choice: "keep" };
+  let builds = 0;
+  const fixture = (name: WbFixtureName) => buildWorkbench(gitPath(), name, `t033-${name}-${++builds}`);
+  const review = (service: Service, repositoryId: string, generation: number, payload: object) => service.request<{ workbenchToken?: string; plan?: unknown }>("reviewWorkbench", payload, { repositoryId, repositoryGeneration: generation });
+  const runWith = (service: Service, repositoryId: string, workbenchToken: string) => service.request<Record<string, unknown>>("runWorkbench", { workbenchToken, start: true }, { repositoryId });
+  const refusal = (response: ServiceResponse<{ workbenchToken?: string }>) => ({ ...outcome(response), token: response.result?.workbenchToken });
+  // Plan.md D2: every `runWorkbench` step runs under the policy `integrate`.
+  const steps = (service: Service, from: number) => service.runner.calls.slice(from).filter((c) => c.environmentPolicy === "integrate").map((c) => c.arguments.join(" "));
+  const startedSince = (service: Service, from: number) => service.runner.frames.slice(from).filter((f) => f.type === "started").map((f) => ({ kind: f.kind, action: f.action, direction: f.direction }));
+  // A repository hook that runs the canary. `sh` runs the canary script, so it needs no execute bit.
+  const hookAt = (f: WbFixture, event: string, command: string) => chmodSync(put(join(f.repo, ".git", "hooks"), event, `#!/bin/sh\nsh ${command}\n`), 0o755);
+
+  caseTest(
+    T033,
+    "the class flag workbench is true for each repository-controlled program of plan.md D12, a merge driver included, and false without them; the review refuses with TRUST_REQUIRED and no canary runs",
+    W,
+    () =>
+      withService({ name: "t033-flag" }, async (service) => {
+        const f = fixture("switch-clean");
+        const run = wbCanary(f.root, "t033-flag");
+        const configFile = f.configs.local!;
+        const base = readFileSync(configFile);
+        const { repositoryId, generation } = await service.register(f.repo);
+        const flags = async () => (await trustOf(service, repositoryId)).approvalRequired;
+        expect(await flags()).toEqual({ reads: false, commit: false, sync: false, workbench: false, mergetool: false });
+        const reviewed = async (label: string) => ({ label, ...refusal(await review(service, repositoryId, generation, SWITCH)) });
+        const from = service.runner.calls.length;
+        const programs: [string, string][] = [
+          ["filter.canary.clean", run.command],
+          ["filter.canary.smudge", run.command],
+          ["filter.canary.process", run.command],
+          ["core.fsmonitor", run.command],
+          ["gpg.program", run.command],
+          ["gpg.ssh.defaultKeyCommand", run.command],
+          // ll-merge.c `ll_ext_merge` runs a merge driver with `use_shell` (contract Δ7).
+          ["merge.canary.driver", `${run.command} %O %A %B`],
+          // The 001 condition `hooksPathControlled`.
+          ["core.hooksPath", ".githooks"],
+        ];
+        for (const [key, value] of programs) {
+          writeFileSync(configFile, base);
+          wb(wbRepoOf(f), ["config", key, value]);
+          expect({ key, workbench: (await flags()).workbench }).toEqual({ key, workbench: true });
+          expect(await reviewed(key)).toEqual({ label: key, state: "failed", code: "TRUST_REQUIRED", token: undefined });
+        }
+        writeFileSync(configFile, base);
+        for (const event of WORKBENCH_EVENTS) {
+          hookAt(f, event, run.command);
+          expect({ event, workbench: (await flags()).workbench }).toEqual({ event, workbench: true });
+          expect(await reviewed(event)).toEqual({ label: event, state: "failed", code: "TRUST_REQUIRED", token: undefined });
+          rmSync(join(f.repo, ".git", "hooks", event));
+        }
+        // Plan.md D12 lists neither the commit hook nor the transport programs, so a review needs no approval for them.
+        const others: [string, () => void][] = [
+          ["pre-commit", () => hookAt(f, "pre-commit", run.command)],
+          ["pre-push", () => hookAt(f, "pre-push", run.command)],
+          ["core.sshCommand", () => void wb(wbRepoOf(f), ["config", "core.sshCommand", run.command])],
+          ["credential.helper", () => void wb(wbRepoOf(f), ["config", "credential.helper", `!${run.command}`])],
+          ["protocol.allow", () => void wb(wbRepoOf(f), ["config", "protocol.allow", "always"])],
+        ];
+        for (const [label, add] of others) {
+          writeFileSync(configFile, base);
+          for (const event of ["pre-commit", "pre-push"]) rmSync(join(f.repo, ".git", "hooks", event), { force: true });
+          add();
+          expect({ label, workbench: (await flags()).workbench }).toEqual({ label, workbench: false });
+          const response = await review(service, repositoryId, generation, SWITCH);
+          expect({ label, ...outcome(response), token: typeof response.result?.workbenchToken }).toEqual({ label, ...SUCCEEDED, token: "string" });
+        }
+        expect({ steps: steps(service, from), ran: ran([run.log]) }).toEqual({ steps: [], ran: [] });
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    T033,
+    "runWorkbench with the class flag true and no approval gives TRUST_REQUIRED before any step, and a rewritten approved hook asks nothing (feature 004 spec FR-071); no canary runs",
+    W,
+    () =>
+      withService({ name: "t033-run" }, async (service) => {
+        const f = fixture("switch-clean");
+        const run = wbCanary(f.root, "t033-run");
+        const { repositoryId, generation } = await service.register(f.repo);
+        // A program added after the review: the run reads every bound value again (contract Δ3 `runWorkbench` step 2).
+        const clean = await review(service, repositoryId, generation, SWITCH);
+        expect(outcome(clean)).toEqual(SUCCEEDED);
+        hookAt(f, "post-checkout", run.command);
+        let from = service.runner.calls.length;
+        expect(outcome(await runWith(service, repositoryId, clean.result!.workbenchToken!))).toEqual({ state: "failed", code: "TRUST_REQUIRED" });
+        expect(steps(service, from)).toEqual([]);
+        // An approval that ends before the run: the reviewed flag decides before any process (contract Δ7 "Mutation trust").
+        const approved = await approve(service, repositoryId);
+        const token = await review(service, repositoryId, generation, SWITCH);
+        expect(outcome(token)).toEqual(SUCCEEDED);
+        expect(outcome(await service.revokeTrust(repositoryId, approved.trustId))).toEqual(SUCCEEDED);
+        from = service.runner.calls.length;
+        const frames = service.runner.frames.length;
+        expect(outcome(await runWith(service, repositoryId, token.result!.workbenchToken!))).toEqual({ state: "rejected", code: "TRUST_REQUIRED" });
+        expect({ steps: steps(service, from), started: startedSince(service, frames) }).toEqual({ steps: [], started: [] });
+        // Feature 004 spec FR-071: an approved hook whose bytes change asks nothing.
+        await approve(service, repositoryId, "switch");
+        hookAt(f, "post-checkout", `${run.command} changed`);
+        const again = await review(service, repositoryId, generation, SWITCH);
+        expect({ ...outcome(again), token: typeof again.result?.workbenchToken }).toEqual({ ...SUCCEEDED, token: "string" });
+        expect(ran([run.log])).toEqual([]);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(
+    T033,
+    "ignore needs no class, and applyFiles and line staging keep the 001 rule: with an unapproved post-checkout hook each one runs, and each records its marker kind",
+    W,
+    () =>
+      withService({ name: "t033-classless" }, async (service) => {
+        const f = fixture("staging-tree");
+        const run = wbCanary(f.root, "t033-classless");
+        hookAt(f, "post-checkout", run.command);
+        const { repositoryId } = await service.register(f.repo);
+        expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: false, sync: true, workbench: true, mergetool: false });
+        // Contract Δ7: `ignore` runs no repository program.
+        let read = await readOk(service, repositoryId);
+        const ignored = await review(service, repositoryId, read.generation, { action: "ignore", snapshotId: read.snapshotId, entryId: entryOf(read, "top-new.txt", "untracked").entryId, target: "gitignore" });
+        expect({ ...outcome(ignored), token: typeof ignored.result?.workbenchToken }).toEqual({ ...SUCCEEDED, token: "string" });
+        let frames = service.runner.frames.length;
+        expect(outcome(await runWith(service, repositoryId, ignored.result!.workbenchToken!))).toEqual(SUCCEEDED);
+        expect(readFileSync(join(f.repo, ".gitignore"), "latin1")).toBe("/top-new.txt\n");
+        expect(startedSince(service, frames)).toEqual([{ kind: "workbench", action: "ignore-gitignore", direction: undefined }]);
+        // Contract Δ6: kind `applyFiles` carries `direction`.
+        read = await readOk(service, repositoryId);
+        frames = service.runner.frames.length;
+        const staged = await service.request("applyFiles", { snapshotId: read.snapshotId, entryIds: [entryOf(read, "src/lib/new.txt", "untracked").entryId], direction: "stage", kind: "selected" }, { repositoryId });
+        expect(outcome(staged)).toEqual(SUCCEEDED);
+        expect(startedSince(service, frames)).toEqual([{ kind: "applyFiles", action: undefined, direction: "stage" }]);
+        expect(git(f.repo, ["ls-files", "--stage", "--", "src/lib/new.txt"])).not.toBe("");
+        // Contract Δ4: `applyHunk` with `lines` keeps the 001 `applyHunk` rule.
+        const h = fixture("staging-hunks");
+        hookAt(h, "post-checkout", run.command);
+        const hunks = await service.register(h.repo);
+        const c = await selectHunks(service, hunks.repositoryId, "added.txt", "unstaged");
+        const body = hunksOf(patchOf(resultOf(c)))[0]!.split("\n").slice(1);
+        const first = body.findIndex((line) => line.startsWith("+")) + 1;
+        expect(outcome(await applyHunk(service, hunks.repositoryId, c, c.hunkIds[0]!, "stage", { lines: [first] }))).toEqual(SUCCEEDED);
+        expect(ran([run.log])).toEqual([]);
+      }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(T033, "contract Δ7: readTrust shows the values of merge.<driver>.driver and merge.<driver>.recursive", W, () =>
+    withService({ name: "t033-display" }, async (service) => {
+      const f = fixture("switch-clean");
+      const run = wbCanary(f.root, "t033-display");
+      wb(wbRepoOf(f), ["config", "merge.canary.driver", `${run.command} %O %A %B`]);
+      wb(wbRepoOf(f), ["config", "merge.canary.recursive", "binary"]);
+      const { repositoryId } = await service.register(f.repo);
+      const shown = (await trustOf(service, repositoryId)).entries.filter((e) => e.key.startsWith("merge.canary.")).map((e) => [e.key, e.value]);
+      expect(shown).toEqual([
+        ["merge.canary.driver", `${run.command} %O %A %B`],
+        ["merge.canary.recursive", "binary"],
+      ]);
+    }),
+  TIMEOUT_MS,
   );
 });

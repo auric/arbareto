@@ -120,11 +120,10 @@ async function openWith(entries = ENTRIES, options: Options = {}) {
 }
 
 describe("switcher button", () => {
-  test("it shows the folder icon, the repository name, and the path; its name holds both; the tooltip holds the key", async () => {
+  test("it shows the folder icon and the folder name only; its name and its tooltip hold the full path; the tooltip holds the key (004 plan.md D15)", async () => {
     const view = await mount();
     const button = trigger(view.host);
-    expect(text(button)).toContain("sample-app");
-    expect(text(button)).toContain(NATIVE);
+    expect(text(button)).toBe("sample-app");
     expect(button.querySelector("svg")).not.toBeNull();
     expect(button.getAttribute("aria-label")).toBe(`sample-app, ${NATIVE}`);
     expect(button.getAttribute("aria-keyshortcuts")).toBe("Control+R");
@@ -132,7 +131,7 @@ describe("switcher button", () => {
       document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", code: "Tab", bubbles: true }));
       button.focus();
     });
-    expect(text(document.querySelector('[data-slot="tooltip-content"]'))).toBe("Recent repositories (Ctrl+R)");
+    expect(text(document.querySelector('[data-slot="tooltip-content"]'))).toBe(`${NATIVE} Recent repositories (Ctrl+R)`);
   });
 
   test("a WSL worktree shows the name without the distro prefix", async () => {
@@ -140,9 +139,9 @@ describe("switcher button", () => {
     expect(trigger(view.host).getAttribute("aria-label")).toBe(`kernel, ${WSL}`);
   });
 
-  test("the path keeps the root and the last folder name whole, and only its middle part ellipsizes", async () => {
-    const view = await mount();
-    const parts = [...trigger(view.host).querySelectorAll<HTMLElement>("[data-path-part]")].map((p) => [p.dataset.pathPart, p.textContent, p.className.split(/\s+/).includes("truncate")]);
+  test("a recent entry path keeps the root and the last folder name whole, and only its middle part ellipsizes", async () => {
+    await openWith();
+    const parts = [...option("sample-app").querySelectorAll<HTMLElement>("[data-path-part]")].map((p) => [p.dataset.pathPart, p.textContent, p.className.split(/\s+/).includes("truncate")]);
     expect(parts).toEqual([
       ["root", "D:\\", false],
       ["middle", "work\\clients\\", true],

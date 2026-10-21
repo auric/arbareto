@@ -1,0 +1,5 @@
+{
+  "schema": "sync-settings-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"sshClient\":\"git\",\"defaultPullAction\":\"pull\",\"switchChoice\":\"discard\",\"plinkPath\":null,\"programs\":[],\"remoteKeyFiles\":[],\"defaultCloneFolder\":null,\"lastCloneParent\":null}"
+}

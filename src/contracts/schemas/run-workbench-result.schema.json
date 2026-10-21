@@ -1,0 +1,978 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "switch"
+        },
+        "head": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "branch"
+                },
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "state",
+                "target",
+                "oid"
+              ],
+              "additionalProperties": false,
+              "title": "BranchHead"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "detached"
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "state",
+                "oid"
+              ],
+              "additionalProperties": false,
+              "title": "DetachedHead"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "unborn"
+                },
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "state",
+                "target"
+              ],
+              "additionalProperties": false,
+              "title": "UnbornHead"
+            }
+          ],
+          "title": "Head"
+        },
+        "refs": {
+          "maxItems": 100000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ref": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "required": [
+              "ref"
+            ],
+            "additionalProperties": false,
+            "title": "RefChange"
+          }
+        },
+        "stash": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "oid": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "state": {
+                  "type": "string",
+                  "enum": [
+                    "dropped",
+                    "kept-conflicts",
+                    "kept-failed-apply",
+                    "kept-failed-checkout",
+                    "kept-not-found",
+                    "kept-stash-changed"
+                  ]
+                }
+              },
+              "required": [
+                "oid",
+                "state"
+              ],
+              "additionalProperties": false,
+              "title": "SwitchStash"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "conflicted": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            },
+            "command": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          "required": [
+            "text",
+            "command"
+          ],
+          "additionalProperties": false,
+          "title": "SyncRemedy"
+        },
+        "outputTail": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "action",
+        "head",
+        "refs",
+        "stash",
+        "conflicted"
+      ],
+      "additionalProperties": false,
+      "title": "SwitchRun"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "create-branch",
+            "rename-branch",
+            "delete-branch"
+          ]
+        },
+        "head": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "branch"
+                },
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "state",
+                "target",
+                "oid"
+              ],
+              "additionalProperties": false,
+              "title": "BranchHead"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "detached"
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "state",
+                "oid"
+              ],
+              "additionalProperties": false,
+              "title": "DetachedHead"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "unborn"
+                },
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "state",
+                "target"
+              ],
+              "additionalProperties": false,
+              "title": "UnbornHead"
+            }
+          ],
+          "title": "Head"
+        },
+        "refs": {
+          "maxItems": 100000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ref": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "required": [
+              "ref"
+            ],
+            "additionalProperties": false,
+            "title": "RefChange"
+          }
+        },
+        "outputTail": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "action",
+        "head",
+        "refs"
+      ],
+      "additionalProperties": false,
+      "title": "BranchRun"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "merge",
+            "rebase"
+          ]
+        },
+        "head": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "branch"
+                },
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "state",
+                "target",
+                "oid"
+              ],
+              "additionalProperties": false,
+              "title": "BranchHead"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "detached"
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "state",
+                "oid"
+              ],
+              "additionalProperties": false,
+              "title": "DetachedHead"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "unborn"
+                },
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "state",
+                "target"
+              ],
+              "additionalProperties": false,
+              "title": "UnbornHead"
+            }
+          ],
+          "title": "Head"
+        },
+        "refs": {
+          "maxItems": 100000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ref": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "required": [
+              "ref"
+            ],
+            "additionalProperties": false,
+            "title": "RefChange"
+          }
+        },
+        "operationState": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "conflicted",
+            "merging",
+            "rebasing",
+            "cherry-picking",
+            "reverting",
+            "sequencer-active",
+            "unknown"
+          ]
+        },
+        "unmerged": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "stash": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "oid"
+              ],
+              "additionalProperties": false,
+              "title": "AutostashKept"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "outputTail": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "action",
+        "head",
+        "refs",
+        "operationState",
+        "unmerged",
+        "stash"
+      ],
+      "additionalProperties": false,
+      "title": "MergeRebaseRun"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "ignore"
+        },
+        "reason": {
+          "type": "string",
+          "const": "ignore-not-regular"
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false,
+      "title": "IgnoreRun"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "worktree-add",
+            "worktree-remove",
+            "worktree-prune"
+          ]
+        },
+        "head": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "branch"
+                },
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "state",
+                "target",
+                "oid"
+              ],
+              "additionalProperties": false,
+              "title": "BranchHead"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "detached"
+                },
+                "oid": {
+                  "type": "string",
+                  "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                }
+              },
+              "required": [
+                "state",
+                "oid"
+              ],
+              "additionalProperties": false,
+              "title": "DetachedHead"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "unborn"
+                },
+                "target": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "required": [
+                "state",
+                "target"
+              ],
+              "additionalProperties": false,
+              "title": "UnbornHead"
+            }
+          ],
+          "title": "Head"
+        },
+        "refs": {
+          "maxItems": 100000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "ref": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "required": [
+              "ref"
+            ],
+            "additionalProperties": false,
+            "title": "RefChange"
+          }
+        },
+        "outputTail": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "action",
+        "head",
+        "refs"
+      ],
+      "additionalProperties": false,
+      "title": "WorktreeRun"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "choose-side",
+            "mergetool"
+          ]
+        },
+        "staged": {
+          "type": "boolean"
+        },
+        "operationState": {
+          "type": "string",
+          "enum": [
+            "normal",
+            "conflicted",
+            "merging",
+            "rebasing",
+            "cherry-picking",
+            "reverting",
+            "sequencer-active",
+            "unknown"
+          ]
+        },
+        "outputTail": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "action",
+        "staged",
+        "operationState"
+      ],
+      "additionalProperties": false,
+      "title": "ResolveRun"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "config-save"
+        },
+        "scope": {
+          "type": "string",
+          "enum": [
+            "local",
+            "global"
+          ]
+        },
+        "written": {
+          "maxItems": 32,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000]*$"
+          }
+        },
+        "failed": {
+          "type": "object",
+          "properties": {
+            "key": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "exitCode": {
+              "anyOf": [
+                {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 4294967295
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "reason": {
+              "type": "string",
+              "enum": [
+                "invalid-key",
+                "no-section-or-name",
+                "invalid-file",
+                "cannot-write",
+                "nothing-set",
+                "invalid-pattern"
+              ]
+            }
+          },
+          "required": [
+            "key",
+            "exitCode"
+          ],
+          "additionalProperties": false,
+          "title": "ConfigSaveFailed"
+        },
+        "stale": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "outputTail": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "action",
+        "scope",
+        "written"
+      ],
+      "additionalProperties": false,
+      "title": "ConfigSaveRun"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "switch",
+            "create-branch",
+            "rename-branch",
+            "delete-branch",
+            "merge",
+            "rebase",
+            "ignore",
+            "worktree-add",
+            "worktree-remove",
+            "worktree-prune",
+            "choose-side",
+            "mergetool",
+            "config-save"
+          ]
+        }
+      },
+      "required": [
+        "action"
+      ],
+      "additionalProperties": false,
+      "title": "WorkbenchUnread"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "unmerged": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "unmerged"
+      ],
+      "additionalProperties": false,
+      "title": "WorkbenchConflicted"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "trustGate": {
+          "type": "string",
+          "enum": [
+            "repository",
+            "target"
+          ]
+        }
+      },
+      "required": [
+        "trustGate"
+      ],
+      "additionalProperties": false,
+      "title": "WorkbenchTrustRefused"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "operationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "enum": [
+            "getEnvironment",
+            "chooseGit",
+            "chooseRepository",
+            "restoreWorkspace",
+            "listRecentRepositories",
+            "openRecentRepository",
+            "removeRecentRepository",
+            "readWorkspace",
+            "readEntries",
+            "openHistory",
+            "loadHistory",
+            "readHistoryRows",
+            "searchHistory",
+            "closeHistory",
+            "readRefs",
+            "readComparison",
+            "readTrust",
+            "approveTrust",
+            "revokeTrust",
+            "applyHunk",
+            "applyFile",
+            "reviewCommit",
+            "commit",
+            "reviewSubmodules",
+            "updateSubmodules",
+            "cancel",
+            "getOperation",
+            "requestClose",
+            "currentSession",
+            "dismissRecoveryMarker",
+            "readTracking",
+            "reviewSync",
+            "sync",
+            "clone",
+            "connectInTerminal",
+            "readSyncSettings",
+            "setSshClient",
+            "setDefaultPullAction",
+            "chooseSyncPath",
+            "clearSyncPath",
+            "launchPuttygen",
+            "readBranches",
+            "readWorktrees",
+            "readGitSettings",
+            "reviewWorkbench",
+            "runWorkbench",
+            "applyFiles",
+            "openWorktree",
+            "revealPath",
+            "setSwitchChoice",
+            "chooseWorktreeFolder"
+          ]
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "accepted",
+            "running",
+            "cancel-requested",
+            "reconciling",
+            "succeeded",
+            "limited",
+            "failed",
+            "canceled",
+            "completed-with-effects",
+            "failed-with-effects",
+            "unknown",
+            "rejected"
+          ]
+        },
+        "phase": {
+          "type": "string",
+          "enum": [
+            "wsl-starting",
+            "preflight",
+            "candidate-verification",
+            "publication",
+            "commit-handoff",
+            "submodule-confirmation",
+            "fetch",
+            "update",
+            "reconciliation",
+            "history-load",
+            "history-search",
+            "sync-fetch",
+            "sync-merge",
+            "sync-rebase",
+            "sync-push",
+            "sync-continue",
+            "clone",
+            "pageant",
+            "switch-stash",
+            "switch-checkout",
+            "switch-reapply",
+            "switch-drop",
+            "branch",
+            "merge",
+            "rebase",
+            "resolve",
+            "mergetool",
+            "worktree",
+            "config",
+            "ignore",
+            "stage-files"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "INVALID_REQUEST",
+            "PROTOCOL_VERSION",
+            "UNKNOWN_OPERATION",
+            "UNKNOWN_TARGET",
+            "FRAME_LIMIT",
+            "BUSY",
+            "WORKSPACE_LIMIT",
+            "GIT_UNAVAILABLE",
+            "GIT_CHANGED",
+            "GIT_UNSUPPORTED",
+            "WEBVIEW_UNAVAILABLE",
+            "WEBVIEW_UNSUPPORTED",
+            "WSL_UNAVAILABLE",
+            "REPOSITORY_UNAVAILABLE",
+            "REPOSITORY_CHANGED",
+            "UNSUPPORTED_REPOSITORY",
+            "OPERATION_IN_PROGRESS",
+            "CONFLICTED",
+            "LOCKED",
+            "UNSUPPORTED_SUBMODULE",
+            "TRUST_REQUIRED",
+            "TRUST_CHANGED",
+            "STALE_SELECTION",
+            "STALE_REVIEW",
+            "APPROVAL_EXPIRED",
+            "UNSUPPORTED_HUNK_PROFILE",
+            "MALFORMED_GIT_OUTPUT",
+            "OUTPUT_LIMIT",
+            "OBJECT_MISSING",
+            "UNSUPPORTED_COMPARISON",
+            "DISPLAY_MAPPING_FAILED",
+            "GRAPH_LAYOUT_LIMITED",
+            "WORKTREE_CHANGING",
+            "IDENTITY_REQUIRED",
+            "HOOK_FAILED",
+            "SIGNING_FAILED",
+            "GIT_FAILED",
+            "PROCESS_OWNERSHIP_FAILED",
+            "PICKER_FAILED",
+            "DEADLINE",
+            "CANCELED",
+            "COMMIT_ENCODING_UNSUPPORTED",
+            "COMPLETED_WITH_EFFECTS",
+            "FAILED_WITH_EFFECTS",
+            "STATE_UNKNOWN",
+            "SERVICE_UNAVAILABLE",
+            "RECOVERY_MARKER_FAILED",
+            "HISTORY_CHANGED",
+            "UNSUPPORTED_FILTER_TEXT",
+            "SEARCH_UNSUPPORTED",
+            "SYNC_UNAVAILABLE",
+            "PUSH_REJECTED",
+            "PUTTY_UNAVAILABLE",
+            "DESTINATION_NOT_EMPTY",
+            "WORKBENCH_UNAVAILABLE",
+            "UNTRACKED_IN_WAY",
+            "STASH_KEPT"
+          ]
+        },
+        "cause": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "stalled": {
+          "type": "boolean"
+        },
+        "stallRemedy": {
+          "type": "object",
+          "properties": {
+            "command": {
+              "type": "string",
+              "pattern": "^[^\\u0000]*$"
+            },
+            "text": {
+              "type": "string",
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false
+        },
+        "endProcesses": {
+          "type": "boolean"
+        },
+        "lingering": {
+          "type": "boolean"
+        },
+        "lingeringDescendants": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "rowId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        }
+      },
+      "required": [
+        "operationId",
+        "operation",
+        "state"
+      ],
+      "additionalProperties": false,
+      "title": "WorkbenchRepeat"
+    }
+  ],
+  "title": "RunWorkbenchResult"
+}

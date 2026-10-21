@@ -1,0 +1,6 @@
+{
+  "schema": "choose-worktree-folder-result",
+  "expected": "INVALID_REQUEST",
+  "platform": "windows",
+  "text": "{\"path\":\"C:\\\\work\",\"name\":\"work\"}"
+}

@@ -3,10 +3,11 @@
 
 import { afterEach, describe, expect, test } from "bun:test";
 import { act } from "react";
+import { ReviewCommitResult } from "../../src/contracts/envelope";
 import type { BridgeResponse } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
-import { contractChecked } from "./bridge-contract";
+import { commitReviewed, contractChecked } from "./bridge-contract";
 
 // tasks.md T239. plan.md "Task flow and command placement" (Compose a commit, Commit, Commit outcome) and "Keyboard and focus" (Message, Unavailable control).
 
@@ -14,7 +15,7 @@ printOrigin("../../src/frontend/commit/CommitTray.tsx", import.meta.dir);
 registerDom();
 const { createRoot } = await import("react-dom/client");
 const { CommitTray, HOOK_DISCLOSURE } = await import("../../src/frontend/commit/CommitTray");
-const { STALE_TEXT } = await import("../../src/frontend/changes/HunkControls");
+const { BLOCKED_TEXT, STALE_TEXT } = await import("../../src/frontend/changes/HunkControls");
 const { createDrafts } = await import("../../src/frontend/state/drafts");
 
 type Call = { operation: string; target: Record<string, unknown>; payload: Record<string, unknown>; resolve(response: BridgeResponse): void };
@@ -33,7 +34,7 @@ const SNAPSHOT = crypto.randomUUID();
 const TOKEN = crypto.randomUUID();
 const HEAD = { state: "branch", target: "refs/heads/main", oid: "1".repeat(40) } as const;
 const ok = (result: unknown): BridgeResponse => ({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "succeeded", result }) as BridgeResponse;
-const report = (commit: boolean, state = "untrusted") => ({ generation: 1, fingerprint: "f".repeat(64), state, persistence: "repository", approvalRequired: { reads: false, commit }, entries: [], hooks: [] });
+const report = (commit: boolean, state = "untrusted") => ({ generation: 1, programs: {}, state, persistence: "repository", approvalRequired: { reads: false, commit }, entries: [], hooks: [] });
 const flush = () => act(async () => void (await new Promise((resolve) => setTimeout(resolve, 0))));
 
 const unmounts: (() => Promise<void>)[] = [];
@@ -115,6 +116,34 @@ describe("tray", () => {
     });
   }
 
+  test("the reason kind places the reason: a block reason with the trust reason text stays under the editor, without the shield (tasks.md T113)", async () => {
+    const shared = BLOCKED_TEXT.operation;
+    const t = await mount({ blocked: "operation", trustReason: shared });
+    await t.type("Message");
+    const line = document.getElementById(t.commit.getAttribute("aria-describedby")!)!;
+    expect(line.textContent).toBe(shared);
+    expect(line.querySelector("svg")).toBeNull();
+    expect(line.parentElement!.contains(t.commit)).toBe(false);
+    const trust = await mount({ trustReason: shared });
+    await trust.type("Message");
+    const trustLine = document.getElementById(trust.commit.getAttribute("aria-describedby")!)!;
+    expect(trustLine.querySelector('svg[aria-hidden="true"]')).not.toBeNull();
+    expect(trustLine.parentElement!.contains(trust.commit)).toBe(true);
+  });
+
+  test("the reason kind places the Commit and push reason, also when both reasons share one text (tasks.md T113)", async () => {
+    const shared = "The Staged list is empty.";
+    const push = (host: HTMLElement) => [...host.querySelectorAll("button")].find((b) => b.textContent === "Commit and push")!;
+    const both = await mount({ staged: 0, pushReason: shared, onPush: () => {} });
+    await both.type("Message");
+    expect(push(both.host).getAttribute("aria-describedby")).toBe(both.commit.getAttribute("aria-describedby"));
+    expect(both.host.textContent).not.toContain(`Commit and push: ${shared}`);
+    const own = await mount({ pushReason: shared, onPush: () => {} });
+    await own.type("Message");
+    expect(own.commit.getAttribute("aria-describedby")).toBeNull();
+    expect(reason(push(own.host))).toBe(`Commit and push: ${shared}`);
+  });
+
   test("Enter inserts no commit, and the draft text stays in the draft store", async () => {
     const t = await mount();
     await t.type("Line one\nLine two");
@@ -132,7 +161,7 @@ describe("commit flow", () => {
   }
   async function runToCommit(t: Awaited<ReturnType<typeof ready>>) {
     await t.answer("readTrust", ok(report(false)));
-    await t.answer("reviewCommit", ok({ reviewToken: TOKEN }));
+    await t.answer("reviewCommit", ok(commitReviewed(TOKEN)));
   }
 
   test("one Commit activation sends one reviewCommit with the shown snapshot ID, then one commit with its token and confirmFullScope true", async () => {
@@ -223,7 +252,7 @@ describe("commit flow", () => {
     const t = await ready();
     await act(async () => t.commit.click());
     await t.answer("readTrust", ok(report(false)));
-    await t.answer("reviewCommit", ok({}));
+    await t.answer("reviewCommit", ok(commitReviewed(null)));
     expect(t.ops()).toEqual(["readTrust", "reviewCommit"]);
     expect(t.host.textContent).toContain(STALE_TEXT);
     expect(t.ended).toHaveLength(1);
@@ -265,13 +294,25 @@ describe("commit flow", () => {
     expect(t.host.querySelector('[role="status"]')?.textContent).toBe("Trust review did not complete: OUTPUT_LIMIT TRUST_REPORT_ENTRIES");
   });
 
+  test("a succeeded review that breaks the result schema shows the unknown-form text, not the Stale text, and sends no commit", async () => {
+    for (const result of [commitReviewed(TOKEN), commitReviewed(null)]) expect(ReviewCommitResult.safeParse(result).success).toBe(true);
+    const malformed = { reviewToken: TOKEN };
+    expect(ReviewCommitResult.safeParse(malformed).success).toBe(false);
+    const t = await ready();
+    await act(async () => t.commit.click());
+    await t.answer("readTrust", ok(report(false)));
+    await t.answer("reviewCommit", ok(malformed));
+    expect(t.ops()).toEqual(["readTrust", "reviewCommit"]);
+    expect(t.host.querySelector('[role="status"]')!.textContent).toBe("Commit did not complete: the result has an unknown form.");
+  });
+
   test("the live element stays mounted and only its text changes", async () => {
     const t = await ready();
     const live = t.host.querySelector('[role="status"]');
     expect(live?.textContent).toBe("");
     await act(async () => t.commit.click());
     await t.answer("readTrust", ok(report(false)));
-    await t.answer("reviewCommit", ok({}));
+    await t.answer("reviewCommit", ok(commitReviewed(null)));
     expect(t.host.querySelector('[role="status"]')).toBe(live);
     expect(live?.textContent).toBe(STALE_TEXT);
   });

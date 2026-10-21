@@ -350,6 +350,49 @@ pub(crate) fn is_wsl_path(path: &Path) -> bool {
     }
 }
 
+/// 001 §7 "Inside and outside" by text: the name components of `path` after the components of `root`.
+/// A Windows root folds only the ASCII letters `A` to `Z`. A WSL root compares the Linux names exactly.
+/// `None`: another prefix, no component after the root, or a component that is `.`, `..`, or breaks the component rule.
+pub(crate) fn below(root: &Path, path: &Path) -> Option<Vec<String>> {
+    let fold = !is_wsl_path(root);
+    let same = |a: &std::ffi::OsStr, b: &std::ffi::OsStr| {
+        if fold {
+            a.eq_ignore_ascii_case(b)
+        } else {
+            a == b
+        }
+    };
+    let mut parts = path.components();
+    for part in root.components() {
+        let equal = match (part, parts.next()?) {
+            (Component::Prefix(a), Component::Prefix(b)) => match (a.kind(), b.kind()) {
+                (Prefix::Disk(x), Prefix::Disk(y)) => x.eq_ignore_ascii_case(&y),
+                (Prefix::UNC(server, share), Prefix::UNC(other_server, other_share)) => {
+                    server.eq_ignore_ascii_case(other_server)
+                        && share.eq_ignore_ascii_case(other_share)
+                }
+                _ => false,
+            },
+            (Component::RootDir, Component::RootDir) => true,
+            (Component::Normal(a), Component::Normal(b)) => same(a, b),
+            _ => false,
+        };
+        if !equal {
+            return None;
+        }
+    }
+    let names: Vec<String> = parts
+        .map(|part| match part {
+            Component::Normal(name) => name
+                .to_str()
+                .filter(|name| is_component(name))
+                .map(str::to_string),
+            _ => None,
+        })
+        .collect::<Option<_>>()?;
+    (!names.is_empty()).then_some(names)
+}
+
 /// One fact per entry, in request order.
 /// After `stop` is set, each open, query, and read fails with `STATUS_CANCELLED`, and the shell sends no fact (contract §6 "Walks").
 pub(crate) fn walk(
@@ -408,12 +451,12 @@ fn check(stop: &AtomicBool) -> Result<(), NTSTATUS> {
 
 /// `OBJ_DONT_REPARSE` stops the open at a reparse point that the I/O manager would follow.
 /// A tag that no file system filter handles fails the open with `STATUS_IO_REPARSE_TAG_NOT_HANDLED` (T302).
-fn is_reparse_point(status: NTSTATUS) -> bool {
+pub(crate) fn is_reparse_point(status: NTSTATUS) -> bool {
     status == STATUS_REPARSE_POINT_ENCOUNTERED || status == STATUS_IO_REPARSE_TAG_NOT_HANDLED
 }
 
 /// Opens a root as the identity request opens a path.
-fn open_root(root: &Path, stop: &AtomicBool) -> Result<OwnedHandle, NTSTATUS> {
+pub(crate) fn open_root(root: &Path, stop: &AtomicBool) -> Result<OwnedHandle, NTSTATUS> {
     check(stop)?;
     open_for_identity(root)
         .map(OwnedHandle::from)
@@ -430,12 +473,12 @@ fn open_root(root: &Path, stop: &AtomicBool) -> Result<OwnedHandle, NTSTATUS> {
         )
 }
 
-fn raw(handle: &OwnedHandle) -> HANDLE {
+pub(crate) fn raw(handle: &OwnedHandle) -> HANDLE {
     HANDLE(handle.as_raw_handle())
 }
 
 /// Opens `name` relative to `parent`. `OBJ_DONT_REPARSE` fails the open at each reparse point that the I/O manager would follow.
-fn open(
+pub(crate) fn open(
     parent: &OwnedHandle,
     name: &str,
     read: bool,
@@ -490,16 +533,16 @@ fn open(
 /// `FILE_STANDARD_INFORMATION` with its `BOOLEAN` fields as bytes. A Rust `bool` must hold 0 or 1.
 #[repr(C)]
 #[derive(Default)]
-struct StandardInformation {
+pub(crate) struct StandardInformation {
     allocation_size: i64,
-    end_of_file: i64,
-    number_of_links: u32,
+    pub(crate) end_of_file: i64,
+    pub(crate) number_of_links: u32,
     delete_pending: u8,
     directory: u8,
 }
 
 /// Reads one information class. `T` must be the structure of `class`.
-fn query<T: Default>(
+pub(crate) fn query<T: Default>(
     handle: &OwnedHandle,
     class: FILE_INFORMATION_CLASS,
     stop: &AtomicBool,
@@ -532,14 +575,17 @@ fn not_opened(status: NTSTATUS, component: usize) -> Fact {
 }
 
 /// Contract §6 "File facts": the `error` code of each status.
-fn error(component: usize, status: NTSTATUS) -> Fact {
-    let code = match status {
+pub(crate) fn error_code(status: NTSTATUS) -> FileFactErrorCode {
+    match status {
         STATUS_ACCESS_DENIED => FileFactErrorCode::AccessDenied,
         STATUS_SHARING_VIOLATION => FileFactErrorCode::SharingViolation,
         STATUS_IO_DEVICE_ERROR => FileFactErrorCode::IoError,
         _ => FileFactErrorCode::OtherError,
-    };
-    error_fact(component, code)
+    }
+}
+
+fn error(component: usize, status: NTSTATUS) -> Fact {
+    error_fact(component, error_code(status))
 }
 
 /// The fact of a final component that the walk opened with attribute access only.
@@ -598,7 +644,7 @@ fn file_fact(
 }
 
 /// Reads at most `limit` bytes from the current position of a synchronous handle.
-fn read(handle: HANDLE, limit: usize, stop: &AtomicBool) -> Result<Vec<u8>, NTSTATUS> {
+pub(crate) fn read(handle: HANDLE, limit: usize, stop: &AtomicBool) -> Result<Vec<u8>, NTSTATUS> {
     let mut bytes = vec![0u8; limit];
     let mut filled = 0;
     while filled < limit {
@@ -1156,6 +1202,47 @@ pub(crate) mod tests {
         }
     }
 
+    /// 001 §7 "Inside and outside" by text: the components after the root components, with ASCII letters folded on Windows only.
+    #[test]
+    fn a_path_lies_below_a_root_by_its_components() {
+        let below = |root: &str, path: &str| super::below(Path::new(root), Path::new(path));
+        let names = |names: &[&str]| Some(names.iter().map(|name| name.to_string()).collect());
+        assert_eq!(
+            below(r"C:\repo", r"C:\repo\.gitignore"),
+            names(&[".gitignore"])
+        );
+        assert_eq!(
+            below(r"C:\Repo", r"c:/REPO/src\a.ts"),
+            names(&["src", "a.ts"])
+        );
+        assert_eq!(
+            below(r"C:\repo\.git", "C:/repo/.git/info/exclude"),
+            names(&["info", "exclude"])
+        );
+        assert_eq!(below(r"\\Host\Share\r", "//host/share/r/a"), names(&["a"]));
+        let wsl = r"\\wsl.localhost\Ubuntu-24.04\home\u\repo";
+        assert_eq!(
+            below(wsl, r"\\WSL.LOCALHOST\Ubuntu-24.04\home\u\repo\a"),
+            names(&["a"])
+        );
+        for (root, path) in [
+            (r"C:\repo", r"C:\repo"),
+            (r"C:\repo", r"C:\repository\a"),
+            (r"C:\repo", r"D:\repo\a"),
+            (r"C:\repo", r"C:\repo\..\x"),
+            (r"C:\repo", r"C:\repo\a\..\..\x"),
+            (r"C:\repo", r"C:\other\a"),
+            (r"C:\repo", r"C:\repo\a:b"),
+            (r"C:\repo", r"C:\repo\nul"),
+            (r"C:\repo", r"repo\a"),
+            (r"\\host\share\r", r"\\host\other\r\a"),
+            (wsl, r"\\wsl.localhost\Ubuntu-24.04\home\U\repo\a"),
+            (wsl, r"\\wsl.localhost\Ubuntu-24.04\home\u\REPO\a"),
+        ] {
+            assert_eq!(below(root, path), None, "{root} {path}");
+        }
+    }
+
     /// A symbolic link `REPARSE_DATA_BUFFER` (MS-FSCC 2.1.2.4) with `SubstituteName` at `offset`.
     fn symlink_buffer(tag: u32, offset: u16, name: &[u16], data_length: Option<u16>) -> Vec<u8> {
         let path: Vec<u8> = name.iter().flat_map(|unit| unit.to_le_bytes()).collect();
@@ -1223,7 +1310,7 @@ pub(crate) mod tests {
     const PRIVATE_TAG: u32 = 0x0000_7A5E;
 
     /// Sets `PRIVATE_TAG` with `FSCTL_SET_REPARSE_POINT` and a `REPARSE_GUID_DATA_BUFFER`. A folder must be empty.
-    fn set_private_tag(path: &Path) -> bool {
+    pub(crate) fn set_private_tag(path: &Path) -> bool {
         use std::os::windows::fs::OpenOptionsExt;
         use windows::Win32::Storage::FileSystem::{
             FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,

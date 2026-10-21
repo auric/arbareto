@@ -17,7 +17,7 @@ export type IdentityResult =
   | { ok: false; stop: WalkStop["stop"] };
 
 // MS-FSCC: the all-zero and the all-ones file ID name no file (research R2).
-const NO_FILE = /^(0{32}|f{32})$/;
+export const NO_FILE = /^(0{32}|f{32})$/;
 
 const refused: IdentityResult = { ok: false, code: "UNSUPPORTED_REPOSITORY", remedy: IDENTITY_REMEDY };
 

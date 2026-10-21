@@ -12,6 +12,7 @@ import { SYNC_NAMES, type StatusOperation } from "../status/OperationStatus";
 import type { ConflictPlan } from "./ConflictActions";
 import type { ForcePlan } from "./ForcePushConfirm";
 import type { ReviewPayload } from "./PullSplitButton";
+import { reviewWithTrust, SYNC_TRUST, type AskTrust } from "../trust/ask";
 import type { NeedsDestination, PushChoice } from "./PushPanel";
 
 type SyncAction = (typeof SYNC_ACTIONS)[number];
@@ -52,10 +53,12 @@ export type UseSyncOptions = {
   onRefused(text: string): void;
   /** A terminal `sync` response. The caller reads the workspace, the refs, the history, and the tracking again (FR-004, FR-013, FR-040). */
   onEnded(response: BridgeResponse): void;
+  /** Feature 004 plan.md D12 "Ask": a review that needs trust asks once, then runs again. */
+  askTrust?: AskTrust;
 };
 
 /** The renderer side of the sync flow: review, then the push panel, the force-push confirmation, or the start. */
-export function useSync({ bridge, target, repositoryId, headTarget, headOid, onOperation, onRefused, onEnded }: UseSyncOptions) {
+export function useSync({ bridge, target, repositoryId, headTarget, headOid, onOperation, onRefused, onEnded, askTrust }: UseSyncOptions) {
   const [panel, setPanel] = useState<NeedsDestination | null>(null);
   const [confirm, setConfirm] = useState<{ plan: Plan & ForcePlan; token: string } | null>(null);
   // FR-023: the notice and the HEAD target that it belongs to.
@@ -117,7 +120,8 @@ export function useSync({ bridge, target, repositoryId, headTarget, headOid, onO
     // A new pull, integrate, or conflict action replaces the question of the last pull.
     if (CLEARS_MODE.includes(payload.action)) setModeChoice(null);
     try {
-      const review = await bridge.reviewSync(t, payload);
+      // The second review takes the generation of the full read after the approval.
+      const review = await reviewWithTrust(() => bridge.reviewSync(target() ?? t, payload), SYNC_TRUST[payload.action], askTrust);
       const result = review.result;
       if (review.state !== "succeeded" || !isReviewed(result)) {
         // A refused review starts nothing. The status bar shows its code and reason.

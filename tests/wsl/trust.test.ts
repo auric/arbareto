@@ -55,8 +55,7 @@ async function register(s: WslSession, repo: SeamRepo): Promise<{ repositoryId: 
 async function approve(s: WslSession, w: { repositoryId: string; generation: number }) {
   const trust = await s.response(s.request("readTrust", {}, { repositoryId: w.repositoryId }));
   expect(trust).toMatchObject({ state: "succeeded" });
-  const fingerprint = (trust.result as { fingerprint: string }).fingerprint;
-  return s.response(s.request("approveTrust", { fingerprint, approve: true }, { repositoryId: w.repositoryId, repositoryGeneration: w.generation }));
+  return s.response(s.request("approveTrust", { action: "read" }, { repositoryId: w.repositoryId }));
 }
 
 describe("WSL trust approval of the selected Git (T212 decision W8)", () => {
@@ -84,7 +83,7 @@ describe("WSL trust approval of the selected Git (T212 decision W8)", () => {
       const git = "/opt/a:b/git";
       const repo = seamRepository(host, runner, { config: filterConfig(host), probe: { git } });
       const w = await register(s, repo);
-      // T318: `readTrust` issues no fingerprint, so `approveTrust` cannot follow. tests/git/trust.test.ts checks that both give one refusal.
+      // T318: `readTrust` and `approveTrust` give one refusal before any listing. tests/git/trust.test.ts checks both.
       const refused = await s.response(s.request("readTrust", {}, { repositoryId: w.repositoryId }));
       expect(refused).toMatchObject({
         state: "failed",
@@ -92,7 +91,7 @@ describe("WSL trust approval of the selected Git (T212 decision W8)", () => {
         result: { remedy: { text: `The Git path ${git} in ${host.distro} holds a name that Windows cannot show. Install Git in another folder of the distro, then approve again.` } },
       });
       // No native confirmation ran, so no record and no session approval exist.
-      expect(runner.trustStore.persists).toEqual([]);
+      expect(runner.frames.filter((f) => f.type === "confirm")).toEqual([]);
       expect(runner.trustStore.records).toEqual([]);
       expect(listScopes(host)).toEqual([]);
     },
@@ -167,6 +166,7 @@ describe("WSL trust listing rules (T212 decisions W3 to W5)", () => {
   const list = (runner: GitRunner, w: Workspace): Promise<ListingOutcome> =>
     createTrust({ runner, environment: { PATH: "C:\\Windows", HOME: "C:\\Users\\u" } }).listTrust({ operationId: crypto.randomUUID(), signal: new AbortController().signal, workspace: w });
 
+  // Feature 004 contract Δ7: only a submodule listing reads digests, so these repository listings send phase-1 requests only.
   test("an absolute Linux link target maps below its root, letter case counts, and a hook needs the X_OK result", async () => {
     const { runner, entries } = stub("", {
       "gitDirectory:hooks": { kind: "directory" },
@@ -182,7 +182,7 @@ describe("WSL trust listing rules (T212 decisions W3 to W5)", () => {
     expect(listing.hooksDirectory).toBe("/home/u/r/.git/hooks");
     expect(entries().filter((e) => e.endsWith(".exe"))).toEqual([]);
     expect(entries()).toContain("worktreeRoot:scripts/pre-commit");
-    expect(entries()).toContain("digest worktreeRoot:scripts/pre-commit");
+    expect(entries().filter((e) => e.startsWith("digest "))).toEqual([]);
     // `/home/u/R` is another folder on Linux, so the target lies outside every root and gets no entry.
     expect(entries().some((e) => e.includes("pre-push") && !e.startsWith("gitDirectory:hooks/"))).toBe(false);
     // hook.c `find_hook`: POSIX Git lists an entry only after `access(X_OK)`.
@@ -193,15 +193,19 @@ describe("WSL trust listing rules (T212 decisions W3 to W5)", () => {
   });
 
   test("a bare-name program takes the first Linux PATH candidate with the owner execute bit", async () => {
-    const { runner, entries } = stub("local\0file:.git/config\0filter.x.clean\ntool\0", {
-      "worktreeRoot:bin/tool": file(false),
-      "worktreeRoot:other/tool": file(true),
-    });
-    const outcome = await list(runner, workspace("bin:other:/usr/bin"));
-    if (!outcome.ok) throw new Error(JSON.stringify(outcome));
-    expect(outcome.listing.approvalRequired.reads).toBe(true);
-    // run-command.c `locate_in_PATH` skips a file without `S_IXUSR`, so only the second candidate is digested.
-    expect(entries().filter((e) => e.startsWith("digest "))).toEqual(["digest worktreeRoot:other/tool"]);
+    const fingerprint = async (facts: Record<string, FileFact>) => {
+      const { runner, entries } = stub("local\0file:.git/config\0filter.x.clean\ntool\0", facts);
+      const outcome = await list(runner, workspace("bin:other:/usr/bin"));
+      if (!outcome.ok) throw new Error(JSON.stringify(outcome));
+      expect(outcome.listing.approvalRequired.reads).toBe(true);
+      expect(entries().filter((e) => e.startsWith("digest "))).toEqual([]);
+      return outcome.listing.fingerprint;
+    };
+    // run-command.c `locate_in_PATH` skips a file without `S_IXUSR`. The found candidate enters the fingerprint, so a skipped first candidate
+    // gives the fingerprint of an absent one, and an executable first candidate gives another one.
+    const skipped = await fingerprint({ "worktreeRoot:bin/tool": file(false), "worktreeRoot:other/tool": file(true) });
+    expect(await fingerprint({ "worktreeRoot:other/tool": file(true) })).toBe(skipped);
+    expect(await fingerprint({ "worktreeRoot:bin/tool": file(true), "worktreeRoot:other/tool": file(true) })).not.toBe(skipped);
   });
 
   test("a protected Linux program path outside the roots gets identity requests in the UNC form, and a name without that form fails the listing", async () => {
@@ -234,7 +238,7 @@ describe("WSL trust listing rules (T212 decisions W3 to W5)", () => {
       ["gpg.program", false],
       ["diff.external", false],
     ]);
-    expect(outcome.listing.approvalRequired).toEqual({ reads: false, commit: false, sync: false });
+    expect(outcome.listing.approvalRequired).toEqual({ reads: false, commit: false, sync: false, workbench: false, mergetool: false });
     expect(identityPaths).toContain(unc("/mnt/c/Program Files/GnuPG/bin/gpg.exe"));
     expect(identityPaths).toContain(unc("/tmp/tools/difftool"));
     // A location only: no `fileFacts` entry names either program.

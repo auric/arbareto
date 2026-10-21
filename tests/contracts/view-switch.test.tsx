@@ -118,7 +118,8 @@ async function press(target: Element, key: string) {
   await settle();
 }
 
-// Opens a repository from the start page, docks the commit panel, and selects an Unstaged entry with its shown comparison and hunk 2.
+// Opens a repository from the start page, opens the Commit view, and selects an Unstaged entry with its shown comparison and hunk 2.
+// Feature 004 T042 (plan.md P5 risk): the Commit view replaces the docked commit panel.
 async function openChanges() {
   const double = bridgeDouble({ chooseRepository: registered() });
   const host = document.body.appendChild(document.createElement("div"));
@@ -129,7 +130,7 @@ async function openChanges() {
     host.remove();
   });
   await click(one('section[aria-label="Start page"] [role="option"]', "Open folder"));
-  await click(one("button", "Select Working directory"));
+  await click([...document.querySelectorAll<HTMLElement>('header nav[aria-label="Views"] button')].find((b) => text(b) === "Commit")!);
   await click(one("button", "Select src/a.ts"));
   await click(one("button", "Select hunk 2"));
   const field = document.querySelector("textarea");

@@ -9,10 +9,6 @@
           "minimum": 0,
           "maximum": 9007199254740991
         },
-        "fingerprint": {
-          "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
-        },
         "state": {
           "type": "string",
           "enum": [
@@ -45,24 +41,22 @@
             },
             "sync": {
               "type": "boolean"
+            },
+            "workbench": {
+              "type": "boolean"
+            },
+            "mergetool": {
+              "type": "boolean"
             }
           },
           "required": [
             "reads",
             "commit",
-            "sync"
+            "sync",
+            "workbench",
+            "mergetool"
           ],
           "additionalProperties": false
-        },
-        "bound": {
-          "type": "string",
-          "enum": [
-            "file-count",
-            "file-bytes",
-            "total-bytes",
-            "link",
-            "name"
-          ]
         },
         "inputLimited": {
           "type": "boolean",
@@ -190,16 +184,385 @@
               }
             ]
           }
+        },
+        "programs": {
+          "type": "object",
+          "properties": {
+            "hooks": {
+              "type": "object",
+              "properties": {
+                "names": {
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "event": {
+                            "type": "string",
+                            "pattern": "^[^\\u0000]*$"
+                          },
+                          "folder": {
+                            "type": "string",
+                            "pattern": "^[^\\u0000]*$"
+                          }
+                        },
+                        "required": [
+                          "event",
+                          "folder"
+                        ],
+                        "additionalProperties": false,
+                        "title": "FolderHookName"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "event": {
+                            "type": "string",
+                            "pattern": "^[^\\u0000]*$"
+                          },
+                          "scope": {
+                            "type": "string",
+                            "enum": [
+                              "system",
+                              "global",
+                              "local",
+                              "worktree",
+                              "command",
+                              "submodule",
+                              "unknown"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "event",
+                          "scope"
+                        ],
+                        "additionalProperties": false,
+                        "title": "ConfiguredHookName"
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "folder": {
+                            "type": "string",
+                            "pattern": "^[^\\u0000]*$"
+                          },
+                          "unlisted": {
+                            "type": "boolean",
+                            "const": true
+                          }
+                        },
+                        "required": [
+                          "folder",
+                          "unlisted"
+                        ],
+                        "additionalProperties": false,
+                        "title": "UnlistedHooksFolder"
+                      }
+                    ]
+                  }
+                },
+                "more": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "names",
+                "more"
+              ],
+              "additionalProperties": false
+            },
+            "filters": {
+              "type": "object",
+              "properties": {
+                "names": {
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "driver": {
+                        "type": "string",
+                        "pattern": "^[^\\u0000]*$"
+                      },
+                      "scope": {
+                        "type": "string",
+                        "enum": [
+                          "system",
+                          "global",
+                          "local",
+                          "worktree",
+                          "command",
+                          "submodule",
+                          "unknown"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "driver",
+                      "scope"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "more": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "names",
+                "more"
+              ],
+              "additionalProperties": false
+            },
+            "monitors": {
+              "type": "object",
+              "properties": {
+                "names": {
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "scope": {
+                        "type": "string",
+                        "enum": [
+                          "system",
+                          "global",
+                          "local",
+                          "worktree",
+                          "command",
+                          "submodule",
+                          "unknown"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "scope"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "more": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "names",
+                "more"
+              ],
+              "additionalProperties": false
+            },
+            "mergeDrivers": {
+              "type": "object",
+              "properties": {
+                "names": {
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "driver": {
+                        "type": "string",
+                        "pattern": "^[^\\u0000]*$"
+                      },
+                      "scope": {
+                        "type": "string",
+                        "enum": [
+                          "system",
+                          "global",
+                          "local",
+                          "worktree",
+                          "command",
+                          "submodule",
+                          "unknown"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "driver",
+                      "scope"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "more": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "names",
+                "more"
+              ],
+              "additionalProperties": false
+            },
+            "mergeTools": {
+              "type": "object",
+              "properties": {
+                "names": {
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "tool": {
+                        "type": "string",
+                        "pattern": "^[^\\u0000]*$"
+                      },
+                      "scope": {
+                        "type": "string",
+                        "enum": [
+                          "system",
+                          "global",
+                          "local",
+                          "worktree",
+                          "command",
+                          "submodule",
+                          "unknown"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "tool",
+                      "scope"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "more": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "names",
+                "more"
+              ],
+              "additionalProperties": false
+            },
+            "signing": {
+              "type": "object",
+              "properties": {
+                "names": {
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string",
+                        "pattern": "^[^\\u0000]*$"
+                      },
+                      "scope": {
+                        "type": "string",
+                        "enum": [
+                          "system",
+                          "global",
+                          "local",
+                          "worktree",
+                          "command",
+                          "submodule",
+                          "unknown"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "scope"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "more": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "names",
+                "more"
+              ],
+              "additionalProperties": false
+            },
+            "other": {
+              "type": "object",
+              "properties": {
+                "names": {
+                  "maxItems": 20,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string",
+                        "pattern": "^[^\\u0000]*$"
+                      },
+                      "scope": {
+                        "type": "string",
+                        "enum": [
+                          "system",
+                          "global",
+                          "local",
+                          "worktree",
+                          "command",
+                          "submodule",
+                          "unknown"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "scope"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "more": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "names",
+                "more"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "hooks",
+            "filters",
+            "monitors",
+            "mergeDrivers",
+            "mergeTools",
+            "signing",
+            "other"
+          ],
+          "additionalProperties": false,
+          "title": "TrustDetails"
         }
       },
       "required": [
         "generation",
-        "fingerprint",
         "state",
         "persistence",
         "approvalRequired",
         "entries",
-        "hooks"
+        "hooks",
+        "programs"
       ],
       "additionalProperties": false,
       "title": "TrustReport"

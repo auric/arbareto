@@ -141,6 +141,14 @@ export function paneBounds(kind: PaneKind, input: PaneInput): Bounds {
   return { min: m.workingChangesMin, max, default: clamp(128, m.workingChangesMin, max) };
 }
 
+/**
+ * Feature 004 plan.md D16 "Geometry": the Commit view has no references sidebar, so its width is the client width.
+ * Outside the constrained profile, the lists sit left of the diff when that width holds the lane minimum, the splitter, and the diff minimum.
+ */
+export function commitViewProfile(profile: Profile, width: number): Profile {
+  return profile === "narrow" && width >= FILE_LANE.min + SPLITTER + DIFF_MIN ? "wide" : profile;
+}
+
 /** plan.md "References sidebar": the sidebar width in the wide and narrow profiles. */
 export function sidebarBounds(profile: "wide" | "narrow", width: number): Bounds {
   const max = Math.max(SIDEBAR.min, Math.min(SIDEBAR.max, width - SIDEBAR_REST[profile] - SPLITTER));
@@ -281,7 +289,6 @@ export function statusAreaHeight(input: { content: number; client: Size; textSca
 
 export const DIALOG_DEFAULTS = {
   trust: { width: 560, height: 440 },
-  updateSubmodules: { width: 800, height: 600 },
   about: { width: 560, height: 480 },
 } as const;
 

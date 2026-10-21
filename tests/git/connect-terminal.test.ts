@@ -220,7 +220,8 @@ describeGit("connect in a terminal (T053)", () => {
     });
   }, TIMEOUT_MS);
 
-  caseTest(TASK, "FR-009: a sync target checks approvalRequired.sync and the trust fingerprint first; a difference gives TRUST_REQUIRED or TRUST_CHANGED, and no terminal request goes out", WINDOWS, async () => {
+  // Feature 004 spec FR-071 (contract Δ14): the approval binds the folders and the Git selection, so a changed program after approval asks nothing.
+  caseTest(TASK, "FR-009: a sync target checks approvalRequired.sync first: without approval it gives TRUST_REQUIRED and no terminal request goes out; after approval a changed program keeps the approval", WINDOWS, async () => {
     const f = fixture("t053-trust");
     await withSync("t053-trust", async (service) => {
       service.runner.inject.sshClient = { plink: f.plink };
@@ -232,15 +233,15 @@ describeGit("connect in a terminal (T053)", () => {
 
       const trust = await service.readTrust(r.repositoryId);
       expect(trust.result!.approvalRequired.sync).toBe(true);
-      expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+      expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
       expect(outcome(await connect(service, fetch, r.repositoryId))).toEqual({ state: "succeeded", code: undefined });
       expect(terminals(service).length).toBe(1);
 
       const second = `${f.h.root}/canary-2.sh`;
       f.h.write(second, `#!/bin/sh\necho ran >> '${f.log}'\nexit 1\n`);
       gitRun(f.h, f.repo, ["config", "core.sshCommand", second]);
-      expect(outcome(await connect(service, fetch, r.repositoryId))).toEqual({ state: "failed", code: "TRUST_CHANGED" });
-      expect(terminals(service).length).toBe(1);
+      expect(outcome(await connect(service, fetch, r.repositoryId))).toEqual({ state: "succeeded", code: undefined });
+      expect(terminals(service).length).toBe(2);
       expect(existsSync(native(f.log))).toBe(false);
       service.runner.inject.sshClient = "git";
     });

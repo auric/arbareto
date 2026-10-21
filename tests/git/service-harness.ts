@@ -4,12 +4,13 @@
 // The in-process service of the batch 2 tests: `createSession` with the `bun-runner.ts` shell double.
 // Its imports must load off Windows without `dlopen` (tests/git/portable-imports.test.ts).
 
-import { spyOn, test } from "bun:test";
-import { chmodSync, closeSync, existsSync, lstatSync, mkdtempSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { expect, spyOn, test } from "bun:test";
+import { chmodSync, closeSync, existsSync, lstatSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import type { Handshake, MutationStarted } from "../../src/contracts/channel";
+import type { Handshake, MutationStarted, TrustAction, TrustDetails } from "../../src/contracts/channel";
+import { ReadBranchesResult, ReadGitSettingsResult, ReadWorktreesResult, ReviewCommitResult, ReviewWorkbenchResult, RunWorkbenchResult } from "../../src/contracts/envelope";
 import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
 import { isObject } from "../../src/contracts/strict-json";
 import type { HunkCheckpoint } from "../../src/git-service/hunk-publish";
@@ -17,7 +18,7 @@ import { createSession, type SessionOptions } from "../../src/git-service/sessio
 import { FrameBoundError, type Frame } from "../../src/git-service/transport";
 import { printOrigin } from "../origin";
 import { createBunRunner, createTrustStore, type BunRunner, type CallMatch, type TrustStore } from "./bun-runner";
-import { FIXTURE_ROOT, fixtureDir, fixtureEnv, serviceEnv } from "./fixture-root";
+import { FIXTURE_GLOBAL_CONFIG, FIXTURE_HOME, FIXTURE_ROOT, fixtureDir, fixtureEnv, serviceEnv } from "./fixture-root";
 import { GIT } from "./git-binary";
 import { gitOpenssl } from "./http-401";
 import { sshTools } from "../support/ssh-server";
@@ -155,6 +156,36 @@ export function caseTest(task: string, name: string, needs: readonly Capability[
   test.skip(name, body, timeoutMs);
 }
 
+const digestOf = (file: string) => (existsSync(file) ? new Bun.CryptoHasher("sha256").update(readFileSync(file)).digest("hex") : "absent");
+
+// SC-009: the SHA-256 of each configuration file that the owned environment gives a Git of `dir`, or "absent".
+// The files are the common `config`, the worktree `config.worktree`, the owned global file, and the owned system file of `remote-fixtures.ts`.
+export function configDigests(dir: string): Record<string, string> {
+  if (GIT === null) throw new Error("Git executable absent");
+  const proc = Bun.spawnSync([GIT, "rev-parse", "--path-format=absolute", "--git-common-dir", "--git-dir"], { cwd: dir, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 30_000 });
+  const lines = proc.stdout.toString("utf8").split("\n");
+  if (proc.exitCode !== 0 || lines.length !== 3 || lines[2] !== "") throw new Error(`git rev-parse in ${dir} exited ${proc.exitCode}: ${proc.stderr.toString()}`);
+  const files = [join(lines[0]!, "config"), join(lines[1]!, "config.worktree"), FIXTURE_GLOBAL_CONFIG, join(FIXTURE_HOME, "system.gitconfig")];
+  return Object.fromEntries(files.map((file) => [file, digestOf(file)]));
+}
+
+// SC-009: every configuration file of each repository that `body` registers keeps its bytes from the first registration to the end of `body`.
+export async function keepConfigs(service: Service, body: (service: Service) => Promise<void>): Promise<void> {
+  const before: Record<string, string> = {};
+  const register = service.register;
+  service.register = (path) => {
+    for (const [file, digest] of Object.entries(configDigests(path))) before[file] ??= digest;
+    return register(path);
+  };
+  try {
+    await body(service);
+  } finally {
+    service.register = register;
+  }
+  const after = Object.fromEntries(Object.keys(before).map((file) => [file, digestOf(file)]));
+  expect(after).toEqual(before);
+}
+
 // Matches only the first call that `match` accepts. The double passes the same call object at each check of that call.
 export function once(match: CallMatch): CallMatch {
   let first: object | null = null;
@@ -237,6 +268,8 @@ export interface OpenOptions extends ServiceSeams {
   unloadedMarkers?: number;
   // Runs when the service sends a `started` mutation frame, before the double writes the marker and replies.
   onStarted?: (frame: MutationStarted) => void;
+  // The `BunRunnerOptions` fixture isolation of WSL processes: the Linux path of the owned global configuration.
+  wslGlobalConfig?: string;
 }
 
 export interface ServiceResponse<R = unknown> {
@@ -327,13 +360,12 @@ export interface OpenedHistory {
 
 export interface TrustResult {
   generation: number;
-  fingerprint: string;
   state: "untrusted" | "approved" | "changed" | "revoked";
   persistence: "stored" | "session";
   trustId?: string;
-  approvalRequired: { reads: boolean; commit: boolean; sync: boolean };
-  bound?: "file-count" | "file-bytes" | "total-bytes" | "link" | "name";
+  approvalRequired: { reads: boolean; commit: boolean; sync: boolean; workbench: boolean; mergetool: boolean };
   inputLimited?: boolean;
+  programs: TrustDetails;
   entries: { key: string; scope: string; origin?: string; value?: string }[];
   hooks: { event: string; scope?: string; path?: string; disabled?: boolean }[];
 }
@@ -374,7 +406,8 @@ export interface Service {
   // The feature 001 cases read the current checkout, so `scope` defaults to "current".
   openHistory(id: string, generation: number, scope?: "all" | "current"): Promise<ServiceResponse<OpenedHistory>>;
   readTrust(id: string): Promise<ServiceResponse<TrustResult>>;
-  approveTrust(id: string, fingerprint: string, generation: number): Promise<ServiceResponse<ApproveResult>>;
+  // Feature 004 contract Δ7: the action names the dialog sentence only.
+  approveTrust(id: string, action?: TrustAction): Promise<ServiceResponse<ApproveResult>>;
   revokeTrust(id: string, trustId: string): Promise<ServiceResponse<RevokeResult>>;
   cancel(operationId: string): Promise<ServiceResponse>;
   getOperation(operationId: string): Promise<ServiceResponse>;
@@ -394,16 +427,28 @@ export function checkFrame(frame: object): void {
 
 const isResponse =(value: unknown): value is ServiceResponse => isObject(value) && typeof value.state === "string" && (value.requestId === null || typeof value.requestId === "string");
 
+// Feature 004 contract Δ10 (T034, T060) and Δ3 `reviewCommit`: every result of these operations must fit its schema.
+const RESULT_SCHEMAS: Readonly<Record<string, { safeParse(value: unknown): { success: boolean } }>> = {
+  readBranches: ReadBranchesResult,
+  readWorktrees: ReadWorktreesResult,
+  readGitSettings: ReadGitSettingsResult,
+  reviewWorkbench: ReviewWorkbenchResult,
+  reviewCommit: ReviewCommitResult,
+  runWorkbench: RunWorkbenchResult,
+};
+
 export async function openService(options: OpenOptions): Promise<Service> {
   const trustStore = options.trustStore ?? createTrustStore();
   const environment = options.environment ?? serviceEnv();
-  const runner = createBunRunner({ git: options.git, directory: fixtureDir(options.name), environment, trustStore });
+  const runner = createBunRunner({ git: options.git, directory: fixtureDir(options.name), environment, trustStore, ...(options.wslGlobalConfig === undefined ? {} : { wslGlobalConfig: options.wslGlobalConfig }) });
   const responses: ServiceResponse[] = [];
   const progress: unknown[] = [];
   const refused: Frame[] = [];
   const responseAt = new Map<string, number>();
   const firstResponse = new Map<string, ServiceResponse>();
   const acceptedBy = new Map<string, string>();
+  // The operation of each sent `requestId`.
+  const sentOperations = new Map<string, string>();
   const listeners = new Set<() => void>();
   let handshakeReply: unknown = null;
   let failed = false;
@@ -461,6 +506,10 @@ export async function openService(options: OpenOptions): Promise<Service> {
       const response = frame.kind === "public" ? frame.response : undefined;
       if (isResponse(response)) {
         responses.push(response);
+        // A result that breaks its schema fails every wait and `dispose`, as a frame above the bound does.
+        const operation = typeof response.requestId === "string" ? sentOperations.get(response.requestId) : undefined;
+        const schema = operation === undefined ? undefined : RESULT_SCHEMAS[operation];
+        if (schema !== undefined && response.result !== undefined && !schema.safeParse(response.result).success) frameError ??= new Error(`${operation} result breaks its schema: ${JSON.stringify(response.result)}`);
         if (typeof response.requestId === "string" && !firstResponse.has(response.requestId)) {
           firstResponse.set(response.requestId, response);
           responseAt.set(response.requestId, performance.now());
@@ -537,6 +586,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     log: () => session.log.entries(),
     send(operation, payload, envelope = {}) {
       const requestId = envelope.requestId ?? crypto.randomUUID();
+      sentOperations.set(requestId, operation);
       sendFrame({
         kind: "public",
         request: {
@@ -586,7 +636,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     readEntries: (id, generation, snapshotId, cursor) => service.request("readEntries", { snapshotId, cursor }, { repositoryId: id, repositoryGeneration: generation }),
     openHistory: (id, generation, scope = "current") => service.request("openHistory", { scope }, { repositoryId: id, repositoryGeneration: generation }),
     readTrust: (id) => service.request("readTrust", {}, { repositoryId: id }),
-    approveTrust: (id, fingerprint, generation) => service.request("approveTrust", { fingerprint, approve: true }, { repositoryId: id, repositoryGeneration: generation }),
+    approveTrust: (id, action = "commit") => service.request("approveTrust", { action }, { repositoryId: id }),
     revokeTrust: (id, trustId) => service.request("revokeTrust", { trustId }, { repositoryId: id }),
     cancel: (operationId) => service.request("cancel", { operationId }),
     getOperation: (operationId) => service.request("getOperation", { operationId }),

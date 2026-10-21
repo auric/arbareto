@@ -5,12 +5,13 @@ import { Archive01Icon, Cancel01Icon, CloudIcon, GitBranchIcon, Search01Icon, Ta
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type Ref } from "react";
 import { HISTORY_VIEW_COMMITS } from "../../contracts/limits";
-import { CopyButton } from "../app/RepositoryStates";
+import { CopyButton, unknownFormText, unknownReadText } from "../app/RepositoryStates";
 import { WarningIcon } from "../app/NoticeBand";
 import { Button } from "../components/ui/button";
 import { IconButton } from "../components/icon-button";
 import { metrics, type Density, type Profile } from "../layout/profiles";
 import type { TrackLabel } from "../state/tracking";
+import { scopedAction } from "../keyboard/shortcuts";
 import { SPECIAL_ROWS, type Head, type HistoryView, type Scope, type SearchState, type ViewRow } from "../state/history-view";
 import { BOUNDARY_TEXT, columnWidth, LANE_SPACING, ViewCell, WorkingLineCell } from "./AncestryCell";
 import { INVALID_UTF8_TEXT, LOCAL_DATE } from "./CommitDetails";
@@ -103,6 +104,7 @@ function refusedText(search: SearchState): string {
   if (search.code === "SEARCH_UNSUPPORTED") return `Search is not available here. ${search.remedy?.text ?? ""}`.trim();
   if (search.code === "OUTPUT_LIMIT") return `Search is not available, because this history list stopped at ${fmt.format(HISTORY_VIEW_COMMITS)} commits.`;
   if (search.code === "HISTORY_CHANGED") return "The search stopped: Git listed the commits in a different order. Press Enter to search again.";
+  if (search.code === undefined) return unknownFormText("Search");
   return `The search failed: ${search.code}. Press Enter to search again.`;
 }
 
@@ -114,14 +116,14 @@ const LABEL_KINDS: { kind: ViewRow["labels"][number]["kind"]; label: string; ico
   { kind: "stash", label: "stash", icon: Archive01Icon },
 ];
 
-/** 001 plan.md "History graph design": how many labels fit in `room`, half of the subject cell. Without room for all, the shown labels leave room for the "+<n>" chip. */
-export function fitChips(widths: readonly number[], room: number, plus: number): number {
-  if (widths.reduce((a, b) => a + b, 0) <= room) return widths.length;
+/** 001 plan.md "History graph design": how many labels fit in `room`, half of the subject cell. Without room for all, the shown labels leave room for the "+<n>" chip. `gap` separates two neighbor labels. */
+export function fitChips(widths: readonly number[], room: number, plus: number, gap = 0): number {
+  if (widths.reduce((a, b) => a + gap + b, -gap) <= room) return widths.length;
   let used = plus;
   let count = 0;
   for (const width of widths) {
-    if (used + width > room) break;
-    used += width;
+    if (used + gap + width > room) break;
+    used += gap + width;
     count++;
   }
   return count;
@@ -131,10 +133,25 @@ type Tracking = ReadonlyMap<string, TrackLabel>;
 /** Feature 003 FR-019: a local branch label joins its count label by branch name. */
 const countOf = (label: ViewRow["labels"][number], tracking: Tracking | undefined) => (label.kind === "branch" ? (tracking?.get(label.name) ?? null) : null);
 
-function LabelChip({ label, tracking }: { label: ViewRow["labels"][number]; tracking?: Tracking }) {
+type Label = ViewRow["labels"][number];
+/** Feature 004 spec FR-014: the branch menu of a local or remote-tracking branch label. */
+type LabelMenu = (label: Label, anchor: HTMLElement, byKey?: boolean) => void;
+
+/** Feature 004 plan.md D15 "History labels": the labels that have a branch menu. */
+const hasMenu = (label: Label) => label.kind === "branch" || label.kind === "remote";
+
+function LabelChip({ label, tracking, onMenu, active = false }: { label: Label; tracking?: Tracking; onMenu?: LabelMenu; active?: boolean }) {
   const count = countOf(label, tracking);
+  const menu =
+    onMenu !== undefined && hasMenu(label)
+      ? (event: { preventDefault(): void; stopPropagation(): void; currentTarget: HTMLElement }) => {
+          event.preventDefault();
+          event.stopPropagation();
+          onMenu(label, event.currentTarget);
+        }
+      : undefined;
   return (
-    <span data-kind={label.kind} className="chip flex shrink-0 items-center gap-1">
+    <span data-kind={label.kind} data-label-active={active ? "" : undefined} className="chip flex shrink-0 items-center gap-1" onContextMenu={menu}>
       <HugeiconsIcon icon={LABEL_KINDS.find((k) => k.kind === label.kind)!.icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
       <span data-chip-name className="max-w-[160px] truncate">
         {label.name}
@@ -145,7 +162,7 @@ function LabelChip({ label, tracking }: { label: ViewRow["labels"][number]; trac
 }
 
 /** The labels of one row. A hidden copy measures each label, so the shown labels take at most half of the subject cell. */
-function RowLabels({ labels, tracking }: { labels: ViewRow["labels"]; tracking?: Tracking }) {
+function RowLabels({ labels, tracking, onMenu, active = null }: { labels: ViewRow["labels"]; tracking?: Tracking; onMenu?: LabelMenu; active?: Label | null }) {
   const measure = useRef<HTMLSpanElement>(null);
   const [count, setCount] = useState(labels.length);
   useLayoutEffect(() => {
@@ -157,8 +174,9 @@ function RowLabels({ labels, tracking }: { labels: ViewRow["labels"]; tracking?:
     const fit = () => {
       const parts = [...copy.children].map((c) => c.getBoundingClientRect().width);
       const plus = parts.pop() ?? 0;
-      const badges = [...region.querySelectorAll(":scope > .badge")].reduce((sum, b) => sum + b.getBoundingClientRect().width, 0);
-      setCount(fitChips(parts, Math.max(0, cell.clientWidth / 2 - badges), plus));
+      const gap = parseFloat(getComputedStyle(region).columnGap) || 0;
+      const badges = [...region.querySelectorAll(":scope > .badge")].reduce((sum, b) => sum + b.getBoundingClientRect().width + gap, 0);
+      setCount(fitChips(parts, Math.max(0, cell.clientWidth / 2 - badges), plus, gap));
     };
     fit();
     const observer = new ResizeObserver(fit);
@@ -166,24 +184,29 @@ function RowLabels({ labels, tracking }: { labels: ViewRow["labels"]; tracking?:
     return () => observer.disconnect();
   }, [labels, tracking]);
   const hidden = labels.length - count;
+  const shown = labels.slice(0, count);
   return (
     <>
-      {labels.slice(0, count).map((l) => (
-        <LabelChip key={`${l.kind}:${l.name}`} label={l} tracking={tracking} />
+      {shown.map((l) => (
+        <LabelChip key={`${l.kind}:${l.name}`} label={l} tracking={tracking} onMenu={onMenu} active={active !== null && l.kind === active.kind && l.name === active.name} />
       ))}
-      {hidden > 0 ? <span className="chip shrink-0">+{hidden}</span> : null}
+      {hidden > 0 ? (
+        <span data-label-active={active !== null && !shown.some((l) => l.kind === active.kind && l.name === active.name) ? "" : undefined} className="chip shrink-0">
+          +{hidden}
+        </span>
+      ) : null}
       <span ref={measure} aria-hidden="true" className="invisible absolute flex gap-1">
         {labels.map((l) => {
           const count = countOf(l, tracking);
           return (
-            <span key={`${l.kind}:${l.name}`} className="flex items-center gap-1">
+            <span key={`${l.kind}:${l.name}`} className="chip-measure flex items-center gap-1">
               <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} className="size-(--icon-size)" />
               <span className="max-w-[160px] truncate">{l.name}</span>
-              {count === null ? null : <span>{count.text}</span>}
+              {count === null ? null : <span className="num">{count.text}</span>}
             </span>
           );
         })}
-        <span>+{labels.length}</span>
+        <span className="chip-measure">+{labels.length}</span>
       </span>
     </>
   );
@@ -241,10 +264,16 @@ export type HistoryListProps = {
   filterRef?: Ref<HTMLInputElement>;
   /** Feature 003 FR-019: the count label of each local branch by name. */
   tracking?: Tracking;
+  /** Feature 004 spec FR-014: a right-click on a branch label opens its branch menu. */
+  onLabelMenu?: LabelMenu;
+  /** Feature 004 plan.md D15: Ctrl+B on the selected commit row opens Create branch here. */
+  onCreateBranch?: (oid: string, anchor: HTMLElement) => void;
+  /** Feature 004 spec FR-072: the reason that no workspace read ran, in place of Loading…, or null. */
+  unread?: string | null;
 };
 
 /** The feature 002 history list: a fixed-height window over the service view (plan.md D6). One listbox, one Tab stop, focus on the list. */
-export function HistoryList({ view, entries, density, profile, textScale = 1, dateFormat = LOCAL_DATE, onSelect, onScope, filterRef, tracking }: HistoryListProps) {
+export function HistoryList({ view, entries, density, profile, textScale = 1, dateFormat = LOCAL_DATE, onSelect, onScope, filterRef, tracking, onLabelMenu, onCreateBranch, unread = null }: HistoryListProps) {
   const state = useSyncExternalStore(view.subscribe, view.getState);
   const ids = { heading: useId(), count: useId(), notes: useId(), list: useId() };
   const list = useRef<HTMLDivElement>(null);
@@ -271,6 +300,8 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   const written = useRef<number | null>(null);
   const [active, setActive] = useState(0);
   const [focused, setFocused] = useState(false);
+  // Plan D15 "History labels": the label that Left or Right moved to, for the row `oid`.
+  const [labelAt, setLabelAt] = useState<{ oid: string; index: number } | null>(null);
 
   const scrollTo = (top: number) => {
     const element = list.current;
@@ -353,6 +384,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   function go(item: number) {
     const to = Math.max(0, Math.min(lastItem, item));
     setActive(to);
+    setLabelAt(null);
     scrollTo(revealTop(to, box.top, rowHeight, list.current?.clientHeight ?? 0, total));
     // plan.md "Keyboard and focus", History list row: selection follows each navigation key.
     if (to === 0) view.select(WORKING_ROW, null, undefined, false);
@@ -364,7 +396,28 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   }
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
+    const selection = state.selection;
+    const selectedOid = selection?.mode === listMode && selection.index !== null ? selection.id : undefined;
+    if (onCreateBranch !== undefined && selectedOid !== undefined && scopedAction(event.nativeEvent, "historyRow") === "createBranch") {
+      event.preventDefault();
+      return onCreateBranch(selectedOid, event.currentTarget);
+    }
+    // Feature 004 spec FR-014, plan D15 "History labels": Shift+F10 and the Menu key open the branch menu of the active label of the selected row.
+    const menuKey = (event.key === "F10" && event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) || (event.key === "ContextMenu" && !event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey);
+    if (menuKey && onLabelMenu !== undefined && selectedOid !== undefined && !event.nativeEvent.isComposing) {
+      const label = menuLabels[labelIndex];
+      if (label === undefined) return;
+      event.preventDefault();
+      const option = document.getElementById(optionId(selection!.index! + SPECIAL_ROWS));
+      const chip = [...(option?.querySelectorAll<HTMLElement>(".chip[data-kind]") ?? [])].find((c) => c.dataset.kind === label.kind && c.querySelector("[data-chip-name]")?.textContent === label.name);
+      return onLabelMenu(label, chip ?? option ?? event.currentTarget, true);
+    }
     if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
+    if ((event.key === "ArrowLeft" || event.key === "ArrowRight") && onLabelMenu !== undefined && selectedRow !== undefined && menuLabels.length > 0) {
+      event.preventDefault();
+      const index = Math.max(0, Math.min(menuLabels.length - 1, labelIndex + (event.key === "ArrowRight" ? 1 : -1)));
+      return setLabelAt({ oid: selectedRow.oid, index });
+    }
     const page = Math.max(1, Math.floor(height / rowHeight));
     const moves: Record<string, () => void> = {
       ArrowDown: () => go(active + 1),
@@ -399,12 +452,19 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
   const row0 = view.row(0);
   // plan.md D6: the dotted lead-in shows only when HEAD is row 0.
   const line = !filter && row0?.checkout === true;
-  const special = specialParts(entries);
+  const special = specialParts(entries, unread);
   const lanes = state.lanes;
   const optionId = (item: number) => `${ids.list}-${item}`;
   const setSize = more ? -1 : total;
   const search = state.search;
   const listMode = filter ? "filter" : "full";
+  const selectedRow = state.selection?.mode === listMode && state.selection.index !== null ? view.row(state.selection.index) : undefined;
+  const menuLabels = selectedRow?.labels.filter(hasMenu) ?? [];
+  const moved = labelAt !== null && labelAt.oid === selectedRow?.oid;
+  const labelIndex = moved ? Math.min(labelAt.index, menuLabels.length - 1) : 0;
+  // The active label shows only after Left or Right, and only while the list has focus.
+  const activeLabel = moved && focused ? (menuLabels[labelIndex] ?? null) : null;
+  const labelText = activeLabel === null ? null : `${activeLabel.name}, ${activeLabel.kind === "branch" ? "branch" : "remote-tracking"} label ${labelIndex + 1} of ${menuLabels.length}.`;
   const isSelected = (item: number) =>
     item < SPECIAL_ROWS ? selectedId === (item === 0 ? WORKING_ROW : INDEX_ROW) : state.selection?.index === item - SPECIAL_ROWS && state.selection.mode === listMode;
 
@@ -469,7 +529,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
           {row.checkout || row.labels.length > 0 ? (
             <span data-slot="row-labels" title={row.labels.map((l) => l.name).join(", ")} className="relative flex min-w-0 max-w-[50%] shrink-0 items-center gap-1 overflow-hidden">
               {row.checkout ? <span className="badge shrink-0">{head?.state === "detached" ? "HEAD, detached" : "HEAD"}</span> : null}
-              <RowLabels labels={row.labels} tracking={tracking} />
+              <RowLabels labels={row.labels} tracking={tracking} onMenu={onLabelMenu} active={row.oid === selectedRow?.oid ? activeLabel : null} />
             </span>
           ) : null}
           {row.match === true ? <HugeiconsIcon icon={Search01Icon} strokeWidth={2} aria-hidden="true" data-slot="match-mark" className="size-(--icon-size) shrink-0 text-accent-role" /> : null}
@@ -571,7 +631,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
     notes.push(
       <p key="open" className="flex items-center gap-2">
         <WarningIcon />
-        <span>{state.openFailure.code === "OUTPUT_LIMIT" && state.openFailure.reason !== undefined ? limitText(state.openFailure.reason) : `Arbareto cannot open the history: ${state.openFailure.code}.`}</span>
+        <span>{state.openFailure.code === "OUTPUT_LIMIT" && state.openFailure.reason !== undefined ? limitText(state.openFailure.reason) : state.openFailure.code === null ? unknownReadText("The history") : `Arbareto cannot open the history: ${state.openFailure.code}.`}</span>
         <Button variant="outline" size="sm" onClick={() => void view.refresh()}>
           Refresh
         </Button>
@@ -657,6 +717,7 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
     search?.state === "finished" && search.matches === 0 ? NO_MATCH : null,
     waiting,
     matchEnd,
+    labelText,
   ]
     .filter((t) => t !== null)
     .join(" ");

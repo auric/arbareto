@@ -33,13 +33,17 @@ use crate::bootstrap::{
 };
 use crate::close::{Mutation, Running};
 use crate::dialogs::Registered;
+use crate::file_append::{self, AppendResult};
 use crate::file_facts;
 use crate::git_env::child_environment;
 use crate::jobs::{Event, Supervisor, Tracker};
 use crate::putty;
 use crate::putty::Program;
+use crate::reveal;
+use crate::schema::mutation_request::StartedKind;
 use crate::schema::process_reply::{
-    ActivityState, ExitDeadline, OutputStream, PageantResultResult, RegisterResultResult,
+    ActivityState, ExitDeadline, FileFactsReplyFactsItem as FactItem, OutputStream,
+    PageantResultResult, RegisterResultResult,
 };
 use crate::schema::process_request::{self as frame, EnvironmentPolicy};
 use crate::schema::{self, reply, typed};
@@ -134,6 +138,9 @@ pub type SyncSettingsRead = Box<dyn Fn() -> SyncSettings + Send + Sync>;
 /// Starts the connect terminal. Without it, the shell starts a new console. Tests inject it.
 pub type TerminalStart = Box<dyn Fn(&putty::Terminal) -> Result<(), SpawnError> + Send + Sync>;
 
+/// Shows one path in Explorer. False when the shell cannot show it. Without it, `reveal::show` runs. Tests inject it.
+pub type RevealShow = Box<dyn Fn(&Path) -> bool + Send + Sync>;
+
 pub struct Config {
     /// The application-owned launch directory of a `gitProbe` run (contract §6 "Channel frames").
     pub launch_directory: PathBuf,
@@ -201,26 +208,34 @@ enum Reply {
     Start,
     /// A request of frame kind `.0`. Only its reply or its deadline reply ends it (T314 D3).
     Frame(&'static str, DeadlineReply),
+    /// Feature 004 contract Δ6 `fileAppend`: `cancel` and `closeJob` stop it, and the stop reply `.1` follows, so every request gets one reply.
+    Answered(DeadlineReply, DeadlineReply),
 }
 
 impl Reply {
     fn frame(self) -> &'static str {
         match self {
             Reply::Frame(frame, _) => frame,
-            Reply::Walk(_) | Reply::Start => "process",
+            Reply::Walk(_) | Reply::Start | Reply::Answered(..) => "process",
         }
     }
 
     fn deadline(self, call_id: &str) -> Value {
         match self {
             Reply::Start => reply::exit(call_id, None, Some(0), Some(ExitDeadline::Deadline)),
-            Reply::Walk(deadline) | Reply::Frame(_, deadline) => deadline(call_id),
+            Reply::Walk(deadline) | Reply::Frame(_, deadline) | Reply::Answered(deadline, _) => {
+                deadline(call_id)
+            }
         }
     }
 
-    /// The reply after a stop. Only a `run` start gets one.
+    /// The reply after a stop. Only a `run` start and a `fileAppend` walk get one.
     fn stopped(self, call_id: &str) -> Option<Value> {
-        matches!(self, Reply::Start).then(|| reply::exit(call_id, None, Some(0), None))
+        match self {
+            Reply::Start => Some(reply::exit(call_id, None, Some(0), None)),
+            Reply::Answered(_, stopped) => Some(stopped(call_id)),
+            Reply::Walk(_) | Reply::Frame(..) => None,
+        }
     }
 }
 
@@ -269,6 +284,15 @@ impl Drop for WalkEnd {
     }
 }
 
+/// Ends the count of one walk watchdog, also at a panic.
+struct WatchdogEnd(Arc<ProcessRequests>);
+
+impl Drop for WatchdogEnd {
+    fn drop(&mut self) {
+        self.0.watchdogs.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 #[derive(Default)]
 struct State {
     /// Operations after `ended` or `closeJob`, oldest first. Every other operation is active from its first request.
@@ -284,8 +308,8 @@ struct State {
     calls: HashMap<String, Call>,
     /// `run` calls and walks share one `callId` namespace.
     walks: HashMap<String, Walk>,
-    /// The mutations whose `started` reply carried a marker ID, until `ended`, with the `started` kind.
-    started: HashMap<String, String>,
+    /// The mutations whose `started` reply carried a marker ID, until `ended`, with the mutation of the `started` frame.
+    started: HashMap<String, Mutation>,
     /// The facts that `wslProbe` bound to each WSL `repositoryDiscovery` context, once (gaps.md W1).
     wsl_bound: HashMap<String, wsl::Bound>,
     /// The contexts with a `wslProbe` in flight. The reservation makes the bind happen once.
@@ -302,6 +326,10 @@ enum Kind {
     Registered,
     /// Feature 003 contract Δ6: the `clone` context.
     Clone,
+    /// Feature 004 contract Δ6: the `globalConfig` context.
+    GlobalConfig,
+    /// Feature 004 contract Δ6: the `worktreeAdd` context.
+    WorktreeAdd,
 }
 
 /// Feature 003 contract Δ6: the one array that a `clone` context admits, and its discovery context.
@@ -321,6 +349,8 @@ struct Target {
     /// A WSL Git, and the Linux form of `current_dir` (contract §11 "Paths and file access").
     wsl: Option<(wsl::Installation, String)>,
     clone: Option<CloneTarget>,
+    /// Feature 004 contract Δ6: the bound path of a `worktreeAdd` context in Git's form.
+    worktree: Option<String>,
 }
 
 /// The frame facts of a `resolveGit` finish.
@@ -380,6 +410,8 @@ pub struct ProcessRequests {
     peak: AtomicUsize,
     /// The walks whose work did not return yet.
     walk_threads: AtomicUsize,
+    /// The walk watchdogs that did not end yet. Only a watchdog replies to a walk.
+    watchdogs: AtomicUsize,
     /// Test hook: the walks whose work did not send its event to the watchdog yet.
     #[cfg(test)]
     unsent_walk_events: AtomicUsize,
@@ -401,6 +433,7 @@ pub struct ProcessRequests {
     /// The running mutations of the close prompt. A clone enters it from its first owned request (feature 003 plan.md D12).
     running: OnceLock<Arc<Running>>,
     terminal_start: OnceLock<TerminalStart>,
+    reveal_show: OnceLock<RevealShow>,
 }
 
 impl ProcessRequests {
@@ -420,6 +453,7 @@ impl ProcessRequests {
             generation: AtomicU64::new(0),
             peak: AtomicUsize::new(0),
             walk_threads: AtomicUsize::new(0),
+            watchdogs: AtomicUsize::new(0),
             #[cfg(test)]
             unsent_walk_events: AtomicUsize::new(0),
             #[cfg(test)]
@@ -434,6 +468,7 @@ impl ProcessRequests {
             sync_settings: OnceLock::new(),
             running: OnceLock::new(),
             terminal_start: OnceLock::new(),
+            reveal_show: OnceLock::new(),
         })
     }
 
@@ -443,6 +478,19 @@ impl ProcessRequests {
 
     pub fn set_running(&self, running: Arc<Running>) {
         let _ = self.running.set(running);
+    }
+
+    #[cfg_attr(not(test), expect(dead_code, reason = "only tests inject the reveal"))]
+    pub fn set_reveal(&self, show: RevealShow) {
+        let _ = self.reveal_show.set(show);
+    }
+
+    /// Feature 004 contract Δ3 `openWorktree`: the worktree root of a registered repository.
+    pub fn worktree_root(&self, repository_id: &str) -> Option<PathBuf> {
+        self.state()
+            .repositories
+            .get(repository_id)
+            .map(|repository| repository.worktree_root.clone())
     }
 
     #[cfg_attr(
@@ -640,10 +688,10 @@ impl ProcessRequests {
 
     /// Records a `started` reply with a marker ID, and tags the Job of that mutation with the common-directory identity.
     /// `started` comes before the first process, so the Job opens here (contract §6 "Recovery markers").
-    pub fn tag(&self, operation_id: &str, kind: &str, common_identity: PhysicalIdentity) {
+    pub fn tag(&self, operation_id: &str, mutation: Mutation, common_identity: PhysicalIdentity) {
         self.state()
             .started
-            .insert(operation_id.to_string(), kind.to_string());
+            .insert(operation_id.to_string(), mutation);
         if self.jobs.open(operation_id).is_ok() {
             self.jobs.tag(operation_id, common_identity);
         }
@@ -693,6 +741,12 @@ impl ProcessRequests {
     #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
     pub fn active_walks(&self) -> usize {
         self.walk_threads.load(Ordering::SeqCst)
+    }
+
+    /// Test hook: the walk watchdogs that did not end yet. At 0, no walk sends another reply.
+    #[cfg_attr(not(test), expect(dead_code, reason = "test hook"))]
+    pub fn active_watchdogs(&self) -> usize {
+        self.watchdogs.load(Ordering::SeqCst)
     }
 
     /// Test hook: the walks whose work did not send its event to the watchdog yet.
@@ -804,42 +858,83 @@ impl ProcessRequests {
             }
             Some("pageant") => self.pageant(&typed(request).ok_or(INVALID)?, call()?),
             Some("terminal") => self.terminal(&typed(request).ok_or(INVALID)?, call()?),
+            Some("fileAppend") => self.file_append(&typed(request).ok_or(INVALID)?, call()?),
+            Some("reveal") => self.reveal(&typed(request).ok_or(INVALID)?, call()?),
             _ => Err(INVALID),
         }
     }
 
     /// Feature 003 contract Δ6 `destinationFacts`: the state of the bound destination. The request carries no path.
     /// A Windows destination reads OS facts. A WSL destination runs the `wslFiles` mode `destination` with its §11 Linux path.
+    /// Feature 004 contract Δ6: a `worktreeAdd` binding serves the review and the run operation of one `worktree-add`.
     fn destination_facts(
         &self,
-        request: &frame::DestinationFacts,
+        request: &frame::DestinationFactsGroup,
         call_id: &str,
     ) -> Result<(), Code> {
-        let (operation_id, clone_id) = (request.operation_id.as_str(), request.clone_id.as_str());
+        use frame::DestinationFactsGroup as G;
         let now = Instant::now();
         let mut state = self.state();
-        check_active(&state, operation_id)?;
-        let context = self.contexts.get(clone_id, now)?;
-        if context.kind != ContextKind::Clone {
-            return Err(UNKNOWN);
-        }
-        self.own(&mut state, clone_id, operation_id, now)?;
+        let (operation_id, context, installation, git_path) = match request {
+            G::Clone {
+                operation_id,
+                clone_id,
+                ..
+            } => {
+                let (operation_id, clone_id) = (operation_id.as_str(), clone_id.as_str());
+                check_active(&state, operation_id)?;
+                let context = self.contexts.get(clone_id, now)?;
+                if context.kind != ContextKind::Clone {
+                    return Err(UNKNOWN);
+                }
+                self.own(&mut state, clone_id, operation_id, now)?;
+                // The Perl text runs only with the WSL Git that the user approved for the facts of the clone probe.
+                let installation = context
+                    .peer
+                    .as_ref()
+                    .and_then(|peer| state.wsl_bound.get(peer))
+                    .map(|bound| bound.installation.clone());
+                (operation_id, context, installation, None)
+            }
+            G::WorktreeAdd {
+                operation_id,
+                bootstrap_id,
+                ..
+            } => {
+                let operation_id = operation_id.as_str();
+                check_active(&state, operation_id)?;
+                let context = self.contexts.get(bootstrap_id, now)?;
+                if context.kind != ContextKind::WorktreeAdd {
+                    return Err(UNKNOWN);
+                }
+                let repository = context
+                    .repository
+                    .as_deref()
+                    .and_then(|id| state.repositories.get(id))
+                    .ok_or(UNKNOWN)?;
+                let installation = match state.gits.get(&repository.git_installation_id) {
+                    Some(Git::Windows { .. }) => None,
+                    Some(Git::Wsl(installation)) => Some(installation.clone()),
+                    None => return Err(UNKNOWN),
+                };
+                // Feature 004 contract Δ6: the reply gives the text that the `worktree add` path item must equal.
+                let git_path = git_form(&context.path, installation.as_ref())?;
+                (operation_id, context, installation, Some(git_path))
+            }
+        };
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
         let (generation, call) = (self.current(), call_id.to_string());
         if !file_facts::is_wsl_path(&context.path) {
             std::thread::spawn(move || {
                 let facts = destination(&context.path);
-                me.send(generation, reply::destination_facts(&call, facts));
+                me.send(
+                    generation,
+                    reply::destination_facts(&call, facts, git_path.as_deref()),
+                );
             });
             return Ok(());
         }
-        // The Perl text runs only with the WSL Git that the user approved for the facts of the clone probe.
-        let installation = context
-            .peer
-            .as_ref()
-            .and_then(|peer| state.wsl_bound.get(peer))
-            .map(|bound| bound.installation.clone())
-            .ok_or(INVALID)?;
+        let installation = installation.ok_or(INVALID)?;
         let approved = state
             .gits
             .values()
@@ -858,7 +953,10 @@ impl ProcessRequests {
             let host = me.wsl_host(&operation);
             let ended = host.run_until(&command, wsl::DESTINATION_OUTPUT_BYTES + 2, deadline);
             let facts = wsl::destination_reply(ended.output);
-            me.send(generation, reply::destination_facts(&call, facts));
+            me.send(
+                generation,
+                reply::destination_facts(&call, facts, git_path.as_deref()),
+            );
         });
         Ok(())
     }
@@ -1020,6 +1118,228 @@ impl ProcessRequests {
         }
     }
 
+    /// Feature 004 contract Δ6 `fileAppend`: one append to `<worktree root>\.gitignore`, or to `info\exclude` of the common
+    /// directory, during the `started` action of its target. The check is a walk, and only its finish writes.
+    fn file_append(&self, request: &frame::FileAppend, call_id: &str) -> Result<(), Code> {
+        let read_at = Instant::now();
+        let parsed = file_append::parse(request)?;
+        let operation_id = parsed.operation_id;
+        let mut state = self.state();
+        check_active(&state, operation_id)?;
+        let action = if parsed.gitignore {
+            Mutation::IgnoreGitignore
+        } else {
+            Mutation::IgnoreExclude
+        };
+        if state.started.get(operation_id) != Some(&action) {
+            return Err(INVALID);
+        }
+        let repository = state
+            .repositories
+            .get(parsed.repository_id)
+            .ok_or(UNKNOWN)?;
+        let roots = [
+            repository.worktree_root.clone(),
+            repository.git_directory.clone(),
+            repository.common_directory.clone(),
+        ];
+        let root = if parsed.gitignore { 0 } else { 2 };
+        let names = file_facts::below(&roots[root], &parsed.path).ok_or(INVALID)?;
+        let wanted: &[&str] = if parsed.gitignore {
+            &[".gitignore"]
+        } else {
+            &["info", "exclude"]
+        };
+        if names != wanted {
+            return Err(INVALID);
+        }
+        let installation = match state
+            .gits
+            .get(&repository.git_installation_id)
+            .ok_or(UNKNOWN)?
+        {
+            Git::Windows { .. } if roots.iter().any(|root| file_facts::is_wsl_path(root)) => {
+                return Err(INVALID);
+            }
+            Git::Windows { .. } => None,
+            Git::Wsl(installation) => Some(installation.clone()),
+        };
+        let (expected, bytes, call) = (parsed.expected, parsed.bytes, call_id.to_string());
+        let Some(installation) = installation else {
+            let root = roots[root].clone();
+            // Only the watchdog runs the finish that writes, so a stop before it gives `stopped` with nothing written.
+            return self.spawn_walk(
+                &mut state,
+                Reply::Answered(file_append_deadline, file_append_stopped),
+                call_id,
+                operation_id,
+                read_at,
+                move |stop| {
+                    let expected = expected.as_ref().map(|(size, sha)| (*size, sha.as_str()));
+                    let opened = file_append::open(&root, &names, expected, &stop.flag);
+                    Box::new(move || {
+                        let appended =
+                            opened.map_or_else(|refused| refused, |opened| opened.append(&bytes));
+                        Some(reply::file_append(&call, appended))
+                    })
+                },
+                || {},
+            );
+        };
+        // Contract Δ11: the Perl text of mode `append` walks from the Linux root without following a link.
+        let linux: Vec<String> = roots
+            .iter()
+            .map(|root| wsl::linux_path(root, &installation.distro))
+            .collect::<Option<_>>()
+            .ok_or(INVALID)?;
+        let linux: [String; 3] = linux.try_into().map_err(|_| INVALID)?;
+        let unit = wsl::unit_name(operation_id, Self::next_unit(&mut state, operation_id))?;
+        let append = wsl::Append {
+            root,
+            path: names,
+            expected,
+            bytes,
+        };
+        let command = wsl::append_command(
+            &installation,
+            &unit,
+            &linux,
+            &append,
+            &self.config.base_environment,
+        );
+        command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
+        self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let (operation, deadline) = (operation_id.to_string(), self.walk_bound());
+        // The `append` process writes inside the walk, and a stop ends it at any point, so the shell cannot know whether it wrote.
+        self.spawn_walk(
+            &mut state,
+            Reply::Answered(file_append_deadline, file_append_interrupted),
+            call_id,
+            operation_id,
+            read_at,
+            move |stop| {
+                let host = me.wsl_host(&operation);
+                // The start byte comes before the cap. One byte above the cap shows output past it.
+                let ended = host.run_walk(
+                    &command,
+                    wsl::APPEND_OUTPUT_BYTES + 2,
+                    deadline,
+                    stop.event.0,
+                );
+                reply_with(reply::file_append(&call, wsl::append_reply(ended.output)))
+            },
+            || {},
+        )
+    }
+
+    /// Feature 004 contract Δ3 `revealPath`: Explorer shows a path that the walk finds below the worktree root.
+    /// A WSL path walks through the distro and shows in its UNC form. Each refusal after the field rules gives `UNKNOWN_TARGET`.
+    fn reveal(&self, request: &frame::Reveal, call_id: &str) -> Result<(), Code> {
+        let read_at = Instant::now();
+        let operation_id = request.operation_id.as_str();
+        let path = native_path(&request.path)?;
+        let mut state = self.state();
+        check_active(&state, operation_id)?;
+        let repository = state
+            .repositories
+            .get(request.repository_id.as_str())
+            .ok_or(UNKNOWN)?;
+        let root = repository.worktree_root.clone();
+        let names = file_facts::below(&root, &path).ok_or(UNKNOWN)?;
+        let installation = match state
+            .gits
+            .get(&repository.git_installation_id)
+            .ok_or(UNKNOWN)?
+        {
+            Git::Windows { .. } if file_facts::is_wsl_path(&root) => return Err(UNKNOWN),
+            Git::Windows { .. } => None,
+            Git::Wsl(installation) => Some(installation.clone()),
+        };
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let call = call_id.to_string();
+        let components = names.len();
+        // A link counts only as the entry itself, because each folder on the way opened without a reparse point.
+        let shown = {
+            let me = Arc::clone(&me);
+            move |fact: Option<&FactItem>| -> Finish {
+                let inside = match fact {
+                    Some(FactItem::File { .. } | FactItem::Directory { .. }) => true,
+                    Some(FactItem::Link { component, .. }) => {
+                        usize::try_from(*component) == Ok(components)
+                    }
+                    _ => false,
+                };
+                Box::new(move || {
+                    Some(if inside && me.show(&path) {
+                        reply::reveal(&call)
+                    } else {
+                        reply::refused(&call, UNKNOWN)
+                    })
+                })
+            }
+        };
+        let Some(installation) = installation else {
+            return self.spawn_walk(
+                &mut state,
+                Reply::Walk(reveal_deadline),
+                call_id,
+                operation_id,
+                read_at,
+                move |stop| {
+                    let facts =
+                        file_facts::walk([&root, &root, &root], false, &[(0, names)], &stop.flag);
+                    shown(facts.first())
+                },
+                || {},
+            );
+        };
+        let linux = wsl::linux_path(&root, &installation.distro).ok_or(UNKNOWN)?;
+        let unit = wsl::unit_name(operation_id, Self::next_unit(&mut state, operation_id))?;
+        let entries = [wsl::FactEntry {
+            root: 0,
+            path: names,
+        }];
+        let command = wsl::file_facts_command(
+            &installation,
+            &unit,
+            false,
+            &[linux.clone(), linux.clone(), linux],
+            &entries,
+            None,
+            &self.config.base_environment,
+        );
+        command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
+        self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
+        let (operation, deadline) = (operation_id.to_string(), self.walk_bound());
+        self.spawn_walk(
+            &mut state,
+            Reply::Walk(reveal_deadline),
+            call_id,
+            operation_id,
+            read_at,
+            move |stop| {
+                let host = me.wsl_host(&operation);
+                let ended = host.run_walk(
+                    &command,
+                    wsl::FACTS_OUTPUT_BYTES + 2,
+                    deadline,
+                    stop.event.0,
+                );
+                let (facts, _) = wsl::file_facts_reply(ended.output, &entries, false, None);
+                shown(facts.first())
+            },
+            || {},
+        )
+    }
+
+    fn show(&self, path: &Path) -> bool {
+        match self.reveal_show.get() {
+            Some(show) => show(path),
+            None => reveal::show(path),
+        }
+    }
+
     fn run(&self, request: &frame::RunGroup, call_id: &str) -> Result<(), Code> {
         use frame::RunGroup;
         let read_at = Instant::now();
@@ -1064,6 +1384,26 @@ impl ProcessRequests {
                     None,
                 ],
             ),
+            RunGroup::GlobalConfig {
+                git_installation_id,
+                ..
+            } => (
+                Kind::GlobalConfig,
+                [None, Some(git_installation_id.as_str()), None],
+            ),
+            RunGroup::WorktreeAdd {
+                bootstrap_id,
+                git_installation_id,
+                repository_id,
+                ..
+            } => (
+                Kind::WorktreeAdd,
+                [
+                    Some(bootstrap_id.as_str()),
+                    Some(git_installation_id.as_str()),
+                    Some(repository_id.as_str()),
+                ],
+            ),
         };
         // The context kinds hold the same `run` fields, each in its own generated type.
         macro_rules! run_fields {
@@ -1092,6 +1432,7 @@ impl ProcessRequests {
                                 ceiling_ms,
                                 stall_ms,
                             } => Limits::Network(inactivity_ms.get(), ceiling_ms.get(), *stall_ms),
+                            frame::$limits::CeilingLimits { ceiling_ms } => Limits::Ceiling(ceiling_ms.get()),
                         },
                         input.as_ref().map(|data| data.as_str()),
                         input_bytes.map(|total| total.get()),
@@ -1105,7 +1446,9 @@ impl ProcessRequests {
             GitProbe(RunGitProbeLimits),
             RepositoryDiscovery(RunDiscoveryLimits),
             RegisteredOperation(RunRegisteredLimits),
-            Clone(RunCloneLimits)
+            Clone(RunCloneLimits),
+            GlobalConfig(RunGlobalConfigLimits),
+            WorktreeAdd(RunWorktreeAddLimits)
         );
         // Feature 002 contract Δ6. typify drops the `const` value of `script`.
         let script = match request {
@@ -1121,12 +1464,14 @@ impl ProcessRequests {
         let mutation = matches!(policy, EnvironmentPolicy::Mutation);
         // Contract §12: `network` serves only the update processes of the `updateSubmodules` mutation.
         // Feature 003 contract Δ3: `remote` and `integrate` serve only the steps of the `sync` mutation.
+        // Feature 004 contract Δ6: `integrate` and `mergetool` also serve the steps of `runWorkbench` and `applyFiles`.
         let changes = mutation
             || matches!(
                 policy,
                 EnvironmentPolicy::Network
                     | EnvironmentPolicy::Remote
                     | EnvironmentPolicy::Integrate
+                    | EnvironmentPolicy::Mergetool
             );
         let policy_fits = match kind {
             Kind::Bootstrap(_) => matches!(policy, EnvironmentPolicy::Probe),
@@ -1138,17 +1483,34 @@ impl ProcessRequests {
                     | EnvironmentPolicy::Search
                     | EnvironmentPolicy::Remote
                     | EnvironmentPolicy::Integrate
+                    | EnvironmentPolicy::Mergetool
             ),
             Kind::Clone => matches!(policy, EnvironmentPolicy::Remote),
+            Kind::GlobalConfig => {
+                matches!(
+                    policy,
+                    EnvironmentPolicy::Read | EnvironmentPolicy::Integrate
+                )
+            }
+            Kind::WorktreeAdd => matches!(policy, EnvironmentPolicy::Integrate),
         };
         if !policy_fits {
             return Err(INVALID);
         }
         // `matching_probe_command` checks the script arguments.
-        if kind == Kind::Registered
-            && !script
+        if matches!(
+            kind,
+            Kind::Registered | Kind::GlobalConfig | Kind::WorktreeAdd
+        ) && !script
             && arguments.first().map(String::as_str) != Some("--no-lazy-fetch")
         {
+            return Err(INVALID);
+        }
+        // Feature 004 contract Δ6: the fixed arrays of `globalConfig`, each with the policy of its contract Δ3 step.
+        if kind == Kind::GlobalConfig && !global_config_fits(&arguments, policy) {
+            return Err(INVALID);
+        }
+        if kind == Kind::Registered && !script && runs_bound_command(&arguments) {
             return Err(INVALID);
         }
         let limits = run_limits(limits, kind, policy)?;
@@ -1158,6 +1520,10 @@ impl ProcessRequests {
             (None, Some(total)) if total <= STREAMED_INPUT_BYTES => RunInput::Streamed(total),
             _ => return Err(INVALID),
         };
+        // Feature 004 contract Δ6: a `mergetool` child gets a closed stdin pipe.
+        if policy == EnvironmentPolicy::Mergetool && !matches!(input, RunInput::Closed) {
+            return Err(INVALID);
+        }
         let index_file = match (transaction, index_file) {
             (false, None) => None,
             (true, Some(file)) if mutation => Some(native_path(file)?),
@@ -1172,17 +1538,24 @@ impl ProcessRequests {
         // The marker and the mutex exist before the first side effect (contract §6 "Recovery markers").
         // Feature 003 contract Δ6: a clone writes only into its new destination, so it has no `started` frame.
         let clone = kind == Kind::Clone;
-        let started = state.started.get(operation_id).map(String::as_str);
+        let started = state.started.get(operation_id).copied();
         if changes && !clone && started.is_none() {
             return Err(INVALID);
         }
-        // Feature 003 contract Δ6: `remote` and `integrate` serve only an operation that started as kind `sync`.
-        if matches!(
-            policy,
-            EnvironmentPolicy::Remote | EnvironmentPolicy::Integrate
-        ) && !clone
-            && started != Some("sync")
-        {
+        // Feature 003 contract Δ6: `remote` serves only an operation that started as kind `sync`.
+        // Feature 004 contract Δ6 and Δ14: `integrate` also serves kinds `workbench` and `applyFiles`,
+        // and `mergetool` serves only kind `workbench` with action `mergetool`.
+        let started_kind = started.and_then(Mutation::kind);
+        let started_fits = match policy {
+            EnvironmentPolicy::Remote => clone || started_kind == Some(StartedKind::Sync),
+            EnvironmentPolicy::Integrate => matches!(
+                started_kind,
+                Some(StartedKind::Sync | StartedKind::Workbench | StartedKind::ApplyFiles)
+            ),
+            EnvironmentPolicy::Mergetool => started == Some(Mutation::MergeTool),
+            _ => true,
+        };
+        if !started_fits {
             return Err(INVALID);
         }
         let target = self.target(&mut state, ids, kind, operation_id)?;
@@ -1200,6 +1573,13 @@ impl ProcessRequests {
             .clone
             .as_ref()
             .is_some_and(|clone| clone.arguments != arguments)
+        {
+            return Err(INVALID);
+        }
+        if target
+            .worktree
+            .as_deref()
+            .is_some_and(|path| !worktree_add_fits(&arguments, path))
         {
             return Err(INVALID);
         }
@@ -1257,6 +1637,10 @@ impl ProcessRequests {
             None => command_line(&target.program, &full),
         }
         .map_err(|_| INVALID)?;
+        // Feature 004 contract Δ6: the admitted `worktree add` run consumes its binding.
+        if let (Kind::WorktreeAdd, Some(bootstrap_id)) = (kind, ids[0]) {
+            self.contexts.destroy(bootstrap_id);
+        }
 
         // The start is a walk: the identity reads, the Job open, and the image open of the process start can wait (contract §6 "Walks").
         // An `input` chunk that comes before the start waits in the queue of the call.
@@ -1434,7 +1818,7 @@ impl ProcessRequests {
                 }
                 self.own(state, bootstrap_id, operation_id, now)?;
                 let (program, git_identity, current_dir, wsl) = match context_kind {
-                    ContextKind::Clone => return Err(UNKNOWN),
+                    ContextKind::Clone | ContextKind::WorktreeAdd => return Err(UNKNOWN),
                     ContextKind::GitProbe => (
                         context.path,
                         None,
@@ -1471,6 +1855,7 @@ impl ProcessRequests {
                     git_directory: None,
                     wsl,
                     clone: None,
+                    worktree: None,
                 })
             }
             // Feature 003 contract Δ6: the fixed clone array ends with the destination in Git's form.
@@ -1511,7 +1896,42 @@ impl ProcessRequests {
                         arguments,
                         bootstrap_id: peer,
                     }),
+                    worktree: None,
                 })
+            }
+            // Feature 004 contract Δ6: the fixed configuration arrays run in the application-owned launch folder.
+            // The contract names no WSL form of this context, so a WSL Git gets `INVALID_REQUEST`.
+            Kind::GlobalConfig => match git(state)? {
+                Ok((program, identity)) => Ok(Target {
+                    program,
+                    current_dir: self.config.launch_directory.clone(),
+                    bootstrap_id: None,
+                    git_identity: Some(identity),
+                    git_directory: None,
+                    wsl: None,
+                    clone: None,
+                    worktree: None,
+                }),
+                Err(_) => Err(INVALID),
+            },
+            // Feature 004 contract Δ6: the registered repository of the review, with the bound path in Git's form.
+            // The review and the run are two operations, so no operation owns the context.
+            Kind::WorktreeAdd => {
+                let context = self.contexts.get(bootstrap_id.ok_or(INVALID)?, now)?;
+                if context.kind != ContextKind::WorktreeAdd
+                    || context.repository.as_deref() != repository_id
+                {
+                    return Err(UNKNOWN);
+                }
+                let mut target = self.target(
+                    state,
+                    [None, git_id, repository_id],
+                    Kind::Registered,
+                    operation_id,
+                )?;
+                let installation = target.wsl.as_ref().map(|(installation, _)| installation);
+                target.worktree = Some(git_form(&context.path, installation)?);
+                Ok(target)
             }
             Kind::Registered => {
                 let found = git(state)?;
@@ -1538,6 +1958,7 @@ impl ProcessRequests {
                     git_directory: Some(repository.git_directory.clone()),
                     wsl,
                     clone: None,
+                    worktree: None,
                 })
             }
         }
@@ -1849,7 +2270,7 @@ impl ProcessRequests {
     }
 
     /// Runs `work` on its own thread with a watchdog thread (contract §6 "Walks").
-    /// Only the watchdog replies and runs the finish of `work`, so a walk gets one reply or none, and no change follows a stop.
+    /// Only the watchdog replies and runs the finish of `work`, so a walk gets one reply or none, and no finish runs after a stop.
     /// At the deadline, the watchdog runs `at_deadline` before the deadline reply. The caller holds `state` until it returns.
     #[allow(clippy::too_many_arguments)]
     fn spawn_walk(
@@ -1903,9 +2324,12 @@ impl ProcessRequests {
             }
         };
         let (deadline, call) = (read_at + self.config.walk_deadline, call_id.to_string());
+        self.watchdogs.fetch_add(1, Ordering::SeqCst);
         let watchdog = {
             let (worker, stop) = (Arc::clone(&worker), Arc::clone(&stop));
             std::thread::Builder::new().spawn(move || {
+                // Dropped last, so the count falls after the reply.
+                let _end = WatchdogEnd(Arc::clone(&me));
                 let event =
                     received.recv_timeout(deadline.saturating_duration_since(Instant::now()));
                 // `cancel`, `closeJob`, and a service exit send `Stop` under the state lock while `walks` holds the walk.
@@ -1944,6 +2368,7 @@ impl ProcessRequests {
             })
         };
         if watchdog.is_err() {
+            self.watchdogs.fetch_sub(1, Ordering::SeqCst);
             state.walks.remove(call_id);
             stop_walk(&stop);
             return Err(OWNERSHIP);
@@ -2278,6 +2703,7 @@ impl ProcessRequests {
             EnvironmentPolicy::Search => wsl::Mode::Search,
             EnvironmentPolicy::Remote => wsl::Mode::Remote,
             EnvironmentPolicy::Integrate => wsl::Mode::Integrate,
+            EnvironmentPolicy::Mergetool => wsl::Mode::Mergetool,
         };
         let index = index_file
             .map(|file| wsl::linux_path(file, &installation.distro).ok_or(INVALID))
@@ -2855,6 +3281,7 @@ impl ProcessRequests {
         match request {
             frame::ReleaseGroup::RepositoryFrame { repository_id, .. } => {
                 state.repositories.remove(repository_id.as_str());
+                self.contexts.release_repository(repository_id);
             }
             frame::ReleaseGroup::GitFrame {
                 git_installation_id,
@@ -3208,6 +3635,8 @@ enum Limits {
     Deadline(u64, Option<f64>),
     /// `inactivityMs`, `ceilingMs`, and `stallMs`.
     Network(u64, u64, f64),
+    /// Feature 004 contract Δ6 `CeilingLimits`: `ceilingMs` alone.
+    Ceiling(u64),
 }
 
 /// The checked `limits` of a `run` request (contract §6 "Channel frames").
@@ -3221,12 +3650,13 @@ struct RunLimits {
     inactivity: Option<Duration>,
 }
 
-/// Each limit within its contract cap. `stallMs` exists only in `registeredOperation` and `clone` (feature 003 contract Δ2).
+/// Each limit within its contract cap. `stallMs` never exists in a bootstrap context (feature 003 contract Δ2).
 /// The `network`, `remote`, and `integrate` policies carry the inactivity limit and the ceiling (feature 003 contract Δ6).
+/// The `mergetool` policy carries only the ceiling, so it has no inactivity limit and no stall notice (feature 004 contract Δ6).
 /// No other policy carries them. typify drops the integer ranges and the `stallMs` const, so this check keeps them.
 fn run_limits(limits: Limits, kind: Kind, policy: EnvironmentPolicy) -> Result<RunLimits, Code> {
     let stall = |ms: f64| {
-        (matches!(kind, Kind::Registered | Kind::Clone) && ms == STALL_MS as f64)
+        (!matches!(kind, Kind::Bootstrap(_)) && ms == STALL_MS as f64)
             .then_some(Duration::from_millis(STALL_MS))
             .ok_or(INVALID)
     };
@@ -3245,10 +3675,22 @@ fn run_limits(limits: Limits, kind: Kind, policy: EnvironmentPolicy) -> Result<R
                 inactivity: Some(Duration::from_millis(inactivity)),
             })
         }
-        Limits::Deadline(ms, stall_ms) if !network => {
+        Limits::Ceiling(ceiling)
+            if policy == EnvironmentPolicy::Mergetool && ceiling <= CEILING_MS =>
+        {
+            Ok(RunLimits {
+                wait: Duration::from_millis(ceiling),
+                expiry: ExitDeadline::Ceiling,
+                stall: None,
+                inactivity: None,
+            })
+        }
+        Limits::Deadline(ms, stall_ms) if !network && policy != EnvironmentPolicy::Mergetool => {
             let cap = match kind {
-                Kind::Registered | Kind::Clone => REGISTERED_DEADLINE_MS,
                 Kind::Bootstrap(_) => BOOTSTRAP_DEADLINE_MS,
+                Kind::Registered | Kind::Clone | Kind::GlobalConfig | Kind::WorktreeAdd => {
+                    REGISTERED_DEADLINE_MS
+                }
             };
             if ms > cap {
                 return Err(INVALID);
@@ -3262,6 +3704,101 @@ fn run_limits(limits: Limits, kind: Kind, policy: EnvironmentPolicy) -> Result<R
         }
         _ => Err(INVALID),
     }
+}
+
+/// Feature 004 contract Δ6: Git's form of a bound `worktreeAdd` path for the route.
+/// That is the Windows path for a Windows Git and the Linux path for a WSL Git. A path of the other route gives `INVALID_REQUEST`.
+fn git_form(path: &Path, installation: Option<&wsl::Installation>) -> Result<String, Code> {
+    match installation {
+        None if !file_facts::is_wsl_path(path) => path.to_str().map(str::to_string).ok_or(INVALID),
+        Some(installation) => wsl::linux_path(path, &installation.distro).ok_or(INVALID),
+        None => Err(INVALID),
+    }
+}
+
+/// Feature 004 contract Δ6 `globalConfig`: the listing under `read`, and the global write and removal under `integrate`.
+fn global_config_fits(arguments: &[String], policy: EnvironmentPolicy) -> bool {
+    let items: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    match items.as_slice() {
+        [
+            "--no-lazy-fetch",
+            "--no-optional-locks",
+            "--literal-pathspecs",
+            "config",
+            "list",
+            "--show-scope",
+            "--show-origin",
+            "-z",
+        ] => policy == EnvironmentPolicy::Read,
+        ["--no-lazy-fetch", "config", "set", "--global", "--", _, _]
+        | ["--no-lazy-fetch", "config", "unset", "--global", "--", _] => {
+            policy == EnvironmentPolicy::Integrate
+        }
+        _ => false,
+    }
+}
+
+/// Git 2.55 `git.c` `handle_options`: the global options that take the next item as their value.
+const VALUE_OPTIONS: [&str; 8] = [
+    "--git-dir",
+    "--namespace",
+    "--work-tree",
+    "-c",
+    "--config-env",
+    "--shallow-file",
+    "-C",
+    "--attr-source",
+];
+
+/// Feature 004 contract Δ6: `worktree add` and `clone` write a folder that only their bound contexts name.
+/// Git 2.55 `git.c` `handle_options` stops at the first item without `-` and at the help and version options.
+fn runs_bound_command(arguments: &[String]) -> bool {
+    let mut rest = arguments;
+    while let [first, tail @ ..] = rest {
+        if !first.starts_with('-') || matches!(first.as_str(), "--help" | "-h" | "--version" | "-v")
+        {
+            break;
+        }
+        let value = usize::from(VALUE_OPTIONS.contains(&first.as_str()));
+        rest = tail.get(value..).unwrap_or_default();
+    }
+    let items: Vec<&str> = rest.iter().map(String::as_str).collect();
+    matches!(items.as_slice(), ["clone", ..] | ["worktree", "add", ..])
+}
+
+/// Feature 004 contract Δ3 and Δ6 `worktreeAdd`: `worktree add [-b <new>] -- <path> <commit>` with the bound path.
+fn worktree_add_fits(arguments: &[String], path: &str) -> bool {
+    let items: Vec<&str> = arguments.iter().map(String::as_str).collect();
+    matches!(
+        items.as_slice(),
+        ["--no-lazy-fetch", "worktree", "add", "--", bound, _]
+            | ["--no-lazy-fetch", "worktree", "add", "-b", _, "--", bound, _]
+            if *bound == path
+    )
+}
+
+/// Feature 004 contract Δ6: the `fileAppend` reply group has no deadline form, so a walk past its deadline gives `error`.
+/// Only the walk finish writes, so a deadline leaves the target unchanged.
+fn file_append_deadline(call_id: &str) -> Value {
+    reply::file_append(
+        call_id,
+        AppendResult::Error(schema::process_reply::FileAppendErrorCode::OtherError),
+    )
+}
+
+/// Feature 004 contract Δ6: a stop before the finish of a Windows walk writes nothing.
+fn file_append_stopped(call_id: &str) -> Value {
+    reply::file_append(call_id, AppendResult::Stopped)
+}
+
+/// Feature 004 contract Δ6: a stop of a WSL walk can end the `append` process during its write.
+fn file_append_interrupted(call_id: &str) -> Value {
+    reply::file_append(call_id, AppendResult::Interrupted)
+}
+
+/// Feature 004 contract Δ3 `revealPath`: an error, the deadline included, gives `UNKNOWN_TARGET`.
+fn reveal_deadline(call_id: &str) -> Value {
+    reply::refused(call_id, UNKNOWN)
 }
 
 /// A base64 chunk with 1 to `max` decoded bytes.
@@ -3972,14 +4509,14 @@ pub(crate) mod tests {
 
         /// The shell side of a `started` reply with a marker ID for the workspace common directory.
         fn started(&self, operation: &str, workspace: &Workspace) {
-            self.started_as(operation, "commit", workspace);
+            self.started_as(operation, Mutation::Commit, workspace);
         }
 
-        fn started_as(&self, operation: &str, kind: &str, workspace: &Workspace) {
+        fn started_as(&self, operation: &str, mutation: Mutation, workspace: &Workspace) {
             let common = workspace.worktree.join(".git");
             self.requests.tag(
                 operation,
-                kind,
+                mutation,
                 crate::bootstrap::PhysicalIdentity::Windows(
                     read_identity(&common).expect("common-directory identity"),
                 ),
@@ -4377,7 +4914,7 @@ pub(crate) mod tests {
         let harness = Harness::child();
         let workspace = harness.child_workspace("repo");
         let operation = uuid();
-        harness.started_as(&operation, "sync", &workspace);
+        harness.started_as(&operation, Mutation::Fetch, &workspace);
         for policy in ["remote", "integrate"] {
             let call = uuid();
             harness.send(run_body(
@@ -4444,9 +4981,9 @@ pub(crate) mod tests {
         let harness = Harness::child();
         let workspace = harness.child_workspace("repo");
         let (sync, commit, submodules) = (uuid(), uuid(), uuid());
-        harness.started_as(&sync, "sync", &workspace);
-        harness.started_as(&commit, "commit", &workspace);
-        harness.started_as(&submodules, "updateSubmodules", &workspace);
+        harness.started_as(&sync, Mutation::Fetch, &workspace);
+        harness.started_as(&commit, Mutation::Commit, &workspace);
+        harness.started_as(&submodules, Mutation::UpdateSubmodules, &workspace);
         for policy in ["remote", "integrate"] {
             let base = |call: &str| {
                 run_body(
@@ -4489,7 +5026,7 @@ pub(crate) mod tests {
                 .contexts
                 .create_clone(&destination, CLONE_URL, None, Instant::now());
         let (owner, commit) = (uuid(), uuid());
-        harness.started_as(&commit, "commit", &workspace);
+        harness.started_as(&commit, Mutation::Commit, &workspace);
         let call = uuid();
         harness.send(clone_run(
             &call,
@@ -6056,7 +6593,7 @@ pub(crate) mod tests {
         );
         harness.requests.tag(
             &operation,
-            "commit",
+            Mutation::Commit,
             crate::bootstrap::PhysicalIdentity::Windows(read_identity(&common).expect("identity")),
         );
         harness.exit(&call, WAIT).expect("exit");
@@ -7470,7 +8007,7 @@ pub(crate) mod tests {
         );
         wsl.harness.requests.tag(
             &operation,
-            "commit",
+            Mutation::Commit,
             PhysicalIdentity::Wsl(wsl::WslIdentity {
                 guid: WSL_GUID.to_string(),
                 file_system_id: "fedc9aa3bd65bc57".to_string(),
@@ -7790,7 +8327,7 @@ pub(crate) mod tests {
         };
         wsl.harness.requests.tag(
             &mutation,
-            "commit",
+            Mutation::Commit,
             crate::bootstrap::PhysicalIdentity::Wsl(common),
         );
         let before = wsl.host.commands().len();
@@ -7827,7 +8364,7 @@ pub(crate) mod tests {
         };
         wsl.harness.requests.tag(
             &network,
-            "updateSubmodules",
+            Mutation::UpdateSubmodules,
             crate::bootstrap::PhysicalIdentity::Wsl(common),
         );
         let before = wsl.host.commands().len();
@@ -7873,7 +8410,7 @@ pub(crate) mod tests {
             };
             wsl.harness.requests.tag(
                 &sync,
-                "sync",
+                Mutation::Fetch,
                 crate::bootstrap::PhysicalIdentity::Wsl(common),
             );
             let before = wsl.host.commands().len();
@@ -8070,7 +8607,7 @@ pub(crate) mod tests {
                 };
                 wsl.harness.requests.tag(
                     &operation,
-                    "sync",
+                    Mutation::Fetch,
                     crate::bootstrap::PhysicalIdentity::Wsl(common),
                 );
                 start_with(&call, &operation, &["emit", stdout, "3"], false, policy);
@@ -9956,7 +10493,7 @@ pub(crate) mod tests {
         let harness = ssh_free_harness();
         let workspace = harness.child_workspace("repo");
         let operation = uuid();
-        harness.started_as(&operation, "sync", &workspace);
+        harness.started_as(&operation, Mutation::Fetch, &workspace);
         let plink = harness.fixture.path(r"it's PuTTY\plink.exe");
         let settings = sync_settings(&harness, plink_settings(&plink));
         let none = json!({ "GIT_SSH_COMMAND": null, "GIT_SSH_VARIANT": null });
@@ -9997,7 +10534,7 @@ pub(crate) mod tests {
         };
         wsl.harness.requests.tag(
             &operation,
-            "sync",
+            Mutation::Fetch,
             crate::bootstrap::PhysicalIdentity::Wsl(common),
         );
         let before = wsl.host.commands().len();
@@ -10893,6 +11430,1236 @@ pub(crate) mod tests {
             wsl.probe(&operation, &bootstrap)["code"],
             "INVALID_REQUEST",
             "the identity binds once"
+        );
+    }
+
+    // ---- Feature 004 (contract Δ6, Δ7, Δ11, Δ14) ----
+
+    fn ceiling(ms: u64) -> Value {
+        json!({ "ceilingMs": ms })
+    }
+
+    /// Feature 004 contract Δ6: `mergetool` serves only kind `workbench` with action `mergetool`, takes only the ceiling limits,
+    /// and gives the child a closed stdin pipe.
+    #[test]
+    fn mergetool_runs_need_a_mergetool_operation_the_ceiling_limits_and_a_closed_stdin() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let (tool, switch, commit) = (uuid(), uuid(), uuid());
+        harness.started_as(&tool, Mutation::MergeTool, &workspace);
+        harness.started_as(&switch, Mutation::Switch, &workspace);
+        harness.started_as(&commit, Mutation::Commit, &workspace);
+        let base = |call: &str| {
+            run_body(
+                call,
+                &tool,
+                &workspace,
+                &["slow-stdin", "0"],
+                "mergetool",
+                ceiling(60_000),
+            )
+        };
+        let call = uuid();
+        harness.send(base(&call));
+        assert_eq!(
+            harness.output_line(&call, "stdout", "STDIN"),
+            "0",
+            "a closed stdin pipe"
+        );
+        assert_eq!(harness.exit(&call, WAIT).expect("exit").1["exitCode"], 0);
+        let cases: Vec<(&str, Edit)> = vec![
+            ("network limits", set("limits", network_limits(1000, 1000))),
+            (
+                "deadline limits",
+                set("limits", json!({ "deadlineMs": 30_000 })),
+            ),
+            (
+                "a ceiling above 4 h",
+                set("limits", ceiling(CEILING_MS + 1)),
+            ),
+            ("a ceiling of 0", set("limits", ceiling(0))),
+            (
+                "a ceiling with an inactivity limit",
+                set("limits", json!({ "ceilingMs": 1000, "inactivityMs": 1000 })),
+            ),
+            (
+                "a ceiling with a stall notice",
+                set("limits", json!({ "ceilingMs": 1000, "stallMs": STALL_MS })),
+            ),
+            ("inline input", set("input", json!(encode(b"a")))),
+            ("streamed input", set("inputBytes", json!(1))),
+            (
+                "the ceiling limits with integrate",
+                set("environmentPolicy", json!("integrate")),
+            ),
+            (
+                "the ceiling limits with read",
+                set("environmentPolicy", json!("read")),
+            ),
+            ("a switch operation", set("operationId", json!(switch))),
+            ("a commit operation", set("operationId", json!(commit))),
+            ("before started", set("operationId", json!(uuid()))),
+        ];
+        expect_refusals(&harness, base, cases, "INVALID_REQUEST");
+    }
+
+    /// Feature 004 contract Δ5 and Δ6: the `mergetool` limits are the ceiling only, so no inactivity limit and no stall notice apply.
+    #[test]
+    fn the_mergetool_limits_are_the_ceiling_alone_and_the_ceiling_ends_the_run() {
+        let limits = run_limits(
+            Limits::Ceiling(CEILING_MS),
+            Kind::Registered,
+            EnvironmentPolicy::Mergetool,
+        )
+        .expect("mergetool limits");
+        assert_eq!(limits.wait, Duration::from_millis(CEILING_MS));
+        assert_eq!(limits.expiry, ExitDeadline::Ceiling);
+        assert!(limits.stall.is_none(), "no stall notice");
+        assert!(limits.inactivity.is_none(), "no inactivity limit");
+        for policy in [
+            EnvironmentPolicy::Read,
+            EnvironmentPolicy::Mutation,
+            EnvironmentPolicy::Network,
+            EnvironmentPolicy::Search,
+            EnvironmentPolicy::Remote,
+            EnvironmentPolicy::Integrate,
+        ] {
+            assert!(
+                run_limits(Limits::Ceiling(1000), Kind::Registered, policy).is_err(),
+                "{policy}"
+            );
+        }
+        for limits in [
+            Limits::Network(1000, 1000, STALL_MS as f64),
+            Limits::Deadline(1000, None),
+        ] {
+            assert!(run_limits(limits, Kind::Registered, EnvironmentPolicy::Mergetool).is_err());
+        }
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::MergeTool, &workspace);
+        let call = uuid();
+        let sent = Instant::now();
+        harness.send(run_body(
+            &call,
+            &operation,
+            &workspace,
+            &["sleep", "60000"],
+            "mergetool",
+            ceiling(1000),
+        ));
+        let (at, exit) = harness.exit(&call, WAIT).expect("exit");
+        assert_eq!(exit["deadline"], "ceiling", "{exit}");
+        assert_eq!(exit["exitCode"], Value::Null);
+        assert!(at.duration_since(sent) >= Duration::from_millis(1000));
+    }
+
+    /// Feature 004 contract Δ6 and Δ14: `integrate` fits an operation of kind `sync`, `workbench`, or `applyFiles`.
+    /// `remote` still fits only kind `sync`.
+    #[test]
+    fn integrate_runs_fit_sync_workbench_and_apply_files_operations() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let fits = [
+            (uuid(), Mutation::Fetch),
+            (uuid(), Mutation::Switch),
+            (uuid(), Mutation::MergeTool),
+            (uuid(), Mutation::StageFiles),
+            (uuid(), Mutation::UnstageFiles),
+        ];
+        for (operation, mutation) in &fits {
+            harness.started_as(operation, *mutation, &workspace);
+            let call = uuid();
+            harness.send(run_body(
+                &call,
+                operation,
+                &workspace,
+                &["sleep", "10"],
+                "integrate",
+                network_limits(30_000, 60_000),
+            ));
+            assert_eq!(
+                harness.exit(&call, WAIT).expect("exit").1["exitCode"],
+                0,
+                "{mutation:?}"
+            );
+        }
+        let (commit, submodules, file) = (uuid(), uuid(), uuid());
+        harness.started_as(&commit, Mutation::Commit, &workspace);
+        harness.started_as(&submodules, Mutation::UpdateSubmodules, &workspace);
+        harness.started_as(&file, Mutation::FileStaging, &workspace);
+        let base = |call: &str| {
+            run_body(
+                call,
+                &commit,
+                &workspace,
+                &["sleep", "10"],
+                "integrate",
+                network_limits(30_000, 60_000),
+            )
+        };
+        let cases: Vec<(&str, Edit)> = vec![
+            ("a commit operation", remove("transactionId")),
+            (
+                "an updateSubmodules operation",
+                set("operationId", json!(submodules)),
+            ),
+            ("an applyFile operation", set("operationId", json!(file))),
+            (
+                "remote for a workbench operation",
+                both(
+                    set("operationId", json!(fits[1].0)),
+                    set("environmentPolicy", json!("remote")),
+                ),
+            ),
+            (
+                "remote for an applyFiles operation",
+                both(
+                    set("operationId", json!(fits[3].0)),
+                    set("environmentPolicy", json!("remote")),
+                ),
+            ),
+        ];
+        expect_refusals(&harness, base, cases, "INVALID_REQUEST");
+    }
+
+    fn global_config_run(
+        call: &str,
+        operation: &str,
+        git: &str,
+        arguments: Value,
+        policy: &str,
+        limits: Value,
+    ) -> Value {
+        json!({
+            "type": "run", "callId": call, "operationId": operation, "contextKind": "globalConfig",
+            "gitInstallationId": git, "arguments": arguments, "environmentPolicy": policy, "limits": limits,
+        })
+    }
+
+    /// Feature 004 contract Δ6: the `globalConfig` context admits only the listing under `read`, and `config set` and
+    /// `config unset` of the global file under `integrate`.
+    #[test]
+    fn a_global_config_run_admits_only_its_three_arrays() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let git = workspace.git.clone();
+        let (read, save) = (uuid(), uuid());
+        harness.started_as(&save, Mutation::SaveGitSettings, &workspace);
+        let list = json!([
+            "--no-lazy-fetch",
+            "--no-optional-locks",
+            "--literal-pathspecs",
+            "config",
+            "list",
+            "--show-scope",
+            "--show-origin",
+            "-z"
+        ]);
+        let set_key = json!([
+            "--no-lazy-fetch",
+            "config",
+            "set",
+            "--global",
+            "--",
+            "pull.rebase",
+            "true"
+        ]);
+        let unset_key = json!([
+            "--no-lazy-fetch",
+            "config",
+            "unset",
+            "--global",
+            "--",
+            "pull.rebase"
+        ]);
+        for (operation, arguments, policy, limits) in [
+            (&read, &list, "read", json!({ "deadlineMs": 30_000 })),
+            (&save, &set_key, "integrate", network_limits(30_000, 60_000)),
+            (
+                &save,
+                &unset_key,
+                "integrate",
+                network_limits(30_000, 60_000),
+            ),
+        ] {
+            let call = uuid();
+            harness.send(global_config_run(
+                &call,
+                operation,
+                &git,
+                arguments.clone(),
+                policy,
+                limits,
+            ));
+            assert!(
+                harness.exit(&call, WAIT).is_some(),
+                "the shell started {arguments}"
+            );
+        }
+        let base = |call: &str| {
+            global_config_run(
+                call,
+                &save,
+                &git,
+                set_key.clone(),
+                "integrate",
+                network_limits(1000, 1000),
+            )
+        };
+        let cases: Vec<(&str, Edit)> = vec![
+            (
+                "a local write",
+                set(
+                    "arguments",
+                    json!([
+                        "--no-lazy-fetch",
+                        "config",
+                        "set",
+                        "--local",
+                        "--",
+                        "pull.rebase",
+                        "true"
+                    ]),
+                ),
+            ),
+            (
+                "no end of options",
+                set(
+                    "arguments",
+                    json!([
+                        "--no-lazy-fetch",
+                        "config",
+                        "set",
+                        "--global",
+                        "pull.rebase",
+                        "true"
+                    ]),
+                ),
+            ),
+            (
+                "an extra item",
+                set(
+                    "arguments",
+                    json!([
+                        "--no-lazy-fetch",
+                        "config",
+                        "set",
+                        "--global",
+                        "--",
+                        "pull.rebase",
+                        "true",
+                        "x"
+                    ]),
+                ),
+            ),
+            (
+                "unset with a value",
+                set(
+                    "arguments",
+                    json!([
+                        "--no-lazy-fetch",
+                        "config",
+                        "unset",
+                        "--global",
+                        "--",
+                        "pull.rebase",
+                        "true"
+                    ]),
+                ),
+            ),
+            (
+                "another command",
+                set("arguments", json!(["--no-lazy-fetch", "status"])),
+            ),
+            (
+                "a listing without -z",
+                set(
+                    "arguments",
+                    json!([
+                        "--no-lazy-fetch",
+                        "--no-optional-locks",
+                        "--literal-pathspecs",
+                        "config",
+                        "list",
+                        "--show-scope",
+                        "--show-origin"
+                    ]),
+                ),
+            ),
+            (
+                "the listing under integrate",
+                set("arguments", list.clone()),
+            ),
+            (
+                "a write under read",
+                both(
+                    set("environmentPolicy", json!("read")),
+                    set("limits", json!({ "deadlineMs": 30_000 })),
+                ),
+            ),
+            (
+                "a write under mutation",
+                both(
+                    set("environmentPolicy", json!("mutation")),
+                    set("limits", json!({ "deadlineMs": 30_000 })),
+                ),
+            ),
+            ("a write before started", set("operationId", json!(uuid()))),
+            (
+                "a repository",
+                set("repositoryId", json!(workspace.repository)),
+            ),
+        ];
+        expect_refusals(&harness, base, cases, "INVALID_REQUEST");
+        let cases: Vec<(&str, Edit)> = vec![(
+            "an unregistered Git",
+            set("gitInstallationId", json!(uuid())),
+        )];
+        expect_refusals(&harness, base, cases, "UNKNOWN_TARGET");
+    }
+
+    fn worktree_add_run(
+        call: &str,
+        operation: &str,
+        workspace: &Workspace,
+        bootstrap: &str,
+        arguments: Value,
+    ) -> Value {
+        json!({
+            "type": "run", "callId": call, "operationId": operation, "contextKind": "worktreeAdd",
+            "gitInstallationId": workspace.git, "repositoryId": workspace.repository, "bootstrapId": bootstrap,
+            "arguments": arguments, "environmentPolicy": "integrate", "limits": network_limits(30_000, 60_000),
+        })
+    }
+
+    /// Feature 004 contract Δ6: a `worktreeAdd` context admits only the two `worktree add` forms with its bound path in Git's form.
+    #[test]
+    fn a_worktree_add_run_admits_only_its_bound_path_in_the_two_forms() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let path = harness.fixture.path(r"worktrees\it's wt");
+        let text = path.to_str().expect("path").to_string();
+        let bound =
+            harness
+                .contexts
+                .create_worktree_add(&path, &workspace.repository, Instant::now());
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::AddWorktree, &workspace);
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        let existing = json!(["--no-lazy-fetch", "worktree", "add", "--", text, "topic"]);
+        let new = json!([
+            "--no-lazy-fetch",
+            "worktree",
+            "add",
+            "-b",
+            "wt",
+            "--",
+            text,
+            oid
+        ]);
+        let other = harness
+            .fixture
+            .path("other")
+            .to_str()
+            .expect("path")
+            .to_string();
+        let base =
+            |call: &str| worktree_add_run(call, &operation, &workspace, &bound, existing.clone());
+        let arguments = |items: Value| set("arguments", items);
+        let cases: Vec<(&str, Edit)> = vec![
+            (
+                "another path",
+                arguments(json!([
+                    "--no-lazy-fetch",
+                    "worktree",
+                    "add",
+                    "--",
+                    other,
+                    "topic"
+                ])),
+            ),
+            (
+                "the path with forward slashes",
+                arguments(json!([
+                    "--no-lazy-fetch",
+                    "worktree",
+                    "add",
+                    "--",
+                    text.replace('\\', "/"),
+                    "topic"
+                ])),
+            ),
+            (
+                "an option",
+                arguments(json!([
+                    "--no-lazy-fetch",
+                    "worktree",
+                    "add",
+                    "--force",
+                    "--",
+                    text,
+                    "topic"
+                ])),
+            ),
+            (
+                "no end of options",
+                arguments(json!(["--no-lazy-fetch", "worktree", "add", text, "topic"])),
+            ),
+            (
+                "no commit",
+                arguments(json!(["--no-lazy-fetch", "worktree", "add", "--", text])),
+            ),
+            (
+                "an extra item",
+                arguments(json!([
+                    "--no-lazy-fetch",
+                    "worktree",
+                    "add",
+                    "--",
+                    text,
+                    "topic",
+                    "x"
+                ])),
+            ),
+            (
+                "-b without a name",
+                arguments(json!([
+                    "--no-lazy-fetch",
+                    "worktree",
+                    "add",
+                    "-b",
+                    "--",
+                    text,
+                    oid
+                ])),
+            ),
+            (
+                "another command",
+                arguments(json!(["--no-lazy-fetch", "worktree", "remove", "--", text])),
+            ),
+            (
+                "policy read",
+                both(
+                    set("environmentPolicy", json!("read")),
+                    set("limits", json!({ "deadlineMs": 30_000 })),
+                ),
+            ),
+            (
+                "policy mutation",
+                both(
+                    set("environmentPolicy", json!("mutation")),
+                    set("limits", json!({ "deadlineMs": 30_000 })),
+                ),
+            ),
+            ("before started", set("operationId", json!(uuid()))),
+        ];
+        expect_refusals(&harness, base, cases, "INVALID_REQUEST");
+        let discovery = harness
+            .contexts
+            .create(
+                ContextKind::RepositoryDiscovery,
+                &workspace.worktree,
+                Instant::now(),
+            )
+            .expect("discovery context");
+        let second = harness.fixture.path("second");
+        std::fs::create_dir_all(second.join(".git")).expect("second repository");
+        let second = harness.register_repository(&workspace.git, &second);
+        let cases: Vec<(&str, Edit)> = vec![
+            ("an unknown context", set("bootstrapId", json!(uuid()))),
+            ("a discovery context", set("bootstrapId", json!(discovery))),
+            ("another repository", set("repositoryId", json!(second))),
+            (
+                "an unregistered Git",
+                set("gitInstallationId", json!(uuid())),
+            ),
+        ];
+        expect_refusals(&harness, base, cases, "UNKNOWN_TARGET");
+        // Contract Δ6: a registered run never runs `worktree add` or `clone`. The Git command follows the global options of Git 2.55 `git.c` `handle_options`.
+        let registered = |call: &str| {
+            run_body(
+                call,
+                &operation,
+                &workspace,
+                &["status"],
+                "integrate",
+                network_limits(30_000, 60_000),
+            )
+        };
+        let cases: Vec<(&str, Edit)> = vec![
+            (
+                "a registered worktree add",
+                arguments(json!([
+                    "--no-lazy-fetch",
+                    "worktree",
+                    "add",
+                    "--",
+                    other,
+                    "topic"
+                ])),
+            ),
+            (
+                "a registered worktree add after global options",
+                arguments(json!([
+                    "--no-lazy-fetch",
+                    "--no-optional-locks",
+                    "-c",
+                    "core.x=y",
+                    "-C",
+                    text,
+                    "--git-dir=.git",
+                    "worktree",
+                    "add",
+                    "-b",
+                    "wt",
+                    "--",
+                    other,
+                    oid
+                ])),
+            ),
+            (
+                "a registered clone",
+                arguments(json!([
+                    "--no-lazy-fetch",
+                    "clone",
+                    "--",
+                    "https://example.test/a.git",
+                    other
+                ])),
+            ),
+            (
+                "a registered clone under read",
+                both(
+                    both(
+                        set("environmentPolicy", json!("read")),
+                        set("limits", json!({ "deadlineMs": 30_000 })),
+                    ),
+                    arguments(json!([
+                        "--no-lazy-fetch",
+                        "--literal-pathspecs",
+                        "clone",
+                        "--",
+                        text,
+                        other
+                    ])),
+                ),
+            ),
+        ];
+        expect_refusals(&harness, registered, cases, "INVALID_REQUEST");
+        // The value of `-C` is no command, so this run is `git add` in a folder named `worktree`.
+        for items in [
+            json!(["--no-lazy-fetch", "-C", "worktree", "add", "--", "x"]),
+            json!(["--no-lazy-fetch", "worktree", "list", "--porcelain", "-z"]),
+        ] {
+            let call = uuid();
+            let mut body = registered(&call);
+            body["arguments"] = items.clone();
+            harness.send(body);
+            assert!(
+                harness.exit(&call, WAIT).is_some(),
+                "the shell started {items}"
+            );
+        }
+        // A refused run keeps the binding. An admitted run consumes it, so a second run of that binding starts nothing.
+        assert!(harness.contexts.get(&bound, Instant::now()).is_ok());
+        for arguments in [&existing, &new] {
+            let bound =
+                harness
+                    .contexts
+                    .create_worktree_add(&path, &workspace.repository, Instant::now());
+            let call = uuid();
+            harness.send(worktree_add_run(
+                &call,
+                &operation,
+                &workspace,
+                &bound,
+                arguments.clone(),
+            ));
+            assert!(
+                harness.exit(&call, WAIT).is_some(),
+                "the shell started {arguments}"
+            );
+            assert!(
+                harness.contexts.get(&bound, Instant::now()).is_err(),
+                "the run consumed its binding"
+            );
+            let again = uuid();
+            harness.send(worktree_add_run(
+                &again,
+                &operation,
+                &workspace,
+                &bound,
+                arguments.clone(),
+            ));
+            assert_eq!(harness.reply(&again), refused(&again, "UNKNOWN_TARGET"));
+        }
+    }
+
+    /// Feature 004 contract Δ6: `destinationFacts` of a `worktreeAdd` binding reads its path for the review and the run operation.
+    #[test]
+    fn destination_facts_of_a_worktree_add_binding_read_its_path_for_each_operation() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let path = harness.fixture.path("wt");
+        let bound =
+            harness
+                .contexts
+                .create_worktree_add(&path, &workspace.repository, Instant::now());
+        let facts = |operation: &str, id: &str| {
+            let call = uuid();
+            harness.send(json!({ "type": "destinationFacts", "callId": call, "operationId": operation, "bootstrapId": id }));
+            harness.reply(&call)
+        };
+        let (review, run) = (uuid(), uuid());
+        assert_eq!(facts(&review, &bound)["result"], "absent");
+        std::fs::create_dir(&path).expect("folder");
+        assert_eq!(
+            facts(&run, &bound)["result"],
+            "empty",
+            "the review and the run share the binding"
+        );
+        std::fs::write(path.join("x"), "x").expect("file");
+        assert_eq!(facts(&review, &bound)["result"], "not-empty");
+        let (clone, discovery) =
+            harness
+                .contexts
+                .create_clone(&path, CLONE_URL, None, Instant::now());
+        for id in [clone, discovery, uuid()] {
+            assert_eq!(facts(&uuid(), &id)["code"], "UNKNOWN_TARGET", "{id}");
+        }
+        let call = uuid();
+        harness.send(json!({ "type": "destinationFacts", "callId": call, "operationId": uuid(), "cloneId": bound }));
+        assert_eq!(
+            harness.reply(&call)["code"],
+            "UNKNOWN_TARGET",
+            "a worktreeAdd binding is no clone context"
+        );
+        harness.send(json!({ "type": "release", "repositoryId": workspace.repository }));
+        assert_eq!(
+            facts(&uuid(), &bound)["code"],
+            "UNKNOWN_TARGET",
+            "a released repository"
+        );
+        assert!(
+            harness.contexts.get(&bound, Instant::now()).is_err(),
+            "the release ends the binding"
+        );
+    }
+
+    fn file_append_body(
+        call: &str,
+        operation: &str,
+        repository: &str,
+        target: &str,
+        path: &Path,
+        expected: Value,
+        bytes: &[u8],
+    ) -> Value {
+        json!({
+            "type": "fileAppend", "callId": call, "operationId": operation, "repositoryId": repository,
+            "target": target, "path": path, "expected": expected, "bytes": encode(bytes),
+        })
+    }
+
+    /// Feature 004 contract Δ6: `fileAppend` writes `<worktree root>\.gitignore` or `info\exclude` of the common directory,
+    /// only for the `started` action of its target.
+    #[test]
+    fn a_file_append_writes_only_the_root_gitignore_or_the_common_info_exclude() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let git = workspace.worktree.join(".git");
+        std::fs::create_dir_all(git.join("info")).expect("info");
+        let (ignore, exclude, commit) = (uuid(), uuid(), uuid());
+        harness.started_as(&ignore, Mutation::IgnoreGitignore, &workspace);
+        harness.started_as(&exclude, Mutation::IgnoreExclude, &workspace);
+        harness.started_as(&commit, Mutation::Commit, &workspace);
+        let repository = workspace.repository.as_str();
+        let send = |operation: &str, target: &str, path: &Path, expected: Value, bytes: &[u8]| {
+            let call = uuid();
+            harness.send(file_append_body(
+                &call, operation, repository, target, path, expected, bytes,
+            ));
+            let reply = harness.reply(&call);
+            assert_eq!(reply["callId"], json!(call));
+            reply["result"].clone()
+        };
+        let gitignore = workspace.worktree.join(".gitignore");
+        assert_eq!(
+            send(&ignore, "gitignore", &gitignore, json!("absent"), b"/a\n"),
+            "appended"
+        );
+        assert_eq!(std::fs::read(&gitignore).expect("read"), b"/a\n");
+        assert_eq!(
+            send(&ignore, "gitignore", &gitignore, json!("absent"), b"/b\n"),
+            "stale"
+        );
+        let file = git.join("info").join("exclude");
+        assert_eq!(
+            send(&exclude, "exclude", &file, json!("absent"), b"/c\n"),
+            "appended"
+        );
+        let expected =
+            json!({ "size": 3, "sha256": crate::settings::hex(&crate::settings::sha256(b"/c\n")) });
+        assert_eq!(
+            send(&exclude, "exclude", &file, expected, b"/d\n"),
+            "appended"
+        );
+        assert_eq!(std::fs::read(&file).expect("read"), b"/c\n/d\n");
+        let base = |call: &str| {
+            file_append_body(
+                call,
+                &ignore,
+                repository,
+                "gitignore",
+                &gitignore,
+                json!("absent"),
+                b"/z\n",
+            )
+        };
+        let excluded = |path: Value| {
+            both(
+                both(
+                    set("operationId", json!(exclude)),
+                    set("target", json!("exclude")),
+                ),
+                set("path", path),
+            )
+        };
+        let cases: Vec<(&str, Edit)> = vec![
+            (
+                "a .gitignore below the root",
+                set(
+                    "path",
+                    json!(workspace.worktree.join("sub").join(".gitignore")),
+                ),
+            ),
+            (
+                "another name at the root",
+                set("path", json!(workspace.worktree.join("x"))),
+            ),
+            ("a relative path", set("path", json!(".gitignore"))),
+            (
+                "an exclude outside the common directory",
+                excluded(json!(workspace.worktree.join("exclude"))),
+            ),
+            ("the common directory itself", excluded(json!(git))),
+            (
+                "another file below the common directory",
+                excluded(json!(git.join("config"))),
+            ),
+            (
+                "an exclude in another folder",
+                excluded(json!(git.join("hooks").join("exclude"))),
+            ),
+            (
+                "info\\exclude one folder deeper",
+                excluded(json!(git.join("x").join("info").join("exclude"))),
+            ),
+            (
+                "an exclude write of the gitignore action",
+                both(set("target", json!("exclude")), set("path", json!(file))),
+            ),
+            ("a commit operation", set("operationId", json!(commit))),
+            ("before started", set("operationId", json!(uuid()))),
+            ("empty bytes", set("bytes", json!(""))),
+        ];
+        expect_refusals(&harness, base, cases, "INVALID_REQUEST");
+        let cases: Vec<(&str, Edit)> =
+            vec![("an unknown repository", set("repositoryId", json!(uuid())))];
+        expect_refusals(&harness, base, cases, "UNKNOWN_TARGET");
+        assert_eq!(
+            std::fs::read(&gitignore).expect("read"),
+            b"/a\n",
+            "no refused request wrote"
+        );
+        assert!(!workspace.worktree.join("exclude").exists());
+        assert!(!workspace.worktree.join("x").exists());
+    }
+
+    /// Feature 004 contract Δ6: every `fileAppend` request gets one reply. A stop before the finish of the walk gives `stopped`, and nothing is written.
+    /// Without the stop, the same held walk writes and replies `appended`.
+    #[test]
+    fn a_stop_before_the_file_append_finish_replies_stopped_and_writes_nothing() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::IgnoreGitignore, &workspace);
+        let gitignore = workspace.worktree.join(".gitignore");
+        std::fs::write(&gitignore, b"/a\n").expect("gitignore");
+        let expected = |bytes: &[u8]| json!({ "size": bytes.len(), "sha256": crate::settings::hex(&crate::settings::sha256(bytes)) });
+        for (stop, bytes, reply, after) in [
+            (true, expected(b"/a\n"), "stopped", &b"/a\n"[..]),
+            (false, expected(b"/a\n"), "appended", &b"/a\n/b\n"[..]),
+        ] {
+            let Some(oplock) = Oplock::request(&gitignore) else {
+                println!("{SKIP_OPLOCK}");
+                return;
+            };
+            let call = uuid();
+            harness.send(file_append_body(
+                &call,
+                &operation,
+                &workspace.repository,
+                "gitignore",
+                &gitignore,
+                bytes,
+                b"/b\n",
+            ));
+            assert!(
+                oplock.broken(WAIT),
+                "the target open of the walk waits on the oplock break"
+            );
+            // The seam: the state lock holds the watchdog after the check of the walk ends.
+            let state = harness.requests.state();
+            drop(oplock);
+            assert!(
+                eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
+                "the check ends after the oplock holder closes"
+            );
+            assert!(
+                eventually(CLOSE_WAIT, || harness.requests.unsent_walk_events() == 0),
+                "the walk sends its end to the watchdog"
+            );
+            if stop {
+                // `cancel` sends exactly this event under the state lock.
+                let _ = state.walks[call.as_str()].events.send(WalkEvent::Stop);
+            }
+            drop(state);
+            assert_eq!(
+                harness.reply(&call),
+                json!({ "type": "fileAppend", "callId": call, "result": reply })
+            );
+            assert!(
+                eventually(CLOSE_WAIT, || harness.requests.active_watchdogs() == 0),
+                "the watchdog, the only sender of a walk reply, ends"
+            );
+            assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
+            assert_eq!(std::fs::read(&gitignore).expect("read"), after, "{reply}");
+        }
+    }
+
+    /// Feature 004 contract Δ6: a cancel ends the WSL `append` process at any point, so the reply is `interrupted`.
+    #[test]
+    fn a_canceled_wsl_file_append_replies_interrupted() {
+        let wsl = wsl_harness(true);
+        let (_git, repository) = slow_wsl_repository(&wsl);
+        let operation = uuid();
+        wsl.harness.requests.tag(
+            &operation,
+            Mutation::IgnoreExclude,
+            PhysicalIdentity::Wsl(wsl::WslIdentity {
+                guid: WSL_GUID.to_string(),
+                file_system_id: "fedc9aa3bd65bc57".to_string(),
+                inode: "4242".to_string(),
+            }),
+        );
+        let call = uuid();
+        let path = PathBuf::from(format!(r"{WSL_PATH}\.git\info\exclude"));
+        wsl.harness.send(file_append_body(
+            &call,
+            &operation,
+            &repository,
+            "exclude",
+            &path,
+            json!({ "size": 3, "sha256": HEX_A }),
+            b"/x\n",
+        ));
+        assert!(
+            walk_child_started(&wsl, &operation),
+            "the append child runs"
+        );
+        wsl.harness
+            .send(json!({ "type": "cancel", "callId": call }));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            json!({ "type": "fileAppend", "callId": call, "result": "interrupted" })
+        );
+        assert!(
+            eventually(CLOSE_WAIT, || wsl.harness.requests.active_watchdogs() == 0),
+            "the watchdog, the only sender of a walk reply, ends"
+        );
+        assert_eq!(wsl.harness.replies_for(&call).len(), 1, "one reply");
+    }
+
+    /// Feature 004 contract Δ11: a WSL repository appends through the `wslFiles` mode `append` with its Linux roots.
+    #[test]
+    fn a_wsl_file_append_runs_the_append_mode_with_the_linux_roots() {
+        let wsl = wsl_harness(true);
+        let (_git, repository) = wsl_repository(&wsl);
+        let operation = uuid();
+        wsl.harness.requests.tag(
+            &operation,
+            Mutation::IgnoreExclude,
+            PhysicalIdentity::Wsl(wsl::WslIdentity {
+                guid: WSL_GUID.to_string(),
+                file_system_id: "fedc9aa3bd65bc57".to_string(),
+                inode: "4242".to_string(),
+            }),
+        );
+        wsl.host.push(0, b"Sappended\0");
+        let call = uuid();
+        let path = PathBuf::from(format!(r"{WSL_PATH}\.git\info\exclude"));
+        wsl.harness.send(file_append_body(
+            &call,
+            &operation,
+            &repository,
+            "exclude",
+            &path,
+            json!({ "size": 3, "sha256": HEX_A }),
+            b"/x\n",
+        ));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            json!({ "type": "fileAppend", "callId": call, "result": "appended" })
+        );
+        let probe = wsl.host.commands().last().expect("Perl text").clone();
+        assert!(probe.arguments.contains(&wsl::texts().wsl_files));
+        assert!(probe.arguments.ends_with(&[
+            "--".to_string(),
+            "append".to_string(),
+            "/home/u/repo".to_string(),
+            "/home/u/repo/.git".to_string(),
+            "/home/u/repo/.git".to_string(),
+            "/usr/bin/git".to_string(),
+            "/usr/bin/sha256sum".to_string(),
+        ]));
+        assert_eq!(
+            stdin_of(&probe),
+            format!("1048576\x002\x002\x00info\x00exclude\x003\x00{HEX_A}\x002f780a\x00")
+                .into_bytes()
+        );
+    }
+
+    type Shown = Arc<Mutex<Vec<PathBuf>>>;
+
+    /// Records each path that the shell would show in Explorer, and answers `shown`.
+    fn record_reveals(harness: &Harness, shown: bool) -> Shown {
+        let paths: Shown = Arc::default();
+        let record = Arc::clone(&paths);
+        harness.requests.set_reveal(Box::new(move |path: &Path| {
+            record.lock().expect("shown").push(path.to_path_buf());
+            shown
+        }));
+        paths
+    }
+
+    fn reveal_body(call: &str, repository: &str, path: &Path) -> Value {
+        json!({ "type": "reveal", "callId": call, "operationId": uuid(), "repositoryId": repository, "path": path })
+    }
+
+    /// Feature 004 contract Δ3 `revealPath`: the shell shows an entry that the walk finds below the worktree root.
+    /// Every other path, and a failed show, gives `UNKNOWN_TARGET`.
+    #[test]
+    fn a_reveal_shows_only_an_existing_entry_below_the_worktree_root() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let shown = record_reveals(&harness, true);
+        let source = workspace.worktree.join("src");
+        let file = source.join("a.ts");
+        std::fs::create_dir_all(&source).expect("src");
+        std::fs::write(&file, "x").expect("file");
+        let reveal = |path: &Path| {
+            let call = uuid();
+            harness.send(reveal_body(&call, &workspace.repository, path));
+            (call.clone(), harness.reply(&call))
+        };
+        for path in [&file, &source] {
+            let (call, reply) = reveal(path);
+            assert_eq!(reply, json!({ "type": "reveal", "callId": call }));
+        }
+        assert_eq!(
+            *shown.lock().expect("shown"),
+            vec![file.clone(), source.clone()]
+        );
+        let outside = harness.fixture.path("outside");
+        std::fs::create_dir_all(&outside).expect("outside");
+        std::fs::write(outside.join("a.ts"), "x").expect("outside file");
+        let mut paths = vec![
+            workspace.worktree.join("absent.ts"),
+            outside.join("a.ts"),
+            workspace.worktree.clone(),
+            source.join("..").join("..").join("outside").join("a.ts"),
+        ];
+        if junction(&workspace.worktree.join("linked"), &outside) {
+            paths.push(workspace.worktree.join("linked").join("a.ts"));
+        } else {
+            println!("SKIP reveal junction: missing capability ntfs-junction (unverified)");
+        }
+        for path in paths {
+            let (call, reply) = reveal(&path);
+            assert_eq!(
+                reply,
+                refused(&call, "UNKNOWN_TARGET"),
+                "{}",
+                path.display()
+            );
+        }
+        assert_eq!(
+            shown.lock().expect("shown").len(),
+            2,
+            "no refused path showed"
+        );
+        let call = uuid();
+        harness.send(reveal_body(
+            &call,
+            &workspace.repository,
+            Path::new(r"src\a.ts"),
+        ));
+        assert_eq!(harness.reply(&call), refused(&call, "INVALID_REQUEST"));
+        let call = uuid();
+        harness.send(reveal_body(&call, &uuid(), &file));
+        assert_eq!(harness.reply(&call), refused(&call, "UNKNOWN_TARGET"));
+
+        let failing = Harness::child();
+        let other = failing.child_workspace("repo");
+        record_reveals(&failing, false);
+        std::fs::write(other.worktree.join("a.ts"), "x").expect("file");
+        let call = uuid();
+        failing.send(reveal_body(
+            &call,
+            &other.repository,
+            &other.worktree.join("a.ts"),
+        ));
+        assert_eq!(
+            failing.reply(&call),
+            refused(&call, "UNKNOWN_TARGET"),
+            "a failed show"
+        );
+    }
+
+    /// Feature 004 contract Δ11: a WSL path takes the §11 file facts walk, and the shell shows its UNC form.
+    #[test]
+    fn a_wsl_reveal_walks_through_the_distro_and_shows_the_unc_path() {
+        let wsl = wsl_harness(true);
+        let (_git, repository) = wsl_repository(&wsl);
+        let shown = record_reveals(&wsl.harness, true);
+        let path = PathBuf::from(format!(r"{WSL_PATH}\src\a.ts"));
+        wsl.host
+            .push(0, b"Sfile\x001\x001000000000\x000\x000\x00none\0");
+        let call = uuid();
+        wsl.harness.send(reveal_body(&call, &repository, &path));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            json!({ "type": "reveal", "callId": call })
+        );
+        assert_eq!(*shown.lock().expect("shown"), vec![path.clone()]);
+        let probe = wsl.host.commands().last().expect("Perl probe").clone();
+        assert_eq!(stdin_of(&probe), b"0\x002\x00src\x00a.ts\x00");
+        wsl.host.push(0, b"Sabsent\0");
+        let call = uuid();
+        wsl.harness.send(reveal_body(&call, &repository, &path));
+        assert_eq!(wsl.harness.reply(&call), refused(&call, "UNKNOWN_TARGET"));
+        assert_eq!(shown.lock().expect("shown").len(), 1);
+    }
+
+    /// Feature 004 contract Δ6: the `destinationFacts` reply of a `worktreeAdd` binding gives the bound path in Git's form.
+    /// The run that takes that text byte for byte passes the admission check. A clone reply gives no path.
+    #[test]
+    fn the_destination_facts_path_of_a_worktree_add_binding_is_the_path_item_of_its_run() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let path = harness.fixture.path(r"worktrees\it's wt");
+        let bound =
+            harness
+                .contexts
+                .create_worktree_add(&path, &workspace.repository, Instant::now());
+        let call = uuid();
+        harness.send(json!({ "type": "destinationFacts", "callId": call, "operationId": uuid(), "bootstrapId": bound }));
+        let reply = harness.reply(&call);
+        assert_eq!(
+            reply,
+            json!({ "type": "destinationFacts", "callId": call, "result": "absent", "path": path.to_str().expect("path") })
+        );
+        assert!(
+            typed::<schema::process_reply::ProcessReply>(&reply).is_some(),
+            "{reply}"
+        );
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::AddWorktree, &workspace);
+        let run = uuid();
+        harness.send(worktree_add_run(
+            &run,
+            &operation,
+            &workspace,
+            &bound,
+            json!([
+                "--no-lazy-fetch",
+                "worktree",
+                "add",
+                "--",
+                reply["path"],
+                "topic"
+            ]),
+        ));
+        assert!(
+            harness.exit(&run, WAIT).is_some(),
+            "the shell started the run"
+        );
+        assert!(
+            harness.contexts.get(&bound, Instant::now()).is_err(),
+            "the admitted run consumed the binding"
+        );
+        let (clone, _) = harness
+            .contexts
+            .create_clone(&path, CLONE_URL, None, Instant::now());
+        let reply = destination_facts(&harness, &uuid(), &clone);
+        assert_eq!(reply.get("path"), None, "{reply}");
+    }
+
+    /// Feature 004 contract Δ6 and Δ11: for a WSL Git, Git's form of the bound path is its Linux path.
+    #[test]
+    fn a_wsl_worktree_add_binding_replies_its_linux_path_and_its_run_takes_that_path() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        let path = PathBuf::from(format!(r"{WSL_PATH}-wt"));
+        let bound = wsl
+            .harness
+            .contexts
+            .create_worktree_add(&path, &repository, Instant::now());
+        wsl.host.push(0, b"Sabsent\0");
+        let call = uuid();
+        wsl.harness.send(json!({ "type": "destinationFacts", "callId": call, "operationId": uuid(), "bootstrapId": bound }));
+        assert_eq!(
+            wsl.harness.reply(&call),
+            json!({ "type": "destinationFacts", "callId": call, "result": "absent", "path": "/home/u/repo-wt" })
+        );
+        let probe = wsl
+            .host
+            .commands()
+            .last()
+            .expect("destination mode")
+            .clone();
+        assert_eq!(stdin_of(&probe), b"/home/u/repo-wt\0");
+        let operation = uuid();
+        wsl.harness.requests.tag(
+            &operation,
+            Mutation::AddWorktree,
+            PhysicalIdentity::Wsl(wsl::WslIdentity {
+                guid: WSL_GUID.to_string(),
+                file_system_id: "fedc9aa3bd65bc57".to_string(),
+                inode: "4242".to_string(),
+            }),
+        );
+        let run = uuid();
+        wsl.harness.send(json!({
+            "type": "run", "callId": run, "operationId": operation, "contextKind": "worktreeAdd",
+            "gitInstallationId": git, "repositoryId": repository, "bootstrapId": bound,
+            "arguments": ["--no-lazy-fetch", "worktree", "add", "--", "/home/u/repo-wt", "topic"],
+            "environmentPolicy": "integrate", "limits": network_limits(30_000, 60_000),
+        }));
+        let reply = wsl
+            .harness
+            .wait_reply(WAIT, |v| {
+                v["callId"] == run.as_str() && (v["type"] == "exit" || v["type"] == "refused")
+            })
+            .expect("run reply")
+            .1;
+        assert_ne!(reply["code"], "INVALID_REQUEST", "{reply}");
+        assert!(
+            wsl.harness.contexts.get(&bound, Instant::now()).is_err(),
+            "the admission check passed and consumed the binding"
         );
     }
 }

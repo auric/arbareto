@@ -8,7 +8,7 @@ import type { OnProgress } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { contractChecked, fixtureId } from "./bridge-contract";
+import { commitReviewed, contractChecked, fixtureId } from "./bridge-contract";
 
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
 // Pierre and its worker need the Vite build (T160). The doubles count the pool provider mounts.
@@ -166,6 +166,16 @@ async function selectRow(id: string) {
   await act(async () => option!.click());
   await settle();
 }
+// Feature 004 T042 (plan.md P5 risk): the 001 commit panel tests run in the Commit view, which replaces the docked commit panel.
+async function switchView(name: "Commit" | "History") {
+  const nav = document.querySelector<HTMLElement>('header nav[aria-label="Views"]')!;
+  await act(async () => [...nav.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === name)!.click());
+  await settle();
+}
+const openCommitView = () => switchView("Commit");
+const COMMIT_VIEW = 'section[aria-label="Commit view"]';
+// The commit view grid: the lane, the comparison, and the tray cells.
+const commitGrid = () => document.querySelector<HTMLElement>(`${COMMIT_VIEW} [data-section="workingChanges"]`)!.parentElement!;
 
 describe("start", () => {
   test("a canceled restoreWorkspace, which means no stored repository, shows the start page, No repository open, and no refusal", async () => {
@@ -180,7 +190,7 @@ describe("start", () => {
   test("a restoreWorkspace registration shows the one view without mode tabs and sends the full read, openHistory, and readTrust", async () => {
     const double = await mount(succeeded(REGISTRATION));
     // Feature 003 data-model §10: the Pull main part reads `readSyncSettings`.
-    expect(double.calls.map((c) => c.operation).sort()).toEqual(["openHistory", "readSyncSettings", "readTrust", "readWorkspace"]);
+    expect(double.calls.map((c) => c.operation).sort()).toEqual(["openHistory", "readBranches", "readSyncSettings", "readTrust", "readWorkspace", "readWorktrees"]);
     expect(double.pending("readWorkspace").args[1]).toEqual({ refresh: false, check: "full" });
     expect(document.querySelector('[role="tab"], [role="tablist"]')).toBeNull();
     expect(document.querySelector('section[aria-label="History"]')).not.toBeNull();
@@ -245,7 +255,8 @@ describe("History", () => {
     await selectRow(HEAD);
     const dock = document.querySelector('section[aria-label="Dock"]')!;
     expect(dock.textContent).toContain("Selected commit");
-    expect(dock.querySelector('section[aria-label="Commit panel"]')!.closest("[hidden]")).not.toBeNull();
+    expect(dock.querySelector('section[aria-label="Working directory summary"]')).toBeNull();
+    expect(document.querySelector(COMMIT_VIEW)).toBeNull();
   });
 });
 
@@ -255,8 +266,8 @@ describe("mounted controls", () => {
     const double = await mount(succeeded(REGISTRATION));
     await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
-    await selectRow("working-directory");
-    const panel = document.querySelector('section[aria-label="Commit panel"]')!;
+    await openCommitView();
+    const panel = document.querySelector(COMMIT_VIEW)!;
     expect(panel.querySelectorAll("textarea")).toHaveLength(1);
     const commit = [...panel.querySelectorAll("button")].find((b) => b.textContent === "Commit (Ctrl+Enter)")!;
     expect(commit.getAttribute("aria-disabled")).toBe("true");
@@ -268,10 +279,10 @@ describe("mounted controls", () => {
 
 });
 
-// T235 and T148: the submodule row, the mounted T236 review, and the T138 status region across the update.
+// T235 and T148: the submodule row, the feature 004 one-click update (T073, no review dialog), and the T138 status region across the update.
 describe("submodule update mount", () => {
   const NOTICE = { submoduleNotice: { count: 2, paths: ["a", "b"], filter: "applied" as const } };
-  const REVIEW = () => ({ generation: 1, rows: [], programs: [], refusals: [], submoduleReviewToken: crypto.randomUUID() });
+  const REVIEW = () => ({ generation: 1, rows: [], programs: [], refusals: [], hosts: [], submoduleReviewToken: crypto.randomUUID() });
   const bandButton = () => document.querySelector<HTMLElement>('[data-slot="notice-band"] button');
   const dialog = () => document.querySelector<HTMLElement>('[role="dialog"]');
   const footerButton = (label: string) => [...document.querySelectorAll<HTMLElement>("footer button")].find((b) => b.textContent === label);
@@ -284,20 +295,18 @@ describe("submodule update mount", () => {
     await act(async () => bandButton()!.click());
     await settle();
     expect(latest(double, "reviewSubmodules").args.slice(0, 2)).toEqual([{ repositoryId: REGISTRATION.repositoryId, repositoryGeneration: shown.generation }, { snapshotId: shown.snapshotId }]);
-    await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
-    expect(dialog()?.textContent).toContain("No submodules found.");
-    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Start update")!.click());
-    await settle();
+    // Feature 004 FR-076: a review without refusals and host lines starts the update at once.
+    const token = REVIEW();
+    await resolve(latest(double, "reviewSubmodules"), succeeded(token));
+    expect(dialog()).toBeNull();
     const update = latest(double, "updateSubmodules");
+    expect(update.args[1]).toEqual({ submoduleReviewToken: token.submoduleReviewToken, start: true });
     const onProgress = update.args[2] as (event: unknown) => void;
-    // Contract §2: the accepted event comes before the approval checks. Data-model §7: `running` follows only when they pass.
     await act(async () => onProgress({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "accepted", counters: {} }));
-    await settle();
-    expect(dialog()).not.toBeNull();
     await act(async () => onProgress({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "running", phase: "preflight", counters: {}, stalled: false }));
     await settle();
     expect(dialog()).toBeNull();
-    expect(document.activeElement === footerButton("Cancel")).toBe(true);
+    expect(footerButton("Cancel")).toBeDefined();
     return { double, update };
   }
   const RUNNING_TEXT = "A Git operation is running. Wait for its result, or select Cancel.";
@@ -310,50 +319,28 @@ describe("submodule update mount", () => {
     return [...document.querySelectorAll<HTMLElement>('[data-slot="menubar-content"] [role="menuitem"]')].find((e) => e.textContent === "Update submodules")!;
   };
 
-  test("B4-1: after a read while the review is open, an expired token after the accepted event reviews the current snapshot and generation, and the rejection starts no read", async () => {
+  test("B4-1: after a read during the update, an expired token after the accepted event reviews the current snapshot and generation, and the rejection starts no read", async () => {
     const double = await mount(succeeded(REGISTRATION));
     await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
     await act(async () => bandButton()!.click());
     await settle();
     await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
+    const update = latest(double, "updateSubmodules");
     // Contract §8: a full read gives a new snapshot ID. A changed observation also gives a new generation.
     await act(async () => document.querySelector<HTMLElement>('header button[aria-label="Refresh"]')!.click());
     await settle();
     const later = snapshot({ ...NOTICE, generation: 2 });
     await resolve(latest(double, "readWorkspace"), { ...succeeded(later), repositoryGeneration: 2 });
-    expect(dialog()).not.toBeNull();
-    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Start update")!.click());
-    await settle();
-    const update = latest(double, "updateSubmodules");
     await act(async () => (update.args[2] as (event: unknown) => void)({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "accepted", counters: {} }));
     await settle();
-    expect(dialog()).not.toBeNull();
     const reads = double.calls.filter((c) => c.operation === "readWorkspace").length;
     await resolve(update, { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "rejected", code: "APPROVAL_EXPIRED" });
-    expect(dialog()).not.toBeNull();
-    expect(double.calls.filter((c) => c.operation === "reviewSubmodules")).toHaveLength(2);
+    expect(dialog()).toBeNull();
+    expect(double.calls.filter((c) => c.operation === "reviewSubmodules")).toHaveLength(3);
     expect(latest(double, "reviewSubmodules").args.slice(0, 2)).toEqual([{ repositoryId: REGISTRATION.repositoryId, repositoryGeneration: 2 }, { snapshotId: later.snapshotId }]);
     // Contract §9: an expired token starts no Git process. The new review answers it, so no read follows it.
     expect(double.calls.filter((c) => c.operation === "readWorkspace")).toHaveLength(reads);
-  });
-
-  test("B4-2: the review dialog shows no busy reason for its own pending update", async () => {
-    const double = await mount(succeeded(REGISTRATION));
-    await serveHistory(double);
-    await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
-    await act(async () => bandButton()!.click());
-    await settle();
-    await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
-    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Start update")!.click());
-    await settle();
-    const update = latest(double, "updateSubmodules");
-    await act(async () => (update.args[2] as (event: unknown) => void)({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "accepted", counters: {} }));
-    await settle();
-    expect(dialog()).not.toBeNull();
-    expect(dialog()!.textContent).not.toContain(RUNNING_TEXT);
-    // The band button outside the dialog still shows the running reason.
-    expect(describedBy(bandButton()!)).toBe(RUNNING_TEXT);
   });
 
   test("plan.md Switch repository: while a mutation runs, the switcher entries and Open folder are disabled with the running reason", async () => {
@@ -379,14 +366,12 @@ describe("submodule update mount", () => {
     await act(async () => bandButton()!.click());
     await settle();
     await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
-    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Start update")!.click());
-    await settle();
     const update = latest(double, "updateSubmodules");
     const reads = double.calls.filter((c) => c.operation === "readWorkspace").length;
     await resolve(update, { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "rejected", code: "REPOSITORY_CHANGED" });
     const after = double.calls.filter((c) => c.operation === "readWorkspace").slice(reads);
     expect(after.map((c) => c.args[1])).toEqual([{ refresh: false, check: "full" }]);
-    expect(double.calls.filter((c) => c.operation === "reviewSubmodules")).toHaveLength(1);
+    expect(double.calls.filter((c) => c.operation === "reviewSubmodules")).toHaveLength(2);
   });
 
   test("B4-2: while a mutation runs, the band button and the menu item stay focusable, show the running reason as their description, and send nothing", async () => {
@@ -401,11 +386,8 @@ describe("submodule update mount", () => {
     const item = await openRepositoryMenu();
     expect(item.getAttribute("aria-disabled")).toBe("true");
     expect(describedBy(item)).toBe(RUNNING_TEXT);
-    // Base UI MenuGroupLabel names its group and hides itself. A reason or a status must not become a group name.
+    // Base UI MenuGroupLabel names its group and hides itself. A reason must not become a group name.
     expect(item.closest('[role="group"]')!.hasAttribute("aria-labelledby")).toBe(false);
-    const status = document.querySelector<HTMLElement>('[data-slot="menubar-content"] [role="status"]')!;
-    expect(status.closest('[role="group"]')!.hasAttribute("aria-labelledby")).toBe(false);
-    expect(status.closest('[aria-hidden="true"]')).toBeNull();
     await act(async () => item.click());
     await settle();
     expect(double.calls.filter((c) => c.operation === "reviewSubmodules")).toHaveLength(reviews);
@@ -461,7 +443,7 @@ describe("submodule update mount", () => {
     expect(document.activeElement!.closest("[data-section]")?.getAttribute("data-section")).toBe("references");
   });
 
-  test("the repository menu item sends reviewSubmodules for the shown snapshot and opens the review", async () => {
+  test("the repository menu item sends reviewSubmodules for the shown snapshot and starts the update with no dialog", async () => {
     const double = await mount(succeeded(REGISTRATION));
     const shown = snapshot();
     await resolve(double.pending("readWorkspace"), succeeded(shown));
@@ -474,7 +456,71 @@ describe("submodule update mount", () => {
     await settle();
     expect(latest(double, "reviewSubmodules").args[1]).toEqual({ snapshotId: shown.snapshotId });
     await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
-    expect(dialog()?.textContent).toContain("Update submodules");
+    expect(dialog()).toBeNull();
+    expect(double.calls.filter((c) => c.operation === "updateSubmodules")).toHaveLength(1);
+  });
+
+  test("feature 004 FR-078: in the Commit view, a refusal switches to the History view and focuses its line in the Submodules group", async () => {
+    await sized(1600, 900, async () => {
+      const double = await mount(succeeded(REGISTRATION));
+      await serveHistory(double);
+      await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
+      await openCommitView();
+      expect(document.querySelector(COMMIT_VIEW)).not.toBeNull();
+      // The History view stays mounted but hidden, so the group is out of sight.
+      expect(document.querySelector<HTMLElement>('[data-view="history"]')!.hidden).toBe(true);
+      await act(async () => bandButton()!.click());
+      await settle();
+      const refusal = "Submodule a is not active, and Arbareto does not activate submodules. Activate it with the command, then update it again.";
+      await resolve(latest(double, "reviewSubmodules"), succeeded({ ...REVIEW(), refusals: [{ code: "UNSUPPORTED_SUBMODULE", reason: "inactive", path: "a", text: refusal, remedy: null }] }));
+      await settle();
+      expect(document.querySelector(COMMIT_VIEW)).toBeNull();
+      expect(document.querySelector<HTMLElement>('[data-view="history"]')!.hidden).toBe(false);
+      const line =document.querySelector<HTMLElement>('[data-slot="submodules-group"] [data-slot="refusal-line"]');
+      expect(line?.textContent).toContain(refusal);
+      expect(document.activeElement === line).toBe(true);
+      expect(double.calls.filter((c) => c.operation === "updateSubmodules")).toHaveLength(0);
+    });
+  });
+
+  test("tasks.md T114: in the constrained profile, a host line from the Repository menu expands the collapsed references section and takes focus", async () => {
+    await sized(720, 480, async () => {
+      const double = await mount(succeeded(REGISTRATION));
+      await serveHistory(double);
+      await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
+      expect(document.querySelector<HTMLElement>("[data-profile]")!.dataset.profile).toBe("constrained");
+      const toggle = () => document.querySelector<HTMLElement>('[data-section="references"] button[aria-label="Show references"]')!;
+      expect(toggle().getAttribute("aria-expanded")).toBe("false");
+      expect(document.querySelector('[data-slot="submodules-group"]') === null).toBe(true);
+      const item = await openRepositoryMenu();
+      await act(async () => item.click());
+      await settle();
+      const hosts = [{ path: "a", fetch: { kind: "host", name: "git.example.net" }, settings: { kind: "unknown" } }];
+      await resolve(latest(double, "reviewSubmodules"), succeeded({ ...REVIEW(), hosts }));
+      await settle();
+      // Plan D15: a host line never waits unseen.
+      expect(toggle().getAttribute("aria-expanded")).toBe("true");
+      const line = document.querySelector<HTMLElement>('[data-section="references"] [data-slot="submodules-group"] [data-slot="host-line"]');
+      expect(line === null).toBe(false);
+      expect(document.activeElement === line).toBe(true);
+    });
+  });
+
+  test("tasks.md T114: a canceled update that the group Update submodules button started returns focus to that button", async () => {
+    await sized(1600, 900, async () => {
+      const double = await mount(succeeded(REGISTRATION));
+      await serveHistory(double);
+      await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
+      const groupButton = () => document.querySelector<HTMLElement>('[data-slot="submodules-group"] [data-slot="group-header"] button:not([aria-expanded])')!;
+      await act(async () => groupButton().focus());
+      await act(async () => groupButton().click());
+      await settle();
+      await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
+      const update = latest(double, "updateSubmodules");
+      await act(async () => bandButton()!.focus());
+      await resolve(update, { requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "canceled", result: {} });
+      expect(document.activeElement === groupButton()).toBe(true);
+    });
   });
 
   test("a failed review shows its code in the status bar and opens no dialog", async () => {
@@ -511,7 +557,7 @@ describe("submodule update mount", () => {
 
   // plan.md "Status area", Cancel sender. The `cancel` senders in src/frontend: the status-bar Cancel (OperationStatus),
   // the WslStarting Cancel (only during a `wsl-starting` phase), and the poll cancel of a user read (requests.ts, only the poll operationId).
-  // The review dialog Cancel and Escape call `onCancel`, which sends no `cancel`.
+  // The Submodules group Cancel sends through the same status-bar request guard.
   test("T369: while an update runs, only the status-bar Cancel sends cancel with its operationId", async () => {
     const OP = crypto.randomUUID();
     const double = await mount(succeeded(REGISTRATION));
@@ -520,19 +566,11 @@ describe("submodule update mount", () => {
     await act(async () => bandButton()!.click());
     await settle();
     await resolve(latest(double, "reviewSubmodules"), succeeded(REVIEW()));
-    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Start update")!.click());
-    await settle();
     const update = latest(double, "updateSubmodules");
     const onProgress = update.args[2] as (event: unknown) => void;
     const cancels = () => double.calls.filter((c) => c.operation === "cancel" && (c.args[0] as { operationId?: string }).operationId === OP);
     await act(async () => onProgress({ requestId: crypto.randomUUID(), operationId: OP, state: "accepted", counters: {} }));
     await settle();
-    // Before acceptance, the dialog stays open, and its Escape and Cancel stay active.
-    await act(async () => void dialog()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", code: "Escape", bubbles: true, cancelable: true })));
-    await settle();
-    await act(async () => [...dialog()!.querySelectorAll<HTMLElement>("button")].find((b) => b.textContent === "Cancel")!.click());
-    await settle();
-    expect(cancels()).toHaveLength(0);
     await act(async () => onProgress({ requestId: crypto.randomUUID(), operationId: OP, state: "running", phase: "preflight", counters: {}, stalled: false }));
     await settle();
     expect(dialog()).toBeNull();
@@ -551,22 +589,22 @@ describe("submodule update mount", () => {
   });
 
   for (const [width, height, profile] of [[1600, 900, "wide"], [960, 900, "narrow"], [720, 480, "constrained"]] as const) {
-    test(`at ${width}x${height} (${profile}), F6 visits the header, the band, the references, the history list, the commit panel sections, and wraps`, async () => {
+    test(`at ${width}x${height} (${profile}), F6 in the Commit view visits the header, the band, Changes, Staged, the diff, the message, and wraps (plan D15)`, async () => {
       await sized(width, height, async () => {
         const double = await mount(succeeded(REGISTRATION));
         expect(document.querySelector("[data-profile]")!.getAttribute("data-profile")).toBe(profile);
         await serveHistory(double);
         await resolve(double.pending("readWorkspace"), succeeded(snapshot(NOTICE)));
-        await selectRow("working-directory");
+        await openCommitView();
         const sectionOf = () => document.activeElement!.closest("[data-section]")?.getAttribute("data-section");
         await act(async () => document.querySelector<HTMLElement>('header button[aria-keyshortcuts="Control+R"]')!.focus());
         const seen: (string | null | undefined)[] = [];
-        for (let i = 0; i < 8; i++) {
+        for (let i = 0; i < 6; i++) {
           await act(async () => void document.activeElement!.dispatchEvent(new KeyboardEvent("keydown", { key: "F6", code: "F6", bubbles: true, cancelable: true })));
           await settle();
           seen.push(sectionOf());
         }
-        expect(seen).toEqual(["noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "header"]);
+        expect(seen).toEqual(["noticeHeading", "workingChanges", "staged", "comparison", "composer", "header"]);
         expect(document.activeElement === document.querySelector('header button[aria-keyshortcuts="Control+R"]')).toBe(true);
       });
     });
@@ -576,7 +614,7 @@ describe("submodule update mount", () => {
 describe("trust", () => {
   const report = (state: string, reads: boolean) => ({
     generation: 1,
-    fingerprint: "f".repeat(64),
+    programs: {},
     state,
     persistence: "stored",
     approvalRequired: { reads, commit: false },
@@ -584,10 +622,12 @@ describe("trust", () => {
     hooks: [],
   });
 
-  test("the Trust required dialog opens when reads need an approval", async () => {
+  // Feature 004 spec FR-072: a read that needs trust never prompts by itself.
+  test("no dialog and no approval start when reads need an approval", async () => {
     const double = await mount(succeeded(REGISTRATION));
     await resolve(double.pending("readTrust"), succeeded(report("untrusted", true)));
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Trust required");
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(double.calls.some((c) => c.operation === "approveTrust")).toBe(false);
   });
 
   test("no dialog opens when reads need no approval", async () => {
@@ -651,8 +691,8 @@ describe("help line", () => {
     const double = await mount(succeeded(REGISTRATION));
     await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
-    await selectRow("working-directory");
-    const changes = document.querySelector('section[aria-label="Commit panel"]')!.textContent ?? "";
+    await openCommitView();
+    const changes = document.querySelector(COMMIT_VIEW)!.textContent ?? "";
     expect(changes).toContain(HELP_LINE);
     expect(changes).not.toContain("available after batch 3");
   });
@@ -677,7 +717,7 @@ const shownComparison = (entryId: string, patch: string) => ({
   }),
   entryId,
 });
-const PANE = { density: "compact", profile: "wide", textScale: 1, menuOpen: false, modalOpen: false, onStatus: () => {}, selected: null, onSelectRow: () => {}, history: null as never, filterRef: { current: null } } as const;
+const PANE = { density: "compact", profile: "wide", textScale: 1, menuOpen: false, modalOpen: false, onStatus: () => {}, selected: null, onSelectRow: () => {}, history: null as never, workbench: null as never, filterRef: { current: null } } as const;
 
 async function render(node: () => ReactNode) {
   const host = document.body.appendChild(document.createElement("div"));
@@ -771,9 +811,10 @@ describe("history selection", () => {
 });
 
 describe("repository menu", () => {
-  test("the revoke result text leaves when another repository opens", async () => {
+  // Feature 004 plan.md D12: Stop trusting sits in the status bar chip.
+  test("the Stop trusting result text leaves when another repository opens", async () => {
     const double = await mount(succeeded(REGISTRATION));
-    const report = { generation: 1, fingerprint: "f".repeat(64), trustId: crypto.randomUUID(), state: "approved", persistence: "stored", approvalRequired: { reads: false, commit: false }, entries: [], hooks: [] };
+    const report = { generation: 1, programs: {}, trustId: crypto.randomUUID(), state: "approved", persistence: "stored", approvalRequired: { reads: false, commit: true }, entries: [], hooks: [] };
     await resolve(latest(double, "readTrust"), succeeded(report));
     const openMenu = async () => {
       const trigger = [...document.querySelectorAll<HTMLElement>('[role="menubar"] [role="menuitem"]')].find((e) => e.textContent === "Repository")!;
@@ -782,17 +823,19 @@ describe("repository menu", () => {
       await settle();
     };
     const item = (label: string) => [...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((e) => e.textContent === label)!;
-    await openMenu();
-    await act(async () => item("Revoke trust").click());
+    await act(async () => document.querySelector<HTMLElement>('footer [data-slot="trust-chip"]')!.click());
+    await settle();
+    await act(async () => item("Stop trusting this repository").click());
     await settle();
     await resolve(latest(double, "revokeTrust"), succeeded({ endedProcesses: 0 }));
-    expect(text()).toContain("Trust revoked.");
+    expect(text()).toContain("Arbareto no longer trusts this repository.");
+    await openMenu();
     await act(async () => item("Open folder…Ctrl+O").click());
     await settle();
     await resolve(latest(double, "chooseRepository"), succeeded({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "b".repeat(64) }));
     await openMenu();
     expect(document.querySelector('[role="menu"]')).not.toBeNull();
-    expect(text()).not.toContain("Trust revoked.");
+    expect(text()).not.toContain("Arbareto no longer trusts this repository.");
   });
 });
 
@@ -823,14 +866,34 @@ describe("remembered pane sizes", () => {
   });
 
   // plan.md "Dock region": pointer and keyboard resizing change the docked panel height in both directions.
-  test("a keyboard shrink step lowers the commit dock and stores it, and a grow step raises it", async () => {
+  test("the Working directory summary takes the History dock height, not the commit dock height", async () => {
     const before = window.innerWidth;
     (window as unknown as { happyDOM: { setInnerWidth(width: number): void } }).happyDOM.setInnerWidth(1600);
     try {
       const double = await mount(succeeded(REGISTRATION));
       await serveHistory(double);
       await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
+      await selectRow(HEAD);
+      const splitter = () => document.querySelector<HTMLElement>('[role="separator"][aria-label="Resize dock"]')!;
+      const details = Number(splitter().getAttribute("aria-valuenow"));
       await selectRow("working-directory");
+      expect(Number(splitter().getAttribute("aria-valuenow"))).toBe(details);
+      await act(async () => void splitter().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true })));
+      expect(Math.round(readPreferences(localStorage).panes.detailsDock!)).toBe(details - 8);
+      expect(readPreferences(localStorage).panes.commitDock).toBeNull();
+    } finally {
+      (window as unknown as { happyDOM: { setInnerWidth(width: number): void } }).happyDOM.setInnerWidth(before);
+    }
+  });
+
+  test("a keyboard shrink step lowers the History dock and stores it, and a grow step raises it", async () => {
+    const before = window.innerWidth;
+    (window as unknown as { happyDOM: { setInnerWidth(width: number): void } }).happyDOM.setInnerWidth(1600);
+    try {
+      const double = await mount(succeeded(REGISTRATION));
+      await serveHistory(double);
+      await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
+      await selectRow(HEAD);
       const splitter = document.querySelector<HTMLElement>('[role="separator"][aria-label="Resize dock"]')!;
       const key = (k: string) => act(async () => void splitter.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true })));
       const start = Number(splitter.getAttribute("aria-valuenow"));
@@ -838,10 +901,10 @@ describe("remembered pane sizes", () => {
       // The dock sits below the splitter, so ArrowDown shrinks it.
       await key("ArrowDown");
       expect(Number(splitter.getAttribute("aria-valuenow"))).toBe(start - 8);
-      expect(readPreferences(localStorage).panes.commitDock).toBe(start - 8);
+      expect(Math.round(readPreferences(localStorage).panes.detailsDock!)).toBe(start - 8);
       await key("ArrowUp");
       expect(Number(splitter.getAttribute("aria-valuenow"))).toBe(start);
-      expect(readPreferences(localStorage).panes.commitDock).toBe(start);
+      expect(Math.round(readPreferences(localStorage).panes.detailsDock!)).toBe(start);
     } finally {
       (window as unknown as { happyDOM: { setInnerWidth(width: number): void } }).happyDOM.setInnerWidth(before);
     }
@@ -869,7 +932,7 @@ describe("file lane splitter", () => {
       const double = await mount(succeeded(REGISTRATION));
       await serveHistory(double);
       await resolve(double.pending("readWorkspace"), succeeded(snapshot()));
-      await selectRow("working-directory");
+      await openCommitView();
       const splitter = document.querySelector<HTMLElement>('[role="separator"][aria-label="Resize file lane"]')!;
       expect(splitter).not.toBeNull();
       const start = Number(splitter.getAttribute("aria-valuenow"));
@@ -923,8 +986,8 @@ describe("selection follows focus", () => {
     const double = await mount(succeeded(REGISTRATION));
     await serveHistory(double);
     await resolve(double.pending("readWorkspace"), succeeded(snapshot({ entries, entryCount: entries.length })));
-    await selectRow("working-directory");
-    const first = document.querySelector<HTMLElement>('section[aria-label="Commit panel"] [role="option"]')!;
+    await openCommitView();
+    const first = document.querySelector<HTMLElement>(`${COMMIT_VIEW} [role="treeitem"]`)!;
     await act(async () => {
       first.focus();
       first.click();
@@ -982,21 +1045,22 @@ describe("pane scrolling", () => {
         // The references sidebar scrolls inside its own region.
         const tree = document.querySelector('[data-section="references"]')!;
         expect(tree !== null).toBe(true);
-        await selectRow("working-directory");
-        const changes = document.querySelector<HTMLElement>('section[aria-label="Commit panel"]')!;
-        const listboxes = [...changes.querySelectorAll('[role="listbox"]')];
+        await openCommitView();
+        const changes = commitGrid();
+        const listboxes = [...changes.querySelectorAll('[role="tree"]')];
         expect(listboxes).toHaveLength(2);
         for (const box of listboxes) expect(own(box)).toBe(true);
         const cells = [...changes.children].filter((c) => ["lane", "comparison", "tray"].includes((c as HTMLElement).style.gridArea.split(" ")[0]!));
         expect(cells).toHaveLength(3);
         for (const cell of cells) expect(own(cell)).toBe(true);
-        // Working changes and Staged each scroll inside their own section.
-        const sections = [...changes.querySelectorAll('[role="listbox"]')].map((box) => box.closest("section:not([aria-label])"));
+        // Changes and Staged each scroll inside their own section.
+        const sections = [...changes.querySelectorAll('[role="tree"]')].map((box) => box.closest("section:not([aria-label])"));
         expect(new Set(sections).size).toBe(2);
         for (const section of sections) expect(scrolls(section!)).toBe(true);
-        // The narrow and constrained file band holds both sections side by side ("Chosen layout, sizes, and DPI").
-        expect(sections[0]!.parentElement!.className.split(/\s+/)).toContain(profile === "wide" ? "flex-col" : "flex-row");
+        // The constrained file band holds both sections side by side ("Chosen layout, sizes, and DPI"). The narrow Commit view uses the list column (004 plan D16 "Geometry").
+        expect(sections[0]!.parentElement!.className.split(/\s+/)).toContain(profile === "constrained" ? "flex-row" : "flex-col");
 
+        await switchView("History");
         const history = document.querySelector('section[aria-label="History"]')!;
         const list = history.querySelector('[role="listbox"]')!;
         expect(own(list)).toBe(true);
@@ -1014,8 +1078,8 @@ describe("pane scrolling", () => {
       const double = await mount(succeeded(REGISTRATION));
       await serveHistory(double);
       await resolve(double.pending("readWorkspace"), succeeded(snapshot({ entries: [changeEntry("a.txt")], entryCount: 1, submoduleNotice: { count: 1, paths: ["s"], filter: "applied" } })));
-      await selectRow("working-directory");
-      const rows = document.querySelector<HTMLElement>('section[aria-label="Commit panel"]')!.style.gridTemplateRows.split(/\s+(?![^(]*\))/);
+      await openCommitView();
+      const rows = commitGrid().style.gridTemplateRows.split(/\s+(?![^(]*\))/);
       expect(rows).toEqual(["58px", "0", "minmax(0px, 1fr)", "0", "58px"]);
     });
   });
@@ -1049,15 +1113,17 @@ describe("single view", () => {
     expect(header.querySelector('button[aria-label="Refresh"]')!.getAttribute("aria-keyshortcuts")).toBe("F5");
   });
 
-  test("the Commit button names both counts and selects the Working directory row", async () => {
+  test("the Commit button names both counts and opens the Commit view (plan D15 top bar)", async () => {
     const entries = [changeEntry("a.txt"), { ...changeEntry("b.txt"), category: "staged" } as ChangeEntry];
     await opened({ entries, entryCount: 2 });
     const commit = document.querySelector<HTMLElement>('header button[aria-label^="Commit:"]')!;
     expect(commit.getAttribute("aria-label")).toBe("Commit: 1 working change, 1 staged");
     await act(async () => commit.click());
     await settle();
-    expect(document.querySelector('[data-row-id="working-directory"]')!.getAttribute("aria-selected")).toBe("true");
-    expect(document.querySelector('section[aria-label="Commit panel"]')!.closest("[hidden]")).toBeNull();
+    const view = document.querySelector(COMMIT_VIEW);
+    expect(view).not.toBeNull();
+    expect(view!.closest("[hidden]")).toBeNull();
+    expect(document.querySelector('header nav[aria-label="Views"] button[aria-current="page"]')?.textContent).toBe("Commit");
   });
 
   test("one notice band spans the width above the sidebar and the history list", async () => {
@@ -1084,7 +1150,7 @@ describe("single view", () => {
     const double = await opened();
     const before = double.calls.length;
     await selectRow("working-directory");
-    expect(document.querySelector('section[aria-label="Commit panel"]')!.closest("[hidden]")).toBeNull();
+    expect(document.querySelector('section[aria-label="Working directory summary"]')!.closest("[hidden]")).toBeNull();
     await selectRow("index");
     expect(double.calls.slice(before).map((c) => c.operation)).toEqual([]);
     await selectRow(HEAD);
@@ -1157,7 +1223,7 @@ describe("single view", () => {
   // Feature 003 FR-038 and FR-039 add Fetch, Pull, Push, and Commit and push. Stash, Clone, and settings stay absent.
   test("no Stash, Clone, or settings control renders anywhere (FR-056)", async () => {
     await opened();
-    await selectRow("working-directory");
+    await openCommitView();
     const names = [...document.querySelectorAll('button, [role="menuitem"], [role="tab"], a')].map((e) => `${e.getAttribute("aria-label") ?? ""} ${e.textContent ?? ""}`);
     for (const name of names) expect(name).not.toMatch(/\b(stash|clone|settings)\b/i);
   });
@@ -1245,6 +1311,7 @@ describe("drafts across a switch", () => {
     });
     await render(0);
     await settle();
+    await openCommitView();
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "Unsent draft");
@@ -1266,6 +1333,7 @@ describe("drafts across a switch", () => {
 
   test("an unsent message draft stays in the draft store after a switch through the repository switcher, and returns with its worktree", async () => {
     const double = await mount(succeeded(REGISTRATION));
+    await openCommitView();
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(field, "Unsent draft");
@@ -1277,16 +1345,16 @@ describe("drafts across a switch", () => {
     await act(async () => switcherOptions()[1]!.click());
     await resolve(latest(double, "openRecentRepository"), succeeded({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "b".repeat(64), worktreeRoot: "C:\other" }));
     expect(double.calls.some((c) => c.operation === "removeDraft")).toBe(false);
-    // The other worktree has no draft. Its field shows no text.
-    expect(document.querySelector("textarea")).toBe(field);
-    expect(field.value).toBe("");
+    // The other worktree has no draft. Its field shows no text. Data-model §14: each worktree keeps its own view, so the other one opens in History.
+    await openCommitView();
+    expect(document.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
     // A switch back restores the draft of the first worktree.
     await act(async () => document.querySelector<HTMLElement>('header button[aria-keyshortcuts="Control+R"]')!.click());
     await settle();
     await resolve(latest(double, "listRecentRepositories"), succeeded({ entries: [{ entryId: crypto.randomUUID(), path: "C:\\repo", location: { kind: "native" }, openedAt: "2026-10-10T08:00:00Z", current: false }] }));
     await act(async () => switcherOptions()[1]!.click());
     await resolve(latest(double, "openRecentRepository"), succeeded(REGISTRATION));
-    expect(field.value).toBe("Unsent draft");
+    expect(document.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("Unsent draft");
   });
 });
 
@@ -1307,7 +1375,7 @@ describe("menus", () => {
     const items = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')];
     const label = (e: HTMLElement) => [...e.childNodes].filter((n) => !(n instanceof HTMLElement && n.dataset.slot === "menubar-shortcut")).map((n) => n.textContent).join("").trim();
     // Feature 003 plan.md D12 adds Clone… and Settings….
-    expect(items.map(label)).toEqual(["Open folder…", "Recent repositories", "Clone…", "Select Git", "Settings…", "Review repository trust", "Revoke trust", "Update submodules"]);
+    expect(items.map(label)).toEqual(["Open folder…", "Recent repositories", "Clone…", "Select Git", "Settings…", "Update submodules"]);
     const keys = [...menu.querySelectorAll<HTMLElement>('[data-slot="menubar-shortcut"]')];
     expect(keys.map((k) => k.textContent)).toEqual(["Ctrl+O", "Ctrl+R"]);
     for (const k of keys) expect(k.className.split(/\s+/)).toEqual(expect.arrayContaining(["ml-auto", "whitespace-nowrap", "text-muted-text"]));
@@ -1333,7 +1401,7 @@ describe("menus", () => {
 // T362: plan.md "Header layout" and "Long text": the branch text of a very long branch name.
 describe("toolbar branch text", () => {
   const LONG = "feature/ACS-10545-a-very-long-branch-name-that-goes-on-and-on-and-on";
-  test("it shows a middle ellipsis, holds the full name in its tooltip and accessible text, and takes only the width that the other items leave", async () => {
+  test('it shows a middle ellipsis, holds the full name in its tooltip and accessible text, and the branch button takes the free width (004 plan.md D15 "Top bar row")', async () => {
     const double = await mount(succeeded(REGISTRATION));
     await resolve(double.pending("readWorkspace"), succeeded(snapshot({ head: { state: "branch", target: `refs/heads/${LONG}`, oid: HEAD } })));
     const branch = document.querySelector<HTMLElement>('header [data-slot="branch-text"]')!;
@@ -1344,14 +1412,16 @@ describe("toolbar branch text", () => {
       ["folder", "feature/", true],
       ["last", "ACS-10545-a-very-long-branch-name-that-goes-on-and-on-and-on", true],
     ]);
-    expect(branch.style.flex).toBe("1 1 0px");
+    // T109: the text counts in the button width. The button takes the free width (plan.md D15 "Top bar row").
+    expect(branch.style.flex).toBe("0 1 auto");
+    expect(branch.closest<HTMLElement>('[data-slot="branch-button"]')!.style.flexGrow).toBe("1000");
     expect(branch.className.split(/\s+/)).toContain("min-w-0");
   });
 });
 
 // T148 review fixes: the commit trust gate, the status bar notice, and the failed file action output.
 describe("mounted staging and commit", () => {
-  const trustReport = (commit: boolean) => ({ generation: 1, fingerprint: "f".repeat(64), state: "untrusted", persistence: "stored", approvalRequired: { reads: false, commit }, entries: [], hooks: [] });
+  const trustReport = (commit: boolean) => ({ generation: 1, programs: {}, state: "untrusted", persistence: "stored", approvalRequired: { reads: false, commit }, entries: [], hooks: [] });
   const button = (label: string) => [...document.querySelectorAll<HTMLButtonElement>("button")].find((b) => b.textContent === label)!;
   const typeMessage = async (text: string) => {
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
@@ -1368,7 +1438,7 @@ describe("mounted staging and commit", () => {
     const entry = stagedEntry();
     const shown = snapshot({ entries: [entry], entryCount: 1 });
     await resolve(latest(double, "readWorkspace"), succeeded(shown));
-    await selectRow("working-directory");
+    await openCommitView();
     await typeMessage("Fix the parser");
     return { double, entry, shown };
   }
@@ -1377,8 +1447,6 @@ describe("mounted staging and commit", () => {
     await act(async () => button("Commit (Ctrl+Enter)").click());
     await settle();
     await resolve(latest(double, "readTrust"), succeeded(trustReport(true)));
-    await act(async () => button("Approve").click());
-    await settle();
     await resolve(latest(double, "approveTrust"), succeeded({ trustId: crypto.randomUUID(), persistence: "stored", saveFailed: false }));
   }
 
@@ -1389,7 +1457,7 @@ describe("mounted staging and commit", () => {
     await act(async () => button("Commit (Ctrl+Enter)").click());
     await settle();
     await resolve(latest(double, "readTrust"), succeeded(trustReport(false)));
-    await resolve(latest(double, "reviewCommit"), succeeded({ reviewToken: crypto.randomUUID() }));
+    await resolve(latest(double, "reviewCommit"), succeeded(commitReviewed(crypto.randomUUID())));
     const effects = { head: true, index: true, workingFiles: false, operationState: false };
     await resolve(latest(double, "commit"), { ...succeeded({ commitOid: "2".repeat(40), effects, lingeringDescendants: 0 }), state: "completed-with-effects" });
     const field = document.querySelector<HTMLTextAreaElement>("textarea")!;
@@ -1425,8 +1493,6 @@ describe("mounted staging and commit", () => {
     await act(async () => button("Commit (Ctrl+Enter)").click());
     await settle();
     await resolve(latest(double, "readTrust"), succeeded(trustReport(true)));
-    await act(async () => button("Approve").click());
-    await settle();
     await resolve(latest(double, "approveTrust"), succeeded({ trustId: crypto.randomUUID(), persistence: "stored", saveFailed: false }));
     const own = latest(double, "readWorkspace");
     expect(own).not.toBe(before);
@@ -1451,15 +1517,14 @@ describe("mounted staging and commit", () => {
     await act(async () => button("Commit (Ctrl+Enter)").click());
     await settle();
     await resolve(latest(double, "readTrust"), succeeded(trustReport(true)));
-    expect(document.querySelector('[role="dialog"]')?.textContent).toContain("Trust required");
-    await act(async () => button("Approve").click());
-    await settle();
+    expect(document.querySelector('[role="dialog"]')).toBeNull();
+    expect(latest(double, "approveTrust").args[1]).toEqual({ action: "commit" });
     await resolve(latest(double, "approveTrust"), succeeded({ trustId: crypto.randomUUID(), persistence: "stored", saveFailed: false }));
     expect(double.calls.some((c) => c.operation === "reviewCommit")).toBe(false);
     const after = snapshot({ entries: [{ ...entry, entryId: crypto.randomUUID() }], entryCount: 1 });
     await resolve(latest(double, "readWorkspace"), succeeded(after));
     expect(latest(double, "reviewCommit").args[1]).toEqual({ snapshotId: after.snapshotId });
-    await resolve(latest(double, "reviewCommit"), succeeded({ reviewToken: crypto.randomUUID() }));
+    await resolve(latest(double, "reviewCommit"), succeeded(commitReviewed(crypto.randomUUID())));
     await resolve(latest(double, "commit"), succeeded({ commitOid: "2".repeat(40) }));
     const status = () => [...document.querySelectorAll('footer [role="status"]')].map((s) => s.textContent).join(" | ");
     expect(status()).toContain("Committed 222222222222 to main");
@@ -1469,21 +1534,18 @@ describe("mounted staging and commit", () => {
     expect(status()).toContain("Committed 222222222222 to main");
   });
 
-  test("a trust read that closes the gate dialog cancels the gate, so the next Commit starts again", async () => {
-    const { double } = await openCommitPanel();
+  test("a late first trust read keeps the pending commit approval, and the approval continues the commit", async () => {
+    const { double, shown } = await openCommitPanel();
     const initial = latest(double, "readTrust");
     await act(async () => button("Commit (Ctrl+Enter)").click());
     await settle();
     await resolve(latest(double, "readTrust"), succeeded(trustReport(true)));
-    expect(document.querySelector('[role="dialog"]')).not.toBeNull();
-    // The first trust read of the registration arrives late and closes the dialog.
     await resolve(initial, succeeded(trustReport(false)));
-    expect(document.querySelector('[role="dialog"]')).toBeNull();
-    const reads = double.calls.filter((c) => c.operation === "readTrust").length;
-    await act(async () => button("Commit (Ctrl+Enter)").click());
-    await settle();
-    expect(double.calls.filter((c) => c.operation === "readTrust")).toHaveLength(reads + 1);
+    expect(double.calls.filter((c) => c.operation === "approveTrust")).toHaveLength(1);
     expect(double.calls.some((c) => c.operation === "reviewCommit")).toBe(false);
+    await resolve(latest(double, "approveTrust"), succeeded({ trustId: crypto.randomUUID(), persistence: "stored", saveFailed: false }));
+    await resolve(latest(double, "readWorkspace"), succeeded(shown));
+    expect(latest(double, "reviewCommit").args[1]).toEqual({ snapshotId: shown.snapshotId });
   });
 
   test("a failed Stage file shows its output below the comparison heading, also after the next read issues a new comparison ID", async () => {
@@ -1493,8 +1555,8 @@ describe("mounted staging and commit", () => {
     const first = snapshot({ entries: [entry], entryCount: 1 });
     await resolve(latest(double, "readWorkspace"), succeeded(first));
     await resolve(latest(double, "readTrust"), succeeded(trustReport(false)));
-    await selectRow("working-directory");
-    await act(async () => document.querySelector<HTMLElement>(`[role="option"][data-entry-id="${entry.entryId}"]`)!.click());
+    await openCommitView();
+    await act(async () => document.querySelector<HTMLElement>(`[role="treeitem"][data-entry-id="${entry.entryId}"]`)!.click());
     await settle();
     const shown = shownComparison(entry.entryId, DIFF);
     await resolve(latest(double, "readComparison"), { ...shown, result: { ...(shown.result as object), snapshotId: first.snapshotId } });

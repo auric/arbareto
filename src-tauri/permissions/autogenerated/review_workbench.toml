@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-review-workbench"
+description = "Enables the review_workbench command without any pre-configured scope."
+commands.allow = ["review_workbench"]
+
+[[permission]]
+identifier = "deny-review-workbench"
+description = "Denies the review_workbench command without any pre-configured scope."
+commands.deny = ["review_workbench"]

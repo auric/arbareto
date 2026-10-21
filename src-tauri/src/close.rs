@@ -98,12 +98,31 @@ pub enum Mutation {
     Skip,
     /// Feature 003 plan.md D12: a clone has no `started` frame. The shell names it from its own clone contexts.
     Clone,
+    // Feature 004 contract Δ6: kind `workbench` takes the name of its action, and kind `applyFiles` that of its direction.
+    Switch,
+    CreateBranch,
+    RenameBranch,
+    DeleteBranch,
+    Merge,
+    Rebase,
+    ChooseOurs,
+    ChooseTheirs,
+    MergeTool,
+    IgnoreGitignore,
+    IgnoreExclude,
+    AddWorktree,
+    RemoveWorktree,
+    PruneWorktrees,
+    SaveGitSettings,
+    StageFiles,
+    UnstageFiles,
 }
 
 impl Mutation {
-    /// The mutation of a `started` frame (contract §6 "Mutation frames", feature 003 contract Δ6).
+    /// The mutation of a `started` frame (contract §6 "Mutation frames", feature 003 and feature 004 contract Δ6).
     /// `None`: a hunk or file action without a direction, another kind with one, `resolve` outside a file action,
-    /// or `action` without kind `sync` or kind `sync` without `action`.
+    /// `action` outside kinds `sync` and `workbench`, kind `sync` or `workbench` without an action of its own list,
+    /// or kind `applyFiles` without `stage` or `unstage`.
     pub fn of(
         kind: StartedKind,
         direction: Option<StartedDirection>,
@@ -117,6 +136,8 @@ impl Mutation {
             (StartedKind::ApplyFile, Some(Stage), None) => Mutation::FileStaging,
             (StartedKind::ApplyFile, Some(Unstage), None) => Mutation::FileUnstaging,
             (StartedKind::ApplyFile, Some(Resolve), None) => Mutation::MarkResolved,
+            (StartedKind::ApplyFiles, Some(Stage), None) => Mutation::StageFiles,
+            (StartedKind::ApplyFiles, Some(Unstage), None) => Mutation::UnstageFiles,
             (StartedKind::Commit, None, None) => Mutation::Commit,
             (StartedKind::UpdateSubmodules, None, None) => Mutation::UpdateSubmodules,
             (StartedKind::Sync, None, Some(action)) => match action {
@@ -128,8 +149,63 @@ impl Mutation {
                 A::Abort => Mutation::Abort,
                 A::Continue => Mutation::Continue,
                 A::Skip => Mutation::Skip,
+                _ => return None,
+            },
+            (StartedKind::Workbench, None, Some(action)) => match action {
+                A::Switch => Mutation::Switch,
+                A::CreateBranch => Mutation::CreateBranch,
+                A::RenameBranch => Mutation::RenameBranch,
+                A::DeleteBranch => Mutation::DeleteBranch,
+                A::Merge => Mutation::Merge,
+                A::Rebase => Mutation::Rebase,
+                A::ChooseOurs => Mutation::ChooseOurs,
+                A::ChooseTheirs => Mutation::ChooseTheirs,
+                A::Mergetool => Mutation::MergeTool,
+                A::IgnoreGitignore => Mutation::IgnoreGitignore,
+                A::IgnoreExclude => Mutation::IgnoreExclude,
+                A::WorktreeAdd => Mutation::AddWorktree,
+                A::WorktreeRemove => Mutation::RemoveWorktree,
+                A::WorktreePrune => Mutation::PruneWorktrees,
+                A::ConfigSave => Mutation::SaveGitSettings,
+                _ => return None,
             },
             _ => return None,
+        })
+    }
+
+    /// The `started` kind of the mutation. A clone has no `started` frame.
+    pub fn kind(self) -> Option<StartedKind> {
+        use Mutation as M;
+        Some(match self {
+            M::HunkStaging | M::HunkUnstaging => StartedKind::ApplyHunk,
+            M::FileStaging | M::FileUnstaging | M::MarkResolved => StartedKind::ApplyFile,
+            M::Commit => StartedKind::Commit,
+            M::UpdateSubmodules => StartedKind::UpdateSubmodules,
+            M::Fetch
+            | M::FetchAll
+            | M::Pull
+            | M::Push
+            | M::ForcePush
+            | M::Abort
+            | M::Continue
+            | M::Skip => StartedKind::Sync,
+            M::Switch
+            | M::CreateBranch
+            | M::RenameBranch
+            | M::DeleteBranch
+            | M::Merge
+            | M::Rebase
+            | M::ChooseOurs
+            | M::ChooseTheirs
+            | M::MergeTool
+            | M::IgnoreGitignore
+            | M::IgnoreExclude
+            | M::AddWorktree
+            | M::RemoveWorktree
+            | M::PruneWorktrees
+            | M::SaveGitSettings => StartedKind::Workbench,
+            M::StageFiles | M::UnstageFiles => StartedKind::ApplyFiles,
+            M::Clone => return None,
         })
     }
 
@@ -151,6 +227,23 @@ impl Mutation {
             Mutation::Continue => "Continue",
             Mutation::Skip => "Skip",
             Mutation::Clone => "Clone",
+            Mutation::Switch => "Switch",
+            Mutation::CreateBranch => "Create branch",
+            Mutation::RenameBranch => "Rename branch",
+            Mutation::DeleteBranch => "Delete branch",
+            Mutation::Merge => "Merge",
+            Mutation::Rebase => "Rebase",
+            Mutation::ChooseOurs => "Choose ours",
+            Mutation::ChooseTheirs => "Choose theirs",
+            Mutation::MergeTool => "Merge tool",
+            Mutation::IgnoreGitignore => "Add to .gitignore",
+            Mutation::IgnoreExclude => "Add to info/exclude",
+            Mutation::AddWorktree => "Add worktree",
+            Mutation::RemoveWorktree => "Remove worktree",
+            Mutation::PruneWorktrees => "Prune worktrees",
+            Mutation::SaveGitSettings => "Save Git settings",
+            Mutation::StageFiles => "Stage files",
+            Mutation::UnstageFiles => "Unstage files",
         }
     }
 }
@@ -199,6 +292,8 @@ pub fn prompt(mutations: &[Mutation]) -> Confirmation {
         [] => (String::new(), "is", "it"),
     };
     Confirmation {
+        instruction: None,
+        details: None,
         text: format!(
             "{names} {verb} running. Arbareto cannot guarantee a rollback if you interrupt {object}. The repository can keep a part of the change."
         ),
@@ -214,6 +309,7 @@ pub fn prompt(mutations: &[Mutation]) -> Confirmation {
         ],
         default_button: STAY_OPEN,
         accept_button: INTERRUPT,
+        shield: false,
     }
 }
 
@@ -513,6 +609,78 @@ mod tests {
             prompt(&pulls.mutations()).text,
             "Pull is running. Arbareto cannot guarantee a rollback if you interrupt it. The repository can keep a part of the change."
         );
+    }
+
+    /// Feature 004 contract Δ6: the close prompt names each `workbench` action and each `applyFiles` direction.
+    #[test]
+    fn the_prompt_names_each_feature_004_action() {
+        use StartedAction as A;
+        use StartedDirection::{Stage, Unstage};
+        let workbench = [
+            (A::Switch, "Switch"),
+            (A::CreateBranch, "Create branch"),
+            (A::RenameBranch, "Rename branch"),
+            (A::DeleteBranch, "Delete branch"),
+            (A::Merge, "Merge"),
+            (A::Rebase, "Rebase"),
+            (A::ChooseOurs, "Choose ours"),
+            (A::ChooseTheirs, "Choose theirs"),
+            (A::Mergetool, "Merge tool"),
+            (A::IgnoreGitignore, "Add to .gitignore"),
+            (A::IgnoreExclude, "Add to info/exclude"),
+            (A::WorktreeAdd, "Add worktree"),
+            (A::WorktreeRemove, "Remove worktree"),
+            (A::WorktreePrune, "Prune worktrees"),
+            (A::ConfigSave, "Save Git settings"),
+        ];
+        let cases = workbench
+            .map(|(action, name)| (StartedKind::Workbench, None, Some(action), name))
+            .into_iter()
+            .chain([
+                (StartedKind::ApplyFiles, Some(Stage), None, "Stage files"),
+                (
+                    StartedKind::ApplyFiles,
+                    Some(Unstage),
+                    None,
+                    "Unstage files",
+                ),
+            ]);
+        for (kind, direction, action, name) in cases {
+            let mutation = Mutation::of(kind, direction, action).expect("a valid frame");
+            assert_eq!(mutation.kind(), Some(kind), "{name}");
+            assert_eq!(
+                prompt(&[mutation]).text,
+                format!(
+                    "{name} is running. Arbareto cannot guarantee a rollback if you interrupt it. The repository can keep a part of the change."
+                )
+            );
+        }
+        assert_eq!(Mutation::Clone.kind(), None, "a clone has no started frame");
+    }
+
+    /// Feature 004 contract Δ6: a `workbench` frame carries a workbench action, a `sync` frame a sync action,
+    /// and an `applyFiles` frame `stage` or `unstage`.
+    #[test]
+    fn a_feature_004_frame_outside_its_kind_rule_names_no_mutation() {
+        use StartedAction as A;
+        use StartedDirection::{Resolve, Stage};
+        for (kind, direction, action) in [
+            (StartedKind::Workbench, None, None),
+            (StartedKind::Workbench, None, Some(A::Fetch)),
+            (StartedKind::Workbench, Some(Stage), Some(A::Switch)),
+            (StartedKind::Sync, None, Some(A::Switch)),
+            (StartedKind::Sync, None, Some(A::Mergetool)),
+            (StartedKind::ApplyFiles, None, None),
+            (StartedKind::ApplyFiles, Some(Resolve), None),
+            (StartedKind::ApplyFiles, Some(Stage), Some(A::Switch)),
+            (StartedKind::Commit, None, Some(A::ConfigSave)),
+        ] {
+            assert_eq!(
+                Mutation::of(kind, direction, action),
+                None,
+                "{kind:?} {direction:?} {action:?}"
+            );
+        }
     }
 
     /// Feature 003 plan.md D12: a running clone is "Clone", and a running clone with a sync names both.

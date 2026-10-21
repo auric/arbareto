@@ -69,7 +69,7 @@ describe("closed lists (data-model §9, contract §9 and §12)", () => {
   });
 
   test("UNSUPPORTED_SUBMODULE reasons, and the two run-only reasons", () => {
-    expect([...SUBMODULE_REFUSAL_REASONS]).toEqual(["unsaved-commits", "update-mode", "clone-interrupted", "folder-not-empty", "no-url", "path", "active-value", "remote-name", "gitdir-config", "limit"]);
+    expect([...SUBMODULE_REFUSAL_REASONS]).toEqual(["unsaved-commits", "update-mode", "clone-interrupted", "folder-not-empty", "no-url", "path", "active-value", "remote-name", "parent-not-initialized", "inactive", "gitdir-config", "limit"]);
     expect([...SUBMODULE_RUN_REFUSAL_REASONS]).toEqual(["programs", "changed-after-review"]);
   });
 
@@ -164,8 +164,18 @@ describe("row result validator (data-model §9 'Row result', contract §12 'Reco
   });
 
   test("a failed process row carries its output tail and remedy", () => {
-    const failed = { ...base, state: "failed", newCommit: OLD, fetched: true, outputTail: "fatal: could not read from remote\n", remedy: { command: null, text: FETCH_TEXT } };
+    const failed = { ...base, state: "failed", newCommit: OLD, fetched: true, outputTail: "fatal: could not read from remote\n", exitCode: 128, remedy: { command: null, text: FETCH_TEXT } };
     expect(SubmoduleRowResult.safeParse(failed).success).toBe(true);
+  });
+
+  test("feature 004 contract Δ12: a failed step carries its exit code or null, and only with its output tail", () => {
+    const failed = { ...base, state: "failed", newCommit: OLD, outputTail: "fatal: x\n", remedy: { command: null, text: FETCH_TEXT } };
+    expect(SubmoduleRowResult.safeParse({ ...failed, exitCode: null }).success).toBe(true);
+    expect(SubmoduleRowResult.safeParse(failed).success).toBe(false);
+    expect(SubmoduleRowResult.safeParse({ ...failed, exitCode: -1 }).success).toBe(false);
+    const { outputTail: _, ...noTail } = failed;
+    expect(SubmoduleRowResult.safeParse({ ...noTail, exitCode: 128 }).success).toBe(false);
+    expect(SubmoduleRowResult.safeParse({ ...base, state: "unchanged", oldCommit: OLD, newCommit: OLD, exitCode: 0 }).success).toBe(false);
   });
 
   test("a failed read names the read and carries no remedy", () => {

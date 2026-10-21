@@ -93,15 +93,18 @@ describeGit("bun runner", (git) => {
     expect(await runner.run(failed)).toEqual({ exitCode: 1, activeDescendants: 0 });
   });
 
+  // The record of each call holds the time from its run request to its exit. The child prints `performance.now()`, its own run time from its process start,
+  // and its process lives inside that interval. The test measures the time around the call, which holds the interval. So no timing bound decides.
   test("each recorded call keeps its wall time from the request to the exit", async () => {
-    const nap = `alias.nap=!"${slash(process.execPath)}" -e 'setTimeout(() => {}, 200)'`;
-    const slow = call({ arguments: ["--no-lazy-fetch", "-c", nap, "nap"] });
-    expect(await runner.run(slow)).toEqual({ exitCode: 0, activeDescendants: 0 });
-    const fast = call();
-    expect(await runner.run(fast)).toEqual({ exitCode: 0, activeDescendants: 0 });
-    const durationMs = (c: GitCall) => runner.calls.find((r) => r.operationId === c.operationId)?.durationMs ?? Number.NaN;
-    expect(durationMs(slow)).toBeGreaterThanOrEqual(150);
-    expect(durationMs(fast)).toBeLessThan(150);
+    const child = (body: string) => call({ arguments: ["--no-lazy-fetch", "-c", `alias.t=!"${slash(process.execPath)}" -e '${body}'`, "t"] });
+    for (const c of [child("setTimeout(() => console.log(performance.now()), 200)"), child("console.log(performance.now())")]) {
+      const start = performance.now();
+      expect(await runner.run(c)).toEqual({ exitCode: 0, activeDescendants: 0 });
+      const elapsed = performance.now() - start;
+      const own = Number(text(c.stdout).trim());
+      const recorded = runner.calls.find((r) => r.operationId === c.operationId)?.durationMs ?? Number.NaN;
+      expect({ own: own > 0, ownWithin: own <= recorded, recordedWithin: recorded <= elapsed }).toEqual({ own: true, ownWithin: true, recordedWithin: true });
+    }
   });
 
   test("gitProbe runs only the version probe, and an array without --no-lazy-fetch is refused", async () => {
@@ -335,37 +338,44 @@ describeGit("bun runner", (git) => {
     ]);
   });
 
-  test("the trust store keys records by identity, survives a new session, and follows persist and revoke", async () => {
+  test("the trust store keys records by identity, survives a new session, and follows a failed store and revoke", async () => {
     const store = createTrustStore();
     const first = createBunRunner({ git, directory: fixtureDir("trust-1"), environment: serviceEnv(), trustStore: store });
     const linked = fixtureDir("linked");
-    const confirm = (worktreeRoot: string, persist: boolean) => ({
+    const none = { names: [], more: 0 };
+    // Feature 004 contract Δ6: the version 2 frame.
+    const confirm = (worktreeRoot: string) => ({
       type: "confirm" as const,
       worktreeRoot,
-      gitDirectory: commonDirectory,
+      adminDirectory: commonDirectory,
       commonDirectory,
       gitSelectedPath: git,
-      fingerprint: "a".repeat(64),
-      ...(persist ? { persist: true as const } : { persist: false as const, bound: "file-count" as const }),
+      policyVersion: 2 as const,
+      action: "commit" as const,
+      details: { hooks: none, filters: none, monitors: none, mergeDrivers: none, mergeTools: none, signing: none, other: none },
     });
-    const stored = await first.trust(confirm(repo, true));
-    expect(stored).toMatchObject({ result: "approved", stored: true, record: { worktreeRoot: repo, commonDirectory } });
-    await first.trust(confirm(linked, true));
+    const stored = await first.trust(confirm(repo));
+    expect(stored).toMatchObject({ result: "approved", stored: true, record: { policyVersion: 2, worktreeRoot: repo, adminDirectory: commonDirectory, commonDirectory } });
+    await first.trust(confirm(linked));
     expect(store.records.length).toBe(2);
     await first.dispose();
 
     const second = createBunRunner({ git, directory: fixtureDir("trust-2"), environment: serviceEnv(), trustStore: store });
     expect(store.records.map((r) => r.worktreeRoot)).toEqual([repo, linked]);
     second.inject.confirmResult = "declined";
-    expect(await second.trust(confirm(repo, true))).toEqual({ result: "declined" });
+    expect(await second.trust(confirm(repo))).toEqual({ result: "declined" });
     expect(store.records.length).toBe(2);
     second.inject.confirmResult = "approved";
-    expect(await second.trust(confirm(repo, false))).toEqual({ result: "approved", stored: false });
-    expect(store.records.map((r) => r.worktreeRoot)).toEqual([linked]);
-    await second.trust(confirm(repo, true));
+    // Contract §7 "Trust approval store": a failed store leaves the records unchanged.
+    second.inject.trustStoreFails = true;
+    expect(await second.trust(confirm(repo))).toEqual({ result: "approved", stored: false });
+    expect(store.records.map((r) => r.worktreeRoot)).toEqual([repo, linked]);
+    second.inject.trustStoreFails = false;
+    await second.trust(confirm(repo));
+    expect(store.records.map((r) => r.worktreeRoot)).toEqual([linked, repo]);
     expect(await second.trust({ type: "revoke", commonDirectory })).toEqual({ endedProcesses: 0 });
     expect(store.records).toEqual([]);
-    expect(store.persists).toEqual([true, true, true, false, true]);
+    expect(second.frames.filter((f) => f.type === "confirm").length).toBe(3);
     await second.dispose();
   });
 

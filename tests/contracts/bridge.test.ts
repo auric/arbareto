@@ -49,7 +49,7 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   readRefs: (b) => b.readRefs(gen()),
   readComparison: (b) => b.readComparison({ ...gen(), selectionId: id() }, { snapshotId: id(), entryId: id() }),
   readTrust: (b) => b.readTrust(repo()),
-  approveTrust: (b) => b.approveTrust(gen(), { fingerprint: "a".repeat(64), approve: true }),
+  approveTrust: (b) => b.approveTrust(repo(), { action: "commit" }),
   revokeTrust: (b) => b.revokeTrust(repo(), { trustId: id() }),
   applyHunk: (b) => b.applyHunk(gen(), { comparisonId: id(), hunkId: id(), snapshotId: id(), direction: "stage" }),
   applyFile: (b) => b.applyFile(gen(), { comparisonId: id(), snapshotId: id(), direction: "unstage" }),
@@ -73,6 +73,17 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   chooseSyncPath: (b) => b.chooseSyncPath({ target: "remoteKey", worktreeKey: "a".repeat(64), remote: "origin" }),
   clearSyncPath: (b) => b.clearSyncPath({ target: "plink" }),
   launchPuttygen: (b) => b.launchPuttygen(),
+  // Feature 004 contract Δ1.
+  readBranches: (b) => b.readBranches(gen()),
+  readWorktrees: (b) => b.readWorktrees(gen()),
+  readGitSettings: (b) => b.readGitSettings(repo()),
+  reviewWorkbench: (b) => b.reviewWorkbench(gen(), { action: "worktree-prune" }),
+  runWorkbench: (b) => b.runWorkbench(repo(), { workbenchToken: id(), start: true }),
+  applyFiles: (b) => b.applyFiles(repo(), { snapshotId: id(), entryIds: [id()], direction: "stage", kind: "selected" }),
+  openWorktree: (b) => b.openWorktree({ repositoryId: id(), path: "/home/u/repo-wt" }),
+  revealPath: (b) => b.revealPath({ repositoryId: id(), entryId: id() }),
+  setSwitchChoice: (b) => b.setSwitchChoice({ choice: "stash" }),
+  chooseWorktreeFolder: (b) => b.chooseWorktreeFolder({ repositoryId: id() }),
 };
 
 interface Options {

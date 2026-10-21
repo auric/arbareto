@@ -1,0 +1,5 @@
+{
+  "schema": "run-workbench-result",
+  "expected": "valid",
+  "text": "{\"action\":\"switch\",\"head\":{\"state\":\"branch\",\"target\":\"refs/heads/target\",\"oid\":\"0123456789abcdef0123456789abcdef01234567\"},\"refs\":[],\"stash\":{\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\",\"state\":\"kept-failed-apply\"},\"conflicted\":0,\"remedy\":{\"text\":\"The stash keeps the changes. This command applies them again.\",\"command\":\"& 'C:\\\\Git\\\\git.exe' --no-lazy-fetch -C 'C:\\repo' stash apply '89abcdef0123456789abcdef0123456789abcdef'\"},\"outputTail\":\"error: conflict\\n\"}"
+}

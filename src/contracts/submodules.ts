@@ -5,7 +5,7 @@
 
 import { z } from "zod";
 import { Base64 } from "./channel";
-import { COMMIT_OUTPUT_TAIL_BYTES, COMMIT_OUTPUT_TAIL_LINES } from "./limits";
+import { COMMIT_OUTPUT_TAIL_BYTES, COMMIT_OUTPUT_TAIL_LINES, PROCESS_EXIT_CODE_MAX } from "./limits";
 import { Count, Fingerprint, Identifier, OutputTail, Phase, ProgressFields, Text } from "./operations";
 import { buildRemedyCommand, type RemedyValue } from "./remedy-command";
 
@@ -22,6 +22,9 @@ export const SUBMODULE_REFUSAL_REASONS = [
   "path",
   "active-value",
   "remote-name",
+  // Feature 004 contract Δ12: a scoped review of a nested row whose parent row has no `.git` entry, and of a row outside the active set.
+  "parent-not-initialized",
+  "inactive",
   "gitdir-config",
   "limit",
 ] as const;
@@ -30,6 +33,10 @@ export type SubmoduleRefusalReason = (typeof SUBMODULE_REFUSAL_REASONS)[number];
 // Contract §12 "Refusals during the run": these reasons exist only during the run.
 export const SUBMODULE_RUN_REFUSAL_REASONS = ["programs", "changed-after-review"] as const;
 export type SubmoduleRunRefusalReason = (typeof SUBMODULE_RUN_REFUSAL_REASONS)[number];
+
+// Feature 004 contract Δ12: the `STALE_REVIEW` reason of an `updateSubmodules` request without `confirmHosts` after a review with host lines.
+export const SUBMODULE_STALE_REVIEW_REASONS = ["hosts"] as const;
+export type SubmoduleStaleReviewReason = (typeof SUBMODULE_STALE_REVIEW_REASONS)[number];
 
 export const SUBMODULE_ROW_STATES = ["cloned", "moved", "unchanged", "failed", "clone-interrupted", "changed-elsewhere", "refused"] as const;
 export type SubmoduleRowState = (typeof SUBMODULE_ROW_STATES)[number];
@@ -95,6 +102,8 @@ export const SubmoduleRowResult = z
     text: Text.optional(),
     remedy: RowRemedy.optional(),
     outputTail: OutputTail.optional(),
+    // Feature 004 contract Δ12: the Git exit code of the failed step. Null: the step ended without an exit code, such as after a kill.
+    exitCode: z.int().min(0).max(PROCESS_EXIT_CODE_MAX).nullable().optional(),
     failedRead: z.enum(SUBMODULE_FAILED_READS).optional(),
     folderPath: Text.optional(),
   })
@@ -107,6 +116,8 @@ export const SubmoduleRowResult = z
     // A failed read carries no remedy and no process output.
     if (row.failedRead !== undefined && (row.state !== "failed" || row.remedy !== undefined || row.outputTail !== undefined)) return false;
     if (row.outputTail !== undefined && row.state !== "failed") return false;
+    // A failed step carries its output tail and its exit code together.
+    if ((row.exitCode !== undefined) !== (row.outputTail !== undefined)) return false;
     return row.remedy === undefined || row.state === "failed" || refused || row.state === "clone-interrupted";
   });
 export type SubmoduleRowResult = z.infer<typeof SubmoduleRowResult>;
@@ -158,6 +169,85 @@ export function redactUrlUserInfo(text: string): string {
   }
   return out + text.slice(from);
 }
+
+// Feature 004 plan.md D13: the host of a URL. `local` is this computer. `unknown` means that no exact host follows from the URL.
+export const SubmoduleHost = z.discriminatedUnion("kind", [z.strictObject({ kind: z.literal("host"), name: Text }), z.strictObject({ kind: z.literal("local") }), z.strictObject({ kind: z.literal("unknown") })]);
+export type SubmoduleHost = z.infer<typeof SubmoduleHost>;
+
+// Contract Δ12 host line: a row whose fetch host differs from the host of its effective `submodule.<name>.url`.
+export const SubmoduleHostLine = z.strictObject({ path: Text, fetch: SubmoduleHost, settings: SubmoduleHost });
+export type SubmoduleHostLine = z.infer<typeof SubmoduleHostLine>;
+
+const LOCAL_HOST: SubmoduleHost = { kind: "local" };
+const UNKNOWN_HOST: SubmoduleHost = { kind: "unknown" };
+// transport.c `transport_get`: Git connects to these schemes itself, or through its own `git remote-http`, `remote-https`, `remote-ftp`, and `remote-ftps`.
+const HOST_SCHEMES: ReadonlySet<string> = new Set(["ssh", "git+ssh", "ssh+git", "git", "http", "https", "ftp", "ftps"]);
+// compat/mingw.c `is_valid_win32_path` with `core.protectNTFS`, the Git for Windows default. A name that this check cannot clear gives no exact host.
+const WIN32_NAME = /^(?:\.{1,2}|[^\u0000-\u001f:<>"|?*]*[^\u0000-\u001f:<>"|?* .])$/;
+const DOS_DEVICE = /^(?:aux|nul|prn|con|conin\$|conout\$|com[1-9¹²³]|lpt[1-9¹²³])(?:[ .:]|$)/i;
+
+// connect.c `url_is_local_not_ssh`. Null: Git can read the drive path as the scp form, and this check cannot tell.
+function localPath(url: string, platform: "windows" | "posix"): boolean | null {
+  const colon = url.indexOf(":");
+  const slash = url.indexOf("/");
+  if (colon < 0 || (slash >= 0 && slash < colon)) return true;
+  // `win32_has_dos_drive_prefix`: one character of at most four UTF-8 bytes, then `:`.
+  const bytes = new TextEncoder().encode(url);
+  if (platform !== "windows") return false;
+  let i = 1;
+  if (bytes[0]! & 0x80) while (i < 4 && (bytes[i] ?? 0) & 0x80) i++;
+  if (bytes[i] !== 0x3a) return false;
+  const rest = new TextDecoder().decode(bytes.subarray(i + 1));
+  return rest.split(/[\\/]/).every((name) => name === "" || (WIN32_NAME.test(name) && !DOS_DEVICE.test(name))) ? true : null;
+}
+
+// connect.c `host_end`, `get_host_and_port`, and `get_port` on `[user@]host[:port]`: a host in brackets ends at `]`, and a decimal port or a lone `:` goes.
+function authorityHost(authority: string): SubmoduleHost {
+  const parts = authority.split("@");
+  if (parts.length > 2) return UNKNOWN_HOST;
+  let name = parts.at(-1)!;
+  if (name.startsWith("[")) {
+    const close = name.indexOf("]");
+    if (close < 0 || !/^(?::\d*)?$/.test(name.slice(close + 1))) return UNKNOWN_HOST;
+    name = name.slice(1, close);
+  }
+  const colon = name.indexOf(":");
+  const port = colon < 0 ? null : name.slice(colon + 1);
+  if (port !== null && /^\d*$/.test(port) && (port === "" || Number(port) < 65536)) name = name.slice(0, colon);
+  return name === "" ? UNKNOWN_HOST : { kind: "host", name };
+}
+
+// git-fetch(1) "GIT URLS" with transport.c `transport_get`, url.c `is_url`, and connect.c `parse_connect_url`. `platform` names the Git that fetches.
+export function submoduleUrlHost(url: string, platform: "windows" | "posix"): SubmoduleHost {
+  // `<transport>::<address>` runs `git remote-<transport>`. Git refuses `rsync:`.
+  if (/^[A-Za-z0-9][A-Za-z0-9+.-]*::/.test(url) || url.startsWith("rsync:")) return UNKNOWN_HOST;
+  const scheme = /^([A-Za-z0-9][A-Za-z0-9+.-]*):\/\//.exec(url);
+  if (scheme !== null) {
+    if (scheme[1] === "file") return LOCAL_HOST;
+    if (!HOST_SCHEMES.has(scheme[1]!)) return UNKNOWN_HOST;
+    const rest = url.slice(scheme[0].length);
+    const slash = rest.indexOf("/");
+    // Git decodes `%XX` (url.c `url_decode`), and `host_end` finds `@[` anywhere in the text. Neither gives an exact host here.
+    const at = rest.indexOf("@[");
+    if (slash < 0 || /[%\\]/.test(rest.slice(0, slash)) || at > slash) return UNKNOWN_HOST;
+    return authorityHost(rest.slice(0, slash));
+  }
+  const local = localPath(url, platform);
+  if (local !== false) return local === true ? LOCAL_HOST : UNKNOWN_HOST;
+  // The scp form `[user@]host:path`. `host_end`: a host in brackets, also after `user@`, ends at `]`, and the path `:` must follow it.
+  const colon = url.indexOf(":");
+  const at = url.indexOf("@[");
+  if (at > colon) return UNKNOWN_HOST;
+  const start = at >= 0 ? at + 1 : 0;
+  if (url[start] !== "[") return authorityHost(url.slice(0, colon));
+  const close = url.indexOf("]", start);
+  return close < 0 || url[close + 1] !== ":" ? UNKNOWN_HOST : authorityHost(url.slice(0, close + 1));
+}
+
+// RFC 4343: host names compare without regard to ASCII letter case. An unknown host never compares equal.
+const asciiLower = (text: string) => text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+export const sameSubmoduleHost = (a: SubmoduleHost, b: SubmoduleHost): boolean =>
+  a.kind === "local" ? b.kind === "local" : a.kind === "host" && b.kind === "host" && asciiLower(a.name) === asciiLower(b.name);
 
 const LF = 0x0a;
 // ECMA-48 control strings (OSC, DCS, SOS, PM, APC) end at ST or BEL. Their content holds no control character, so no line is lost.

@@ -1,5 +1,0 @@
-{
-  "schema": "read-trust-result",
-  "expected": "valid",
-  "text": "{\"generation\":0,\"fingerprint\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"state\":\"approved\",\"persistence\":\"session\",\"approvalRequired\":{\"reads\":true,\"commit\":true,\"sync\":true},\"entries\":[{\"key\":\"filter.canary.clean\",\"scope\":\"local\",\"origin\":\"file:.git/config\",\"value\":\"./tools/clean.sh\"},{\"key\":\"url.https://<redacted>@host.example/.insteadof\",\"scope\":\"global\",\"origin\":\"file:C:/Users/u/.gitconfig\"}],\"hooks\":[{\"event\":\"pre-commit\",\"name\":\"lint\",\"scope\":\"global\",\"commandScope\":\"local\",\"commandOrigin\":\"file:.git/config\",\"disabled\":false,\"repositoryControlled\":true},{\"event\":\"post-commit\",\"name\":\"off\",\"scope\":\"local\",\"disabled\":true,\"repositoryControlled\":false},{\"event\":\"pre-commit\",\"path\":\"C:/repo/.git/hooks/pre-commit\",\"repositoryControlled\":true}],\"trustId\":\"0f0f0f0f-0000-4000-8000-000000000080\",\"bound\":\"file-bytes\"}"
-}

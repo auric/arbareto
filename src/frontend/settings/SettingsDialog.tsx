@@ -1,24 +1,24 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { Cancel01Icon, Settings02Icon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
-import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useId, useRef, useState, type ReactNode } from "react";
 import type { BridgeResponse, createBridge } from "../bridge";
-import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import { isObject } from "../lib/utils";
-import { PUTTY_PROGRAM_NAMES, puttyUnavailableText } from "./ConnectTerminal";
+import { PULL_ACTIONS, type DefaultPullAction } from "../sync/PullSplitButton";
+import { PUTTY_PROGRAM_NAMES } from "./ConnectTerminal";
 
 // Feature 003 spec FR-032 to FR-037 and FR-054, plan.md D9 and D12 "Settings panel", O-7, O-8, contract Δ3 shell-only settings operations, and data-model §10.
-// Feature 004 moves the sections into its Settings view (004 plan O-7). Each section takes only `settings`, `change`, and its own facts.
+// Feature 004 moves the sections into its Settings view as the pages "SSH" and "Clone" (004 plan O-7). Each section takes only `settings`, `change`, and its own facts.
 
 type Bridge = ReturnType<typeof createBridge>;
-type SettingsBridge = Pick<Bridge, "readSyncSettings" | "setSshClient" | "chooseSyncPath" | "clearSyncPath" | "launchPuttygen">;
+export type SettingsBridge = Pick<Bridge, "readSyncSettings" | "setSshClient" | "chooseSyncPath" | "clearSyncPath" | "launchPuttygen">;
 
-/** Data-model §10: the `readSyncSettings` fields that the settings show. */
+/** Data-model §10 and feature 004 data-model §13: the `readSyncSettings` fields that the settings show. */
 export type SyncSettings = {
   sshClient: "git" | "plink";
+  defaultPullAction: DefaultPullAction;
+  switchChoice: "keep" | "stash";
   plinkPath: string | null;
   programs: { program: string; path: string; present: boolean }[];
   remoteKeyFiles: { worktreeKey: string; remote: string; path: string }[];
@@ -36,9 +36,10 @@ export function syncSettingsOf(response: BridgeResponse): SyncSettings | null {
   const r = response.result;
   if (response.state !== "succeeded" || !isObject(r)) return null;
   if (r.sshClient !== "git" && r.sshClient !== "plink") return null;
+  if (!PULL_ACTIONS.some((a) => a.action === r.defaultPullAction) || (r.switchChoice !== "keep" && r.switchChoice !== "stash")) return null;
   if (!textOrNull(r.plinkPath) || !textOrNull(r.defaultCloneFolder)) return null;
   if (!Array.isArray(r.programs) || !r.programs.every(isProgram) || !Array.isArray(r.remoteKeyFiles) || !r.remoteKeyFiles.every(isKeyFile)) return null;
-  return { sshClient: r.sshClient, plinkPath: r.plinkPath, programs: r.programs, remoteKeyFiles: r.remoteKeyFiles, defaultCloneFolder: r.defaultCloneFolder } as SyncSettings;
+  return { sshClient: r.sshClient, defaultPullAction: r.defaultPullAction, switchChoice: r.switchChoice, plinkPath: r.plinkPath, programs: r.programs, remoteKeyFiles: r.remoteKeyFiles, defaultCloneFolder: r.defaultCloneFolder } as SyncSettings;
 }
 
 /** Sends one settings operation. It gives the new settings, or null after a canceled picker or a failure. */
@@ -241,97 +242,6 @@ export function CloneFolderSettings({ settings, change, bridge }: SectionProps) 
             Clear default clone folder
           </Button>
         )}
-      </div>
-    </section>
-  );
-}
-
-export type SettingsDialogProps = {
-  bridge: SettingsBridge;
-  /** The open repository: its `worktreeKey` and the `readTrust` key file proposals. Null without a repository. */
-  repository: { worktreeKey: string; proposals: KeyProposal[] } | null;
-  /** Each response that carries new settings. */
-  onSettings?(response: BridgeResponse): void;
-  onClose(): void;
-};
-
-type Read = { state: "loading" } | { state: "loaded"; value: SyncSettings } | { state: "failed"; code: string };
-
-/** The non-modal settings panel (plan.md D12). */
-export function SettingsDialog({ bridge, repository, onSettings, onClose }: SettingsDialogProps) {
-  const heading = useId();
-  const [read, setRead] = useState<Read>({ state: "loading" });
-  const [failure, setFailure] = useState<ReactNode>(null);
-  const busy = useRef(false);
-  const section = useRef<HTMLElement>(null);
-  useEffect(() => {
-    let current = true;
-    void bridge.readSyncSettings().then((response) => {
-      if (!current) return;
-      const value = syncSettingsOf(response);
-      setRead(value === null ? { state: "failed", code: response.code ?? response.state } : { state: "loaded", value });
-    });
-    return () => void (current = false);
-  }, [bridge]);
-  // Focus moves into the panel at open and back to the opener at close.
-  useLayoutEffect(() => {
-    const opener = document.activeElement;
-    section.current?.querySelector<HTMLElement>("h2")?.focus();
-    return () => {
-      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
-    };
-  }, []);
-
-  const change: Change = async (send) => {
-    if (busy.current) return null;
-    busy.current = true;
-    try {
-      const response = await send();
-      if (response.state === "canceled") return null;
-      const next = syncSettingsOf(response);
-      if (next === null) {
-        setFailure(puttyUnavailableText(response) ?? `The setting did not change: ${response.code ?? response.state}.`);
-        return null;
-      }
-      setFailure(null);
-      setRead({ state: "loaded", value: next });
-      onSettings?.(response);
-      return next;
-    } finally {
-      busy.current = false;
-    }
-  };
-
-  return (
-    <section
-      ref={section}
-      data-slot="settings-panel"
-      aria-labelledby={heading}
-      className="flex min-h-0 flex-1 flex-col"
-      onKeyDown={(event) => {
-        if (event.key !== "Escape") return;
-        event.preventDefault();
-        onClose();
-      }}
-    >
-      <div className="flex shrink-0 items-center gap-2 border-b border-divider px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
-        <HugeiconsIcon icon={Settings02Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
-        <h2 id={heading} tabIndex={-1} className="flex-1 font-semibold">
-          Settings
-        </h2>
-        <IconButton icon={Cancel01Icon} label="Close settings" keys={{ aria: "Escape", text: "Esc" }} onClick={onClose} />
-      </div>
-      <div className="flex min-h-0 max-w-[720px] flex-col gap-4 overflow-auto p-3">
-        {read.state === "loading" ? <p className="text-muted-text">The settings are still loading…</p> : null}
-        {read.state === "failed" ? <p role="alert">{`The settings did not load: ${read.code}.`}</p> : null}
-        {failure === null ? null : <p role="alert">{failure}</p>}
-        {read.state === "loaded" ? (
-          <>
-            <SshClientSettings settings={read.value} change={change} bridge={bridge} />
-            <KeyFileSettings settings={read.value} change={change} bridge={bridge} repository={repository} />
-            <CloneFolderSettings settings={read.value} change={change} bridge={bridge} />
-          </>
-        ) : null}
       </div>
     </section>
   );

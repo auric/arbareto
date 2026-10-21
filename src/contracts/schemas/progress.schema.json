@@ -41,7 +41,20 @@
         "sync-push",
         "sync-continue",
         "clone",
-        "pageant"
+        "pageant",
+        "switch-stash",
+        "switch-checkout",
+        "switch-reapply",
+        "switch-drop",
+        "branch",
+        "merge",
+        "rebase",
+        "resolve",
+        "mergetool",
+        "worktree",
+        "config",
+        "ignore",
+        "stage-files"
       ]
     },
     "counters": {

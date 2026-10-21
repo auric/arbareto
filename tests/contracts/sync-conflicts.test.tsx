@@ -59,15 +59,15 @@ describe("conflict row (FR-030)", () => {
     expect(row()).not.toBeNull();
     expect(text(band())).toContain("A merge is in progress, with 1 conflicted file.");
     expect(text(band())).not.toContain(OUTSIDE);
-    expect(actions()).toEqual(["Abort…", "Continue"]);
-    expect(button("Abort…", row()!).querySelector("svg")).not.toBeNull();
+    expect(actions()).toEqual(["Abort merge…", "Continue"]);
+    expect(button("Abort merge…", row()!).querySelector("svg")).not.toBeNull();
   });
 
   test("a rebase in progress offers Abort, Continue, and Skip, and the Skip tooltip states that it leaves the commit out (FR-044)", async () => {
     await open("rebasing");
     expect(text(band())).toContain("A rebase is in progress.");
     expect(text(band())).not.toContain(OUTSIDE);
-    expect(actions()).toEqual(["Abort…", "Continue", "Skip…"]);
+    expect(actions()).toEqual(["Abort rebase…", "Continue", "Skip…"]);
     await keyboardFocus(button("Skip…", row()!));
     expect(tooltipText()).toBe(SKIP_TOOLTIP);
   });
@@ -92,7 +92,7 @@ describe("conflict row (FR-030)", () => {
     await open("unknown");
     expect(row()).toBeNull();
     expect(text(band())).toContain(UNKNOWN);
-    expect(buttons("Abort…")).toHaveLength(0);
+    for (const label of ["Abort…", "Abort merge…", "Abort rebase…"]) expect(buttons(label)).toHaveLength(0);
     expect(buttons("Continue")).toHaveLength(0);
   });
 });
@@ -101,7 +101,7 @@ describe("Abort (FR-042)", () => {
   for (const kind of ["merge", "rebase"] as const) {
     test(`Abort of a ${kind} opens a confirmation that states what Git restores, with Cancel focused`, async () => {
       const { double } = await open(kind === "merge" ? "merging" : "rebasing");
-      await click(button("Abort…", row()!));
+      await click(button(`Abort ${kind}…`, row()!));
       const review = double.pending("reviewSync")!;
       expect(review.args[1]).toEqual({ action: "abort" });
       await answer(review, succeeded({ action: "abort", plan: { remotes: [], operationState: kind === "merge" ? "merging" : "rebasing" }, syncReviewToken: TOKEN }));
@@ -115,7 +115,7 @@ describe("Abort (FR-042)", () => {
       await click(button("Cancel", d));
       expect(dialog()).toBeNull();
       expect(double.count("sync")).toBe(0);
-      await click(button("Abort…", row()!));
+      await click(button(`Abort ${kind}…`, row()!));
       await answer(double.pending("reviewSync"), succeeded({ action: "abort", plan: { remotes: [], operationState: kind === "merge" ? "merging" : "rebasing" }, syncReviewToken: TOKEN_2 }));
       await click(button(`Abort ${kind}`, dialog()!));
       expect(double.pending("sync")!.args[1]).toEqual({ syncReviewToken: TOKEN_2, start: true });
@@ -124,7 +124,7 @@ describe("Abort (FR-042)", () => {
 
   test("an abort review without the operation kind starts nothing and opens no confirmation", async () => {
     const { double } = await open("merging");
-    await click(button("Abort…", row()!));
+    await click(button("Abort merge…", row()!));
     await answer(double.pending("reviewSync"), succeeded({ action: "abort", plan: { remotes: [] }, syncReviewToken: TOKEN }));
     expect(dialog()).toBeNull();
     expect(double.count("sync")).toBe(0);
@@ -146,7 +146,7 @@ describe("Continue (FR-043, FR-045)", () => {
     await settle();
     expect(row()).not.toBeNull();
     expect(text(band())).toContain("A rebase is in progress, with 1 conflicted file.");
-    expect(actions()).toEqual(["Abort…", "Continue", "Skip…"]);
+    expect(actions()).toEqual(["Abort rebase…", "Continue", "Skip…"]);
   });
 
   test("rebase-exec shows its reason and the terminal command, and offers Abort only", async () => {
@@ -156,8 +156,8 @@ describe("Continue (FR-043, FR-045)", () => {
     expect(text(row()!)).toContain(EXEC_TEXT);
     expect(text(row()!)).toContain(EXEC_COMMAND);
     expect(buttons("Copy command", row()!)).toHaveLength(1);
-    expect(actions()).toEqual(["Abort…"]);
-    expect(button("Abort…", row()!).getAttribute("aria-disabled")).not.toBe("true");
+    expect(actions()).toEqual(["Abort rebase…"]);
+    expect(button("Abort rebase…", row()!).getAttribute("aria-disabled")).not.toBe("true");
   });
 
   test("unknown-operation shows its reason and offers no action", async () => {
@@ -213,7 +213,7 @@ describe("Skip (FR-044)", () => {
     await click(button("Skip…", row()!));
     await answer(double.pending("reviewSync"), refused("no-skip-commit"));
     expect(text(row()!)).toContain(NO_SKIP);
-    expect(actions()).toEqual(["Abort…", "Continue"]);
+    expect(actions()).toEqual(["Abort rebase…", "Continue"]);
   });
 
   test("rebase-exec on Skip offers Abort only", async () => {
@@ -221,7 +221,7 @@ describe("Skip (FR-044)", () => {
     await click(button("Skip…", row()!));
     await answer(double.pending("reviewSync"), refused("rebase-exec", { remedy: { text: EXEC_TEXT, command: null } }));
     expect(text(row()!)).toContain(EXEC_TEXT);
-    expect(actions()).toEqual(["Abort…"]);
+    expect(actions()).toEqual(["Abort rebase…"]);
   });
 });
 
@@ -310,7 +310,7 @@ describe("conflict row while an operation runs (plan D12)", () => {
     await act(async () => (sync.args[2] as (e: unknown) => void)({ requestId: "r", operationId: fixtureId(0x211), state: "running", phase: "sync-fetch", counters: {} }));
     await settle();
     expect(text(row()!)).not.toContain("A Git operation is running. Wait for its result, or select Cancel.");
-    for (const label of ["Abort…", "Continue", "Skip…"]) {
+    for (const label of ["Abort rebase…", "Continue", "Skip…"]) {
       const control = button(label, row()!);
       expect(control.getAttribute("aria-disabled")).toBe("true");
       expect(control.tabIndex).toBe(0);
@@ -330,7 +330,7 @@ describe("conflict row while an operation runs (plan D12)", () => {
     const host = document.body.appendChild(document.createElement("div"));
     const root = createRoot(host);
     await act(async () => root.render(<ConflictRow operationState="rebasing" conflicted={0} reason={BLOCKED_TEXT.unknown} onAction={async () => null} />));
-    for (const label of ["Abort…", "Continue", "Skip…"]) {
+    for (const label of ["Abort rebase…", "Continue", "Skip…"]) {
       const control = button(label, host);
       expect(describedText(control)).toBe(BLOCKED_TEXT.unknown);
       expect(visuallyHidden(control)).toBe(false);

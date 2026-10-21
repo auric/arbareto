@@ -53,7 +53,7 @@ const stateOf = (h: GitHost, repo: string) => ({ ...repoShape(h, repo), refs: re
 async function approved(service: Service, repo: string): Promise<RegistrationResult> {
   const r = await register(service, repo);
   const trust = await service.readTrust(r.repositoryId);
-  if (trust.result!.approvalRequired.sync) expect((await service.approveTrust(r.repositoryId, trust.result!.fingerprint, r.generation)).state).toBe("succeeded");
+  if (trust.result!.approvalRequired.sync) expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
   return r;
 }
 

@@ -40,6 +40,8 @@ export const ERROR_CODES_BY_CATEGORY = {
   history: ["HISTORY_CHANGED", "UNSUPPORTED_FILTER_TEXT", "SEARCH_UNSUPPORTED"],
   // Feature 003 contract Δ9. The contract gives these codes no 001 category.
   sync: ["SYNC_UNAVAILABLE", "PUSH_REJECTED", "PUTTY_UNAVAILABLE", "DESTINATION_NOT_EMPTY"],
+  // Feature 004 contract Δ9. The contract gives these codes no 001 category.
+  workbench: ["WORKBENCH_UNAVAILABLE", "UNTRACKED_IN_WAY", "STASH_KEPT"],
 } as const;
 
 export type ErrorCategory = keyof typeof ERROR_CODES_BY_CATEGORY;
@@ -93,6 +95,54 @@ export const DESTINATION_NOT_EMPTY_REASONS = ["not-empty", "file", "other"] as c
 export const SYNC_OUTPUT_LIMIT_REASONS = ["SYNC_REMOTES"] as const;
 // Contract Δ9: `PUTTY_UNAVAILABLE` names the program. O-7: Pageant and PuTTYgen sit in the plink folder.
 export const PUTTY_PROGRAMS = ["plink", "pageant", "puttygen"] as const;
+
+// Feature 004 contract Δ9: the reasons of the new codes.
+export const WORKBENCH_UNAVAILABLE_REASONS = [
+  "detached",
+  "unborn",
+  "current-branch",
+  "other-worktree",
+  "name-exists",
+  "invalid-name",
+  "reserved-name",
+  "same-branch",
+  "ff-only",
+  "dirty-tree",
+  "interactive",
+  "no-merge-tool",
+  "merge-tool-name",
+  "side-missing",
+  "side-not-regular",
+  "stages-missing",
+  "main-worktree",
+  "current-worktree",
+  "locked",
+  "prunable",
+  "nothing-to-prune",
+  "multi-value",
+  "limit",
+  "push-current-only",
+  "ignore-exists",
+  "ignore-not-text",
+  "ignore-not-regular",
+  "ignore-size",
+  "path",
+  "message-size",
+  "unreadable",
+  "no-tracking-refspec",
+  "several-tracking-remotes",
+  "squash-no-ff",
+  "merge-options",
+  "invalid-config",
+  "unknown-operation",
+  "apply-backend",
+  "config-in-include",
+  "included",
+  "unreadable-value",
+] as const;
+export type WorkbenchUnavailableReason = (typeof WORKBENCH_UNAVAILABLE_REASONS)[number];
+export const UNTRACKED_IN_WAY_REASONS = ["untracked-in-way"] as const;
+export const STASH_KEPT_REASONS = ["conflicts", "failed-apply", "failed-checkout", "not-found", "stash-changed"] as const;
 
 export function isErrorCode(value: unknown): value is ErrorCode {
   return typeof value === "string" && (ERROR_CODES as readonly string[]).includes(value);

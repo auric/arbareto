@@ -251,6 +251,14 @@
   --marker-width: 2px;
   --icon-size: 16px;
   --boundary-width: 2px;
+
+  /* Feature 004 plan.md D16 additions. The Light values are open (O-13), so the shadows serve both themes. */
+  --radius-overlay: 6px;
+  --shadow-overlay: 0 10px 28px rgba(0, 0, 0, 0.5);
+  --shadow-tooltip: 0 4px 12px rgba(0, 0, 0, 0.45);
+  /* D16 danger button: Removed fill, Surface text. */
+  --danger-fill: var(--removed);
+  --danger-text: var(--surface);
 }
 
 @layer base {
@@ -342,6 +350,11 @@
     outline: var(--focus-width) solid var(--accent-role);
     outline-offset: calc(-1 * var(--focus-width));
   }
+  /* Feature 004 plan.md D15 "History labels": the active label of the focused history list. */
+  .chip[data-label-active] {
+    outline: var(--focus-width) solid var(--accent-role);
+    outline-offset: calc(-1 * var(--focus-width));
+  }
 
   .selected-hunk-bar {
     width: var(--hunk-bar-width);
@@ -363,8 +376,9 @@
     border-color: var(--control-border);
     color: var(--text);
   }
-  /* plan.md "Reference chips": local branches use Accent; remote and tag chips use Text for the name, icon, and outline. */
-  .chip {
+  /* plan.md "Reference chips": local branches use Accent; remote and tag chips use Text for the name, icon, and outline. The hidden label measure copy uses the same box. */
+  .chip,
+  .chip-measure {
     height: var(--h-badge);
     padding-inline: 4px;
     border: 1px solid var(--text);
@@ -388,6 +402,45 @@
   outline-offset: var(--focus-offset);
 }
 
+/* Feature 004 plan.md D16 "Components": the focus outline marks only the focused menu item, 2 px inside it, and never the whole menu. */
+:is(
+    [data-slot="dropdown-menu-content"],
+    [data-slot="dropdown-menu-sub-content"],
+    [data-slot="menubar-content"],
+    [data-slot="menubar-sub-content"]
+  ):focus-visible {
+  outline: none;
+}
+[role="menu"] :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):focus-visible {
+  outline-offset: calc(-1 * var(--focus-width));
+}
+
+/* Feature 004 plan.md D16: popovers, menus, and dialogs. */
+:is(
+    [data-slot="dropdown-menu-content"],
+    [data-slot="dropdown-menu-sub-content"],
+    [data-slot="menubar-content"],
+    [data-slot="menubar-sub-content"],
+    [data-slot="popover-content"],
+    [data-slot="dialog-content"]
+  ) {
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-overlay);
+}
+[data-slot="tooltip-content"] {
+  box-shadow: var(--shadow-tooltip);
+}
+
+/* D16 danger rules (D-S5): Removed text on destructive menu items and secondary buttons, the filled danger button only inside a confirmation. */
+/* They come before the disabled rule, so an unavailable destructive item shows Muted. */
+.danger-text {
+  color: var(--removed);
+}
+.danger-button {
+  background-color: var(--danger-fill);
+  color: var(--danger-text);
+}
+
 :is(:disabled, [aria-disabled="true"], [data-disabled]) {
   opacity: 1;
   color: var(--muted-text);
@@ -399,8 +452,28 @@
   :focus-visible {
     outline-color: Highlight;
   }
+  [data-slot="segmented"] [aria-current="page"] {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  /* Plan D16 "Selection": the selected settings scope. */
+  [data-slot="scope-picker"] label:has(input:checked),
+  [data-slot="scope-picker"] label:has(input:checked) span {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  /* The selected scope fills with Highlight, so its focus outline uses CanvasText. */
+  [data-slot="scope-picker"] label:has(input:focus-visible) {
+    outline-color: CanvasText;
+  }
   .list-row[data-active] {
     outline-color: Highlight;
+  }
+  /* The active label sits on the selected row, which fills with Highlight. */
+  .chip[data-label-active] {
+    outline-color: HighlightText;
   }
   .list-row[aria-selected="true"] {
     forced-color-adjust: none;
@@ -409,6 +482,20 @@
   }
   .list-row[aria-selected="true"]::before {
     background: HighlightText;
+  }
+  .list-row[aria-selected="true"] :is([data-slot="status-letter"], [data-slot="row-icon"], .text-muted-text, .text-accent-role, .text-removed) {
+    color: HighlightText;
+  }
+  /* The selected row turns off the forced colors for its subtree, so a button in it needs system colors too. */
+  .list-row[aria-selected="true"] button {
+    background: Highlight;
+    color: HighlightText;
+    border-color: HighlightText;
+  }
+  /* Forced colors drop the ring shadow, so a dialog and a tooltip need an edge against the content below. */
+  [data-slot="dialog-content"],
+  [data-slot="tooltip-content"] {
+    outline: 1px solid CanvasText;
   }
   .selected-hunk-bar {
     forced-color-adjust: none;
@@ -444,6 +531,12 @@
     stroke: CanvasText;
   }
   :is(:disabled, [aria-disabled="true"], [data-disabled]) {
+    color: GrayText;
+    border-color: GrayText;
+  }
+  /* The selected-row button rule outranks the rule above, so a disabled button in a selected row needs its own pair. */
+  .list-row[aria-selected="true"] button:is(:disabled, [aria-disabled="true"], [data-disabled]) {
+    background: Canvas;
     color: GrayText;
     border-color: GrayText;
   }

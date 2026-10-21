@@ -7,7 +7,7 @@ import { CopyButton } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { Button } from "../components/ui/button";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
-import type { TrustReport } from "../trust/TrustDialog";
+import type { TrustReport } from "../trust/TrustChip";
 import type { FileActionResult } from "./ChangesPane";
 import { BLOCKED_TEXT, STALE_TEXT, stagingReason, type Blocked, type Eligibility, type StagingTarget } from "./HunkControls";
 import { LIMITATION_TEXT } from "./limitation-text";
@@ -49,7 +49,7 @@ const LABEL: Record<Direction, Decision["label"]> = { stage: "Stage file", unsta
 const OUTCOME: Record<Direction, string> = { stage: "File staged", unstage: "File unstaged", resolve: "File marked resolved" };
 
 /** The file-action decision of the comparison (contract §4, feature 003 contract Δ4), then the workspace and trust state. */
-function decide(props: Omit<FileControlsProps, "reasonId">): Decision {
+export function decide(props: Omit<FileControlsProps, "reasonId">): Decision {
   const { comparison, category } = props;
   const action = comparison.fileAction;
   const accepted = action === "stage" || action === "unstage" || action === "resolve";

@@ -182,6 +182,18 @@ describe("groups and folders", () => {
     expect(text(empty.host)).toContain("No branches");
   });
 
+  test("an empty group shows its text below its own heading, and the heading names it (T116)", async () => {
+    const { host } = await sidebar({ refs: { ...REFS, refs: REFS.refs.filter((r) => r.kind === "branch") } });
+    const heading = (label: string) => host.querySelector<HTMLElement>(`[role="treeitem"][aria-label="${label}, 0"]`)!;
+    const note = (words: string) => [...host.querySelectorAll("p")].find((p) => text(p) === words)!;
+    const after = (a: Node, b: Node) => (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    expect(after(heading("Remotes"), note("No remote-tracking branches"))).toBe(true);
+    expect(after(note("No remote-tracking branches"), heading("Tags"))).toBe(true);
+    expect(after(heading("Tags"), note("No tags"))).toBe(true);
+    expect(document.getElementById(heading("Remotes").getAttribute("aria-describedby")!)).toBe(note("No remote-tracking branches"));
+    expect(document.getElementById(heading("Tags").getAttribute("aria-describedby")!)).toBe(note("No tags"));
+  });
+
   test("no control changes a reference: the sidebar holds no button, and no context menu opens", async () => {
     const { host } = await sidebar();
     expect(host.querySelectorAll("button")).toHaveLength(0);
@@ -302,6 +314,35 @@ describe("tree keys", () => {
     expect(text(host.querySelector(`#${CSS.escape(outside.getAttribute("aria-describedby")!)}`))).toBe("Not in the loaded history rows");
     expect(main.hasAttribute("aria-describedby")).toBe(false);
   });
+
+  // Plan.md D15 "Action menu" and spec FR-014: a key-opened row menu focuses its first item; a right-click keeps the focus on the menu.
+  const menuSettle = () =>
+    act(async () => {
+      for (let i = 0; i < 10; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  for (const [name, init] of [
+    ["Shift+F10", { key: "F10", shiftKey: true }],
+    ["the Menu key", { key: "ContextMenu" }],
+  ] as const)
+    test(`${name} on the current branch row moves the focus to the first item of its menu`, async () => {
+      const { host } = await sidebar({ onShowBranchHistory: () => {} });
+      const main = item(host, "main,");
+      await act(async () => main.focus());
+      await act(async () => void main.dispatchEvent(new KeyboardEvent("keydown", { ...init, code: init.key, bubbles: true, cancelable: true })));
+      await menuSettle();
+      const first = document.querySelector<HTMLElement>('[role="menu"] [role="menuitem"]');
+      expect(text(first)).toStartWith("Show only this branch's history");
+      expect(document.activeElement === first).toBe(true);
+    });
+
+  test("a right-click on the current branch row keeps the focus on the menu, not on its first item", async () => {
+    const { host } = await sidebar({ onShowBranchHistory: () => {} });
+    await act(async () => void item(host, "main,").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
+    await menuSettle();
+    const menu = document.querySelector<HTMLElement>('[role="menu"]');
+    expect(menu === null).toBe(false);
+    expect(document.activeElement === menu!.querySelector('[role="menuitem"]')).toBe(false);
+  });
 });
 
 describe("states", () => {
@@ -314,6 +355,8 @@ describe("states", () => {
     ["REF_LISTING_RECORDS", { state: "limited", code: "OUTPUT_LIMIT", result: { completeness: { state: "limited", code: "OUTPUT_LIMIT", reason: "REF_LISTING_RECORDS" } } }, "This repository has more than 10,000 references. This version does not list them."],
     ["REF_LISTING_BYTES", { state: "limited", code: "OUTPUT_LIMIT", result: { completeness: { state: "limited", code: "OUTPUT_LIMIT", reason: "REF_LISTING_BYTES" } } }, "The reference list is larger than this version can show."],
     ["another refusal", { state: "failed", code: "GIT_FAILED", result: { completeness: { state: "failed", code: "GIT_FAILED" } } }, "Arbareto cannot read the references: GIT_FAILED."],
+    // Feature 004 plan D15 "Malformed result".
+    ["succeeded of unknown form", { state: "succeeded", result: {} }, "The references did not load: the result has an unknown form."],
   ] as const) {
     test(`a ${name} refusal shows its text with the error icon and Refresh`, async () => {
       const { host, refreshes } = await sidebar({ refs: null, failure: { requestId: crypto.randomUUID(), ...response } as never });
@@ -399,12 +442,29 @@ describe("virtual tree", () => {
     expect(focused()).toBe("Branches, 9995");
   });
 
+  test("an empty group shows its text below its own heading, and the heading names it (T118)", async () => {
+    const all = many(1_000);
+    const { host } = await sidebar({ refs: { ...all, refs: all.refs.filter((r) => r.kind !== "tag") } });
+    await settle();
+    await act(async () => item(host, "Branches").focus());
+    // End moves to the Tags heading, and the focused row stays mounted.
+    await key(item(host, "Branches"), "End");
+    await settle();
+    const heading = item(host, "Tags, 0");
+    const note = [...host.querySelectorAll("p")].find((p) => text(p) === "No tags")!;
+    expect(heading.compareDocumentPosition(note) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(host.querySelector('[role="tree"]')!.contains(note)).toBe(true);
+    expect(document.getElementById(heading.getAttribute("aria-describedby")!)).toBe(note);
+    // The heading and the text share one virtual item of two rows, so the next item starts below the text.
+    expect(note.parentElement!.style.height).toBe(`${2 * parseFloat(heading.style.height)}px`);
+  });
+
   test("the filter and the expanded state cover refs outside the window", async () => {
     const { host } = await sidebar({ refs: many(10_000) });
     await settle();
     await type(host, "09994");
     await settle();
-    expect(names(host)).toContain("branch-09994, local branch");
+    expect(names(host)).toContain("branch-09994, local branch, No upstream");
     await type(host, "");
     await settle();
     await click(item(host, "Branches"));

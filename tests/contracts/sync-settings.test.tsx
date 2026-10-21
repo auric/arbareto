@@ -12,13 +12,14 @@ import { contractChecked, fixtureId } from "./bridge-contract";
 // tasks.md T071 (feature 003). Spec FR-032 to FR-037. Plan D9, D12, O-7, O-8, O-10. Contract Δ3 shell-only settings operations and `connectInTerminal`. Data-model §10, §11.
 
 printOrigin("../../src/frontend/settings/SettingsDialog.tsx", import.meta.dir);
+printOrigin("../../src/frontend/settings/SettingsView.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/NoticeBand.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
 mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ children }: { children: ReactNode }) => <>{children}</> }));
 mock.module("../../src/frontend/changes/PatchView", () => ({ default: ({ patch }: { patch: string }) => <pre>{patch}</pre> }));
 registerDom();
 const { createRoot } = await import("react-dom/client");
-const { SettingsDialog } = await import("../../src/frontend/settings/SettingsDialog");
+const { SettingsView } = await import("../../src/frontend/settings/SettingsView");
 const workbench = await import("../../src/frontend/app/Workbench");
 
 let restoreLayout: () => void = () => {};
@@ -64,7 +65,10 @@ async function renderSettings(current = base(), repository: { worktreeKey: strin
   let closed = 0;
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
-  await act(async () => root.render(<SettingsDialog bridge={double.bridge as never} repository={repository} onClose={() => void (closed += 1)} />));
+  // Feature 004 O-7: the sections are the Settings view pages "SSH" and "Clone". Without a target, the view opens on "SSH" and reads no Git settings.
+  await act(async () =>
+    root.render(<SettingsView bridge={double.bridge as never} target={null} wsl={false} repository={repository} operationRunning={false} onOperation={() => {}} onEnded={() => {}} onClose={() => void (closed += 1)} />),
+  );
   unmounts.push(async () => {
     await act(async () => root.unmount());
     host.remove();
@@ -192,6 +196,7 @@ describe("PuTTYgen (FR-036, FR-037)", () => {
 describe("default clone folder (FR-054)", () => {
   test("the default clone folder can be set and cleared", async () => {
     const r = await renderSettings();
+    await click([...panel().querySelectorAll<HTMLElement>('[role="tab"]')].find((t) => text(t) === "Clone")!);
     expect(text(panel())).toContain("Default clone folder");
     await click(button("Choose default clone folder…", panel()));
     expect(r.pending("chooseSyncPath").args[0]).toEqual({ target: "cloneFolder" });

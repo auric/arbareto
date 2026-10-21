@@ -52,8 +52,8 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
   },
   readTrust: { renderer: () => ({}), service: () => ({}) },
   approveTrust: {
-    renderer: () => ({ fingerprint: FINGERPRINT, approve: true }),
-    service: () => ({ fingerprint: FINGERPRINT, approve: true }),
+    renderer: () => ({ action: "commit" }),
+    service: () => ({ action: "commit" }),
   },
   revokeTrust: { renderer: () => ({ trustId: id() }), service: () => ({ trustId: id() }) },
   applyHunk: {
@@ -101,6 +101,23 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
   chooseSyncPath: { renderer: () => ({ target: "plink" }) },
   clearSyncPath: { renderer: () => ({ target: "remoteKey", worktreeKey: FINGERPRINT, remote: "origin" }) },
   launchPuttygen: { renderer: () => ({}) },
+  // Feature 004 contract Δ1 and Δ3.
+  readBranches: { renderer: () => ({}), service: () => ({}) },
+  readWorktrees: { renderer: () => ({}), service: () => ({}) },
+  readGitSettings: { renderer: () => ({}), service: () => ({}) },
+  reviewWorkbench: {
+    renderer: () => ({ action: "worktree-add", branch: { existing: "refs/heads/topic" }, path: CLONE_DESTINATION }),
+    service: () => ({ action: "worktree-add", branch: { existing: "refs/heads/topic" }, bootstrapId: id() }),
+  },
+  runWorkbench: { renderer: () => ({ workbenchToken: id(), start: true }), service: () => ({ workbenchToken: id(), start: true }) },
+  applyFiles: {
+    renderer: () => ({ snapshotId: id(), entryIds: [id()], direction: "stage", kind: "selected" }),
+    service: () => ({ snapshotId: id(), entryIds: [id()], direction: "stage", kind: "selected" }),
+  },
+  openWorktree: { renderer: () => ({ repositoryId: id(), path: CLONE_DESTINATION }), service: () => ({ repositoryId: id(), bootstrapId: id() }) },
+  revealPath: { renderer: () => ({ repositoryId: id(), entryId: id() }), service: () => ({ repositoryId: id(), entryId: id() }) },
+  setSwitchChoice: { renderer: () => ({ choice: "stash" }) },
+  chooseWorktreeFolder: { renderer: () => ({ repositoryId: id() }) },
 };
 
 const NAMES = Object.keys(PAYLOADS);
@@ -116,9 +133,11 @@ const GENERATION_REQUIRED = [
   "commit",
   "reviewSubmodules",
   "updateSubmodules",
-  "approveTrust",
   "readTracking",
   "reviewSync",
+  "readBranches",
+  "readWorktrees",
+  "reviewWorkbench",
 ];
 const GENERATION_ABSENT = NAMES.filter((n) => !GENERATION_REQUIRED.includes(n) && n !== "readWorkspace");
 
@@ -144,9 +163,15 @@ const REPOSITORY_BOUND = [
   "readTracking",
   "reviewSync",
   "sync",
+  "readBranches",
+  "readWorktrees",
+  "reviewWorkbench",
+  "runWorkbench",
+  "applyFiles",
 ];
 // Feature 003 data-model §11: a sync target names its repository, and a clone target without a workspace names none.
-const REPOSITORY_OPTIONAL = ["connectInTerminal"];
+// Feature 004 contract Δ3 `readGitSettings`: without `repositoryId`, the read runs in the `globalConfig` context.
+const REPOSITORY_OPTIONAL = ["connectInTerminal", "readGitSettings"];
 
 function envelope(operation: string, side: Side = "renderer", payload?: Json): Json {
   const make = PAYLOADS[operation]?.[side];
@@ -182,9 +207,9 @@ const sidesOf = (name: string) =>
 
 describe("operation list", () => {
   // Feature 002 plan.md P7 retires the contract §3 `readHistory`.
-  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, and the 11 feature 003 contract Δ1 operations", () => {
+  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, and the 10 feature 004 contract Δ1 operations", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(41);
+    expect(OPERATIONS.length).toBe(51);
   });
 
   for (const name of NAMES) {
@@ -363,24 +388,23 @@ describe("repositoryId", () => {
     expectCode(envelope("readTrust", "renderer", { repositoryId: id() }), "INVALID_REQUEST"));
 });
 
-describe("approveTrust fingerprint", () => {
-  test.each([
-    ["a".repeat(63)],
-    ["a".repeat(65)],
-    ["A".repeat(64)],
-    ["g" + "a".repeat(63)],
-    [id()],
-  ])("fingerprint %j gives INVALID_REQUEST", (fingerprint) =>
-    expectCode(envelope("approveTrust", "renderer", { fingerprint, approve: true }), "INVALID_REQUEST"),
+// Feature 004 contract Δ7: the payload names one contract Δ6 action and no fingerprint.
+describe("approveTrust action", () => {
+  test.each([["clone"], [""], ["Commit"], [1], [null]])("action %j gives INVALID_REQUEST", (action) =>
+    expectCode(envelope("approveTrust", "renderer", { action }), "INVALID_REQUEST"),
   );
+  test("the feature 001 payload with a fingerprint gives INVALID_REQUEST", () => {
+    expectCode(envelope("approveTrust", "renderer", { fingerprint: FINGERPRINT, approve: true }), "INVALID_REQUEST");
+    expectCode(envelope("approveTrust", "renderer", { action: "commit", fingerprint: FINGERPRINT }), "INVALID_REQUEST");
+  });
 });
 
 describe("explicit approval fields", () => {
   const cases: Array<[string, string]> = [
-    ["approveTrust", "approve"],
     ["commit", "confirmFullScope"],
     ["updateSubmodules", "start"],
     ["sync", "start"],
+    ["runWorkbench", "start"],
   ];
   for (const [name, field] of cases) {
     test.each([[false], ["true"], [1], [null]])(`${name} ${field} %j gives INVALID_REQUEST`, (value) => {

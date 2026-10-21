@@ -1,0 +1,5 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"untracked-in-way\",\"paths\":[\"new.txt\",\"sub/x.txt\"],\"more\":0}"
+}

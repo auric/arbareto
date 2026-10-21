@@ -20,7 +20,7 @@ use crate::text_scale::{self, Current};
 pub const MAIN_WINDOW: &str = "main";
 
 /// Contract §3: the closed allowlist of public operations, as `src/contracts/operations.ts` lists them.
-pub const OPERATIONS: [&str; 41] = [
+pub const OPERATIONS: [&str; 51] = [
     "getEnvironment",
     "chooseGit",
     "chooseRepository",
@@ -63,10 +63,22 @@ pub const OPERATIONS: [&str; 41] = [
     "chooseSyncPath",
     "clearSyncPath",
     "launchPuttygen",
+    // Feature 004 contract Δ1.
+    "readBranches",
+    "readWorktrees",
+    "readGitSettings",
+    "reviewWorkbench",
+    "runWorkbench",
+    "applyFiles",
+    "openWorktree",
+    "revealPath",
+    "setSwitchChoice",
+    "chooseWorktreeFolder",
 ];
 
 /// Contract §3: the shell runs these first. The shell answers `requestClose` itself and never forwards it.
-const NATIVE_FIRST: [&str; 15] = [
+/// Feature 004 contract Δ1: only the `worktree-add` form of `reviewWorkbench` is native-first, so `submit` decides it by its action.
+const NATIVE_FIRST: [&str; 18] = [
     "requestClose",
     "chooseGit",
     "chooseRepository",
@@ -83,10 +95,14 @@ const NATIVE_FIRST: [&str; 15] = [
     "chooseSyncPath",
     "clearSyncPath",
     "launchPuttygen",
+    // Feature 004 contract Δ1.
+    "openWorktree",
+    "setSwitchChoice",
+    "chooseWorktreeFolder",
 ];
 
-/// Contract §3 "Recent repositories" and feature 003 contract Δ1: the shell answers these itself and never forwards them.
-const NATIVE_ANSWERS: [&str; 8] = [
+/// Contract §3 "Recent repositories" and feature 003 and feature 004 contract Δ1: the shell answers these itself and never forwards them.
+const NATIVE_ANSWERS: [&str; 10] = [
     "listRecentRepositories",
     "removeRecentRepository",
     "readSyncSettings",
@@ -95,7 +111,12 @@ const NATIVE_ANSWERS: [&str; 8] = [
     "chooseSyncPath",
     "clearSyncPath",
     "launchPuttygen",
+    "setSwitchChoice",
+    "chooseWorktreeFolder",
 ];
+
+/// Feature 004 contract Δ1: the `reviewWorkbench` action whose path the shell binds first.
+const WORKTREE_ADD: &str = "worktree-add";
 
 /// Pinned Tauri serves the bundled frontend on Windows at this host (manager/mod.rs:335-338, webview/mod.rs:1966-1974).
 const LOCAL_HOST: &str = "tauri.localhost";
@@ -310,7 +331,8 @@ impl Ipc {
                 self.text_scale.get(),
             ));
         }
-        let native_first = NATIVE_FIRST.contains(&operation);
+        let native_first = NATIVE_FIRST.contains(&operation)
+            || (operation == "reviewWorkbench" && request["payload"]["action"] == WORKTREE_ADD);
         let mut envelope = Value::Null;
         if native_first {
             if operation == "requestClose" {
@@ -395,7 +417,12 @@ impl Ipc {
             let (Some(native), true) = (native, self.session().session_id.is_some()) else {
                 return rejected("SERVICE_UNAVAILABLE");
             };
-            match native.prepare(operation, &envelope["payload"]) {
+            // Feature 004 contract Δ6: the `worktreeAdd` binding takes the `repositoryId` of the envelope.
+            let mut payload = envelope["payload"].clone();
+            if operation == "reviewWorkbench" {
+                payload["repositoryId"] = envelope["repositoryId"].clone();
+            }
+            match native.prepare(operation, &payload) {
                 Err(Ended::Rejected(code)) => return rejected(code),
                 Err(Ended::Failed(code, result)) => {
                     return answer(
@@ -888,6 +915,102 @@ pub async fn clear_sync_path(
 }
 
 #[tauri::command]
+pub async fn read_branches(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readBranches", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_worktrees(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readWorktrees", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_git_settings(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readGitSettings", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn review_workbench(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "reviewWorkbench", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn run_workbench(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "runWorkbench", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn apply_files(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "applyFiles", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn open_worktree(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "openWorktree", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn reveal_path(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "revealPath", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn set_switch_choice(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "setSwitchChoice", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn choose_worktree_folder(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(
+        webview,
+        &ipc,
+        "chooseWorktreeFolder",
+        request.body().clone(),
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn launch_puttygen(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
@@ -936,12 +1059,18 @@ mod tests {
     struct FakeNative {
         prepare: Prepare,
         prepares: Mutex<usize>,
+        /// The operation and the payload of each `prepare` call.
+        prepared: Mutex<Vec<(String, Value)>>,
         closes: Mutex<Vec<close::Request>>,
     }
 
     impl NativeFirst for FakeNative {
-        fn prepare(&self, _: &str, _: &Value) -> Result<Option<Prepared>, Ended> {
+        fn prepare(&self, operation: &str, payload: &Value) -> Result<Option<Prepared>, Ended> {
             *self.prepares.lock().expect("prepares") += 1;
+            self.prepared
+                .lock()
+                .expect("prepared")
+                .push((operation.to_string(), payload.clone()));
             (self.prepare)()
         }
 
@@ -973,6 +1102,7 @@ mod tests {
         let native = Arc::new(FakeNative {
             prepare,
             prepares: Mutex::new(0),
+            prepared: Mutex::new(Vec::new()),
             closes: Mutex::new(Vec::new()),
         });
         let weak: Weak<FakeNative> = Arc::downgrade(&native);
@@ -1362,6 +1492,247 @@ mod tests {
                 "{envelope}"
             );
         }
+        assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
+        assert!(frames.lock().expect("frames").is_empty());
+    }
+
+    /// Feature 004 contract Δ1: the service operations reach the service byte for byte, and no native step runs.
+    /// `revealPath` reaches the service, which sends the private `reveal` request. Only the `worktree-add` review is native-first.
+    #[test]
+    fn the_feature_004_service_requests_are_forwarded_byte_for_byte() {
+        let target = |mut envelope: Value, generation: bool| {
+            envelope["repositoryId"] = json!(OPERATION_ID);
+            if generation {
+                envelope["repositoryGeneration"] = json!(3);
+            }
+            envelope
+        };
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        let cases = [
+            target(request("readBranches", json!({})), true),
+            target(request("readWorktrees", json!({})), true),
+            target(request("readGitSettings", json!({})), false),
+            request("readGitSettings", json!({})),
+            target(
+                request(
+                    "reviewWorkbench",
+                    json!({ "action": "switch", "target": { "ref": "refs/heads/main" }, "choice": "keep" }),
+                ),
+                true,
+            ),
+            target(
+                request(
+                    "reviewWorkbench",
+                    json!({ "action": "create-branch", "name": "topic", "start": oid, "switchTo": true }),
+                ),
+                true,
+            ),
+            target(
+                request(
+                    "runWorkbench",
+                    json!({ "workbenchToken": OPERATION_ID, "start": true }),
+                ),
+                false,
+            ),
+            target(
+                request(
+                    "applyFiles",
+                    json!({ "snapshotId": OPERATION_ID, "entryIds": [SESSION_ID], "direction": "stage", "kind": "selected" }),
+                ),
+                false,
+            ),
+            request(
+                "revealPath",
+                json!({ "repositoryId": OPERATION_ID, "entryId": SESSION_ID }),
+            ),
+        ];
+        for envelope in cases {
+            let operation = envelope["operation"]
+                .as_str()
+                .expect("operation")
+                .to_string();
+            assert!(OPERATIONS.contains(&operation.as_str()), "{operation}");
+            let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+            let body = envelope.to_string();
+            assert_eq!(
+                ipc.handle(MAIN_WINDOW, LOCAL, &raw(&body), &operation),
+                Outcome::Forwarded,
+                "{envelope}"
+            );
+            assert_eq!(
+                *frames.lock().expect("frames"),
+                vec![frame_of(&body)],
+                "{operation}"
+            );
+            assert_eq!(*native.prepares.lock().expect("prepares"), 0, "{operation}");
+        }
+        for operation in [
+            "revealPath",
+            "readGitSettings",
+            "runWorkbench",
+            "applyFiles",
+        ] {
+            assert!(!NATIVE_FIRST.contains(&operation), "{operation}");
+        }
+    }
+
+    /// Feature 004 contract Δ1 and data-model §13: the shell answers `setSwitchChoice` itself, also without a service session.
+    #[test]
+    fn set_switch_choice_is_answered_natively_and_never_forwarded() {
+        assert!(NATIVE_FIRST.contains(&"setSwitchChoice"));
+        assert!(NATIVE_ANSWERS.contains(&"setSwitchChoice"));
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        for session in [Some(SESSION_ID.to_string()), None] {
+            ipc.set_session(session);
+            for choice in ["keep", "stash"] {
+                assert_eq!(
+                    send(
+                        &ipc,
+                        &request("setSwitchChoice", json!({ "choice": choice }))
+                    ),
+                    Outcome::Answer(
+                        json!({ "requestId": REQUEST_ID, "state": "succeeded", "result": { "operation": "setSwitchChoice", "entries": [] } })
+                    ),
+                    "{choice}"
+                );
+            }
+        }
+        assert_eq!(*native.prepares.lock().expect("prepares"), 4);
+        assert!(
+            native.prepared.lock().expect("prepared").is_empty(),
+            "no prepare step"
+        );
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0);
+    }
+
+    /// Feature 004 contract Δ1 and Δ3: the shell answers `chooseWorktreeFolder` itself and never forwards it.
+    #[test]
+    fn choose_worktree_folder_is_answered_natively_and_never_forwarded() {
+        assert!(NATIVE_FIRST.contains(&"chooseWorktreeFolder"));
+        assert!(NATIVE_ANSWERS.contains(&"chooseWorktreeFolder"));
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        assert_eq!(
+            send(
+                &ipc,
+                &request(
+                    "chooseWorktreeFolder",
+                    json!({ "repositoryId": OPERATION_ID })
+                )
+            ),
+            Outcome::Answer(
+                json!({ "requestId": REQUEST_ID, "state": "succeeded", "result": { "operation": "chooseWorktreeFolder", "entries": [] } })
+            )
+        );
+        assert_eq!(*native.prepares.lock().expect("prepares"), 1);
+        assert!(native.prepared.lock().expect("prepared").is_empty());
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0);
+    }
+
+    /// Feature 004 contract Δ1 and Δ3: `openWorktree` and the `worktree-add` review run their native step.
+    /// The step of the review gets the `repositoryId` of the envelope. The service gets the native payload.
+    #[test]
+    fn open_worktree_and_the_worktree_add_review_forward_the_native_payload() {
+        let native_payload = json!({ "repositoryId": OPERATION_ID, "bootstrapId": SESSION_ID });
+        let forwarded = native_payload.clone();
+        let (ipc, frames, native) = connected(Box::new(move || {
+            Ok(Some(Prepared {
+                payload: forwarded.clone(),
+                path: None,
+            }))
+        }));
+        let open = request(
+            "openWorktree",
+            json!({ "repositoryId": OPERATION_ID, "path": "/home/u/repo-wt" }),
+        );
+        assert_eq!(send(&ipc, &open), Outcome::Forwarded);
+        let mut review = request(
+            "reviewWorkbench",
+            json!({ "action": "worktree-add", "branch": { "existing": "refs/heads/topic" }, "path": "C:\\src\\wt" }),
+        );
+        review["repositoryId"] = json!(OPERATION_ID);
+        review["repositoryGeneration"] = json!(3);
+        let mut second = review.clone();
+        second["requestId"] = json!(SESSION_ID);
+        assert_eq!(send(&ipc, &second), Outcome::Forwarded);
+        assert_eq!(
+            *native.prepared.lock().expect("prepared"),
+            vec![
+                ("openWorktree".to_string(), open["payload"].clone()),
+                (
+                    "reviewWorkbench".to_string(),
+                    json!({ "action": "worktree-add", "branch": { "existing": "refs/heads/topic" }, "path": "C:\\src\\wt", "repositoryId": OPERATION_ID }),
+                ),
+            ]
+        );
+        let frames = frames.lock().expect("frames");
+        let frame = |at: usize| -> Value { serde_json::from_str(&frames[at]).expect("frame") };
+        assert_eq!(
+            frame(0),
+            json!({ "kind": "public", "request": request("openWorktree", native_payload.clone()) })
+        );
+        let mut expected = second.clone();
+        expected["payload"] = native_payload;
+        assert_eq!(frame(1), json!({ "kind": "public", "request": expected }));
+    }
+
+    /// Feature 004 contract Δ1: the checks that typify drops refuse before any dialog.
+    /// The path rule, a branch name of 1 to 255 UTF-8 bytes, an existing branch under `refs/heads/`, and the stored switch choices.
+    #[test]
+    fn the_feature_004_rust_checks_refuse_before_any_dialog() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        let oid = "0123456789abcdef0123456789abcdef01234567";
+        let review = |payload: Value| {
+            let mut envelope = request("reviewWorkbench", payload);
+            envelope["repositoryId"] = json!(OPERATION_ID);
+            envelope["repositoryGeneration"] = json!(3);
+            envelope
+        };
+        let add = |branch: Value, path: &str| {
+            review(json!({ "action": "worktree-add", "branch": branch, "path": path }))
+        };
+        let wide = "\u{e9}".repeat(128);
+        assert_eq!(wide.len(), 256);
+        let mut bound = add(json!({ "existing": "refs/heads/topic" }), "C:\\src\\wt");
+        bound["payload"]["bootstrapId"] = json!(SESSION_ID);
+        for envelope in [
+            add(json!({ "existing": "refs/heads/topic" }), "src\\wt"),
+            add(
+                json!({ "existing": "refs/heads/topic" }),
+                "\\\\?\\C:\\src\\wt",
+            ),
+            add(json!({ "existing": "refs/heads/topic" }), ""),
+            add(json!({ "new": wide, "start": oid }), "C:\\src\\wt"),
+            add(json!({ "new": "", "start": oid }), "C:\\src\\wt"),
+            add(json!({ "existing": "refs/tags/v1" }), "C:\\src\\wt"),
+            add(json!({ "existing": "refs/heads/" }), "C:\\src\\wt"),
+            add(json!({ "existing": "topic" }), "C:\\src\\wt"),
+            bound,
+            request("setSwitchChoice", json!({ "choice": "discard" })),
+            request("setSwitchChoice", json!({})),
+            request("chooseWorktreeFolder", json!({})),
+            request(
+                "chooseWorktreeFolder",
+                json!({ "repositoryId": OPERATION_ID, "path": "C:\\src" }),
+            ),
+            request(
+                "openWorktree",
+                json!({ "repositoryId": OPERATION_ID, "path": "" }),
+            ),
+            request("openWorktree", json!({ "path": "C:\\src\\wt" })),
+        ] {
+            assert_eq!(
+                send(&ipc, &envelope),
+                rejected("INVALID_REQUEST"),
+                "{envelope}"
+            );
+        }
+        let good = add(
+            json!({ "new": "\u{e9}".repeat(127), "start": oid }),
+            "C:\\src\\wt",
+        );
+        assert!(schema::native_first(&good).is_ok(), "254 bytes pass");
         assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
         assert!(frames.lock().expect("frames").is_empty());
     }

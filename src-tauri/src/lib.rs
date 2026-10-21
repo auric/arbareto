@@ -10,6 +10,8 @@ mod dialogs;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod env_sanitize;
 #[cfg(windows)]
+mod file_append;
+#[cfg(windows)]
 mod file_facts;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod framing;
@@ -29,6 +31,8 @@ mod process_requests;
 mod profile;
 #[cfg(windows)]
 mod putty;
+#[cfg(windows)]
+mod reveal;
 #[cfg(windows)]
 mod schema;
 #[cfg(windows)]
@@ -124,6 +128,16 @@ pub fn run() {
             ipc::choose_sync_path,
             ipc::clear_sync_path,
             ipc::launch_puttygen,
+            ipc::read_branches,
+            ipc::read_worktrees,
+            ipc::read_git_settings,
+            ipc::review_workbench,
+            ipc::run_workbench,
+            ipc::apply_files,
+            ipc::open_worktree,
+            ipc::reveal_path,
+            ipc::set_switch_choice,
+            ipc::choose_worktree_folder,
         ])
         .setup(move |app| start(app, root.as_deref()))
         .on_window_event(|window, event| {

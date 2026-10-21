@@ -54,6 +54,25 @@ pub struct Settings {
     pub recent: Vec<RecentEntry>,
     /// Feature 003 data-model §10.
     pub sync: SyncSettings,
+    /// Feature 004 data-model §13.
+    pub switch_choice: SwitchChoice,
+}
+
+/// Feature 004 data-model §13 `switchChoice`: the preselected switch choice. `discard` is no stored choice (spec FR-010).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SwitchChoice {
+    #[default]
+    Keep,
+    Stash,
+}
+
+impl SwitchChoice {
+    pub fn text(self) -> &'static str {
+        match self {
+            SwitchChoice::Keep => "keep",
+            SwitchChoice::Stash => "stash",
+        }
+    }
 }
 
 // ---- Feature 003 shell settings (data-model §10) ----
@@ -486,6 +505,10 @@ pub fn load(path: &Path) -> Settings {
             .map(recent_entries)
             .unwrap_or_default(),
         sync: sync_settings(&file),
+        switch_choice: match file.get("switchChoice").and_then(Value::as_str) {
+            Some("stash") => SwitchChoice::Stash,
+            _ => SwitchChoice::Keep,
+        },
     }
 }
 
@@ -540,6 +563,12 @@ fn save_with(path: &Path, settings: &Settings, fault: Fault) -> io::Result<()> {
     }
     if let Some(repository) = &settings.last_repository {
         file.insert("lastRepository".to_string(), json!(text(repository)?));
+    }
+    if settings.switch_choice != SwitchChoice::Keep {
+        file.insert(
+            "switchChoice".to_string(),
+            json!(settings.switch_choice.text()),
+        );
     }
     if let Some(window) = settings.window {
         file.insert(
@@ -923,20 +952,23 @@ pub const MARKER_BYTES: usize = 4096;
 /// At most 64 markers per handshake (contract §5).
 pub const MARKER_LIMIT: usize = 64;
 
-/// The mutation names of contract §3, as `src/contracts/operations.ts` `MUTATIONS` lists them.
-pub(crate) const MUTATIONS: [&str; 5] = [
+/// The marker kinds of contract §6, as `src/contracts/operations.ts` `MutationKind` lists them.
+/// Feature 004 contract Δ6: a `runWorkbench` marker has kind `workbench`, so the kinds are no longer the `MUTATIONS` names.
+pub(crate) const MUTATIONS: [&str; 7] = [
     "applyHunk",
     "applyFile",
     "commit",
     "updateSubmodules",
     "sync",
+    "workbench",
+    "applyFiles",
 ];
 
 /// One recovery marker. Its file is `<markerId>.json` in the `recovery` folder and holds the handshake form.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Marker {
     pub marker_id: String,
-    /// One mutation name of contract §3.
+    /// One marker kind of `MUTATIONS`.
     pub kind: String,
     /// A UTC time in RFC 3339 form.
     pub started_at: String,
@@ -1449,17 +1481,17 @@ pub const TRUST_RECORD_BYTES: usize = 4096;
 /// At most 256 records. A new record above 256 replaces the oldest (contract §5).
 pub const TRUST_RECORD_LIMIT: usize = 256;
 
-/// The `confirm` trust frame (contract §6 "Channel frames").
+/// The `confirm` trust frame version 2 (feature 004 contract Δ6).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Confirm {
     pub worktree_root: PathBuf,
-    pub git_directory: PathBuf,
+    pub admin_directory: PathBuf,
     pub common_directory: PathBuf,
     pub git_selected_path: PathBuf,
-    pub fingerprint: String,
-    pub persist: bool,
-    /// `file-count`, `file-bytes`, `total-bytes`, `link`, or `name`. Present only with `persist: false`.
-    pub bound: Option<String>,
+    /// One contract Δ6 action, such as `commit`.
+    pub action: String,
+    /// The `details` object that `schema::trust_request` checked.
+    pub details: Value,
 }
 
 #[derive(Debug, PartialEq)]
@@ -1510,17 +1542,18 @@ impl Identities {
     fn read(request: &Confirm, read: IdentityReader) -> Option<Identities> {
         let common = read(&request.common_directory)?;
         let root = read(&request.worktree_root)?;
-        let git_directory = read(&request.git_directory)?;
-        let key = [&common, &root, &git_directory].map(PhysicalIdentity::text);
+        let admin = read(&request.admin_directory)?;
+        let key = [&common, &root, &admin].map(PhysicalIdentity::text);
         Some(Identities {
             common: common.reply(),
-            worktree: json!([root.reply(), git_directory.reply()]),
+            worktree: json!([root.reply(), admin.reply()]),
             stem: hex(&sha256(key.concat().as_bytes())),
         })
     }
 }
 
 /// A record of the same worktree: both identities match, or both paths match (contract §7 "Trust approval store").
+/// A version 1 record holds the same fields, so a new approval replaces it (feature 004 plan.md O-5).
 fn same_worktree(record: &Value, request: &Confirm, identities: Option<&Identities>) -> bool {
     let paths = record["commonDirectory"].as_str() == request.common_directory.to_str()
         && record["worktreeRoot"].as_str() == request.worktree_root.to_str();
@@ -1530,7 +1563,8 @@ fn same_worktree(record: &Value, request: &Confirm, identities: Option<&Identiti
         })
 }
 
-/// Loads every valid record, oldest first. Above the limit, it keeps the newest records.
+/// Loads every valid record of version 1 or 2, oldest first. Above the limit, it keeps the newest records.
+/// Feature 004 plan.md O-5: the service gives a version 1 record `changed`, so it asks once.
 fn load_records(folder: &Path) -> Vec<Record> {
     let mut records: Vec<Record> = json_files(folder)
         .into_iter()
@@ -1584,7 +1618,7 @@ impl Trust {
         });
     }
 
-    /// Shows the confirmation through `accept`, then writes or deletes records.
+    /// Shows the confirmation through `accept`, then writes the version 2 record.
     pub fn confirm_with(
         &self,
         request: &Confirm,
@@ -1596,12 +1630,6 @@ impl Trust {
         }
         let identities = Identities::read(request, read);
         let mut state = lock(&self.state);
-        if !request.persist {
-            self.remove(&mut state, |record| {
-                same_worktree(&record.value, request, identities.as_ref())
-            });
-            return Confirmed::Approved { record: None };
-        }
         let record = identities
             .as_ref()
             .and_then(|identities| self.store(&mut state, request, identities));
@@ -1615,15 +1643,16 @@ impl Trust {
         request: &Confirm,
         identities: &Identities,
     ) -> Option<Value> {
+        // Feature 004 data-model §10: no fingerprint and no program digest.
         let record = json!({
+            "policyVersion": 2,
             "commonDirectory": request.common_directory.to_str()?,
             "commonIdentity": identities.common,
             "worktreeRoot": request.worktree_root.to_str()?,
-            "gitDirectory": request.git_directory.to_str()?,
+            "adminDirectory": request.admin_directory.to_str()?,
             "worktreeIdentity": identities.worktree,
-            "configurationFingerprint": request.fingerprint,
-            "approvedAt": utc_now().ok()?,
             "gitSelectedPath": request.git_selected_path.to_str()?,
+            "approvedAt": utc_now().ok()?,
         });
         let bytes = record.to_string().into_bytes();
         // A record above 4 KiB gets the reply of a failed write: the approval holds for the session only.
@@ -1898,6 +1927,7 @@ mod tests {
             wsl_gits: Vec::new(),
             recent: Vec::new(),
             sync: Default::default(),
+            switch_choice: Default::default(),
         }
     }
 
@@ -2240,6 +2270,49 @@ mod tests {
         ] {
             std::fs::write(&path, file.to_string()).expect("write");
             assert_eq!(load(&path).sync, expected, "{file}");
+        }
+    }
+
+    /// Feature 004 data-model §13: `switchChoice` is `keep` or `stash`. Any other value reads as `keep`, and `keep` writes nothing.
+    #[test]
+    fn the_switch_choice_round_trips_and_any_other_value_reads_as_keep() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        for choice in [SwitchChoice::Keep, SwitchChoice::Stash] {
+            let settings = Settings {
+                switch_choice: choice,
+                ..Settings::default()
+            };
+            save(&path, &settings).expect("save");
+            assert_eq!(load(&path).switch_choice, choice);
+            let file: Value =
+                serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+            let stored = file.get("switchChoice").cloned();
+            assert_eq!(
+                stored,
+                (choice == SwitchChoice::Stash).then(|| json!("stash")),
+                "{choice:?}"
+            );
+            assert_eq!(
+                choice.text(),
+                if choice == SwitchChoice::Stash {
+                    "stash"
+                } else {
+                    "keep"
+                }
+            );
+        }
+        assert_eq!(Settings::default().switch_choice, SwitchChoice::Keep);
+        for value in [
+            json!("keep"),
+            json!("discard"),
+            json!("Stash"),
+            json!(""),
+            json!(1),
+            json!(null),
+        ] {
+            std::fs::write(&path, json!({ "switchChoice": value }).to_string()).expect("write");
+            assert_eq!(load(&path).switch_choice, SwitchChoice::Keep, "{value}");
         }
     }
 
@@ -3187,16 +3260,29 @@ mod tests {
         }
     }
 
-    fn confirm(worktree: &Worktree, fingerprint: &str, persist: bool) -> Confirm {
+    fn confirm(worktree: &Worktree) -> Confirm {
         Confirm {
             worktree_root: worktree.root.clone(),
-            git_directory: worktree.git_directory.clone(),
+            admin_directory: worktree.git_directory.clone(),
             common_directory: worktree.common.clone(),
             git_selected_path: PathBuf::from(GIT_PATH),
-            fingerprint: fingerprint.to_string(),
-            persist,
-            bound: (!persist).then(|| "file-count".to_string()),
+            action: "commit".to_string(),
+            details: json!({}),
         }
+    }
+
+    /// The feature 001 record form of `worktree`, with the identities that the shell reads.
+    fn version_1_record(worktree: &Worktree) -> Value {
+        json!({
+            "commonDirectory": worktree.common,
+            "commonIdentity": identity_reply(&worktree.common),
+            "worktreeRoot": worktree.root,
+            "gitDirectory": worktree.git_directory,
+            "worktreeIdentity": [identity_reply(&worktree.root), identity_reply(&worktree.git_directory)],
+            "configurationFingerprint": FINGERPRINT,
+            "approvedAt": "2026-10-07T10:00:00Z",
+            "gitSelectedPath": GIT_PATH,
+        })
     }
 
     fn approved(trust: &Trust, request: &Confirm) -> Option<Value> {
@@ -3232,7 +3318,7 @@ mod tests {
         let worktree = main_worktree(&fixture, "repo");
         let folder = fixture.path("trust");
         let trust = Trust::open(&folder);
-        let request = confirm(&worktree, FINGERPRINT, true);
+        let request = confirm(&worktree);
         let mut shown = None;
         let reply = trust.confirm_with(&request, &native_identity, |shown_request| {
             shown = Some(shown_request.clone());
@@ -3245,23 +3331,25 @@ mod tests {
         else {
             panic!("expected a stored record, got {reply:?}");
         };
+        // Feature 004 data-model §10: no fingerprint and no program digest.
         assert_eq!(
             keys(&record),
             sorted(&[
+                "policyVersion",
                 "commonDirectory",
                 "commonIdentity",
                 "worktreeRoot",
-                "gitDirectory",
+                "adminDirectory",
                 "worktreeIdentity",
-                "configurationFingerprint",
-                "approvedAt",
                 "gitSelectedPath",
+                "approvedAt",
             ])
         );
+        assert_eq!(record["policyVersion"], json!(2));
         assert_eq!(record["commonDirectory"], json!(worktree.common));
         assert_eq!(record["commonIdentity"], identity_reply(&worktree.common));
         assert_eq!(record["worktreeRoot"], json!(worktree.root));
-        assert_eq!(record["gitDirectory"], json!(worktree.git_directory));
+        assert_eq!(record["adminDirectory"], json!(worktree.git_directory));
         assert_eq!(
             record["worktreeIdentity"],
             json!([
@@ -3269,7 +3357,6 @@ mod tests {
                 identity_reply(&worktree.git_directory)
             ])
         );
-        assert_eq!(record["configurationFingerprint"], json!(FINGERPRINT));
         assert_eq!(record["gitSelectedPath"], json!(GIT_PATH));
         assert!(utc_time(record["approvedAt"].as_str().expect("approvedAt")).is_some());
         assert_eq!(trust.records(), vec![record.clone()]);
@@ -3282,6 +3369,72 @@ mod tests {
             stored, record,
             "the file holds the handshake form and no other field"
         );
+        assert_eq!(
+            Trust::open(&folder).records(),
+            vec![record],
+            "the record round-trips through the folder"
+        );
+    }
+
+    #[test]
+    fn a_version_1_record_loads_and_an_approval_of_its_worktree_replaces_it_with_version_2() {
+        let fixture = Fixture::new();
+        let main = main_worktree(&fixture, "repo");
+        let linked = linked_worktree(&fixture, &main, "linked");
+        let folder = fixture.path("trust");
+        std::fs::create_dir_all(&folder).expect("trust folder");
+        let old = version_1_record(&main);
+        let other = version_1_record(&linked);
+        assert!(schema::trust_record(&old), "{old}");
+        std::fs::write(folder.join("old-main.json"), old.to_string()).expect("version 1 record");
+        std::fs::write(folder.join("old-linked.json"), other.to_string())
+            .expect("version 1 record");
+        // Plan.md O-5: the handshake carries the version 1 records, and the service gives them `changed`.
+        let trust = Trust::open(&folder);
+        assert_eq!(
+            roots(&trust),
+            sorted(&[&text(&main.root), &text(&linked.root)])
+        );
+        let record = approved(&trust, &confirm(&main)).expect("stored");
+        assert_eq!(record["policyVersion"], json!(2));
+        let mut kept = trust.records();
+        kept.sort_by_key(|r| r["worktreeRoot"].as_str().map(str::to_string));
+        assert_eq!(
+            kept,
+            vec![other, record],
+            "only the record of the approved worktree changes"
+        );
+        assert_eq!(
+            entries(&folder).len(),
+            2,
+            "the version 1 file of that worktree is gone"
+        );
+        assert_eq!(Trust::open(&folder).records().len(), 2);
+    }
+
+    #[test]
+    fn a_record_of_another_version_or_with_a_fingerprint_beside_version_2_is_refused() {
+        let fixture = Fixture::new();
+        let worktree = main_worktree(&fixture, "repo");
+        let trust = Trust::open(&fixture.path("trust"));
+        let record = approved(&trust, &confirm(&worktree)).expect("stored");
+        assert!(schema::trust_record(&record));
+        let mut later = record.clone();
+        later["policyVersion"] = json!(3);
+        assert!(!schema::trust_record(&later), "version 3");
+        let mut mixed = record.clone();
+        mixed["configurationFingerprint"] = json!(FINGERPRINT);
+        assert!(!schema::trust_record(&mixed), "a fingerprint");
+        let mut renamed = record;
+        renamed["gitDirectory"] = renamed["adminDirectory"].take();
+        renamed
+            .as_object_mut()
+            .expect("object")
+            .remove("adminDirectory");
+        assert!(
+            !schema::trust_record(&renamed),
+            "gitDirectory with policyVersion 2"
+        );
     }
 
     #[test]
@@ -3291,11 +3444,7 @@ mod tests {
         let folder = fixture.path("trust");
         let trust = Trust::open(&folder);
         assert_eq!(
-            trust.confirm_with(
-                &confirm(&worktree, FINGERPRINT, true),
-                &native_identity,
-                |_| false
-            ),
+            trust.confirm_with(&confirm(&worktree), &native_identity, |_| false),
             Confirmed::Declined
         );
         assert_eq!(trust.records(), Vec::<Value>::new());
@@ -3307,10 +3456,9 @@ mod tests {
         let fixture = Fixture::new();
         let worktree = main_worktree(&fixture, "repo");
         let trust = Trust::open(&fixture.path("trust"));
-        approved(&trust, &confirm(&worktree, FINGERPRINT, true)).expect("stored");
-        let second = approved(&trust, &confirm(&worktree, DIGEST, true)).expect("stored");
-        assert_eq!(trust.records(), vec![second.clone()]);
-        assert_eq!(second["configurationFingerprint"], json!(DIGEST));
+        approved(&trust, &confirm(&worktree)).expect("stored");
+        let second = approved(&trust, &confirm(&worktree)).expect("stored");
+        assert_eq!(trust.records(), vec![second]);
     }
 
     #[test]
@@ -3319,27 +3467,11 @@ mod tests {
         let main = main_worktree(&fixture, "repo");
         let linked = linked_worktree(&fixture, &main, "linked");
         let trust = Trust::open(&fixture.path("trust"));
-        approved(&trust, &confirm(&main, FINGERPRINT, true)).expect("stored");
-        approved(&trust, &confirm(&linked, FINGERPRINT, true)).expect("stored");
+        approved(&trust, &confirm(&main)).expect("stored");
+        approved(&trust, &confirm(&linked)).expect("stored");
         assert_eq!(
             roots(&trust),
             sorted(&[&text(&main.root), &text(&linked.root)])
-        );
-    }
-
-    #[test]
-    fn an_approval_without_persist_writes_no_record_and_deletes_the_records_of_the_worktree() {
-        let fixture = Fixture::new();
-        let main = main_worktree(&fixture, "repo");
-        let linked = linked_worktree(&fixture, &main, "linked");
-        let trust = Trust::open(&fixture.path("trust"));
-        approved(&trust, &confirm(&main, FINGERPRINT, true)).expect("stored");
-        approved(&trust, &confirm(&linked, FINGERPRINT, true)).expect("stored");
-        assert_eq!(approved(&trust, &confirm(&main, DIGEST, false)), None);
-        assert_eq!(
-            roots(&trust),
-            [text(&linked.root)],
-            "another worktree keeps its record"
         );
     }
 
@@ -3351,7 +3483,7 @@ mod tests {
         let other = main_worktree(&fixture, "other");
         let trust = Trust::open(&fixture.path("trust"));
         for worktree in [&main, &linked, &other] {
-            approved(&trust, &confirm(worktree, FINGERPRINT, true)).expect("stored");
+            approved(&trust, &confirm(worktree)).expect("stored");
         }
         let mut tag = None;
         trust.revoke_path(&main.common);
@@ -3374,11 +3506,7 @@ mod tests {
         const DISTRO: &str = "{c6d24ae9-40f2-40bf-b35d-bf0b6ca4ea00}";
         let fixture = Fixture::new();
         let trust = Trust::open(&fixture.path("trust"));
-        approved(
-            &trust,
-            &confirm(&main_worktree(&fixture, "repo"), FINGERPRINT, true),
-        )
-        .expect("stored");
+        approved(&trust, &confirm(&main_worktree(&fixture, "repo"))).expect("stored");
         assert!(!trust.holds_guid(DISTRO), "a Windows record");
         let wsl = main_worktree(&fixture, "wsl");
         let root = wsl.root.clone();
@@ -3389,7 +3517,7 @@ mod tests {
                 inode: if path == root { "10" } else { "11" }.to_string(),
             }))
         };
-        let confirmed = trust.confirm_with(&confirm(&wsl, FINGERPRINT, true), &read, |_| true);
+        let confirmed = trust.confirm_with(&confirm(&wsl), &read, |_| true);
         assert!(matches!(confirmed, Confirmed::Approved { record: Some(_) }));
         assert!(trust.holds_guid(DISTRO), "a WSL record of the distro");
         assert!(
@@ -3403,7 +3531,7 @@ mod tests {
         let fixture = Fixture::new();
         let main = main_worktree(&fixture, "repo");
         let trust = Trust::open(&fixture.path("trust"));
-        approved(&trust, &confirm(&main, FINGERPRINT, true)).expect("stored");
+        approved(&trust, &confirm(&main)).expect("stored");
         let mut closed = false;
         let gone = fixture.path("gone\\.git");
         trust.revoke_path(&gone);
@@ -3421,7 +3549,7 @@ mod tests {
         let fixture = Fixture::new();
         let trust = Trust::open(&fixture.path("trust"));
         let first = main_worktree(&fixture, "repo-a");
-        approved(&trust, &confirm(&first, FINGERPRINT, true)).expect("stored");
+        approved(&trust, &confirm(&first)).expect("stored");
         std::fs::rename(&first.root, fixture.path("repo-b")).expect("move within the volume");
         let moved = Worktree {
             root: fixture.path("repo-b"),
@@ -3435,14 +3563,14 @@ mod tests {
             Vec::<Value>::new(),
             "revoke from the new path"
         );
-        approved(&trust, &confirm(&moved, FINGERPRINT, true)).expect("stored");
+        approved(&trust, &confirm(&moved)).expect("stored");
         std::fs::rename(&moved.root, fixture.path("repo-c")).expect("move within the volume");
         let again = Worktree {
             root: fixture.path("repo-c"),
             git_directory: fixture.path("repo-c\\.git"),
             common: fixture.path("repo-c\\.git"),
         };
-        approved(&trust, &confirm(&again, DIGEST, true)).expect("stored");
+        approved(&trust, &confirm(&again)).expect("stored");
         assert_eq!(
             roots(&trust),
             [text(&again.root)],
@@ -3459,7 +3587,7 @@ mod tests {
             .map(|n| linked_worktree(&fixture, &main, &format!("w{n:03}")))
             .collect();
         for worktree in &worktrees {
-            approved(&trust, &confirm(worktree, FINGERPRINT, true)).expect("stored");
+            approved(&trust, &confirm(worktree)).expect("stored");
         }
         let roots = roots(&trust);
         assert_eq!(roots.len(), TRUST_RECORD_LIMIT);
@@ -3487,7 +3615,7 @@ mod tests {
         let folder = fixture.path("trust");
         let trust = Trust::open(&folder);
         assert_eq!(
-            approved(&trust, &confirm(&worktree, FINGERPRINT, true)),
+            approved(&trust, &confirm(&worktree)),
             None,
             "the approval holds for the session only"
         );
@@ -3500,14 +3628,10 @@ mod tests {
         let fixture = Fixture::new();
         let worktree = main_worktree(&fixture, "repo");
         let trust = Trust::open(&fixture.path("trust"));
-        let first = approved(&trust, &confirm(&worktree, FINGERPRINT, true)).expect("stored");
+        let first = approved(&trust, &confirm(&worktree)).expect("stored");
         for stage in [Stage::Write, Stage::Flush] {
             trust.fail_next(stage, ERROR_DISK_FULL);
-            assert_eq!(
-                approved(&trust, &confirm(&worktree, DIGEST, true)),
-                None,
-                "{stage:?}"
-            );
+            assert_eq!(approved(&trust, &confirm(&worktree)), None, "{stage:?}");
             assert_eq!(trust.records(), vec![first.clone()], "{stage:?}");
         }
     }
@@ -3517,14 +3641,14 @@ mod tests {
         let call = "0f0f0f0f-0000-4000-8000-0000000000bb";
         let identity = json!({ "volumeSerial": "00000000000000ab", "fileId": "11".repeat(16) });
         let record = json!({
+            "policyVersion": 2,
             "commonDirectory": "C:\\repo\\.git",
             "commonIdentity": identity,
             "worktreeRoot": "C:\\repo",
-            "gitDirectory": "C:\\repo\\.git",
+            "adminDirectory": "C:\\repo\\.git",
             "worktreeIdentity": [identity, identity],
-            "configurationFingerprint": FINGERPRINT,
-            "approvedAt": "2026-10-07T10:00:00Z",
             "gitSelectedPath": "C:\\Git\\cmd\\git.exe",
+            "approvedAt": "2026-10-07T10:00:00Z",
         });
         assert!(schema::trust_record(&record), "{record}");
         assert_eq!(
@@ -3552,8 +3676,8 @@ mod tests {
         let folder = fixture.path("trust");
         {
             let first = Trust::open(&folder);
-            approved(&first, &confirm(&main, FINGERPRINT, true)).expect("stored");
-            approved(&first, &confirm(&linked, FINGERPRINT, true)).expect("stored");
+            approved(&first, &confirm(&main)).expect("stored");
+            approved(&first, &confirm(&linked)).expect("stored");
         }
         let reopened = Trust::open(&folder);
         assert_eq!(
@@ -3604,18 +3728,19 @@ mod tests {
         );
     }
 
-    /// Feature 003 contract Δ2 and Δ6: the marker kinds equal `MUTATIONS` of `src/contracts/operations.ts`, so a `sync` marker loads.
+    /// Feature 003 contract Δ2 and Δ6: a `sync` marker loads.
+    /// Feature 004 contract Δ6: the marker kinds equal `MutationKind` of `src/contracts/operations.ts`, so `workbench` and `applyFiles` markers load.
     #[test]
-    fn the_marker_kinds_equal_the_contract_mutations_and_a_sync_marker_loads() {
+    fn the_marker_kinds_equal_the_contract_kinds_and_each_new_kind_loads() {
         let contract = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/../src/contracts/operations.ts"
         ))
         .expect("operations.ts");
         let (list, _) = contract
-            .split_once("MUTATION_NAMES = [")
+            .split_once("MutationKind = z.enum([")
             .and_then(|(_, rest)| rest.split_once(']'))
-            .expect("MUTATION_NAMES");
+            .expect("MutationKind");
         let names: Vec<&str> = list.split('"').skip(1).step_by(2).collect();
         assert_eq!(names, MUTATIONS);
         let fixture = Fixture::new();
@@ -3623,14 +3748,16 @@ mod tests {
         let recovery = folder(&fixture, "recovery");
         let id = write_marker(&recovery, &repository, 1, 0);
         let path = recovery.join(format!("{id}.json"));
-        let mut marker: Value =
-            serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
-        marker["kind"] = json!("sync");
-        std::fs::write(&path, marker.to_string()).expect("write");
-        let scan = Markers::open(&recovery).scan();
-        assert_eq!((scan.markers.len(), scan.damaged.len()), (1, 0));
-        assert_eq!(scan.markers[0].kind, "sync");
-        assert_eq!(scan.markers[0].handshake(), marker);
+        for kind in ["sync", "workbench", "applyFiles"] {
+            let mut marker: Value =
+                serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+            marker["kind"] = json!(kind);
+            std::fs::write(&path, marker.to_string()).expect("write");
+            let scan = Markers::open(&recovery).scan();
+            assert_eq!((scan.markers.len(), scan.damaged.len()), (1, 0), "{kind}");
+            assert_eq!(scan.markers[0].kind, kind);
+            assert_eq!(scan.markers[0].handshake(), marker);
+        }
     }
 
     #[test]

@@ -8,6 +8,7 @@ import {
   ConfirmRunReply,
   DestinationFactsReply as DestinationFactsReplySchema,
   ExitReply,
+  FileAppendReply as FileAppendReplySchema,
   FileFactsReply,
   IdentityListReply,
   InputWrittenReply,
@@ -16,6 +17,7 @@ import {
   PageantReply as PageantReplySchema,
   Refused,
   RegisterReply as RegisterReplySchema,
+  RevealReply,
   ResolveGitReply,
   RevokeReply,
   StartedReply as StartedReplySchema,
@@ -23,7 +25,7 @@ import {
   WslDistrosReply,
   WslFilesReply,
 } from "../contracts/channel";
-import { INLINE_PROCESS_INPUT_BYTES, NATIVE_CHUNK_BYTES, UNACKNOWLEDGED_INPUT_CHUNKS } from "../contracts/limits";
+import { GIT_PROCESS_DEADLINE_MS, INLINE_PROCESS_INPUT_BYTES, NATIVE_CHUNK_BYTES, UNACKNOWLEDGED_INPUT_CHUNKS } from "../contracts/limits";
 import { isChannelPath, isIdentifier } from "../contracts/operations";
 import { isObject } from "../contracts/strict-json";
 import {
@@ -46,6 +48,7 @@ import {
   wslResultsFit,
   RunnerRefusal,
   type DestinationFactsReply,
+  type FileAppendReply,
   type FileFact,
   type FileFactsRequest,
   type GitCall,
@@ -64,6 +67,7 @@ import {
   type TrustReply,
   type WalkDeadline,
   type WalkStop,
+  type WorktreeAddFactsReply,
 } from "./git-runner";
 import type { Frame, FrameKind, FrameWriter } from "./transport";
 
@@ -115,11 +119,21 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
 
   // A request other than `run`. A malformed reply fails the call at once.
   // Contract §6 "Walks": an abort of `canceled.signal` sends `cancel` and resolves `canceled.value` at once. An aborted signal sends nothing.
-  function ask<T>(kind: FrameKind, body: Body, parse: (reply: Body) => T | undefined, canceled?: { signal: AbortSignal; value: T }): Promise<T> {
+  // With `wait`, the shell still replies after `cancel`, so the call waits up to `wait` ms for that reply before it resolves `canceled.value`.
+  function ask<T>(kind: FrameKind, body: Body, parse: (reply: Body) => T | undefined, canceled?: { signal: AbortSignal; value: T; wait?: number }): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       if (canceled?.signal.aborted) return resolve(canceled.value);
       const callId = crypto.randomUUID();
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const abort = () => {
+        if (canceled!.wait !== undefined) {
+          send(kind, { type: "cancel", callId });
+          timer = setTimeout(() => {
+            pending.delete(callId);
+            resolve(canceled!.value);
+          }, canceled!.wait);
+          return;
+        }
         pending.delete(callId);
         resolve(canceled!.value);
         send(kind, { type: "cancel", callId });
@@ -127,6 +141,7 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
       pending.set(callId, {
         handle(replyKind, reply) {
           pending.delete(callId);
+          clearTimeout(timer);
           canceled?.signal.removeEventListener("abort", abort);
           const refused = replyKind === kind ? Refused.safeParse(reply) : undefined;
           if (refused?.success) {
@@ -423,9 +438,14 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
         if (!reply.success) return undefined;
         if (reply.data.result === "declined") return { result: "declined" };
         if (!reply.data.stored) return { result: "approved", stored: false };
-        // Contract §7 "Trust approval store": with `persist: false`, the shell writes no record.
-        return request.persist ? { result: "approved", stored: true, record: reply.data.record } : undefined;
+        return { result: "approved", stored: true, record: reply.data.record };
       });
+    },
+
+    // Feature 004 contract Δ3 `revealPath`: a walk, so an abort sends `cancel`. Each failure arrives as a `refused` frame.
+    async reveal(request, signal) {
+      checkSyncRequest("reveal", request);
+      return ask<"shown" | WalkStop>("process", { type: "reveal", ...request }, (r) => (RevealReply.safeParse(r).success ? "shown" : undefined), { signal, value: CANCELED });
     },
 
     // Feature 003 contract Δ6: the shell waits up to 30 s for Pageant, so the call has no cancel.
@@ -439,14 +459,32 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
       });
     },
 
+    // Feature 004 contract Δ6: only the reply to the `worktreeAdd` form carries `path`.
     async destinationFacts(request) {
       checkSyncRequest("destinationFacts", request);
-      return ask<DestinationFactsReply>("process", { type: "destinationFacts", ...request }, (r) => {
+      return ask<DestinationFactsReply | WorktreeAddFactsReply>("process", { type: "destinationFacts", ...request }, (r) => {
         const reply = DestinationFactsReplySchema.safeParse(r);
-        if (!reply.success) return undefined;
+        if (!reply.success || "path" in reply.data !== "bootstrapId" in request) return undefined;
         const { type: _type, callId: _callId, ...result } = reply.data;
         return result;
       });
+    },
+
+    // Feature 004 contract Δ6 `fileAppend`: a walk, so an abort sends `cancel`. The reply group has no deadline form.
+    // Every request gets one reply, also after `cancel`, so the call waits for it within the walk deadline (contract §5). No reply by then gives `canceled`.
+    async fileAppend(request, signal) {
+      checkSyncRequest("fileAppend", request);
+      return ask<FileAppendReply | WalkStop>(
+        "process",
+        { type: "fileAppend", ...request },
+        (r) => {
+          const reply = FileAppendReplySchema.safeParse(r);
+          if (!reply.success) return undefined;
+          const { type: _type, callId: _callId, ...result } = reply.data;
+          return result;
+        },
+        { signal, value: CANCELED, wait: GIT_PROCESS_DEADLINE_MS },
+      );
     },
 
     async terminal(request) {

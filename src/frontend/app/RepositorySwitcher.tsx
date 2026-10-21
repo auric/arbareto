@@ -286,17 +286,17 @@ export function RepositorySwitcher({ worktreeRoot, open, instant = false, onOpen
           }
         >
           <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
+          {/* Feature 004 plan.md D15 "Repository button": the folder name only. The tooltip and the accessible name give the full path. */}
           {worktreeRoot === null ? null : (
-            <>
-              <span aria-hidden="true" className="shrink-0 font-semibold">
-                {name}
-              </span>
-              <PathText path={worktreeRoot} />
-            </>
+            <span aria-hidden="true" className="min-w-0 truncate font-semibold">
+              {name}
+            </span>
           )}
           <HugeiconsIcon icon={ArrowDown01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
         </TooltipTrigger>
-        <TooltipContent>Recent repositories (Ctrl+R)</TooltipContent>
+        <TooltipContent className="flex-col items-start">
+          {worktreeRoot === null ? null : <span className="[overflow-wrap:anywhere]">{worktreeRoot}</span>} Recent repositories (Ctrl+R)
+        </TooltipContent>
       </Tooltip>
       {/* plan.md "Dialog sizes": at most 480 DIPs wide and 60% of the client height, inside the client area less 16 DIPs on each side. */}
       <PopoverContent {...(instant && open ? { "data-instant": "" } : {})} align="start" className="max-h-[min(60vh,calc(100vh-32px))] w-[min(480px,calc(100vw-32px))]">

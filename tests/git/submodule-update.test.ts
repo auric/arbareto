@@ -306,7 +306,7 @@ describe("trust (contract §12 \"Trust\", \"Update protocol\" step 3)", () => {
       await update();
       const { repositoryId } = await service.register(sup);
       const trust = await service.readTrust(repositoryId);
-      const approved = await service.approveTrust(repositoryId, trust.result!.fingerprint, trust.result!.generation);
+      const approved = await service.approveTrust(repositoryId);
       expect(approved.result!.persistence).toBe("stored");
       const r = await reviewSubmodules(service, repositoryId);
       expect(outcome(await updateSubmodules(service, repositoryId, r))).toEqual({ state: "succeeded", code: undefined });
@@ -737,6 +737,8 @@ describe("refusals before and during the run (contract §12 \"Refusals\", \"Upda
       const { response } = await updated(service, sup);
       const row = resultOf(response, "ext");
       expect({ state: row.state, tail: typeof row.outputTail, remedy: row.remedy }).toEqual({ state: "failed", tail: "string", remedy: { command: cloneRemedy(sup, "ext"), text: STEP_TEXT.clone } });
+      // Feature 004 contract Δ12: the runner end gives the nonzero exit code of the failed clone step.
+      expect({ exitCode: typeof row.exitCode, nonzero: (row.exitCode ?? 0) > 0 }).toEqual({ exitCode: "number", nonzero: true });
       expect(canaryLines(b, "ext-url")).toEqual([]);
     });
   });

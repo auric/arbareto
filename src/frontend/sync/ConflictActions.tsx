@@ -109,7 +109,7 @@ export function ConflictRow({ operationState, conflicted, reason: given, running
       <span>{unknown ? `${blockingText("unknown", conflicted)} ${FINISH_OUTSIDE}` : blockingText(operationState, conflicted)}</span>
       {unknown ? null : (
         <div role="group" aria-label="Conflict actions" className="flex flex-wrap items-center gap-1">
-          {hidden("abort") ? null : tip("abort", action("abort", "Abort…", UndoIcon, reason, reasonId, true), null)}
+          {hidden("abort") ? null : tip("abort", action("abort", operationState === "merging" ? "Abort merge…" : "Abort rebase…", UndoIcon, reason, reasonId, true), null)}
           {hidden("continue") ? null : tip("continue", action("continue", "Continue", ArrowRight02Icon, continueReason, reason === null ? continueId : reasonId), null)}
           {hidden("skip") ? null : skip}
         </div>

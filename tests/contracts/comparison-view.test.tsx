@@ -9,6 +9,7 @@ import { printOrigin } from "../origin";
 
 printOrigin("../../src/frontend/changes/ComparisonView.tsx", import.meta.dir);
 printOrigin("../../src/frontend/changes/hunk-mapping.ts", import.meta.dir);
+printOrigin("../../src/frontend/changes/patch-css.ts", import.meta.dir);
 // `ComparisonView.tsx` loads Base UI. Base UI must first evaluate with a DOM (tests/dom.ts).
 registerDom();
 const { createRoot } = await import("react-dom/client");
@@ -137,4 +138,22 @@ describe("hunk mapping", () => {
       expect(mapHunks(patch, hunks)).toEqual({ ok: false, code: "DISPLAY_MAPPING_FAILED" });
     });
   }
+});
+
+describe("selected lines (feature 004 plan.md D16)", () => {
+  // Pierre needs the Vite build (T160), and other files stub PatchView in a shared process. The test renders the PatchView `unsafeCSS` on a line that Pierre marks as selected.
+  test("the selected lines take the 3 px Accent bar on the left and no fill", async () => {
+    const { PATCH_CSS } = await import("../../src/frontend/changes/patch-css");
+    const host = await show(
+      <div>
+        <style>{PATCH_CSS}</style>
+        <div data-selected-line="" />
+      </div>,
+    );
+    host.style.setProperty("--accent-role", "rgb(1, 2, 3)");
+    const line = host.querySelector<HTMLElement>("[data-selected-line]")!;
+    const style = getComputedStyle(line);
+    expect(style.boxShadow).toBe("inset 3px 0 0 rgb(1, 2, 3)");
+    expect(["", "none"]).toContain(style.backgroundImage);
+  });
 });

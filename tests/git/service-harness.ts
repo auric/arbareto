@@ -417,7 +417,10 @@ export interface Service {
 }
 
 // Contract §5: a read ends by its 30-second deadline, and its outcome follows within the 5-second reconciliation target.
-const RESPONSE_WAIT_MS = READ_DEADLINE_MS + RECONCILIATION_TARGET_MS;
+export const RESPONSE_WAIT_MS = READ_DEADLINE_MS + RECONCILIATION_TARGET_MS;
+// Contract §5 "Ordinary read deadline": `reviewSubmodules`, the `updateSubmodules` preflight, and its level reads have no total read deadline. This wait is a test budget below the 120-second case timeout.
+export const NO_TOTAL_DEADLINE_WAIT_MS = 90_000;
+const NO_TOTAL_DEADLINE = new Set(["reviewSubmodules", "updateSubmodules"]);
 
 // Contract §5 "Private/reply frame": a pipe frame body holds at most 16 MiB of encoded JSON.
 export function checkFrame(frame: object): void {
@@ -602,7 +605,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
       });
       return requestId;
     },
-    async response<R>(requestId: string, timeoutMs = RESPONSE_WAIT_MS) {
+    async response<R>(requestId: string, timeoutMs = NO_TOTAL_DEADLINE.has(sentOperations.get(requestId) ?? "") ? NO_TOTAL_DEADLINE_WAIT_MS : RESPONSE_WAIT_MS) {
       return (await waitFor(() => firstResponse.get(requestId), timeoutMs, `response of ${requestId}`)) as ServiceResponse<R>;
     },
     request<R>(operation: string, payload: object, envelope?: Envelope) {

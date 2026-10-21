@@ -15,7 +15,7 @@ import { FIXTURE_ROOT, ownedGit, useFixtureRoot } from "./fixture-root";
 import { buildF27, buildF28, buildF29, F27_TOKEN_URL, put, type Built, type F27Variant, type F28Variant } from "./fixtures";
 import { fileSha256, rawIndexDigest, refState, workingFileDigests } from "./git-oracle";
 import { gitPath, readOk, TIMEOUT_MS, valuesOf } from "./hunk-harness";
-import { caseTest, withFsCalls, type Capability, type Service } from "./service-harness";
+import { caseTest, NO_TOTAL_DEADLINE_WAIT_MS, RESPONSE_WAIT_MS, withFsCalls, type Capability, type Service } from "./service-harness";
 import {
   actionsOf,
   callsSince,
@@ -777,6 +777,7 @@ describe("programs (contract §12 \"Trust\")", () => {
         const start = performance.now();
         const { r } = await reviewed(service, b);
         const elapsed = performance.now() - start;
+        console.log(`${name}: review ${Math.round(elapsed)} ms, response wait ${NO_TOTAL_DEADLINE_WAIT_MS} ms, old wait ${RESPONSE_WAIT_MS} ms`);
         // A review inside the injected deadline proves nothing about the missing total timer.
         if (readDeadlineMs !== undefined) expect({ premise: "review outlasts the injected read deadline", readDeadlineMs, elapsed, ok: elapsed > readDeadlineMs }).toEqual({ premise: "review outlasts the injected read deadline", readDeadlineMs, elapsed, ok: true });
         expect({ state: r.response.state, code: r.response.code, refusals: r.refusals.map((x) => ({ reason: x.reason, text: x.text })) }).toEqual({ state: "succeeded", code: undefined, refusals: [{ reason: "limit", text: TEXTS.limit }] });

@@ -816,6 +816,16 @@ describe("message editor (FR-047) and Amend last commit (FR-098)", () => {
     expect(cell(t.host.querySelector("textarea")!)).not.toBe(cell(guide));
   });
 
+  test("the summary line and the Commit reason line wrap in the editor column and show the full text, not an ellipsis (T115)", async () => {
+    const t = await tray({ amend: { value: null, onChange: () => {} } });
+    const commit = [...t.host.querySelectorAll("button")].find((b) => b.textContent === "Commit (Ctrl+Enter)")!;
+    const reason = document.getElementById(commit.getAttribute("aria-describedby")!)!;
+    expect(text(reason)).toBe("The commit message is empty.");
+    const summary = reason.parentElement!.querySelector("p")!;
+    expect(text(summary)).toContain("staged");
+    for (const line of [summary, reason]) expect(line.className.split(/\s+/)).not.toContain("truncate");
+  });
+
   test("Amend last commit sits next to the message editor and states its reason for an unborn branch and during a merge or a rebase", async () => {
     const box = { value: null, onChange: () => {} };
     const unborn = await tray({ head: { state: "unborn", target: "refs/heads/main" }, amend: box });

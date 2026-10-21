@@ -44,14 +44,12 @@ import {
   clampPanes,
   commitViewProfile,
   dockBounds,
-  headerRows,
   historyFit,
   metrics,
   overflowScroll,
   paneBounds,
   sidebarBounds,
   statusAreaHeight,
-  UnmeasuredLayoutError,
   workAreaHeight,
   type Density,
   type Profile,
@@ -297,16 +295,6 @@ function useClientSize(): Size {
     return () => window.removeEventListener("resize", onResize);
   }, []);
   return size;
-}
-
-/** The plan.md header rows. A size without a plan.md value takes two rows, as the constrained profile does. */
-function headerRowCount(width: number, textScale: number): number {
-  try {
-    return headerRows(width, textScale);
-  } catch (error) {
-    if (error instanceof UnmeasuredLayoutError) return 2;
-    throw error;
-  }
 }
 
 /** plan.md "Status and fallback texts": the toolbar branch text. */
@@ -1256,7 +1244,6 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
 
   const distro = wslDistro(workspace);
   const wslGit = workspace?.location.kind === "wsl" ? workspace.location.git : null;
-  const rows = headerRowCount(client.width, textScale);
   // plan.md "Notice band": the blocking row, then the submodule row.
   let conflicted = 0;
   let working = 0;
@@ -1698,8 +1685,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             <RecoveryMarkers environment={environment} onDismissMarker={(markerId) => void dismissMarker(markerId)} />
           </div>
         ) : null}
-        {/* Feature 004 plan.md D15 "Top bar row": one row wherever the 001 header model reserves one row. */}
-        <header data-section="header" className={`flex ${rows === 1 ? "flex-nowrap" : "flex-wrap"} items-center gap-x-2 border-b border-divider px-2`} style={{ minHeight: "var(--h-header)" }}>
+        {/* Feature 004 plan.md D15 "Top bar row": one row while the controls fit at their text widths. Otherwise the last controls wrap. */}
+        <header data-section="header" className="flex flex-wrap items-center gap-x-2 border-b border-divider px-2" style={{ minHeight: "var(--h-header)" }}>
           <div ref={switcher} className="flex min-w-[160px] shrink items-center" style={{ order: 1, minHeight: "var(--h-header)" }}>
             <RepositorySwitcher
               bridge={bridge}
@@ -1721,8 +1708,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             </span>
           )}
           {workspace === null ? null : (
-            // plan.md "Header layout": in one row, the branch button takes only the width that the other items leave, so it never moves them to another row.
-            <BranchButton head={workspace.head} operationState={workspace.operationState} counts={currentLabel} tracking={labels} actions={branches} blockedReason={mutationReason} rowHeight={m.row} headingHeight={m.subgroupHeading} wraps={rows !== 1} />
+            <BranchButton head={workspace.head} operationState={workspace.operationState} counts={currentLabel} tracking={labels} actions={branches} blockedReason={mutationReason} rowHeight={m.row} headingHeight={m.subgroupHeading} />
           )}
           {workspace === null ? null : <WorktreeButton actions={worktrees} worktreeRoot={path} rowHeight={m.row} itemHeight={m.row + m.helpLine} headingHeight={m.subgroupHeading} />}
           {state.repository === null ? null : (
@@ -1748,7 +1734,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               <Segmented label="Views" options={VIEW_OPTIONS} value={view === "settings" ? null : view} onChange={(next) => store.setView(viewKey, next)} />
             </span>
           )}
-          <div ref={menubar} className="flex items-center" style={{ order: 6, flexBasis: rows === 1 ? undefined : "auto" }} onFocus={onMenubarFocus}>
+          <div ref={menubar} className="flex items-center" style={{ order: 6, minHeight: "var(--h-header)" }} onFocus={onMenubarFocus}>
             <Menubar className="h-auto border-0 p-0">
               <RepositoryMenu
                 key={repositoryId}
@@ -1847,7 +1833,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               </MenubarMenu>
             </Menubar>
           </div>
-          <span className="flex items-center gap-1" style={{ order: 7 }}>
+          <span className="flex items-center gap-1" style={{ order: 7, minHeight: "var(--h-header)" }}>
             <IconButton icon={RefreshIcon} label="Refresh" keys={{ aria: "F5", text: "F5" }} disabled={!state.repository} onClick={refresh} />
             {/* Feature 004 plan.md D15 top bar: the Commit icon opens the Commit view and focuses Working changes. */}
             <IconButton

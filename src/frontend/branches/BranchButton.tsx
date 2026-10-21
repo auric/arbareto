@@ -29,8 +29,6 @@ export type BranchButtonProps = {
   /** The reason that blocks the switch, such as a merge in progress. The list then shows it instead of the branches. */
   blockedReason: string | null;
   rowHeight: number;
-  /** The header wraps into rows (001 plan.md "Header layout"). The menu bar then moves to the next row before the branch text shrinks. */
-  wraps: boolean;
 };
 
 /** Spec FR-007: the branch, "Detached at <short ID>", or the operation in progress. An unborn branch keeps the 001 header text. */
@@ -41,7 +39,7 @@ function buttonText(head: WorkspaceSnapshot["head"], operationState: WorkspaceSn
   return head.state === "unborn" ? `${branchName(head.target)}, no commits yet` : branchName(head.target);
 }
 
-export function BranchButton({ headingHeight, head, operationState, counts, tracking, actions, blockedReason, rowHeight, wraps }: BranchButtonProps) {
+export function BranchButton({ headingHeight, head, operationState, counts, tracking, actions, blockedReason, rowHeight }: BranchButtonProps) {
   const [open, setOpen] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
   const text = buttonText(head, operationState);
@@ -68,9 +66,9 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
           data-slot="branch-button"
           aria-label={counts === null ? text : `${text}, ${counts.label}`}
           className="flex h-(--h-button) min-w-0 max-w-fit items-center gap-1 overflow-hidden rounded-sm border border-control-border px-2 hover:bg-hover-fill"
-          // Plan.md D15 "Top bar row": the grow factor gives the branch text the free width before the sync reason line (grow 1).
-          // A zero basis in one row keeps the menu bar, Refresh, and Commit in that row. The text basis in wrapped rows moves them first.
-          style={{ order: 3, flex: wraps ? "1000 1 auto" : "1000 1 0px" }}
+          // Plan.md D15 "Top bar row": the text basis moves the menu bar, Refresh, and Commit to the next row before the branch text shrinks.
+          // The grow factor gives the branch text the free width before the sync reason line (grow 1).
+          style={{ order: 3, flex: "1000 1 auto" }}
         />
       }
       tooltip={T.tooltip}
@@ -121,9 +119,9 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
           {last}
         </span>
       </span>
-      {/* The counts shrink before the branch name and end with an ellipsis. The title and the accessible name hold the full counts. */}
+      {/* The counts shrink before the branch name. One em keeps their ellipsis. The title and the accessible name hold the full counts. */}
       {counts === null ? null : (
-        <span data-slot="branch-counts" aria-hidden="true" title={counts.label} className="num min-w-0 shrink-[1000] truncate">
+        <span data-slot="branch-counts" aria-hidden="true" title={counts.label} className="num min-w-[1em] shrink-[1000] truncate">
           {counts.text}
         </span>
       )}

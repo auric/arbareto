@@ -351,14 +351,15 @@ export function CommitTray(props: CommitTrayProps) {
       </div>
       <div className="flex min-w-0 flex-col" style={{ gridColumn: "1" }}>
         <GuideLines id={`${reasonId}-guide`} text={text} />
-        {head === null ? null : <p className="truncate">{summaryLine(head, staged)}</p>}
+        {/* Plan.md D15 "Message editor": the lines wrap to the column and show their full text. */}
+        {head === null ? null : <p className="break-words">{summaryLine(head, staged)}</p>}
         {trustShown ? null : (
-          <p id={reasonId} hidden={hideReason} className="truncate text-muted-text">
+          <p id={reasonId} hidden={hideReason} className="break-words text-muted-text">
             {shownReason}
           </p>
         )}
         {pushReason === null || pushSharesReason ? null : (
-          <p id={`${reasonId}-push`} className="truncate text-muted-text">
+          <p id={`${reasonId}-push`} className="break-words text-muted-text">
             {`Commit and push: ${pushReason}`}
           </p>
         )}

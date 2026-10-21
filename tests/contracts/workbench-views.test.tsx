@@ -181,7 +181,7 @@ describe("views (FR-033, FR-068, data-model §14)", () => {
     for (const part of bar.querySelectorAll<HTMLElement>('nav[aria-label="Views"] button')) expect(part.style.height).toBe("var(--h-button)");
   });
 
-  test("the top bar stays one row, and the repository button shows the folder name only, with the full path in its tooltip and accessible name (T087)", async () => {
+  test("the top bar wraps only when its controls do not fit (T115), and the repository button shows the folder name only, with the full path in its tooltip and accessible name (T087)", async () => {
     const root = "C:\\Users\\sample\\AppData\\Local\\Temp\\a-long-sample-folder-name-that-fills-the-top-bar\\nested\\deeper\\sample-repo";
     const world = createWorld();
     world.answers.readWorkspace = () => {
@@ -189,11 +189,8 @@ describe("views (FR-033, FR-068, data-model §14)", () => {
       return succeeded({ ...shot, identity: { ...shot.identity, worktreeRoot: root } });
     };
     await mountWorkbench(workbench, world);
-    // The 001 header model gives one row at this width (plan.md "Header layout").
-    expect(window.innerWidth).toBeGreaterThanOrEqual(960);
-    const classes = header().className.split(/\s+/);
-    expect(classes).toContain("flex-nowrap");
-    expect(classes).not.toContain("flex-wrap");
+    // Plan D15 "Top bar row" (T115): the header is one row while its controls fit, and wraps when they do not. The DOM test has no layout, so it checks the wrap only.
+    expect(header().className.split(/\s+/)).toContain("flex-wrap");
     const repository = header().querySelector<HTMLElement>('[aria-keyshortcuts="Control+R"]')!;
     expect(text(repository)).toBe("sample-repo");
     expect(repository.getAttribute("aria-label")).toBe(`sample-repo, ${root}`);

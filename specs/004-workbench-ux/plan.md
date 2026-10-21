@@ -521,7 +521,7 @@ Each phase writes its tests first. P0.2 to P0.4 are the riskiest proofs and run 
 
 Source: the 004 design standard of 2026-10-16 (consistency audit a052af1c, decisions D-S1 to D-S8). These decisions are final.
 - Verb (D-S1): the branch action is "Switch". Menu item "Switch (Ctrl+.)", confirmation "Switch to <branch>?", button "Switch". "Check out the commit only" stays for a detached HEAD. This amends the spec FR-014 item "Checkout" (O-12).
-- Frame (D-S2): title bar 32 px, top bar 40 px, sidebar 264 px on Surface with "References <n>", status bar 32 px with status text, the trust chip, and the Git version.
+- Frame (D-S2): title bar 32 px, top bar 40 px for one row (D15 "Top bar row"), sidebar 264 px on Surface with "References <n>", status bar 32 px with status text, the trust chip, and the Git version.
 - Trust chip (D-S3), history header (D-S4), notes (D-S6), and the sample tag (D-S7) apply to mockups and screenshots.
 - Native task dialog (D-S8): Windows chrome colors, the only exception to the tokens.
 - Token additions to the 001 compact token system (001 plan.md "Compact token system"). The Light values are open (O-13):

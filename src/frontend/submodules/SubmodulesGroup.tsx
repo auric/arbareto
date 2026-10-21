@@ -391,13 +391,13 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
         {rows === null ? null : <span className="num font-normal text-muted-text">{num(list.length)}</span>}
         {run !== null ? (
           <>
-            {counters?.rowIndex === undefined || counters.rowCount === undefined ? null : <span className="font-normal">{`Updating ${num(counters.rowIndex)} of ${num(counters.rowCount)}`}</span>}
+            {counters?.rowIndex === undefined || counters.rowCount === undefined ? null : <HeaderStatus text={`Updating ${num(counters.rowIndex)} of ${num(counters.rowCount)}`} />}
             <Button type="button" variant="outline" size="sm" onClick={onCancel}>
               Cancel
             </Button>
           </>
         ) : summary === null ? null : (
-          <span className="font-normal text-muted-text">{`${num(summary.updated)} updated, ${num(summary.failed)} failed`}</span>
+          <HeaderStatus muted text={`${num(summary.updated)} updated, ${num(summary.failed)} failed`} />
         )}
         <IconButton
           icon={FolderSyncIcon}
@@ -593,5 +593,14 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
         <ActionMenu label={`Actions for ${menu.path}`} groups={menuGroups(menu.path)} open anchor={menu.anchor} byKey={menu.byKey} finalFocus={() => menu.anchor} onOpenChange={(next) => void (next || setMenu(null))} />
       )}
     </section>
+  );
+}
+
+/** Plan D15 "Header": the status text shrinks first and keeps one line. The tooltip gives the full text. */
+function HeaderStatus({ text, muted = false }: { text: string; muted?: boolean }) {
+  return (
+    <span data-slot="header-status" title={text} className={`min-w-0 truncate font-normal whitespace-nowrap${muted ? " text-muted-text" : ""}`}>
+      {text}
+    </span>
   );
 }

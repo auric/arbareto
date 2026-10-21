@@ -88,19 +88,23 @@ export function WorktreeRow({ entry: e }: { entry: WorktreeEntry }) {
   return (
     <>
       <CurrentMark entry={e} />
-      <span data-slot="worktree-lines" title={entryLabel(e)} className="flex min-w-0 flex-1 flex-col">
-        <span className="flex min-w-0 items-center gap-2">
-          <span className={e.current ? "min-w-0 truncate font-semibold" : "min-w-0 truncate"}>{folderOf(e.path)}</span>
-          {branch === null ? null : (
-            <span className="flex min-w-0 shrink-[1000] items-center gap-1 text-muted-text">
-              {e.branch === null ? null : <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />}
-              <span className="num min-w-0 truncate">{branch}</span>
-            </span>
-          )}
+      {/* Plan D15 "Rows": the lines take their first-line width before the marks. The marks shrink first. */}
+      <span className="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+        <span data-slot="worktree-lines" title={entryLabel(e)} className="flex max-w-full shrink-0 grow flex-col">
+          <span className="flex min-w-0 items-center gap-2">
+            <span className={e.current ? "min-w-0 truncate font-semibold" : "min-w-0 truncate"}>{folderOf(e.path)}</span>
+            {branch === null ? null : (
+              <span className="flex min-w-0 items-center gap-1 text-muted-text">
+                {e.branch === null ? null : <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />}
+                <span className="num min-w-0 truncate">{branch}</span>
+              </span>
+            )}
+          </span>
+          {/* A zero width with a full minimum: the path fills the lines but adds no width to them. */}
+          <span className="w-0 min-w-full truncate text-muted-text">{e.path}</span>
         </span>
-        <span className="min-w-0 truncate text-muted-text">{e.path}</span>
+        <Marks entry={e} />
       </span>
-      <Marks entry={e} />
     </>
   );
 }

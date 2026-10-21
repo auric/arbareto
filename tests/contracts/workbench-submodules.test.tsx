@@ -9,6 +9,7 @@
 // - `SubmodulesGroup({ update, runningReason, blockedReason, onCancel })` shows the Submodules group of the sidebar.
 
 import { afterEach, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { act, useState, type ReactNode } from "react";
 import { SubmoduleHostLine, SubmodulePlanRow, SubmoduleRowResult } from "../../src/contracts/submodules";
 import { registerDom } from "../dom";
@@ -282,6 +283,14 @@ describe("rows and progress (FR-077)", () => {
     expect(view.cancels()).toBe(1);
   });
 
+  test("the header keeps one line: its status text shrinks first, ends with an ellipsis, and its tooltip gives the full text (T116, plan D15 Header)", async () => {
+    const view = await started();
+    await sendProgress(view.double, progress("fetch", "libs/a", 1, 62));
+    const status = group().querySelector<HTMLElement>('[data-slot="header-status"]')!;
+    expect(status.title).toBe("Updating 1 of 3");
+    expect(status.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
+  });
+
   test("the header writes the row counters with a thousands separator, as the worktree button does", async () => {
     const view = await started();
     await sendProgress(view.double, { ...progress("fetch", "libs/a", 1), counters: { rowIndex: 1000, rowCount: 1200 } });
@@ -320,6 +329,23 @@ describe("results (FR-081, FR-082)", () => {
     const info = [...group().querySelectorAll('[data-slot="registration-line"]')];
     expect(info.map((e) => text(e))).toEqual(["Git changed the repository settings of 1 submodule."]);
     expect(buttons("Update anyway")).toHaveLength(0);
+  });
+
+  test("the header totals keep one line, end with an ellipsis, and give the full text in the tooltip (T116, plan D15 Header)", async () => {
+    await finished();
+    const status = group().querySelector<HTMLElement>('[data-slot="header-status"]')!;
+    expect(status.title).toBe("2 updated, 1 failed");
+    expect(status.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
+  });
+
+  test("in forced colors, a selected row shows its state text and its buttons in HighlightText on Highlight (T116, plan D16)", () => {
+    const css = readFileSync(printOrigin("../../src/frontend/index.css", import.meta.dir), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const forced = css.slice(css.indexOf("@media (forced-colors: active)"));
+    const rules = [...forced.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.replace(/\s+/g, " ").trim(), body: m[2]!.replace(/\s+/g, " ").trim() }));
+    const state = rules.find((r) => r.selector.startsWith('.list-row[aria-selected="true"] :is(') && r.selector.includes(".text-removed"));
+    expect(state?.body).toBe("color: HighlightText;");
+    const controls = rules.find((r) => r.selector === '.list-row[aria-selected="true"] button');
+    expect(controls?.body).toBe("background: Highlight; color: HighlightText; border-color: HighlightText;");
   });
 
   test("a failed step without an exit code says so and never shows a number", async () => {

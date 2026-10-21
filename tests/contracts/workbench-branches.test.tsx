@@ -292,6 +292,18 @@ describe("branch list (FR-008, FR-009, FR-013, SC-003)", () => {
     expect(double.count("reviewWorkbench")).toBe(0);
   });
 
+  test("in a held branch row, the branch name gets its width first, and the Open <worktree> note shrinks first (T116, plan D15 Rows)", async () => {
+    await mountWorkbench(workbench, branchWorld());
+    await openList();
+    const signup = options()[2]!;
+    const note = [...signup.querySelectorAll<HTMLElement>("[title]")].find((s) => s.title === "Open C:\\wt\\sample-signup")!;
+    // A zero basis: the note takes only the width that the name leaves, so the name never shrinks for it.
+    expect(note.className.split(/\s+/)).toEqual(expect.arrayContaining(["flex-1", "min-w-0", "truncate"]));
+    const name = [...signup.querySelectorAll("span")].find((s) => s.textContent === "signup")!;
+    expect(name.className.split(/\s+/)).not.toContain("flex-1");
+    expect(signup.getAttribute("aria-label")).toContain("Open C:\\wt\\sample-signup");
+  });
+
   test("an Open <worktree> that ends UNKNOWN_TARGET shows the D15 worktree text, not the raw code", async () => {
     const world = branchWorld();
     world.answers.openWorktree = () => ({ requestId: fixtureId(0x5fe), state: "failed", code: "UNKNOWN_TARGET", result: {} });

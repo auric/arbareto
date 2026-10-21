@@ -66,7 +66,7 @@ export const WORKING_FILE_ID_TEXT = "This volume gives this file no unique file 
 export const STEP_FAILED_TEXT = "Arbareto could not finish this staging step. Nothing was staged. Use Refresh, then try again or stage in a terminal.";
 // Contract §9 "Lingering count".
 export const REVOKE_TEXT = "Revoke trust also ends them.";
-export const lingeringSentence = (count: number) => `Arbareto still runs ${count === 1 ? "1 process" : `${count} processes`} that Git or a hook started in this repository. Closing Arbareto ends them.`;
+export const lingeringSentence = (count: number) => `Arbareto still runs ${count === 1 ? "1 process" : `${count} processes`} from earlier operations in this repository. Closing Arbareto ends them.`;
 // Contract §9 "Lingering count": the sentences need a nonzero count, and "Revoke trust also ends them." needs a current trust ID. The text starts with a space.
 export const lingeringText = (count: number | null, trustId: boolean) => (count !== null && count > 0 ? ` ${lingeringSentence(count)}${trustId ? ` ${REVOKE_TEXT}` : ""}` : "");
 

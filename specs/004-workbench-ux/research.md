@@ -521,6 +521,12 @@ Open items:
 
 Process deviation, 2026-10-21, at about 02:13: the board-comparison agent opened `C:\Projects\arbareto` in the dev app for about one minute. An empty picker path caused it. `git status` of that checkout stayed clean, and it had no `index.lock`. The times of `index`, `HEAD`, and `config` are older than the open. The fix preamble now requires a path check before each open.
 
+Task records for the tick audit:
+- T111 plan-rule checks (2026-10-20, T111 agent): (A) the worktree ask after Not now from the trust chip does not break plan.md D15 "Trust texts". A canceled chip ask records `declined`, and every later `askTrust` returns false until the repository changes. A temporary probe (chip Not now, then Remove worktree) sent 1 `approveTrust` and 1 `reviewWorkbench`, so nothing asked a second time. (B) The Submodules header during a run does not break D15 "Header". Every submodule progress event carries `rowIndex` and `rowCount` (`src/contracts/submodules.ts`). Board shot 44 was taken before the first event, while the Run confirmation still waited. With no counter yet, the header shows no count.
+- T112 (3) check (2026-10-20, T109 agent): the "Stage all changes is unavailable" line wraps in full. Only the scroll edge of the Changes list cuts it, with about 74 DIP visible at 1280×800, as 001 plan.md "Constrained sizes" allows. No change.
+- T115 (5) check (2026-10-21, T115 agent): 960×800 Comfortable uses the constrained profile. The file band gets the Working changes minimum of 118 DIP, room for one help line and one row. The "Stage all changes is unavailable" line wraps to 3 lines, so the band scrolls. The T112 (3) rule covers this case. No change.
+- Deviation, before screenshots: T112 has no before shot at 720×480 and no 1280×800 before shot during a merge (`scratchpad\t112-l7\`). T115 has no before shot at 1024×640 Comfortable with and without a merge, at 1024×640 Compact without a merge, or at 960×800 Comfortable without a merge. The second board comparison (`t076b-l4\shots\`) and the T115 crops give the before state for the other sizes. The third board comparison at 4436e44 checks the after state at all sizes.
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.

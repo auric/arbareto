@@ -4,7 +4,7 @@
 // T021: `reviewWorkbench` and `runWorkbench` with action `switch` (contract Δ3, data-model §2 and §3, plan.md D3, quickstart Q5 to Q8).
 // The oracle is a second build of the same fixture with Git's own commands. Fresh Git reads decide every expectation, never message text.
 
-import { expect } from "bun:test";
+import { expect, spyOn } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
@@ -120,6 +120,31 @@ caseTest(TASK, "FR-009, FR-010, and SC-001: a clean review has no default choice
   git(o, ["checkout", "-q", "--no-guess", "target", "--"]);
   expect(stateOf(f)).toEqual(stateOf(o));
   expect(stateOf(f).config).toBe(f.digests.local!);
+}, TIMEOUT_MS);
+
+// T386: contract §6 "Registration reuse and release". The released `repositoryId` gets UNKNOWN_TARGET before any token check, so the release frees the consumed token.
+caseTest("T386", "T386: a release frees the consumed workbench token, and a runWorkbench with that token then gets UNKNOWN_TARGET and starts no process", SHELL, async () => {
+  const f = build("switch-clean");
+  const o = build("switch-clean");
+  await withSync("t386-release", async (service) => {
+    const r = await open(service, f.repo);
+    const rv = await reviewed(service, r, switchTo("keep"));
+    expect(outcome(await service.response<SwitchResult>(sendRun(service, r, rv.workbenchToken)))).toEqual(SUCCEEDED);
+    const spy = spyOn(Map.prototype, "delete");
+    let deleted: unknown[] = [];
+    try {
+      // Another common directory releases the first workspace.
+      await open(service, o.repo);
+    } finally {
+      // `mockRestore` clears the recorded calls.
+      deleted = spy.mock.calls.map((c) => c[0]);
+      spy.mockRestore();
+    }
+    expect(deleted.includes(rv.workbenchToken)).toBe(true);
+    const calls = service.runner.calls.length;
+    expect(outcome(await service.response(sendRun(service, r, rv.workbenchToken)))).toEqual({ state: "rejected", code: "UNKNOWN_TARGET" });
+    expect(service.runner.calls.length).toBe(calls);
+  });
 }, TIMEOUT_MS);
 
 caseTest(TASK, "SC-001 and SC-002: a dirty tree with Keep changes, Stash and reapply, and Discard changes equals Git's own commands on a copy, and untracked files stay", SHELL, async () => {

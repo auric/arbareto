@@ -458,7 +458,7 @@ Failing-first records:
 
 ## R29 Verification runs for T062, T076, and T093, 2026-10-20 and 2026-10-21
 
-Three runs in `C:\Projects\arbareto-l4` on f004-impl. The logs are in the orchestrator scratchpad `verify-004-l4/`, `verify2-004-l4/`, and `verify3-004-l4/`. Runs 1 and 2 fail the T062, T076, and T093 pass condition. Run 3 at b35cdd0 passes it.
+Three runs in `C:\Projects\arbareto-l4` on f004-impl. The logs are in the orchestrator scratchpad `verify-004-l4/`, `verify2-004-l4/`, and `verify3-004-l4/`. Runs 1 and 2 fail the T062, T076, and T093 pass condition. Run 3 at b35cdd0 passes it. Runs 4 and 5 verify T119. Their logs are in `verify4-004-l4/` and `verify5-l3/`.
 
 Run 1, 2026-10-20, at 51f9ab2:
 - `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `bun run build:service`, and `cargo check`: exit 0.
@@ -551,6 +551,35 @@ Run 3, 2026-10-21 06:24 to 09:18, at b35cdd0, on a clean tree:
 - Deviation: the first `test:all` start did not read the environment variables and started no test.
 - Not in this run: the `bun run dev` board comparison, screenshots, live-input steps, and reviews.
 - Verdict: the agent-runnable pass condition of T062, T076, and T093 holds at b35cdd0.
+
+Run 4, 2026-10-21 11:09 to 14:43, at 31183cd in `C:\Projects\arbareto-l4` on f004-impl, on a clean tree:
+- `bun install --frozen-lockfile`, `bun run build`, `cargo check`, `bun run build:service`, `bun run typecheck`, and `bun run export:schemas --check`: exit 0.
+- 11:10 to 14:17: `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 1 in 187 minutes. Parallel step: 194 files, 6,635 tests, 6,593 pass, 40 skip, 2 fail, exit 1, in 4,802 s. Serial step: 31 files, 595 tests, 585 pass, 10 skip, 0 fail, in 6,406 s. All 225 files ran, with 7,230 tests and 50 skip.
+- All 1,883 `ORIGIN` lines of `test:all` are under `C:\Projects\arbareto-l4`.
+- Failure 1: `tests/git/submodule-review.test.ts`, "a modules walk above 256 folders gives limit", after 54.9 s. The harness `response` wait (`tests/git/service-harness.ts:481`) gave "no answer within 35000 ms".
+- Failure 2: `tests/wsl/mutations.test.ts`, "a Windows repository with core.sharedRepository stays eligible". The case hit the Bun default timeout of 5,000 ms.
+- Each failed file alone then passed: `submodule-review.test.ts` 77 pass, 0 fail, and `wsl/mutations.test.ts` 28 pass, 0 fail. All `ORIGIN` lines of both reruns are under `C:\Projects\arbareto-l4`.
+- Cause: test defects, not product defects. The harness waited 35 s for every operation, but contract §5 gives `reviewSubmodules` no total read deadline. The shared-repository case gave no timeout. 001 T383 records both causes and the fix.
+- T119 cases: both T119 cases of `worktrees.test.ts` pass (8.1 s and 11.9 s), with no T119 SKIP line. The four `head-unresolved` golden vectors pass. `workbench-parsers`, `workbench-worktrees`, and `workbench-branches` pass with no skip.
+- `cargo test --locked`: 553 passed, 0 failed, 4 ignored.
+- Skips: the same 50 skipped tests as run 3.
+- Memory: the lowest free memory was 7,619 MB. The peak sum of bun.exe private bytes was 5,079 MB, and all 653 samples are nonzero. The memory guard did not stop a step.
+- Not in this run: `bun run test:contracts`, `bun test tests/windows`, control mutations, the board comparison, and reviews.
+- Verdict: fail, because `bun run test:all` gave exit 1. Both failures are outside T119.
+- Fix: 001 T383, fc48588. Main 2868a40 merges it.
+
+Run 5, 2026-10-21 15:20 to 18:44, at fc48588 in `C:\Projects\arbareto-l3`, on a clean tree. fc48588 is main 3575a15 with 001 T383, and main 3575a15 holds the T119 merge.
+- `bun install --frozen-lockfile`, `bun run build`, `cargo check`, `bun run build:service`, `bun run typecheck`, and `bun run export:schemas --check`: exit 0.
+- 15:21 to 18:41: `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0 in 199 minutes. Parallel step: 194 files, 6,635 tests, 6,595 pass, 40 skip, 0 fail, in 5,738 s. Serial step: 31 files, 595 tests, 585 pass, 10 skip, 0 fail, in 6,220 s. All 225 files ran, with 7,230 tests, 0 fail, and 50 skip.
+- All 1,883 `ORIGIN` lines of `test:all` are under `C:\Projects\arbareto-l3`. Stdout holds 213 of them, and stderr holds 1,670.
+- T119 cases: in `worktrees.test.ts`, the FR-013 and FR-017 `headUnresolved` case passes (11.58 s), the FR-016 to FR-055 `head-unresolved` case passes (15.98 s), and the "HEAD unknown" display case passes (0.32 s). No T119 SKIP line.
+- T383 cases: the walk case passes (69.49 s), the T382 case passes (60.12 s), and the shared-repository case passes (6.75 s). The walk cases print "review 45016 ms" and "review 36944 ms", with the response wait 90,000 ms. Both reviews take longer than the old 35,000 ms wait.
+- `cargo test --locked`: 553 passed, 0 failed, 4 ignored.
+- Skips: 50 skipped tests in both runs. Three entries of the run 4 skip list do not occur as test names in run 5: the two F15 `fixtures-repos` lines "missing capability disposable-volume (unverified)" and "missing capability other-account-owner (unverified)", and the `history-wsl` line "(c): with an empty LOCPATH folder …".
+- Memory: the lowest free memory was 7,110 MB. The peak bun.exe private size was 4,893 MB. The memory guard did not stop a step.
+- Deviation: the run summary counted only the 213 stdout `ORIGIN` lines, and it did not find the review time lines. Both are in the stderr log.
+- Not in this run: `bun run test:contracts`, `bun test tests/windows`, control mutations, the board comparison, and reviews.
+- Verdict: run 5 is the green full run that verifies T119.
 
 Open items:
 - The Remove dialog cannot show the branch-delete note at once. The facts come only after a review with `deleteBranch` true, so this needs a contract change (T110 skip).

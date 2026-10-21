@@ -122,7 +122,7 @@ A developer keeps the full history and graph, and moves from one match to the ne
 
 Include the full history of one captured ref set, loaded in steps, a scrollable virtual list, and graph lanes for every row. Include a virtual list for the references sidebar. Include a switch between all branches and the current branch. Include commit bodies for the details pane only. Include one commit message filter with filter mode and highlight mode. Include a memory budget and speed comparisons with Git Extensions.
 
-Exclude remote sync, ahead and behind counts, and remote operations (feature 003). Exclude several patterns, AND matching, and inverted matching. Exclude author, committer, date, path, and content filters. They come later on the same mechanism. Exclude history inspection features: Changes and Files tabs, historical diffs, and branch filtering. Git Extensions calls that filter "Show filtered branches". Exclude the reflog and older stash entries from the history rows.
+Exclude remote sync, ahead and behind counts, and remote operations (feature 003). Exclude several patterns, AND matching, and inverted matching. Exclude author, committer, date, path, and content filters. They come later on the same mechanism. Exclude history inspection features: the Files tab and branch filtering. Git Extensions calls that filter "Show filtered branches". Amended by feature 005 (2026-10-21): feature 005 adds historical diffs and blame. Exclude the reflog and older stash entries from the history rows.
 
 The application never writes a commit-graph file, an index of messages, or any other repository data to make reads faster. It never starts repository maintenance.
 

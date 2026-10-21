@@ -345,6 +345,7 @@ describe("core.sharedRepository (contract §4 \"WSL index publication\", §9)", 
       const { repositoryId } = await service.register(repo);
       expect((await readOk(service, repositoryId)).hunkEligibility).toEqual({ eligible: true });
     }),
+    CASE_TIMEOUT_MS,
   );
 });
 

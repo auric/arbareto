@@ -231,6 +231,23 @@ The fact probes of 2026-10-21 ran before the tests, on Git 2.56.0.windows.2 and 
 - F19: RI and RT read a skip-worktree `.gitignore` from its index blob, and the S shadow verdicts equal them. Windows NTFS opens `.GITIGNORE` for `.gitignore`, and Git reports the rules as `.gitignore`. NTFS does not open `.gıtignore` for `.gitignore`. WSL ext4 opens neither.
 - Not checked: the Git 2.55 blame source. Only the experiment covers Git 2.55.
 
+**Batch 0 verification (T005), 2026-10-22.** Run in `C:\Projects\arbareto-l2` on f005-impl at a50ec5b, with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`.
+- `bun install --frozen-lockfile`, `bun run build`, `cargo check --locked`, `bun run build:service`, `bun run typecheck`, and `bun run export:schemas --check`: exit 0.
+- `bun run test:contracts`: exit 0, 5,048 pass, 33 skip, 0 fail, 5,081 tests in 103 files.
+- `ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0, 126 min. Parallel group: 6,862 pass, 40 skip, 0 fail, 6,902 tests in 196 files. Serial group: 602 pass, 10 skip, 0 fail, 612 tests in 31 files.
+- `cargo test --locked` in `src-tauri`: exit 0, 555 passed, 0 failed, 4 ignored.
+- Every `ORIGIN` line is under `C:\Projects\arbareto-l2`: 300 in the contract run, 1,904 in the full run. All 87 `GIT_CORE` lines name one Git.
+- Skips: no new skip against run 7. The 14 H200K skips of run 7 are gone, because those cases ran.
+- Facts: batch 0 has no fact test, so no 005 test printed an `OBSERVATION` line.
+- Control mutation: without the raw-byte compare in `compareNames`, `tests/contracts/tree-order.test.ts` failed (9 pass, 5 fail), with the totality case. After the undo, the file had its original SHA-256, and 14 of 14 passed.
+
+**Batch 0 review, 2026-10-22.** Independent batch 0 review, reviewer agent, on 20df552. Skills: `ponytail-review`, and a manual correctness, security, heuristics, constitution, and contract review. Verdict: no crash, no security hole, and no heuristic. Resolution: a50ec5b fixes all items.
+- Medium: the five new `bridge.ts` target methods had no `Exact` guard. The fix adds the guard and five `@ts-expect-error` cases.
+- Medium: the schema export dropped `const`, so `Shadow.op` is now `z.enum(["create"])`. `DeleteExpected.kind` stays a serde tag, and the new vector `process-file-delete-link-as-file.json` checks it.
+- Medium: `comparePaths` split both paths for each compare (1,845 ms for 100,000 paths). `treeKey` and `compareKeys` build each key once (241 to 273 ms).
+- Low: T013 now names the Windows `fileFacts` `content` refusal. The 001 contract §5 has an amendment line for the 2 MiB bound. Plan D3 names `COMMIT_CHANGES_RESULT_BYTES`, and data-model §8 follows the Δ3 NUL rule.
+- Gap: the `ignorePreview` run context had no fields. It now has `contextKind`, `gitInstallationId`, `shadowId`, `shadowRepository`, and `shadowIndex`, with one valid and two invalid vectors. The service and the shell refuse it until T041 and T015.
+
 ## Plan review 2026-10-21
 
 The independent plan review of 2026-10-21 found no Critical issue and three High issues in the Delete design. First, the `PreDeleteItem` check compares the held handle with itself and must compare the identity of `psiItem` instead. Second, the WSL `delete` and `replace` modes act by full path and must hold each folder through `chdir` with a device and inode check. Third, the held folder handles block the deepest-first folder removal. The review also found that a folder on the path can become a junction after it is emptied, so the FR-031 limit must name that case too. In the ignore preview, the `--no-index` self-check cannot agree with the shadow for a skip-worktree `.gitignore`. The fix is a typed limit or a self-check against the index-aware listings. The 2 MiB request bound needs base64 text, and the single-file patch read must keep only sections whose paths match exactly. The rest of the method is exact for the report cases, and it runs no repository program before trust approval. The blame and History diff commands are correct apart from two small fixes: `--inter-hunk-context=0` for the line map, and `config --type=path` for the ignore list.

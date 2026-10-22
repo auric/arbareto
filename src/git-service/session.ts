@@ -61,7 +61,7 @@ type Handler<K extends ServiceOperation> = (request: Extract<ServiceRequest, { o
 export interface SessionOptions {
   writer: FrameWriter;
   runner: GitRunner & WslRunner & SyncRunner & { receive(frame: Frame): boolean };
-  // Called after a failed handshake reply. The service then exits.
+  // Called after a failed handshake reply, and when a deferred workspace release throws. The service then exits.
   fail(): void;
   // Contract §5 "Other Git process deadline" bounds the startup revalidation. Tests set a shorter value.
   startupDeadlineMs?: number;
@@ -185,10 +185,11 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const reviews = createCommitReviewer({ runner, trust, approvals, now: approvalClock });
   const submoduleReviews = createSubmoduleReviewer({ runner, trust, approvals, environment, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
   // The registry sends `ended` or `closeJob` at the terminal response (operations.ts), so the exclusion sends neither.
-  // A release of a workspace with an unfinished mutation gives BUSY, so the workspace of a settled mutation is still registered.
+  // A release of a workspace with an unfinished mutation gives BUSY or waits for the freed slot, so the workspace of a settled mutation is still registered.
   const exclusion = createExclusion(
     { started: (frame) => runner.started(frame), ended: () => {}, closeJob: () => {} },
     { blocked: (w) => recovery.blocked(w), settled: (entry, markerId) => recovery.settled(entry, markerId, registrations.get(entry.workspace.repositoryId)?.worktreeIdentity) },
+    (repositoryId) => registrations.settle(repositoryId),
   );
   const publisher = createHunkPublisher({ runner, trust, reader, comparisons, approvals, registry, exclusion, respond, ...(hunkCheckpoint === undefined ? {} : { hunkCheckpoint }) });
   // Contract §5 and §8: both publishers keep their retained digests and approval owners in one store, because recovery (T114) reads it.
@@ -205,12 +206,13 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const registrations = createRegistrations({
     runner,
     unfinishedMutation: (repositoryId) => exclusion.holds(repositoryId),
+    fail,
     onRegister: (w) => {
       recovery.register(w);
       // Contract §11 "Change polling": a WSL workspace gets no watcher.
-      if (watchHints && w.wsl === undefined) watchers.set(w.repositoryId, watchWorkspace([w.worktreeRoot, w.gitDirectory, w.commonDirectory], (lost) => reader.hint(w.repositoryId, lost)));
+      if (watchHints && w.wsl === undefined) watchers.set(w.repositoryId, watchWorkspace([w.worktreeRoot, w.gitDirectory, w.commonDirectory], (lost, paths) => reader.hint(w.repositoryId, lost, paths)));
     },
-    onRelease: (workspace) => {
+    onRelease: (workspace, replaced) => {
       watchers.get(workspace.repositoryId)?.();
       watchers.delete(workspace.repositoryId);
       scheduler.release(workspace.repositoryId);
@@ -220,9 +222,10 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       reviews.release(workspace.repositoryId);
       submoduleReviews.release(workspace.repositoryId);
       syncs.release(workspace.repositoryId);
-      approvals.invalidate((a) => a.repositoryId === workspace.repositoryId);
-      workbench.invalidate(workspace.repositoryId);
-      trust.release(workspace);
+      approvals.release(workspace.repositoryId);
+      workbench.release(workspace.repositoryId);
+      for (const owners of [committer.owners, syncs.owners, updater.owners, publisher.owners]) for (const [operationId, id] of owners) if (id === workspace.repositoryId) owners.delete(operationId);
+      trust.release(workspace, replaced);
       recovery.release(workspace);
     },
   });

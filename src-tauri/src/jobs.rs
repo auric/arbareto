@@ -364,11 +364,16 @@ struct Entry {
 }
 
 impl Entry {
-    /// The lingering count. The accounting of a WSL Job counts `wsl.exe` processes, not Linux processes.
-    /// So the last anchor count replaces it (contract §11 "Process ownership").
+    /// The lingering count. The accounting of a WSL Job counts Windows processes, not Linux processes.
+    /// So it is the larger of the last anchor count and the Windows processes other than the anchor (contract §11 "Process ownership").
+    /// A `wslhost.exe` stays in the Job while its relay has a Linux descendant, also one outside the operation scopes.
     fn count(&self) -> u32 {
         if self.wsl.has_anchor() {
-            self.wsl.lingering_count()
+            let anchor = self.wsl.anchor_pid();
+            let others = self.job.process_ids().map_or(0, |ids| {
+                ids.iter().filter(|&&id| Some(id) != anchor).count() as u32
+            });
+            self.wsl.lingering_count().max(others)
         } else {
             self.job.active_processes().unwrap_or(0)
         }

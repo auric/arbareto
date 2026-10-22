@@ -165,7 +165,7 @@ function Diff({ mapped, view, selectedHunk, onRefresh, reset, lines, onLines, hu
         </p>
       ) : null}
       {/* The diff body is one Tab stop. S, U, Shift+Up, and Shift+Down act while focus is in the diff (spec FR-043, FR-087). */}
-      <div tabIndex={0} aria-label="Diff" data-slot="diff-body" className="flex min-h-0 flex-1 flex-col" onKeyDown={onKeyDown}>
+      <div tabIndex={0} role="group" aria-label="Diff" data-slot="diff-body" className="flex min-h-0 flex-1 flex-col" onKeyDown={onKeyDown}>
         <Suspense fallback={<Loading hasContent={false} refreshing={false} />}>
           {/* An external change remounts the view and resets its scroll. An own hunk action keeps the view and anchors it. */}
           <PatchView

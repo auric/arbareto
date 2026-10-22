@@ -11,7 +11,7 @@ import { copyPerfFixture, PERF_CACHE_ROOT, PERF_L, PERF_M, PERF_SEED, semanticDi
 import { sha256 } from "./git-oracle";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_HOME, FIXTURE_ROOT, fixtureEnv, ownedGit, realGlobalConfigDigests, removeFixtureRoot, removeTree } from "./fixture-root";
 import { buildF17, put, type Built, type F17Variant } from "./fixtures";
-import { GIT } from "./git-binary";
+import { fixtureGitPath, GIT } from "./git-binary";
 
 printOrigin("../../src/git-service/commands", import.meta.dir);
 printOrigin("../windows/perf-fixtures", import.meta.dir);
@@ -40,7 +40,7 @@ interface Out {
 
 function start(dir: string, args: string[], stdin: "ignore" | "pipe" = "ignore") {
   spawned++;
-  const proc = Bun.spawn([git, ...args], { cwd: dir, env: fixtureEnv({ LC_ALL: "C" }), stdin, stdout: "pipe", stderr: "pipe", timeout: DEADLINE_MS });
+  const proc = Bun.spawn([fixtureGitPath(git), ...args], { cwd: dir, env: fixtureEnv({ LC_ALL: "C" }), stdin, stdout: "pipe", stderr: "pipe", timeout: DEADLINE_MS });
   const out: Promise<Out> = Promise.all([new Response(proc.stdout).arrayBuffer(), new Response(proc.stderr).text(), proc.exited]).then(([o, e, x]) => ({
     exit: proc.signalCode ? `signal ${proc.signalCode}` : x,
     stdout: Buffer.from(o),
@@ -244,7 +244,7 @@ async function f17Case(variant: F17Variant): Promise<string> {
   } else {
     // Control: a lazy fetch of a missing blob runs `remote.origin.uploadpack`.
     const before = counts(b);
-    const p = Bun.spawnSync([git, "--no-optional-locks", "cat-file", "--batch-check"], { cwd: dir, env: fixtureEnv({ LC_ALL: "C" }), stdin: Buffer.from(`${missing[0]}\n`), stdout: "pipe", stderr: "pipe", timeout: DEADLINE_MS });
+    const p = Bun.spawnSync([fixtureGitPath(git), "--no-optional-locks", "cat-file", "--batch-check"], { cwd: dir, env: fixtureEnv({ LC_ALL: "C" }), stdin: Buffer.from(`${missing[0]}\n`), stdout: "pipe", stderr: "pipe", timeout: DEADLINE_MS });
     const fired = firedSince(b, before);
     console.log(`  CONTROL cat-file --batch-check without --no-lazy-fetch exit=${p.exitCode} canaries=[${fired.join(",")}]${check(fired.includes("uploadpack"))}`);
   }
@@ -319,7 +319,7 @@ console.log(`FIXTURE_ROOT ${FIXTURE_ROOT}`);
 mkdirSync(join(FIXTURE_HOME, ".config"), { recursive: true });
 writeFileSync(FIXTURE_GLOBAL_CONFIG, "[user]\n\tname = Arbareto Fixture\n\temail = fixture@arbareto.invalid\n[init]\n\tdefaultBranch = main\n[core]\n\tautocrlf = false\n");
 try {
-  console.log(`GIT_VERSION ${Bun.spawnSync([git, "version"]).stdout.toString().trim()}`);
+  console.log(`GIT_VERSION ${Bun.spawnSync([fixtureGitPath(git), "version"], { env: fixtureEnv() }).stdout.toString().trim()}`);
   const rows: string[] = [];
   for (const v of ["trust", "partial-reset-soft", "partial-read-tree"] as const) rows.push(await f17Case(v));
   console.log("TABLE | Case | Canaries before approval: listing and held history | Gated full read | History response | Canaries after approval: listing and held history | Gated full read | History response |");

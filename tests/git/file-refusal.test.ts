@@ -11,6 +11,7 @@ import { WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { APPROVAL_LIFETIME_MS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { fixtureEnv, serviceEnv, useFixtureRoot } from "./fixture-root";
+import { fixtureGitPath } from "./git-binary";
 import { buildChanged, buildF02, buildF04, buildF04Stage, buildF05, buildF07, buildF10, buildF16StageInput, buildFileAccepted, put, type Built, type F04StageVariant, type F10Variant } from "./fixtures";
 import { indexEntries } from "./git-oracle";
 import {
@@ -40,7 +41,7 @@ import {
   type Comparison,
   type Direction,
 } from "./hunk-harness";
-import { caseTest, openService, type Capability, type ChangeEntry, type Envelope, type HunkCheckpoint, type OpenOptions, type Refusal, type Service, type ServiceResponse } from "./service-harness";
+import { caseTest, openService, withKeptWorkspaces, type Capability, type ChangeEntry, type Envelope, type HunkCheckpoint, type OpenOptions, type Refusal, type Service, type ServiceResponse } from "./service-harness";
 
 const TASK = "T197";
 const SHELL: Capability[] = ["shell-double"];
@@ -569,7 +570,7 @@ describe("blob proof and Git failures (contract §4 \"Blob proof\", §9)", () =>
       const repo = repoOf(buildF04(gitPath(), "t197-safecrlf", "safecrlf"));
       // Git's own `git add` in a copy gives the refusal line. Its exit status is the oracle, never its text.
       const oracle = copyRepo(repo, "t197-safecrlf-oracle");
-      const add = Bun.spawnSync([gitPath(), "--literal-pathspecs", "add", "--", "mixed.txt"], { cwd: oracle, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+      const add = Bun.spawnSync([fixtureGitPath(gitPath()), "--literal-pathspecs", "add", "--", "mixed.txt"], { cwd: oracle, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
       const stderr = add.stderr.toString("utf8").replaceAll("\r\n", "\n").split("\n").filter((line) => line !== "");
       expect({ exit: add.exitCode === 0, lines: stderr.length > 0 }).toEqual({ exit: false, lines: true });
       await underTest();
@@ -601,20 +602,25 @@ describe("request checks (contract §4, §9)", () => {
   );
 
   caseTest(TASK, `an entry from another workspace gives UNKNOWN_TARGET`, SHELL, () =>
-    withService({ name: "t197-other-workspace" }, async (service) => {
-      const built = buildF07(gitPath(), "t197-other-workspace");
-      const a = join(built.root, "wt-a");
-      const b = join(built.root, "wt-b");
-      put(a, "shared.txt", "shared changed in a\n");
-      put(b, "shared.txt", "shared changed in b\n");
-      await underTest();
-      const wa = await service.register(a);
-      const wb = await service.register(b);
-      const ca = await compare(service, wa.repositoryId, "shared.txt", "unstaged");
-      const rb = await readOk(service, wb.repositoryId);
-      const response = await refused(service, b, () => service.request("applyFile", { comparisonId: ca.comparisonId, snapshotId: rb.snapshotId, direction: "stage" }, { repositoryId: wb.repositoryId, repositoryGeneration: rb.generation }));
-      expect(code(response)).toBe("UNKNOWN_TARGET");
-    }),
+    // Contract §6 "Registration reuse and release": the seam keeps `wa` registered, so its comparison stays live.
+    withKeptWorkspaces(() =>
+      withService({ name: "t197-other-workspace" }, async (service) => {
+        const built = buildF07(gitPath(), "t197-other-workspace");
+        const a = join(built.root, "wt-a");
+        const b = join(built.root, "wt-b");
+        put(a, "shared.txt", "shared changed in a\n");
+        put(b, "shared.txt", "shared changed in b\n");
+        await underTest();
+        const wa = await service.register(a);
+        const ca = await compare(service, wa.repositoryId, "shared.txt", "unstaged");
+        const wb = await service.register(b);
+        const rb = await readOk(service, wb.repositoryId);
+        expect(rb.generation).toBe(ca.read.generation);
+        // The comparison, its snapshot, and the generation all match, so only the repositoryId binding refuses.
+        const response = await refused(service, b, () => service.request("applyFile", { comparisonId: ca.comparisonId, snapshotId: ca.read.snapshotId, direction: "stage" }, { repositoryId: wb.repositoryId, repositoryGeneration: rb.generation }));
+        expect(code(response)).toBe("UNKNOWN_TARGET");
+      }),
+    ),
     TIMEOUT_MS,
   );
 
@@ -635,12 +641,13 @@ describe("request checks (contract §4, §9)", () => {
       put(b, "shared.txt", "shared changed in b\n");
       await underTest();
       const wa = await service.register(a);
-      const wb = await service.register(b);
       const ca = await compare(service, wa.repositoryId, "shared.txt", "unstaged");
-      const cb = await compare(service, wb.repositoryId, "shared.txt", "unstaged");
       const first = applyFile(service, wa.repositoryId, ca, "stage");
       await atStep5;
       try {
+        // Contract §6 "Registration reuse and release": the running mutation keeps `wa` registered.
+        const wb = await service.register(b);
+        const cb = await compare(service, wb.repositoryId, "shared.txt", "unstaged");
         expect(code(await refused(service, b, () => applyFile(service, wb.repositoryId, cb, "stage")))).toBe("BUSY");
       } finally {
         release();

@@ -377,6 +377,11 @@ export function createWorkbench(o: WorkbenchOptions) {
       for (const [key, e] of tokens) if (e.consumed === null && e.repositoryId === repositoryId) tokens.delete(key);
     },
 
+    // Contract §6 "Registration reuse and release": a released `repositoryId` is never issued again, so no request reaches a consumed token of it.
+    release(repositoryId: string): void {
+      for (const [key, e] of tokens) if (e.repositoryId === repositoryId) tokens.delete(key);
+    },
+
     // Contract Δ3 refusals from the payload alone. The caller answers them before it schedules any Git process.
     precheck: (payload: WorkbenchPayload, w: Workspace): Refused | null => handlers.get(payload.action)?.precheck?.(payload, w) ?? null,
 

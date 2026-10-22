@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { acquireLock, builderDigest, PERF_CACHE_ROOT, perfReuseState, type PerfReuseState } from "../windows/perf-fixtures";
 import { FIXED_TIMESTAMPS, FIXTURE_GLOBAL_CONFIG, FIXTURE_HOME, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedPath, removeTree } from "./fixture-root";
 import { fiCommit, put } from "./fixtures";
+import { fixtureGitPath } from "./git-binary";
 import { sha256 } from "./git-oracle";
 
 // An `undefined` value removes the variable.
@@ -43,7 +44,7 @@ function wbEnv(extra: Env = {}): Record<string, string> {
 
 // One Git process with a working directory under `root`. Bun ends the process after `timeoutMs`; the exit code is then -1.
 function gitRun(git: string, cwd: string, args: readonly string[], o: GitOptions & { root?: string } = {}): GitResult {
-  const proc = Bun.spawnSync([git, ...args], {
+  const proc = Bun.spawnSync([fixtureGitPath(git), ...args], {
     cwd: ownedPath(o.root ?? FIXTURE_ROOT, cwd),
     env: wbEnv(o.env),
     stdin: o.input === undefined ? "ignore" : Buffer.from(o.input),
@@ -380,7 +381,7 @@ const UNTRACKED_FOLDERS = 100;
 // Callers read it in place with `--no-optional-locks`. A mutation needs its own copy.
 export function untrackedFixture(git: string): WbFixture {
   mkdirSync(PERF_CACHE_ROOT, { recursive: true });
-  const build = Bun.spawnSync([git, "version", "--build-options"], { cwd: PERF_CACHE_ROOT, env: wbEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const build = Bun.spawnSync([fixtureGitPath(git), "version", "--build-options"], { cwd: PERF_CACHE_ROOT, env: wbEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   if (build.exitCode !== 0) throw new Error(`git version --build-options exited ${build.exitCode}`);
   const key = sha256(Buffer.from(JSON.stringify({ builder: builderDigest(readFileSync(import.meta.path)), git: build.stdout.toString() })));
   const id = "wb-untracked-100k";

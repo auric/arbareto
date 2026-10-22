@@ -331,6 +331,28 @@ describe("commit flow", () => {
     expect(u.field.value).toBe("Edited while Git ran");
   });
 
+  // tasks.md T389: the commit sends the message that the disable rules checked before the review.
+  test("T389: an edit during the review keeps the checked message for the commit, and the edit stays as the draft", async () => {
+    const t = await ready();
+    await act(async () => t.commit.click());
+    await t.answer("readTrust", ok(report(false)));
+    await t.type(" \n");
+    await t.answer("reviewCommit", ok(commitReviewed(TOKEN)));
+    expect(t.calls.at(-1)!.payload).toEqual({ reviewToken: TOKEN, message: "Fix the parser", confirmFullScope: true });
+    await t.answer("commit", ok({ commitOid: "2".repeat(40) }));
+    expect(t.field.value).toBe(" \n");
+  });
+
+  test("T389: a draft cleared during the review still commits the checked message", async () => {
+    const t = await ready();
+    await act(async () => t.commit.click());
+    await t.answer("readTrust", ok(report(false)));
+    await act(async () => t.drafts.clear(KEY));
+    await t.answer("reviewCommit", ok(commitReviewed(TOKEN)));
+    expect(t.ops()).toEqual(["readTrust", "reviewCommit", "commit"]);
+    expect(t.calls.at(-1)!.payload.message).toBe("Fix the parser");
+  });
+
   test("a failed commit keeps the draft", async () => {
     const t = await ready();
     await act(async () => t.commit.click());

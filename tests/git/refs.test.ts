@@ -12,7 +12,7 @@ import * as LIMITS from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, fixtureEnv, ownedGit, useFixtureRoot } from "./fixture-root";
 import { buildF33, F33_BROKEN_REF, F33_BYTE_TAGS, F33_LIMIT_TAGS, type Built, type F33Variant } from "./fixtures";
-import { GIT } from "./git-binary";
+import { fixtureGitPath, GIT } from "./git-binary";
 import { caseTest, once, openService, type Service, type ServiceResponse } from "./service-harness";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
@@ -323,8 +323,8 @@ describe("research probes on the admitted Git (contract §3 \"Output rules\")", 
     const built = buildF33(gitPath(), "t356-probe-broken", "base");
     const repo = repoOf(built);
     expect(existsSync(join(repo, ".git", F33_BROKEN_REF))).toBe(true);
-    const check = Bun.spawnSync([gitPath(), "check-ref-format", F33_BROKEN_REF], { env: fixtureEnv(), stdout: "pipe", stderr: "pipe" });
-    const proc = Bun.spawnSync([gitPath(), ...CONTRACT_ARGS], { cwd: repo, env: fixtureEnv(), stdout: "pipe", stderr: "pipe" });
+    const check = Bun.spawnSync([fixtureGitPath(gitPath()), "check-ref-format", F33_BROKEN_REF], { env: fixtureEnv(), stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawnSync([fixtureGitPath(gitPath()), ...CONTRACT_ARGS], { cwd: repo, env: fixtureEnv(), stdout: "pipe", stderr: "pipe" });
     const listed = latin1(proc.stdout).includes(F33_BROKEN_REF);
     console.log(
       `OBSERVATION ${TASK}: ${git(repo, ["version"]).toString().trim()}: check-ref-format ${F33_BROKEN_REF} exit ${check.exitCode}; for-each-ref exit ${proc.exitCode}, record listed ${listed}, stderr ${JSON.stringify(proc.stderr.toString())}`,

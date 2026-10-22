@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { ATTRIBUTION_EVIDENCE_BYTES, ATTRIBUTION_EVIDENCE_RECORDS } from "../../src/contracts/limits";
 import { canaryRuns, expectHunks, fixtureChecks, git1, TIMEOUT } from "./fixture-checks";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, useFixtureRoot } from "./fixture-root";
-import { describeGit } from "./git-binary";
+import { describeGit, fixtureGitPath } from "./git-binary";
 import { sha256 } from "./git-oracle";
 import { gitOpenssl, loopbackCertificate, startHttp401 } from "./http-401";
 import * as F from "./fixtures";
@@ -135,7 +135,7 @@ describeGit("fixture builders: F15, F17 to F20, and the 401 server", (git) => {
         }
         const server = startHttp401(tls);
         try {
-          const proc = Bun.spawn([git, "ls-remote", server.url], { cwd: dir, env: fixtureEnv(env), stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: HTTP_401_WAIT_MS });
+          const proc = Bun.spawn([fixtureGitPath(git), "ls-remote", server.url], { cwd: dir, env: fixtureEnv(env), stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: HTTP_401_WAIT_MS });
           expect({ exit: await proc.exited, requested: server.requests() >= 1 }).toEqual({ exit: 128, requested: true });
         } finally {
           server.stop();

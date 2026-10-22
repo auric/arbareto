@@ -42,16 +42,16 @@ describe("lockRefusal (contract §4 \"Windows lock ownership\", §9 \"Lingering 
     [0, false, LOCKED_REMEDY],
     [0, true, LOCKED_REMEDY],
     [null, true, LOCKED_REMEDY],
-    [1, false, `${LOCKED_REMEDY} Arbareto still runs 1 process that Git or a hook started in this repository. Closing Arbareto ends them.`],
-    [1, true, `${LOCKED_REMEDY} Arbareto still runs 1 process that Git or a hook started in this repository. Closing Arbareto ends them. ${REVOKE}`],
-    [2, false, `${LOCKED_REMEDY} Arbareto still runs 2 processes that Git or a hook started in this repository. Closing Arbareto ends them.`],
-    [2, true, `${LOCKED_REMEDY} Arbareto still runs 2 processes that Git or a hook started in this repository. Closing Arbareto ends them. ${REVOKE}`],
+    [1, false, `${LOCKED_REMEDY} Arbareto still runs 1 process from earlier operations in this repository. Closing Arbareto ends them.`],
+    [1, true, `${LOCKED_REMEDY} Arbareto still runs 1 process from earlier operations in this repository. Closing Arbareto ends them. ${REVOKE}`],
+    [2, false, `${LOCKED_REMEDY} Arbareto still runs 2 processes from earlier operations in this repository. Closing Arbareto ends them.`],
+    [2, true, `${LOCKED_REMEDY} Arbareto still runs 2 processes from earlier operations in this repository. Closing Arbareto ends them. ${REVOKE}`],
   ])("LOCKED with lingering count %p and trust ID %p", (count, trustId, text) => {
     expect(lockRefusal(locked, count, trustId)).toEqual({ code: "LOCKED", path: LOCK, remedy: { text } });
   });
 
   test("lingeringSentence uses the singular for 1", () => {
-    expect([lingeringSentence(1), lingeringSentence(3)].map((s) => s.split(" that ")[0])).toEqual(["Arbareto still runs 1 process", "Arbareto still runs 3 processes"]);
+    expect([lingeringSentence(1), lingeringSentence(3)].map((s) => s.split(" from ")[0])).toEqual(["Arbareto still runs 1 process", "Arbareto still runs 3 processes"]);
   });
 
   test("file-id refuses with its text, and a lock that can remain is foreign", () => {

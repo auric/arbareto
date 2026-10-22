@@ -139,6 +139,11 @@ export function createApprovals(now: () => number = () => performance.now()) {
       for (const [key, e] of entries) if (e.consumed === null && "comparisonId" in e.approval && e.approval.comparisonId === comparisonId) entries.delete(key);
     },
 
+    // Contract §6 "Registration reuse and release": a released `repositoryId` is never issued again, so no request reaches a consumed approval of it.
+    release(repositoryId: string): void {
+      for (const [key, e] of entries) if (e.approval.repositoryId === repositoryId) entries.delete(key);
+    },
+
     // The binding fields whose values differ. Raw bytes compare byte by byte.
     staleFields<B extends HunkBinding | FileBinding | CommitBinding | SubmoduleBinding>(bound: B, current: B): string[] {
       return Object.keys(bound).filter((k) => !Bun.deepEquals(bound[k as keyof B], current[k as keyof B], true));

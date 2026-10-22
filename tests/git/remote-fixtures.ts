@@ -8,6 +8,7 @@ import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, chmodSync }
 import { dirname } from "node:path";
 import { FIXED_TIMESTAMPS, FIXTURE_GLOBAL_CONFIG, FIXTURE_HOME, FIXTURE_ROOT, fixtureEnv, ownedPath } from "./fixture-root";
 import { fiCommit, type FiCommit } from "./fixtures";
+import { fixtureGitPath } from "./git-binary";
 import { sha256, workingFileDigests } from "./git-oracle";
 
 export interface GitResult {
@@ -72,7 +73,7 @@ export function nativeHost(git: string, name = "remote"): GitHost {
     globalConfig: slash(FIXTURE_GLOBAL_CONFIG),
     run(cwd, args, options = {}) {
       const env = nativeEnv(options.env);
-      const proc = Bun.spawnSync([git, ...args], { cwd: owned(cwd), env, stdin: options.input ?? "ignore", stdout: "pipe", stderr: "pipe", timeout: options.timeoutMs ?? 120_000 });
+      const proc = Bun.spawnSync([fixtureGitPath(git), ...args], { cwd: owned(cwd), env, stdin: options.input ?? "ignore", stdout: "pipe", stderr: "pipe", timeout: options.timeoutMs ?? 120_000 });
       return { exitCode: proc.exitCode ?? -1, stdout: proc.stdout, stderr: proc.stderr };
     },
     write(path, content) {

@@ -49,6 +49,7 @@ description: "Task list for the Full History and Commit Message Filter feature"
 | 3. Search | 4 | P5 | T031–T037, T063 | US2, US3 | `searchHistory`, matching probe, merge, reduced settlement, match navigation. |
 | 4. Frontend and retirement | 5 | P6, P7 | T038–T050, T062 | US1, US2, US3 | Virtual list with the load trigger, filter, modes, notices, scope switch, details, the virtual references sidebar, retirement of `readHistory`. |
 | 5. Packaged qualification | 6 | P8 | T051–T060 | Cross-cutting | SC-002, SC-005, SC-006, SC-010, SC-011, SC-012, SC-014, WSL. Blocked by open 001 T154, T165, T180, T240, T242, T244. |
+| Convergence | 7 | none | T064–T068 | US1, US2 | Gaps after batch 4: the limited filter row, the Ctrl+F text, and the sidebar threshold. User requests of 2026-10-16: the bold current branch and the copy buttons next to their values. |
 
 Work packages (plan.md "Work packages"): WP1 is T001 to T004, T008, and T010. WP2 is T006 and T061. WP3 is T005, T009, T012 to T014, T016, T017, and T019. WP4 is T015, T018, and T027. WP5 is T025 and T029. WP6 is T021 to T024, T026, and T028. WP7 is T031 to T036. WP8 is T038 to T047 and T062. WP9 is T048 and T049. WP10 is T052 to T058. WP11 is T063.
 
@@ -250,6 +251,16 @@ The responsiveness and capture workloads need the 001 tools `tests/windows/injec
 
 ---
 
+## Phase 7: Convergence
+
+- [ ] T064 [US2] Keep the reduced parents and the "No earlier matching commit" state of a limited filter row accessible. A limited cell draws no segment, and `parents` holds the Git parents, so the renderer cannot state either (`noEarlier` in `src/frontend/history/HistoryList.tsx`). First change contract Δ3 `readHistoryRows` and data-model §7 to carry this fact on a filter row, then change `src/git-service/history-view.ts` and `HistoryList.tsx`. Write the failing case first in `tests/git/history-search.test.ts` and `tests/contracts/history-filter.test.tsx`. Depends on T050. per FR-016, FR-033, plan: D4 (partial)
+- [ ] T065 [US2] Show the Ctrl+F key of the message filter as text. Today only `aria-keyshortcuts` carries it (`src/frontend/history/HistoryFilter.tsx`). The 001 FR-005 rule names only buttons and menu items. Ask the user how a text box shows its key, record the answer in spec.md FR-031, and then change the code and `tests/contracts/history-filter.test.tsx`. Depends on T050. per FR-031 (partial)
+- [ ] T066 [US1] Resolve the 200-row threshold of the references sidebar. `VIRTUAL_MIN` in `src/frontend/refs/ReferencesSidebar.tsx` creates an element for every row up to 200 rows, but FR-055 states no threshold. Record the threshold in spec.md Assumptions as a reviewer default, or remove it and keep `tests/contracts/references-sidebar.test.tsx` green. Depends on T050. per FR-055 (contradicts)
+- [x] T067 [US1] Show the current branch in bold in the references sidebar (user request 2026-10-16). Remove the visible "Current" mark. The current branch row gets `aria-current="true"` and keeps "Current" in its accessible name. The bold weight survives forced colors. A detached HEAD marks no row. Change `src/frontend/refs/ReferencesSidebar.tsx`. In `tests/contracts/references-sidebar.test.tsx`, the current branch name is bold, the row has `aria-current`, and its text holds no "Current". No other row is bold or has `aria-current`, also with a detached HEAD. Control mutation: remove the bold class from the current branch name, and the sidebar test must fail. Undo the edit and rerun green. per FR-056
+- [x] T068 [US1] Put each copy button of the commit details next to the value that it copies (user request 2026-10-16). Remove Copy commit ID and Copy message from the "Selected commit" heading. Copy commit ID follows the ID, also in the text-limit state. Copy message follows the subject and copies the subject, a blank line, and the body. Each parent ID gets a "Copy parent ID <short ID>" button that copies that parent. The short ID is the first 12 hex digits. Each button is an `IconButton` with a tooltip, uses `useCopy`, and is a normal tab stop. Change `src/frontend/history/CommitDetails.tsx`. In `tests/contracts/commit-details.test.tsx`, the heading row holds no button, Copy commit ID sits in the ID row and copies the ID, and each parent button names and copies its own parent. Control mutation: make each parent button copy the selected commit ID, and the parent case must fail. Undo the edit and rerun green. per FR-057
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase dependencies
@@ -261,6 +272,7 @@ The responsiveness and capture workloads need the 001 tools `tests/windows/injec
 - **Phase 5 (batch 4)**: Depends on T037. The tests T038 to T042 come first. T043 to T047 run in order, because T044, T046, and T047 share `HistoryList.tsx`, and T046 and T047 share `HistoryFilter.tsx`. WP9 runs strictly after WP4, WP5, and WP6: T049 edits files of T018, T029, and T028, so T049 depends on T018, T028, T029, T035, T047, and T048, and has no [P]. T062 touches only the sidebar files, so it may run beside T038 to T044. T045 adds the context menu item to `ReferencesSidebar.tsx`, so it follows T062. T050 closes batch 4.
 - **Recorded exception (2026-10-13)**: T038 to T044, T046 to T049, and T062 ran before batch 3 on f002-b0, with the fake bridge of `tests/contracts/history-fake.ts`. The R20 run is their evidence. Until T035 merges, the service answers `searchHistory` with `SERVICE_UNAVAILABLE`, so the filter does not work in the app. T050 cannot pass before T037 passes.
 - **Phase 6 (batch 5)**: Depends on T050. T051 waits for the user and blocks T053, T054, and T055. T052 comes before every measurement. T053, T054, T055, and T056 share `tests/windows/history-perf.test.ts`, so they run in that order with no [P]. T054 also depends on T007 (O-1). T055 depends on 001 T165, T240, and T242. T056 depends on 001 T244. T057 depends on 001 T180, and T180 depends on 001 T165. T057 and T058 may run beside the T053 to T056 chain. T059 and T060 run last.
+- **Phase 7 (convergence)**: Depends on T050. No batch 5 task depends on it. T064 and T065 share `tests/contracts/history-filter.test.tsx`, so they run in sequence. T066 and T067 share `ReferencesSidebar.tsx` and its test, so they run in sequence. T068 touches only the commit details files.
 
 ### User story dependencies
 
@@ -358,6 +370,8 @@ Each FR and SC maps to at least one task.
 | FR-053 | T038, T055 |
 | FR-054 | T022, T024, T028, T038, T054, T055, T061 |
 | FR-055 | T062 |
+| FR-056 | T067 |
+| FR-057 | T068 |
 | SC-001 | T001, T022, T055 |
 | SC-002 | T006, T007, T051, T054, T058, T061 |
 | SC-003 | T001, T003, T022 |
@@ -404,13 +418,3 @@ The spec requires all three stories for qualification. No partial increment coun
 - Verify that each test fails before its implementation task starts.
 - The orchestrator session commits after each task or logical group. Never commit fixture repositories, performance fixtures, or executables.
 - The application never writes a commit-graph, a message index, or other repository data (FR-044).
-
----
-
-## Phase 7: Convergence
-
-- [ ] T064 [US2] Keep the reduced parents and the "No earlier matching commit" state of a limited filter row accessible. A limited cell draws no segment, and `parents` holds the Git parents, so the renderer cannot state either (`noEarlier` in `src/frontend/history/HistoryList.tsx`). First change contract Δ3 `readHistoryRows` and data-model §7 to carry this fact on a filter row, then change `src/git-service/history-view.ts` and `HistoryList.tsx`. Write the failing case first in `tests/git/history-search.test.ts` and `tests/contracts/history-filter.test.tsx`. Depends on T050. per FR-016, FR-033, plan: D4 (partial)
-- [ ] T065 [US2] Show the Ctrl+F key of the message filter as text. Today only `aria-keyshortcuts` carries it (`src/frontend/history/HistoryFilter.tsx`). The 001 FR-005 rule names only buttons and menu items. Ask the user how a text box shows its key, record the answer in spec.md FR-031, and then change the code and `tests/contracts/history-filter.test.tsx`. Depends on T050. per FR-031 (partial)
-- [ ] T066 [US1] Resolve the 200-row threshold of the references sidebar. `VIRTUAL_MIN` in `src/frontend/refs/ReferencesSidebar.tsx` creates an element for every row up to 200 rows, but FR-055 states no threshold. Record the threshold in spec.md Assumptions as a reviewer default, or remove it and keep `tests/contracts/references-sidebar.test.tsx` green. Depends on T050. per FR-055 (contradicts)
-- [x] T067 [US1] Show the current branch in bold in the references sidebar (user request 2026-10-16). Remove the visible "Current" mark. The current branch row gets `aria-current="true"` and keeps "Current" in its accessible name. The bold weight survives forced colors. A detached HEAD marks no row. Change `src/frontend/refs/ReferencesSidebar.tsx`. In `tests/contracts/references-sidebar.test.tsx`, the current branch name is bold, the row has `aria-current`, and its text holds no "Current". No other row is bold or has `aria-current`, also with a detached HEAD. Control mutation: remove the bold class from the current branch name, and the sidebar test must fail. Undo the edit and rerun green. per FR-049
-- [x] T068 [US1] Put each copy button of the commit details next to the value that it copies (user request 2026-10-16). Remove Copy commit ID and Copy message from the "Selected commit" heading. Copy commit ID follows the ID, also in the text-limit state. Copy message follows the subject and copies the subject, a blank line, and the body. Each parent ID gets a "Copy parent ID <short ID>" button that copies that parent. The short ID is the first 12 hex digits. Each button is an `IconButton` with a tooltip, uses `useCopy`, and is a normal tab stop. Change `src/frontend/history/CommitDetails.tsx`. In `tests/contracts/commit-details.test.tsx`, the heading row holds no button, Copy commit ID sits in the ID row and copies the ID, and each parent button names and copies its own parent. Control mutation: make each parent button copy the selected commit ID, and the parent case must fail. Undo the edit and rerun green. per FR-017

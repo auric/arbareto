@@ -207,7 +207,7 @@ These stay **unverified** until the named step runs:
 
 ## Results
 
-P0 to P8 record their results here as R14 and later. Record times and ratios as numbers, never as comparative adjectives.
+P0 to P8 record their results here as R14 and later. Tasks with no P step, such as T067 and T068 (R23), also record their results here. Record times and ratios as numbers, never as comparative adjectives.
 
 ## R14 Git peak memory
 

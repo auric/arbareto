@@ -117,6 +117,8 @@ const classOf = (action: string): "workbench" | "mergetool" | null => (CLASSLESS
 const REPOSITORY_GATE = { trustGate: "repository" } as const;
 // Feature 005 contract Δ9 `STALE_REVIEW` reasons of each action.
 const STALE_REASONS: Readonly<Record<string, string>> = { delete: "files-changed", "ignore-save": "ignore-changed" };
+// The observation refusal of each feature 005 action that names a changed bound fact (contract Δ3 review refusals). Another refusal passes through.
+const FACT_REFUSALS: Readonly<Record<string, ErrorCode>> = { delete: "STALE_SELECTION", "ignore-save": "STALE_REVIEW" };
 
 // ---- Shared reads ----
 
@@ -210,6 +212,8 @@ registerWorkbenchAction<"ignore", IgnorePlan>("ignore", {
 // ---- Feature 005 ignore Save (contract Δ3 `ignore-save`, Δ6 `fileReplace`, plan.md D10) ----
 
 registerWorkbenchAction<"ignore-save", IgnoreSaveBound>("ignore-save", {
+  // Contract Δ3: the editor text holds LF line ends only, so a CR byte gives INVALID_REQUEST before any Git process.
+  precheck: (p) => (Buffer.from(p.text, "base64").includes(0x0d) ? { refused: "INVALID_REQUEST" } : null),
   async observe(ctx, p) {
     const review = await reviewIgnoreSave(ctx, { target: p.target, text: new Uint8Array(Buffer.from(p.text, "base64")), expected: p.expected });
     if (isStop(review)) return review;
@@ -317,7 +321,9 @@ export function createWorkbench(o: WorkbenchOptions) {
     const factsChanged = Object.hasOwn(STALE_REASONS, action) ? { code: "STALE_REVIEW" as const, result: { action, reason: STALE_REASONS[action] } } : { code: "STALE_REVIEW" as const };
     if ("refused" in again) {
       if (again.refused === "TRUST_REQUIRED" || again.refused === "TRUST_CHANGED") return { code: again.refused, result: again.result };
-      return again.refused === "CONFLICTED" ? { code: "CONFLICTED", result: again.result } : factsChanged;
+      if (again.refused === "CONFLICTED") return { code: "CONFLICTED", result: again.result };
+      if (Object.hasOwn(FACT_REFUSALS, action)) return again.refused === FACT_REFUSALS[action] ? factsChanged : { code: again.refused, ...(again.result === undefined ? {} : { result: again.result }) };
+      return factsChanged;
     }
     if ((e.trust.required || required(action, again.common.listing)) && again.common.listing.fingerprint !== e.trust.fingerprint) return { code: "TRUST_CHANGED", result: REPOSITORY_GATE };
     const same = generation === e.generation && Bun.deepEquals({ head: e.head, state: e.operationState }, { head: again.common.head, state: again.common.operationState }, true);

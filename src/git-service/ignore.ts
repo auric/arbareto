@@ -282,8 +282,6 @@ export async function reviewIgnoreSave(t: IgnoreContext, p: { target: IgnoreTarg
   const decoded = decodeIgnore(loaded.bytes);
   if (!decoded.ok) return unavailable(decoded.reason);
   if (p.text.includes(0)) return unavailable("ignore-nul");
-  // A CR in the text would give bytes that the codec refuses at the next load (plan.md D8 `mixed-line-endings`).
-  if (p.text.includes(0x0d)) return unavailable("mixed-line-endings");
   const form: IgnoreForm = loaded.state === "absent" ? { lineEnding: "lf", bom: false } : decoded;
   const bytes = encodeIgnore(p.text, form);
   if (bytes.length > IGNORE_TARGET_BYTES) return unavailable("ignore-size");
@@ -337,7 +335,8 @@ export async function runIgnoreSave(
     const outcome = "stop" in reply || reply.result === "stopped" ? "stopped" : "interrupted";
     if (!same(bound.expected)) return { event: { type: "failed-with-effects" }, result: { ...result, outcome } };
     if (settled.canceled) return { event: { type: "no-effects", observed: "canceled" }, result: { ...result, outcome } };
-    return { event: { type: "no-effects", observed: "failed", code: "DEADLINE" }, result: { ...result, outcome } };
+    // Contract Δ3: a shell `stopped` or `interrupted` reply names no cause, so only a runner deadline stop gives DEADLINE.
+    return { event: { type: "no-effects", observed: "failed", code: "stop" in reply && reply.stop === "deadline" ? "DEADLINE" : "GIT_FAILED" }, result: { ...result, outcome } };
   }
   if (reply.result === "replaced") return { event: same(bound.after) ? { type: "intended-effects-confirmed" } : { type: "differing-effects" }, result: { ...result, outcome: "replaced" } };
   const error = { ...result, outcome: "error" as const, ...("code" in reply ? { code: reply.code } : {}) };

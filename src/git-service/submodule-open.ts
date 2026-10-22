@@ -50,9 +50,10 @@ export async function checkSubmodule(t: SubmoduleTarget, path: string): Promise<
   if (step.exit.deadline !== undefined) return { ok: false, code: "DEADLINE" };
   if (step.exit.exitCode !== 0) return { ok: false, code: "GIT_FAILED" };
   const record = new RegExp(`^160000 ${OID_HEX[w.objectFormat]} 0\t`);
+  // The header is ASCII. The path after the TAB compares by its bytes.
   const bytes = Buffer.from(out.take());
-  const text = bytes.toString("utf8");
-  const one = !out.limited && out.records === 1 && text.endsWith("\0") && record.test(text) && text.slice(text.indexOf("\t") + 1, -1) === path;
+  const tab = bytes.indexOf(0x09);
+  const one = !out.limited && out.records === 1 && bytes.at(-1) === 0 && record.test(bytes.toString("latin1")) && bytes.subarray(tab + 1, -1).equals(Buffer.from(path));
   if (!one) return refusal("not-submodule");
 
   // Step 4: the folder and its `.git` entry, without following a link (contract §6 "File facts").

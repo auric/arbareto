@@ -80,7 +80,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 ### `previewIgnore`
 
-- Payload: `{target, text, snapshotId}`. `text` is the base64 of the UTF-8 bytes of the editor text. The decoded bytes are at most 1 MiB, strict UTF-8, and hold no NUL, else `INVALID_REQUEST`. The renderer checks `isWellFormed()` before it encodes, because `TextEncoder` replaces a lone surrogate (plan D9). One read slot. The renderer sends it 400 ms after the last edit and cancels the running one (001 §5 "Pending reads").
+- Payload: `{target, text, snapshotId}`. `text` is the base64 of the UTF-8 bytes of the editor text. The decoded bytes are at most 1 MiB, strict UTF-8, and hold no NUL, else `INVALID_REQUEST`. A CR byte in `text` gives `INVALID_REQUEST` for `previewIgnore` and `ignore-save`, because the editor text holds LF line ends only (plan D8). The renderer checks `isWellFormed()` before it encodes, because `TextEncoder` replaces a lone surrogate (plan D9). One read slot. The renderer sends it 400 ms after the last edit and cancels the running one (001 §5 "Pending reads").
 - Read gate: 001 §7 `reads`, because `ls-files` loads the index.
 - Repository commands:
   - `--no-lazy-fetch --no-optional-locks --literal-pathspecs ls-files -z --stage -v`.
@@ -91,7 +91,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - `fileFacts` (`digest: false`) for every `.gitignore` path of the listings, and for `<folder>/.gitignore` of each folder of an input path that lists no exact `.gitignore` (plan D9 `name-case`).
 - Shadow commands: Δ6 `shadow`.
 - Parse: `ls-files -z --stage -v` gives `<tag> SP <mode> SP <oid> SP <stage> TAB <path> NUL` (git-ls-files(1) `--stage`, `-v`). `ls-files -o -z`, `ls-files -o -i -z`, and `ls-files -c -i -z` give `<path> NUL`, and a folder record ends with `/`. `check-ignore -z -v -n` gives `<source> NUL <line> NUL <pattern> NUL <path> NUL`, one record per input in input order (git-check-ignore(1) OUTPUT). A record count other than the input count gives `MALFORMED_GIT_OUTPUT`.
-- Bounds: 100,000 inputs per check (`PREVIEW_PATHS`, the SC-005 size, about 5 s on Windows); 100,000 records and 32 MiB per listing (the status listing bounds); 10,000 ignore files (`PREVIEW_IGNORE_FILES`) of at most 1 MiB each; 1,000 paths per result group (`PREVIEW_GROUP_PATHS`, spec FR-038); 100 notices plus a count. Above a bound: the result `unavailable` with its reason (data-model §7), never a partial preview.
+- Bounds: 100,000 inputs per preview (`PREVIEW_PATHS`, the SC-005 size, about 5 s on Windows; plan D9 `paths` names what counts); 100,000 records and 32 MiB per listing (the status listing bounds); 10,000 ignore files (`PREVIEW_IGNORE_FILES`) of at most 1 MiB each; 1,000 paths per result group (`PREVIEW_GROUP_PATHS`, spec FR-038); 100 notices plus a count. Above a bound: the result `unavailable` with its reason (data-model §7), never a partial preview.
 - Deadline: 30 s per process. The whole preview has no other deadline. Cancel ends every Job and the shadow context.
 - Errors: `TRUST_REQUIRED`, `TRUST_CHANGED`; `GIT_FAILED`, `OUTPUT_LIMIT`, `DEADLINE`, `CANCELED` of a step. The result `unavailable` is a `succeeded` response.
 - Result: data-model §7.
@@ -111,7 +111,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 - New payload forms:
   - `{action: "delete", snapshotId, entryIds, folder?, mode: "recycle" | "permanent"}`. `entryIds` holds 1 to 10,000 unique IDs. `folder` holds the base64 folder bytes of a folder row.
-  - `{action: "ignore-save", target, text, expected}`. `text` as `previewIgnore` (base64 UTF-8 bytes). `expected` is `"absent"` or `{size, sha256}`.
+  - `{action: "ignore-save", target, text, expected}`. `text` as `previewIgnore` (base64 UTF-8 bytes). A CR byte in `text` gives `INVALID_REQUEST` before any Git process. `expected` is `"absent"` or `{size, sha256}`.
 - The form `{action: "ignore", …}` goes.
 - Common refusals (004 Δ3) now apply to `delete` too: `OPERATION_IN_PROGRESS`, `unknown-operation`, and `CONFLICTED` with the count, because Delete counts as a mutation for 001 FR-015 and FR-016 (spec FR-033).
 - `ignore-save` keeps the 004 exception of the action `ignore`: `OPERATION_IN_PROGRESS`, `unknown-operation`, and `CONFLICTED` do not refuse it, because Save changes no Git state (spec FR-046). A running mutation gives `BUSY` (001 FR-015). The stale check stays.
@@ -123,7 +123,9 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 ### `runWorkbench` (004 Δ3)
 
 - `delete`: the marker of action `delete-files`; the check phase (`fileFacts` again, any difference gives `STALE_REVIEW` `files-changed` and no request); then `fileDelete` requests of at most 64 entries, in tree order; then, for a folder Delete, one `fileDelete` with the candidate folders; then fresh `fileFacts` (`digest: false`) of every path and folder, and `readWorkspace`. The phase `delete-files` counts the replied entries.
-- `ignore-save`: the marker of action `ignore-save-gitignore` or `ignore-save-exclude`; one `fileReplace`; then a fresh `fileFacts` digest of the target and `readWorkspace`.
+  - A folder Delete with more than 64 candidates sends one `fileDelete` per candidate subtree of at most 64 folders. A larger subtree first sends its child subtrees, then its top folder alone. A folder goes after every folder below it.
+  - Response state: every file `recycled` or `deleted` gives `succeeded`, also after Cancel, because the delete phase does not stop. A removed file, or a file that is absent after a request without an entry reply, with `stopped`, or with `interrupted`, gives `failed-with-effects`, also after Cancel. Otherwise Cancel gives `canceled`. Otherwise no file was removed, and the response is `failed` with the code of the first file in tree order: `changed` gives `STALE_REVIEW` with reason `files-changed`; `stopped` after the service deadline of its request gives `DEADLINE`; a refused request gives its code; anything else gives `GIT_FAILED`. Each file keeps its own outcome. A shell reply `absent` or `stale` is never an effect of the request.
+- `ignore-save`: the marker of action `ignore-save-gitignore` or `ignore-save-exclude`; one `fileReplace`; then a fresh `fileFacts` digest of the target and `readWorkspace`. A `stopped` or `interrupted` reply with the expected state gives `canceled` after Cancel, and otherwise `failed` with `GIT_FAILED`, because the reply names no cause.
 - Outcome: plan D6 table and D10. The response states follow 001 data-model §7.
 - Deadline per `fileDelete`: `GIT_PROCESS_DEADLINE_MS` plus `MULTI_FILE_STEP_MS_PER_FILE` for each entry, at most `REGISTERED_DEADLINE_CAP_MS`. `fileReplace`: the 001 walk deadline.
 
@@ -166,7 +168,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 | Delete digest | files up to 1 MiB (the 001 §6 `fileFacts` digest bound); above it, size and `lastWrite` only |
 | Delete confirmation paths | 20, plus a count |
 | Ignore file, editor text, saved bytes | 1 MiB (`IGNORE_TARGET_BYTES`) |
-| Preview inputs per check (`PREVIEW_PATHS`) | 100,000 |
+| Preview inputs per preview (`PREVIEW_PATHS`) | 100,000 |
 | Preview listings | 100,000 records and 32 MiB each |
 | Preview ignore files (`PREVIEW_IGNORE_FILES`) | 10,000, each at most 1 MiB |
 | Preview group paths (`PREVIEW_GROUP_PATHS`) | 1,000, plus the count |
@@ -180,7 +182,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 - New request `fileDelete {repositoryId, mode: "recycle" | "permanent", entries, folders}`.
   - `entries`: 0 to 64 of `{path, expected}`. `path` is an absolute path below the worktree root by `file_facts::below`. `expected` is the review fact: `{kind: "file", size, lastWrite, digest?}` or `{kind: "link", tag, target}`. A `digest` needs a `size` of at most 1 MiB (Δ5).
-  - `folders`: 0 to 64 absolute folder paths below the worktree root, deepest first. Each folder is the shallowest folder of the request or lies below it. One of `entries` and `folders` is not empty.
+  - `folders`: 0 to 64 absolute folder paths below the worktree root, deepest first. Each folder is the shallowest folder of the request or lies below it. One of `entries` and `folders` is not empty. A folder Delete with more candidates sends them in subtrees (Δ3 `runWorkbench`).
   - Rules: the operation holds a `started` marker of kind `workbench` with action `delete-files`. Another operation gets `INVALID_REQUEST`. `recycle` in a WSL workspace gets `INVALID_REQUEST`. A `recycle` entry whose path holds 260 or more UTF-16 units gets `INVALID_REQUEST`, because the review refuses it first (Δ3).
   - Windows: plan D7. `PreDeleteItem` compares the `FILE_ID_INFORMATION` of the `SIGDN_FILESYSPATH` path of `psiItem`, opened as a Win32 path without following a link, with the checked handle. A failure or another ID cancels this and every later item. The folder step deletes each candidate through its held walk handle with `DELETE`, deepest first. WSL: `wslFiles` mode `delete` (Δ11).
   - Reply: per entry `recycled {recycledPath}`, `deleted`, `kept {hresult}`, `stale`, `absent`, `not-regular`, `error {code}` (such as `access-denied` or `sharing-violation`), or `stopped` (the Recycle Bin operation ended before the item); per folder `removed`, `kept`, `absent`, `not-regular`, or `error {code}`. Exactly one reply per request, also after `cancel`, `closeJob`, or a service exit.

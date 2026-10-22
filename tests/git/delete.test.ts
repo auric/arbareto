@@ -16,6 +16,7 @@ import { useFixtureRoot } from "./fixture-root";
 import { workingFileDigests } from "./git-oracle";
 import { gitPath, outcome, readOk, SUCCEEDED, subcommand, until, withService } from "./hunk-harness";
 import { caseTest, type Capability, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { canary } from "./workbench-fixtures";
 
 for (const module of ["file-delete", "workbench-review", "native-runner", "session"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 useFixtureRoot();
@@ -495,6 +496,125 @@ describe("the run (plan.md D6, contract Δ3 `runWorkbench`)", () => {
         release();
         service.runner.inject.holdWalk = null;
       }
+    }),
+    TIMEOUT_MS,
+  );
+
+  // Plan.md D6 "Response state": the delete phase does not stop, so a Cancel never hides a removed file.
+  caseTest(TASK, "Cancel after the first fileDelete request: the 64 removed files give failed-with-effects, and the rest stay with stopped", SHELL, () =>
+    withService({ name: "t032-cancel-after" }, async (service) => {
+      const f = files();
+      const names = Array.from({ length: 70 }, (_, i) => `batch/f${String(i).padStart(2, "0")}.txt`);
+      for (const name of names) write(f.repo, name, "b\n");
+      const { r, read } = await open(service, f);
+      const entries = await allEntries(service, r, read);
+      const ids = names.map((n) => entries.find((e) => e.path === n)!.entryId);
+      const plan = await reviewOk(service, r, read, ids, "permanent");
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let requests = 0;
+      service.runner.inject.holdWalk = (kind) => (kind === "fileDelete" && ++requests === 2 ? gate : Promise.resolve());
+      try {
+        const requestId = sendRun(service, r, plan.workbenchToken);
+        await until(() => deleteFrames(service).length === 2, "the second fileDelete frame");
+        await service.cancel(await service.operationId(requestId));
+        const done = await service.response<DeleteRun>(requestId);
+        const counts = (outcome: string) => done.result?.entries.filter((e) => e.outcome === outcome).length;
+        expect({ state: done.state, code: done.code, deleted: counts("deleted"), stopped: counts("stopped") }).toEqual({ state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", deleted: 64, stopped: 6 });
+      } finally {
+        release();
+        service.runner.inject.holdWalk = null;
+      }
+    }),
+    TIMEOUT_MS,
+  );
+
+  // Plan.md D6 table: a request without an entry reply can have removed a file, as a WSL `interrupted` request or a reply after the wait.
+  caseTest(TASK, "a file that is gone after a request without an entry reply counts as an effect: Cancel gives failed-with-effects", SHELL, () =>
+    withService({ name: "t032-gone-no-reply" }, async (service) => {
+      const f = files();
+      const { r, read } = await open(service, f);
+      const plan = await reviewOk(service, r, read, [idOf(read, "u1.txt"), idOf(read, "u2.txt")], "permanent");
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      service.runner.inject.holdWalk = (kind) => {
+        if (kind !== "fileDelete") return Promise.resolve();
+        rmSync(join(f.repo, "u1.txt"));
+        return gate;
+      };
+      try {
+        const requestId = sendRun(service, r, plan.workbenchToken);
+        await until(() => deleteFrames(service).length === 1, "the fileDelete frame");
+        await service.cancel(await service.operationId(requestId));
+        const done = await service.response<DeleteRun>(requestId);
+        expect({ state: done.state, code: done.code, entries: done.result?.entries }).toEqual({
+          state: "failed-with-effects",
+          code: "FAILED_WITH_EFFECTS",
+          entries: [
+            { entryId: idOf(read, "u1.txt"), outcome: "absent" },
+            { entryId: idOf(read, "u2.txt"), outcome: "stopped" },
+          ],
+        });
+      } finally {
+        release();
+        service.runner.inject.holdWalk = null;
+      }
+    }),
+    TIMEOUT_MS,
+  );
+
+  // Contract Δ3: only the service deadline of the request gives DEADLINE. The shell walk deadline replies `stopped`, which names no cause.
+  caseTest(TASK, "a shell stop before the delete phase without the service deadline gives failed GIT_FAILED with stopped outcomes", SHELL, () =>
+    withService({ name: "t032-shell-stop" }, async (service) => {
+      const f = files();
+      const { r, read } = await open(service, f);
+      const plan = await reviewOk(service, r, read, [idOf(read, "u1.txt")], "permanent");
+      // The walk takes this deadline at its start. The Git processes after it take the 001 deadline again.
+      service.runner.inject.deadlineMs = 1_500;
+      service.runner.inject.holdWalk = (kind) => {
+        if (kind !== "fileDelete") return Promise.resolve();
+        service.runner.inject.deadlineMs = null;
+        return new Promise<void>(() => {});
+      };
+      try {
+        const done = await run(service, r, plan.workbenchToken);
+        expect({ state: done.state, code: done.code, entries: done.result?.entries }).toEqual({ state: "failed", code: "GIT_FAILED", entries: [{ entryId: idOf(read, "u1.txt"), outcome: "stopped" }] });
+        expect(existsSync(join(f.repo, "u1.txt"))).toBe(true);
+      } finally {
+        service.runner.inject.holdWalk = null;
+        service.runner.inject.deadlineMs = null;
+      }
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(TASK, "an operation that starts between the review and the run gives OPERATION_IN_PROGRESS, not STALE_REVIEW", SHELL, () =>
+    withService({ name: "t032-run-in-progress" }, async (service) => {
+      const f = files();
+      const { r, read } = await open(service, f);
+      const plan = await reviewOk(service, r, read, [idOf(read, "u1.txt")], "permanent");
+      // A MERGE_HEAD marker starts a merge for Git (git-merge(1) "HOW CONFLICTS ARE PRESENTED").
+      writeFileSync(join(f.repo, ".git", "MERGE_HEAD"), `${git(f.repo, ["rev-parse", "HEAD"]).trim()}\n`);
+      try {
+        expect(outcome(await run(service, r, plan.workbenchToken))).toEqual({ state: "failed", code: "OPERATION_IN_PROGRESS" });
+        expect(deleteFrames(service)).toEqual([]);
+      } finally {
+        rmSync(join(f.repo, ".git", "MERGE_HEAD"));
+      }
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(TASK, "in a repository whose command-valued core.fsmonitor needs trust, the review and the run of Delete never run it", SHELL, () =>
+    withService({ name: "t032-canary" }, async (service) => {
+      const f = files();
+      const { r, read } = await open(service, f);
+      const monitor = canary(f.root, "t032-fsmonitor");
+      git(f.repo, ["config", "core.fsmonitor", monitor.command]);
+      const plan = await reviewOk(service, r, read, [idOf(read, "u1.txt")], "permanent");
+      expect(existsSync(monitor.log)).toBe(false);
+      expect(outcome(await run(service, r, plan.workbenchToken))).toEqual(SUCCEEDED);
+      expect([existsSync(join(f.repo, "u1.txt")), existsSync(monitor.log)]).toEqual([false, false]);
     }),
     TIMEOUT_MS,
   );

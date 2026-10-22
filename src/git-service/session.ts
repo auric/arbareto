@@ -956,6 +956,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     const workspace = workspaceOf(request.repositoryId);
     const installation = installationOf(workspace);
     if (installation === null) return reject(request.requestId, gitCode());
+    // Contract Δ3: the editor text holds LF line ends only, so a CR byte gives INVALID_REQUEST.
+    if (Buffer.from(request.payload.text, "base64").includes(0x0d)) return reject(request.requestId, "INVALID_REQUEST");
     const found = reader.snapshot(request.repositoryId, request.repositoryGeneration, request.payload.snapshotId);
     if (!found.ok) {
       const { operationId } = registry.start("previewIgnore", request.requestId);

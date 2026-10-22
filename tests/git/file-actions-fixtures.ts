@@ -221,6 +221,26 @@ export function buildCaseNames(git: string, name: string): FaFixture {
   return { name, git, root, repo, tracked: ["keep.md"], ignored: WINDOWS ? ["up/a.txt"] : [], notes: {} };
 }
 
+// ---- Preview inputs at the PREVIEW_PATHS bound (contract Δ5, plan.md D9 `paths`) ----
+
+export const BOUND_INDEX_ONLY = 99_997;
+
+// 100,000 preview inputs: 99,997 index-only entries `t/NNNNN.txt` and the tracked `.gitignore` (`big/`) and `t/.gitignore` give 99,999 T paths,
+// and the U folder record `big/` gives one more. `big/` holds 3 untracked files. The folder `t` is the one folder above a `.gitignore` below the root.
+export function buildPathsBound(git: string, name: string): FaFixture {
+  const root = fixtureDir(name);
+  const repo = init(git, join(root, "repo"));
+  write(repo, ".gitignore", "big/\n");
+  write(repo, "t/.gitignore", "x\n");
+  commitAll(git, repo, [".gitignore", "t/.gitignore"], "base");
+  const oid = faGit(git, repo, ["hash-object", "-w", "--stdin"], { input: "t\n" }).toString().trim();
+  const lines = Array.from({ length: BOUND_INDEX_ONLY }, (_, i) => `100644 ${oid}\tt/${String(i).padStart(5, "0")}.txt\0`).join("");
+  faGit(git, repo, ["update-index", "-z", "--index-info"], { input: lines });
+  for (const file of ["a.txt", "b.txt", "c.txt"]) write(repo, `big/${file}`, `${file}\n`);
+  const tracked = [".gitignore", "t/.gitignore", ...Array.from({ length: BOUND_INDEX_ONLY }, (_, i) => `t/${String(i).padStart(5, "0")}.txt`)];
+  return { name, git, root, repo, tracked: byBytes(tracked), ignored: ["big/a.txt", "big/b.txt", "big/c.txt"], notes: {} };
+}
+
 // ---- Linked worktree (F18) ----
 
 export function buildLinkedWorktree(git: string, name: string): FaFixture & { linked: string } {

@@ -11,7 +11,7 @@ import { PreviewIgnoreResult } from "../../src/contracts/envelope";
 import { PREVIEW_GROUP_PATHS } from "../../src/contracts/limits";
 import { comparePaths } from "../../src/contracts/tree-order";
 import { printOrigin } from "../origin";
-import { buildCaseNames, buildReport, faGit, REPORT_ROOT_TEXT, write, type FaFixture } from "./file-actions-fixtures";
+import { buildCaseNames, buildPathsBound, buildReport, faGit, REPORT_ROOT_TEXT, write, type FaFixture } from "./file-actions-fixtures";
 import { fixtureDir, useFixtureRoot } from "./fixture-root";
 import { workingFileDigests } from "./git-oracle";
 import { approve, gitPath, outcome, readOk, shortDeadline, SUCCEEDED, subcommand, until, withService } from "./hunk-harness";
@@ -236,6 +236,41 @@ describe("typed limits (spec FR-039, contract Δ5)", () => {
       expect(unavailable(response)).toEqual({ state: "succeeded", code: undefined, result: { unavailable: { reason: "paths", bound: "PREVIEW_PATHS" } } });
     }),
     LARGE_TIMEOUT_MS,
+  );
+
+  // Contract Δ5 `PREVIEW_PATHS` counts the inputs of the whole preview: T paths, U records, expansion files and folders, and nested repositories.
+  // The folder probes above each `.gitignore` do not count.
+  caseTest(TASK, "100,000 inputs and a folder probe stay below PREVIEW_PATHS, also with a built base", SHELL, () =>
+    withService({ name: "t034-bound-probe" }, async (service) => {
+      const f = buildPathsBound(gitPath(), `t034-bound-probe-${++builds}`);
+      const { r, read } = await open(service, f);
+      for (let i = 0; i < 2; i++) {
+        const got = await previewed(service, r, read, "gitignore", "big/\n# same rules\n");
+        expect({ i, newly: got.newlyIgnored.count, noLonger: got.noLongerIgnored.count }).toEqual({ i, newly: 0, noLonger: 0 });
+      }
+    }),
+    LARGE_TIMEOUT_MS,
+  );
+
+  caseTest(TASK, "a folder record that only the saved text ignores adds its files to the 100,000 base inputs, which gives paths", SHELL, () =>
+    withService({ name: "t034-bound-total" }, async (service) => {
+      const f = buildPathsBound(gitPath(), `t034-bound-total-${++builds}`);
+      const { r, read } = await open(service, f);
+      const response = await preview(service, r, read, "gitignore", "");
+      expect(unavailable(response)).toEqual({ state: "succeeded", code: undefined, result: { unavailable: { reason: "paths", bound: "PREVIEW_PATHS" } } });
+    }),
+    LARGE_TIMEOUT_MS,
+  );
+
+  caseTest(TASK, "a CR byte in the text gives INVALID_REQUEST before any Git process", SHELL, () =>
+    withService({ name: "t034-cr" }, async (service) => {
+      const f = report();
+      const { r, read } = await open(service, f);
+      const calls = service.runner.calls.length;
+      for (const text of ["*.md\r\n", "*.md\r"]) expect(outcome(await preview(service, r, read, "gitignore", text))).toEqual({ state: "rejected", code: "INVALID_REQUEST" });
+      expect(service.runner.calls.length).toBe(calls);
+    }),
+    TIMEOUT_MS,
   );
 
   caseTest(TASK, "an ignore file above 1 MiB gives listing", SHELL, () =>

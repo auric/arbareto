@@ -171,6 +171,14 @@ describe("T028 builder self-check (plan.md P0.1)", () => {
     expect(existsSync(join(a.sup, "bare", ".git"))).toBe(false);
   });
 
+  gitCase("preview bound: 99,999 tracked paths with 99,997 index-only entries, and the untracked folder big/; two equal builds", () => {
+    const a = F.buildPathsBound(gitPath(), "t028-bound-a");
+    const b = F.buildPathsBound(gitPath(), "t028-bound-b");
+    checkFixture(a);
+    sameBuilds(a, b);
+    expect(listed(a.repo, U_ARGS)).toEqual(["big/"]);
+  }, LARGE_TIMEOUT_MS);
+
   gitCase("linked worktree: one tracked file and a linked worktree", () => {
     const a = F.buildLinkedWorktree(gitPath(), "t028-linked-a");
     checkFixture(a);

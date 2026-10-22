@@ -39,6 +39,10 @@ const limit = (reason: Reason, bound?: string) => new End({ result: "succeeded",
 const failed = (code: ErrorCode) => new End({ result: "failed", code });
 const CANCELED = new End({ result: "canceled" });
 const stopped = (stop: WalkStop["stop"]) => (stop === "deadline" ? limit("deadline") : CANCELED);
+// Contract Δ5 `PREVIEW_PATHS`: the inputs of the whole preview, without the folder probes (plan.md D9 `paths`). Each count includes every earlier input.
+const inputsFit = (count: number) => {
+  if (count > PREVIEW_PATHS) throw limit("paths", "PREVIEW_PATHS");
+};
 
 const NUL = 0x00;
 const LF = 0x0a;
@@ -254,6 +258,7 @@ export function createIgnorePreview({ runner, trust }: { runner: GitRunner; trus
     let c: Checked;
     if (base?.snapshotId === p.snapshotId) {
       if (base.selfCheck !== null) throw limit(base.selfCheck);
+      inputsFit(base.inputs.length);
       // A built base runs one C check (plan.md D9 "Time"). The folder probes join it.
       await shadow.fill("c", candidateFiles(base, p.target, candidate), base.inputs);
       await shadow.exclude("c", p.target === "exclude" ? { bytes: candidate } : base.exclude === null ? null : { real: base.exclude });
@@ -314,6 +319,7 @@ export function createIgnorePreview({ runner, trust }: { runner: GitRunner; trus
     base.ignoreFiles.push(...first.files);
     base.links.push(...first.links);
     await nameCase(t, base, p.target, inputs);
+    inputsFit(inputs.length);
     await Promise.all([shadow.fill("s", base.ignoreFiles, inputs), shadow.fill("c", candidateFiles(base, p.target, candidate), inputs)]);
     await Promise.all([
       shadow.exclude("s", base.exclude === null ? null : { real: base.exclude }),
@@ -335,6 +341,7 @@ export function createIgnorePreview({ runner, trust }: { runner: GitRunner; trus
     base.links.push(...links);
     await nameCase(t, base, p.target, added);
     inputs.push(...added);
+    inputsFit(inputs.length);
     await Promise.all([shadow.fill("s", fresh, added), shadow.fill("c", fresh, added)]);
     const probes = probesOf(base.ignoreFiles, new Set());
     const [s2, c2] = await Promise.all([shadow.check("s", added, ignoreCase, excludesFile), shadow.check("c", [...added, ...probes], ignoreCase, excludesFile)]);
@@ -365,6 +372,7 @@ export function createIgnorePreview({ runner, trust }: { runner: GitRunner; trus
     await nameCase(t, base, p.target, extra);
     const rels = [...base.ignoreFiles, ...local].map((f) => f.rel);
     const probes = probesOf(local, new Set(checked.probes.map((probe) => keyOf(probe.path))));
+    inputsFit(base.inputs.length + extra.length);
     await shadow.fill("c", local, extra);
     const more = await shadow.check("c", [...extra, ...probes], base.ignoreCase, base.excludesFile);
 
@@ -607,17 +615,7 @@ function selfCheck(base: Base, riBytes: Uint8Array, rtBytes: Uint8Array): Reason
   const rtKeys = new Set(rt.map(keyOf));
   // An RI folder record `<d>/` with no RI record below it: an excluded folder that the walk did not enter (dir.c:2094-2096).
   const sorted = [...riKeys].sort();
-  const hasBelow = (folderKey: string) => {
-    let lo = 0;
-    let hi = sorted.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (sorted[mid]! <= folderKey) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo < sorted.length && sorted[lo]!.startsWith(folderKey);
-  };
-  const excluded = (folderKey: string) => riKeys.has(folderKey) && !hasBelow(folderKey);
+  const excluded = (folderKey: string) => riKeys.has(folderKey) && !prefixed(sorted, folderKey, false);
   const covered = (path: Uint8Array) => ancestors(path).some((a) => a.length > 0 && excluded(keyOf(withSlash(a))));
   const inputKeys = new Set<string>();
   const trackedKeys = new Set<string>();
@@ -640,21 +638,23 @@ function selfCheck(base: Base, riBytes: Uint8Array, rtBytes: Uint8Array): Reason
   for (const key of rtKeys) if (!trackedKeys.has(key)) return "self-check";
   // An RI record that is no input must be an empty folder: no U record and no expansion record at or below it (`--no-empty-directory`).
   const known = [...inputKeys, ...[...base.expansions.values()].flat().map(keyOf)].sort();
-  const knownAt = (key: string) => {
-    let lo = 0;
-    let hi = known.length;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (known[mid]! < key) lo = mid + 1;
-      else hi = mid;
-    }
-    return lo < known.length && known[lo]!.startsWith(key);
-  };
   for (const key of riKeys) {
     if (inputKeys.has(key)) continue;
-    if (!key.endsWith("/") || knownAt(key) || inputKeys.has(key.slice(0, -1))) return "self-check";
+    if (!key.endsWith("/") || prefixed(known, key, true) || inputKeys.has(key.slice(0, -1))) return "self-check";
   }
   return null;
+}
+
+// True when `sorted` holds a key that starts with `key`: `key` itself only with `at`, else a key after it.
+function prefixed(sorted: readonly string[], key: string, at: boolean): boolean {
+  let lo = 0;
+  let hi = sorted.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (at ? sorted[mid]! < key : sorted[mid]! <= key) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo < sorted.length && sorted[lo]!.startsWith(key);
 }
 
 // git-config(1) `core.ignoreCase`: the last entry wins, and an unset key is false. A value that is no boolean makes Git fail, so the preview fails too.
@@ -801,9 +801,8 @@ class Shadow {
     await this.verify(repo, [{ rel: ".git/info/exclude", oid }]);
   }
 
-  // Step 6: one `check-ignore` over `inputs`. More than 100,000 inputs give `paths` (contract Δ5 `PREVIEW_PATHS`).
+  // Step 6: one `check-ignore` over `inputs`. The caller bounds the inputs with `inputsFit`.
   async check(repo: Repo, inputs: readonly Input[], ignoreCase: boolean, excludesFile: string | null): Promise<Uint8Array> {
-    if (inputs.length > PREVIEW_PATHS) throw limit("paths", "PREVIEW_PATHS");
     if (inputs.length === 0) return new Uint8Array();
     const sent = inputs.map((i) => stdinPath(i.path));
     const out = verdictCollector(sent);

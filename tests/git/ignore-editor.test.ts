@@ -15,6 +15,7 @@ import { useFixtureRoot } from "./fixture-root";
 import { workingFileDigests } from "./git-oracle";
 import { gitPath, outcome, readOk, SUCCEEDED, subcommand, until, withService } from "./hunk-harness";
 import { caseTest, type Capability, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
+import { canary } from "./workbench-fixtures";
 
 for (const module of ["ignore", "ignore-text", "workbench-review", "native-runner", "session"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 useFixtureRoot();
@@ -187,7 +188,7 @@ describe("ignore-save (plan.md D10, contract Δ3 and Δ6)", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(TASK, "new bytes above 1 MiB give ignore-size; a NUL gives ignore-nul; a CR in the text gives mixed-line-endings; a 1 MiB text of short lines fits one request", SHELL, () =>
+  caseTest(TASK, "new bytes above 1 MiB give ignore-size; a NUL gives ignore-nul; a CR in the text gives INVALID_REQUEST before any Git process; a 1 MiB text of short lines fits one request", SHELL, () =>
     withService({ name: "t033-save-bounds" }, async (service) => {
       const f = form("crlf");
       const r = await service.register(f.repo);
@@ -195,7 +196,10 @@ describe("ignore-save (plan.md D10, contract Δ3 and Δ6)", () => {
       // 400,000 lines of "a" give 800,000 bytes with LF and 1,200,000 bytes with the CRLF of the file.
       expect(refusal(await reviewSave(service, r, "gitignore", "a\n".repeat(400_000), read.result!.expected))).toEqual(unavailable("ignore-size"));
       expect(refusal(await reviewSave(service, r, "gitignore", "a\n\0\n", read.result!.expected))).toEqual(unavailable("ignore-nul"));
-      expect(refusal(await reviewSave(service, r, "gitignore", "a\r\nb\n", read.result!.expected))).toEqual(unavailable("mixed-line-endings"));
+      // Contract Δ3: a CR byte in `text` gives INVALID_REQUEST for `previewIgnore` and `ignore-save`.
+      const calls = service.runner.calls.length;
+      for (const text of ["a\r\nb\n", "a\rb\n"]) expect(outcome(await reviewSave(service, r, "gitignore", text, read.result!.expected))).toEqual({ state: "rejected", code: "INVALID_REQUEST" });
+      expect(service.runner.calls.length).toBe(calls);
       const lf = form("lf");
       const lr = await service.register(lf.repo);
       const lread = await readIgnore(service, lr, "gitignore");
@@ -225,6 +229,50 @@ describe("ignore-save (plan.md D10, contract Δ3 and Δ6)", () => {
       expect(existsSync(join(f.repo, ".git", "info", "exclude"))).toBe(true);
       const fresh = await readOk(service, r.repositoryId);
       expect(fresh.entries.some((e) => e.path === "free.txt")).toBe(false);
+    }),
+    TIMEOUT_MS,
+  );
+
+  // Contract Δ3: the shell walk deadline replies `stopped`, which names no cause, so only a service deadline gives DEADLINE.
+  caseTest(TASK, "a shell stop before the write without a Cancel gives failed GIT_FAILED with outcome stopped, and the file stays", SHELL, () =>
+    withService({ name: "t033-save-shell-stop" }, async (service) => {
+      const f = form("lf");
+      const r = await service.register(f.repo);
+      const read = await readIgnore(service, r, "gitignore");
+      const review = await reviewSave(service, r, "gitignore", "/z/\n", read.result!.expected);
+      expect(outcome(review)).toEqual(SUCCEEDED);
+      // The walk takes this deadline at its start. The Git processes after it take the 001 deadline again.
+      service.runner.inject.deadlineMs = 1_500;
+      service.runner.inject.holdWalk = (kind) => {
+        if (kind !== "fileReplace") return Promise.resolve();
+        service.runner.inject.deadlineMs = null;
+        return new Promise<void>(() => {});
+      };
+      try {
+        const response = await service.response(sendRun(service, r, review.result!.workbenchToken));
+        expect(refusal(response)).toEqual({ state: "failed", code: "GIT_FAILED", result: { action: "ignore-save", outcome: "stopped" } });
+        expect(readFileSync(join(f.repo, ".gitignore"), "utf8")).toBe("*.log\n/out/\n");
+      } finally {
+        service.runner.inject.holdWalk = null;
+        service.runner.inject.deadlineMs = null;
+      }
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(TASK, "in a repository whose command-valued core.fsmonitor needs trust, the review and the run of Save never run it", SHELL, () =>
+    withService({ name: "t033-save-canary" }, async (service) => {
+      const f = form("lf");
+      const r = await service.register(f.repo);
+      const read = await readIgnore(service, r, "gitignore");
+      const monitor = canary(f.root, "t033-fsmonitor");
+      faGit(gitPath(), f.repo, ["config", "core.fsmonitor", monitor.command]);
+      const review = await reviewSave(service, r, "gitignore", "/canary/\n", read.result!.expected);
+      expect(outcome(review)).toEqual(SUCCEEDED);
+      expect(existsSync(monitor.log)).toBe(false);
+      const response = await service.response(sendRun(service, r, review.result!.workbenchToken));
+      expect(outcome(response)).toEqual(SUCCEEDED);
+      expect([readFileSync(join(f.repo, ".gitignore"), "utf8"), existsSync(monitor.log)]).toEqual(["/canary/\n", false]);
     }),
     TIMEOUT_MS,
   );

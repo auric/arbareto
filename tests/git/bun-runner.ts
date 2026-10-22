@@ -548,6 +548,8 @@ export function createBunRunner(options: BunRunnerOptions) {
   const recycleBin = join(options.directory, "recycle-bin");
   // `src-tauri/src/shadow.rs` `PREVIEW`: the shadow folders below the launch folder, by `shadowId`.
   const previewFolder = join(launchDirectory, "preview");
+  // The empty configuration file of each shadow folder. The shell name may differ; the double names it here only.
+  const SHADOW_CONFIG = "empty.gitconfig";
   const shadows = new Map<string, { operationId: string; folder: string }>();
   // `std::fs::remove_dir_all` never follows a link. `rmSync` with `recursive` removes a link itself, too.
   const removeShadow = (folder: string) => rmSync(folder, { recursive: true, force: true, maxRetries: 3 });
@@ -1227,14 +1229,15 @@ export function createBunRunner(options: BunRunnerOptions) {
     if (!target.wsl) {
       if (call.script) throw new RunnerRefusal("INVALID_REQUEST", "script needs a WSL Git");
       const env = environment(call);
-      // Feature 005 contract Δ6: `GIT_INDEX_FILE` names `<cwd>/.git/index` or `<cwd>/.git/exclude.index`, and `GIT_DIR` names `<cwd>/.git`.
+      // Feature 005 contract Δ6, as the WP3 shell sets it: `GIT_INDEX_FILE` names `<cwd>/.git/index` or `<cwd>/.git/exclude.index`, `GIT_DIR` names `<cwd>\.git`,
+      // and `GIT_WORK_TREE` names `<cwd>`, so `git init` makes no bare repository (T030 F14). The global and system files are one empty file in the shadow folder (F15).
       if (call.context.contextKind === "ignorePreview") {
-        for (const key of Object.keys(env)) if (["GIT_INDEX_FILE", "GIT_DIR"].includes(key.toUpperCase())) delete env[key];
+        const shadowEnv = ["GIT_INDEX_FILE", "GIT_DIR", "GIT_WORK_TREE", "GIT_CONFIG_GLOBAL", "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM"];
+        for (const key of Object.keys(env)) if (shadowEnv.includes(key.toUpperCase())) delete env[key];
         env.GIT_INDEX_FILE = join(target.cwd, ".git", call.context.shadowIndex === "exclude" ? "exclude.index" : "index");
-        // `git init` takes a `GIT_DIR` that does not end in `/.git` as a bare repository (setup.c `guess_repository_type`), and Git for Windows
-        // does not read `\.git` as that end (T030 F14). `checkout-index` then needs a work tree, so the value uses `/` separators.
-        // The shell sets the native form (process_requests.rs:2196-2199). WP5 reports that gap.
-        env.GIT_DIR = join(target.cwd, ".git").replaceAll("\\", "/");
+        env.GIT_DIR = join(target.cwd, ".git");
+        env.GIT_WORK_TREE = target.cwd;
+        env.GIT_CONFIG_GLOBAL = env.GIT_CONFIG_SYSTEM = join(target.cwd, "..", SHADOW_CONFIG);
       }
       if (commandLineUnits(target.program, call.arguments) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
       if (call.context.contextKind === "repositoryDiscovery") revalidate(call.context.bootstrapId);
@@ -1665,6 +1668,7 @@ export function createBunRunner(options: BunRunnerOptions) {
         mkdirSync(folder);
         mkdirSync(join(folder, "s"));
         mkdirSync(join(folder, "c"));
+        writeFileSync(join(folder, SHADOW_CONFIG), "", { flag: "wx" });
       } catch {
         return { result: "error", code: "other-error" };
       }

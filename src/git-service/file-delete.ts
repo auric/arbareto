@@ -211,7 +211,8 @@ async function runDelete(r: WorkbenchRun, _p: Payload, bound: DeleteBound): Prom
   let deadline = false;
   // One request with the contract Δ3 deadline. The shell replies once, also after `cancel`. Null: no reply, or a request that the shell refused.
   const send = async (entries: number[], folders: string[][]): Promise<Extract<FileDeleteReply, { entries: unknown }> | null> => {
-    const signal = AbortSignal.any([ctx.signal, AbortSignal.timeout(deadlineOf(entries.length + folders.length))]);
+    const timeout = AbortSignal.timeout(deadlineOf(entries.length + folders.length));
+    const signal = AbortSignal.any([ctx.signal, timeout]);
     let reply: FileDeleteReply | WalkStop;
     try {
       reply = await ctx.runner.fileDelete(
@@ -225,7 +226,8 @@ async function runDelete(r: WorkbenchRun, _p: Payload, bound: DeleteBound): Prom
     }
     if ("entries" in reply) return reply;
     if ("result" in reply && reply.result === "interrupted") ends.push({ exit: null, canceled: ctx.signal.aborted, refused: null, outputTail: "" });
-    deadline ||= !ctx.signal.aborted;
+    // Contract Δ3: only the service deadline of this request gives DEADLINE. A shell `stopped` names no cause.
+    deadline ||= timeout.aborted;
     return null;
   };
   r.progress("delete-files", { fileIndex: 0, fileCount: bound.entries.length });
@@ -260,10 +262,12 @@ async function runDelete(r: WorkbenchRun, _p: Payload, bound: DeleteBound): Prom
   const folders = bound.folders.map((f, i) => folderOutcome(f, folderReplies.get(f.join("/")) ?? null, present[names.length + i]!));
   const value = { action: "delete", entries: files, folders };
   const removed = files.filter((f) => f.outcome === "recycled" || f.outcome === "deleted").length;
-  // Plan.md D6 "Response state". Cancel never reports an undo.
-  if (settled.canceled) return r.finish({ type: "no-effects", observed: "canceled" }, value);
+  // Plan.md D6 table, last row: a request without an entry reply, or with `stopped`, can have removed the file before it stopped.
+  const gone = bound.entries.filter((_, i) => !present[i] && (replies[i] === null || replies[i]!.result === "stopped")).length;
+  // Plan.md D6 "Response state": the delete phase does not stop at a Cancel, so the effects come first. Cancel never reports an undo.
   if (removed === files.length) return r.finish({ type: "intended-effects-confirmed" }, value);
-  if (removed > 0) return r.finish({ type: "failed-with-effects" }, value);
+  if (removed + gone > 0) return r.finish({ type: "failed-with-effects" }, value);
+  if (settled.canceled) return r.finish({ type: "no-effects", observed: "canceled" }, value);
   // No file removed: the code of the first file in tree order.
   const code: ErrorCode = refused ?? (files[0]!.outcome === "changed" ? "STALE_REVIEW" : files[0]!.outcome === "stopped" && deadline ? "DEADLINE" : "GIT_FAILED");
   r.finish({ type: "no-effects", observed: "failed", code }, value);

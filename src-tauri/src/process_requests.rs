@@ -1404,6 +1404,8 @@ impl ProcessRequests {
                     Some(repository_id.as_str()),
                 ],
             ),
+            // Feature 005 contract Δ6. tasks.md T015 binds the `ignorePreview` context to a `shadow` folder.
+            RunGroup::IgnorePreview { .. } => return Err(INVALID),
         };
         // The context kinds hold the same `run` fields, each in its own generated type.
         macro_rules! run_fields {
@@ -1448,7 +1450,8 @@ impl ProcessRequests {
             RegisteredOperation(RunRegisteredLimits),
             Clone(RunCloneLimits),
             GlobalConfig(RunGlobalConfigLimits),
-            WorktreeAdd(RunWorktreeAddLimits)
+            WorktreeAdd(RunWorktreeAddLimits),
+            IgnorePreview(RunIgnorePreviewLimits)
         );
         // Feature 002 contract Δ6. typify drops the `const` value of `script`.
         let script = match request {

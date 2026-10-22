@@ -33,21 +33,27 @@ const components = (path: Uint8Array): Uint8Array[] => {
   }
   return parts;
 };
-const sameBytes = (a: Uint8Array, b: Uint8Array) => a.length === b.length && a.every((byte, i) => byte === b[i]);
+// Data-model §3: one key per row, built once per read. `folder` marks a folder row: a folder, a submodule, or a nested repository.
+export type TreeKey = { readonly parts: readonly Uint8Array[]; readonly folder: boolean };
+export const treeKey = (path: Uint8Array, folder = false): TreeKey => ({ parts: components(path), folder });
 
-// `aFolder` and `bFolder` mark a folder row: a folder, a submodule, or a nested repository.
 // At the first differing component the folder side comes first. A path that ends where the other continues is the file side.
-export function comparePaths(a: Uint8Array, b: Uint8Array, aFolder = false, bFolder = false): number {
-  const left = components(a);
-  const right = components(b);
+export function compareKeys(a: TreeKey, b: TreeKey): number {
+  const left = a.parts;
+  const right = b.parts;
   for (let i = 0; ; i++) {
     const leftEnded = i === left.length;
     const rightEnded = i === right.length;
-    if (leftEnded || rightEnded) return leftEnded && rightEnded ? (aFolder === bFolder ? 0 : aFolder ? -1 : 1) : leftEnded ? 1 : -1;
-    if (sameBytes(left[i]!, right[i]!)) continue;
-    const leftFolder = i < left.length - 1 || aFolder;
-    const rightFolder = i < right.length - 1 || bFolder;
+    if (leftEnded || rightEnded) return leftEnded && rightEnded ? (a.folder === b.folder ? 0 : a.folder ? -1 : 1) : leftEnded ? 1 : -1;
+    // `compareNames` gives 0 only for equal bytes.
+    const names = compareNames(left[i]!, right[i]!);
+    if (names === 0) continue;
+    const leftFolder = i < left.length - 1 || a.folder;
+    const rightFolder = i < right.length - 1 || b.folder;
     if (leftFolder !== rightFolder) return leftFolder ? -1 : 1;
-    return compareNames(left[i]!, right[i]!);
+    return names;
   }
 }
+
+// Builds both keys on each call. A sort builds the keys first and uses `compareKeys`.
+export const comparePaths = (a: Uint8Array, b: Uint8Array, aFolder = false, bFolder = false): number => compareKeys(treeKey(a, aFolder), treeKey(b, bFolder));

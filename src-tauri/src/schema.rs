@@ -1165,10 +1165,25 @@ mod tests {
                 Ok(value)
                     if matches!(
                         value["type"].as_str(),
-                        Some("run" | "pageant" | "destinationFacts" | "terminal")
+                        Some("run" | "pageant" | "destinationFacts" | "terminal" | "shadow")
                     ) =>
                 {
                     valid(typed::<process_request::ProcessRequest>(&value).is_some())
+                }
+                // Feature 005 contract Δ6: one of `entries` and `folders` is not empty, and each path is an absolute channel path.
+                // tasks.md T013 moves these rules into the `fileDelete` parse.
+                Ok(value) if value["type"] == "fileDelete" => {
+                    typed::<process_request::FileDelete>(&value)
+                        .filter(|r| !r.entries.is_empty() || !r.folders.is_empty())
+                        .ok_or(INVALID)
+                        .and_then(|r| {
+                            r.entries
+                                .iter()
+                                .map(|entry| entry.path.as_str())
+                                .chain(r.folders.iter().map(|folder| folder.as_str()))
+                                .try_for_each(|item| path(&json!(item)).map(drop))
+                        })
+                        .map_err(|code| text_of(&code))
                 }
                 Ok(value) if value["type"] == "fileFacts" => typed(&value)
                     .ok_or(INVALID)
@@ -1235,10 +1250,11 @@ mod tests {
         // The `unlisted` hooks item of plan D14 adds 2 `confirm` vectors.
         // WP23 adds 2 `confirm` vectors for the `repository` action (contract Δ6).
         // T094 adds 3 `native-first-envelope` vectors for `chooseWorktreeFolder` (contract Δ3).
-        // Feature 005 T002 adds 15 shell-read vectors. T013 adds the `fileDelete`, `fileReplace`, and `shadow` vectors.
+        // Feature 005 T002 adds 15 shell-read vectors. The batch 0 review adds the 5 `fileDelete`, 2 `shadow`, and 3 `ignorePreview` vectors.
+        // T013 adds the `fileReplace` vectors.
         assert_eq!(
             checked,
-            if cfg!(windows) { 195 } else { 190 },
+            if cfg!(windows) { 205 } else { 200 },
             "shell-read vectors"
         );
     }

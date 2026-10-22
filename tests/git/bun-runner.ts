@@ -616,6 +616,8 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (!fits) throw new RunnerRefusal("INVALID_REQUEST", "worktree add arguments");
       return { program, cwd: repository.worktreeRoot };
     }
+    // Feature 005 contract Δ6, as the shell refuses it until tasks.md T015. T041 adds the shadow double.
+    if (context.contextKind === "ignorePreview") throw new RunnerRefusal("INVALID_REQUEST", "ignorePreview");
     const bound = contexts.get(context.bootstrapId);
     // Feature 003 contract Δ6: before its clone exits with status 0, a clone destination has no identity.
     if (!bound || bound.kind !== context.contextKind || bound.pending) throw unknownTarget();

@@ -307,6 +307,8 @@ const CONTEXT_POLICIES: Record<ProcessContext["contextKind"], readonly Environme
   clone: ["remote"],
   globalConfig: ["read", "integrate"],
   worktreeAdd: ["integrate"],
+  // Feature 005 contract Δ6: the 001 `read` policy with the shadow cwd.
+  ignorePreview: ["read"],
 };
 
 // Feature 004 contract Δ6: the three `globalConfig` arrays, each with the policy of its contract Δ3 step (src-tauri `global_config_fits`).
@@ -358,6 +360,8 @@ export function checkCall(call: GitCall): void {
   if (!CONTEXT_POLICIES[kind].includes(policy)) refuse("environment policy");
   if (kind === "globalConfig" && !globalConfigFits(args, policy)) refuse("globalConfig");
   if (kind === "worktreeAdd" && !worktreeAddForm(args)) refuse("worktreeAdd");
+  // tasks.md T041 admits the contract Δ6 shadow arrays.
+  if (kind === "ignorePreview") refuse("ignorePreview");
   if (kind === "registeredOperation" && call.script === undefined && runsBoundCommand(args)) refuse("bound command");
   if (input !== undefined && (!(input instanceof Uint8Array) || input.length > STREAMED_PROCESS_INPUT_BYTES)) refuse("input");
   // Feature 004 contract Δ6: the shell gives a `mergetool` child a closed stdin pipe.

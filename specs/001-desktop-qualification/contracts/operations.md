@@ -387,7 +387,7 @@ The first reached bound wins. A bound cannot turn an incomplete result into a su
 
 | Resource | Limit |
 | --- | ---: |
-| Incoming public request | 1 MiB encoded envelope. The shell checks the raw body bytes before any parse (§1 "Renderer request body"). The shell writes the frame body as `{"kind":"public","request":`, the envelope, and `}`. So a `public` frame body above 1 MiB plus 28 bytes gives `FRAME_LIMIT`. |
+| Incoming public request | 1 MiB encoded envelope. The shell checks the raw body bytes before any parse (§1 "Renderer request body"). The shell writes the frame body as `{"kind":"public","request":`, the envelope, and `}`. So a `public` frame body above 1 MiB plus 28 bytes gives `FRAME_LIMIT`. Amended by feature 005 (2026-10-21): the bound is 2 MiB (2,097,152 bytes), and the `public` frame body bound follows (005 contract Δ5). |
 | Private/reply frame | 16 MiB encoded. It bounds the length header of every pipe frame (§1). |
 | JSON nesting | 16 levels |
 | Identifier | 64 ASCII bytes |

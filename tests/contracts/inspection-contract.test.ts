@@ -604,6 +604,8 @@ describe("contract Δ6 private requests", () => {
     expect(ok(channel.ProcessRequest, req({ mode: "move", entries: [{ path: abs("a"), expected: fileExpected }] }))).toBe(false);
     expect(ok(channel.ProcessRequest, req({ entries: [{ path: abs("a"), expected: { kind: "directory" } }] }))).toBe(false);
     expect(ok(channel.ProcessRequest, req({ entries: [{ path: abs("a"), expected: { kind: "link", tag: "symlink" } }] }))).toBe(false);
+    // A link fact with the file fields is no file fact.
+    expect(ok(channel.ProcessRequest, req({ entries: [{ path: abs("a"), expected: { ...fileExpected, kind: "link" } }] }))).toBe(false);
   });
 
   test("fileReplace takes the target, the path, the expected state, and 0 to 1 MiB of bytes", () => {
@@ -621,6 +623,19 @@ describe("contract Δ6 private requests", () => {
     expect(ok(channel.ProcessRequest, { type: "shadow", ...call, op: "create" })).toBe(true);
     expect(ok(channel.ProcessRequest, { type: "shadow", ...call, op: "remove" })).toBe(false);
     expect(ok(channel.ProcessRequest, { type: "fileAppend", ...call, target: "gitignore", path: abs(".gitignore"), expected: "absent", bytes: b64("/x\n") })).toBe(true);
+  });
+
+  test("the ignorePreview run context names the Git, the shadow, the repository s or c, and the index", () => {
+    const context = { contextKind: "ignorePreview", gitInstallationId: id(), shadowId: id(), shadowRepository: "s", shadowIndex: "index" };
+    const run = { type: "run", callId: id(), operationId: id(), arguments: ["--no-lazy-fetch", "init", "-q", "--template="], environmentPolicy: "read", limits: { deadlineMs: 30_000 }, ...context };
+    expect(ok(channel.ProcessContext, context)).toBe(true);
+    expect(ok(channel.ProcessRequest, run)).toBe(true);
+    expect(ok(channel.ProcessRequest, { ...run, shadowRepository: "c", shadowIndex: "exclude" })).toBe(true);
+    for (const wrong of [{ shadowRepository: "x" }, { shadowIndex: "other" }, { shadowId: "s1" }, { repositoryId: id() }]) expect(ok(channel.ProcessRequest, { ...run, ...wrong })).toBe(false);
+    const { shadowIndex: _index, ...withoutIndex } = run;
+    const { gitInstallationId: _git, ...withoutGit } = run;
+    expect(ok(channel.ProcessRequest, withoutIndex)).toBe(false);
+    expect(ok(channel.ProcessRequest, withoutGit)).toBe(false);
   });
 
   test("fileFacts content needs digest true, exactly one entry, and no index", () => {

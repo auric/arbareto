@@ -100,7 +100,7 @@ Each section names its source. Field names are contract names. "001 data-model Â
 - `bytes`: the BOM when the file has one, then the text in the file's line-ending form.
 - `after`: `{size, sha256}` of `bytes`.
 - `bound`: `expected`, the repository generation, and the Arbareto mutation markers (001 FR-015). The Git operation state and the conflicted count are not bound, because Save runs during an unfinished operation and with conflicts (spec FR-046).
-- Validation: the request text decodes from base64 to strict UTF-8 without NUL; `bytes` at most 1 MiB.
+- Validation: the request text decodes from base64 to strict UTF-8 of at most 1 MiB. A NUL passes the schema, and the review refuses it with `ignore-nul` (contract Î”3). `bytes` at most 1 MiB, else `ignore-size`.
 - Result: `replaced`, or the 001 outcome with `STALE_REVIEW` `ignore-changed`, `stale`, `not-regular`, `stopped`, `interrupted`, or `error {code}`, cross-checked by the fresh target digest.
 
 ## 9. Submodule open and the parent chain

@@ -183,6 +183,7 @@ describe("golden vectors", () => {
     for (const kind of ["valid", "invalid"]) {
       expect(texts(kind, "process-request").map((t) => t.type)).toEqual(expect.arrayContaining(["fileDelete", "fileReplace", "shadow"]));
       expect(texts(kind, "process-request").some((t) => t.type === "fileFacts" && "content" in t)).toBe(true);
+      expect(texts(kind, "process-request").some((t) => t.type === "run" && t.contextKind === "ignorePreview")).toBe(true);
     }
     expect(texts("valid", "process-reply").map((t) => t.type)).toEqual(expect.arrayContaining(["fileDelete", "fileReplace", "shadow"]));
     expect(texts("valid", "process-reply").some((t) => t.type === "reveal" && t.result === "absent")).toBe(true);

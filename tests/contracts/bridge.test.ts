@@ -109,6 +109,16 @@ function extraTargetKeys(b: Bridge) {
   void b.runWorkbench(withRepository, { workbenchToken: id(), start: true });
   // @ts-expect-error The `extra` key is outside the `applyFiles` target.
   void b.applyFiles(withRepository, { snapshotId: id(), entryIds: [id()], direction: "stage", kind: "selected" });
+  // @ts-expect-error The `extra` key is outside the `readCommitChanges` target.
+  void b.readCommitChanges(withGeneration, { viewId: id(), oid: "0123456789abcdef0123456789abcdef01234567", parent: 0 });
+  // @ts-expect-error The `extra` key is outside the `readCommitFile` target.
+  void b.readCommitFile(withGeneration, { changesId: id(), fileId: 0 });
+  // @ts-expect-error The `extra` key is outside the `readBlame` target.
+  void b.readBlame(withGeneration, { source: { blameId: id(), line: 1 }, options: { ignoreWhitespace: false, detectMoves: false, detectCopies: false, ignoreList: false } });
+  // @ts-expect-error The `extra` key is outside the `readIgnoreFile` target.
+  void b.readIgnoreFile(withGeneration, { target: "gitignore" });
+  // @ts-expect-error The `extra` key is outside the `previewIgnore` target.
+  void b.previewIgnore(withGeneration, { target: "gitignore", text: "", snapshotId: id() });
 }
 
 interface Options {

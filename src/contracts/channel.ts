@@ -194,6 +194,15 @@ const CLONE = { contextKind: z.literal("clone"), cloneId: Identifier, gitInstall
 const GLOBAL_CONFIG = { contextKind: z.literal("globalConfig"), gitInstallationId: Identifier };
 // Feature 004 contract Δ6: the native step of the `worktree-add` review binds the path to `bootstrapId`.
 const WORKTREE_ADD = { contextKind: z.literal("worktreeAdd"), gitInstallationId: Identifier, repositoryId: Identifier, bootstrapId: Identifier };
+// Feature 005 contract Δ6: the shadow folder of one `shadow` reply. `shadowRepository` picks the cwd `<shadow>/s` or `<shadow>/c`.
+// `shadowIndex` picks `GIT_INDEX_FILE`: `<cwd>/.git/index` or `<cwd>/.git/exclude.index`.
+const IGNORE_PREVIEW = {
+  contextKind: z.literal("ignorePreview"),
+  gitInstallationId: Identifier,
+  shadowId: Identifier,
+  shadowRepository: z.enum(["s", "c"]),
+  shadowIndex: z.enum(["index", "exclude"]),
+};
 // Contract §6 "Channel frames" `run` fields: the context IDs of each context kind.
 export const ProcessContext = z.discriminatedUnion("contextKind", [
   z.strictObject(GIT_PROBE).meta({ title: "GitProbeContext" }),
@@ -202,6 +211,7 @@ export const ProcessContext = z.discriminatedUnion("contextKind", [
   z.strictObject(CLONE).meta({ title: "CloneContext" }),
   z.strictObject(GLOBAL_CONFIG).meta({ title: "GlobalConfigContext" }),
   z.strictObject(WORKTREE_ADD).meta({ title: "WorktreeAddContext" }),
+  z.strictObject(IGNORE_PREVIEW).meta({ title: "IgnorePreviewContext" }),
 ]);
 export type ProcessContext = z.infer<typeof ProcessContext>;
 
@@ -262,6 +272,7 @@ const Stamp = z
   .refine((value) => STAMP.test(value) && BigInt.asIntN(64, BigInt(value)) === BigInt(value));
 
 // Feature 005 contract Δ6 `fileDelete`: the review fact of each entry. A file above the 1 MiB digest bound binds only size and `lastWrite`.
+// typify tags this union by the `kind` consts, so the Rust type reads a link fact never as a file fact.
 const DeleteExpected = z.union([
   z.strictObject({ kind: z.literal("file"), size: Count, lastWrite: Stamp, digest: Fingerprint.optional() }).meta({ title: "DeleteExpectedFile" }),
   z
@@ -431,6 +442,7 @@ export const ProcessRequest = z.xor([
     // Feature 004 contract Δ6: the shell admits only the fixed arrays of each context.
     z.strictObject({ ...run, ...GLOBAL_CONFIG }).meta({ title: "RunGlobalConfig" }),
     z.strictObject({ ...run, ...WORKTREE_ADD }).meta({ title: "RunWorktreeAdd" }),
+    z.strictObject({ ...run, ...IGNORE_PREVIEW }).meta({ title: "RunIgnorePreview" }),
   ]).meta({ title: "RunGroup" }),
   named("Input", z.strictObject({ type: z.literal("input"), ...call, data: InlineInput })),
   named("Cancel", z.strictObject({ type: z.literal("cancel"), ...call })),
@@ -516,7 +528,8 @@ export const ProcessRequest = z.xor([
       bytes: IgnoreBytes,
     }),
   ),
-  named("Shadow", z.strictObject({ type: z.literal("shadow"), ...call, operationId: Identifier, repositoryId: Identifier, op: z.literal("create") })),
+  // typify drops a const, so `op` is an enum of one value.
+  named("Shadow", z.strictObject({ type: z.literal("shadow"), ...call, operationId: Identifier, repositoryId: Identifier, op: z.enum(["create"]) })),
 ]);
 
 // Contract §6 "Process replies": the `refused` codes. The service refuses its own invalid request with INVALID_REQUEST.

@@ -286,13 +286,13 @@ const IgnoreTarget = z.enum(["gitignore", "exclude"]);
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 // Contract Δ3 `previewIgnore`: base64 of at most 1 MiB of strict UTF-8 bytes. `atob` exists in Bun and in WebView2.
 // zod runs a refinement also after a failed format check, and `atob` throws on other text.
-const editorText = (nulRefusal: boolean) =>
+const editorText = (allowNul: boolean) =>
   z.base64().refine((data) => {
     try {
       if (decodedBytes(data) > IGNORE_TARGET_BYTES) return false;
       const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
       strictUtf8.decode(bytes);
-      return nulRefusal || !bytes.includes(0);
+      return allowNul || !bytes.includes(0);
     } catch {
       return false;
     }

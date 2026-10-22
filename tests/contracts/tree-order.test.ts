@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { printOrigin } from "../origin";
-import { compareNames, comparePaths } from "../../src/contracts/tree-order";
+import { compareKeys, compareNames, comparePaths, treeKey } from "../../src/contracts/tree-order";
 
 const SOURCE = printOrigin("../../src/contracts/tree-order.ts", import.meta.dir);
 
@@ -82,6 +82,7 @@ describe("compareNames", () => {
 });
 
 // A tree of the paths: folders first, then files, each group by `compareNames`. The leaves in walk order.
+// A folder row leaf with the name of a folder node walks after that node.
 type Node = { children: Map<string, { name: Uint8Array; node: Node }>; leaves: { name: Uint8Array; path: string; folder: boolean }[] };
 function treeLeaves(paths: { path: string; folder: boolean }[]): string[] {
   const root: Node = { children: new Map(), leaves: [] };
@@ -96,18 +97,22 @@ function treeLeaves(paths: { path: string; folder: boolean }[]): string[] {
     node.leaves.push({ name: bytes(parts.at(-1)!), path: entry.path, folder: entry.folder });
   }
   const walk = (node: Node): string[] => {
-    type Item = { name: Uint8Array; folder: boolean; out: () => string[] };
+    type Item = { name: Uint8Array; folder: boolean; node: boolean; out: () => string[] };
     const items: Item[] = [
-      ...[...node.children.values()].map((c) => ({ name: c.name, folder: true, out: () => walk(c.node) })),
-      ...node.leaves.map((l) => ({ name: l.name, folder: l.folder, out: () => [l.path] })),
+      ...[...node.children.values()].map((c) => ({ name: c.name, folder: true, node: true, out: () => walk(c.node) })),
+      ...node.leaves.map((l) => ({ name: l.name, folder: l.folder, node: false, out: () => [l.path] })),
     ];
-    items.sort((a, b) => (a.folder === b.folder ? compareNames(a.name, b.name) : a.folder ? -1 : 1));
+    items.sort((a, b) => (a.folder === b.folder ? compareNames(a.name, b.name) || (a.node === b.node ? 0 : a.node ? -1 : 1) : a.folder ? -1 : 1));
     return items.flatMap((i) => i.out());
   };
   return walk(root);
 }
+// One key per row, built before the sort (data-model §3).
 const flat = (paths: { path: string; folder: boolean }[]) =>
-  paths.toSorted((a, b) => comparePaths(bytes(a.path), bytes(b.path), a.folder, b.folder)).map((p) => p.path);
+  paths
+    .map((p) => ({ path: p.path, key: treeKey(bytes(p.path), p.folder) }))
+    .sort((a, b) => compareKeys(a.key, b.key))
+    .map((p) => p.path);
 
 describe("comparePaths", () => {
   test("spec US3-1: the folders A/ and c/ come before a.txt and b.txt", () => {
@@ -139,11 +144,28 @@ describe("comparePaths", () => {
       seen.add(path);
       paths.push({ path, folder: next() % 7 === 0 });
     }
-    // A leaf that is also a folder name of another path cannot exist in one tree.
+    // A History list can hold a leaf that is also a folder of another path, such as `D a/x` and `A a`.
     const prefixes = new Set(paths.flatMap((p) => p.path.split("/").slice(0, -1).map((_, i, all) => all.slice(0, i + 1).join("/"))));
-    const leaves = paths.filter((p) => !prefixes.has(p.path));
-    expect(leaves.length).toBeGreaterThan(100);
-    expect(flat(leaves)).toEqual(treeLeaves(leaves));
+    expect(paths.filter((p) => prefixes.has(p.path)).length).toBeGreaterThan(10);
+    expect(paths.length).toBeGreaterThan(100);
+    expect(flat(paths)).toEqual(treeLeaves(paths));
+  });
+
+  test("a commit that replaces the folder a/ with the submodule a lists a/x before a, as the tree walk does", () => {
+    // `diff-tree -r` gives `D a/x` and `A a` (mode 160000), and the submodule row sorts as a folder.
+    const paths = [
+      { path: "a", folder: true },
+      { path: "a/x", folder: false },
+      { path: "b", folder: false },
+    ];
+    expect(flat(paths)).toEqual(["a/x", "a", "b"]);
+    expect(flat(paths)).toEqual(treeLeaves(paths));
+    expect(sign(compareKeys(treeKey(bytes("a/x")), treeKey(bytes("a"), true)))).toBe(-1);
+  });
+
+  test("comparePaths gives the key order", () => {
+    const list = ["a", "A", "a/b", "A/b", "a/B", "b", "a.txt", "a/b/c"].map(bytes);
+    for (const a of list) for (const b of list) expect(sign(comparePaths(a, b, false, true))).toBe(sign(compareKeys(treeKey(a), treeKey(b, true))));
   });
 
   test("the order is total over paths", () => {

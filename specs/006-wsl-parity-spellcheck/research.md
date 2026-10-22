@@ -152,7 +152,7 @@
 
 ## R12 Open facts (P0 list)
 
-Each F fact runs on Windows with Bun 1.4.3, with local servers on 127.0.0.1 only, in `tests/git/dictionary-facts.test.ts`, except F9 to F11 (WSL tests), F12 and F13 (the early gate report), and F14 (the packaged test, after `bun run build`). Each records the observed versions.
+Each F fact runs on Windows with Bun 1.4.3, with local servers on 127.0.0.1 only, in `tests/git/dictionary-facts.test.ts`, except F9 to F11 (WSL tests), F12 and F13 (the early gate report), F14 (a throwaway Vite build in `tests/gate/wasm-asset.test.ts`, and again on the package `dist/`), and F16 (a source lookup). N1 and N2 run first on `bun run dev`, then in the package. Each records the observed versions.
 
 - F1: `fetch(url, {redirect: "manual"})` against a local server that answers 301, 302, 303, 307, and 308 gives a response with that status and does not follow it.
 - F2: with `proxy: false` and `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` set to a local counting proxy, the request goes to the local target directly, and the counter stays 0.
@@ -169,6 +169,7 @@ Each F fact runs on Windows with Bun 1.4.3, with local servers on 127.0.0.1 only
 - F13: per cached catalog language: `index.aff` and `index.dic` equal their NFC form.
 - F14: `bun run build` emits `hunspell.wasm` as an asset with the SHA-256 of R2, and the built spell worker names it through `new URL(…, import.meta.url)`.
 - F15: `createHunspellFromStrings` runs under Bun 1.4.3 (the loader's Node path reads the module from the package folder). If it fails, the early report gives no fixture result, and the packaged gate alone decides step 2.
+- F16: the tree of github.com/rotemdan/hunspell-wasm at `8f755ef64e8b047b77b676f9698b3dfa5cb1887d` (read through `api.github.com`): whether it holds the Hunspell C++ source or a submodule commit of github.com/hunspell/hunspell, the Hunspell version, and the build files that make `wasm/hunspell.wasm`. The result decides the D18 source link text.
 - N1: in the package, the spell workers start under the CSP with `'wasm-unsafe-eval'` and `connect-src 'self'`, fetch `hunspell.wasm` from the app origin, and load English from the `?raw` chunk.
 - N2: in the package, `execCommand("insertText")` in the React-controlled textarea replaces the word, fires one `input` event, and one Ctrl+Z through live input restores the word.
 - N3: in the package, Shift+F10 and the Menu key with the caret in a marked word open the spelling menu. Elsewhere, the built-in menu with Cut, Copy, Paste, and Select all opens. A right-click on a mark opens the spelling menu (live input, the T082 harness).
@@ -188,12 +189,12 @@ Unverified points (they stay unverified until their test runs):
 - The XDG global file on WSL (R9), the Q11 force note, and the Q23 host line on WSL (R10).
 - `GIT_CONFIG_GLOBAL` set by a distro for `wsl.exe` processes (R9).
 - ICU dictionary word breaks for Thai, Lao, Khmer, Myanmar, and CJK text (R6).
-- Whether the hunspell-wasm repository at `8f755ef` holds the Hunspell sources and the build files of `hunspell.wasm`, and which Hunspell version it builds (plan D18).
+- Whether the hunspell-wasm repository at `8f755ef` holds the Hunspell sources and the build files of `hunspell.wasm`, and which Hunspell version it builds (F16, plan D18).
 - The legal readings of a run-time download (R3) and of the LGPL-2.1 use of `hunspell.wasm` inside the application bundle (R2).
 - The NFC state of each catalog dictionary (F13).
 
 ## R13 Results
 
-The results of F1 to F15 and N1 to N8 go here when WP1, WP4, WP5, and WP8 run them. The packaged gate records each run of each language here: the date, the build, the WebView2 runtime version, the baseline, the peak, the increase, the load time, and the fixture count.
+The results of F1 to F16 and N1 to N8 go here when WP1, WP4, WP5, and WP8 run them. The packaged gate records each run of each language here: the date, the build, the WebView2 runtime version, the baseline, the peak, the increase, the load time, and the fixture count.
 
 Measurements before the tests (2026-10-22): the R2 tables (Edge 155, Hunspell and nspell; Bun 1.4.3, nspell), the R6 CSP probes, and the R6 segmentation time.

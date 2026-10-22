@@ -4,7 +4,7 @@
 // T070, T322, T336, and T341: the feature 001 history rules on the feature 002 operations (feature 002 tasks.md T049, plan.md P7).
 // A case keeps its 001 assertion where feature 002 keeps the rule. Feature 002 replaces the 100-row page, its boundaries, and its page bounds.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { appendFileSync, chmodSync, existsSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { HISTORY_BODY_BYTES } from "../../src/contracts/envelope";
@@ -22,7 +22,7 @@ import { printOrigin } from "../origin";
 import { FIXED_IDENTITY, FIXTURE_ROOT, fixtureDir, fixtureEnv, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { cachedF16History } from "../windows/fixture-cache";
 import { buildF01, buildF17, buildF19, F16_OBJECT_LIMIT, type Built, type F16HistoryVariant, type F19Variant } from "./fixtures";
-import { GIT } from "./git-binary";
+import { fixtureGitPath, GIT } from "./git-binary";
 import { refState } from "./git-oracle";
 import { isLoad, isTextRead, load, openView, rows, type Loaded, type Opened, type ViewRow } from "./history-view-harness";
 import { caseTest, once, openService, type Service, type ServiceResponse } from "./service-harness";
@@ -635,7 +635,7 @@ describe("missing objects (001 contract §7 \"Missing objects\")", () => {
         const ident = `${FIXED_IDENTITY.name} <${FIXED_IDENTITY.email}> 1767225600 +0000`;
         const tip = git(clone, ["hash-object", "-t", "commit", "-w", "--stdin"], `tree ${tree}\nparent ${missing}\nauthor ${ident}\ncommitter ${ident}\n\nmissing parent\n`).toString().trim();
         git(clone, ["update-ref", "refs/heads/main", tip]);
-        const catFile = () => Bun.spawnSync([gitPath(), "--no-lazy-fetch", "cat-file", "-e", missing], { cwd: clone, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" }).exitCode;
+        const catFile = () => Bun.spawnSync([fixtureGitPath(gitPath()), "--no-lazy-fetch", "cat-file", "-e", missing], { cwd: clone, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" }).exitCode;
         expect(catFile()).not.toBe(0);
         const loaded = (await checkout(service, clone)).loaded!;
         expect({ state: loaded.state, code: loaded.code, reason: loaded.result?.reason }).toEqual({ state: "failed", code: "OBJECT_MISSING", reason: "object-missing" });
@@ -927,6 +927,69 @@ describe("failed history steps (001 contract §7 \"Missing objects\")", () => {
           expect(await pending).toMatchObject({ state: "failed", code: "REPOSITORY_UNAVAILABLE", result: { remedy: { text: DAMAGED_STORE_REMEDY, command: null } } });
           expect(marked).toEqual([workspace.repositoryId]);
         } finally {
+          release();
+        }
+      }),
+    TIMEOUT_MS,
+  );
+
+  // T386: a held history load that ends after the workspace release must not recreate the reader state of the released `repositoryId`.
+  caseTest(
+    "T386",
+    "T386: a history load that marks the workspace unavailable after its release, a later hint, and a later listing tuple read keep no reader state of the released workspace",
+    ["shell-double"],
+    () =>
+      withService("t386-late-mark", async (service) => {
+        const { repo, oids, loose } = handHistory("t386-late-mark");
+        const signal = new AbortController().signal;
+        const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", gitPath()), executablePath: gitPath() });
+        if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation: probed.installation, signal });
+        if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+        const workspace = registrations.get(registered.result.repositoryId)!;
+        const trust = createTrust({ runner: service.runner, environment: serviceEnv() });
+        const reader = createWorkspaceReader({ runner: service.runner, trust });
+        const responses = new Map<string, { state: string; code?: string; result?: unknown }>();
+        const registry = createOperationRegistry((response) => void (response.requestId !== null && responses.set(response.requestId, response as never)), () => {}, createSessionLog(), service.runner);
+        const views = createHistoryViews({
+          runner: service.runner,
+          trust,
+          listingTuple: reader.listingTuple,
+          markUnavailable: reader.markUnavailable,
+          registry,
+          viewCommits: LIMITS.HISTORY_VIEW_COMMITS,
+          reject: (requestId, code) => void responses.set(requestId, { state: "rejected", code }),
+        });
+        const opened = await views.open({ operationId: crypto.randomUUID(), signal, installation: probed.installation, workspace, generation: workspace.generation }, "current");
+        expect(opened.result).toBe("succeeded");
+        const { viewId } = opened.value as { viewId: string };
+        const send = async (request: Record<string, unknown>, run: (request: never) => void) => {
+          const requestId = crypto.randomUUID();
+          run({ requestId, repositoryId: workspace.repositoryId, ...request } as never);
+          await waitFor(`response ${requestId}`, () => responses.has(requestId));
+          return responses.get(requestId)!;
+        };
+        expect(await send({ payload: { viewId, need: { end: true } } }, (r) => views.load(r))).toMatchObject({ state: "succeeded", result: { rows: 6, complete: true } });
+        const release = service.runner.holdStart(once(isTextRead));
+        // A reader state holds `refFiles`. Only `stateOfWorkspace` in `status.ts` sets one.
+        const sets = spyOn(Map.prototype, "set");
+        try {
+          const pending = send({ payload: { viewId, mode: "full", at: { row: 0 }, count: 6, text: "rows" } }, (r) => views.rows(r));
+          await waitFor("cat-file --batch-command call", () => service.runner.calls.some(isTextRead));
+          rmSync(loose(oids.H1), { force: true });
+          // Session onRelease order: the reader, then the trust store.
+          reader.release(workspace.repositoryId);
+          trust.release(workspace);
+          sets.mockClear();
+          release();
+          expect(await pending).toMatchObject({ state: "failed", code: "REPOSITORY_UNAVAILABLE" });
+          reader.hint(workspace.repositoryId, true, null);
+          expect(await reader.listingTuple(workspace, crypto.randomUUID(), signal)).toBeNull();
+          const recreated = sets.mock.calls.filter(([key, value]) => key === workspace.repositoryId && typeof value === "object" && value !== null && "refFiles" in value);
+          expect(recreated.length).toBe(0);
+        } finally {
+          sets.mockRestore();
           release();
         }
       }),

@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_HOME, FIXTURE_ROOT, fixtureEnv, ownedGit, realGlobalConfigDigests, removeFixtureRoot, removeTree } from "./fixture-root";
 import { buildF07, buildF08, buildF15, buildF18, put } from "./fixtures";
-import { GIT } from "./git-binary";
+import { fixtureGitPath, GIT } from "./git-binary";
 
 printOrigin("./fixture-root", import.meta.dir);
 printOrigin("./fixtures", import.meta.dir);
@@ -43,7 +43,7 @@ const redact = (s: string) => s.replaceAll(FIXTURE_ROOT, "<root>").replaceAll(FI
 
 function spawn(dir: string, args: string[], extra: Record<string, string> = {}): Result {
   try {
-    const p = Bun.spawnSync([git, "--no-lazy-fetch", ...args], { cwd: dir, env: fixtureEnv({ LC_ALL: "C", ...extra }), stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: DEADLINE_MS });
+    const p = Bun.spawnSync([fixtureGitPath(git), "--no-lazy-fetch", ...args], { cwd: dir, env: fixtureEnv({ LC_ALL: "C", ...extra }), stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: DEADLINE_MS });
     return { exit: p.exitCode ?? `signal ${p.signalCode}`, stdout: redact(p.stdout.toString()), stderr: redact(p.stderr.toString()) };
   } catch (e) {
     return { exit: `spawn-failed ${(e as { code?: string }).code ?? "error"}`, stdout: "", stderr: "" };

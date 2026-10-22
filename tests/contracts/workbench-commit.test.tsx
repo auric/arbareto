@@ -588,6 +588,13 @@ describe("hunk buttons (FR-037)", () => {
     expect(call.args[1]).toEqual({ comparisonId: fixtureId(0x7ff), hunkId: fixtureId(0x701), snapshotId: expect.any(String), direction: "stage" });
   });
 
+  test("T389: the diff body Tab stop is a group with the accessible name Diff", async () => {
+    await shownDiff();
+    expect(diffBody().getAttribute("role")).toBe("group");
+    expect(diffBody().getAttribute("aria-label")).toBe("Diff");
+    expect(diffBody().tabIndex).toBe(0);
+  });
+
   test("a staged diff shows Unstage hunk", async () => {
     await shownDiff("staged");
     expect(buttons("Unstage hunk", commitView()!)).toHaveLength(2);

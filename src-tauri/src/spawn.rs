@@ -340,7 +340,7 @@ impl Suspended<'_> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     use std::os::windows::io::AsRawHandle;
@@ -723,7 +723,7 @@ mod tests {
     }
 
     /// The image file name of a process, without closing or ending it.
-    fn image_name(pid: u32) -> Option<String> {
+    pub(crate) fn image_name(pid: u32) -> Option<String> {
         // SAFETY: the call returns a new handle or fails.
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
         // SAFETY: OpenProcess returned a new handle that nothing else owns.

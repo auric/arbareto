@@ -30,8 +30,8 @@ export type Clock = {
   clearTimeout(id: unknown): void;
 };
 export type FocusSource = { hasFocus(): boolean; subscribe(listener: (focused: boolean) => void): () => void };
-/** The feature 002 history view. Its `openHistory` request goes through `track`, so it counts as a read of the workspace. */
-export type HistoryParticipant = { open(): unknown; refresh(): unknown };
+/** The feature 002 history view. Its `openHistory` request goes through `track`, so it counts as a read of the workspace. `openedSeq` gives `HistoryState.openedSeq`. */
+export type HistoryParticipant = { open(): unknown; refresh(): unknown; openedSeq(): number };
 
 // The T331 `ReadComparisonResult` type is on another branch. These are the only fields that this module reads.
 type ComparisonHunk = { hunkId: string; digest: string };
@@ -136,7 +136,9 @@ const browserFocus: FocusSource = {
 export function createRequests({ bridge, clock = browserClock, focus = browserFocus, history }: { bridge: RequestBridge; clock?: Clock; focus?: FocusSource; history?: HistoryParticipant }) {
   let state = INITIAL;
   const listeners = new Set<() => void>();
+  // A patch without a changed field keeps the state object and notifies no listener (T385).
   const set = (patch: Partial<RequestState>) => {
+    if ((Object.keys(patch) as (keyof RequestState)[]).every((key) => Object.is(patch[key], state[key]))) return;
     state = { ...state, ...patch };
     for (const listener of listeners) listener();
   };
@@ -176,6 +178,8 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     // A pending comparison read or a pending reconciling read never keeps a capability (contract §8).
     if (!result || !workspace || !shown || shown.selectionId !== latestSelectionId || next.comparison?.state !== "succeeded" || reconciling !== null || blocked(workspace)) return null;
     if (shown.snapshotId !== workspace.snapshotId || shown.generation !== workspace.generation || result.snapshotId !== workspace.snapshotId) return null;
+    const kept = state.capability;
+    if (kept?.comparisonId === result.comparisonId && kept.snapshotId === workspace.snapshotId && kept.repositoryGeneration === workspace.generation) return kept;
     return { comparisonId: result.comparisonId, snapshotId: workspace.snapshotId, repositoryGeneration: workspace.generation };
   }
   const update = (patch: Partial<RequestState>) => {
@@ -261,7 +265,9 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     if (refresh && response.state === "succeeded" && result.recoveryState === "ready") sessionBlocked = false;
     const headChanged = observedHead !== null && !sameHead(observedHead, result.head);
     observedHead = result.head;
-    if (state.headRead === null || seq > state.headRead.seq) set({ headRead: { head: result.head, seq } });
+    // The "References changed" notice reads only `head` and whether `seq` is above `openedSeq`. An equal head above it changes neither.
+    const headKept = state.headRead !== null && sameHead(state.headRead.head, result.head) && state.headRead.seq > (history?.openedSeq() ?? 0);
+    if (!headKept && (state.headRead === null || seq > state.headRead.seq)) set({ headRead: { head: result.head, seq } });
     // plan.md Refresh row: `readRefs` follows each full status result. A WSL poll result sends none.
     // A changed HEAD sends one, so the feature 002 "References changed" notice can show (contract Δ8).
     if (headChanged || (result.readKind === "full" && !(isPoll && result.location.kind === "wsl"))) requestRefs();

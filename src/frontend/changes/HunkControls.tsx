@@ -3,7 +3,7 @@
 
 import { ArrowDown01Icon, ArrowUp01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { Fragment, useId, useRef, useState, type RefObject } from "react";
+import { Fragment, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import type { ChangeEntry, Comparison, WorkspaceSnapshot } from "../../contracts/envelope";
 import { WarningIcon } from "../app/NoticeBand";
 import type { BridgeResponse, createBridge } from "../bridge";
@@ -291,7 +291,10 @@ export function HunkControls(props: HunkControlsProps) {
     if ((direction === "unstage") !== unstage || lineReason !== null || picked === null || lineHunk === undefined) return;
     void act({ hunk: lineHunk, ordinals: picked.lines });
   };
-  if (props.lines) props.lines.action.current = runLines;
+  // React forbids a ref write during render. S and U call the action of the committed render.
+  useLayoutEffect(() => {
+    if (props.lines) props.lines.action.current = runLines;
+  });
   const lineCount = range === null || rows === null ? 0 : (changeRows(rows, range)?.length ?? 0);
 
   return (

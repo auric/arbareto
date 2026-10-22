@@ -8,7 +8,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { canaryRuns, fixtureChecks, git1, TIMEOUT } from "./fixture-checks";
 import { FIXTURE_ROOT, fixtureEnv, ownedGit, useFixtureRoot } from "./fixture-root";
-import { describeGit } from "./git-binary";
+import { describeGit, fixtureGitPath } from "./git-binary";
 import { hookListArgs } from "./git-oracle";
 import * as F from "./fixtures";
 
@@ -96,7 +96,7 @@ describeGit("fixture builders: F10 to F12 and F14", (git) => {
       const repo = join(b.root, "repo");
       builtRepos.push(repo);
       // The child inherits the hook output, so the run gets no pipe that the child would hold open.
-      const run = Bun.spawnSync([git, "hook", "run", "post-commit"], { cwd: repo, env: fixtureEnv(), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+      const run = Bun.spawnSync([fixtureGitPath(git), "hook", "run", "post-commit"], { cwd: repo, env: fixtureEnv(), stdin: "ignore", stdout: "ignore", stderr: "ignore" });
       expect(run.exitCode).toBe(0);
       const host = require(join(import.meta.dir, process.platform === "win32" ? "win32.ts" : "linux.ts")) as typeof import("./win32");
       const records = readdirSync(join(b.root, b.facts.notes.records as string)).map((name) => name.split("-").map(BigInt) as [bigint, bigint]);

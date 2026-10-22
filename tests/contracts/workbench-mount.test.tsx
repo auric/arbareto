@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, afterEach, beforeAll, describe, expect, mock, spyOn, test } from "bun:test";
-import { act, useEffect, type ReactNode } from "react";
+import { act, Profiler, useEffect, type ReactNode } from "react";
 import type { ChangeEntry, Environment, WorkspaceSnapshot } from "../../src/contracts/envelope";
 import type { OnProgress } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
@@ -215,6 +215,52 @@ describe("start", () => {
     } finally {
       if (original) Object.defineProperty(globalThis.navigator, "clipboard", original);
       else delete (globalThis.navigator as { clipboard?: unknown }).clipboard;
+    }
+  });
+});
+
+// T385: a no-change poll renders nothing. The Profiler counts each commit of the workbench tree.
+describe("change poll", () => {
+  test("10 retained polls with the same snapshotId commit no render", async () => {
+    const focus = spyOn(document, "hasFocus").mockReturnValue(true);
+    try {
+      const ticks: (() => void)[] = [];
+      const clock = { ...NO_POLL, setInterval: (run: () => void) => (ticks.push(run), 0) };
+      const double = bridgeDouble();
+      const host = document.body.appendChild(document.createElement("div"));
+      const root = createRoot(host);
+      let commits = 0;
+      await act(async () =>
+        root.render(
+          <Profiler id="workbench" onRender={() => void commits++}>
+            <Workbench bridge={double.bridge as never} restored={Promise.resolve(succeeded(REGISTRATION)) as never} ChangesPane={ChangesPaneMount} ComparisonView={ComparisonViewMount} HistoryView={HistoryViewMount} clock={clock} />
+          </Profiler>,
+        ),
+      );
+      unmounts.push(async () => {
+        await act(async () => root.unmount());
+        host.remove();
+      });
+      await settle();
+      await serveHistory(double);
+      const shown = snapshot();
+      await resolve(double.pending("readWorkspace"), succeeded(shown));
+      expect(ticks).toHaveLength(1);
+      async function poll() {
+        const reads = double.calls.filter((c) => c.operation === "readWorkspace").length;
+        await act(async () => ticks[0]!());
+        const sent = double.calls.filter((c) => c.operation === "readWorkspace");
+        expect(sent).toHaveLength(reads + 1);
+        expect(sent.at(-1)!.args[1]).toEqual({ refresh: false, check: "changes" });
+        await resolve(sent.at(-1)!, succeeded({ ...shown, readKind: "retained" }));
+      }
+      // The first read went out before the history view opened. The first poll records the HEAD for the notice (contract Δ8).
+      await poll();
+      const before = commits;
+      for (let i = 0; i < 10; i++) await poll();
+      expect(commits - before).toBe(0);
+    } finally {
+      focus.mockRestore();
     }
   });
 });

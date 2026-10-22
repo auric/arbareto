@@ -128,6 +128,22 @@ describe("exclusion (T106)", () => {
     expect(exclusion.holds(e.workspace.repositoryId)).toBe(false);
   });
 
+  // T384, contract §6 "Registration reuse and release": a replaced workspace leaves when its slot frees, also after a refusal.
+  test("every freed slot calls freed with its repositoryId after the slot is free: an end, a refusal reply, and a refused started frame", async () => {
+    const replies: (() => Reply | Promise<Reply>)[] = [() => ({ markerId: crypto.randomUUID() }), () => ({ busy: true }), () => Promise.reject(new RunnerRefusal("UNKNOWN_TARGET"))];
+    const { runner } = shell(() => replies.shift()!());
+    const freed: [string, boolean][] = [];
+    const exclusion = createExclusion(runner, undefined, (repositoryId) => freed.push([repositoryId, exclusion.holds(repositoryId)]));
+    const [ended, busy, refused] = [entry(), entry(), entry()];
+    const entered = await exclusion.enter(ended);
+    expect(freed).toEqual([]);
+    if (!entered.ok) throw new Error("not entered");
+    entered.end(false);
+    await exclusion.enter(busy);
+    await exclusion.enter(refused);
+    expect(freed).toEqual([ended, busy, refused].map((e) => [e.workspace.repositoryId, false]));
+  });
+
   test("end runs once, so a second end sends no second ended frame", async () => {
     const { runner, frames } = shell(() => ({ markerId: crypto.randomUUID() }));
     const exclusion = createExclusion(runner);

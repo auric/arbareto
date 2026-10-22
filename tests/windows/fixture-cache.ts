@@ -7,6 +7,7 @@
 import { cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fixtureEnv, fixturePath, ownedPath, removeTree } from "../git/fixture-root";
+import { fixtureGitPath } from "../git/git-binary";
 import { buildF16History, buildF16Status, type Built, type F16HistoryVariant, type F16PageVariant } from "../git/fixtures";
 import { sha256 } from "../git/git-oracle";
 import { acquireLock, builderDigest, PERF_CACHE_ROOT } from "./perf-fixtures";
@@ -15,7 +16,7 @@ import { acquireLock, builderDigest, PERF_CACHE_ROOT } from "./perf-fixtures";
 const SOURCES = ["../git/fixtures.ts", "../git/fixture-root.ts", "../git/git-oracle.ts", "fixture-cache.ts"].map((p) => join(import.meta.dir, p));
 
 function gitBuildOptions(git: string): string {
-  const proc = Bun.spawnSync([git, "version", "--build-options"], { cwd: PERF_CACHE_ROOT, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawnSync([fixtureGitPath(git), "version", "--build-options"], { cwd: PERF_CACHE_ROOT, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   if (proc.exitCode !== 0) throw new Error(`git version --build-options exited ${proc.exitCode}: ${proc.stderr.toString()}`);
   return proc.stdout.toString();
 }

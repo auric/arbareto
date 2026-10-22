@@ -6,6 +6,7 @@
 import { closeSync, cpSync, existsSync, lstatSync, openSync, readdirSync, readlinkSync, readSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import { fixtureEnv } from "./fixture-root";
+import { fixtureGitPath } from "./git-binary";
 
 // In-memory `ce_flags` bits from Git `read-cache-ll.h`. `ls-files --debug` prints that field in hexadecimal (builtin/ls-files.c `print_debug`). The debug format is not a stable interface, so T042 prints the Git version under test.
 const CE_STAGEMASK = 0x3000;
@@ -35,7 +36,7 @@ export interface RefState {
 
 // `config` holds `-c` arguments, such as the `disarm` list of a fixture.
 function git(gitPath: string, repo: string, args: string[], allowExit: number[] = [0], config: string[] = [], env: Record<string, string> = {}): Uint8Array {
-  const proc = Bun.spawnSync([gitPath, "--no-optional-locks", ...config, ...args], { cwd: repo, env: fixtureEnv(env), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawnSync([fixtureGitPath(gitPath), "--no-optional-locks", ...config, ...args], { cwd: repo, env: fixtureEnv(env), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   if (!allowExit.includes(proc.exitCode)) throw new Error(`oracle git ${args.join(" ")} exited ${proc.exitCode}: ${proc.stderr.toString()}`);
   return proc.stdout;
 }
@@ -158,7 +159,7 @@ export interface SubmoduleUpdateResult {
 // Git's own `submodule update --init --recursive` in a copy of `superDir`. `env` names the owned global file of the fixture.
 export function submoduleUpdateOracle(gitExe: string, superDir: string, copyDir: string, env: Record<string, string>): SubmoduleUpdateResult {
   cpSync(superDir, copyDir, { recursive: true });
-  const update = Bun.spawnSync([gitExe, "submodule", "update", "--init", "--recursive"], { cwd: copyDir, env: fixtureEnv(env), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const update = Bun.spawnSync([fixtureGitPath(gitExe), "submodule", "update", "--init", "--recursive"], { cwd: copyDir, env: fixtureEnv(env), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   return { exitCode: update.exitCode, ...submoduleState(gitExe, copyDir, env) };
 }
 

@@ -684,7 +684,7 @@
     "    if ($op eq 'create') {",
     "      my $name = take();",
     "      return put('error', 'other-error') unless $name =~ /\\Aarbareto-preview-[0-9A-Za-z._-]+\\z/;",
-    "      mkdir(\"/tmp/$name\", 0700) or return put('error', code($!));",
+    "      mkdir(\"/tmp/$name\", 0700) && mkdir(\"/tmp/$name/s\", 0700) && mkdir(\"/tmp/$name/c\", 0700) or return put('error', code($!));",
     "      return put('created');",
     "    }",
     "    if ($op eq 'remove') {",

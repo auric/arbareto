@@ -2155,6 +2155,15 @@ impl ProcessRequests {
         if let Some(bootstrap_id) = &target.bootstrap_id {
             self.contexts.permits(bootstrap_id, &arguments, now)?;
         }
+        // Feature 005 contract Δ6 (D9): the index of a shadow run, `<cwd>/.git/index` or `<cwd>/.git/exclude.index`.
+        let shadow_index = match (kind, shadow_index) {
+            (Kind::IgnorePreview, Some(frame::RunIgnorePreviewShadowIndex::Index)) => Some("index"),
+            (Kind::IgnorePreview, Some(frame::RunIgnorePreviewShadowIndex::Exclude)) => {
+                Some("exclude.index")
+            }
+            (Kind::IgnorePreview, None) => return Err(INVALID),
+            _ => None,
+        };
         // Contract §11 "Process launch": a WSL Git runs through the wrapper, and `-C` takes the Linux directory.
         let (wsl_command, full, environment) = match &target.wsl {
             Some((installation, directory)) => {
@@ -2165,6 +2174,7 @@ impl ProcessRequests {
                     directory,
                     policy,
                     index_file.as_deref(),
+                    shadow_index,
                     &arguments,
                     &input,
                     script,
@@ -2185,18 +2195,26 @@ impl ProcessRequests {
                 if matches!(policy, EnvironmentPolicy::Remote) {
                     putty::add_pair(&mut environment, &self.sync_settings());
                 }
-                // Feature 005 contract Δ6 (D9): the shadow context sets `GIT_INDEX_FILE` to `<cwd>/.git/index` or `exclude.index`.
-                // `GIT_DIR` names `<cwd>/.git`, so Git never finds a repository above the shadow folder.
-                if kind == Kind::IgnorePreview {
-                    let name = match shadow_index {
-                        Some(frame::RunIgnorePreviewShadowIndex::Index) => "index",
-                        Some(frame::RunIgnorePreviewShadowIndex::Exclude) => "exclude.index",
-                        None => return Err(INVALID),
-                    };
-                    let git_dir = target.current_dir.join(".git");
-                    environment
-                        .push(("GIT_INDEX_FILE".into(), git_dir.join(name).into_os_string()));
-                    environment.push(("GIT_DIR".into(), git_dir.into_os_string()));
+                // `GIT_DIR=.git` names `<cwd>/.git`, so Git never finds a repository above the shadow folder.
+                // Git `guess_repository_type`: `git init` makes a repository with a work tree only for `.git` or a value
+                // that ends in `/.git`, so a `\.git` path would give a bare repository.
+                if let Some(name) = shadow_index {
+                    let index = target.current_dir.join(".git").join(name);
+                    environment.push(("GIT_INDEX_FILE".into(), index.into_os_string()));
+                    environment.push(("GIT_DIR".into(), ".git".into()));
+                    // F15: Git for Windows caches the first `core.longpaths` value while it reads the system and global
+                    // files, so `-c core.longpaths=true` cannot win over theirs. The shadow reads neither file.
+                    let empty = target
+                        .current_dir
+                        .parent()
+                        .ok_or(INVALID)?
+                        .join(shadow::EMPTY_CONFIG);
+                    environment.retain(|(name, _)| {
+                        !crate::env_sanitize::name_is(name, "GIT_CONFIG_GLOBAL")
+                            && !crate::env_sanitize::name_is(name, "GIT_CONFIG_SYSTEM")
+                    });
+                    environment.push(("GIT_CONFIG_GLOBAL".into(), empty.clone().into_os_string()));
+                    environment.push(("GIT_CONFIG_SYSTEM".into(), empty.into_os_string()));
                 }
                 (None, full, environment)
             }
@@ -2536,7 +2554,7 @@ impl ProcessRequests {
     }
 
     /// Feature 005 contract Δ6: the shadow target of an `ignorePreview` run (plan.md D9). The cwd is `<shadow>/s` or `<shadow>/c`.
-    /// An unbound `shadowId`, or one of another operation, gives `UNKNOWN_TARGET`. A WSL shadow run is not wired yet (WP5).
+    /// An unbound `shadowId`, or one of another operation, gives `UNKNOWN_TARGET`. A WSL shadow runs only the WSL Git of its distro.
     fn ignore_preview_target(
         &self,
         state: &State,
@@ -2556,22 +2574,31 @@ impl ProcessRequests {
             .get(shadow_id)
             .filter(|shadow| shadow.operation_id == operation_id)
             .ok_or(UNKNOWN)?;
-        let folder = match &shadow.folder {
-            ShadowFolder::Windows(path) => path.clone(),
-            // A WSL shadow run needs the §11 route; WP5 wires it.
-            ShadowFolder::Wsl(..) => return Err(INVALID),
-        };
-        let (program, identity) = match state.gits.get(git_id).ok_or(UNKNOWN)? {
-            Git::Windows { program, identity } => (program.clone(), *identity),
-            Git::Wsl(_) => return Err(INVALID),
-        };
+        let (program, git_identity, current_dir, wsl) =
+            match (&shadow.folder, state.gits.get(git_id).ok_or(UNKNOWN)?) {
+                (ShadowFolder::Windows(folder), Git::Windows { program, identity }) => {
+                    (program.clone(), Some(*identity), folder.join(sub), None)
+                }
+                // Contract §11 "Process launch": `wsl.exe` runs in the launch folder, and `-C` takes `/tmp/<shadow>/<s|c>`.
+                (ShadowFolder::Wsl(bound, name), Git::Wsl(installation))
+                    if bound == installation =>
+                {
+                    (
+                        wsl::wsl_program(),
+                        None,
+                        self.config.launch_directory.clone(),
+                        Some((installation.clone(), format!("/tmp/{name}/{sub}"))),
+                    )
+                }
+                _ => return Err(INVALID),
+            };
         Ok(Target {
             program,
-            current_dir: folder.join(sub),
+            current_dir,
             bootstrap_id: None,
-            git_identity: Some(identity),
+            git_identity,
             git_directory: None,
-            wsl: None,
+            wsl,
             clone: None,
             worktree: None,
         })
@@ -3304,6 +3331,7 @@ impl ProcessRequests {
         directory: &str,
         policy: EnvironmentPolicy,
         index_file: Option<&Path>,
+        shadow_index: Option<&str>,
         arguments: &[String],
         input: &RunInput,
         script: bool,
@@ -3330,6 +3358,18 @@ impl ProcessRequests {
         if script {
             let base = &self.config.base_environment;
             return wsl::matching_probe_command(installation, &unit, arguments, base, stdin);
+        }
+        if let Some(index) = shadow_index {
+            let base = &self.config.base_environment;
+            return wsl::shadow_command(
+                installation,
+                &unit,
+                directory,
+                index,
+                arguments,
+                base,
+                stdin,
+            );
         }
         wsl::git_command(
             installation,
@@ -13754,6 +13794,86 @@ pub(crate) mod tests {
         );
     }
 
+    /// Feature 005 contract Δ6, Δ11: a WSL shadow run takes the cwd `/tmp/<shadow>/<s|c>`, `--git-dir=.git`, and the shadow index
+    /// in mode `read`. Its arrays are the Windows arrays without `-c core.longpaths=true`.
+    #[test]
+    fn a_wsl_ignore_preview_run_takes_the_shadow_folder_and_the_shadow_index() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        let operation = uuid();
+        // The sweep lists no folder, then `scratch create` makes the folder.
+        wsl.host.push(0, b"Sswept\0");
+        wsl.host.push(0, b"Screated\0");
+        let call = uuid();
+        wsl.harness.send(json!({ "type": "shadow", "callId": call, "operationId": operation, "repositoryId": repository, "op": "create" }));
+        let shadow_id = wsl.harness.reply(&call)["shadowId"]
+            .as_str()
+            .expect("shadowId")
+            .to_string();
+        let name = match &wsl.harness.requests.state().shadows[&shadow_id].folder {
+            ShadowFolder::Wsl(_, name) => name.clone(),
+            ShadowFolder::Windows(_) => panic!("a WSL shadow"),
+        };
+        let run = |arguments: &[&str]| {
+            let call = uuid();
+            wsl.harness.send(json!({
+                "type": "run", "callId": call, "operationId": operation, "contextKind": "ignorePreview",
+                "gitInstallationId": git, "shadowId": shadow_id, "shadowRepository": "c", "shadowIndex": "exclude",
+                "arguments": arguments, "environmentPolicy": "read", "limits": { "deadlineMs": 30_000 },
+            }));
+            wsl.harness
+                .wait_reply(WAIT, |v| {
+                    v["callId"] == call.as_str() && (v["type"] == "exit" || v["type"] == "refused")
+                })
+                .expect("the last reply")
+                .1
+        };
+        let before = wsl.host.commands().len();
+        let windows_form = [
+            "--no-lazy-fetch",
+            "-c",
+            "core.longpaths=true",
+            "hash-object",
+            "-w",
+            "--no-filters",
+            "--stdin-paths",
+        ];
+        assert_eq!(
+            run(&windows_form)["code"],
+            "INVALID_REQUEST",
+            "a WSL shadow takes no core.longpaths"
+        );
+        assert_eq!(
+            wsl.host.commands().len(),
+            before,
+            "a refused run starts nothing"
+        );
+        // Without a test child, the host records the command and starts nothing, so the run ends refused.
+        let init = ["--no-lazy-fetch", "init", "-q", "--template="];
+        assert_eq!(run(&init)["code"], "PROCESS_OWNERSHIP_FAILED");
+        let commands = wsl.host.commands();
+        let launched = &commands.last().expect("the Git command").arguments;
+        let folder = format!("/tmp/{name}/c");
+        let tail: Vec<String> = [
+            "--no-lazy-fetch",
+            "-C",
+            &folder,
+            "--git-dir=.git",
+            "init",
+            "-q",
+            "--template=",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        assert!(launched.ends_with(&tail), "{launched:?}");
+        assert!(
+            launched.contains(&format!("{folder}/.git/exclude.index")),
+            "{launched:?}"
+        );
+        assert!(launched.contains(&"read".to_string()), "{launched:?}");
+    }
+
     /// Contract Δ6: an `ignorePreview` run refuses an unbound `shadowId` and an `indexFile` field (plan.md D9).
     #[test]
     fn an_ignore_preview_run_refuses_an_unbound_shadow_and_an_index_file() {
@@ -14013,6 +14133,128 @@ pub(crate) mod tests {
         })
     }
 
+    /// F15 (research.md R17): a shadow `checkout-index` of a path of 260 or more UTF-16 units, with an owned configuration
+    /// file of `scope` that holds `core.longpaths=false`. Returns the exit code of `checkout-index`.
+    fn long_shadow_checkout(git: &Path, scope: &str) -> Value {
+        let fixture = Fixture::new();
+        let home = fixture.path("home");
+        std::fs::create_dir_all(home.join(".config")).expect("home");
+        let mut environment = owned_environment(&home);
+        let longpaths_false = "[core]\n\tlongpaths = false\n";
+        let global = if scope == "global" {
+            longpaths_false
+        } else {
+            ""
+        };
+        std::fs::write(home.join(".gitconfig"), global).expect("global configuration");
+        if scope == "system" {
+            let system = fixture.path("system.gitconfig");
+            std::fs::write(&system, longpaths_false).expect("system configuration");
+            environment.retain(|(name, _)| name.as_os_str() != "GIT_CONFIG_NOSYSTEM");
+            environment.push(("GIT_CONFIG_SYSTEM".into(), system.into_os_string()));
+        }
+        let harness = Harness::new(
+            fixture,
+            Vec::new(),
+            environment.clone(),
+            Duration::from_millis(WALK_DEADLINE_MS),
+        );
+        let repository = harness.fixture.path("repo");
+        std::fs::create_dir(&repository).expect("repository folder");
+        let mut init = Command::new(git);
+        init.args(["init", "--quiet"])
+            .current_dir(&repository)
+            .env_clear()
+            .envs(environment.iter().map(|(k, v)| (k, v)));
+        assert_eq!(run_fixture(&mut init, WAIT).0, 0, "git init");
+        let git_id = harness.register_git(git);
+        let repository_id = harness.register_repository(&git_id, &repository);
+        let (operation, call) = (uuid(), uuid());
+        harness.send(json!({ "type": "shadow", "callId": call, "operationId": operation, "repositoryId": repository_id, "op": "create" }));
+        let shadow_id = harness.reply(&call)["shadowId"]
+            .as_str()
+            .expect("shadowId")
+            .to_string();
+        let run = |arguments: &[&str], input: &[u8]| {
+            let call = uuid();
+            let mut body = json!({
+                "type": "run", "callId": call, "operationId": operation, "contextKind": "ignorePreview",
+                "gitInstallationId": git_id, "shadowId": shadow_id, "shadowRepository": "s", "shadowIndex": "index",
+                "arguments": arguments, "environmentPolicy": "read", "limits": { "deadlineMs": 30_000 },
+            });
+            if !input.is_empty() {
+                body["input"] = json!(encode(input));
+            }
+            harness.send(body);
+            let exit = harness.exit(&call, WAIT).expect("exit").1["exitCode"].clone();
+            let stdout = String::from_utf8(harness.output(&call, "stdout")).expect("UTF-8");
+            (exit, stdout)
+        };
+        let init = ["--no-lazy-fetch", "init", "-q", "--template="];
+        assert_eq!(run(&init, b"").0, json!(0));
+        let hash = [
+            "--no-lazy-fetch",
+            "hash-object",
+            "-w",
+            "--no-filters",
+            "--stdin",
+        ];
+        let (exit, oid) = run(&hash, b"x\n");
+        assert_eq!(exit, json!(0));
+        let long = format!("{}/{}/f.txt", "d".repeat(120), "e".repeat(120));
+        let entry = format!("100644 {}\t{long}\0", oid.trim());
+        let update = ["--no-lazy-fetch", "update-index", "-z", "--index-info"];
+        assert_eq!(run(&update, entry.as_bytes()).0, json!(0));
+        let checkout = [
+            "--no-lazy-fetch",
+            "-c",
+            "core.longpaths=true",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.eol=lf",
+            "checkout-index",
+            "-a",
+            "-f",
+        ];
+        let exit = run(&checkout, b"").0;
+        let shadow = std::fs::read_dir(harness.fixture.path("launch").join(shadow::PREVIEW))
+            .expect("preview")
+            .filter_map(Result::ok)
+            .next()
+            .expect("the shadow folder")
+            .path()
+            .join("s");
+        let target = shadow.join(&long);
+        assert!(
+            target.as_os_str().encode_wide().count() >= 260,
+            "a long path"
+        );
+        println!("OBSERVATION F15: {scope} core.longpaths=false gives checkout-index exit {exit}");
+        if exit == json!(0) {
+            assert_eq!(std::fs::read(&target).expect("checked out"), b"x\n");
+        }
+        exit
+    }
+
+    /// F15: a global `core.longpaths=false` never reaches the shadow, so `-c core.longpaths=true` decides.
+    #[test]
+    fn a_global_core_longpaths_false_never_reaches_a_long_shadow_checkout() {
+        let Some(git) = find_git() else {
+            return;
+        };
+        assert_eq!(long_shadow_checkout(&git, "global"), json!(0));
+    }
+
+    /// F15: a system-scope `core.longpaths=false` never reaches the shadow either.
+    #[test]
+    fn a_system_core_longpaths_false_never_reaches_a_long_shadow_checkout() {
+        let Some(git) = find_git() else {
+            return;
+        };
+        assert_eq!(long_shadow_checkout(&git, "system"), json!(0));
+    }
+
     /// Feature 005 contract Δ6: an `ignorePreview` run sets `GIT_DIR` to `<cwd>/.git`.
     /// So Git never uses a repository above the shadow folder, here one in the launch directory.
     #[test]
@@ -14046,7 +14288,9 @@ pub(crate) mod tests {
                 body["input"] = json!(encode(input));
             }
             fixture.harness.send(body);
-            fixture.harness.exit(&call, WAIT).expect("exit").1["exitCode"].clone()
+            let exit = fixture.harness.exit(&call, WAIT).expect("exit").1["exitCode"].clone();
+            let stdout = String::from_utf8(fixture.harness.output(&call, "stdout")).expect("UTF-8");
+            (exit, stdout)
         };
         let hash = [
             "--no-lazy-fetch",
@@ -14056,7 +14300,7 @@ pub(crate) mod tests {
             "--stdin",
         ];
         assert_ne!(
-            run(&hash, b"probe\n"),
+            run(&hash, b"probe\n").0,
             json!(0),
             "no repository at <cwd>/.git before init"
         );
@@ -14066,21 +14310,56 @@ pub(crate) mod tests {
             "no object above the shadow folder"
         );
         assert_eq!(
-            run(&["--no-lazy-fetch", "init", "-q", "--template="], b""),
+            run(&["--no-lazy-fetch", "init", "-q", "--template="], b"").0,
             json!(0)
-        );
-        assert_eq!(run(&hash, b"probe\n"), json!(0));
-        assert_eq!(
-            files_below(&outer),
-            before,
-            "the object goes into the shadow repository"
         );
         let shadow = std::fs::read_dir(launch.join("preview"))
             .expect("preview")
             .filter_map(Result::ok)
             .next()
             .expect("the shadow folder")
-            .path();
-        assert!(files_below(&shadow.join("s").join(".git").join("objects")) > 0);
+            .path()
+            .join("s");
+        // Git `guess_repository_type`: `git init` with `GIT_DIR` set makes a bare repository unless `GIT_DIR` is `.git` or ends in `/.git`.
+        let bare = fixture.git(&shadow, &["config", "--get", "core.bare"], WAIT);
+        assert_eq!(
+            bare,
+            (0, "false\n".to_string()),
+            "the shadow repository has a work tree"
+        );
+        let (exit, oid) = run(&hash, b"probe\n");
+        assert_eq!(exit, json!(0));
+        assert_eq!(
+            files_below(&outer),
+            before,
+            "the object goes into the shadow repository"
+        );
+        assert!(files_below(&shadow.join(".git").join("objects")) > 0);
+        let entry = format!("100644 {}\tkeep.txt\0", oid.trim());
+        let update = ["--no-lazy-fetch", "update-index", "-z", "--index-info"];
+        assert_eq!(run(&update, entry.as_bytes()).0, json!(0));
+        let checkout = [
+            "--no-lazy-fetch",
+            "-c",
+            "core.longpaths=true",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.eol=lf",
+            "checkout-index",
+            "-a",
+            "-f",
+        ];
+        assert_eq!(
+            run(&checkout, b"").0,
+            json!(0),
+            "checkout-index needs a work tree"
+        );
+        let after = fixture.git(&shadow, &["config", "--get", "core.worktree"], WAIT);
+        assert_eq!(after.0, 1, "no run writes core.worktree: {after:?}");
+        assert_eq!(
+            std::fs::read(shadow.join("keep.txt")).expect("checked out"),
+            b"probe\n"
+        );
     }
 }

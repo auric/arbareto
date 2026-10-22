@@ -131,13 +131,13 @@ export function createBridge(onSessionChange?: () => void, onTextScale?: (value:
     clearSyncPath: (payload: Payload<"clearSyncPath">, onProgress?: OnProgress) => call("clearSyncPath", {}, payload, onProgress),
     launchPuttygen: (onProgress?: OnProgress) => call("launchPuttygen", {}, {}, onProgress),
     // Feature 004 contract Δ1.
-    readBranches: (target: Target<"readBranches">, onProgress?: OnProgress) => call("readBranches", target, {}, onProgress),
-    readWorktrees: (target: Target<"readWorktrees">, onProgress?: OnProgress) => call("readWorktrees", target, {}, onProgress),
-    readGitSettings: (target: Target<"readGitSettings">, onProgress?: OnProgress) => call("readGitSettings", target, {}, onProgress),
-    reviewWorkbench: (target: Target<"reviewWorkbench">, payload: Payload<"reviewWorkbench">, onProgress?: OnProgress) =>
+    readBranches: <T extends Target<"readBranches">>(target: Exact<"readBranches", T>, onProgress?: OnProgress) => call("readBranches", target, {}, onProgress),
+    readWorktrees: <T extends Target<"readWorktrees">>(target: Exact<"readWorktrees", T>, onProgress?: OnProgress) => call("readWorktrees", target, {}, onProgress),
+    readGitSettings: <T extends Target<"readGitSettings">>(target: Exact<"readGitSettings", T>, onProgress?: OnProgress) => call("readGitSettings", target, {}, onProgress),
+    reviewWorkbench: <T extends Target<"reviewWorkbench">>(target: Exact<"reviewWorkbench", T>, payload: Payload<"reviewWorkbench">, onProgress?: OnProgress) =>
       call("reviewWorkbench", target, payload, onProgress),
-    runWorkbench: (target: Target<"runWorkbench">, payload: Payload<"runWorkbench">, onProgress?: OnProgress) => call("runWorkbench", target, payload, onProgress),
-    applyFiles: (target: Target<"applyFiles">, payload: Payload<"applyFiles">, onProgress?: OnProgress) => call("applyFiles", target, payload, onProgress),
+    runWorkbench: <T extends Target<"runWorkbench">>(target: Exact<"runWorkbench", T>, payload: Payload<"runWorkbench">, onProgress?: OnProgress) => call("runWorkbench", target, payload, onProgress),
+    applyFiles: <T extends Target<"applyFiles">>(target: Exact<"applyFiles", T>, payload: Payload<"applyFiles">, onProgress?: OnProgress) => call("applyFiles", target, payload, onProgress),
     openWorktree: (payload: Payload<"openWorktree">, onProgress?: OnProgress) => call("openWorktree", {}, payload, onProgress),
     revealPath: (payload: Payload<"revealPath">, onProgress?: OnProgress) => call("revealPath", {}, payload, onProgress),
     setSwitchChoice: (payload: Payload<"setSwitchChoice">, onProgress?: OnProgress) => call("setSwitchChoice", {}, payload, onProgress),

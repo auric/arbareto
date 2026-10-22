@@ -1,0 +1,5 @@
+{
+  "schema": "progress",
+  "expected": "valid",
+  "text": "{\"requestId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"state\":\"running\",\"phase\":\"delete-files\",\"counters\":{\"fileIndex\":64,\"fileCount\":200},\"stalled\":false}"
+}

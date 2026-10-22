@@ -54,7 +54,11 @@
         "worktree",
         "config",
         "ignore",
-        "stage-files"
+        "stage-files",
+        "blame",
+        "delete-files",
+        "ignore-save",
+        "preview"
       ]
     },
     "counters": {

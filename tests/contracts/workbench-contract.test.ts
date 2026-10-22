@@ -50,7 +50,7 @@ const b64 = (text: string) => Buffer.from(text).toString("base64");
 
 const NEW_RENDERER = ["readBranches", "readWorktrees", "readGitSettings", "reviewWorkbench", "runWorkbench", "applyFiles", "openWorktree", "revealPath"];
 const NEW_SHELL = ["setSwitchChoice", "chooseWorktreeFolder"];
-const WORKBENCH_ACTIONS = ["switch", "create-branch", "rename-branch", "delete-branch", "merge", "rebase", "choose-side", "mergetool", "ignore", "worktree-add", "worktree-remove", "worktree-prune", "config-save"];
+const WORKBENCH_ACTIONS = ["switch", "create-branch", "rename-branch", "delete-branch", "merge", "rebase", "choose-side", "mergetool", "ignore", "worktree-add", "worktree-remove", "worktree-prune", "config-save", "delete", "ignore-save"];
 // Contract Δ6: the close prompt names each of these.
 const STARTED_ACTIONS = [
   "switch",
@@ -68,6 +68,10 @@ const STARTED_ACTIONS = [
   "worktree-remove",
   "worktree-prune",
   "config-save",
+  // Feature 005 contract Δ2.
+  "delete-files",
+  "ignore-save-gitignore",
+  "ignore-save-exclude",
 ];
 const WORKBENCH_PHASES = ["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "config", "ignore", "stage-files"];
 
@@ -164,6 +168,18 @@ describe("contract Δ9 codes", () => {
       "config-in-include",
       "included",
       "unreadable-value",
+      // Feature 005 contract Δ9.
+      "conflicted",
+      "submodule",
+      "nested-repository",
+      "no-recycle-bin",
+      "long-path",
+      "nothing-to-delete",
+      "ignore-link",
+      "ignore-folder",
+      "ignore-not-utf8",
+      "ignore-nul",
+      "mixed-line-endings",
     ]);
     expect([...(E.UNTRACKED_IN_WAY_REASONS ?? [])]).toEqual(["untracked-in-way"]);
     expect([...(E.STASH_KEPT_REASONS ?? [])]).toEqual(["conflicts", "failed-apply", "failed-checkout", "not-found", "stash-changed"]);
@@ -289,6 +305,9 @@ describe("contract Δ3 payloads", () => {
   const review = (payload: unknown, side: "renderer" | "service" = "renderer") => check(request("reviewWorkbench", payload, gen()), side);
 
   const FORMS = [
+    // Feature 005 contract Δ3.
+    { action: "delete", snapshotId: id(), entryIds: [id(), id()], folder: b64("logs"), mode: "recycle" },
+    { action: "ignore-save", target: "gitignore", text: b64("/build/\n"), expected: { size: 7, sha256: DIGEST } },
     { action: "switch", target: { ref: "refs/heads/feature/x" }, choice: "keep" },
     { action: "switch", target: { ref: "refs/heads/main" }, choice: "stash" },
     { action: "switch", target: { track: { ref: "refs/remotes/origin/topic", name: "topic" } }, choice: "discard" },

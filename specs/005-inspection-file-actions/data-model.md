@@ -15,7 +15,7 @@ Each section names its source. Field names are contract names. "001 data-model Â
   - `pathBytes`: the base64 path bytes. For `renamed`, the new path.
   - `oldPathBytes`: the base64 old path for `renamed`, else absent.
   - `kind`: `submodule` when either mode is 160000, `link` when either mode is 120000, else `file`.
-- `completeness`: `complete`, or `limited` with `code` (`STATUS_LISTING_RECORDS`, `STATUS_LISTING_BYTES`, or `HISTORY_PAGE_BYTES`) and `shown`.
+- `completeness`: `complete`, or `limited` with `code` (`STATUS_LISTING_RECORDS`, `STATUS_LISTING_BYTES`, or `COMMIT_CHANGES_RESULT_BYTES`) and `shown`.
 - Retained only in the service: the raw record bytes and offsets, the modes, and the object IDs of each entry.
 - Validation: the raw grammar of plan D3 step 6. Status C, U, X, B, or another byte refuses the listing with `MALFORMED_GIT_OUTPUT`. Modes are six octal digits. OIDs match the object format. An added entry has the old mode 000000 and the zero OID; a deleted entry has the new mode 000000 and the zero OID.
 - Lifetime: until the next `readCommitChanges` of the view, a view release, or a registration release. Then `UNKNOWN_TARGET`.

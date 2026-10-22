@@ -1,0 +1,5 @@
+{
+  "schema": "open-submodule-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"not-submodule\"}"
+}

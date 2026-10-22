@@ -1,0 +1,8 @@
+{
+  "schema": "read-commit-changes-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"changesId\":\"0f0f0f0f-0000-4000-8000-000000000007\",\"viewId\":\"0f0f0f0f-0000-4000-8000-000000000006\",\"oid\":\"0123456789abcdef0123456789abcdef01234567\",\"parents\":[\"89abcdef0123456789abcdef0123456789abcdef\"],\"base\":{\"kind\":\"parent\",\"index\":0,\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\"},\"files\":[{\"fileId\":0,\"status\":\"copied\",\"pathBytes\":\"c3JjL2EudHM=\",\"kind\":\"file\"}],\"completeness\":{\"state\":\"complete\"}}",
+  "repair": {
+    "files.0.status": "modified"
+  }
+}

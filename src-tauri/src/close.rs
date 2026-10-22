@@ -116,6 +116,10 @@ pub enum Mutation {
     SaveGitSettings,
     StageFiles,
     UnstageFiles,
+    // Feature 005 contract Δ6.
+    DeleteFiles,
+    SaveGitignore,
+    SaveExclude,
 }
 
 impl Mutation {
@@ -167,6 +171,9 @@ impl Mutation {
                 A::WorktreeRemove => Mutation::RemoveWorktree,
                 A::WorktreePrune => Mutation::PruneWorktrees,
                 A::ConfigSave => Mutation::SaveGitSettings,
+                A::DeleteFiles => Mutation::DeleteFiles,
+                A::IgnoreSaveGitignore => Mutation::SaveGitignore,
+                A::IgnoreSaveExclude => Mutation::SaveExclude,
                 _ => return None,
             },
             _ => return None,
@@ -203,7 +210,10 @@ impl Mutation {
             | M::AddWorktree
             | M::RemoveWorktree
             | M::PruneWorktrees
-            | M::SaveGitSettings => StartedKind::Workbench,
+            | M::SaveGitSettings
+            | M::DeleteFiles
+            | M::SaveGitignore
+            | M::SaveExclude => StartedKind::Workbench,
             M::StageFiles | M::UnstageFiles => StartedKind::ApplyFiles,
             M::Clone => return None,
         })
@@ -244,6 +254,9 @@ impl Mutation {
             Mutation::SaveGitSettings => "Save Git settings",
             Mutation::StageFiles => "Stage files",
             Mutation::UnstageFiles => "Unstage files",
+            Mutation::DeleteFiles => "Delete files",
+            Mutation::SaveGitignore => "Save .gitignore",
+            Mutation::SaveExclude => "Save info/exclude",
         }
     }
 }
@@ -632,6 +645,10 @@ mod tests {
             (A::WorktreeRemove, "Remove worktree"),
             (A::WorktreePrune, "Prune worktrees"),
             (A::ConfigSave, "Save Git settings"),
+            // Feature 005 contract Δ6.
+            (A::DeleteFiles, "Delete files"),
+            (A::IgnoreSaveGitignore, "Save .gitignore"),
+            (A::IgnoreSaveExclude, "Save info/exclude"),
         ];
         let cases = workbench
             .map(|(action, name)| (StartedKind::Workbench, None, Some(action), name))

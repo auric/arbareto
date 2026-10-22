@@ -1140,6 +1140,7 @@ fn fact(records: &mut Records, components: usize, digest: bool, total: &mut usiz
             };
             Fact::File {
                 bound,
+                bytes: None,
                 digest: digested,
                 executable: Some(executable),
                 last_write: reply::last_write(last_write),

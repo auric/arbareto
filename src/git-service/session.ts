@@ -11,7 +11,9 @@ import { isWindows, NATIVE } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import { RunnerRefusal, type GitRunner, type SyncRunner, type WslRunner } from "./git-runner";
 import { createApprovals } from "./approvals";
+import { createBlameReader, type BlameOptions } from "./blame";
 import { createBranchesReader } from "./branches";
+import { createCommitChanges } from "./commit-changes";
 import { createCloner, type RouteTarget } from "./clone";
 import { createCommitter } from "./commit";
 import { createCommitReviewer } from "./commit-review";
@@ -178,7 +180,20 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const refs = createRefsReader({ runner, trust, listingTuple: reader.listingTuple });
   const tracking = createTrackingReader({ runner, trust, listingTuple: reader.listingTuple });
   const branches = createBranchesReader({ runner, trust, reader, listingTuple: reader.listingTuple });
-  const views = createHistoryViews({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable, registry, viewCommits: historyViewCommits, ...(historyProbeRuns === undefined ? {} : { probeRuns: historyProbeRuns }), reject: (requestId, code) => reject(requestId, code) });
+  // Feature 005 contract Δ8: a view release drops the retained commit listing of that view.
+  const commitChanges = createCommitChanges({ runner, trust });
+  const blames = createBlameReader({ runner, trust });
+  const views = createHistoryViews({
+    runner,
+    trust,
+    listingTuple: reader.listingTuple,
+    markUnavailable: reader.markUnavailable,
+    registry,
+    viewCommits: historyViewCommits,
+    ...(historyProbeRuns === undefined ? {} : { probeRuns: historyProbeRuns }),
+    reject: (requestId, code) => reject(requestId, code),
+    onRelease: (viewId) => commitChanges.dropView(viewId),
+  });
   const approvals = createApprovals(approvalClock);
   // Contract §5: comparison eviction invalidates its approvals.
   const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
@@ -217,6 +232,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       watchers.delete(workspace.repositoryId);
       scheduler.release(workspace.repositoryId);
       views.releaseRepository(workspace.repositoryId);
+      commitChanges.release(workspace.repositoryId);
+      blames.release(workspace.repositoryId);
       reader.release(workspace.repositoryId);
       comparisons.release(workspace.repositoryId);
       reviews.release(workspace.repositoryId);
@@ -406,7 +423,23 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const scheduleRead = (
     request: {
       requestId: string;
-      operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules" | "readTracking" | "reviewSync" | "reviewWorkbench" | "readBranches" | "readWorktrees" | "readGitSettings";
+      operation:
+        | "readWorkspace"
+        | "openHistory"
+        | "readRefs"
+        | "readTrust"
+        | "readComparison"
+        | "reviewCommit"
+        | "reviewSubmodules"
+        | "readTracking"
+        | "reviewSync"
+        | "reviewWorkbench"
+        | "readBranches"
+        | "readWorktrees"
+        | "readGitSettings"
+        | "readCommitChanges"
+        | "readCommitFile"
+        | "readBlame";
       repositoryId: string;
     },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
@@ -422,7 +455,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       repositoryId: request.repositoryId,
       signal,
       ...(selection === undefined ? {} : { selection }),
-      ...(request.operation === "reviewSubmodules" ? { deadline: false as const } : {}),
+      // Feature 005 contract Δ3 `readBlame`: each step has its own deadline, and the blame step takes HISTORY_PROCESS_DEADLINE_MS.
+      ...(request.operation === "reviewSubmodules" || request.operation === "readBlame" ? { deadline: false as const } : {}),
       run: (work) => run({ operationId, signal: work }).catch(() => failed),
       failed: (outcome) => outcome.result === "failed" || outcome.result === "deadline",
       reread: (target) => reread(target).catch(() => null),
@@ -797,6 +831,93 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     connect().catch((error: unknown) => finish(error instanceof RunnerRefusal ? error.code : "GIT_FAILED"));
   };
 
+  // The re-read of a failed inspection read (data-model §7 read rows).
+  const inspectionReread = (workspace: Workspace) => async (t: RereadTarget): Promise<ReadResult | null> => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" });
+  // A read that ends at acceptance with a result and no Git process.
+  const answered = (request: { requestId: string; operation: "readBlame" }, outcome: ReadResult) => {
+    const { operationId } = registry.start(request.operation, request.requestId);
+    registry.apply(operationId, { type: "valid-read" });
+    settleRead(operationId, outcome);
+  };
+
+  // Feature 005 contract Δ3 `readCommitChanges`. The view, the row, and the parent index decide at acceptance, and no Git process starts.
+  // Contract §5 "Pending reads": a new read of the workspace cancels each unfinished one.
+  const readCommitChanges: Handler<"readCommitChanges"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    if (request.repositoryGeneration !== workspace.generation) {
+      const { operationId } = registry.start("readCommitChanges", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+    }
+    const { viewId, oid, parent } = request.payload;
+    const target = views.commitTarget(request.repositoryId, viewId, oid);
+    if (target === null) return reject(request.requestId, "UNKNOWN_TARGET");
+    // Contract Δ3: a row without parents takes only parent 0.
+    if (parent >= Math.max(1, target.parents.length)) return reject(request.requestId, "INVALID_REQUEST");
+    // Contract Δ8: a new call drops the retained listing of the view at once.
+    commitChanges.dropView(viewId);
+    scheduleRead(
+      request,
+      (t) => commitChanges.readCommitChanges({ ...t, workspace, installation }, { viewId, oid, ...target }, parent),
+      inspectionReread(workspace),
+      { result: "failed", code: "GIT_FAILED" },
+      "readCommitChanges",
+    );
+  };
+
+  // Feature 005 contract Δ3 `readCommitFile`. The retained listing and the file ID decide at acceptance.
+  const readCommitFile: Handler<"readCommitFile"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const { changesId, fileId } = request.payload;
+    const found = commitChanges.entry(changesId, fileId);
+    if ("refused" in found || found.listing.repositoryId !== request.repositoryId) return reject(request.requestId, "refused" in found ? found.refused : "UNKNOWN_TARGET");
+    scheduleRead(
+      request,
+      (t) => commitChanges.readCommitFile({ ...t, workspace, installation }, changesId, fileId),
+      inspectionReread(workspace),
+      { result: "failed", code: "GIT_FAILED" },
+      "readCommitFile",
+    );
+  };
+
+  // Feature 005 contract Δ3 `readBlame`. The source decides at acceptance. No read gate: no command of the read loads the index (plan.md D2).
+  const readBlame: Handler<"readBlame"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const { source } = request.payload;
+    const options: BlameOptions = request.payload.options;
+    const progress = (operationId: string) => (counters: Record<string, number>) => registry.progress(operationId, "blame", counters);
+    let run: (t: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>;
+    if ("changesId" in source) {
+      const found = commitChanges.entry(source.changesId, source.fileId);
+      if ("refused" in found || found.listing.repositoryId !== request.repositoryId) return reject(request.requestId, "refused" in found ? found.refused : "UNKNOWN_TARGET");
+      // Plan.md D12 "Sources": a deleted row blames its path at the chosen parent.
+      const target = { commit: found.entry.status === "D" ? found.listing.base! : found.listing.oid, path: found.entry.path };
+      run = (t) => blames.readBlame({ ...t, workspace, installation }, target, options, progress(t.operationId));
+    } else if ("snapshotId" in source) {
+      const found = reader.entry(request.repositoryId, request.repositoryGeneration, source.snapshotId, source.entryId);
+      if (!found.ok) {
+        const { operationId } = registry.start("readBlame", request.requestId);
+        return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
+      }
+      const head = found.snapshot.head;
+      // Spec FR-053: an unborn HEAD has no history. No Git process starts.
+      if (head.state === "unborn") return answered(request, { result: "failed", code: "BLAME_UNAVAILABLE", value: { reason: "no-history" } });
+      const target = { commit: head.oid, path: new Uint8Array(Buffer.from(found.entry.pathBytes, "base64")) };
+      run = (t) => blames.readBlame({ ...t, workspace, installation }, target, options, progress(t.operationId));
+    } else {
+      const found = blames.before(request.repositoryId, source.blameId, source.line);
+      if ("refused" in found) return reject(request.requestId, found.refused);
+      if ("reason" in found) return answered(request, { result: "failed", code: "BLAME_UNAVAILABLE", value: { reason: found.reason } });
+      run = (t) => blames.readBefore({ ...t, workspace, installation }, found, options, progress(t.operationId));
+    }
+    scheduleRead(request, run, inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "readBlame");
+  };
+
   // `undefined`: a later task adds the handler. The request then gets SERVICE_UNAVAILABLE.
   const handlers: { [K in ServiceOperation]: Handler<K> | undefined } = {
     getEnvironment: (request) => {
@@ -931,10 +1052,10 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     },
     openWorktree,
     revealPath,
-    // Feature 005 contract Δ1: WP4 and WP5 add these handlers.
-    readCommitChanges: undefined,
-    readCommitFile: undefined,
-    readBlame: undefined,
+    readCommitChanges,
+    readCommitFile,
+    readBlame,
+    // Feature 005 contract Δ1: WP5 adds these handlers.
     readIgnoreFile: undefined,
     previewIgnore: undefined,
     openSubmodule: undefined,

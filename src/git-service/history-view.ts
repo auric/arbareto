@@ -63,6 +63,8 @@ export interface HistoryViewsOptions {
   // Contract Δ3 "Matching probe": the probe commits that each run must list. Only tests set other sets.
   probeRuns?: readonly ProbeRun[];
   reject(requestId: string, code: ErrorCode): void;
+  // Feature 005 contract Δ8: called once when a view ends, so the retained commit listing of that view goes.
+  onRelease?: (viewId: string) => void;
 }
 
 // Data-model §6: the one search of a view. Its `operationId` is the `searchId` (contract Δ2).
@@ -138,7 +140,7 @@ async function readRecords(runner: GitRunner, t: ProcessTarget, args: string[]):
 }
 
 // Contract Δ3 capture step 3: two LF-ended paths, relative to the worktree root, where Git ran.
-async function topologyPaths(runner: GitRunner, t: ProcessTarget): Promise<{ shallow: string; grafts: string } | Stop> {
+export async function topologyPaths(runner: GitRunner, t: ProcessTarget): Promise<{ shallow: string; grafts: string } | Stop> {
   const out = small();
   const exit = await readStep(runner, t, topologyPathArgs(), out);
   if (isStop(exit)) return exit;
@@ -250,7 +252,7 @@ export function objectStream(oids: readonly string[], objectFormat: ObjectFormat
   };
 }
 
-export function createHistoryViews({ runner, trust, listingTuple, markUnavailable, registry, viewCommits, probeRuns = MATCHING_PROBE_RUNS, reject }: HistoryViewsOptions) {
+export function createHistoryViews({ runner, trust, listingTuple, markUnavailable, registry, viewCommits, probeRuns = MATCHING_PROBE_RUNS, reject, onRelease }: HistoryViewsOptions) {
   let current: View | null = null;
   // Contract Δ3: the probe runs before the first search of each `gitInstallationId` in a service session. A failed probe gives no answer to keep.
   const probes = new Map<string, "pass" | "mismatch">();
@@ -277,6 +279,7 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     if (current === view) current = null;
     for (const operationId of [...view.operations]) registry.cancel(operationId);
     notify(view);
+    onRelease?.(view.viewId);
   }
 
   const find = (repositoryId: string, viewId: string): View | null => (current !== null && current.viewId === viewId && current.workspace.repositoryId === repositoryId ? current : null);
@@ -983,6 +986,16 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
       const { operationId } = registry.start("closeHistory", request.requestId);
       registry.apply(operationId, { type: "valid-read" });
       finish(null, operationId, { result: "succeeded" });
+    },
+
+    // Feature 005 contract Δ3 `readCommitChanges` "Target": a served row of the current view. The parents come in Git order from the
+    // view topology, and the view shallow set decides `shallow` (plan.md D3 step 1). Null for another view, a released view, or no row.
+    commitTarget(repositoryId: string, viewId: string, oid: string): { parents: string[]; shallow: boolean } | null {
+      const view = find(repositoryId, viewId);
+      if (view === null || !isObjectId(oid, view.workspace.objectFormat)) return null;
+      const row = view.topology.rowOf(oid);
+      if (row < 0 || row >= view.rows) return null;
+      return { parents: view.topology.parents(row), shallow: view.shallow.kind === "file" && view.shallow.commits.has(oid) };
     },
 
     // A workspace release ends its view.

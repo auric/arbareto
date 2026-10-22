@@ -257,6 +257,62 @@ function treeItem(oid: string, objectFormat: ObjectFormat): string {
 // Contract §7: status and diff reads pass `--ignore-submodules=dirty`. Research R3: the prefix and relative options override the diff UI keys.
 const PATCH_OPTIONS = ["-p", "--no-textconv", "--no-ext-diff", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/", "--ignore-submodules=dirty"] as const;
 
+// Feature 005 contract Δ3 `readCommitChanges`: the two-tree form, because `diff-tree <merge>` prints nothing (research.md R2).
+// `-l1000` fixes the rename limit, so `diff.renameLimit` cannot change the listing (research.md R16 F2).
+export function commitChangesArgs(base: string, oid: string, objectFormat: ObjectFormat): string[] {
+  return read("diff-tree", "-r", "-z", "--raw", "-M", "-l1000", treeItem(base, objectFormat), treeItem(oid, objectFormat));
+}
+
+// Feature 005 contract Δ3 `readCommitFile`: `paths` is the path, or the new path and the old path of a rename.
+export function commitPatchArgs(base: string, oid: string, objectFormat: ObjectFormat, paths: readonly string[]): string[] {
+  return read("diff-tree", ...PATCH_OPTIONS, "-M", "-l1000", treeItem(base, objectFormat), treeItem(oid, objectFormat), "--", ...pathItems(paths));
+}
+
+export function commitNumstatArgs(base: string, oid: string, objectFormat: ObjectFormat, paths: readonly string[]): string[] {
+  return read("diff-tree", ...NUMSTAT_OPTIONS, "-M", "-l1000", treeItem(base, objectFormat), treeItem(oid, objectFormat), "--", ...pathItems(paths));
+}
+
+// Feature 005 contract Δ3 `readBlame` step 1: one record with the mode, the type, the object ID, and the size (git-ls-tree(1) `--long`).
+export function blameTreeArgs(oid: string, objectFormat: ObjectFormat, path: string): string[] {
+  return read("ls-tree", "-z", "-l", "--full-tree", treeItem(oid, objectFormat), "--", pathItem(path));
+}
+
+// Step 2: the binary fact (spec FR-061). `git diff` of two trees loads no index (builtin/diff.c `builtin_diff_tree`).
+export function blameNumstatArgs(emptyTree: string, oid: string, objectFormat: ObjectFormat, path: string): string[] {
+  return read("diff", "--numstat", "-z", "--no-textconv", "--no-ext-diff", "--no-relative", "--no-renames", treeItem(emptyTree, objectFormat), treeItem(oid, objectFormat), "--", pathItem(path));
+}
+
+// Step 3: the blob bytes. It names no pathspec.
+export function blobArgs(oid: string, objectFormat: ObjectFormat): string[] {
+  return [NO_LAZY_FETCH, "--no-optional-locks", "cat-file", "blob", treeItem(oid, objectFormat)];
+}
+
+// Step 4: every `blame.ignoreRevsFile` value, as `git_config_pathname` expands it (builtin/config.c, builtin/blame.c). Exit 1 means no value.
+export function ignoreRevsArgs(): string[] {
+  return [NO_LAZY_FETCH, "--no-optional-locks", "config", "get", "--all", "--type=path", "-z", "blame.ignoreRevsFile"];
+}
+
+export interface BlameFlags {
+  ignoreWhitespace: boolean;
+  detectMoves: boolean;
+  detectCopies: boolean;
+}
+
+// Steps 5 and 6. Blame turns textconv on by default (builtin/blame.c), so every form passes `--no-textconv`.
+// `cleared`: the command-line `--ignore-revs-file=` clears every configured list for this one blame (git-blame(1)).
+// The porcelain form sets the mark keys for this process only (git(1) `-c`).
+export function blameArgs(oid: string, objectFormat: ObjectFormat, path: string, flags: BlameFlags, form: "incremental" | "cleared" | "porcelain"): string[] {
+  const options = [...(flags.ignoreWhitespace ? ["-w"] : []), ...(flags.detectMoves ? ["-M"] : []), ...(flags.detectCopies ? ["-C"] : [])];
+  const marks = form === "porcelain" ? ["-c", "blame.markIgnoredLines=true", "-c", "blame.markUnblamableLines=true"] : [];
+  const mode = form === "porcelain" ? "--porcelain" : "--incremental";
+  return read(...marks, "blame", mode, "--no-textconv", "--encoding=none", ...options, ...(form === "cleared" ? ["--ignore-revs-file="] : []), treeItem(oid, objectFormat), "--", pathItem(path));
+}
+
+// "Blame before this commit": Git's own zero-context hunks of two blobs. `--inter-hunk-context=0` keeps `diff.interHunkContext` out (research.md R12).
+export function blobDiffArgs(oldBlob: string, newBlob: string, objectFormat: ObjectFormat): string[] {
+  return [NO_LAZY_FETCH, "--no-optional-locks", "diff", "-U0", "--inter-hunk-context=0", "--no-textconv", "--no-ext-diff", "--no-color", treeItem(oldBlob, objectFormat), treeItem(newBlob, objectFormat)];
+}
+
 // Contract §4: the unstage hunks. The tree is the captured HEAD OID or the empty tree of `emptyTreeArgs`.
 export function stagedPatchArgs(tree: string, objectFormat: ObjectFormat, path: string): string[] {
   return read("diff-index", "--cached", ...PATCH_OPTIONS, treeItem(tree, objectFormat), "--", pathItem(path));

@@ -1,0 +1,5 @@
+{
+  "schema": "read-commit-file-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"path\"}"
+}

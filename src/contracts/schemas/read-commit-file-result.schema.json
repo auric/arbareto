@@ -251,6 +251,22 @@
       ],
       "additionalProperties": false,
       "title": "InspectionObjectMissing"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "path"
+          ]
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "additionalProperties": false,
+      "title": "CommitFileRefused"
     }
   ],
   "title": "ReadCommitFileResult"

@@ -175,6 +175,11 @@
             "additionalProperties": false,
             "title": "BlameCommit"
           }
+        },
+        "focusLine": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
         }
       },
       "required": [
@@ -202,7 +207,8 @@
             "size",
             "lines",
             "ignore-revs-file-missing",
-            "no-previous"
+            "no-previous",
+            "path"
           ]
         },
         "path": {

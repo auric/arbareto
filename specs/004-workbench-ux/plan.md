@@ -516,6 +516,8 @@ Each phase writes its tests first. P0.2 to P0.4 are the riskiest proofs and run 
 | Ctrl+S | Save the pending Git setting changes of the selected scope, with the Save review | Settings view | None in 001 to 003 |
 
 - F6 order per view: History keeps the 001 order. Commit: header, notice band, Changes, Staged, diff, message, status region. Settings: header, notice band, scope bar, page list, page content, status region. The notice band stays visible in every view.
+- F6 entry into a file list focuses its Tab-stop row. An empty list gives the first control of its section. Each `data-section` container has `tabIndex={-1}`, so a section without a control takes focus itself. When focus does not land inside the target section, F6 continues to the next section. Enter, a double-click, the Commit icon, and Open Commit view open the Commit view. Focus then goes to the Changes Tab-stop row, else to Filter files (001 FR-005).
+- About window (001 plan.md "About window"): the Overview text is selectable too, as the License and notice texts are. Ctrl+A selects only the content of the shown tab panel.
 
 ### D16 UI standard
 

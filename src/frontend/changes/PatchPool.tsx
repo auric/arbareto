@@ -10,8 +10,8 @@ import { DIFF_THEME } from "../highlight/set";
 const POOL = { workerFactory: () => new Worker(WorkerUrl, { type: "module" }), poolSize: 2 };
 const HIGHLIGHTER = { preferredHighlighter: "shiki-js", theme: DIFF_THEME } as const;
 
-/** The Pierre worker pool. Pierre ends the pool when its last provider unmounts, so mount this once for the session. */
-export default function PatchPool({ children }: { children: ReactNode }) {
+/** The Pierre worker pool. Pierre keeps one pool and ends it when its last provider unmounts, so one childless instance stays mounted for the session. */
+export default function PatchPool({ children }: { children?: ReactNode }) {
   return (
     <WorkerPoolContextProvider poolOptions={POOL} highlighterOptions={HIGHLIGHTER}>
       {children}

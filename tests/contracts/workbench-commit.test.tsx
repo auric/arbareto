@@ -717,6 +717,27 @@ describe("hunk buttons (FR-037)", () => {
     await shownDiff("staged");
     expect(buttons("Unstage hunk", commitView()!)).toHaveLength(2);
   });
+
+  // T125: the first diff of a session loads the Pierre pool. The comparison view must not remount then, or Chromium drops the focus to the body.
+  test("T125: Copy path keeps the focus when the first diff of the session arrives", async () => {
+    const file = entry("unstaged", "f.ts", ".M");
+    const world = createWorld({ entries: [file] });
+    world.answers.readComparison = undefined;
+    const double = await openCommitView(world);
+    await click(item("Changes", "f.ts"));
+    const copy = button("Copy path", commitView()!.querySelector('[data-section="comparison"]')!);
+    await act(async () => copy.focus());
+    expect(document.activeElement === copy).toBe(true);
+    const call = double.calls.filter((c) => c.operation === "readComparison").at(-1)!;
+    const payload = call.args[1] as { snapshotId: string; entryId: string };
+    await answer(call, succeeded({ comparisonId: fixtureId(0x7fe), snapshotId: payload.snapshotId, entryId: payload.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: b64(PATCH), hunks: [hunk(0, 1, 4, 1, 5), hunk(1, 10, 2, 11, 3)], support: "supported", fileAction: "stage", remedy: null }));
+    await settle();
+    expect(buttons("Stage hunk", commitView()!)).toHaveLength(2);
+    expect(copy.isConnected).toBe(true);
+    expect(document.activeElement === copy).toBe(true);
+    expect(copy.matches("button:not([disabled])")).toBe(true);
+    expect(copy.closest("[hidden]")).toBeNull();
+  });
 });
 
 describe("line selection (FR-041 to FR-044, contract Δ4)", () => {
@@ -1027,6 +1048,84 @@ describe("Working directory row (plan D15, O-11)", () => {
     await act(async () => void working().dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
     await settle();
     expect(commitView()).not.toBeNull();
+  });
+
+  // T121 and T122 (plan.md D15 "F6 order per view", 001 FR-005). happy-dom focuses a plain `div` and keeps focus inside a newly hidden
+  // ancestor; Chromium does neither. So each case asserts the Chromium facts: the focused element is a TABBABLE match or has an explicit
+  // `tabindex`, and it has no `hidden` ancestor.
+  const TABBABLE = 'input:not([disabled]), button:not([disabled]), textarea, [tabindex="0"]';
+  const focused = () => document.activeElement as HTMLElement;
+  const sectionOf = (element: Element) => element.closest<HTMLElement>("[data-section]")?.dataset.section;
+  const expectChromiumFocus = (element: HTMLElement) => {
+    expect(element === document.body).toBe(false);
+    expect(element.matches(TABBABLE) || element.hasAttribute("tabindex")).toBe(true);
+    expect(element.closest("[hidden]")).toBeNull();
+  };
+  const tabStop = (list: "changes" | "staged") => document.querySelector<HTMLElement>(`[data-file-tree="${list}"] [role="treeitem"][tabindex="0"]`);
+  async function enterOnWorkingRow(entries: ChangeEntry[]) {
+    await mountWorkbench(workbench, createWorld({ entries }));
+    await click(working());
+    await act(async () => historyList().focus());
+    await press(historyList(), "Enter");
+    expect(commitView()).not.toBeNull();
+  }
+  // Presses F6 on the focused element and returns the new focused element. Each press must move focus.
+  async function f6() {
+    const before = focused();
+    await press(before, "F6");
+    expect(focused() === before).toBe(false);
+    expectChromiumFocus(focused());
+    return focused();
+  }
+
+  test("T121: Enter on the row with files focuses the Changes Tab-stop row outside a hidden ancestor", async () => {
+    await enterOnWorkingRow(board().all);
+    expectChromiumFocus(focused());
+    expect(focused() === tabStop("changes")).toBe(true);
+  });
+
+  test("T121: Enter on the row with an empty Changes list focuses Filter files", async () => {
+    await enterOnWorkingRow(board().staged);
+    expectChromiumFocus(focused());
+    expect(focused().getAttribute("aria-label")).toBe("Filter files");
+  });
+
+  test("T121: a double-click on the row and the Commit icon focus the Changes Tab-stop row", async () => {
+    await mountWorkbench(workbench, createWorld({ entries: board().all }));
+    await act(async () => historyList().focus());
+    await act(async () => void working().dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    await settle();
+    expectChromiumFocus(focused());
+    expect(focused() === tabStop("changes")).toBe(true);
+    await click(button("History", views()));
+    await act(async () => historyList().focus());
+    await click(document.querySelector<HTMLElement>('header button[aria-label^="Commit:"]')!);
+    expectChromiumFocus(focused());
+    expect(focused() === tabStop("changes")).toBe(true);
+  });
+
+  test("T122: F6 from the Changes row visits the Staged Tab-stop row, then the diff", async () => {
+    await enterOnWorkingRow(board().all);
+    expect(sectionOf(await f6())).toBe("staged");
+    expect(focused() === tabStop("staged")).toBe(true);
+    expect(sectionOf(await f6())).toBe("comparison");
+  });
+
+  test("T122: with no file selected, F6 from Filter files reaches Staged, then the diff section itself", async () => {
+    await enterOnWorkingRow([]);
+    expect(focused().getAttribute("aria-label")).toBe("Filter files");
+    expect(sectionOf(await f6())).toBe("staged");
+    const diff = await f6();
+    expect(diff === document.querySelector('[data-section="comparison"]')).toBe(true);
+    expect(diff.getAttribute("tabindex")).toBe("-1");
+  });
+
+  test("T122: a section that refuses focus makes F6 continue to the next section", async () => {
+    await enterOnWorkingRow([]);
+    // Chromium refuses focus on an element that is not focusable, such as a `display: contents` box.
+    document.querySelector<HTMLElement>('[data-section="comparison"]')!.focus = () => {};
+    expect(sectionOf(await f6())).toBe("staged");
+    expect(sectionOf(await f6())).toBe("composer");
   });
 });
 

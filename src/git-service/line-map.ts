@@ -51,8 +51,9 @@ export function parseHunks(out: Uint8Array): Hunk[] | null {
 // Spec FR-056: `line` is a line of the new version. A line inside a hunk with new lines maps to the old start, or to the old start plus 1 for a pure insertion.
 // Every other line moves by the sum of (old count - new count) of the hunks that end before it. A hunk with new count 0 ends after its new start line,
 // because xdiff prints the line before an empty range as its start. The result clamps to 1 and the old line count.
-export function mapLine(line: number, hunks: readonly Hunk[], oldLines: number): number {
-  const clamp = (n: number) => Math.max(1, Math.min(n, oldLines));
+// Null when the old version has no line.
+export function mapLine(line: number, hunks: readonly Hunk[], oldLines: number): number | null {
+  const clamp = (n: number) => (oldLines === 0 ? null : Math.max(1, Math.min(n, oldLines)));
   let shift = 0;
   for (const h of hunks) {
     if (h.newCount > 0 && h.newStart <= line && line < h.newStart + h.newCount) return clamp(h.oldCount === 0 ? h.oldStart + 1 : h.oldStart);

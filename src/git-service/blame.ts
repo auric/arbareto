@@ -4,7 +4,7 @@
 // Feature 005 contract Δ3 `readBlame`, Δ5 bounds, data-model §10 and §11, plan.md D12 steps 1 to 6 and "Blame before this commit".
 // No read gate: no command of this read loads the index (plan.md D2, research.md R13, F4).
 
-import type { ErrorCode } from "../contracts/errors";
+import type { BlameUnavailableReason } from "../contracts/errors";
 import {
   BLAME_FILE_BYTES,
   BLAME_FILE_LINES,
@@ -19,8 +19,8 @@ import {
 } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { BlameStream, countLines, type ParsedBlame } from "./blame-parser";
-import { blameArgs, blameNumstatArgs, blameTreeArgs, blobArgs, blobDiffArgs, emptyTreeArgs, ignoreRevsArgs, isObjectId, type BlameFlags, type ObjectFormat } from "./commands";
-import type { InspectionOutcome, InspectionTarget } from "./commit-changes";
+import { blameArgs, blameNumstatArgs, blameTreeArgs, blobArgs, blobDiffArgs, ignoreRevsArgs, isObjectId, type BlameFlags, type ObjectFormat } from "./commands";
+import { b64, both, emptyTreeOf, fail, Stop, type InspectionOutcome, type InspectionTarget } from "./commit-changes";
 import { parseNumstat } from "./diff-parser";
 import { createTailCollector } from "./discovery";
 import { createCollector, RunnerRefusal, type Collector, type GitExit, type GitRunner } from "./git-runner";
@@ -32,7 +32,7 @@ import { hasPromisor, OBJECT_MISSING_REMEDY } from "./status";
 import type { Trust } from "./trust";
 
 export type BlameOptions = BlameFlags & { ignoreList: boolean };
-export type BlameReason = "no-history" | "binary" | "submodule" | "size" | "lines" | "ignore-revs-file-missing" | "no-previous";
+export type BlameReason = BlameUnavailableReason;
 
 // The commit and path that one blame reads.
 export interface BlameTarget {
@@ -46,23 +46,22 @@ interface Retained {
   repositoryId: string;
   lines: number;
   parsed: ParsedBlame;
-  // Data-model §11 output: the mapped line of a "Blame before this commit" result, or null.
-  focus: number | null;
 }
 
 const NUL = 0x00;
-const LF = 0x0a;
 const SLASH = 0x2f;
 const PROGRESS_MS = 1000 / BLAME_PROGRESS_EVENTS_PER_SECOND;
 // git-config(1) `get`: exit 1 when the key has no value.
 const NO_VALUE = 1;
-const b64 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
-
-class Stop {
-  constructor(readonly outcome: InspectionOutcome) {}
-}
-const fail = (code: ErrorCode, value?: object) => new Stop({ result: "failed", code, ...(value === undefined ? {} : { value }) });
 const unavailable = (reason: BlameReason, path?: string) => fail("BLAME_UNAVAILABLE", { reason, ...(path === undefined ? {} : { path }) });
+// An argv item is text, so a path that is no valid UTF-8 gets the 001 reason `path`.
+const textOf = (bytes: Uint8Array): string => {
+  try {
+    return strictUtf8.decode(bytes);
+  } catch {
+    throw unavailable("path");
+  }
+};
 
 // git-ls-tree(1) `--long`: `<mode> SP <type> SP <oid> SP <size> TAB <path> NUL`. builtin/ls-tree.c prints the size with `%7s`, and `-` for a tree or a gitlink.
 function treeRecord(out: Uint8Array, path: Uint8Array, objectFormat: ObjectFormat): { type: "blob" | "tree" | "commit"; oid: string; size: number | null } | "none" | null {
@@ -136,11 +135,12 @@ export function createBlameReader({ runner, trust }: BlameReaderOptions) {
   }
 
   // Plan.md D12 step 4: the configured values that Git reads, and the file check of each value below the worktree root (spec FR-060).
-  async function ignoreList(t: InspectionTarget): Promise<string[]> {
+  // True when the effective list holds a value.
+  async function hasIgnoreList(t: InspectionTarget): Promise<boolean> {
     const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
     const exit = await step(t, ignoreRevsArgs(), out);
     if (out.limited) throw fail("OUTPUT_LIMIT");
-    if (exit.exitCode === NO_VALUE && out.bytes === 0) return [];
+    if (exit.exitCode === NO_VALUE && out.bytes === 0) return false;
     if (exit.exitCode !== 0) throw fail("GIT_FAILED");
     const raw = out.take();
     if (raw.length === 0 || raw[raw.length - 1] !== NUL) throw fail("MALFORMED_GIT_OUTPUT");
@@ -181,7 +181,7 @@ export function createBlameReader({ runner, trust }: BlameReaderOptions) {
       const absent = batch.find((_, i) => facts[i]!.kind === "absent");
       if (absent !== undefined) throw unavailable("ignore-revs-file-missing", absent.value);
     }
-    return effective.map((v) => latin1(v));
+    return effective.length > 0;
   }
 
   async function shallowSet(t: InspectionTarget): Promise<ReadonlySet<string>> {
@@ -200,13 +200,7 @@ export function createBlameReader({ runner, trust }: BlameReaderOptions) {
   async function blame(t: InspectionTarget, target: BlameTarget, options: BlameOptions, progress: (counters: Record<string, number>) => void): Promise<{ value: Record<string, unknown>; record: Retained }> {
     const w = t.workspace;
     const fmt = w.objectFormat;
-    let path: string;
-    try {
-      path = strictUtf8.decode(target.path);
-    } catch {
-      // An argv item is text, so Git cannot get a path that is no valid UTF-8 as a literal argument.
-      throw fail("UNSUPPORTED_COMPARISON");
-    }
+    const path = textOf(target.path);
     // A folder record ends with `/` (git-status(1)). A folder has no blame.
     if (target.path[target.path.length - 1] === SLASH) throw unavailable("no-history");
     const blob = await blobOf(t, target.commit, path, target.path);
@@ -214,11 +208,7 @@ export function createBlameReader({ runner, trust }: BlameReaderOptions) {
     if (blob === "commit") throw unavailable("submodule");
     if (blob.size > BLAME_FILE_BYTES) throw unavailable("size");
 
-    const tree = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-    const treeExit = await step(t, emptyTreeArgs(), tree, { input: new Uint8Array() });
-    const treeRaw = tree.take();
-    const emptyTree = latin1(treeRaw.subarray(0, -1));
-    if (treeExit.exitCode !== 0 || treeRaw[treeRaw.length - 1] !== LF || !isObjectId(emptyTree, fmt)) throw fail("GIT_FAILED");
+    const emptyTree = await emptyTreeOf((args, out, input) => step(t, args, out, { input }), fmt);
     const numstat = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
     const numstatExit = await step(t, blameNumstatArgs(emptyTree, target.commit, fmt, path), numstat);
     if (numstat.limited) throw fail("MALFORMED_GIT_OUTPUT");
@@ -236,9 +226,9 @@ export function createBlameReader({ runner, trust }: BlameReaderOptions) {
     const lines = countLines(bytes);
     if (lines > BLAME_FILE_LINES) throw unavailable("lines");
 
-    const list = await ignoreList(t);
+    const listed = await hasIgnoreList(t);
     const shallow = await shallowSet(t);
-    const form = list.length === 0 ? "incremental" : options.ignoreList ? "porcelain" : "cleared";
+    const form = !listed ? "incremental" : options.ignoreList ? "porcelain" : "cleared";
     const stream = new BlameStream(form === "porcelain" ? "porcelain" : "incremental", fmt);
     let last = 0;
     const send = (force: boolean) => {
@@ -276,8 +266,8 @@ export function createBlameReader({ runner, trust }: BlameReaderOptions) {
     if (exit.exitCode !== 0) return failed(t, { outputTail: tail.outputTail() });
     const parsed = stream.finish(lines);
     if (parsed === null) throw fail("MALFORMED_GIT_OUTPUT");
-    const record: Retained = { blameId: crypto.randomUUID(), repositoryId: w.repositoryId, lines, parsed, focus: null };
-    const value = {
+    const record: Retained = { blameId: crypto.randomUUID(), repositoryId: w.repositoryId, lines, parsed };
+    const value: Record<string, unknown> = {
       blameId: record.blameId,
       commit: target.commit,
       pathBytes: b64(target.path),
@@ -330,19 +320,14 @@ export function createBlameReader({ runner, trust }: BlameReaderOptions) {
       return { origin, orig: g.origStart + (line - g.finalStart) };
     },
 
-    // Data-model §11: the zero-context hunks between the previous version and the version of the line's commit, then the blame of the previous version.
+    // Contract Δ3: steps 1 to 6 for (P, Q) first, so the refusals of the previous version come first. Then the zero-context hunks
+    // between the previous version and the version of the line's commit give the mapped line (data-model §11).
     async readBefore(t: InspectionTarget, from: { origin: ParsedBlame["origins"][number]; orig: number }, options: BlameOptions, progress: (counters: Record<string, number>) => void): Promise<InspectionOutcome> {
       try {
         const previous = from.origin.previous!;
         const fmt = t.workspace.objectFormat;
-        const name = (bytes: Uint8Array) => {
-          try {
-            return strictUtf8.decode(bytes);
-          } catch {
-            throw fail("UNSUPPORTED_COMPARISON");
-          }
-        };
-        const [oldBlob, newBlob] = await Promise.all([blobOf(t, previous.oid, name(previous.path), previous.path), blobOf(t, from.origin.oid, name(from.origin.filename), from.origin.filename)]);
+        const done = await blame(t, { commit: previous.oid, path: previous.path }, options, progress);
+        const [oldBlob, newBlob] = await both(blobOf(t, previous.oid, textOf(previous.path), previous.path), blobOf(t, from.origin.oid, textOf(from.origin.filename), from.origin.filename));
         // Git named both versions in its blame output, so each must be a blob.
         if (typeof oldBlob !== "object" || typeof newBlob !== "object") throw fail("MALFORMED_GIT_OUTPUT");
         const out = createCollector({ maxBytes: BLAME_OUTPUT_BYTES });
@@ -352,9 +337,9 @@ export function createBlameReader({ runner, trust }: BlameReaderOptions) {
         if (exit.exitCode !== 0) return await failed(t);
         const hunks = parseHunks(out.take());
         if (hunks === null) throw fail("MALFORMED_GIT_OUTPUT");
-        const done = await blame(t, { commit: previous.oid, path: previous.path }, options, progress);
         if (t.signal.aborted) return { result: "canceled" };
-        done.record.focus = mapLine(from.orig, hunks, done.record.lines);
+        const focusLine = mapLine(from.orig, hunks, done.record.lines);
+        if (focusLine !== null) done.value.focusLine = focusLine;
         return settle(t.workspace.repositoryId, done);
       } catch (error) {
         if (error instanceof Stop) return error.outcome;

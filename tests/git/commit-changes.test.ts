@@ -287,8 +287,9 @@ describe("readCommitFile (contract Δ3, plan.md D3)", () => {
           const file = response.result!;
           const where = { label, path };
           expect({ ...where, state: response.state }).toEqual({ ...where, state: "succeeded" });
+          // Plan.md D3: a submodule row passes the read gate and runs no Git read.
           if (entry.kind === "submodule") {
-            expect(service.runner.calls.length).toBe(before);
+            expect(service.runner.calls.slice(before).filter(isDiffTree)).toEqual([]);
             seen.add("submodule");
             continue;
           }
@@ -396,12 +397,54 @@ describe("readCommitFile (contract Δ3, plan.md D3)", () => {
   );
 });
 
+describe("sibling steps and refused reads", () => {
+  caseTest(TASK, "a refused numstat step ends the read only after the patch process of the same read ended", SHELL, () =>
+    withService("t021-sibling", async (service) => {
+      const built = buildHistory(gitPath(), "t021-sibling");
+      const v = await viewOf(service, built.repo);
+      const changes = (await readChanges(service, v, built.oids.normal!)).result!;
+      const entry = changes.files.find((f) => Buffer.from(f.pathBytes, "base64").toString() === "a.txt")!;
+      service.runner.inject.refuse = (call) => (isDiffTree(call) && call.arguments.includes("--numstat") ? "INVALID_REQUEST" : undefined);
+      const response = await readFile(service, v, changes.changesId, entry.fileId);
+      service.runner.inject.refuse = undefined;
+      expect({ state: response.state, code: response.code }).toEqual({ state: "failed", code: "INVALID_REQUEST" });
+      const patch = service.runner.calls.filter((c) => isDiffTree(c) && c.arguments.includes("-p")).at(-1)!;
+      expect(patch.exit).toBeDefined();
+      expect(service.runner.liveRecorded()).toBe(0);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(TASK, "a readCommitChanges that gets BUSY keeps the retained listing of the view", SHELL, () =>
+    withService("t021-busy", async (service) => {
+      const built = buildHistory(gitPath(), "t021-busy");
+      const v = await viewOf(service, built.repo);
+      const kept = (await readChanges(service, v, built.oids.normal!)).result!;
+      // Contract §5: two running reads of the workspace and eight waiting reads fill every slot.
+      const release = service.runner.pauseStdout((c) => c.arguments.includes("config") && c.arguments.includes("list"));
+      const held: string[] = [];
+      try {
+        for (let i = 0; i < 10; i++) held.push(service.send("readTrust", {}, { repositoryId: v.repositoryId }));
+        await waitFor("two held listings", () => service.runner.calls.filter((c) => c.arguments.includes("config") && c.arguments.includes("list") && c.exit === undefined).length >= 2);
+        expect((await readChanges(service, v, built.oids.rename!)).code).toBe("BUSY");
+      } finally {
+        release();
+      }
+      for (const id of held) await service.response(id);
+      expect((await readFile(service, v, kept.changesId, 0)).state).toBe("succeeded");
+    }),
+    TIMEOUT_MS,
+  );
+});
+
 describe("read gate, Cancel, and the deadline (contract Δ3, Δ7, plan.md D2)", () => {
   caseTest(TASK, "in an untrusted repository with a command-valued core.fsmonitor, both reads give TRUST_REQUIRED and the canary stays absent until approval (FR-003)", SHELL, () =>
     withService("t021-gate", async (service) => {
       const built = buildHistory(gitPath(), "t021-gate");
       const v = await viewOf(service, built.repo);
-      const ready = (await readChanges(service, v, built.oids.normal!)).result!;
+      // The `submodule` listing holds only the submodule row `lib`: the read gate refuses it too (plan.md D3 step 1).
+      const ready = (await readChanges(service, v, built.oids.submodule!)).result!;
+      expect(ready.files.map((f) => f.kind)).toEqual(["submodule"]);
       const c = canary(fixturePath("t021-gate"), "fsmonitor");
       git(built.repo, ["config", "core.fsmonitor", c.command]);
       const before = service.runner.calls.length;

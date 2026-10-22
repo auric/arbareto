@@ -68,6 +68,12 @@ describe("the FR-056 line map", () => {
 
   test("the result clamps to 1 and the old line count", () => {
     expect(mapLine(5, [h(3, 0, 4, 3)], 3)).toBe(3);
-    expect(mapLine(2, [h(1, 3, 1, 0)], 0)).toBe(1);
+    expect(mapLine(1, [h(3, 2, 1, 0)], 5)).toBe(1);
+  });
+
+  test("an empty previous version has no line, so the map gives null", () => {
+    // P holds an empty file, and X adds two lines: `@@ -0,0 +1,2 @@`.
+    expect(mapLine(1, [h(0, 0, 1, 2)], 0)).toBeNull();
+    expect(mapLine(2, [h(1, 3, 1, 0)], 0)).toBeNull();
   });
 });

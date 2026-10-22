@@ -160,7 +160,8 @@ export const UNTRACKED_IN_WAY_REASONS = ["untracked-in-way"] as const;
 export const STASH_KEPT_REASONS = ["conflicts", "failed-apply", "failed-checkout", "not-found", "stash-changed"] as const;
 
 // Feature 005 contract Δ9: the reasons of the new codes, and the new reasons of `STALE_REVIEW` and `UNKNOWN_TARGET`.
-export const BLAME_UNAVAILABLE_REASONS = ["no-history", "binary", "submodule", "size", "lines", "ignore-revs-file-missing", "no-previous"] as const;
+// `path`: the 001 reason of a path that is no valid UTF-8, which no argv item can carry.
+export const BLAME_UNAVAILABLE_REASONS = ["no-history", "binary", "submodule", "size", "lines", "ignore-revs-file-missing", "no-previous", "path"] as const;
 export type BlameUnavailableReason = (typeof BLAME_UNAVAILABLE_REASONS)[number];
 export const SUBMODULE_UNAVAILABLE_REASONS = ["not-submodule", "submodule-not-initialized", "path"] as const;
 export type SubmoduleUnavailableReason = (typeof SUBMODULE_UNAVAILABLE_REASONS)[number];

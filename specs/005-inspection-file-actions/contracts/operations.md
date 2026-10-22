@@ -14,6 +14,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 ## Δ2 Envelope (001 §2)
 
 - `readCommitChanges`, `readCommitFile`, `readBlame`, `readIgnoreFile`, and `previewIgnore` carry `repositoryId` and `repositoryGeneration`. `openSubmodule` carries `repositoryId` of the parent.
+- Generation rule: `readCommitChanges` gives `REPOSITORY_CHANGED` at acceptance when `repositoryGeneration` is not the workspace generation, as `openHistory` does. `readCommitFile` and `readBlame` with `{changesId, fileId}` or `{blameId, line}` do not check it, because their retained listing or result names commit IDs, and these survive a generation change as 001 History pages do. `readBlame` with `{snapshotId, entryId}` checks it through the snapshot (001 §9).
 - `MUTATIONS` keeps `runWorkbench`. No new mutation operation.
 - Phases: `blame` (counters `blamed` and `total`, or none), `delete-files` (counters `fileIndex` and `fileCount`), `ignore-save`, `preview`. Events carry no path, ref name, or Git text.
 - Marker actions of kind `workbench` add `delete-files`, `ignore-save-gitignore`, and `ignore-save-exclude`. The actions `ignore-gitignore` and `ignore-exclude` go.
@@ -46,8 +47,8 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - `--no-lazy-fetch --no-optional-locks --literal-pathspecs diff-tree --numstat -z --no-textconv --no-ext-diff --no-relative --ignore-submodules=dirty -M -l1000 <base> <oid> -- <paths>`.
 - Parse: `parsePatch` (001 §4) with the added header lines `similarity index <n>%`, `rename from <path>`, and `rename to <path>`, in the diff.c `fill_metainfo` order. A pure rename has no hunk. `parseNumstat` with the old path for R. `-` and `-` give `binary: true`. A type change gives its fact and no patch.
 - Section filter (plan D3): a pathspec also matches the paths below `<path>/`. The service drops each patch and numstat section whose paths lie below `<path>/` or `<old path>/`. The kept sections must equal the listing entry: its status and its paths, and two sections of one path for a type change. A section with another path, a missing section, or an extra section gives `MALFORMED_GIT_OUTPUT`.
-- Bounds: `CANONICAL_DIFF_BYTES` (4 MiB) and `CANONICAL_DIFF_LINES` (20,000) per patch, with the 001 limited result. Reason: the 001 canonical diff bounds of every shown diff.
-- Deadline 30 s. Errors as `readCommitChanges`.
+- Bounds: `CANONICAL_DIFF_BYTES` (4 MiB) and `CANONICAL_DIFF_LINES` (20,000) per patch, with the 001 limited result. Reason: the 001 canonical diff bounds of every shown diff. Known limit: the byte bound counts the whole `diff-tree -p` output, also the sections below `<path>/` that the filter drops.
+- Deadline 30 s. Errors as `readCommitChanges`. A path that is no valid UTF-8 gives `UNSUPPORTED_COMPARISON` with the 001 reason `path`, because no argv item can carry it.
 - Result: data-model §2.
 
 ### `readBlame`
@@ -56,17 +57,17 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - Target: `{changesId, fileId}` gives the commit and path of plan D12 (status D: the chosen parent and the old path). `{snapshotId, entryId}` gives the snapshot HEAD and the entry path. An unborn HEAD gives `BLAME_UNAVAILABLE` `no-history`. `{blameId, line}` gives the `previous` commit and path of the line's group, and `no-previous` without one. An unknown ID gives `UNKNOWN_TARGET`.
 - No read gate: no command loads the index (plan D2).
 - Commands, in this order:
-  1. `--no-lazy-fetch --no-optional-locks --literal-pathspecs ls-tree -z -l --full-tree <oid> -- <path>`. Exactly one record `<mode> SP <type> SP <oid> SP <size> TAB <path> NUL` with the exact path. `<size>` is right-aligned in at least 7 characters, or `-` for a gitlink (builtin/ls-tree.c:233). Type `commit` gives `submodule`. No record gives `no-history`. A size above `BLAME_FILE_BYTES` gives `size`.
+  1. `--no-lazy-fetch --no-optional-locks --literal-pathspecs ls-tree -z -l --full-tree <oid> -- <path>`. Exactly one record `<mode> SP <type> SP <oid> SP <size> TAB <path> NUL` with the exact path. After `<oid>` and one SP, the size is right-aligned with spaces to a width of at least 7 (`%7s`, builtin/ls-tree.c:233). The size is `-` for a tree or a gitlink. Type `commit` gives `submodule`. No record gives `no-history`. A size above `BLAME_FILE_BYTES` gives `size`.
   2. `--no-lazy-fetch --no-optional-locks --literal-pathspecs diff --numstat -z --no-textconv --no-ext-diff --no-relative --no-renames <empty tree> <oid> -- <path>`. `-` and `-` give `binary`.
   3. `--no-lazy-fetch --no-optional-locks cat-file blob <blob oid>`. More than `BLAME_FILE_LINES` lines gives `lines`.
   4. `--no-lazy-fetch --no-optional-locks config get --all --type=path -z blame.ignoreRevsFile`, cwd the worktree root. Exit 1 gives an empty list (git-config(1) `get`). Any other non-zero exit gives `GIT_FAILED`. An empty value gives an empty `-z` record. The effective list is every non-empty value from every scope, as in Git, and an empty value resets nothing (plan D12 step 4, O-9). Then the file check of plan D12 step 4. A missing file gives `ignore-revs-file-missing` with `path`.
   5. Without an effective list or with `ignoreList: false`: `--no-lazy-fetch --no-optional-locks --literal-pathspecs blame --incremental --no-textconv --encoding=none [-w] [-M] [-C] [--ignore-revs-file=] <oid> -- <path>`. `--ignore-revs-file=` comes only with an effective list and `ignoreList: false`. It clears every list for this one blame.
   6. With an effective list and `ignoreList: true`: `--no-lazy-fetch --no-optional-locks --literal-pathspecs -c blame.markIgnoredLines=true -c blame.markUnblamableLines=true blame --porcelain --no-textconv --encoding=none [-w] [-M] [-C] <oid> -- <path>`.
-- For `{blameId, line}`, before step 1: `ls-tree` of the previous path at the previous commit and of `filename` at the line's commit, then `--no-lazy-fetch --no-optional-locks diff -U0 --inter-hunk-context=0 --no-textconv --no-ext-diff --no-color <old blob> <new blob>`. The hunk headers give the mapped line (data-model §11). Without `--exit-code`, `git diff` exits 0 with and without a difference (git-diff(1) `--exit-code`), so any other exit gives `GIT_FAILED`.
+- For `{blameId, line}`: steps 1 to 6 for (P, Q) first, so a binary or oversize previous version gives its `BLAME_UNAVAILABLE` reason. Then `ls-tree` of the previous path at the previous commit and of `filename` at the line's commit, then `--no-lazy-fetch --no-optional-locks diff -U0 --inter-hunk-context=0 --no-textconv --no-ext-diff --no-color <old blob> <new blob>`. The hunk headers give the mapped line `focusLine` (data-model §10 and §11). Without `--exit-code`, `git diff` exits 0 with and without a difference (git-diff(1) `--exit-code`), so any other exit gives `GIT_FAILED`.
 - Parse: data-model §10 and plan D12 "Parse". An unknown header line, a group outside 1 to N, or a gap gives `MALFORMED_GIT_OUTPUT`.
 - Bounds: file 4 MiB (`BLAME_FILE_BYTES`, the canonical diff byte bound, so one file never exceeds what a diff shows), 100,000 lines (`BLAME_FILE_LINES`, the line bound of the virtual list budget), Git output 32 MiB (`BLAME_OUTPUT_BYTES`, the status listing byte bound), encoded result 12 MiB (`BLAME_RESULT_BYTES`, so the result fits the 16 MiB pipe frame with its JSON framing), progress 4 events per second (`BLAME_PROGRESS_EVENTS_PER_SECOND`, as the history progress). Above a bound: `OUTPUT_LIMIT`.
 - Deadline: `HISTORY_PROCESS_DEADLINE_MS` (120 s) for the blame step, 30 s for the others. Cancel ends the Job (001 FR-045).
-- Errors: `BLAME_UNAVAILABLE` with its reason; `GIT_FAILED` with the output tail (an exit 128 of a non-relative ignore file); `OBJECT_MISSING` by the `hasPromisor` path; `OUTPUT_LIMIT`; `DEADLINE`; `CANCELED`.
+- Errors: `BLAME_UNAVAILABLE` with its reason, and reason `path` for a path that is no valid UTF-8; `GIT_FAILED` with the output tail (an exit 128 of a non-relative ignore file); `OBJECT_MISSING` by the `hasPromisor` path; `OUTPUT_LIMIT`; `DEADLINE`; `CANCELED`.
 - Result: data-model §10. One retained result per workspace.
 
 ### `readIgnoreFile`
@@ -215,7 +216,8 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 | Code | Reasons | Meaning |
 |---|---|---|
-| `BLAME_UNAVAILABLE` | `no-history`, `binary`, `submodule`, `size`, `lines`, `ignore-revs-file-missing`, `no-previous` | Blame cannot run for this file. No blame process starts. |
+| `BLAME_UNAVAILABLE` | `no-history`, `binary`, `submodule`, `size`, `lines`, `ignore-revs-file-missing`, `no-previous`, `path` | Blame cannot run for this file. No blame process starts. |
+| `UNSUPPORTED_COMPARISON` (001) | `readCommitFile` uses the 001 reason `path` | The path is no valid UTF-8, so no argv item can carry it. |
 | `SUBMODULE_UNAVAILABLE` | `not-submodule`, `submodule-not-initialized`, `path` | The open cannot start. The parent stays open. |
 | `WORKBENCH_UNAVAILABLE` (004) | adds `conflicted`, `submodule`, `nested-repository`, `no-recycle-bin`, `long-path`, `nothing-to-delete`, `ignore-link`, `ignore-folder`, `ignore-not-utf8`, `ignore-nul`, `mixed-line-endings`; keeps the 004 reasons `ignore-not-regular`, `ignore-size`, `limit`, `path`, and `unreadable`; removes `ignore-exists`, `ignore-not-text` | The action cannot run. No file changes. |
 | `STALE_REVIEW` (001) | adds `files-changed`, `ignore-changed` | A bound fact changed after the review. Nothing changes. |
@@ -223,6 +225,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 - `ignore-revs-file-missing` carries `path`, the value as configured.
 - `not-regular` is a per-file outcome of `fileDelete` and `fileReplace` (Δ6), not a `WORKBENCH_UNAVAILABLE` reason.
+- `path` of `BLAME_UNAVAILABLE` is the 001 reason of a path that is no valid UTF-8. It carries no `path` field.
 - Reused: `BUSY`, `CONFLICTED`, `OPERATION_IN_PROGRESS`, `APPROVAL_EXPIRED`, `STALE_SELECTION`, `TRUST_REQUIRED`, `TRUST_CHANGED`, `MALFORMED_GIT_OUTPUT`, `OUTPUT_LIMIT`, `OBJECT_MISSING`, `GIT_FAILED`, `DEADLINE`, `CANCELED`, `FAILED_WITH_EFFECTS`, `REPOSITORY_CHANGED`, `INVALID_REQUEST`.
 
 ## Δ10 Required contract checks (001 §10)

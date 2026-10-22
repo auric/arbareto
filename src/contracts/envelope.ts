@@ -1888,7 +1888,9 @@ export const CommitFile = z
       (f.patch === null || (!f.binary && f.facts?.submodule === undefined && f.facts?.typeChange === undefined)),
   )
   .meta({ title: "CommitFile" });
-export const ReadCommitFileResult = z.union([CommitFile, InspectionObjectMissing]).meta({ title: "ReadCommitFileResult" });
+// Contract Δ3: UNSUPPORTED_COMPARISON with the 001 reason `path` for a path that is no valid UTF-8.
+const CommitFileRefused = z.strictObject({ reason: z.enum(["path"]) }).meta({ title: "CommitFileRefused" });
+export const ReadCommitFileResult = z.union([CommitFile, InspectionObjectMissing, CommitFileRefused]).meta({ title: "ReadCommitFileResult" });
 export type CommitFile = z.infer<typeof CommitFile>;
 
 // Data-model §6. `text` has LF line ends and no BOM. The renderer shows it as plain text only.
@@ -1978,8 +1980,10 @@ export const Blame = z
     ignoreList: z.enum(["none", "on", "off"]),
     groups: z.array(BlameGroup).max(BLAME_FILE_LINES),
     commits: z.array(BlameCommit).max(BLAME_FILE_LINES),
+    // Data-model §10 and §11: only a `{blameId, line}` source carries the mapped line. A result without lines has none.
+    focusLine: z.int().min(1).max(BLAME_FILE_LINES).optional(),
   })
-  .refine((b) => Array.isArray(b.groups) && Array.isArray(b.commits) && coversLines(b.groups, b.lines, b.commits.length))
+  .refine((b) => Array.isArray(b.groups) && Array.isArray(b.commits) && coversLines(b.groups, b.lines, b.commits.length) && (b.focusLine === undefined || b.focusLine <= b.lines))
   .meta({ title: "Blame" });
 // Contract Δ3 `readBlame` errors: the BLAME_UNAVAILABLE reason, the OBJECT_MISSING remedy, or the GIT_FAILED output tail.
 // Only `ignore-revs-file-missing` carries `path`, the value as configured.

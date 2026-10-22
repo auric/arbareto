@@ -855,8 +855,6 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     if (target === null) return reject(request.requestId, "UNKNOWN_TARGET");
     // Contract Δ3: a row without parents takes only parent 0.
     if (parent >= Math.max(1, target.parents.length)) return reject(request.requestId, "INVALID_REQUEST");
-    // Contract Δ8: a new call drops the retained listing of the view at once.
-    commitChanges.dropView(viewId);
     scheduleRead(
       request,
       (t) => commitChanges.readCommitChanges({ ...t, workspace, installation }, { viewId, oid, ...target }, parent),

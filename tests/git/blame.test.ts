@@ -51,6 +51,7 @@ interface Blame {
   content: string;
   lines: number;
   ignoreList: "none" | "on" | "off";
+  focusLine?: number;
   groups: { commit: number; origStart: number; finalStart: number; count: number; ignored: boolean; unblamable: boolean }[];
   commits: BlameCommit[];
   reason?: string;
@@ -178,15 +179,18 @@ describe("attribution (SC-006, FR-057, FR-058)", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(TASK, "every blame passes --no-textconv: a textconv canary stays absent", SHELL, () =>
+  caseTest(TASK, "every blame and its diffs pass --no-textconv and --no-ext-diff: the textconv, diff driver, and external diff canaries stay absent", SHELL, () =>
     withService("t022-textconv", async (service) => {
       const built = buildBlame(gitPath(), "t022-textconv");
       const c = canary(fixturePath("t022-textconv"), "textconv", "cat \"$1\"\n");
-      git(built.repo, ["config", "diff.canary.textconv", c.command]);
+      for (const key of ["diff.canary.textconv", "diff.canary.command", "diff.external"]) git(built.repo, ["config", key, c.command]);
       writeFileSync(join(built.repo, ".gitattributes"), "* diff=canary\n");
       const v = await viewOf(service, built.repo);
       const response = await readBlame(service, v, await historySource(service, v, built.oids.b7!, "tale.txt"));
       expect(response.state).toBe("succeeded");
+      const line = resultLines(response.result!).findIndex((l) => l.oid === built.oids.b7) + 1;
+      expect((await readBlame(service, v, { blameId: response.result!.blameId, line })).state).toBe("succeeded");
+      expect(service.runner.calls.some((c) => c.arguments.includes("-U0"))).toBe(true);
       expect(existsSync(c.log)).toBe(false);
       // The canary is live: Git's own blame without the option runs it.
       gitExit(gitPath(), FIXTURE_ROOT, built.repo, ["blame", built.oids.b7!, "--", "tale.txt"]);
@@ -299,9 +303,71 @@ describe("sources (FR-053)", () => {
         expect({ configured, state: before.state, commit: before.result!.commit, path: before.result!.pathBytes }).toEqual({ configured, state: "succeeded", commit: previous.oid, path: previous.pathBytes });
         expectAttribution(before, porcelainOracle(built.repo, previous.oid, Buffer.from(previous.pathBytes, "base64").toString(), []), git(built.repo, ["cat-file", "blob", `${previous.oid}:${Buffer.from(previous.pathBytes, "base64").toString()}`]), { configured });
         expect(diffs().at(-1)!.arguments.slice(0, 7)).toEqual(["--no-lazy-fetch", "--no-optional-locks", "diff", "-U0", "--inter-hunk-context=0", "--no-textconv", "--no-ext-diff"]);
+        // Data-model §11: the line lies inside a hunk of Git's own zero-context diff, so it maps to that hunk's old start.
+        const origin = again.commits[group.commit]!;
+        const o = group.origStart + (line - group.finalStart);
+        const blobAt = (oid: string, pathBytes: string) => text(built.repo, ["rev-parse", `${oid}:${Buffer.from(pathBytes, "base64").toString()}`]).trim();
+        const headers = text(built.repo, ["diff", "-U0", "--inter-hunk-context=0", "--no-textconv", "--no-ext-diff", "--no-color", blobAt(previous.oid, previous.pathBytes), blobAt(origin.oid, origin.filenameBytes)])
+          .split("\n")
+          .map((l) => /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/.exec(l))
+          .filter((m) => m !== null)
+          .map((m) => ({ a: Number(m![1]), b: Number(m![2] ?? 1), c: Number(m![3]), d: Number(m![4] ?? 1) }));
+        const hunk = headers.find((h) => h.d > 0 && h.c <= o && o < h.c + h.d)!;
+        expect({ configured, focusLine: before.result!.focusLine }).toEqual({ configured, focusLine: hunk.b === 0 ? hunk.a + 1 : hunk.a });
       }
+      // Data-model §10: only a `{blameId, line}` source carries `focusLine`.
+      expect(first.focusLine).toBeUndefined();
       // An older blameId gives UNKNOWN_TARGET, because the workspace keeps one blame result.
       expect((await readBlame(service, v, { blameId: first.blameId, line })).code).toBe("UNKNOWN_TARGET");
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(TASK, "Blame before this commit runs steps 1 to 6 for the previous version first: binary and oversize give their reasons before any diff, and an empty version gives no focusLine (contract Δ3)", SHELL, () =>
+    withService("t022-before-refusals", async (service) => {
+      const built = buildBlame(gitPath(), "t022-before-refusals");
+      const v = await viewOf(service, built.repo);
+      const diffs = () => service.runner.calls.filter((c) => c.arguments.includes("-U0")).length;
+      const beforeOf = async (view: Viewed, oid: string, path: string) => {
+        const r = (await readBlame(service, view, await historySource(service, view, oid, path))).result!;
+        return readBlame(service, view, { blameId: r.blameId, line: 1 });
+      };
+      const start = diffs();
+      const binary = await beforeOf(v, built.oids.b8!, "bin.dat");
+      expect({ state: binary.state, code: binary.code, reason: binary.result?.reason }).toEqual({ state: "failed", code: "BLAME_UNAVAILABLE", reason: "binary" });
+      expect(diffs()).toBe(start);
+      const empty = await beforeOf(v, built.oids.b8!, "empty.txt");
+      fits(ReadBlameResult, empty.result);
+      expect({ state: empty.state, commit: empty.result!.commit, lines: empty.result!.lines, focus: "focusLine" in empty.result! }).toEqual({ state: "succeeded", commit: built.oids.b7!, lines: 0, focus: false });
+      const bounds = buildPatchBounds(gitPath(), "t022-before-refusals-bounds");
+      const bv = await viewOf(service, bounds.repo);
+      const at = diffs();
+      const size = await beforeOf(bv, bounds.oids.shrink!, "wide.txt");
+      expect({ state: size.state, code: size.code, reason: size.result?.reason }).toEqual({ state: "failed", code: "BLAME_UNAVAILABLE", reason: "size" });
+      expect(diffs()).toBe(at);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(TASK, "a path that is no valid UTF-8 gives BLAME_UNAVAILABLE path, and readCommitFile gives UNSUPPORTED_COMPARISON path, before any Git process of the file", SHELL, () =>
+    withService("t022-bad-path", async (service) => {
+      const repo = fixturePath("t022-bad-path/repo");
+      mkdirSync(repo, { recursive: true });
+      git(repo, ["init", "-q", "-b", "main"]);
+      const stream = Buffer.concat([Buffer.from("commit refs/heads/main\ncommitter F <f@x.invalid> 1767225600 +0000\ndata 2\nc1\nM 100644 inline bad"), Buffer.from([0xff]), Buffer.from(".txt\ndata 2\nx\n\n")]);
+      runGit(gitPath(), FIXTURE_ROOT, repo, ["fast-import", "--quiet"], { input: stream });
+      const v = await viewOf(service, repo);
+      const oid = text(repo, ["rev-parse", "main"]).trim();
+      const changes = await service.request<{ changesId: string; files: { fileId: number; pathBytes: string }[] }>("readCommitChanges", { viewId: v.viewId, oid, parent: 0 }, { repositoryId: v.repositoryId, repositoryGeneration: v.repositoryGeneration });
+      const file = changes.result!.files[0]!;
+      expect(Buffer.from(file.pathBytes, "base64")).toEqual(Buffer.concat([Buffer.from("bad"), Buffer.from([0xff]), Buffer.from(".txt")]));
+      const before = service.runner.calls.length;
+      const blamed = await readBlame(service, v, { changesId: changes.result!.changesId, fileId: file.fileId });
+      fits(ReadBlameResult, blamed.result);
+      expect({ state: blamed.state, code: blamed.code, result: blamed.result }).toEqual({ state: "failed", code: "BLAME_UNAVAILABLE", result: { reason: "path" } as Blame });
+      const read = await service.request<{ reason?: string }>("readCommitFile", { changesId: changes.result!.changesId, fileId: file.fileId }, { repositoryId: v.repositoryId, repositoryGeneration: v.repositoryGeneration });
+      expect({ state: read.state, code: read.code, result: read.result }).toEqual({ state: "failed", code: "UNSUPPORTED_COMPARISON", result: { reason: "path" } });
+      expect(service.runner.calls.slice(before).filter((c) => c.arguments.includes("blame") || c.arguments.includes("ls-tree") || c.arguments.includes("diff-tree"))).toEqual([]);
     }),
     TIMEOUT_MS,
   );

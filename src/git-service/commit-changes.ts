@@ -5,7 +5,7 @@
 
 import type { ErrorCode } from "../contracts/errors";
 import { CANONICAL_DIFF_BYTES, COMMIT_CHANGES_RESULT_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../contracts/limits";
-import { commitChangesArgs, commitNumstatArgs, commitPatchArgs, emptyTreeArgs, isObjectId, type ObjectFormat } from "./commands";
+import { commitChangesArgs, commitNumstatArgs, commitPatchArgs, emptyTreeArgs, isObjectId, OID_HEX as OID, type ObjectFormat } from "./commands";
 import { parsePatch, unquote } from "./diff-parser";
 import { createCollector, type Collector, type GitExit, type GitRunner } from "./git-runner";
 import { contextOf, encodedBytes, latin1, runRead, strictUtf8 } from "./read-steps";
@@ -42,13 +42,41 @@ const ABSENT_MODE = "000000";
 const GITLINK = "160000";
 const SYMLINK = "120000";
 const STATUS_NAMES: Record<RawStatus, string> = { A: "added", D: "deleted", M: "modified", R: "renamed", T: "type-changed" };
-const OID: Record<ObjectFormat, string> = { sha1: "[0-9a-f]{40}", sha256: "[0-9a-f]{64}" };
 const HEADERS: Record<ObjectFormat, RegExp> = Object.fromEntries((["sha1", "sha256"] as const).map((f) => [f, new RegExp(`^:([0-7]{6}) ([0-7]{6}) (${OID[f]}) (${OID[f]}) ([ADMT]|R(?:0[0-9]{2}|100))$`)])) as Record<ObjectFormat, RegExp>;
 const ZERO = /^0+$/;
 const DIFF_GIT = Buffer.from("diff --git ");
 
-const kindOf = (modes: readonly string[]): FileKind => (modes.includes(GITLINK) ? "submodule" : modes.includes(SYMLINK) ? "link" : "file");
-const b64 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+const kindOfMode = (mode: string): FileKind => (mode === GITLINK ? "submodule" : mode === SYMLINK ? "link" : "file");
+// Data-model §1: a gitlink on either side makes a submodule entry, else a link on either side a link entry.
+const kindOf = (modes: readonly string[]): FileKind => {
+  const kinds = modes.map(kindOfMode);
+  return kinds.includes("submodule") ? "submodule" : kinds.includes("link") ? "link" : "file";
+};
+export const b64 = (bytes: Uint8Array) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("base64");
+
+// The outcome that ends an inspection read early.
+export class Stop {
+  constructor(readonly outcome: InspectionOutcome) {}
+}
+export const fail = (code: ErrorCode, value?: object) => new Stop({ result: "failed", code, ...(value === undefined ? {} : { value }) });
+
+// The empty tree OID of the object format: `hash-object -t tree --stdin` with empty stdin writes no object.
+export async function emptyTreeOf(run: (args: string[], out: Collector, input: Uint8Array) => Promise<GitExit>, objectFormat: ObjectFormat): Promise<string> {
+  const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
+  const exit = await run(emptyTreeArgs(), out, new Uint8Array());
+  const raw = out.take();
+  const oid = latin1(raw.subarray(0, -1));
+  if (exit.exitCode !== 0 || raw[raw.length - 1] !== LF || !isObjectId(oid, objectFormat)) throw fail("GIT_FAILED");
+  return oid;
+}
+
+// Both steps end before the first rejection propagates, so no sibling Git process outlives the read.
+export async function both<A, B>(a: Promise<A>, b: Promise<B>): Promise<[A, B]> {
+  const [x, y] = await Promise.allSettled([a, b]);
+  if (x.status === "rejected") throw x.reason;
+  if (y.status === "rejected") throw y.reason;
+  return [x.value, y.value];
+}
 
 // Contract Δ3 `readCommitChanges` "Parse": diff-format(5) raw `-z` records. Any other status or form refuses the whole listing (null).
 // `truncated`: the output stopped at a bound, so an unfinished last record is dropped. A finished record that breaks the grammar still refuses.
@@ -209,11 +237,6 @@ function formsMatch(sections: readonly Uint8Array[], entry: RawEntry): boolean {
   return forms.length === 1 && forms[0] === (entry.status === "A" ? "new" : entry.status === "D" ? "deleted" : "other");
 }
 
-class Stop {
-  constructor(readonly outcome: InspectionOutcome) {}
-}
-const fail = (code: ErrorCode) => new Stop({ result: "failed", code });
-
 export interface Listing {
   changesId: string;
   repositoryId: string;
@@ -278,15 +301,6 @@ export function createCommitChanges({ runner, trust }: CommitChangesOptions) {
     return promisor === true;
   }
 
-  async function emptyTree(t: InspectionTarget): Promise<string> {
-    const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-    const exit = await step(t, emptyTreeArgs(), out, new Uint8Array());
-    const raw = out.take();
-    const oid = latin1(raw.subarray(0, -1));
-    if (exit.exitCode !== 0 || raw[raw.length - 1] !== LF || !isObjectId(oid, t.workspace.objectFormat)) throw fail("GIT_FAILED");
-    return oid;
-  }
-
   // Data-model §1 entry of one raw record.
   const entryValue = (e: RawEntry, fileId: number) => ({
     fileId,
@@ -312,7 +326,7 @@ export function createCommitChanges({ runner, trust }: CommitChangesOptions) {
         return { result: "succeeded", value: value({ kind: "shallow" }, [], { state: "complete" }) };
       }
       const trustListing = await gate(t);
-      const base = parents.length === 0 ? { kind: "empty-tree" as const, oid: await emptyTree(t) } : { kind: "parent" as const, index: parent, oid: parents[parent]! };
+      const base = parents.length === 0 ? { kind: "empty-tree" as const, oid: await emptyTreeOf((args, out, input) => step(t, args, out, input), w.objectFormat) } : { kind: "parent" as const, index: parent, oid: parents[parent]! };
       const out = createCollector({ maxBytes: STATUS_LISTING_BYTES });
       const exit = await step(t, commitChangesArgs(base.oid, target.oid, w.objectFormat), out);
       // Contract §5: a reached bound stops the process, so its exit status proves nothing.
@@ -381,7 +395,6 @@ export function createCommitChanges({ runner, trust }: CommitChangesOptions) {
   // Data-model §2 `facts`, from the listing alone.
   function factsOf(e: RawEntry) {
     const [oldMode, newMode] = e.modes;
-    const kindOfMode = (mode: string): FileKind => (mode === GITLINK ? "submodule" : mode === SYMLINK ? "link" : "file");
     return {
       ...(e.status === "R" ? { rename: { oldPath: b64(e.oldPath!), score: e.score! } } : {}),
       ...(e.status !== "T" && e.status !== "A" && e.status !== "D" && oldMode !== newMode ? { mode: { old: oldMode, new: newMode } } : {}),
@@ -396,11 +409,12 @@ export function createCommitChanges({ runner, trust }: CommitChangesOptions) {
     const { listing, entry } = found;
     const facts = factsOf(entry);
     const value = (binary: boolean, patch: string | null, completeness: object, remedy?: object) => ({ changesId, fileId, facts, binary, patch, completeness, ...(remedy === undefined ? {} : { remedy }) });
-    // Plan.md D3 step 2: a submodule entry runs no Git process. Its facts come from the listing, which its own read gate admitted.
-    if (entry.kind === "submodule") return { result: "succeeded", value: value(false, null, { state: "complete" }) };
     try {
+      // Plan.md D3 step 1: the gate runs again, because the trust state can change between reads.
       const trustListing = await gate(t);
-      // Contract Δ3: an argv item is text. Git paths that are no valid UTF-8 cannot pass as a literal argument.
+      // Step 2: a submodule entry runs no Git read. Its facts come from the listing.
+      if (entry.kind === "submodule") return { result: "succeeded", value: value(false, null, { state: "complete" }) };
+      // Contract Δ3: an argv item is text, so a path that is no valid UTF-8 gets the 001 reason `path`.
       const names = (entry.oldPath === undefined ? [entry.path] : [entry.path, entry.oldPath]).map((p) => {
         try {
           return strictUtf8.decode(p);
@@ -408,14 +422,14 @@ export function createCommitChanges({ runner, trust }: CommitChangesOptions) {
           return null;
         }
       });
-      if (names.some((n) => n === null)) return { result: "failed", code: "UNSUPPORTED_COMPARISON" };
+      if (names.some((n) => n === null)) return { result: "failed", code: "UNSUPPORTED_COMPARISON", value: { reason: "path" } };
       const paths = names as string[];
       const patchOut = createCollector({ maxBytes: CANONICAL_DIFF_BYTES + 1 });
       const numstatOut = createCollector({ maxBytes: STATUS_LISTING_BYTES });
-      const [patchExit, numstatExit] = await Promise.all([
+      const [patchExit, numstatExit] = await both(
         step(t, commitPatchArgs(listing.base!, listing.oid, listing.objectFormat, paths), patchOut),
         step(t, commitNumstatArgs(listing.base!, listing.oid, listing.objectFormat, paths), numstatOut),
-      ]);
+      );
       if ((!patchOut.limited && patchExit.exitCode !== 0) || (!numstatOut.limited && numstatExit.exitCode !== 0)) {
         if (await missing(t, trustListing)) return { result: "limited", code: "OBJECT_MISSING", value: value(false, null, { state: "limited", code: "OBJECT_MISSING" }, { text: OBJECT_MISSING_REMEDY }) };
         return { result: "failed", code: "GIT_FAILED" };
@@ -450,8 +464,7 @@ export function createCommitChanges({ runner, trust }: CommitChangesOptions) {
   return {
     readCommitChanges,
     readCommitFile,
-    // The retained listing of `changesId`, for the acceptance checks of `readCommitFile` and `readBlame`.
-    listing: (changesId: string): Listing | undefined => byId.get(changesId),
+    // The retained entry, for the acceptance checks of `readCommitFile` and `readBlame`.
     entry: entryOf,
     // Contract Δ8: a new call or a view release drops the listing of that view.
     dropView: drop,

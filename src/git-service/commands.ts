@@ -11,9 +11,11 @@ const read = (...args: string[]): string[] => [...READ_OPTIONS, ...args];
 // Data-model §2 `objectFormat`: the values of `rev-parse --show-object-format`.
 export type ObjectFormat = "sha1" | "sha256";
 
+// The object ID hex of each format, for parsers that match an ID inside a longer line.
+export const OID_HEX: Readonly<Record<ObjectFormat, string>> = { sha1: "[0-9a-f]{40}", sha256: "[0-9a-f]{64}" };
 const OID_PATTERNS: Record<ObjectFormat, RegExp> = {
-  sha1: /^[0-9a-f]{40}$/,
-  sha256: /^[0-9a-f]{64}$/,
+  sha1: new RegExp(`^${OID_HEX.sha1}$`),
+  sha256: new RegExp(`^${OID_HEX.sha256}$`),
 };
 
 export function isObjectId(value: string, objectFormat: ObjectFormat): boolean {

@@ -1,0 +1,8 @@
+{
+  "schema": "read-commit-file-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"reason\":\"binary\"}",
+  "repair": {
+    "reason": "path"
+  }
+}

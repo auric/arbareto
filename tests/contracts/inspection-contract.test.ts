@@ -114,7 +114,7 @@ describe("contract Δ9 codes", () => {
   });
 
   test("each new code has exactly its contract reasons", () => {
-    expect([...(E.BLAME_UNAVAILABLE_REASONS ?? [])]).toEqual(["no-history", "binary", "submodule", "size", "lines", "ignore-revs-file-missing", "no-previous"]);
+    expect([...(E.BLAME_UNAVAILABLE_REASONS ?? [])]).toEqual(["no-history", "binary", "submodule", "size", "lines", "ignore-revs-file-missing", "no-previous", "path"]);
     expect([...(E.SUBMODULE_UNAVAILABLE_REASONS ?? [])]).toEqual(["not-submodule", "submodule-not-initialized", "path"]);
     expect([...(E.STALE_REVIEW_REASONS ?? [])]).toEqual(["files-changed", "ignore-changed"]);
     expect([...(E.UNKNOWN_TARGET_REASONS ?? [])]).toEqual(["absent"]);
@@ -403,6 +403,12 @@ describe("data-model §2 commit file", () => {
     expect(ok(R(), commitFile({ patch: null, completeness: { state: "limited", code: "OBJECT_MISSING" } }))).toBe(false);
     expect(ok(R(), commitFile({ remedy: { text: "Fetch." } }))).toBe(false);
   });
+
+  test("an UNSUPPORTED_COMPARISON refusal names reason path, the 001 reason of a path that is no valid UTF-8", () => {
+    expect(ok(R(), { reason: "path" })).toBe(true);
+    expect(ok(R(), { reason: "binary" })).toBe(false);
+    expect(ok(R(), { ...commitFile(), reason: "path" })).toBe(false);
+  });
 });
 
 describe("data-model §6 ignore file", () => {
@@ -482,6 +488,12 @@ describe("data-model §10 blame", () => {
     expect(ok(R(), blame())).toBe(true);
     for (const ignoreList of ["on", "off"]) expect(ok(R(), blame({ ignoreList }))).toBe(true);
     expect(ok(R(), blame({ content: "", lines: 0, groups: [], commits: [] }))).toBe(true);
+  });
+
+  test("focusLine is an integer from 1 to lines, and absent when lines is 0", () => {
+    for (const focusLine of [1, 3]) expect(ok(R(), blame({ focusLine }))).toBe(true);
+    for (const focusLine of [0, 4, 1.5, "2"]) expect(ok(R(), blame({ focusLine }))).toBe(false);
+    expect(ok(R(), blame({ content: "", lines: 0, groups: [], commits: [], focusLine: 1 }))).toBe(false);
   });
 
   test("a gap, an overlap, a group past N, or an unknown commit index refuses the result", () => {

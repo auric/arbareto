@@ -438,7 +438,7 @@ describe("T018 Git facts F1 to F9 and F17 (research.md R16)", () => {
       if (hunks !== null) {
         for (let o = 1; o <= newLines.length; o++) {
           const inside = hunks.some((h) => h.newCount > 0 && h.newStart <= o && o < h.newStart + h.newCount);
-          if (!inside && oldLines[mapLine(o, hunks, oldLines.length) - 1] !== newLines[o - 1]) mapped = false;
+          if (!inside && oldLines[(mapLine(o, hunks, oldLines.length) ?? 0) - 1] !== newLines[o - 1]) mapped = false;
         }
       }
       holds &&= sameHeaders && mapped;

@@ -121,7 +121,8 @@ Each section names its source. Field names are contract names. "001 data-model �
   - `content`: the base64 file bytes, at most 4 MiB. `lines`: the line count N, at most 100,000.
   - `ignoreList`: `none`, `on`, or `off` (the toggle state of this run).
   - `groups`: in final line order, each `{commit, origStart, finalStart, count, ignored, unblamable}`. `commit` is an index into `commits`. `ignored` and `unblamable` are true only from the porcelain markers.
-  - `commits`: each `{oid, author, authorMail, authorTime, authorTz, summary, previous: {oid, pathBytes} | null, filenameBytes, shallow}`. Text fields are the raw bytes as base64, because `--encoding=none` gives Git's stored bytes.
+  - `commits`: one entry per distinct (oid, previous, filename) origin (blame.h `blame_origin`). An `oid` can repeat. Each `{oid, author, authorMail, authorTime, authorTz, summary, previous: {oid, pathBytes} | null, filenameBytes, shallow}`. Text fields are the raw bytes as base64, because `--encoding=none` gives Git's stored bytes. `authorMail` holds Git's bytes, with the angle brackets.
+  - `focusLine`: for a `{blameId, line}` source, the data-model §11 mapped line, an integer from 1 to `lines`. Absent for the other sources, and absent when `lines` is 0.
 - Validation: the groups cover 1 to N exactly once; `previous` OIDs match the object format; `authorTime` is an integer; `authorTz` matches `[+-][0-9]{4}`.
 - Progress event `blame`: `{blamed, total}` in incremental mode, at most 4 per second; no counters in porcelain mode.
 
@@ -130,8 +131,8 @@ Each section names its source. Field names are contract names. "001 data-model �
 - Input: the retained result, a line L. The group g with `finalStart ≤ L < finalStart + count`. The commit X of g with `previous {P, Q}`.
 - `o = origStart + (L - finalStart)`, the line in X's version of `filename`.
 - Hunks of `diff -U0 <blob Q at P> <blob filename at X>`: `(a, b, c, d)` from `@@ -a[,b] +c[,d] @@`, with an omitted count of 1.
-- Map: a hunk with d > 0 and c ≤ o < c + d gives a, or a + 1 when b = 0. Otherwise o + Σ(b − d) over the hunks with c + d − 1 < o. The result clamps to 1 and the line count of Q.
-- Output: the new blame request `{source: {blameId, line: L}}` runs for `(P, Q)` and focuses the mapped line.
+- Map: a hunk with d > 0 and c ≤ o < c + d gives a, or a + 1 when b = 0. Otherwise o + Σ(b − d) over the hunks that end before o. A hunk with d > 0 ends at c + d − 1. A hunk with d = 0 ends at c, because Git prints the new line before an empty range as c (xdiff `xdl_format_hunk_hdr`, F9). The result clamps to 1 and the line count of Q. A Q without lines gives no mapped line.
+- Output: the new blame request `{source: {blameId, line: L}}` runs for `(P, Q)`, and its result carries the mapped line as `focusLine` (§10).
 - No `previous`: reason `no-previous`.
 
 ## 12. Branch tracking facts

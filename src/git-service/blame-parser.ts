@@ -7,7 +7,7 @@
 // `emit_porcelain_per_line_details` prints `unblamable`, then `ignored`, for each line. Each porcelain line ends with its TAB content line.
 
 import { unquote } from "./diff-parser";
-import type { ObjectFormat } from "./commands";
+import { OID_HEX as OID, type ObjectFormat } from "./commands";
 
 const LF = 0x0a;
 const TAB = 0x09;
@@ -44,7 +44,6 @@ export interface ParsedBlame {
 
 type Info = Omit<BlameOrigin, "previous" | "filename">;
 const INFO_KEYS = ["author", "author-mail", "author-time", "author-tz", "committer", "committer-mail", "committer-time", "committer-tz", "summary"] as const;
-const OID: Record<ObjectFormat, string> = { sha1: "[0-9a-f]{40}", sha256: "[0-9a-f]{64}" };
 const NUMBER = "([1-9][0-9]{0,8})";
 const TIME = /^(?:0|[1-9][0-9]{0,15})$/;
 const TZ = /^[+-][0-9]{4}$/;

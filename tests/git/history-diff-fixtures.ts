@@ -226,6 +226,8 @@ export function buildPatchBounds(git: string, name: string): Built {
       { label: "lines", from: "base", changes: 1, files: { "many.txt": f("x\n".repeat(20_001)) } },
       { label: "bytes", from: "lines", changes: 1, files: { "wide.txt": f(`${"y".repeat(4 * 1024 * 1024)}\n`) } },
       { label: "hugelines", from: "bytes", changes: 1, files: { "huge-lines.txt": f("x\n".repeat(100_001)) } },
+      // The line of `shrink` names the 4 MiB version of `bytes` as its previous version.
+      { label: "shrink", from: "hugelines", changes: 1, files: { "wide.txt": f("small\n") } },
     ], { checkout: false }),
   };
 }
@@ -353,7 +355,8 @@ export function buildBlame(git: string, name: string): Built {
     { label: "b5", from: "b4", changes: 2, files: { "tale.txt": f(tale5), "other.txt": f(`${OTHER}other line added in b5\n`) } },
     { label: "b6", from: "b5", changes: 1, files: { "tale.txt": f(tale6) } },
     { label: "b7", from: "b6", changes: 1, files: { "tale.txt": f(tale7) } },
-    { label: "b8", from: "b7", changes: 1, files: { "nolf.txt": f("x\ny\nz") } },
+    // `empty.txt` was empty in b1 and `bin.dat` was binary in b1, so "Blame before this commit" of their b8 lines reads those versions.
+    { label: "b8", from: "b7", changes: 3, files: { "nolf.txt": f("x\ny\nz"), "empty.txt": f("filled 1\nfilled 2\n"), "bin.dat": f("text now\n") } },
   ];
   const repo = fixtureDir(`${name}/repo`);
   return { name, ...importRepo(git, FIXTURE_ROOT, repo, steps) };

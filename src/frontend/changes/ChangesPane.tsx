@@ -104,13 +104,16 @@ const ROW_LABEL: Record<FileDirection, string> = { stage: "Stage file", unstage:
 type ListHandle = { focusEntry(entryId: string): void; focusHeading(): void };
 type Marked = { list: ListName; ids: ReadonlySet<string>; anchor: string };
 
-/** plan.md Stage key row order: the next surviving file row, then the previous one, else null for the list heading. */
-function survivor(list: readonly ChangeEntry[], entryId: string, alive: ReadonlySet<string>): ChangeEntry | null {
+// Each full status read gives each file a new entry ID. A file keeps its place: the list and the path bytes.
+const placeOf = (e: ChangeEntry) => `${listOf(e.category)}:${e.pathBytes}`;
+/** plan.md Stage key row order: the entry of the current read at the next surviving file row, then the previous one, else null for the list heading. */
+function survivor(list: readonly ChangeEntry[], entryId: string, alive: ReadonlyMap<string, ChangeEntry>): ChangeEntry | null {
   const index = list.findIndex((e) => e.entryId === entryId);
   if (index < 0) return null;
-  const ok = (e: ChangeEntry) => e.entryId !== entryId && alive.has(e.entryId);
-  for (let i = index + 1; i < list.length; i++) if (ok(list[i]!)) return list[i]!;
-  for (let i = index - 1; i >= 0; i--) if (ok(list[i]!)) return list[i]!;
+  const gone = placeOf(list[index]!);
+  const at = (e: ChangeEntry) => (placeOf(e) === gone ? undefined : alive.get(placeOf(e)));
+  for (let i = index + 1; i < list.length; i++) if (at(list[i]!)) return at(list[i]!)!;
+  for (let i = index - 1; i >= 0; i--) if (at(list[i]!)) return at(list[i]!)!;
   return null;
 }
 const filesOf = (rows: readonly TreeRow[]) => rows.flatMap((r) => (r.kind === "file" ? [r.entry] : []));
@@ -127,7 +130,7 @@ export function ChangesPane(props: ChangesPaneProps) {
   const setUntrackedOpen = (next: boolean) => (props.onUntrackedOpen ? props.onUntrackedOpen(next) : setOwnOpen(next));
   const [toggled, setToggled] = useState<ReadonlySet<string>>(new Set());
   const [marked, setMarked] = useState<Marked | null>(null);
-  const [menu, setMenu] = useState<{ row: TreeRow; list: ListName; anchor: HTMLElement; byKey: boolean } | null>(null);
+  const [menu, setMenu] = useState<{ key: string; list: ListName; anchor: HTMLElement; byKey: boolean } | null>(null);
   const [ignore, setIgnore] = useState<{ review: Extract<IgnoreReview, { ok: true }>; anchor: HTMLElement } | null>(null);
   const copy = useCopy();
   // Spec FR-101: Filter files filters only the shown rows. The derived actions and every count keep the status read.
@@ -183,7 +186,7 @@ export function ChangesPane(props: ChangesPaneProps) {
 
   // Moves focus to the next file row, the previous file row, or the list heading. `select` also selects that entry.
   function moveFrom(entry: ChangeEntry, list: readonly ChangeEntry[], select: boolean) {
-    const target = survivor(list, entry.entryId, new Set(live.current.entries.map((e) => e.entryId)));
+    const target = survivor(list, entry.entryId, new Map(live.current.entries.map((e) => [placeOf(e), e])));
     const handle = lists.current[listOf(entry.category)];
     if (target === null) return handle?.focusHeading();
     if (select) live.current.onSelect(target.entryId);
@@ -249,18 +252,23 @@ export function ChangesPane(props: ChangesPaneProps) {
   }, [toolbarSuccess]);
 
   // A hunk action or an external change removed the focused entry: focus a survivor or the heading, without a selection change.
+  // The survivor comes from the shown rows, and a layout or toggle change also changes them.
   useLayoutEffect(() => {
     const before = previous.current;
     previous.current = { entries, rows };
     const lost = focused.current;
-    if (before.entries === entries || lost === null || entries.some((e) => e.entryId === lost.entryId)) return;
-    focused.current = null;
+    if (before.entries === entries || lost === null) return;
+    const kept = entries.find((e) => placeOf(e) === placeOf(lost));
+    focused.current = kept ?? null;
+    if (kept !== undefined) return;
     const active = document.activeElement;
     if (active !== null && active !== document.body) return;
     moveFrom(lost, filesOf(before.rows[listOf(lost.category)]), false);
-  }, [entries]);
+  }, [entries, rows]);
 
   const onFocus = (event: ReactFocusEvent) => {
+    // A portal (the row menu) is outside the pane. Its focus keeps the row that opened it.
+    if (!root.current?.contains(event.target as Node)) return;
     const item = (event.target as Element).closest?.('[role="treeitem"]') as HTMLElement | null;
     const id = item?.dataset.entryId;
     focused.current = id === undefined ? null : (live.current.entries.find((e) => e.entryId === id) ?? null);
@@ -394,13 +402,21 @@ export function ChangesPane(props: ChangesPaneProps) {
         return copy;
       });
     },
-    onMenu: (row: TreeRow, anchor: HTMLElement, byKey = false) => setMenu({ row, list, anchor, byKey }),
+    onMenu: (row: TreeRow, anchor: HTMLElement, byKey = false) => {
+      if (row.kind === "file") focused.current = row.entry;
+      setMenu({ key: row.key, list, anchor, byKey });
+    },
     onRowAction: (row: TreeRow) => {
       if (row.kind === "file") actOnEntry(row.entry);
       else if (row.kind === "folder") void runFiles(folderRequest(row, list), folderLabel(list));
       else void runFiles(derived.untracked, "Stage all untracked");
     },
   });
+
+  // The menu acts on the row of the current read. No row or more than one row closes it.
+  const menuRows = menu === null ? [] : rows[menu.list].filter((r) => r.key === menu.key);
+  const menuRow = menuRows.length === 1 ? menuRows[0]! : null;
+  if (menu !== null && menuRow === null) setMenu(null);
 
   const changes = rows.changes;
   const working = derived.changes.entryIds.length;
@@ -523,8 +539,8 @@ export function ChangesPane(props: ChangesPaneProps) {
           <TreeList {...listProps("staged")} label="Staged" layout={layout} cut={false} untrackedCount={0} section={null} />
         </section>
       </div>
-      {menu === null ? null : (
-        <ActionMenu label={menu.row.kind === "file" ? menu.row.entry.path : menu.row.kind === "folder" ? menu.row.path : "Untracked"} groups={menuGroups(menu.row, menu.list, menu.anchor)} open anchor={menu.anchor} byKey={menu.byKey} onOpenChange={(open) => !open && setMenu(null)} finalFocus={() => menu.anchor} />
+      {menu === null || menuRow === null ? null : (
+        <ActionMenu label={menuRow.kind === "file" ? menuRow.entry.path : menuRow.kind === "folder" ? menuRow.path : "Untracked"} groups={menuGroups(menuRow, menu.list, menu.anchor)} open anchor={menu.anchor} byKey={menu.byKey} onOpenChange={(open) => !open && setMenu(null)} finalFocus={() => menu.anchor} />
       )}
       {ignore === null ? null : (
         <ConfirmPopover
@@ -627,8 +643,10 @@ function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedI
   const toFocus = useRef<string | null>(null);
   const [activeKey, setActiveKey] = useState<string | null>(null);
   const index = (key: string | null) => (key === null ? -1 : rows.findIndex((r) => r.key === key));
+  const keyOf = (entryId: string | null) => rows.find((r) => r.kind === "file" && r.entry.entryId === entryId)?.key ?? null;
   // The Tab stop: the last focused row, else the selected file of this list, else the first row.
-  const activeIndex = index(activeKey) >= 0 ? index(activeKey) : index(selectedId) >= 0 ? index(selectedId) : rows.length > 0 ? 0 : -1;
+  const selectedIndex = rows.findIndex((r) => r.kind === "file" && r.entry.entryId === selectedId);
+  const activeIndex = index(activeKey) >= 0 ? index(activeKey) : selectedIndex >= 0 ? selectedIndex : rows.length > 0 ? 0 : -1;
   const visibleFiles = useMemo(() => filesOf(rows), [rows]);
 
   const virtual = rows.length > VIRTUAL_MIN;
@@ -663,8 +681,12 @@ function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedI
     element.focus();
   });
   const heading = () => scroller.current?.parentElement?.querySelector<HTMLElement>("[data-list-heading]") ?? null;
-  const handle = useRef<ListHandle>({ focusEntry: focusKey, focusHeading: () => heading()?.focus() });
-  handle.current.focusEntry = focusKey;
+  const focusEntry = (entryId: string) => {
+    const key = keyOf(entryId);
+    if (key !== null) focusKey(key);
+  };
+  const handle = useRef<ListHandle>({ focusEntry, focusHeading: () => heading()?.focus() });
+  handle.current.focusEntry = focusEntry;
   useEffect(() => {
     register(handle.current);
     return () => register(null);

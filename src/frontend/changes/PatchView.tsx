@@ -7,6 +7,7 @@ import { useMemo, useRef, type ReactNode } from "react";
 import { diffLanguage } from "../highlight/language";
 import { DIFF_THEME } from "../highlight/set";
 import { PATCH_CSS } from "./patch-css";
+import PatchPool from "./PatchPool";
 
 export type PatchViewProps = {
   /** The decoded canonical patch. */
@@ -62,35 +63,38 @@ export default function PatchView({ patch, selected, anchor = null, lines = null
     anchored.current = anchorKey;
     element.scrollIntoView({ block: "nearest" });
   };
+  // Pierre reads its pool from the nearest provider. The workbench keeps one more provider mounted, so the pool outlives this view.
   return (
-    <Virtualizer className="min-h-0 flex-1 overflow-auto select-text">
-      <FileDiff
-        fileDiff={fileDiff}
-        selectedLines={lines ?? range}
-        lineAnnotations={annotations}
-        renderAnnotation={(annotation) => {
-          const mark = annotation.metadata;
-          if (mark === "anchor") return <span ref={scrollOnce} aria-hidden="true" className="block h-0" />;
-          if (mark === "selected") return <span className="block border-l-3 border-accent-role px-2 font-semibold">Selected hunk</span>;
-          return (
-            <span className={`flex items-center justify-end gap-2 px-2 ${mark.selected ? "border-l-3 border-accent-role" : ""}`}>
-              {mark.selected ? <span className="mr-auto font-semibold">Selected hunk</span> : null}
-              {hunkAction?.(mark.hunk)}
-            </span>
-          );
-        }}
-        options={{
-          diffStyle: "unified",
-          disableFileHeader: true,
-          preferredHighlighter: "shiki-js",
-          theme: DIFF_THEME,
-          unsafeCSS: PATCH_CSS,
-          // Spec FR-043: drag over the line numbers. The view owns the selection, so a new patch clears it.
-          enableLineSelection: onLines !== undefined,
-          controlledSelection: true,
-          onLineSelectionEnd: (next) => onLines?.(next),
-        }}
-      />
-    </Virtualizer>
+    <PatchPool>
+      <Virtualizer className="min-h-0 flex-1 overflow-auto select-text">
+        <FileDiff
+          fileDiff={fileDiff}
+          selectedLines={lines ?? range}
+          lineAnnotations={annotations}
+          renderAnnotation={(annotation) => {
+            const mark = annotation.metadata;
+            if (mark === "anchor") return <span ref={scrollOnce} aria-hidden="true" className="block h-0" />;
+            if (mark === "selected") return <span className="block border-l-3 border-accent-role px-2 font-semibold">Selected hunk</span>;
+            return (
+              <span className={`flex items-center justify-end gap-2 px-2 ${mark.selected ? "border-l-3 border-accent-role" : ""}`}>
+                {mark.selected ? <span className="mr-auto font-semibold">Selected hunk</span> : null}
+                {hunkAction?.(mark.hunk)}
+              </span>
+            );
+          }}
+          options={{
+            diffStyle: "unified",
+            disableFileHeader: true,
+            preferredHighlighter: "shiki-js",
+            theme: DIFF_THEME,
+            unsafeCSS: PATCH_CSS,
+            // Spec FR-043: drag over the line numbers. The view owns the selection, so a new patch clears it.
+            enableLineSelection: onLines !== undefined,
+            controlledSelection: true,
+            onLineSelectionEnd: (next) => onLines?.(next),
+          }}
+        />
+      </Virtualizer>
+    </PatchPool>
   );
 }

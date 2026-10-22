@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { useRef, type RefObject } from "react";
+import { useRef, type KeyboardEvent, type RefObject } from "react";
 import type { Environment } from "../../contracts/envelope";
 import { SCOPE_LINE } from "../app/RepositoryStates";
 import type { Notices } from "../build/notices";
@@ -23,7 +23,7 @@ type OverviewProps = { scope: Environment["platformScope"]; build: Environment["
 /** The Overview panel. `build.commit` carries the `-dirty` suffix when it applies (contract `buildIdentity`). */
 export function AboutOverview({ scope, build, repositoryUrl }: OverviewProps) {
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-2 select-text">
       <p className="font-heading font-semibold">Arbareto</p>
       <p>
         Build: {build.version} <span className="font-mono break-all">{build.commit}</span>
@@ -57,6 +57,16 @@ export type AboutDialogProps = Omit<OverviewProps, "repositoryUrl"> & {
 // Each panel is the only scrolling region and one Tab stop (plan.md "Dialog sizes").
 const PANEL = "min-h-0 overflow-y-auto px-4 py-2 focus-visible:ring-[3px] focus-visible:ring-ring/50";
 
+// Plan D15 "About window": Ctrl+A selects only the shown tab panel, not the page behind the modal.
+function selectPanel(event: KeyboardEvent<HTMLElement>) {
+  // The Blink SelectAll key: `editing_behavior.cc` matches VK_A by `keyCode` on every layout.
+  if (!event.ctrlKey || event.shiftKey || event.altKey || event.metaKey || event.keyCode !== 65) return;
+  const panel = event.currentTarget.querySelector('[role="tabpanel"]:not([hidden])');
+  if (panel === null) return;
+  event.preventDefault();
+  document.getSelection()?.selectAllChildren(panel);
+}
+
 export function AboutDialog({ open, scope, build, notices, client, finalFocus, onClose }: AboutDialogProps) {
   const heading = useRef<HTMLHeadingElement>(null);
   const size = dialogSize("about", client);
@@ -68,6 +78,7 @@ export function AboutDialog({ open, scope, build, notices, client, finalFocus, o
         finalFocus={finalFocus}
         className="flex max-w-none flex-col gap-0 p-0 sm:max-w-none"
         style={{ width: size.width, height: size.height }}
+        onKeyDown={selectPanel}
       >
         <DialogTitle ref={heading} tabIndex={-1} className="px-4 py-3">
           About Arbareto

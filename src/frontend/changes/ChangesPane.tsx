@@ -536,6 +536,7 @@ export function ChangesPane(props: ChangesPaneProps) {
         ) : null}
         <section
           data-section="staged"
+          tabIndex={-1}
           className={`flex min-h-0 min-w-0 flex-col overflow-y-auto border-divider ${sideBySide ? "border-l" : "border-t"} ${box > minPane * 2 ? "shrink-0" : "flex-1"}`}
           style={box > minPane * 2 ? { flexBasis: staged } : undefined}
         >

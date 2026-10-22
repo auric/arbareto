@@ -1203,7 +1203,9 @@ describe("single view", () => {
     expect(double.calls.slice(before).map((c) => c.operation)).toEqual([]);
     await selectRow(HEAD);
     expect(document.querySelector('section[aria-label="Dock"]')!.textContent).toContain("Selected commit");
-    expect(double.calls.slice(before).map((c) => [c.operation, (c.args[1] as { text?: string }).text])).toEqual([["readHistoryRows", "details"]]);
+    // Feature 005 plan.md D3 "Selection": a commit row also reads its changed files.
+    const reads = double.calls.slice(before).map((c) => `${c.operation} ${(c.args[1] as { text?: string }).text ?? ""}`);
+    expect(reads.sort()).toEqual(["readCommitChanges ", "readHistoryRows details"]);
   });
 
   test("the History-ready, Commit-panel-ready, and Details-ready marks follow their states once each", async () => {

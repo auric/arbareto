@@ -154,9 +154,9 @@ describe("Selected commit", () => {
     expect(host.querySelector("h2")!.closest(".select-text")).toBeNull();
   });
 
-  test("the static line stays, and the details hold no Git action", async () => {
+  test("the 001 static line is gone (feature 005 FR-005), and the details hold no Git action", async () => {
     const host = await details(4, (i) => (i === 4 ? { children: [] } : {}));
-    expect(text(host)).toContain("Changed files are not shown in this version.");
+    expect(text(host)).not.toContain("Changed files are not shown in this version.");
     const labels = [...host.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? text(b));
     expect(labels).toEqual(["Copy message", "Copy commit ID", fakeOid(5), `Copy parent ID ${fakeOid(5).slice(0, 12)}`]);
   });

@@ -96,6 +96,15 @@
   --warning-fill: light-dark(#FFF4D4, #3A321C);
   --selected-row: light-dark(#DCE8FA, #2B3A50);
 
+  /* Feature 005 plan.md D16: the seven blame age shades, step 1 (oldest) to 7 (newest). */
+  --age-1: light-dark(#C2D4F0, #323B4B);
+  --age-2: light-dark(#A7C0E6, #3E4D66);
+  --age-3: light-dark(#8DACDC, #4A5F82);
+  --age-4: light-dark(#7398D3, #56719D);
+  --age-5: light-dark(#5984C9, #6283B9);
+  --age-6: light-dark(#3E70BF, #6E95D4);
+  --age-7: light-dark(#245CB5, #7AA7F0);
+
   /* Lane roles (plan.md "History graph design"). */
   --lane-teal: light-dark(#06726E, #34AFA4);
   --lane-sky: light-dark(#00516B, #88CEEF);
@@ -452,6 +461,10 @@
 @media (forced-colors: active) {
   :focus-visible {
     outline-color: Highlight;
+  }
+  /* Feature 005 plan.md D16: the age bar is decoration. Forced colors remove it, and the relative date stays the cue. */
+  .age-bar {
+    forced-color-adjust: auto;
   }
   [data-slot="segmented"] [aria-current="page"] {
     forced-color-adjust: none;

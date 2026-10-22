@@ -34,6 +34,7 @@ import {
   MenubarSubTrigger,
   MenubarTrigger,
 } from "../components/ui/menubar";
+import { CommitChanges } from "../history/CommitChanges";
 import { ViewCommitDetails } from "../history/CommitDetails";
 import { HistoryList } from "../history/HistoryList";
 import { branchName, INDEX_ROW, WORKING_ROW } from "../history/HistoryView";
@@ -57,7 +58,7 @@ import {
 } from "../layout/profiles";
 import { Splitter } from "../layout/Splitter";
 import { ReferencesSidebar } from "../refs/ReferencesSidebar";
-import { createHistoryView, refsChanged, type HistoryBridge, type HistoryView as HistoryStore } from "../state/history-view";
+import { createHistoryView, createInspection, refsChanged, type HistoryBridge, type HistoryView as HistoryStore } from "../state/history-view";
 import { createRequests, isRegistration, wslDistro, type Clock, type RequestBridge, type Requests, type RequestState } from "../state/requests";
 import { metrics as densityMetrics } from "../layout/profiles";
 import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, storePanes, writePreferences, type DarkPalette, type Panes, type Preferences, type Theme } from "../state/preferences";
@@ -100,7 +101,7 @@ import { WorktreesGroup } from "../worktrees/WorktreesGroup";
 import { W } from "../worktrees/texts";
 import { useBranchActions } from "../branches/BranchActions";
 import { CommitView } from "../views/CommitView";
-import { HistoryView as HistoryFrame } from "../views/HistoryView";
+import { HistoryView as HistoryFrame, HistoryListSlot } from "../views/HistoryView";
 import { shortRef } from "../refs/ReferencesSidebar";
 
 // plan.md "Chosen layout: one view", "Chosen layout, sizes, and DPI", "Dock region", "Keyboard and focus", and "Required visible states".
@@ -147,6 +148,9 @@ export type WorkbenchBridge = RequestBridge &
     | "readGitSettings"
     | "setSwitchChoice"
     | "chooseWorktreeFolder"
+    | "readCommitChanges"
+    | "readCommitFile"
+    | "readBlame"
   >;
 /** The hunk and file staging facts that the workbench gives the changes pane and the comparison view (T145, T202). */
 export type Staging = {
@@ -593,6 +597,9 @@ const panelOf = (selected: string | null): Panel | null => (selected === null ? 
 
 // plan.md "Keyboard and focus", Pane navigation: each section element carries its name.
 const SECTION_SELECTOR = "[data-section]";
+// Feature 005 plan.md D15: the History regions where Ctrl+F focuses Filter files, and the F6 stops inside the commit details section.
+const HISTORY_FILES_SCOPE = '[data-slot="changed-files"], [data-slot="history-diff"]';
+const DOCK_STOP = "[data-dock-stop]";
 const TABBABLE = 'input:not([disabled]), button:not([disabled]), textarea, [tabindex="0"], [role="option"][tabindex="0"]';
 
 // The About dialog and the notices load on first open (plan.md "Startup chunk budget").
@@ -640,7 +647,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (response.state === "canceled" && response.operationId !== undefined && response.operationId === canceledStart.current) setNotice(WSL_START_CANCELED_TEXT);
     return response;
   };
-  const [{ requests, historyView, store }] = useState(() => {
+  const [{ requests, historyView, store, inspection }] = useState(() => {
     // The two stores refer to each other: the requests open the view, and the view's `openHistory` counts as a workspace read.
     let view: HistoryStore | null = null;
     const requests = createRequests({
@@ -679,7 +686,17 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       mutationEnded: requests.mutationEnded,
       refreshHistory: () => void view!.refresh(),
     });
-    return { requests, historyView: view, store };
+    // Feature 005 plan.md D15 "State": the commit changes, the selected file, the parent index, and the blame.
+    const inspection = createInspection(
+      {
+        readCommitChanges: (target, payload, onProgress) => bridge.readCommitChanges(target, payload, onProgress),
+        readCommitFile: (target, payload, onProgress) => bridge.readCommitFile(target, payload, onProgress),
+        readBlame: (target, payload, onProgress) => bridge.readBlame(target, payload, onProgress),
+        cancel: (payload) => bridge.cancel(payload),
+      },
+      () => requests.target()!,
+    );
+    return { requests, historyView: view, store, inspection };
   });
   // The latest environment: the given one, or a later read after a dismissal or a `service-session` event.
   const [environment, setEnvironment] = useState(given);
@@ -703,12 +720,16 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   }
   const state = useSyncExternalStore(requests.subscribe, requests.state, requests.state);
   const historyState = useSyncExternalStore(historyView.subscribe, historyView.getState, historyView.getState);
+  const blameOpen = useSyncExternalStore(inspection.subscribe, () => inspection.getState().blame !== null, () => inspection.getState().blame !== null);
+  const lineOid = useSyncExternalStore(inspection.subscribe, inspection.lineCommit, inspection.lineCommit);
   // Data-model §14: the view of each worktree for the window session. Without a repository, the empty key holds the view.
   const viewKey = state.repository?.worktreeKey ?? "";
   const view: View = useSyncExternalStore(store.subscribe, () => store.view(viewKey), () => store.view(viewKey));
   const commitState = useSyncExternalStore(store.subscribe, () => store.commitView(viewKey), () => store.commitView(viewKey));
   const filterRef = useRef<HTMLInputElement>(null);
   const filesFilterRef = useRef<HTMLInputElement>(null);
+  // Feature 005 plan.md D15 keyboard map: Ctrl+F focuses Filter files while the focus is in Changed files or in the History diff.
+  const historyFilesRef = useRef<HTMLInputElement>(null);
   const [preferences, setPreferences] = useState(storedPreferences);
   const client = useClientSize();
   const profile: Profile = chooseProfile(client, textScale, preferences.density);
@@ -897,6 +918,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (session === firstSession.current) return;
     // Feature 002 contract Δ8: after a service restart no view resumes. Refresh opens a new one.
     historyView.markStale();
+    inspection.reset();
     requests.serviceSession();
     void readEnvironment();
   }, [session, requests]);
@@ -907,6 +929,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     setTrust(null);
     setNotice(null);
     setDeclined(null);
+    inspection.reset();
   }, [repositoryId]);
   useEffect(() => {
     if (repositoryId === null) return;
@@ -1057,7 +1080,20 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (!live.current.statusStop) present.delete("statusRegion");
     const active = document.activeElement as HTMLElement | null;
     const current = from ?? (active?.closest<HTMLElement>(SECTION_SELECTOR)?.dataset.section as Section | undefined) ?? "header";
-    const order: Section[] = ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "commitDetails", "scopeBar", "pageList", "pageContent", "statusRegion"];
+    // Feature 005 plan.md D15 "F6 order": Changed files and then the diff follow the commit details inside its section.
+    const stopsOf = (section: HTMLElement) => [...section.querySelectorAll<HTMLElement>(DOCK_STOP)].filter((stop) => !stop.closest("[hidden]"));
+    const focusStop = (stop: HTMLElement) => {
+      const remembered = lastFocus.current.get("commitDetails");
+      (remembered?.isConnected && stop.contains(remembered) ? remembered : (stop.querySelector<HTMLElement>(TABBABLE) ?? stop)).focus();
+    };
+    const own = from === undefined && current === "commitDetails" ? present.get(current) : undefined;
+    if (own !== undefined) {
+      const stops = stopsOf(own);
+      const at = stops.findIndex((stop) => stop.contains(active));
+      const next = at + (direction === "next" ? 1 : -1);
+      if (at >= 0 && next >= 0 && next < stops.length) return focusStop(stops[next]!);
+    }
+    const order: Section[] =["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "commitDetails", "scopeBar", "pageList", "pageContent", "statusRegion"];
     const hidden = order.filter((s) => !present.has(s));
     const target = nextSection({ panel: live.current.panel ?? "details", hidden, bandRows: present.has("noticeHeading") ? 1 : 0, status: { text: present.has("statusRegion"), toggle: false, cancel: false } }, current, direction);
     if (target === null) return;
@@ -1068,6 +1104,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       const entry = (live.current.starting ? root.querySelector<HTMLElement>('[data-slot="status-area"] button') : null) ?? statusRegion.current?.entry() ?? null;
       return (entry ?? element).focus();
     }
+    const stops = target === "commitDetails" ? stopsOf(element) : [];
+    if (stops.length > 0) return focusStop(stops[direction === "next" ? 0 : stops.length - 1]!);
     const focus = remembered?.isConnected && element.contains(remembered) ? remembered : target === "noticeHeading" ? element.querySelector<HTMLElement>("h2") : element.querySelector<HTMLElement>(TABBABLE);
     (focus ?? element).focus();
   }
@@ -1112,7 +1150,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       else if (action.type === "focusSection") moveSection(action.direction);
       else if (action.type === "focusFilter") {
         const target = filterTarget(live.current.view);
-        if (target === "history") filterRef.current?.focus();
+        if (target === "history") (document.activeElement?.closest(HISTORY_FILES_SCOPE) ? historyFilesRef : filterRef).current?.focus();
         else if (target === "files") filesFilterRef.current?.focus();
         else sections.current?.querySelector<HTMLElement>('[data-view="settings"] input[aria-label="Find a setting"]')?.focus();
       }
@@ -1565,13 +1603,26 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       }
     >
       {inCommitView ? null : pushPanel}
-      {inCommitView || panel !== "commit" || pushPanel !== null ? null : <WorkingSummary working={working} staged={staged} onOpen={openCommitView} />}
-      {panel === "details" && kept !== null && pushPanel === null ? (
+      {inCommitView || panel !== "commit" || pushPanel !== null || blameOpen ? null : <WorkingSummary working={working} staged={staged} onOpen={openCommitView} />}
+      {/* Feature 005 plan.md D15 "Blame view": the dock shows the commit details of the selected blame line. */}
+      {blameOpen ? (
+        lineOid === null || pushPanel !== null ? null : (
+          <div data-section="commitDetails" className="h-full min-h-0">
+            <ViewCommitDetails view={historyView} oid={lineOid} />
+          </div>
+        )
+      ) : panel === "details" && kept !== null && pushPanel === null ? (
         <div data-section="commitDetails" className="h-full min-h-0">
-          <ViewCommitDetails view={historyView} oid={kept} onRead={() => setDetailsRead(row.epoch)} />
+          <ViewCommitDetails
+            view={historyView}
+            oid={kept}
+            onRead={() => setDetailsRead(row.epoch)}
+            profile={profile}
+            changes={<CommitChanges inspection={inspection} view={historyView} oid={kept} profile={profile} filterRef={historyFilesRef} onTrust={() => approveTrust("read")} onBlame={(request) => inspection.openBlame(request)} />}
+          />
         </div>
       ) : null}
-      {panel === null && pushPanel === null ? <p className="p-2 text-muted-text">{DOCK_HINT}</p> : null}
+      {panel === null && pushPanel === null && !blameOpen ? <p className="p-2 text-muted-text">{DOCK_HINT}</p> : null}
     </DockRegion>
   );
 
@@ -1637,7 +1688,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           <div>{sidebar}</div>
         </div>
         <section aria-label="History" data-section="historyList" className="flex min-h-0 flex-col" style={{ flex: "1 1 0" }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
-          <HistoryView {...pane} />
+          <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.selectOid(oid)}>
+            <HistoryView {...pane} />
+          </HistoryListSlot>
         </section>
         <section aria-label="Dock" className="flex min-h-0 flex-col border-t border-divider" style={{ flex: "0 0 auto", minHeight: m.reducedPaneMin, maxHeight: docked ? dockedMax : undefined }}>
           {dock}
@@ -1658,7 +1711,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             onKeyDown={onHistoryKey}
             onDoubleClick={onHistoryDoubleClick}
           >
+            <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.selectOid(oid)}>
             <HistoryView {...pane} />
+          </HistoryListSlot>
           </section>
           {/* The dock splitter sets the height of the dock content. A docked panel takes its own height, so the splitter hides. */}
           <Splitter

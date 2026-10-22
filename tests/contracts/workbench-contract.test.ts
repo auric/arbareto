@@ -573,7 +573,7 @@ describe("contract Δ3 payloads", () => {
 
   // T105: the renderer and the shell read none of these fields, so the strict results refuse them.
   test("a branch entry has no hasLocal, a ref change names only its ref, and a worktree run has no worktree list", () => {
-    const entry = { ref: "refs/remotes/origin/main", kind: "remote", name: "origin/main", invalidUtf8: false, oid: OID, upstream: null, tracking: null, heldBy: null, current: false, localName: "main" };
+    const entry = { ref: "refs/remotes/origin/main", kind: "remote", name: "origin/main", invalidUtf8: false, oid: OID, upstream: null, tracking: null, heldBy: null, current: false, localName: "main", upstreamPresent: false };
     expect(ok(envelope.ReadBranchesResult, { entries: [entry] })).toBe(true);
     expect(ok(envelope.ReadBranchesResult, { entries: [{ ...entry, hasLocal: true }] })).toBe(false);
     const head = { state: "branch", target: "refs/heads/main", oid: OID };

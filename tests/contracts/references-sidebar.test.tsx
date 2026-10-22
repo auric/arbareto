@@ -70,6 +70,8 @@ const REFS: RefsResult = {
 };
 // The history list reads A and B. C is not loaded yet (contract Δ3 target `unknown`).
 const LOADED = new Set([A, B]);
+// Feature 005 spec FR-064: the 003 track state `gone` of feature/x gives the gone mark.
+const GONE = new Map([["feature/x", { text: "Upstream gone", label: "Upstream gone", state: "gone" as const }]]);
 
 type Props = Partial<Parameters<typeof ReferencesSidebar>[0]>;
 let repositories = 0;
@@ -114,21 +116,21 @@ describe("groups and folders", () => {
     ]);
   });
 
-  test("each / of a name starts a folder level, folders keep the Git order of their first name, and closed folders hide their entries", async () => {
+  test("each / of a name starts a folder level, folders come first (feature 005 spec FR-015), and closed folders hide their entries", async () => {
     const { host } = await sidebar();
-    expect(names(host)).toEqual(["Branches, 4", "feature, folder, 1", "main, local branch, Current, → origin/main", "release, folder, 2", "Remotes, 4", "Tags, 1"]);
+    expect(names(host)).toEqual(["Branches, 4", "feature, folder, 1", "release, folder, 2", "main, local branch, Current, → origin/main", "Remotes, 4", "Tags, 1"]);
     expect(item(host, "feature, folder").getAttribute("aria-expanded")).toBe("false");
     expect(item(host, "feature, folder").getAttribute("aria-level")).toBe("2");
     expect(item(host, "main,").getAttribute("aria-level")).toBe("2");
   });
 
   test("a folder with one child stays a folder, and an entry shows its last segment while its name holds the full name", async () => {
-    const { host } = await sidebar();
+    const { host } = await sidebar({ tracking: GONE });
     await click(item(host, "feature, folder"));
     const entry = item(host, "feature/x,");
     expect(entry.getAttribute("aria-level")).toBe("3");
     expect(text(entry).startsWith("x")).toBe(true);
-    expect(entry.getAttribute("aria-label")).toBe("feature/x, local branch, → origin/feature/x, not present");
+    expect(entry.getAttribute("aria-label")).toBe("feature/x, local branch, → origin/feature/x, upstream gone");
   });
 
   test("the folders on the path to the current branch start open", async () => {
@@ -155,8 +157,8 @@ describe("groups and folders", () => {
     expect(item(host, "origin/HEAD").getAttribute("aria-label")).toBe("origin/HEAD, remote-tracking branch, → origin/main");
   });
 
-  test("the current branch name is bold with aria-current and no Current text, other rows are not bold, and an upstream shows → <upstream> or not present", async () => {
-    const { host } = await sidebar();
+  test("the current branch name is bold with aria-current and no Current text, other rows are not bold, and an upstream shows → <upstream> and the gone mark (feature 005 spec FR-064)", async () => {
+    const { host } = await sidebar({ tracking: GONE });
     const main = item(host, "main,");
     expect(main.getAttribute("aria-current")).toBe("true");
     expect(main.getAttribute("aria-label")).toContain("Current");
@@ -166,7 +168,8 @@ describe("groups and folders", () => {
     await click(item(host, "feature, folder"));
     const marked = (h: HTMLElement) => items(h).filter((i) => i.hasAttribute("aria-current") || i.querySelector(".font-semibold") !== null);
     expect(marked(host)).toEqual([main]);
-    expect(text(item(host, "feature/x,"))).toContain("→ origin/feature/x, not present");
+    expect(text(item(host, "feature/x,"))).toContain("→ origin/feature/x");
+    expect(item(host, "feature/x,").querySelector("[data-slot=\"gone-mark\"]")).not.toBeNull();
   });
 
   test("a detached HEAD has no current branch, so no row is bold", async () => {
@@ -286,8 +289,8 @@ describe("tree keys", () => {
     await key(item(host, "feature, folder"), "ArrowLeft");
     expect(item(host, "feature, folder").getAttribute("aria-expanded")).toBe("false");
     await key(item(host, "feature, folder"), "ArrowDown");
-    expect(document.activeElement).toBe(item(host, "main,"));
-    await key(item(host, "main,"), "End");
+    expect(document.activeElement).toBe(item(host, "release, folder"));
+    await key(item(host, "release, folder"), "End");
     expect(document.activeElement).toBe(item(host, "Tags"));
     await key(item(host, "Tags"), "Home");
     expect(document.activeElement).toBe(item(host, "Branches"));

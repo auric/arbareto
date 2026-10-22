@@ -45,7 +45,12 @@ export type SwitcherPopoverProps<T> = {
   itemLabel?(item: T): string;
   /** The heading of the item's group. A heading row with the group count shows before the first shown item of each group. The option names must state the group too, because the heading is no option. */
   itemGroup?(item: T): string;
-  renderItem(item: T): ReactNode;
+  /** `active` is true for the option that `aria-activedescendant` names, the keyboard focus of the list. */
+  renderItem(item: T, active: boolean): ReactNode;
+  /** The `aria-describedby` value of an option, such as an open branch card (feature 005 spec FR-066). */
+  itemDescribedBy?(item: T): string | undefined;
+  /** Escape in the filter field. True: the caller handled it, such as an open branch card, so the popover stays open. */
+  onEscape?(): boolean;
   onPick(item: T): void;
   /** The last options, such as "New branch…" with the key Ctrl+B. The filter never hides them. `note` is a Muted state on the option line. */
   footer?: Footer | readonly Footer[];
@@ -73,7 +78,7 @@ export function SwitcherPopover<T>({ open, onOpenChange, trigger, children, tool
   );
 }
 
-function SwitcherList<T>({ rowHeight, itemHeight, headingHeight, filterLabel, listLabel, items, failure, itemKey, itemText, itemLabel = itemText, itemGroup, renderItem, onPick, footer, onItemDelete, emptyText, noMatchText }: Omit<SwitcherPopoverProps<T>, "open" | "onOpenChange" | "trigger" | "children" | "tooltip">) {
+function SwitcherList<T>({ rowHeight, itemHeight, headingHeight, filterLabel, listLabel, items, failure, itemKey, itemText, itemLabel = itemText, itemGroup, renderItem, itemDescribedBy, onEscape, onPick, footer, onItemDelete, emptyText, noMatchText }: Omit<SwitcherPopoverProps<T>, "open" | "onOpenChange" | "trigger" | "children" | "tooltip">) {
   const ids = { list: useId(), option: useId() };
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -140,7 +145,10 @@ function SwitcherList<T>({ rowHeight, itemHeight, headingHeight, filterLabel, li
     else footers[index - shown.length]?.onPick();
   }
   function onKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    if (event.key === "Escape" && onEscape?.() === true) {
+      event.preventDefault();
+      event.stopPropagation();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       const next = Math.max(0, Math.min(count - 1, active + (event.key === "ArrowDown" ? 1 : -1)));
       setActiveIndex(next);
@@ -183,6 +191,7 @@ function SwitcherList<T>({ rowHeight, itemHeight, headingHeight, filterLabel, li
         aria-setsize={setSizes[setAt[index]!.set]}
         aria-label={end === null ? itemLabel(item!) : end.keys === undefined ? (end.note === undefined ? undefined : `${end.label}, ${end.note}`) : `${end.label} (${end.keys.text})`}
         aria-keyshortcuts={end === null ? (onItemDelete === undefined ? undefined : "Delete") : end.keys?.aria}
+        aria-describedby={end === null ? itemDescribedBy?.(item!) : undefined}
         className={`list-row flex min-w-0 items-center gap-2 px-2 ${index === active ? "bg-hover-fill" : ""}`}
         style={end === null && itemHeight !== undefined ? { height: itemHeight, ...style } : style}
         onMouseDown={(event) => event.preventDefault()}
@@ -207,7 +216,7 @@ function SwitcherList<T>({ rowHeight, itemHeight, headingHeight, filterLabel, li
             )}
           </>
         ) : (
-          renderItem(item!)
+          renderItem(item!, index === active)
         )}
       </div>
     );

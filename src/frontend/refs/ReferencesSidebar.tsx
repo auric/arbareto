@@ -4,10 +4,13 @@
 import { ArrowDown01Icon, ArrowRight01Icon, CancelCircleIcon, SidebarLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
-import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
+import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { RefEntry, RefsResult } from "../../contracts/envelope";
+import { compareKeys, treeKey } from "../../contracts/tree-order";
 import { unknownReadText } from "../app/RepositoryStates";
+import { BranchCard, GoneMark, isCut, UPSTREAM_GONE_NAME, type CardFacts } from "../branches/BranchCard";
 import type { BridgeResponse } from "../bridge";
+import type { BranchEntry } from "../state/workbench";
 import { ActionMenu } from "../components/action-menu";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
@@ -48,7 +51,9 @@ export const shortRef = (name: string) => {
   return prefix === undefined ? name : name.slice(prefix.length);
 };
 
-const upstreamText = (entry: RefEntry) => (entry.upstream === null ? null : `→ ${shortRef(entry.upstream)}${entry.upstreamPresent ? "" : ", not present"}`);
+// Feature 005 spec FR-064 and plan.md O-1: the visible "→ <upstream>" stays, and the gone mark replaces ", not present".
+const upstreamText = (entry: RefEntry) => (entry.upstream === null ? null : `→ ${shortRef(entry.upstream)}`);
+const NAME_SLOT = '[data-slot="ref-name"]';
 
 function refusalText(response: BridgeResponse): string {
   if (response.state === "succeeded") return unknownReadText("The references");
@@ -88,6 +93,8 @@ export type ReferencesSidebarProps = {
   /** The expansion of a collapsible section, when the parent holds it. */
   expanded?: boolean;
   onExpandedChange?: (next: boolean) => void;
+  /** Feature 005 spec FR-066: the newest `readBranches` entries, for the worktree line of the branch card. Without them, the card leaves out that line. */
+  branches?: readonly BranchEntry[] | null;
 };
 
 // plan.md "Keyboard and focus", References sidebar row: the expansion lasts for the window session per repository and is not stored.
@@ -101,11 +108,15 @@ type Row = { node: Tree; level: number; kind: Kind; parent: number; pos: number;
 const groupKey = (kind: Kind) => `group:${kind}`;
 const folderKey = (kind: Kind, path: string) => `folder:${kind}:${path}`;
 
-/** Git's reference hierarchy (git-check-ref-format(1)): each `/` of a name starts one level. Folders keep the order of their first entry. */
+const utf8 = new TextEncoder();
+// Feature 005 contract Δ3 (001 §3): a name that is not valid UTF-8 carries its raw bytes in `nameBytes`.
+const nameBytesOf = (entry: RefEntry) => (entry.nameBytes === undefined ? utf8.encode(entry.name) : Uint8Array.from(atob(entry.nameBytes), (c) => c.charCodeAt(0)));
+/** Git's reference hierarchy (git-check-ref-format(1)): each `/` of a name starts one level. Feature 005 spec FR-015: the entries sort first, so each level shows its folders first. */
 function buildGroup(kind: Kind, label: string, entries: readonly RefEntry[]): Tree {
   const root: Tree = { key: groupKey(kind), label, count: 0, children: [] };
   const folders = new Map<string, Tree>();
-  for (const entry of entries) {
+  const sorted = entries.map((entry) => ({ entry, key: treeKey(nameBytesOf(entry)) })).sort((a, b) => compareKeys(a.key, b.key));
+  for (const { entry } of sorted) {
     const segments = entry.name.split("/");
     let at = root;
     root.count++;
@@ -142,8 +153,12 @@ function matchingPaths(tree: Tree, matches: (entry: RefEntry) => boolean, open: 
   return any;
 }
 
-export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction, after, scrollElement, expanded, onExpandedChange }: ReferencesSidebarProps) {
-  const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId(), empty: useId() };
+export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, collapsible = false, repository, rowHeight = ROW_HEIGHT, onShowBranchHistory, tracking, onBranchAction, after, scrollElement, expanded, onExpandedChange, branches }: ReferencesSidebarProps) {
+  const ids = { heading: useId(), node: useId(), none: useId(), unknown: useId(), empty: useId(), card: useId() };
+  // Feature 005 plan.md D13: one branch card at a time, by row key.
+  const [card, setCard] = useState<{ key: string; instant: boolean } | null>(null);
+  // Exact names only: a ref that is not valid UTF-8 pairs with nothing.
+  const held = useMemo(() => (branches == null ? null : new Map(branches.filter((b) => b.kind === "local" && !b.invalidUtf8).map((b) => [b.ref, b]))), [branches]);
   const emptyId = (kind: Kind) => `${ids.empty}-${kind}`;
   const [query, setQuery] = useState("");
   // Null until the user changes the expansion: the default then follows the current branch of the newest result.
@@ -278,6 +293,11 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>, index: number) {
     const row = rows[index]!;
+    // Feature 005 plan.md D15 keyboard map: Escape closes an open branch card, and the focus stays on the row.
+    if (event.key === "Escape" && card?.key === row.node.key) {
+      event.preventDefault();
+      return setCard(null);
+    }
     // Feature 004 plan.md D15 keyboard map: the branch keys act only on the focused branch row.
     const scoped = actionable(row) ? scopedAction(event.nativeEvent, row.kind === "branch" ? "localBranchRow" : "remoteBranchRow") : null;
     if (scoped !== null) {
@@ -356,19 +376,36 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     const current = isCurrent(row);
     const upstream = upstreamText(entry);
     const notShown = entry.commitId === null ? undefined : missing.get(entry.commitId);
-    const track = kind === "branch" ? (tracking?.get(entry.name) ?? null) : null;
+    // Feature 005 spec FR-064: the 003 track state `gone` gives the mark, and the mark replaces the 003 "Upstream gone" label of the row.
+    const label = kind === "branch" ? (tracking?.get(entry.name) ?? null) : null;
+    const gone = entry.upstream !== null && label?.state === "gone";
+    const track = gone ? null : label;
     // Feature 004 spec FR-008 and the 003 FR-020 change: "No upstream" is part of the name of a local branch row, never visible text.
     const noUpstream = kind === "branch" && entry.upstream === null;
     const name =
       entry.symref === null
-        ? [entry.name, noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream]), ...(noUpstream ? [NO_UPSTREAM] : track === null ? [] : [track.label])].join(", ")
+        ? [entry.name, noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream]), ...(gone ? [UPSTREAM_GONE_NAME] : []), ...(noUpstream ? [NO_UPSTREAM] : track === null ? [] : [track.label])].join(", ")
         : `${entry.name}, ${noun}, → ${shortRef(entry.symref)}`;
-    return (
+    // Feature 005 spec FR-065: the branch and remote rows without a symbolic target have the card.
+    const carded = (kind === "branch" || kind === "remote") && entry.symref === null;
+    const cardOpen = carded && card?.key === node.key;
+    const describedBy = [notShown === undefined ? null : ids[notShown], cardOpen ? ids.card : null].filter((id) => id !== null).join(" ") || undefined;
+    const view = (
       <div
         key={node.key}
         {...common}
+        {...(carded
+          ? {
+              // Spec FR-065: a keyboard focus opens the card of a cut name at once.
+              onFocus: (event: ReactFocusEvent<HTMLElement>) => {
+                setActiveKey(node.key);
+                if (event.currentTarget.matches(":focus-visible") && isCut([event.currentTarget.querySelector(NAME_SLOT)])) setCard({ key: node.key, instant: true });
+              },
+              onBlur: () => setCard((open) => (open?.key === node.key ? null : open)),
+            }
+          : {})}
         aria-label={name}
-        aria-describedby={notShown === undefined ? undefined : ids[notShown]}
+        aria-describedby={describedBy}
         aria-haspopup={actionable(row) || (current && onShowBranchHistory !== undefined) ? "menu" : undefined}
         aria-current={current ? "true" : undefined}
         className="list-row flex min-w-0 items-center gap-2 pr-2"
@@ -376,9 +413,10 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
         {entry.symref === null ? (
           <>
             {/* Git Extensions shows the current branch in bold. The weight survives forced colors. */}
-            <span aria-hidden="true" className={current ? "min-w-0 shrink truncate font-semibold" : "min-w-0 shrink truncate"}>
+            <span data-slot="ref-name" aria-hidden="true" className={current ? "min-w-0 shrink truncate font-semibold" : "min-w-0 shrink truncate"}>
               {node.label}
             </span>
+            {gone ? <GoneMark upstream={shortRef(entry.upstream!)} /> : null}
             {upstream === null ? null : (
               <span aria-hidden="true" className="min-w-0 shrink-[1000] truncate text-muted-text">
                 {upstream}
@@ -396,6 +434,32 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
           </span>
         )}
       </div>
+    );
+    if (!carded) return view;
+    const holder = held?.get(`refs/heads/${entry.name}`);
+    const facts: CardFacts =
+      kind === "remote"
+        ? { kind: "name", name: entry.name }
+        : {
+            kind: "local",
+            name: entry.name,
+            upstream: entry.upstream === null ? null : shortRef(entry.upstream),
+            gone,
+            track: label,
+            // Spec FR-066: only another worktree. The open worktree holds the current branch.
+            heldBy: held === null || entry.invalidUtf8 ? undefined : current ? null : (holder?.heldBy ?? null),
+          };
+    return (
+      <BranchCard
+        key={node.key}
+        facts={facts}
+        id={ids.card}
+        open={cardOpen}
+        instant={cardOpen && card?.instant === true}
+        onOpenChange={(next) => setCard(next ? { key: node.key, instant: false } : (open) => (open?.key === node.key ? null : open))}
+        names={() => [elements.current.get(node.key)?.querySelector(NAME_SLOT)]}
+        trigger={view}
+      />
     );
   };
 

@@ -55,6 +55,12 @@
     "allow-reveal-path",
     "allow-set-switch-choice",
     "allow-choose-worktree-folder",
+    "allow-read-commit-changes",
+    "allow-read-commit-file",
+    "allow-read-blame",
+    "allow-read-ignore-file",
+    "allow-preview-ignore",
+    "allow-open-submodule",
     "core:event:allow-listen"
   ]
 }

@@ -42,6 +42,8 @@ export const ERROR_CODES_BY_CATEGORY = {
   sync: ["SYNC_UNAVAILABLE", "PUSH_REJECTED", "PUTTY_UNAVAILABLE", "DESTINATION_NOT_EMPTY"],
   // Feature 004 contract Δ9. The contract gives these codes no 001 category.
   workbench: ["WORKBENCH_UNAVAILABLE", "UNTRACKED_IN_WAY", "STASH_KEPT"],
+  // Feature 005 contract Δ9. The contract gives these codes no 001 category.
+  inspection: ["BLAME_UNAVAILABLE", "SUBMODULE_UNAVAILABLE"],
 } as const;
 
 export type ErrorCategory = keyof typeof ERROR_CODES_BY_CATEGORY;
@@ -140,10 +142,30 @@ export const WORKBENCH_UNAVAILABLE_REASONS = [
   "config-in-include",
   "included",
   "unreadable-value",
+  // Feature 005 contract Δ9. T057 removes `ignore-exists` and `ignore-not-text`.
+  "conflicted",
+  "submodule",
+  "nested-repository",
+  "no-recycle-bin",
+  "long-path",
+  "nothing-to-delete",
+  "ignore-link",
+  "ignore-folder",
+  "ignore-not-utf8",
+  "ignore-nul",
+  "mixed-line-endings",
 ] as const;
 export type WorkbenchUnavailableReason = (typeof WORKBENCH_UNAVAILABLE_REASONS)[number];
 export const UNTRACKED_IN_WAY_REASONS = ["untracked-in-way"] as const;
 export const STASH_KEPT_REASONS = ["conflicts", "failed-apply", "failed-checkout", "not-found", "stash-changed"] as const;
+
+// Feature 005 contract Δ9: the reasons of the new codes, and the new reasons of `STALE_REVIEW` and `UNKNOWN_TARGET`.
+export const BLAME_UNAVAILABLE_REASONS = ["no-history", "binary", "submodule", "size", "lines", "ignore-revs-file-missing", "no-previous"] as const;
+export type BlameUnavailableReason = (typeof BLAME_UNAVAILABLE_REASONS)[number];
+export const SUBMODULE_UNAVAILABLE_REASONS = ["not-submodule", "submodule-not-initialized", "path"] as const;
+export type SubmoduleUnavailableReason = (typeof SUBMODULE_UNAVAILABLE_REASONS)[number];
+export const STALE_REVIEW_REASONS = ["files-changed", "ignore-changed"] as const;
+export const UNKNOWN_TARGET_REASONS = ["absent"] as const;
 
 export function isErrorCode(value: unknown): value is ErrorCode {
   return typeof value === "string" && (ERROR_CODES as readonly string[]).includes(value);

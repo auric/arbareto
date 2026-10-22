@@ -931,6 +931,13 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     },
     openWorktree,
     revealPath,
+    // Feature 005 contract Δ1: WP4 and WP5 add these handlers.
+    readCommitChanges: undefined,
+    readCommitFile: undefined,
+    readBlame: undefined,
+    readIgnoreFile: undefined,
+    previewIgnore: undefined,
+    openSubmodule: undefined,
   };
 
   function receiveHandshake(frame: Fields) {

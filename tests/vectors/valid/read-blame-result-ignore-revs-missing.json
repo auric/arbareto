@@ -1,0 +1,5 @@
+{
+  "schema": "read-blame-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"ignore-revs-file-missing\",\"path\":\".git-blame-ignore-revs\"}"
+}

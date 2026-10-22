@@ -1,0 +1,8 @@
+{
+  "schema": "open-submodule-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"reason\":\"nested\"}",
+  "repair": {
+    "reason": "path"
+  }
+}

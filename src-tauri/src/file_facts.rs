@@ -73,6 +73,8 @@ pub(crate) fn parse(request: &FileFacts) -> Result<Request<'_>, Code> {
     if request.context_kind != "registeredOperation"
         || !(1..=ENTRIES).contains(&request.files.len())
         || (request.index.is_some() && request.digest)
+        // Feature 005 contract Δ6: `content` takes `digest: true` and exactly one entry.
+        || (request.content == Some(true) && !(request.digest && request.files.len() == 1))
     {
         return Err(INVALID);
     }
@@ -610,6 +612,7 @@ fn file_fact(
     };
     let file = |digest, bound| Fact::File {
         bound,
+        bytes: None,
         digest,
         executable: None,
         last_write: last_write(basic.LastWriteTime),

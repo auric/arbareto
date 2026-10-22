@@ -84,6 +84,13 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   revealPath: (b) => b.revealPath({ repositoryId: id(), entryId: id() }),
   setSwitchChoice: (b) => b.setSwitchChoice({ choice: "stash" }),
   chooseWorktreeFolder: (b) => b.chooseWorktreeFolder({ repositoryId: id() }),
+  // Feature 005 contract Δ1.
+  readCommitChanges: (b) => b.readCommitChanges(gen(), { viewId: id(), oid: "0123456789abcdef0123456789abcdef01234567", parent: 1 }),
+  readCommitFile: (b) => b.readCommitFile(gen(), { changesId: id(), fileId: 12 }),
+  readBlame: (b) => b.readBlame(gen(), { source: { blameId: id(), line: 42 }, options: { ignoreWhitespace: false, detectMoves: true, detectCopies: false, ignoreList: true } }),
+  readIgnoreFile: (b) => b.readIgnoreFile(gen(), { target: "exclude" }),
+  previewIgnore: (b) => b.previewIgnore(gen(), { target: "gitignore", text: "Ki5sb2cKIWtlZXAubG9nCg==", snapshotId: id() }),
+  openSubmodule: (b) => b.openSubmodule({ repositoryId: id(), path: "lib/core" }),
 };
 
 // tasks.md T389. `tsc` checks this function. It never runs. A target variable with a key outside the contract must not compile.

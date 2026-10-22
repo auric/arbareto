@@ -138,6 +138,12 @@ pub fn run() {
             ipc::reveal_path,
             ipc::set_switch_choice,
             ipc::choose_worktree_folder,
+            ipc::read_commit_changes,
+            ipc::read_commit_file,
+            ipc::read_blame,
+            ipc::read_ignore_file,
+            ipc::preview_ignore,
+            ipc::open_submodule,
         ])
         .setup(move |app| start(app, root.as_deref()))
         .on_window_event(|window, event| {

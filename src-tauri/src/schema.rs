@@ -122,6 +122,10 @@ pub fn native_first(
             };
             payload["action"] == "worktree-add" && named && paths(payload, &["path"]).is_ok()
         }
+        // Feature 005 contract Δ3 `openSubmodule`: each `/` component follows the 001 §6 component rule.
+        Some("openSubmodule") => payload["path"]
+            .as_str()
+            .is_some_and(|path| path.split('/').all(crate::file_facts::is_component)),
         _ => true,
     };
     if fits {
@@ -291,7 +295,9 @@ pub fn progress(value: &Value) -> bool {
                 | P::Clone
                 | P::Pageant,
             ) => Some(&SYNC_COUNTERS),
-            Some(P::StageFiles) => Some(&["fileIndex", "fileCount"]),
+            Some(P::StageFiles | P::DeleteFiles) => Some(&["fileIndex", "fileCount"]),
+            // Feature 005 contract Δ2.
+            Some(P::Blame) => Some(&["blamed", "total"]),
             Some(P::Config) => Some(&["keyIndex", "keyCount"]),
             Some(
                 P::SwitchStash
@@ -304,7 +310,9 @@ pub fn progress(value: &Value) -> bool {
                 | P::Resolve
                 | P::Mergetool
                 | P::Worktree
-                | P::Ignore,
+                | P::Ignore
+                | P::IgnoreSave
+                | P::Preview,
             ) => Some(&[]),
             _ => None,
         };
@@ -1070,7 +1078,7 @@ mod tests {
     /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, sync review, sync, clone, branch, worktree, Git settings, and workbench results in `Response.result` and reads no field of them.
     /// The shell writes the settings result of the shell-only settings operations and never reads it.
     /// The same holds for the `chooseWorktreeFolder` result.
-    const NOT_READ: [&str; 32] = [
+    const NOT_READ: [&str; 39] = [
         "service-envelope",
         "open-recent-repository-result",
         "recent-repositories-result",
@@ -1104,6 +1112,14 @@ mod tests {
         "run-workbench-result",
         "choose-worktree-folder-result",
         "review-commit-result",
+        // Feature 005 contract Δ10.
+        "read-commit-changes-result",
+        "read-commit-file-result",
+        "read-blame-result",
+        "read-ignore-file-result",
+        "preview-ignore-result",
+        "open-submodule-result",
+        "reveal-path-result",
     ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
@@ -1219,9 +1235,10 @@ mod tests {
         // The `unlisted` hooks item of plan D14 adds 2 `confirm` vectors.
         // WP23 adds 2 `confirm` vectors for the `repository` action (contract Δ6).
         // T094 adds 3 `native-first-envelope` vectors for `chooseWorktreeFolder` (contract Δ3).
+        // Feature 005 T002 adds 15 shell-read vectors. T013 adds the `fileDelete`, `fileReplace`, and `shadow` vectors.
         assert_eq!(
             checked,
-            if cfg!(windows) { 180 } else { 175 },
+            if cfg!(windows) { 195 } else { 190 },
             "shell-read vectors"
         );
     }
@@ -1270,6 +1287,7 @@ mod tests {
         let facts = vec![
             Fact::File {
                 bound: None,
+                bytes: None,
                 digest: Some(reply::digest(&"a".repeat(64))),
                 executable: None,
                 last_write: reply::last_write(133_700_000_000_000_000),

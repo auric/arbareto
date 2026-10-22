@@ -1,0 +1,5 @@
+{
+  "schema": "read-commit-changes-result",
+  "expected": "valid",
+  "text": "{\"changesId\":\"0f0f0f0f-0000-4000-8000-000000000007\",\"viewId\":\"0f0f0f0f-0000-4000-8000-000000000006\",\"oid\":\"0123456789abcdef0123456789abcdef01234567\",\"parents\":[\"89abcdef0123456789abcdef0123456789abcdef\"],\"base\":{\"kind\":\"parent\",\"index\":0,\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\"},\"files\":[{\"fileId\":0,\"status\":\"modified\",\"pathBytes\":\"c3JjL2EudHM=\",\"kind\":\"file\"},{\"fileId\":1,\"status\":\"renamed\",\"score\":92,\"pathBytes\":\"c3JjL25ldy50cw==\",\"oldPathBytes\":\"c3JjL29sZC50cw==\",\"kind\":\"file\"},{\"fileId\":2,\"status\":\"type-changed\",\"pathBytes\":\"bGli\",\"kind\":\"submodule\"}],\"completeness\":{\"state\":\"limited\",\"code\":\"OUTPUT_LIMIT\",\"reason\":\"STATUS_LISTING_BYTES\",\"shown\":3}}"
+}

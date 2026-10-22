@@ -69,7 +69,10 @@
             "worktree-add",
             "worktree-remove",
             "worktree-prune",
-            "config-save"
+            "config-save",
+            "delete-files",
+            "ignore-save-gitignore",
+            "ignore-save-exclude"
           ]
         },
         "worktreeRoot": {

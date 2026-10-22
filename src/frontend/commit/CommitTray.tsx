@@ -190,6 +190,8 @@ export function CommitTray(props: CommitTrayProps) {
       if (!amended && !(await trusted(trustBeforeReview))) return focusField();
       let current = shown();
       if (current === null) return focusField();
+      // The commit sends the message that the disable rules checked. An edit during the review stays as the draft.
+      const submission = amended ? null : drafts.submit(worktreeKey);
       let review = await bridge.reviewCommit(current.reviewed, amended ? { snapshotId: current.snapshotId, amend: true } : { snapshotId: current.snapshotId });
       let parsed = review.state === "succeeded" ? commitReviewOf(review.result) : null;
       if (amended && parsed !== null && amendNeedsTrust(parsed)) {
@@ -228,10 +230,10 @@ export function CommitTray(props: CommitTrayProps) {
         if (response.code === "STALE_REVIEW") setNotice(STALE_TEXT);
         if (response.state === "succeeded") live.current.amend?.onChange(null);
       } else {
-        const submission = drafts.submit(worktreeKey)!;
-        response = await trackOperation("commit", undefined, (onProgress) => bridge.commit(reviewed, { reviewToken: token, message: submission.text, confirmFullScope: true }, onProgress), props.onOperation);
+        // The passed disable check holds a non-blank draft, so `submission` is set.
+        response = await trackOperation("commit", undefined, (onProgress) => bridge.commit(reviewed, { reviewToken: token, message: submission!.text, confirmFullScope: true }, onProgress), props.onOperation);
         if (response.code === "STALE_REVIEW") setNotice(STALE_TEXT);
-        void drafts.complete(submission, response.state as TerminalState);
+        void drafts.complete(submission!, response.state as TerminalState);
       }
       const reconciled = props.onEnded?.(response);
       // Feature 003 FR-038: only a reconciled intended success starts the push.

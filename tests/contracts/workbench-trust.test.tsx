@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { act, type ReactNode } from "react";
 import { ReadTrustResult } from "../../src/contracts/envelope";
@@ -10,7 +10,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
 import { contractChecked, fixtureId } from "./bridge-contract";
-import { answer, button, buttons, click, createWorld, itemLabel, keyboardFocus, menuItem, mountWorkbench, settle, snapshot, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
+import { answer, button, buttons, click, createWorld, itemLabel, keyboardFocus, menuItem, mountWorkbench, press, settle, snapshot, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
 
 // tasks.md T066 (feature 004, WP23). Story US7. Spec FR-069 to FR-075. Plan D12, D14, D15.
 
@@ -172,6 +172,34 @@ describe("trust chip (FR-073)", () => {
     await click(menuItem("Stop trusting this repository"));
     await answer(double.pending("revokeTrust"), { requestId: fixtureId(0x503), state: "failed", code: "DEADLINE" });
     expect(statusText()).toContain(`${STOPPED} Arbareto does not know how many programs it stopped, because Stop trusting reached its deadline.`);
+  });
+
+  // tasks.md T389. Plan D15: "Trusted" needs state `approved` without `inputLimited`. A `limited` read carries the full report.
+  const INPUT_LIMITED = JSON.parse((JSON.parse(readFileSync(join(import.meta.dir, "../vectors/valid/read-trust-input-limited.json"), "utf8")) as { text: string }).text) as Record<string, unknown>;
+  const limited = (result: unknown) => succeeded(ReadTrustResult.parse(result), { state: "limited", code: "OUTPUT_LIMIT" });
+
+  test("T389: a limited readTrust with an input-limited report shows Not trusted and no failure text", async () => {
+    const world = createWorld();
+    world.answers.readTrust = () => limited(INPUT_LIMITED);
+    await mountWorkbench(workbench, world);
+    expect(text(chip()!)).toBe("Not trusted");
+    expect(chip()!.getAttribute("aria-label")).toBe("Not trusted. Git does not run this repository's own programs.");
+    expect(statusText()).not.toContain("Trust review did not complete");
+  });
+
+  test("T389: an approved input-limited report shows Not trusted, and the keyboard reaches Stop trusting", async () => {
+    const world = createWorld();
+    world.answers.readTrust = () => limited({ ...INPUT_LIMITED, state: "approved", trustId: TRUST_ID });
+    const double = await mountWorkbench(workbench, world);
+    expect(text(chip()!)).toBe("Not trusted");
+    await keyboardFocus(chip()!);
+    await press(chip()!, "ArrowDown");
+    const item = menuItem("Stop trusting this repository");
+    expect(unavailable(item)).toBe(false);
+    await act(async () => item.focus());
+    expect(document.activeElement).toBe(item);
+    await press(item, "Enter");
+    expect(double.pending("revokeTrust")!.args).toEqual([{ repositoryId: REPOSITORY }, { trustId: TRUST_ID }]);
   });
 });
 

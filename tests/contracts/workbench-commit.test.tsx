@@ -590,6 +590,55 @@ describe("Untracked menu and ignore items (FR-045, FR-046, plan D9)", () => {
     expect(double.count("revealPath") + double.count("reviewWorkbench")).toBe(0);
   });
 
+  test("T120: a row menu opened by Shift+F10 acts on the entry of the new read", async () => {
+    const old = [entry("untracked", "m.txt"), entry("untracked", "n.txt")];
+    const world = createWorld({ entries: old });
+    const double = await openCommitView(world);
+    await click(item("Changes", "Untracked"));
+    const row = item("Changes", "m.txt");
+    await act(async () => row.focus());
+    await press(row, "F10", { shiftKey: true });
+    expect(document.activeElement).toBe(menuItems()[0]!);
+    await newRead(world, double, renewed(old));
+    expect(row.isConnected).toBe(true);
+    await click(menuItem("Show in Explorer"));
+    expect(double.pending("revealPath")!.args[0]).toEqual({ repositoryId: fixtureId(1), entryId: world.entries.find((e) => e.path === "m.txt")!.entryId });
+  });
+
+  test("T120: a new read that moves the file to Staged closes the row menu, and no request goes out", async () => {
+    const { double } = await readWhileMenuOpen((old) => old.map((e) => (e.path === "m.txt" ? { ...e, entryId: fixtureId(next++), category: "staged" as const, xy: "A." } : { ...e, entryId: fixtureId(next++) })));
+    expect(menuItems()).toHaveLength(0);
+    const sent = double.calls.length;
+    await settle();
+    expect(double.calls.slice(sent).map((c) => c.operation)).toEqual([]);
+    expect(double.count("revealPath") + double.count("reviewWorkbench")).toBe(0);
+  });
+
+  test("T120: a new read that removes the folder of an open folder menu moves focus to the next row", async () => {
+    const old = [entry("untracked", "logs/1.log"), entry("untracked", "logs/2.log"), entry("untracked", "notes.txt")];
+    const world = createWorld({ entries: old });
+    const double = await openCommitView(world);
+    await click(item("Changes", "Untracked"));
+    await contextMenu(item("Changes", "logs"));
+    expect(menuItems().length).toBeGreaterThan(0);
+    await newRead(world, double, renewed(old.filter((e) => e.path === "notes.txt")));
+    expect(menuItems()).toHaveLength(0);
+    expect(document.activeElement).toBe(item("Changes", "notes.txt"));
+  });
+
+  test("T120: a new read that hides the focused file in a collapsed folder moves focus to the heading", async () => {
+    const old = [entry("untracked", "a/b/x.txt")];
+    const world = createWorld({ entries: old });
+    const double = await openCommitView(world);
+    await click(item("Changes", "Untracked"));
+    await click(item("Changes", "a/b"));
+    const row = item("Changes", "a/b/x.txt");
+    await act(async () => row.focus());
+    await newRead(world, double, [...renewed(old), entry("untracked", "a/c.txt")]);
+    expect(row.isConnected).toBe(false);
+    expect(document.activeElement).toBe(tree("Changes").parentElement!.querySelector('[data-list-heading="Changes"]'));
+  });
+
   test("T120: a new read keeps keyboard focus on the focused file row", async () => {
     const old = [entry("unstaged", "a.ts", ".M"), entry("unstaged", "b.ts", ".M")];
     const world = createWorld({ entries: old });

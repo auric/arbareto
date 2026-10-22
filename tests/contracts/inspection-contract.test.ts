@@ -594,6 +594,9 @@ describe("contract Δ6 private requests", () => {
     expect(ok(channel.ProcessRequest, req({ entries: [{ path: abs("a.txt"), expected: fileExpected }] }))).toBe(true);
     expect(ok(channel.ProcessRequest, req({ mode: "permanent", entries: [{ path: abs("ln"), expected: { kind: "link", tag: "symlink", target: "../x" } }] }))).toBe(true);
     expect(ok(channel.ProcessRequest, req({ entries: [{ path: abs("big.bin"), expected: { kind: "file", size: 2 * MIB, lastWrite: "-5" } }] }))).toBe(true);
+    // Contract Δ5: a digest binds a file of at most 1 MiB.
+    expect(ok(channel.ProcessRequest, req({ entries: [{ path: abs("a.bin"), expected: { ...fileExpected, size: MIB } }] }))).toBe(true);
+    expect(ok(channel.ProcessRequest, req({ entries: [{ path: abs("a.bin"), expected: { ...fileExpected, size: MIB + 1 } }] }))).toBe(false);
     expect(ok(channel.ProcessRequest, req({ folders: [abs(`a${SEP}b`), abs("a")] }))).toBe(true);
     expect(ok(channel.ProcessRequest, req({}))).toBe(false);
     const many = Array.from({ length: 65 }, (_, i) => ({ path: abs(`f${i}`), expected: fileExpected }));
@@ -662,13 +665,18 @@ describe("contract Δ6 private requests", () => {
       { result: "recycled", recycledPath: abs("x") },
       { result: "kept", hresult: 0x80270000 },
       { result: "error", code: "access-denied" },
-      ...["deleted", "stale", "absent", "not-regular", "stopped", "interrupted"].map((result) => ({ result })),
+      ...["deleted", "stale", "absent", "not-regular", "stopped"].map((result) => ({ result })),
     ];
     const folders = [{ result: "removed" }, { result: "kept" }, { result: "absent" }, { result: "not-regular" }, { result: "error", code: "io-error" }];
     expect(reply({ type: "fileDelete", entries, folders })).toBe(true);
     expect(reply({ type: "fileDelete", entries: [{ result: "recycled" }], folders: [] })).toBe(false);
     expect(reply({ type: "fileDelete", entries: [{ result: "kept" }], folders: [] })).toBe(false);
     expect(reply({ type: "fileDelete", entries: [], folders: [{ result: "deleted" }] })).toBe(false);
+    // A stop before the delete phase gives `stopped`. A WSL stop or deadline gives `interrupted`.
+    for (const result of ["stopped", "interrupted"]) expect(reply({ type: "fileDelete", result })).toBe(true);
+    expect(reply({ type: "fileDelete", result: "deleted" })).toBe(false);
+    expect(reply({ type: "fileDelete", result: "stopped", entries: [], folders: [] })).toBe(false);
+    expect(reply({ type: "fileDelete", entries: [{ result: "interrupted" }], folders: [] })).toBe(false);
     for (const result of ["replaced", "stale", "stopped", "interrupted"]) expect(reply({ type: "fileReplace", result })).toBe(true);
     expect(reply({ type: "fileReplace", result: "refused", reason: "not-regular" })).toBe(true);
     expect(reply({ type: "fileReplace", result: "error", code: "access-denied" })).toBe(true);

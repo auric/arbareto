@@ -231,6 +231,16 @@ The fact probes of 2026-10-21 ran before the tests, on Git 2.56.0.windows.2 and 
 - F19: RI and RT read a skip-worktree `.gitignore` from its index blob, and the S shadow verdicts equal them. Windows NTFS opens `.GITIGNORE` for `.gitignore`, and Git reports the rules as `.gitignore`. NTFS does not open `.gıtignore` for `.gitignore`. WSL ext4 opens neither.
 - Not checked: the Git 2.55 blame source. Only the experiment covers Git 2.55.
 
+WP3 shell facts of 2026-10-22 (cargo tests in `file_delete.rs` and `file_replace.rs`, Windows 11 build 26300):
+- N6: a held folder handle blocks a rename only with `FILE_LIST_DIRECTORY` in its access. NT records the share mode only for an open with read, write, or delete access (`IoSetShareAccess`).
+- N7: the Win32 `SetFileInformationByHandle(FileRenameInfoEx)` refuses a relative name with a `RootDirectory` (`0x80070057`). `NtSetInformationFile(FileRenameInformationEx)` resolves the name below the parent handle. A collision gives `STATUS_OBJECT_NAME_COLLISION`.
+- D10: the reparse tag query needs `FILE_READ_ATTRIBUTES` on the target handle.
+- N1 and N11: the Shell moves each checked file to the Recycle Bin while the checked handle stays open. `recycledPath` is a file system path below `<drive>\$Recycle.Bin\<SID>\`, and the `$I` item lies beside the `$R` item.
+- N3: a junction goes to the Recycle Bin as a link, and its target stays.
+- N4: a `PreDeleteItem` cancel makes `PerformOperations` fail. The cancelled item still gets `PostDeleteItem` with `0x800704C7` (`ERROR_CANCELLED`), so it replies `kept`. Each later item gets no call and replies `stopped`. An item that moved before the cancel keeps its `recycled` result.
+- N9: an untracked `x.` or `x ` beside a tracked `x` replies `kept` with `0x800704C7`. Both files stay. The request path rule refuses such a name, so only the cargo test reaches this step.
+- Dependency: `windows-core` `0.62.2` is a direct dependency, because the `#[implement]` macro of the `IFileOperationProgressSink` sink names that crate. It is the version that `windows` `0.62.2` already uses.
+
 ## Plan review 2026-10-21
 
 The independent plan review of 2026-10-21 found no Critical issue and three High issues in the Delete design. First, the `PreDeleteItem` check compares the held handle with itself and must compare the identity of `psiItem` instead. Second, the WSL `delete` and `replace` modes act by full path and must hold each folder through `chdir` with a device and inode check. Third, the held folder handles block the deepest-first folder removal. The review also found that a folder on the path can become a junction after it is emptied, so the FR-031 limit must name that case too. In the ignore preview, the `--no-index` self-check cannot agree with the shadow for a skip-worktree `.gitignore`. The fix is a typed limit or a self-check against the index-aware listings. The 2 MiB request bound needs base64 text, and the single-file patch read must keep only sections whose paths match exactly. The rest of the method is exact for the report cases, and it runs no repository program before trust approval. The blame and History diff commands are correct apart from two small fixes: `--inter-hunk-context=0` for the line map, and `config --type=path` for the ignore list.

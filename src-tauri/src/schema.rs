@@ -842,7 +842,7 @@ pub mod reply {
         use crate::file_delete::{EntryResult as E, FolderResult as F};
         use p::DeleteEntryResultResult as R;
         use p::DeleteFolderResultResult as D;
-        use p::{FileDeleteReplyEntriesItem as Entry, FileDeleteReplyFoldersItem as Folder};
+        use p::{FileDeleteResultsEntriesItem as Entry, FileDeleteResultsFoldersItem as Folder};
         let entries = entries
             .iter()
             .map(|entry| match entry {
@@ -882,22 +882,34 @@ pub mod reply {
                 },
             })
             .collect();
-        encode(p::ProcessReply::FileDeleteReply {
-            call_id: field(call_id),
-            entries,
-            folders,
-            type_: "fileDelete".to_string(),
-        })
+        encode(p::ProcessReply::FileDeleteGroup(
+            p::FileDeleteGroup::Results {
+                call_id: field(call_id),
+                entries,
+                folders,
+                type_: "fileDelete".to_string(),
+            },
+        ))
     }
 
-    /// Feature 005 contract Δ6: a `fileDelete` walk that stopped or passed its deadline before the delete deleted nothing.
-    pub fn file_delete_empty(call_id: &str) -> Value {
-        encode(p::ProcessReply::FileDeleteReply {
-            call_id: field(call_id),
-            entries: Vec::new(),
-            folders: Vec::new(),
-            type_: "fileDelete".to_string(),
-        })
+    /// Feature 005 contract Δ6: a Windows `fileDelete` walk that stopped or passed its deadline before the delete phase changed nothing.
+    pub fn file_delete_stopped(call_id: &str) -> Value {
+        file_delete_ended(call_id, p::FileDeleteEndedResult::Stopped)
+    }
+
+    /// Feature 005 contract Δ6: a WSL `fileDelete` that stopped, passed its deadline, or broke its output. The outcome is unknown.
+    pub fn file_delete_interrupted(call_id: &str) -> Value {
+        file_delete_ended(call_id, p::FileDeleteEndedResult::Interrupted)
+    }
+
+    fn file_delete_ended(call_id: &str, result: p::FileDeleteEndedResult) -> Value {
+        encode(p::ProcessReply::FileDeleteGroup(
+            p::FileDeleteGroup::Ended {
+                call_id: field(call_id),
+                result,
+                type_: "fileDelete".to_string(),
+            },
+        ))
     }
 
     /// Feature 005 contract Δ6 `fileReplace`: `replaced`, `stale`, `stopped`, `interrupted`, `refused not-regular`, or `error`.
@@ -931,17 +943,12 @@ pub mod reply {
         }))
     }
 
-    /// Feature 005 contract Δ6: a `fileReplace` walk past its deadline writes nothing, so it gives `error other-error`.
-    pub fn file_replace_deadline(call_id: &str) -> Value {
-        file_replace(call_id, crate::file_replace::ReplaceResult::Error(p::FileFactErrorCode::OtherError))
-    }
-
-    /// Feature 005 contract Δ6: a stop of a Windows `fileReplace` walk before the write.
+    /// Feature 005 contract Δ6: a stop or a deadline of a Windows `fileReplace` walk before the write.
     pub fn file_replace_stopped(call_id: &str) -> Value {
         file_replace(call_id, crate::file_replace::ReplaceResult::Stopped)
     }
 
-    /// Feature 005 contract Δ6: a stop of a WSL `fileReplace` walk that could have written.
+    /// Feature 005 contract Δ6: a stop or a deadline of a WSL `fileReplace` walk that could have written.
     pub fn file_replace_interrupted(call_id: &str) -> Value {
         file_replace(call_id, crate::file_replace::ReplaceResult::Interrupted)
     }
@@ -1387,9 +1394,10 @@ mod tests {
         // T094 adds 3 `native-first-envelope` vectors for `chooseWorktreeFolder` (contract Δ3).
         // Feature 005 T002 adds 15 shell-read vectors. The batch 0 review adds the 5 `fileDelete`, 2 `shadow`, and 3 `ignorePreview` vectors.
         // T013 adds the 4 `fileReplace` vectors (valid present and absent, an over-bound size, and a relative path).
+        // The WP3 review adds the `fileDelete` digest above 1 MiB.
         assert_eq!(
             checked,
-            if cfg!(windows) { 209 } else { 204 },
+            if cfg!(windows) { 210 } else { 205 },
             "shell-read vectors"
         );
     }

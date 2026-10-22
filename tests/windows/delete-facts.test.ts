@@ -6,7 +6,7 @@
 // A fact that needs a capability the host cannot create (a volume without a Recycle Bin, a COM progress sink, keyboard input) skips and names it.
 // The shell delete primitives (`src-tauri/src/file_delete.rs`) carry the IFileOperation recycle, the folder walk, and the PreDeleteItem identity check,
 // with cargo tests. This packaged test records the OS facts that FFI reaches directly, and names the service-driven cases as capability skips.
-// Each Recycle Bin item it moves purges through its parsing name. It changes no other Recycle Bin item (spec SC-003).
+// It moves no Recycle Bin item. The ignored cargo tests of `file_delete.rs` move fixture items and purge them through `recycledPath`.
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { dlopen, FFIType, ptr, type Pointer } from "bun:ffi";
@@ -167,19 +167,20 @@ describe.skipIf(process.platform !== "win32")("T012 native delete facts", () => 
 
   // N1 to N4, N3b, N6, N8 to N11: the Recycle Bin, the warning on a volume without one, links and junctions, the cancel of the rest,
   // the held folder handle, the folder reveal, names that end in a dot or a space, long paths, and the Shell move beside the held handle.
-  // These exercise the shell `IFileOperation` path (cargo tests in `src-tauri/src/file_delete.rs`) and the Shell APIs, driven through the
-  // service's `fileDelete`, `reveal`, and `fileReplace` requests. The packaged service run (quickstart.md Q3) confirms them end to end.
+  // These exercise the shell `IFileOperation` path and the Shell APIs, driven through the service's `fileDelete`, `reveal`, and `fileReplace`
+  // requests. The packaged service run (quickstart.md Q3) confirms them end to end. The shell facts run in the named cargo tests of
+  // `src-tauri/src`; "ignored" tests run only on demand with `cargo test --locked -- --ignored --exact <name>`.
   test("N1 to N11 and N3b through the shell service and the Shell APIs", () => {
-    unverified("N1.recycle-per-item", "service-fileDelete: the IFileOperation recycle runs through the packaged service");
+    unverified("N1.recycle-per-item", "packaged-service; ignored cargo test file_delete::tests::recycle_moves_each_checked_item_while_its_handle_stays_open");
     unverified("N2.nuke-warning", "volume-without-recycle-bin: a removable FAT32 or a VHD with the Recycle Bin off");
-    unverified("N3.links-recycle", "service-fileDelete: links and junctions recycle as links through the packaged service");
+    unverified("N3.links-recycle", "packaged-service; ignored cargo test file_delete::tests::recycle_moves_a_junction_as_a_link");
     unverified("N3b.links-permanent", "volume-without-recycle-bin");
-    unverified("N4.predelete-cancel", "service-fileDelete: the PreDeleteItem cancel of the rest through the packaged service");
-    unverified("N6.held-folder-rename", "service-fileDelete: the held folder handle blocks a rename by another process");
+    unverified("N4.predelete-cancel", "packaged-service; ignored cargo tests file_delete::tests::a_cancel_at_the_first_item_moves_nothing and a_cancel_keeps_the_result_of_each_item_that_the_shell_moved_before_it");
+    unverified("N6.held-folder-rename", "packaged-service; cargo test file_delete::tests::the_walk_holds_a_folder_without_delete_sharing");
     unverified("N8.reveal-folder", "service-reveal: SHOpenFolderAndSelectItems on a folder through the packaged service");
-    unverified("N9.dot-space-names", "service-fileDelete: the SIGDN_FILESYSPATH identity check of a dot or space name");
-    unverified("N10.long-path", "service-fileDelete: SHCreateItemFromParsingName and DeleteItem on a path of 260 or more units");
-    unverified("N11.held-handle-move", "service-fileDelete: the Shell move beside the held target handle");
+    unverified("N9.dot-space-names", "packaged-service; ignored cargo test file_delete::tests::recycle_never_moves_a_name_that_ends_with_a_dot_or_a_space");
+    unverified("N10.long-path", "packaged-service; cargo test process_requests::tests::a_recycle_of_a_long_path_is_refused");
+    unverified("N11.held-handle-move", "packaged-service; ignored cargo test file_delete::tests::recycle_moves_each_checked_item_while_its_handle_stays_open");
     expect(true).toBe(true);
   });
 });

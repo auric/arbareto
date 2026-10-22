@@ -38,7 +38,6 @@ use crate::file_append::{self, AppendResult};
 use crate::file_delete;
 use crate::file_facts;
 use crate::file_replace;
-use crate::shadow;
 use crate::git_env::child_environment;
 use crate::jobs::{Event, Supervisor, Tracker};
 use crate::putty;
@@ -52,6 +51,7 @@ use crate::schema::process_reply::{
 use crate::schema::process_request::{self as frame, EnvironmentPolicy};
 use crate::schema::{self, reply, typed};
 use crate::settings::{SavedWslGit, SshClient, SyncSettings};
+use crate::shadow;
 use crate::spawn::{Input, SpawnError, SpawnRequest, command_line, spawn};
 use crate::wsl;
 
@@ -767,13 +767,13 @@ impl ProcessRequests {
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.jobs.service_exited();
         // Feature 005 contract Δ6: a service exit removes every shadow folder.
-        for shadow in std::mem::take(&mut state.shadows).into_values() {
-            match shadow.folder {
-                ShadowFolder::Windows(path) => shadow::remove(&path),
-                ShadowFolder::Wsl(installation, name) => self.remove_wsl_shadow(installation, name),
-            }
-        }
+        let shadows = std::mem::take(&mut state.shadows)
+            .into_values()
+            .map(|shadow| shadow.folder)
+            .collect();
         *state = State::default();
+        drop(state);
+        self.remove_shadows(shadows);
     }
 
     /// Test hook: the largest number of chunks that one stream queue held.
@@ -1405,7 +1405,10 @@ impl ProcessRequests {
         if state.started.get(operation_id) != Some(&Mutation::DeleteFiles) {
             return Err(INVALID);
         }
-        let repository = state.repositories.get(parsed.repository_id).ok_or(UNKNOWN)?;
+        let repository = state
+            .repositories
+            .get(parsed.repository_id)
+            .ok_or(UNKNOWN)?;
         let root = repository.worktree_root.clone();
         let git_roots = [
             repository.worktree_root.clone(),
@@ -1429,7 +1432,11 @@ impl ProcessRequests {
                 Ok((names, path.clone()))
             })
             .collect::<Result<_, Code>>()?;
-        let installation = match state.gits.get(&repository.git_installation_id).ok_or(UNKNOWN)? {
+        let installation = match state
+            .gits
+            .get(&repository.git_installation_id)
+            .ok_or(UNKNOWN)?
+        {
             Git::Windows { .. } if file_facts::is_wsl_path(&root) => return Err(INVALID),
             Git::Windows { .. } => None,
             Git::Wsl(installation) => Some(installation.clone()),
@@ -1451,9 +1458,10 @@ impl ProcessRequests {
         let call = call_id.to_string();
         let Some(installation) = installation else {
             let (mode, owner) = (parsed.mode, self.owner_window());
+            // The checks run in the walk and the delete in the finish, so a stop or a deadline before it changes nothing.
             return self.spawn_walk(
                 &mut state,
-                Reply::Answered(reply::file_delete_empty, reply::file_delete_empty),
+                Reply::Answered(reply::file_delete_stopped, reply::file_delete_stopped),
                 call_id,
                 operation_id,
                 read_at,
@@ -1496,8 +1504,10 @@ impl ProcessRequests {
                 },
             })
             .collect();
-        let wsl_folders: Vec<(usize, Vec<String>)> =
-            folders.iter().map(|(names, _)| (0usize, names.clone())).collect();
+        let wsl_folders: Vec<(usize, Vec<String>)> = folders
+            .iter()
+            .map(|(names, _)| (0usize, names.clone()))
+            .collect();
         let unit = wsl::unit_name(operation_id, Self::next_unit(&mut state, operation_id))?;
         let command = wsl::delete_command(
             &installation,
@@ -1511,18 +1521,30 @@ impl ProcessRequests {
         self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
         let (operation, deadline) = (operation_id.to_string(), self.walk_bound());
+        // The `delete` process unlinks inside the walk, so a stop or a deadline leaves the outcome unknown.
         self.spawn_walk(
             &mut state,
-            Reply::Answered(reply::file_delete_empty, reply::file_delete_empty),
+            Reply::Answered(
+                reply::file_delete_interrupted,
+                reply::file_delete_interrupted,
+            ),
             call_id,
             operation_id,
             read_at,
             move |stop| {
                 let host = me.wsl_host(&operation);
-                let ended =
-                    host.run_walk(&command, wsl::DELETE_OUTPUT_BYTES + 2, deadline, stop.event.0);
-                let (e, f) = wsl::delete_reply(ended.output, entry_count, folder_count);
-                reply_with(reply::file_delete(&call, &e, &f))
+                let ended = host.run_walk(
+                    &command,
+                    wsl::DELETE_OUTPUT_BYTES + 2,
+                    deadline,
+                    stop.event.0,
+                );
+                reply_with(
+                    match wsl::delete_reply(ended.output, entry_count, folder_count) {
+                        Some((entries, folders)) => reply::file_delete(&call, &entries, &folders),
+                        None => reply::file_delete_interrupted(&call),
+                    },
+                )
             },
             || {},
         )
@@ -1543,7 +1565,10 @@ impl ProcessRequests {
         if state.started.get(operation_id) != Some(&action) {
             return Err(INVALID);
         }
-        let repository = state.repositories.get(parsed.repository_id).ok_or(UNKNOWN)?;
+        let repository = state
+            .repositories
+            .get(parsed.repository_id)
+            .ok_or(UNKNOWN)?;
         let git_roots = [
             repository.worktree_root.clone(),
             repository.git_directory.clone(),
@@ -1559,7 +1584,11 @@ impl ProcessRequests {
         if names != wanted {
             return Err(INVALID);
         }
-        let installation = match state.gits.get(&repository.git_installation_id).ok_or(UNKNOWN)? {
+        let installation = match state
+            .gits
+            .get(&repository.git_installation_id)
+            .ok_or(UNKNOWN)?
+        {
             Git::Windows { .. } if git_roots.iter().any(|r| file_facts::is_wsl_path(r)) => {
                 return Err(INVALID);
             }
@@ -1569,17 +1598,19 @@ impl ProcessRequests {
         let (expected, bytes, call) = (parsed.expected, parsed.bytes, call_id.to_string());
         let Some(installation) = installation else {
             let base = git_roots[root].clone();
+            // The check runs in the walk and the write in the finish, so a stop or a deadline before it writes nothing.
             return self.spawn_walk(
                 &mut state,
-                Reply::Answered(reply::file_replace_deadline, reply::file_replace_stopped),
+                Reply::Answered(reply::file_replace_stopped, reply::file_replace_stopped),
                 call_id,
                 operation_id,
                 read_at,
-                move |_stop| {
+                move |stop| {
+                    let expected = expected.as_ref().map(|(size, sha)| (*size, sha.as_str()));
+                    let checked = file_replace::check(&base, &names, expected, &stop.flag);
                     Box::new(move || {
-                        let expected = expected.as_ref().map(|(size, sha)| (*size, sha.as_str()));
                         let result =
-                            file_replace::replace(&base, &names, expected, &bytes, &NEVER_STOP);
+                            checked.map_or_else(|result| result, |checked| checked.write(&bytes));
                         Some(reply::file_replace(&call, result))
                     })
                 },
@@ -1601,22 +1632,35 @@ impl ProcessRequests {
             bytes,
         };
         let unit = wsl::unit_name(operation_id, Self::next_unit(&mut state, operation_id))?;
-        let command =
-            wsl::replace_command(&installation, &unit, &linux, &replace, &self.config.base_environment);
+        let command = wsl::replace_command(
+            &installation,
+            &unit,
+            &linux,
+            &replace,
+            &self.config.base_environment,
+        );
         command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
         self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
         let (operation, deadline) = (operation_id.to_string(), self.walk_bound());
+        // The `replace` process can rename inside the walk, so a stop or a deadline leaves the outcome unknown.
         self.spawn_walk(
             &mut state,
-            Reply::Answered(reply::file_replace_deadline, reply::file_replace_interrupted),
+            Reply::Answered(
+                reply::file_replace_interrupted,
+                reply::file_replace_interrupted,
+            ),
             call_id,
             operation_id,
             read_at,
             move |stop| {
                 let host = me.wsl_host(&operation);
-                let ended =
-                    host.run_walk(&command, wsl::DELETE_OUTPUT_BYTES + 2, deadline, stop.event.0);
+                let ended = host.run_walk(
+                    &command,
+                    wsl::DELETE_OUTPUT_BYTES + 2,
+                    deadline,
+                    stop.event.0,
+                );
                 reply_with(reply::file_replace(&call, wsl::replace_reply(ended.output)))
             },
             || {},
@@ -1634,13 +1678,17 @@ impl ProcessRequests {
             .get(request.repository_id.as_str())
             .ok_or(UNKNOWN)?;
         let root = repository.worktree_root.clone();
-        let installation = match state.gits.get(&repository.git_installation_id).ok_or(UNKNOWN)? {
+        let installation = match state
+            .gits
+            .get(&repository.git_installation_id)
+            .ok_or(UNKNOWN)?
+        {
             Git::Windows { .. } if file_facts::is_wsl_path(&root) => return Err(INVALID),
             Git::Windows { .. } => None,
             Git::Wsl(installation) => Some(installation.clone()),
         };
         let Some(installation) = installation else {
-            // Windows: create the folder below `<launch>/preview`, after a sweep of leftovers.
+            // Windows: create the folder below `<launch>/preview`. The leftovers go after the state lock.
             let live: std::collections::HashSet<PathBuf> = state
                 .shadows
                 .values()
@@ -1651,8 +1699,8 @@ impl ProcessRequests {
                 .collect();
             let me = shadow::self_identity();
             let created = shadow::create(&self.config.launch_directory, me, &live);
-            let reply = match created {
-                Ok(folder) => {
+            let (reply, leftovers) = match created {
+                Ok((folder, leftovers)) => {
                     let shadow_id = crate::settings::random_id().map_err(|_| OWNERSHIP)?;
                     state.shadows.insert(
                         shadow_id.clone(),
@@ -1661,11 +1709,16 @@ impl ProcessRequests {
                             folder: ShadowFolder::Windows(folder),
                         },
                     );
-                    reply::shadow(call_id, &shadow_id)
+                    (reply::shadow(call_id, &shadow_id), leftovers)
                 }
-                Err(error) => reply::shadow_error(call_id, io_fact_code(&error)),
+                Err(error) => (
+                    reply::shadow_error(call_id, io_fact_code(&error)),
+                    Vec::new(),
+                ),
             };
             self.send(self.current(), reply);
+            drop(state);
+            self.remove_shadows(leftovers.into_iter().map(ShadowFolder::Windows).collect());
             return Ok(());
         };
         // WSL: `scratch create` makes the folder under `/tmp`. The reply follows the walk.
@@ -1692,8 +1745,11 @@ impl ProcessRequests {
         command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
         self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
         let node = self.me.upgrade().ok_or(OWNERSHIP)?;
-        let (operation, deadline, call) =
-            (operation_id.to_string(), self.walk_bound(), call_id.to_string());
+        let (operation, deadline, call) = (
+            operation_id.to_string(),
+            self.walk_bound(),
+            call_id.to_string(),
+        );
         self.spawn_walk(
             &mut state,
             Reply::Answered(shadow_deadline, shadow_deadline),
@@ -1703,8 +1759,12 @@ impl ProcessRequests {
             move |stop| {
                 node.sweep_wsl_shadows(&installation, me, &live);
                 let host = node.wsl_host(&operation);
-                let ended =
-                    host.run_walk(&command, wsl::SCRATCH_OUTPUT_BYTES + 2, deadline, stop.event.0);
+                let ended = host.run_walk(
+                    &command,
+                    wsl::SCRATCH_OUTPUT_BYTES + 2,
+                    deadline,
+                    stop.event.0,
+                );
                 let outcome = wsl::scratch_reply(ended.output, &wsl::Scratch::Create(name.clone()));
                 Box::new(move || match outcome {
                     wsl::ScratchResult::Created => {
@@ -1777,7 +1837,8 @@ impl ProcessRequests {
             wsl::unit_name(&operation, unit)
         };
         if let Ok(sweep_unit) = next() {
-            let command = wsl::scratch_command(installation, &sweep_unit, &wsl::Scratch::Sweep, base);
+            let command =
+                wsl::scratch_command(installation, &sweep_unit, &wsl::Scratch::Sweep, base);
             let ended = host.run_until(&command, wsl::SCRATCH_OUTPUT_BYTES + 2, bound);
             if let wsl::ScratchResult::Swept(names) =
                 wsl::scratch_reply(ended.output, &wsl::Scratch::Sweep)
@@ -2125,14 +2186,17 @@ impl ProcessRequests {
                     putty::add_pair(&mut environment, &self.sync_settings());
                 }
                 // Feature 005 contract Δ6 (D9): the shadow context sets `GIT_INDEX_FILE` to `<cwd>/.git/index` or `exclude.index`.
+                // `GIT_DIR` names `<cwd>/.git`, so Git never finds a repository above the shadow folder.
                 if kind == Kind::IgnorePreview {
                     let name = match shadow_index {
                         Some(frame::RunIgnorePreviewShadowIndex::Index) => "index",
                         Some(frame::RunIgnorePreviewShadowIndex::Exclude) => "exclude.index",
                         None => return Err(INVALID),
                     };
-                    let index = target.current_dir.join(".git").join(name);
-                    environment.push(("GIT_INDEX_FILE".into(), index.into_os_string()));
+                    let git_dir = target.current_dir.join(".git");
+                    environment
+                        .push(("GIT_INDEX_FILE".into(), git_dir.join(name).into_os_string()));
+                    environment.push(("GIT_DIR".into(), git_dir.into_os_string()));
                 }
                 (None, full, environment)
             }
@@ -3853,9 +3917,7 @@ impl ProcessRequests {
         }
         deactivate(&mut state, operation_id);
         // Feature 005 contract Δ6: a preview operation's shadow folder goes when the operation ends.
-        for (installation, name) in remove_shadows_of(&mut state, operation_id) {
-            self.remove_wsl_shadow(installation, name);
-        }
+        let shadows = take_shadows_of(&mut state, operation_id);
         // Feature 003 contract Δ6: the end of a clone operation releases its contexts and its close prompt name.
         if let Some(ids) = state.clones.remove(operation_id) {
             for id in &ids {
@@ -3866,7 +3928,23 @@ impl ProcessRequests {
                 running.ended(operation_id);
             }
         }
+        drop(state);
+        self.remove_shadows(shadows);
         Ok(())
+    }
+
+    /// Feature 005 contract Δ6: removes shadow folders on their own threads, so the state lock never waits on a file system.
+    fn remove_shadows(&self, folders: Vec<ShadowFolder>) {
+        let mut windows = Vec::new();
+        for folder in folders {
+            match folder {
+                ShadowFolder::Windows(path) => windows.push(path),
+                ShadowFolder::Wsl(installation, name) => self.remove_wsl_shadow(installation, name),
+            }
+        }
+        if !windows.is_empty() {
+            std::thread::spawn(move || windows.iter().for_each(|path| shadow::remove(path)));
+        }
     }
 
     /// Reads one pipe. Every read runs under the drain lock, so the completion signal sees an exact pipe count.
@@ -4122,23 +4200,18 @@ fn deactivate(state: &mut State, operation_id: &str) {
     }
 }
 
-/// Feature 005 contract Δ6: removes the shadow folders of `operation_id`. Returns each WSL folder, which needs a `scratch remove`.
-fn remove_shadows_of(state: &mut State, operation_id: &str) -> Vec<(wsl::Installation, String)> {
+/// Feature 005 contract Δ6: takes the shadow folders of `operation_id` out of the state. The caller removes them after the lock.
+fn take_shadows_of(state: &mut State, operation_id: &str) -> Vec<ShadowFolder> {
     let ids: Vec<String> = state
         .shadows
         .iter()
         .filter(|(_, shadow)| shadow.operation_id == operation_id)
         .map(|(id, _)| id.clone())
         .collect();
-    let mut wsl_folders = Vec::new();
-    for id in ids {
-        match state.shadows.remove(&id).map(|shadow| shadow.folder) {
-            Some(ShadowFolder::Windows(path)) => shadow::remove(&path),
-            Some(ShadowFolder::Wsl(installation, name)) => wsl_folders.push((installation, name)),
-            None => {}
-        }
-    }
-    wsl_folders
+    ids.iter()
+        .filter_map(|id| state.shadows.remove(id))
+        .map(|shadow| shadow.folder)
+        .collect()
 }
 
 /// An operation is active from its first request until `ended` or `closeJob` (contract §6 "Channel frames").
@@ -4374,9 +4447,6 @@ fn file_append_interrupted(call_id: &str) -> Value {
 fn reveal_deadline(call_id: &str) -> Value {
     reply::refused(call_id, UNKNOWN)
 }
-
-/// Feature 005 contract Δ6 `fileReplace`: the Windows replace runs in the walk finish, which never checks a stop.
-static NEVER_STOP: AtomicBool = AtomicBool::new(false);
 
 /// Feature 005 contract Δ6 `shadow`: a WSL `scratch create` walk past its deadline or stopped gives an `error` reply.
 fn shadow_deadline(call_id: &str) -> Value {
@@ -13276,39 +13346,143 @@ pub(crate) mod tests {
     fn a_registered_read_run_admits_the_005_history_and_blame_arrays() {
         let harness = Harness::child();
         let workspace = harness.child_workspace("repo");
-        let (base, oid, empty) = ("b".repeat(40), "a".repeat(40), "4b825dc642cb6eb9a060e54bf8d69288fbee4904");
+        let (base, oid, empty) = (
+            "b".repeat(40),
+            "a".repeat(40),
+            "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        );
         let arrays: Vec<Vec<&str>> = vec![
-            vec!["--no-optional-locks", "--literal-pathspecs", "diff-tree", "-r", "-z", "--raw", "-M", "-l1000", &base, &oid],
             vec![
-                "--no-optional-locks", "--literal-pathspecs", "diff-tree", "-p", "--no-textconv", "--no-ext-diff", "--no-relative",
-                "--src-prefix=a/", "--dst-prefix=b/", "--ignore-submodules=dirty", "-M", "-l1000", &base, &oid, "--", "a.ts",
+                "--no-optional-locks",
+                "--literal-pathspecs",
+                "diff-tree",
+                "-r",
+                "-z",
+                "--raw",
+                "-M",
+                "-l1000",
+                &base,
+                &oid,
             ],
             vec![
-                "--no-optional-locks", "--literal-pathspecs", "diff-tree", "--numstat", "-z", "--no-textconv", "--no-ext-diff",
-                "--no-relative", "--ignore-submodules=dirty", "-M", "-l1000", &base, &oid, "--", "a.ts",
+                "--no-optional-locks",
+                "--literal-pathspecs",
+                "diff-tree",
+                "-p",
+                "--no-textconv",
+                "--no-ext-diff",
+                "--no-relative",
+                "--src-prefix=a/",
+                "--dst-prefix=b/",
+                "--ignore-submodules=dirty",
+                "-M",
+                "-l1000",
+                &base,
+                &oid,
+                "--",
+                "a.ts",
             ],
-            vec!["--no-optional-locks", "--literal-pathspecs", "ls-tree", "-z", "-l", "--full-tree", &oid, "--", "a.ts"],
             vec![
-                "--no-optional-locks", "--literal-pathspecs", "diff", "--numstat", "-z", "--no-textconv", "--no-ext-diff",
-                "--no-relative", "--no-renames", empty, &oid, "--", "a.ts",
+                "--no-optional-locks",
+                "--literal-pathspecs",
+                "diff-tree",
+                "--numstat",
+                "-z",
+                "--no-textconv",
+                "--no-ext-diff",
+                "--no-relative",
+                "--ignore-submodules=dirty",
+                "-M",
+                "-l1000",
+                &base,
+                &oid,
+                "--",
+                "a.ts",
+            ],
+            vec![
+                "--no-optional-locks",
+                "--literal-pathspecs",
+                "ls-tree",
+                "-z",
+                "-l",
+                "--full-tree",
+                &oid,
+                "--",
+                "a.ts",
+            ],
+            vec![
+                "--no-optional-locks",
+                "--literal-pathspecs",
+                "diff",
+                "--numstat",
+                "-z",
+                "--no-textconv",
+                "--no-ext-diff",
+                "--no-relative",
+                "--no-renames",
+                empty,
+                &oid,
+                "--",
+                "a.ts",
             ],
             vec!["--no-optional-locks", "cat-file", "blob", &oid],
-            vec!["--no-optional-locks", "config", "get", "--all", "--type=path", "-z", "blame.ignoreRevsFile"],
             vec![
-                "--no-optional-locks", "--literal-pathspecs", "blame", "--incremental", "--no-textconv", "--encoding=none", &oid,
-                "--", "a.ts",
+                "--no-optional-locks",
+                "config",
+                "get",
+                "--all",
+                "--type=path",
+                "-z",
+                "blame.ignoreRevsFile",
             ],
             vec![
-                "--no-optional-locks", "--literal-pathspecs", "blame", "--incremental", "--no-textconv", "--encoding=none",
-                "--ignore-revs-file=", &oid, "--", "a.ts",
+                "--no-optional-locks",
+                "--literal-pathspecs",
+                "blame",
+                "--incremental",
+                "--no-textconv",
+                "--encoding=none",
+                &oid,
+                "--",
+                "a.ts",
             ],
             vec![
-                "--no-optional-locks", "--literal-pathspecs", "-c", "blame.markIgnoredLines=true", "-c",
-                "blame.markUnblamableLines=true", "blame", "--porcelain", "--no-textconv", "--encoding=none", &oid, "--", "a.ts",
+                "--no-optional-locks",
+                "--literal-pathspecs",
+                "blame",
+                "--incremental",
+                "--no-textconv",
+                "--encoding=none",
+                "--ignore-revs-file=",
+                &oid,
+                "--",
+                "a.ts",
             ],
             vec![
-                "--no-optional-locks", "diff", "-U0", "--inter-hunk-context=0", "--no-textconv", "--no-ext-diff", "--no-color",
-                &base, &oid,
+                "--no-optional-locks",
+                "--literal-pathspecs",
+                "-c",
+                "blame.markIgnoredLines=true",
+                "-c",
+                "blame.markUnblamableLines=true",
+                "blame",
+                "--porcelain",
+                "--no-textconv",
+                "--encoding=none",
+                &oid,
+                "--",
+                "a.ts",
+            ],
+            vec![
+                "--no-optional-locks",
+                "diff",
+                "-U0",
+                "--inter-hunk-context=0",
+                "--no-textconv",
+                "--no-ext-diff",
+                "--no-color",
+                &base,
+                &oid,
             ],
         ];
         let limits = json!({ "deadlineMs": 30_000 });
@@ -13324,17 +13498,36 @@ pub(crate) mod tests {
         };
         for array in &arrays {
             let call = uuid();
-            let admitted = outcome(run_body(&call, &uuid(), &workspace, array, "read", limits.clone()));
+            let admitted = outcome(run_body(
+                &call,
+                &uuid(),
+                &workspace,
+                array,
+                "read",
+                limits.clone(),
+            ));
             assert_eq!(admitted["type"], "exit", "{array:?}: {admitted}");
             // The near miss: the same array without `--no-lazy-fetch` first.
             let call = uuid();
             let mut near = run_body(&call, &uuid(), &workspace, array, "read", limits.clone());
             near["arguments"] = json!(array);
-            assert_eq!(outcome(near), refused(&call, "INVALID_REQUEST"), "{array:?}");
+            assert_eq!(
+                outcome(near),
+                refused(&call, "INVALID_REQUEST"),
+                "{array:?}"
+            );
         }
         // The near miss of the blame form: a bound command after the same `-c` options.
         let call = uuid();
-        let bound = ["-c", "blame.markIgnoredLines=true", "worktree", "add", "--", "x", "main"];
+        let bound = [
+            "-c",
+            "blame.markIgnoredLines=true",
+            "worktree",
+            "add",
+            "--",
+            "x",
+            "main",
+        ];
         assert_eq!(
             outcome(run_body(&call, &uuid(), &workspace, &bound, "read", limits)),
             refused(&call, "INVALID_REQUEST")
@@ -13455,8 +13648,7 @@ pub(crate) mod tests {
         let workspace = harness.child_workspace("repo");
         let gitignore = workspace.worktree.join(".gitignore");
         std::fs::write(&gitignore, b"/old\n").expect("gitignore");
-        let expected =
-            json!({ "size": 5, "sha256": crate::settings::hex(&crate::settings::sha256(b"/old\n")) });
+        let expected = json!({ "size": 5, "sha256": crate::settings::hex(&crate::settings::sha256(b"/old\n")) });
         let commit = uuid();
         harness.started_as(&commit, Mutation::Commit, &workspace);
         let call = uuid();
@@ -13500,7 +13692,10 @@ pub(crate) mod tests {
         harness.send(json!({ "type": "shadow", "callId": call, "operationId": operation, "repositoryId": workspace.repository, "op": "create" }));
         let reply = harness.reply(&call);
         assert_eq!(reply["type"], "shadow");
-        assert!(reply["shadowId"].as_str().is_some_and(is_identifier), "{reply}");
+        assert!(
+            reply["shadowId"].as_str().is_some_and(is_identifier),
+            "{reply}"
+        );
         let preview = harness.fixture.path("launch").join("preview");
         let folders: Vec<_> = std::fs::read_dir(&preview)
             .expect("preview")
@@ -13510,7 +13705,53 @@ pub(crate) mod tests {
         let folder = folders[0].path();
         assert!(folder.join("s").is_dir() && folder.join("c").is_dir());
         harness.send(json!({ "type": "closeJob", "operationId": operation }));
-        assert!(!folder.exists(), "closeJob removes the shadow folder");
+        // The removal runs on its own thread after the state lock.
+        assert!(
+            eventually(CLOSE_WAIT, || !folder.exists()),
+            "closeJob removes the shadow folder"
+        );
+    }
+
+    /// Plan.md D14: the shadow create removes a leftover folder after it releases the state lock.
+    /// A batch oplock on a file in the leftover holds the removal, and the reply still comes.
+    #[test]
+    fn a_shadow_create_replies_while_a_leftover_removal_waits() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let me = shadow::self_identity();
+        let leftover = harness
+            .fixture
+            .path("launch")
+            .join(shadow::PREVIEW)
+            .join(shadow::folder_name(me.0, me.1).expect("name"));
+        std::fs::create_dir_all(&leftover).expect("leftover");
+        let held = leftover.join("held.txt");
+        std::fs::write(&held, b"x").expect("held file");
+        let Some(oplock) = Oplock::request(&held) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let call = uuid();
+        let reply = std::thread::scope(|scope| {
+            // A removal under the state lock would hold this send until the oplock goes.
+            scope.spawn(|| {
+                harness.send(json!({ "type": "shadow", "callId": call, "operationId": uuid(), "repositoryId": workspace.repository, "op": "create" }));
+            });
+            let reply = harness.wait_reply(WAIT, |v| v["callId"] == call.as_str());
+            drop(oplock);
+            reply
+        });
+        let reply = reply
+            .map(|(_, reply)| reply)
+            .expect("the reply comes while the removal waits");
+        assert!(
+            reply["shadowId"].as_str().is_some_and(is_identifier),
+            "{reply}"
+        );
+        assert!(
+            eventually(CLOSE_WAIT, || !leftover.exists()),
+            "the leftover goes"
+        );
     }
 
     /// Contract Δ6: an `ignorePreview` run refuses an unbound `shadowId` and an `indexFile` field (plan.md D9).
@@ -13532,12 +13773,314 @@ pub(crate) mod tests {
             harness.send(body);
             harness.reply(&call)["code"].as_str().map(str::to_string)
         };
-        assert_eq!(run(json!({})), Some("UNKNOWN_TARGET".to_string()), "an unbound shadow");
+        assert_eq!(
+            run(json!({})),
+            Some("UNKNOWN_TARGET".to_string()),
+            "an unbound shadow"
+        );
         let index = workspace.worktree.join(".git").join("arbareto-candidate-x");
         assert_eq!(
             run(json!({ "indexFile": index.to_str().expect("path") })),
             Some("INVALID_REQUEST".to_string()),
             "an indexFile field"
         );
+    }
+
+    /// Contract Δ6: a stop before the delete phase replies `stopped`, and nothing changes.
+    /// Without the stop, the same held walk deletes and replies the entry results.
+    #[test]
+    fn a_stop_before_the_file_delete_finish_replies_stopped_and_deletes_nothing() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::DeleteFiles, &workspace);
+        let file = workspace.worktree.join("build.log");
+        for stop in [true, false] {
+            std::fs::write(&file, b"log\n").expect("file");
+            let entries = json!([{ "path": file.to_str().expect("path"), "expected": file_fact_of(b"log\n", &file) }]);
+            let Some(oplock) = Oplock::request(&file) else {
+                println!("{SKIP_OPLOCK}");
+                return;
+            };
+            let call = uuid();
+            harness.send(file_delete_body(
+                &call,
+                &operation,
+                &workspace.repository,
+                "permanent",
+                entries,
+                json!([]),
+            ));
+            assert!(
+                oplock.broken(WAIT),
+                "the target open of the walk waits on the oplock break"
+            );
+            // The seam: the state lock holds the watchdog after the check of the walk ends.
+            let state = harness.requests.state();
+            drop(oplock);
+            assert!(eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0));
+            assert!(eventually(CLOSE_WAIT, || harness
+                .requests
+                .unsent_walk_events()
+                == 0));
+            if stop {
+                // `cancel` sends exactly this event under the state lock.
+                let _ = state.walks[call.as_str()].events.send(WalkEvent::Stop);
+            }
+            drop(state);
+            let expected = if stop {
+                json!({ "type": "fileDelete", "callId": call, "result": "stopped" })
+            } else {
+                json!({ "type": "fileDelete", "callId": call, "entries": [{ "result": "deleted" }], "folders": [] })
+            };
+            assert_eq!(harness.reply(&call), expected);
+            assert!(eventually(CLOSE_WAIT, || harness
+                .requests
+                .active_watchdogs()
+                == 0));
+            assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
+            assert_eq!(file.exists(), stop, "stop {stop}");
+        }
+    }
+
+    /// Contract Δ6 (plan.md D10): the Windows replace checks the target inside the walk and writes in the finish.
+    /// A deadline during the check replies `stopped`, and nothing is written.
+    #[test]
+    fn a_deadline_before_the_file_replace_write_replies_stopped_and_writes_nothing() {
+        let harness = Harness::new(
+            Fixture::new(),
+            CHILD_PREFIX.iter().map(|s| s.to_string()).collect(),
+            std::env::vars_os().collect(),
+            Duration::from_secs(2),
+        );
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::SaveGitignore, &workspace);
+        let gitignore = workspace.worktree.join(".gitignore");
+        std::fs::write(&gitignore, b"/old\n").expect("gitignore");
+        let Some(oplock) = Oplock::request(&gitignore) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let call = uuid();
+        harness.send(file_replace_body(
+            &call,
+            &operation,
+            &workspace.repository,
+            "gitignore",
+            gitignore.to_str().expect("path"),
+            json!({ "size": 5, "sha256": crate::settings::hex(&crate::settings::sha256(b"/old\n")) }),
+            b"/new\n",
+        ));
+        assert!(
+            oplock.broken(WAIT),
+            "the target open waits on the oplock break"
+        );
+        let reply = harness.wait_reply(WAIT, |v| v["callId"] == call.as_str());
+        drop(oplock);
+        assert_eq!(
+            reply.map(|(_, reply)| reply),
+            Some(json!({ "type": "fileReplace", "callId": call, "result": "stopped" })),
+            "the deadline reply comes while the check waits"
+        );
+        assert!(eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0));
+        assert!(eventually(CLOSE_WAIT, || harness
+            .requests
+            .active_watchdogs()
+            == 0));
+        assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
+        assert_eq!(
+            std::fs::read(&gitignore).expect("read"),
+            b"/old\n",
+            "nothing was written"
+        );
+    }
+
+    fn wsl_common_identity() -> PhysicalIdentity {
+        PhysicalIdentity::Wsl(wsl::WslIdentity {
+            guid: WSL_GUID.to_string(),
+            file_system_id: "fedc9aa3bd65bc57".to_string(),
+            inode: "4242".to_string(),
+        })
+    }
+
+    fn wsl_delete_body(call: &str, operation: &str, repository: &str) -> Value {
+        let entries = json!([{ "path": format!(r"{WSL_PATH}\build.log"), "expected": { "kind": "file", "size": 4, "lastWrite": "1" } }]);
+        file_delete_body(call, operation, repository, "permanent", entries, json!([]))
+    }
+
+    /// Feature 005 contract Δ6 and Δ11: the WSL `delete` and `replace` processes change files inside the walk.
+    /// So a cancel or a deadline replies `interrupted`, and the service reads the workspace again.
+    #[test]
+    fn a_stopped_or_late_wsl_file_delete_or_replace_replies_interrupted() {
+        for deadline in [false, true] {
+            let harness = Harness::new(
+                Fixture::new(),
+                CHILD_PREFIX.iter().map(|s| s.to_string()).collect(),
+                std::env::vars_os().collect(),
+                Duration::from_secs(if deadline { 2 } else { 60 }),
+            );
+            let wsl = wsl_harness_with(true, harness);
+            let (_git, repository) = slow_wsl_repository(&wsl);
+            for kind in ["fileDelete", "fileReplace"] {
+                let operation = uuid();
+                let mutation = if kind == "fileDelete" {
+                    Mutation::DeleteFiles
+                } else {
+                    Mutation::SaveGitignore
+                };
+                wsl.harness
+                    .requests
+                    .tag(&operation, mutation, wsl_common_identity());
+                let call = uuid();
+                wsl.harness.send(if kind == "fileDelete" {
+                    wsl_delete_body(&call, &operation, &repository)
+                } else {
+                    let path = format!(r"{WSL_PATH}\.gitignore");
+                    file_replace_body(
+                        &call,
+                        &operation,
+                        &repository,
+                        "gitignore",
+                        &path,
+                        json!("absent"),
+                        b"/x\n",
+                    )
+                });
+                assert!(
+                    walk_child_started(&wsl, &operation),
+                    "{kind}: the child runs"
+                );
+                if !deadline {
+                    wsl.harness
+                        .send(json!({ "type": "cancel", "callId": call }));
+                }
+                assert_eq!(
+                    wsl.harness.reply(&call),
+                    json!({ "type": kind, "callId": call, "result": "interrupted" }),
+                    "{kind}, deadline {deadline}"
+                );
+                assert!(eventually(CLOSE_WAIT, || wsl
+                    .harness
+                    .requests
+                    .active_watchdogs()
+                    == 0));
+                assert_eq!(wsl.harness.replies_for(&call).len(), 1, "one reply");
+            }
+        }
+    }
+
+    /// Feature 005 contract Δ11: a WSL `delete` output that ends early or a non-zero exit status gives `interrupted`.
+    /// A complete output gives the entry results.
+    #[test]
+    fn a_broken_wsl_delete_output_replies_interrupted() {
+        let wsl = wsl_harness(true);
+        let (_git, repository) = wsl_repository(&wsl);
+        for (exit, stdout, expected) in [
+            (
+                0,
+                &b"Sdeleted\0"[..],
+                json!({ "entries": [{ "result": "deleted" }], "folders": [] }),
+            ),
+            (3, &b"Sdeleted\0"[..], json!({ "result": "interrupted" })),
+            (0, &b"S"[..], json!({ "result": "interrupted" })),
+        ] {
+            let operation = uuid();
+            wsl.harness
+                .requests
+                .tag(&operation, Mutation::DeleteFiles, wsl_common_identity());
+            wsl.host.push(exit, stdout);
+            let call = uuid();
+            wsl.harness
+                .send(wsl_delete_body(&call, &operation, &repository));
+            let mut want = json!({ "type": "fileDelete", "callId": call });
+            want.as_object_mut()
+                .expect("reply")
+                .extend(expected.as_object().expect("fields").clone());
+            assert_eq!(wsl.harness.reply(&call), want, "exit {exit}, {stdout:?}");
+        }
+    }
+
+    fn files_below(path: &Path) -> usize {
+        std::fs::read_dir(path).map_or(0, |entries| {
+            entries
+                .filter_map(Result::ok)
+                .map(|entry| {
+                    let path = entry.path();
+                    if path.is_dir() { files_below(&path) } else { 1 }
+                })
+                .sum()
+        })
+    }
+
+    /// Feature 005 contract Δ6: an `ignorePreview` run sets `GIT_DIR` to `<cwd>/.git`.
+    /// So Git never uses a repository above the shadow folder, here one in the launch directory.
+    #[test]
+    fn an_ignore_preview_run_never_uses_a_repository_above_the_shadow_folder() {
+        let Some(git) = find_git() else {
+            return;
+        };
+        let fixture = GitFixture::new(git, |_| "#!/bin/sh\nexit 0\n".to_string());
+        let launch = fixture.harness.fixture.path("launch");
+        assert_eq!(
+            fixture.git(&launch, &["init", "--quiet"], WAIT).0,
+            0,
+            "the outer repository"
+        );
+        let outer = launch.join(".git").join("objects");
+        let before = files_below(&outer);
+        let (operation, call) = (uuid(), uuid());
+        fixture.harness.send(json!({ "type": "shadow", "callId": call, "operationId": operation, "repositoryId": fixture.workspace.repository, "op": "create" }));
+        let shadow_id = fixture.harness.reply(&call)["shadowId"]
+            .as_str()
+            .expect("shadowId")
+            .to_string();
+        let run = |arguments: &[&str], input: &[u8]| {
+            let call = uuid();
+            let mut body = json!({
+                "type": "run", "callId": call, "operationId": operation, "contextKind": "ignorePreview",
+                "gitInstallationId": fixture.workspace.git, "shadowId": shadow_id, "shadowRepository": "s", "shadowIndex": "index",
+                "arguments": arguments, "environmentPolicy": "read", "limits": { "deadlineMs": 30_000 },
+            });
+            if !input.is_empty() {
+                body["input"] = json!(encode(input));
+            }
+            fixture.harness.send(body);
+            fixture.harness.exit(&call, WAIT).expect("exit").1["exitCode"].clone()
+        };
+        let hash = [
+            "--no-lazy-fetch",
+            "hash-object",
+            "-w",
+            "--no-filters",
+            "--stdin",
+        ];
+        assert_ne!(
+            run(&hash, b"probe\n"),
+            json!(0),
+            "no repository at <cwd>/.git before init"
+        );
+        assert_eq!(
+            files_below(&outer),
+            before,
+            "no object above the shadow folder"
+        );
+        assert_eq!(
+            run(&["--no-lazy-fetch", "init", "-q", "--template="], b""),
+            json!(0)
+        );
+        assert_eq!(run(&hash, b"probe\n"), json!(0));
+        assert_eq!(
+            files_below(&outer),
+            before,
+            "the object goes into the shadow repository"
+        );
+        let shadow = std::fs::read_dir(launch.join("preview"))
+            .expect("preview")
+            .filter_map(Result::ok)
+            .next()
+            .expect("the shadow folder")
+            .path();
+        assert!(files_below(&shadow.join("s").join(".git").join("objects")) > 0);
     }
 }

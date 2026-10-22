@@ -602,8 +602,7 @@ impl Service {
 
     /// Feature 005 plan.md D7: binds the main window handle for the Recycle Bin `SetOwnerWindow`.
     pub fn bind_owner_window(&self, hwnd: isize) {
-        self.requests
-            .set_owner_window(Box::new(move || Some(hwnd)));
+        self.requests.set_owner_window(Box::new(move || Some(hwnd)));
     }
 }
 

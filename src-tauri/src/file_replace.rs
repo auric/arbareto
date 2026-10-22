@@ -4,38 +4,32 @@
 //! Feature 005 contract Δ6 `fileReplace`: one atomic replace of `.gitignore` or `info/exclude` (plan.md D10).
 //! The walk opens each component relative to its parent with `OBJ_DONT_REPARSE`. A complete temporary file renames over the target.
 
-use std::os::windows::io::{FromRawHandle, OwnedHandle};
+use std::os::windows::io::OwnedHandle;
 use std::path::{Path, PathBuf};
-use std::str::FromStr;
 use std::sync::atomic::AtomicBool;
 
-use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
     FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
     FILE_RENAME_INFORMATION, FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
     FILE_SYNCHRONOUS_IO_NONALERT, FileAttributeTagInformation, FileRenameInformationEx,
-    FileStandardInformation, NTCREATEFILE_CREATE_DISPOSITION, NtCreateFile, NtSetInformationFile,
+    FileStandardInformation, NtSetInformationFile,
 };
 use windows::Wdk::System::SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION;
 use windows::Win32::Foundation::{
-    ERROR_ACCESS_DENIED, ERROR_IO_DEVICE, ERROR_SHARING_VIOLATION, HANDLE, NTSTATUS,
-    OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, STATUS_FILE_IS_A_DIRECTORY,
-    STATUS_OBJECT_NAME_COLLISION, STATUS_OBJECT_NAME_NOT_FOUND, UNICODE_STRING,
+    NTSTATUS, STATUS_FILE_IS_A_DIRECTORY, STATUS_OBJECT_NAME_COLLISION,
+    STATUS_OBJECT_NAME_NOT_FOUND,
 };
 use windows::Win32::Storage::FileSystem::{
-    DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL, FILE_ATTRIBUTE_REPARSE_POINT,
-    FILE_DISPOSITION_FLAG_DELETE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX,
-    FILE_DISPOSITION_INFO_EX_FLAGS, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_WRITE_DATA, FileDispositionInfoEx, FlushFileBuffers, SYNCHRONIZE,
-    SetFileInformationByHandle, WriteFile,
+    DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_READ_ATTRIBUTES,
+    FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_WRITE_DATA, FlushFileBuffers,
+    SYNCHRONIZE, WriteFile,
 };
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
-use windows::core::PWSTR;
 
 use crate::file_append::IGNORE_TARGET_BYTES;
 use crate::file_facts::{
-    StandardInformation, error_code, is_reparse_point, open as open_relative, open_root, query,
-    raw, read,
+    StandardInformation, create_relative, error_code, is_reparse_point, open as open_relative,
+    open_root, query, raw, read, set_disposition, win32_code,
 };
 use crate::process_requests::{Code, native_path};
 use crate::schema::process_reply::FileFactErrorCode;
@@ -107,188 +101,111 @@ fn failed(status: NTSTATUS) -> ReplaceResult {
     if is_reparse_point(status) {
         return ReplaceResult::NotRegular;
     }
-    let code = error_code(status).to_string();
-    ReplaceResult::Error(FileFactErrorCode::from_str(&code).unwrap_or(FileFactErrorCode::OtherError))
+    ReplaceResult::Error(error_code(status))
 }
 
-/// Opens `name` relative to `parent` with `access`, `share`, and `options`, and `disposition`.
-fn create(
-    parent: &OwnedHandle,
-    name: &str,
-    access: windows::Win32::Storage::FileSystem::FILE_ACCESS_RIGHTS,
-    share: windows::Win32::Storage::FileSystem::FILE_SHARE_MODE,
-    options: windows::Wdk::Storage::FileSystem::NTCREATEFILE_CREATE_OPTIONS,
-    disposition: NTCREATEFILE_CREATE_DISPOSITION,
-) -> Result<OwnedHandle, NTSTATUS> {
-    let mut units: Vec<u16> = name.encode_utf16().collect();
-    // `is_component` keeps the name within 255 units, so the byte length fits a `u16`.
-    let length = (units.len() * 2) as u16;
-    let object_name = UNICODE_STRING {
-        Length: length,
-        MaximumLength: length,
-        Buffer: PWSTR(units.as_mut_ptr()),
-    };
-    let attributes = OBJECT_ATTRIBUTES {
-        Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-        RootDirectory: raw(parent),
-        ObjectName: &raw const object_name,
-        Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
-        ..Default::default()
-    };
-    let mut handle = HANDLE::default();
-    let mut io = IO_STATUS_BLOCK::default();
-    // SAFETY: each pointer refers to a live local, and `parent` keeps its handle open.
-    let status = unsafe {
-        NtCreateFile(
-            &raw mut handle,
-            access,
-            &raw const attributes,
-            &raw mut io,
-            None,
-            FILE_ATTRIBUTE_NORMAL,
-            share,
-            disposition,
-            options,
-            None,
-            0,
-        )
-    };
-    if status.is_err() {
-        return Err(status);
-    }
-    // SAFETY: a successful open returns a new handle that nothing else owns.
-    Ok(unsafe { OwnedHandle::from_raw_handle(handle.0) })
+/// One replace after its check (plan.md D10). It holds the parent folder and the existing target until the write.
+pub(crate) struct Checked {
+    parent: OwnedHandle,
+    name: String,
+    /// The existing target, open with no write sharing, so no other writer changes it before the rename.
+    target: Option<OwnedHandle>,
 }
 
-/// Sets `FileDispositionInfoEx` with POSIX delete on `handle`, so the name goes when the last handle closes.
-fn dispose(handle: &OwnedHandle) -> NTSTATUS {
-    let info = FILE_DISPOSITION_INFO_EX {
-        Flags: FILE_DISPOSITION_INFO_EX_FLAGS(
-            FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0,
-        ),
-    };
-    set_information(handle, FileDispositionInfoEx, unsafe {
-        std::slice::from_raw_parts(
-            (&raw const info).cast::<u8>(),
-            size_of::<FILE_DISPOSITION_INFO_EX>(),
-        )
-    })
-}
-
-/// `SetFileInformationByHandle` with `class` and the raw `info` bytes.
-fn set_information(
-    handle: &OwnedHandle,
-    class: windows::Win32::Storage::FileSystem::FILE_INFO_BY_HANDLE_CLASS,
-    info: &[u8],
-) -> NTSTATUS {
-    // SAFETY: `handle` is open, and `info` is a live buffer of the passed length.
-    match unsafe {
-        SetFileInformationByHandle(raw(handle), class, info.as_ptr().cast(), info.len() as u32)
-    } {
-        Ok(()) => NTSTATUS(0),
-        Err(error) => NTSTATUS(error.code().0),
-    }
-}
-
-/// Replaces the target `names` below `root` with `bytes` in one rename. It checks `expected` first.
+/// Walks to the parent of `names` below `root` and checks the target against `expected`. It writes nothing and respects `stop`.
 /// A reparse point on the way or at the target gives `NotRegular`. A different state gives `Stale`.
-pub(crate) fn replace(
+pub(crate) fn check(
     root: &Path,
     names: &[String],
     expected: Option<(u64, &str)>,
-    bytes: &[u8],
     stop: &AtomicBool,
-) -> ReplaceResult {
-    let (last, middle) = match names.split_last() {
-        Some(parts) => parts,
-        None => return ReplaceResult::Error(FileFactErrorCode::OtherError),
-    };
-    let mut parent = match open_root(root, stop) {
-        Ok(handle) => handle,
-        Err(status) => return failed(status),
-    };
+) -> Result<Checked, ReplaceResult> {
+    let (last, middle) = names
+        .split_last()
+        .ok_or(ReplaceResult::Error(FileFactErrorCode::OtherError))?;
+    let mut parent = open_root(root, stop).map_err(failed)?;
     for name in middle {
-        parent = match open_relative(&parent, name, false, false, stop) {
-            Ok(handle) => handle,
-            Err(status) => return failed(status),
-        };
+        parent = open_relative(&parent, name, false, false, stop).map_err(failed)?;
     }
-    // Hold the existing target open with no write sharing until the rename, so no other writer changes it.
-    let replace_existing = match expected {
+    let target = match expected {
         Some((size, sha)) => {
             // `FILE_READ_ATTRIBUTES` serves the reparse tag and link count queries below.
-            let target = match create(
-                &parent,
+            let target = create_relative(
+                raw(&parent),
                 last,
                 FILE_READ_DATA | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
                 FILE_SHARE_READ | FILE_SHARE_DELETE,
-                FILE_OPEN_REPARSE_POINT | FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
                 FILE_OPEN,
-            ) {
-                Ok(target) => target,
-                Err(STATUS_OBJECT_NAME_NOT_FOUND) => return ReplaceResult::Stale,
-                Err(STATUS_FILE_IS_A_DIRECTORY) => return ReplaceResult::NotRegular,
-                Err(status) => return failed(status),
-            };
-            let tag = match query::<FILE_ATTRIBUTE_TAG_INFORMATION>(
-                &target,
-                FileAttributeTagInformation,
-                stop,
-            ) {
-                Ok(tag) => tag,
-                Err(status) => return failed(status),
-            };
+                FILE_OPEN_REPARSE_POINT | FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+            )
+            .map_err(|status| match status {
+                STATUS_OBJECT_NAME_NOT_FOUND => ReplaceResult::Stale,
+                STATUS_FILE_IS_A_DIRECTORY => ReplaceResult::NotRegular,
+                status => failed(status),
+            })?;
+            let tag =
+                query::<FILE_ATTRIBUTE_TAG_INFORMATION>(&target, FileAttributeTagInformation, stop)
+                    .map_err(failed)?;
             let kind = FILE_ATTRIBUTE_DIRECTORY.0 | FILE_ATTRIBUTE_REPARSE_POINT.0;
             if tag.ReparseTag != 0 || tag.FileAttributes & kind != 0 {
-                return ReplaceResult::NotRegular;
+                return Err(ReplaceResult::NotRegular);
             }
-            let standard =
-                match query::<StandardInformation>(&target, FileStandardInformation, stop) {
-                    Ok(standard) => standard,
-                    Err(status) => return failed(status),
-                };
+            let standard = query::<StandardInformation>(&target, FileStandardInformation, stop)
+                .map_err(failed)?;
             if standard.number_of_links != 1 {
-                return ReplaceResult::NotRegular;
+                return Err(ReplaceResult::NotRegular);
             }
             if u64::try_from(standard.end_of_file) != Ok(size) {
-                return ReplaceResult::Stale;
+                return Err(ReplaceResult::Stale);
             }
-            // One byte past the size shows a longer file. The caller bounds the size.
-            let read_bytes = match read(raw(&target), size as usize + 1, stop) {
-                Ok(bytes) => bytes,
-                Err(status) => return failed(status),
-            };
+            // One byte past the size shows a longer file. `parse` bounds the size.
+            let read_bytes = read(raw(&target), size as usize + 1, stop).map_err(failed)?;
             if read_bytes.len() as u64 != size || hex(&sha256(&read_bytes)) != sha {
-                return ReplaceResult::Stale;
+                return Err(ReplaceResult::Stale);
             }
             Some(target)
         }
         None => None,
     };
-    // A random temporary name beside the target. The create fails if it already exists.
-    let temp = match crate::settings::random_id() {
-        Ok(id) => format!(".arbareto-{}.tmp", id.replace('-', "")),
-        Err(_) => return ReplaceResult::Error(FileFactErrorCode::OtherError),
-    };
-    let temp_handle = match create(
-        &parent,
-        &temp,
-        DELETE | FILE_WRITE_DATA | SYNCHRONIZE,
-        FILE_SHARE_READ,
-        FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE,
-        FILE_CREATE,
-    ) {
-        Ok(handle) => handle,
-        Err(status) => return failed(status),
-    };
-    let result = write_and_rename(&parent, &temp_handle, last, bytes, replace_existing.is_some());
-    if result != ReplaceResult::Replaced {
-        // A failure after the create removes the temporary file by disposition on its handle.
-        let _ = dispose(&temp_handle);
+    Ok(Checked {
+        parent,
+        name: last.clone(),
+        target,
+    })
+}
+
+impl Checked {
+    /// Writes `bytes` to a new temporary file beside the target and renames it over the target. It does not stop.
+    pub(crate) fn write(self, bytes: &[u8]) -> ReplaceResult {
+        // A random temporary name beside the target. The create fails if it already exists.
+        let temp = match crate::settings::random_id() {
+            Ok(id) => format!(".arbareto-{}.tmp", id.replace('-', "")),
+            Err(_) => return ReplaceResult::Error(FileFactErrorCode::OtherError),
+        };
+        let temp_handle = match create_relative(
+            raw(&self.parent),
+            &temp,
+            DELETE | FILE_WRITE_DATA | SYNCHRONIZE,
+            FILE_SHARE_READ,
+            FILE_CREATE,
+            FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE,
+        ) {
+            Ok(handle) => handle,
+            Err(status) => return failed(status),
+        };
+        let result = write_and_rename(
+            &self.parent,
+            &temp_handle,
+            &self.name,
+            bytes,
+            self.target.is_some(),
+        );
+        if result != ReplaceResult::Replaced {
+            // A failure after the create removes the temporary file by disposition on its handle.
+            let _ = set_disposition(&temp_handle);
+        }
+        result
     }
-    drop(temp_handle);
-    drop(replace_existing);
-    result
 }
 
 /// Writes `bytes`, flushes, then renames the temporary handle over `name` in `parent`.
@@ -304,16 +221,10 @@ fn write_and_rename(
     let wrote = unsafe { WriteFile(raw(temp), Some(bytes), Some(&raw mut written), None) };
     // SAFETY: `temp` is open.
     let flushed = wrote.and_then(|()| unsafe { FlushFileBuffers(raw(temp)) });
-    let code = |error: &windows::core::Error| match error.code() {
-        code if code == ERROR_ACCESS_DENIED.to_hresult() => FileFactErrorCode::AccessDenied,
-        code if code == ERROR_SHARING_VIOLATION.to_hresult() => FileFactErrorCode::SharingViolation,
-        code if code == ERROR_IO_DEVICE.to_hresult() => FileFactErrorCode::IoError,
-        _ => FileFactErrorCode::OtherError,
-    };
     match flushed {
         Ok(()) if written as usize == bytes.len() => {}
         Ok(()) => return ReplaceResult::Error(FileFactErrorCode::OtherError),
-        Err(error) => return ReplaceResult::Error(code(&error)),
+        Err(error) => return ReplaceResult::Error(win32_code(&error)),
     }
     // The Win32 `SetFileInformationByHandle` rejects a relative `FileName` with a `RootDirectory` (ERROR_INVALID_PARAMETER),
     // so the rename uses `NtSetInformationFile(FileRenameInformationEx)`, which resolves the name under the held parent.
@@ -378,11 +289,28 @@ mod tests {
         hex(&sha256(bytes))
     }
 
+    /// The check of the walk, then the write of the finish.
+    fn replace(
+        root: &Path,
+        names: &[String],
+        expected: Option<(u64, &str)>,
+        bytes: &[u8],
+        stop: &AtomicBool,
+    ) -> ReplaceResult {
+        check(root, names, expected, stop)
+            .map_or_else(|result| result, |checked| checked.write(bytes))
+    }
+
     fn names(names: &[&str]) -> Vec<String> {
         names.iter().map(|name| name.to_string()).collect()
     }
 
-    fn do_replace(root: &Path, path: &[&str], expected: Option<&[u8]>, bytes: &[u8]) -> ReplaceResult {
+    fn do_replace(
+        root: &Path,
+        path: &[&str],
+        expected: Option<&[u8]>,
+        bytes: &[u8],
+    ) -> ReplaceResult {
         let expected = expected.map(|old| (old.len() as u64, digest(old)));
         let expected = expected.as_ref().map(|(size, sha)| (*size, sha.as_str()));
         replace(root, &names(path), expected, bytes, &RUN)
@@ -532,17 +460,28 @@ mod tests {
         let sha = "b".repeat(64);
         assert_eq!(frame(json!({})), Ok((true, None, 3)));
         assert_eq!(
-            frame(json!({ "target": "exclude", "expected": { "size": 1_048_576, "sha256": sha }, "bytes": "" })),
+            frame(
+                json!({ "target": "exclude", "expected": { "size": 1_048_576, "sha256": sha }, "bytes": "" })
+            ),
             Ok((false, Some((1_048_576, sha.clone())), 0)),
             "an empty replacement is valid"
         );
         let big = crate::process_requests::encode_base64(&vec![b'x'; 1_048_577]);
         for (name, fields) in [
             ("a relative path", json!({ "path": ".gitignore" })),
-            ("a device path", json!({ "path": "\\\\?\\C:\\repo\\.gitignore" })),
+            (
+                "a device path",
+                json!({ "path": "\\\\?\\C:\\repo\\.gitignore" }),
+            ),
             ("bytes above 1 MiB", json!({ "bytes": big })),
-            ("an expected size above 1 MiB", json!({ "expected": { "size": 1_048_577, "sha256": sha } })),
-            ("a negative expected size", json!({ "expected": { "size": -1, "sha256": sha } })),
+            (
+                "an expected size above 1 MiB",
+                json!({ "expected": { "size": 1_048_577, "sha256": sha } }),
+            ),
+            (
+                "a negative expected size",
+                json!({ "expected": { "size": -1, "sha256": sha } }),
+            ),
         ] {
             assert_eq!(frame(fields), Err(INVALID), "{name}");
         }

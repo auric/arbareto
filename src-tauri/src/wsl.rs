@@ -1678,38 +1678,27 @@ pub fn delete_command(
 }
 
 /// One `delete` reply: a result per entry in order, then a result per folder.
+/// The process unlinks inside the walk, so an exit status other than 0, no start byte, or another form gives `None`:
+/// the outcome is unknown, and the request replies `interrupted` (contract Δ6, Δ11).
 pub fn delete_reply(
     output: Option<Output>,
     entries: usize,
     folders: usize,
-) -> (
+) -> Option<(
     Vec<crate::file_delete::EntryResult>,
     Vec<crate::file_delete::FolderResult>,
-) {
+)> {
     use crate::file_delete::{EntryResult as E, FolderResult as F};
-    let parsed = output
-        .filter(|out| out.exit_code == Some(0))
-        .and_then(|out| {
-            let bytes = started(&out.stdout).filter(|b| b.len() <= DELETE_OUTPUT_BYTES)?;
-            let mut records = Records { bytes, at: 0 };
-            let entry_results: Vec<E> = (0..entries)
-                .map(|_| delete_entry_record(&mut records))
-                .collect::<Option<_>>()?;
-            let folder_results: Vec<F> = (0..folders)
-                .map(|_| delete_folder_record(&mut records))
-                .collect::<Option<_>>()?;
-            (records.at == bytes.len()).then_some((entry_results, folder_results))
-        });
-    parsed.unwrap_or_else(|| {
-        (
-            (0..entries)
-                .map(|_| E::Error(FileFactErrorCode::OtherError))
-                .collect(),
-            (0..folders)
-                .map(|_| F::Error(FileFactErrorCode::OtherError))
-                .collect(),
-        )
-    })
+    let out = output.filter(|out| out.exit_code == Some(0))?;
+    let bytes = started(&out.stdout).filter(|b| b.len() <= DELETE_OUTPUT_BYTES)?;
+    let mut records = Records { bytes, at: 0 };
+    let entry_results: Vec<E> = (0..entries)
+        .map(|_| delete_entry_record(&mut records))
+        .collect::<Option<_>>()?;
+    let folder_results: Vec<F> = (0..folders)
+        .map(|_| delete_folder_record(&mut records))
+        .collect::<Option<_>>()?;
+    (records.at == bytes.len()).then_some((entry_results, folder_results))
 }
 
 fn delete_entry_record(records: &mut Records) -> Option<crate::file_delete::EntryResult> {
@@ -1772,6 +1761,7 @@ pub fn replace_command(
 }
 
 /// One `replace` reply: `replaced`, `stale`, `refused not-regular`, or `error`.
+/// The process can rename before it ends, so an exit status other than 0, no start byte, or another form gives `interrupted` (contract Δ6).
 pub fn replace_reply(output: Option<Output>) -> crate::file_replace::ReplaceResult {
     use crate::file_replace::ReplaceResult as R;
     let parsed = output
@@ -1788,7 +1778,7 @@ pub fn replace_reply(output: Option<Output>) -> crate::file_replace::ReplaceResu
             };
             (records.at == bytes.len()).then_some(result)
         });
-    parsed.unwrap_or(R::Error(FileFactErrorCode::OtherError))
+    parsed.unwrap_or(R::Interrupted)
 }
 
 /// The shadow scratch operation of a WSL workspace (contract Δ11).
@@ -2769,19 +2759,26 @@ mod tests {
                 3,
                 2
             ),
-            (
+            Some((
                 vec![E::Deleted, E::Stale, E::Error(C::AccessDenied)],
                 vec![F::Removed, F::Kept]
-            )
+            ))
         );
-        let broken = (
-            vec![E::Error(C::OtherError); 1],
-            vec![F::Error(C::OtherError); 1],
-        );
-        for stdout in ["Sdeleted\0", "deleted\0removed\0", "Sdeleted\0gone\0", "Sdeleted\0removed\0extra\0"] {
-            assert_eq!(delete_reply(output(0, stdout), 1, 1), broken, "{stdout:?}");
+        // A broken output gives an unknown outcome.
+        for stdout in [
+            "Sdeleted\0",
+            "deleted\0removed\0",
+            "Sdeleted\0gone\0",
+            "Sdeleted\0removed\0extra\0",
+        ] {
+            assert_eq!(delete_reply(output(0, stdout), 1, 1), None, "{stdout:?}");
         }
-        assert_eq!(delete_reply(output(3, "Sdeleted\0removed\0"), 1, 1), broken, "exit 3");
+        assert_eq!(
+            delete_reply(output(3, "Sdeleted\0removed\0"), 1, 1),
+            None,
+            "exit 3"
+        );
+        assert_eq!(delete_reply(None, 1, 1), None, "no output");
     }
 
     /// Feature 005 contract Δ11: mode `replace` gets the bound, the path, the expected state, and the bytes in hex.
@@ -2830,13 +2827,25 @@ mod tests {
         ] {
             assert_eq!(replace_reply(output(0, stdout)), expected, "{stdout:?}");
         }
-        for stdout in ["replaced\0", "Sreplaced\0stale\0", "Serror\0sharing-violation\0"] {
+        // The process can rename before a broken output, so the outcome is unknown.
+        for stdout in [
+            "replaced\0",
+            "Sreplaced\0stale\0",
+            "Serror\0sharing-violation\0",
+            "S",
+        ] {
             assert_eq!(
                 replace_reply(output(0, stdout)),
-                R::Error(C::OtherError),
+                R::Interrupted,
                 "{stdout:?}"
             );
         }
+        assert_eq!(
+            replace_reply(output(3, "Sreplaced\0")),
+            R::Interrupted,
+            "exit 3"
+        );
+        assert_eq!(replace_reply(None), R::Interrupted, "no output");
     }
 
     /// Feature 005 contract Δ11: mode `scratch` gets its operation and the folder name, and `sweep` lists the names after `swept`.
@@ -2844,14 +2853,38 @@ mod tests {
     fn the_scratch_mode_creates_removes_and_sweeps_by_name() {
         let unit = unit_name(OPERATION, 3).expect("unit");
         let name = "arbareto-preview-1-2-0123456789abcdef".to_string();
-        let create = scratch_command(&installation(), &unit, &Scratch::Create(name.clone()), &base());
+        let create = scratch_command(
+            &installation(),
+            &unit,
+            &Scratch::Create(name.clone()),
+            &base(),
+        );
         assert_eq!(
             perl_tail(&create),
-            strings(&["--", "scratch", "/", "/", "/", "/usr/local/bin/git", "/usr/bin/sha256sum"])
+            strings(&[
+                "--",
+                "scratch",
+                "/",
+                "/",
+                "/",
+                "/usr/local/bin/git",
+                "/usr/bin/sha256sum"
+            ])
         );
-        assert_eq!(stdin_bytes(&create), format!("create\0{name}\0").into_bytes());
-        let remove = scratch_command(&installation(), &unit, &Scratch::Remove(name.clone()), &base());
-        assert_eq!(stdin_bytes(&remove), format!("remove\0{name}\0").into_bytes());
+        assert_eq!(
+            stdin_bytes(&create),
+            format!("create\0{name}\0").into_bytes()
+        );
+        let remove = scratch_command(
+            &installation(),
+            &unit,
+            &Scratch::Remove(name.clone()),
+            &base(),
+        );
+        assert_eq!(
+            stdin_bytes(&remove),
+            format!("remove\0{name}\0").into_bytes()
+        );
         let sweep = scratch_command(&installation(), &unit, &Scratch::Sweep, &base());
         assert_eq!(stdin_bytes(&sweep), b"sweep\0");
         assert!(matches!(
@@ -2871,14 +2904,19 @@ mod tests {
             ScratchResult::Swept(names) if names.is_empty()
         ));
         assert!(matches!(
-            scratch_reply(output(0, "Serror\0access-denied\0"), &Scratch::Create(name.clone())),
+            scratch_reply(
+                output(0, "Serror\0access-denied\0"),
+                &Scratch::Create(name.clone())
+            ),
             ScratchResult::Error(crate::schema::process_reply::FileFactErrorCode::AccessDenied)
         ));
         for stdout in ["created\0", "Sremoved\0", "Screated\0extra\0"] {
             assert!(
                 matches!(
                     scratch_reply(output(0, stdout), &Scratch::Create(name.clone())),
-                    ScratchResult::Error(crate::schema::process_reply::FileFactErrorCode::OtherError)
+                    ScratchResult::Error(
+                        crate::schema::process_reply::FileFactErrorCode::OtherError
+                    )
                 ),
                 "{stdout:?}"
             );

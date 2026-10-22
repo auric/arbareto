@@ -75,15 +75,19 @@ export type ViewCommitDetailsProps = {
   changes?: ReactNode;
   /** The constrained profile shows the details and the changes as the tabs "Commit" and "Changes". */
   profile?: Profile;
+  /** The details width. The Workbench keeps it, so it survives the blame view. Without it, the region keeps its own. */
+  width?: number;
+  onWidth?(width: number): void;
 };
 
 // Feature 005 plan.md D15 "History view": the Commit details region is 268 px wide.
-const DETAILS_WIDTH = 268;
+export const DETAILS_WIDTH = 268;
 
 /** The docked "Selected commit" region of a feature 002 view. It reads the commit when it shows, and it holds no Git action. */
-export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead, changes, profile = "wide" }: ViewCommitDetailsProps) {
-  // The width lasts for the window session.
-  const [width, setWidth] = useState(DETAILS_WIDTH);
+export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead, changes, profile = "wide", width: given, onWidth }: ViewCommitDetailsProps) {
+  const [own, setOwn] = useState(DETAILS_WIDTH);
+  const width = given ?? own;
+  const setWidth = onWidth ?? setOwn;
   const headingId = useId();
   const copy = useCopy();
   const [read, setRead] = useState<{ oid: string; details: Details } | null>(null);

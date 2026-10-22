@@ -228,6 +228,8 @@ description: "Task list for the History Inspection and Commit View File Actions 
 
 **Agent**: frontend-implementer. It loads `arbareto-ux`, `vercel-react-best-practices`, and `web-design-guidelines`. After WP5 and WP6. T057 uses implementer-xhigh.
 
+**Note (WP6 review)**: WP6 put the History F6 stops (`DOCK_STOP` in `moveSection`) and the Ctrl+F routing to Filter files (`HISTORY_FILES_SCOPE`) into `src/frontend/app/Workbench.tsx`, because `src/frontend/keyboard/shortcuts.ts` is a WP7 file. WP7 moves both into `src/frontend/keyboard/shortcuts.ts` (new `Section` values and `ORDERS` entries, and a scope-aware `filterTarget`), with `tests/contracts/shortcuts-005.test.ts` cases.
+
 **Goal**: The row menu groups, Delete with its confirmation, the folder reveal, the ignore editor, Open submodule with the parent button, and the Commit view Blame entry.
 
 **Independent Test**: Component tests with the bridge test double, then keyboard-only runs of US2 and US5 (quickstart.md Q15, Q18, Q23, Q26, Q31).

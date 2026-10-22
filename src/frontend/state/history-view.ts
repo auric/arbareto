@@ -617,6 +617,20 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     return found?.target ?? null;
   }
 
+  /** Feature 005 spec FR-056: selects a commit, and first loads the full list up to it when the view has not loaded it, as `open` does. */
+  async function revealOid(oid: string): Promise<"found" | "none" | "unknown" | null> {
+    const target = await selectOid(oid);
+    if (target !== "unknown" || state.view === null || filterMode() || state.stale !== null || state.limit !== null || searching()) return target;
+    // plan.md D6: a running End or OID load keeps its turn. A scroll load is canceled first, as End does.
+    if (state.load !== null && state.load.kind !== "scroll") return target;
+    await settleLoad();
+    const loaded = await runLoad({ oid }, "oid");
+    if (loaded?.state !== "succeeded") return target;
+    const found = await readAt({ oid }, "full", "none");
+    if (found?.target === "found") select(oid, found.rows[0]!.index, "full");
+    return found?.target ?? null;
+  }
+
   /** Spec FR-017: the body loads only when the details pane shows the commit. It gives the response state, and the row of a `found` target. */
   async function readDetails(oid: string): Promise<Details> {
     const view = state.view;
@@ -642,7 +656,9 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     const view = state.view;
     stopSearch();
     epoch++;
-    if (view !== null) void bridge.closeHistory(repository(), { viewId: view.viewId });
+    // After a service session the requests name no repository, and contract Δ8 already ended the view.
+    const current = target() as ReturnType<typeof target> | null;
+    if (view !== null && current !== null) void bridge.closeHistory({ repositoryId: current.repositoryId }, { viewId: view.viewId });
     pages.clear();
     cacheBytes = 0;
     set({ ...INITIAL, scope: state.scope });
@@ -673,6 +689,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     match,
     cancelSearch,
     selectOid,
+    revealOid,
     readDetails,
     markStale,
     close,
@@ -695,7 +712,8 @@ export type BlameRequest = { source: BlameSource; path: string; oid: string };
 type Failure = { code: string | null; remedy?: { text: string } };
 type ChangesKey = { viewId: string; oid: string; parent: number };
 export type ChangesRead = ChangesKey & ({ state: "loading" } | { state: "loaded"; result: CommitChanges } | ({ state: "failed"; trust: boolean } & Failure));
-export type FileRead = { changesId: string; fileId: number } & ({ state: "loading" } | { state: "loaded"; result: CommitFile } | ({ state: "failed" } & Failure));
+// `reason` is the `UNSUPPORTED_COMPARISON` reason (contract Δ3 `readCommitFile`).
+export type FileRead = { changesId: string; fileId: number } & ({ state: "loading" } | { state: "loaded"; result: CommitFile } | ({ state: "failed"; reason?: string } & Failure));
 export type BlameRun =
   | { state: "running"; operationId: string | null; blamed?: number; total?: number }
   | { state: "done"; result: Blame }
@@ -821,7 +839,10 @@ export function createInspection(bridge: InspectionBridge, target: () => { repos
     if (response === null) return;
     const result = response.result as CommitFile | undefined;
     if ((response.state === "succeeded" || response.state === "limited") && typeof result?.fileId === "number" && result.facts !== undefined) set({ file: { changesId, fileId, state: "loaded", result } });
-    else set({ file: { changesId, fileId, state: "failed", ...failureOf(response) } });
+    else {
+      const reason = (result as { reason?: unknown } | undefined)?.reason;
+      set({ file: { changesId, fileId, state: "failed", ...failureOf(response), ...(response.code === "UNSUPPORTED_COMPARISON" && typeof reason === "string" ? { reason } : {}) } });
+    }
   }
 
   async function runBlame(keepLine: boolean) {

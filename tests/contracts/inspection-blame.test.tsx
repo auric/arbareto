@@ -4,7 +4,7 @@
 // Feature 005 T044: the blame view (spec FR-053 to FR-063, FR-067, FR-068, plan.md D12, D15 "Blame view", D16 age shades).
 
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
-import { act, type ReactNode } from "react";
+import { act, useEffect, type ReactNode } from "react";
 import type { BridgeResponse, OnProgress } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
@@ -17,7 +17,16 @@ printOrigin("../../src/frontend/views/HistoryView.tsx", import.meta.dir);
 printOrigin("../../src/frontend/state/history-view.ts", import.meta.dir);
 registerDom();
 mock.module("../../src/frontend/changes/PatchView", () => ({ default: ({ patch }: { patch: string }) => <pre data-slot="patch-double">{patch}</pre> }));
-mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ children }: { children: ReactNode }) => <>{children}</> }));
+// The pool double counts its live providers. Pierre ends its worker pool when the last provider unmounts (@pierre/diffs 1.5.1 WorkerPoolContext.js).
+const pool = { live: 0 };
+function PoolDouble({ children }: { children?: ReactNode }) {
+  useEffect(() => {
+    pool.live++;
+    return () => void pool.live--;
+  }, []);
+  return <>{children}</>;
+}
+mock.module("../../src/frontend/changes/PatchPool", () => ({ default: PoolDouble }));
 
 const { createRoot } = await import("react-dom/client");
 const { BlameView } = await import("../../src/frontend/blame/BlameView");
@@ -429,5 +438,86 @@ describe("workbench dock swap", () => {
     await key(first, "Escape");
     expect(section.querySelector('section[data-slot="blame-view"]')).toBeNull();
     expect(section.querySelector<HTMLElement>("[data-history-list]")!.closest("[hidden]")).toBeNull();
+  });
+});
+
+// ---- Review fixes of WP6 (2, 3, 4, 6, 7) ----
+
+describe("select the line's commit (spec FR-056)", () => {
+  test("a commit 5,000 rows down while the view holds 1,000 rows loads, then gets selected", async () => {
+    const { createFake, oid } = await import("./history-fake");
+    const { createHistoryView } = await import("../../src/frontend/state/history-view");
+    const fake = createFake({ total: 10_000, loaded: 1_000 });
+    const history = createHistoryView(fake.bridge, TARGET);
+    await act(async () => void (await history.open("all", false)));
+    // The loaded rows lack the commit, so the plain row read cannot select it.
+    expect(await history.selectOid(oid(5_000))).toBe("unknown");
+    let target: unknown;
+    await act(async () => void (target = await history.revealOid(oid(5_000))));
+    expect(target).toBe("found");
+    expect(history.getState().selection).toEqual({ id: oid(5_000), index: 5_000, mode: "full" });
+  });
+});
+
+const harness = async () => {
+  const { mountWorkbench, HEAD } = await import("./inspection-workbench");
+  const w = await mountWorkbench(() => blameResult([{ oid: HEAD, time: NOW_S - DAY }], [{ commit: 0, count: 2 }], { commit: HEAD, pathBytes: b64("src/a.txt") }));
+  unmounts.push(w.unmount);
+  await w.selectCommit();
+  const openBlame = async () => {
+    await click([...document.querySelectorAll<HTMLButtonElement>('[data-slot="history-diff"] button')].find((b) => text(b) === "Blame")!);
+    await w.serve();
+  };
+  const blameShown = () => document.querySelector('section[aria-label="History"] section[data-slot="blame-view"]') !== null;
+  return { w, openBlame, blameShown };
+};
+
+describe("workbench state across the blame view", () => {
+  test("the Pierre pool stays mounted when the History diff leaves the dock", async () => {
+    const { openBlame } = await harness();
+    expect(pool.live).toBeGreaterThan(0);
+    await openBlame();
+    // The dock shows only the line details now, so the History diff and its region are gone.
+    expect(document.querySelector('[data-slot="history-diff"]')).toBeNull();
+    expect(pool.live).toBeGreaterThan(0);
+  });
+
+  test("a service session closes the blame view", async () => {
+    const { w, openBlame, blameShown } = await harness();
+    await openBlame();
+    expect(blameShown()).toBe(true);
+    await w.setSession(1);
+    // The same repository shows again, so the History section is back. The blame view of the ended session is gone.
+    expect(document.querySelector('section[aria-label="History"] [data-history-list]')).not.toBeNull();
+    expect(blameShown()).toBe(false);
+  });
+
+  test("another repository closes the blame view", async () => {
+    const other = await harness();
+    await other.openBlame();
+    expect(other.blameShown()).toBe(true);
+    // Ctrl+O runs chooseRepository. Its registration opens another repository.
+    await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "o", ctrlKey: true, bubbles: true, cancelable: true })));
+    await other.w.openOther();
+    expect(other.blameShown()).toBe(false);
+  });
+
+  test("Changed files keeps its layout across Back", async () => {
+    const { openBlame } = await harness();
+    const flat = () => document.querySelector<HTMLElement>('[data-slot="changed-files"] button[aria-label="Flat layout"]')!;
+    await click(flat());
+    expect(flat().getAttribute("aria-pressed")).toBe("true");
+    await openBlame();
+    await key(document.querySelector('section[data-slot="blame-view"] [role="option"]')!, "Escape");
+    expect(flat().getAttribute("aria-pressed")).toBe("true");
+  });
+
+  test("Ctrl+F does not move the focus to the hidden History filter while the blame view shows", async () => {
+    const { openBlame } = await harness();
+    await openBlame();
+    const line = document.querySelector<HTMLElement>('section[data-slot="blame-view"] [role="option"]')!;
+    await act(async () => line.focus());
+    await key(line, "f", { ctrlKey: true });
+    expect(document.activeElement).toBe(line);
   });
 });

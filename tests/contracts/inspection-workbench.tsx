@@ -50,11 +50,15 @@ export async function mountWorkbench(blame: (payload: Record<string, unknown>) =
   const bridge = new Proxy({}, { get: (_, name) => (...args: unknown[]) => new Promise((resolve) => calls.push({ operation: String(name), args, resolve })) });
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
-  await act(async () =>
-    root.render(
-      <Workbench bridge={contractChecked(bridge) as never} restored={Promise.resolve(succeeded(REGISTRATION)) as never} ChangesPane={ChangesPaneMount} ComparisonView={ComparisonViewMount} HistoryView={HistoryViewMount} clock={NO_POLL} />,
-    ),
-  );
+  const checked = contractChecked(bridge);
+  const restored = Promise.resolve(succeeded(REGISTRATION));
+  const render = (session: number) =>
+    act(async () =>
+      root.render(
+        <Workbench bridge={checked as never} restored={restored as never} session={session} ChangesPane={ChangesPaneMount} ComparisonView={ComparisonViewMount} HistoryView={HistoryViewMount} clock={NO_POLL} />,
+      ),
+    );
+  await render(0);
   await settle();
   let changesId = "";
   // Answers the history, inspection, and blame calls. Other calls stay pending.
@@ -127,6 +131,31 @@ export async function mountWorkbench(blame: (payload: Record<string, unknown>) =
       await act(async () => option.click());
       await settle();
       await serve();
+    },
+    /** Feature 001 contract §2: a `service-session` event adds 1 to `session`. */
+    async setSession(session: number) {
+      await render(session);
+      await settle();
+      // Contract §2: the page runs `restoreWorkspace` again. It registers the same repository.
+      const restore = calls.find((c) => c.operation === "restoreWorkspace" && !answered.has(c))!;
+      answered.add(restore);
+      await act(async () => restore.resolve(succeeded(REGISTRATION)));
+      await settle();
+      await serve();
+      const read = calls.filter((c) => c.operation === "readWorkspace" && !answered.has(c)).at(-1);
+      if (read !== undefined) {
+        answered.add(read);
+        await act(async () => read.resolve(succeeded(snapshot())));
+        await settle();
+        await serve();
+      }
+    },
+    /** Answers the pending `chooseRepository` with another repository. */
+    async openOther() {
+      const choose = calls.find((c) => c.operation === "chooseRepository" && !answered.has(c))!;
+      answered.add(choose);
+      await act(async () => choose.resolve(succeeded({ repositoryId: crypto.randomUUID(), generation: 1, worktreeKey: "b".repeat(64) })));
+      await settle();
     },
     async unmount() {
       await act(async () => root.unmount());

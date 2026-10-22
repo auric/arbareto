@@ -39,6 +39,8 @@ const SHALLOW_TEXT = "Arbareto cannot show the changes. The parent of this commi
 const READING_FILES = "Arbareto reads the changed files.";
 const READING_DIFF = "Arbareto reads the diff.";
 const BINARY_TEXT = "Binary file. Arbareto does not show its changes.";
+// Contract Δ3 `readCommitFile`: UNSUPPORTED_COMPARISON with the reason `path`.
+const PATH_TEXT = "Arbareto cannot pass this file name to Git, because it is not valid UTF-8.";
 const STATUS_WORD: Record<Entry["status"], string> = { added: "added", deleted: "deleted", modified: "modified", renamed: "renamed", "type-changed": "type changed" };
 const STATUS_LETTER: Record<Entry["status"], string> = { added: "A", deleted: "D", modified: "M", renamed: "R", "type-changed": "T" };
 // 004 plan.md D16: M in Warning text, A in Added text, D in Removed text, R and T in Text. The letter is text, so color is never the only cue.
@@ -144,10 +146,16 @@ export type CommitChangesProps = {
   onBlame(request: BlameRequest): void;
   /** Ctrl+F focuses it while the focus is in Changed files or in the diff (plan.md D15 keyboard map). */
   filterRef?: RefObject<HTMLInputElement | null>;
+  /** The Changed files width and layout. The Workbench keeps them, so they survive the blame view. */
+  panes: HistoryPanes;
+  onPanes(next: Partial<HistoryPanes>): void;
 };
+export type HistoryPanes = { width: number; layout: "tree" | "flat" };
+// Plan.md D15 "History view": the Changed files region is 288 px wide.
+export const HISTORY_PANES: HistoryPanes = { width: 288, layout: "tree" };
 
 /** The Changed files and diff regions of the selected commit (spec FR-005). Wide and narrow: side by side with a splitter. Constrained: the list above the diff. */
-export function CommitChanges({ inspection, view, oid, profile, onTrust, onBlame, filterRef }: CommitChangesProps) {
+export function CommitChanges({ inspection, view, oid, profile, onTrust, onBlame, filterRef, panes, onPanes }: CommitChangesProps) {
   const viewId = useSyncExternalStore(view.subscribe, () => view.getState().view?.viewId ?? null, () => view.getState().view?.viewId ?? null);
   const state = useSyncExternalStore(inspection.subscribe, inspection.getState, inspection.getState);
   const [parent, setParent] = useState({ oid, index: 0 });
@@ -159,8 +167,8 @@ export function CommitChanges({ inspection, view, oid, profile, onTrust, onBlame
   const read = state.changes !== null && state.changes.viewId === viewId && state.changes.oid === oid && state.changes.parent === index ? state.changes : null;
   const result = read?.state === "loaded" ? read.result : null;
   const sorted = useMemo(() => (result === null ? [] : treeOrder(result.files)), [result]);
-  const [width, setWidth] = useState(288);
-  const [layout, setLayout] = useState<"tree" | "flat">("tree");
+  const { width, layout } = panes;
+  const setLayout = (next: "tree" | "flat") => onPanes({ layout: next });
   const [collapsed, setCollapsed] = useState<{ id: string | null; keys: ReadonlySet<string> }>({ id: null, keys: new Set() });
   const [query, setQuery] = useState("");
   const keys = collapsed.id === result?.changesId ? collapsed.keys : EMPTY;
@@ -277,7 +285,7 @@ export function CommitChanges({ inspection, view, oid, profile, onTrust, onBlame
   return (
     <>
       {list}
-      <Splitter label="Resize changed files" orientation="vertical" value={width} min={FILE_LANE.min} max={FILE_LANE.max} onChange={setWidth} />
+      <Splitter label="Resize changed files" orientation="vertical" value={width} min={FILE_LANE.min} max={FILE_LANE.max} onChange={(next) => onPanes({ width: next })} />
       {diff}
     </>
   );
@@ -479,8 +487,6 @@ function decodePatch(base64: string): string | null {
     return null;
   }
 }
-// git-diff(1) "Generating patch text with -p": each hunk of the canonical patch starts with a header line that begins with "@@ ".
-const hunkCount = (patch: string) => patch.split("\n").filter((line) => line.startsWith("@@ ")).length;
 type FileRead = ReturnType<Inspection["getState"]>["file"];
 type PierreHunk = NonNullable<Parameters<typeof import("../changes/PatchView").default>[0]["anchor"]>;
 
@@ -531,7 +537,7 @@ function CommitDiff({ entry, file, onBlame }: { entry: Entry | null; file: FileR
     );
     return () => void (current = false);
   }, [patch]);
-  const total = patch === null ? 0 : hunkCount(patch);
+  const total = patch === null || hunks?.patch !== patch ? 0 : hunks.list.length;
   const move = (direction: 1 | -1) => total > 0 && setStep({ patch, index: Math.min(total - 1, Math.max(0, (at ?? (direction === 1 ? -1 : total)) + direction)) });
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const action = scopedAction(event.nativeEvent, "diff");
@@ -544,7 +550,7 @@ function CommitDiff({ entry, file, onBlame }: { entry: Entry | null; file: FileR
   const body =
     file === null || entry === null ? null
     : file.state === "loading" ? <p className="p-2 text-muted-text">{READING_DIFF}</p>
-    : file.state === "failed" ? <p className="p-2">{file.remedy?.text ?? failureText("The diff", file.code)}</p>
+    : file.state === "failed" ? <p className="p-2">{file.remedy?.text ?? (file.reason === "path" ? PATH_TEXT : failureText("The diff", file.code))}</p>
     : (
       <>
         <Facts result={file.result} />

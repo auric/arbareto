@@ -4,7 +4,7 @@
 // Feature 005 T043: the changed files and the diff of the selected commit in History (spec FR-005 to FR-014, FR-017, FR-067, FR-068, plan.md D3 and D15).
 
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
-import { act, type ReactNode } from "react";
+import { act, useState, type ReactNode } from "react";
 import type { BridgeResponse, OnProgress } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
@@ -30,7 +30,13 @@ mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ childre
 
 const { createRoot } = await import("react-dom/client");
 const { ViewCommitDetails } = await import("../../src/frontend/history/CommitDetails");
-const { CommitChanges } = await import("../../src/frontend/history/CommitChanges");
+const { CommitChanges, HISTORY_PANES } = await import("../../src/frontend/history/CommitChanges");
+type ChangesProps = Omit<import("../../src/frontend/history/CommitChanges").CommitChangesProps, "panes" | "onPanes">;
+// The Workbench keeps the Changed files width and layout. This wrapper keeps them for the tests.
+function WithPanes(props: ChangesProps) {
+  const [panes, setPanes] = useState(HISTORY_PANES);
+  return <CommitChanges {...props} panes={panes} onPanes={(next) => setPanes((p) => ({ ...p, ...next }))} />;
+}
 const { createHistoryView, createInspection } = await import("../../src/frontend/state/history-view");
 type HistoryView = import("../../src/frontend/state/history-view").HistoryView;
 type Inspection = import("../../src/frontend/state/history-view").Inspection;
@@ -145,7 +151,7 @@ async function mountChanges(oid = fakeOid(2), profile: "wide" | "narrow" | "cons
       view={view}
       oid={o}
       profile={profile}
-      changes={<CommitChanges inspection={inspection} view={view} oid={o} profile={profile} onTrust={async () => (trusts.push(1), true)} onBlame={(request) => blames.push(request)} />}
+      changes={<WithPanes inspection={inspection} view={view} oid={o} profile={profile} onTrust={async () => (trusts.push(1), true)} onBlame={(request) => blames.push(request)} />}
     />
   );
   const { host, rerender } = await show(node(oid));
@@ -498,5 +504,42 @@ describe("workbench keys", () => {
     expect(document.querySelector('[data-slot="history-diff"]')!.contains(document.activeElement)).toBe(true);
     await key(document.activeElement!, "F6", { shiftKey: true });
     expect(files.contains(document.activeElement)).toBe(true);
+  });
+});
+
+// ---- Review fixes of WP6 (4, 5) ----
+
+describe("generation and path refusals", () => {
+  test("REPOSITORY_CHANGED sends one new readCommitChanges, and a second one shows the failure (001 contract §9)", async () => {
+    const m = await mountChanges();
+    await answer(m.double.last("readCommitChanges"), failed("REPOSITORY_CHANGED"));
+    expect(m.double.of("readCommitChanges").length).toBe(2);
+    await answer(m.double.last("readCommitChanges"), failed("REPOSITORY_CHANGED"));
+    expect(m.double.of("readCommitChanges").length).toBe(2);
+    expect(text(m.host)).toContain("Arbareto cannot read the changed files: REPOSITORY_CHANGED.");
+  });
+
+  test("REPOSITORY_CHANGED, then a result: the list shows", async () => {
+    const m = await mountChanges();
+    await answer(m.double.last("readCommitChanges"), failed("REPOSITORY_CHANGED"));
+    await answer(m.double.last("readCommitChanges"), succeeded(changesResult(m.viewId, fakeOid(2), [{ path: "a.txt" }])));
+    expect(labels(m.host)).toEqual(["a.txt, modified"]);
+  });
+
+  test("UNSUPPORTED_COMPARISON with the reason path shows the path text (plan.md D3)", async () => {
+    const m = await loaded([{ path: "a.txt" }]);
+    await answer(m.double.last("readCommitFile"), failed("UNSUPPORTED_COMPARISON", { reason: "path" }));
+    expect(text(diff(m.host))).toContain("Arbareto cannot pass this file name to Git, because it is not valid UTF-8.");
+  });
+
+  test("no hunk count without hunks, and 1 hunk for one", async () => {
+    const one = "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-old\n+new\n";
+    const m = await loaded([{ path: "a.txt" }, { path: "b.png" }]);
+    await answer(m.double.last("readCommitFile"), succeeded(fileResult(m.result.changesId, 0, { patch: b64(one) })));
+    expect(text(diff(m.host).querySelector('[data-slot="diff-header"]')!)).toContain("1 hunk");
+    expect(text(diff(m.host).querySelector('[data-slot="diff-header"]')!)).not.toContain("hunks");
+    await click(item(m.host, "b.png, modified"));
+    await answer(m.double.last("readCommitFile"), succeeded(fileResult(m.result.changesId, 1, { binary: true, patch: null })));
+    expect(text(diff(m.host).querySelector('[data-slot="diff-header"]')!)).not.toContain("hunk");
   });
 });

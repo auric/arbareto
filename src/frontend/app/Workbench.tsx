@@ -34,8 +34,8 @@ import {
   MenubarSubTrigger,
   MenubarTrigger,
 } from "../components/ui/menubar";
-import { CommitChanges } from "../history/CommitChanges";
-import { ViewCommitDetails } from "../history/CommitDetails";
+import { CommitChanges, HISTORY_PANES } from "../history/CommitChanges";
+import { DETAILS_WIDTH, ViewCommitDetails } from "../history/CommitDetails";
 import { HistoryList } from "../history/HistoryList";
 import { branchName, INDEX_ROW, WORKING_ROW } from "../history/HistoryView";
 import { createShortcutHandler, filterTarget, isEditable, nextSection, type Panel, type Section } from "../keyboard/shortcuts";
@@ -721,7 +721,16 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const state = useSyncExternalStore(requests.subscribe, requests.state, requests.state);
   const historyState = useSyncExternalStore(historyView.subscribe, historyView.getState, historyView.getState);
   const blameOpen = useSyncExternalStore(inspection.subscribe, () => inspection.getState().blame !== null, () => inspection.getState().blame !== null);
+  const historyPatchShown = () => {
+    const file = inspection.getState().file;
+    return file?.state === "loaded" && file.result.patch !== null;
+  };
   const lineOid = useSyncExternalStore(inspection.subscribe, inspection.lineCommit, inspection.lineCommit);
+  // @pierre/diffs 1.5.1 WorkerPoolContext.js: the providers share one worker pool, and the last provider that unmounts ends it.
+  // From the first diff of either view on, one hidden provider keeps the pool for the session.
+  const historyPatch = useSyncExternalStore(inspection.subscribe, historyPatchShown, historyPatchShown);
+  const [keepPool, setKeepPool] = useState(false);
+  if (!keepPool && (historyPatch || showsDiff(resultOf(state.comparison)))) setKeepPool(true);
   // Data-model §14: the view of each worktree for the window session. Without a repository, the empty key holds the view.
   const viewKey = state.repository?.worktreeKey ?? "";
   const view: View = useSyncExternalStore(store.subscribe, () => store.view(viewKey), () => store.view(viewKey));
@@ -730,6 +739,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const filesFilterRef = useRef<HTMLInputElement>(null);
   // Feature 005 plan.md D15 keyboard map: Ctrl+F focuses Filter files while the focus is in Changed files or in the History diff.
   const historyFilesRef = useRef<HTMLInputElement>(null);
+  // The details width and the Changed files width and layout stay while the blame view replaces the dock content.
+  const [historyPanes, setHistoryPanes] = useState({ details: DETAILS_WIDTH, ...HISTORY_PANES });
   const [preferences, setPreferences] = useState(storedPreferences);
   const client = useClientSize();
   const profile: Profile = chooseProfile(client, textScale, preferences.density);
@@ -918,7 +929,6 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (session === firstSession.current) return;
     // Feature 002 contract Δ8: after a service restart no view resumes. Refresh opens a new one.
     historyView.markStale();
-    inspection.reset();
     requests.serviceSession();
     void readEnvironment();
   }, [session, requests]);
@@ -928,6 +938,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   useEffect(() => {
     setTrust(null);
     setNotice(null);
+    // A service session also passes here: `requests.serviceSession` clears the repository first (requests.ts `serviceSession`).
     setDeclined(null);
     inspection.reset();
   }, [repositoryId]);
@@ -1093,7 +1104,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       const next = at + (direction === "next" ? 1 : -1);
       if (at >= 0 && next >= 0 && next < stops.length) return focusStop(stops[next]!);
     }
-    const order: Section[] =["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "commitDetails", "scopeBar", "pageList", "pageContent", "statusRegion"];
+    const order: Section[] = ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "commitDetails", "scopeBar", "pageList", "pageContent", "statusRegion"];
     const hidden = order.filter((s) => !present.has(s));
     const target = nextSection({ panel: live.current.panel ?? "details", hidden, bandRows: present.has("noticeHeading") ? 1 : 0, status: { text: present.has("statusRegion"), toggle: false, cancel: false } }, current, direction);
     if (target === null) return;
@@ -1150,11 +1161,16 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       else if (action.type === "focusSection") moveSection(action.direction);
       else if (action.type === "focusFilter") {
         const target = filterTarget(live.current.view);
-        if (target === "history") (document.activeElement?.closest(HISTORY_FILES_SCOPE) ? historyFilesRef : filterRef).current?.focus();
+        // Feature 005 plan.md D15: the blame view hides the History list, so its filter takes no focus then.
+        if (target === "history") {
+          if (!inspection.getState().blame) (document.activeElement?.closest(HISTORY_FILES_SCOPE) ? historyFilesRef : filterRef).current?.focus();
+        }
         else if (target === "files") filesFilterRef.current?.focus();
         else sections.current?.querySelector<HTMLElement>('[data-view="settings"] input[aria-label="Find a setting"]')?.focus();
       }
-      else if (action.type === "match") void historyView.match(action.direction);
+      else if (action.type === "match") {
+        if (!inspection.getState().blame) void historyView.match(action.direction);
+      }
       else if (action.type === "sync") runSync.current(action.control);
       else if (action.type === "toggleScope" && live.current.repository !== null) void historyView.setScope(historyView.getState().scope === "current" ? "all" : "current");
     };
@@ -1618,7 +1634,21 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             oid={kept}
             onRead={() => setDetailsRead(row.epoch)}
             profile={profile}
-            changes={<CommitChanges inspection={inspection} view={historyView} oid={kept} profile={profile} filterRef={historyFilesRef} onTrust={() => approveTrust("read")} onBlame={(request) => inspection.openBlame(request)} />}
+            width={historyPanes.details}
+            onWidth={(details) => setHistoryPanes((p) => ({ ...p, details }))}
+            changes={
+              <CommitChanges
+                inspection={inspection}
+                view={historyView}
+                oid={kept}
+                profile={profile}
+                filterRef={historyFilesRef}
+                panes={historyPanes}
+                onPanes={(next) => setHistoryPanes((p) => ({ ...p, ...next }))}
+                onTrust={() => approveTrust("read")}
+                onBlame={(request) => inspection.openBlame(request)}
+              />
+            }
           />
         </div>
       ) : null}
@@ -1688,7 +1718,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           <div>{sidebar}</div>
         </div>
         <section aria-label="History" data-section="historyList" className="flex min-h-0 flex-col" style={{ flex: "1 1 0" }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
-          <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.selectOid(oid)}>
+          <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.revealOid(oid)}>
             <HistoryView {...pane} />
           </HistoryListSlot>
         </section>
@@ -1711,9 +1741,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             onKeyDown={onHistoryKey}
             onDoubleClick={onHistoryDoubleClick}
           >
-            <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.selectOid(oid)}>
-            <HistoryView {...pane} />
-          </HistoryListSlot>
+            <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.revealOid(oid)}>
+              <HistoryView {...pane} />
+            </HistoryListSlot>
           </section>
           {/* The dock splitter sets the height of the dock content. A docked panel takes its own height, so the splitter hides. */}
           <Splitter
@@ -2063,6 +2093,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         ) : null}
         {branches.overlays}
         {worktrees.overlays}
+        {keepPool ? (
+          <Suspense fallback={null}>
+            <PatchPool>{null}</PatchPool>
+          </Suspense>
+        ) : null}
       </div>
     </CopyFailed>
   );

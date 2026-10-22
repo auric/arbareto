@@ -458,7 +458,7 @@ Failing-first records:
 
 ## R29 Verification runs for T062, T076, and T093, 2026-10-20 and 2026-10-21
 
-Three runs in `C:\Projects\arbareto-l4` on f004-impl. The logs are in the orchestrator scratchpad `verify-004-l4/`, `verify2-004-l4/`, and `verify3-004-l4/`. Runs 1 and 2 fail the T062, T076, and T093 pass condition. Run 3 at b35cdd0 passes it. Runs 4 and 5 verify T119. Their logs are in `verify4-004-l4/` and `verify5-l3/`.
+Three runs in `C:\Projects\arbareto-l4` on f004-impl. The logs are in the orchestrator scratchpad `verify-004-l4/`, `verify2-004-l4/`, and `verify3-004-l4/`. Runs 1 and 2 fail the T062, T076, and T093 pass condition. Run 3 at b35cdd0 passes it. Runs 4 and 5 verify T119. Their logs are in `verify4-004-l4/` and `verify5-l3/`. Run 6 verifies T120. Its logs are in `f005-t027/` (files `*-r2.*`).
 
 Run 1, 2026-10-20, at 51f9ab2:
 - `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `bun run build:service`, and `cargo check`: exit 0.
@@ -580,6 +580,15 @@ Run 5, 2026-10-21 15:20 to 18:44, at fc48588 in `C:\Projects\arbareto-l3`, on a 
 - Deviation: the run summary counted only the 213 stdout `ORIGIN` lines, and it did not find the review time lines. Both are in the stderr log.
 - Not in this run: `bun run test:contracts`, `bun test tests/windows`, control mutations, the board comparison, and reviews.
 - Verdict: run 5 is the green full run that verifies T119.
+
+Run 6, 2026-10-22 12:11 to 14:17, at f005-impl 6f72152 in `C:\Projects\arbareto-l2` (005 batch 1, T027 part A r2). 6f72152 holds main 631cff2 through merge e5d682a, and so all T120 code and cases.
+- `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo check`, `cargo test`, and `bun run build:service`: exit 0.
+- 12:13 to 14:17: `ARBARETO_WSL_DISTRO=Ubuntu-26.04 ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0 in 124 minutes. Parallel step: 201 files, 7,037 tests, 6,997 pass, 40 skip, 0 fail, in 2,428.9 s. Serial step: 34 files, 670 tests, 660 pass, 10 skip, 0 fail, in 5,002.2 s.
+- All 1,921 `ORIGIN` lines of `test:all` are under `C:\Projects\arbareto-l2`. Stdout holds 224 of them, and stderr holds 1,697.
+- 005 changes after the merge (`git diff 631cff2 6f72152`): `ChangesPane.tsx` has no change. WP2 (9a9ed47) sorts the rows of `file-tree.ts` folders first and changes the expected order in two `workbench-commit.test.tsx` cases (positions, Filter files). The row keys and the T120 cases do not change.
+- Control mutations, from the T120 author in three rounds: the kept row object again; the entry ID as the file row key again; the earlier-rows kept check, with no `moveFrom` in the menu-close effect. Each mutation turned the new cases red. A hash compare restored each file.
+- Not in this run: `bun test tests/windows`, the packaged T082 test, and the board comparison.
+- Verdict: run 6 is the green full run that verifies T120.
 
 Open items:
 - The Remove dialog cannot show the branch-delete note at once. The facts come only after a review with `deleteBranch` true, so this needs a contract change (T110 skip).

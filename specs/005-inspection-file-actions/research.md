@@ -260,6 +260,68 @@ WP3 shell facts of 2026-10-22 (cargo tests in `file_delete.rs` and `file_replace
 - N4: a `PreDeleteItem` cancel makes `PerformOperations` fail. The cancelled item still gets `PostDeleteItem` with `0x800704C7` (`ERROR_CANCELLED`), so it replies `kept`. Each later item gets no call and replies `stopped`. An item that moved before the cancel keeps its `recycled` result.
 - N9: an untracked `x.` or `x ` beside a tracked `x` replies `kept` with `0x800704C7`. Both files stay. The request path rule refuses such a name, so only the cargo test reaches this step.
 - Dependency: `windows-core` `0.62.2` is a direct dependency, because the `#[implement]` macro of the `IFileOperationProgressSink` sink names that crate. It is the version that `windows` `0.62.2` already uses.
+- Crate features: WP3 added no `windows` crate feature. The installed list already holds `Win32_UI_Shell`, `Win32_System_Com`, and `Wdk_Storage_FileSystem`.
+
+**Batch 1 verification (T027) part A, 2026-10-22.** Run 2 in `C:\Projects\arbareto-l2` on f005-impl at 6f72152, with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`.
+- `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo check --locked`, and `bun run build:service`: exit 0.
+- `cargo test --locked`: exit 0, 591 passed, 0 failed, 9 ignored.
+- `ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0, 124 min. Parallel group: 6,997 pass, 40 skip, 0 fail, 7,037 tests in 201 files. Serial group: 660 pass, 10 skip, 0 fail, 670 tests in 34 files.
+- Every `ORIGIN` line is under `C:\Projects\arbareto-l2`: 1,921 in the full run. All 88 `GIT_CORE` lines name one Git.
+- Skips: 40 and 10, the same counts as batch 0.
+- Kernel pool from 12:11 to 14:17: paged 2,819 to 4,650 MiB, nonpaged 1,402 to 1,856 MiB. During `test:all`, the lowest free memory was 15,791 MB, and the Bun processes of the run peaked at 4,197 MB private.
+- Control mutations, each red, then undone with the original SHA-256 and green: (1) status `C` accepted in `commit-changes.ts`: `tests/contracts/diff-parser.test.ts` failed. (2) `--no-textconv` dropped in `blame.ts`: the textconv canary case of `tests/git/blame.test.ts` failed. (3) `FILE_NON_DIRECTORY_FILE` on the target open in `file_delete.rs`: `a_folder_link_deletes_the_link_and_keeps_the_target` failed.
+- Run 1 at 37fff42 stopped at `cargo test` on one real-WSL test, `the_real_destination_mode_reads_the_entry_then_one_child`. An investigator proved the code path unchanged since batch 0, and the test passed 5 of 5 times alone. Commit 6f72152 makes two real-WSL asserts print the deadline flag, the exit code, and stdout, so a next failure shows its cause.
+- Still open: `bun run test:windows` (with T012) and the board comparison. Both wait for the user's open 001 T149 step, because `test:windows` tests the installed package and the board comparison starts the app.
+- T014 waits for the Recycle Bin cases (the ignored cargo tests and T012) in the T027 part B run.
+
+T018 facts, on Git 2.56.0.windows.2. T012 printed no line yet (it is a `tests/windows` file):
+- `OBSERVATION T018: Git version git version 2.56.0.windows.2 equals git version 2.56.0.windows.2: holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T018: F1 raw grammar A D M R092 T, gitlink and link records, empty-tree roots in SHA-1 and SHA-256, and an empty diff-tree <merge>: holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T018: F2 -l1000 gives 1,001 D and 1,001 A records, diff.renameLimit=5000 changes nothing, and -l2000 pairs all 1,001: holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T018: F3 the rename patch header order of diff.c fill_metainfo, its parse, and a type change as two sections with one numstat record: holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T018: F4 canary runs {"diff-tree":true,"ls-files":true} and stays absent {"diff trees":false,"diff blobs":false,"ls-tree":false,"cat-file":false,"blame":false,"check-ignore":false,"config":false}: holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T018: F5 ls-tree blob, link, and gitlink records [["100644","blob","fbbee861521bd5355538b096fa3998541cd33909","     ","11","a.txt"],["120000","blob","8d14cbf983b3fad683171c9418998d9f68340823","      ","5","lnk"],["160000","commit","1111111111111111111111111111111111111111","      ","-","lib"]] with a %7s size field, and a missing tree exit 128: holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T018: F6 incremental and porcelain headers, marks only in porcelain with the -c keys, and a last line without LF counted: holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T018: F7 missing file exits 128/128/128, an empty value keeps 1 of 1 marks, --ignore-revs-file= leaves 0, config get lists ".revs\u0000\u0000C:/Users/user/AppData/Local/Temp/arbareto-fixtures-4a9972a4-1a20-4011-b156-d1f6982768aa/home/home.revs\u0000.revs\u0000": holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T018: F8 incremental equals porcelain tale.txt:true other.txt:true nolf.txt:true story.txt:true tale.txt-w:true other.txt-w:true nolf.txt-w:true story.txt-w:true tale.txt-M:true other.txt-M:true nolf.txt-M:true story.txt-M:true tale.txt-C:true other.txt-C:true nolf.txt-C:true story.txt-C:true tale.txt-w-M-C:true other.txt-w-M-C:true nolf.txt-w-M-C:true story.txt-w-M-C:true: holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T018: F9 3 hunks same=true mapped=true; 1 hunks same=true mapped=true; 2 hunks same=true mapped=true; 1 hunks same=true mapped=true; diff.interHunkContext=3 merges hunks without the option: true: holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T018: F17 pruned upstream "refs/remotes/origin/gone" missing, removed remote "": holds (git version 2.56.0.windows.2)`
+- Every fact holds, so contracts/operations.md and plan.md need no change.
+
+**Batch 1 reviews, 2026-10-22.** Three independent reviewer agents, one per work package. Skills: `ponytail-review` and a manual correctness, security, heuristics, constitution, and contract review; `web-design-guidelines` and `arbareto-ux` for WP2. Control mutations of the fixes turned their cases red: one in WP2, four in WP3, and two in WP4.
+
+WP2 (T006 to T011), review of 9a9ed47, fixes in 9767fbe. No heuristic. Tree order, key cost, and the card accessibility were correct.
+- High: the gone mark came from the `readBranches` listing, so the upstream `refs/tags/v1` with remote `.` showed "gone". Fix: `upstreamPresent` from the 003 track state `gone` of the paired tracking entry, null without a pair, with a new T006 case.
+- Medium: the branch list hid the 003 note "Upstream gone" (contract Δ14). Fix: the note stays beside the mark.
+- Medium: `Workbench.tsx` did not pass `branches` to the sidebar, so "Checked out in" never showed (FR-066). Fix: the prop and a Workbench test.
+- Medium: ref names that are not valid UTF-8 sorted by lossy text. Fix: `RefEntry.nameBytes` and the raw byte sort.
+- Low: Escape in the branch list also closed the list. Fix: `onEscape` on `SwitcherList`.
+- Low: a native `title` repeated the card. Fix: the title is gone.
+
+WP3 (T012 to T015), review of 87a2681, fixes in e95c175. No path deletes outside the root, follows a link, or removes an unlisted file.
+- High: a cancelled Recycle Bin batch dropped the sink results, so recycled items replied `kept`. Fix: the shell always takes the outcomes after `Unadvise`, and a panic gives `error other-error`.
+- High: a WSL delete or replace that stopped after some unlinks replied that nothing changed. Fix: the reply `interrupted`.
+- High: a digest request with a huge size could abort the shell. Fix: `digest` above 1 MiB refuses.
+- High: the shadow allowlist admitted `checkout-index` without `core.autocrlf=false`, `core.eol=lf`, and on Windows `core.longpaths`. Fix: only the exact Δ6 arrays pass.
+- Medium: the leftover sweep removed a live owner's folder when `OpenProcess` failed for another reason. Fix: only `ERROR_INVALID_PARAMETER` means that the owner is gone.
+- Medium: shadow Git could use a `.git` above the shadow folder. Fix: `GIT_DIR=<cwd>/.git`.
+- Medium: the WSL scratch sweep and remove did not filter by owner and followed links. Fix: the uid filter and the `walk_parent` no-follow walk.
+- Medium: no test covered the Recycle Bin mode. Fix: ignored cargo tests for N1, N3, N4, N9, and N11, run on demand, that purge only their own items.
+- Medium: the `stopped` reply was ambiguous. Fix: `stopped` for a whole Windows request without a change, `interrupted` for a WSL outcome that is not known.
+- Low: unrelated folder trees refuse; the lock stays held during the shadow removal; a name lookup failure gives `error`; a replace that never started gives `stopped`.
+- Text: contract Δ10 and plan D14 "Allowlist" state that the service builds the arrays (001 §6).
+- Follow-ups: a broken WSL `replace` output gives `interrupted`; the shadow-create sweep removes leftovers outside the state lock.
+
+WP4 (T016 to T026), review of acda7cd, fixes in bbade14. No heuristic, and no read runs a repository program in an untrusted repository.
+- The "Blame before this commit" line never reached the renderer. Fix: `focusLine` in the result.
+- The focus clamp gave 1 for an empty previous version. Fix: no `focusLine`.
+- A binary or oversize previous version gave `MALFORMED_GIT_OUTPUT` or `OUTPUT_LIMIT`. Fix: the blame checks of (P, Q) run before the blob diff.
+- A submodule row of `readCommitFile` skipped the read gate. Fix: the gate runs first.
+- A sibling Git step could outlive its read. Fix: a `Promise.allSettled` helper.
+- The diff driver canaries did not cover the diff of "Blame before this commit". Fix: `diff.<driver>.command` and `diff.external` canaries.
+- A `readCommitChanges` that `BUSY` refused dropped the older listing. Fix: the drop happens only when the read runs.
+- The patch bound counts dropped sections. Contract Δ3 records it as a known limit.
+- Text: the data-model §11 zero-count hunk rule (xdiff `xdl_format_hunk_hdr`, F9), the plan D12 `ls-tree -l` size `%7s`, the reason `path` for paths that are not valid UTF-8, one `commits` entry per (oid, previous, filename) origin, and the Δ2 generation rule.
 
 ## Plan review 2026-10-21
 

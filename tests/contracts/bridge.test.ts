@@ -86,6 +86,24 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   chooseWorktreeFolder: (b) => b.chooseWorktreeFolder({ repositoryId: id() }),
 };
 
+// tasks.md T389. `tsc` checks this function. It never runs. A target variable with a key outside the contract must not compile.
+function extraTargetKeys(b: Bridge) {
+  const withGeneration = { ...gen(), extra: 1 };
+  const withRepository = { ...repo(), extra: 1 };
+  // @ts-expect-error The `extra` key is outside the `readBranches` target.
+  void b.readBranches(withGeneration);
+  // @ts-expect-error The `extra` key is outside the `readWorktrees` target.
+  void b.readWorktrees(withGeneration);
+  // @ts-expect-error The `extra` key is outside the `readGitSettings` target.
+  void b.readGitSettings(withRepository);
+  // @ts-expect-error The `extra` key is outside the `reviewWorkbench` target.
+  void b.reviewWorkbench(withGeneration, { action: "worktree-prune" });
+  // @ts-expect-error The `extra` key is outside the `runWorkbench` target.
+  void b.runWorkbench(withRepository, { workbenchToken: id(), start: true });
+  // @ts-expect-error The `extra` key is outside the `applyFiles` target.
+  void b.applyFiles(withRepository, { snapshotId: id(), entryIds: [id()], direction: "stage", kind: "selected" });
+}
+
 interface Options {
   // Return undefined to keep the request without a response.
   answer?: (command: string, request: Envelope) => unknown;

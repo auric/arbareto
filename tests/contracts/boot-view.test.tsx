@@ -180,7 +180,13 @@ describe("Select Git result", () => {
     await act(async () => root.render(<BootView state="facts" environment={environment({ gitCode: "GIT_UNAVAILABLE" })} onSelectGit={async () => response as never} onDismissMarker={() => {}} />));
     const select = [...host.querySelectorAll("button")].find((b) => b.textContent === "Select Git")!;
     await act(async () => select.click());
-    return { host, done: () => act(async () => root.unmount()).then(() => host.remove()) };
+    return {
+      host,
+      done: async () => {
+        await act(async () => root.unmount());
+        host.remove();
+      },
+    };
   }
 
   test("a rejected chooseGit shows its code and its text in an alert", async () => {

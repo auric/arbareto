@@ -11,6 +11,7 @@ import * as submodules from "../../src/contracts/submodules";
 import type { SubmodulePlanRow, SubmoduleProgram } from "../../src/contracts/submodules";
 import { printOrigin } from "../origin";
 import { fixtureEnv, useFixtureRoot } from "./fixture-root";
+import { fixtureGitPath } from "./git-binary";
 import { buildF27, buildF28, buildF29, type Built, type F28Variant } from "./fixtures";
 import { rawIndexDigest } from "./git-oracle";
 import { gitPath, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, valuesOf } from "./hunk-harness";
@@ -94,7 +95,7 @@ async function update(service: Service, repositoryId: string, r: Review, confirm
 // Git's own update of one row in a copy: `git -C <parent> submodule update --init --recursive -- :(literal)<path>`. `parent` is relative to the superproject.
 function scopedOracle(b: Built, name: string, parent: string, path: string) {
   const copy = copySuper(b, name);
-  const run = Bun.spawnSync([gitPath(), "submodule", "update", "--init", "--recursive", "--", `:(literal)${path}`], { cwd: join(copy, parent), env: fixtureEnv(globalEnv(b)), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const run = Bun.spawnSync([fixtureGitPath(gitPath()), "submodule", "update", "--init", "--recursive", "--", `:(literal)${path}`], { cwd: join(copy, parent), env: fixtureEnv(globalEnv(b)), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   return { copy, exitCode: run.exitCode, ...stateOf(b, copy) };
 }
 

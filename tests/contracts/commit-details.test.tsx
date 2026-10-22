@@ -285,5 +285,6 @@ describe("details reads beside page reads", () => {
     } finally {
       restore();
     }
-  });
+    // The case presses keys across 2,000 rows in happy-dom and takes 3 to 4 s, near the 5 s Bun default.
+  }, 30_000);
 });

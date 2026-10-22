@@ -254,7 +254,8 @@ describe("constrained sidebar (plan.md D15 P2 regions, T112)", () => {
     expect(items.length).toBeGreaterThan(0);
     expect(items.length).toBeLessThan(80);
     expect(items[0]!.getAttribute("aria-label")!.startsWith("Branches")).toBe(true);
-  });
+    // The case renders 5,000 branches in happy-dom and takes 4 to 6 s, above the 5 s Bun default.
+  }, 30_000);
 });
 
 describe("switcher popover (plan.md D15)", () => {

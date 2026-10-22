@@ -1700,6 +1700,8 @@ interface WorktreeTrust {
 // Contract §6 "Startup contexts" case rule for `gitSelectedPath` and record paths.
 const samePath = (a: string, b: string) => NATIVE.fold(a) === NATIVE.fold(b);
 const worktreeKey = (w: Workspace) => JSON.stringify([w.commonIdentity, w.worktreeIdentity]);
+// A worktree of the common directory of `w`, by identity or by path.
+const sameRepository = (t: WorktreeTrust, w: Workspace) => sameIdentity(t.common, w.commonIdentity) || samePath(t.commonDirectory, w.commonDirectory);
 
 // Contract §7 "Trust approval store": a record of the same worktree. Both record versions hold these fields.
 const sameWorktreeRecord = (record: TrustRecord, w: Workspace) =>
@@ -1791,16 +1793,32 @@ export function createTrust({ runner, environment, configFiles = () => undefined
       records = [...handshake];
     },
 
-    // Contract §6 "Registration reuse and release": a release clears the session approval and the trust ID of its worktree, and the shared listing of its `repositoryId`.
-    release(w: Workspace): void {
+    // Contract §6 "Registration reuse and release": a release clears the trust ID of its worktree and the shared listing of its `repositoryId`.
+    // `replaced`: another worktree of the same repository took its place, so the session approval stays (feature 004 `worktree-remove` gates on it).
+    // Every other release clears the session approval of each worktree of its common directory, also one that a replacement kept.
+    release(w: Workspace, replaced = false): void {
       const t = worktrees.get(worktreeKey(w));
-      if (t !== undefined) {
-        delete t.approval;
-        delete t.trustId;
-      }
+      if (t !== undefined) delete t.trustId;
+      if (!replaced) for (const other of worktrees.values()) if (sameRepository(other, w)) delete other.approval;
       shared.release(w.repositoryId);
       released.add(w.repositoryId);
     },
+    // Contract §8 "Watcher hints": the files of the last `core.excludesFile` and `core.attributesFile` entries, resolved as a git-config(1) pathname.
+    // Git opens a relative value in the worktree root, where each read runs. Null: a value that the service cannot resolve.
+    readFiles(w: Workspace, listing: Pick<TrustListing, "entries">): string[] | null {
+      const files: string[] = [];
+      for (const key of ["core.excludesfile", "core.attributesfile"]) {
+        const entry = listing.entries.findLast((e) => e.key === key);
+        if (entry === undefined) continue;
+        if (!entry.exact || entry.value === null) return null;
+        const path = interpolatePath(entry.value.replace(/^:\(optional\)/, ""), environmentValue(environment, "HOME"));
+        if (path === null) return null;
+        if (path !== "") files.push(NATIVE.path.resolve(w.worktreeRoot, path));
+      }
+      return files;
+    },
+    // Contract §6: true for a `repositoryId` that a release ended.
+    isReleased: (repositoryId: string): boolean => released.has(repositoryId),
     listTrust: list,
     view,
     gate,
@@ -1888,7 +1906,7 @@ export function createTrust({ runner, environment, configFiles = () => undefined
       records = records.filter((r) => !sameIdentity(r.commonIdentity, w.commonIdentity) && !samePath(r.commonDirectory, w.commonDirectory));
       worktree(w);
       for (const t of worktrees.values()) {
-        if (!sameIdentity(t.common, w.commonIdentity) && !samePath(t.commonDirectory, w.commonDirectory)) continue;
+        if (!sameRepository(t, w)) continue;
         delete t.approval;
         delete t.trustId;
         t.revoked = true;

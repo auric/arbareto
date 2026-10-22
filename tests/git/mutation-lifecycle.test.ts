@@ -461,19 +461,49 @@ describe("frames and markers (contract §6 \"Recovery markers\", §8)", () => {
       const other = repoOf(buildChanged(gitPath(), "t100-open-busy-other", "F09"));
       await underTest("recovery");
       const a = await service.register(join(built.root, "wt-a"));
-      const b = await service.register(join(built.root, "wt-b"));
       const r = await reviewOk(service, a.repositoryId);
       const release = service.runner.holdStart(isCommitCall);
       const pending = commit(service, a.repositoryId, r, "busy\n");
       try {
         await until(() => commitCalls(service).length === 1, "commit process");
+        // Contract §6 "Registration reuse and release": the commit keeps `a` registered beside `b`.
+        const b = await service.register(join(built.root, "wt-b"));
         expect((await service.chooseRepository(other)).code).toBe("BUSY");
+        await readOk(service, a.repositoryId);
+        await readOk(service, b.repositoryId);
       } finally {
         release();
       }
       expect(outcome(await pending)).toEqual(SUCCEEDED);
-      await readOk(service, a.repositoryId);
-      await readOk(service, b.repositoryId);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T384", `opening another worktree of the same repository while a commit runs in the left one keeps the left one until the commit ends, then releases it`, SHELL, () =>
+    withService({ name: "t384-left-busy" }, async (service) => {
+      const built = buildF07(gitPath(), "t384-left-busy");
+      await underTest("recovery");
+      const a = await service.register(join(built.root, "wt-a"));
+      const r = await reviewOk(service, a.repositoryId);
+      const releasedA = () => service.runner.frames.some((f) => f.type === "release" && f.repositoryId === a.repositoryId);
+      const release = service.runner.holdStart(isCommitCall);
+      const pending = commit(service, a.repositoryId, r, "left\n");
+      let b: { repositoryId: string } | undefined;
+      try {
+        await until(() => commitCalls(service).length === 1, "commit process");
+        b = await service.register(join(built.root, "wt-b"));
+        expect(releasedA()).toBe(false);
+      } finally {
+        release();
+      }
+      const response = await pending;
+      expect(outcome(response)).toEqual(SUCCEEDED);
+      // The release follows the terminal response, when the commit frees its exclusion slot.
+      await until(releasedA, "release of the left worktree");
+      expect(outcome(await service.readWorkspace(a.repositoryId))).toEqual({ state: "rejected", code: "UNKNOWN_TARGET" });
+      await readOk(service, b!.repositoryId);
+      // The commit record survives the release (contract §6).
+      expect((await service.getOperation(response.operationId!)).result).toMatchObject({ operation: "commit", state: "succeeded" });
     }),
     TIMEOUT_MS,
   );

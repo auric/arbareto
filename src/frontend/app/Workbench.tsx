@@ -645,7 +645,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     let view: HistoryStore | null = null;
     const requests = createRequests({
       clock,
-      history: { open: () => void view!.open(view!.getState().scope, false), refresh: () => void view!.refresh() },
+      history: { open: () => void view!.open(view!.getState().scope, false), refresh: () => void view!.refresh(), openedSeq: () => view!.getState().openedSeq },
       bridge: {
         restoreWorkspace: () => bridge.restoreWorkspace(onStart).then(endStart),
         readEntries: (target, payload) => bridge.readEntries(target, payload),
@@ -913,7 +913,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     let current = true;
     void bridge.readTrust({ repositoryId }).then((response) => {
       if (!current) return;
-      if (response.state !== "succeeded" || !isTrustReport(response.result)) return setNotice(failureText("Trust review", response, trustFailureCode(response)));
+      // 004 plan.md D15: a `limited` read carries the full report with `inputLimited`, so the chip shows "Not trusted".
+      if ((response.state !== "succeeded" && response.state !== "limited") || !isTrustReport(response.result)) return setNotice(failureText("Trust review", response, trustFailureCode(response)));
       setTrust({ report: response.result });
     });
     return () => void (current = false);

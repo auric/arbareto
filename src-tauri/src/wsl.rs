@@ -1660,6 +1660,8 @@ struct Answers {
 /// `exchange` waits up to the probe deadline, so `close` and `last` do not take its lock.
 pub struct Anchor {
     process: OwnedHandle,
+    /// `process` stays open, so no other process can take this ID.
+    pid: u32,
     stdin: Mutex<Option<File>>,
     /// Lets one exchange run at a time.
     exchange: Mutex<()>,
@@ -1672,6 +1674,7 @@ impl Anchor {
         let spawned = spawn(&command.spawn_request(current_dir), job)?;
         // SAFETY: `spawn` returned an open process handle that the caller owns.
         let process = unsafe { OwnedHandle::from_raw_handle(spawned.process.0) };
+        let pid = spawned.pid;
         let answers = Arc::new((Mutex::new(Answers::default()), Condvar::new()));
         let shared = Arc::clone(&answers);
         let stdout = spawned.stdout;
@@ -1727,6 +1730,7 @@ impl Anchor {
         std::thread::spawn(move || std::io::copy(&mut stderr, &mut std::io::sink()));
         Ok(Anchor {
             process,
+            pid,
             stdin: Mutex::new(spawned.stdin),
             exchange: Mutex::new(()),
             answers,
@@ -1823,6 +1827,10 @@ impl Mutation {
 
     pub fn last(&self) -> Option<(u32, Option<u64>)> {
         self.anchor.as_ref().and_then(|anchor| anchor.last())
+    }
+
+    pub fn anchor_pid(&self) -> Option<u32> {
+        self.anchor.as_ref().map(|anchor| anchor.pid)
     }
 
     pub fn ended(&self) {
@@ -4693,6 +4701,147 @@ mod tests {
             "no scope of the operation remains"
         );
     }
+
+    /// One real WSL mutation in a supervised Job: the anchor, one wrapped `/bin/sh -c <script>`, and the anchor count.
+    /// Returns the image names in the Job while the anchor runs.
+    fn real_mutation(
+        supervisor: &Arc<Supervisor>,
+        reference: &Reference,
+        inst: &Installation,
+        operation: &str,
+        script: &str,
+    ) -> (Vec<String>, Option<u32>) {
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        supervisor.open(operation).expect("open");
+        supervisor.tag(operation, wsl_tag());
+        supervisor
+            .start_anchor(
+                operation,
+                &anchor_command(inst, operation, &environment).expect("anchor"),
+                &reference.directory,
+            )
+            .expect("anchor");
+        let host = OperationHost {
+            jobs: Arc::clone(supervisor),
+            operation_id: operation.to_string(),
+            current_dir: reference.directory.clone(),
+        };
+        let command = wrapped(
+            inst,
+            Mode::Mutation,
+            &unit_name(operation, 1).expect("unit"),
+            None,
+            "/bin/sh",
+            &strings(&["-c", script]),
+            &environment,
+            Stdin::Closed,
+        );
+        let out = host.run(&command).expect("mutation process");
+        assert_eq!(out.exit_code, Some(0), "mutation exit");
+        let images = supervisor
+            .process_ids(operation)
+            .into_iter()
+            .filter_map(crate::spawn::tests::image_name)
+            .collect();
+        (images, supervisor.active_descendants(operation, None))
+    }
+
+    /// T387, contract §11 "Process ownership": `wslhost.exe` joins the Job of each `wsl.exe`.
+    /// A mutation with no Linux descendant leaves no lingering Job.
+    #[test]
+    fn the_real_wsl_job_holds_wslhost_and_a_plain_mutation_leaves_no_lingering_job() {
+        let Some(reference) = reference() else {
+            return;
+        };
+        let Some(inst) = probed(&reference) else {
+            return;
+        };
+        let supervisor = Supervisor::start().expect("supervisor");
+        let operations: Vec<String> = (0..10u32)
+            .map(|n| format!("0f0f0f0f-0000-4000-8002-{:08x}{n:04x}", std::process::id()))
+            .collect();
+        for operation in &operations {
+            let (images, count) =
+                real_mutation(&supervisor, &reference, &inst, operation, "exec /bin/true");
+            assert!(
+                images
+                    .iter()
+                    .any(|image| image.eq_ignore_ascii_case("wslhost.exe")),
+                "wslhost.exe in the Job while the anchor runs: {images:?}"
+            );
+            assert_eq!(count, Some(0), "no Linux descendant");
+            supervisor.ended(operation, false);
+        }
+        let settled = eventually(WAIT, || {
+            operations.iter().all(|operation| {
+                !supervisor.is_lingering(operation) && supervisor.job_handle(operation).is_none()
+            })
+        });
+        let left: Vec<&String> = operations
+            .iter()
+            .filter(|operation| supervisor.job_handle(operation).is_some())
+            .collect();
+        assert!(settled, "Jobs left after 10 s: {left:?}");
+        assert_eq!(supervisor.lingering_count(&wsl_tag()), 0, "the Job count");
+        supervisor.shutdown();
+    }
+
+    /// T387, contract §11 "Process ownership": a Linux process outside the operation scopes keeps the relay and its `wslhost.exe`.
+    /// The anchor counts 0, but the lingering count also counts the Windows processes of the Job.
+    #[test]
+    fn the_real_lingering_count_counts_the_windows_processes_of_a_wsl_job() {
+        let Some(reference) = reference() else {
+            return;
+        };
+        let Some(inst) = probed(&reference) else {
+            return;
+        };
+        let supervisor = Supervisor::start().expect("supervisor");
+        let operation = format!("0f0f0f0f-0000-4000-8003-{:012x}", std::process::id());
+        let script = format!(
+            "{} --user --scope --quiet /bin/sleep {LINGER_SECONDS} </dev/null >/dev/null 2>&1 &",
+            inst.systemd_run
+        );
+        let started = Instant::now();
+        let (images, count) = real_mutation(&supervisor, &reference, &inst, &operation, &script);
+        println!(
+            "OBSERVATION T387: mutation returned after {:?}, anchor count {count:?}, Job images {images:?}",
+            started.elapsed()
+        );
+        // The shell returns before `systemd-run` moves the background job into its own scope.
+        let mut last = count;
+        let outside = eventually(PREMISE_WAIT, || {
+            last = supervisor.active_descendants(&operation, None);
+            last == Some(0)
+        });
+        assert!(
+            outside,
+            "the sleep runs outside the operation scopes within {PREMISE_WAIT:?}: first {count:?}, last {last:?}"
+        );
+        supervisor.ended(&operation, false);
+        let held = supervisor.process_ids(&operation).len();
+        let count = supervisor.lingering_count(&wsl_tag());
+        println!("OBSERVATION T387: Job holds {held} processes, lingering count {count}");
+        assert!(
+            supervisor.is_lingering(&operation),
+            "the relay keeps wslhost.exe in the Job"
+        );
+        assert!(
+            count > 0,
+            "the lingering count of a Job with {held} processes"
+        );
+        assert!(
+            supervisor.revoke(&wsl_tag()) > 0,
+            "revoke reports the Windows processes"
+        );
+        supervisor.shutdown();
+    }
+
+    /// The sleep outlives the mutation run, the anchor exit, and the checks.
+    const LINGER_SECONDS: u64 = 10;
+
+    /// The bound for the sleep to leave the operation scopes. It stays well below `LINGER_SECONDS`.
+    const PREMISE_WAIT: Duration = Duration::from_secs(5);
 
     /// The units `arbareto-<operation>-*` that remain after at most 5 seconds.
     fn units_left(reference: &Reference, inst: &Installation, operation: &str) -> String {

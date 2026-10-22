@@ -41,9 +41,14 @@ export interface RecoveryGate {
 
 type Slot = Pick<Workspace, "repositoryId" | "commonIdentity"> & { operationId: string };
 
-export function createExclusion(runner: Pick<GitRunner, "started" | "ended" | "closeJob">, gate?: RecoveryGate) {
+// `freed`: a slot of that workspace ended (contract §6 "Registration reuse and release").
+export function createExclusion(runner: Pick<GitRunner, "started" | "ended" | "closeJob">, gate?: RecoveryGate, freed?: (repositoryId: string) => void) {
   // Contract §5: one mutation per common repository. A slot lives from `enter` to `end` or to a refusal.
   const slots = new Set<Slot>();
+  const free = (slot: Slot) => {
+    slots.delete(slot);
+    freed?.(slot.repositoryId);
+  };
 
   async function enter(entry: MutationEntry): Promise<Entered | NotEntered> {
     const w = entry.workspace;
@@ -54,7 +59,7 @@ export function createExclusion(runner: Pick<GitRunner, "started" | "ended" | "c
     slots.add(slot);
     // Contract §6: a reply without a marker ID holds no mutex and no marker, so the service sends `closeJob`, not `ended`.
     const refuse = (result: NotEntered): NotEntered => {
-      slots.delete(slot);
+      free(slot);
       runner.closeJob(entry.operationId);
       return result;
     };
@@ -71,7 +76,7 @@ export function createExclusion(runner: Pick<GitRunner, "started" | "ended" | "c
       });
     } catch (error) {
       if (error instanceof RunnerRefusal) return refuse({ ok: false, code: error.code });
-      slots.delete(slot);
+      free(slot);
       throw error;
     }
     if ("stop" in reply) return refuse({ ok: false, code: "DEADLINE" });
@@ -86,7 +91,7 @@ export function createExclusion(runner: Pick<GitRunner, "started" | "ended" | "c
         ended = true;
         runner.ended(entry.operationId, endProcesses);
         gate?.settled(entry, reply.markerId);
-        slots.delete(slot);
+        free(slot);
       },
     };
   }

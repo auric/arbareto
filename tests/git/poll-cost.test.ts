@@ -8,7 +8,7 @@ import { configListArgs, discoveryLayoutArgs, discoveryProfiles, historyRefsArgs
 import { printOrigin } from "../origin";
 import { copyPerfFixture, ensurePerfFixture, PERF_L, PERF_M, type PerfFacts, type PerfSpec } from "../windows/perf-fixtures";
 import { FIXTURE_ROOT, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
-import { GIT } from "./git-binary";
+import { fixtureGitPath, GIT } from "./git-binary";
 import type { RecordedCall } from "./bun-runner";
 import { caseTest, openService, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
@@ -205,7 +205,7 @@ function tupleFiles(repo: string): string[] {
   const gitDir = join(repo, ".git");
   const head = readFileSync(join(gitDir, "HEAD"), "utf8").trim();
   if (!head.startsWith("ref: ")) throw new Error(`HEAD is not a symbolic ref: ${head}`);
-  const config = Bun.spawnSync([gitPath(), "config", "list", "--show-origin", "-z"], { cwd: repo, env: serviceEnv() });
+  const config = Bun.spawnSync([fixtureGitPath(gitPath()), "config", "list", "--show-origin", "-z"], { cwd: repo, env: serviceEnv() });
   if (config.exitCode !== 0) throw new Error(`git config list exited ${config.exitCode}`);
   // `-z` prints origin NUL key LF value NUL for each entry.
   const fields = config.stdout.toString().split("\0").slice(0, -1);

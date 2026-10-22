@@ -365,7 +365,7 @@ export const psQuote = (value: string) => `'${value.replace(/['‘’‚‛]/g, 
 export const HOOK_REMEDY_TEXT = "This command runs the pre-commit hook in a terminal and does not commit. Other hooks show their output only here. Arbareto keeps your message.";
 export const hookRemedy = (root: string) => `& ${psQuote(gitPath())} --no-lazy-fetch -C ${psQuote(root)} hook run --ignore-missing pre-commit`;
 // Contract §9 "Lingering count" and "Other locks".
-export const lingeringSentence = (count: number) => `Arbareto still runs ${count === 1 ? "1 process" : `${count} processes`} that Git or a hook started in this repository. Closing Arbareto ends them.`;
+export const lingeringSentence = (count: number) => `Arbareto still runs ${count === 1 ? "1 process" : `${count} processes`} from earlier operations in this repository. Closing Arbareto ends them.`;
 export const REVOKE_SENTENCE = "Revoke trust also ends them.";
 export const OTHER_LOCKS_TEXT = "Git could not take a lock. Another Git process, or a process that Git or a hook started, can hold it. Use Refresh after that process ends.";
 export const LOCKED_REMEDY = "Another Git process or a crash left this lock. Remove it only after all Git tools stop, including other Arbareto windows.";

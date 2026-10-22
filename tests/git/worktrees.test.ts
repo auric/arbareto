@@ -13,6 +13,7 @@ import type { Workspace } from "../../src/git-service/registration";
 import { STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, removeTree, serviceEnv, useFixtureRoot } from "./fixture-root";
+import { fixtureGitPath } from "./git-binary";
 import { put } from "./fixtures";
 import { sha256, workingFileDigests } from "./git-oracle";
 import { caseTest, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
@@ -464,8 +465,10 @@ caseTest("T060", "FR-051 and contract Δ3 openWorktree through the session: a bo
     expect(slash(opened.result!.worktreeRoot).toLowerCase()).toBe(slash(recordPath(f, "wt with spaces")).toLowerCase());
     const list = await service.request<{ entries: { path: string; current: boolean }[] }>("readWorktrees", {}, { repositoryId: opened.result!.repositoryId, repositoryGeneration: opened.result!.generation });
     expect(list.result!.entries.filter((e) => e.current).map((e) => e.path)).toEqual([recordPath(f, "wt with spaces")]);
-    expect(outcome(await send(folder(f, "elsewhere")))).toEqual({ state: "failed", code: "UNKNOWN_TARGET" });
+    expect(outcome(await send(folder(f, "elsewhere"), opened.result!.repositoryId))).toEqual({ state: "failed", code: "UNKNOWN_TARGET" });
     expect(outcome(await send(folder(f, "wt-dirty"), crypto.randomUUID()))).toEqual({ state: "rejected", code: "UNKNOWN_TARGET" });
+    // T384, 001 contract §6 "Registration reuse and release": the open of another worktree released the left one.
+    expect(outcome(await send(folder(f, "wt-dirty")))).toEqual({ state: "rejected", code: "UNKNOWN_TARGET" });
   });
 }, TIMEOUT_MS);
 
@@ -495,14 +498,16 @@ caseTest("T060", "plan.md O-20: worktree-remove takes the trust listing of the t
     expect(service.runner.calls.slice(from).some((c) => c.arguments.includes("status"))).toBe(false);
     expect(existsSync(log)).toBe(false);
     // That worktree as its own workspace: its listing names the monitor, and its approval binds its own folders.
+    // 001 contract §6 "Registration reuse and release": each open releases the other worktree, so the review runs in a new registration of the repository.
     const own = await service.register(native(folder(f, "wt with spaces")));
     expect((await service.readTrust(own.repositoryId)).result!.approvalRequired.workbench).toBe(true);
     expect((await service.approveTrust(own.repositoryId, "worktree")).state).toBe("succeeded");
     expect(existsSync(log)).toBe(false);
-    const rv = await reviewed(service, r, removePayload(target, false, false));
+    const again = await open(service, f.repo);
+    const rv = await reviewed(service, again, removePayload(target, false, false));
     expect(rv.plan).toMatchObject({ worktree: target, tracked: 0, untracked: 0, force: false });
     expect(existsSync(log)).toBe(true);
-    const response = await service.response<WorktreeRun>(sendRun(service, r, rv.workbenchToken));
+    const response = await service.response<WorktreeRun>(sendRun(service, again, rv.workbenchToken));
     expect(outcome(response)).toEqual(SUCCEEDED);
     expect(recordsOf(f).map((x) => valueOf(x, "worktree"))).not.toContain(target);
   });
@@ -515,12 +520,15 @@ caseTest("T060", "plan.md O-20: a target worktree approval that ends between the
   git(f, ["config", "--worktree", "core.fsmonitor", log.command], [0], folder(f, "wt with spaces"));
   const target = recordPath(f, "wt with spaces");
   await withSync("t060-o20-run", async (service) => {
-    const r = await open(service, f.repo);
+    // 001 contract §6 "Registration reuse and release": each open releases the other worktree.
+    // 001 contract §7 `revoke`: Stop trusting in the repository ends the approval of every worktree of its common folder.
     const own = await service.register(native(folder(f, "wt with spaces")));
-    const approved = await service.approveTrust(own.repositoryId, "worktree");
+    expect((await service.approveTrust(own.repositoryId, "worktree")).state).toBe("succeeded");
+    const r = await open(service, f.repo);
+    const approved = await service.approveTrust(r.repositoryId);
     expect(approved.state).toBe("succeeded");
     const rv = await reviewed(service, r, removePayload(target, false, false));
-    expect((await service.revokeTrust(own.repositoryId, (approved.result as { trustId: string }).trustId)).state).toBe("succeeded");
+    expect((await service.revokeTrust(r.repositoryId, (approved.result as { trustId: string }).trustId)).state).toBe("succeeded");
     const from = service.runner.calls.length;
     const response = await service.response(sendRun(service, r, rv.workbenchToken));
     expect(refused(response)).toEqual({ state: "failed", code: "TRUST_REQUIRED", result: { trustGate: "target" } });
@@ -723,7 +731,7 @@ const longCase = process.platform === "win32" ? caseTest : (task: string, name: 
 // A worktrees fixture with `wt-long`, whose HEAD names a branch with a loose ref path of at least 270 UTF-16 units, and the free branch `t119-free`.
 // The effective `core.longpaths` of the service environment, which reads the system file (`serviceEnv`). git-config(1): exit 1 means no value.
 function serviceLongPaths(dir: string): { scope: string; value: string } | null {
-  const p = Bun.spawnSync([gitExe(), "config", "--show-scope", "--type=bool", "--get", "core.longpaths"], { cwd: dir, env: serviceEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const p = Bun.spawnSync([fixtureGitPath(gitExe()), "config", "--show-scope", "--type=bool", "--get", "core.longpaths"], { cwd: dir, env: serviceEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   if (p.exitCode === 1) return null;
   if (p.exitCode !== 0) throw new Error(`git config --get core.longpaths exited ${p.exitCode}`);
   const [scope, value] = p.stdout.toString().trimEnd().split("	");

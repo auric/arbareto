@@ -17,7 +17,7 @@ import { createTrust, parseMaybeBool, readProgramFiles, redactUrlUserInfo, relat
 import { printOrigin } from "../origin";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_ROOT, fixtureEnv, ownedGit, serviceEnv, useFixtureRoot, type OwnedGitOptions } from "./fixture-root";
 import { buildF02, buildF07, buildF08, buildF17, put, type Built } from "./fixtures";
-import { GIT } from "./git-binary";
+import { fixtureGitPath, GIT } from "./git-binary";
 import { hookListArgs, sha256 } from "./git-oracle";
 import { applyHunk, entryOf, hunksOf, patchOf, readOk, resultOf, selectHunks } from "./hunk-harness";
 import { caseTest, once, openService, withFsCalls, withPath, type ApproveResult, type Capability, type OpenOptions, type Service, type ServiceResponse, type TrustResult } from "./service-harness";
@@ -541,7 +541,7 @@ describe("partial clone (contract §7 \"Missing objects\")", () => {
         expect((built.facts.notes.missingBlobs as string[]).includes(missing)).toBe(true);
         git(clone, ["--no-lazy-fetch", "update-index", "--force-remove", "--", "data.txt"]);
         git(clone, ["--no-lazy-fetch", "update-index", "--add", "--cacheinfo", `100644,${missing},renamed.txt`]);
-        const catFile = () => Bun.spawnSync([gitPath(), "--no-lazy-fetch", "cat-file", "-e", missing], { cwd: clone, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" }).exitCode;
+        const catFile = () => Bun.spawnSync([fixtureGitPath(gitPath()), "--no-lazy-fetch", "cat-file", "-e", missing], { cwd: clone, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" }).exitCode;
         expect(catFile()).not.toBe(0);
         // Oracle: Git's own status with these options fails on the missing blob.
         git(clone, ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs", "status", "--porcelain=v2", "-z", "--untracked-files=all", "--find-renames", "--ignore-submodules=dirty"], { allowExit: [128] });
@@ -571,7 +571,7 @@ describe("partial clone (contract §7 \"Missing objects\")", () => {
         const clone = repoOf(built, "clone");
         const uploadpack = join(built.root, built.facts.canaries.uploadpack!);
         const tree = built.facts.notes.missingTree as string;
-        const catFile = (oid: string) => Bun.spawnSync([gitPath(), "--no-lazy-fetch", "cat-file", "-e", oid], { cwd: clone, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" }).exitCode;
+        const catFile = (oid: string) => Bun.spawnSync([fixtureGitPath(gitPath()), "--no-lazy-fetch", "cat-file", "-e", oid], { cwd: clone, env: fixtureEnv(), stdin: "ignore", stdout: "pipe", stderr: "pipe" }).exitCode;
         // Oracle: the HEAD commit is present, and its root tree is missing.
         expect(catFile("HEAD")).toBe(0);
         expect(git(clone, ["--no-lazy-fetch", "cat-file", "commit", "HEAD"])).toStartWith(`tree ${tree}\n`);
@@ -1824,31 +1824,35 @@ describe("F07 per-worktree records (contract §7 \"Trust approval store\")", () 
         const programB = insideProgram(built, b, "tools/b.sh");
         config(b, "--worktree", "filter.wt.clean", programB.command);
 
+        // Contract §6 "Registration reuse and release": each registration of one worktree releases the other, so each step reads the worktree it just opened.
         const A = await first.register(a);
-        const B = await first.register(b);
         await approve(first, A.repositoryId);
         const recordA = structuredClone(first.trustStore.records);
         expect(recordA.length).toBe(1);
+        const B = await first.register(b);
         await approve(first, B.repositoryId);
         expect(first.trustStore.records.length).toBe(2);
         expect(first.trustStore.records.filter((r) => samePath(fieldsOf(r).worktreeRoot) === samePath(fieldsOf(recordA[0]!).worktreeRoot))).toEqual(recordA);
 
         const second = set(await nextSession(first, "t071-per-worktree-next"));
         const A2 = await second.register(a);
+        expect((await trustOf(second, A2.repositoryId)).state).toBe("approved");
         const B2 = await second.register(b);
-        expect({ a: (await trustOf(second, A2.repositoryId)).state, b: (await trustOf(second, B2.repositoryId)).state }).toEqual({ a: "approved", b: "approved" });
+        expect((await trustOf(second, B2.repositoryId)).state).toBe("approved");
         // Feature 004 spec FR-071.
         flipByte(programB.path);
-        expect({ a: (await trustOf(second, A2.repositoryId)).state, b: (await trustOf(second, B2.repositoryId)).state }).toEqual({ a: "approved", b: "approved" });
-        expect({ a: outcome(await second.readWorkspace(A2.repositoryId)), b: outcome(await second.readWorkspace(B2.repositoryId)) }).toEqual({ a: SUCCEEDED, b: SUCCEEDED });
+        expect({ b: (await trustOf(second, B2.repositoryId)).state, read: outcome(await second.readWorkspace(B2.repositoryId)) }).toEqual({ b: "approved", read: SUCCEEDED });
+        const A2again = await second.register(a);
+        expect({ a: (await trustOf(second, A2again.repositoryId)).state, read: outcome(await second.readWorkspace(A2again.repositoryId)) }).toEqual({ a: "approved", read: SUCCEEDED });
 
-        const trustIdA = (await trustOf(second, A2.repositoryId)).trustId;
+        const trustIdA = (await trustOf(second, A2again.repositoryId)).trustId;
         expect(typeof trustIdA).toBe("string");
-        expect(outcome(await second.revokeTrust(A2.repositoryId, trustIdA!))).toEqual(SUCCEEDED);
+        expect(outcome(await second.revokeTrust(A2again.repositoryId, trustIdA!))).toEqual(SUCCEEDED);
         const third = set(await nextSession(second, "t071-per-worktree-third"));
         const A3 = await third.register(a);
+        expect((await trustOf(third, A3.repositoryId)).state).toBe("untrusted");
         const B3 = await third.register(b);
-        expect({ a: (await trustOf(third, A3.repositoryId)).state, b: (await trustOf(third, B3.repositoryId)).state }).toEqual({ a: "untrusted", b: "untrusted" });
+        expect((await trustOf(third, B3.repositoryId)).state).toBe("untrusted");
       }),
     TIMEOUT_MS,
   );

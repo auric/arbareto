@@ -11,7 +11,7 @@ import { join } from "node:path";
 import { MATCHING_PROBE_COMMITS, MATCHING_PROBE_RUNS, MATCHING_PROBE_STREAM, MATCHING_PROBE_TIP } from "../../src/contracts/matching-probe";
 import { printOrigin } from "../origin";
 import { FIXED_IDENTITY, FIXTURE_HOME, FIXTURE_ROOT, fixtureEnv, useFixtureRoot } from "./fixture-root";
-import { describeGit } from "./git-binary";
+import { describeGit, fixtureGitPath } from "./git-binary";
 
 printOrigin("../../src/contracts/matching-probe.ts", import.meta.dir);
 
@@ -24,7 +24,7 @@ describeGit("matching probe facts", (gitPath) => {
   let probe = "";
 
   const git = (args: string[], env: Record<string, string> = {}, input?: Uint8Array) => {
-    const proc = Bun.spawnSync([gitPath, ...args], { cwd: FIXTURE_ROOT, env: fixtureEnv({ ...LOCALE, ...env }), stdin: input ?? "ignore", stdout: "pipe", stderr: "pipe" });
+    const proc = Bun.spawnSync([fixtureGitPath(gitPath), ...args], { cwd: FIXTURE_ROOT, env: fixtureEnv({ ...LOCALE, ...env }), stdin: input ?? "ignore", stdout: "pipe", stderr: "pipe" });
     return { exitCode: proc.exitCode, out: proc.stdout.toString("utf8") };
   };
   const oidsOf = (out: string) => out.split("\n").filter((l) => l !== "");

@@ -12,10 +12,10 @@ use serde_json::Value;
 
 use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
-    FILE_BASIC_INFORMATION, FILE_INFORMATION_CLASS, FILE_OPEN_REPARSE_POINT,
+    FILE_BASIC_INFORMATION, FILE_INFORMATION_CLASS, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
     FILE_SYNCHRONOUS_IO_NONALERT, FileAttributeTagInformation, FileBasicInformation,
-    FileStandardInformation, NtFsControlFile, NtOpenFile, NtQueryInformationFile, NtReadFile,
-    SYMLINK_FLAG_RELATIVE,
+    FileStandardInformation, NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS,
+    NtCreateFile, NtFsControlFile, NtQueryInformationFile, NtReadFile, SYMLINK_FLAG_RELATIVE,
 };
 use windows::Wdk::System::SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION;
 use windows::Win32::Foundation::{
@@ -27,8 +27,11 @@ use windows::Win32::Foundation::{
     UNICODE_STRING, WIN32_ERROR,
 };
 use windows::Win32::Storage::FileSystem::{
-    FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
-    MAXIMUM_REPARSE_DATA_BUFFER_SIZE, SYNCHRONIZE,
+    FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_NORMAL, FILE_DISPOSITION_FLAG_DELETE,
+    FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX,
+    FILE_DISPOSITION_INFO_EX_FLAGS, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE,
+    FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfoEx,
+    MAXIMUM_REPARSE_DATA_BUFFER_SIZE, SYNCHRONIZE, SetFileInformationByHandle,
 };
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
 use windows::Win32::System::Ioctl::FSCTL_GET_REPARSE_POINT;
@@ -53,7 +56,8 @@ const INVALID: Code = Code::InvalidRequest;
 /// Contract §5 "File facts".
 const ENTRIES: usize = 64;
 const COMPONENT_UNITS: usize = 255;
-const FILE_BYTES: u64 = 1 << 20;
+/// The digest bound of one file. A `fileDelete` digest binds a file within it (contract Δ5).
+pub(crate) const FILE_BYTES: u64 = 1 << 20;
 const TOTAL_BYTES: u64 = 8 << 20;
 /// Microsoft Learn "Reparse Point Tags": bit 29 is the name surrogate bit (`IsReparseTagNameSurrogate`).
 const NAME_SURROGATE: u32 = 0x2000_0000;
@@ -488,6 +492,34 @@ pub(crate) fn open(
     stop: &AtomicBool,
 ) -> Result<OwnedHandle, NTSTATUS> {
     check(stop)?;
+    let mut access = FILE_READ_ATTRIBUTES | SYNCHRONIZE;
+    if read {
+        access |= FILE_READ_DATA;
+    }
+    let mut options = FILE_SYNCHRONOUS_IO_NONALERT;
+    if reparse_point {
+        options |= FILE_OPEN_REPARSE_POINT;
+    }
+    create_relative(
+        raw(parent),
+        name,
+        access,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        options,
+    )
+}
+
+/// `NtCreateFile` of `name` relative to `parent`. `OBJ_DONT_REPARSE` fails the open at each reparse point that the I/O manager would follow.
+/// `FILE_OPEN_REPARSE_POINT` in `options` opens a final reparse point itself.
+pub(crate) fn create_relative(
+    parent: HANDLE,
+    name: &str,
+    access: FILE_ACCESS_RIGHTS,
+    share: FILE_SHARE_MODE,
+    disposition: NTCREATEFILE_CREATE_DISPOSITION,
+    options: NTCREATEFILE_CREATE_OPTIONS,
+) -> Result<OwnedHandle, NTSTATUS> {
     let mut units: Vec<u16> = name.encode_utf16().collect();
     // `is_component` keeps the name within 255 units, so the byte length fits a `u16`.
     let length = (units.len() * 2) as u16;
@@ -498,31 +530,28 @@ pub(crate) fn open(
     };
     let attributes = OBJECT_ATTRIBUTES {
         Length: size_of::<OBJECT_ATTRIBUTES>() as u32,
-        RootDirectory: raw(parent),
+        RootDirectory: parent,
         ObjectName: &raw const object_name,
         // Win32 file names ignore letter case, and Git opens hooks through Win32.
         Attributes: OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE,
         ..Default::default()
     };
-    let mut access = FILE_READ_ATTRIBUTES | SYNCHRONIZE;
-    if read {
-        access |= FILE_READ_DATA;
-    }
-    let mut options = FILE_SYNCHRONOUS_IO_NONALERT;
-    if reparse_point {
-        options |= FILE_OPEN_REPARSE_POINT;
-    }
     let mut handle = HANDLE::default();
     let mut io = IO_STATUS_BLOCK::default();
-    // SAFETY: each pointer refers to a live local, and `parent` keeps its handle open.
+    // SAFETY: each pointer refers to a live local, and the caller keeps `parent` open.
     let status = unsafe {
-        NtOpenFile(
+        NtCreateFile(
             &raw mut handle,
-            access.0,
+            access,
             &raw const attributes,
             &raw mut io,
-            (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE).0,
-            options.0,
+            None,
+            FILE_ATTRIBUTE_NORMAL,
+            share,
+            disposition,
+            options,
+            None,
+            0,
         )
     };
     if status.is_err() {
@@ -530,6 +559,35 @@ pub(crate) fn open(
     }
     // SAFETY: a successful open returns a new handle that nothing else owns.
     Ok(unsafe { OwnedHandle::from_raw_handle(handle.0) })
+}
+
+/// The file-fact code of a Win32 error, as `error_code` maps the status of the same failure.
+pub(crate) fn win32_code(error: &windows::core::Error) -> FileFactErrorCode {
+    match error.code() {
+        code if code == ERROR_ACCESS_DENIED.to_hresult() => FileFactErrorCode::AccessDenied,
+        code if code == ERROR_SHARING_VIOLATION.to_hresult() => FileFactErrorCode::SharingViolation,
+        code if code == ERROR_IO_DEVICE.to_hresult() => FileFactErrorCode::IoError,
+        _ => FileFactErrorCode::OtherError,
+    }
+}
+
+/// `SetFileInformationByHandle(FileDispositionInfoEx)` with POSIX delete on `handle`. The name goes when the last handle closes.
+/// No `FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE`, so a read-only file gives `ERROR_ACCESS_DENIED` (plan.md D7).
+pub(crate) fn set_disposition(handle: &OwnedHandle) -> windows::core::Result<()> {
+    let info = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_INFO_EX_FLAGS(
+            FILE_DISPOSITION_FLAG_DELETE.0 | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS.0,
+        ),
+    };
+    // SAFETY: `handle` is open, and `info` is a live local of the passed size.
+    unsafe {
+        SetFileInformationByHandle(
+            raw(handle),
+            FileDispositionInfoEx,
+            (&raw const info).cast(),
+            size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+        )
+    }
 }
 
 /// `FILE_STANDARD_INFORMATION` with its `BOOLEAN` fields as bytes. A Rust `bool` must hold 0 or 1.
@@ -751,6 +809,38 @@ fn link(handle: &OwnedHandle, tag: u32, component: usize, stop: &AtomicBool) -> 
             .map(|target| (name, target, relative))
     });
     link_fact(component, target)
+}
+
+/// Feature 005 contract Δ6 `fileDelete`: the `SubstituteName` and relative flag of a reparse point under `handle`.
+/// `tag` is the `FileAttributeTagInformation` reparse tag. `None` for another tag or a failed read.
+pub(crate) fn reparse_target(
+    handle: &OwnedHandle,
+    tag: u32,
+    stop: &AtomicBool,
+) -> Option<(String, bool)> {
+    check(stop).ok()?;
+    let mut data = vec![0u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize];
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: `handle` is open and synchronous, and `data` has the passed length.
+    let status = unsafe {
+        NtFsControlFile(
+            raw(handle),
+            None,
+            None,
+            None,
+            &raw mut io,
+            FSCTL_GET_REPARSE_POINT,
+            None,
+            0,
+            Some(data.as_mut_ptr().cast()),
+            data.len() as u32,
+        )
+    };
+    if status.is_err() {
+        return None;
+    }
+    data.truncate(io.Information);
+    target(&data, tag)
 }
 
 /// `SubstituteName` and the relative flag from `REPARSE_DATA_BUFFER` (Microsoft Learn, MS-FSCC 2.1.2.4 and 2.1.2.5).

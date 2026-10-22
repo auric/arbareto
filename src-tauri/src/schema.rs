@@ -833,6 +833,154 @@ pub mod reply {
         }))
     }
 
+    /// Feature 005 contract Δ6 `fileDelete`: one result per entry and per folder, in request order.
+    pub fn file_delete(
+        call_id: &str,
+        entries: &[crate::file_delete::EntryResult],
+        folders: &[crate::file_delete::FolderResult],
+    ) -> Value {
+        use crate::file_delete::{EntryResult as E, FolderResult as F};
+        use p::DeleteEntryResultResult as R;
+        use p::DeleteFolderResultResult as D;
+        use p::{FileDeleteResultsEntriesItem as Entry, FileDeleteResultsFoldersItem as Folder};
+        let entries = entries
+            .iter()
+            .map(|entry| match entry {
+                E::Deleted => Entry::Result { result: R::Deleted },
+                E::Stale => Entry::Result { result: R::Stale },
+                E::Absent => Entry::Result { result: R::Absent },
+                E::NotRegular => Entry::Result {
+                    result: R::NotRegular,
+                },
+                E::Stopped => Entry::Result { result: R::Stopped },
+                E::Recycled(path) => Entry::Recycled {
+                    recycled_path: field(path),
+                    result: "recycled".to_string(),
+                },
+                E::Kept(hresult) => Entry::Kept {
+                    hresult: *hresult,
+                    result: "kept".to_string(),
+                },
+                E::Error(code) => Entry::Error {
+                    code: field(&code.to_string()),
+                    result: "error".to_string(),
+                },
+            })
+            .collect();
+        let folders = folders
+            .iter()
+            .map(|folder| match folder {
+                F::Removed => Folder::Result { result: D::Removed },
+                F::Kept => Folder::Result { result: D::Kept },
+                F::Absent => Folder::Result { result: D::Absent },
+                F::NotRegular => Folder::Result {
+                    result: D::NotRegular,
+                },
+                F::Error(code) => Folder::Error {
+                    code: field(&code.to_string()),
+                    result: "error".to_string(),
+                },
+            })
+            .collect();
+        encode(p::ProcessReply::FileDeleteGroup(
+            p::FileDeleteGroup::Results {
+                call_id: field(call_id),
+                entries,
+                folders,
+                type_: "fileDelete".to_string(),
+            },
+        ))
+    }
+
+    /// Feature 005 contract Δ6: a Windows `fileDelete` walk that stopped or passed its deadline before the delete phase changed nothing.
+    pub fn file_delete_stopped(call_id: &str) -> Value {
+        file_delete_ended(call_id, p::FileDeleteEndedResult::Stopped)
+    }
+
+    /// Feature 005 contract Δ6: a WSL `fileDelete` that stopped, passed its deadline, or broke its output. The outcome is unknown.
+    pub fn file_delete_interrupted(call_id: &str) -> Value {
+        file_delete_ended(call_id, p::FileDeleteEndedResult::Interrupted)
+    }
+
+    fn file_delete_ended(call_id: &str, result: p::FileDeleteEndedResult) -> Value {
+        encode(p::ProcessReply::FileDeleteGroup(
+            p::FileDeleteGroup::Ended {
+                call_id: field(call_id),
+                result,
+                type_: "fileDelete".to_string(),
+            },
+        ))
+    }
+
+    /// Feature 005 contract Δ6 `fileReplace`: `replaced`, `stale`, `stopped`, `interrupted`, `refused not-regular`, or `error`.
+    pub fn file_replace(call_id: &str, result: crate::file_replace::ReplaceResult) -> Value {
+        use crate::file_replace::ReplaceResult as V;
+        use p::FileReplaceGroup as G;
+        use p::FileReplaceResultResult as R;
+        let type_ = "fileReplace".to_string();
+        let plain = |result: R| G::Result {
+            call_id: field(call_id),
+            result,
+            type_: type_.clone(),
+        };
+        encode(p::ProcessReply::FileReplaceGroup(match result {
+            V::Replaced => plain(R::Replaced),
+            V::Stale => plain(R::Stale),
+            V::Stopped => plain(R::Stopped),
+            V::Interrupted => plain(R::Interrupted),
+            V::NotRegular => G::Refused {
+                call_id: field(call_id),
+                reason: p::FileReplaceRefusedReason::NotRegular,
+                result: "refused".to_string(),
+                type_,
+            },
+            V::Error(code) => G::Error {
+                call_id: field(call_id),
+                code: field(&code.to_string()),
+                result: "error".to_string(),
+                type_,
+            },
+        }))
+    }
+
+    /// Feature 005 contract Δ6: a stop or a deadline of a Windows `fileReplace` walk before the write.
+    pub fn file_replace_stopped(call_id: &str) -> Value {
+        file_replace(call_id, crate::file_replace::ReplaceResult::Stopped)
+    }
+
+    /// Feature 005 contract Δ6: a stop or a deadline of a WSL `fileReplace` walk that could have written.
+    pub fn file_replace_interrupted(call_id: &str) -> Value {
+        file_replace(call_id, crate::file_replace::ReplaceResult::Interrupted)
+    }
+
+    /// Feature 005 contract Δ6 `shadow`: the bound shadow folder of one preview operation.
+    pub fn shadow(call_id: &str, shadow_id: &str) -> Value {
+        encode(p::ProcessReply::ShadowGroup(p::ShadowGroup::Created {
+            call_id: field(call_id),
+            shadow_id: field(shadow_id),
+            type_: "shadow".to_string(),
+        }))
+    }
+
+    /// Feature 005 contract Δ6 `shadow`: a failed create.
+    pub fn shadow_error(call_id: &str, code: p::FileFactErrorCode) -> Value {
+        encode(p::ProcessReply::ShadowGroup(p::ShadowGroup::Error {
+            call_id: field(call_id),
+            code: field(&code.to_string()),
+            result: "error".to_string(),
+            type_: "shadow".to_string(),
+        }))
+    }
+
+    /// Feature 005 contract Δ6: the `reveal` walk found no entry. The service maps it to `UNKNOWN_TARGET` reason `absent`.
+    pub fn reveal_absent(call_id: &str) -> Value {
+        encode(p::ProcessReply::RevealAbsent {
+            call_id: field(call_id),
+            result: p::RevealAbsentResult::Absent,
+            type_: "reveal".to_string(),
+        })
+    }
+
     /// Feature 004 contract Δ3 `revealPath`: Explorer shows the path.
     pub fn reveal(call_id: &str) -> Value {
         encode(p::ProcessReply::RevealReply {
@@ -1170,21 +1318,15 @@ mod tests {
                 {
                     valid(typed::<process_request::ProcessRequest>(&value).is_some())
                 }
-                // Feature 005 contract Δ6: one of `entries` and `folders` is not empty, and each path is an absolute channel path.
-                // tasks.md T013 moves these rules into the `fileDelete` parse.
-                Ok(value) if value["type"] == "fileDelete" => {
-                    typed::<process_request::FileDelete>(&value)
-                        .filter(|r| !r.entries.is_empty() || !r.folders.is_empty())
-                        .ok_or(INVALID)
-                        .and_then(|r| {
-                            r.entries
-                                .iter()
-                                .map(|entry| entry.path.as_str())
-                                .chain(r.folders.iter().map(|folder| folder.as_str()))
-                                .try_for_each(|item| path(&json!(item)).map(drop))
-                        })
-                        .map_err(|code| text_of(&code))
-                }
+                // Feature 005 contract Δ6: the field rules of `file_delete::parse` and `file_replace::parse`.
+                Ok(value) if value["type"] == "fileDelete" => typed(&value)
+                    .ok_or(INVALID)
+                    .and_then(|request| crate::file_delete::parse(&request).map(drop))
+                    .map_err(|code| text_of(&code)),
+                Ok(value) if value["type"] == "fileReplace" => typed(&value)
+                    .ok_or(INVALID)
+                    .and_then(|request| crate::file_replace::parse(&request).map(drop))
+                    .map_err(|code| text_of(&code)),
                 Ok(value) if value["type"] == "fileFacts" => typed(&value)
                     .ok_or(INVALID)
                     .and_then(|request| crate::file_facts::parse(&request).map(drop))
@@ -1251,10 +1393,11 @@ mod tests {
         // WP23 adds 2 `confirm` vectors for the `repository` action (contract Δ6).
         // T094 adds 3 `native-first-envelope` vectors for `chooseWorktreeFolder` (contract Δ3).
         // Feature 005 T002 adds 15 shell-read vectors. The batch 0 review adds the 5 `fileDelete`, 2 `shadow`, and 3 `ignorePreview` vectors.
-        // T013 adds the `fileReplace` vectors.
+        // T013 adds the 4 `fileReplace` vectors (valid present and absent, an over-bound size, and a relative path).
+        // The WP3 review adds the `fileDelete` digest above 1 MiB.
         assert_eq!(
             checked,
-            if cfg!(windows) { 205 } else { 200 },
+            if cfg!(windows) { 210 } else { 205 },
             "shell-read vectors"
         );
     }

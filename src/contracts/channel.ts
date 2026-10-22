@@ -23,6 +23,7 @@ import {
   SUBMODULE_REVIEW_SUBMODULES,
   SUBMODULE_UPDATE_CEILING_MS,
   SUBMODULE_UPDATE_INACTIVITY_MS,
+  TRUST_DIGEST_FILE_BYTES,
   TRUST_RECORD_BYTES,
   TRUST_RECORDS,
   WEBVIEW2_VERSION_BYTES,
@@ -271,10 +272,13 @@ const Stamp = z
   // zod runs a refinement also after a failed pattern check, and `BigInt` throws on other text.
   .refine((value) => STAMP.test(value) && BigInt.asIntN(64, BigInt(value)) === BigInt(value));
 
-// Feature 005 contract Δ6 `fileDelete`: the review fact of each entry. A file above the 1 MiB digest bound binds only size and `lastWrite`.
+// Feature 005 contract Δ6 `fileDelete`: the review fact of each entry. A file above the 1 MiB digest bound binds only size and `lastWrite` (Δ5).
 // typify tags this union by the `kind` consts, so the Rust type reads a link fact never as a file fact.
 const DeleteExpected = z.union([
-  z.strictObject({ kind: z.literal("file"), size: Count, lastWrite: Stamp, digest: Fingerprint.optional() }).meta({ title: "DeleteExpectedFile" }),
+  z
+    .strictObject({ kind: z.literal("file"), size: Count, lastWrite: Stamp, digest: Fingerprint.optional() })
+    .refine((fact) => fact.digest === undefined || fact.size <= TRUST_DIGEST_FILE_BYTES)
+    .meta({ title: "DeleteExpectedFile" }),
   z
     .strictObject({ kind: z.literal("link"), tag: z.enum(["symlink", "junction", "other"]), target: Text.optional() })
     .refine((fact) => (fact.tag !== "other") === (fact.target !== undefined))
@@ -714,8 +718,9 @@ export const RevealReply = z.strictObject({ type: z.literal("reveal"), ...call }
 // typify drops a const, so an enum keeps the Rust reply union closed.
 export const RevealAbsentReply = z.strictObject({ type: z.literal("reveal"), ...call, result: z.enum(["absent"]) }).meta({ title: "RevealAbsent" });
 // One result per request entry and per folder, in request order. `kept` carries the `PostDeleteItem` HRESULT as an unsigned 32-bit value.
+// `stopped`: the Recycle Bin operation ended before the item.
 const DeleteEntryResult = z.union([
-  z.strictObject({ result: z.enum(["deleted", "stale", "absent", "not-regular", "stopped", "interrupted"]) }).meta({ title: "DeleteEntryResult" }),
+  z.strictObject({ result: z.enum(["deleted", "stale", "absent", "not-regular", "stopped"]) }).meta({ title: "DeleteEntryResult" }),
   z.strictObject({ result: z.literal("recycled"), recycledPath: ChannelPath }).meta({ title: "DeleteEntryRecycled" }),
   z.strictObject({ result: z.literal("kept"), hresult: z.int().min(0).max(0xffff_ffff) }).meta({ title: "DeleteEntryKept" }),
   z.strictObject({ result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "DeleteEntryError" }),
@@ -725,9 +730,13 @@ const DeleteFolderResult = z.union([
   z.strictObject({ result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "DeleteFolderError" }),
 ]);
 // Exactly one reply per request, also after `cancel`, `closeJob`, or a service exit.
-export const FileDeleteReply = z
-  .strictObject({ type: z.literal("fileDelete"), ...call, entries: z.array(DeleteEntryResult).max(FILE_FACT_ENTRIES), folders: z.array(DeleteFolderResult).max(FILE_FACT_ENTRIES) })
-  .meta({ title: "FileDeleteReply" });
+// `stopped`: a Windows stop or deadline before the delete phase, so nothing changed. `interrupted`: a WSL stop, deadline, or broken output, so the outcome is unknown.
+export const FileDeleteReply = z.union([
+  z
+    .strictObject({ type: z.literal("fileDelete"), ...call, entries: z.array(DeleteEntryResult).max(FILE_FACT_ENTRIES), folders: z.array(DeleteFolderResult).max(FILE_FACT_ENTRIES) })
+    .meta({ title: "FileDeleteResults" }),
+  z.strictObject({ type: z.literal("fileDelete"), ...call, result: z.enum(["stopped", "interrupted"]) }).meta({ title: "FileDeleteEnded" }),
+]);
 export const FileReplaceReply = z.union([
   z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.enum(["replaced", "stale", "stopped", "interrupted"]) }).meta({ title: "FileReplaceResult" }),
   z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("refused"), reason: z.enum(["not-regular"]) }).meta({ title: "FileReplaceRefused" }),
@@ -758,7 +767,7 @@ export const ProcessReply = z.xor([
   RevealReply,
   // Feature 005 contract Δ6. `RevealAbsent` stays a root branch, so the shell keeps its `RevealReply` type.
   RevealAbsentReply,
-  FileDeleteReply,
+  FileDeleteReply.meta({ title: "FileDeleteGroup" }),
   FileReplaceReply.meta({ title: "FileReplaceGroup" }),
   ShadowReply.meta({ title: "ShadowGroup" }),
 ]);

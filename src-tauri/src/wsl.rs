@@ -1610,6 +1610,274 @@ pub fn append_reply(output: Option<Output>) -> AppendResult {
     parsed.unwrap_or(AppendResult::Error(FileAppendErrorCode::OtherError))
 }
 
+// ---- Feature 005 `fileDelete`, `fileReplace`, shadow scratch (contract Δ6, Δ11) ----
+
+/// The stdout cap of a `delete` or `replace` request after the start byte: one short record per entry and folder.
+pub const DELETE_OUTPUT_BYTES: usize = 64 * (64 + 64);
+/// The stdout cap of a `scratch` request: `created`/`removed`, or the `sweep` names of the distro user.
+pub const SCRATCH_OUTPUT_BYTES: usize = 64 * (LINK_TARGET_BYTES + 64);
+
+/// The review fact of one WSL delete entry (contract Δ6). A WSL link is a symlink with a target.
+pub enum WslDeleteExpected {
+    /// `last_write` is `st_mtime` in whole nanoseconds, as the `fileFacts` fact gives it.
+    File {
+        size: u64,
+        last_write: i64,
+        digest: Option<String>,
+    },
+    Link {
+        target: String,
+    },
+}
+
+/// One WSL delete entry: the root index, the path components, and the review fact.
+pub struct WslDeleteEntry {
+    pub root: usize,
+    pub path: Vec<String>,
+    pub expected: WslDeleteExpected,
+}
+
+/// The `wslFiles` text in mode `delete` through the wrapper. Stdin holds the entries then the folders.
+pub fn delete_command(
+    installation: &Installation,
+    unit: &str,
+    roots: &[String; 3],
+    entries: &[WslDeleteEntry],
+    folders: &[(usize, Vec<String>)],
+    base: &[(OsString, OsString)],
+) -> Command {
+    let mut tokens: Vec<String> = vec![entries.len().to_string()];
+    for entry in entries {
+        tokens.push(entry.root.to_string());
+        tokens.push(entry.path.len().to_string());
+        tokens.extend(entry.path.iter().cloned());
+        match &entry.expected {
+            WslDeleteExpected::File {
+                size,
+                last_write,
+                digest,
+            } => {
+                tokens.push("file".to_string());
+                tokens.push(size.to_string());
+                tokens.push(last_write.to_string());
+                tokens.push(digest.clone().unwrap_or_else(|| "-".to_string()));
+            }
+            WslDeleteExpected::Link { target } => {
+                tokens.push("link".to_string());
+                tokens.push(target.clone());
+            }
+        }
+    }
+    tokens.push(folders.len().to_string());
+    for (root, path) in folders {
+        tokens.push(root.to_string());
+        tokens.push(path.len().to_string());
+        tokens.extend(path.iter().cloned());
+    }
+    files_perl(installation, unit, "delete", roots, tokens, base)
+}
+
+/// One `delete` reply: a result per entry in order, then a result per folder.
+/// The process unlinks inside the walk, so an exit status other than 0, no start byte, or another form gives `None`:
+/// the outcome is unknown, and the request replies `interrupted` (contract Δ6, Δ11).
+pub fn delete_reply(
+    output: Option<Output>,
+    entries: usize,
+    folders: usize,
+) -> Option<(
+    Vec<crate::file_delete::EntryResult>,
+    Vec<crate::file_delete::FolderResult>,
+)> {
+    use crate::file_delete::{EntryResult as E, FolderResult as F};
+    let out = output.filter(|out| out.exit_code == Some(0))?;
+    let bytes = started(&out.stdout).filter(|b| b.len() <= DELETE_OUTPUT_BYTES)?;
+    let mut records = Records { bytes, at: 0 };
+    let entry_results: Vec<E> = (0..entries)
+        .map(|_| delete_entry_record(&mut records))
+        .collect::<Option<_>>()?;
+    let folder_results: Vec<F> = (0..folders)
+        .map(|_| delete_folder_record(&mut records))
+        .collect::<Option<_>>()?;
+    (records.at == bytes.len()).then_some((entry_results, folder_results))
+}
+
+fn delete_entry_record(records: &mut Records) -> Option<crate::file_delete::EntryResult> {
+    use crate::file_delete::EntryResult as E;
+    Some(match records.token()? {
+        "deleted" => E::Deleted,
+        "stale" => E::Stale,
+        "absent" => E::Absent,
+        "not-regular" => E::NotRegular,
+        "error" => E::Error(code_token(records)?.parse().ok()?),
+        _ => return None,
+    })
+}
+
+fn delete_folder_record(records: &mut Records) -> Option<crate::file_delete::FolderResult> {
+    use crate::file_delete::FolderResult as F;
+    Some(match records.token()? {
+        "removed" => F::Removed,
+        "kept" => F::Kept,
+        "absent" => F::Absent,
+        "not-regular" => F::NotRegular,
+        "error" => F::Error(code_token(records)?.parse().ok()?),
+        _ => return None,
+    })
+}
+
+/// One WSL replace: the target path, the expected state, and the new bytes.
+pub struct WslReplace {
+    pub root: usize,
+    pub path: Vec<String>,
+    /// `None` is `absent`.
+    pub expected: Option<(u64, String)>,
+    pub bytes: Vec<u8>,
+}
+
+/// The `wslFiles` text in mode `replace` through the wrapper (plan.md D10). Stdin holds the path, the expected state, and the bytes in hex.
+pub fn replace_command(
+    installation: &Installation,
+    unit: &str,
+    roots: &[String; 3],
+    replace: &WslReplace,
+    base: &[(OsString, OsString)],
+) -> Command {
+    let mut tokens: Vec<String> = vec![
+        IGNORE_TARGET_BYTES.to_string(),
+        replace.root.to_string(),
+        replace.path.len().to_string(),
+    ];
+    tokens.extend(replace.path.iter().cloned());
+    match &replace.expected {
+        None => tokens.push("absent".to_string()),
+        Some((size, sha256)) => {
+            tokens.push("present".to_string());
+            tokens.push(size.to_string());
+            tokens.push(sha256.clone());
+        }
+    }
+    tokens.push(crate::settings::hex(&replace.bytes));
+    files_perl(installation, unit, "replace", roots, tokens, base)
+}
+
+/// One `replace` reply: `replaced`, `stale`, `refused not-regular`, or `error`.
+/// The process can rename before it ends, so an exit status other than 0, no start byte, or another form gives `interrupted` (contract Δ6).
+pub fn replace_reply(output: Option<Output>) -> crate::file_replace::ReplaceResult {
+    use crate::file_replace::ReplaceResult as R;
+    let parsed = output
+        .filter(|out| out.exit_code == Some(0))
+        .and_then(|out| {
+            let bytes = started(&out.stdout).filter(|b| b.len() <= DELETE_OUTPUT_BYTES)?;
+            let mut records = Records { bytes, at: 0 };
+            let result = match records.token()? {
+                "replaced" => R::Replaced,
+                "stale" => R::Stale,
+                "refused" => R::NotRegular,
+                "error" => R::Error(code_token(&mut records)?.parse().ok()?),
+                _ => return None,
+            };
+            (records.at == bytes.len()).then_some(result)
+        });
+    parsed.unwrap_or(R::Interrupted)
+}
+
+/// The shadow scratch operation of a WSL workspace (contract Δ11).
+pub enum Scratch {
+    /// Makes `/tmp/<name>` with `mkdir` mode 0700.
+    Create(String),
+    /// Removes `/tmp/<name>` depth-first, only below the `arbareto-preview-` prefix.
+    Remove(String),
+    /// Lists the `arbareto-preview-*` folders of the distro user.
+    Sweep,
+}
+
+/// The `wslFiles` text in mode `scratch` through the wrapper (contract Δ11). The mode reads no root, so the roots are `/`.
+pub fn scratch_command(
+    installation: &Installation,
+    unit: &str,
+    scratch: &Scratch,
+    base: &[(OsString, OsString)],
+) -> Command {
+    let tokens = match scratch {
+        Scratch::Create(name) => vec!["create".to_string(), name.clone()],
+        Scratch::Remove(name) => vec!["remove".to_string(), name.clone()],
+        Scratch::Sweep => vec!["sweep".to_string()],
+    };
+    files_perl(
+        installation,
+        unit,
+        "scratch",
+        &["/".to_string(), "/".to_string(), "/".to_string()],
+        tokens,
+        base,
+    )
+}
+
+/// The result of a `scratch` request.
+pub enum ScratchResult {
+    Created,
+    Removed,
+    /// The `arbareto-preview-*` folder names of the distro user.
+    Swept(Vec<String>),
+    Error(FileFactErrorCode),
+}
+
+/// One `scratch` reply.
+pub fn scratch_reply(output: Option<Output>, scratch: &Scratch) -> ScratchResult {
+    let parsed = output
+        .filter(|out| out.exit_code == Some(0))
+        .and_then(|out| {
+            let bytes = started(&out.stdout).filter(|b| b.len() <= SCRATCH_OUTPUT_BYTES)?;
+            let mut records = Records { bytes, at: 0 };
+            let result = match (scratch, records.token()?) {
+                (Scratch::Create(_), "created") => ScratchResult::Created,
+                (Scratch::Remove(_), "removed") => ScratchResult::Removed,
+                // `sweep` prints `swept`, then one name per folder.
+                (Scratch::Sweep, "swept") => {
+                    let mut names = Vec::new();
+                    while records.at < bytes.len() {
+                        names.push(records.token()?.to_string());
+                    }
+                    ScratchResult::Swept(names)
+                }
+                (_, "error") => ScratchResult::Error(code_token(&mut records)?.parse().ok()?),
+                _ => return None,
+            };
+            (records.at == bytes.len()).then_some(result)
+        });
+    parsed.unwrap_or(ScratchResult::Error(FileFactErrorCode::OtherError))
+}
+
+/// The Perl `wslFiles` text in mode `mode` through the wrapper in `probe` mode, with the three Linux roots and `tokens` on stdin.
+fn files_perl(
+    installation: &Installation,
+    unit: &str,
+    mode: &str,
+    roots: &[String; 3],
+    tokens: Vec<String>,
+    base: &[(OsString, OsString)],
+) -> Command {
+    let mut input = Vec::new();
+    for token in &tokens {
+        input.extend_from_slice(token.as_bytes());
+        input.push(0);
+    }
+    let mut arguments = strings(&["-e", &texts().wsl_files, "--", mode]);
+    arguments.extend(roots.iter().cloned());
+    arguments.push(installation.git.clone());
+    arguments.push(installation.sha256sum.clone());
+    wrapped(
+        installation,
+        Mode::Probe,
+        unit,
+        None,
+        PERL,
+        &arguments,
+        base,
+        Stdin::Bytes(input),
+    )
+}
+
 // ---- The mutation anchor ----
 
 /// One anchor answer: the process count and the CPU-time sum. `None` in a part is unknown.
@@ -2402,6 +2670,257 @@ mod tests {
         }
         assert_eq!(append_reply(output(3, "Sappended\0")), other, "exit 3");
         assert_eq!(append_reply(None), other, "no end");
+    }
+
+    fn stdin_bytes(command: &Command) -> Vec<u8> {
+        match &command.stdin {
+            Stdin::Bytes(bytes) => bytes.clone(),
+            other => panic!("stdin bytes, not {other:?}"),
+        }
+    }
+
+    /// The arguments after the Perl text: `--`, the mode, the three roots, the Git, and `sha256sum`.
+    fn perl_tail(command: &Command) -> Vec<String> {
+        let start = command
+            .arguments
+            .iter()
+            .position(|argument| argument == "-e")
+            .expect("Perl text");
+        assert_eq!(command.arguments[start + 1], texts().wsl_files);
+        command.arguments[start + 2..].to_vec()
+    }
+
+    /// Feature 005 contract Δ11: mode `delete` gets the entries with their review facts, then the folders, and reads one record each.
+    #[test]
+    fn the_delete_mode_takes_the_entries_and_folders_on_stdin_and_reads_one_record_each() {
+        use crate::file_delete::{EntryResult as E, FolderResult as F};
+        use crate::schema::process_reply::FileFactErrorCode as C;
+        let roots = [
+            "/home/u/repo".to_string(),
+            "/home/u/repo/.git".to_string(),
+            "/home/u/repo/.git".to_string(),
+        ];
+        let unit = unit_name(OPERATION, 3).expect("unit");
+        let entries = [
+            WslDeleteEntry {
+                root: 0,
+                path: strings(&["build.log"]),
+                expected: WslDeleteExpected::File {
+                    size: 4,
+                    last_write: 1_000_000_000,
+                    digest: Some("a".repeat(64)),
+                },
+            },
+            WslDeleteEntry {
+                root: 0,
+                path: strings(&["big.bin"]),
+                expected: WslDeleteExpected::File {
+                    size: 2_000_000,
+                    last_write: 7_000_000_000,
+                    digest: None,
+                },
+            },
+            WslDeleteEntry {
+                root: 0,
+                path: strings(&["src", "ln"]),
+                expected: WslDeleteExpected::Link {
+                    target: "../out".to_string(),
+                },
+            },
+        ];
+        let folders = [(0usize, strings(&["a", "b"])), (0usize, strings(&["a"]))];
+        let command = delete_command(&installation(), &unit, &roots, &entries, &folders, &base());
+        assert_eq!(
+            perl_tail(&command),
+            strings(&[
+                "--",
+                "delete",
+                "/home/u/repo",
+                "/home/u/repo/.git",
+                "/home/u/repo/.git",
+                "/usr/local/bin/git",
+                "/usr/bin/sha256sum"
+            ])
+        );
+        assert_eq!(
+            stdin_bytes(&command),
+            format!(
+                "3\x000\x001\x00build.log\x00file\x004\x001000000000\x00{}\x00\
+                 0\x001\x00big.bin\x00file\x002000000\x007000000000\x00-\x00\
+                 0\x002\x00src\x00ln\x00link\x00../out\x00\
+                 2\x000\x002\x00a\x00b\x000\x001\x00a\x00",
+                "a".repeat(64)
+            )
+            .into_bytes()
+        );
+        assert_eq!(
+            delete_reply(
+                output(0, "Sdeleted\0stale\0error\0access-denied\0removed\0kept\0"),
+                3,
+                2
+            ),
+            Some((
+                vec![E::Deleted, E::Stale, E::Error(C::AccessDenied)],
+                vec![F::Removed, F::Kept]
+            ))
+        );
+        // A broken output gives an unknown outcome.
+        for stdout in [
+            "Sdeleted\0",
+            "deleted\0removed\0",
+            "Sdeleted\0gone\0",
+            "Sdeleted\0removed\0extra\0",
+        ] {
+            assert_eq!(delete_reply(output(0, stdout), 1, 1), None, "{stdout:?}");
+        }
+        assert_eq!(
+            delete_reply(output(3, "Sdeleted\0removed\0"), 1, 1),
+            None,
+            "exit 3"
+        );
+        assert_eq!(delete_reply(None, 1, 1), None, "no output");
+    }
+
+    /// Feature 005 contract Δ11: mode `replace` gets the bound, the path, the expected state, and the bytes in hex.
+    #[test]
+    fn the_replace_mode_takes_the_expected_state_and_the_bytes_on_stdin() {
+        use crate::file_replace::ReplaceResult as R;
+        use crate::schema::process_reply::FileFactErrorCode as C;
+        let roots = [
+            "/home/u/repo".to_string(),
+            "/home/u/repo/.git".to_string(),
+            "/home/u/repo/.git".to_string(),
+        ];
+        let unit = unit_name(OPERATION, 3).expect("unit");
+        let present = WslReplace {
+            root: 2,
+            path: strings(&["info", "exclude"]),
+            expected: Some((12, "a".repeat(64))),
+            bytes: b"/x\n".to_vec(),
+        };
+        let command = replace_command(&installation(), &unit, &roots, &present, &base());
+        assert_eq!(perl_tail(&command)[1], "replace");
+        assert_eq!(
+            stdin_bytes(&command),
+            format!(
+                "1048576\x002\x002\x00info\x00exclude\x00present\x0012\x00{}\x002f780a\x00",
+                "a".repeat(64)
+            )
+            .into_bytes()
+        );
+        let absent = WslReplace {
+            root: 0,
+            path: strings(&[".gitignore"]),
+            expected: None,
+            bytes: Vec::new(),
+        };
+        let command = replace_command(&installation(), &unit, &roots, &absent, &base());
+        assert_eq!(
+            stdin_bytes(&command),
+            b"1048576\x000\x001\x00.gitignore\x00absent\x00\x00"
+        );
+        for (stdout, expected) in [
+            ("Sreplaced\0", R::Replaced),
+            ("Sstale\0", R::Stale),
+            ("Srefused\0", R::NotRegular),
+            ("Serror\0io-error\0", R::Error(C::IoError)),
+        ] {
+            assert_eq!(replace_reply(output(0, stdout)), expected, "{stdout:?}");
+        }
+        // The process can rename before a broken output, so the outcome is unknown.
+        for stdout in [
+            "replaced\0",
+            "Sreplaced\0stale\0",
+            "Serror\0sharing-violation\0",
+            "S",
+        ] {
+            assert_eq!(
+                replace_reply(output(0, stdout)),
+                R::Interrupted,
+                "{stdout:?}"
+            );
+        }
+        assert_eq!(
+            replace_reply(output(3, "Sreplaced\0")),
+            R::Interrupted,
+            "exit 3"
+        );
+        assert_eq!(replace_reply(None), R::Interrupted, "no output");
+    }
+
+    /// Feature 005 contract Δ11: mode `scratch` gets its operation and the folder name, and `sweep` lists the names after `swept`.
+    #[test]
+    fn the_scratch_mode_creates_removes_and_sweeps_by_name() {
+        let unit = unit_name(OPERATION, 3).expect("unit");
+        let name = "arbareto-preview-1-2-0123456789abcdef".to_string();
+        let create = scratch_command(
+            &installation(),
+            &unit,
+            &Scratch::Create(name.clone()),
+            &base(),
+        );
+        assert_eq!(
+            perl_tail(&create),
+            strings(&[
+                "--",
+                "scratch",
+                "/",
+                "/",
+                "/",
+                "/usr/local/bin/git",
+                "/usr/bin/sha256sum"
+            ])
+        );
+        assert_eq!(
+            stdin_bytes(&create),
+            format!("create\0{name}\0").into_bytes()
+        );
+        let remove = scratch_command(
+            &installation(),
+            &unit,
+            &Scratch::Remove(name.clone()),
+            &base(),
+        );
+        assert_eq!(
+            stdin_bytes(&remove),
+            format!("remove\0{name}\0").into_bytes()
+        );
+        let sweep = scratch_command(&installation(), &unit, &Scratch::Sweep, &base());
+        assert_eq!(stdin_bytes(&sweep), b"sweep\0");
+        assert!(matches!(
+            scratch_reply(output(0, "Screated\0"), &Scratch::Create(name.clone())),
+            ScratchResult::Created
+        ));
+        assert!(matches!(
+            scratch_reply(output(0, "Sremoved\0"), &Scratch::Remove(name.clone())),
+            ScratchResult::Removed
+        ));
+        assert!(matches!(
+            scratch_reply(output(0, &format!("Sswept\0{name}\0")), &Scratch::Sweep),
+            ScratchResult::Swept(names) if names == vec![name.clone()]
+        ));
+        assert!(matches!(
+            scratch_reply(output(0, "Sswept\0"), &Scratch::Sweep),
+            ScratchResult::Swept(names) if names.is_empty()
+        ));
+        assert!(matches!(
+            scratch_reply(
+                output(0, "Serror\0access-denied\0"),
+                &Scratch::Create(name.clone())
+            ),
+            ScratchResult::Error(crate::schema::process_reply::FileFactErrorCode::AccessDenied)
+        ));
+        for stdout in ["created\0", "Sremoved\0", "Screated\0extra\0"] {
+            assert!(
+                matches!(
+                    scratch_reply(output(0, stdout), &Scratch::Create(name.clone())),
+                    ScratchResult::Error(
+                        crate::schema::process_reply::FileFactErrorCode::OtherError
+                    )
+                ),
+                "{stdout:?}"
+            );
+        }
     }
 
     /// Feature 004 contract Δ11 `openWorktree`: a Linux record path maps to the UNC form under the server and distro of the root.

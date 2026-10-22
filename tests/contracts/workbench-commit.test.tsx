@@ -532,6 +532,124 @@ describe("Untracked menu and ignore items (FR-045, FR-046, plan D9)", () => {
     expect(double.pending("revealPath")!.args[0]).toEqual({ repositoryId: fixtureId(1), entryId: all.find((e) => e.path === "notes.txt")!.entryId });
   });
 
+  // T120: each full status read gives each file a new entry ID (src/git-service/status.ts). The open row menu acts on the entry of the latest read.
+  async function newRead(world: World, double: Awaited<ReturnType<typeof openCommitView>>, entries: ChangeEntry[]) {
+    const reads = double.count("readWorkspace");
+    world.entries = entries;
+    await act(async () => void (window.dispatchEvent(new Event("blur")), window.dispatchEvent(new Event("focus"))));
+    await settle();
+    expect(double.count("readWorkspace")).toBe(reads + 1);
+  }
+  async function readWhileMenuOpen(after: (old: ChangeEntry[]) => ChangeEntry[]) {
+    const old = [entry("untracked", "m.txt"), entry("untracked", "n.txt")];
+    const world = createWorld({ entries: old });
+    const double = await openCommitView(world);
+    await click(item("Changes", "Untracked"));
+    const anchor = item("Changes", "m.txt");
+    await contextMenu(anchor);
+    expect(menuItems().length).toBeGreaterThan(0);
+    await newRead(world, double, after(old));
+    return { double, anchor, b: world.entries.find((e) => e.path === "m.txt") };
+  }
+  const renewed = (old: ChangeEntry[]) => old.map((e) => ({ ...e, entryId: fixtureId(next++) }));
+
+  test("T120: Show in Explorer after a new read sends revealPath with the entry ID of the new read", async () => {
+    const { double, b } = await readWhileMenuOpen(renewed);
+    await click(menuItem("Show in Explorer"));
+    expect(double.pending("revealPath")!.args[0]).toEqual({ repositoryId: fixtureId(1), entryId: b!.entryId });
+  });
+
+  test("T120: Stage file after a new read acts on the entry of the new read", async () => {
+    const { double, b } = await readWhileMenuOpen(renewed);
+    await click(menuItem("Stage file"));
+    expect((double.calls.findLast((c) => c.operation === "readComparison")!.args[1] as { entryId: string }).entryId).toBe(b!.entryId);
+  });
+
+  test("T120: Add to .gitignore after a new read reviews the entry of the new read", async () => {
+    const { double, b } = await readWhileMenuOpen(renewed);
+    await click(menuItem("Add to .gitignore"));
+    expect((double.pending("reviewWorkbench")!.args[1] as { entryId: string }).entryId).toBe(b!.entryId);
+  });
+
+  test("T120: after a new read, the menu anchor is the shown m.txt row, and Escape returns focus to it", async () => {
+    const { anchor } = await readWhileMenuOpen(renewed);
+    expect(anchor.isConnected).toBe(true);
+    expect(item("Changes", "m.txt")).toBe(anchor);
+    await press(document.activeElement!, "Escape");
+    expect(menuItems()).toHaveLength(0);
+    expect(document.activeElement).toBe(item("Changes", "m.txt"));
+  });
+
+  test("T120: a new read without the file closes the row menu, moves focus to the next row, and no request goes out", async () => {
+    const { double } = await readWhileMenuOpen((old) => renewed(old.filter((e) => e.path !== "m.txt")));
+    expect(menuItems()).toHaveLength(0);
+    expect(document.activeElement).toBe(item("Changes", "n.txt"));
+    const sent = double.calls.length;
+    await settle();
+    expect(double.calls.slice(sent).map((c) => c.operation)).toEqual([]);
+    expect(double.count("revealPath") + double.count("reviewWorkbench")).toBe(0);
+  });
+
+  test("T120: a row menu opened by Shift+F10 acts on the entry of the new read", async () => {
+    const old = [entry("untracked", "m.txt"), entry("untracked", "n.txt")];
+    const world = createWorld({ entries: old });
+    const double = await openCommitView(world);
+    await click(item("Changes", "Untracked"));
+    const row = item("Changes", "m.txt");
+    await act(async () => row.focus());
+    await press(row, "F10", { shiftKey: true });
+    expect(document.activeElement).toBe(menuItems()[0]!);
+    await newRead(world, double, renewed(old));
+    expect(row.isConnected).toBe(true);
+    await click(menuItem("Show in Explorer"));
+    expect(double.pending("revealPath")!.args[0]).toEqual({ repositoryId: fixtureId(1), entryId: world.entries.find((e) => e.path === "m.txt")!.entryId });
+  });
+
+  test("T120: a new read that moves the file to Staged closes the row menu, and no request goes out", async () => {
+    const { double } = await readWhileMenuOpen((old) => old.map((e) => (e.path === "m.txt" ? { ...e, entryId: fixtureId(next++), category: "staged" as const, xy: "A." } : { ...e, entryId: fixtureId(next++) })));
+    expect(menuItems()).toHaveLength(0);
+    const sent = double.calls.length;
+    await settle();
+    expect(double.calls.slice(sent).map((c) => c.operation)).toEqual([]);
+    expect(double.count("revealPath") + double.count("reviewWorkbench")).toBe(0);
+  });
+
+  test("T120: a new read that removes the folder of an open folder menu moves focus to the next row", async () => {
+    const old = [entry("untracked", "logs/1.log"), entry("untracked", "logs/2.log"), entry("untracked", "notes.txt")];
+    const world = createWorld({ entries: old });
+    const double = await openCommitView(world);
+    await click(item("Changes", "Untracked"));
+    await contextMenu(item("Changes", "logs"));
+    expect(menuItems().length).toBeGreaterThan(0);
+    await newRead(world, double, renewed(old.filter((e) => e.path === "notes.txt")));
+    expect(menuItems()).toHaveLength(0);
+    expect(document.activeElement).toBe(item("Changes", "notes.txt"));
+  });
+
+  test("T120: a new read that hides the focused file in a collapsed folder moves focus to the heading", async () => {
+    const old = [entry("untracked", "a/b/x.txt")];
+    const world = createWorld({ entries: old });
+    const double = await openCommitView(world);
+    await click(item("Changes", "Untracked"));
+    await click(item("Changes", "a/b"));
+    const row = item("Changes", "a/b/x.txt");
+    await act(async () => row.focus());
+    await newRead(world, double, [...renewed(old), entry("untracked", "a/c.txt")]);
+    expect(row.isConnected).toBe(false);
+    expect(document.activeElement).toBe(tree("Changes").parentElement!.querySelector('[data-list-heading="Changes"]'));
+  });
+
+  test("T120: a new read keeps keyboard focus on the focused file row", async () => {
+    const old = [entry("unstaged", "a.ts", ".M"), entry("unstaged", "b.ts", ".M")];
+    const world = createWorld({ entries: old });
+    const double = await openCommitView(world);
+    const row = item("Changes", "b.ts");
+    await act(async () => row.focus());
+    await newRead(world, double, renewed(old));
+    expect(row.isConnected).toBe(true);
+    expect(document.activeElement).toBe(item("Changes", "b.ts"));
+  });
+
   for (const [name, init] of [
     ["Shift+F10", { key: "F10", shiftKey: true }],
     ["the Menu key", { key: "ContextMenu" }],

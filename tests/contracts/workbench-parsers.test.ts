@@ -33,10 +33,10 @@ describe("readBranches records (contract Δ3)", () => {
         rec("refs/remotes/origin/main", B, "", " ", ""),
       ),
     ).toEqual([
-      { ref: "refs/heads/feature/x", kind: "local", name: "feature/x", invalidUtf8: false, oid: A, object: A, upstream: "refs/remotes/origin/feature/x", current: false },
-      { ref: "refs/heads/main", kind: "local", name: "main", invalidUtf8: false, oid: B, object: B, upstream: "refs/remotes/origin/main", current: true },
-      { ref: "refs/heads/no-up", kind: "local", name: "no-up", invalidUtf8: false, oid: A, object: A, upstream: null, current: false },
-      { ref: "refs/remotes/origin/main", kind: "remote", name: "origin/main", invalidUtf8: false, oid: B, object: B, upstream: null, current: false },
+      { ref: "refs/heads/feature/x", kind: "local", name: "feature/x", invalidUtf8: false, oid: A, object: A, upstream: "refs/remotes/origin/feature/x", upstreamPresent: false, current: false },
+      { ref: "refs/heads/main", kind: "local", name: "main", invalidUtf8: false, oid: B, object: B, upstream: "refs/remotes/origin/main", upstreamPresent: true, current: true },
+      { ref: "refs/heads/no-up", kind: "local", name: "no-up", invalidUtf8: false, oid: A, object: A, upstream: null, upstreamPresent: false, current: false },
+      { ref: "refs/remotes/origin/main", kind: "remote", name: "origin/main", invalidUtf8: false, oid: B, object: B, upstream: null, upstreamPresent: false, current: false },
     ]);
   });
 
@@ -46,6 +46,22 @@ describe("readBranches records (contract Δ3)", () => {
   });
 
   test("empty output gives no entry", () => expect(parse()).toEqual([]));
+
+  // Feature 005 T009, contract Δ3: `upstreamPresent` compares raw ref bytes with every record of the same output.
+  test("upstreamPresent: a listed upstream, a symbolic ref record, a missing upstream, and invalid UTF-8 bytes that differ only in their lossy text", () => {
+    const present = (...records: string[]) => parse(...records)!.map((e) => [e.ref, e.upstreamPresent]);
+    expect(present(rec("refs/heads/a", A, "refs/remotes/o/HEAD", " ", ""), rec("refs/heads/b", A, "refs/remotes/o/gone", " ", ""), rec("refs/remotes/o/HEAD", B, "", " ", "refs/remotes/o/main"), rec("refs/remotes/o/main", B, "", " ", ""))).toEqual([
+      ["refs/heads/a", true],
+      ["refs/heads/b", false],
+      ["refs/remotes/o/main", false],
+    ]);
+    // 0xFE and 0xFF both decode to U+FFFD, so only the raw bytes tell them apart.
+    expect(present(rec("refs/heads/c", A, "refs/remotes/o/x\xfe", " ", ""), rec("refs/remotes/o/x\xff", B, "", " ", ""))).toEqual([
+      ["refs/heads/c", false],
+      ["refs/remotes/o/x�", false],
+    ]);
+    expect(present(rec("refs/heads/c", A, "refs/remotes/o/x\xff", " ", ""), rec("refs/remotes/o/x\xff", B, "", " ", ""))[0]).toEqual(["refs/heads/c", true]);
+  });
 
   // Data-model §1 `oid`: the commit of the ref. git-for-each-ref(1): a `*` field holds the value of the peeled object.
   test("a ref to an annotated tag gives its peeled commit, and a ref whose object peels to no commit is skipped", () => {

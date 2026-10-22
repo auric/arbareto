@@ -422,6 +422,7 @@
     [data-slot="menubar-content"],
     [data-slot="menubar-sub-content"],
     [data-slot="popover-content"],
+    [data-slot="hover-card-content"],
     [data-slot="dialog-content"]
   ) {
   border-radius: var(--radius-overlay);
@@ -493,8 +494,10 @@
     border-color: HighlightText;
   }
   /* Forced colors drop the ring shadow, so a dialog and a tooltip need an edge against the content below. */
+  /* Feature 005 plan.md D16: the branch card too. */
   [data-slot="dialog-content"],
-  [data-slot="tooltip-content"] {
+  [data-slot="tooltip-content"],
+  [data-slot="hover-card-content"] {
     outline: 1px solid CanvasText;
   }
   .selected-hunk-bar {

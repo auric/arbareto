@@ -968,17 +968,17 @@ describe("virtual list (FR-086, SC-007 component check)", () => {
   test("tree rows report the position and the set size of their level", async () => {
     await openCommitView(createWorld({ entries: board().all }));
     const at = (label: string) => [item("Changes", label).getAttribute("aria-posinset"), item("Changes", label).getAttribute("aria-setsize")];
-    // Level 1 holds README.md, src, and the Untracked section row.
-    expect(at("README.md")).toEqual(["1", "3"]);
-    expect(at("src")).toEqual(["2", "3"]);
+    // Level 1 holds src, README.md, and the Untracked section row: folders first (feature 005 spec FR-015).
+    expect(at("README.md")).toEqual(["2", "3"]);
+    expect(at("src")).toEqual(["1", "3"]);
     expect(at("Untracked")).toEqual(["3", "3"]);
     expect(at("src/auth")).toEqual(["1", "2"]);
     expect(at("src/auth/session.ts")).toEqual(["2", "2"]);
     await click(item("Changes", "Untracked"));
-    // The untracked level: docs/drafts, logs, notes.txt, and src.
-    expect(at("notes.txt")).toEqual(["3", "4"]);
+    // The untracked level: docs/drafts, logs, src, and notes.txt.
+    expect(at("notes.txt")).toEqual(["4", "4"]);
     const staged = item("Staged", "CHANGELOG.md");
-    expect([staged.getAttribute("aria-posinset"), staged.getAttribute("aria-setsize")]).toEqual(["1", "2"]);
+    expect([staged.getAttribute("aria-posinset"), staged.getAttribute("aria-setsize")]).toEqual(["2", "2"]);
   });
 
   test("stage-files progress events re-render no visible file row", async () => {
@@ -1118,13 +1118,14 @@ describe("Filter files (FR-101, Q29)", () => {
     await openCommitView(createWorld({ entries: files }));
     await click(button("Flat layout"));
     await typeIn(filesField()!, "a.ts");
-    expect(labels("Changes")).toEqual(["a.ts", "dir/A.TS"]);
+    // Feature 005 spec FR-016: the flat layout shows the folder path first.
+    expect(labels("Changes")).toEqual(["dir/A.TS", "a.ts"]);
     expect(text(commitView()!)).not.toContain("No file matches the filter.");
     await typeIn(filesField()!, ".*");
     expect(labels("Changes")).toEqual([]);
     expect(text(commitView()!)).toContain("No file matches the filter.");
     await typeIn(filesField()!, "");
-    expect(labels("Changes")).toEqual(["a.ts", "axts", "dir/A.TS"]);
+    expect(labels("Changes")).toEqual(["dir/A.TS", "a.ts", "axts"]);
   });
 
   test("the no-match line is an always-present status region that holds the text only when nothing matches", async () => {

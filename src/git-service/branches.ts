@@ -30,6 +30,7 @@ export interface BranchEntry {
   heldBy: string | null;
   current: boolean;
   localName: string | null;
+  upstreamPresent: boolean;
 }
 
 export type BranchesOutcome =
@@ -134,6 +135,7 @@ export function createBranchesReader({ runner, trust, reader, listingTuple }: Pi
             heldBy: holders.get(r.ref) ?? null,
             current: r.current,
             localName,
+            upstreamPresent: r.upstreamPresent,
           };
         });
         const value = { entries };

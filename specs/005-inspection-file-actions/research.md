@@ -231,6 +231,9 @@ The fact probes of 2026-10-21 ran before the tests, on Git 2.56.0.windows.2 and 
 - F19: RI and RT read a skip-worktree `.gitignore` from its index blob, and the S shadow verdicts equal them. Windows NTFS opens `.GITIGNORE` for `.gitignore`, and Git reports the rules as `.gitignore`. NTFS does not open `.gıtignore` for `.gitignore`. WSL ext4 opens neither.
 - Not checked: the Git 2.55 blame source. Only the experiment covers Git 2.55.
 
+WP2 (2026-10-22):
+- R16 open point closed: the `base-mira` registry of `shadcn@4.21.0` has `hover-card`. `bunx --bun shadcn@4.21.0 add hover-card` created `src/frontend/components/ui/hover-card.tsx` on `@base-ui/react` PreviewCard (Base UI 1.8.0). It added no dependency.
+
 ## Plan review 2026-10-21
 
 The independent plan review of 2026-10-21 found no Critical issue and three High issues in the Delete design. First, the `PreDeleteItem` check compares the held handle with itself and must compare the identity of `psiItem` instead. Second, the WSL `delete` and `replace` modes act by full path and must hold each folder through `chdir` with a device and inode check. Third, the held folder handles block the deepest-first folder removal. The review also found that a folder on the path can become a junction after it is emptied, so the FR-031 limit must name that case too. In the ignore preview, the `--no-index` self-check cannot agree with the shadow for a skip-worktree `.gitignore`. The fix is a typed limit or a self-check against the index-aware listings. The 2 MiB request bound needs base64 text, and the single-file patch read must keep only sections whose paths match exactly. The rest of the method is exact for the report cases, and it runs no repository program before trust approval. The blame and History diff commands are correct apart from two small fixes: `--inter-hunk-context=0` for the line map, and `config --type=path` for the ignore list.

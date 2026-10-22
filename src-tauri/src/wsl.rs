@@ -4945,7 +4945,7 @@ mod tests {
             return;
         };
         let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
-        let operation = format!("0f0f0f0f-0000-4000-8003-{:012x}", std::process::id());
+        let operation = format!("0f0f0f0f-0000-4000-8005-{:012x}", std::process::id());
         let host = reference.host();
         let root = format!("/tmp/arbareto-destination-{}", std::process::id());
         let shell = |n: u32, script: &str| {
@@ -5184,7 +5184,7 @@ mod tests {
             return;
         };
         let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
-        let operation = format!("0f0f0f0f-0000-4000-8000-{:012x}", std::process::id());
+        let operation = format!("0f0f0f0f-0000-4000-8006-{:012x}", std::process::id());
         let cases: [(&str, Option<&str>, Answer); 3] = [
             ("/usr/bin/false", None, (None, None)),
             (

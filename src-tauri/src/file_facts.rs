@@ -753,6 +753,38 @@ fn link(handle: &OwnedHandle, tag: u32, component: usize, stop: &AtomicBool) -> 
     link_fact(component, target)
 }
 
+/// Feature 005 contract Δ6 `fileDelete`: the `SubstituteName` and relative flag of a reparse point under `handle`.
+/// `tag` is the `FileAttributeTagInformation` reparse tag. `None` for another tag or a failed read.
+pub(crate) fn reparse_target(
+    handle: &OwnedHandle,
+    tag: u32,
+    stop: &AtomicBool,
+) -> Option<(String, bool)> {
+    check(stop).ok()?;
+    let mut data = vec![0u8; MAXIMUM_REPARSE_DATA_BUFFER_SIZE as usize];
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: `handle` is open and synchronous, and `data` has the passed length.
+    let status = unsafe {
+        NtFsControlFile(
+            raw(handle),
+            None,
+            None,
+            None,
+            &raw mut io,
+            FSCTL_GET_REPARSE_POINT,
+            None,
+            0,
+            Some(data.as_mut_ptr().cast()),
+            data.len() as u32,
+        )
+    };
+    if status.is_err() {
+        return None;
+    }
+    data.truncate(io.Information);
+    target(&data, tag)
+}
+
 /// `SubstituteName` and the relative flag from `REPARSE_DATA_BUFFER` (Microsoft Learn, MS-FSCC 2.1.2.4 and 2.1.2.5).
 /// `None` for another tag, data out of bounds, text that is no well-formed UTF-16, or a NUL.
 fn target(data: &[u8], tag: u32) -> Option<(String, bool)> {

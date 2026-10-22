@@ -25,6 +25,8 @@ uuid = "1.26"
 
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39.1"
+# Feature 005 contract Δ6: `windows::core::implement` expands to `windows_core::` paths for the `fileDelete` progress sink.
+windows-core = "0.62.2"
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.62.0"

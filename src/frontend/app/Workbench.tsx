@@ -439,7 +439,7 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
 }
 
 // The Pierre worker pool. It loads with the first diff and stays mounted, because Pierre ends the pool when its last provider unmounts.
-// It is a sibling of the view: a new parent above the view remounts it and drops its focus (T125).
+// It is a sibling of the view: a new parent above the view remounts it and drops its focus (T125). It lasts for each Commit view visit.
 const PatchPool = lazy(() => import("../changes/PatchPool"));
 
 /** The T134 comparison view of the selected entry, with the T145 hunk controls in its heading. */
@@ -1090,7 +1090,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const onSectionFocus = (event: FocusEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
     const section = target.closest<HTMLElement>(SECTION_SELECTOR)?.dataset.section as Section | undefined;
-    if (section) lastFocus.current.set(section, target);
+    // Plan D15 "F6 order per view": a click on empty space focuses the section box. The box never counts as the last focus.
+    if (section && target.dataset.section === undefined) lastFocus.current.set(section, target);
     if (!menubar.current?.contains(target) && !target.closest('[role="menu"]')) lastOutside.current = target;
   };
 
@@ -1537,10 +1538,23 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const inCommitView = view === "commit";
   // Plan.md D15 and O-11: the Working directory and Index rows dock a summary. Enter or a double-click on the row opens the Commit view.
   // 001 FR-005: the switch hides the focused History view, so focus moves to the Changes Tab-stop row, else to Filter files.
-  const openCommitView = () => {
-    store.setView(viewKey, "commit");
-    requestAnimationFrame(() => (sections.current?.querySelector<HTMLElement>('[data-file-tree="changes"] [role="treeitem"][tabindex="0"]') ?? filesFilterRef.current)?.focus());
+  // Focus that is already in the shown Commit view stays, such as the push panel focus.
+  const focusCommitEntry = () => {
+    const active = document.activeElement;
+    if (active?.closest('[data-view="commit"]') && !active.closest("[hidden]")) return;
+    (sections.current?.querySelector<HTMLElement>('[data-file-tree="changes"] [role="treeitem"][tabindex="0"]') ?? filesFilterRef.current)?.focus();
   };
+  const commitEntryPending = useRef(false);
+  const openCommitView = () => {
+    if (inCommitView) return focusCommitEntry();
+    commitEntryPending.current = true;
+    store.setView(viewKey, "commit");
+  };
+  useLayoutEffect(() => {
+    if (!commitEntryPending.current || !inCommitView) return;
+    commitEntryPending.current = false;
+    focusCommitEntry();
+  });
   const onHistoryKey = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (event.key !== "Enter" || event.ctrlKey || event.shiftKey || event.altKey || event.metaKey || isEditable(event.target as HTMLElement)) return;
     const list = (event.target as HTMLElement).closest<HTMLElement>("[data-history-list]");

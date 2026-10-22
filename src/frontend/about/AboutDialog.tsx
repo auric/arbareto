@@ -59,7 +59,8 @@ const PANEL = "min-h-0 overflow-y-auto px-4 py-2 focus-visible:ring-[3px] focus-
 
 // Plan D15 "About window": Ctrl+A selects only the shown tab panel, not the page behind the modal.
 function selectPanel(event: KeyboardEvent<HTMLElement>) {
-  if (!event.ctrlKey || event.shiftKey || event.altKey || event.metaKey || event.key.toLowerCase() !== "a") return;
+  // The Blink SelectAll key: `editing_behavior.cc` matches VK_A by `keyCode` on every layout.
+  if (!event.ctrlKey || event.shiftKey || event.altKey || event.metaKey || event.keyCode !== 65) return;
   const panel = event.currentTarget.querySelector('[role="tabpanel"]:not([hidden])');
   if (panel === null) return;
   event.preventDefault();

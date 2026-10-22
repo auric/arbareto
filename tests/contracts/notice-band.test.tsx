@@ -286,7 +286,7 @@ describe("recovery row lifetime in the workbench", () => {
     await view.resolveRead(true, snapshot({ recovery: { outcome: "none" } }));
     expect(shown()).toBe(true);
     // Ctrl+O runs Open folder (plan.md "Keyboard and focus").
-    await act(async () => void document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "o", code: "KeyO", ctrlKey: true, bubbles: true, cancelable: true })));
+    await act(async () => void document.body.dispatchEvent(new KeyboardEvent("keydown", { key: "o", code: "KeyO", keyCode: 79, ctrlKey: true, bubbles: true, cancelable: true })));
     await settle();
     const choose = view.calls.filter((c) => c.operation === "chooseRepository").at(-1)!;
     await act(async () => choose.resolve(succeeded({ ...registration(), worktreeKey: "b".repeat(64) })));

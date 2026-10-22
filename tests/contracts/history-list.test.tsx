@@ -424,15 +424,15 @@ describe("research.md R13: the plan.md D6 keys against the 001 keyboard map", ()
       );
     const input = { tagName: "INPUT", type: "text" };
     for (const target of [{ tagName: "DIV" }, input]) {
-      expect(press({ key: "f", ctrlKey: true }, target)).toEqual({ type: "focusFilter" });
+      expect(press({ key: "f", keyCode: 70, ctrlKey: true }, target)).toEqual({ type: "focusFilter" });
       expect(press({ key: "F3" }, target)).toEqual({ type: "match", direction: "next" });
       expect(press({ key: "F3", shiftKey: true }, target)).toEqual({ type: "match", direction: "previous" });
-      expect(press({ key: "B", ctrlKey: true, shiftKey: true }, target)).toEqual({ type: "toggleScope" });
+      expect(press({ key: "B", keyCode: 66, ctrlKey: true, shiftKey: true }, target)).toEqual({ type: "toggleScope" });
     }
     // The 001 keys keep their actions.
     expect(press({ key: "F5" })).toEqual({ type: "refresh" });
-    expect(press({ key: "o", ctrlKey: true })).toEqual({ type: "openFolder" });
-    expect(press({ key: "r", ctrlKey: true })).toEqual({ type: "openSwitcher" });
+    expect(press({ key: "o", keyCode: 79, ctrlKey: true })).toEqual({ type: "openFolder" });
+    expect(press({ key: "r", keyCode: 82, ctrlKey: true })).toEqual({ type: "openSwitcher" });
     // A modal or an open menu blocks them, as it blocks the 001 keys.
     expect(createShortcutHandler()({ type: "keydown", key: "F3", code: "", ctrlKey: false, shiftKey: false, altKey: false, metaKey: false, repeat: false, isComposing: false, getModifierState: () => false, preventDefault: () => {}, composedPath: () => [] } as never, { ...context, modalOpen: true })).toBeNull();
   });

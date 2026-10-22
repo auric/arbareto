@@ -492,6 +492,15 @@ T032 and T063, the 64fee42 run (R21), Windows Git 2.56.0.windows.2 and Ubuntu-26
 - T032: a search cancel on H200K without a commit-graph ends in 11 ms. The test asserts at most 1,000 ms.
 - T063: WSL search on Ubuntu-26.04 runs one `script` call with `matchingProbe`, then the search. Cases (a), (b), and (d) pass. Case (c) skips: an empty `LOCPATH` does not hide C.UTF-8 on glibc 2.43 (finding, R10).
 
+## R23 Ticks of T067 and T068, 2026-10-22
+
+001 full run 7 at 27ddd40 is green (001 research.md R10 "Full runs 6 and 7"): parallel 6,611 pass, serial 588 pass, 0 fail. All `ORIGIN` lines name `C:\Projects\arbareto-l5`. Commit 32c40ec holds both tasks. From 27ddd40 to d4fc41a, no file of either task changed. The control mutations ran at d4fc41a in `C:\Projects\arbareto-l8`, and each `ORIGIN` line names that checkout. Each source file was restored byte for byte (sha256 check).
+
+| Task | Proof | Edit | Red | Green |
+|---|---|---|---|---|
+| T067 | `tests/contracts/references-sidebar.test.tsx` is green in run 7. | `ReferencesSidebar.tsx:379` drops `font-semibold` on the current row. | 33 pass, 1 fail ("the current branch name is bold with aria-current and no Current text", line 164). | 34 pass |
+| T068 | `tests/contracts/commit-details.test.tsx` is green in run 7. | `CommitDetails.tsx:141` makes the parent button copy the selected commit ID. | 14 pass, 1 fail ("each parent has its own Copy parent ID button, and it copies that parent", line 109). | 15 pass |
+
 ## Batch reviews
 
 Each batch verification task passes only after one independent review of its batch is recorded here.

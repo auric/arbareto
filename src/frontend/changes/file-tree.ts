@@ -10,6 +10,7 @@ import { MULTI_FILE_ACTION_FILES } from "../../contracts/limits";
 export type Layout = "tree" | "flat";
 /** `pos` and `size` are the 1-based position and the set size of the row among its siblings (WAI-ARIA `aria-posinset`, `aria-setsize`). */
 type Place = { pos: number; size: number };
+/** `key` is the path bytes: each full status read gives each file a new entry ID, and the row must stay mounted. */
 export type FileRow = { kind: "file"; key: string; depth: number; entry: ChangeEntry } & Place;
 /** `folder` holds the folder path bytes in base64, as `applyFiles` and the ignore review take them. */
 export type FolderRow = { kind: "folder"; key: string; depth: number; name: string; path: string; folder: string; count: number; expanded: boolean; untracked: boolean } & Place;
@@ -62,7 +63,7 @@ function treeRows(entries: readonly ChangeEntry[], scope: string, depth: number,
     for (const child of children) {
       pos++;
       if (!isFolder(child)) {
-        out.push({ kind: "file", key: child.entryId, depth: level, entry: child, pos, size });
+        out.push({ kind: "file", key: child.pathBytes, depth: level, entry: child, pos, size });
         continue;
       }
       let node = child;
@@ -88,7 +89,7 @@ function treeRows(entries: readonly ChangeEntry[], scope: string, depth: number,
 function listRows(entries: readonly ChangeEntry[], layout: Layout, scope: string, depth: number, toggled: ReadonlySet<string>, untracked: boolean, out: TreeRow[], extra = 0, keep?: Keep): number {
   if (layout === "tree") return treeRows(entries, scope, depth, toggled, untracked, out, extra, keep);
   const shown = keep === undefined ? entries : entries.filter(keep);
-  shown.forEach((entry, i) => out.push({ kind: "file", key: entry.entryId, depth, entry, pos: i + 1, size: shown.length + extra }));
+  shown.forEach((entry, i) => out.push({ kind: "file", key: entry.pathBytes, depth, entry, pos: i + 1, size: shown.length + extra }));
   return shown.length;
 }
 

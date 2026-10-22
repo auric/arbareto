@@ -6,14 +6,13 @@
 // No case sends keyboard or pointer input. A fact that needs input prints `OBSERVATION T005: unverified <Nn>` with its capability.
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { CFunction, dlopen, FFIType, ptr, read, type Pointer } from "bun:ffi";
-import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs";
+import { CFunction, dlopen, FFIType, ptr, type Pointer } from "bun:ffi";
+import { existsSync, readFileSync, renameSync, writeFileSync, writeSync } from "node:fs";
 import { release } from "node:os";
 import { join } from "node:path";
 import { processCreationTime, terminateRecorded } from "../git/win32";
-import { close, find, focus, foregroundPid, foregroundSkip, inputDesktopSkip, invoke, MAX_WAIT_MS, UiaError, waitFocus, type Element } from "./uia";
-
-const PROBE_VARIABLE = "ARBARETO_NATIVE_PROBE";
+import { PROBE_VARIABLE, running, TOOL_NAME, toolCommand, waitEnded, waitReady, writeGuiCopy, type Member } from "./merge-tool-fixture";
+import { close, find, focus, foregroundPid, foregroundSkip, inputDesktopSkip, invoke, MAX_WAIT_MS, showContextMenu, UiaError, waitFocus, type Element } from "./uia";
 
 const { ptr: P, u32, i32, u64 } = FFIType;
 const open = () => ({
@@ -81,7 +80,6 @@ const pinned = (bytes: Uint8Array) => {
 };
 const address = (bytes: Uint8Array) => BigInt(pinned(bytes));
 const view = (bytes: Uint8Array) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-const slash = (path: string) => path.replaceAll("\\", "/");
 
 function fail(call: string): never {
   throw new Error(`${call} failed: ${win().kernel32.GetLastError()}`);
@@ -284,7 +282,8 @@ function startInJob(job: Pointer, program: string, args: readonly string[], cwd:
   }
 }
 
-function jobPids(job: Pointer): number[] {
+// Microsoft Learn `QueryInformationJobObject`: a null `job` queries the immediate Job of the calling process.
+function jobPids(job: Pointer | null): number[] {
   const list = new Uint8Array(8 + 8 * JOB_PID_CAPACITY);
   if (!win().kernel32.QueryInformationJobObject(job, JOB_PID_LIST_CLASS, ptr(list), list.byteLength, null)) fail("QueryInformationJobObject");
   const assigned = view(list).getUint32(0, true);
@@ -345,15 +344,20 @@ async function shellProbe(): Promise<never> {
   process.exit(0);
 }
 
-// The fixture merge tool. It shows one window, records whether that window is the foreground window right after `ShowWindow`, and waits.
+// The fixture merge tool. It shows one window, records whether that window is the foreground window right after `ShowWindow`, records its immediate Job, and waits.
 function toolProbe(readyDir: string): never {
-  const { user32 } = win();
+  const { kernel32, user32 } = win();
   try {
     const hwnd = createWindow("STATIC", TOOL_TITLE, WS_OVERLAPPEDWINDOW, null, 0);
     user32.ShowWindow(hwnd, SW_SHOWNORMAL);
     const foreground = user32.GetForegroundWindow() === hwnd;
+    // The creation time at the Job query binds each PID to its process.
+    const members = jobPids(null).map((pid) => ({ pid, created: processCreationTime(pid)?.toString() ?? null }));
+    const limits = new Uint8Array(JOB_EXTENDED_LIMIT_BYTES);
+    if (!kernel32.QueryInformationJobObject(null, JOB_EXTENDED_LIMIT_CLASS, ptr(limits), JOB_EXTENDED_LIMIT_BYTES, null)) fail("QueryInformationJobObject");
+    const job = { members, limitFlags: view(limits).getUint32(JOB_LIMIT_FLAGS_OFFSET, true) };
     const file = join(readyDir, `${process.pid}`);
-    writeFileSync(`${file}.tmp`, JSON.stringify({ pid: process.pid, hwnd: Number(hwnd), foreground }));
+    writeFileSync(`${file}.tmp`, JSON.stringify({ pid: process.pid, hwnd: Number(hwnd), foreground, job }));
     renameSync(`${file}.tmp`, file);
     const message = new Uint8Array(MSG_BYTES);
     while (user32.GetMessageW(ptr(message), null, 0, 0) > 0) {
@@ -395,14 +399,12 @@ const { GIT } = await import("../git/git-binary");
 const { fixtureDir, fixtureEnv, useFixtureRoot } = await import("../git/fixture-root");
 const { buildWorkbench, repoOf, wb } = await import("../git/workbench-fixtures");
 const { obs, observationLine } = await import("../git/fact-runner");
-const { appEnv, findInstalledApp, processRecords, startInstalledApp, WAIT_MS, waitExit } = await import("./installed-app");
+const { appEnv, explorerReveal, explorerWindows, findInstalledApp, processRecords, startInstalledApp, WAIT_MS, waitExit } = await import("./installed-app");
 
-for (const helper of ["./uia.ts", "./installed-app.ts", "../git/win32.ts", "../git/workbench-fixtures.ts"]) printOrigin(helper, import.meta.dir);
+for (const helper of ["./uia.ts", "./installed-app.ts", "./merge-tool-fixture.ts", "../git/win32.ts", "../git/workbench-fixtures.ts"]) printOrigin(helper, import.meta.dir);
 
 const TASK = "T005";
 const TEST_TIMEOUT_MS = 120_000;
-const TOOL_READY_MS = 60_000;
-const POLL_MS = 20;
 const OS = release();
 
 const observe = (fact: string, expected: unknown, observed: unknown, match?: boolean) => console.log(observationLine(TASK, obs(fact, expected, observed, match), `os=${OS}`));
@@ -534,88 +536,8 @@ function folderBox(pid: number): Pointer {
 }
 const WM_SETTEXT = 0x000c;
 
-// Windows SDK 10.0.19041.0 `UIAutomationClient.h`: IUIAutomationElement3 and the C vtable slot of ShowContextMenu.
-const IID_IUIAutomationElement3 = "8471df34-aee0-4a01-a7de-7db9af12c296";
-const SLOT_QUERY_INTERFACE = 0;
-const SLOT_RELEASE = 2;
-const SLOT_SHOW_CONTEXT_MENU = 91;
-
-function guid(text: string): Uint8Array {
-  const hex = text.replaceAll("-", "");
-  const bytes = Buffer.alloc(16);
-  bytes.writeUInt32LE(parseInt(hex.slice(0, 8), 16), 0);
-  bytes.writeUInt16LE(parseInt(hex.slice(8, 12), 16), 4);
-  bytes.writeUInt16LE(parseInt(hex.slice(12, 16), 16), 6);
-  Buffer.from(hex.slice(16), "hex").copy(bytes, 8);
-  return new Uint8Array(bytes);
-}
-
-function slotCall(self: Pointer, slot: number, args: FFIType[], values: unknown[]): number {
-  const fn = read.ptr(read.ptr(self, 0) as Pointer, slot * 8) as Pointer;
-  const method = CFunction({ ptr: fn, args: [P, ...args], returns: slot === SLOT_RELEASE ? u32 : i32 }) as unknown as (...a: unknown[]) => number;
-  return method(self, ...values);
-}
-
-// The HRESULT of IUIAutomationElement3::ShowContextMenu. Chromium dispatches the page `contextmenu` event for it, as for the keyboard menu key.
-function showContextMenu(element: Element): number {
-  const out = new BigUint64Array(1);
-  const iid = guid(IID_IUIAutomationElement3);
-  const hr = slotCall(element.self, SLOT_QUERY_INTERFACE, [P, P], [ptr(iid), ptr(out)]);
-  if (hr < 0) return hr;
-  const element3 = Number(out[0]) as Pointer;
-  try {
-    return slotCall(element3, SLOT_SHOW_CONTEXT_MENU, [], []);
-  } finally {
-    slotCall(element3, SLOT_RELEASE, [], []);
-  }
-}
-
-// Microsoft PE format: `e_lfanew` at 0x3C, the optional header after the 4-byte signature and the 20-byte COFF header, and `Subsystem` at byte 68 of it.
-// The merge tools of git-mergetool(1) are GUI programs, so the copy of the Bun runtime gets the GUI subsystem.
-const IMAGE_SUBSYSTEM_WINDOWS_GUI = 2;
-const IMAGE_SUBSYSTEM_WINDOWS_CUI = 3;
-function writeGuiCopy(from: string, to: string): void {
-  const image = readFileSync(from);
-  const header = image.readUInt32LE(0x3c);
-  const subsystem = header + 4 + 20 + 68;
-  if (image.toString("latin1", header, header + 4) !== "PE\0\0" || image.readUInt16LE(subsystem) !== IMAGE_SUBSYSTEM_WINDOWS_CUI) throw new Error(`${from} is not a console PE image`);
-  image.writeUInt16LE(IMAGE_SUBSYSTEM_WINDOWS_GUI, subsystem);
-  writeFileSync(to, image);
-}
-
-interface ToolReady {
-  pid: number;
-  hwnd: number;
-  foreground: boolean;
-}
-
-async function waitReady(dir: string): Promise<ToolReady | null> {
-  for (const end = performance.now() + TOOL_READY_MS; performance.now() < end; await Bun.sleep(POLL_MS)) {
-    const names = readdirSync(dir);
-    const error = names.find((n) => n.endsWith(".error"));
-    if (error !== undefined) throw new Error(`the fixture tool failed: ${readFileSync(join(dir, error), "utf8")}`);
-    const ready = names.find((n) => /^\d+$/.test(n));
-    if (ready !== undefined) return JSON.parse(readFileSync(join(dir, ready), "utf8")) as ToolReady;
-  }
-  return null;
-}
-
-interface Member {
-  pid: number;
-  name: string | null;
-  created: bigint | null;
-}
-
-const running = (members: Member[]) => members.filter((m) => m.created !== null && processCreationTime(m.pid) === m.created);
-
-async function waitEnded(members: Member[]): Promise<Member[]> {
-  for (const end = performance.now() + WAIT_MS; running(members).length > 0 && performance.now() < end; ) await Bun.sleep(POLL_MS);
-  return running(members);
-}
-
 // plan.md D7: `mergetool --tool=<tool> --no-prompt -- <path>` with the global `--literal-pathspecs`.
 const MERGETOOL_ARGS = ["--no-lazy-fetch", "--literal-pathspecs", "mergetool", "--tool=window", "--no-prompt", "--", "uu.txt"];
-const TOOL_NAME = "native-merge-tool.exe";
 
 // The start page option text, `OPEN_FOLDER` in src/frontend/app/RepositorySwitcher.tsx.
 const OPEN_FOLDER = "Open folder… (Ctrl+O)";
@@ -623,14 +545,6 @@ const OPEN_FOLDER = "Open folder… (Ctrl+O)";
 const CURRENT_ROW = "main, local branch, Current";
 // `SHOW_BRANCH_HISTORY` in src/frontend/refs/ReferencesSidebar.tsx. The shortcut column is `aria-hidden`, so the UIA name is the label only (feature 004 spec FR-085).
 const MENU_ITEM = "Show only this branch's history";
-
-function powershell(script: string): unknown {
-  const shell = join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  const proc = Bun.spawnSync([shell, "-NoProfile", "-NonInteractive", "-Command", `[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)\n${script}`], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: TEST_TIMEOUT_MS / 2 });
-  if (proc.exitCode !== 0) throw new Error(`powershell exited ${proc.exitCode}: ${proc.stderr.toString()}`);
-  return JSON.parse(proc.stdout.toString());
-}
-const quoted = (text: string) => `'${text.replaceAll("'", "''")}'`;
 
 describe.skipIf(process.platform !== "win32")("T005 native facts N1 to N6", () => {
   useFixtureRoot();
@@ -676,26 +590,11 @@ describe.skipIf(process.platform !== "win32")("T005 native facts N1 to N6", () =
       const folder = fixtureDir("native-reveal");
       const target = join(folder, "reveal target.txt");
       writeFileSync(target, "reveal\n");
-      const before = powershell("ConvertTo-Json -Compress -InputObject @(@((New-Object -ComObject Shell.Application).Windows() | ForEach-Object { [int64]$_.HWND }))") as number[];
+      const before = explorerWindows();
       const reveal = spawnProbe("reveal", [target], process.env);
       try {
         const call = await reveal.reply<{ init: number; hr: number }>(MAX_WAIT_MS);
-        // Shell.Application gives the folder path and the selected items of each Explorer window. Only a window that this call opened closes.
-        const state = powershell(`$dir = ${quoted(folder)}
-$before = @(${before.join(",")})
-$shell = New-Object -ComObject Shell.Application
-$found = $null
-$selected = @()
-$end = [DateTime]::UtcNow.AddMilliseconds(${TOOL_READY_MS / 4})
-while ([DateTime]::UtcNow -lt $end) {
-  foreach ($w in @($shell.Windows())) { try { if ($w.Document.Folder.Self.Path -eq $dir) { $found = $w } } catch {} }
-  if ($null -ne $found) { $selected = @($found.Document.SelectedItems() | ForEach-Object { $_.Path }); if ($selected.Count -gt 0) { break } }
-  Start-Sleep -Milliseconds ${POLL_MS}
-}
-$hwnd = if ($null -ne $found) { [int64]$found.HWND } else { $null }
-$preexisting = $null -ne $found -and $before -contains $hwnd
-if ($null -ne $found -and -not $preexisting) { $found.Quit() }
-ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $selected; preexisting = $preexisting }`) as { found: boolean; selected: string[]; preexisting: boolean };
+        const state = explorerReveal(folder, before);
         if (state.preexisting) console.log(`NOTE ${TASK}: the reveal opened a tab in an existing Explorer window. The test leaves that window open.`);
         // Windows paths ignore case.
         const selected = state.selected.map((p) => p.toLowerCase());
@@ -727,7 +626,7 @@ ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $s
           }
           const fixture = buildWorkbench(GIT!, "conflict-merge", `native-conflict-${variant}`);
           const ready = fixtureDir(`native-ready-${variant}`);
-          wb(repoOf(fixture), ["config", "mergetool.window.cmd", `${PROBE_VARIABLE}=tool '${slash(tool)}' '${slash(import.meta.path)}' '${slash(ready)}' "$MERGED"`]);
+          wb(repoOf(fixture), ["config", "mergetool.window.cmd", toolCommand(tool, ready)]);
           // plan.md D14: the user starts the tool from the Arbareto window, so the starting process holds the foreground.
           const focusCall = noFocus === null ? await uiaCode(() => use(find(shell.pid, SHELL_BUTTON, MAX_WAIT_MS), focus)) : null;
           const focusWait = focusCall === "ok" ? await uiaCode(() => waitFocus(shell.pid, SHELL_BUTTON, MAX_WAIT_MS)) : null;
@@ -766,7 +665,7 @@ ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $s
           }
           shell.send({ cmd: "cancel" });
           await shell.reply(MAX_WAIT_MS);
-          const left = await waitEnded(members);
+          const left = await waitEnded(members, WAIT_MS);
           if (facts === null) observe("N4.cancel-ends-started-members", { remaining: [] }, { names: members.map((m) => m.name), remaining: left.map((m) => m.name) }, left.length === 0);
           else if (variant === "plain") {
             observe("N3.tool-in-job", true, members.some((m) => m.pid === facts.pid));
@@ -778,7 +677,7 @@ ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $s
       } finally {
         await shell.stop();
         // The fixture root holds the tool image, so its removal needs every tool process gone.
-        for (const m of await waitEnded(tools)) {
+        for (const m of await waitEnded(tools, WAIT_MS)) {
           console.log(`LEFT ${TASK}: fixture tool PID ${m.pid} still runs`);
           terminateRecorded(m.pid, m.created!);
         }

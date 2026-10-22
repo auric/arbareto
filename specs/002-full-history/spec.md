@@ -25,6 +25,10 @@
 - Q: Do Git's own processes count toward the 128 MiB budget of SC-002? → A: No. The user said: "no, we should not count git own memory, we can do nothing about it". SC-002 bounds only the Arbareto processes and records the Git peaks apart (plan.md O-1).
 - Q: How does the user select the branch scope of the history? → A: No tabs. A View menu checkbox, a branch context menu item, and a chip select it. The user said: "i don't like we have tabs for current branch and all branches … it should be nice looking interface". The user approved the mockups (plan.md D6): "no, that's enough i guess, i am ok". FR-049 encodes this.
 
+### Session 2026-10-16
+
+- Q: How does the references sidebar mark the current branch, and where do the copy buttons of the commit details sit? → A: The user asked for the current branch in bold. The user also asked for each copy button next to the value that it copies. T067 and T068 built both requests. FR-056 and FR-057 encode this.
+
 ## User Scenarios & Testing *(mandatory)*
 
 Feature 001 shows one history page of at most 100 commits. This feature replaces that limit with the full history of a captured ref set. The default set covers all branches. The order of the journeys follows the reading flow: scroll, filter, then highlight.
@@ -160,6 +164,7 @@ Feature 001 rules stay in force unless a requirement here replaces them. FR-008 
 
 - **FR-017**: The commit message body MUST load only when the details pane shows that commit. History rows MUST hold the subject, author, date, and references, not the body.
 - **FR-018**: The details pane MUST keep the feature 001 body bound of 16 KiB. A longer body MUST end at a character boundary and state that it is cut.
+- **FR-057**: The heading row of the details pane MUST hold no button. The Copy commit ID button MUST sit in the ID row and copy the full ID, also for a commit over the text limit. The Copy message button MUST follow the subject. It MUST copy the subject, a blank line, and the body. Each parent MUST have its own button "Copy parent ID <short ID>" that copies that parent ID. The short ID is the first 12 hexadecimal digits.
 
 #### Message filter
 
@@ -223,6 +228,7 @@ Feature 001 rules stay in force unless a requirement here replaces them. FR-008 
 #### Other lists
 
 - **FR-055**: The references sidebar MUST create elements only for the rows near the visible area. Keyboard navigation, the sidebar filter, and the expanded state MUST cover every ref. Each tree item MUST state its level, its position, and its set size, because not all items exist as elements.
+- **FR-056**: The references sidebar MUST show the name of the current branch in bold. The current branch row MUST have `aria-current="true"`. Its accessible name MUST hold "Current", but its visible text MUST NOT. Other rows MUST NOT be bold or have `aria-current`. A detached HEAD MUST mark no row.
 
 ### Key Entities *(include if feature involves data)*
 

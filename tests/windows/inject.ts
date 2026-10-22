@@ -53,8 +53,14 @@ const KEYEVENTF_EXTENDEDKEY = 0x1;
 const KEYEVENTF_KEYUP = 0x2;
 const KEYEVENTF_UNICODE = 0x4;
 
-// Virtual-key codes of winuser.h. Microsoft Learn "Keyboard Input Overview" lists HOME, END, and the arrow keys of the navigation cluster as extended keys.
+// Virtual-key codes of winuser.h. Microsoft Learn "Keyboard Input Overview" lists DEL, HOME, END, and the arrow keys of the navigation cluster as extended keys.
 const KEYS: Record<string, { vk: number; extended: boolean }> = {
+  A: { vk: 0x41, extended: false },
+  B: { vk: 0x42, extended: false },
+  M: { vk: 0x4d, extended: false },
+  Delete: { vk: 0x2e, extended: true },
+  F2: { vk: 0x71, extended: false },
+  F10: { vk: 0x79, extended: false },
   Shift: { vk: 0x10, extended: false },
   Ctrl: { vk: 0x11, extended: false },
   Enter: { vk: 0x0d, extended: false },

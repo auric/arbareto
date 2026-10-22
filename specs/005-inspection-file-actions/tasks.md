@@ -48,7 +48,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 | --- | --- | --- | --- | --- | --- |
 | 0. Contracts | 1 | P1 (comparator), P2 | T001–T005 | Foundational | WP1 alone (implementer). |
 | 1. Facts, shell, History service, frontend base | 2, 3, 4 | P0.1 to P0.3, P1, P3, P4, P6 | T006–T027 | US3, US8, US9 (WP2); US2, US4, US5, US6 shell (WP3); US1, US7 service (WP4) | A: WP2 (frontend-implementer). B: WP3 (implementer-xhigh, local Windows). C: WP4 (implementer). |
-| 2. File action service, History UI | 5, 6 | P0.1, P0.2, P1, P5, P7 | T028–T047 | US2, US4, US5, US6 service (WP5); US1, US7 UI (WP6) | A: WP5 (implementer-xhigh, after WP4). B: WP6 (frontend-implementer, after WP2 and WP4). |
+| 2. File action service, History UI | 5, 6 | P0.1, P0.2, P1, P5, P7 | T028–T047, T065 | US2, US4, US5, US6 service (WP5); US1, US7 UI (WP6); US7 service (T065, WP4) | A: WP5 (implementer-xhigh, after WP4). B: WP6 (frontend-implementer, after WP2 and WP4). C: T065 (WP4, implementer). |
 | 3. Commit view UI | 7 | P8 | T048–T058 | US2, US4, US5, US6 UI, and the Commit view Blame entry of US7 | WP7 alone (frontend-implementer). Then the WP3 removal step T057 (implementer-xhigh). |
 | 4. Qualification | 8 | P9 | T059–T064 | Cross-cutting | WP8 (implementer writes, scout runs; WSL alone, then packaged). |
 
@@ -216,9 +216,15 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - [ ] T045 [US1] Change `src/frontend/history/CommitDetails.tsx`, `src/frontend/state/history-view.ts`, `src/frontend/views/HistoryView.tsx` (the History view frame, not `src/frontend/history/HistoryView.tsx`), and `src/frontend/app/Workbench.tsx`, and create `src/frontend/history/CommitChanges.tsx` (P7, WP6). Plan.md D3 and D15 "History view": 268 px Commit details, 288 px Changed files, the 001 "Splitter" rule, 26 px rows, and `PatchView` without `hunkAction`. The store follows the 001 latest-wins and generation rules. Make T043 pass. Spec: FR-005 to FR-014. Depends on T011, T025, and T043.
 - [ ] T046 [US7] Create `src/frontend/blame/BlameView.tsx` and `src/frontend/blame/blame-time.ts`, and change `src/frontend/state/history-view.ts`, `src/frontend/views/HistoryView.tsx` (the History view frame), `src/frontend/app/Workbench.tsx`, and `src/frontend/index.css` (P7, WP6). Plan.md D12 and D15 "Blame view": 20 px rows, the 4 px age bar, the 236 px gutter, the 16 px marker, the 40 px line number, and the 28 px legend. Add the seven Dark and Light age shades of plan.md D16 to `index.css`, with `forced-color-adjust: auto` on the age bar. Make T044 pass. Spec: FR-053 to FR-063. Depends on T026, T044, and T045.
 
+### Blame rerun source (WP4 follow-up)
+
+**Agent**: implementer. Parallel with WP5 and WP6.
+
+- [ ] T065 [US7] Add the `{blameId}` source of `readBlame` in `src/contracts/envelope.ts`, `src/contracts/schemas/`, `tests/vectors/`, `tests/contracts/inspection-contract.test.ts`, `src/git-service/blame.ts`, and `src/git-service/session.ts` (P4, WP4). Contract Δ3, data-model §10, and plan.md D12 "Sources": the source gives the commit and path of the retained result, and steps 1 to 6 run with the new options. `focusLine` is absent. An unknown ID gives `UNKNOWN_TARGET`. The generation is not checked. One retained result per workspace replaces the source of a shown "Blame before this commit" result, so an option change cannot re-send `{blameId, line}`. Tests first in `tests/git/blame.test.ts`: an option rerun after a "before" step keeps the commit and path and equals `git blame --porcelain` with the same options; an unknown ID gives `UNKNOWN_TARGET`. Add one valid and two invalid vectors, run `bun run export:schemas`, and run `cargo test --locked the_golden_vectors` in `src-tauri`. Control mutation: resolve the source from the line's commit in place of the previous commit; the oracle case must fail. Spec: FR-053, FR-056, FR-057. Depends on T026 and T027.
+
 ### Batch 2 verification
 
-- [ ] T047 [US1] Run the batch 2 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `bun run test:contracts`, and `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `Local: WSL`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every `OBSERVATION` line of T030 into research.md R17. A failed fact changes contracts/operations.md and plan.md before batch 3. Control mutations, each undone and rerun green: (1) in `src/git-service/file-delete.ts`, skip the check phase; the US2-5 case of `tests/git/delete.test.ts` must fail. (2) In `src/git-service/ignore-preview.ts`, skip the self-check; the `self-check` case of `tests/git/ignore-preview.test.ts` must fail. (3) In `src/frontend/history/CommitChanges.tsx`, keep the service order; the tree-order case of `tests/contracts/inspection-history.test.tsx` must fail. Board comparison: start the app with `bun run dev` and `ARBARETO_PROFILE_ROOT` set to a scratch folder, and compare the History regions, the parent picker, the constrained tabs, and the blame view with the Main, HistoryStates, Blame, Light, and ForcedColors boards. Record the screenshots and every difference in research.md R17. The task passes only after one independent review of batch 2 is recorded in research.md, with `ponytail-review`, the heuristics review of the Delete and preview code, and `web-design-guidelines` for the UI diff. Spec: all IDs of T028 to T046, SC-001, SC-003, SC-005 to SC-007. Depends on T028 to T046.
+- [ ] T047 [US1] Run the batch 2 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `bun run test:contracts`, and `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `Local: WSL`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every `OBSERVATION` line of T030 into research.md R17. A failed fact changes contracts/operations.md and plan.md before batch 3. Control mutations, each undone and rerun green: (1) in `src/git-service/file-delete.ts`, skip the check phase; the US2-5 case of `tests/git/delete.test.ts` must fail. (2) In `src/git-service/ignore-preview.ts`, skip the self-check; the `self-check` case of `tests/git/ignore-preview.test.ts` must fail. (3) In `src/frontend/history/CommitChanges.tsx`, keep the service order; the tree-order case of `tests/contracts/inspection-history.test.tsx` must fail. Board comparison: start the app with `bun run dev` and `ARBARETO_PROFILE_ROOT` set to a scratch folder, and compare the History regions, the parent picker, the constrained tabs, and the blame view with the Main, HistoryStates, Blame, Light, and ForcedColors boards. Record the screenshots and every difference in research.md R17. The task passes only after one independent review of batch 2 is recorded in research.md, with `ponytail-review`, the heuristics review of the Delete and preview code, and `web-design-guidelines` for the UI diff. Spec: all IDs of T028 to T046 and T065, SC-001, SC-003, SC-005 to SC-007. Depends on T028 to T046 and T065.
 
 **Checkpoint**: US1 works end to end. US7 works from the History diff. The service serves US2, US4, US5, and US6.
 
@@ -277,7 +283,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 
 - Batch 0 (T001–T005): no dependency. Main at 3575a15 holds features 001 to 004.
 - Batch 1 (T006–T027): after T005. WP2 (T006–T011), WP3 (T012–T015), and WP4 (T016–T026) run in parallel. T027 after all three.
-- Batch 2 (T028–T047): after T027. WP5 (T028–T042) and WP6 (T043–T046) run in parallel. T047 after both.
+- Batch 2 (T028–T047, T065): after T027. WP5 (T028–T042), WP6 (T043–T046), and T065 run in parallel. T047 after all three.
 - Batch 3 (T048–T058): after T047. WP7 (T048–T056) alone, then T057, then T058.
 - Batch 4 (T059–T064): after T058. T059 alone first. Then T060 and T061. Then T062, T063, and T064.
 
@@ -299,10 +305,10 @@ description: "Task list for the History Inspection and Commit View File Actions 
 
 - Batch 0: T001 and T002, then T003 beside T004.
 - Batch 1: Track A WP2: T006, T007, and T008 in parallel; T009 beside T010; then T011. Track B WP3: T012 and T013, then T014, then T015. Track C WP4: T016, T017, T018; then T019 to T022 in parallel; T023 beside T024; then T025, then T026.
-- Batch 2: Track A WP5: T028, T029, T030; then T031 to T036 in parallel; T037 beside T038; then T039, T040, T041, and T042 in order. Track B WP6: T043 beside T044; then T045, then T046.
+- Batch 2: Track A WP5: T028, T029, T030; then T031 to T036 in parallel; T037 beside T038; then T039, T040, T041, and T042 in order. Track B WP6: T043 beside T044; then T045, then T046. T065 beside both tracks.
 - Batch 3: T048 to T051 in parallel; then T052 to T056 in order, because they share `ChangesPane.tsx`, `bridge.ts`, `state/workbench.ts`, and `Workbench.tsx`; then T057 alone.
 - Batch 4: T059 alone. Then T060 beside T061.
-- Shared files: `src/git-service/session.ts` in WP4 (T025, T026), then WP5 (T038 to T042). `src/frontend/app/Workbench.tsx` in WP6, then WP7. `src/frontend/bridge.ts` in WP1 (T004), then WP7. `src/frontend/changes/file-tree.ts` in WP2 only; WP7 uses it unchanged. `src/frontend/index.css` in WP2 (T011), then WP6 (T046). `src/contracts/` and `tests/vectors/` in WP1, and in T057 alone; a later package that needs a schema change reports it, and the orchestrator merges it. Rust only in WP1 (the T004 ripple), WP3 (T013 to T015), and T057, one at a time. `tests/groups.json` in every WP; the orchestrator resolves merge conflicts.
+- Shared files: `src/git-service/session.ts` in WP4 (T025, T026), then WP5 (T038 to T042) and T065; the orchestrator resolves merge conflicts. `src/frontend/app/Workbench.tsx` in WP6, then WP7. `src/frontend/bridge.ts` in WP1 (T004), then WP7. `src/frontend/changes/file-tree.ts` in WP2 only; WP7 uses it unchanged. `src/frontend/index.css` in WP2 (T011), then WP6 (T046). `src/contracts/` and `tests/vectors/` in WP1, and in T065 and T057 alone; a later package that needs a schema change reports it, and the orchestrator merges it. Rust only in WP1 (the T004 ripple), WP3 (T013 to T015), and T057, one at a time. `tests/groups.json` in every WP; the orchestrator resolves merge conflicts.
 
 ## Parallel Example: Batch 1
 
@@ -324,7 +330,7 @@ Then:          T027
 | FR-020 to FR-033 (US2) | T012 to T014, T028 to T030, T032, T039, T048, T053, T059, T060 |
 | FR-034 to FR-046 (US5) | T013 to T015, T028 to T031, T033, T034, T037, T040, T041, T049, T054, T057, T059 |
 | FR-047 to FR-052 (US6) | T013, T015, T030, T035, T042, T050, T055, T059, T060 |
-| FR-053 to FR-063 (US7) | T016 to T018, T020, T022, T024, T026, T044, T046, T048, T052, T061 |
+| FR-053 to FR-063 (US7) | T016 to T018, T020, T022, T024, T026, T065, T044, T046, T048, T052, T061 |
 | FR-064 to FR-066 (US8, US9) | T006, T008, T009, T011, T018 |
 | FR-067 | T008, T043, T044, T048 to T051, T056, T060 |
 | FR-068 | T043, T044, T049 |

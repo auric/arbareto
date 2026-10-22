@@ -114,7 +114,7 @@ Each section names its source. Field names are contract names. "001 data-model ย
 ## 10. Blame request and result
 
 - Source: plan D12.
-- Request `source`: `{changesId, fileId}`, `{snapshotId, entryId}`, or `{blameId, line}`. `options`: `ignoreWhitespace`, `detectMoves`, `detectCopies`, `ignoreList` (booleans).
+- Request `source`: `{changesId, fileId}`, `{snapshotId, entryId}`, `{blameId, line}`, or `{blameId}`. `{blameId}` gives the commit and path of the retained result (its `commit` and `pathBytes`). Steps 1 to 6 run with the new options. `focusLine` is absent. An unknown ID gives `UNKNOWN_TARGET`. The generation is not checked, as for `{blameId, line}`. `options`: `ignoreWhitespace`, `detectMoves`, `detectCopies`, `ignoreList` (booleans).
 - Result:
   - `blameId`: a contract ยง2 identifier. One retained result per workspace.
   - `commit`: the blamed commit OID. `pathBytes`: the blamed path.

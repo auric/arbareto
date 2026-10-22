@@ -323,6 +323,34 @@ describe("sources (FR-053)", () => {
     TIMEOUT_MS,
   );
 
+  caseTest("T065", "a {blameId} source reruns the commit and path of the retained result with new options after Blame before this commit; an unknown ID gives UNKNOWN_TARGET", SHELL, () =>
+    withService("t065-rerun", async (service) => {
+      const built = buildBlame(gitPath(), "t065-rerun");
+      const v = await viewOf(service, built.repo);
+      const first = (await readBlame(service, v, await historySource(service, v, built.oids.b7!, "tale.txt"))).result!;
+      const line = resultLines(first).findIndex((l) => l.oid === built.oids.b7) + 1;
+      const shown = (await readBlame(service, v, { blameId: first.blameId, line })).result!;
+      expect(shown.commit).toBe(built.oids.b6!);
+      const path = Buffer.from(shown.pathBytes, "base64").toString();
+      const content = git(built.repo, ["cat-file", "blob", `${shown.commit}:${path}`]);
+      // The b6 version holds rotated, copied, and indented lines, so -w, -M, and -C each change Git's attribution.
+      const plain = JSON.stringify(porcelainOracle(built.repo, shown.commit, path, []));
+      let id = shown.blameId;
+      for (const options of OPTION_SETS.slice(1)) {
+        const oracle = porcelainOracle(built.repo, shown.commit, path, flags(options));
+        const where = { options: flags(options).join("") };
+        expect({ ...where, changed: JSON.stringify(oracle) !== plain }).toEqual({ ...where, changed: true });
+        const rerun = await readBlame(service, v, { blameId: id }, options);
+        expectAttribution(rerun, oracle, content, where);
+        expect({ ...where, commit: rerun.result!.commit, path: rerun.result!.pathBytes, focus: "focusLine" in rerun.result! }).toEqual({ ...where, commit: shown.commit, path: shown.pathBytes, focus: false });
+        id = rerun.result!.blameId;
+      }
+      // The workspace keeps one result, so the replaced IDs and a foreign ID give UNKNOWN_TARGET.
+      for (const blameId of [first.blameId, shown.blameId, crypto.randomUUID()]) expect((await readBlame(service, v, { blameId })).code).toBe("UNKNOWN_TARGET");
+    }),
+    TIMEOUT_MS,
+  );
+
   caseTest(TASK, "Blame before this commit runs steps 1 to 6 for the previous version first: binary and oversize give their reasons before any diff, and an empty version gives no focusLine (contract Δ3)", SHELL, () =>
     withService("t022-before-refusals", async (service) => {
       const built = buildBlame(gitPath(), "t022-before-refusals");

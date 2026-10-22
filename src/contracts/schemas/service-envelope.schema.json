@@ -3337,6 +3337,21 @@
                   ],
                   "additionalProperties": false,
                   "title": "BlameBefore"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "blameId": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                    }
+                  },
+                  "required": [
+                    "blameId"
+                  ],
+                  "additionalProperties": false,
+                  "title": "BlameRerun"
                 }
               ]
             },

@@ -4,7 +4,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 ## 1. Catalog file (`src/contracts/dictionaries.json`)
 
-- Source: plan D3, spec FR-017. `scripts/dictionary-catalog.ts` writes it. Only an application release changes it.
+- Source: plan D3, spec FR-017. `scripts/dictionary-catalog.ts` writes it, from the network or with `--offline` from the cache. Only an application release changes it.
 - `version`: 1.
 - `source`: `{repository: "wooorm/dictionaries", commit, urlPrefix}`. `commit` is 40 lowercase hex digits. `urlPrefix` is `https://raw.githubusercontent.com/wooorm/dictionaries/<commit>/dictionaries/`.
 - `bundled`: the English record (§2 fields), with `id` `en`, the `dictionary-en` package name and version, and the files of that package.
@@ -15,11 +15,10 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 - `id`: a language ID. Form `^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$`, at most 32 bytes. Examples: `uk`, `de-CH`, `sr-Latn`, `ca-valencia`, `tlh-Latn`, `hyw`.
 - `name`: the English name, 1 to 64 code points (plan D3).
-- `license`: the `license` field of the folder's `package.json`, 1 to 128 bytes, as given.
+- `license`: the `license` field of the folder's `package.json`, 1 to 128 bytes, as given (spec FR-015).
 - `commit`: the pinned commit.
 - `files`: 3 or 4 entries `{name, url, size, sha256}`, in the order `index.aff`, `index.dic`, then the licence documents. `name` is one of `index.aff`, `index.dic`, `license`, `licence`, `readme.md`. `size` is 1 to 12,582,912. `sha256` is 64 lowercase hex digits.
 - `licences`: the licence document names, 1 or 2: `["license"]`, `["licence"]`, `["license", "licence"]` (`oc`), or `["readme.md"]` (`eu`, `et`).
-- `nfc`: true when `index.aff` and `index.dic` equal their NFC form (F13).
 - Validation: the sizes of `files` add up to at most 12,582,912 (`DICTIONARY_LANGUAGE_BYTES`). Each name occurs once.
 - The download order is the `files` order. The row link names the URL of `licences[0]`.
 
@@ -27,18 +26,20 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 - Source: plan D5, spec FR-013, FR-017.
 - Files: each `files` name of the entry, and `entry.json`.
-- `entry.json`: `{version: 1, entry, source, installedAt}`. `entry` is the catalog entry (§2) that the files came from. `source` is `download` or `import`. `installedAt` is a UTC time.
-- Staging: `.staging-<id>-<32 hex>/` and `.old-<id>-<32 hex>/` in `dictionaries/`. They exist only during a run or after a crash.
-- File check (`readDictionary`, `listDictionaries`): the folder exists; `entry.json` parses and its `entry` equals the current catalog entry (same keys and values); each file exists as a regular file with the catalog size and SHA-256.
-- Release reconcile (once per service process, under the dictionary lock):
+- `entry.json`: `{version: 1, entry}`. `entry` is the catalog entry (§2) that the files came from. The service reads at most `DICTIONARY_MANIFEST_BYTES` (65,536) of it. A larger file, invalid JSON, or another form counts as no valid manifest.
+- Staging: `.staging-<id>-<32 hex>/` in `dictionaries/`. It exists only during a run or after a crash.
+- Install: remove an existing `<id>/`, then rename the staging folder to `<id>/`.
+- Language check (`listDictionaries`): the folder exists; `entry.json` is valid and its `entry` equals the current catalog entry (same keys and values); each file exists as a regular file with the catalog size and SHA-256.
+- File check (`readDictionary`): the folder exists; `entry.json` is valid and equals the entry; the requested file exists as a regular file with the catalog size and SHA-256.
+- Release reconcile (once per service process; every dictionary operation waits for it):
 
 | Entry in `dictionaries/` | Action | Notice for this service process |
 |---|---|---|
-| A name that starts with `.staging-` or `.old-` | remove | none |
+| A name that starts with `.staging-` | remove | none |
 | A catalog ID whose `entry.json` holds the current entry | keep | none |
 | A catalog ID whose `entry.json` holds another entry | remove | `catalog-changed` for that ID |
-| A catalog ID without a parsing `entry.json` | keep (the check gives `changed`) | none |
-| No catalog ID, and `entry.json` parses with that ID | remove | `catalog-removed` with `entry.name` |
+| A catalog ID without a valid `entry.json` | keep (the check gives `changed`) | none |
+| No catalog ID, and `entry.json` is valid with that ID | remove | `catalog-removed` with `entry.name` |
 | Any other entry | keep, untouched | none |
 
 - A download or import of a language clears its `catalog-changed` notice.
@@ -49,11 +50,11 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 | `state` | Rule |
 |---|---|
-| `downloading` | A `downloadDictionary` run holds the lock for this ID. |
-| `importing` | An `importDictionary` run holds the lock for this ID. |
+| `downloading` | A `downloadDictionary` run holds the run lock for this ID. |
+| `importing` | An `importDictionary` run holds the run lock for this ID. |
 | `not-downloaded` | The folder `<id>/` does not exist. |
-| `changed` | The folder exists, and the §3 file check fails. |
-| `ready` | The §3 file check passes. |
+| `changed` | The folder exists, and the §3 language check fails. |
+| `ready` | The §3 language check passes. |
 
 - `notice`: `catalog-changed` or absent. `removed`: the `catalog-removed` names of this service process.
 - Row state in the renderer (plan D17 texts):
@@ -66,7 +67,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 | Importing… | `importing` |
 | Ready | `ready`, and no load failure of this window session |
 | Changed | `changed` |
-| Failed | the last run of this window session for this ID failed, or its worker load failed |
+| Failed | the last run of this window session for this ID failed, or its worker load failed or passed its deadline |
 
 - A Failed row keeps its failure text until the next run of that row or a restart. A load failure of a `ready` row shows Failed with the FR-016 load text and offers only Remove.
 - Row actions: Not downloaded: Download, Import…. Downloading: Cancel. Importing: none. Ready: Show licence, Remove. Changed: Download, Import…, Remove. Failed after a run: Retry, Import…, and Remove when files exist. Failed with reason `not-https`: Import… only. Bundled: Show licence.
@@ -76,17 +77,20 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 - Source: plan D4, spec FR-010, FR-011, FR-016.
 - Request: `{language}`. Result: `{language, state: "ready"}`.
-- Steps: `reconciling` → `fetching` (file i of n) → `checking` (file i) → `installing` → `ready`. Every file passes `fetching` and `checking` before `installing`.
-- Ends: `ready`; `failed` with `DICTIONARY_UNAVAILABLE` and a reason of §5 below; `failed` with `DEADLINE`; `canceled`. Every end except `ready` removes the staging folder.
+- Steps: the reconcile → the run lock → `fetching` (file i of n) → `checking` (file i) → `installing` → `ready`. Every file passes `fetching` and `checking` before `installing`.
+- Ends: `ready`; `failed` with `DICTIONARY_UNAVAILABLE` and a reason below; `failed` with `DEADLINE`; `canceled`. Every end except `ready` removes the staging folder.
 - Reasons: `not-https` (before any request), `redirect` (300 to 399), `http-not-found` (404), `http-rate-limit` (429), `http-status` with `status` (any other status that is not 200), `transport` (a rejected request or body read that is not this run's abort), `mismatch` (a byte count or SHA-256 other than the catalog), `save` with `folder` (a file system error of the staging or the install), `busy` (another run holds the lock).
-- Progress: phase `dictionary`, counters `received` (decoded bytes so far, all files) and `total` (the sum of the catalog sizes).
-- Bounds: `DICTIONARY_DOWNLOAD_DEADLINE_MS` (120,000) for the whole run; each file at most its catalog size plus one byte read.
+- Bytes: the run reads at most the catalog size plus one byte of each body, and writes at most the catalog size. Byte `size + 1` gives `mismatch`.
+- Connection: direct, `proxy: false` (user decision, 2026-10-22).
+- Progress: phase `dictionary`, counters `received` (decoded bytes so far, all files, each up to its size) and `total` (the sum of the catalog sizes).
+- Bounds: `DICTIONARY_DOWNLOAD_DEADLINE_MS` (120,000) for the whole run.
 
 ## 6. Import run
 
 - Source: plan D6, spec FR-012.
 - Renderer request: `{language}`. Service payload after the shell picker: `{language, folder}`, with `folder` a channel path from the picker.
-- Steps: `reconciling` → `checking` (file i) → `installing` → `ready`.
+- Steps: the reconcile → the run lock → `checking` (file i) → `installing` → `ready`.
+- Bytes: at most the catalog size plus one byte read, and at most the catalog size written, per file.
 - Reasons: `import-mismatch` (a missing file, another type, another size, or another SHA-256), `import-unreadable` with `folder` (a read error other than `ENOENT`), `save` with `folder`, `busy`.
 - No network request runs.
 
@@ -95,8 +99,8 @@ Each section names its source. Field names are contract names. "001 data-model �
 - Source: plan D7, spec FR-013.
 - Request: `{language, file, offset}`. `file` is a `files` name of the entry. `offset` is a multiple of `DICTIONARY_CHUNK_BYTES` (1,048,576) below the size, or 0.
 - Result: `{language, file, size, offset, bytes}`. `bytes` is the base64 of the bytes from `offset`, at most `DICTIONARY_CHUNK_BYTES`.
-- Reasons: `absent` (no folder), `changed` (the §3 file check fails). An unknown `language` or `file`, or a bad `offset`, gives `INVALID_REQUEST`.
-- Each call checks the whole file, so every chunk comes from bytes that equal the catalog.
+- Reasons: `absent` (no folder), `changed` (the §3 file check fails). An unknown `language` or `file`, or a bad `offset`, gives `INVALID_REQUEST`. A `cancel {operationId}` gives `canceled`.
+- Each call checks the requested file whole, so every chunk comes from bytes that equal the catalog.
 
 ## 8. Language selection setting
 
@@ -109,10 +113,10 @@ Each section names its source. Field names are contract names. "001 data-model �
 ## 9. Personal word list record
 
 - Source: plan D10, spec FR-006. IndexedDB database `arbareto-spelling`, version 1, store `words`, key path `word`.
-- Record: `{word, addedAt}`. `word` is NFC, 1 to 100 code points (`PERSONAL_WORD_CODE_POINTS`). `addedAt` is a UTC time text.
+- Record: `{word}`. `word` is NFC, 1 to 100 code points (`PERSONAL_WORD_CODE_POINTS`).
 - List bound: 10,000 records (`PERSONAL_WORDS`).
 - List state: `loading`, `loaded` (the words), `unreadable` (more than 10,000 records, a record that fails the rules, or a read error), `unavailable` (the database does not open).
-- Add: one `readwrite` transaction, `count()`, then `add(record)`. `ConstraintError` means "already listed". Remove: `delete(word)`.
+- Add: one `readwrite` transaction, `count()`, then `add(record)`. `ConstraintError` means "already listed". Remove: `delete(word)`, with no confirmation (user decision, 2026-10-22).
 - In `unreadable` and `unavailable`, Arbareto writes nothing to the store.
 
 ## 10. Ignore list
@@ -125,7 +129,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 - Lines: T splits at U+000A. Every rule below stays inside one line, because UAX #29 breaks at a line feed (WB3a, WB3b) and the token rules use White_Space, which holds U+000A.
 - Backtick ranges: in each line, the U+0060 code points pair in order: the first with the second, the third with the fourth. Each pair skips the range from the first backtick to the second backtick, both included. A last backtick without a pair skips nothing.
 - Tokens: the maximal runs of code points without the Unicode property `White_Space` (`/\P{White_Space}+/gu`). A token is skipped when it holds a code point of `\p{Nd}`, or U+005F `_`, U+002F `/`, U+005C `\`, U+0040 `@`, or U+003A `:`, or a U+002E `.` that is neither its first nor its last code point.
-- Words: the segments of `new Intl.Segmenter("und", {granularity: "word"})` over T with `isWordLike` true, whose range meets no skipped range.
+- Words: the segments of `new Intl.Segmenter("und", {granularity: "word"})` over a line with `isWordLike` true, whose range meets no skipped range.
 - Lookup form: `word.normalize("NFC")`. The range keeps the offsets in T.
 - Vectors (the contract test holds these and more):
 
@@ -147,44 +151,47 @@ Each section names its source. Field names are contract names. "001 data-model �
 - A word t (NFC) passes when the accepted set of the personal list or of the Ignore list holds t.
 - Examples: L = {kubectl} accepts `kubectl`, `Kubectl`, and `KUBECTL`, and refuses `KubeCtl`. L = {iPhone} accepts `iPhone`, `IPhone`, and `IPHONE`.
 
-## 13. Spelling marks
+## 13. Spelling marks and rounds
 
-- Source: spec FR-001, FR-004, SC-004, SC-009.
-- Mark: `{start, end, word}` in UTF-16 offsets of the text of its round, with `word` in NFC.
-- Round: a number, the text, and the set of loaded languages when the round started. Each loaded worker replies with its refused ranges.
-- Merge: a range is a mark when every loaded worker of the round refused it, and neither list of §12 accepts its word. A round merges only when every loaded worker of that round replied. A newer round drops an older one.
-- Shown marks between rounds: A is the old text, and B is the new text. p is the length of their common prefix. s is the length of their common suffix, at most `min(|A|, |B|) − p`. The changed lines are the lines of A that meet the range from p to `|A| − s`, both ends included. Marks in lines before the changed lines stay. Marks in lines after them move by `|B| − |A|`. Marks in the changed lines go until the next merge. This is exact, because §11 never crosses a line feed.
+- Source: spec FR-001, FR-004, SC-004, SC-009; plan D9.
+- Mark: `{start, end, raw, word}`. `start` and `end` are UTF-16 offsets in the text of its round. `raw` is the text of that range, as typed. `word` is its NFC form for the lookups.
+- Refused set: per loaded language, the refused ranges of the current text, kept per line.
+- Changed lines: A is the old text, and B is the new text. p is the length of their common prefix. s is the length of their common suffix, at most `min(|A|, |B|) − p`. The changed lines of A are the lines that meet the range from p to `|A| − s`, both ends included. The changed lines of B are the lines that meet the range from p to `|B| − s`.
+- Shift: in each refused set and in the shown marks, the ranges in lines before the changed lines stay, the ranges in lines after them move by `|B| − |A|`, and the ranges in the changed lines go. This is exact, because §11 never crosses a line feed.
+- Round: a number, the text version, the changed lines of B (all lines for the first round of a worker), and the set of check workers that were loaded when it started. Each of those workers replies with the refused ranges of those lines.
+- Merge: when every worker of the round replied, the engine puts the replies into the refused sets. A range is a mark when every loaded language refused it, and neither list of §12 accepts its `word`. A round merges only when all its workers replied. A newer round drops an older one, and the engine then sends the union of the dropped and the new changed lines.
 - Composition: from `compositionstart` to `compositionend`, no mark shows.
 - Count: the number of shown marks.
 
 ## 14. Worker protocol
 
-- Source: plan D9. One worker per loaded language. Main thread to worker, then the worker reply:
+- Source: plan D9. Two workers per loaded language: the check worker and the suggestion worker. Main thread to worker, then the worker reply:
 
-| Message | Fields | Reply |
-|---|---|---|
-| `init` | `language` | for `en`: `loaded` or `load-failed` after the `?raw` import |
-| `chunk` | `file` (`aff` or `dic`), `data` (base64) | none |
-| `build` | none | `loaded` or `load-failed` |
-| `check` | `round`, `text` | `checked {round, ranges}`, `ranges` a transferred `Uint32Array` of start and end pairs |
-| `suggest` | `id`, `word` | `suggested {id, list}`, at most 5 strings |
+| Message | Worker | Fields | Reply |
+|---|---|---|---|
+| `init` | both | `language` | for `en`: `loaded` or `load-failed` after the `?raw` import |
+| `chunk` | both | `file` (`aff` or `dic`), `data` (base64) | none |
+| `build` | both | none | `loaded` or `load-failed` |
+| `check` | check | `round`, `lines` (each `{start, text}`) | `checked {round, ranges}`, `ranges` a transferred `Uint32Array` of start and end pairs in offsets of T |
+| `suggest` | suggestion | `id`, `word` | `suggested {id, list}`, at most 5 strings |
 
-- A worker gets the next `check` only after it replied to the last one. The engine keeps only the newest text for it.
-- Each worker keeps a word cache of at most 100,000 entries (`SPELL_WORD_CACHE_ENTRIES`). At the bound, the cache empties.
+- A check worker gets the next `check` only after it replied to the last one. The engine keeps only the newest round for it.
+- A suggestion worker gets the next `suggest` only after it replied to the last one. A newer request replaces a queued one, and the engine drops a reply whose `id` is not the newest.
+- Load deadline: `DICTIONARY_LOAD_DEADLINE_MS` (30,000 ms) from the first `readDictionary` call, or from `init` for `en`, until `loaded`. At the deadline, the engine calls `worker.terminate()`.
 
 ## 15. Suggestions
 
-- Source: spec FR-005. The lists of the loaded workers in selection order, joined, with repeats dropped by exact string equality after NFC, cut to 5 (`SPELLING_SUGGESTIONS`).
-- A suggestion replaces the range of its mark only when the editor text in that range still equals the marked word.
+- Source: spec FR-005. The lists of the suggestion workers of the loaded languages in selection order, joined, with repeats dropped by exact string equality after NFC, cut to 5 (`SPELLING_SUGGESTIONS`).
+- A suggestion replaces the range of its mark only when the editor text in that range still equals the mark `raw` text. The NFC `word` is never the compare value.
 
 ## 16. Language fixture (SC-002)
 
-- Source: spec SC-002, Assumptions. The catalog script, `tests/git/dictionary-gate.test.ts`, and `tests/windows/spelling-perf.test.ts` build it from the cached `index.aff` and `index.dic` of one language. The packaged test types the words into the commit editor and reads the count text (plan D3).
+- Source: spec SC-002, Assumptions. `scripts/dictionary-catalog.ts`, `tests/gate/dictionary-gate.test.ts`, and `tests/windows/spelling-perf.test.ts` build it from the cached `index.aff` and `index.dic` of one language. The packaged test writes the words into the commit editor and reads the count text (plan D3).
 - Dictionary lines: the lines of `index.dic` after the first line. A stem is the text before the first `/` that no `\` precedes, the first TAB, or the first space. Flags follow the `/`, in the flag form that the `FLAG` line of `index.aff` names (hunspell(5): one character, `long`, `num`, or `UTF-8`).
 - Eligible stem: its flags hold none of the flags that `index.aff` names with `FORBIDDENWORD`, `NEEDAFFIX`, `PSEUDOROOT`, or `ONLYINCOMPOUND`; the stem is one §11 word with no skipped token.
-- Positive words: for i from 0 to 199, the first eligible stem at or after line ⌊i × (n − 1) / 199⌋ + 1 of the n dictionary lines. Each must pass `correct()` after NFC.
-- Negative words: `qzxqzxqzx`, `xkcdqwvjz`, `zzqqxxjj`, `vvbbqqzz`, `jjqqxxzz`, and the first 5 positive words with `qzxqzx` appended. Each must fail `correct()`.
-- Result: `{language, positives, negatives, failedPositives, failedNegatives}`. A language passes with 0 failures.
+- Positive words: for i from 0 to 199, the first eligible stem at or after line ⌊i × (n − 1) / 199⌋ + 1 of the n dictionary lines. Each must pass Hunspell `testSpelling` after NFC.
+- Negative words: `qzxqzxqzx`, `xkcdqwvjz`, `zzqqxxjj`, `vvbbqqzz`, `jjqqxxzz`, and the first 5 positive words with `qzxqzx` appended. Each must fail `testSpelling`.
+- Result: `{language, positives, negatives, failedPositives, failedNegatives}`. A language passes with 0 failures. In the package, the count text must equal the number of negative words.
 
 ## 17. WSL Global save request
 
@@ -194,6 +201,6 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 ## 18. View state (renderer, not stored)
 
-- Spelling store: the selection (§8), the language states (§4), the per-language load state (`idle`, `loading`, `loaded`, `failed`), the word list state (§9), the Ignore list (§10), the shown marks (§13), and the open menu `{mark, suggestions, pending}`.
+- Spelling store: the selection (§8), the language states (§4), the per-language load state of each worker (`idle`, `loading`, `loaded`, `failed`), the refused sets (§13), the word list state (§9), the Ignore list (§10), the shown marks (§13), and the open menu `{mark, suggestions, pending}`.
 - Spelling page: the focused row of each list, the open licence `{language, documents}` or none, and the running run `{language, kind, operationId, received, total}` or none.
 - Settings view: `wslDistro` (string or null) from `workspace.location`.

@@ -90,10 +90,12 @@ const UIA_LiveSettingPropertyId = 30135;
 // `UIAutomationCore.h` enum LiveSetting.
 const Polite = 1;
 // `UIAutomationClient.h` control type IDs for the `controlType` argument of `find`.
-export const ControlType = { Button: 50000, Edit: 50004, MenuItem: 50011, Tree: 50023 } as const;
+export const ControlType = { Button: 50000, Edit: 50004, MenuItem: 50011, Tree: 50023, TreeItem: 50024 } as const;
 const TreeScope_Descendants = 0x4;
+const IID_IUIAutomationElement3 = "8471df34-aee0-4a01-a7de-7db9af12c296";
 const SLOT = {
   // IUnknown
+  QueryInterface: 0,
   Release: 2,
   // IUIAutomation
   ElementFromHandle: 6,
@@ -114,7 +116,11 @@ const SLOT = {
   GetCurrentPatternAs: 14,
   get_CurrentProcessId: 20,
   get_CurrentName: 23,
+  get_CurrentAcceleratorKey: 24,
   get_CurrentIsEnabled: 28,
+  get_CurrentBoundingRectangle: 43,
+  // IUIAutomationElement3
+  ShowContextMenu: 91,
   // IUIAutomationElementArray
   get_Length: 3,
   GetElement: 4,
@@ -182,7 +188,7 @@ function release(self: Pointer | null): void {
   if (self !== null) slotCall(self, SLOT.Release, [], []);
 }
 
-function bstr(name: "get_CurrentName" | "GetText" | "get_CurrentValue", self: Pointer, args: FFIType[], values: unknown[]): string {
+function bstr(name: "get_CurrentName" | "get_CurrentAcceleratorKey" | "GetText" | "get_CurrentValue", self: Pointer, args: FFIType[], values: unknown[]): string {
   const text = outCall(self, name, args, values);
   if (text === null) return "";
   try {
@@ -445,6 +451,38 @@ export function isEnabled(element: Element): boolean {
   const value = new Int32Array(1);
   hr("get_CurrentIsEnabled", slotCall(element.self, SLOT.get_CurrentIsEnabled, [P], [ptr(value)]));
   return value[0] !== 0;
+}
+
+// Spec FR-085: Chromium maps `aria-keyshortcuts` to AcceleratorKey (research.md R17). An element without it gives "".
+export function acceleratorKey(element: Element): string {
+  return bstr("get_CurrentAcceleratorKey", element.self, [], []);
+}
+
+export interface Rect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
+// A per-monitor-aware caller gets physical pixels.
+export function boundingRect(element: Element): Rect {
+  const rect = new Int32Array(4);
+  hr("get_CurrentBoundingRectangle", slotCall(element.self, SLOT.get_CurrentBoundingRectangle, [P], [ptr(rect)]));
+  return { x: rect[0]!, y: rect[1]!, width: rect[2]! - rect[0]!, height: rect[3]! - rect[1]! };
+}
+
+// The HRESULT of IUIAutomationElement3::ShowContextMenu. Chromium dispatches the page `contextmenu` event for it, as for the keyboard menu key (research.md R21 N2).
+export function showContextMenu(element: Element): number {
+  const out = new BigUint64Array(1);
+  const result = slotCall(element.self, SLOT.QueryInterface, [P, P], [ptr(guid(IID_IUIAutomationElement3)), ptr(out)]);
+  if (result < 0) return result;
+  const element3 = Number(out[0]) as Pointer;
+  try {
+    return slotCall(element3, SLOT.ShowContextMenu, [], []);
+  } finally {
+    release(element3);
+  }
 }
 
 export function readValue(element: Element): string {

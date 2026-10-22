@@ -8,11 +8,10 @@ import { inflateSync, crc32 } from "node:zlib";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
-import { CFunction, FFIType, ptr, read, type Pointer } from "bun:ffi";
 import { FIXTURE_ROOT, fixtureDir, fixtureGit, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { appEnv, findInstalledApp, startInstalledApp, waitExit, type OwnedProcess } from "./installed-app";
-import { find, inputDesktopSkip, invoke, MAX_WAIT_MS, waitFocus, type Element } from "./uia";
+import { boundingRect, find, inputDesktopSkip, invoke, MAX_WAIT_MS, waitFocus, type Element } from "./uia";
 import { qpc, qpcFrequency } from "./inject";
 import {
   analyzeRun,
@@ -221,15 +220,6 @@ function tryOpen(region: Region): Opened {
     if (error instanceof CaptureError) return { skip: error.message, hresult: error.hresult ?? null };
     throw error;
   }
-}
-
-// `UIAutomationClient.h` (Windows SDK 10.0.26100.0): `IUIAutomationElement::get_CurrentBoundingRectangle` is vtable slot 43. A per-monitor-aware caller gets physical pixels.
-function boundingRect(element: Element): Region {
-  const rect = new Int32Array(4);
-  const fn = read.ptr(read.ptr(element.self, 0) as Pointer, 43 * 8) as Pointer;
-  const result = CFunction({ ptr: fn, args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 })(element.self, ptr(rect)) as number;
-  if (result < 0) throw new Error(`get_CurrentBoundingRectangle returned 0x${(result >>> 0).toString(16)}`);
-  return { x: rect[0]!, y: rect[1]!, width: rect[2]! - rect[0]!, height: rect[3]! - rect[1]! };
 }
 
 // Desktop duplication gives no frames while the display is off. The request keeps an on display on during the live cases.

@@ -148,7 +148,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 - `shadowId`: a contract §2 identifier, bound to one operation.
 - Path: `<launch directory>/preview/<pid>-<creation time>-<16 hex>` on Windows, or `/tmp/arbareto-preview-<pid>-<creation time>-<16 hex>` in a WSL distro. `<pid>` and `<creation time>` name the shell process. The launch directory is the per-user app local data folder, or the launch folder below `ARBARETO_PROFILE_ROOT` (`service.rs:108-113`). It is never the install folder.
 - Lifetime: until its operation ends, also after Cancel, `closeJob`, or a service exit. Leftovers whose owner process record does not exist go at the next create.
-- Files: two shadow repositories, `s` (saved text) and `c` (candidate text). Each holds its `.git`, `.git/index`, `.git/exclude.index`, the ignore files, and the empty folders of the folder inputs.
+- Files: two shadow repositories, `s` (saved text) and `c` (candidate text). Each holds its `.git`, `.git/index`, `.git/exclude.index`, the ignore files, and the empty folders of the folder inputs. On Windows, the folder also holds the empty file `empty.gitconfig`, which `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` name (contract Δ6).
 
 ## 14. View state (renderer, not stored)
 

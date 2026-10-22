@@ -530,6 +530,38 @@ pub fn git_command(
     ))
 }
 
+/// Feature 005 contract Δ6, Δ11: one Git process of a WSL shadow repository, in mode `read`, with the cwd `directory`.
+/// `--git-dir=.git` sets `GIT_DIR` as on Windows, and the wrapper sets `GIT_INDEX_FILE` to `<directory>/.git/<index>`.
+pub fn shadow_command(
+    installation: &Installation,
+    unit: &str,
+    directory: &str,
+    index: &str,
+    arguments: &[String],
+    base: &[(OsString, OsString)],
+    stdin: Stdin,
+) -> Result<Command, Code> {
+    let [first, rest @ ..] = arguments else {
+        return Err(INVALID);
+    };
+    if first != "--no-lazy-fetch" || !directory.starts_with('/') {
+        return Err(INVALID);
+    }
+    let mut git = strings(&["--no-lazy-fetch", "-C", directory, "--git-dir=.git"]);
+    git.extend(rest.iter().cloned());
+    let index = format!("{directory}/.git/{index}");
+    Ok(wrapped(
+        installation,
+        Mode::Read,
+        unit,
+        Some(&index),
+        &installation.git,
+        &git,
+        base,
+        stdin,
+    ))
+}
+
 /// Feature 002 contract Δ3 "Matching probe", Δ6: the fixed `matchingProbe` text through the wrapper in mode `search`.
 /// `arguments`: the probe folder, the tip, the run length `n`, and two runs of `n` items, each with `--no-lazy-fetch` first.
 pub fn matching_probe_command(
@@ -1783,7 +1815,7 @@ pub fn replace_reply(output: Option<Output>) -> crate::file_replace::ReplaceResu
 
 /// The shadow scratch operation of a WSL workspace (contract Δ11).
 pub enum Scratch {
-    /// Makes `/tmp/<name>` with `mkdir` mode 0700.
+    /// Makes `/tmp/<name>` and its shadow repository folders `s` and `c` with `mkdir` mode 0700.
     Create(String),
     /// Removes `/tmp/<name>` depth-first, only below the `arbareto-preview-` prefix.
     Remove(String),
@@ -5637,6 +5669,140 @@ mod tests {
         let check = "test \"$(cat \"$1/repo/.gitignore\")\" = \"$(printf '/a\n/b')\" && test \"$(cat \"$1/repo/.git/info/exclude\")\" = /d && test ! -s \"$1/outside/x\" && test ! -e \"$1/outside/y\" && test ! -s \"$1/outside/h\"";
         assert_eq!(shell(check), Some(0), "the file bytes");
         assert_eq!(shell("rm -rf -- \"$1\""), Some(0));
+    }
+
+    /// Feature 005 contract Δ6, Δ11: the shadow commands make a repository with a work tree in `<shadow>/s`, check out an
+    /// index entry there, and never use the repository above the shadow folder.
+    #[test]
+    fn the_real_shadow_commands_init_a_work_tree_and_never_use_a_repository_above() {
+        let Some(reference) = reference() else {
+            return;
+        };
+        let Some(inst) = probed(&reference) else {
+            return;
+        };
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let operation = format!("0f0f0f0f-0000-4000-8007-{:012x}", std::process::id());
+        let host = reference.host();
+        let name = format!("arbareto-preview-real-{}", std::process::id());
+        let root = format!("/tmp/{name}");
+        let folder = format!("{root}/s");
+        let n = std::cell::Cell::new(0);
+        let unit = || {
+            n.set(n.get() + 1);
+            unit_name(&operation, n.get()).expect("unit")
+        };
+        let shell = |script: &str| {
+            let arguments = strings(&["-c", script, "sh", &root, &inst.git]);
+            let command = wrapped(
+                &inst,
+                Mode::Read,
+                &unit(),
+                None,
+                "/bin/sh",
+                &arguments,
+                &environment,
+                Stdin::Closed,
+            );
+            host.run(&command).expect("shell").exit_code
+        };
+        let git = |arguments: &[&str], input: &[u8]| {
+            let stdin = if input.is_empty() {
+                Stdin::Closed
+            } else {
+                Stdin::Bytes(input.to_vec())
+            };
+            let command = shadow_command(
+                &inst,
+                &unit(),
+                &folder,
+                "index",
+                &strings(arguments),
+                &environment,
+                stdin,
+            )
+            .expect("shadow command");
+            let out = host
+                .run_until(&command, 4096, PROBE_DEADLINE)
+                .output
+                .expect("output");
+            let stdout =
+                started(&out.stdout).map(|bytes| String::from_utf8_lossy(bytes).into_owned());
+            (out.exit_code, stdout.unwrap_or_default())
+        };
+        let scratch = |scratch: &Scratch| {
+            let command = scratch_command(&inst, &unit(), scratch, &environment);
+            let ended = host.run_until(&command, SCRATCH_OUTPUT_BYTES + 2, PROBE_DEADLINE);
+            scratch_reply(ended.output, scratch)
+        };
+        assert_eq!(shell("rm -rf -- \"$1\""), Some(0));
+        assert!(matches!(
+            scratch(&Scratch::Create(name.clone())),
+            ScratchResult::Created
+        ));
+        // `scratch create` makes `s` and `c`. An outer repository lies directly above them.
+        let made = "test -d \"$1/s\" && test -d \"$1/c\" && \"$2\" init -q -- \"$1\"";
+        assert_eq!(shell(made), Some(0));
+        let outer_empty = "test -z \"$(find \"$1/.git/objects\" -type f)\"";
+        let hash = [
+            "--no-lazy-fetch",
+            "hash-object",
+            "-w",
+            "--no-filters",
+            "--stdin",
+        ];
+        assert_ne!(
+            git(&hash, b"probe\n").0,
+            Some(0),
+            "no repository at <cwd>/.git before init"
+        );
+        assert_eq!(
+            shell(outer_empty),
+            Some(0),
+            "no object above the shadow folder"
+        );
+        assert_eq!(
+            git(&["--no-lazy-fetch", "init", "-q", "--template="], b"").0,
+            Some(0)
+        );
+        let work_tree = "test \"$(\"$2\" --git-dir=\"$1/s/.git\" config --get core.bare)\" = false";
+        assert_eq!(shell(work_tree), Some(0), "core.bare is false");
+        let (exit, oid) = git(&hash, b"probe\n");
+        assert_eq!(exit, Some(0));
+        let entry = format!("100644 {}\tkeep.txt\0", oid.trim());
+        let update = ["--no-lazy-fetch", "update-index", "-z", "--index-info"];
+        assert_eq!(git(&update, entry.as_bytes()).0, Some(0));
+        let checkout = [
+            "--no-lazy-fetch",
+            "-c",
+            "core.autocrlf=false",
+            "-c",
+            "core.eol=lf",
+            "checkout-index",
+            "-a",
+            "-f",
+        ];
+        assert_eq!(
+            git(&checkout, b"").0,
+            Some(0),
+            "checkout-index has a work tree"
+        );
+        let checked = "test \"$(cat \"$1/s/keep.txt\")\" = probe";
+        assert_eq!(shell(checked), Some(0), "the checked-out bytes");
+        assert_eq!(
+            shell(outer_empty),
+            Some(0),
+            "the outer repository stays empty"
+        );
+        assert!(matches!(
+            scratch(&Scratch::Remove(name.clone())),
+            ScratchResult::Removed
+        ));
+        assert_eq!(
+            shell("test ! -e \"$1\""),
+            Some(0),
+            "scratch remove deletes the whole folder"
+        );
     }
 
     /// T378: systemd 258 and later expand `${NAME}`, `$$`, and a whole `$NAME` argument of a `--scope` command, and drop an unset one.

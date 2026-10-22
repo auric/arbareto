@@ -16,6 +16,8 @@ use windows::Win32::System::Threading::{
 
 /// The subfolder of the launch directory that holds every shadow folder.
 pub(crate) const PREVIEW: &str = "preview";
+/// The empty configuration file of a Windows shadow folder. `GIT_CONFIG_GLOBAL` and `GIT_CONFIG_SYSTEM` name it (contract Δ6, F15).
+pub(crate) const EMPTY_CONFIG: &str = "empty.gitconfig";
 
 /// The PID and the creation time of the shell process. The sweep uses them to find leftover own folders.
 pub(crate) fn self_identity() -> (u32, u64) {
@@ -111,6 +113,7 @@ pub(crate) fn create(
     std::fs::create_dir(&folder)?;
     std::fs::create_dir(folder.join("s"))?;
     std::fs::create_dir(folder.join("c"))?;
+    std::fs::write(folder.join(EMPTY_CONFIG), b"")?;
     Ok((folder, leftovers))
 }
 
@@ -242,6 +245,10 @@ mod tests {
         std::fs::create_dir_all(&own).expect("own");
         let (folder, mut leftovers) = create(&launch, me, &HashSet::new()).expect("create");
         assert!(folder.join("s").is_dir() && folder.join("c").is_dir());
+        assert_eq!(
+            std::fs::read(folder.join(EMPTY_CONFIG)).expect("empty config"),
+            b""
+        );
         leftovers.sort();
         let mut expected = vec![gone, own];
         expected.sort();

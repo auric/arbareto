@@ -1,12 +1,12 @@
 <!--
 Sync Impact Report
-- Version change: 2.0.0 -> 3.0.0 (MAJOR). The amendment narrows an existing MUST of principle I with a defined exception. A non-interactive rebase pull that the user selects, or that the user's own Git configuration selects, no longer needs a separate confirmation.
-- Modified principles: I. Preserve User Data (title unchanged). One bullet is added. Its first case includes an application default action that the user set to a rebase pull. The other principle I obligations are unchanged.
+- Version change: 3.0.0 -> 4.0.0 (MAJOR). An obligation of principle I is relaxed for one class of actions. Maintainer decision of 2026-10-22 (feature 006). Principle I now names the scope of the confirmation rule: repository data, Git state, and user files. Removal of app-managed data that the user can restore at once from the same view MAY act without confirmation.
+- Modified principles: I. Preserve User Data (title unchanged). The second bullet changes its second sentence. The non-discard rule and the rebase pull exception are unchanged.
 - Added sections: none.
 - Removed sections: none.
 - Templates: .specify/templates/plan-template.md, spec-template.md, tasks-template.md, and checklist-template.md cite no principle text or version. They stay unchanged (upstream).
-- Dependent artifacts: specs/001-desktop-qualification/plan.md now cites version 3.0.0. specs/002-full-history/plan.md (branch f002-b0) and specs/003-remote-sync/plan.md (branch f003-spec) still cite 2.0.0. They need a version citation update to 3.0.0.
-- Follow-up TODOs: none.
+- Dependent artifacts: specs/001 to 004 plan.md cite version 3.0.0. Their principle I rows stay correct. specs/004-workbench-ux/plan.md note N-1 quotes the old sentence "Destructive actions and history rewrites MUST require explicit confirmation". The quote is now out of date, but its conclusion stays valid. Feature specs stay unchanged.
+- Follow-up TODOs: CLAUDE.md says "Version 2.0.0 is ratified". Fix it through claude-md-improver.
 -->
 # Arbareto Constitution
 
@@ -15,7 +15,7 @@ Sync Impact Report
 ### I. Preserve User Data
 
 - Git MUST remain authoritative. Cached views and filesystem watchers MUST NOT replace fresh Git state checks.
-- Operations MUST NOT silently discard changes, rewrite history, or change user Git configuration. Destructive actions and history rewrites MUST require explicit confirmation of their scope and effects.
+- Operations MUST NOT silently discard changes, rewrite history, or change user Git configuration. Destructive actions on repository data, Git state, or user files MUST require explicit confirmation of their scope and effects, and history rewrites too. Removing app-managed data that the user can restore at once from the same view, such as a downloaded dictionary or a personal word, MAY act without confirmation.
 - Exception: a non-interactive rebase pull counts as confirmed when the user explicitly selects a rebase action, including an application default action that the user set to a rebase pull. It also counts as confirmed when the user's own Git configuration selects a rebase for a pull that the user starts. Force operations, discards, resets, and other history rewrites still MUST require explicit confirmation of their scope and effects.
 - Operations MUST NOT bypass Git hooks.
 - Operations MUST use the selected Git executable and record its version.
@@ -112,4 +112,4 @@ Sync Impact Report
 - Plans and reviews MUST identify compliance evidence or unresolved blockers for each applicable principle.
 - Unresolved violations MUST block affected merges or releases. Conflicting changes MUST wait for an approved constitutional amendment.
 
-**Version**: 3.0.0 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-10-12
+**Version**: 4.0.0 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-10-22

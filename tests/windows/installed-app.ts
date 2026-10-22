@@ -40,7 +40,7 @@ export const PROBE_TIMEOUT_MS = 30_000;
 const PROBE_MAX_BYTES = 16 * 1024 * 1024;
 export const WAIT_MS = 10_000;
 
-function powershellJson(script: string): unknown {
+export function powershellJson(script: string): unknown {
   const root = process.env.SystemRoot;
   if (!root) throw new Error("SystemRoot is not set");
   const proc = Bun.spawnSync(
@@ -49,6 +49,52 @@ function powershellJson(script: string): unknown {
   );
   if (proc.exitCode !== 0) throw new Error(`powershell exited ${proc.exitCode}: ${proc.stderr.toString()}`);
   return JSON.parse(proc.stdout.toString());
+}
+
+const quoted = (text: string) => `'${text.replaceAll("'", "''")}'`;
+
+// The HWND of each Explorer window that Shell.Application lists.
+export function explorerWindows(): number[] {
+  return powershellJson("ConvertTo-Json -Compress -InputObject @(@((New-Object -ComObject Shell.Application).Windows() | ForEach-Object { [int64]$_.HWND }))") as number[];
+}
+
+const REVEAL_WAIT_MS = 15_000;
+const REVEAL_POLL_MS = 20;
+
+export interface Reveal {
+  found: boolean;
+  selected: string[];
+  preexisting: boolean;
+}
+
+// Shell.Application gives the folder path and the selected items of each Explorer window. Only a window on `dir` whose HWND is not in `before` closes, also after a failed probe.
+export function explorerReveal(dir: string, before: readonly number[]): Reveal {
+  const head = `$dir = ${quoted(dir)}
+$before = @(${before.join(",")})
+$shell = New-Object -ComObject Shell.Application
+`;
+  try {
+    return powershellJson(`${head}$found = $null
+$selected = @()
+$end = [DateTime]::UtcNow.AddMilliseconds(${REVEAL_WAIT_MS})
+while ([DateTime]::UtcNow -lt $end) {
+  foreach ($w in @($shell.Windows())) { try { if ($w.Document.Folder.Self.Path -eq $dir) { $found = $w } } catch {} }
+  if ($null -ne $found) { $selected = @($found.Document.SelectedItems() | ForEach-Object { $_.Path }); if ($selected.Count -gt 0) { break } }
+  Start-Sleep -Milliseconds ${REVEAL_POLL_MS}
+}
+$hwnd = if ($null -ne $found) { [int64]$found.HWND } else { $null }
+$preexisting = $null -ne $found -and $before -contains $hwnd
+if ($null -ne $found -and -not $preexisting) { $found.Quit() }
+ConvertTo-Json -Compress -InputObject @{ found = $null -ne $found; selected = $selected; preexisting = $preexisting }`) as Reveal;
+  } catch (error) {
+    try {
+      powershellJson(`${head}foreach ($w in @($shell.Windows())) { try { if ($w.Document.Folder.Self.Path -eq $dir -and $before -notcontains [int64]$w.HWND) { $w.Quit() } } catch {} }
+'null'`);
+    } catch (cleanup) {
+      throw new AggregateError([error, cleanup], "the Explorer probe and its cleanup failed");
+    }
+    throw error;
+  }
 }
 
 // SHCTX is HKCU for `installMode` `currentUser` (src-tauri/tauri.conf.json). The key name is `${PRODUCTNAME}`.

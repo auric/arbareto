@@ -42,7 +42,7 @@ describe("T165 inject.ts without injection", () => {
   });
 
   test("navigation-cluster keys carry the extended-key flag", () => {
-    for (const [name, vk] of [["Home", 0x24], ["Up", 0x26], ["Down", 0x28]] as const) {
+    for (const [name, vk] of [["Home", 0x24], ["Up", 0x26], ["Down", 0x28], ["Delete", 0x2e]] as const) {
       expect(keystroke(name)).toEqual([
         { vk, scan: 0, flags: 0x1 },
         { vk, scan: 0, flags: 0x3 },

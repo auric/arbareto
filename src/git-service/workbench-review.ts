@@ -15,7 +15,7 @@ import type { Exclusion } from "./exclusion";
 import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit } from "./git-runner";
 import { captureHead, sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
 import { enterReconciling, isStop, settled, type Fact, type Failure, type ObserveContext, type PublishContext, type Stop } from "./hunk-publish";
-import { reviewIgnore, runIgnore, type IgnorePlan } from "./ignore";
+import { reviewIgnore, reviewIgnoreSave, runIgnore, runIgnoreSave, type IgnorePlan, type IgnoreSaveBound } from "./ignore";
 import type { OperationRegistry } from "./operations";
 import { contextOf } from "./read-steps";
 import type { Workspace } from "./registration";
@@ -38,7 +38,7 @@ export type PayloadOf<A extends WorkbenchAction> = Extract<WorkbenchPayload, { a
 type RunRequest = Extract<ServiceRequest, { operation: "runWorkbench" }>;
 
 // The context of a handler. Its reader also maps an entry of a shown snapshot and reads the workspace. Its runner also sends the `wslFiles` walks.
-export type WorkbenchContext = PublishContext & { reader: Pick<WorkspaceReader, "operationState" | "entry" | "readWorkspace"> };
+export type WorkbenchContext = PublishContext & { reader: Pick<WorkspaceReader, "operationState" | "entry" | "readWorkspace" | "selection"> };
 
 // Contract Δ3 "Every review reads": the HEAD capture, the operation markers, and the trust listing.
 export interface Common {
@@ -75,8 +75,8 @@ export interface WorkbenchRun {
   before: Observed;
   // A step after a Cancel starts no process and ends `canceled`. `context` defaults to the registered workspace; contract Δ6 `worktreeAdd` and `globalConfig` pass their binding.
   step(args: string[], phase: Phase, options?: StepOptions): Promise<StepEnd>;
-  // A progress event for a step without a Git process.
-  progress(phase: Phase): void;
+  // A progress event for a step without a Git process. Feature 005 contract Δ2: `delete-files` carries its counters.
+  progress(phase: Phase, counters?: Record<string, number>): void;
   // Enters `reconciling` after the steps. Null: a WSL step gave no process-end fact, so the outcome stays unknown.
   reconcile(ends: readonly StepEnd[]): Promise<{ canceled: boolean } | null>;
   finish(event: OperationEvent, result: unknown): void;
@@ -91,6 +91,9 @@ export interface WorkbenchHandler<A extends WorkbenchAction, B> {
   observe(ctx: WorkbenchContext, payload: PayloadOf<A>, common: Common): Promise<Observation<B>>;
   // Contract Δ6: the `action` of the `started` frame.
   started(payload: PayloadOf<A>): NonNullable<MutationStarted["action"]>;
+  // Feature 005 plan.md D2: false for an action that runs no repository Git process before its reconcile read, because the run observation reads the index.
+  // Its run reads no `before`.
+  observeBefore?: false;
   run(r: WorkbenchRun, payload: PayloadOf<A>, bound: B): Promise<void>;
 }
 
@@ -102,14 +105,18 @@ export function registerWorkbenchAction<A extends WorkbenchAction, B>(action: A,
 }
 
 // Contract Δ3 "Common refusals": these actions also run while an operation is in progress. `worktree-remove` checks its own worktree.
-const IN_PROGRESS_ALLOWED: ReadonlySet<string> = new Set(["choose-side", "mergetool", "ignore", "config-save", "worktree-prune", "worktree-remove"]);
+// Feature 005 contract Δ3: `ignore-save` keeps the exception of `ignore`, because Save changes no Git state (spec FR-046).
+const IN_PROGRESS_ALLOWED: ReadonlySet<string> = new Set(["choose-side", "mergetool", "ignore", "config-save", "worktree-prune", "worktree-remove", "ignore-save"]);
 
 // Contract Δ7 "Mutation trust": `ignore` and `config-save` run no repository program, so they need no class. `mergetool` takes the class `mergetool`.
 // Every other action takes the class `workbench`.
-const CLASSLESS: ReadonlySet<string> = new Set(["ignore", "config-save"]);
+// Feature 005 contract Δ7: `delete` and `ignore-save` run no repository program either.
+const CLASSLESS: ReadonlySet<string> = new Set(["ignore", "config-save", "delete", "ignore-save"]);
 const classOf = (action: string): "workbench" | "mergetool" | null => (CLASSLESS.has(action) ? null : action === "mergetool" ? "mergetool" : "workbench");
 // Plan.md O-20: the result of a trust refusal by the trust listing of this repository.
 const REPOSITORY_GATE = { trustGate: "repository" } as const;
+// Feature 005 contract Δ9 `STALE_REVIEW` reasons of each action.
+const STALE_REASONS: Readonly<Record<string, string>> = { delete: "files-changed", "ignore-save": "ignore-changed" };
 
 // ---- Shared reads ----
 
@@ -200,6 +207,32 @@ registerWorkbenchAction<"ignore", IgnorePlan>("ignore", {
   },
 });
 
+// ---- Feature 005 ignore Save (contract Δ3 `ignore-save`, Δ6 `fileReplace`, plan.md D10) ----
+
+registerWorkbenchAction<"ignore-save", IgnoreSaveBound>("ignore-save", {
+  async observe(ctx, p) {
+    const review = await reviewIgnoreSave(ctx, { target: p.target, text: new Uint8Array(Buffer.from(p.text, "base64")), expected: p.expected });
+    if (isStop(review)) return review;
+    if ("code" in review) return review.reason !== undefined ? { refused: review.code, result: { reason: review.reason } } : { code: review.code };
+    return review;
+  },
+  started: (p) => (p.target === "gitignore" ? "ignore-save-gitignore" : "ignore-save-exclude"),
+  observeBefore: false,
+  async run(r, _p, bound) {
+    const { ctx, q } = r;
+    r.progress("ignore-save");
+    // Contract §11: an `interrupted` WSL reply waits for the process-end fact before the fresh read.
+    const outcome = await runIgnoreSave(
+      { runner: ctx.runner, operationId: ctx.operationId, signal: ctx.signal, workspace: ctx.workspace, replacer: ctx.runner },
+      bound,
+      (interrupted) => r.reconcile(interrupted ? [{ exit: null, canceled: ctx.signal.aborted, refused: null, outputTail: "" }] : []),
+      () => q.reader.readWorkspace({ operationId: q.operationId, signal: q.signal, installation: q.installation, workspace: q.workspace, refresh: false }),
+    );
+    if (outcome.event.type === "reconciliation-read-failed") return r.unknown({ code: outcome.event.code }, outcome.result);
+    r.finish(outcome.event, outcome.result);
+  },
+});
+
 // ---- Tokens (data-model §2) ----
 
 interface Issued {
@@ -277,15 +310,19 @@ export function createWorkbench(o: WorkbenchOptions) {
   }
 
   // Data-model §2: a trust difference gives TRUST_REQUIRED or TRUST_CHANGED, and any other difference STALE_REVIEW. A trust code keeps its gate (plan.md O-20).
+  // Feature 005 contract Δ3: a bound fact of `delete` or `ignore-save` that changed gives STALE_REVIEW with the reason of its action.
   function staleOf(e: Issued, again: Full | Refused | Failure | Stop, generation: number): { code: ErrorCode; result?: unknown } | Stop | null {
     if (isStop(again) || "code" in again) return again;
+    const action = e.payload.action;
+    const factsChanged = Object.hasOwn(STALE_REASONS, action) ? { code: "STALE_REVIEW" as const, result: { action, reason: STALE_REASONS[action] } } : { code: "STALE_REVIEW" as const };
     if ("refused" in again) {
       if (again.refused === "TRUST_REQUIRED" || again.refused === "TRUST_CHANGED") return { code: again.refused, result: again.result };
-      return again.refused === "CONFLICTED" ? { code: "CONFLICTED", result: again.result } : { code: "STALE_REVIEW" };
+      return again.refused === "CONFLICTED" ? { code: "CONFLICTED", result: again.result } : factsChanged;
     }
-    if ((e.trust.required || required(e.payload.action, again.common.listing)) && again.common.listing.fingerprint !== e.trust.fingerprint) return { code: "TRUST_CHANGED", result: REPOSITORY_GATE };
-    const same = generation === e.generation && Bun.deepEquals({ head: e.head, state: e.operationState, bound: e.bound }, { head: again.common.head, state: again.common.operationState, bound: again.bound }, true);
-    return same ? null : { code: "STALE_REVIEW" };
+    if ((e.trust.required || required(action, again.common.listing)) && again.common.listing.fingerprint !== e.trust.fingerprint) return { code: "TRUST_CHANGED", result: REPOSITORY_GATE };
+    const same = generation === e.generation && Bun.deepEquals({ head: e.head, state: e.operationState }, { head: again.common.head, state: again.common.operationState }, true);
+    if (!same) return { code: "STALE_REVIEW" };
+    return Bun.deepEquals(e.bound, again.bound, true) ? null : factsChanged;
   }
 
   async function execute(w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, token: string, e: Issued): Promise<void> {
@@ -305,11 +342,14 @@ export function createWorkbench(o: WorkbenchOptions) {
         return command === null ? { text: STEP_REMEDY_TEXT } : { command, text: STEP_REMEDY_TEXT };
       };
 
-      const runOf = (common: Common, before: Observed): WorkbenchRun => ({
+      const runOf = (common: Common, before: Observed | null): WorkbenchRun => ({
         ctx,
         q,
         common,
-        before,
+        get before(): Observed {
+          if (before === null) throw new Error(`${e.payload.action} reads no observation before its run`);
+          return before;
+        },
         // Plan.md D2: each step runs under the policy `integrate` with the 003 limits and the 15 s stall notice.
         // Contract Δ6: only the `mergetool` action has the phase `mergetool`. Its step runs under the policy `mergetool` with the ceiling alone, so it gets no stall notice.
         async step(args, phase, options = {}) {
@@ -336,8 +376,8 @@ export function createWorkbench(o: WorkbenchOptions) {
           }
           return { exit, canceled: signal.aborted && (exit === null || exit.exitCode === null), refused, outputTail: stderr.outputTail() };
         },
-        progress(phase) {
-          registry.progress(operationId, phase);
+        progress(phase, counters) {
+          registry.progress(operationId, phase, counters);
         },
         async reconcile(ends) {
           const canceled = enterReconciling(registry, operationId, ends.some((end) => end.exit?.deadline !== undefined), lastDescendants);
@@ -363,6 +403,7 @@ export function createWorkbench(o: WorkbenchOptions) {
       if (!later.ok) return refuse({ code: "code" in later ? later.code : "UNKNOWN_TARGET" });
       e.consumed = operationId;
       const full = again as Full;
+      if (handler.observeBefore === false) return void (await handler.run(runOf(full.common, null), e.payload, full.bound));
       const before = await observe(ctx, false);
       if (!("value" in before)) return refuse(before);
       await handler.run(runOf(full.common, before.value), e.payload, full.bound);

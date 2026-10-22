@@ -300,11 +300,25 @@ describe("contract Δ3 payloads", () => {
   });
 });
 
+describe("contract Δ3 readRefs nameBytes (001 §3)", () => {
+  const ref = { kind: "branch", name: "b�", invalidUtf8: true, objectId: OID, objectType: "commit", peeledId: null, peeledType: null, symref: null, upstream: null, upstreamPresent: false, commitId: OID };
+  const list = (r: object) => ({ generation: 1, refs: [r], current: null, refsDigest: "0".repeat(64), completeness: { state: "complete" } });
+  test("an invalid UTF-8 name carries its raw bytes in base64, and a valid name carries none", () => {
+    expect(ok(envelope.ReadRefsResult, list({ ...ref, nameBytes: btoa("b\xff") }))).toBe(true);
+    expect(ok(envelope.ReadRefsResult, list(ref))).toBe(false);
+    expect(ok(envelope.ReadRefsResult, list({ ...ref, name: "b", invalidUtf8: false, nameBytes: btoa("b") }))).toBe(false);
+    expect(ok(envelope.ReadRefsResult, list({ ...ref, name: "b", invalidUtf8: false }))).toBe(true);
+  });
+});
+
 describe("contract Δ3 readBranches", () => {
   const entry = { ref: "refs/heads/topic", kind: "local", name: "topic", invalidUtf8: false, oid: OID, upstream: "refs/remotes/origin/topic", tracking: null, heldBy: null, current: false, localName: null };
   test("an entry carries upstreamPresent, and true needs an upstream", () => {
     expect(ok(envelope.ReadBranchesResult, { entries: [{ ...entry, upstreamPresent: true }] })).toBe(true);
     expect(ok(envelope.ReadBranchesResult, { entries: [{ ...entry, upstreamPresent: false }] })).toBe(true);
+    // WP2 review: null is an unpaired tracking entry, an unknown state. The field is required.
+    expect(ok(envelope.ReadBranchesResult, { entries: [{ ...entry, upstreamPresent: null }] })).toBe(true);
+    expect(ok(envelope.ReadBranchesResult, { entries: [entry] })).toBe(false);
     expect(ok(envelope.ReadBranchesResult, { entries: [{ ...entry, upstream: null, upstreamPresent: false }] })).toBe(true);
     expect(ok(envelope.ReadBranchesResult, { entries: [{ ...entry, upstream: null, upstreamPresent: true }] })).toBe(false);
     expect(ok(envelope.ReadBranchesResult, { entries: [{ ...entry, upstreamPresent: "yes" }] })).toBe(false);

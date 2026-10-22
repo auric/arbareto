@@ -9,13 +9,13 @@ import type { TrackLabel } from "../state/tracking";
 
 // Feature 005 spec FR-064 to FR-066, plan.md D13, D15 "Branch card", D16, the BranchCard board.
 
-/** `upstream` is the short name. `upstreamPresent` undefined: the read did not state it, so no gone mark shows. `heldBy` undefined: no `readBranches` result is loaded. */
+/** `upstream` is the short name. `gone` follows spec FR-064. `heldBy` undefined: no `readBranches` result is loaded. */
 export type CardFacts =
   | { kind: "name"; name: string }
-  | { kind: "local"; name: string; upstream: string | null; upstreamPresent: boolean | undefined; track: TrackLabel; heldBy: string | null | undefined };
+  | { kind: "local"; name: string; upstream: string | null; gone: boolean; track: TrackLabel; heldBy: string | null | undefined };
 
-/** Spec FR-064: the reference read names an upstream, and the same read shows no reference of that name. */
-export const isGone = (upstream: string | null, upstreamPresent: boolean | undefined) => upstream !== null && upstreamPresent === false;
+/** Spec FR-064 and contract Δ3: `upstreamPresent` is false for the 003 track state `gone` of the paired tracking entry. Null is unknown, so no mark shows. */
+export const isGone = (upstream: string | null, upstreamPresent: boolean | null) => upstream !== null && upstreamPresent === false;
 export const goneTooltip = (upstream: string) => `The upstream ${upstream} no longer exists.`;
 export const UPSTREAM_GONE_NAME = "upstream gone";
 
@@ -40,22 +40,22 @@ function Line({ icon, muted = true, children }: { icon: IconSvgElement; muted?: 
   );
 }
 
-// Feature 003 `trackLabel`: only the count form has a visible text that differs from its label, and "=" is its form for zero and zero.
+// Feature 003 `trackLabel`: "=" is the count form for zero and zero.
 function counts(track: TrackLabel): string | null {
-  if (track === null || track.text === track.label) return null;
+  if (track === null || track.state !== "counts") return null;
   return track.text === "=" ? "Up to date" : track.label;
 }
 
 function CardText({ facts }: { facts: CardFacts }) {
   const name = <span className="font-semibold [overflow-wrap:anywhere]">{facts.name}</span>;
   if (facts.kind === "name") return name;
-  const { upstream, upstreamPresent, track, heldBy } = facts;
-  const ahead = upstream === null || isGone(upstream, upstreamPresent) || upstreamPresent !== true ? null : counts(track);
+  const { upstream, gone, track, heldBy } = facts;
+  const ahead = upstream === null || gone ? null : counts(track);
   return (
     <>
       {name}
       <Line icon={CloudIcon}>{upstream === null ? "No upstream" : `Upstream: ${upstream}`}</Line>
-      {upstream !== null && isGone(upstream, upstreamPresent) ? (
+      {upstream !== null && gone ? (
         <Line icon={Unlink01Icon} muted={false}>
           {`Upstream gone: ${upstream} no longer exists`}
         </Line>

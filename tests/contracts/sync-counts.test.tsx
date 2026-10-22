@@ -37,20 +37,20 @@ const count = () => document.querySelector('[data-slot="tracking-count"]');
 
 describe("label rule (data-model §1, FR-020, FR-021)", () => {
   test("counts show arrows with numbers and the text alternative", () => {
-    expect(trackLabel(entry(), index())).toEqual({ text: "↑2 ↓3", label: "2 ahead, 3 behind" });
+    expect(trackLabel(entry(), index())).toEqual({ text: "↑2 ↓3", label: "2 ahead, 3 behind", state: "counts" });
   });
 
   test("0 and 0 shows the equal mark", () => {
-    expect(trackLabel(entry({ track: { state: "counts", ahead: 0, behind: 0 } }), index())).toEqual({ text: "=", label: "0 ahead, 0 behind" });
+    expect(trackLabel(entry({ track: { state: "counts", ahead: 0, behind: 0 } }), index())).toEqual({ text: "=", label: "0 ahead, 0 behind", state: "counts" });
   });
 
   test("no upstream and a gone upstream show their texts", () => {
-    expect(trackLabel(entry({ upstream: null, upstreamObjectId: null, track: { state: "none" } }), index())).toEqual({ text: "No upstream", label: "No upstream" });
-    expect(trackLabel(entry({ upstreamObjectId: null, track: { state: "gone" } }), index())).toEqual({ text: "Upstream gone", label: "Upstream gone" });
+    expect(trackLabel(entry({ upstream: null, upstreamObjectId: null, track: { state: "none" } }), index())).toEqual({ text: "No upstream", label: "No upstream", state: "none" });
+    expect(trackLabel(entry({ upstreamObjectId: null, track: { state: "gone" } }), index())).toEqual({ text: "Upstream gone", label: "Upstream gone", state: "gone" });
   });
 
   test("a count above 10,000 shows 10000+", () => {
-    expect(trackLabel(entry({ track: { state: "counts", ahead: 10_001, behind: 10_000 } }), index())).toEqual({ text: "↑10000+ ↓10000", label: "10000+ ahead, 10000 behind" });
+    expect(trackLabel(entry({ track: { state: "counts", ahead: 10_001, behind: 10_000 } }), index())).toEqual({ text: "↑10000+ ↓10000", label: "10000+ ahead, 10000 behind", state: "counts" });
   });
 
   test("a count shows only when both OIDs equal the newest readRefs values", () => {
@@ -61,7 +61,7 @@ describe("label rule (data-model §1, FR-020, FR-021)", () => {
 
   test("labels join by branch name", () => {
     const labels = trackingLabels([entry(), entry({ name: "dev", objectId: oid(5), current: false })] as never, refList(createWorld()) as never);
-    expect(labels.get("main")).toEqual({ text: "↑2 ↓3", label: "2 ahead, 3 behind" });
+    expect(labels.get("main")).toEqual({ text: "↑2 ↓3", label: "2 ahead, 3 behind", state: "counts" });
     expect(labels.get("dev")).toBeNull();
   });
 });

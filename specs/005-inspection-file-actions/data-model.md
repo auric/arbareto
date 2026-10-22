@@ -136,8 +136,9 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 ## 12. Branch tracking facts
 
-- `BranchEntry` (004 data-model §1) gains `upstreamPresent`: true when `upstream` is not null and the same read lists that ref.
-- Gone: `upstream !== null && !upstreamPresent`.
+- `BranchEntry` (004 data-model §1) gains the required `upstreamPresent` (boolean or null): false when `upstream` is null; else false for the 003 track state `gone` of the paired tracking entry and true for another state; null without a paired entry (unknown, no mark).
+- Gone: `upstream !== null && upstreamPresent === false`. The sidebar takes `gone` from the 003 track state of its tracking label.
+- `RefEntry` (001 data-model §4) gains `nameBytes` (base64 raw name bytes) exactly when `invalidUtf8` is true. The References tree keys on these bytes (§3).
 - Card facts (renderer, no new read): `name` (the full ref name without its namespace), `upstream` (short name or null), `gone`, `tracking` (the 003 `ahead` and `behind`, or null), `heldBy` (from the latest `readBranches`, or unknown when none is loaded). A remote row holds only `name`.
 
 ## 13. Shadow folder (shell)

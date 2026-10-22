@@ -927,8 +927,11 @@ export const RefEntry = z
     symref: z.string().nullable(),
     upstream: z.string().nullable(),
     upstreamPresent: z.boolean(),
+    // Feature 005 contract Δ3 (001 §3): the raw name bytes in base64, present exactly when `invalidUtf8` is true. The tree order keys on them.
+    nameBytes: z.base64().min(1).optional(),
     commitId: ObjectId.nullable(),
   })
+  .refine((r) => r.invalidUtf8 === (r.nameBytes !== undefined))
   .meta({ title: "RefEntry" });
 
 // Contract §3 `readRefs`: the complete list in Git's `refname` order, and the branch that `%(HEAD)` marks.
@@ -1639,8 +1642,8 @@ const BranchEntry = z
     heldBy: Text.min(1).nullable(),
     current: z.boolean(),
     localName: Text.min(1).nullable(),
-    // Feature 005 contract Δ3: the same `for-each-ref` read holds the `upstream` ref. T009 makes the service send it.
-    upstreamPresent: z.boolean().optional(),
+    // Feature 005 contract Δ3: false for no upstream or the 003 track state `gone` of the paired tracking entry. Null: no paired entry, so the state is unknown.
+    upstreamPresent: z.boolean().nullable(),
   })
   .refine((e) => (e.kind === "local" ? e.localName === null : !e.current && e.tracking === null) && (e.upstreamPresent !== true || e.upstream !== null))
   .meta({ title: "BranchEntry" });

@@ -83,6 +83,8 @@ const REFS: RefsResult = {
     ref("branch", "main", { upstream: "refs/remotes/origin/main", upstreamPresent: true }),
     ref("branch", "removed-remote", { upstream: null }),
     ref("branch", "spike", { upstream: null }),
+    // `readRefs` lists no refs/tags upstream as present for a branch, but the 003 track state counts it: no mark.
+    ref("branch", "tagged", { upstream: "refs/tags/v1", upstreamPresent: false }),
     ref("remote", `origin/${LONG}`),
     ref("remote", "origin/main"),
   ],
@@ -91,11 +93,12 @@ const REFS: RefsResult = {
   completeness: { state: "complete" },
 };
 const TRACKING = new Map<string, TrackLabel>([
-  [LONG, { text: "↑3 ↓1", label: "3 ahead, 1 behind" }],
-  ["main", { text: "=", label: "0 ahead, 0 behind" }],
-  ["fix-old-cache", { text: "Upstream gone", label: "Upstream gone" }],
-  ["spike", { text: "No upstream", label: "No upstream" }],
-  ["removed-remote", { text: "No upstream", label: "No upstream" }],
+  [LONG, { text: "↑3 ↓1", label: "3 ahead, 1 behind", state: "counts" }],
+  ["main", { text: "=", label: "0 ahead, 0 behind", state: "counts" }],
+  ["tagged", { text: "=", label: "0 ahead, 0 behind", state: "counts" }],
+  ["fix-old-cache", { text: "Upstream gone", label: "Upstream gone", state: "gone" }],
+  ["spike", { text: "No upstream", label: "No upstream", state: "none" }],
+  ["removed-remote", { text: "No upstream", label: "No upstream", state: "none" }],
 ]);
 const entry = (kind: "local" | "remote", name: string, fields: Partial<BranchEntry> = {}): BranchEntry => ({ ref: `refs/${kind === "local" ? "heads" : "remotes"}/${name}`, kind, name, invalidUtf8: false, oid: B, upstream: null, tracking: null, heldBy: null, current: false, localName: null, upstreamPresent: false, ...fields });
 const BRANCHES: BranchEntry[] = [
@@ -104,6 +107,8 @@ const BRANCHES: BranchEntry[] = [
   entry("local", "main", { upstream: "refs/remotes/origin/main", upstreamPresent: true, current: true, heldBy: "C:/Repos/sample-repo" }),
   entry("local", "removed-remote"),
   entry("local", "spike"),
+  // Contract Δ3: null is an unpaired tracking entry, so the gone state is unknown and no mark shows.
+  entry("local", "unknown", { upstream: "refs/remotes/origin/unknown", upstreamPresent: null }),
   entry("remote", `origin/${LONG}`),
   entry("remote", "origin/main"),
 ];
@@ -291,9 +296,10 @@ describe("the gone mark (spec FR-064, US9-1 to US9-3, plan.md O-1)", () => {
     expect(text(target)).not.toContain("not present");
   });
 
-  test("no upstream, a removed remote, a present upstream, and a remote row show no mark", async () => {
+  test("no upstream, a removed remote, a present upstream, a tag upstream that the 003 track state counts, and a remote row show no mark", async () => {
     const host = await sidebar();
-    for (const start of ["spike,", "removed-remote,", "main,", `${LONG},`]) expect([start, row(host, start).querySelector('[data-slot="gone-mark"]')]).toEqual([start, null]);
+    // Booleans only: a DOM node inside a failed toEqual makes Bun walk the whole DOM.
+    for (const start of ["spike,", "removed-remote,", "main,", "tagged,", `${LONG},`]) expect([start, row(host, start).querySelector('[data-slot="gone-mark"]') !== null]).toEqual([start, false]);
     await openRemotes(host);
     expect(row(host, "origin/main,").querySelector('[data-slot="gone-mark"]')).toBeNull();
   });
@@ -318,7 +324,7 @@ function actions(entries: BranchEntry[] | null) {
 }
 const button = (host: HTMLElement) => host.querySelector<HTMLElement>('[data-slot="branch-button"]')!;
 const branchButton = (fake: Actions, target = "refs/heads/main") =>
-  show(<BranchButton headingHeight={24} head={{ state: "branch", target, oid: A }} operationState="normal" counts={{ text: "=", label: "Up to date" }} tracking={TRACKING} actions={fake} blockedReason={null} rowHeight={26} />);
+  show(<BranchButton headingHeight={24} head={{ state: "branch", target, oid: A }} operationState="normal" counts={{ text: "=", label: "Up to date", state: "counts" }} tracking={TRACKING} actions={fake} blockedReason={null} rowHeight={26} />);
 const options = () => [...document.querySelectorAll<HTMLElement>('[role="listbox"] [role="option"]')];
 const option = (name: string) => options().find((o) => o.getAttribute("aria-label")!.startsWith(`${name},`))!;
 const listName = (element: HTMLElement) => element.querySelector<HTMLElement>('[data-slot="branch-name"]')!;
@@ -330,6 +336,8 @@ describe("the branch button (spec FR-065)", () => {
   test("a cut branch button shows the card of the current branch at once on keyboard focus, and Escape closes it with the focus kept", async () => {
     const { fake, used } = actions(ON_LONG);
     const host = await branchButton(fake, `refs/heads/${LONG}`);
+    // The card and the hidden text carry the full name, so the name has no native title.
+    expect(button(host).querySelector('[data-slot="branch-text"]')!.getAttribute("title")).toBeNull();
     stubCut(button(host).querySelector<HTMLElement>('[data-branch-part="last"]')!, true);
     await focus(button(host));
     expect(cardLines()).toEqual([LONG, `Upstream: origin/${LONG}`, "3 ahead, 1 behind"]);
@@ -409,8 +417,30 @@ describe("the branch list rows (spec FR-064, FR-065)", () => {
     const mark = gone.querySelector<HTMLElement>('[data-slot="gone-mark"]')!;
     expect(mark.getAttribute("title")).toBe("The upstream origin/fix-old-cache no longer exists.");
     expect(listName(gone).compareDocumentPosition(mark) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Contract Δ14: the 003 note "Upstream gone" stays visible, and the name says it once.
+    expect(text(gone)).toContain("Upstream gone");
+    expect(gone.getAttribute("aria-label")!.toLowerCase().split("upstream gone").length - 1).toBe(1);
     expect(gone.getAttribute("aria-label")).toContain(", upstream gone");
-    for (const name of ["spike", "removed-remote", "main", LONG, "origin/main"]) expect([name, option(name).querySelector('[data-slot="gone-mark"]')]).toEqual([name, null]);
+    // "unknown" has a null upstreamPresent: the tracking entry did not pair, so the state is unknown.
+    for (const name of ["spike", "removed-remote", "main", "unknown", LONG, "origin/main"]) expect([name, option(name).querySelector('[data-slot="gone-mark"]') !== null]).toEqual([name, false]);
+  });
+
+  test("Escape closes an open card and keeps the branch list open; a second Escape closes the list", async () => {
+    const { fake } = actions(BRANCHES);
+    await openList(fake);
+    const field = document.querySelector<HTMLInputElement>('input[role="combobox"]')!;
+    stubCut(listName(option(LONG)), true);
+    await press(field, "ArrowDown");
+    await press(field, "ArrowUp");
+    expect(card()).not.toBeNull();
+    await press(field, "Escape");
+    await settle();
+    expect(card()).toBeNull();
+    expect(options().length).toBeGreaterThan(0);
+    expect(document.activeElement).toBe(field);
+    await press(field, "Escape");
+    await settle();
+    expect(options()).toEqual([]);
   });
 
   test("a cut remote row card shows only the full name", async () => {

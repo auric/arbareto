@@ -70,6 +70,8 @@ const REFS: RefsResult = {
 };
 // The history list reads A and B. C is not loaded yet (contract Δ3 target `unknown`).
 const LOADED = new Set([A, B]);
+// Feature 005 spec FR-064: the 003 track state `gone` of feature/x gives the gone mark.
+const GONE = new Map([["feature/x", { text: "Upstream gone", label: "Upstream gone", state: "gone" as const }]]);
 
 type Props = Partial<Parameters<typeof ReferencesSidebar>[0]>;
 let repositories = 0;
@@ -123,7 +125,7 @@ describe("groups and folders", () => {
   });
 
   test("a folder with one child stays a folder, and an entry shows its last segment while its name holds the full name", async () => {
-    const { host } = await sidebar();
+    const { host } = await sidebar({ tracking: GONE });
     await click(item(host, "feature, folder"));
     const entry = item(host, "feature/x,");
     expect(entry.getAttribute("aria-level")).toBe("3");
@@ -156,7 +158,7 @@ describe("groups and folders", () => {
   });
 
   test("the current branch name is bold with aria-current and no Current text, other rows are not bold, and an upstream shows → <upstream> and the gone mark (feature 005 spec FR-064)", async () => {
-    const { host } = await sidebar();
+    const { host } = await sidebar({ tracking: GONE });
     const main = item(host, "main,");
     expect(main.getAttribute("aria-current")).toBe("true");
     expect(main.getAttribute("aria-label")).toContain("Current");

@@ -157,11 +157,19 @@ describe("References tree (spec FR-015, FR-017, US3-3)", () => {
     expect(items.filter(([level]) => level === "2").map(([, name]) => name)).toEqual(["Feature", "feature", "a-top", "main"]);
   });
 
-  test("names that are not valid UTF-8 sort by the bytes of their text, after the A to Z fold", async () => {
-    // Git order: "B\xFF" (0x42) before "b~" (0x62). The text holds U+FFFD (EF BF BD), and 0x7E sorts before 0xEF.
-    const refs = { ...REFS, refs: [ref("branch", "B�", { invalidUtf8: true }), ref("branch", "b~")] };
+  test("names that are not valid UTF-8 sort by their raw bytes from nameBytes, after the A to Z fold", async () => {
+    // Raw "B\xFF" folds to "b\xFF", so "b~" (0x7E) comes first. Raw "\xC0x" (0xC0) comes before "ñ" (0xC3 0xB1); its text U+FFFD (0xEF) would not.
+    const refs = {
+      ...REFS,
+      refs: [
+        ref("branch", "B�", { invalidUtf8: true, nameBytes: b64(Uint8Array.from([0x42, 0xff])) }),
+        ref("branch", "b~"),
+        ref("branch", "�x", { invalidUtf8: true, nameBytes: b64(Uint8Array.from([0xc0, 0x78])) }),
+        ref("branch", "ñ"),
+      ],
+    };
     const { host } = await show(sidebar(refs));
-    expect(treeItems(host).filter(([level]) => level === "2").map(([, name]) => name)).toEqual(["b~", "B�"]);
+    expect(treeItems(host).filter(([level]) => level === "2").map(([, name]) => name)).toEqual(["b~", "B�", "�x", "ñ"]);
   });
 });
 

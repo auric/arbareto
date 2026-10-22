@@ -8,7 +8,7 @@ import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, 
 import type { RefEntry, RefsResult } from "../../contracts/envelope";
 import { compareKeys, treeKey } from "../../contracts/tree-order";
 import { unknownReadText } from "../app/RepositoryStates";
-import { BranchCard, GoneMark, isCut, isGone, UPSTREAM_GONE_NAME, type CardFacts } from "../branches/BranchCard";
+import { BranchCard, GoneMark, isCut, UPSTREAM_GONE_NAME, type CardFacts } from "../branches/BranchCard";
 import type { BridgeResponse } from "../bridge";
 import type { BranchEntry } from "../state/workbench";
 import { ActionMenu } from "../components/action-menu";
@@ -109,14 +109,13 @@ const groupKey = (kind: Kind) => `group:${kind}`;
 const folderKey = (kind: Kind, path: string) => `folder:${kind}:${path}`;
 
 const utf8 = new TextEncoder();
-/**
- * Git's reference hierarchy (git-check-ref-format(1)): each `/` of a name starts one level. Feature 005 spec FR-015: the entries sort first, so each level shows its folders first.
- * `RefEntry` holds no raw name bytes, so a name that is not valid UTF-8 sorts by the bytes of its text. Equal texts keep Git's refname order.
- */
+// Feature 005 contract Δ3 (001 §3): a name that is not valid UTF-8 carries its raw bytes in `nameBytes`.
+const nameBytesOf = (entry: RefEntry) => (entry.nameBytes === undefined ? utf8.encode(entry.name) : Uint8Array.from(atob(entry.nameBytes), (c) => c.charCodeAt(0)));
+/** Git's reference hierarchy (git-check-ref-format(1)): each `/` of a name starts one level. Feature 005 spec FR-015: the entries sort first, so each level shows its folders first. */
 function buildGroup(kind: Kind, label: string, entries: readonly RefEntry[]): Tree {
   const root: Tree = { key: groupKey(kind), label, count: 0, children: [] };
   const folders = new Map<string, Tree>();
-  const sorted = entries.map((entry) => ({ entry, key: treeKey(utf8.encode(entry.name)) })).sort((a, b) => compareKeys(a.key, b.key));
+  const sorted = entries.map((entry) => ({ entry, key: treeKey(nameBytesOf(entry)) })).sort((a, b) => compareKeys(a.key, b.key));
   for (const { entry } of sorted) {
     const segments = entry.name.split("/");
     let at = root;
@@ -377,9 +376,10 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     const current = isCurrent(row);
     const upstream = upstreamText(entry);
     const notShown = entry.commitId === null ? undefined : missing.get(entry.commitId);
-    // Feature 005 spec FR-064: the gone mark replaces the 003 "Upstream gone" label of the row.
-    const gone = kind === "branch" && isGone(entry.upstream, entry.upstreamPresent);
-    const track = kind === "branch" && !gone ? (tracking?.get(entry.name) ?? null) : null;
+    // Feature 005 spec FR-064: the 003 track state `gone` gives the mark, and the mark replaces the 003 "Upstream gone" label of the row.
+    const label = kind === "branch" ? (tracking?.get(entry.name) ?? null) : null;
+    const gone = entry.upstream !== null && label?.state === "gone";
+    const track = gone ? null : label;
     // Feature 004 spec FR-008 and the 003 FR-020 change: "No upstream" is part of the name of a local branch row, never visible text.
     const noUpstream = kind === "branch" && entry.upstream === null;
     const name =
@@ -444,8 +444,8 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
             kind: "local",
             name: entry.name,
             upstream: entry.upstream === null ? null : shortRef(entry.upstream),
-            upstreamPresent: entry.upstreamPresent,
-            track: tracking?.get(entry.name) ?? null,
+            gone,
+            track: label,
             // Spec FR-066: only another worktree. The open worktree holds the current branch.
             heldBy: held === null || entry.invalidUtf8 ? undefined : current ? null : (holder?.heldBy ?? null),
           };

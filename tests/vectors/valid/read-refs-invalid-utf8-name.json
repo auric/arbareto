@@ -1,0 +1,5 @@
+{
+  "schema": "read-refs-result",
+  "expected": "valid",
+  "text": "{\"generation\":3,\"refs\":[{\"kind\":\"branch\",\"name\":\"b\uFFFD\",\"invalidUtf8\":true,\"objectId\":\"0123456789abcdef0123456789abcdef01234567\",\"objectType\":\"commit\",\"peeledId\":null,\"peeledType\":null,\"symref\":null,\"upstream\":null,\"upstreamPresent\":false,\"nameBytes\":\"Yv8=\",\"commitId\":\"0123456789abcdef0123456789abcdef01234567\"}],\"refsDigest\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"current\":null,\"completeness\":{\"state\":\"complete\"}}"
+}

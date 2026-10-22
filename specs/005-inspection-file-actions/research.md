@@ -158,8 +158,8 @@
 
 ## R14 Branch gone mark and card
 
-- Decision: `upstreamPresent` from the same `for-each-ref` read, and the gone rule `upstream !== null && !upstreamPresent` (plan D13).
-- Rationale: `%(upstream)` prints the mapped ref also when that ref is missing (design R9). `RefEntry` already computes `upstreamPresent` this way (code, `refs-parser.ts:94`). A missing remote gives no fetch refspec, so `branch_get_upstream` returns NULL and `%(upstream)` is empty (source, remote.c:1796-1801, :1908; clarify F2). The 003 `%(upstream:track,nobracket)` `gone` agrees, and `for-each-ref` prints it untranslated (source, ref-filter.c:50, design R9).
+- Decision: `upstreamPresent` from the 003 track state of the paired tracking entry of the same read, and the gone rule `upstream !== null && upstreamPresent === false` (plan D13). Without a paired entry, `upstreamPresent` is null and no mark shows (WP2 review, 2026-10-22).
+- Rationale: `%(upstream)` prints the mapped ref also when that ref is missing (design R9). The branch listing holds only `refs/heads` and `refs/remotes`, so a listing compare marks `branch.b.merge=refs/tags/v1` with remote `.` as gone, although Git resolves it (probed, Git 2.56.0, WP2 review). A missing remote gives no fetch refspec, so `branch_get_upstream` returns NULL and `%(upstream)` is empty (source, remote.c:1796-1801, :1908; clarify F2). The 003 `%(upstream:track,nobracket)` `gone` agrees, and `for-each-ref` prints it untranslated (source, ref-filter.c:50, design R9).
 - "Cut" is the layout fact `scrollWidth > clientWidth` of the name element (doc, CSSOM View). It needs no text measure.
 - The card uses Base UI PreviewCard, which `@base-ui/react` already ships (code, `package.json`). The shadcn `hover-card` wrapper of the `base-mira` registry is unverified until WP2 runs the generator.
 - Alternatives considered: a `title` attribute (no keyboard access, no structure); a second `for-each-ref` read (spec FR-066 forbids a new read).

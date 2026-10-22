@@ -49,6 +49,8 @@ export type SwitcherPopoverProps<T> = {
   renderItem(item: T, active: boolean): ReactNode;
   /** The `aria-describedby` value of an option, such as an open branch card (feature 005 spec FR-066). */
   itemDescribedBy?(item: T): string | undefined;
+  /** Escape in the filter field. True: the caller handled it, such as an open branch card, so the popover stays open. */
+  onEscape?(): boolean;
   onPick(item: T): void;
   /** The last options, such as "New branch…" with the key Ctrl+B. The filter never hides them. `note` is a Muted state on the option line. */
   footer?: Footer | readonly Footer[];
@@ -76,7 +78,7 @@ export function SwitcherPopover<T>({ open, onOpenChange, trigger, children, tool
   );
 }
 
-function SwitcherList<T>({ rowHeight, itemHeight, headingHeight, filterLabel, listLabel, items, failure, itemKey, itemText, itemLabel = itemText, itemGroup, renderItem, itemDescribedBy, onPick, footer, onItemDelete, emptyText, noMatchText }: Omit<SwitcherPopoverProps<T>, "open" | "onOpenChange" | "trigger" | "children" | "tooltip">) {
+function SwitcherList<T>({ rowHeight, itemHeight, headingHeight, filterLabel, listLabel, items, failure, itemKey, itemText, itemLabel = itemText, itemGroup, renderItem, itemDescribedBy, onEscape, onPick, footer, onItemDelete, emptyText, noMatchText }: Omit<SwitcherPopoverProps<T>, "open" | "onOpenChange" | "trigger" | "children" | "tooltip">) {
   const ids = { list: useId(), option: useId() };
   const [query, setQuery] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -143,7 +145,10 @@ function SwitcherList<T>({ rowHeight, itemHeight, headingHeight, filterLabel, li
     else footers[index - shown.length]?.onPick();
   }
   function onKeyDown(event: ReactKeyboardEvent<HTMLInputElement>) {
-    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+    if (event.key === "Escape" && onEscape?.() === true) {
+      event.preventDefault();
+      event.stopPropagation();
+    } else if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
       const next = Math.max(0, Math.min(count - 1, active + (event.key === "ArrowDown" ? 1 : -1)));
       setActiveIndex(next);

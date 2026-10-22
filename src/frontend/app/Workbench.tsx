@@ -1605,6 +1605,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       onShowBranchHistory={() => void historyView.setScope("current")}
       tracking={labels}
       onBranchAction={branches.entries === null ? undefined : (entry, action, anchor, byKey) => branches.onRef(entry.kind as "branch" | "remote", entry.name, action, anchor, byKey)}
+      branches={branches.entries}
       after={
         state.repository === null ? null : (
           <>

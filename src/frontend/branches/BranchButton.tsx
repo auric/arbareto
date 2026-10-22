@@ -27,7 +27,7 @@ const gone = (e: BranchEntry) => e.kind === "local" && isGone(e.upstream, e.upst
 const factsOf = (e: BranchEntry, tracking: ReadonlyMap<string, TrackLabel>): CardFacts =>
   e.kind === "remote"
     ? { kind: "name", name: e.name }
-    : { kind: "local", name: e.name, upstream: e.upstream === null ? null : shortRef(e.upstream), upstreamPresent: e.upstreamPresent, track: tracking.get(e.name) ?? null, heldBy: e.current ? null : e.heldBy };
+    : { kind: "local", name: e.name, upstream: e.upstream === null ? null : shortRef(e.upstream), gone: gone(e), track: tracking.get(e.name) ?? null, heldBy: e.current ? null : e.heldBy };
 
 type ListNameProps = { entry: BranchEntry; facts: CardFacts; active: boolean; card: Card; cardId: string; setCard(next: Card | ((open: Card) => Card)): void };
 
@@ -90,10 +90,14 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
   const text = buttonText(head, operationState);
   const [folder, last] = splitPath(text, GIT_SEPARATORS);
   const failure = blockedReason !== null ? <p>{blockedReason}</p> : actions.failure !== null ? <p role="alert">{actions.failure}</p> : undefined;
-  // Spec FR-008: "No upstream" shows in the list. A held branch offers Open instead of a switch (FR-013). Feature 005 FR-064: the gone mark replaces the 003 "Upstream gone" label.
-  const note = (e: BranchEntry) => (e.heldBy !== null && !e.current ? T.open(e.heldBy) : e.kind === "local" && e.upstream === null ? T.noUpstream : e.kind === "local" && !gone(e) ? (tracking.get(e.name)?.text ?? null) : null);
+  // Spec FR-008: "No upstream" shows in the list. A held branch offers Open instead of a switch (FR-013).
+  const held = (e: BranchEntry) => e.heldBy !== null && !e.current;
+  const note = (e: BranchEntry) => (held(e) ? T.open(e.heldBy!) : e.kind === "local" && e.upstream === null ? T.noUpstream : e.kind === "local" ? (tracking.get(e.name)?.text ?? null) : null);
+  // Feature 005 contract Δ14: the 003 note "Upstream gone" stays visible beside the gone mark. The name states it once.
   const label = (e: BranchEntry) =>
-    [e.name, ...(e.current ? [T.current] : []), e.kind === "local" ? T.localNoun : T.remoteNoun, ...(gone(e) ? [UPSTREAM_GONE_NAME] : e.kind === "local" && e.upstream !== null ? [tracking.get(e.name)?.label] : []), note(e)].filter((part) => part != null).join(", ");
+    [e.name, ...(e.current ? [T.current] : []), e.kind === "local" ? T.localNoun : T.remoteNoun, ...(gone(e) ? [UPSTREAM_GONE_NAME] : e.kind === "local" && e.upstream !== null ? [tracking.get(e.name)?.label] : []), gone(e) && !held(e) ? null : note(e)]
+      .filter((part) => part != null)
+      .join(", ");
   // The card of the button names the current branch of the newest `readBranches` result. Without it, or for another head state, the card shows the text only.
   const currentEntry = head.state === "branch" && operationState !== "merging" && operationState !== "rebasing" ? actions.entries?.find((e) => e.current && e.ref === head.target) : undefined;
   const buttonCard = card?.key === BUTTON;
@@ -145,6 +149,12 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
       itemLabel={label}
       itemGroup={(e) => (e.kind === "local" ? T.localGroup : T.remoteGroup)}
       itemDescribedBy={(e) => (card?.key === e.ref ? cardId : undefined)}
+      // Feature 005 plan.md D15: Escape closes an open row card first, and the list stays open.
+      onEscape={() => {
+        if (card === null || card.key === BUTTON) return false;
+        setCard(null);
+        return true;
+      }}
       renderItem={(e, active) => {
         const n = note(e);
         return (
@@ -171,7 +181,7 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
       noMatchText={T.noMatch}
     >
       <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
-      {/* plan.md "Header layout": the folder part shrinks first and the last `/` segment last. The title and the hidden text hold the full name. */}
+      {/* plan.md "Header layout": the folder part shrinks first and the last `/` segment last. The hidden text and the branch card (feature 005) hold the full name. */}
       <BranchCard
         facts={currentEntry === undefined ? { kind: "name", name: text } : factsOf(currentEntry, tracking)}
         id={cardId}
@@ -181,7 +191,7 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
         names={() => [...(parts.current?.querySelectorAll("[data-branch-part]") ?? [])]}
         side="bottom"
         trigger={
-          <span ref={parts} data-slot="branch-text" title={text} className="flex min-w-0 items-center whitespace-nowrap" style={{ flex: "0 1 auto" }}>
+          <span ref={parts} data-slot="branch-text" className="flex min-w-0 items-center whitespace-nowrap" style={{ flex: "0 1 auto" }}>
             <span className="sr-only">{text}</span>
             {folder === "" ? null : (
               <span data-branch-part="folder" aria-hidden="true" className="min-w-0 shrink-[1000] truncate">

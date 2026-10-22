@@ -185,7 +185,10 @@
                 ]
               },
               "upstreamPresent": {
-                "type": "boolean"
+                "type": [
+                  "boolean",
+                  "null"
+                ]
               }
             },
             "required": [
@@ -198,7 +201,8 @@
               "tracking",
               "heldBy",
               "current",
-              "localName"
+              "localName",
+              "upstreamPresent"
             ],
             "additionalProperties": false,
             "title": "BranchEntry"

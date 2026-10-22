@@ -1155,7 +1155,9 @@ describe("single view", () => {
     ];
     expect(items.map((i) => i !== null)).toEqual([true, true, true, true, true, true]);
     for (let i = 1; i < items.length; i++) expect(follows(items[i - 1]!, items[i]!)).toBe(true);
-    expect(header.querySelector('[data-slot="branch-text"]')!.getAttribute("title")).toBe("main");
+    // Feature 005: the branch card and the hidden text carry the full name, so the name has no native title.
+    expect(header.querySelector('[data-slot="branch-text"]')!.getAttribute("title")).toBeNull();
+    expect(header.querySelector('[data-slot="branch-text"] .sr-only')!.textContent).toBe("main");
     expect(header.querySelector('button[aria-label="Refresh"]')!.getAttribute("aria-keyshortcuts")).toBe("F5");
   });
 
@@ -1447,11 +1449,11 @@ describe("menus", () => {
 // T362: plan.md "Header layout" and "Long text": the branch text of a very long branch name.
 describe("toolbar branch text", () => {
   const LONG = "feature/ACS-10545-a-very-long-branch-name-that-goes-on-and-on-and-on";
-  test('it shows a middle ellipsis, holds the full name in its tooltip and accessible text, and the branch button takes the free width (004 plan.md D15 "Top bar row")', async () => {
+  test('it shows a middle ellipsis, holds the full name in its hidden text and the branch card (feature 005), and the branch button takes the free width (004 plan.md D15 "Top bar row")', async () => {
     const double = await mount(succeeded(REGISTRATION));
     await resolve(double.pending("readWorkspace"), succeeded(snapshot({ head: { state: "branch", target: `refs/heads/${LONG}`, oid: HEAD } })));
     const branch = document.querySelector<HTMLElement>('header [data-slot="branch-text"]')!;
-    expect(branch.getAttribute("title")).toBe(LONG);
+    expect(branch.getAttribute("title")).toBeNull();
     expect(branch.querySelector(".sr-only")?.textContent).toBe(LONG);
     const parts = [...branch.querySelectorAll<HTMLElement>("[data-branch-part]")].map((p) => [p.dataset.branchPart, p.textContent, p.className.split(/\s+/).includes("truncate")]);
     expect(parts).toEqual([

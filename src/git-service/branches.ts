@@ -30,7 +30,8 @@ export interface BranchEntry {
   heldBy: string | null;
   current: boolean;
   localName: string | null;
-  upstreamPresent: boolean;
+  // Feature 005 contract Δ3: null when no tracking entry pairs with this read.
+  upstreamPresent: boolean | null;
 }
 
 export type BranchesOutcome =
@@ -135,7 +136,8 @@ export function createBranchesReader({ runner, trust, reader, listingTuple }: Pi
             heldBy: holders.get(r.ref) ?? null,
             current: r.current,
             localName,
-            upstreamPresent: r.upstreamPresent,
+            // ref-filter.c prints `gone` when the upstream does not resolve. The branch listing alone cannot tell it: it holds only refs/heads and refs/remotes.
+            upstreamPresent: r.upstream === null ? false : tracking === null ? null : tracking.track.state !== "gone",
           };
         });
         const value = { entries };

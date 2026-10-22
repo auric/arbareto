@@ -25,11 +25,11 @@ interface Entry {
   ref: string;
   kind: string;
   upstream: string | null;
-  upstreamPresent?: boolean;
+  upstreamPresent: boolean | null;
   tracking: { track: { state: string } } | null;
 }
 
-// The branch cases: a pruned upstream, a removed remote, no upstream, and a present upstream.
+// The branch cases: a pruned upstream, a removed remote, no upstream, a present upstream, and a tag upstream with remote `.`.
 function build(name: string): Repo {
   const root = fixtureDir(name);
   const up: Repo = { git: gitPath(), dir: join(root, "up"), pre: [] };
@@ -52,6 +52,11 @@ function build(name: string): Repo {
   run(r, ["branch", "--track", "present", "origin/keep"]);
   run(r, ["branch", "--track", "removed", "other/keep"]);
   run(r, ["branch", "--no-track", "none", "main"]);
+  // An upstream outside refs/heads and refs/remotes: Git resolves it, so it is no gone upstream.
+  run(r, ["tag", "v1"]);
+  run(r, ["branch", "--no-track", "tagged", "main"]);
+  run(r, ["config", "branch.tagged.remote", "."]);
+  run(r, ["config", "branch.tagged.merge", "refs/tags/v1"]);
   // The pruned upstream: the remote branch goes, and `fetch --prune` drops its remote-tracking ref.
   run(up, ["branch", "-D", "old"]);
   run(r, ["fetch", "-q", "--prune", "origin"]);
@@ -59,20 +64,19 @@ function build(name: string): Repo {
   return r;
 }
 
-// `%(upstream)` and `%(upstream:track,nobracket)` of each local branch, and every listed ref of the same read (git-for-each-ref(1)).
+// `%(upstream)` and `%(upstream:track,nobracket)` of each local branch (git-for-each-ref(1)). ref-filter.c prints `gone` when the upstream does not resolve.
 function oracle(r: Repo) {
-  const records = run(r, ["for-each-ref", "--format=%(refname)%00%(upstream)%00%(upstream:track,nobracket)", "refs/heads", "refs/remotes"])
+  const records = run(r, ["for-each-ref", "--format=%(refname)%00%(upstream)%00%(upstream:track,nobracket)", "refs/heads"])
     .split("\n")
     .filter((line) => line !== "")
     .map((line) => line.split("\0") as [string, string, string]);
-  const listed = new Set(records.map(([ref]) => ref));
-  return new Map(records.filter(([ref]) => ref.startsWith("refs/heads/")).map(([ref, upstream, track]) => [ref, { upstream: upstream === "" ? null : upstream, present: upstream !== "" && listed.has(upstream), track }]));
+  return new Map(records.map(([ref, upstream, track]) => [ref, { upstream: upstream === "" ? null : upstream, present: upstream !== "" && track !== "gone", track }]));
 }
 
-const gone = (e: Entry) => e.upstream !== null && !e.upstreamPresent;
+const gone = (e: Entry) => e.upstream !== null && e.upstreamPresent === false;
 
 describe("readBranches upstreamPresent and the gone rule (contract Δ3, spec FR-064)", () => {
-  caseTest(TASK, "upstreamPresent equals Git's listing, the gone rule holds only for the pruned upstream, and it agrees with the 003 track state gone", SHELL, () =>
+  caseTest(TASK, "upstreamPresent equals Git's track state, the gone rule holds only for the pruned upstream, and a tag upstream with remote . is present", SHELL, () =>
     withService({ name: "t006-branch-gone" }, async (service: Service) => {
       const r = build("t006-branch-gone");
       const registered = await service.register(r.dir);
@@ -89,6 +93,8 @@ describe("readBranches upstreamPresent and the gone rule (contract Δ3, spec FR-
       // remote.c `branch_get_upstream`: a removed remote gives no upstream.
       expect(byRef.get("refs/heads/removed")).toMatchObject({ upstream: null, upstreamPresent: false });
       expect(byRef.get("refs/heads/none")).toMatchObject({ upstream: null, upstreamPresent: false });
+      // The branch listing holds only refs/heads and refs/remotes, so the tag upstream is not in it. Git still resolves it.
+      expect(byRef.get("refs/heads/tagged")).toMatchObject({ upstream: "refs/tags/v1", upstreamPresent: true });
       expect(local.filter(gone).map((e) => e.ref)).toEqual(["refs/heads/pruned"]);
       // Spec Assumptions: the rule agrees with the 003 track state of the same read and with Git's own `gone`.
       for (const e of local) expect([e.ref, gone(e)]).toEqual([e.ref, e.tracking?.track.state === "gone"]);

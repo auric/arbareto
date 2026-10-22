@@ -28,8 +28,6 @@ export interface BranchRecord {
   // `%(objectname)`: the ref value. Feature 003 `readTracking` pairs on this value.
   object: string;
   upstream: string | null;
-  // Feature 005 contract Δ3: the same output holds a record of the `upstream` ref, by its raw bytes.
-  upstreamPresent: boolean;
   current: boolean;
 }
 
@@ -46,9 +44,6 @@ export function parseBranches(stdout: Uint8Array, objectFormat: ObjectFormat): B
   if (raw === "") return [];
   if (!raw.endsWith("\n")) return null;
   const entries: BranchRecord[] = [];
-  // The raw `refname` of every valid record, a symbolic ref and a non-commit ref too, as `refs-parser.ts` lists them.
-  const listed = new Set<string>();
-  const upstreams: string[] = [];
   let current = 0;
   for (const line of raw.slice(0, -1).split("\n")) {
     const f = line.split("\0");
@@ -60,10 +55,8 @@ export function parseBranches(stdout: Uint8Array, objectFormat: ObjectFormat): B
     if (!peel) return null;
     if (head !== " " && !(head === "*" && prefix === HEADS && ++current === 1)) return null;
     const oid = type === "commit" ? object : peeledType === "commit" ? peeled : null;
-    listed.add(refname);
     if (symref !== "" || oid === null) continue;
     const ref = decoded(refname);
-    upstreams.push(upstream);
     entries.push({
       ref: ref.text,
       kind: prefix === HEADS ? "local" : "remote",
@@ -72,11 +65,9 @@ export function parseBranches(stdout: Uint8Array, objectFormat: ObjectFormat): B
       oid,
       object,
       upstream: upstream === "" ? null : decoded(upstream).text,
-      upstreamPresent: false,
       current: head === "*",
     });
   }
-  entries.forEach((e, i) => (e.upstreamPresent = upstreams[i] !== "" && listed.has(upstreams[i]!)));
   return entries;
 }
 

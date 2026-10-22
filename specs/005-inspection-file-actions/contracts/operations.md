@@ -7,7 +7,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - New renderer operations: `readCommitChanges`, `readCommitFile`, `readBlame`, `readIgnoreFile`, `previewIgnore`, `openSubmodule`. Each has one Tauri command and one zod schema.
 - `openSubmodule` is native-first, as `openWorktree` (004 Δ1).
 - `reviewWorkbench` gains the actions `delete` and `ignore-save`. The 004 action `ignore` goes.
-- `revealPath` gains `folder`. `readBranches` entries gain `upstreamPresent`.
+- `revealPath` gains `folder`. `readBranches` entries gain `upstreamPresent`. `readRefs` entries gain `nameBytes` for a name that is not valid UTF-8.
 - New private requests: `fileDelete`, `fileReplace`, and `shadow`. `fileAppend` goes.
 - Keep explicit range checks in Rust (001 §1).
 
@@ -133,7 +133,12 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 ### `readBranches` (004 Δ3)
 
-- Each entry gains `upstreamPresent`: true when `upstream` is not null and the same `for-each-ref` output holds a record of that ref. No new command.
+- Each entry gains the required field `upstreamPresent` (boolean or null). It is false when `upstream` is null. Otherwise it comes from the 003 tracking entry that pairs with the entry in the same read: false for the track state `gone`, and true for another state. Without a paired tracking entry it is null, an unknown state, and no mark shows. No new command.
+- Rationale: the branch listing holds only `refs/heads` and `refs/remotes`, but an upstream can be another ref, such as `refs/tags/v1` with remote `.`. `%(upstream:track,nobracket)` prints `gone` exactly when the upstream does not resolve (ref-filter.c).
+
+### `readRefs` (001 §3)
+
+- Each `RefEntry` whose name is not valid UTF-8 gains `nameBytes`: the raw name bytes in base64. A valid UTF-8 name has no `nameBytes`. The References tree sorts on these bytes (plan D4).
 
 ## Δ4 File staging (001 §4)
 

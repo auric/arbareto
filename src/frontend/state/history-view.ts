@@ -705,7 +705,7 @@ export type InspectionBridge = Pick<ReturnType<typeof createBridge>, "readCommit
 type ProgressHandler = NonNullable<Parameters<InspectionBridge["readBlame"]>[2]>;
 type ProgressEvent = Parameters<ProgressHandler>[0];
 export type BlameOptions = { ignoreWhitespace: boolean; detectMoves: boolean; detectCopies: boolean; ignoreList: boolean };
-export type BlameSource = { changesId: string; fileId: number } | { snapshotId: string; entryId: string } | { blameId: string; line: number };
+export type BlameSource = { changesId: string; fileId: number } | { snapshotId: string; entryId: string } | { blameId: string; line: number } | { blameId: string };
 /** A blame to run: the source, and the path and commit that the heading names until the result arrives. */
 export type BlameRequest = { source: BlameSource; path: string; oid: string };
 /** `code` null: a `succeeded` response with a result of unknown form (feature 004 plan.md D15 "Malformed result"). */
@@ -905,7 +905,10 @@ export function createInspection(bridge: InspectionBridge, target: () => { repos
     setBlameOptions(next: Partial<BlameOptions>) {
       const blame = state.blame;
       if (blame === null) return;
-      setBlame({ options: { ...blame.options, ...next } });
+      // Plan.md D12: an option change sends `{blameId}` of the shown result. Without a result, the request keeps its source.
+      const shown = blame.run.state === "done" ? blame.run.result : null;
+      const request = shown === null ? blame.request : { source: { blameId: shown.blameId }, path: textOf(shown.pathBytes), oid: shown.commit };
+      setBlame({ request, options: { ...blame.options, ...next } });
       void runBlame(true);
     },
     /** Spec FR-056: "Blame before this commit" of the selected line. A line without `previous` does nothing. */

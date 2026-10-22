@@ -332,7 +332,7 @@ describe("options (spec FR-057, FR-059)", () => {
     ]);
     expect(text(toolbar)).toContain("6 lines");
     await click(toggles[0]!);
-    expect(m.d.last().payload).toEqual({ source: SOURCE, options: { ignoreWhitespace: true, detectMoves: false, detectCopies: false, ignoreList: true } });
+    expect(m.d.last().payload).toEqual({ source: { blameId: m.result.blameId }, options: { ignoreWhitespace: true, detectMoves: false, detectCopies: false, ignoreList: true } });
   });
 
   test("Skip commits in the ignore list shows only with an effective list and starts on; the marks ? and *", async () => {
@@ -519,5 +519,64 @@ describe("workbench state across the blame view", () => {
     await act(async () => line.focus());
     await key(line, "f", { ctrlKey: true });
     expect(document.activeElement).toBe(line);
+  });
+});
+
+// ---- Finding 1 (T065 contract source `{blameId}`): an option change re-blames the shown result ----
+
+describe("options re-blame the shown result (plan.md D12)", () => {
+  const OFF = { ignoreWhitespace: false, detectMoves: false, detectCopies: false, ignoreList: true };
+  test("after Blame before this commit, each toggle sends the shown result's blameId and shows the new result", async () => {
+    const m = await answered();
+    await key(line(m.host, 1), "ArrowLeft", { altKey: true });
+    const before = { ...THREE(), commit: P, focusLine: 2 };
+    await act(async () => m.d.last().resolve(succeeded(before)));
+    await settle();
+    let shown: { blameId: string } = before;
+    const toggles = [
+      ["Ignore whitespace", "ignoreWhitespace"],
+      ["Detect moved lines", "detectMoves"],
+      ["Detect lines from other files", "detectCopies"],
+    ] as const;
+    const options: Record<string, boolean> = { ...OFF };
+    for (const [label, option] of toggles) {
+      await click(button(m.host, label));
+      options[option] = true;
+      expect(m.d.last().payload).toEqual({ source: { blameId: shown.blameId }, options });
+      const next = { ...THREE(), commit: P };
+      await act(async () => m.d.last().resolve(succeeded(next)));
+      await settle();
+      expect(text(view(m.host).querySelector("h2")!)).toBe(`Blame: src/login.ts at ${P.slice(0, 12)}`);
+      expect(text(view(m.host))).not.toContain("UNKNOWN_TARGET");
+      expect(lines(m.host).length).toBe(6);
+      shown = next;
+    }
+  });
+
+  test("a toggle before any result keeps the original source", async () => {
+    const m = await mountBlame();
+    await click(button(m.host, "Ignore whitespace"));
+    expect(m.d.last().payload).toEqual({ source: SOURCE, options: { ...OFF, ignoreWhitespace: true } });
+  });
+
+  test("a toggle after a History refresh sends the shown result's blameId", async () => {
+    const { mountWorkbench, HEAD } = await import("./inspection-workbench");
+    const results: { blameId: string }[] = [];
+    const w = await mountWorkbench(() => {
+      const r = blameResult([{ oid: HEAD, time: NOW_S - DAY }], [{ commit: 0, count: 2 }], { commit: HEAD, pathBytes: b64("src/a.txt") });
+      results.push(r);
+      return r;
+    });
+    unmounts.push(w.unmount);
+    await w.selectCommit();
+    await click([...document.querySelectorAll<HTMLButtonElement>('[data-slot="history-diff"] button')].find((b) => text(b) === "Blame")!);
+    await w.serve();
+    // F5 refreshes the History view. Its new view drops the listing, not the retained blame.
+    await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "F5", bubbles: true, cancelable: true })));
+    await w.serve();
+    const toggle = [...document.querySelectorAll<HTMLButtonElement>('section[data-slot="blame-view"] button')].find((b) => text(b) === "Detect moved lines")!;
+    await click(toggle);
+    const reads = w.calls.filter((c) => c.operation === "readBlame");
+    expect(reads.at(-1)!.args[1]).toEqual({ source: { blameId: results.at(-1)!.blameId }, options: { ...OFF, detectMoves: true } });
   });
 });

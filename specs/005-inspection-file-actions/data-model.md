@@ -57,7 +57,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 - Per path: `outcome` one of `recycled`, `deleted`, `kept`, `changed`, `absent`, `not-regular`, `error`, `stopped`, with `code` for `error`, and `recycledPath` for `recycled` (the parsing name of `psiNewlyCreated`, Windows only).
 - Per candidate folder: `removed`, `kept` (not empty), `absent`, `not-regular`, or `error` with `code`.
 - The outcome table of plan D6 maps the shell reply and the fresh fact to the outcome.
-- `state`: the 001 data-model §7 outcome: `succeeded`, `failed`, `failed-with-effects`, or `canceled`.
+- `state`: the 001 data-model §7 outcome: `succeeded`, `failed`, `failed-with-effects`, or `canceled`, by the plan D6 "Response state" order. A removed file wins over a Cancel.
 - `recycledPath` never enters a log line. Tests use it to purge their own items.
 
 ## 6. Ignore file (`readIgnoreFile` result)
@@ -100,7 +100,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 - `bytes`: the BOM when the file has one, then the text in the file's line-ending form.
 - `after`: `{size, sha256}` of `bytes`.
 - `bound`: `expected`, the repository generation, and the Arbareto mutation markers (001 FR-015). The Git operation state and the conflicted count are not bound, because Save runs during an unfinished operation and with conflicts (spec FR-046).
-- Validation: the request text decodes from base64 to strict UTF-8 of at most 1 MiB. A NUL passes the schema, and the review refuses it with `ignore-nul` (contract Δ3). `bytes` at most 1 MiB, else `ignore-size`.
+- Validation: the request text decodes from base64 to strict UTF-8 of at most 1 MiB. A CR byte gives `INVALID_REQUEST` (contract Δ3). A NUL passes the schema, and the review refuses it with `ignore-nul` (contract Δ3). `bytes` at most 1 MiB, else `ignore-size`.
 - Result: `replaced`, or the 001 outcome with `STALE_REVIEW` `ignore-changed`, `stale`, `not-regular`, `stopped`, `interrupted`, or `error {code}`, cross-checked by the fresh target digest.
 
 ## 9. Submodule open and the parent chain

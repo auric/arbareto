@@ -5256,8 +5256,16 @@ mod tests {
             &environment,
             Stdin::Closed,
         );
-        let out = host.run(&command).expect("mutation process");
-        assert_eq!(out.exit_code, Some(0), "mutation exit");
+        let Ended {
+            output, deadline, ..
+        } = host.run_until(&command, RETAINED_BYTES, PROBE_DEADLINE);
+        let out = output.unwrap_or_else(|| panic!("mutation process: deadline {deadline}"));
+        assert_eq!(
+            out.exit_code,
+            Some(0),
+            "mutation exit: deadline {deadline} stdout {:?}",
+            String::from_utf8_lossy(&out.stdout)
+        );
         let images = supervisor
             .process_ids(operation)
             .into_iter()
@@ -5499,7 +5507,17 @@ mod tests {
             let command =
                 destination_command(&inst, &unit, &format!("{root}/{name}"), &environment);
             let ended = host.run_until(&command, DESTINATION_OUTPUT_BYTES + 2, PROBE_DEADLINE);
-            assert_eq!(destination_reply(ended.output), expected, "{name}");
+            let exit = ended.output.as_ref().map(|out| out.exit_code);
+            let stdout = ended
+                .output
+                .as_ref()
+                .map(|out| String::from_utf8_lossy(&out.stdout).into_owned());
+            assert_eq!(
+                destination_reply(ended.output),
+                expected,
+                "{name}: deadline {} exit {exit:?} stdout {stdout:?}",
+                ended.deadline
+            );
         }
         assert_eq!(shell(9, "rm -rf -- \"$1\""), Some(0));
     }

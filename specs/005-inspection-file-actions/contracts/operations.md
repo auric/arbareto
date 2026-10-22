@@ -14,7 +14,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 ## Δ2 Envelope (001 §2)
 
 - `readCommitChanges`, `readCommitFile`, `readBlame`, `readIgnoreFile`, and `previewIgnore` carry `repositoryId` and `repositoryGeneration`. `openSubmodule` carries `repositoryId` of the parent.
-- Generation rule: `readCommitChanges` gives `REPOSITORY_CHANGED` at acceptance when `repositoryGeneration` is not the workspace generation, as `openHistory` does. `readCommitFile` and `readBlame` with `{changesId, fileId}` or `{blameId, line}` do not check it, because their retained listing or result names commit IDs, and these survive a generation change as 001 History pages do. `readBlame` with `{snapshotId, entryId}` checks it through the snapshot (001 §9).
+- Generation rule: `readCommitChanges` gives `REPOSITORY_CHANGED` at acceptance when `repositoryGeneration` is not the workspace generation, as `openHistory` does. `readCommitFile` and `readBlame` with `{changesId, fileId}`, `{blameId, line}`, or `{blameId}` do not check it, because their retained listing or result names commit IDs, and these survive a generation change as 001 History pages do. `readBlame` with `{snapshotId, entryId}` checks it through the snapshot (001 §9).
 - `MUTATIONS` keeps `runWorkbench`. No new mutation operation.
 - Phases: `blame` (counters `blamed` and `total`, or none), `delete-files` (counters `fileIndex` and `fileCount`), `ignore-save`, `preview`. Events carry no path, ref name, or Git text.
 - Marker actions of kind `workbench` add `delete-files`, `ignore-save-gitignore`, and `ignore-save-exclude`. The actions `ignore-gitignore` and `ignore-exclude` go.
@@ -53,8 +53,8 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 ### `readBlame`
 
-- Payload: `{source, options}`. `source` is `{changesId, fileId}`, `{snapshotId, entryId}`, or `{blameId, line}`. `options` is `{ignoreWhitespace, detectMoves, detectCopies, ignoreList}`, all booleans. One read slot.
-- Target: `{changesId, fileId}` gives the commit and path of plan D12 (status D: the chosen parent and the old path). `{snapshotId, entryId}` gives the snapshot HEAD and the entry path. An unborn HEAD gives `BLAME_UNAVAILABLE` `no-history`. `{blameId, line}` gives the `previous` commit and path of the line's group, and `no-previous` without one. An unknown ID gives `UNKNOWN_TARGET`.
+- Payload: `{source, options}`. `source` is `{changesId, fileId}`, `{snapshotId, entryId}`, `{blameId, line}`, or `{blameId}`. `options` is `{ignoreWhitespace, detectMoves, detectCopies, ignoreList}`, all booleans. One read slot.
+- Target: `{changesId, fileId}` gives the commit and path of plan D12 (status D: the chosen parent and the old path). `{snapshotId, entryId}` gives the snapshot HEAD and the entry path. An unborn HEAD gives `BLAME_UNAVAILABLE` `no-history`. `{blameId, line}` gives the `previous` commit and path of the line's group, and `no-previous` without one. `{blameId}` gives the commit and path of the retained result (data-model §10 `commit`, `pathBytes`). Steps 1 to 6 run with the new options. `focusLine` is absent. The generation is not checked, as for `{blameId, line}`. An unknown ID gives `UNKNOWN_TARGET`.
 - No read gate: no command loads the index (plan D2).
 - Commands, in this order:
   1. `--no-lazy-fetch --no-optional-locks --literal-pathspecs ls-tree -z -l --full-tree <oid> -- <path>`. Exactly one record `<mode> SP <type> SP <oid> SP <size> TAB <path> NUL` with the exact path. After `<oid>` and one SP, the size is right-aligned with spaces to a width of at least 7 (`%7s`, builtin/ls-tree.c:233). The size is `-` for a tree or a gitlink. Type `commit` gives `submodule`. No record gives `no-history`. A size above `BLAME_FILE_BYTES` gives `size`.

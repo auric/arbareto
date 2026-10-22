@@ -379,6 +379,7 @@ const BlameSource = z.union([
   z.strictObject(changesFile).meta({ title: "BlameCommitFile" }),
   z.strictObject({ snapshotId: Identifier, entryId: Identifier }).meta({ title: "BlameWorkingFile" }),
   z.strictObject({ blameId: Identifier, line: z.int().min(1).max(BLAME_FILE_LINES) }).meta({ title: "BlameBefore" }),
+  z.strictObject({ blameId: Identifier }).meta({ title: "BlameRerun" }),
 ]);
 const BlameOptions = z.strictObject({ ignoreWhitespace: z.boolean(), detectMoves: z.boolean(), detectCopies: z.boolean(), ignoreList: z.boolean() }).meta({ title: "BlameOptions" });
 const ReadBlame = op("readBlame", snapshot, z.strictObject({ source: BlameSource, options: BlameOptions }));

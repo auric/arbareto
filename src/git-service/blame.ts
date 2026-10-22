@@ -44,6 +44,7 @@ export interface BlameTarget {
 interface Retained {
   blameId: string;
   repositoryId: string;
+  target: BlameTarget;
   lines: number;
   parsed: ParsedBlame;
 }
@@ -266,7 +267,7 @@ export function createBlameReader({ runner, trust }: BlameReaderOptions) {
     if (exit.exitCode !== 0) return failed(t, { outputTail: tail.outputTail() });
     const parsed = stream.finish(lines);
     if (parsed === null) throw fail("MALFORMED_GIT_OUTPUT");
-    const record: Retained = { blameId: crypto.randomUUID(), repositoryId: w.repositoryId, lines, parsed };
+    const record: Retained = { blameId: crypto.randomUUID(), repositoryId: w.repositoryId, target, lines, parsed };
     const value: Record<string, unknown> = {
       blameId: record.blameId,
       commit: target.commit,
@@ -307,6 +308,12 @@ export function createBlameReader({ runner, trust }: BlameReaderOptions) {
         if (error instanceof Stop) return error.outcome;
         throw error;
       }
+    },
+
+    // Contract Δ3 `{blameId}` acceptance: the commit and path of the retained result. No Git process runs.
+    rerun(repositoryId: string, blameId: string): BlameTarget | { refused: "UNKNOWN_TARGET" } {
+      const r = retained.get(repositoryId);
+      return r === undefined || r.blameId !== blameId ? { refused: "UNKNOWN_TARGET" } : r.target;
     },
 
     // Contract Δ3 `{blameId, line}` acceptance: the group of `line` in the retained result. No Git process runs.

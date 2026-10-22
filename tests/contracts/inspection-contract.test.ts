@@ -225,11 +225,11 @@ describe("contract Δ3 payloads", () => {
     expect(read("readCommitFile", { changesId: "c", fileId: 0 })).toBe("INVALID_REQUEST");
   });
 
-  test("readBlame takes one of the three source forms and the four booleans", () => {
-    for (const source of [{ changesId: id(), fileId: 2 }, { snapshotId: id(), entryId: id() }, { blameId: id(), line: 1 }, { blameId: id(), line: 100_000 }]) {
+  test("readBlame takes one of the four source forms and the four booleans", () => {
+    for (const source of [{ changesId: id(), fileId: 2 }, { snapshotId: id(), entryId: id() }, { blameId: id(), line: 1 }, { blameId: id(), line: 100_000 }, { blameId: id() }]) {
       expect(read("readBlame", { source, options: OPTIONS })).toBe("ok");
     }
-    for (const source of [{ blameId: id(), line: 0 }, { blameId: id(), line: 100_001 }, { changesId: id(), entryId: id() }, { changesId: id(), fileId: 1, line: 2 }, {}]) {
+    for (const source of [{ blameId: id(), line: 0 }, { blameId: id(), line: 100_001 }, { changesId: id(), entryId: id() }, { changesId: id(), fileId: 1, line: 2 }, { blameId: id(), focusLine: 2 }, {}]) {
       expect(read("readBlame", { source, options: OPTIONS })).toBe("INVALID_REQUEST");
     }
     const { ignoreList: _omit, ...three } = OPTIONS;

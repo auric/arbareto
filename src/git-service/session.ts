@@ -907,6 +907,11 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       if (head.state === "unborn") return answered(request, { result: "failed", code: "BLAME_UNAVAILABLE", value: { reason: "no-history" } });
       const target = { commit: head.oid, path: new Uint8Array(Buffer.from(found.entry.pathBytes, "base64")) };
       run = (t) => blames.readBlame({ ...t, workspace, installation }, target, options, progress(t.operationId));
+    } else if (!("line" in source)) {
+      // Contract Δ3: the generation is not checked, as for `{blameId, line}`.
+      const target = blames.rerun(request.repositoryId, source.blameId);
+      if ("refused" in target) return reject(request.requestId, target.refused);
+      run = (t) => blames.readBlame({ ...t, workspace, installation }, target, options, progress(t.operationId));
     } else {
       const found = blames.before(request.repositoryId, source.blameId, source.line);
       if ("refused" in found) return reject(request.requestId, found.refused);

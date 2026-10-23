@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
+import { latinKeyCode } from "./key-codes";
 import {
   bandFocusFallback,
   createShortcutHandler,
@@ -52,6 +53,7 @@ const PATHS = {
 type KeyOptions = {
   key: string;
   code?: string;
+  keyCode?: number;
   type?: "keydown" | "keyup";
   ctrl?: boolean;
   shift?: boolean;
@@ -72,6 +74,7 @@ function keyEvent(options: KeyOptions) {
     type: options.type ?? "keydown",
     key: options.key,
     code: options.code ?? "",
+    keyCode: options.keyCode ?? latinKeyCode(options.key),
     ctrlKey: options.ctrl ?? false,
     shiftKey: options.shift ?? false,
     altKey: options.alt ?? false,

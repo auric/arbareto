@@ -442,15 +442,14 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
   );
 }
 
-// The Pierre worker pool. It loads with the first diff and stays mounted, because Pierre ends the pool when its last provider unmounts.
+// The Pierre worker pool. The Workbench mounts one keeper at the first diff of either view, because Pierre ends the pool when its last provider unmounts.
+// The keeper sits outside the comparison view: a new parent above the view remounts it and drops its focus (T125).
 const PatchPool = lazy(() => import("../changes/PatchPool"));
 
 /** The T134 comparison view of the selected entry, with the T145 hunk controls in its heading. */
 export function ComparisonViewMount({ state, requests, staging, workbench, onStatus, askTrust }: WorkbenchPaneProps) {
   const { entry, target, comparison } = shownComparison(state, staging);
   const response = entry !== null && state.comparison?.entryId === entry.entryId ? state.comparison : null;
-  const [pool, setPool] = useState(false);
-  if (!pool && showsDiff(resultOf(response))) setPool(true);
   const file = entry === null ? null : `${entry.category}:${entry.pathBytes}`;
   const anchor = staging?.anchor?.file === file ? staging.anchor : null;
   // A refusal of a hunk's own button shows in the reason line of the hunk controls until the comparison changes.
@@ -547,15 +546,7 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
     );
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-0 flex-1">
-        {pool ? (
-          <Suspense fallback={<Loading hasContent={false} refreshing={false} />}>
-            <PatchPool>{view}</PatchPool>
-          </Suspense>
-        ) : (
-          view
-        )}
-      </div>
+      <div className="min-h-0 flex-1">{view}</div>
     </div>
   );
 }
@@ -601,6 +592,8 @@ const SECTION_SELECTOR = "[data-section]";
 const HISTORY_FILES_SCOPE = '[data-slot="changed-files"], [data-slot="history-diff"]';
 const DOCK_STOP = "[data-dock-stop]";
 const TABBABLE = 'input:not([disabled]), button:not([disabled]), textarea, [tabindex="0"], [role="option"][tabindex="0"]';
+// Plan D15 "F6 order per view": the Tab-stop row of a file list.
+const FILE_TAB_STOP = '[data-file-tree] [role="treeitem"][tabindex="0"]';
 
 // The About dialog and the notices load on first open (plan.md "Startup chunk budget").
 const AboutMount = lazy(() => import("../about/AboutMount"));
@@ -1090,35 +1083,42 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     // plan.md "Status area": an empty status region is no F6 stop.
     if (!live.current.statusStop) present.delete("statusRegion");
     const active = document.activeElement as HTMLElement | null;
-    const current = from ?? (active?.closest<HTMLElement>(SECTION_SELECTOR)?.dataset.section as Section | undefined) ?? "header";
+    const sectionOf = (node: Element | null) => node?.closest<HTMLElement>(SECTION_SELECTOR)?.dataset.section as Section | undefined;
+    let current = from ?? sectionOf(active) ?? "header";
     // Feature 005 plan.md D15 "F6 order": Changed files and then the diff follow the commit details inside its section.
     const stopsOf = (section: HTMLElement) => [...section.querySelectorAll<HTMLElement>(DOCK_STOP)].filter((stop) => !stop.closest("[hidden]"));
-    const focusStop = (stop: HTMLElement) => {
+    const stopTarget = (stop: HTMLElement) => {
       const remembered = lastFocus.current.get("commitDetails");
-      (remembered?.isConnected && stop.contains(remembered) ? remembered : (stop.querySelector<HTMLElement>(TABBABLE) ?? stop)).focus();
+      return remembered?.isConnected && stop.contains(remembered) ? remembered : (stop.querySelector<HTMLElement>(TABBABLE) ?? stop);
     };
     const own = from === undefined && current === "commitDetails" ? present.get(current) : undefined;
     if (own !== undefined) {
       const stops = stopsOf(own);
       const at = stops.findIndex((stop) => stop.contains(active));
       const next = at + (direction === "next" ? 1 : -1);
-      if (at >= 0 && next >= 0 && next < stops.length) return focusStop(stops[next]!);
+      if (at >= 0 && next >= 0 && next < stops.length) return stopTarget(stops[next]!).focus();
     }
     const order: Section[] = ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "commitDetails", "scopeBar", "pageList", "pageContent", "statusRegion"];
     const hidden = order.filter((s) => !present.has(s));
-    const target = nextSection({ panel: live.current.panel ?? "details", hidden, bandRows: present.has("noticeHeading") ? 1 : 0, status: { text: present.has("statusRegion"), toggle: false, cancel: false } }, current, direction);
-    if (target === null) return;
-    const element = present.get(target)!;
-    const remembered = lastFocus.current.get(target);
-    if (target === "statusRegion") {
-      // The WSL start Cancel, else the T138 entry rule: the area heading once after it opens, then the last target.
-      const entry = (live.current.starting ? root.querySelector<HTMLElement>('[data-slot="status-area"] button') : null) ?? statusRegion.current?.entry() ?? null;
-      return (entry ?? element).focus();
+    // Plan D15 "F6 order per view": a section that takes no focus is skipped. One pass over the order bounds the loop.
+    for (let step = 0; step < order.length; step++) {
+      const target = nextSection({ panel: live.current.panel ?? "details", hidden, bandRows: present.has("noticeHeading") ? 1 : 0, status: { text: present.has("statusRegion"), toggle: false, cancel: false } }, current, direction);
+      if (target === null) return;
+      const element = present.get(target)!;
+      const remembered = lastFocus.current.get(target);
+      const stops = target === "commitDetails" ? stopsOf(element) : [];
+      let focus: HTMLElement | null;
+      if (stops.length > 0) focus = stopTarget(stops[direction === "next" ? 0 : stops.length - 1]!);
+      else if (target === "statusRegion") {
+        // The WSL start Cancel, else the T138 entry rule: the area heading once after it opens, then the last target.
+        focus = (live.current.starting ? root.querySelector<HTMLElement>('[data-slot="status-area"] button') : null) ?? statusRegion.current?.entry() ?? null;
+      } else if (remembered?.isConnected && element.contains(remembered)) focus = remembered;
+      else if (target === "noticeHeading") focus = element.querySelector<HTMLElement>("h2");
+      else focus = [...element.querySelectorAll<HTMLElement>(FILE_TAB_STOP)].find((row) => sectionOf(row) === target) ?? element.querySelector<HTMLElement>(TABBABLE);
+      (focus ?? element).focus();
+      if (sectionOf(document.activeElement) === target) return;
+      current = target;
     }
-    const stops = target === "commitDetails" ? stopsOf(element) : [];
-    if (stops.length > 0) return focusStop(stops[direction === "next" ? 0 : stops.length - 1]!);
-    const focus = remembered?.isConnected && element.contains(remembered) ? remembered : target === "noticeHeading" ? element.querySelector<HTMLElement>("h2") : element.querySelector<HTMLElement>(TABBABLE);
-    (focus ?? element).focus();
   }
   // plan.md "Notice band": when a band row with focus leaves, focus moves to the band heading while the band keeps a row, else to the next F6 stop.
   useLayoutEffect(() => {
@@ -1131,7 +1131,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const onSectionFocus = (event: FocusEvent<HTMLDivElement>) => {
     const target = event.target as HTMLElement;
     const section = target.closest<HTMLElement>(SECTION_SELECTOR)?.dataset.section as Section | undefined;
-    if (section) lastFocus.current.set(section, target);
+    // Plan D15 "F6 order per view": a click on empty space focuses the section box. The box never counts as the last focus.
+    if (section && target.dataset.section === undefined) lastFocus.current.set(section, target);
     if (!menubar.current?.contains(target) && !target.closest('[role="menu"]')) lastOutside.current = target;
   };
 
@@ -1530,7 +1531,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const commitPanel = (
     <div ref={commitPanelRef} hidden={pushPanel !== null} className="flex h-full min-h-0 flex-col">
       <div className="grid min-h-0 flex-1" style={grid}>
-        <div data-section="workingChanges" className="min-h-0 overflow-auto" style={{ gridArea: "lane" }}>
+        <div data-section="workingChanges" tabIndex={-1} className="min-h-0 overflow-auto" style={{ gridArea: "lane" }}>
           <ChangesPane {...pane} profile={commitProfile} />
         </div>
         <Splitter
@@ -1543,13 +1544,13 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           onCommit={keepPane(commitProfile === "wide" ? "fileLane" : "fileBand")}
           className={resizable ? "[grid-area:laneSplit]" : "hidden"}
         />
-        <div ref={comparisonPane} data-section="comparison" className="min-h-0 overflow-auto" style={{ gridArea: "comparison" }}>
+        <div ref={comparisonPane} data-section="comparison" tabIndex={-1} className="min-h-0 overflow-auto" style={{ gridArea: "comparison" }}>
           <ComparisonView {...pane} />
         </div>
         <div className="[grid-area:traySplit]">
           <Splitter label="Resize commit tray" orientation="horizontal" value={trayHeight} min={tray.min} max={tray.max} reverse onChange={resize("tray")} onCommit={keepPane("tray")} className={resizable ? undefined : "hidden"} />
         </div>
-        <div data-section="composer" className="min-h-0 overflow-auto border-t border-divider p-2" style={{ gridArea: "tray" }}>
+        <div data-section="composer" tabIndex={-1} className="min-h-0 overflow-auto border-t border-divider p-2" style={{ gridArea: "tray" }}>
           <CommitTray
             bridge={bridge}
             target={state.repository !== null && workspace !== null ? { repositoryId: state.repository.repositoryId, repositoryGeneration: workspace.generation } : null}
@@ -1582,7 +1583,24 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The Commit view shows the push panel and the commit workspace. The dock of the hidden History view then holds neither.
   const inCommitView = view === "commit";
   // Plan.md D15 and O-11: the Working directory and Index rows dock a summary. Enter or a double-click on the row opens the Commit view.
-  const openCommitView = () => store.setView(viewKey, "commit");
+  // 001 FR-005: the switch hides the focused History view, so focus moves to the Changes Tab-stop row, else to Filter files.
+  // Focus that is already in the shown Commit view stays, such as the push panel focus.
+  const focusCommitEntry = () => {
+    const active = document.activeElement;
+    if (active?.closest('[data-view="commit"]') && !active.closest("[hidden]")) return;
+    (sections.current?.querySelector<HTMLElement>('[data-file-tree="changes"] [role="treeitem"][tabindex="0"]') ?? filesFilterRef.current)?.focus();
+  };
+  const commitEntryPending = useRef(false);
+  const openCommitView = () => {
+    if (inCommitView) return focusCommitEntry();
+    commitEntryPending.current = true;
+    store.setView(viewKey, "commit");
+  };
+  useLayoutEffect(() => {
+    if (!commitEntryPending.current || !inCommitView) return;
+    commitEntryPending.current = false;
+    focusCommitEntry();
+  });
   const onHistoryKey = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (event.key !== "Enter" || event.ctrlKey || event.shiftKey || event.altKey || event.metaKey || isEditable(event.target as HTMLElement)) return;
     const list = (event.target as HTMLElement).closest<HTMLElement>("[data-history-list]");
@@ -1623,12 +1641,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       {/* Feature 005 plan.md D15 "Blame view": the dock shows the commit details of the selected blame line. */}
       {blameOpen ? (
         lineOid === null || pushPanel !== null ? null : (
-          <div data-section="commitDetails" className="h-full min-h-0">
+          <div data-section="commitDetails" tabIndex={-1} className="h-full min-h-0">
             <ViewCommitDetails view={historyView} oid={lineOid} />
           </div>
         )
       ) : panel === "details" && kept !== null && pushPanel === null ? (
-        <div data-section="commitDetails" className="h-full min-h-0">
+        <div data-section="commitDetails" tabIndex={-1} className="h-full min-h-0">
           <ViewCommitDetails
             view={historyView}
             oid={kept}
@@ -1713,11 +1731,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       <div className="flex min-h-0 flex-1 flex-col">
         {/* plan.md "References sidebar": expanded, the section takes the reduced pane minimum and no more height. */}
         {/* plan.md "Section minima": its content keeps its own height and scrolls inside the section, so every group stays reachable. */}
-        <div ref={referencesSection} data-section="references" data-references-scroll="" className="shrink-0 overflow-y-auto border-b border-divider" style={{ height: "auto", maxHeight: m.reducedPaneMin }}>
+        <div ref={referencesSection} data-section="references" tabIndex={-1} data-references-scroll="" className="shrink-0 overflow-y-auto border-b border-divider" style={{ height: "auto", maxHeight: m.reducedPaneMin }}>
           {/* A block wrapper of content height. The sidebar height then resolves to its content, not to the section height. */}
           <div>{sidebar}</div>
         </div>
-        <section aria-label="History" data-section="historyList" className="flex min-h-0 flex-col" style={{ flex: "1 1 0" }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
+        <section aria-label="History" data-section="historyList" tabIndex={-1} className="flex min-h-0 flex-col" style={{ flex: "1 1 0" }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
           <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.revealOid(oid)}>
             <HistoryView {...pane} />
           </HistoryListSlot>
@@ -1728,7 +1746,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       </div>
     ) : (
       <div className="grid min-h-0 flex-1" style={{ gridTemplateColumns: `${sideWidth}px ${m.splitter}px minmax(0, 1fr)` }}>
-        <div data-section="references" className="min-h-0 border-r border-divider">
+        <div data-section="references" tabIndex={-1} className="min-h-0 border-r border-divider">
           {sidebar}
         </div>
         <Splitter label="Resize references sidebar" orientation="vertical" value={sideWidth} min={sideBounds!.min} max={sideBounds!.max} onChange={resize("sidebar")} onCommit={keepPane("sidebar")} />
@@ -1736,6 +1754,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           <section
             aria-label="History"
             data-section="historyList"
+            tabIndex={-1}
             className="flex min-h-0 flex-col"
             style={docked ? { flex: "1 1 0", minHeight: m.historyListMin } : { flex: "0 0 auto", height: Math.max(listHeight, m.historyListMin) }}
             onKeyDown={onHistoryKey}
@@ -1773,7 +1792,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           </div>
         ) : null}
         {/* Feature 004 plan.md D15 "Top bar row": one row while the controls fit at their text widths. Otherwise the last controls wrap. */}
-        <header data-section="header" className="flex flex-wrap items-center gap-x-2 border-b border-divider px-2" style={{ minHeight: "var(--h-header)" }}>
+        <header data-section="header" tabIndex={-1} className="flex flex-wrap items-center gap-x-2 border-b border-divider px-2" style={{ minHeight: "var(--h-header)" }}>
           <div ref={switcher} className="flex min-w-[160px] shrink items-center" style={{ order: 1, minHeight: "var(--h-header)" }}>
             <RepositorySwitcher
               bridge={bridge}
@@ -1927,10 +1946,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               icon={GitCommitIcon}
               label={commitLabel}
               disabled={!state.repository}
-              onClick={() => {
-                openCommitView();
-                requestAnimationFrame(() => sections.current?.querySelector<HTMLElement>('[data-section="workingChanges"] [role="option"][tabindex="0"], [data-section="workingChanges"] h2')?.focus());
-              }}
+              onClick={openCommitView}
             />
             {state.repository === null ? null : (
               <span aria-hidden="true" className="num text-muted-text">
@@ -1942,7 +1958,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
 
         <main className={`flex min-h-0 flex-1 flex-col ${scrolls ? "overflow-y-auto" : "overflow-clip"}`}>
           {/* plan.md "Overflow": the band shows at most its two reserved rows and scrolls inside them. */}
-          <div ref={bandRef} data-slot="notice-band" data-section="noticeHeading" className="shrink-0 overflow-y-auto" style={{ maxHeight: 2 * m.bandRow }}>
+          <div ref={bandRef} data-slot="notice-band" data-section="noticeHeading" tabIndex={-1} className="shrink-0 overflow-y-auto" style={{ maxHeight: 2 * m.bandRow }}>
             {workspace === null ? null : (
               <NoticeBand
                 operationState={workspace.operationState}
@@ -2041,12 +2057,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             )}
           </div>
           {/* plan.md "Status area": T138 fills this slot. */}
-          <div data-slot="status-area" data-section={starting === null ? undefined : "statusRegion"} className="shrink-0 overflow-y-auto" style={{ maxHeight: statusAreaMax }}>
+          <div data-slot="status-area" data-section={starting === null ? undefined : "statusRegion"} tabIndex={starting === null ? undefined : -1} className="shrink-0 overflow-y-auto" style={{ maxHeight: statusAreaMax }}>
             {starting === null ? null : <WslStarting name={starting.distro} operationId={starting.operationId} cancel={starting.cancelable ? cancelStart : undefined} />}
           </div>
         </main>
 
-        <div data-section="statusRegion" className="contents">
+        <div data-section="statusRegion" tabIndex={-1} className="contents">
           <OperationStatus
             ref={statusRegion}
             bridge={bridge}

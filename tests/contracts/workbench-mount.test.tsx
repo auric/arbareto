@@ -777,24 +777,32 @@ async function render(node: () => ReactNode) {
 }
 
 describe("comparison mount", () => {
-  test("the Pierre worker pool mounts once at the first diff and stays across selections, Loading, and patch changes", async () => {
+  // @pierre/diffs 1.5.1 WorkerPoolContext.js ends the pool when its last provider unmounts. PatchView is a double here, so the counter sees only the Workbench keeper.
+  test("the first comparison diff mounts the session-wide Pierre pool once; it stays when the comparison view unmounts and across Commit view visits (T125)", async () => {
     pool.mounts = 0;
     pool.unmounts = 0;
-    const [a, b] = [changeEntry("a.txt"), changeEntry("b.txt")];
-    const base = { repository: REGISTRATION, entries: [a, b], selectedHunk: null } as const;
-    const view = (fields: Record<string, unknown>) => () => <ComparisonViewMount {...PANE} requests={{ refresh: () => {} } as never} state={{ ...base, ...fields } as never} />;
-    const shown = await render(view({ selection: { entryId: a.entryId }, comparison: null }));
+    const double = await mount(succeeded(REGISTRATION));
+    await serveHistory(double);
+    const entry = changeEntry("a.txt");
+    const first = snapshot({ entries: [entry], entryCount: 1 });
+    await resolve(latest(double, "readWorkspace"), succeeded(first));
+    await openCommitView();
+    await act(async () => document.querySelector<HTMLElement>(`[role="treeitem"][data-entry-id="${entry.entryId}"]`)!.click());
+    await settle();
     expect(pool.mounts).toBe(0);
-    await shown.rerender(view({ selection: { entryId: a.entryId }, comparison: shownComparison(a.entryId, DIFF) }));
-    await settle();
-    expect(shown.host.querySelector('[data-slot="patch-double"]')).not.toBeNull();
-    await shown.rerender(view({ selection: { entryId: b.entryId }, comparison: shownComparison(a.entryId, DIFF) }));
-    await settle();
-    expect(shown.host.textContent).toContain("Loading…");
-    await shown.rerender(view({ selection: { entryId: b.entryId }, comparison: shownComparison(b.entryId, DIFF.replace("+n", "+m")) }));
-    await settle();
-    await shown.rerender(view({ selection: null, comparison: null }));
-    await settle();
+    const copy = document.querySelector<HTMLElement>(`${COMMIT_VIEW} [data-section="comparison"] button[aria-label="Copy path"]`)!;
+    expect(copy).not.toBeNull();
+    const shown = shownComparison(entry.entryId, DIFF);
+    await resolve(latest(double, "readComparison"), { ...shown, result: { ...(shown.result as object), snapshotId: first.snapshotId } });
+    expect(document.querySelector('[data-slot="patch-double"]')).not.toBeNull();
+    // T125: the comparison view keeps one parent tree across the first diff.
+    expect(copy.isConnected).toBe(true);
+    expect(document.querySelector(`${COMMIT_VIEW} [data-section="comparison"] button[aria-label="Copy path"]`)).toBe(copy);
+    expect(pool).toEqual({ mounts: 1, unmounts: 0 });
+    await switchView("History");
+    expect(document.querySelector('[data-section="comparison"]')).toBeNull();
+    expect(pool).toEqual({ mounts: 1, unmounts: 0 });
+    await openCommitView();
     expect(pool).toEqual({ mounts: 1, unmounts: 0 });
   });
 
@@ -1246,7 +1254,7 @@ describe("single view", () => {
 
   test("Ctrl+O runs the folder dialog, and Ctrl+R opens the switcher", async () => {
     const double = await opened();
-    const key = (k: string) => act(async () => void document.body.dispatchEvent(new KeyboardEvent("keydown", { key: k, code: `Key${k.toUpperCase()}`, ctrlKey: true, bubbles: true, cancelable: true })));
+    const key = (k: string) => act(async () => void document.body.dispatchEvent(new KeyboardEvent("keydown", { key: k, code: `Key${k.toUpperCase()}`, keyCode: k.toUpperCase().charCodeAt(0), ctrlKey: true, bubbles: true, cancelable: true })));
     await key("o");
     await settle();
     expect(double.calls.filter((c) => c.operation === "chooseRepository")).toHaveLength(1);
@@ -1329,7 +1337,7 @@ describe("switcher open motion", () => {
   const popup = () => document.querySelector<HTMLElement>('[data-slot="popover-content"]');
   test("a Ctrl+R open has data-instant, and a pointer open does not", async () => {
     await mount(succeeded(REGISTRATION));
-    await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "r", code: "KeyR", ctrlKey: true, bubbles: true, cancelable: true })));
+    await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "r", code: "KeyR", keyCode: 82, ctrlKey: true, bubbles: true, cancelable: true })));
     await settle();
     expect(popup()).not.toBeNull();
     expect(popup()!.hasAttribute("data-instant")).toBe(true);
@@ -1674,13 +1682,13 @@ describe("history scope and shortcuts", () => {
 
   test("Ctrl+Shift+B toggles the scope, also from the filter text box", async () => {
     const double = await opened();
-    await press({ key: "B", code: "KeyB", ctrlKey: true, shiftKey: true }, document.body);
+    await press({ key: "B", code: "KeyB", keyCode: 66, ctrlKey: true, shiftKey: true }, document.body);
     await serveHistory(double);
     expect(scopes(double)).toEqual(["all", "current"]);
     expect(chip()).not.toBeNull();
     const filter = document.querySelector<HTMLInputElement>('input[aria-label="Filter commit messages"]')!;
     await act(async () => filter.focus());
-    const event = await press({ key: "B", code: "KeyB", ctrlKey: true, shiftKey: true }, filter);
+    const event = await press({ key: "B", code: "KeyB", keyCode: 66, ctrlKey: true, shiftKey: true }, filter);
     expect(event.defaultPrevented).toBe(true);
     await serveHistory(double);
     expect(scopes(double)).toEqual(["all", "current", "all"]);
@@ -1691,7 +1699,7 @@ describe("history scope and shortcuts", () => {
   for (const key of ["Enter", " "])
     test(`the chip remove control is a native button with an accessible name, and ${key === " " ? "Space" : "Enter"} reaches it unhandled`, async () => {
       const double = await opened();
-      await press({ key: "B", code: "KeyB", ctrlKey: true, shiftKey: true }, document.body);
+      await press({ key: "B", code: "KeyB", keyCode: 66, ctrlKey: true, shiftKey: true }, document.body);
       await serveHistory(double);
       const remove = chip()!.querySelector<HTMLButtonElement>('button[aria-label="Show all branches"]')!;
       expect(remove.tagName).toBe("BUTTON");
@@ -1732,7 +1740,7 @@ describe("history scope and shortcuts", () => {
 
   test("Ctrl+F focuses the filter, and F3 and Shift+F3 move between the matches of filter mode", async () => {
     const double = await opened();
-    await press({ key: "f", code: "KeyF", ctrlKey: true }, document.body);
+    await press({ key: "f", code: "KeyF", keyCode: 70, ctrlKey: true }, document.body);
     const filter = document.querySelector<HTMLInputElement>('input[aria-label="Filter commit messages"]')!;
     expect(document.activeElement).toBe(filter);
     await act(async () => {

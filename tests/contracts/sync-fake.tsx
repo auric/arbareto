@@ -4,9 +4,11 @@
 // A Workbench bridge double for the feature 003 sync tests. The read operations answer from `world`; every other operation waits until the test answers it.
 // The results follow contract Δ3 and data-model §1 to §10. The double invents no field.
 
+import { expect } from "bun:test";
 import { act } from "react";
 import type { WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { contractChecked, fixtureId } from "./bridge-contract";
+import { latinKeyCode } from "./key-codes";
 
 export const oid = (n: number) => n.toString(16).padStart(40, "0");
 export const REGISTRATION = { repositoryId: fixtureId(1), generation: 1, worktreeKey: "a".repeat(64) };
@@ -219,10 +221,22 @@ export async function click(element: Element) {
 }
 export async function press(target: Element | Window, key: string, init: KeyboardEventInit = {}) {
   await act(async () => {
-    target.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, bubbles: true, cancelable: true, ...init }));
-    target.dispatchEvent(new KeyboardEvent("keyup", { key, code: key, bubbles: true, cancelable: true, ...init }));
+    target.dispatchEvent(new KeyboardEvent("keydown", { key, code: key, keyCode: latinKeyCode(key), bubbles: true, cancelable: true, ...init }));
+    target.dispatchEvent(new KeyboardEvent("keyup", { key, code: key, keyCode: latinKeyCode(key), bubbles: true, cancelable: true, ...init }));
   });
   await settle();
+}
+// The Chromium focus rules that happy-dom does not apply. happy-dom focuses a plain `div` and keeps focus inside a newly hidden ancestor.
+// Headless Edge 155 (2026-10-22) refused `focus()` on a `display: contents` box, under `visibility: hidden`, and under `inert`.
+// The tests load no Tailwind CSS, so the `hidden` class (`display: none`) counts by its name. happy-dom computes the inline `display` and the inherited `visibility`.
+const TABBABLE = 'input:not([disabled]), button:not([disabled]), textarea, [tabindex="0"]';
+export function expectChromiumFocus(element: Element | null) {
+  expect(element === null || element === document.body).toBe(false);
+  expect(element!.matches(TABBABLE) || element!.hasAttribute("tabindex")).toBe(true);
+  expect(element!.closest("[hidden], [inert], .hidden")).toBeNull();
+  expect(getComputedStyle(element!).visibility).not.toBe("hidden");
+  expect(getComputedStyle(element!).display).not.toBe("contents");
+  for (let e: Element | null = element; e !== null; e = e.parentElement) expect(getComputedStyle(e).display).not.toBe("none");
 }
 /** A button by its accessible name: `aria-label`, else its text. */
 export function buttons(label: string, from: ParentNode = document): HTMLElement[] {

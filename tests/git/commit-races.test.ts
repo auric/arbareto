@@ -24,6 +24,7 @@ import {
   gitPathOf,
   gitText,
   indexTree,
+  isCommitCall,
   one,
   outcome,
   putHook,
@@ -36,6 +37,7 @@ import {
   TIMEOUT_MS,
   treeOf,
   underTest,
+  until,
   valuesOf,
   withService,
 } from "./hunk-harness";
@@ -320,6 +322,52 @@ describe("changes after handoff (contract §4, §8)", () => {
       }, TIMEOUT_MS);
     }
   }
+});
+
+describe("reconciliation reads and the Job close of a limited read (contract §6 `cancel`)", () => {
+  // The window read stops at the preflight tip, so the native runner cancels it, and the shell closes the Job of the operation.
+  // The first HEAD read after the commit process gets the output of Git's own read as injected bytes. The stdout barrier holds them, so the call runs until the release.
+  // The release comes when every other call of the operation after the commit process has an exit.
+  caseTest("T391", `T391: F09: a reconciliation HEAD read that runs while the window read stops at the preflight tip gives succeeded with commitOid at HEAD and resolves the marker`, SHELL, () => {
+    let commitOperation = "";
+    return withService({ name: "t391-window", onStarted: (frame) => void (commitOperation = frame.operationId) }, async (service) => {
+      const repo = repoOf(buildChanged(gitPath(), "t391-window", "F09"));
+      await underTest("reconcile");
+      const { repositoryId } = await service.register(repo);
+      const r = await reviewOk(service, repositoryId);
+      const own = () => service.runner.calls.filter((c) => c.operationId === commitOperation);
+      const isHeadRead = (call: { operationId: string; arguments: readonly string[] }) =>
+        call.operationId === commitOperation && own().some(isCommitCall) && call.arguments.includes("rev-parse") && call.arguments.includes("--verify");
+      let heldRecord: (typeof service.runner.calls)[number] | undefined;
+      service.runner.inject.stdout = (call) => {
+        if (heldRecord !== undefined || !isHeadRead(call)) return undefined;
+        heldRecord = own().findLast((c) => c.exit === undefined && c.arguments.join("\0") === call.arguments.join("\0"));
+        return git(repo, [...call.arguments]);
+      };
+      let heldCall: object | null = null;
+      const release = service.runner.pauseStdout((call) => {
+        if (heldCall === null && heldRecord !== undefined && isHeadRead(call)) heldCall = call;
+        return call === heldCall;
+      });
+      const pending = commit(service, repositoryId, r, "window\n");
+      try {
+        await until(() => heldRecord !== undefined, "the held HEAD read", 60_000);
+        const others = () => own().slice(own().findIndex(isCommitCall) + 1).filter((c) => c !== heldRecord);
+        await until(() => others().every((c) => c.exit !== undefined || c.refused !== undefined), "the other reconciliation calls end", 60_000);
+      } finally {
+        release();
+      }
+      const response = await pending;
+      service.runner.inject.stdout = undefined;
+      const entry = service.log().find((e) => (e as { operationId?: string }).operationId === commitOperation) as { cause?: string } | undefined;
+      expect({ ...outcome(response), commitOid: valuesOf(response.result, "commitOid")[0], cause: entry?.cause, markers: service.runner.markers.size }).toEqual({
+        ...SUCCEEDED,
+        commitOid: refState(gitPath(), repo).headOid,
+        cause: undefined,
+        markers: 0,
+      });
+    });
+  }, TIMEOUT_MS);
 });
 
 describe("recovery refresh (contract §8)", () => {

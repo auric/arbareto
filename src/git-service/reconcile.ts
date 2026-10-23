@@ -245,10 +245,11 @@ export async function reconcileCommit(r: CommitReconciliation): Promise<void> {
     registry.apply(operationId, { type: "reconciliation-read-failed", code: "GIT_FAILED" }, { outputTail: r.outputTail, lingeringDescendants: lingering, ...(foreign.length > 0 ? { foreign } : {}) }, "GIT_FAILED");
     return;
   }
-  // Git exits 128 for the window read of an unborn HEAD. With an unborn reviewed HEAD, the window read waits for the observed HEAD.
-  const [state, early] = await Promise.all([observeState(q, EMPTY, false, canonicalIndex(q, binding.reviewedIndex)), binding.head.state === "unborn" ? null : readWindow(q, r.tip)]);
+  // Contract §6 `cancel`: a read that its collector stops must not overlap another process of the same operation.
+  // Git exits 128 for the window read of an unborn HEAD, so the window read follows the observed HEAD.
+  const state = await observeState(q, EMPTY, false, canonicalIndex(q, binding.reviewedIndex));
   const head = "value" in state.head ? state.head.value : null;
-  const window = head === null || head.state === "unborn" ? NO_RECORDS : (early ?? (await readWindow(q, r.tip)));
+  const window = head === null || head.state === "unborn" ? NO_RECORDS : await readWindow(q, r.tip);
   const failed = [state.head, state.index, state.operationState, window].find((f) => !("value" in f)) as Failure | Stop | undefined;
   let decision =
     failed !== undefined

@@ -248,6 +248,41 @@ describeGit("bun runner", (git) => {
     TEST_TIMEOUT_MS,
   );
 
+  // Contract §6 `cancel`: the shell closes the Job of the operation that owns the call. The native runner sends it for a limited stdout.
+  // Mirrors `cancel_closes_only_the_job_of_that_operation_at_once_while_a_grandchild_sleeps` and `a_run_after_a_run_cancel_starts_in_a_new_job_of_the_same_operation` in src-tauri/src/process_requests.rs.
+  test(
+    "T391: a limited stdout ends every running call of its operation with exitCode null, a call of another operation runs on, and the operation stays active",
+    async () => {
+      // The limited call is a spawned Git, then injected stdout bytes. Injected bytes give `activeDescendants` 0.
+      for (const [form, limitedExit] of [
+        ["spawned", { exitCode: null, activeDescendants: null }],
+        ["injected", { exitCode: null, activeDescendants: 0 }],
+      ] as const) {
+        const go = fixturePath(`go-t391-${form}`);
+        // A `!` alias that marks `ready`, then waits at most 20 s for `go` and exits 0 only when `go` exists.
+        const waiting = (ready: string, operationId: string) =>
+          call({ operationId, arguments: ["--no-lazy-fetch", "-c", `alias.w=!: > "${slash(ready)}"; i=0; while [ $i -lt 400 ] && [ ! -e "${slash(go)}" ]; do sleep 0.05; i=$((i+1)); done; [ -e "${slash(go)}" ]`, "w"] });
+        const operationId = id();
+        const readies = [fixturePath(`ready-t391-${form}-sibling`), fixturePath(`ready-t391-${form}-other`)];
+        const sibling = runner.run(waiting(readies[0]!, operationId));
+        const other = runner.run(waiting(readies[1]!, id()));
+        for (let i = 0; i < 400 && !readies.every((r) => existsSync(r)); i++) await Bun.sleep(25);
+        expect({ form, ready: readies.map((r) => existsSync(r)) }).toEqual({ form, ready: [true, true] });
+        const limited = call({ operationId, arguments: ["--no-lazy-fetch", "cat-file", "blob", blob], stdout: createCollector({ maxBytes: 1024 }) });
+        if (form === "injected") runner.inject.stdout = (c) => (c.arguments.includes(blob) ? new Uint8Array(BLOB_BYTES) : undefined);
+        try {
+          expect({ form, exit: await runner.run(limited) }).toEqual({ form, exit: limitedExit });
+        } finally {
+          runner.inject.stdout = undefined;
+        }
+        writeFileSync(go, "");
+        expect({ [`${form} sibling`]: await sibling, [`${form} other`]: await other }).toEqual({ [`${form} sibling`]: { exitCode: null, activeDescendants: null }, [`${form} other`]: { exitCode: 0, activeDescendants: 0 } });
+        expect({ form, next: await runner.run(call({ operationId })) }).toEqual({ form, next: { exitCode: 0, activeDescendants: 0 } });
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
   // The double ends only the spawned Git, so the `head` grandchild can still write after the cancel.
   test("4 MiB of forwarded stderr ends the process", async () => {
     const c = call({ arguments: ["--no-lazy-fetch", "-c", `alias.z=!head -c ${5 * MIB} /dev/zero >&2`, "z"] });

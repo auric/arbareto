@@ -28,13 +28,15 @@ export type RepositoryMenuProps = {
   onUpdateSubmodules?(): void;
   /** The reason of a workbench state that blocks mutations, or null. The item then stays focusable and does nothing (plan.md "Unavailable control"). */
   updateSubmodulesReason?: string | null;
+  /** Feature 005 spec FR-034: Edit .gitignore and Edit info/exclude open the ignore editor. The items stay disabled without it. */
+  onEditIgnore?(target: "gitignore" | "exclude"): void;
   onOpenChange?(open: boolean): void;
   triggerRef?: Ref<HTMLButtonElement>;
   finalFocus?: ComponentProps<typeof MenubarContent>["finalFocus"];
 };
 
 /** The repository menu of the header menu bar. Render it inside `Menubar`. */
-export function RepositoryMenu({ onOpenRepository, onOpenRecent, onSelectGit, onClone, onOpenSettings, onUpdateSubmodules, updateSubmodulesReason = null, onOpenChange, triggerRef, finalFocus }: RepositoryMenuProps) {
+export function RepositoryMenu({ onOpenRepository, onOpenRecent, onSelectGit, onClone, onOpenSettings, onUpdateSubmodules, updateSubmodulesReason = null, onEditIgnore, onOpenChange, triggerRef, finalFocus }: RepositoryMenuProps) {
   const updateReasonId = useId();
   return (
     <MenubarMenu onOpenChange={onOpenChange}>
@@ -72,6 +74,15 @@ export function RepositoryMenu({ onOpenRepository, onOpenRecent, onSelectGit, on
               {updateSubmodulesReason}
             </div>
           )}
+        </MenubarGroup>
+        <MenubarSeparator />
+        <MenubarGroup>
+          <MenubarItem disabled={onEditIgnore === undefined} onClick={() => onEditIgnore?.("gitignore")}>
+            Edit .gitignore
+          </MenubarItem>
+          <MenubarItem disabled={onEditIgnore === undefined} onClick={() => onEditIgnore?.("exclude")}>
+            Edit info/exclude
+          </MenubarItem>
         </MenubarGroup>
       </MenubarContent>
     </MenubarMenu>

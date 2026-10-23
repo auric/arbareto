@@ -9,7 +9,7 @@ import type { ErrorCode } from "../../contracts/errors";
 import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
 import { ChangesPane as ChangesList, type FileAction, type FileActionResult } from "../changes/ChangesPane";
 import { ComparisonView as Comparison, resultOf, showsDiff, type LineState } from "../changes/ComparisonView";
-import { fileActions } from "../changes/file-actions";
+import { deleteBlock, fileActions } from "../changes/file-actions";
 import { countsText } from "../changes/file-tree";
 import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
 import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
@@ -66,7 +66,9 @@ import { createDrafts } from "../state/drafts";
 import { createDraftStore } from "../state/draft-store";
 import { OperationStatus, SYNC_NAMES, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
-import { SubmodulesGroup, useSubmoduleUpdate } from "../submodules/SubmodulesGroup";
+import { INITIALIZE_FIRST, openSubmoduleReason, SubmodulesGroup, useSubmoduleUpdate } from "../submodules/SubmodulesGroup";
+import { DiscardConfirm, IgnoreEditor } from "../ignore/IgnoreEditor";
+import { ParentButton } from "./ParentButton";
 import { needsTrust, type AskTrust } from "../trust/ask";
 import { isTrustReport, READS_TRUST_TEXT, ReadsTrustNotice, SaveFailedNotice, showsChip, stoppedText, trustBeforeReview, TrustChip, trustFailureCode, COMMIT_TRUST_TEXT, type TrustReport } from "../trust/TrustChip";
 import type { TrustAction } from "../../contracts/channel";
@@ -93,7 +95,7 @@ import { DockRegion } from "../components/docked-panel";
 import { IntegratePanel, type IntegrateRequest } from "../integrate/IntegratePanel";
 import { ResolveView } from "../resolve/ResolveView";
 import { Segmented } from "../components/segmented";
-import { createWorkbench, type View, type Workbench as WorkbenchStore } from "../state/workbench";
+import { createIgnoreEditor, createWorkbench, type IgnoreEditor as IgnoreStore, type IgnoreTarget, type Parent, type View, type Workbench as WorkbenchStore } from "../state/workbench";
 import { BranchButton } from "../branches/BranchButton";
 import { useWorktreeActions } from "../worktrees/WorktreeActions";
 import { WorktreeButton } from "../worktrees/WorktreeButton";
@@ -151,6 +153,9 @@ export type WorkbenchBridge = RequestBridge &
     | "readCommitChanges"
     | "readCommitFile"
     | "readBlame"
+    | "readIgnoreFile"
+    | "previewIgnore"
+    | "openSubmodule"
   >;
 /** The hunk and file staging facts that the workbench gives the changes pane and the comparison view (T145, T202). */
 export type Staging = {
@@ -215,6 +220,14 @@ export type WorkbenchPaneProps = {
   askTrust?: AskTrust;
   /** The feature 004 branch actions (spec FR-014): the history labels and Create branch here on a history row. */
   branches?: ReturnType<typeof useBranchActions>;
+  /** Feature 005 plan.md P8: the ignore editor, Blame, and Open submodule of the Commit view row menu. */
+  commitActions?: CommitActions;
+};
+export type CommitActions = {
+  ignore: IgnoreStore;
+  onBlame(entry: ChangeEntry): void;
+  onOpenSubmodule(path: string): void;
+  submoduleReason(pathBytes: string): string | null;
 };
 export type WorkbenchProps = {
   bridge: WorkbenchBridge;
@@ -244,6 +257,19 @@ export type WorkbenchProps = {
 // plan.md "Required visible states", No file-action decision.
 export const NO_DECISION = "This entry has no file-action decision";
 export const NO_DECISION_PENDING = "Its comparison is still loading.";
+// Feature 005 plan.md D11 and D15 "Submodules" texts.
+const PARENT_LOST = "Open the parent repository with Open repository.";
+const SUBMODULE_REASON: Record<string, (path: string) => string> = {
+  "submodule-not-initialized": () => INITIALIZE_FIRST,
+  "not-submodule": (path) => `Git lists no submodule at ${path}.`,
+  path: () => "The submodule path holds a link, so Arbareto cannot open it.",
+};
+function submoduleRefusal(response: BridgeResponse, path: string): string {
+  if (response.code === "BUSY") return "A Git operation is running in this repository. Wait for its result, then open the submodule.";
+  const reason = (response.result as { reason?: unknown } | undefined)?.reason;
+  const known = response.code === "SUBMODULE_UNAVAILABLE" && typeof reason === "string" ? SUBMODULE_REASON[reason] : undefined;
+  return known?.(path) ?? `Open submodule did not complete: ${response.code ?? response.state}.`;
+}
 // plan.md "Required visible states", No selection.
 export const DOCK_HINT = "Select the Working directory row to commit, or a commit to see its details.";
 const NO_REPOSITORY = "No repository open";
@@ -344,7 +370,7 @@ function noDecisionText(state: RequestState): string {
 }
 
 /** The T133 changes pane on the T132 request state, with the T202 file controls in its stage bar. */
-export function ChangesPaneMount({ state, requests, profile, density, textScale, menuOpen, modalOpen, onStatus, staging, workbench, onTrustReads, filesFilterRef }: WorkbenchPaneProps) {
+export function ChangesPaneMount({ state, requests, profile, density, textScale, menuOpen, modalOpen, onStatus, staging, workbench, onTrustReads, filesFilterRef, commitActions }: WorkbenchPaneProps) {
   const workspace = state.workspace;
   const key = state.repository?.worktreeKey ?? "";
   const view = useSyncExternalStore(
@@ -383,6 +409,7 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
   const controls = staging !== undefined && shown.entry !== null && shown.comparison !== null ? fileProps(staging, shown.comparison, shown.entry.category) : null;
   // Feature 004 plan.md D8 and D15: the multi-file, ignore, and reveal actions bind the shown read.
   const running = staging?.blocked === "busy" || staging?.blocked === "running";
+  const conflicts = state.entries.filter((e) => e.category === "conflicted").length;
   const files =
     staging === undefined || workbench === undefined || workbench === null
       ? undefined
@@ -399,6 +426,18 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
           reason: running ? RUNNING_REASON : staging.blocked !== null ? BLOCKED_TEXT[staging.blocked] : null,
           running,
           cut: workspace.cut === "untracked",
+          // Feature 005 plan.md D6: the 004 common refusals, then the 001 blocks of the shown read.
+          deleteBlock: deleteBlock(workspace.operationState, conflicts) ?? (staging.blocked !== null && staging.blocked !== "operation" && staging.blocked !== "conflicted" ? BLOCKED_TEXT[staging.blocked] : null),
+          wsl: workspace.location.kind === "wsl",
+          unborn: workspace.head.state === "unborn",
+          ...(commitActions === undefined
+            ? {}
+            : {
+                onIgnore: (target: IgnoreTarget, line: string) => commitActions.ignore.open(target, line),
+                onBlame: commitActions.onBlame,
+                onOpenSubmodule: commitActions.onOpenSubmodule,
+                submoduleReason: commitActions.submoduleReason,
+              }),
         };
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -597,8 +636,7 @@ const panelOf = (selected: string | null): Panel | null => (selected === null ? 
 
 // plan.md "Keyboard and focus", Pane navigation: each section element carries its name.
 const SECTION_SELECTOR = "[data-section]";
-// Feature 005 plan.md D15: the History regions where Ctrl+F focuses Filter files, and the F6 stops inside the commit details section.
-const HISTORY_FILES_SCOPE = '[data-slot="changed-files"], [data-slot="history-diff"]';
+// Feature 005 plan.md D15: the F6 stops inside the commit details section.
 const DOCK_STOP = "[data-dock-stop]";
 const TABBABLE = 'input:not([disabled]), button:not([disabled]), textarea, [tabindex="0"], [role="option"][tabindex="0"]';
 
@@ -647,7 +685,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (response.state === "canceled" && response.operationId !== undefined && response.operationId === canceledStart.current) setNotice(WSL_START_CANCELED_TEXT);
     return response;
   };
-  const [{ requests, historyView, store, inspection }] = useState(() => {
+  const [{ requests, historyView, store, inspection, ignore }] = useState(() => {
     // The two stores refer to each other: the requests open the view, and the view's `openHistory` counts as a workspace read.
     let view: HistoryStore | null = null;
     const requests = createRequests({
@@ -696,8 +734,23 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       },
       () => requests.target()!,
     );
-    return { requests, historyView: view, store, inspection };
+    // Feature 005 plan.md D15 "State": the ignore editor of the Commit view.
+    const ignore = createIgnoreEditor({
+      bridge: {
+        readIgnoreFile: (target, payload, onProgress) => bridge.readIgnoreFile(target, payload, onProgress),
+        previewIgnore: (target, payload, onProgress) => bridge.previewIgnore(target, payload, onProgress),
+        reviewWorkbench: (target, payload, onProgress) => bridge.reviewWorkbench(target, payload, onProgress),
+        runWorkbench: (target, payload, onProgress) => bridge.runWorkbench(target, payload, onProgress),
+        cancel: (payload) => bridge.cancel(payload),
+      },
+      target: requests.target,
+      snapshotId: () => requests.state().workspace?.snapshotId ?? null,
+      onOperation: (op) => reportOperation.current(op),
+      ended: (response) => store.ended("runWorkbench", response),
+    });
+    return { requests, historyView: view, store, inspection, ignore };
   });
+  const reportOperation = useRef<(op: StatusOperation) => void>(() => {});
   // The latest environment: the given one, or a later read after a dismissal or a `service-session` event.
   const [environment, setEnvironment] = useState(given);
   useEffect(() => setEnvironment(given), [given]);
@@ -735,6 +788,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const viewKey = state.repository?.worktreeKey ?? "";
   const view: View = useSyncExternalStore(store.subscribe, () => store.view(viewKey), () => store.view(viewKey));
   const commitState = useSyncExternalStore(store.subscribe, () => store.commitView(viewKey), () => store.commitView(viewKey));
+  const parents = useSyncExternalStore(store.subscribe, () => store.getState().parents, () => store.getState().parents);
+  const ignoreState = useSyncExternalStore(ignore.subscribe, ignore.getState, ignore.getState);
   const filterRef = useRef<HTMLInputElement>(null);
   const filesFilterRef = useRef<HTMLInputElement>(null);
   // Feature 005 plan.md D15 keyboard map: Ctrl+F focuses Filter files while the focus is in Changed files or in the History diff.
@@ -814,6 +869,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const [drafts] = useState(() => givenDrafts ?? createDrafts(createDraftStore()));
   // The latest mutation of this repository for the status region (T138). Another repository clears it.
   const [operation, setOperation] = useState<StatusOperation | null>(null);
+  reportOperation.current = setOperation;
   // Feature 003 data-model §1: the newest `readTracking` entries of the open repository.
   // `code` is the response code or state of a failed read, null after a success.
   const [tracking, setTracking] = useState<{ repositoryId: string; entries: TrackingEntry[] | null; failure: string | null } | null>(null);
@@ -898,10 +954,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     [requests, historyView],
   );
 
-  function registered(response: BridgeResponse) {
+  /** Feature 005 data-model §9: `parents` is the parent chain after this open. Every other open clears it. */
+  function registered(response: BridgeResponse, parents: readonly Parent[] = []) {
     // Contract §3: a canceled dialog, or no stored last repository, keeps the workspace.
     if (response.state === "canceled") return;
     if (response.state === "succeeded" && isRegistration(response.result)) {
+      store.setParents(parents);
       setRefusal(null);
       setSaveFailed(false);
       setRecovery(null);
@@ -941,6 +999,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     // A service session also passes here: `requests.serviceSession` clears the repository first (requests.ts `serviceSession`).
     setDeclined(null);
     inspection.reset();
+    ignore.reset();
   }, [repositoryId]);
   useEffect(() => {
     if (repositoryId === null) return;
@@ -1138,9 +1197,71 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // Contract `openWorktree`: UNKNOWN_TARGET comes before the 001 registration flow, so it takes the plan D15 worktree text.
   const openedWorktree = (response: BridgeResponse) => (responseCode(response) === "UNKNOWN_TARGET" ? setNotice(W.unknownTarget) : registered(response));
 
-  async function openRepository() {
-    registered(endStart(await bridge.chooseRepository(onStart)));
+  // Feature 005 spec FR-044: unsaved ignore editor text asks first.
+  function openRepository() {
+    ignore.guard(() => void bridge.chooseRepository(onStart).then((response) => registered(endStart(response))));
   }
+
+  // Feature 005 plan.md D11: the parent is the recent entry that is current before the open, else `entryId: null`.
+  function openSubmodule(path: string) {
+    ignore.guard(async () => {
+      const { repository, workspace: w } = requests.state();
+      if (repository === null || w === null) return;
+      const recent = await bridge.listRecentRepositories();
+      const list = (recent.result as { entries?: { entryId: string; path: string; current: boolean }[] } | undefined)?.entries;
+      const current = recent.state === "succeeded" && Array.isArray(list) ? list.find((e) => e.current === true) : undefined;
+      const parentPath = current?.path ?? w.identity.worktreeRoot;
+      const parent: Parent = { entryId: current?.entryId ?? null, name: folderName(parentPath), path: parentPath };
+      const chain = store.getState().parents;
+      const response = await bridge.openSubmodule({ repositoryId: repository.repositoryId, path });
+      if (response.state === "succeeded" && isRegistration(response.result)) return registered(response, [...chain, parent]);
+      setNotice(submoduleRefusal(response, path));
+    });
+  }
+  // Feature 005 spec FR-051: one click opens the parent entry. A missing entry clears the chain.
+  function openParent() {
+    ignore.guard(async () => {
+      const chain = store.getState().parents;
+      const top = chain.at(-1);
+      if (top === undefined) return;
+      const lost = () => {
+        setNotice(PARENT_LOST);
+        store.setParents([]);
+      };
+      if (top.entryId === null) return lost();
+      const response = await bridge.openRecentRepository({ entryId: top.entryId });
+      if (response.state === "succeeded" && isRegistration(response.result)) return registered(response, chain.slice(0, -1));
+      if (response.code === "UNKNOWN_TARGET" || response.code === "REPOSITORY_UNAVAILABLE") return lost();
+      registered(response);
+    });
+  }
+  // Feature 005 spec FR-054: Blame of a Commit view row opens in History. Escape and Back return to that row.
+  const blameReturn = useRef<{ pathBytes: string; category: ChangeEntry["category"] } | null>(null);
+  const focusReturn = useRef<{ pathBytes: string; category: ChangeEntry["category"] } | null>(null);
+  function blameEntry(entry: ChangeEntry) {
+    const w = requests.state().workspace;
+    if (w === null || w.head.state === "unborn") return;
+    inspection.openBlame({ source: { snapshotId: w.snapshotId, entryId: entry.entryId }, path: entry.path, oid: w.head.oid });
+    blameReturn.current = { pathBytes: entry.pathBytes, category: entry.category };
+    store.setView(viewKey, "history");
+  }
+  function blameBack() {
+    const back = blameReturn.current;
+    blameReturn.current = null;
+    if (back === null) return;
+    const entry = requests.state().entries.find((e) => e.pathBytes === back.pathBytes && e.category === back.category);
+    if (entry !== undefined) requests.selectEntry(entry.entryId);
+    focusReturn.current = back;
+    store.setView(viewKey, "commit");
+  }
+  // The History list slot moves focus in its own effect, so this parent effect runs after it.
+  useEffect(() => {
+    const back = focusReturn.current;
+    if (back === null || view !== "commit") return;
+    focusReturn.current = null;
+    const entry = state.entries.find((e) => e.pathBytes === back.pathBytes && e.category === back.category);
+    if (entry !== undefined) sections.current?.querySelector<HTMLElement>(`[data-file-tree] [role="treeitem"][data-entry-id="${entry.entryId}"]`)?.focus();
+  });
 
   // One page-level shortcut handler (plan.md "Keyboard and focus"). The switcher popup counts as a menu.
   useEffect(() => {
@@ -1160,10 +1281,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       }
       else if (action.type === "focusSection") moveSection(action.direction);
       else if (action.type === "focusFilter") {
-        const target = filterTarget(live.current.view);
+        const target = filterTarget(live.current.view, document.activeElement);
         // Feature 005 plan.md D15: the blame view hides the History list, so its filter takes no focus then.
-        if (target === "history") {
-          if (!inspection.getState().blame) (document.activeElement?.closest(HISTORY_FILES_SCOPE) ? historyFilesRef : filterRef).current?.focus();
+        if (target === "history" || target === "historyFiles") {
+          if (!inspection.getState().blame) (target === "historyFiles" ? historyFilesRef : filterRef).current?.focus();
         }
         else if (target === "files") filesFilterRef.current?.focus();
         else sections.current?.querySelector<HTMLElement>('[data-view="settings"] input[aria-label="Find a setting"]')?.focus();
@@ -1489,6 +1610,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     branches,
     onTrustReads: () => void approveTrust("read"),
     askTrust,
+    commitActions: {
+      ignore,
+      onBlame: blameEntry,
+      onOpenSubmodule: openSubmodule,
+      submoduleReason: (pathBytes) => openSubmoduleReason(submoduleUpdate.rows, pathBytes, parents.length),
+    },
   };
   // Feature 004 plan.md D16 "Geometry": the Commit view holds the commit workspace without the references sidebar.
   const commitProfile = commitViewProfile(profile, client.width);
@@ -1544,7 +1671,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           className={resizable ? "[grid-area:laneSplit]" : "hidden"}
         />
         <div ref={comparisonPane} data-section="comparison" className="min-h-0 overflow-auto" style={{ gridArea: "comparison" }}>
-          <ComparisonView {...pane} />
+          {/* Feature 005 plan.md D15 "Ignore editor": the editor takes the diff region. */}
+          <div hidden={ignoreState.editor !== null} className="h-full min-h-0">
+            <ComparisonView {...pane} />
+          </div>
+          {ignoreState.editor === null ? null : <IgnoreEditor store={ignore} onTrust={() => void approveTrust("read")} />}
         </div>
         <div className="[grid-area:traySplit]">
           <Splitter label="Resize commit tray" orientation="horizontal" value={trayHeight} min={tray.min} max={tray.max} reverse onChange={resize("tray")} onCommit={keepPane("tray")} className={resizable ? undefined : "hidden"} />
@@ -1646,7 +1777,10 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 panes={historyPanes}
                 onPanes={(next) => setHistoryPanes((p) => ({ ...p, ...next }))}
                 onTrust={() => approveTrust("read")}
-                onBlame={(request) => inspection.openBlame(request)}
+                onBlame={(request) => {
+                  blameReturn.current = null;
+                  inspection.openBlame(request);
+                }}
               />
             }
           />
@@ -1666,6 +1800,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           blockedReason={stateBlocked === null ? null : BLOCKED_TEXT[stateBlocked]}
           onCancel={() => statusRegion.current?.requestCancel()}
           onTrustReads={() => void approveTrust("read")}
+          onOpen={openSubmodule}
+          chain={parents.length}
         />
       </div>
     );
@@ -1718,7 +1854,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           <div>{sidebar}</div>
         </div>
         <section aria-label="History" data-section="historyList" className="flex min-h-0 flex-col" style={{ flex: "1 1 0" }} onKeyDown={onHistoryKey} onDoubleClick={onHistoryDoubleClick}>
-          <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.revealOid(oid)}>
+          <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.revealOid(oid)} onBack={blameBack}>
             <HistoryView {...pane} />
           </HistoryListSlot>
         </section>
@@ -1741,7 +1877,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             onKeyDown={onHistoryKey}
             onDoubleClick={onHistoryDoubleClick}
           >
-            <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.revealOid(oid)}>
+            <HistoryListSlot inspection={inspection} onSelectCommit={(oid) => historyView.revealOid(oid)} onBack={blameBack}>
               <HistoryView {...pane} />
             </HistoryListSlot>
           </section>
@@ -1774,7 +1910,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         ) : null}
         {/* Feature 004 plan.md D15 "Top bar row": one row while the controls fit at their text widths. Otherwise the last controls wrap. */}
         <header data-section="header" className="flex flex-wrap items-center gap-x-2 border-b border-divider px-2" style={{ minHeight: "var(--h-header)" }}>
-          <div ref={switcher} className="flex min-w-[160px] shrink items-center" style={{ order: 1, minHeight: "var(--h-header)" }}>
+          <div ref={switcher} className="flex min-w-[160px] shrink items-center gap-2" style={{ order: 1, minHeight: "var(--h-header)" }}>
+            {parents.length === 0 ? null : <ParentButton parent={parents.at(-1)!} onOpen={openParent} />}
             <RepositorySwitcher
               bridge={bridge}
               worktreeRoot={path}
@@ -1836,6 +1973,14 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 onOpenSettings={openSettings}
                 onUpdateSubmodules={workspace === null ? undefined : () => updateSubmodules("menu")}
                 updateSubmodulesReason={blockedReason}
+                onEditIgnore={
+                  workspace === null
+                    ? undefined
+                    : (target) => {
+                        store.setView(viewKey, "commit");
+                        ignore.open(target);
+                      }
+                }
                 onOpenChange={onMenuOpen("repository")}
                 finalFocus={finalFocus}
               />
@@ -2093,6 +2238,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         ) : null}
         {branches.overlays}
         {worktrees.overlays}
+        {ignoreState.discard === null ? null : <DiscardConfirm file={ignoreState.discard.file} onKeep={ignore.keepEditing} onDiscard={ignore.discard} />}
         {keepPool ? (
           <Suspense fallback={null}>
             <PatchPool>{null}</PatchPool>

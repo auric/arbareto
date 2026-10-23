@@ -1424,8 +1424,8 @@ describe("menus", () => {
     const menu = await openMenu("Repository");
     const items = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')];
     const label = (e: HTMLElement) => [...e.childNodes].filter((n) => !(n instanceof HTMLElement && n.dataset.slot === "menubar-shortcut")).map((n) => n.textContent).join("").trim();
-    // Feature 003 plan.md D12 adds Clone… and Settings….
-    expect(items.map(label)).toEqual(["Open folder…", "Recent repositories", "Clone…", "Select Git", "Settings…", "Update submodules"]);
+    // Feature 003 plan.md D12 adds Clone… and Settings…. Feature 005 spec FR-034 adds the ignore editor items.
+    expect(items.map(label)).toEqual(["Open folder…", "Recent repositories", "Clone…", "Select Git", "Settings…", "Update submodules", "Edit .gitignore", "Edit info/exclude"]);
     const keys = [...menu.querySelectorAll<HTMLElement>('[data-slot="menubar-shortcut"]')];
     expect(keys.map((k) => k.textContent)).toEqual(["Ctrl+O", "Ctrl+R"]);
     for (const k of keys) expect(k.className.split(/\s+/)).toEqual(expect.arrayContaining(["ml-auto", "whitespace-nowrap", "text-muted-text"]));

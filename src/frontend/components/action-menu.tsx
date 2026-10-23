@@ -5,7 +5,7 @@ import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { Fragment, useCallback, useId, type ComponentProps, type ReactElement } from "react";
 import { isEditable } from "../keyboard/shortcuts";
 import { RunningTooltip } from "./running-tooltip";
-import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "./ui/dropdown-menu";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "./ui/dropdown-menu";
 
 // Feature 004 plan.md D15 "Action menu", D16 danger rules, spec FR-014 and FR-085.
 
@@ -24,11 +24,14 @@ export type ActionItem = {
   onSelect(): void;
 };
 
+export type ActionGroup = readonly ActionItem[] | { label: string; items: readonly ActionItem[] };
+
 export type ActionMenuProps = {
   /** The accessible name of the menu. */
   label: string;
   /** Item groups. A separator divides two groups. */
-  groups: readonly (readonly ActionItem[])[];
+  /** Each group follows a separator. A labelled group starts with its label (feature 005 plan.md D15 "Delete from disk"). */
+  groups: readonly ActionGroup[];
   open: boolean;
   onOpenChange(open: boolean): void;
   /** A button opens the menu. */
@@ -53,7 +56,8 @@ export function ActionMenu({ label, groups, open, onOpenChange, trigger, anchor,
           <Fragment key={index}>
             {index === 0 ? null : <DropdownMenuSeparator />}
             <DropdownMenuGroup>
-              {group.map((item) => (
+              {"label" in group ? <DropdownMenuLabel className="flex h-6 items-center font-semibold text-muted-text">{group.label}</DropdownMenuLabel> : null}
+              {("items" in group ? group.items : group).map((item) => (
                 <Item key={item.label} item={item} />
               ))}
             </DropdownMenuGroup>

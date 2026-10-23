@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { act } from "react";
 import type { Environment } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
@@ -12,7 +13,8 @@ printOrigin("../../src/frontend/about/AboutDialog.tsx", import.meta.dir);
 registerDom();
 const { renderToStaticMarkup } = await import("react-dom/server");
 const { GitSegment } = await import("../../src/frontend/app/Workbench");
-const { AboutOverview } = await import("../../src/frontend/about/AboutDialog");
+const { createRoot } = await import("react-dom/client");
+const { AboutDialog, AboutOverview } = await import("../../src/frontend/about/AboutDialog");
 
 // plan.md "Provisional prerequisite admission" and "About window": the label shows only with platform scope `other`.
 const LABEL = "Unqualified platform";
@@ -32,4 +34,48 @@ describe("Unqualified platform label", () => {
       expect(plain(renderToStaticMarkup(<AboutOverview scope={scope} build={BUILD} repositoryUrl="https://github.com/auric/arbareto" />)).includes(LABEL)).toBe(scope === "other");
     });
   }
+});
+
+// T123 (plan.md D15 "About window"): `index.css` sets `user-select: none` on the body, so copyable text needs `select-text`.
+describe("About text selection", () => {
+  const NOTICES = { repositoryUrl: "https://github.com/auric/arbareto", project: { license: "AGPL text", notice: "NOTICE text" }, texts: ["MIT text"], groups: [] };
+  const unmounts: (() => void)[] = [];
+  afterEach(() => {
+    for (const unmount of unmounts.splice(0)) unmount();
+    document.getSelection()?.removeAllRanges();
+  });
+
+  test("the Build line of the Overview is inside a select-text root", () => {
+    const host = document.createElement("div");
+    host.innerHTML = renderToStaticMarkup(<AboutOverview scope="qualification-target" build={BUILD} repositoryUrl={NOTICES.repositoryUrl} />);
+    const build = [...host.querySelectorAll("p")].find((p) => p.textContent?.startsWith("Build:"))!;
+    expect(build.closest(".select-text")).not.toBeNull();
+    expect(host.firstElementChild!.classList.contains("select-text")).toBe(true);
+  });
+
+  // Blink SelectAll matches `keyCode` 65 (`editing_behavior.cc`). The Ukrainian layout gives "ф" on that key; AZERTY puts VK_A on the physical Q key.
+  for (const [layout, init] of [
+    ["US", { key: "a", code: "KeyA", keyCode: 65 }],
+    ["Ukrainian", { key: "ф", code: "KeyA", keyCode: 65 }],
+    ["AZERTY", { key: "a", code: "KeyQ", keyCode: 65 }],
+  ] as const)
+  test(`Ctrl+A (${layout} layout) in the focused Overview panel selects only that panel and cancels the default action`, async () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    await act(async () => root.render(<AboutDialog open scope="qualification-target" build={BUILD} notices={NOTICES} client={{ width: 1280, height: 800 }} finalFocus={() => null} onClose={() => {}} />));
+    unmounts.push(() => {
+      act(() => root.unmount());
+      host.remove();
+    });
+    const panel = [...document.querySelectorAll<HTMLElement>('[role="tabpanel"]')].find((p) => !p.hidden && p.textContent?.includes("Build:"))!;
+    expect(panel !== undefined).toBe(true);
+    await act(async () => panel.focus());
+    const event = new KeyboardEvent("keydown", { ...init, ctrlKey: true, bubbles: true, cancelable: true });
+    await act(async () => void panel.dispatchEvent(event));
+    expect(event.defaultPrevented).toBe(true);
+    const selection = document.getSelection()!;
+    expect(selection.rangeCount).toBe(1);
+    expect(panel.contains(selection.getRangeAt(0).commonAncestorContainer)).toBe(true);
+    expect(selection.toString()).toContain(`Build: 0.1.0 ${BUILD.commit}`);
+  });
 });

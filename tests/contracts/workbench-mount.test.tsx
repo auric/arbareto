@@ -1242,7 +1242,7 @@ describe("single view", () => {
 
   test("Ctrl+O runs the folder dialog, and Ctrl+R opens the switcher", async () => {
     const double = await opened();
-    const key = (k: string) => act(async () => void document.body.dispatchEvent(new KeyboardEvent("keydown", { key: k, code: `Key${k.toUpperCase()}`, ctrlKey: true, bubbles: true, cancelable: true })));
+    const key = (k: string) => act(async () => void document.body.dispatchEvent(new KeyboardEvent("keydown", { key: k, code: `Key${k.toUpperCase()}`, keyCode: k.toUpperCase().charCodeAt(0), ctrlKey: true, bubbles: true, cancelable: true })));
     await key("o");
     await settle();
     expect(double.calls.filter((c) => c.operation === "chooseRepository")).toHaveLength(1);
@@ -1325,7 +1325,7 @@ describe("switcher open motion", () => {
   const popup = () => document.querySelector<HTMLElement>('[data-slot="popover-content"]');
   test("a Ctrl+R open has data-instant, and a pointer open does not", async () => {
     await mount(succeeded(REGISTRATION));
-    await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "r", code: "KeyR", ctrlKey: true, bubbles: true, cancelable: true })));
+    await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "r", code: "KeyR", keyCode: 82, ctrlKey: true, bubbles: true, cancelable: true })));
     await settle();
     expect(popup()).not.toBeNull();
     expect(popup()!.hasAttribute("data-instant")).toBe(true);
@@ -1670,13 +1670,13 @@ describe("history scope and shortcuts", () => {
 
   test("Ctrl+Shift+B toggles the scope, also from the filter text box", async () => {
     const double = await opened();
-    await press({ key: "B", code: "KeyB", ctrlKey: true, shiftKey: true }, document.body);
+    await press({ key: "B", code: "KeyB", keyCode: 66, ctrlKey: true, shiftKey: true }, document.body);
     await serveHistory(double);
     expect(scopes(double)).toEqual(["all", "current"]);
     expect(chip()).not.toBeNull();
     const filter = document.querySelector<HTMLInputElement>('input[aria-label="Filter commit messages"]')!;
     await act(async () => filter.focus());
-    const event = await press({ key: "B", code: "KeyB", ctrlKey: true, shiftKey: true }, filter);
+    const event = await press({ key: "B", code: "KeyB", keyCode: 66, ctrlKey: true, shiftKey: true }, filter);
     expect(event.defaultPrevented).toBe(true);
     await serveHistory(double);
     expect(scopes(double)).toEqual(["all", "current", "all"]);
@@ -1687,7 +1687,7 @@ describe("history scope and shortcuts", () => {
   for (const key of ["Enter", " "])
     test(`the chip remove control is a native button with an accessible name, and ${key === " " ? "Space" : "Enter"} reaches it unhandled`, async () => {
       const double = await opened();
-      await press({ key: "B", code: "KeyB", ctrlKey: true, shiftKey: true }, document.body);
+      await press({ key: "B", code: "KeyB", keyCode: 66, ctrlKey: true, shiftKey: true }, document.body);
       await serveHistory(double);
       const remove = chip()!.querySelector<HTMLButtonElement>('button[aria-label="Show all branches"]')!;
       expect(remove.tagName).toBe("BUTTON");
@@ -1728,7 +1728,7 @@ describe("history scope and shortcuts", () => {
 
   test("Ctrl+F focuses the filter, and F3 and Shift+F3 move between the matches of filter mode", async () => {
     const double = await opened();
-    await press({ key: "f", code: "KeyF", ctrlKey: true }, document.body);
+    await press({ key: "f", code: "KeyF", keyCode: 70, ctrlKey: true }, document.body);
     const filter = document.querySelector<HTMLInputElement>('input[aria-label="Filter commit messages"]')!;
     expect(document.activeElement).toBe(filter);
     await act(async () => {

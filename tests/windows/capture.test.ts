@@ -261,7 +261,7 @@ describe.skipIf(process.platform !== "win32")("T242 capture.ts live", () => {
   );
 
   describe("installed app", () => {
-    // Bun 1.4.3 runs `afterAll` hooks in declaration order, also when a test timeout leaves its body running. This hook must come before the fixture root removal.
+    // Bun 1.4.4 runs `afterAll` hooks in declaration order, also when a test timeout leaves its body running. This hook must come before the fixture root removal.
     let owned: OwnedProcess | undefined;
     afterAll(() => owned?.stop());
     useFixtureRoot();

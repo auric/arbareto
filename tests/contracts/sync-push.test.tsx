@@ -6,7 +6,7 @@ import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { answer, button, buttons, click, createWorld, mountWorkbench, oid, press, settle, succeeded, text, unmountAll } from "./sync-fake";
+import { answer, button, buttons, click, createWorld, expectChromiumFocus, mountWorkbench, oid, press, settle, succeeded, text, unmountAll } from "./sync-fake";
 import { fixtureId } from "./bridge-contract";
 
 // tasks.md T059 (feature 003). Spec FR-014 to FR-016. Plan D4. Data-model §3, §5. Contract Δ3 `reviewSync` (`needsDestination`).
@@ -117,6 +117,19 @@ describe("push flow (FR-014 to FR-016)", () => {
     await press(document.activeElement!, "Escape");
     expect(panel()).toBeNull();
     expect(document.activeElement).toBe(opener);
+  });
+
+  // T121 (001 FR-005): the Commit view hides the commit workspace while the push panel shows, so focus stays in the panel.
+  test("T121: the Commit icon with the push panel open keeps focus in the panel, not on the body or in the hidden workspace", async () => {
+    const world = createWorld({ branches: [NO_UPSTREAM], head: { state: "branch", target: "refs/heads/feature/x", oid: oid(1) }, remotes: [] });
+    const double = await mountWorkbench(workbench, world);
+    await click(button("Push"));
+    await answer(double.pending("reviewSync"), succeeded({ action: "push", plan: { remotes: ["origin", "backup"], needsDestination: panelPlan() } }));
+    expect(panel()!.contains(document.activeElement)).toBe(true);
+    await click(document.querySelector<HTMLElement>('header button[aria-label^="Commit:"]')!);
+    expect(document.querySelector('section[aria-label="Commit view"]')).not.toBeNull();
+    expect(panel()!.contains(document.activeElement)).toBe(true);
+    expectChromiumFocus(document.activeElement);
   });
 
   test("Rejected by the remote shows the remote message as plain text and offers no pull or force choice", async () => {

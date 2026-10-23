@@ -349,7 +349,7 @@ const JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK = 0x1000;
 const JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
 
 describe.skipIf(process.platform !== "win32")("T082 packaged workbench", () => {
-  // Bun 1.4.3 runs `afterAll` hooks in declaration order, also when a test timeout leaves its body running. This hook must come before the fixture root removal.
+  // Bun 1.4.4 runs `afterAll` hooks in declaration order, also when a test timeout leaves its body running. This hook must come before the fixture root removal.
   const owned = new Set<OwnedProcess>();
   afterAll(() => {
     for (const app of owned) app.stop();

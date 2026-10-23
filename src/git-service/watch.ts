@@ -88,7 +88,7 @@ function watchDirectory(directory: string, changed: (name: unknown) => void, los
     stop();
     lost();
   };
-  // Bun 1.4.3 (T366 check 2) on Windows repeats events without an error after the watched directory is removed. The directory identity decides, at most once per debounce time.
+  // Bun 1.4.4 (T390 check 2) on Windows repeats events without an error after the watched directory is removed. The directory identity decides, at most once per debounce time.
   const verify = () => {
     check = setTimeout(() => {
       check = undefined;
@@ -110,7 +110,7 @@ function watchDirectory(directory: string, changed: (name: unknown) => void, los
     armed.on("error", lose);
     armed.on("change", (_event, name) => {
       if (stopped) return;
-      // Bun 1.4.3 gives a null name for lost events (an overflow). On Linux, an event about the recursive root itself gives an undefined name, and no error follows. After a removal, that watch stays silent. A directory created again at the path can keep the same dev and ino. T088 decision E8.
+      // Bun 1.4.4 gives a null name for lost events (an overflow). On Linux, an event about the recursive root itself gives an undefined name, and no error follows. After a removal, that watch stays silent. A directory created again at the path can keep the same dev and ino. T088 decision E8.
       if (name == null) {
         watcher?.close();
         watcher = undefined;

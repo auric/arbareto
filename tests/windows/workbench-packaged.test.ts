@@ -20,7 +20,7 @@ import { buildWorkbench, repoOf, wb, type WbFixture, type WbFixtureName } from "
 import { CaptureError, DISPLAY_OFF, displayState, encodePng, keepDisplayOn, openDuplication, releaseDisplay } from "./capture";
 import { formatMeasurement, measure, THRESHOLD, type Image } from "./contrast";
 import { encodeInputs, INPUT_BYTES, keystroke } from "./inject";
-import { appEnv, explorerReveal, explorerWindows, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
+import { appEnv, COMMIT_VIEW, explorerReveal, explorerWindows, findInstalledApp, localRow, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
 import { running, TOOL_NAME, TOOL_READY_MS, toolCommand, waitEnded, waitReady, writeGuiCopy, type Member } from "./merge-tool-fixture";
 import {
   acceleratorKey,
@@ -69,14 +69,10 @@ const COMMIT = "Commit (Ctrl+Enter)";
 const MESSAGE = "Commit message";
 const AMEND = "Amend last commit";
 const amendStatement = (oid: string) => `Commit replaces commit ${oid.slice(0, 12)}.`;
-// `VIEW_OPTIONS` of src/frontend/app/Workbench.tsx: the Commit button of the Views control. The Commit view holds the file lists and the message editor (plan.md D15).
-const COMMIT_VIEW = "Commit";
 // src/frontend/changes/ChangesPane.tsx: the Changes list header button. A file row has the path as its name (`aria-label={entry.path}`).
 const STAGE_ALL = "Stage all changes";
 // src/frontend/branches/BranchButton.tsx: the text, then the counts label of the current branch, which is "No upstream" here.
 const BRANCH_BUTTON = "main, No upstream";
-// The local branch row name of src/frontend/refs/ReferencesSidebar.tsx for a branch without an upstream.
-const localRow = (name: string, current = false) => [name, "local branch", ...(current ? ["Current"] : []), "No upstream"].join(", ");
 // src-tauri/src/dialogs.rs `trust_confirmation` (plan.md D14).
 const TRUST_MAIN = "Do you trust this repository?";
 const TRUST = "Trust";

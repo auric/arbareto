@@ -736,7 +736,7 @@ describe("hints inside ignored folders (contract §8 \"Watcher hints\")", () => 
     () =>
       withIgnored("t384-deleted", async (service, repo, repositoryId, emit, first) => {
         rmSync(join(repo, "build", "keep.txt"));
-        // Bun 1.4.3 on Windows reports a delete through an 8.3 short name with that name (probe of 2026-10-21). Git reports such a name as ignored.
+        // Bun 1.4.4 on Windows reports a delete through an 8.3 short name with that name (probe of 2026-10-23). Git reports such a name as ignored.
         expect(git(repo, ["check-ignore", "--", "build/KEEP~1.TXT"])).toBe("build/KEEP~1.TXT\n");
         await emit([join("build", "KEEP~1.TXT")]);
         const poll = await read(service, repositoryId, CHANGES);

@@ -52,7 +52,7 @@ async function use<T>(element: Promise<Element>, body: (element: Element) => T):
 const uia = <T>(pid: number, name: string, type: number | undefined, body: (element: Element) => T) => use(find(pid, name, MAX_WAIT_MS, type), body);
 
 describe.skipIf(process.platform !== "win32")("T124 packaged keys through CDP", () => {
-  // Bun 1.4.3 runs `afterAll` hooks in declaration order. This hook must come before the fixture root removal.
+  // Bun 1.4.4 runs `afterAll` hooks in declaration order. This hook must come before the fixture root removal.
   let app: OwnedProcess | null = null;
   let cdp: Cdp | null = null;
   afterAll(() => {

@@ -715,7 +715,7 @@ Sources: [git-show-ref --exists](https://github.com/git/git/blob/v2.55.0/Documen
 
 **Decision**: T088 keeps Bun's built-in `fs.watch` with `recursive: true`. It adds no watcher library.
 
-**Rationale**: Bun 1.4.3 watches recursively on Windows through `ReadDirectoryChangesW` (`src/runtime/node/win_watcher.rs:390-398` at commit c6da4a4d). Bun reports a buffer overflow as a `change` event with a `null` file name. On Windows, `win_watcher.rs:250-253` does this. On Linux, `test/js/node/watch/fs.watch.test.ts:624-625` shows it for `IN_Q_OVERFLOW`. On Linux, a nameless event on a recursive root gives an `undefined` name (`path_watcher.rs:1066`, `node_fs_watcher.rs:948`), and the service re-arms on it too. The service treats every event as a hint, and that event too. The contract §8 change tuple decides every change.
+**Rationale**: Bun 1.4.4 watches recursively on Windows through `ReadDirectoryChangesW` (`src/runtime/node/win_watcher.rs:390-398` at commit 38afee6c). Bun reports a buffer overflow as a `change` event with a `null` file name. On Windows, `win_watcher.rs:250-253` does this. On Linux, `test/js/node/watch/fs.watch.test.ts:623-624` shows it for `IN_Q_OVERFLOW`. On Linux, a nameless event on a recursive root gives an `undefined` name (`path_watcher.rs:1150`, `node_fs_watcher.rs:948`), and the service re-arms on it too. The service treats every event as a hint, and that event too. The contract §8 change tuple decides every change.
 
 **Alternatives considered**:
 
@@ -725,7 +725,7 @@ Sources: [git-show-ref --exists](https://github.com/git/git/blob/v2.55.0/Documen
 
 **Revisit**: Open this decision again only when T161 or T075 shows missed hints that `fs.watch` cannot deliver.
 
-Sources: [win_watcher.rs](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/runtime/node/win_watcher.rs#L250-L253), [recursive watch](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/runtime/node/win_watcher.rs#L390-L398), [overflow test](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/test/js/node/watch/fs.watch.test.ts#L624-L625), [executables doc](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/docs/bundler/executables.mdx#L886-L896), [opencode#37686](https://github.com/anomalyco/opencode/issues/37686).
+Sources: [win_watcher.rs](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/runtime/node/win_watcher.rs#L250-L253), [recursive watch](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/runtime/node/win_watcher.rs#L390-L398), [overflow test](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/test/js/node/watch/fs.watch.test.ts#L623-L624), [executables doc](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/docs/bundler/executables.mdx#L886-L896), [opencode#37686](https://github.com/anomalyco/opencode/issues/37686).
 
 ## R6. Measurement evidence and reference environment
 
@@ -1163,7 +1163,7 @@ The versions below are minimum versions, verified on 2026-09-29. The lockfiles r
 | Tauri frontend API | `2.12.0` | Apache-2.0 OR MIT; revision `4f46cfc10da37f5deba2326569f86b0700d97835`. |
 | Native dialog plugin | `2.8.0` | Apache-2.0 OR MIT; revision `a2364a5f216324439feedeb25b2db74e7b1eba90`. |
 | Win32 bindings | `windows = 0.62.0` | MIT OR Apache-2.0; published source revision `983720fec75dea714cca37d29679eb9369ec7ef7`. |
-| Bun compiler/runtime | `1.4.3` (exact) | MIT plus linked-component obligations; revision `c6da4a4d3010e5553438c60f6bd76d981976867c`. |
+| Bun compiler/runtime | `1.4.4` (exact) | MIT plus linked-component obligations; revision `38afee6c84fcf48c0edb2466aa4b27d287a59c30`. |
 | Rust/Cargo | `1.98.0` | Apache-2.0 OR MIT plus component notices; Rust revision `88d9e12ae178fab0fb5cc050a94da85685d449ea`. |
 | NSIS | `3.11` | Mainly zlib/libpng, with compression-component notices. Tauri pins its download and hash. |
 | `serde` / `serde_json` | `1.0.228` / `1.0.145` | MIT OR Apache-2.0; Tauri's `Cargo.lock` selects these versions at the revision above. |
@@ -1204,7 +1204,7 @@ Sources: [Tauri versions and MSRV](https://github.com/tauri-apps/tauri/blob/447f
 
 ### Compiled-service hardening
 
-Use `bun-windows-x64`. Bun 1.4.3 targets SSE4.2/Nehalem and performs runtime instruction dispatch. Do not repeat older mandatory-AVX2 claims.
+Use `bun-windows-x64`. Bun 1.4.4 targets SSE4.2/Nehalem and performs runtime instruction dispatch. Do not repeat older mandatory-AVX2 claims.
 
 Compile with all four implemented autoload controls:
 
@@ -1221,47 +1221,48 @@ They do not sanitize environment variables. `BUN_BE_BUN=1` can select the Bun CL
 
 Sanitize runtime-control variables before Rust launches the service. Match environment names case-insensitively on Windows. Use fixed executable arguments and an application-owned startup directory.
 
-`src-tauri/src/env_sanitize.rs` removes the names below from the service environment (T032). The T025 test lists them as Bun reads between process entry and the entry module. `BUN_BYTECODE_DIGEST_OUT` is the exception: Bun reads it at exit. This record verifies each read site, not the read time. The tag `bun-v1.4.3` points directly at commit `c6da4a4d3010e5553438c60f6bd76d981976867c` (GitHub API `git/refs/tags/bun-v1.4.3`, object type `commit`). Each site is a path at that commit. On 2026-10-11, the T366 implementer read each line below in a fetch of that commit.
+`src-tauri/src/env_sanitize.rs` removes the names below from the service environment (T032). The T025 test lists them as Bun reads between process entry and the entry module. `BUN_BYTECODE_DIGEST_OUT` is the exception: Bun reads it at exit. This record verifies each read site, not the read time. The tag `bun-v1.4.4` points directly at commit `38afee6c84fcf48c0edb2466aa4b27d287a59c30` (GitHub API `git/refs/tags/bun-v1.4.4`, object type `commit`). Each site is a path at that commit. The simdutf site is a path in the WebKit commit that `scripts/build/deps/webkit.ts:6` pins. On 2026-10-23, the T390 implementer read each line below in the source archive of that commit.
 
-| Removed name | Bun 1.4.3 read site |
+| Removed name | Bun 1.4.4 read site |
 | --- | --- |
-| `BUN_BE_BUN` | `src/bun_core/env_var.rs:227` |
-| `BUN_OPTIONS` | `src/bun_core/env_var.rs:124` |
-| `BUN_FEATURE_FLAG_NO_ORPHANS` | `src/bun_core/env_var.rs:98` |
-| Every name that starts with `BUN_JSC_` | `src/jsc/bindings/ZigGlobalObject.cpp:379` checks the prefix, and `:383` sets the JSC option after it. |
-| `BUN_DISABLE_STOP_IF_NECESSARY_TIMER` | `src/jsc/bindings/ZigGlobalObject.cpp:509` |
-| `BUN_GC_TIMER_INTERVAL` | `src/bun_core/env_var.rs:103` |
-| `BUN_GC_RUNS_UNTIL_SKIP_RELEASE_ACCESS` | `src/bun_core/env_var.rs:101` |
-| `BUN_GC_TIMER_DISABLE` | `src/bun_core/env_var.rs:102` |
-| `BUN_IDLE_GC_SECONDS` | `src/bun_core/env_var.rs:104` |
-| `HYPERFINE_RANDOMIZED_ENVIRONMENT_OFFSET` | `src/bun_core/env_var.rs:165` |
-| `BUN_INSPECT` | `src/bun_core/env_var.rs:108` |
-| `BUN_INSPECT_CONNECT_TO` | `src/bun_core/env_var.rs:109` |
+| `BUN_BE_BUN` | `src/bun_core/env_var.rs:242` |
+| `BUN_OPTIONS` | `src/bun_core/env_var.rs:132` |
+| `BUN_FEATURE_FLAG_NO_ORPHANS` | `src/bun_core/env_var.rs:104` |
+| Every name that starts with `BUN_JSC_` | `src/jsc/bindings/ZigGlobalObject.cpp:391` checks the prefix, and `:395` sets the JSC option after it. `:445` also reads `BUN_JSC_useConcurrentJIT`. |
+| `BUN_DISABLE_STOP_IF_NECESSARY_TIMER` | `src/jsc/bindings/ZigGlobalObject.cpp:547` |
+| `BUN_GC_TIMER_INTERVAL` | `src/bun_core/env_var.rs:109` |
+| `BUN_GC_RUNS_UNTIL_SKIP_RELEASE_ACCESS` | `src/bun_core/env_var.rs:107` |
+| `BUN_GC_TIMER_DISABLE` | `src/bun_core/env_var.rs:108` |
+| `BUN_IDLE_GC_SECONDS` | `src/bun_core/env_var.rs:110` |
+| `HYPERFINE_RANDOMIZED_ENVIRONMENT_OFFSET` | `src/bun_core/env_var.rs:173` |
+| `BUN_INSPECT` | `src/bun_core/env_var.rs:114` |
+| `BUN_INSPECT_CONNECT_TO` | `src/bun_core/env_var.rs:115` |
 | `BUN_INSPECT_NOTIFY` | `src/js/internal/debugger.ts:249` |
-| `BUN_INSPECT_PRELOAD` | `src/bun_core/env_var.rs:110` |
-| `NODE_PENDING_DEPRECATION` | `src/bun_core/env_var.rs:187` |
-| `NODE_USE_SYSTEM_CA` | `src/bun_core/env_var.rs:189` |
-| `_BUN_WATCHER_CHILD` | `src/sys/windows/mod.rs:1519` reads it with `GetEnvironmentVariableW`. Lines 1506-1509 define the name. |
-| `NODE_ENV` | `src/runtime/cli/run_command.rs:663` and `src/dotenv/env_loader.rs:203` |
-| `BUN_ENV` | `src/dotenv/env_loader.rs:203` |
-| `BUN_DISABLE_TRANSPILER` | `src/bundler/transpiler.rs:724` |
-| `BUN_CONFIG_MAX_HTTP_REQUESTS` | `src/http/AsyncHTTP.rs:207` |
-| `BUN_SHOW_BUN_STACKFRAMES` | `src/jsc/VirtualMachine.rs:4246` |
-| `BUN_FEATURE_FLAG_DISABLE_ASYNC_TRANSPILER` | `src/bun_core/env_var.rs:244` |
-| `NODE_CHANNEL_FD` | `src/bun_core/env_var.rs:172` |
-| `NODE_CHANNEL_SERIALIZATION_MODE` | `src/jsc/VirtualMachine.rs:4261` |
-| `NODE_PRESERVE_SYMLINKS` | `src/jsc/VirtualMachine.rs:4291` |
-| `BUN_GARBAGE_COLLECTOR_LEVEL` | `src/jsc/VirtualMachine.rs:4295` |
-| `BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` | `src/jsc/VirtualMachine.rs:4300` |
-| `BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING` | `src/jsc/VirtualMachine.rs:4304` |
-| `BUN_FEATURE_FLAG_SYNTHETIC_MEMORY_LIMIT` | `src/jsc/VirtualMachine.rs:4317` |
-| `BUN_FEATURE_FLAG_DISABLE_STANDALONE_MADVISE` | `src/bun_core/env_var.rs:278` |
-| `BUN_BYTECODE_ORDER_OUT` | `src/jsc/BytecodeOrderRecorder.rs:126` reads it when each VM of a compiled executable starts (`src/jsc/VirtualMachine.rs:3333`). At exit, Bun writes a file to the named path (`BytecodeOrderRecorder.rs:177-178`). `src/bun_core/env_var.rs:50` defines the name. |
-| `BUN_BYTECODE_DIGEST_OUT` | `src/jsc/BytecodeOrderRecorder.rs:67` reads it at exit (`src/jsc/VirtualMachine.rs:2281`) and writes a file to the named path. `src/bun_core/env_var.rs:45` defines the name. |
+| `BUN_INSPECT_PRELOAD` | `src/bun_core/env_var.rs:116` |
+| `NODE_PENDING_DEPRECATION` | `src/bun_core/env_var.rs:201` |
+| `NODE_USE_SYSTEM_CA` | `src/bun_core/env_var.rs:203` |
+| `_BUN_WATCHER_CHILD` | `src/sys/windows/mod.rs:1539` reads it with `GetEnvironmentVariableW`. Lines 1526-1529 define the name. |
+| `NODE_ENV` | `src/runtime/cli/run_command.rs:724` and `src/dotenv/env_loader.rs:215` |
+| `BUN_ENV` | `src/dotenv/env_loader.rs:215` |
+| `BUN_DISABLE_TRANSPILER` | `src/bundler/transpiler.rs:726` |
+| `BUN_CONFIG_MAX_HTTP_REQUESTS` | `src/http/AsyncHTTP.rs:212` |
+| `BUN_SHOW_BUN_STACKFRAMES` | `src/jsc/VirtualMachine.rs:4391` |
+| `BUN_FEATURE_FLAG_DISABLE_ASYNC_TRANSPILER` | `src/bun_core/env_var.rs:259` |
+| `NODE_CHANNEL_FD` | `src/bun_core/env_var.rs:180` |
+| `NODE_CHANNEL_SERIALIZATION_MODE` | `src/jsc/VirtualMachine.rs:4405` reads it. `src/bun_core/env_var.rs:181` defines the name. |
+| `NODE_PRESERVE_SYMLINKS` | `src/jsc/VirtualMachine.rs:4427` |
+| `BUN_GARBAGE_COLLECTOR_LEVEL` | `src/jsc/VirtualMachine.rs:4431` |
+| `BUN_FEATURE_FLAG_FORCE_WAITER_THREAD` | `src/jsc/VirtualMachine.rs:4436` |
+| `BUN_FEATURE_FLAG_INTERNAL_FOR_TESTING` | `src/jsc/VirtualMachine.rs:4440` |
+| `BUN_FEATURE_FLAG_SYNTHETIC_MEMORY_LIMIT` | `src/jsc/VirtualMachine.rs:4453` |
+| `BUN_FEATURE_FLAG_DISABLE_STANDALONE_MADVISE` | `src/bun_core/env_var.rs:293` |
+| `BUN_BYTECODE_ORDER_OUT` | `src/jsc/BytecodeOrderRecorder.rs:126` reads it when each VM of a compiled executable starts (`src/jsc/VirtualMachine.rs:3484`). At exit, Bun writes a file to the named path (`BytecodeOrderRecorder.rs:177-178`). `src/bun_core/env_var.rs:55` defines the name. |
+| `BUN_BYTECODE_DIGEST_OUT` | `src/jsc/BytecodeOrderRecorder.rs:67` reads it at exit (`src/jsc/VirtualMachine.rs:2366`) and writes a file to the named path. `src/bun_core/env_var.rs:50` defines the name. |
+| `SIMDUTF_FORCE_IMPLEMENTATION` | `src/runtime/bin_entry/mod.rs:164` calls `has_any_implementation` (`src/simdutf_sys/simdutf.rs:288-290`) at process entry. That call runs the simdutf first-use selection. It reads the name with the C runtime `getenv` (WebKit `Source/WTF/wtf/simdutf/simdutf_impl.cpp.h:13964`). An unknown name selects no implementation, and Bun exits with code 134 (`src/jsc/bindings/c-bindings.cpp:37-51`). |
 
-On Windows, Bun 1.4.3 compares environment names without ASCII letter case. The `env_var.rs` reads go through `getenv_z_any_case` (`src/bun_core/util.rs:344`), which compares at lines 409-412. The `DotEnv` map is `CaseInsensitiveAsciiStringArrayHashMap` (`src/dotenv/env_loader.rs:1286`). The `BUN_JSC_` check compares exact bytes (`ZigGlobalObject.cpp:379`). The shell removes each name and the prefix without ASCII letter case (contract §7). So it removes every form that Bun reads. Git child environments (T182) use the same name rule.
+On Windows, Bun 1.4.4 compares environment names without ASCII letter case. The `env_var.rs` reads go through `getenv_z_any_case` (`src/bun_core/util.rs:344`), which compares at lines 409-412. The `DotEnv` map is `CaseInsensitiveAsciiStringArrayHashMap` (`src/dotenv/env_loader.rs:1317`). The `BUN_JSC_` prefix check compares exact bytes (`ZigGlobalObject.cpp:391`). The `BUN_JSC_useConcurrentJIT` check ignores ASCII letter case (`:445`). The simdutf read also ignores letter case: with `simdutf_force_implementation=bogus`, Bun 1.4.4 exits with code 134 (T390 probe). The shell removes each name and the prefix without ASCII letter case (contract §7). So it removes every form that Bun reads. Git child environments (T182) use the same name rule.
 
-Sources: [tag ref](https://api.github.com/repos/oven-sh/bun/git/refs/tags/bun-v1.4.3), [variable registry](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/bun_core/env_var.rs#L45-L278), [JSC options](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/jsc/bindings/ZigGlobalObject.cpp#L373-L387), [virtual machine reads](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/jsc/VirtualMachine.rs#L4246-L4317), [bytecode order and digest files](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/jsc/BytecodeOrderRecorder.rs#L63-L180), [Windows name comparison](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/bun_core/util.rs#L340-L412), [DotEnv map](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/dotenv/env_loader.rs#L1279-L1286), [watcher child](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/sys/windows/mod.rs#L1506-L1519).
+Sources: [tag ref](https://api.github.com/repos/oven-sh/bun/git/refs/tags/bun-v1.4.4), [variable registry](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/bun_core/env_var.rs#L50-L293), [JSC options](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/jsc/bindings/ZigGlobalObject.cpp#L385-L399), [per-thread JSC option](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/jsc/bindings/ZigGlobalObject.cpp#L439-L448), [virtual machine reads](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/jsc/VirtualMachine.rs#L4391-L4453), [bytecode order and digest files](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/jsc/BytecodeOrderRecorder.rs#L63-L180), [Windows name comparison](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/bun_core/util.rs#L340-L412), [DotEnv map](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/dotenv/env_loader.rs#L1310-L1317), [watcher child](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/sys/windows/mod.rs#L1526-L1539), [process entry SIMD check](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/runtime/bin_entry/mod.rs#L163-L169), [SIMD abort](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/jsc/bindings/c-bindings.cpp#L36-L51), [WebKit pin](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/scripts/build/deps/webkit.ts#L6), [simdutf selection](https://github.com/oven-sh/WebKit/blob/d6375c72affe0f70222cdcb45012b10f0bf3a9d5/Source/WTF/wtf/simdutf/simdutf_impl.cpp.h#L13959-L13979).
 
 Keep Git's controlled child environment separate. Preserve required user authentication settings without modifying PATH, agents, helpers, or persistent configuration.
 
@@ -1273,7 +1274,7 @@ Sources: [command scope and protected configuration](https://github.com/git-for-
 
 Sources: [repository variables](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git.adoc#L501-L601), [terminal prompt](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git.adoc#L758-L760), [configuration file selection](https://github.com/git-for-windows/git/blob/52ca1113d651127f89477a8763f86ab20f645e1d/Documentation/git.adoc#L762-L778).
 
-Sources: [CPU configuration](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/scripts/build/config.ts#L1023-L1029), [CPU compiler flag](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/scripts/build/flags.ts#L72-L77), [autoload flag parser](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/runtime/cli/Arguments.rs#L2350-L2431), [executable flag encoding](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/runtime/cli/build_command.rs#L939-L958), [runtime flag application](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/bun.js.rs#L10-L28), [Bun CLI bypass](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/runtime/cli/mod.rs#L1202-L1208), [BUN_OPTIONS](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/runtime/cli/mod.rs#L1356-L1400), [explicit config exception](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/bunfig/arguments.rs#L148-L239).
+Sources: [CPU configuration](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/scripts/build/config.ts#L1043-L1049), [CPU compiler flag](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/scripts/build/flags.ts#L72-L77), [autoload flag parser](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/runtime/cli/Arguments.rs#L2290-L2371), [executable flag encoding](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/runtime/cli/build_command.rs#L873-L892), [runtime flag application](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/bun.js.rs#L10-L28), [Bun CLI bypass](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/runtime/cli/mod.rs#L1033-L1039), [BUN_OPTIONS](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/runtime/cli/mod.rs#L1189-L1233), [explicit config exception](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/bunfig/arguments.rs#L277-L373).
 
 **Batch 1 observations, 2026-10-03.** T065 copied these test and task records.
 
@@ -1297,7 +1298,7 @@ Tauri shell plugin `2.4.0` also uses child-process termination. Its normal exit 
 
 Use separate shell-owned service and operation Jobs. Do not expose native spawning to the renderer. Serialize argument arrays only at `CreateProcessW`, with tested Windows quoting and explicit `lpApplicationName`.
 
-Sources: [Bun libuv pin](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/scripts/build/deps/libuv.ts#L14-L28), [libuv Job flags](https://github.com/oven-sh/libuv/blob/8023581113b276e7c1aee3f82da57ca0893faab1/src/win/process.c#L69-L120), [process termination](https://github.com/oven-sh/libuv/blob/8023581113b276e7c1aee3f82da57ca0893faab1/src/win/process.c#L1354-L1365), [watchdog implementation](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/src/io/ParentDeathWatchdog.rs#L187-L263), [Tauri shell process handling](https://github.com/tauri-apps/plugins-workspace/blob/a2364a5f216324439feedeb25b2db74e7b1eba90/plugins/shell/src/process/mod.rs#L63-L85), [line buffering](https://github.com/tauri-apps/plugins-workspace/blob/a2364a5f216324439feedeb25b2db74e7b1eba90/plugins/shell/src/process/mod.rs#L466-L479).
+Sources: [Bun libuv pin](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/scripts/build/deps/libuv.ts#L14-L28), [libuv Job flags](https://github.com/oven-sh/libuv/blob/8023581113b276e7c1aee3f82da57ca0893faab1/src/win/process.c#L69-L120), [process termination](https://github.com/oven-sh/libuv/blob/8023581113b276e7c1aee3f82da57ca0893faab1/src/win/process.c#L1354-L1365), [watchdog implementation](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/src/io/ParentDeathWatchdog.rs#L187-L263), [Tauri shell process handling](https://github.com/tauri-apps/plugins-workspace/blob/a2364a5f216324439feedeb25b2db74e7b1eba90/plugins/shell/src/process/mod.rs#L63-L85), [line buffering](https://github.com/tauri-apps/plugins-workspace/blob/a2364a5f216324439feedeb25b2db74e7b1eba90/plugins/shell/src/process/mod.rs#L466-L479).
 
 ### IPC permissions
 
@@ -1409,7 +1410,7 @@ Sources: [sidecar signing](https://github.com/tauri-apps/tauri/blob/447fa9f3f993
 
 Bun's licence states that it statically links LGPL-licensed JavaScriptCore/WebKit. Include notices and satisfy applicable source/relinking obligations before distribution. Do not label the complete compiled product MIT-only.
 
-Source: [Bun licence and linked components](https://github.com/oven-sh/bun/blob/c6da4a4d3010e5553438c60f6bd76d981976867c/LICENSE.md#L1-L19).
+Source: [Bun licence and linked components](https://github.com/oven-sh/bun/blob/38afee6c84fcf48c0edb2466aa4b27d287a59c30/LICENSE.md#L1-L19).
 
 ### Corresponding Source location
 
@@ -1546,7 +1547,7 @@ The mitigation is `bunx --bun` or `bun run` for every tool. None of these packag
 
 Source: `engines` fields at `https://registry.npmjs.org/<package>/<version>` for each row.
 
-Use `bunx --bun vite build`. Bare `bunx vite` can honor the Node shebang. Qualify type checking and bundling under Bun 1.4.3 without relying on a Node executable.
+Use `bunx --bun vite build`. Bare `bunx vite` can honor the Node shebang. Qualify type checking and bundling under Bun 1.4.4 without relying on a Node executable.
 
 Source: [Bun Vite execution guidance](https://bun.sh/docs/guides/ecosystem/vite). Native package versions come from the manifests of the versions above.
 
@@ -2445,6 +2446,8 @@ After T003 and T006, each dependency change gets one record here (plan.md, Tool 
 - NSIS licence, 2026-10-12: `third-party-licenses/tools/nsis@3.11/COPYING`, SHA-256 `e7dd514003ab96cb3ddccbc028fe5c795fccf57dc41f21cfb9d4dd16ead23bf5`, 15632 bytes. Source: entry `nsis-3.11/COPYING` of https://github.com/tauri-apps/binary-releases/releases/download/nsis-3.11/nsis-3.11.zip, zip SHA-1 `ef7ff767e5cbd9edd22add3a32c9b8f4500bb10d`. Tauri bundler 2.10.0 `nsis/mod.rs:38-41` pins this URL and SHA-1. Licence: zlib/libpng, bzip2, CPL-1.0. Reason: `cargo tauri build` runs `beforeBuildCommand` before the bundler downloads NSIS. `build:notices` read `%LOCALAPPDATA%\tauri\NSIS\COPYING`, so a machine without an earlier bundle could not build. Now `build:notices` reads the vendored copy (`NSIS_VERSION`). It refuses a bundler copy that differs from it. Reviewer: the main session reviews the diff. Checks: `bun test tests/contracts/notices.test.ts`, `bun run build:notices` on a machine without `%LOCALAPPDATA%\tauri\NSIS`, `bun run build`, and `bun run typecheck`. Control mutation: without the vendored file, `build:notices` exits 1 with `NOTICE_PROBLEM NSIS: no licence text`, and two NSIS cases of `notices.test.ts` fail.
 - T366 `@types/bun`, 2026-10-13: the devDependency `@types/bun` moves from `~1.4.2` to `~1.4.3`. npm published `@types/bun` 1.4.3 on 2026-10-12. `bun.lock` changes `@types/bun` from `1.4.2` to `1.4.3`, and `bun-types` from `1.4.2` to `1.4.3`. `bun-types` 1.4.3 adds the dependency `undici-types` `*`. `bun.lock` already held `undici-types` `8.9.0` through `@types/node`, so no package is added. Licence: MIT for both. Reason: T366 kept `~1.4.2` only until npm had `@types/bun` 1.4.3. Reviewer: the main session reviews the diff. Findings: `build:notices` writes a byte-identical `notices.json` with 209 entries, because no shipped package changes. Checks that ran again: `bun install --frozen-lockfile`, `bun run typecheck`, `bun run build:notices`, `bun test tests/git/bun-runner.test.ts`, and `bun test tests/contracts/notices.test.ts`.
 - T366 close, 2026-10-13: the user decided that the T149 full run on main `e951ad2` on 2026-10-13 satisfies the clause "Full run 4 runs on Bun 1.4.3". The run numbering changed after T366 was written. The run used `bun test v1.4.3 (c6da4a4d3)`. `test:all` on Ubuntu-26.04 with 6 workers ran 136 files and 4,774 tests with 0 failures. Every ORIGIN line is under `C:\Projects\arbareto\`. The Ubuntu-24.04 registration file gave 38 pass and 4 skip. `test:windows` gave 107 pass, 4 skip, and 0 fail. `cargo test` gave 435 passed and 4 ignored. `cargo clippy -D warnings` and `cargo fmt --check` passed. The `drafts.ts` and `close.rs` control mutations turned red, then green again. The `@types/bun` record above closes the last clause.
+- T390 Bun 1.4.4 move, 2026-10-23: the exact Bun pin moves from `1.4.3` (commit `c6da4a4d3010e5553438c60f6bd76d981976867c`) to `1.4.4`. The tag `bun-v1.4.4` points at commit `38afee6c84fcf48c0edb2466aa4b27d287a59c30`, released 2026-10-22. The release `SHASUMS256.txt` and the GitHub asset digests agree: `bun-windows-x64.zip` SHA-256 `cd2c0fccc78f3ede1f50ca827a15f063eda13d4d150a3d0674f4f6e323d864a5`, `bun-linux-x64.zip` SHA-256 `bf8ccbfb2b0b80159e0f9a6d15c55317add8077534dbc6130a3edb52fccb395c`. `@types/bun` moves from `~1.4.3` to `~1.4.4`. npm published `@types/bun` 1.4.4 on 2026-10-23. `bun.lock` changes `@types/bun` and `bun-types` from `1.4.3` to `1.4.4`, and it adds no package. `bun-types` 1.4.4 types `resourceUsage().cpuTime` as `bigint`. Bun 1.4.4 also writes `"trustedDependencies": []` into `bun.lock`, and Bun 1.4.3 does not. A `bun install --frozen-lockfile` passes with each lock form on each version. With Bun 1.4.4, the empty list still blocks the `cpu-features` build. Licence: MIT plus linked-component obligations. `third-party-licenses/runtime/bun@1.4.4/LICENSE.md` replaces the `bun@1.4.3` folder, SHA-256 `362fe32c954ec829240bd7429c53d705eef08c6bfa45ffc2d02005f857cba4dd`. Source: https://raw.githubusercontent.com/oven-sh/bun/38afee6c84fcf48c0edb2466aa4b27d287a59c30/LICENSE.md. The file adds rows for `bun lint` and `bun fmt`. They port ESLint, typescript-eslint, oxlint, Prettier, `oxc_formatter`, and other packages under MIT, BSD, ISC, and Apache-2.0. The new Apache-2.0 sources are `eslint/rewrite`, `google/diff-match-patch`, `jhchen/fast-diff`, `A11yance/aria-query`, the trivago and IanVS sort-imports plugins, and the TypeScript 5.9 `organizeImports.ts` (`src/format/js/sort_imports/organize.rs:1-2`). No `NOTICE`, `NOTICE.txt`, or `NOTICE.md` file occurs in the default-branch history of these repositories (GitHub API `commits?path=`). TypeScript `v5.9.3` has only `LICENSE.txt` and `ThirdPartyNoticeText.txt`. So no new NOTICE ships. Bun still pins typescript-go `2bd066d87f5bafd315be9f40889d0a60b9e58e0b` (`test/cli/check/typescript-go/version.json`). So `typescript-go-NOTICE.txt` stays unchanged, SHA-256 `f5c708b59114507b8b27b48181b6883d106bbca0c1634bbee45b5e344237b66b`. Finding: Bun 1.4.4 checks simdutf at process entry (R7). With `SIMDUTF_FORCE_IMPLEMENTATION=bogus`, the compiled service exits with code 134. Bun 1.4.3 links the same simdutf file (WebKit `0c06faadf65bf8e8c8ad3a5a8aca83e1e9ed653f`, blob `d60c376fe567abf9acb89a506d04c5631371c956`). With the same value, Bun 1.4.3 gave `false` from `isUtf8` and `isAscii` and an empty `TextDecoder` result, without an error. The T366 record did not list this name. The shell now removes it. Reviewer: the main session reviews the diff.
+- T390 live checks, 2026-10-23, Bun 1.4.4 (revision `38afee6c84fcf48c0edb2466aa4b27d287a59c30`) on Windows. Probes: `tests/windows/probe-bun-runtime.ts` (checks 1, 4, 5, and 6) and `tests/git/probe-bun-watch.ts` (checks 2 and 3). Check 1 passes: the compiled service gets both `BUN_BYTECODE_*` variables and a closed stdin, exits 0, and writes both files (order file 3 bytes, digest file 0 bytes). Check 2 passes: after the removal of the watched directory, 1001 `rename` events come in 2000 ms, 501 of them in the second half, with no `error` event. The overflow gives one `change` event with a `null` name. Check 3 passes on Ubuntu-26.04 with the Linux Bun 1.4.4, 3 of 3 runs: `rename "sub/a.txt"`, `rename "sub"`, and `rename` with an `undefined` name, then silence, with no `error` event and no `null` name. Check 4 passes: `typeof resourceUsage().cpuTime.total` is `bigint`. Check 5 passes: `bun test ./a.test.ts` runs only `a.test.ts`, and the control `bun test a.test.ts` also runs `xa.test.ts`. `docs/test/discovery.mdx` is byte-identical at both commits. Check 6 passes: a Bun parent killed through `proc.kill()` exits 143, and its Bun child ends. Check 7 passes: with `BUN_BE_BUN=1`, the compiled service runs `check` and prints `TS2322` "Type 'number' is not assignable to type 'string'.". Its `fmt --check` reports an unformatted file. Bun 1.4.4 stores the TypeScript messages zstd-compressed (`src/sema/messages.rs:46`), so a text search of the binary does not find them. A scratch probe deleted a file through its 8.3 short name: Bun 1.4.3 and 1.4.4 both report the short name. Checks that ran again on Bun 1.4.4: `bun install --frozen-lockfile`, `bun run build`, `bun run build:service`, `bun run typecheck`, `bun run export:schemas --check`, `bun test ./tests/contracts ./tests/git/portable-imports.test.ts` (4,846 pass, 33 skip, 0 fail), `tests/git/bun-runner.test.ts`, `tests/git/external-changes.test.ts`, `tests/windows/installed-app.test.ts`, the `env_sanitize` tests of `cargo test --locked`, `cargo clippy --locked --all-targets -- -D warnings`, and `cargo fmt --check`. `build:notices` wrote 209 entries. Control: with the new name only in the test list, two `env_sanitize` cases fail. Checks 2, 3, 5, and 6 pass, so the Bun 1.4.3 behaviour comments now name Bun 1.4.4.
 
 ## R11. Planning artifact checks
 

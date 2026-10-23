@@ -29,6 +29,8 @@ const TRUST_DIALOG_NAMES: usize = 20;
 const BRANCH_NAME_BYTES: usize = 255;
 /// Feature 004 data-model §1: a local branch lies under this prefix.
 const LOCAL_BRANCH_PREFIX: &str = "refs/heads/";
+/// Feature 006 contract Δ5: `src/contracts/limits.ts` `SPELLING_LANGUAGES`.
+const SPELLING_LANGUAGES: usize = 3;
 
 macro_rules! generated {
     ($($module:ident),*) => {
@@ -122,6 +124,14 @@ pub fn native_first(
             };
             payload["action"] == "worktree-add" && named && paths(payload, &["path"]).is_ok()
         }
+        // Feature 006 data-model §8: typify drops the item bound and the repeat rule of `languages`.
+        Some("setSpelling") => payload["languages"].as_array().is_some_and(|ids| {
+            ids.len() <= SPELLING_LANGUAGES
+                && ids
+                    .iter()
+                    .enumerate()
+                    .all(|(index, id)| !ids[..index].contains(id))
+        }),
         _ => true,
     };
     if fits {
@@ -293,6 +303,7 @@ pub fn progress(value: &Value) -> bool {
             ) => Some(&SYNC_COUNTERS),
             Some(P::StageFiles) => Some(&["fileIndex", "fileCount"]),
             Some(P::Config) => Some(&["keyIndex", "keyCount"]),
+            Some(P::Dictionary) => Some(&["received", "total"]),
             Some(
                 P::SwitchStash
                 | P::SwitchCheckout
@@ -1070,7 +1081,7 @@ mod tests {
     /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, sync review, sync, clone, branch, worktree, Git settings, and workbench results in `Response.result` and reads no field of them.
     /// The shell writes the settings result of the shell-only settings operations and never reads it.
     /// The same holds for the `chooseWorktreeFolder` result.
-    const NOT_READ: [&str; 32] = [
+    const NOT_READ: [&str; 37] = [
         "service-envelope",
         "open-recent-repository-result",
         "recent-repositories-result",
@@ -1104,6 +1115,12 @@ mod tests {
         "run-workbench-result",
         "choose-worktree-folder-result",
         "review-commit-result",
+        // Feature 006 contract Δ10. The shell writes the `openLicenceLink` result and never reads it.
+        "list-dictionaries-result",
+        "read-dictionary-result",
+        "dictionary-run-result",
+        "remove-dictionary-result",
+        "open-licence-link-result",
     ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
@@ -1219,9 +1236,10 @@ mod tests {
         // The `unlisted` hooks item of plan D14 adds 2 `confirm` vectors.
         // WP23 adds 2 `confirm` vectors for the `repository` action (contract Δ6).
         // T094 adds 3 `native-first-envelope` vectors for `chooseWorktreeFolder` (contract Δ3).
+        // Feature 006 T010 adds 11 `native-first-envelope` vectors and 2 `progress` vectors (contract Δ10).
         assert_eq!(
             checked,
-            if cfg!(windows) { 180 } else { 175 },
+            if cfg!(windows) { 193 } else { 188 },
             "shell-read vectors"
         );
     }

@@ -1,0 +1,5 @@
+{
+  "schema": "remove-dictionary-result",
+  "expected": "valid",
+  "text": "{\"language\":\"uk\",\"removed\":true}"
+}

@@ -931,6 +931,12 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     },
     openWorktree,
     revealPath,
+    // Feature 006 tasks.md T022 adds these handlers.
+    listDictionaries: undefined,
+    readDictionary: undefined,
+    downloadDictionary: undefined,
+    importDictionary: undefined,
+    removeDictionary: undefined,
   };
 
   function receiveHandshake(frame: Fields) {

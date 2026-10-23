@@ -6,6 +6,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { NativeFirstEnvelope, validateRequest } from "../../src/contracts/envelope";
+import { DICTIONARY_UNAVAILABLE_REASONS } from "../../src/contracts/errors";
 import { EXPORTED } from "../../src/contracts/export-schemas";
 import { decodeStrictJson } from "../../src/contracts/strict-json";
 
@@ -153,6 +154,24 @@ describe("golden vectors", () => {
     expect(actions("review-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "rebase", "ignore", "config-save", "untracked-in-way"]));
     expect(actions("run-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "ignore", "rebase", "config-save"]));
     for (const schema of ["review-workbench-result", "run-workbench-result", "read-branches-result", "read-worktrees-result", "read-git-settings-result", "review-commit-result"]) for (const kind of ["valid", "invalid"]) expect({ schema, kind, count: texts(kind, schema).length > 0 }).toEqual({ schema, kind, count: true });
+  });
+
+  // Feature 006 contract Δ10: vectors for each new operation, the code, every reason, the phase, `spelling` in `readSyncSettings`, and the shell setting.
+  test("each feature 006 operation, reason, phase, result, and the spelling setting has its vectors", () => {
+    const texts = (kind: string, schema: string) => vectors.filter((v) => v.kind === kind && v.vector.schema === schema).map(({ vector }) => JSON.parse(vector.text) as Record<string, unknown>);
+    const operations = (kind: string, schema: string) => texts(kind, schema).map((t) => t.operation);
+    const service = ["listDictionaries", "readDictionary", "downloadDictionary", "importDictionary", "removeDictionary"];
+    expect(operations("valid", "renderer-envelope")).toEqual(expect.arrayContaining([...service, "setSpelling", "openLicenceLink"]));
+    expect(operations("valid", "service-envelope")).toEqual(expect.arrayContaining(service));
+    expect(operations("invalid", "service-envelope")).toEqual(expect.arrayContaining(["readDictionary", "importDictionary", "setSpelling", "openLicenceLink"]));
+    for (const kind of ["valid", "invalid"]) expect(operations(kind, "native-first-envelope")).toEqual(expect.arrayContaining(["importDictionary", "setSpelling", "openLicenceLink"]));
+    expect(texts("valid", "response").map((t) => t.code)).toContain("DICTIONARY_UNAVAILABLE");
+    const results = ["list-dictionaries-result", "read-dictionary-result", "dictionary-run-result", "remove-dictionary-result", "open-licence-link-result"];
+    const reasons = new Set(results.flatMap((schema) => texts("valid", schema).map((t) => t.reason)));
+    for (const reason of DICTIONARY_UNAVAILABLE_REASONS) expect({ reason, vector: reasons.has(reason) }).toEqual({ reason, vector: true });
+    for (const kind of ["valid", "invalid"]) expect(texts(kind, "progress").map((t) => t.phase)).toContain("dictionary");
+    for (const schema of results) for (const kind of ["valid", "invalid"]) expect({ schema, kind, count: texts(kind, schema).length > 0 }).toEqual({ schema, kind, count: true });
+    for (const kind of ["valid", "invalid"]) expect(texts(kind, "sync-settings-result").some((t) => "spelling" in t)).toBe(true);
   });
 
   const faulted = vectors.filter(({ kind, vector }) => kind === "invalid" && FAULT_SCHEMAS.includes(vector.schema));

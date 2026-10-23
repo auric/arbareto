@@ -118,6 +118,14 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
   revealPath: { renderer: () => ({ repositoryId: id(), entryId: id() }), service: () => ({ repositoryId: id(), entryId: id() }) },
   setSwitchChoice: { renderer: () => ({ choice: "stash" }) },
   chooseWorktreeFolder: { renderer: () => ({ repositoryId: id() }) },
+  // Feature 006 contract Δ1 and Δ3.
+  listDictionaries: { renderer: () => ({}), service: () => ({}) },
+  readDictionary: { renderer: () => ({ language: "uk", file: "index.dic", offset: 0 }), service: () => ({ language: "uk", file: "index.dic", offset: 0 }) },
+  downloadDictionary: { renderer: () => ({ language: "uk" }), service: () => ({ language: "uk" }) },
+  importDictionary: { renderer: () => ({ language: "uk" }), service: () => ({ language: "uk", folder: CLONE_DESTINATION }) },
+  removeDictionary: { renderer: () => ({ language: "uk" }), service: () => ({ language: "uk" }) },
+  setSpelling: { renderer: () => ({ enabled: true, languages: ["en", "uk"] }) },
+  openLicenceLink: { renderer: () => ({ language: "en" }) },
 };
 
 const NAMES = Object.keys(PAYLOADS);
@@ -207,9 +215,9 @@ const sidesOf = (name: string) =>
 
 describe("operation list", () => {
   // Feature 002 plan.md P7 retires the contract §3 `readHistory`.
-  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, and the 10 feature 004 contract Δ1 operations", () => {
+  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, the 10 feature 004 contract Δ1 operations, and the 7 feature 006 contract Δ1 operations", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(51);
+    expect(OPERATIONS.length).toBe(58);
   });
 
   for (const name of NAMES) {

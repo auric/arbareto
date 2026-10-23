@@ -1,0 +1,6 @@
+{
+  "schema": "dictionary-run-result",
+  "expected": "valid",
+  "platform": "windows",
+  "text": "{\"reason\":\"save\",\"folder\":\"C:\\\\Users\\\\u\\\\AppData\\\\Local\\\\Programs\\\\Arbareto\\\\dictionaries\\\\uk\"}"
+}

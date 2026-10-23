@@ -1,0 +1,5 @@
+{
+  "schema": "dictionary-run-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"busy\"}"
+}

@@ -202,7 +202,6 @@
     "tests/git/hunk-unstage.test.ts",
     "tests/git/identity.test.ts",
     "tests/git/ignore-editor.test.ts",
-    "tests/git/ignore.test.ts",
     "tests/git/index-lock.test.ts",
     "tests/git/line-stage.test.ts",
     "tests/git/mark-resolved.test.ts",

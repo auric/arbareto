@@ -54,12 +54,10 @@ import { ChannelPath, Identifier, isIdentifier, Text } from "../contracts/operat
 import wslProcess from "../contracts/wsl-process.json";
 import { routeWslPath, wslUnitName } from "../contracts/wsl-route";
 import { configGlobalPathArgs, configSystemPathArgs } from "./commands";
-import type { FileAppendReply, FileAppendRequest } from "./ignore";
 import type { Workspace } from "./registration";
 
 export { isChannelPath } from "../contracts/operations";
 export type { FileFact, FileIdentity, IdentityReply, MarkerFailure, MutationStarted, ProcessContext, ResolveGitRequest, TrustRecord, TrustRequest, WslDistrosCall, WslDistrosResult, WslIdentity };
-export type { FileAppendReply, FileAppendRequest };
 
 // Contract §6 "Channel frames" `register`: the Git form, the repository form, or the WSL form (§11).
 export type RegisterRequest = RegisterRequestBase | RegisterWslCall;
@@ -183,8 +181,6 @@ export interface GitRunner {
   resolved(markerId: string): void;
   // Only `revoke` can end with the deadline.
   trust(request: TrustRequest): Promise<TrustReply | WalkDeadline>;
-  // Feature 004 contract Δ6 `fileAppend`: a walk without a deadline form, so the shell gives `error` past its deadline. A `refused` frame throws RunnerRefusal.
-  fileAppend(request: FileAppendRequest, signal: AbortSignal): Promise<FileAppendReply | WalkStop>;
   // Feature 004 contract Δ3 `revealPath`: a walk. The shell refuses each failure with UNKNOWN_TARGET, so a `refused` frame throws RunnerRefusal.
   // Feature 005 contract Δ6: a walk that finds no entry replies `absent`.
   reveal(request: RevealRequest, signal: AbortSignal): Promise<"shown" | "absent" | WalkStop>;
@@ -514,7 +510,7 @@ export function checkTrust(request: TrustRequest): void {
 }
 
 // Feature 003 and feature 004 contract Δ6. The `type` literal selects the frame schema. A request that holds `type` or `callId` breaks the field set.
-export function checkSyncRequest(type: "pageant" | "destinationFacts" | "terminal" | "fileAppend" | "reveal" | "fileDelete" | "fileReplace" | "shadow", request: object): void {
+export function checkSyncRequest(type: "pageant" | "destinationFacts" | "terminal" | "reveal" | "fileDelete" | "fileReplace" | "shadow", request: object): void {
   const valid = typeof request === "object" && request !== null && !("type" in request) && !("callId" in request);
   if (!valid || !fits(ProcessRequest, { type, callId: crypto.randomUUID(), ...request })) refuse(type);
 }

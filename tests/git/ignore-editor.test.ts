@@ -8,16 +8,19 @@ import { describe, expect } from "bun:test";
 import { existsSync, lstatSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { ReadIgnoreFileResult, ReviewWorkbenchResult, RunWorkbenchResult } from "../../src/contracts/envelope";
+import { ignoreLine } from "../../src/contracts/ignore-line";
 import { PUBLIC_REQUEST_BYTES } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
 import { buildConflicted, buildIgnoreForm, buildLinkedWorktree, faGit, type FaFixture, type IgnoreForm } from "./file-actions-fixtures";
-import { useFixtureRoot } from "./fixture-root";
+import { fixtureEnv, useFixtureRoot } from "./fixture-root";
+import { fixtureGitPath } from "./git-binary";
 import { workingFileDigests } from "./git-oracle";
 import { gitPath, outcome, readOk, SUCCEEDED, subcommand, until, withService } from "./hunk-harness";
 import { caseTest, type Capability, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 import { canary } from "./workbench-fixtures";
 
 for (const module of ["ignore", "ignore-text", "workbench-review", "native-runner", "session"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
+printOrigin("../../src/contracts/ignore-line.ts", import.meta.dir);
 useFixtureRoot();
 
 const TASK = "T033";
@@ -297,6 +300,84 @@ describe("ignore-save (plan.md D10, contract Δ3 and Δ6)", () => {
       }
       expect(outcome(await service.response(requestId))).toEqual(SUCCEEDED);
       expect(readFileSync(join(f.repo, ".gitignore"), "utf8")).toBe("/a/\n");
+    }),
+    TIMEOUT_MS,
+  );
+});
+
+// Feature 004 T026 line cases that hold for the editor (spec FR-034, 004 FR-046). `git check-ignore` and the file bytes are the oracle.
+describe("the 004 line in the saved text (spec FR-034, 004 FR-046 and plan.md D9)", () => {
+  const LINE_TASK = "T057";
+
+  // The editor text after "Add to .gitignore…": an LF first when the text does not end with one, then the line and LF (src/frontend/state/workbench.ts `addLine`).
+  function withLine(text: string, path: string, folder = false): { line: string; text: string } {
+    const line = ignoreLine(Buffer.from(path), folder);
+    if (!line.ok) throw new Error(`ignoreLine refused ${path}: ${line.reason}`);
+    return { line: line.line, text: `${text === "" || text.endsWith("\n") ? text : `${text}\n`}${line.line}\n` };
+  }
+
+  // git-check-ignore(1) `-v -z`: exit 0 and `<source> NUL <line> NUL <pattern> NUL <path> NUL` for an ignored path, exit 1 for none.
+  function checkIgnore(repo: string, path: string): { exit: number; pattern?: string; source?: string } {
+    const result = Bun.spawnSync([fixtureGitPath(gitPath()), "--no-optional-locks", "check-ignore", "-v", "-z", "--no-index", "--stdin"], { cwd: repo, env: fixtureEnv(), stdin: Buffer.from(`${path}\0`), stdout: "pipe", stderr: "pipe" });
+    const [source, , pattern] = result.stdout.toString("utf8").split("\0");
+    return { exit: result.exitCode ?? -1, ...(result.exitCode === 0 ? { pattern, source } : {}) };
+  }
+
+  async function saveLine(service: Service, r: RegistrationResult, target: "gitignore" | "exclude", path: string, folder = false): Promise<string> {
+    const read = await readIgnore(service, r, target);
+    expect(outcome(read)).toEqual(SUCCEEDED);
+    const added = withLine(read.result!.text, path, folder);
+    const response = await save(service, r, target, added.text, read.result!.expected);
+    expect({ path, ...outcome(response), result: response.result }).toEqual({ path, ...SUCCEEDED, result: { action: "ignore-save", outcome: "replaced" } });
+    return added.line;
+  }
+
+  caseTest(LINE_TASK, "a file and a folder go into the root .gitignore with the anchored line and LF, check-ignore matches each path, and the fresh status leaves them out", SHELL, () =>
+    withService({ name: "t057-gitignore" }, async (service) => {
+      const f = form("absent");
+      const r = await service.register(f.repo);
+      expect(await saveLine(service, r, "gitignore", "a.log")).toBe("/a.log");
+      expect(readFileSync(join(f.repo, ".gitignore"), "latin1")).toBe("/a.log\n");
+      expect(checkIgnore(f.repo, "a.log")).toEqual({ exit: 0, pattern: "/a.log", source: ".gitignore" });
+      expect(await saveLine(service, r, "gitignore", "out", true)).toBe("/out/");
+      expect(readFileSync(join(f.repo, ".gitignore"), "latin1")).toBe("/a.log\n/out/\n");
+      expect(checkIgnore(f.repo, "out/x.txt")).toEqual({ exit: 0, pattern: "/out/", source: ".gitignore" });
+      const fresh = await readOk(service, r.repositoryId);
+      expect(fresh.entries.filter((e) => e.path === "a.log" || e.path.startsWith("out/"))).toEqual([]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(LINE_TASK, "a text without a final LF gets one LF before the line; a name with [ and a name with *, ?, and trailing spaces get backslash escapes that check-ignore matches", SHELL, () =>
+    withService({ name: "t057-escapes" }, async (service) => {
+      const f = form("none");
+      writeFileSync(join(f.repo, "br[ack]et.txt"), "bracket\n");
+      const r = await service.register(f.repo);
+      expect(await saveLine(service, r, "gitignore", "br[ack]et.txt")).toBe("/br\\[ack]et.txt");
+      expect(readFileSync(join(f.repo, ".gitignore"), "latin1")).toBe("*.log\n/br\\[ack]et.txt\n");
+      expect(checkIgnore(f.repo, "br[ack]et.txt")).toEqual({ exit: 0, pattern: "/br\\[ack]et.txt", source: ".gitignore" });
+      expect((await readOk(service, r.repositoryId)).entries.some((e) => e.path === "br[ack]et.txt")).toBe(false);
+      // NTFS cannot hold this name. check-ignore --no-index matches the path text alone.
+      const odd = "odd/a*b?c  ";
+      expect(await saveLine(service, r, "gitignore", odd)).toBe("/odd/a\\*b\\?c\\ \\ ");
+      expect(checkIgnore(f.repo, odd)).toEqual({ exit: 0, pattern: "/odd/a\\*b\\?c\\ \\ ", source: ".gitignore" });
+      // Without the escapes, `*` and `?` would match this name too.
+      expect(checkIgnore(f.repo, "odd/aXbYc  ")).toEqual({ exit: 1 });
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(LINE_TASK, "info/exclude takes the line at the path that Git names; in a linked worktree that is the file of the common folder, and check-ignore and the fresh status there honor it", SHELL, () =>
+    withService({ name: "t057-exclude" }, async (service) => {
+      const f = buildLinkedWorktree(gitPath(), `t057-linked-${++builds}`);
+      const exclude = join(f.repo, ".git", "info", "exclude");
+      const before = existsSync(exclude) ? readFileSync(exclude, "latin1") : "";
+      writeFileSync(join(f.linked, "linked-only.txt"), "linked\n");
+      const r = await service.register(f.linked);
+      expect(await saveLine(service, r, "exclude", "linked-only.txt")).toBe("/linked-only.txt");
+      expect(readFileSync(exclude, "latin1")).toBe(`${before}${before === "" || before.endsWith("\n") ? "" : "\n"}/linked-only.txt\n`);
+      expect(checkIgnore(f.linked, "linked-only.txt").exit).toBe(0);
+      expect((await readOk(service, r.repositoryId)).entries.some((e) => e.path === "linked-only.txt")).toBe(false);
     }),
     TIMEOUT_MS,
   );

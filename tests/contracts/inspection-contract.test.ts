@@ -120,11 +120,15 @@ describe("contract Δ9 codes", () => {
     expect([...(E.UNKNOWN_TARGET_REASONS ?? [])]).toEqual(["absent"]);
   });
 
-  test("WORKBENCH_UNAVAILABLE adds the feature 005 reasons and keeps the 004 ignore reasons until T057", () => {
+  test("WORKBENCH_UNAVAILABLE adds the feature 005 reasons, keeps the other 004 ignore reasons, and removes ignore-exists and ignore-not-text (T057)", () => {
     const added = ["conflicted", "submodule", "nested-repository", "no-recycle-bin", "long-path", "nothing-to-delete", "ignore-link", "ignore-folder", "ignore-not-utf8", "ignore-nul", "mixed-line-endings"];
-    const kept = ["ignore-not-regular", "ignore-size", "limit", "path", "unreadable", "ignore-exists", "ignore-not-text"];
+    const kept = ["ignore-not-regular", "ignore-size", "limit", "path", "unreadable"];
     expect(errors.WORKBENCH_UNAVAILABLE_REASONS).toEqual(expect.arrayContaining([...added, ...kept] as never[]));
     expect(new Set(errors.WORKBENCH_UNAVAILABLE_REASONS).size).toBe(errors.WORKBENCH_UNAVAILABLE_REASONS.length);
+    for (const reason of ["ignore-exists", "ignore-not-text"]) {
+      expect(errors.WORKBENCH_UNAVAILABLE_REASONS).not.toContain(reason as never);
+      expect(ok(envelope.ReviewWorkbenchResult, { reason })).toBe(false);
+    }
   });
 
   test("a response carries each new code", () => {
@@ -285,9 +289,16 @@ describe("contract Δ3 payloads", () => {
       }
     });
 
-    test("the 004 ignore action stays until T057", () => {
-      expect(review({ action: "ignore", snapshotId: id(), entryId: id(), target: "gitignore" })).toBe("ok");
-      expect(channel.WORKBENCH_ACTIONS).toEqual(expect.arrayContaining(["ignore", "delete", "ignore-save"]));
+    test("the 004 ignore action gives INVALID_REQUEST, and its plan and run results go (T057)", () => {
+      for (const side of ["renderer", "service"] as const) {
+        expect(review({ action: "ignore", snapshotId: id(), entryId: id(), target: "gitignore" }, side)).toBe("INVALID_REQUEST");
+        expect(review({ action: "ignore", snapshotId: id(), entryId: id(), target: "exclude", folder: b64("logs") }, side)).toBe("INVALID_REQUEST");
+      }
+      expect(channel.WORKBENCH_ACTIONS).toEqual(expect.arrayContaining(["delete", "ignore-save"]));
+      expect(channel.WORKBENCH_ACTIONS).not.toContain("ignore" as never);
+      const plan = { target: "gitignore", path: b64("top-new.txt"), folder: false, line: "/top-new.txt", prefixNewline: false, expected: "absent" };
+      expect(ok(envelope.ReviewWorkbenchResult, { action: "ignore", plan, workbenchToken: id() })).toBe(false);
+      for (const result of [{ action: "ignore" }, { action: "ignore", reason: "ignore-not-regular" }]) expect(ok(envelope.RunWorkbenchResult, result)).toBe(false);
     });
   });
 
@@ -648,10 +659,11 @@ describe("contract Δ6 private requests", () => {
     expect(ok(channel.ProcessRequest, req({ target: "attributes" }))).toBe(false);
   });
 
-  test("shadow takes op create, and fileAppend stays until T057", () => {
+  test("shadow takes op create, and fileAppend goes (T057)", () => {
     expect(ok(channel.ProcessRequest, { type: "shadow", ...call, op: "create" })).toBe(true);
     expect(ok(channel.ProcessRequest, { type: "shadow", ...call, op: "remove" })).toBe(false);
-    expect(ok(channel.ProcessRequest, { type: "fileAppend", ...call, target: "gitignore", path: abs(".gitignore"), expected: "absent", bytes: b64("/x\n") })).toBe(true);
+    expect(ok(channel.ProcessRequest, { type: "fileAppend", ...call, target: "gitignore", path: abs(".gitignore"), expected: "absent", bytes: b64("/x\n") })).toBe(false);
+    expect(P.FileAppendReply).toBeUndefined();
   });
 
   test("the ignorePreview run context names the Git, the shadow, the repository s or c, and the index", () => {
@@ -707,6 +719,8 @@ describe("contract Δ6 private requests", () => {
     expect(reply({ type: "fileReplace", result: "refused", reason: "not-regular" })).toBe(true);
     expect(reply({ type: "fileReplace", result: "error", code: "access-denied" })).toBe(true);
     expect(reply({ type: "fileReplace", result: "appended" })).toBe(false);
+    // T057: the 004 `fileAppend` replies go.
+    for (const value of [{ result: "appended" }, { result: "stopped" }, { result: "refused", reason: "not-regular" }, { result: "error", code: "io-error" }]) expect(reply({ type: "fileAppend", ...value })).toBe(false);
     expect(reply({ type: "shadow", shadowId: id() })).toBe(true);
     expect(reply({ type: "shadow", result: "error", code: "other-error" })).toBe(true);
     expect(reply({ type: "shadow", shadowId: "s1" })).toBe(false);
@@ -715,10 +729,11 @@ describe("contract Δ6 private requests", () => {
     expect(reply({ type: "reveal", result: "missing" })).toBe(false);
   });
 
-  test("a workbench marker names delete-files, ignore-save-gitignore, or ignore-save-exclude, and the 004 ignore actions stay until T057", () => {
+  test("a workbench marker names delete-files, ignore-save-gitignore, or ignore-save-exclude, and the 004 ignore actions go (T057)", () => {
     const started = { type: "started", callId: id(), operationId: id(), repositoryId: id(), kind: "workbench", worktreeRoot: REPO, commonDirectory: `${REPO}${SEP}.git` };
-    for (const action of ["delete-files", "ignore-save-gitignore", "ignore-save-exclude", "ignore-gitignore", "ignore-exclude"]) expect(ok(channel.MutationRequest, { ...started, action })).toBe(true);
-    expect(ok(channel.MutationRequest, { ...started, action: "delete" })).toBe(false);
-    expect(P.WORKBENCH_STARTED_ACTIONS).toEqual(expect.arrayContaining(["delete-files", "ignore-save-gitignore", "ignore-save-exclude", "ignore-gitignore", "ignore-exclude"]));
+    for (const action of ["delete-files", "ignore-save-gitignore", "ignore-save-exclude"]) expect(ok(channel.MutationRequest, { ...started, action })).toBe(true);
+    for (const action of ["delete", "ignore-gitignore", "ignore-exclude"]) expect(ok(channel.MutationRequest, { ...started, action })).toBe(false);
+    expect(P.WORKBENCH_STARTED_ACTIONS).toEqual(expect.arrayContaining(["delete-files", "ignore-save-gitignore", "ignore-save-exclude"]));
+    for (const action of ["ignore-gitignore", "ignore-exclude"]) expect(P.WORKBENCH_STARTED_ACTIONS).not.toContain(action);
   });
 });

@@ -125,8 +125,6 @@ export const WORKBENCH_UNAVAILABLE_REASONS = [
   "multi-value",
   "limit",
   "push-current-only",
-  "ignore-exists",
-  "ignore-not-text",
   "ignore-not-regular",
   "ignore-size",
   "path",
@@ -142,7 +140,7 @@ export const WORKBENCH_UNAVAILABLE_REASONS = [
   "config-in-include",
   "included",
   "unreadable-value",
-  // Feature 005 contract Δ9. T057 removes `ignore-exists` and `ignore-not-text`.
+  // Feature 005 contract Δ9.
   "conflicted",
   "submodule",
   "nested-repository",

@@ -258,7 +258,7 @@ const refUnder = (...prefixes: string[]) => Text.refine((ref) => prefixes.some((
 const LocalRef = refUnder("refs/heads/");
 const RemoteRef = refUnder("refs/remotes/");
 const BranchRef = refUnder("refs/heads/", "refs/remotes/");
-// Contract Δ3 `choose-side`, `mergetool`, and `ignore` name an entry of the shown snapshot.
+// Contract Δ3 `choose-side` and `mergetool` name an entry of the shown snapshot.
 const shownEntry = { snapshotId: Identifier, entryId: Identifier };
 // Contract Δ5 "Config changes per Save". It is no output bound, so `limits.ts` does not list it.
 const CONFIG_CHANGES = 32;
@@ -319,8 +319,6 @@ const reviewWorkbench = <A extends z.ZodObject>(add: A) =>
     z.strictObject({ action: z.literal("rebase"), ref: BranchRef, autostash: z.boolean(), autosquash: z.boolean() }).meta({ title: "ReviewRebase" }),
     z.strictObject({ action: z.literal("choose-side"), ...shownEntry, side: z.enum(["ours", "theirs"]) }).meta({ title: "ReviewChooseSide" }),
     z.strictObject({ action: z.literal("mergetool"), ...shownEntry }).meta({ title: "ReviewMergetool" }),
-    // Data-model §7: `folder` holds the path bytes of an Untracked folder row above the entry, in base64.
-    z.strictObject({ action: z.literal("ignore"), ...shownEntry, target: z.enum(["gitignore", "exclude"]), folder: z.base64().min(1).optional() }).meta({ title: "ReviewIgnore" }),
     add,
     // Contract Δ11: the record path of a WSL repository is a Linux path, so the service matches the text with a fresh list.
     z.strictObject({ action: z.literal("worktree-remove"), worktree: Text.min(1), force: z.boolean(), deleteBranch: z.boolean() }).meta({ title: "ReviewWorktreeRemove" }),
@@ -1436,17 +1434,6 @@ const RebasePlan = z
     autosquash: z.literal(false),
   })
   .meta({ title: "RebasePlan" });
-// Data-model §7. `path` holds the path bytes in base64.
-const IgnorePlan = z
-  .strictObject({
-    target: z.enum(["gitignore", "exclude"]),
-    path: z.base64().min(1),
-    folder: z.boolean(),
-    line: Text.min(1),
-    prefixNewline: z.boolean(),
-    expected: z.union([z.literal("absent"), z.strictObject({ size: Count, sha256: Fingerprint }).meta({ title: "IgnoreExpected" })]),
-  })
-  .meta({ title: "IgnorePlan" });
 // Plan.md D10. `path` is the bound path in Git's form for the route (contract Δ6).
 const WorktreeAddPlan = z
   .strictObject({
@@ -1547,7 +1534,6 @@ export const ReviewWorkbenchResult = z
       reviewed("delete-branch", DeleteBranchPlan, "DeleteBranchReviewed"),
       reviewed("merge", MergePlan, "MergeReviewed"),
       reviewed("rebase", RebasePlan, "RebaseReviewed"),
-      reviewed("ignore", IgnorePlan, "IgnoreReviewed"),
       reviewed("worktree-add", WorktreeAddPlan, "WorktreeAddReviewed"),
       reviewed("worktree-remove", WorktreeRemovePlan, "WorktreeRemoveReviewed"),
       reviewed("worktree-prune", WorktreePrunePlan, "WorktreePruneReviewed"),
@@ -1725,7 +1711,7 @@ const STASH_STATES = ["dropped", ...STASH_KEPT_REASONS.map((reason) => `kept-${r
 const BRANCH_ACTIONS = ["create-branch", "rename-branch", "delete-branch"] as const;
 const WORKTREE_ACTIONS = ["worktree-add", "worktree-remove", "worktree-prune"] as const;
 const RESOLVE_ACTIONS = ["choose-side", "mergetool"] as const;
-const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", "ignore", ...WORKTREE_ACTIONS, ...RESOLVE_ACTIONS, "config-save", "delete", "ignore-save"] as const;
+const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", ...WORKTREE_ACTIONS, ...RESOLVE_ACTIONS, "config-save", "delete", "ignore-save"] as const;
 // Data-model §5: the outcome of each path and each candidate folder. Only `error` carries `code`, and only `recycled` carries `recycledPath`.
 const DeleteFileOutcome = z
   .strictObject({
@@ -1770,7 +1756,6 @@ export const RunWorkbenchResult = z
         outputTail: OutputTail.optional(),
       })
       .meta({ title: "MergeRebaseRun" }),
-    z.strictObject({ action: z.literal("ignore"), reason: z.literal("ignore-not-regular").optional() }).meta({ title: "IgnoreRun" }),
     z.strictObject({ action: z.enum(WORKTREE_ACTIONS), head: Head, refs: RefChanges, outputTail: OutputTail.optional() }).meta({ title: "WorktreeRun" }),
     // Spec FR-096: `staged` comes from the fresh index read. It is true when the path has no stage above 0.
     z.strictObject({ action: z.enum(RESOLVE_ACTIONS), staged: z.boolean(), operationState: WorkspaceOperationState, outputTail: OutputTail.optional() }).meta({ title: "ResolveRun" }),

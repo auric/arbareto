@@ -364,7 +364,6 @@ pub mod reply {
 
     use super::{mutation_reply as m, process_reply as p, trust_reply as t, typed};
     use crate::bootstrap::PhysicalIdentity;
-    use crate::file_append::AppendResult;
     use crate::process_requests::{Destination, encode_base64};
     use crate::putty::Unavailable;
     use crate::settings::{hex, sha256};
@@ -801,36 +800,6 @@ pub mod reply {
                 type_: "pageant".into(),
             },
         ))
-    }
-
-    /// Feature 004 contract Δ6 `fileAppend`: `appended`, `stale`, `stopped`, `interrupted`, `refused` with `not-regular`, or `error` with a file fact code.
-    pub fn file_append(call_id: &str, appended: AppendResult) -> Value {
-        use p::FileAppendGroup as G;
-        use p::FileAppendResultResult as R;
-        let type_ = "fileAppend".to_string();
-        let result = |result: R| G::Result {
-            call_id: field(call_id),
-            result,
-            type_: type_.clone(),
-        };
-        encode(p::ProcessReply::FileAppendGroup(match appended {
-            AppendResult::Appended => result(R::Appended),
-            AppendResult::Stale => result(R::Stale),
-            AppendResult::Stopped => result(R::Stopped),
-            AppendResult::Interrupted => result(R::Interrupted),
-            AppendResult::NotRegular => G::Refused {
-                call_id: field(call_id),
-                reason: p::FileAppendRefusedReason::NotRegular,
-                result: "refused".into(),
-                type_,
-            },
-            AppendResult::Error(code) => G::Error {
-                call_id: field(call_id),
-                code,
-                result: "error".into(),
-                type_,
-            },
-        }))
     }
 
     /// Feature 005 contract Δ6 `fileDelete`: one result per entry and per folder, in request order.
@@ -1309,6 +1278,8 @@ mod tests {
             // `ProcessRequests::dispatch` reads the `type` value, then its generated type (contract §6 "Channel frames").
             // Feature 003 contract Δ10: the `run`, `pageant`, `destinationFacts`, and `terminal` vectors check the generated type.
             // T030 and T031 add the handlers of the `clone` context and the new requests.
+            // Feature 005 contract Δ15: `dispatch` has no `fileAppend` branch, so its vector gets no check here.
+            // `process_requests::tests::a_file_append_frame_gets_invalid_request_and_writes_nothing` sends it through `dispatch`.
             "process-request" => match strict(text) {
                 Ok(value)
                     if matches!(
@@ -1337,11 +1308,7 @@ mod tests {
                         crate::file_facts::wsl_files_request(&value, &request).map(drop)
                     })
                     .map_err(|code| text_of(&code)),
-                // Feature 004 contract Δ6: the field rules of `ProcessRequests::dispatch` for `fileAppend` and `reveal`.
-                Ok(value) if value["type"] == "fileAppend" => typed(&value)
-                    .ok_or(INVALID)
-                    .and_then(|request| crate::file_append::parse(&request).map(drop))
-                    .map_err(|code| text_of(&code)),
+                // Feature 004 contract Δ6: the field rules of `ProcessRequests::dispatch` for `reveal`.
                 Ok(value) if value["type"] == "reveal" => typed::<process_request::Reveal>(&value)
                     .ok_or(INVALID)
                     .and_then(|request| path(&json!(request.path.as_str())).map(drop))
@@ -1395,6 +1362,7 @@ mod tests {
         // Feature 005 T002 adds 15 shell-read vectors. The batch 0 review adds the 5 `fileDelete`, 2 `shadow`, and 3 `ignorePreview` vectors.
         // T013 adds the 4 `fileReplace` vectors (valid present and absent, an over-bound size, and a relative path).
         // The WP3 review adds the `fileDelete` digest above 1 MiB.
+        // T057 removes the 2 `fileAppend` vectors from this check and adds the 2 `started` vectors of the 004 ignore actions.
         assert_eq!(
             checked,
             if cfg!(windows) { 210 } else { 205 },
@@ -2044,8 +2012,6 @@ mod tests {
             "choose-ours",
             "choose-theirs",
             "mergetool",
-            "ignore-gitignore",
-            "ignore-exclude",
             "worktree-add",
             "worktree-remove",
             "worktree-prune",
@@ -2075,56 +2041,35 @@ mod tests {
             json!({ "kind": "workbench", "action": "switch", "direction": "stage" }),
             json!({ "kind": "applyFiles" }),
             json!({ "kind": "applyFiles", "direction": "resolve" }),
+            // Feature 005 contract Δ2: the 004 ignore actions go.
+            json!({ "kind": "workbench", "action": "ignore-gitignore" }),
+            json!({ "kind": "workbench", "action": "ignore-exclude" }),
         ] {
             assert!(!started(fields.clone()), "{fields}");
         }
     }
 
-    /// Feature 004 contract Δ6: the `fileAppend` and `reveal` replies in their wire form.
+    /// Feature 004 contract Δ6: the `reveal` reply in its wire form. Feature 005 contract Δ15: the `fileAppend` reply goes.
     #[test]
-    fn the_file_append_and_reveal_replies_have_their_wire_form() {
-        use crate::file_append::AppendResult;
-        use process_reply::FileAppendErrorCode as E;
-        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/vectors/valid");
+    fn the_reveal_reply_has_its_wire_form_and_no_file_append_reply_parses() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/vectors");
         let vector = |name: &str| -> Value {
             let text = std::fs::read_to_string(root.join(name)).expect("vector file");
             let vector: Vector = serde_json::from_str(&text).expect("vector form");
             serde_json::from_str(&vector.text).expect("vector text")
         };
         let call = "0f0f0f0f-0000-4000-8000-000000000001";
-        for (built, expected) in [
-            (
-                reply::file_append(call, AppendResult::Appended),
-                vector("process-reply-file-append-appended.json"),
-            ),
-            (
-                reply::file_append(call, AppendResult::NotRegular),
-                vector("process-reply-file-append-refused.json"),
-            ),
-            (
-                reply::file_append(call, AppendResult::Stale),
-                json!({ "type": "fileAppend", "callId": call, "result": "stale" }),
-            ),
-            (
-                reply::file_append(call, AppendResult::Stopped),
-                vector("process-reply-file-append-stopped.json"),
-            ),
-            (
-                reply::file_append(call, AppendResult::Interrupted),
-                json!({ "type": "fileAppend", "callId": call, "result": "interrupted" }),
-            ),
-            (
-                reply::file_append(call, AppendResult::Error(E::SharingViolation)),
-                json!({ "type": "fileAppend", "callId": call, "result": "error", "code": "sharing-violation" }),
-            ),
-            (reply::reveal(call), vector("process-reply-reveal.json")),
-        ] {
-            assert_eq!(built, expected);
-            assert!(
-                typed::<process_reply::ProcessReply>(&built).is_some(),
-                "{built}"
-            );
-        }
+        let built = reply::reveal(call);
+        assert_eq!(built, vector("valid/process-reply-reveal.json"));
+        assert!(
+            typed::<process_reply::ProcessReply>(&built).is_some(),
+            "{built}"
+        );
+        let appended = vector("invalid/process-reply-file-append.json");
+        assert!(
+            typed::<process_reply::ProcessReply>(&appended).is_none(),
+            "{appended}"
+        );
     }
 
     /// Feature 004 contract Δ6: the `destinationFacts` reply to the `worktreeAdd` form carries `path`, and the clone reply none.

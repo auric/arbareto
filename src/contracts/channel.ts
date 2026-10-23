@@ -488,20 +488,6 @@ export const ProcessRequest = z.xor([
   ]).meta({ title: "PageantGroup" }),
   // The shell takes the Git path from `gitInstallationId` and the worktree root from `repositoryId`. A clone target has no repository.
   named("Terminal", z.strictObject({ type: z.literal("terminal"), ...call, operationId: Identifier, gitInstallationId: Identifier, repositoryId: Identifier.optional(), target: Text.min(1) })),
-  // Feature 004 contract Δ6. `expected` is `absent`, or the size and SHA-256 of the target (data-model §7).
-  named(
-    "FileAppend",
-    z.strictObject({
-      type: z.literal("fileAppend"),
-      ...call,
-      operationId: Identifier,
-      repositoryId: Identifier,
-      target: z.enum(["gitignore", "exclude"]),
-      path: ChannelPath,
-      expected: z.union([z.enum(["absent"]), z.strictObject({ size: Count, sha256: Fingerprint }).meta({ title: "FileAppendExpected" })]),
-      bytes: InlineInput,
-    }),
-  ),
   named("Reveal", z.strictObject({ type: z.literal("reveal"), ...call, operationId: Identifier, repositoryId: Identifier, path: ChannelPath })),
   // Feature 005 contract Δ6. The shell checks each path against the worktree root with `file_facts::below`.
   named(
@@ -702,14 +688,6 @@ export const TerminalReply = z.union([
 ]);
 // ---- Feature 004 contract Δ6 replies ----
 
-// `refused` names a reparse point or a non-regular file. `stale` names a size or SHA-256 other than `expected`.
-// Every request gets one reply, also after `cancel` or `closeJob`. `stopped`: the stop came before the write, so nothing was written.
-// `interrupted`: the stop came while a WSL `append` process could write, so the shell does not know whether it wrote.
-export const FileAppendReply = z.union([
-  z.strictObject({ type: z.literal("fileAppend"), ...call, result: z.enum(["appended", "stale", "stopped", "interrupted"]) }).meta({ title: "FileAppendResult" }),
-  z.strictObject({ type: z.literal("fileAppend"), ...call, result: z.literal("refused"), reason: z.enum(["not-regular"]) }).meta({ title: "FileAppendRefused" }),
-  z.strictObject({ type: z.literal("fileAppend"), ...call, result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "FileAppendError" }),
-]);
 // An error gives the `refused` frame with `UNKNOWN_TARGET` (contract Δ3 `revealPath`).
 export const RevealReply = z.strictObject({ type: z.literal("reveal"), ...call }).meta({ title: "RevealReply" });
 // ---- Feature 005 contract Δ6 replies ----
@@ -763,7 +741,6 @@ export const ProcessReply = z.xor([
   DestinationFactsReply.meta({ title: "DestinationFactsGroup" }),
   PageantReply.meta({ title: "PageantReplyGroup" }),
   TerminalReply.meta({ title: "TerminalGroup" }),
-  FileAppendReply.meta({ title: "FileAppendGroup" }),
   RevealReply,
   // Feature 005 contract Δ6. `RevealAbsent` stays a root branch, so the shell keeps its `RevealReply` type.
   RevealAbsentReply,
@@ -787,12 +764,11 @@ export const WORKBENCH_ACTIONS = [
   "rebase",
   "choose-side",
   "mergetool",
-  "ignore",
   "worktree-add",
   "worktree-remove",
   "worktree-prune",
   "config-save",
-  // Feature 005 contract Δ1. T057 removes `ignore`.
+  // Feature 005 contract Δ1.
   "delete",
   "ignore-save",
 ] as const;
@@ -807,13 +783,11 @@ export const WORKBENCH_STARTED_ACTIONS = [
   "choose-ours",
   "choose-theirs",
   "mergetool",
-  "ignore-gitignore",
-  "ignore-exclude",
   "worktree-add",
   "worktree-remove",
   "worktree-prune",
   "config-save",
-  // Feature 005 contract Δ2. T057 removes `ignore-gitignore` and `ignore-exclude`.
+  // Feature 005 contract Δ2.
   "delete-files",
   "ignore-save-gitignore",
   "ignore-save-exclude",

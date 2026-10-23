@@ -187,11 +187,21 @@ Each section names its source. Field names are contract names. "001 data-model �
 ## 16. Language fixture (SC-002)
 
 - Source: spec SC-002, Assumptions. `scripts/dictionary-catalog.ts`, `tests/gate/dictionary-gate.test.ts`, and `tests/windows/spelling-perf.test.ts` build it from the cached `index.aff` and `index.dic` of one language. The packaged test writes the words into the commit editor and reads the count text (plan D3).
-- Dictionary lines: the lines of `index.dic` after the first line. A stem is the text before the first `/` that no `\` precedes, the first TAB, or the first space. Flags follow the `/`, in the flag form that the `FLAG` line of `index.aff` names (hunspell(5): one character, `long`, `num`, or `UTF-8`).
-- Eligible stem: its flags hold none of the flags that `index.aff` names with `FORBIDDENWORD`, `NEEDAFFIX`, `PSEUDOROOT`, or `ONLYINCOMPOUND`; the stem is one §11 word with no skipped token.
-- Positive words: for i from 0 to 199, the first eligible stem at or after line ⌊i × (n − 1) / 199⌋ + 1 of the n dictionary lines. Each must pass Hunspell `testSpelling` after NFC.
-- Negative words: `qzxqzxqzx`, `xkcdqwvjz`, `zzqqxxjj`, `vvbbqqzz`, `jjqqxxzz`, and the first 5 positive words with `qzxqzx` appended. Each must fail `testSpelling`.
-- Result: `{language, positives, negatives, failedPositives, failedNegatives}`. A language passes with 0 failures. In the package, the count text must equal the number of negative words.
+- Rule source: hunspell(5) and the Hunspell source that `hunspell.wasm` builds (github.com/hunspell/hunspell `edb6191`, research R13 F16): `hashmgr.cxx` `load_tables`, `decode_flags`, and `parse_aliasf`, and `hunspell.cxx` `checkword` and `spell`.
+- Dictionary lines: the lines of `index.dic` after the first line, without a final empty line. Per line (`load_tables`):
+  - A morphological field starts at the first `:` that has a space or TAB three positions before it. The word ends before the white space run in front of that field. A TAB before that point ends the word first.
+  - The flags follow the first `/` that no `\` precedes. A `\/` stays in the word as `/`. A `/` at position 0 moves the split to position 1, as `load_tables` does.
+- Flag form (hunspell(5) "AFFIX FILE GENERAL OPTIONS", `FLAG`): a `FLAG` line that holds `long`, `num`, or `UTF-8` sets the form, and the last match wins. Default: each byte is one flag. `long`: each byte pair is one flag. `num`: decimal numbers split by commas. `UTF-8`: each UTF-16 unit is one flag.
+- Flag aliases (hunspell(5) `AF`): after the line `AF <count>`, the next `<count>` lines `AF <flag vector>` define the aliases 1 to `<count>`. With aliases, a dictionary flag field is the decimal number of one alias.
+- Refusing flags: the `FORBIDDENWORD` flag (the last definition), the `NEEDAFFIX` flag (else the `PSEUDOROOT` flag), the `ONLYINCOMPOUND` flag, and the `WARN` flag when `FORBIDWARN` is present. `checkword` and `spell` refuse a bare stem that carries one of them (hunspell(5) "AFFIX FILE OTHER OPTIONS", "OPTIONS FOR COMPOUNDING", and "AFFIX FILE OPTIONS FOR SUGGESTION"). hunspell(5) has no `COMPOUNDONLY` directive.
+- Eligible stem: no line of the same word carries a refusing flag, because Hunspell keeps each line as a homonym. The word holds no space or TAB (a phrase line). The word is one §11 word with no skipped token.
+- Positive words: for i from 0 to 199, the first eligible stem at or after line ⌊i × (n − 1) / 199⌋ + 1 of the n dictionary lines. When no eligible stem lies at or after that line, step i gives no word. Each word must pass Hunspell `testSpelling` after NFC.
+- Script: the Unicode `Script` value that holds the most `\p{L}` code points of the positive words after NFC, each occurrence counted. A tie refuses. fr and sv also list Greek letter names such as `α`, so their positive words hold two Script values. The fixture names these values: Latin, Cyrillic, Greek, Armenian, Hebrew, Arabic, Syriac, Thaana, Georgian, Ethiopic, Cherokee, Canadian_Aboriginal, Mongolian, Tifinagh, Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam, Sinhala, Thai, Lao, Tibetan, Myanmar, Khmer, Hangul, Han, Hiragana, and Katakana.
+- Negative words, Latin script: `qzxqzxqzx`, `xkcdqwvjz`, `zzqqxxjj`, `vvbbqqzz`, `jjqqxxzz`, and the first 5 positive words with `qzxqzx` appended.
+- Negative words, another script: A is the distinct code points of that Script value among the `\p{L}` code points of the positive words, in code point order. T(k) is A[k] A[k+1] A[k+2]. The words are T(k) three times for k from 0 to 4, and the first 5 positive words with T(0) twice appended.
+- Each negative word must fail `testSpelling`.
+- Refusals, each a gate step 2 failure with its reason: `no-positive-words` (0 positive words), `script-unlisted U+XXXX` (a letter of a Script value that the list does not name), `script-tie <values>` (two or more Script values hold the most letters), and `script-letters <count>` (fewer than 7 letters in a script other than Latin).
+- Result: `{language, positives, negatives, failedPositives, failedNegatives}`. A language passes with 0 failures and no refusal. In the package, the count text must equal the number of negative words.
 
 ## 17. WSL Global save request
 

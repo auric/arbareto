@@ -21,7 +21,7 @@ export type CargoMetadata = {
 export type Crate = { name: string; version: string; license: string | undefined; licenseFile: string | undefined; dir: string };
 
 export type LicenseFile = { name: string; text: string };
-export type Shipped = { name: string; version?: string; license: string | undefined; files: LicenseFile[] };
+export type Shipped = { name: string; version?: string; license: string | undefined; files: LicenseFile[]; note?: string };
 /** A licence file of the output. `text` is the index of its text in `Notices.texts`. */
 export type NoticeFile = { name: string; text: number };
 export type Notices = {
@@ -29,7 +29,7 @@ export type Notices = {
   project: { license: string; notice: string };
   /** Each distinct licence text once. Files share a text only when the texts are byte-identical. */
   texts: string[];
-  groups: { license: string; packages: { name: string; version?: string; files: NoticeFile[] }[] }[];
+  groups: { license: string; packages: { name: string; version?: string; files: NoticeFile[]; note?: string }[] }[];
 };
 
 // "<name>@<version>": a scoped name starts with "@", so the version separator is the last "@".
@@ -139,6 +139,8 @@ export function missingRuntimeFiles(names: readonly string[]): string[] {
 // NOTICE files stay with the package: research.md R9 requires supplied NOTICE content.
 const LICENSE_NAMES = new Set([
   "copying",
+  "copying.lesser",
+  "copying.mpl",
   "licence",
   "license",
   "license.md",
@@ -171,14 +173,14 @@ export function licenseFileNames(names: string[]): string[] {
 export function inventory(shipped: Shipped[], repositoryUrl: string, project: Notices["project"]): { notices: Notices; problems: string[]; code: 0 | 1 } {
   const problems: string[] = [];
   if (repositoryUrl.trim() === "") problems.push("package.json repository.url is empty");
-  const groups = new Map<string, { name: string; version?: string; files: LicenseFile[] }[]>();
+  const groups = new Map<string, { name: string; version?: string; files: LicenseFile[]; note?: string }[]>();
   for (const item of shipped) {
     const label = item.version === undefined ? item.name : `${item.name} ${item.version}`;
     if (item.license === undefined || item.license.trim() === "") problems.push(`${label}: no licence name`);
     if (item.files.length === 0) problems.push(`${label}: no licence text`);
     const license = item.license ?? "";
     const group = groups.get(license) ?? [];
-    group.push({ name: item.name, ...(item.version === undefined ? {} : { version: item.version }), files: item.files });
+    group.push({ name: item.name, ...(item.version === undefined ? {} : { version: item.version }), files: item.files, ...(item.note === undefined ? {} : { note: item.note }) });
     groups.set(license, group);
   }
   const order = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
@@ -210,6 +212,29 @@ async function readLicenseFiles(dir: string, named: string | undefined | null): 
   const all = [...new Bun.Glob("*").scanSync({ cwd: dir, onlyFiles: true, dot: true })];
   const names = named === null ? all.sort() : named !== undefined ? [named] : licenseFileNames(all);
   return Promise.all(names.map(async (name) => ({ name, text: await Bun.file(`${dir}/${name}`).text() })));
+}
+
+// 006 plan.md D18: no tarball file names the Hunspell source, so this fixed note joins its entry.
+export const PACKAGE_NOTES: Record<string, string> = {
+  "hunspell-wasm":
+    "Arbareto uses Hunspell under LGPL-2.1. Source: https://github.com/rotemdan/hunspell-wasm (commit 8f755ef64e8b047b77b676f9698b3dfa5cb1887d) and https://github.com/hunspell/hunspell.",
+};
+
+/** The npm entries with their installed licence files, a vendored folder when the package has none, and the fixed notes. */
+export async function npmShipped(root: string, packages: NpmPackage[], vendoredKeys: ReadonlySet<string>): Promise<{ shipped: Shipped[]; problems: string[] }> {
+  const shipped: Shipped[] = [];
+  const problems: string[] = [];
+  for (const p of packages) {
+    const dir = `${root}/node_modules/${p.path.join("/node_modules/")}`;
+    const installed = (await Bun.file(`${dir}/package.json`).json()) as { version?: string; license?: unknown };
+    if (installed.version !== p.version) problems.push(`npm ${p.name}: node_modules holds ${String(installed.version)}, bun.lock holds ${p.version}`);
+    const own = await readLicenseFiles(dir, undefined);
+    const key = vendoredKey(vendoredKeys, "npm", p.name, p.version);
+    const files = own.length > 0 || key === undefined ? own : await readLicenseFiles(`${root}/third-party-licenses/${key}`, null);
+    const note = PACKAGE_NOTES[p.name];
+    shipped.push({ name: p.name, version: p.version, license: typeof installed.license === "string" ? installed.license : undefined, files, ...(note === undefined ? {} : { note }) });
+  }
+  return { shipped, problems };
 }
 
 // Tauri bundler 2.10.0 nsis/mod.rs:38-41 pins nsis-3.11.zip. research.md R10 records the vendored COPYING.
@@ -281,15 +306,9 @@ async function main(): Promise<number> {
   const filesOf = async (packageFiles: LicenseFile[], key: string | undefined) =>
     packageFiles.length > 0 || key === undefined ? packageFiles : readLicenseFiles(`${vendored}/${key}`, null);
   const { packages, problems: npmProblems } = npmClosure(lock, cssPackages(css));
-  const shipped: Shipped[] = [];
-  const problems = [...npmProblems];
-  for (const p of packages) {
-    const dir = `${root}/node_modules/${p.path.join("/node_modules/")}`;
-    const installed = (await Bun.file(`${dir}/package.json`).json()) as { version?: string; license?: unknown };
-    if (installed.version !== p.version) problems.push(`npm ${p.name}: node_modules holds ${String(installed.version)}, bun.lock holds ${p.version}`);
-    const files = await filesOf(await readLicenseFiles(dir, undefined), vendoredKey(vendoredKeys, "npm", p.name, p.version));
-    shipped.push({ name: p.name, version: p.version, license: typeof installed.license === "string" ? installed.license : undefined, files });
-  }
+  const npm = await npmShipped(root, packages, vendoredKeys);
+  const shipped: Shipped[] = npm.shipped;
+  const problems = [...npmProblems, ...npm.problems];
   const cargoSet = cargoShipped(tree.stdout.toString(), JSON.parse(cargo.stdout.toString()) as CargoMetadata);
   problems.push(...cargoSet.problems);
   for (const c of cargoSet.crates) {

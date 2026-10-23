@@ -294,7 +294,7 @@ if (import.meta.main) {
     else printSystemConfig(GIT, result.env);
     const owned = startInstalledApp(found.app, result);
     console.log(`STARTED ${owned.pid}`);
-    // A Bun 1.4.3 child ends when the Bun process exits, so the launcher stays until the app exits.
+    // A Bun 1.4.4 child ends when the Bun process exits, so the launcher stays until the app exits.
     console.log(`EXITED ${await owned.exited}`);
   } catch (error) {
     if (!(error instanceof InstalledAppRefusal)) throw error;

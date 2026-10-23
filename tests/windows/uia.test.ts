@@ -195,7 +195,7 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
   );
 
   describe("installed app", () => {
-    // Bun 1.4.3 runs `afterAll` hooks in declaration order, also when a test timeout leaves its body running. This hook must come before the fixture root removal.
+    // Bun 1.4.4 runs `afterAll` hooks in declaration order, also when a test timeout leaves its body running. This hook must come before the fixture root removal.
     const owned = new Set<OwnedProcess>();
     afterAll(() => {
       for (const app of owned) app.stop();

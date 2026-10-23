@@ -32,7 +32,7 @@ export function registerDom(): void {
       "Base UI evaluated without a DOM, so its layout effects are no-ops for every later test file. A test file imported a module that loads Base UI before registerDom(), or without it. Call registerDom() first, then load React DOM and Base UI modules with `await import(...)`.",
     );
   }
-  // Bun 1.4.3 prints a failed matcher operand through this hook. Without it, Bun walks the whole happy-dom and React graph, which takes minutes and can lose the failure.
+  // Bun 1.4.4 prints a failed matcher operand through this hook. Without it, Bun walks the whole happy-dom and React graph, which takes minutes and can lose the failure.
   Object.defineProperty(Node.prototype, Symbol.for("nodejs.util.inspect.custom"), { configurable: true, value: shortNode });
   // React 19 `act` warns unless this global is true.
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

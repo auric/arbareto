@@ -3,6 +3,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
+import { latinKeyCode } from "./key-codes";
 import { createShortcutHandler, filterTarget, KEYS, scopedAction, type KeyScope, type ScopedAction, type ShortcutContext } from "../../src/frontend/keyboard/shortcuts";
 
 // tasks.md T038 (feature 004, WP11). Stories US1 to US4. Spec FR-014, FR-043, FR-087, SC-014. Plan D15 keyboard map.
@@ -27,14 +28,14 @@ const D15: [ScopedAction, string, string, KeyScope[]][] = [
 ];
 const SCOPES: KeyScope[] = ["localBranchRow", "remoteBranchRow", "historyRow", "diff", "fileList", "message", "panel", "settingsView"];
 
-type Init = { key: string; ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean; metaKey?: boolean; isComposing?: boolean };
+type Init = { key: string; keyCode?: number; ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean; metaKey?: boolean; isComposing?: boolean };
 /** A keydown with the modifiers and the key of an `aria-keyshortcuts` value. */
 function keyOf(aria: string): Init {
   const parts = aria.split("+");
   const key = parts.pop()!;
   return { key: key === "Space" ? " " : key.length === 1 ? key.toLowerCase() : key, ctrlKey: parts.includes("Control"), shiftKey: parts.includes("Shift"), altKey: parts.includes("Alt"), metaKey: parts.includes("Meta") };
 }
-const event = (init: Init) => ({ shiftKey: false, ctrlKey: false, altKey: false, metaKey: false, isComposing: false, ...init });
+const event = (init: Init) => ({ shiftKey: false, ctrlKey: false, altKey: false, metaKey: false, isComposing: false, keyCode: latinKeyCode(init.key), ...init });
 
 describe("plan.md D15 keyboard map", () => {
   test("the map holds the D15 keys and texts", () => {
@@ -115,5 +116,39 @@ describe("Ctrl+F per view (FR-101, plan D15 keyboard map, T092)", () => {
     for (const path of [[body], [row, body], [input, body], [textarea, body]]) expect(pageAction({ key: "f", ctrlKey: true }, path)).toEqual({ type: "focusFilter" });
     expect(pageAction({ key: "F", ctrlKey: true }, [body])).toEqual({ type: "focusFilter" });
     for (const modifier of ["shiftKey", "altKey", "metaKey"] as const) expect(pageAction({ key: "f", ctrlKey: true, [modifier]: true }, [body])).toBeNull();
+  });
+});
+
+// T126 (plan.md D15 keyboard map): Blink matches its editing keys by `keyCode`, the Windows virtual key (`editing_behavior.cc`).
+// The Windows Ukrainian layout keeps VK_A to VK_Z and VK_OEM_PERIOD on the Latin key positions, so `key` is Cyrillic there.
+describe("letter shortcuts on every keyboard layout (T126)", () => {
+  const UKRAINIAN: [string, Init, string | ScopedAction, KeyScope | null][] = [
+    ["Ctrl+F", { key: "а", keyCode: 70, ctrlKey: true }, "focusFilter", null],
+    ["Ctrl+Shift+B", { key: "И", keyCode: 66, ctrlKey: true, shiftKey: true }, "toggleScope", null],
+    ["Ctrl+O", { key: "щ", keyCode: 79, ctrlKey: true }, "openFolder", null],
+    ["Ctrl+R", { key: "к", keyCode: 82, ctrlKey: true }, "openSwitcher", null],
+    ["Ctrl+.", { key: "ю", keyCode: 190, ctrlKey: true }, "switch", "localBranchRow"],
+    ["Ctrl+M", { key: "ь", keyCode: 77, ctrlKey: true }, "merge", "localBranchRow"],
+    ["Ctrl+Shift+E", { key: "У", keyCode: 69, ctrlKey: true, shiftKey: true }, "rebase", "remoteBranchRow"],
+    ["Ctrl+B", { key: "и", keyCode: 66, ctrlKey: true }, "createBranch", "historyRow"],
+    ["Ctrl+S", { key: "і", keyCode: 83, ctrlKey: true }, "save", "settingsView"],
+    ["S", { key: "і", keyCode: 83 }, "stageLines", "diff"],
+    ["U", { key: "г", keyCode: 85 }, "unstageLines", "diff"],
+  ];
+
+  test("each letter and period shortcut acts with a Ukrainian layout event and with a Latin event", () => {
+    for (const [name, init, action, scope] of UKRAINIAN) {
+      const latin = { ...init, key: init.keyCode === 190 ? "." : String.fromCharCode(init.keyCode!).toLowerCase() };
+      for (const e of [init, latin]) {
+        const got = scope === null ? (pageAction(e, [body]) as { type: string } | null)?.type : scopedAction(event(e), scope);
+        expect([name, e.key, got]).toEqual([name, e.key, action]);
+      }
+    }
+  });
+
+  test("a Latin key with another virtual key does not act, so the match never reads `key`", () => {
+    expect(pageAction({ key: "f", keyCode: 0, ctrlKey: true }, [body])).toBeNull();
+    expect(scopedAction(event({ key: "s", keyCode: 0 }), "diff")).toBeNull();
+    expect(scopedAction(event({ key: ".", keyCode: 0, ctrlKey: true }), "localBranchRow")).toBeNull();
   });
 });

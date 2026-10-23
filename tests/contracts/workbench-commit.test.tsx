@@ -9,7 +9,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
 import { stubLayout } from "./history-fake";
-import { answer, button, buttons, click, createWorld, itemLabel, keyboardFocus, mountWorkbench, press, settle, snapshot as snapshotOf, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
+import { answer, button, buttons, click, createWorld, expectChromiumFocus, itemLabel, keyboardFocus, mountWorkbench, press, settle, snapshot as snapshotOf, succeeded, text, tooltipText, unmountAll, type World } from "./sync-fake";
 
 // tasks.md T042 (feature 004, WP14). Story US4 and the FR-098 box of US11. Spec FR-029 to FR-048, FR-086, FR-098, SC-006, SC-014.
 // Plan D8, D9, D15 ("Commit view layout", "Virtual tree", "Limited status", "Multi-select", "Line selection", "Row and hunk buttons", "Ignore items", "Message editor"), D16, and O-11.
@@ -671,6 +671,26 @@ describe("hunk buttons (FR-037)", () => {
     await shownDiff("staged");
     expect(buttons("Unstage hunk", commitView()!)).toHaveLength(2);
   });
+
+  // T125: the first diff of a session loads the Pierre pool. The comparison view must not remount then, or Chromium drops the focus to the body.
+  test("T125: Copy path keeps the focus when the first diff of the session arrives", async () => {
+    const file = entry("unstaged", "f.ts", ".M");
+    const world = createWorld({ entries: [file] });
+    world.answers.readComparison = undefined;
+    const double = await openCommitView(world);
+    await click(item("Changes", "f.ts"));
+    const copy = button("Copy path", commitView()!.querySelector('[data-section="comparison"]')!);
+    await act(async () => copy.focus());
+    expect(document.activeElement === copy).toBe(true);
+    const call = double.calls.filter((c) => c.operation === "readComparison").at(-1)!;
+    const payload = call.args[1] as { snapshotId: string; entryId: string };
+    await answer(call, succeeded({ comparisonId: fixtureId(0x7fe), snapshotId: payload.snapshotId, entryId: payload.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: b64(PATCH), hunks: [hunk(0, 1, 4, 1, 5), hunk(1, 10, 2, 11, 3)], support: "supported", fileAction: "stage", remedy: null }));
+    await settle();
+    expect(buttons("Stage hunk", commitView()!)).toHaveLength(2);
+    expect(copy.isConnected).toBe(true);
+    expect(document.activeElement === copy).toBe(true);
+    expectChromiumFocus(copy);
+  });
 });
 
 describe("line selection (FR-041 to FR-044, contract Δ4)", () => {
@@ -981,6 +1001,113 @@ describe("Working directory row (plan D15, O-11)", () => {
     await act(async () => void working().dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
     await settle();
     expect(commitView()).not.toBeNull();
+  });
+
+  // T121 and T122 (plan.md D15 "F6 order per view", 001 FR-005). Each case asserts the Chromium focus facts (`expectChromiumFocus`).
+  const focused = () => document.activeElement as HTMLElement;
+  const sectionOf = (element: Element) => element.closest<HTMLElement>("[data-section]")?.dataset.section;
+  const tabStop = (list: "changes" | "staged") => document.querySelector<HTMLElement>(`[data-file-tree="${list}"] [role="treeitem"][tabindex="0"]`);
+  async function enterOnWorkingRow(entries: ChangeEntry[]) {
+    await mountWorkbench(workbench, createWorld({ entries }));
+    await click(working());
+    await act(async () => historyList().focus());
+    await press(historyList(), "Enter");
+    expect(commitView()).not.toBeNull();
+  }
+  // Presses F6 on the focused element and returns the new focused element. Each press must move focus.
+  async function f6(shiftKey = false) {
+    const before = focused();
+    await press(before, "F6", { shiftKey });
+    expect(focused() === before).toBe(false);
+    expectChromiumFocus(focused());
+    return focused();
+  }
+
+  test("T121: Enter on the row with files focuses the Changes Tab-stop row outside a hidden ancestor", async () => {
+    await enterOnWorkingRow(board().all);
+    expectChromiumFocus(focused());
+    expect(focused() === tabStop("changes")).toBe(true);
+  });
+
+  test("T121: Enter on the row with an empty Changes list focuses Filter files", async () => {
+    await enterOnWorkingRow(board().staged);
+    expectChromiumFocus(focused());
+    expect(focused().getAttribute("aria-label")).toBe("Filter files");
+  });
+
+  test("T121: a double-click on the row and the Commit icon focus the Changes Tab-stop row", async () => {
+    await mountWorkbench(workbench, createWorld({ entries: board().all }));
+    await act(async () => historyList().focus());
+    await act(async () => void working().dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    await settle();
+    expectChromiumFocus(focused());
+    expect(focused() === tabStop("changes")).toBe(true);
+    await click(button("History", views()));
+    await act(async () => historyList().focus());
+    await click(document.querySelector<HTMLElement>('header button[aria-label^="Commit:"]')!);
+    expectChromiumFocus(focused());
+    expect(focused() === tabStop("changes")).toBe(true);
+  });
+
+  test("T122: F6 from the Changes row visits the Staged Tab-stop row, then the diff", async () => {
+    await enterOnWorkingRow(board().all);
+    expect(sectionOf(await f6())).toBe("staged");
+    expect(focused() === tabStop("staged")).toBe(true);
+    expect(sectionOf(await f6())).toBe("comparison");
+  });
+
+  test("T122: with no file selected, F6 from Filter files reaches Staged, then the diff section itself", async () => {
+    await enterOnWorkingRow([]);
+    expect(focused().getAttribute("aria-label")).toBe("Filter files");
+    expect(sectionOf(await f6())).toBe("staged");
+    const diff = await f6();
+    expect(diff === document.querySelector('[data-section="comparison"]')).toBe(true);
+    expect(diff.getAttribute("tabindex")).toBe("-1");
+  });
+
+  // Chromium focuses the nearest focusable ancestor on a click, so a click on empty section space focuses the `tabIndex={-1}` box.
+  test("T122: after a click on the History section background, F6 away and back lands on the History Tab stop, not the box", async () => {
+    await mountWorkbench(workbench, createWorld({ entries: board().all }));
+    const box = [...document.querySelectorAll<HTMLElement>('[data-section="historyList"]')].find((e) => e.closest("[hidden]") === null)!;
+    await act(async () => box.focus());
+    expect(focused() === box).toBe(true);
+    expect(sectionOf(await f6())).not.toBe("historyList");
+    const back = await f6(true);
+    expect(sectionOf(back)).toBe("historyList");
+    expect(back === box).toBe(false);
+    expect(box.contains(back)).toBe(true);
+  });
+
+  test("T122: after F6 focused the empty diff box and a file is then selected, F6 lands on Copy path or a hunk button, not the box", async () => {
+    const file = entry("unstaged", "f.ts", ".M");
+    const world = createWorld({ entries: [file] });
+    world.answers.readComparison = (args) => {
+      const payload = args[1] as { snapshotId: string; entryId: string };
+      return succeeded({ comparisonId: fixtureId(0x7fd), snapshotId: payload.snapshotId, entryId: payload.entryId, scope: "index-to-worktree", completeness: { state: "complete" }, patch: b64(PATCH), hunks: [hunk(0, 1, 4, 1, 5), hunk(1, 10, 2, 11, 3)], support: "supported", fileAction: "stage", remedy: null });
+    };
+    await openCommitView(world);
+    const filter = () => document.querySelector<HTMLElement>('input[aria-label="Filter files"]')!;
+    const box = document.querySelector<HTMLElement>('[data-section="comparison"]')!;
+    expect(box.querySelector('button[aria-label="Copy path"], button')).toBeNull();
+    await act(async () => filter().focus());
+    await f6();
+    expect((await f6()) === box).toBe(true);
+    await click(item("Changes", "f.ts"));
+    expect(buttons("Stage hunk", box)).toHaveLength(2);
+    await act(async () => filter().focus());
+    await f6();
+    const target = await f6();
+    expect(sectionOf(target)).toBe("comparison");
+    expect(target === box).toBe(false);
+    expect(target === button("Copy path", box) || target === buttons("Stage hunk", box)[0]).toBe(true);
+  });
+
+  test("T122: a section that refuses focus makes F6 continue to the next section", async () => {
+    await enterOnWorkingRow([]);
+    // Chromium refuses focus on an element that is not focusable, such as a `display: contents` box.
+    document.querySelector<HTMLElement>('[data-section="comparison"]')!.focus = () => {};
+    expect(sectionOf(await f6())).toBe("staged");
+    expect(sectionOf(await f6())).toBe("composer");
   });
 });
 

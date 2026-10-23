@@ -15,6 +15,9 @@ export type Section =
   | "comparison"
   | "composer"
   | "commitDetails"
+  // Feature 005 plan.md D15 "F6 order": the History dock regions after the commit details.
+  | "changedFiles"
+  | "historyDiff"
   | "scopeBar"
   | "pageList"
   | "pageContent"
@@ -43,7 +46,7 @@ export type ShortcutContext = {
   commitEnabled: boolean;
 };
 
-export type ShortcutEvent = Pick<KeyboardEvent, "type" | "key" | "code" | "ctrlKey" | "shiftKey" | "altKey" | "metaKey" | "repeat" | "isComposing" | "getModifierState" | "preventDefault"> & {
+export type ShortcutEvent = Pick<KeyboardEvent, "type" | "key" | "code" | "keyCode" | "ctrlKey" | "shiftKey" | "altKey" | "metaKey" | "repeat" | "isComposing" | "getModifierState" | "preventDefault"> & {
   composedPath(): readonly unknown[];
 };
 
@@ -59,6 +62,11 @@ export function isEditable(target: Target | undefined): boolean {
   if (tag === "TEXTAREA") return true;
   return tag === "INPUT" && !NON_TEXT_INPUTS.has((target.type ?? "text").toLowerCase());
 }
+
+// Plan D15 keyboard map (T126): a letter shortcut matches `keyCode`, the Windows virtual key, as Blink does (`editing_behavior.cc`).
+// VK_A to VK_Z are 65 to 90 on every Windows layout, also where `key` is Cyrillic. `code` is not used: AZERTY keeps VK_A on the A label.
+const letterOf = (e: { keyCode: number }) => (e.keyCode >= 65 && e.keyCode <= 90 ? String.fromCharCode(e.keyCode) : null);
+const VK_OEM_PERIOD = 190;
 
 const mods = (e: ShortcutEvent) => `${+e.ctrlKey}${+e.shiftKey}${+e.altKey}${+e.metaKey}`;
 const NONE = "0000";
@@ -103,13 +111,12 @@ export function createShortcutHandler() {
     if (e.key === "Enter" && m === CTRL) return inMessage && context.commitEnabled ? { type: "commit" } : null;
     // These keys type no text, so they work in text fields too. The 001 accelerator handler turns off the WebView2 find keys.
     if (e.key === "F3" && (m === NONE || m === SHIFT)) return { type: "match", direction: m === SHIFT ? "previous" : "next" };
-    if (m === CTRL && e.key.toLowerCase() === "f") return { type: "focusFilter" };
-    if (m === CTRL_SHIFT && e.key.toLowerCase() === "b") return { type: "toggleScope" };
+    const letter = letterOf(e);
+    if (m === CTRL && letter === "F") return { type: "focusFilter" };
+    if (m === CTRL_SHIFT && letter === "B") return { type: "toggleScope" };
     if (editable) return null;
-    // `key` is the letter of the active layout (UI Events KeyboardEvent key). Caps Lock gives the capital without Shift.
-    const letter = m === CTRL ? e.key.toLowerCase() : null;
-    if (letter === "o") return { type: "openFolder" };
-    if (letter === "r") return { type: "openSwitcher" };
+    if (m === CTRL && letter === "O") return { type: "openFolder" };
+    if (m === CTRL && letter === "R") return { type: "openSwitcher" };
     if (m === CTRL && e.key === "ArrowDown") return { type: "sync", control: "pull" };
     if (m === CTRL && e.key === "ArrowUp") return { type: "sync", control: "push" };
     if (m === CTRL_SHIFT && e.key === "ArrowDown") return { type: "sync", control: "fetch" };
@@ -182,12 +189,13 @@ export const KEYS: Record<ScopedAction, { aria: string; text: string; scopes: re
 const BY_KEY = new Map(Object.entries(KEYS).flatMap(([action, k]) => k.scopes.map((scope) => [`${scope} ${k.aria}`, action as ScopedAction] as const)));
 
 // The browser KeyboardEvent, not the React event: React events carry no `isComposing`.
-export type ScopedKeyEvent = Pick<KeyboardEvent, "key" | "ctrlKey" | "shiftKey" | "altKey" | "metaKey" | "isComposing">;
+export type ScopedKeyEvent = Pick<KeyboardEvent, "key" | "keyCode" | "ctrlKey" | "shiftKey" | "altKey" | "metaKey" | "isComposing">;
 
-/** The D15 action of a key in `scope`, or null. A single letter matches without regard to Caps Lock. */
+/** The D15 action of a key in `scope`, or null. A letter and the period match by `keyCode`, so Caps Lock and the layout do not count. */
 export function scopedAction(event: ScopedKeyEvent, scope: KeyScope): ScopedAction | null {
   if (event.isComposing) return null;
-  const key = event.key === " " ? "Space" : event.key.length === 1 ? event.key.toUpperCase() : event.key;
+  const key = event.key === " " ? "Space" : (letterOf(event) ?? (event.keyCode === VK_OEM_PERIOD ? "." : event.key.length === 1 ? null : event.key));
+  if (key === null) return null;
   const aria = [event.ctrlKey && "Control", event.shiftKey && "Shift", event.altKey && "Alt", event.metaKey && "Meta", key].filter(Boolean).join("+");
   return BY_KEY.get(`${scope} ${aria}`) ?? null;
 }
@@ -201,7 +209,7 @@ export type SectionState = {
 
 const ORDERS: Record<Panel, readonly Section[]> = {
   commit: ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "statusRegion"],
-  details: ["header", "noticeHeading", "references", "historyList", "commitDetails", "statusRegion"],
+  details: ["header", "noticeHeading", "references", "historyList", "commitDetails", "changedFiles", "historyDiff", "statusRegion"],
   settings: ["header", "noticeHeading", "scopeBar", "pageList", "pageContent", "statusRegion"],
 };
 

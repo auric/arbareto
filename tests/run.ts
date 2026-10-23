@@ -37,7 +37,7 @@ const ran = new Map<string, number>();
 for (const step of steps) {
   if (step.files.length === 0) continue;
   const report = join(out, `${step.name}.xml`);
-  // A leading `./` makes Bun read each argument as a path, not as a name filter (Bun 1.4.3 docs/test/discovery.mdx).
+  // A leading `./` makes Bun read each argument as a path, not as a name filter (Bun 1.4.4 docs/test/discovery.mdx).
   const args = ["test", ...step.flags, "--reporter=junit", `--reporter-outfile=${report}`, ...step.files.map((f) => `./${f}`)];
   console.log(`STEP ${step.name}: ${step.files.length} files, start ${new Date().toISOString()}`);
   const started = performance.now();

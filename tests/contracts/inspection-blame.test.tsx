@@ -10,6 +10,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
 import { stubLayout, TARGET } from "./history-fake";
+import { latinKeyCode } from "./key-codes";
 
 printOrigin("../../src/frontend/blame/BlameView.tsx", import.meta.dir);
 printOrigin("../../src/frontend/blame/blame-time.ts", import.meta.dir);
@@ -55,7 +56,7 @@ const settle = () =>
   });
 const text = (element: Element) => (element.textContent ?? "").replace(/\s+/g, " ").trim();
 const key = async (element: Element, k: string, init: KeyboardEventInit = {}) => {
-  const event = new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...init });
+  const event = new KeyboardEvent("keydown", { key: k, keyCode: latinKeyCode(k), bubbles: true, cancelable: true, ...init });
   await act(async () => void element.dispatchEvent(event));
   return event;
 };
@@ -497,7 +498,7 @@ describe("workbench state across the blame view", () => {
     await other.openBlame();
     expect(other.blameShown()).toBe(true);
     // Ctrl+O runs chooseRepository. Its registration opens another repository.
-    await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "o", ctrlKey: true, bubbles: true, cancelable: true })));
+    await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "o", keyCode: latinKeyCode("o"), ctrlKey: true, bubbles: true, cancelable: true })));
     await other.w.openOther();
     expect(other.blameShown()).toBe(false);
   });

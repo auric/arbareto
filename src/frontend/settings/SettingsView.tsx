@@ -190,7 +190,7 @@ export function SettingsView({ bridge, target, wsl, repository, operationRunning
         close();
       }}
     >
-      <div data-section="scopeBar" className="flex shrink-0 items-center gap-3 border-b border-divider px-2 py-1" style={{ minHeight: "var(--h-pane-heading)" }}>
+      <div data-section="scopeBar" tabIndex={-1} className="flex shrink-0 items-center gap-3 border-b border-divider px-2 py-1" style={{ minHeight: "var(--h-pane-heading)" }}>
         <HugeiconsIcon icon={Settings02Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
         <h2 id={heading} tabIndex={-1} className="shrink-0 font-semibold">
           {TEXTS.heading}
@@ -200,7 +200,7 @@ export function SettingsView({ bridge, target, wsl, repository, operationRunning
         <IconButton ref={closeButton} icon={Cancel01Icon} label={TEXTS.close} keys={{ aria: "Escape", text: "Esc" }} onClick={close} />
       </div>
       <Tabs orientation="vertical" value={active} onValueChange={(value) => setPage(String(value))} className="min-h-0 flex-1 gap-0">
-        <div data-section="pageList" className="flex w-52 shrink-0 flex-col gap-1 overflow-y-auto border-r border-divider p-1">
+        <div data-section="pageList" tabIndex={-1} className="flex w-52 shrink-0 flex-col gap-1 overflow-y-auto border-r border-divider p-1">
           <div className="relative flex shrink-0 items-center">
             <HugeiconsIcon icon={Search01Icon} strokeWidth={2} aria-hidden="true" className="pointer-events-none absolute left-2 size-(--icon-size) text-muted-text" />
             <Tooltip>
@@ -232,7 +232,7 @@ export function SettingsView({ bridge, target, wsl, repository, operationRunning
             ))}
           </TabsList>
         </div>
-        <div data-section="pageContent" className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-2">
+        <div data-section="pageContent" tabIndex={-1} className="min-h-0 min-w-0 flex-1 overflow-y-auto px-3 py-2">
           {failure === null ? null : <p role="alert">{failure}</p>}
           {active === null ? (
             <p className="text-muted-text">{TEXTS.noMatch}</p>

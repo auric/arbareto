@@ -3,18 +3,18 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
+import { latinKeyCode } from "./key-codes";
 
 // tasks.md T051 (feature 005, WP7). Stories US2, US5, US6, US7, US8. Spec FR-013, FR-023, FR-056, FR-067, SC-010. Plan D15 "Keyboard map additions".
 
 printOrigin("../../src/frontend/keyboard/shortcuts.ts", import.meta.dir);
-const { KEYS, createShortcutHandler, filterTarget, scopedAction, HISTORY_FILES_SCOPE } = await import("../../src/frontend/keyboard/shortcuts");
+const { KEYS, createShortcutHandler, filterTarget, scopedAction, sectionOrder, HISTORY_FILES_SCOPE } = await import("../../src/frontend/keyboard/shortcuts");
 type Scope = Parameters<typeof scopedAction>[1];
 
 // A US-layout keydown. `keyCode` is the Windows virtual key that Blink matches for a letter (plan D15 keyboard map, 004 T126).
-const VK: Record<string, number> = { Delete: 46, Enter: 13, Escape: 27, ArrowLeft: 37, s: 83, f: 70 };
-const key = (k: string, mods: { ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean; metaKey?: boolean; isComposing?: boolean } = {}) => ({
+const key = (k: string, mods: { ctrlKey?: boolean; shiftKey?: boolean; altKey?: boolean; metaKey?: boolean; isComposing?: boolean; keyCode?: number } = {}) => ({
   key: k,
-  keyCode: VK[k] ?? 0,
+  keyCode: latinKeyCode(k),
   ctrlKey: false,
   shiftKey: false,
   altKey: false,
@@ -46,6 +46,11 @@ describe("D15 keys act only in their scope", () => {
     expect(actsIn(key("s", { ctrlKey: true }), "save")).toEqual(["settingsView", "ignoreEditor"]);
     expect(scopedAction(key("Escape"), "ignoreEditor")).toBe("closeEditor");
     expect(actsIn(key("Escape"), "closeEditor")).toEqual(["ignoreEditor"]);
+  });
+
+  test("Ctrl+S matches the virtual key on every layout: a Cyrillic key with VK_S saves", () => {
+    expect(scopedAction(key("ы", { ctrlKey: true, keyCode: 83 }), "ignoreEditor")).toBe("save");
+    expect(scopedAction(key("s", { ctrlKey: true, keyCode: 0 }), "ignoreEditor")).toBeNull();
   });
 
   test("an IME composition takes no key", () => {
@@ -89,6 +94,12 @@ describe("no 005 key collides with a 001 to 004 page key (plan D15 conflict chec
   }
   test("Ctrl+F stays the page filter key", () => {
     expect(page(key("f", { ctrlKey: true })).action).toEqual({ type: "focusFilter" });
+  });
+});
+
+describe("F6 order (plan D15)", () => {
+  test("History: Changed files and then the diff follow the commit details", () => {
+    expect(sectionOrder("details")).toEqual(["header", "noticeHeading", "references", "historyList", "commitDetails", "changedFiles", "historyDiff", "statusRegion"]);
   });
 });
 

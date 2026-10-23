@@ -40,6 +40,13 @@ export const PROBE_TIMEOUT_MS = 30_000;
 const PROBE_MAX_BYTES = 16 * 1024 * 1024;
 export const WAIT_MS = 10_000;
 
+// App texts that several packaged tests use.
+// `VIEW_OPTIONS` of src/frontend/app/Workbench.tsx: the buttons of the Views control. The Commit view holds the file lists and the message editor (plan.md D15). The History view leaves the UIA tree while it is hidden.
+export const HISTORY_VIEW = "History";
+export const COMMIT_VIEW = "Commit";
+// The local branch row name of src/frontend/refs/ReferencesSidebar.tsx for a branch without an upstream.
+export const localRow = (name: string, current = false) => [name, "local branch", ...(current ? ["Current"] : []), "No upstream"].join(", ");
+
 export function powershellJson(script: string): unknown {
   const root = process.env.SystemRoot;
   if (!root) throw new Error("SystemRoot is not set");
@@ -294,7 +301,7 @@ if (import.meta.main) {
     else printSystemConfig(GIT, result.env);
     const owned = startInstalledApp(found.app, result);
     console.log(`STARTED ${owned.pid}`);
-    // A Bun 1.4.3 child ends when the Bun process exits, so the launcher stays until the app exits.
+    // A Bun 1.4.4 child ends when the Bun process exits, so the launcher stays until the app exits.
     console.log(`EXITED ${await owned.exited}`);
   } catch (error) {
     if (!(error instanceof InstalledAppRefusal)) throw error;

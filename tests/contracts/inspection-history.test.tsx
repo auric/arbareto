@@ -10,6 +10,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
 import { createFake, oid as fakeOid, stubLayout, TARGET } from "./history-fake";
+import { latinKeyCode } from "./key-codes";
 
 printOrigin("../../src/frontend/history/CommitChanges.tsx", import.meta.dir);
 printOrigin("../../src/frontend/history/CommitDetails.tsx", import.meta.dir);
@@ -170,7 +171,7 @@ const items = (host: HTMLElement) => [...tree(host).querySelectorAll<HTMLElement
 const labels = (host: HTMLElement) => items(host).map((e) => e.getAttribute("aria-label"));
 const item = (host: HTMLElement, label: string) => items(host).find((e) => e.getAttribute("aria-label") === label)!;
 const diff = (host: HTMLElement) => host.querySelector<HTMLElement>('[data-slot="history-diff"]')!;
-const key = (element: Element, k: string, init: KeyboardEventInit = {}) => act(async () => void element.dispatchEvent(new KeyboardEvent("keydown", { key: k, bubbles: true, cancelable: true, ...init })));
+const key = (element: Element, k: string, init: KeyboardEventInit = {}) => act(async () => void element.dispatchEvent(new KeyboardEvent("keydown", { key: k, keyCode: latinKeyCode(k), bubbles: true, cancelable: true, ...init })));
 const click = (element: Element) => act(async () => (element as HTMLElement).click());
 
 describe("layout (spec FR-005, Main and HistoryStates boards)", () => {
@@ -495,10 +496,13 @@ describe("workbench keys", () => {
     await key(first, "f", { ctrlKey: true });
     expect(document.activeElement).toBe(filter);
     // happy-dom has no layout, so the Workbench takes the constrained profile, where the Changes tab holds both regions.
-    // F6 from the History list reaches the shown dock regions in order: Changed files, then the diff.
+    // F6 from the History list reaches the shown dock regions in order: the commit details tabs, Changed files, then the diff.
     const list = document.querySelector<HTMLElement>('section[aria-label="History"] [data-history-list]')!;
     await act(async () => list.focus());
     await key(list, "F6");
+    expect(document.activeElement?.closest('[data-section="commitDetails"]')).not.toBeNull();
+    expect(files.contains(document.activeElement)).toBe(false);
+    await key(document.activeElement!, "F6");
     expect(files.contains(document.activeElement)).toBe(true);
     await key(document.activeElement!, "F6");
     expect(document.querySelector('[data-slot="history-diff"]')!.contains(document.activeElement)).toBe(true);

@@ -665,7 +665,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     async dispose() {
       closed = true;
       notify();
-      // Bun 1.4.3 on Windows: a watcher of a removed directory repeats events until it closes.
+      // Bun 1.4.4 on Windows: a watcher of a removed directory repeats events until it closes.
       session.close();
       await runner.dispose();
       if (frameError !== null) throw frameError;

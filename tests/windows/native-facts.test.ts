@@ -399,7 +399,7 @@ const { GIT } = await import("../git/git-binary");
 const { fixtureDir, fixtureEnv, useFixtureRoot } = await import("../git/fixture-root");
 const { buildWorkbench, repoOf, wb } = await import("../git/workbench-fixtures");
 const { obs, observationLine } = await import("../git/fact-runner");
-const { appEnv, explorerReveal, explorerWindows, findInstalledApp, processRecords, startInstalledApp, WAIT_MS, waitExit } = await import("./installed-app");
+const { appEnv, explorerReveal, explorerWindows, findInstalledApp, localRow, processRecords, startInstalledApp, WAIT_MS, waitExit } = await import("./installed-app");
 
 for (const helper of ["./uia.ts", "./installed-app.ts", "./merge-tool-fixture.ts", "../git/win32.ts", "../git/workbench-fixtures.ts"]) printOrigin(helper, import.meta.dir);
 
@@ -541,8 +541,6 @@ const MERGETOOL_ARGS = ["--no-lazy-fetch", "--literal-pathspecs", "mergetool", "
 
 // The start page option text, `OPEN_FOLDER` in src/frontend/app/RepositorySwitcher.tsx.
 const OPEN_FOLDER = "Open folder… (Ctrl+O)";
-// The accessible name of the current branch row in src/frontend/refs/ReferencesSidebar.tsx, for a branch without an upstream.
-const CURRENT_ROW = "main, local branch, Current";
 // `SHOW_BRANCH_HISTORY` in src/frontend/refs/ReferencesSidebar.tsx. The shortcut column is `aria-hidden`, so the UIA name is the label only (feature 004 spec FR-085).
 const MENU_ITEM = "Show only this branch's history";
 
@@ -730,7 +728,7 @@ describe.skipIf(process.platform !== "win32")("T005 native facts N1 to N6", () =
           } finally {
             select.release();
           }
-          const hr = await use(find(owned.pid, CURRENT_ROW, MAX_WAIT_MS), showContextMenu);
+          const hr = await use(find(owned.pid, localRow("main", true), MAX_WAIT_MS), showContextMenu);
           const menu = await present(owned.pid, MENU_ITEM, MAX_WAIT_MS);
           observe("N2.app-menu-by-uia-show-context-menu", { hr: 0, menu: true }, { hr, menu });
         } finally {

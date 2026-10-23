@@ -17,7 +17,7 @@ export interface Groups {
 
 export const REPO = join(import.meta.dir, "..");
 export const slash = (p: string) => p.replaceAll("\\", "/");
-// Bun 1.4.3 docs/test/discovery.mdx: the default test file name patterns.
+// Bun 1.4.4 docs/test/discovery.mdx: the default test file name patterns.
 const TEST_FILE = new Bun.Glob("**/*{.test,_test,.spec,_spec}.{js,jsx,ts,tsx,mjs,cjs,mts,cts}");
 
 /** True when a `fast` entry selects the file. */

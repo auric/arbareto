@@ -126,7 +126,7 @@ export function vendoredKey(keys: ReadonlySet<string>, ecosystem: "npm" | "cargo
   return keys.has(key) ? key : undefined;
 }
 
-// research.md R10 (T366): Bun 1.4.3 embeds the typescript-go type checker, so Apache-2.0 §4(d) requires its NOTICE.txt.
+// research.md R10 (T366, T390): Bun 1.4.4 embeds the typescript-go type checker, so Apache-2.0 §4(d) requires its NOTICE.txt.
 export const BUN_RUNTIME_FILES = ["LICENSE.md", "typescript-go-NOTICE.txt"] as const;
 
 /** The required Bun runtime files that the vendored runtime folder does not hold. */

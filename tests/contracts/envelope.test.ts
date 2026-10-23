@@ -420,6 +420,20 @@ describe("approveTrust action", () => {
   });
 });
 
+// Feature 005 contract Δ1 and Δ15 (T057): the 004 `reviewWorkbench` action `ignore` goes. `ignore-save` replaces it.
+describe("reviewWorkbench action ignore", () => {
+  for (const side of ["renderer", "service"] as const) {
+    test(`ignore gives INVALID_REQUEST on the ${side} side`, () => {
+      for (const payload of [
+        { action: "ignore", snapshotId: id(), entryId: id(), target: "gitignore" },
+        { action: "ignore", snapshotId: id(), entryId: id(), target: "exclude", folder: "bG9ncw==" },
+      ]) {
+        expectCode(envelope("reviewWorkbench", side, payload), "INVALID_REQUEST", side);
+      }
+    });
+  }
+});
+
 describe("explicit approval fields", () => {
   const cases: Array<[string, string]> = [
     ["commit", "confirmFullScope"],

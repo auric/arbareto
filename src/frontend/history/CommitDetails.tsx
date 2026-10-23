@@ -205,7 +205,7 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead, 
             <TabsTrigger value="commit">Commit</TabsTrigger>
             <TabsTrigger value="changes">Changes</TabsTrigger>
           </TabsList>
-          <TabsContent value="commit" data-dock-stop="" data-slot="commit-details-body" className={`${bodyClass} p-3`}>
+          <TabsContent value="commit" data-slot="commit-details-body" className={`${bodyClass} p-3`}>
             {body}
           </TabsContent>
           <TabsContent value="changes" keepMounted className="flex min-h-0 flex-col data-[hidden]:hidden">
@@ -214,7 +214,7 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead, 
         </Tabs>
       ) : (
         <div className="flex min-h-0 flex-1">
-          <div data-dock-stop="" data-slot="commit-details-body" className={`${bodyClass} shrink-0 p-3`} style={{ width }}>
+          <div data-slot="commit-details-body" className={`${bodyClass} shrink-0 p-3`} style={{ width }}>
             {body}
           </div>
           <Splitter label="Resize commit details" orientation="vertical" value={width} min={FILE_LANE.min} max={FILE_LANE.max} onChange={setWidth} />

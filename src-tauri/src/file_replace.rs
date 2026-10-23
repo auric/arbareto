@@ -26,7 +26,6 @@ use windows::Win32::Storage::FileSystem::{
 };
 use windows::Win32::System::IO::IO_STATUS_BLOCK;
 
-use crate::file_append::IGNORE_TARGET_BYTES;
 use crate::file_facts::{
     StandardInformation, create_relative, error_code, is_reparse_point, open as open_relative,
     open_root, query, raw, read, set_disposition, win32_code,
@@ -37,6 +36,8 @@ use crate::schema::process_request::{FileReplace, FileReplaceExpected};
 use crate::settings::{hex, sha256};
 
 const INVALID: Code = Code::InvalidRequest;
+/// Contract Δ5 "Ignore target file": the largest target and the largest new bytes.
+pub(crate) const IGNORE_TARGET_BYTES: u64 = 1_048_576;
 
 /// The result of one replace (contract Δ6 `fileReplace` reply).
 #[derive(Clone, Debug, PartialEq, Eq)]

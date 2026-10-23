@@ -627,95 +627,6 @@
           "properties": {
             "action": {
               "type": "string",
-              "const": "ignore"
-            },
-            "plan": {
-              "type": "object",
-              "properties": {
-                "target": {
-                  "type": "string",
-                  "enum": [
-                    "gitignore",
-                    "exclude"
-                  ]
-                },
-                "path": {
-                  "type": "string",
-                  "minLength": 1,
-                  "format": "base64",
-                  "contentEncoding": "base64",
-                  "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
-                },
-                "folder": {
-                  "type": "boolean"
-                },
-                "line": {
-                  "type": "string",
-                  "minLength": 1,
-                  "pattern": "^[^\\u0000]*$"
-                },
-                "prefixNewline": {
-                  "type": "boolean"
-                },
-                "expected": {
-                  "anyOf": [
-                    {
-                      "type": "string",
-                      "const": "absent"
-                    },
-                    {
-                      "type": "object",
-                      "properties": {
-                        "size": {
-                          "type": "integer",
-                          "minimum": 0,
-                          "maximum": 9007199254740991
-                        },
-                        "sha256": {
-                          "type": "string",
-                          "pattern": "^[0-9a-f]{64}$"
-                        }
-                      },
-                      "required": [
-                        "size",
-                        "sha256"
-                      ],
-                      "additionalProperties": false,
-                      "title": "IgnoreExpected"
-                    }
-                  ]
-                }
-              },
-              "required": [
-                "target",
-                "path",
-                "folder",
-                "line",
-                "prefixNewline",
-                "expected"
-              ],
-              "additionalProperties": false,
-              "title": "IgnorePlan"
-            },
-            "workbenchToken": {
-              "type": "string",
-              "maxLength": 64,
-              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
-            }
-          },
-          "required": [
-            "action",
-            "plan",
-            "workbenchToken"
-          ],
-          "additionalProperties": false,
-          "title": "IgnoreReviewed"
-        },
-        {
-          "type": "object",
-          "properties": {
-            "action": {
-              "type": "string",
               "const": "worktree-add"
             },
             "plan": {
@@ -1686,8 +1597,6 @@
             "multi-value",
             "limit",
             "push-current-only",
-            "ignore-exists",
-            "ignore-not-text",
             "ignore-not-regular",
             "ignore-size",
             "path",

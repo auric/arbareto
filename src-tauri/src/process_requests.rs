@@ -34,7 +34,6 @@ use crate::bootstrap::{
 };
 use crate::close::{Mutation, Running};
 use crate::dialogs::Registered;
-use crate::file_append::{self, AppendResult};
 use crate::file_delete;
 use crate::file_facts;
 use crate::file_replace;
@@ -215,7 +214,8 @@ enum Reply {
     Start,
     /// A request of frame kind `.0`. Only its reply or its deadline reply ends it (T314 D3).
     Frame(&'static str, DeadlineReply),
-    /// Feature 004 contract Δ6 `fileAppend`: `cancel` and `closeJob` stop it, and the stop reply `.1` follows, so every request gets one reply.
+    /// Feature 005 contract Δ6 `fileDelete`, `fileReplace`, and `shadow`: `cancel` and `closeJob` stop it, and the stop reply `.1` follows,
+    /// so every request gets one reply.
     Answered(DeadlineReply, DeadlineReply),
 }
 
@@ -236,7 +236,7 @@ impl Reply {
         }
     }
 
-    /// The reply after a stop. Only a `run` start and a `fileAppend` walk get one.
+    /// The reply after a stop. Only a `run` start and an `Answered` walk get one.
     fn stopped(self, call_id: &str) -> Option<Value> {
         match self {
             Reply::Start => Some(reply::exit(call_id, None, Some(0), None)),
@@ -903,7 +903,6 @@ impl ProcessRequests {
             }
             Some("pageant") => self.pageant(&typed(request).ok_or(INVALID)?, call()?),
             Some("terminal") => self.terminal(&typed(request).ok_or(INVALID)?, call()?),
-            Some("fileAppend") => self.file_append(&typed(request).ok_or(INVALID)?, call()?),
             Some("reveal") => self.reveal(&typed(request).ok_or(INVALID)?, call()?),
             // Feature 005 contract Δ6.
             Some("fileDelete") => self.file_delete(&typed(request).ok_or(INVALID)?, call()?),
@@ -1165,121 +1164,6 @@ impl ProcessRequests {
             Some(start) => start(terminal),
             None => putty::start_terminal(terminal, &self.config.launch_directory),
         }
-    }
-
-    /// Feature 004 contract Δ6 `fileAppend`: one append to `<worktree root>\.gitignore`, or to `info\exclude` of the common
-    /// directory, during the `started` action of its target. The check is a walk, and only its finish writes.
-    fn file_append(&self, request: &frame::FileAppend, call_id: &str) -> Result<(), Code> {
-        let read_at = Instant::now();
-        let parsed = file_append::parse(request)?;
-        let operation_id = parsed.operation_id;
-        let mut state = self.state();
-        check_active(&state, operation_id)?;
-        let action = if parsed.gitignore {
-            Mutation::IgnoreGitignore
-        } else {
-            Mutation::IgnoreExclude
-        };
-        if state.started.get(operation_id) != Some(&action) {
-            return Err(INVALID);
-        }
-        let repository = state
-            .repositories
-            .get(parsed.repository_id)
-            .ok_or(UNKNOWN)?;
-        let roots = [
-            repository.worktree_root.clone(),
-            repository.git_directory.clone(),
-            repository.common_directory.clone(),
-        ];
-        let root = if parsed.gitignore { 0 } else { 2 };
-        let names = file_facts::below(&roots[root], &parsed.path).ok_or(INVALID)?;
-        let wanted: &[&str] = if parsed.gitignore {
-            &[".gitignore"]
-        } else {
-            &["info", "exclude"]
-        };
-        if names != wanted {
-            return Err(INVALID);
-        }
-        let installation = match state
-            .gits
-            .get(&repository.git_installation_id)
-            .ok_or(UNKNOWN)?
-        {
-            Git::Windows { .. } if roots.iter().any(|root| file_facts::is_wsl_path(root)) => {
-                return Err(INVALID);
-            }
-            Git::Windows { .. } => None,
-            Git::Wsl(installation) => Some(installation.clone()),
-        };
-        let (expected, bytes, call) = (parsed.expected, parsed.bytes, call_id.to_string());
-        let Some(installation) = installation else {
-            let root = roots[root].clone();
-            // Only the watchdog runs the finish that writes, so a stop before it gives `stopped` with nothing written.
-            return self.spawn_walk(
-                &mut state,
-                Reply::Answered(file_append_deadline, file_append_stopped),
-                call_id,
-                operation_id,
-                read_at,
-                move |stop| {
-                    let expected = expected.as_ref().map(|(size, sha)| (*size, sha.as_str()));
-                    let opened = file_append::open(&root, &names, expected, &stop.flag);
-                    Box::new(move || {
-                        let appended =
-                            opened.map_or_else(|refused| refused, |opened| opened.append(&bytes));
-                        Some(reply::file_append(&call, appended))
-                    })
-                },
-                || {},
-            );
-        };
-        // Contract Δ11: the Perl text of mode `append` walks from the Linux root without following a link.
-        let linux: Vec<String> = roots
-            .iter()
-            .map(|root| wsl::linux_path(root, &installation.distro))
-            .collect::<Option<_>>()
-            .ok_or(INVALID)?;
-        let linux: [String; 3] = linux.try_into().map_err(|_| INVALID)?;
-        let unit = wsl::unit_name(operation_id, Self::next_unit(&mut state, operation_id))?;
-        let append = wsl::Append {
-            root,
-            path: names,
-            expected,
-            bytes,
-        };
-        let command = wsl::append_command(
-            &installation,
-            &unit,
-            &linux,
-            &append,
-            &self.config.base_environment,
-        );
-        command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
-        self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
-        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
-        let (operation, deadline) = (operation_id.to_string(), self.walk_bound());
-        // The `append` process writes inside the walk, and a stop ends it at any point, so the shell cannot know whether it wrote.
-        self.spawn_walk(
-            &mut state,
-            Reply::Answered(file_append_deadline, file_append_interrupted),
-            call_id,
-            operation_id,
-            read_at,
-            move |stop| {
-                let host = me.wsl_host(&operation);
-                // The start byte comes before the cap. One byte above the cap shows output past it.
-                let ended = host.run_walk(
-                    &command,
-                    wsl::APPEND_OUTPUT_BYTES + 2,
-                    deadline,
-                    stop.event.0,
-                );
-                reply_with(reply::file_append(&call, wsl::append_reply(ended.output)))
-            },
-            || {},
-        )
     }
 
     /// Feature 004 contract Δ3 `revealPath`: Explorer shows a path that the walk finds below the worktree root.
@@ -4462,25 +4346,6 @@ fn worktree_add_fits(arguments: &[String], path: &str) -> bool {
             | ["--no-lazy-fetch", "worktree", "add", "-b", _, "--", bound, _]
             if *bound == path
     )
-}
-
-/// Feature 004 contract Δ6: the `fileAppend` reply group has no deadline form, so a walk past its deadline gives `error`.
-/// Only the walk finish writes, so a deadline leaves the target unchanged.
-fn file_append_deadline(call_id: &str) -> Value {
-    reply::file_append(
-        call_id,
-        AppendResult::Error(schema::process_reply::FileAppendErrorCode::OtherError),
-    )
-}
-
-/// Feature 004 contract Δ6: a stop before the finish of a Windows walk writes nothing.
-fn file_append_stopped(call_id: &str) -> Value {
-    reply::file_append(call_id, AppendResult::Stopped)
-}
-
-/// Feature 004 contract Δ6: a stop of a WSL walk can end the `append` process during its write.
-fn file_append_interrupted(call_id: &str) -> Value {
-    reply::file_append(call_id, AppendResult::Interrupted)
 }
 
 /// Feature 004 contract Δ3 `revealPath`: an error, the deadline included, gives `UNKNOWN_TARGET`.
@@ -12854,288 +12719,54 @@ pub(crate) mod tests {
         );
     }
 
-    fn file_append_body(
-        call: &str,
-        operation: &str,
-        repository: &str,
-        target: &str,
-        path: &Path,
-        expected: Value,
-        bytes: &[u8],
-    ) -> Value {
-        json!({
-            "type": "fileAppend", "callId": call, "operationId": operation, "repositoryId": repository,
-            "target": target, "path": path, "expected": expected, "bytes": encode(bytes),
-        })
-    }
-
-    /// Feature 004 contract Δ6: `fileAppend` writes `<worktree root>\.gitignore` or `info\exclude` of the common directory,
-    /// only for the `started` action of its target.
+    /// Feature 005 contract Δ6 and Δ15: `fileAppend` goes. Its frame gets INVALID_REQUEST, also under the Save marker of its target,
+    /// and nothing writes. typify drops the `type` const, so the generated type reads these fields as `fileReplace`.
+    /// Only the `type` match of `dispatch` refuses the frame. The same fields with `type` `fileReplace` write the file.
     #[test]
-    fn a_file_append_writes_only_the_root_gitignore_or_the_common_info_exclude() {
+    fn a_file_append_frame_gets_invalid_request_and_writes_nothing() {
         let harness = Harness::child();
         let workspace = harness.child_workspace("repo");
         let git = workspace.worktree.join(".git");
         std::fs::create_dir_all(git.join("info")).expect("info");
-        let (ignore, exclude, commit) = (uuid(), uuid(), uuid());
-        harness.started_as(&ignore, Mutation::IgnoreGitignore, &workspace);
-        harness.started_as(&exclude, Mutation::IgnoreExclude, &workspace);
-        harness.started_as(&commit, Mutation::Commit, &workspace);
-        let repository = workspace.repository.as_str();
-        let send = |operation: &str, target: &str, path: &Path, expected: Value, bytes: &[u8]| {
-            let call = uuid();
-            harness.send(file_append_body(
-                &call, operation, repository, target, path, expected, bytes,
-            ));
-            let reply = harness.reply(&call);
-            assert_eq!(reply["callId"], json!(call));
-            reply["result"].clone()
-        };
-        let gitignore = workspace.worktree.join(".gitignore");
-        assert_eq!(
-            send(&ignore, "gitignore", &gitignore, json!("absent"), b"/a\n"),
-            "appended"
-        );
-        assert_eq!(std::fs::read(&gitignore).expect("read"), b"/a\n");
-        assert_eq!(
-            send(&ignore, "gitignore", &gitignore, json!("absent"), b"/b\n"),
-            "stale"
-        );
-        let file = git.join("info").join("exclude");
-        assert_eq!(
-            send(&exclude, "exclude", &file, json!("absent"), b"/c\n"),
-            "appended"
-        );
-        let expected =
-            json!({ "size": 3, "sha256": crate::settings::hex(&crate::settings::sha256(b"/c\n")) });
-        assert_eq!(
-            send(&exclude, "exclude", &file, expected, b"/d\n"),
-            "appended"
-        );
-        assert_eq!(std::fs::read(&file).expect("read"), b"/c\n/d\n");
+        let (gitignore, exclude) = (uuid(), uuid());
+        harness.started_as(&gitignore, Mutation::SaveGitignore, &workspace);
+        harness.started_as(&exclude, Mutation::SaveExclude, &workspace);
+        let ignore_file = workspace.worktree.join(".gitignore");
+        let exclude_file = git.join("info").join("exclude");
         let base = |call: &str| {
-            file_append_body(
-                call,
-                &ignore,
-                repository,
-                "gitignore",
-                &gitignore,
-                json!("absent"),
-                b"/z\n",
-            )
-        };
-        let excluded = |path: Value| {
-            both(
-                both(
-                    set("operationId", json!(exclude)),
-                    set("target", json!("exclude")),
-                ),
-                set("path", path),
-            )
+            json!({
+                "type": "fileAppend", "callId": call, "operationId": gitignore, "repositoryId": workspace.repository,
+                "target": "gitignore", "path": ignore_file, "expected": "absent", "bytes": encode(b"/a\n"),
+            })
         };
         let cases: Vec<(&str, Edit)> = vec![
             (
-                "a .gitignore below the root",
-                set(
-                    "path",
-                    json!(workspace.worktree.join("sub").join(".gitignore")),
+                "the Save .gitignore marker",
+                set("target", json!("gitignore")),
+            ),
+            (
+                "the Save info/exclude marker",
+                both(
+                    both(
+                        set("operationId", json!(exclude)),
+                        set("target", json!("exclude")),
+                    ),
+                    set("path", json!(exclude_file)),
                 ),
             ),
-            (
-                "another name at the root",
-                set("path", json!(workspace.worktree.join("x"))),
-            ),
-            ("a relative path", set("path", json!(".gitignore"))),
-            (
-                "an exclude outside the common directory",
-                excluded(json!(workspace.worktree.join("exclude"))),
-            ),
-            ("the common directory itself", excluded(json!(git))),
-            (
-                "another file below the common directory",
-                excluded(json!(git.join("config"))),
-            ),
-            (
-                "an exclude in another folder",
-                excluded(json!(git.join("hooks").join("exclude"))),
-            ),
-            (
-                "info\\exclude one folder deeper",
-                excluded(json!(git.join("x").join("info").join("exclude"))),
-            ),
-            (
-                "an exclude write of the gitignore action",
-                both(set("target", json!("exclude")), set("path", json!(file))),
-            ),
-            ("a commit operation", set("operationId", json!(commit))),
-            ("before started", set("operationId", json!(uuid()))),
-            ("empty bytes", set("bytes", json!(""))),
         ];
         expect_refusals(&harness, base, cases, "INVALID_REQUEST");
-        let cases: Vec<(&str, Edit)> =
-            vec![("an unknown repository", set("repositoryId", json!(uuid())))];
-        expect_refusals(&harness, base, cases, "UNKNOWN_TARGET");
-        assert_eq!(
-            std::fs::read(&gitignore).expect("read"),
-            b"/a\n",
-            "no refused request wrote"
-        );
-        assert!(!workspace.worktree.join("exclude").exists());
-        assert!(!workspace.worktree.join("x").exists());
-    }
-
-    /// Feature 004 contract Δ6: every `fileAppend` request gets one reply. A stop before the finish of the walk gives `stopped`, and nothing is written.
-    /// Without the stop, the same held walk writes and replies `appended`.
-    #[test]
-    fn a_stop_before_the_file_append_finish_replies_stopped_and_writes_nothing() {
-        let harness = Harness::child();
-        let workspace = harness.child_workspace("repo");
-        let operation = uuid();
-        harness.started_as(&operation, Mutation::IgnoreGitignore, &workspace);
-        let gitignore = workspace.worktree.join(".gitignore");
-        std::fs::write(&gitignore, b"/a\n").expect("gitignore");
-        let expected = |bytes: &[u8]| json!({ "size": bytes.len(), "sha256": crate::settings::hex(&crate::settings::sha256(bytes)) });
-        for (stop, bytes, reply, after) in [
-            (true, expected(b"/a\n"), "stopped", &b"/a\n"[..]),
-            (false, expected(b"/a\n"), "appended", &b"/a\n/b\n"[..]),
-        ] {
-            let Some(oplock) = Oplock::request(&gitignore) else {
-                println!("{SKIP_OPLOCK}");
-                return;
-            };
-            let call = uuid();
-            harness.send(file_append_body(
-                &call,
-                &operation,
-                &workspace.repository,
-                "gitignore",
-                &gitignore,
-                bytes,
-                b"/b\n",
-            ));
-            assert!(
-                oplock.broken(WAIT),
-                "the target open of the walk waits on the oplock break"
-            );
-            // The seam: the state lock holds the watchdog after the check of the walk ends.
-            let state = harness.requests.state();
-            drop(oplock);
-            assert!(
-                eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0),
-                "the check ends after the oplock holder closes"
-            );
-            assert!(
-                eventually(CLOSE_WAIT, || harness.requests.unsent_walk_events() == 0),
-                "the walk sends its end to the watchdog"
-            );
-            if stop {
-                // `cancel` sends exactly this event under the state lock.
-                let _ = state.walks[call.as_str()].events.send(WalkEvent::Stop);
-            }
-            drop(state);
-            assert_eq!(
-                harness.reply(&call),
-                json!({ "type": "fileAppend", "callId": call, "result": reply })
-            );
-            assert!(
-                eventually(CLOSE_WAIT, || harness.requests.active_watchdogs() == 0),
-                "the watchdog, the only sender of a walk reply, ends"
-            );
-            assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
-            assert_eq!(std::fs::read(&gitignore).expect("read"), after, "{reply}");
-        }
-    }
-
-    /// Feature 004 contract Δ6: a cancel ends the WSL `append` process at any point, so the reply is `interrupted`.
-    #[test]
-    fn a_canceled_wsl_file_append_replies_interrupted() {
-        let wsl = wsl_harness(true);
-        let (_git, repository) = slow_wsl_repository(&wsl);
-        let operation = uuid();
-        wsl.harness.requests.tag(
-            &operation,
-            Mutation::IgnoreExclude,
-            PhysicalIdentity::Wsl(wsl::WslIdentity {
-                guid: WSL_GUID.to_string(),
-                file_system_id: "fedc9aa3bd65bc57".to_string(),
-                inode: "4242".to_string(),
-            }),
-        );
+        assert!(!ignore_file.exists(), "no .gitignore");
+        assert!(!exclude_file.exists(), "no info/exclude");
         let call = uuid();
-        let path = PathBuf::from(format!(r"{WSL_PATH}\.git\info\exclude"));
-        wsl.harness.send(file_append_body(
-            &call,
-            &operation,
-            &repository,
-            "exclude",
-            &path,
-            json!({ "size": 3, "sha256": HEX_A }),
-            b"/x\n",
-        ));
-        assert!(
-            walk_child_started(&wsl, &operation),
-            "the append child runs"
-        );
-        wsl.harness
-            .send(json!({ "type": "cancel", "callId": call }));
+        let mut replace = base(&call);
+        replace["type"] = json!("fileReplace");
+        harness.send(replace);
         assert_eq!(
-            wsl.harness.reply(&call),
-            json!({ "type": "fileAppend", "callId": call, "result": "interrupted" })
+            harness.reply(&call),
+            json!({ "type": "fileReplace", "callId": call, "result": "replaced" })
         );
-        assert!(
-            eventually(CLOSE_WAIT, || wsl.harness.requests.active_watchdogs() == 0),
-            "the watchdog, the only sender of a walk reply, ends"
-        );
-        assert_eq!(wsl.harness.replies_for(&call).len(), 1, "one reply");
-    }
-
-    /// Feature 004 contract Δ11: a WSL repository appends through the `wslFiles` mode `append` with its Linux roots.
-    #[test]
-    fn a_wsl_file_append_runs_the_append_mode_with_the_linux_roots() {
-        let wsl = wsl_harness(true);
-        let (_git, repository) = wsl_repository(&wsl);
-        let operation = uuid();
-        wsl.harness.requests.tag(
-            &operation,
-            Mutation::IgnoreExclude,
-            PhysicalIdentity::Wsl(wsl::WslIdentity {
-                guid: WSL_GUID.to_string(),
-                file_system_id: "fedc9aa3bd65bc57".to_string(),
-                inode: "4242".to_string(),
-            }),
-        );
-        wsl.host.push(0, b"Sappended\0");
-        let call = uuid();
-        let path = PathBuf::from(format!(r"{WSL_PATH}\.git\info\exclude"));
-        wsl.harness.send(file_append_body(
-            &call,
-            &operation,
-            &repository,
-            "exclude",
-            &path,
-            json!({ "size": 3, "sha256": HEX_A }),
-            b"/x\n",
-        ));
-        assert_eq!(
-            wsl.harness.reply(&call),
-            json!({ "type": "fileAppend", "callId": call, "result": "appended" })
-        );
-        let probe = wsl.host.commands().last().expect("Perl text").clone();
-        assert!(probe.arguments.contains(&wsl::texts().wsl_files));
-        assert!(probe.arguments.ends_with(&[
-            "--".to_string(),
-            "append".to_string(),
-            "/home/u/repo".to_string(),
-            "/home/u/repo/.git".to_string(),
-            "/home/u/repo/.git".to_string(),
-            "/usr/bin/git".to_string(),
-            "/usr/bin/sha256sum".to_string(),
-        ]));
-        assert_eq!(
-            stdin_of(&probe),
-            format!("1048576\x002\x002\x00info\x00exclude\x003\x00{HEX_A}\x002f780a\x00")
-                .into_bytes()
-        );
+        assert_eq!(std::fs::read(&ignore_file).expect("read"), b"/a\n");
     }
 
     type Shown = Arc<Mutex<Vec<PathBuf>>>;

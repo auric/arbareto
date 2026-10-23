@@ -5,7 +5,7 @@
 // It does not reproduce the shell console flags or Jobs. T024 and T027 cover them.
 // T206 adds the contract §11 WSL process requests. T212 takes their types from the zod frames of `src/contracts/channel.ts`.
 
-import { appendFileSync, linkSync, lstatSync, mkdirSync, opendirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { linkSync, lstatSync, mkdirSync, opendirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Subprocess } from "bun";
@@ -34,7 +34,6 @@ import {
   type DeleteEntryReply,
   type DeleteFolderReply,
   type DestinationFactsReply,
-  type FileAppendReply,
   type FileDeleteExpected,
   type FileDeleteReply,
   type FileReplaceReply,
@@ -1528,44 +1527,6 @@ export function createBunRunner(options: BunRunnerOptions) {
       // The double has no WSL `destination` mode. T075 covers it in the distro.
       if (wslParts(bound.path) !== null) throw new RunnerRefusal("INVALID_REQUEST", "WSL destination");
       return destinationOf(bound.path);
-    },
-
-    // Feature 004 contract Δ6 `fileAppend` on Windows, as `src-tauri/src/file_append.rs` checks it: a `started` marker of the target's action,
-    // the exact target, no link on the way, a regular file with one link, the expected state, and one append. The double has no WSL `append` mode.
-    async fileAppend(request, signal): Promise<FileAppendReply | WalkStop> {
-      checkSyncRequest("fileAppend", request);
-      frames.push({ type: "fileAppend", ...request });
-      if (inactive.has(request.operationId)) throw unknownTarget();
-      const action = request.target === "gitignore" ? "ignore-gitignore" : "ignore-exclude";
-      if (![...markers.values()].some((m) => m.operationId === request.operationId && m.kind === "workbench" && m.action === action)) throw new RunnerRefusal("INVALID_REQUEST", "fileAppend action");
-      const repository = repositories.get(request.repositoryId);
-      if (repository === undefined) throw unknownTarget();
-      if (wslGits.has(repository.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL fileAppend");
-      const root = request.target === "gitignore" ? repository.worktreeRoot : repository.commonDirectory;
-      const names = request.target === "gitignore" ? [".gitignore"] : ["info", "exclude"];
-      if (resolve(request.path) !== resolve(join(root, ...names))) throw new RunnerRefusal("INVALID_REQUEST", "fileAppend path");
-      const bytes = Buffer.from(request.bytes, "base64");
-      // src-tauri `file_append_deadline` and `file_append_stopped`: a walk past its deadline gives `error` `other-error`, and a stop before the read gives `stopped`.
-      const replied = (reply: FileAppendReply | WalkStop): FileAppendReply => ("stop" in reply ? (reply.stop === "deadline" ? { result: "error", code: "other-error" } : { result: "stopped" }) : reply);
-      return replied(await walk(signal, (): FileAppendReply => {
-        let at = root;
-        for (const [i, name] of names.entries()) {
-          at = join(at, name);
-          const st = lstatSync(at, { throwIfNoEntry: false });
-          if (st === undefined) {
-            if (i < names.length - 1) return { result: "error", code: "other-error" };
-            if (request.expected !== "absent") return { result: "stale" };
-            writeFileSync(at, bytes, { flag: "wx" });
-            return { result: "appended" };
-          }
-          if (st.isSymbolicLink() || (i < names.length - 1 && !st.isDirectory())) return { result: "refused", reason: "not-regular" };
-          if (i === names.length - 1 && (!st.isFile() || st.nlink !== 1)) return { result: "refused", reason: "not-regular" };
-        }
-        const old = readFileSync(at);
-        if (request.expected === "absent" || old.length !== request.expected.size || new Bun.CryptoHasher("sha256").update(old).digest("hex") !== request.expected.sha256) return { result: "stale" };
-        appendFileSync(at, bytes);
-        return { result: "appended" };
-      }, "fileAppend"));
     },
 
     // Feature 004 contract Δ3 `revealPath`, as `src-tauri/src/process_requests.rs` `reveal` checks it: the path lies below the worktree root by text,

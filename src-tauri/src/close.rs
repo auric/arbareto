@@ -108,8 +108,6 @@ pub enum Mutation {
     ChooseOurs,
     ChooseTheirs,
     MergeTool,
-    IgnoreGitignore,
-    IgnoreExclude,
     AddWorktree,
     RemoveWorktree,
     PruneWorktrees,
@@ -165,8 +163,6 @@ impl Mutation {
                 A::ChooseOurs => Mutation::ChooseOurs,
                 A::ChooseTheirs => Mutation::ChooseTheirs,
                 A::Mergetool => Mutation::MergeTool,
-                A::IgnoreGitignore => Mutation::IgnoreGitignore,
-                A::IgnoreExclude => Mutation::IgnoreExclude,
                 A::WorktreeAdd => Mutation::AddWorktree,
                 A::WorktreeRemove => Mutation::RemoveWorktree,
                 A::WorktreePrune => Mutation::PruneWorktrees,
@@ -205,8 +201,6 @@ impl Mutation {
             | M::ChooseOurs
             | M::ChooseTheirs
             | M::MergeTool
-            | M::IgnoreGitignore
-            | M::IgnoreExclude
             | M::AddWorktree
             | M::RemoveWorktree
             | M::PruneWorktrees
@@ -246,8 +240,6 @@ impl Mutation {
             Mutation::ChooseOurs => "Choose ours",
             Mutation::ChooseTheirs => "Choose theirs",
             Mutation::MergeTool => "Merge tool",
-            Mutation::IgnoreGitignore => "Add to .gitignore",
-            Mutation::IgnoreExclude => "Add to info/exclude",
             Mutation::AddWorktree => "Add worktree",
             Mutation::RemoveWorktree => "Remove worktree",
             Mutation::PruneWorktrees => "Prune worktrees",
@@ -639,8 +631,6 @@ mod tests {
             (A::ChooseOurs, "Choose ours"),
             (A::ChooseTheirs, "Choose theirs"),
             (A::Mergetool, "Merge tool"),
-            (A::IgnoreGitignore, "Add to .gitignore"),
-            (A::IgnoreExclude, "Add to info/exclude"),
             (A::WorktreeAdd, "Add worktree"),
             (A::WorktreeRemove, "Remove worktree"),
             (A::WorktreePrune, "Prune worktrees"),
@@ -673,6 +663,18 @@ mod tests {
             );
         }
         assert_eq!(Mutation::Clone.kind(), None, "a clone has no started frame");
+    }
+
+    /// Feature 005 contract Δ2 and Δ6: the actions `ignore-gitignore` and `ignore-exclude` go, so a `started` frame
+    /// with one fails the generated type and gets INVALID_REQUEST. The close prompt names neither.
+    #[test]
+    fn the_004_ignore_actions_are_no_started_action() {
+        for action in ["ignore-gitignore", "ignore-exclude"] {
+            assert!(
+                serde_json::from_value::<StartedAction>(json!(action)).is_err(),
+                "{action}"
+            );
+        }
     }
 
     /// Feature 004 contract Δ6: a `workbench` frame carries a workbench action, a `sync` frame a sync action,

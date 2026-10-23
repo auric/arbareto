@@ -64,8 +64,6 @@
             "choose-ours",
             "choose-theirs",
             "mergetool",
-            "ignore-gitignore",
-            "ignore-exclude",
             "worktree-add",
             "worktree-remove",
             "worktree-prune",

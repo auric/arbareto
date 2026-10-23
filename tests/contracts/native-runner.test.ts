@@ -1082,7 +1082,7 @@ describe("native runner matching probe script", () => {
   });
 });
 
-// Feature 004 contract Δ6 (T034): the `globalConfig` and `worktreeAdd` contexts, the policy `mergetool`, the `worktreeAdd` form of `destinationFacts`, and `fileAppend`.
+// Feature 004 contract Δ6 (T034): the `globalConfig` and `worktreeAdd` contexts, the policy `mergetool`, and the `worktreeAdd` form of `destinationFacts`. Feature 005 T057 removes `fileAppend`.
 describe("native runner feature 004 requests", () => {
   const globalConfig: ProcessContext = { contextKind: "globalConfig", gitInstallationId: id() };
   const worktreeAdd: ProcessContext = { contextKind: "worktreeAdd", gitInstallationId: id(), repositoryId: id(), bootstrapId: id() };
@@ -1155,36 +1155,6 @@ describe("native runner feature 004 requests", () => {
     const extra = channel.runner.destinationFacts({ operationId, cloneId: id() });
     expect(replyTo({ result: "absent", path: WORKTREE })).toBe(false);
     await expect(extra).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
-  });
-
-  test("fileAppend sends its frame and maps each reply form; a refused frame throws RunnerRefusal; an abort sends cancel and waits for the reply", async () => {
-    const channel = createChannelDouble();
-    const request = { operationId: id(), repositoryId: id(), target: "gitignore" as const, path: isWindows ? "C:\\repo\\.gitignore" : "/repo/.gitignore", expected: "absent" as const, bytes: Buffer.from("/build/\n").toString("base64") };
-    for (const reply of [{ result: "appended" }, { result: "stale" }, { result: "stopped" }, { result: "interrupted" }, { result: "refused", reason: "not-regular" }, { result: "error", code: "io-error" }]) {
-      const appended = channel.runner.fileAppend(request, SIGNAL);
-      const body = channel.last("fileAppend");
-      expect(body).toEqual({ type: "fileAppend", callId: body.callId, ...request });
-      expect(channel.reply("process", { type: "fileAppend", callId: body.callId, ...reply })).toBe(true);
-      expect(await appended).toEqual(reply as Awaited<typeof appended>);
-    }
-    const refused = channel.runner.fileAppend(request, SIGNAL);
-    channel.reply("process", { type: "refused", callId: channel.last("fileAppend").callId, code: "INVALID_REQUEST" });
-    const error = await refused.catch((e: unknown) => e);
-    expect({ refusal: error instanceof RunnerRefusal, code: (error as RunnerRefusal).code }).toEqual({ refusal: true, code: "INVALID_REQUEST" });
-    // A call that settled at the abort keeps its first value. So the reply value proves that the call waited for the reply.
-    for (const result of ["stopped", "appended"] as const) {
-      const abort = new AbortController();
-      const canceled = channel.runner.fileAppend(request, abort.signal);
-      const { callId } = channel.last("fileAppend");
-      abort.abort();
-      expect(channel.last("cancel")).toEqual({ type: "cancel", callId });
-      expect(channel.reply("process", { type: "fileAppend", callId, result })).toBe(true);
-      expect(await canceled).toEqual({ result });
-    }
-    const before = channel.sent.length;
-    const empty = channel.runner.fileAppend({ ...request, bytes: "" }, SIGNAL).catch((error: unknown) => error);
-    expect(channel.sent.length).toBe(before);
-    expect(await empty).toMatchObject({ code: "INVALID_REQUEST" });
   });
 
   test("reveal sends its frame and maps the reply to shown; a refused frame throws RunnerRefusal with UNKNOWN_TARGET; an abort sends cancel", async () => {

@@ -205,7 +205,8 @@ export function CommitChanges({ inspection, view, oid, profile, onTrust, onBlame
     <section
       aria-labelledby={headingId}
       data-slot="changed-files"
-      data-dock-stop=""
+      data-section="changedFiles"
+      tabIndex={-1}
       className={`flex min-h-0 flex-col ${profile === "constrained" ? "max-h-[50%] shrink-0 border-b border-divider" : "shrink-0"}`}
       style={profile === "constrained" ? undefined : { width }}
     >
@@ -568,7 +569,7 @@ function CommitDiff({ entry, file, onBlame }: { entry: Entry | null; file: FileR
       </>
     );
   return (
-    <section aria-label="Diff of the selected file" data-slot="history-diff" data-dock-stop="" className="flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onKeyDown}>
+    <section aria-label="Diff of the selected file" data-slot="history-diff" data-section="historyDiff" tabIndex={-1} className="flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onKeyDown}>
       {path === null ? null : (
         <div data-slot="diff-header" className="flex shrink-0 items-center gap-2 border-b border-divider px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
           <span className="min-w-0 truncate font-mono font-semibold" title={path}>

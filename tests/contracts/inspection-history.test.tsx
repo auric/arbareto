@@ -496,10 +496,13 @@ describe("workbench keys", () => {
     await key(first, "f", { ctrlKey: true });
     expect(document.activeElement).toBe(filter);
     // happy-dom has no layout, so the Workbench takes the constrained profile, where the Changes tab holds both regions.
-    // F6 from the History list reaches the shown dock regions in order: Changed files, then the diff.
+    // F6 from the History list reaches the shown dock regions in order: the commit details tabs, Changed files, then the diff.
     const list = document.querySelector<HTMLElement>('section[aria-label="History"] [data-history-list]')!;
     await act(async () => list.focus());
     await key(list, "F6");
+    expect(document.activeElement?.closest('[data-section="commitDetails"]')).not.toBeNull();
+    expect(files.contains(document.activeElement)).toBe(false);
+    await key(document.activeElement!, "F6");
     expect(files.contains(document.activeElement)).toBe(true);
     await key(document.activeElement!, "F6");
     expect(document.querySelector('[data-slot="history-diff"]')!.contains(document.activeElement)).toBe(true);

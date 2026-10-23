@@ -24,7 +24,7 @@ const D15: [ScopedAction, string, string, KeyScope[]][] = [
   ["previousHunk", "Alt+ArrowUp", "Alt+Up", ["diff"]],
   ["nextHunk", "Alt+ArrowDown", "Alt+Down", ["diff"]],
   ["primary", "Control+Enter", "Ctrl+Enter", ["message", "panel"]],
-  ["save", "Control+S", "Ctrl+S", ["settingsView"]],
+  ["save", "Control+S", "Ctrl+S", ["settingsView", "ignoreEditor"]],
 ];
 const SCOPES: KeyScope[] = ["localBranchRow", "remoteBranchRow", "historyRow", "diff", "fileList", "message", "panel", "settingsView"];
 
@@ -40,7 +40,8 @@ const event = (init: Init) => ({ shiftKey: false, ctrlKey: false, altKey: false,
 describe("plan.md D15 keyboard map", () => {
   test("the map holds the D15 keys and texts", () => {
     for (const [action, aria, text] of D15) expect(KEYS[action]).toEqual({ aria, text, scopes: D15.find((row) => row[0] === action)![3] });
-    expect(Object.keys(KEYS).sort()).toEqual(D15.map((row) => row[0]).sort());
+    // Feature 005 adds its own keys. tests/contracts/shortcuts-005.test.ts checks them.
+    expect(Object.keys(KEYS).sort()).toEqual([...D15.map((row) => row[0]), "deleteFiles", "deletePermanently", "openSubmodule", "closeEditor"].sort());
   });
 
   test("each key acts only in its scope", () => {

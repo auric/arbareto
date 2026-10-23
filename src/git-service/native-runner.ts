@@ -8,7 +8,6 @@ import {
   ConfirmRunReply,
   DestinationFactsReply as DestinationFactsReplySchema,
   ExitReply,
-  FileAppendReply as FileAppendReplySchema,
   FileDeleteReply as FileDeleteReplySchema,
   FileFactsReply,
   FileReplaceReply as FileReplaceReplySchema,
@@ -52,7 +51,6 @@ import {
   wslResultsFit,
   RunnerRefusal,
   type DestinationFactsReply,
-  type FileAppendReply,
   type FileDeleteReply,
   type FileReplaceReply,
   type ShadowReply,
@@ -516,23 +514,6 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
         const { type: _type, callId: _callId, ...result } = reply.data;
         return result;
       });
-    },
-
-    // Feature 004 contract Δ6 `fileAppend`: a walk, so an abort sends `cancel`. The reply group has no deadline form.
-    // Every request gets one reply, also after `cancel`, so the call waits for it within the walk deadline (contract §5). No reply by then gives `canceled`.
-    async fileAppend(request, signal) {
-      checkSyncRequest("fileAppend", request);
-      return ask<FileAppendReply | WalkStop>(
-        "process",
-        { type: "fileAppend", ...request },
-        (r) => {
-          const reply = FileAppendReplySchema.safeParse(r);
-          if (!reply.success) return undefined;
-          const { type: _type, callId: _callId, ...result } = reply.data;
-          return result;
-        },
-        { signal, value: CANCELED, wait: GIT_PROCESS_DEADLINE_MS },
-      );
     },
 
     async terminal(request) {

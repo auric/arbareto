@@ -10,8 +10,6 @@ mod dialogs;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod env_sanitize;
 #[cfg(windows)]
-mod file_append;
-#[cfg(windows)]
 mod file_delete;
 #[cfg(windows)]
 mod file_facts;

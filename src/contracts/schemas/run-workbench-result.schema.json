@@ -441,24 +441,6 @@
       "properties": {
         "action": {
           "type": "string",
-          "const": "ignore"
-        },
-        "reason": {
-          "type": "string",
-          "const": "ignore-not-regular"
-        }
-      },
-      "required": [
-        "action"
-      ],
-      "additionalProperties": false,
-      "title": "IgnoreRun"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "action": {
-          "type": "string",
           "enum": [
             "worktree-add",
             "worktree-remove",
@@ -859,7 +841,6 @@
             "delete-branch",
             "merge",
             "rebase",
-            "ignore",
             "worktree-add",
             "worktree-remove",
             "worktree-prune",

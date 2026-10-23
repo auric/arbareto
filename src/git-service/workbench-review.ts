@@ -15,7 +15,7 @@ import type { Exclusion } from "./exclusion";
 import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit } from "./git-runner";
 import { captureHead, sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
 import { enterReconciling, isStop, settled, type Fact, type Failure, type ObserveContext, type PublishContext, type Stop } from "./hunk-publish";
-import { reviewIgnore, reviewIgnoreSave, runIgnore, runIgnoreSave, type IgnorePlan, type IgnoreSaveBound } from "./ignore";
+import { reviewIgnoreSave, runIgnoreSave, type IgnoreSaveBound } from "./ignore";
 import type { OperationRegistry } from "./operations";
 import { contextOf } from "./read-steps";
 import type { Workspace } from "./registration";
@@ -105,13 +105,13 @@ export function registerWorkbenchAction<A extends WorkbenchAction, B>(action: A,
 }
 
 // Contract Δ3 "Common refusals": these actions also run while an operation is in progress. `worktree-remove` checks its own worktree.
-// Feature 005 contract Δ3: `ignore-save` keeps the exception of `ignore`, because Save changes no Git state (spec FR-046).
-const IN_PROGRESS_ALLOWED: ReadonlySet<string> = new Set(["choose-side", "mergetool", "ignore", "config-save", "worktree-prune", "worktree-remove", "ignore-save"]);
+// Feature 005 contract Δ3: `ignore-save` keeps the exception of the 004 action `ignore`, because Save changes no Git state (spec FR-046).
+const IN_PROGRESS_ALLOWED: ReadonlySet<string> = new Set(["choose-side", "mergetool", "config-save", "worktree-prune", "worktree-remove", "ignore-save"]);
 
-// Contract Δ7 "Mutation trust": `ignore` and `config-save` run no repository program, so they need no class. `mergetool` takes the class `mergetool`.
+// Contract Δ7 "Mutation trust": `config-save` runs no repository program, so it needs no class. `mergetool` takes the class `mergetool`.
 // Every other action takes the class `workbench`.
 // Feature 005 contract Δ7: `delete` and `ignore-save` run no repository program either.
-const CLASSLESS: ReadonlySet<string> = new Set(["ignore", "config-save", "delete", "ignore-save"]);
+const CLASSLESS: ReadonlySet<string> = new Set(["config-save", "delete", "ignore-save"]);
 const classOf = (action: string): "workbench" | "mergetool" | null => (CLASSLESS.has(action) ? null : action === "mergetool" ? "mergetool" : "workbench");
 // Plan.md O-20: the result of a trust refusal by the trust listing of this repository.
 const REPOSITORY_GATE = { trustGate: "repository" } as const;
@@ -177,37 +177,6 @@ export function conclude(r: WorkbenchRun, f: { done: boolean; intended: boolean;
   const code: ErrorCode | undefined = end?.refused ?? (end?.exit?.deadline !== undefined ? undefined : end?.exit?.diagnosticLimit ? "OUTPUT_LIMIT" : "GIT_FAILED");
   r.finish({ type: "no-effects", observed: "failed", ...(code === undefined ? {} : { code }) }, { ...result, ...tail });
 }
-
-// ---- Ignore lines (contract Δ3 `ignore`, Δ6 `fileAppend`, plan.md D9) ----
-
-// The token binds the whole plan. Its other fields follow from `expected`, `line`, the target, and the path that Git names (data-model §2).
-registerWorkbenchAction<"ignore", IgnorePlan>("ignore", {
-  async observe(ctx, p) {
-    const w = ctx.workspace;
-    const found = ctx.reader.entry(w.repositoryId, w.generation, p.snapshotId, p.entryId);
-    if (!found.ok) return { refused: found.code };
-    const review = await reviewIgnore(ctx, found.entry, p.target, p.folder === undefined ? null : new Uint8Array(Buffer.from(p.folder, "base64")));
-    if (isStop(review)) return review;
-    if ("code" in review) return review.reason !== undefined ? { refused: review.code, result: { reason: review.reason } } : review.code === "INVALID_REQUEST" ? { refused: review.code } : { code: review.code };
-    const plan = review.plan;
-    return { bound: plan, plan: { target: plan.target, path: Buffer.from(plan.path).toString("base64"), folder: plan.folder, line: plan.line, prefixNewline: plan.prefixNewline, expected: plan.expected } };
-  },
-  started: (p) => (p.target === "gitignore" ? "ignore-gitignore" : "ignore-exclude"),
-  async run(r, _p, plan) {
-    const { ctx, q } = r;
-    r.progress("ignore");
-    // Spec FR-046: the status read follows the append.
-    const outcome = await runIgnore({ runner: ctx.runner, operationId: ctx.operationId, signal: ctx.signal, workspace: ctx.workspace, appender: ctx.runner }, plan, () =>
-      q.reader.readWorkspace({ operationId: q.operationId, signal: q.signal, installation: q.installation, workspace: q.workspace, refresh: false }),
-    );
-    const settledRun = await r.reconcile([]);
-    const result = { action: "ignore", ...(outcome.type === "no-effects" && outcome.reason !== undefined ? { reason: outcome.reason } : {}) };
-    if (settledRun === null) return r.unknown({ code: "GIT_FAILED" }, result);
-    if (outcome.type === "reconciliation-read-failed") return r.unknown({ code: outcome.code }, result);
-    if (outcome.type === "no-effects") return r.finish({ type: "no-effects", observed: outcome.observed, ...(outcome.code === undefined ? {} : { code: outcome.code }) }, result);
-    r.finish({ type: outcome.type }, result);
-  },
-});
 
 // ---- Feature 005 ignore Save (contract Δ3 `ignore-save`, Δ6 `fileReplace`, plan.md D10) ----
 

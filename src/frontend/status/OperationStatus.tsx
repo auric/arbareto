@@ -26,6 +26,9 @@ export type StatusOperation = {
   kind: "commit" | "applyHunk" | "applyFile" | "updateSubmodules" | "sync" | "applyFiles" | "runWorkbench";
   /** Feature 004: the name, the running text, and the area heading of an `applyFiles` or `runWorkbench` operation (plan.md D15). */
   texts?: [name: string, running: string, heading: string];
+  /** Feature 005 plan.md D15: the outcome line of a `runWorkbench` that states its own result, and the detail lines of the area. */
+  outcome?: string;
+  lines?: readonly string[];
   /** Feature 003 FR-052: `resolve` is Mark resolved. */
   direction?: "stage" | "unstage" | "resolve";
   /** Feature 003: the action of a `sync` and the remotes of its review plan, in `git remote` order (contract Δ3). */
@@ -309,13 +312,14 @@ function operationText(op: StatusOperation, worktreeRoot: string, head: Head | n
     const step = op.kind === "updateSubmodules" && progress?.phase !== undefined ? SUBMODULE_STEPS[progress.phase] : undefined;
     const { rowIndex, rowCount } = progress?.counters ?? {};
     if (step !== undefined && progress?.path !== undefined && rowIndex !== undefined && rowCount !== undefined) return { lead: `${step} ${progress.path} (${rowIndex} of ${rowCount})…`, tail: "" };
-    // Feature 004 contract Δ2: the `stage-files` phase counts the proved files.
-    const { fileIndex, fileCount } = progress?.phase === "stage-files" ? progress.counters : {};
+    // Feature 004 contract Δ2 `stage-files` and feature 005 Δ2 `delete-files` count the files.
+    const { fileIndex, fileCount } = progress?.phase === "stage-files" || progress?.phase === "delete-files" ? progress.counters : {};
     if (fileIndex !== undefined && fileCount !== undefined) return { lead: `${verb} (${fileIndex} of ${fileCount})…`, tail: "" };
     const syncStep = op.kind === "sync" ? syncStepText(op) : null;
     if (syncStep !== null) return { lead: syncStep, tail: "" };
     return { lead: `${verb} in ${folderName(worktreeRoot)}…`, tail: "" };
   }
+  if (op.outcome !== undefined) return { lead: op.outcome, tail: "" };
   const outcome = outcomeOf(response);
   const sync = op.kind === "sync" ? syncOutcome(name, response, outcome, head) : null;
   if (sync !== null) return sync;
@@ -456,7 +460,8 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
     submoduleRows.length > 0 ||
     (outcome.remotes?.length ?? 0) > 0 ||
     inactivity ||
-    suggested;
+    suggested ||
+    (op?.lines?.length ?? 0) > 0;
   const hasArea = heading !== undefined && (details || truncated || current !== null);
   const open = hasArea && current?.open === true;
 
@@ -633,6 +638,11 @@ export function OperationStatus({ bridge, operation: op, worktreeRoot, head, tru
             ) : (
               <code className="block break-all">{outcome.path}</code>
             )}
+            {op?.lines?.map((detail, index) => (
+              <p key={index} className="break-all">
+                {detail}
+              </p>
+            ))}
             {outcome.outputTail === undefined ? null : <pre className="font-mono whitespace-pre-wrap select-text">{outcome.outputTail}</pre>}
             {outcome.remedy?.text === undefined ? null : <p>{outcome.remedy.text}</p>}
             {isText(outcome.remedy?.command) ? <code className="block break-all">{outcome.remedy.command}</code> : null}

@@ -1,5 +1,5 @@
 {
   "schema": "sync-settings-result",
   "expected": "INVALID_REQUEST",
-  "text": "{\"sshClient\":\"git\",\"defaultPullAction\":\"pull\",\"plinkPath\":null,\"programs\":[],\"remoteKeyFiles\":[],\"defaultCloneFolder\":null,\"lastCloneParent\":null}"
+  "text": "{\"sshClient\":\"git\",\"defaultPullAction\":\"pull\",\"plinkPath\":null,\"programs\":[],\"remoteKeyFiles\":[],\"defaultCloneFolder\":null,\"lastCloneParent\":null,\"spelling\":{\"enabled\":true,\"languages\":[\"en\"]}}"
 }

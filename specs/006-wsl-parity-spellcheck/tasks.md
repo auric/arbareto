@@ -24,7 +24,7 @@ description: "Task list for the WSL Parity and Commit Message Spell Check featur
 
 ## Path Conventions
 
-- Paths follow plan.md "Project Structure": `scripts/`, `src/contracts/`, `src/git-service/`, `src/frontend/`, `src-tauri/`, `tests/contracts/`, `tests/git/`, `tests/gate/`, `tests/vectors/`, `tests/windows/`, and `tests/wsl/`.
+- Paths follow plan.md "Project Structure": `scripts/`, `src/contracts/`, `src/git-service/`, `src/frontend/`, `src-tauri/`, `tests/contracts/`, `tests/git/`, `tests/gate/`, `tests/support/`, `tests/vectors/`, `tests/windows/`, and `tests/wsl/`.
 - Feature evidence goes only into `specs/006-wsl-parity-spellcheck/research.md` "R13 Results".
 - The approved mockup boards live in the orchestrator scratchpad folder `f006/canvas/project/`: `Main`, `SpellingEdges`, `SpellingPage`, `DictionaryFailures`, `LicenceView`, `WslGlobal`, `ForcedColors`, and `Light` (`*.dc.html`). They are not repository files.
 - The local dictionary cache is the folder in `ARBARETO_DICTIONARY_CACHE`, outside the repository (plan.md D3).
@@ -347,4 +347,5 @@ Then:          T030
 - Run `/speckit-analyze` after every edit of this file.
 - Run `/speckit-converge` at the end of each batch.
 - The orchestrator commits after each task or logical group.
+- The data-model §16 fixture code lives in `tests/gate/dictionary-gate.test.ts` after WP1 (T008). WP5 (T023) and WP8 (T042, T043) need the same fixture. The first of them moves the code into the new shared module `tests/support/language-fixture.ts`, and `tests/gate/dictionary-gate.test.ts` and `tests/windows/spelling-perf.test.ts` import it from there. The module holds no Win32 call.
 - The legal reading of LGPL-2.1 Hunspell embedded in the application bundle stays a user and lawyer item (plan.md D18).

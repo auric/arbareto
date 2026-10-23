@@ -1,0 +1,6 @@
+{
+  "schema": "dictionary-run-result",
+  "expected": "valid",
+  "platform": "posix",
+  "text": "{\"reason\":\"import-unreadable\",\"folder\":\"/home/u/dictionaries/uk\"}"
+}

@@ -1,0 +1,6 @@
+{
+  "schema": "dictionary-run-result",
+  "expected": "valid",
+  "platform": "posix",
+  "text": "{\"reason\":\"save\",\"folder\":\"/opt/arbareto/dictionaries/uk\"}"
+}

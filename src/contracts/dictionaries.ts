@@ -4,13 +4,26 @@
 // 006 data-model §1 and §2: the schema of src/contracts/dictionaries.json. The service, the renderer, and the build parse the file with it.
 
 import { z } from "zod";
+import { DICTIONARY_CATALOG_ENTRIES, DICTIONARY_LANGUAGE_BYTES } from "./limits";
 
-// Contract Δ5. shortcut: WP2 adds this bound to limits.ts; import it from there when that lands.
-export const DICTIONARY_LANGUAGE_BYTES = 12_582_912;
+// Data-model §2: a language ID, at most 32 bytes. The form holds only ASCII, so the code point bound is the byte bound.
+export const LANGUAGE_ID_BYTES = 32;
+export const LanguageId = z
+  .string()
+  .max(LANGUAGE_ID_BYTES)
+  .regex(/^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/);
+export type LanguageId = z.infer<typeof LanguageId>;
+
+// Data-model §2: the names that a catalog entry `files` can hold, in the download order.
+export const DICTIONARY_FILE_NAMES = ["index.aff", "index.dic", "license", "licence", "readme.md"] as const;
+export const DictionaryFileName = z.enum(DICTIONARY_FILE_NAMES);
+
+// Data-model §4: the service state of a catalog entry, and its notice.
+export const LANGUAGE_STATES = ["not-downloaded", "ready", "changed", "downloading", "importing"] as const;
+export const LANGUAGE_NOTICES = ["catalog-changed"] as const;
 
 const COMMIT = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
-const LANGUAGE_ID = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
 const LICENCE_FORMS = ["license", "licence", "license,licence", "readme.md"];
 const utf8 = new TextEncoder();
 const bytes = (text: string) => utf8.encode(text).length;
@@ -30,14 +43,14 @@ export function compareNames(a: string, b: string): number {
 }
 
 const CatalogFile = z.strictObject({
-  name: z.enum(["index.aff", "index.dic", "license", "licence", "readme.md"]),
+  name: DictionaryFileName,
   url: z.string(),
   size: z.number().int().min(1).max(DICTIONARY_LANGUAGE_BYTES),
   sha256: z.string().regex(SHA256),
 });
 
 const entryFields = {
-  id: z.string().regex(LANGUAGE_ID).refine((id) => bytes(id) <= 32),
+  id: LanguageId,
   name: z.string().refine((name) => [...name].length >= 1 && [...name].length <= 64),
   license: z.string().refine((license) => bytes(license) >= 1 && bytes(license) <= 128),
   commit: z.string().regex(COMMIT),
@@ -64,7 +77,7 @@ export const Catalog = z
     version: z.literal(1),
     source: z.strictObject({ repository: z.literal("wooorm/dictionaries"), commit: z.string().regex(COMMIT), urlPrefix: z.string() }),
     bundled: BundledEntry,
-    entries: z.array(CatalogEntry).max(92),
+    entries: z.array(CatalogEntry).max(DICTIONARY_CATALOG_ENTRIES),
   })
   .superRefine((catalog, ctx) => {
     const { commit, urlPrefix } = catalog.source;

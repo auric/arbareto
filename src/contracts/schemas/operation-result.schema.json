@@ -60,7 +60,14 @@
         "openWorktree",
         "revealPath",
         "setSwitchChoice",
-        "chooseWorktreeFolder"
+        "chooseWorktreeFolder",
+        "listDictionaries",
+        "readDictionary",
+        "downloadDictionary",
+        "importDictionary",
+        "removeDictionary",
+        "setSpelling",
+        "openLicenceLink"
       ]
     },
     "state": {
@@ -113,7 +120,8 @@
         "worktree",
         "config",
         "ignore",
-        "stage-files"
+        "stage-files",
+        "dictionary"
       ]
     },
     "code": {
@@ -175,7 +183,8 @@
         "DESTINATION_NOT_EMPTY",
         "WORKBENCH_UNAVAILABLE",
         "UNTRACKED_IN_WAY",
-        "STASH_KEPT"
+        "STASH_KEPT",
+        "DICTIONARY_UNAVAILABLE"
       ]
     },
     "cause": {

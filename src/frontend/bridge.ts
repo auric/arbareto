@@ -142,6 +142,14 @@ export function createBridge(onSessionChange?: () => void, onTextScale?: (value:
     revealPath: (payload: Payload<"revealPath">, onProgress?: OnProgress) => call("revealPath", {}, payload, onProgress),
     setSwitchChoice: (payload: Payload<"setSwitchChoice">, onProgress?: OnProgress) => call("setSwitchChoice", {}, payload, onProgress),
     chooseWorktreeFolder: (payload: Payload<"chooseWorktreeFolder">, onProgress?: OnProgress) => call("chooseWorktreeFolder", {}, payload, onProgress),
+    // Feature 006 contract Δ1.
+    listDictionaries: (onProgress?: OnProgress) => call("listDictionaries", {}, {}, onProgress),
+    readDictionary: (payload: Payload<"readDictionary">, onProgress?: OnProgress) => call("readDictionary", {}, payload, onProgress),
+    downloadDictionary: (payload: Payload<"downloadDictionary">, onProgress?: OnProgress) => call("downloadDictionary", {}, payload, onProgress),
+    importDictionary: (payload: Payload<"importDictionary">, onProgress?: OnProgress) => call("importDictionary", {}, payload, onProgress),
+    removeDictionary: (payload: Payload<"removeDictionary">, onProgress?: OnProgress) => call("removeDictionary", {}, payload, onProgress),
+    setSpelling: (payload: Payload<"setSpelling">, onProgress?: OnProgress) => call("setSpelling", {}, payload, onProgress),
+    openLicenceLink: (payload: Payload<"openLicenceLink">, onProgress?: OnProgress) => call("openLicenceLink", {}, payload, onProgress),
   };
 }
 

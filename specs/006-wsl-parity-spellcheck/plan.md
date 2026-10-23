@@ -165,7 +165,7 @@ Each step writes its tests first. P0.1 and P0.2 are the riskiest proofs and run 
 - Source facts (research R3): the GitHub tree of `8cfea406b505e4d7df52d5a19bce525df98c54ab` lists each `dictionaries/<id>/` folder with its files and sizes. The script stores that tree as `tree.json` in the cache, downloads each file once from `https://raw.githubusercontent.com/wooorm/dictionaries/<commit>/dictionaries/<id>/<name>` into the cache, and computes the SHA-256 there. With `--offline`, the script reads only the cache and makes the same JSON without a network request.
 - Licence documents: every file named `license` or `licence` of that folder, in that order. A folder with neither uses `readme.md` (`eu`, `et`). So `oc` gets two licence documents (user decision, 2026-10-22). The row link names the first document.
 - Licence value: the `license` field of the folder's `package.json`, as given (spec FR-015). `en` gives `(MIT AND BSD)`, `eu` gives `GPL-2.0`, `et` gives `LGPL-2.1`, and `oc` gives `GPL-2.0` (read on 2026-10-22).
-- Name: `Intl.DisplayNames("en", {type: "language"})` of the ID, in Bun 1.4.3 at script time. A result that equals the ID itself fails the script, and the script then takes the name from its reviewed override table. The JSON stores the name, so the run-time ICU version changes nothing.
+- Name: `Intl.DisplayNames("en", {type: "language"})` of the ID, in Bun 1.4.4 at script time (research R13, WP1). A result that equals the ID itself fails the script, and the script then takes the name from its reviewed override table. The JSON stores the name, so the run-time ICU version changes nothing.
 - Order: by name, with the 005 `compareNames` over the UTF-8 bytes. No locale compare.
 - Gate (spec FR-017), each entry:
   1. The files together are at most 12,582,912 bytes. This drops el, el-polyton, ko, mn, and rw (research R3). The script decides this step.
@@ -509,6 +509,7 @@ Parallel tracks use disjoint files in separate worktrees. These files are not di
 - `src/contracts/dictionaries.json`: WP1 makes it. WP8 rebuilds it offline after the gate.
 - `package.json` and `bun.lock`: WP1 only.
 - `tests/gate/dictionary-gate.test.ts`: WP1 (the early report), then WP5 (the SC-002 service path).
+- `tests/support/language-fixture.ts`: the data-model §16 fixture code. The first of WP5 (T023) and WP8 (T042) moves it there from `tests/gate/dictionary-gate.test.ts`.
 - `src/contracts/envelope.ts`, `errors.ts`, `limits.ts`, `operations.ts`, and `schemas/`: WP2 owns them. A later package that needs a schema change reports it, and the orchestrator merges it.
 - `src-tauri/`: only WP3 edits it, except the WP2 ripple in `schema.rs`.
 - `tests/groups.json`: every WP appends its lines. The orchestrator resolves merge conflicts.

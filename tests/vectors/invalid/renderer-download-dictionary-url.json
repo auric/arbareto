@@ -1,0 +1,5 @@
+{
+  "schema": "renderer-envelope",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"version\":1,\"sessionId\":\"0f0f0f0f-0000-4000-8000-0000000000aa\",\"requestId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operation\":\"downloadDictionary\",\"payload\":{\"language\":\"uk\",\"url\":\"https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/uk/license\"}}"
+}

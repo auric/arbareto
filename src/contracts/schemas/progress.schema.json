@@ -54,7 +54,8 @@
         "worktree",
         "config",
         "ignore",
-        "stage-files"
+        "stage-files",
+        "dictionary"
       ]
     },
     "counters": {

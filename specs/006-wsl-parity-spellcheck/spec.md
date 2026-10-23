@@ -19,7 +19,7 @@ The user gave these decisions on 2026-10-21. Earlier recommendations stay valid 
 - Q: Which spell check engine runs? → A: nspell, in the renderer. The WebView2 built-in check stays off. Its suggestions show only in the native menu, and its result has no fixed oracle (004 research.md R20).
 - Q: Which language ships with the application? → A: English. The English dictionary is bundled and works offline (FR-008).
 - Q: How does the user get more dictionaries? → A: An in-app HTTPS download, only when the user asks, plus an offline import from a folder. Every file is checked against a SHA-256 catalog that ships with the application (FR-010 to FR-014).
-- Q: Which languages does the catalog offer? → A: Every dictionary of wooorm/dictionaries that nspell loads within the size bound, not a short list. English stays bundled (FR-017, SC-002).
+- Q: Which languages does the catalog offer? → A: Every dictionary of wooorm/dictionaries that Hunspell (`hunspell-wasm`, user decision 2026-10-22) loads within the size bound, not a short list. English stays bundled (FR-017, SC-002).
 - Q: Which host serves the downloads? → A: raw.githubusercontent.com, at one pinned commit of wooorm/dictionaries (FR-010).
 - Q: How does a word count as correct with several languages? → A: A word is correct when any selected dictionary accepts it. It is also correct when the personal word list or the Ignore list holds it. The application never guesses the language of a word or a message (FR-004).
 - Q: Which text does spell check cover? → A: Only the text of the commit message editor. This covers Commit, Amend last commit, and Commit and push. Spell check never covers file content, diffs, branch names, or the merge message (FR-002).
@@ -305,7 +305,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - Ignore holds for the window session across repositories, and a restart clears it. This is a reviewer default.
 - A language whose load takes long shows its marks when the load ends. Typing never waits for it (FR-008). The plan records the load time per language.
 - Hunspell reads the full Hunspell format, compound rules included. The catalog gate accepts a language when it passes the four FR-017 checks. Spell check quality outside English is not a claim of this feature.
-- The language fixture of a downloaded language comes from that dictionary's own word list plus fixed non-words. The plan defines it. The real files come from the local cache of SC-002, and the repository holds no third-party dictionary.
+- The language fixture of a downloaded language comes from that dictionary's own word list plus negative words built from the script of those words (data-model §16). The real files come from the local cache of SC-002, and the repository holds no third-party dictionary.
 - The dictionary folder sits in the application data folder, and it follows `ARBARETO_PROFILE_ROOT` when that variable is set.
 - Download connects directly, with no proxy, and uses only the root certificates bundled with the service runtime. The shell removes `NODE_USE_SYSTEM_CA` from the service (`env_sanitize.rs`). A network that needs a proxy or a company certificate is a known limit. Import is the fallback (user decision, 2026-10-22).
 - Remove of a dictionary and Remove of a personal word ask for no confirmation (user decision, 2026-10-22). Download, Import, and Add to dictionary undo them.

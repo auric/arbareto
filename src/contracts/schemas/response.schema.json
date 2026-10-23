@@ -91,7 +91,8 @@
         "DESTINATION_NOT_EMPTY",
         "WORKBENCH_UNAVAILABLE",
         "UNTRACKED_IN_WAY",
-        "STASH_KEPT"
+        "STASH_KEPT",
+        "DICTIONARY_UNAVAILABLE"
       ]
     },
     "repositoryGeneration": {

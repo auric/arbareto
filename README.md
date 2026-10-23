@@ -45,6 +45,8 @@ Run these commands from the repository root. Run `bun run build` before `cargo c
 - `bun run test:all` runs `tests/contracts`, `tests/git`, and `tests/wsl` in two steps: the parallel group, then the serial group of `tests/groups.json`. It fails when a test file is in no group or has no report. Set `ARBARETO_WSL_DISTRO` for the WSL tests. `ARBARETO_TEST_WORKERS` sets the worker count of the parallel step (default 8).
 - `ARBARETO_HISTORY_FIXTURES` is a comma list of the large history fixtures that a run may build: `H200K`, `H1M`, or `H200K,H1M`. A named fixture builds when the cache does not hold it, and its cases run. When the variable does not name H200K, the H200K cases run only when the cache holds both H200K variants. When the variable does not name H1M, the H1M cases skip with the capability `history-fixture-h1m`. A skip never counts as a pass.
 - `bun run test:fast` runs `tests/contracts` and the parser tests the same way, for edit loops.
+- `bun scripts/dictionary-catalog.ts [--offline]` writes `src/contracts/dictionaries.json` from the pinned wooorm/dictionaries commit. Set `ARBARETO_DICTIONARY_CACHE` to a folder outside the repository. The script reads `api.github.com` and `raw.githubusercontent.com` into that cache. `--offline` reads only the cache.
+- `bun test tests/gate` runs the early dictionary gate report and the `hunspell.wasm` build fact. Set `ARBARETO_DICTIONARY_CACHE` to the cache of the catalog script. Without it, the gate report skips. `bun run test:all` does not run these files.
 - `cargo check --locked --manifest-path src-tauri/Cargo.toml`
 - `cargo check --locked --manifest-path src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu` (Linux portability check)
 - `cargo test --locked --manifest-path src-tauri/Cargo.toml`

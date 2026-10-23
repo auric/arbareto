@@ -1,0 +1,84 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+// Copyright (c) 2026 Ihor Lifanov
+
+// 006 data-model §1 and §2: the schema of src/contracts/dictionaries.json. The service, the renderer, and the build parse the file with it.
+
+import { z } from "zod";
+
+// Contract Δ5. shortcut: WP2 adds this bound to limits.ts; import it from there when that lands.
+export const DICTIONARY_LANGUAGE_BYTES = 12_582_912;
+
+const COMMIT = /^[0-9a-f]{40}$/;
+const SHA256 = /^[0-9a-f]{64}$/;
+const LANGUAGE_ID = /^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$/;
+const LICENCE_FORMS = ["license", "licence", "license,licence", "readme.md"];
+const utf8 = new TextEncoder();
+const bytes = (text: string) => utf8.encode(text).length;
+
+/**
+ * The 005 name order over UTF-8 bytes: each byte 0x41 to 0x5A maps to that byte plus 0x20, the mapped bytes compare as unsigned values, and equal mapped bytes compare the raw bytes.
+ * shortcut: 005 `src/contracts/tree-order.ts` is not in this branch; use its `compareNames` once 005 merges.
+ */
+export function compareNames(a: string, b: string): number {
+  const x = utf8.encode(a);
+  const y = utf8.encode(b);
+  const fold = (v: number) => (v >= 0x41 && v <= 0x5a ? v + 0x20 : v);
+  for (let i = 0; i < Math.min(x.length, y.length); i++) if (fold(x[i]!) !== fold(y[i]!)) return fold(x[i]!) - fold(y[i]!);
+  if (x.length !== y.length) return x.length - y.length;
+  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i]! - y[i]!;
+  return 0;
+}
+
+const CatalogFile = z.strictObject({
+  name: z.enum(["index.aff", "index.dic", "license", "licence", "readme.md"]),
+  url: z.string(),
+  size: z.number().int().min(1).max(DICTIONARY_LANGUAGE_BYTES),
+  sha256: z.string().regex(SHA256),
+});
+
+const entryFields = {
+  id: z.string().regex(LANGUAGE_ID).refine((id) => bytes(id) <= 32),
+  name: z.string().refine((name) => [...name].length >= 1 && [...name].length <= 64),
+  license: z.string().refine((license) => bytes(license) >= 1 && bytes(license) <= 128),
+  commit: z.string().regex(COMMIT),
+  files: z.array(CatalogFile).min(3).max(4),
+  licences: z.array(z.enum(["license", "licence", "readme.md"])).min(1).max(2),
+};
+
+type EntryShape = { files: { name: string; size: number }[]; licences: string[] };
+const entryRules = (entry: EntryShape, ctx: z.RefinementCtx) => {
+  if (!LICENCE_FORMS.includes(entry.licences.join(","))) ctx.addIssue({ code: "custom", message: "licences form", path: ["licences"] });
+  if (entry.files.map((f) => f.name).join(",") !== ["index.aff", "index.dic", ...entry.licences].join(",")) ctx.addIssue({ code: "custom", message: "files order", path: ["files"] });
+  if (entry.files.reduce((sum, f) => sum + f.size, 0) > DICTIONARY_LANGUAGE_BYTES) ctx.addIssue({ code: "custom", message: "DICTIONARY_LANGUAGE_BYTES", path: ["files"] });
+};
+
+export const CatalogEntry = z.strictObject(entryFields).superRefine(entryRules);
+export type CatalogEntry = z.infer<typeof CatalogEntry>;
+
+const BundledEntry = z
+  .strictObject({ ...entryFields, id: z.literal("en"), package: z.strictObject({ name: z.literal("dictionary-en"), version: z.string() }) })
+  .superRefine(entryRules);
+
+export const Catalog = z
+  .strictObject({
+    version: z.literal(1),
+    source: z.strictObject({ repository: z.literal("wooorm/dictionaries"), commit: z.string().regex(COMMIT), urlPrefix: z.string() }),
+    bundled: BundledEntry,
+    entries: z.array(CatalogEntry).max(92),
+  })
+  .superRefine((catalog, ctx) => {
+    const { commit, urlPrefix } = catalog.source;
+    if (urlPrefix !== `https://raw.githubusercontent.com/wooorm/dictionaries/${commit}/dictionaries/`) ctx.addIssue({ code: "custom", message: "urlPrefix", path: ["source", "urlPrefix"] });
+    const ids = new Set<string>();
+    for (const [i, entry] of [catalog.bundled, ...catalog.entries].entries()) {
+      const path = i === 0 ? ["bundled"] : ["entries", i - 1];
+      if (entry.commit !== commit) ctx.addIssue({ code: "custom", message: "commit", path });
+      for (const f of entry.files) if (f.url !== `${urlPrefix}${entry.id}/${f.name}`) ctx.addIssue({ code: "custom", message: "url", path });
+      if (ids.has(entry.id)) ctx.addIssue({ code: "custom", message: "duplicate id", path });
+      ids.add(entry.id);
+    }
+    for (let i = 1; i < catalog.entries.length; i++) {
+      if (compareNames(catalog.entries[i - 1]!.name, catalog.entries[i]!.name) > 0) ctx.addIssue({ code: "custom", message: "compareNames order", path: ["entries", i] });
+    }
+  });
+export type Catalog = z.infer<typeof Catalog>;

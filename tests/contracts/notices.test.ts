@@ -2,10 +2,10 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { cargoShipped, cssPackages, inventory, licenseFileNames, makensisProblem, missingRuntimeFiles, needsCliPin, npmClosure, NSIS_VERSION, nsisShipped, TAURI_CLI_VERSION, tauriCliProblem, vendoredKey, type BunLock, type CargoMetadata } from "../../src/frontend/build/notices";
+import { cargoShipped, cssPackages, inventory, licenseFileNames, makensisProblem, missingRuntimeFiles, needsCliPin, npmClosure, npmShipped, NSIS_VERSION, nsisShipped, PACKAGE_NOTES, TAURI_CLI_VERSION, tauriCliProblem, vendoredKey, type BunLock, type CargoMetadata } from "../../src/frontend/build/notices";
 import { TM_GRAMMARS_VERSION, TM_THEMES_VERSION } from "../../src/frontend/highlight/set";
 import { printOrigin } from "../origin";
 
@@ -261,5 +261,37 @@ describe("licence texts and inventory (T130)", () => {
     const result = inventory([{ name: "react", version: "19.3.0", license: "MIT", files: [{ name: "LICENSE", text: "t" }] }], "", PROJECT);
     expect(result.code).not.toBe(0);
     expect(result.problems).toEqual(["package.json repository.url is empty"]);
+  });
+});
+
+// 006 plan.md D18 (T002): Hunspell under LGPL-2.1, and the bundled English dictionary.
+describe("hunspell-wasm and dictionary-en notices (006 T002)", () => {
+  const root = join(import.meta.dir, "..", "..");
+  const HUNSPELL_NOTE =
+    "Arbareto uses Hunspell under LGPL-2.1. Source: https://github.com/rotemdan/hunspell-wasm (commit 8f755ef64e8b047b77b676f9698b3dfa5cb1887d) and https://github.com/hunspell/hunspell.";
+
+  test("the licence name set holds COPYING, COPYING.LESSER, and COPYING.MPL", () => {
+    expect(licenseFileNames(["COPYING", "COPYING.LESSER", "COPYING.MPL", "README.md", "package.json"])).toEqual(["COPYING", "COPYING.LESSER", "COPYING.MPL"]);
+  });
+
+  test("the inventory holds the three hunspell-wasm texts, the fixed note, and the full dictionary-en licence", async () => {
+    expect(PACKAGE_NOTES["hunspell-wasm"]).toBe(HUNSPELL_NOTE);
+    const lock = Bun.JSONC.parse(readFileSync(join(root, "bun.lock"), "utf8")) as BunLock;
+    const { packages, problems } = npmClosure(lock, []);
+    expect(problems).toEqual([]);
+    const wanted = packages.filter((p) => p.name === "hunspell-wasm" || p.name === "dictionary-en");
+    expect(wanted.map((p) => `${p.name}@${p.version}`).sort()).toEqual(["dictionary-en@4.0.0", "hunspell-wasm@0.3.0"]);
+    const shipped = await npmShipped(root, wanted, new Set());
+    expect(shipped.problems).toEqual([]);
+    const { notices, problems: inventoryProblems } = inventory(shipped.shipped, REPO, PROJECT);
+    expect(inventoryProblems).toEqual([]);
+    const all = notices.groups.flatMap((g) => g.packages);
+    const hunspell = all.find((p) => p.name === "hunspell-wasm");
+    expect(hunspell?.files.map((f) => f.name)).toEqual(["COPYING", "COPYING.LESSER", "COPYING.MPL"]);
+    expect(hunspell?.note).toBe(HUNSPELL_NOTE);
+    const english = all.find((p) => p.name === "dictionary-en");
+    expect(english?.note).toBeUndefined();
+    const license = english?.files.find((f) => f.name === "license");
+    expect(license === undefined ? undefined : notices.texts[license.text]).toBe(readFileSync(join(root, "node_modules", "dictionary-en", "license"), "utf8"));
   });
 });

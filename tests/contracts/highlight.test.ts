@@ -153,6 +153,15 @@ describe("bundle check (research.md R9)", () => {
     ]);
   });
 
+  test("only the reviewed hunspell.wasm bytes pass, under any name (006 plan.md D9)", () => {
+    const reviewed = new Uint8Array(readFileSync(join(ROOT, "node_modules", "hunspell-wasm", "wasm", "hunspell.wasm")));
+    const changed = reviewed.slice();
+    changed[changed.length - 1] ^= 1;
+    const asset = (file: string, bytes?: Uint8Array) => ({ file, text: bytes === undefined ? "" : new TextDecoder().decode(bytes), ...(bytes === undefined ? {} : { bytes }) });
+    expect(bundleProblems([], [asset("assets/hunspell-B7u9vk2r.wasm", reviewed), asset("assets/other.wasm", reviewed)], false)).toEqual([]);
+    expect(bundleProblems([], [asset("assets/hunspell-B7u9vk2r.wasm", changed), asset("assets/hunspell.wasm")], false)).toEqual(["WebAssembly file: assets/hunspell-B7u9vk2r.wasm", "WebAssembly file: assets/hunspell.wasm"]);
+  });
+
   test("the page build must hold every shipped grammar and theme; the worker build need not", () => {
     expect(bundleProblems([], [], true)).toEqual([...Object.keys(LANGUAGES).map((l) => `grammar ${l} is not in the build`), ...Object.keys(THEMES).map((t) => `theme ${t} is not in the build`)]);
     expect(bundleProblems([], [], false)).toEqual([]);

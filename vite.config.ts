@@ -26,12 +26,13 @@ function highlightGuard(complete: boolean): Plugin {
     name: "arbareto-highlight-guard",
     generateBundle(_options, bundle) {
       const ids: string[] = [];
-      const texts: { file: string; text: string }[] = [];
+      const texts: { file: string; text: string; bytes?: Uint8Array }[] = [];
       for (const item of Object.values(bundle)) {
         if (item.type === "chunk") {
           ids.push(...item.moduleIds);
           texts.push({ file: item.fileName, text: item.code });
-        } else texts.push({ file: item.fileName, text: typeof item.source === "string" ? item.source : new TextDecoder().decode(item.source) });
+        } else if (typeof item.source === "string") texts.push({ file: item.fileName, text: item.source });
+        else texts.push({ file: item.fileName, text: new TextDecoder().decode(item.source), bytes: item.source });
       }
       const problems = bundleProblems(ids, texts, complete);
       if (problems.length > 0) this.error(`highlight set:\n${problems.join("\n")}`);

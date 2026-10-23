@@ -156,7 +156,7 @@ Each F fact runs on Windows with Bun 1.4.3, with local servers on 127.0.0.1 only
 
 - F1: `fetch(url, {redirect: "manual"})` against a local server that answers 301, 302, 303, 307, and 308 gives a response with that status and does not follow it.
 - F2: with `proxy: false` and `HTTP_PROXY`, `HTTPS_PROXY`, and `ALL_PROXY` set to a local counting proxy, the request goes to the local target directly, and the counter stays 0.
-- F3: a local TLS server with a test CA (committed PEM fixtures, inert data). In a child process with `NODE_EXTRA_CA_CERTS` set to that CA, `tls: {ca: tls.rootCertificates}` makes the request fail, and a request without `tls` succeeds. With `NODE_TLS_REJECT_UNAUTHORIZED=0`, `rejectUnauthorized: true` still fails an unknown certificate.
+- F3: a local TLS server with a test CA that the test makes at run time with the openssl of the selected Git (no committed key; a capability skip without openssl). In a child process with `NODE_EXTRA_CA_CERTS` set to that CA, `tls: {ca: tls.rootCertificates}` makes the request fail, and a request without `tls` succeeds. With `NODE_TLS_REJECT_UNAUTHORIZED=0`, `rejectUnauthorized: true` still fails an unknown certificate.
 - F4: a local server sends a gzip body. The stream yields decoded bytes, and a cancel after N + 1 bytes ends the read without reading the rest.
 - F5: an abort during a body read rejects the pending read, and the run's own flag tells Cancel from the deadline.
 - F6: a closed local port rejects with a `TypeError` that carries `code`. The service maps every such rejection to `transport` without reading its message.
@@ -198,3 +198,126 @@ Unverified points (they stay unverified until their test runs):
 The results of F1 to F16 and N1 to N8 go here when WP1, WP4, WP5, and WP8 run them. The packaged gate records each run of each language here: the date, the build, the WebView2 runtime version, the baseline, the peak, the increase, the load time, and the fixture count.
 
 Measurements before the tests (2026-10-22): the R2 tables (Edge 155, Hunspell and nspell; Bun 1.4.3, nspell), the R6 CSP probes, and the R6 segmentation time.
+
+### WP1 (batch 0, 2026-10-24, Windows 11 10.0.26300, Bun 1.4.4, Vite 8.3.2)
+
+The facts ran under Bun 1.4.4, not 1.4.3: main moved to Bun 1.4.4 (T390) before WP1.
+
+Package review (T003, constitution VIII):
+- `hunspell-wasm` 0.3.0: `package.json` licence `(LGPL-2.0 OR GPL-2.0 OR MPL-1.1)`. The installed package holds `COPYING`, `COPYING.LESSER`, and `COPYING.MPL`. No dependencies. The `bun.lock` integrity is `sha512-D7/QLaeekJYYlE37D7KBq5v38vL4tQutTFIUBOUGBl0g9la8OUgfSd8+XbwNPV5uYMHS13umXR9MtdAxStpHJg==`, the reviewed value. `wasm/hunspell.wasm` has the SHA-256 `72152324049c9215da17abceb12555b3ef9094c0524327e660f8145aaa9c68e0`. Upkeep: no release since 2024-10-31 (R2).
+- `dictionary-en` 4.0.0: licence `(MIT AND BSD)`. No dependencies. The `bun.lock` integrity is `sha512-3NHnE1uq33ZE/CIwaZ6gqxa4BnglHnxeAcTM0GJ7cmtRGcvX9InMK/IqLtYcUMFCUpUNgybH+DzkqdgAo3F1zg==`. `index.aff`, `index.dic`, and `license` (3,086, 551,762, and 15,731 bytes) equal the pinned `dictionaries/en` files in size and SHA-256 (catalog script check). Upkeep: no release since 2023-11-03 (R3).
+- `bun run build:notices` puts the three `hunspell-wasm` texts, the D18 note, and the full `dictionary-en` `license` text into the inventory.
+
+Catalog (T007): `bun scripts/dictionary-catalog.ts` wrote 86 entries from the pinned commit, before the gate step 2 report. Gate step 1 left out el-polyton (16,691,753 bytes), el (19,444,263), ko (13,961,541), mn (17,909,512), and rw (38,239,631). `--offline` wrote the same bytes (SHA-256 `bcb12e49247f7f15e5e5230c7f3eed36f2a3bc5133251cae2b99ee83d7400cb6`). The script checks each download against the Git blob ID of the tree. `Intl.DisplayNames` in Bun 1.4.4 returns the ID itself only for `hyw`. The override table names it "Western Armenian", the ISO 639-3 reference name.
+
+Facts (mark, then the observation line):
+- F1 holds. `OBSERVATION T004: F1 statuses=301,302,303,307,308 targetHits=0 bun=1.4.4`
+- F2 holds. The control request without `proxy` went through the proxy, so the child read the variables for 127.0.0.1. `OBSERVATION T004: F2 direct="target" control="proxy" proxyConnections=1 bun=1.4.4`
+- F3 holds. So O-12 stays: `tls.ca` is `tls.rootCertificates`, and the shell does not remove `NODE_EXTRA_CA_CERTS`. `OBSERVATION T004: F3 extraCa.roots={"ok":false,"name":"TypeError","code":"UNABLE_TO_VERIFY_LEAF_SIGNATURE"} extraCa.plain={"ok":true,"status":200} rejectUnauthorized0.strict={"ok":false,"name":"TypeError","code":"UNABLE_TO_VERIFY_LEAF_SIGNATURE"} bun=1.4.4`
+- F4 holds. `OBSERVATION T004: F4 received=262144 N=65536 prefixEqual=true gzipBytes=55770 sentAtCancel=16384 bun=1.4.4`
+- F5 holds. Both aborts reject the pending read with `AbortError`, so only the run flag tells Cancel from the deadline. `OBSERVATION T004: F5 cancel={"outcome":"rejected AbortError","flag":"cancel"} deadline={"outcome":"rejected AbortError","flag":"deadline"} bun=1.4.4`
+- F6 holds. `OBSERVATION T004: F6 typeError=true name=TypeError code=ECONNREFUSED bun=1.4.4`
+- F7 holds. `OBSERVATION T004: F7 symlink=created folderGone=true outsideKept=true rename=true bun=1.4.4`
+- F15 holds under Bun 1.4.4. `OBSERVATION T004: F15 receive=true recieve=false bun=1.4.4`
+- F14 holds. The worker build emits one `.wasm` asset with the reviewed SHA-256. The name sits in the loader chunk that the worker chunk imports, as `new URL("/assets/hunspell-<hash>.wasm", "" + import.meta.url)`. Vite replaces the Node imports `fs/promises` and `module` of the package with its browser stub. The first run found that the app bundle check (`src/frontend/highlight/guard.ts`) refused every `.wasm` file. `OBSERVATION T005: F14 exit=0 wasm=["assets/hunspell-B7u9vk2r.wasm"] sha256=["72152324049c9215da17abceb12555b3ef9094c0524327e660f8145aaa9c68e0"] newUrl=["assets/hunspell-B2QpINDD.js"] appGuard=["WebAssembly file: assets/hunspell-B7u9vk2r.wasm"] vite=8.3.2 bun=1.4.4`
+- F16 holds. The tree of github.com/rotemdan/hunspell-wasm at `8f755ef64e8b047b77b676f9698b3dfa5cb1887d` (api.github.com, not truncated, 57 items) holds the Hunspell C++ source as plain files in `lib/hunspell/` (30 files), not as a submodule. Each of the 30 Git blob IDs equals the blob of `src/hunspell/` at github.com/hunspell/hunspell commit `edb619100791110d3e34f09ec35392ad327c1135` (2023-11-03). That commit comes after v1.7.2: v1.7.2 differs in 13 of the 30 files. `lib/hunspell/Makefile.am` names `libhunspell-1.7`. The build files are `Makefile` (`emcc -O3` over the 10 `.cxx` files, `MODULARIZE`, `EXPORT_ES6`) and `docs/Building.md` (emsdk `latest`). The Emscripten version is not recorded, so a byte-equal rebuild stays unverified. The Git blob IDs of `wasm/hunspell.wasm` (`5bf6977e915bfa17073e53ed99aace4a5b9c01c5`) and `wasm/hunspell.js` (`cd0a65985aa2f952e5e460a8ea121dd6b9183981`) at that commit equal the installed files. So the D18 note text stays.
+
+Early gate report (T008, F12 and F13), with the data-model §16 rule of 2026-10-24 (Hunspell `edb6191` line, flag, `AF`, and homonym rules; refusing flags; no phrase lines; negative words in the script of the language): `bun test tests/gate/dictionary-gate.test.ts` with the cache ran one Bun child per cached catalog language. A Bun time decides nothing (spec SC-002). Marks:
+- F12 fails for `tlh` only: `OBSERVATION T008: tlh fixture refused: no-positive-words positives=0 bun=1.4.4`. Each of the 4,592 `tlh` stems holds only Private Use code points (General_Category `Co`, the pIqaD script), so no stem is one §11 word, and the fixture has no positive evidence. `scripts/dictionary-gate.json` holds this failure, and the catalog now has 85 entries (offline rebuild, SHA-256 `1c634c0bf7ce9d0974c4ce2a8210e95676e3a966075db301d83ebe8b9898f6b0`).
+- F12 holds for the other 86 languages (85 entries and `en`): each loaded within 60 s (largest load 1,391 ms, `eu`; largest RSS increase 86.6 MiB, `fy`), and the fixture gave 0 failures. `hu`, `ia`, and `tk`, which failed under the first rule, pass now.
+- Script values: Latin 75, Cyrillic 5, Armenian 2, Arabic 1, Devanagari 1, Georgian 1, and Hebrew 1. `fr`, `sv`, and `sv-FI` also list Greek letter names (`α/r`, `Δt/L'D'Q'`), so the rule takes the Script value with the most letters.
+- `uk` behavior (a product question, not a gate failure): with the `uk` files, Hunspell accepts each of the 5 fixed Latin negative words (`latinAccepted=5/5`), and also `hello`, `x`, and `Qzx`. It refuses the Cyrillic negative words. So when en and uk are both selected, the merge rule of plan D9 accepts every English typo. Every other language gives `latinAccepted=0/5`.
+- F13: `index.aff` and `index.dic` are in NFC for 81 of the 86 languages. Not in NFC: `fr` (both), `ia` (both), `gl` (`index.dic`), `oc` (`index.dic`), and `fa` (`index.aff`).
+- Fixture size: 76 languages have 200 positive words, 9 have 199, and `hu` has 197 (data-model §16: a step without an eligible stem at or after its line gives no word).
+- F3 after the change to run-time certificates (no committed key; openssl `C:\Program Files\Git\usr\bin\openssl.exe` from the selected Git) holds again with the same observation. F14 with the changed bundle check gives `appGuard=[]`: `OBSERVATION T005: F14 exit=0 wasm=["assets/hunspell-B7u9vk2r.wasm"] sha256=["72152324049c9215da17abceb12555b3ef9094c0524327e660f8145aaa9c68e0"] newUrl=["assets/hunspell-B2QpINDD.js"] appGuard=[] vite=8.3.2 bun=1.4.4`
+- The bundle check (`src/frontend/highlight/guard.ts`) now admits a `.wasm` file only when its bytes have the SHA-256 of the reviewed `hunspell.wasm`. Another `.wasm` file stays a problem.
+
+```
+OBSERVATION T008: en load=133 rss=22.2 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: hy load=193 rss=30.7 nfc=true/true fixture=0/0 positives=200 script=Armenian latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: en-AU load=128 rss=22.4 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: de-AT load=237 rss=51.4 nfc=true/true fixture=0/0 positives=199 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: eu load=1391 rss=36.6 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: br load=226 rss=37.9 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: en-GB load=132 rss=22.5 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: bg load=237 rss=52.4 nfc=true/true fixture=0/0 positives=200 script=Cyrillic latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: en-CA load=135 rss=24.2 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: ca load=363 rss=63.0 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: ca-valencia load=368 rss=66.7 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: hr load=289 rss=56.0 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: cs load=395 rss=70.3 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: da load=400 rss=67.2 nfc=true/true fixture=0/0 positives=199 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: nl load=196 rss=33.1 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: en-ZA load=281 rss=54.8 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: eo load=129 rss=21.1 nfc=true/true fixture=0/0 positives=199 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: et load=407 rss=79.4 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: pt-PT load=336 rss=61.0 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: fo load=348 rss=69.0 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: fr load=319 rss=56.5 nfc=false/false fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: fur load=204 rss=48.9 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: gl load=540 rss=74.1 nfc=true/false fixture=0/0 positives=199 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: ka load=351 rss=65.3 nfc=true/true fixture=0/0 positives=200 script=Georgian latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: de load=225 rss=55.6 nfc=true/true fixture=0/0 positives=199 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: he load=445 rss=71.9 nfc=true/true fixture=0/0 positives=200 script=Hebrew latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: hu load=425 rss=70.7 nfc=true/true fixture=0/0 positives=197 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: is load=408 rss=68.0 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: ia load=224 rss=49.6 nfc=false/false fixture=0/0 positives=199 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: ie load=93 rss=19.7 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: ga load=173 rss=26.2 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: it load=312 rss=55.6 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: tlh-Latn load=80 rss=16.2 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: ltg load=262 rss=54.8 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: la load=357 rss=63.0 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: lv load=329 rss=60.8 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: lt load=316 rss=55.0 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: nds load=84 rss=17.9 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: lb load=358 rss=60.4 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: mk load=327 rss=62.3 nfc=true/true fixture=0/0 positives=200 script=Cyrillic latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-MX load=296 rss=58.4 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: ne load=290 rss=54.1 nfc=true/true fixture=0/0 positives=199 script=Devanagari latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: nb load=361 rss=67.6 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: nn load=296 rss=62.2 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: oc load=254 rss=55.7 nfc=true/false fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: fa load=165 rss=31.5 nfc=false/true fixture=0/0 positives=200 script=Arabic latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: pl load=421 rss=72.5 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: pt load=529 rss=73.4 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: ro load=348 rss=63.7 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: ru load=353 rss=63.6 nfc=true/true fixture=0/0 positives=200 script=Cyrillic latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: gd load=183 rss=31.7 nfc=true/true fixture=0/0 positives=199 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: sr load=200 rss=36.4 nfc=true/true fixture=0/0 positives=200 script=Cyrillic latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: sr-Latn load=178 rss=33.3 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: sk load=372 rss=70.2 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: sl load=204 rss=37.5 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es load=299 rss=57.6 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-AR load=296 rss=56.8 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-BO load=300 rss=57.7 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-CL load=314 rss=54.6 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-CO load=308 rss=53.4 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-CR load=309 rss=57.3 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-CU load=304 rss=55.0 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-DO load=304 rss=53.4 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-EC load=298 rss=58.2 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-SV load=298 rss=57.8 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-GT load=301 rss=57.1 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-HN load=310 rss=57.2 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-NI load=301 rss=58.6 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-PA load=311 rss=56.9 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-PY load=309 rss=57.2 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-PE load=301 rss=57.1 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-PH load=310 rss=57.4 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-PR load=300 rss=55.5 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-US load=303 rss=55.4 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-UY load=300 rss=53.1 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: es-VE load=292 rss=58.1 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: sv load=269 rss=59.2 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: sv-FI load=266 rss=59.0 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: de-CH load=222 rss=54.9 nfc=true/true fixture=0/0 positives=199 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: tr load=514 rss=73.7 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: tk load=304 rss=55.2 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: uk load=548 rss=84.7 nfc=true/true fixture=0/0 positives=200 script=Cyrillic latinAccepted=5/5 bun=1.4.4
+OBSERVATION T008: vi load=59 rss=16.2 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: cy load=136 rss=23.6 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: hyw load=298 rss=57.9 nfc=true/true fixture=0/0 positives=200 script=Armenian latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: fy load=678 rss=86.6 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4
+OBSERVATION T008: tlh fixture refused: no-positive-words positives=0 bun=1.4.4
+```

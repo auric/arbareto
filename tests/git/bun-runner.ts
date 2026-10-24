@@ -11,7 +11,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "nod
 import type { Subprocess } from "bun";
 import policyFile from "../../src/contracts/git-environment.json";
 import wslProcess from "../../src/contracts/wsl-process.json";
-import { GIT_PROCESS_DEADLINE_MS, NATIVE_CHUNK_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
+import { GIT_PROCESS_DEADLINE_MS, IGNORE_TARGET_BYTES, NATIVE_CHUNK_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
 import { NATIVE } from "../../src/contracts/native-path";
 import { isIdentifier } from "../../src/contracts/operations";
 import type { IdentityReply as IdentityReplyFrame, RegisterWslCall, WslDistrosResult, WslSavedGit as WslSavedGitFrame } from "../../src/contracts/channel";
@@ -193,6 +193,93 @@ const started = (bytes: Uint8Array): Uint8Array | null => (bytes[0] === STARTED 
 const WSL_STAT = "/usr/bin/stat";
 const WSL_PERL = "/usr/bin/perl";
 const MAX_INODE = 0xffff_ffff_ffff_ffffn;
+// Feature 005 `src-tauri/src/wsl.rs:1569` and `:1571`: the stdout caps after the start byte of a `delete` or `replace` request and of a `scratch` request.
+const WSL_DELETE_OUTPUT_BYTES = 64 * (64 + 64);
+const WSL_SCRATCH_OUTPUT_BYTES = 64 * (4_095 + 64);
+// `src-tauri/src/wsl.rs:1033` `FACT_ERRORS`: the codes of a WSL file record.
+const WSL_FACT_ERRORS: readonly string[] = ["access-denied", "io-error", "other-error"];
+// `src-tauri/src/process_requests.rs:70`. `walk_bound` (:2818) adds it to the walk deadline, and it bounds each internal `scratch` run.
+const BOOTSTRAP_DEADLINE_MS = 30_000;
+// `src-tauri/src/process_requests.rs:1614`: the WSL shadow folder `/tmp/arbareto-preview-<shadow.rs folder_name>`.
+const WSL_SHADOW_PREFIX = "arbareto-preview-";
+
+// Mirrors `src-tauri/src/wsl.rs:1091` `Records::token`: NUL-ended tokens, each non-empty and of ASCII graphic bytes only. Null: another form.
+function wslTokens(bytes: Uint8Array): string[] | null {
+  const tokens: string[] = [];
+  for (let at = 0; at < bytes.length; ) {
+    const end = bytes.indexOf(0, at);
+    if (end < 0 || end === at || bytes.subarray(at, end).some((b) => b < 0x21 || b > 0x7e)) return null;
+    tokens.push(Buffer.from(bytes.subarray(at, end)).toString("latin1"));
+    at = end + 1;
+  }
+  return tokens;
+}
+
+// One collected `wsl.exe` run. Null: no output, as `Ended.output` `None`.
+type WslOut = { exitCode: number | null; bytes: Uint8Array } | null;
+
+// `src-tauri/src/wsl.rs:1645`: exit status 0, the start byte, and at most `cap` bytes after it. The shell collects `cap + 2` bytes (process_requests.rs:1425).
+function wslRecords(out: WslOut, cap: number): string[] | null {
+  if (out === null || out.exitCode !== 0) return null;
+  const body = started(out.bytes.subarray(0, cap + 2));
+  return body === null || body.length > cap ? null : wslTokens(body);
+}
+
+// Mirrors `src-tauri/src/wsl.rs:1636` `delete_reply` with `:1657` and `:1669`. Any other form leaves the outcome unknown, so the reply is `interrupted`.
+function wslDeleteReply(out: WslOut, entries: number, folders: number): FileDeleteReply {
+  const tokens = wslRecords(out, WSL_DELETE_OUTPUT_BYTES);
+  if (tokens === null) return { result: "interrupted" };
+  let at = 0;
+  const record = <R extends string>(kinds: readonly R[]): { result: R } | { result: "error"; code: FileFactError } | null => {
+    const kind = tokens[at++];
+    if (kind !== "error") return kinds.includes(kind as R) ? { result: kind as R } : null;
+    const code = tokens[at++];
+    return code !== undefined && WSL_FACT_ERRORS.includes(code) ? { result: "error", code: code as FileFactError } : null;
+  };
+  const e = Array.from({ length: entries }, () => record(["deleted", "stale", "absent", "not-regular"] as const));
+  const f = Array.from({ length: folders }, () => record(["removed", "kept", "absent", "not-regular"] as const));
+  if (e.includes(null) || f.includes(null) || at !== tokens.length) return { result: "interrupted" };
+  return { entries: e as DeleteEntryReply[], folders: f as DeleteFolderReply[] };
+}
+
+// Mirrors `src-tauri/src/wsl.rs:1718` `replace_reply`.
+function wslReplaceReply(out: WslOut): FileReplaceReply {
+  const t = wslRecords(out, WSL_DELETE_OUTPUT_BYTES);
+  if (t?.length === 1 && (t[0] === "replaced" || t[0] === "stale")) return { result: t[0] };
+  if (t?.length === 1 && t[0] === "refused") return { result: "refused", reason: "not-regular" };
+  if (t?.length === 2 && t[0] === "error" && WSL_FACT_ERRORS.includes(t[1]!)) return { result: "error", code: t[1] as FileFactError };
+  return { result: "interrupted" };
+}
+
+type ScratchReply = { result: "created" | "removed" } | { result: "swept"; names: string[] } | { result: "error"; code: FileFactError };
+// Mirrors `src-tauri/src/wsl.rs:1779` `scratch_reply`. Another form is `error other-error`.
+function wslScratchReply(out: WslOut, op: "create" | "remove" | "sweep"): ScratchReply {
+  const t = wslRecords(out, WSL_SCRATCH_OUTPUT_BYTES);
+  if (t?.[0] === "error") return t.length === 2 && WSL_FACT_ERRORS.includes(t[1]!) ? { result: "error", code: t[1] as FileFactError } : { result: "error", code: "other-error" };
+  if (op === "create" && t?.length === 1 && t[0] === "created") return { result: "created" };
+  if (op === "remove" && t?.length === 1 && t[0] === "removed") return { result: "removed" };
+  if (op === "sweep" && t?.[0] === "swept") return { result: "swept", names: t.slice(1) };
+  return { result: "error", code: "other-error" };
+}
+
+// Mirrors `src-tauri/src/shadow.rs:56` `parse_name`: `<pid>-<creation time>-<16 hex>`. Rust integer `FromStr` takes one leading `+`.
+function shadowOwner(name: string): { pid: number; created: bigint } | null {
+  const m = /^(\+?\d+)-(\+?\d+)-[0-9A-Fa-f]{16}$/.exec(name);
+  if (m === null || BigInt(m[1]!) > 0xffff_ffffn || BigInt(m[2]!) > 0xffff_ffff_ffff_ffffn) return null;
+  return { pid: Number(m[1]), created: BigInt(m[2]!) };
+}
+
+// Mirrors `src-tauri/src/shadow.rs:138` `leftover`: an own folder that no live shadow holds, or a folder whose owner process is gone.
+// `processCreationTime` gives null for any failed open, so the double counts such an owner as gone. The shell keeps that folder (shadow.rs:89).
+function leftoverShadow(name: string, held: boolean): boolean {
+  const owner = shadowOwner(name);
+  if (owner === null) return false;
+  if (owner.pid === process.pid && owner.created === processCreationTime(process.pid)) return !held;
+  return processCreationTime(owner.pid) !== owner.created;
+}
+
+// The fields of `src-tauri/src/wsl.rs:340` `Installation`, which the shell compares with `==`.
+const sameInstallation = (a: WslInstallation, b: WslInstallation) => (["distro", "guid", "git", "systemdRun", "systemctl", "setsid", "sha256sum", "noexpand"] as const).every((k) => a[k] === b[k]);
 // The three Git-resolved roots of a registered repository, in the order of the Perl texts.
 const ROOT_ORDER = ["worktreeRoot", "gitDirectory", "commonDirectory"] as const;
 type Roots = Record<(typeof ROOT_ORDER)[number], string>;
@@ -540,6 +627,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     worktreeAddFacts: null as ((path: string) => DestinationFactsReply) | null,
     // A repository `register` waits for this promise before its reply.
     holdRegister: null as ((request: { repositoryId: string }) => Promise<void>) | null,
+    // A Linux path replaces the approved `sha256sum` of each WSL `fileDelete`, `fileReplace`, and `shadow` process, such as a test seam that holds the walk.
+    wslSha256sum: null as string | null,
   };
   // Each WSL identity reply with its UNC path, in order.
   const wslIdentityLog: { path: string; reply: WslIdentityReply }[] = [];
@@ -573,9 +662,15 @@ export function createBunRunner(options: BunRunnerOptions) {
   const previewFolder = join(launchDirectory, "preview");
   // `src-tauri/src/shadow.rs` `EMPTY_CONFIG`: the empty configuration file of each Windows shadow folder.
   const SHADOW_CONFIG = "empty.gitconfig";
-  const shadows = new Map<string, { operationId: string; folder: string }>();
+  // `process_requests.rs` `ShadowFolder`: a Windows folder, or a WSL folder `/tmp/<name>` of one installation.
+  type Shadow = { operationId: string; folder: string } | { operationId: string; wsl: WslInstallation; name: string };
+  const shadows = new Map<string, Shadow>();
   // `std::fs::remove_dir_all` never follows a link. `rmSync` with `recursive` removes a link itself, too.
   const removeShadow = (folder: string) => rmSync(folder, { recursive: true, force: true, maxRetries: 3 });
+  // The `scratch remove` runs of `remove_wsl_shadow`. `dispose` waits for them before it ends the scopes.
+  const wslRemovals = new Set<Promise<void>>();
+  // `process_requests.rs:3888` `remove_shadows`.
+  const dropShadow = (shadow: Shadow) => ("wsl" in shadow ? removeWslShadow(shadow.wsl, shadow.name) : removeShadow(shadow.folder));
   const errorCode = (error: unknown): FileFactError => {
     const code = (error as NodeJS.ErrnoException).code;
     return code === "EBUSY" ? "sharing-violation" : code === "EACCES" || code === "EPERM" ? "access-denied" : code === "EIO" ? "io-error" : "other-error";
@@ -670,8 +765,9 @@ export function createBunRunner(options: BunRunnerOptions) {
     return { result: "replaced" };
   }
 
-  // Contract §6 "Walks": the walk deadline and an abort end the hold without a value. The read stays synchronous, as in the shell, so no stop interrupts it.
-  async function walk<T>(signal: AbortSignal, read: () => T | Promise<T>, kind = "walk"): Promise<T | WalkStop> {
+  // Contract §6 "Walks": the walk deadline and an abort end the hold without a value. A Windows read stays synchronous, as in the shell, so no stop interrupts it.
+  // A WSL read gets `stopped`, as `run_walk` gets the stop Event (src-tauri/src/wsl.rs:2144).
+  async function walk<T>(signal: AbortSignal, read: (stopped: Promise<WalkStop>) => T | Promise<T>, kind = "walk"): Promise<T | WalkStop> {
     if (signal.aborted) return { stop: "canceled" };
     let timer: ReturnType<typeof setTimeout> | undefined;
     let abort = () => {};
@@ -683,7 +779,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     });
     try {
       const stop = await Promise.race([(inject.holdWalk?.(kind) ?? Promise.resolve()).then(() => null), stopped]);
-      return stop ?? (await read());
+      return stop ?? (await read(stopped));
     } finally {
       clearTimeout(timer);
       signal.removeEventListener("abort", abort);
@@ -727,7 +823,8 @@ export function createBunRunner(options: BunRunnerOptions) {
 
   // A WSL Git target carries its installation. Its `cwd` is the UNC directory that becomes the Linux `-C` directory.
   // `args`: a `clone` context admits only its fixed array (feature 003 contract Δ6), and only a `run` names it.
-  function resolveTarget(operationId: string, context: ProcessContext, args?: readonly string[]): { program: string; cwd: string; wsl?: WslInstallation } {
+  // `shadow`: the Linux `-C` directory of a WSL shadow run. Its `cwd` is the launch folder.
+  function resolveTarget(operationId: string, context: ProcessContext, args?: readonly string[]): { program: string; cwd: string; wsl?: WslInstallation; shadow?: string } {
     if (inactive.has(operationId)) throw unknownTarget();
     if (context.contextKind === "registeredOperation") {
       const program = gits.get(context.gitInstallationId);
@@ -768,15 +865,19 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (!fits) throw new RunnerRefusal("INVALID_REQUEST", "worktree add arguments");
       return { program, cwd: repository.worktreeRoot };
     }
-    // Feature 005 contract Δ6, as src-tauri/src/process_requests.rs `ignore_preview_target` and `shadow::fits` check it: the shadow of this operation,
-    // a Windows Git, and the fixed shadow arrays. The cwd is `<shadow>/s` or `<shadow>/c`. The shell has no WSL shadow run yet, so the double has none.
+    // Feature 005 contract Δ6, as src-tauri/src/process_requests.rs `ignore_preview_target` (:2450) and `shadow::fits` (:2002) check it: the shadow of this operation,
+    // the Git of its route, and the fixed shadow arrays. The cwd is `<shadow>/s` or `<shadow>/c`.
     if (context.contextKind === "ignorePreview") {
       const shadow = shadows.get(context.shadowId);
       if (shadow === undefined || shadow.operationId !== operationId) throw unknownTarget();
       const program = gits.get(context.gitInstallationId);
       if (program === undefined) throw unknownTarget();
-      if (wslGits.has(context.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL ignorePreview");
-      if (args === undefined || !shadowArrayFits(args, process.platform === "win32")) throw new RunnerRefusal("INVALID_REQUEST", "ignorePreview arguments");
+      const wsl = wslGits.get(context.gitInstallationId);
+      // :2470: a Windows shadow runs only a Windows Git, and a WSL shadow only the WSL Git that made it.
+      if ("wsl" in shadow ? wsl === undefined || !sameInstallation(shadow.wsl, wsl) : wsl !== undefined) throw new RunnerRefusal("INVALID_REQUEST", "ignorePreview Git");
+      if (args === undefined || !shadowArrayFits(args, wsl === undefined && process.platform === "win32")) throw new RunnerRefusal("INVALID_REQUEST", "ignorePreview arguments");
+      // :2474: `wsl.exe` runs in the launch folder, and `-C` takes `/tmp/<shadow>/<s|c>`.
+      if ("wsl" in shadow) return { program, cwd: launchDirectory, wsl, shadow: `/tmp/${shadow.name}/${context.shadowRepository}` };
       return { program, cwd: join(shadow.folder, context.shadowRepository) };
     }
     const bound = contexts.get(context.bootstrapId);
@@ -933,6 +1034,85 @@ export function createBunRunner(options: BunRunnerOptions) {
     const result = wslExec(wslWrapped(inst, operationId, "probe", "", WSL_PERL, args), { env: wslEnvironment(), input: wslFilesInput(request) });
     const out = started(result.bytes);
     return wslFilesResults(out === null ? null : result.exitCode, out ?? result.bytes, request);
+  }
+
+  // ---- Feature 005 WSL `fileDelete`, `fileReplace`, and `shadow` (contract Δ6, Δ11) ----
+
+  // Mirrors `src-tauri/src/wsl.rs:1805` `files_perl`: the `wslFiles` text in `mode` through the wrapper in mode `probe`, the three Linux roots,
+  // the Git and `sha256sum` programs, and NUL-ended tokens on stdin. A request checks the command line (process_requests.rs:1407); an internal run does not.
+  function wslFilesCommand(inst: WslInstallation, operationId: string, mode: "delete" | "replace" | "scratch", roots: readonly string[], tokens: readonly string[], request = true): { args: string[]; input: Uint8Array } {
+    const args = wslWrapped(inst, operationId, "probe", "", WSL_PERL, ["-e", WSL_FILES_TEXT, "--", mode, ...roots, inst.git, inject.wslSha256sum ?? inst.sha256sum]);
+    if (request && commandLineUnits(WSL_EXE, args) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
+    return { args, input: Buffer.from(tokens.map((token) => `${token}\0`).join("")) };
+  }
+  // `src-tauri/src/wsl.rs:1763`: the `scratch` mode reads no root, so the roots are `/`.
+  const scratchCommand = (inst: WslInstallation, operationId: string, tokens: string[], request = true) => wslFilesCommand(inst, operationId, "scratch", ["/", "/", "/"], tokens, request);
+  const walkBoundMs = () => (inject.deadlineMs ?? GIT_PROCESS_DEADLINE_MS) + BOOTSTRAP_DEADLINE_MS;
+
+  // One `wsl.exe` process in the set of `operationId`, so `closeJob` ends it. `stopped` or the bound ends it too, as the stop Event of `run_walk`
+  // (src-tauri/src/wsl.rs:2144) or the deadline of `run_until` (:2140) does. Null: no output.
+  async function wslRun(operationId: string, command: { args: string[]; input: Uint8Array }, stopped: Promise<unknown> | null, boundMs: number | null): Promise<WslOut> {
+    const proc = Bun.spawn([WSL_EXE, ...command.args], { cwd: wslDirectory, env: wslEnvironment(), stdin: "pipe", stdout: "pipe", stderr: "ignore" });
+    const own = running.get(operationId) ?? new Set();
+    running.set(operationId, own.add(proc as unknown as Subprocess));
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const ends = [stopped, boundMs === null ? null : new Promise<void>((resolve) => (timer = setTimeout(resolve, boundMs)))].filter((p) => p !== null).map((p) => p.then(() => null));
+    void (async () => {
+      proc.stdin.write(command.input);
+      await proc.stdin.end();
+    })().catch(() => {});
+    try {
+      const done = Promise.all([new Response(proc.stdout).bytes(), proc.exited]).then(([bytes, exitCode]) => ({ exitCode, bytes }));
+      const out = await Promise.race([done, ...ends]);
+      if (out === null) proc.kill();
+      return out;
+    } finally {
+      clearTimeout(timer);
+      own.delete(proc as unknown as Subprocess);
+    }
+  }
+
+  // Mirrors `src-tauri/src/process_requests.rs:1680` `remove_wsl_shadow`: `scratch remove` in an internal operation, within the walk bound.
+  function removeWslShadow(inst: WslInstallation, name: string): void {
+    const operation = crypto.randomUUID();
+    const removed = wslRun(operation, scratchCommand(inst, operation, ["remove", name], false), null, walkBoundMs()).then(() => {});
+    wslRemovals.add(removed);
+    void removed.finally(() => wslRemovals.delete(removed));
+  }
+
+  // Mirrors `src-tauri/src/process_requests.rs:1707` `sweep_wsl_shadows`: in an internal operation, `scratch sweep`, then `scratch remove` of each leftover.
+  async function sweepWslShadows(inst: WslInstallation, live: ReadonlySet<string>): Promise<void> {
+    const operation = crypto.randomUUID();
+    const swept = wslScratchReply(await wslRun(operation, scratchCommand(inst, operation, ["sweep"], false), null, walkBoundMs()), "sweep");
+    if (swept.result !== "swept") return;
+    for (const name of swept.names) {
+      if (!name.startsWith(WSL_SHADOW_PREFIX) || !leftoverShadow(name.slice(WSL_SHADOW_PREFIX.length), live.has(name))) continue;
+      await wslRun(operation, scratchCommand(inst, operation, ["remove", name], false), null, walkBoundMs());
+    }
+  }
+
+  // Mirrors `src-tauri/src/process_requests.rs:1611` to `:1675`: the `live` names and the create unit at the request, then in the walk the sweep and `scratch create`.
+  // A stop or the deadline gives `error other-error` (`shadow_deadline`, :4385). A folder that the create made then is a leftover of the next sweep.
+  async function wslShadow(operationId: string, inst: WslInstallation, name: string): Promise<ShadowReply> {
+    const live = new Set([...shadows.values()].flatMap((s) => ("wsl" in s ? [s.name] : [])));
+    const command = scratchCommand(inst, operationId, ["create", name]);
+    const ended = await walk(
+      new AbortController().signal,
+      async (stopped) => {
+        let stop = false;
+        void stopped.then(() => (stop = true));
+        await sweepWslShadows(inst, live);
+        return stop ? null : wslRun(operationId, command, stopped, null);
+      },
+      "shadow",
+    );
+    if (ended === null || "stop" in ended) return { result: "error", code: "other-error" };
+    const created = wslScratchReply(ended, "create");
+    if (created.result === "error") return created;
+    if (created.result !== "created") return { result: "error", code: "other-error" };
+    const shadowId = crypto.randomUUID();
+    shadows.set(shadowId, { operationId, wsl: inst, name });
+    return { shadowId };
   }
 
   // Test end: ends every scope of an operation that this double started.
@@ -1290,12 +1470,16 @@ export function createBunRunner(options: BunRunnerOptions) {
     // Feature 002 contract Δ6: a script run gets `/bin/sh`, the script text, and the approved Git from the shell. `checkCall` checked its arguments.
     const run = inject.wslRun?.(call);
     const inst = run === undefined ? target.wsl : { ...target.wsl, systemdRun: run };
-    const dir = wslParts(target.cwd);
+    const dir = target.shadow ?? wslParts(target.cwd)?.linux;
     const index = call.transaction ? wslParts(call.transaction.indexFile)?.linux : "";
     if (!dir || index === undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL path");
+    // Feature 005 `src-tauri/src/wsl.rs:535` `shadow_command`: mode `read`, `--git-dir=.git` after `-C`, and the wrapper index `<dir>/.git/<index>`.
+    const shadowIndex = call.context.contextKind === "ignorePreview" ? `${dir}/.git/${call.context.shadowIndex === "exclude" ? "exclude.index" : "index"}` : null;
     const args = call.script
       ? wslWrapped(inst, call.operationId, "search", "", "/bin/sh", ["-c", WSL_TEXTS.matchingProbe, "sh", inst.git, ...call.arguments])
-      : wslWrapped(inst, call.operationId, call.environmentPolicy, index, inst.git, ["--no-lazy-fetch", "-C", dir.linux, ...call.arguments.slice(1)]);
+      : shadowIndex !== null
+        ? wslWrapped(inst, call.operationId, "read", shadowIndex, inst.git, ["--no-lazy-fetch", "-C", dir, "--git-dir=.git", ...call.arguments.slice(1)])
+        : wslWrapped(inst, call.operationId, call.environmentPolicy, index, inst.git, ["--no-lazy-fetch", "-C", dir, ...call.arguments.slice(1)]);
     if (commandLineUnits(WSL_EXE, args) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
     const anchor = call.environmentPolicy === "mutation" || call.environmentPolicy === "network" ? wslAnchor(call.operationId, inst) : null;
     // Contract §6 "Activity and stall notice": one anchor line each second while a tracked process runs. Any change of the CPU-time sum is activity.
@@ -1496,7 +1680,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       for (const [id, shadow] of shadows) {
         if (shadow.operationId !== operationId) continue;
         shadows.delete(id);
-        removeShadow(shadow.folder);
+        dropShadow(shadow);
       }
     },
 
@@ -1599,9 +1783,9 @@ export function createBunRunner(options: BunRunnerOptions) {
       throw unknownTarget();
     },
 
-    // Feature 005 contract Δ6 `fileDelete` on Windows, as `src-tauri/src/process_requests.rs` `file_delete` and `file_delete.rs` check it:
+    // Feature 005 contract Δ6 `fileDelete`, as `src-tauri/src/process_requests.rs` `file_delete` (:1285) and `file_delete.rs` check it:
     // a `started` marker of action `delete-files`, each path below the worktree root, the folder rule, the `recycle` rules, then the checks and the delete.
-    // The double moves a Recycle Bin item into its owned `recycle-bin` folder, so no test touches the Windows Recycle Bin. It has no WSL `delete` mode.
+    // The double moves a Recycle Bin item into its owned `recycle-bin` folder, so no test touches the Windows Recycle Bin.
     async fileDelete(request, signal): Promise<FileDeleteReply | WalkStop> {
       checkSyncRequest("fileDelete", request);
       frames.push({ type: "fileDelete", ...structuredClone(request) });
@@ -1609,15 +1793,36 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (![...markers.values()].some((m) => m.operationId === request.operationId && m.kind === "workbench" && m.action === "delete-files")) throw new RunnerRefusal("INVALID_REQUEST", "fileDelete action");
       const repository = repositories.get(request.repositoryId);
       if (repository === undefined) throw unknownTarget();
-      if (wslGits.has(repository.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL fileDelete");
       const namesOf = (path: string) => below(repository.worktreeRoot, path) ?? invalidRequest("fileDelete path");
       const entries = request.entries.map((e) => ({ names: namesOf(e.path), path: e.path, expected: e.expected }));
       const folders = request.folders.map((path) => ({ names: namesOf(path), path }));
       const shallowest = folders.reduce<(typeof folders)[number] | null>((top, f) => (top === null || f.names.length < top.names.length ? f : top), null);
       if (shallowest !== null && !folders.every((f) => shallowest.names.every((name, i) => f.names[i] === name))) throw new RunnerRefusal("INVALID_REQUEST", "fileDelete folders");
-      // `file_delete::MAX_PATH`: a `recycle` path of 260 or more UTF-16 units.
+      const wsl = wslGits.get(repository.gitInstallationId);
+      // :1327: a Windows Git never deletes below a WSL root.
+      if (wsl === undefined && wslParts(repository.worktreeRoot) !== null) throw new RunnerRefusal("INVALID_REQUEST", "Windows Git in a WSL repository");
+      // :1332: a WSL workspace has no Recycle Bin. `file_delete::MAX_PATH`: a `recycle` path of 260 or more UTF-16 units.
+      if (request.mode === "recycle" && wsl !== undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL recycle");
       if (request.mode === "recycle" && entries.some((e) => e.path.length >= 260)) throw new RunnerRefusal("INVALID_REQUEST", "fileDelete long path");
       const { gitInstallationId: _git, ...roots } = repository;
+      if (wsl !== undefined) {
+        // :1366: the `wslFiles` mode `delete` with the three Linux roots.
+        const linux = linuxRoots(wsl, roots) ?? invalidRequest("WSL roots");
+        // `src-tauri/src/wsl.rs:1602` `delete_command`: the entry count, each entry with root 0, its components, and its review fact, then the folders.
+        // process_requests.rs:1378: a file gives its size, `lastWrite`, and digest or `-`; a link gives its target, or an empty one.
+        const tokens = [String(entries.length)];
+        for (const { names, expected } of entries) {
+          tokens.push("0", String(names.length), ...names);
+          if (expected.kind === "file") tokens.push("file", String(expected.size), BigInt(expected.lastWrite).toString(), expected.digest ?? "-");
+          else tokens.push("link", expected.target ?? "");
+        }
+        tokens.push(String(folders.length));
+        for (const { names } of folders) tokens.push("0", String(names.length), ...names);
+        const command = wslFilesCommand(wsl, request.operationId, "delete", linux, tokens);
+        const ended = await walk(signal, (stopped) => wslRun(request.operationId, command, stopped, null), "fileDelete");
+        // :1414: the process unlinks inside the walk, so a stop or the deadline replies `interrupted`, as a broken output does.
+        return ended !== null && "stop" in ended ? { result: "interrupted" } : wslDeleteReply(ended, entries.length, folders.length);
+      }
       const reply = await walk(
         signal,
         (): FileDeleteReply => {
@@ -1632,8 +1837,8 @@ export function createBunRunner(options: BunRunnerOptions) {
       return "stop" in reply ? { result: "stopped" } : reply;
     },
 
-    // Feature 005 contract Δ6 `fileReplace` on Windows, as `src-tauri/src/file_replace.rs` checks it: a `started` marker of the target's action,
-    // the exact target, no link on the way, a regular file with one link or an absent file, the expected state, then one atomic replace. It has no WSL `replace` mode.
+    // Feature 005 contract Δ6 `fileReplace`, as `src-tauri/src/process_requests.rs` `file_replace` (:1441) and `file_replace.rs` check it: a `started` marker of the target's action,
+    // the exact target, no link on the way, a regular file with one link or an absent file, the expected state, then one atomic replace.
     async fileReplace(request, signal): Promise<FileReplaceReply | WalkStop> {
       checkSyncRequest("fileReplace", request);
       frames.push({ type: "fileReplace", ...request });
@@ -1642,33 +1847,50 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (![...markers.values()].some((m) => m.operationId === request.operationId && m.kind === "workbench" && m.action === action)) throw new RunnerRefusal("INVALID_REQUEST", "fileReplace action");
       const repository = repositories.get(request.repositoryId);
       if (repository === undefined) throw unknownTarget();
-      if (wslGits.has(repository.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL fileReplace");
       const root = request.target === "gitignore" ? repository.worktreeRoot : repository.commonDirectory;
       const names = request.target === "gitignore" ? [".gitignore"] : ["info", "exclude"];
       if (resolve(request.path) !== resolve(join(root, ...names))) throw new RunnerRefusal("INVALID_REQUEST", "fileReplace path");
       const bytes = Buffer.from(request.bytes, "base64");
+      const { gitInstallationId: _git, ...roots } = repository;
+      const wsl = wslGits.get(repository.gitInstallationId);
+      // :1479: a Windows Git never replaces a file when a root is a WSL path.
+      if (wsl === undefined && ROOT_ORDER.some((name) => wslParts(roots[name]) !== null)) throw new RunnerRefusal("INVALID_REQUEST", "Windows Git in a WSL repository");
+      if (wsl !== undefined) {
+        // :1508: the `wslFiles` mode `replace` with the three Linux roots.
+        const linux = linuxRoots(wsl, roots) ?? invalidRequest("WSL roots");
+        // `src-tauri/src/wsl.rs:1698` `replace_command`: the byte bound, root 0 or 2 (process_requests.rs:1464), the components, the expected state, and the bytes in lowercase hex.
+        const expected = request.expected === "absent" ? ["absent"] : ["present", String(request.expected.size), request.expected.sha256];
+        const tokens = [String(IGNORE_TARGET_BYTES), request.target === "gitignore" ? "0" : "2", String(names.length), ...names, ...expected, bytes.toString("hex")];
+        const command = wslFilesCommand(wsl, request.operationId, "replace", linux, tokens);
+        const ended = await walk(signal, (stopped) => wslRun(request.operationId, command, stopped, null), "fileReplace");
+        // :1533: the process can rename inside the walk, so a stop or the deadline replies `interrupted`.
+        return ended !== null && "stop" in ended ? { result: "interrupted" } : wslReplaceReply(ended);
+      }
       const reply = await walk(signal, () => replaceFile(root, names, request.expected, bytes), "fileReplace");
       // `file_replace_stopped`: a stop or a deadline before the write writes nothing.
       return "stop" in reply ? { result: "stopped" } : reply;
     },
 
-    // Feature 005 contract Δ6 `shadow`, as `src-tauri/src/shadow.rs` `create`: a new `<pid>-<creation time>-<16 hex>` folder with `s` and `c` below `<launch>/preview`.
-    // The leftovers of gone processes and the own folders without a live context go after the reply. The double has no WSL `scratch` mode.
+    // Feature 005 contract Δ6 `shadow`, as `src-tauri/src/process_requests.rs` `shadow` (:1558) and `src-tauri/src/shadow.rs` `create` make it: a new
+    // `<pid>-<creation time>-<16 hex>` folder with `s` and `c` below `<launch>/preview`. The leftovers of gone processes and the own folders without a live context go after the reply.
     async shadow(request): Promise<ShadowReply> {
       checkSyncRequest("shadow", request);
       frames.push({ type: "shadow", ...request });
       if (inactive.has(request.operationId)) throw unknownTarget();
       const repository = repositories.get(request.repositoryId);
       if (repository === undefined) throw unknownTarget();
-      if (wslGits.has(repository.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL shadow");
-      mkdirSync(previewFolder, { recursive: true });
+      const wsl = wslGits.get(repository.gitInstallationId);
+      // :1573: a Windows Git never makes a shadow for a WSL root.
+      if (wsl === undefined && wslParts(repository.worktreeRoot) !== null) throw new RunnerRefusal("INVALID_REQUEST", "Windows Git in a WSL repository");
       const me = `${process.pid}-${processCreationTime(process.pid)}`;
-      const live = new Set([...shadows.values()].map((s) => s.folder));
+      const id16 = () => crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+      if (wsl !== undefined) return wslShadow(request.operationId, wsl, `${WSL_SHADOW_PREFIX}${me}-${id16()}`);
+      mkdirSync(previewFolder, { recursive: true });
+      const live = new Set([...shadows.values()].flatMap((s) => ("folder" in s ? [s.folder] : [])));
       const leftovers = readdirSync(previewFolder)
-        .map((name) => ({ name, owner: /^(\d+)-(\d+)-[0-9a-f]{16}$/.exec(name) }))
-        .filter(({ name, owner }) => owner !== null && (`${owner[1]}-${owner[2]}` === me ? !live.has(join(previewFolder, name)) : processCreationTime(Number(owner[1])) !== BigInt(owner[2]!)))
-        .map(({ name }) => join(previewFolder, name));
-      const folder = join(previewFolder, `${me}-${crypto.randomUUID().replaceAll("-", "").slice(0, 16)}`);
+        .filter((name) => leftoverShadow(name, live.has(join(previewFolder, name))))
+        .map((name) => join(previewFolder, name));
+      const folder = join(previewFolder, `${me}-${id16()}`);
       try {
         mkdirSync(folder);
         mkdirSync(join(folder, "s"));
@@ -1934,8 +2156,10 @@ export function createBunRunner(options: BunRunnerOptions) {
     async dispose(): Promise<void> {
       closing = true;
       // Contract Δ6: a service exit removes every shadow folder.
-      for (const shadow of shadows.values()) removeShadow(shadow.folder);
+      for (const shadow of shadows.values()) dropShadow(shadow);
       shadows.clear();
+      // The `scratch remove` runs end before the scope cleanup below ends their scopes.
+      if (wslRemovals.size > 0) await Promise.race([Promise.all([...wslRemovals]), Bun.sleep(DISPOSE_WAIT_MS)]);
       end(() => true);
       for (const operationId of wslUnits.keys()) endWslScopes(operationId);
       const anchors = [...wslAnchors.values()];

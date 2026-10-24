@@ -4,9 +4,12 @@
 // T358 and T362: the read-only references sidebar of `src/frontend/refs/ReferencesSidebar.tsx` (FR-057; plan.md "References sidebar", "Long text",
 // "Keyboard and focus" References sidebar row, "Task flow and command placement" Browse references row, "Required visible states" References, and "Status and fallback texts").
 
+import { ArrowDown01Icon, ArrowRight01Icon, Folder01Icon, FolderGitIcon, GitBranchIcon, Tag01Icon } from "@hugeicons/core-free-icons";
+import type { IconSvgElement } from "@hugeicons/react";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import type { RefEntry, RefsResult } from "../../src/contracts/envelope";
+import type { BranchEntry } from "../../src/frontend/state/workbench";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
@@ -216,6 +219,59 @@ describe("groups and folders", () => {
     expect(host.querySelectorAll("button")).toHaveLength(0);
     await act(async () => void item(host, "main,").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
     expect(document.querySelector('[role="menu"]')).toBeNull();
+  });
+});
+
+// T080: the row icons and the worktree mark of the Main and BranchCard boards. The icons are Hugeicons, hidden from assistive technology.
+describe("row icons and the worktree mark (Main and BranchCard boards, T080)", () => {
+  // The drawn shapes of an icon: each path `d` or circle `r`, in order, as `@hugeicons/react` renders the icon data.
+  const shapeOf = (icon: IconSvgElement) => icon.map(([, attributes]) => String(attributes.d ?? attributes.r));
+  const shapes = (row: HTMLElement) => [...row.querySelectorAll<SVGElement>(":scope > svg, :scope > span > svg")].map((svg) => [...svg.children].map((c) => c.getAttribute("d") ?? c.getAttribute("r") ?? ""));
+  const hidden = (row: HTMLElement) => [...row.querySelectorAll("svg")].every((svg) => svg.closest('[aria-hidden="true"]') !== null);
+  const held = (name: string, heldBy: string | null, current = false): BranchEntry => ({ ref: `refs/heads/${name}`, kind: "local", name, invalidUtf8: false, oid: A, upstream: null, tracking: null, heldBy, current, localName: null, upstreamPresent: false });
+
+  test("a folder row shows the Muted folder icon after its chevron; group rows show only the chevron", async () => {
+    const { host } = await sidebar();
+    const folder = item(host, "feature, folder");
+    expect(shapes(folder)).toEqual([shapeOf(ArrowRight01Icon), shapeOf(Folder01Icon)]);
+    expect(folder.querySelectorAll("svg")[1]!.getAttribute("class")).toContain("text-muted-text");
+    expect(shapes(item(host, "Branches"))).toEqual([shapeOf(ArrowDown01Icon)]);
+    expect(hidden(folder)).toBe(true);
+  });
+
+  test("a local and a remote-tracking branch row show the branch icon, and a tag row the tag icon, after a chevron-wide space", async () => {
+    const { host } = await sidebar();
+    await click(item(host, "Remotes"));
+    await click(item(host, "origin, folder"));
+    await click(item(host, "Tags"));
+    for (const [start, icon] of [["main,", GitBranchIcon], ["origin/main,", GitBranchIcon], ["origin/HEAD,", GitBranchIcon], ["v1.0,", Tag01Icon]] as const) {
+      const row = item(host, start);
+      const space = row.firstElementChild!;
+      expect({ start, space: [space.tagName, space.getAttribute("aria-hidden"), text(space)], shapes: shapes(row) }).toEqual({ start, space: ["SPAN", "true", ""], shapes: [shapeOf(icon)] });
+      expect(hidden(row)).toBe(true);
+    }
+    // The icons hold no text, so the visible name stays the last segment.
+    expect(text(item(host, "main,"))).toStartWith("main");
+  });
+
+  test("a local branch that another worktree holds shows the Muted worktree mark of the card at the row end, and its name says where (spec FR-066)", async () => {
+    const branches = [held("main", "C:/Repos/sample-repo", true), held("release/1.0", "C:/Repos/sample-repo-release"), held("release/2.0", null)];
+    const { host } = await sidebar({ branches });
+    await click(item(host, "release, folder"));
+    const row = item(host, "release/1.0,");
+    const mark = row.querySelector<HTMLElement>('[data-slot="worktree-mark"]')!;
+    expect({ last: row.lastElementChild === mark, hidden: mark.getAttribute("aria-hidden"), title: mark.getAttribute("title"), muted: mark.className.includes("text-muted-text") }).toEqual({ last: true, hidden: "true", title: "Checked out in C:/Repos/sample-repo-release", muted: true });
+    expect(shapes(row).at(-1)).toEqual(shapeOf(FolderGitIcon));
+    expect(row.getAttribute("aria-label")).toBe("release/1.0, local branch, No upstream, Checked out in C:/Repos/sample-repo-release");
+    // The open worktree holds the current branch, and a branch that no worktree holds has no mark.
+    for (const start of ["main,", "release/2.0,"]) {
+      expect({ start, mark: item(host, start).querySelector('[data-slot="worktree-mark"]') }).toEqual({ start, mark: null });
+      expect(item(host, start).getAttribute("aria-label")).not.toContain("Checked out in");
+    }
+    // Without a `readBranches` result, no row shows the mark.
+    const unread = await sidebar();
+    await click(item(unread.host, "release, folder"));
+    expect(unread.host.querySelector('[data-slot="worktree-mark"]')).toBeNull();
   });
 });
 

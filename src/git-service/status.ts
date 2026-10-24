@@ -442,9 +442,11 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
 
   // The `count` paths that a `rev-parse --git-path` call prints, one per line. Null: the call or its output failed.
   // Contract §11 "Paths and file access": Linux Git prints Linux paths, and the service takes their UNC form. A name without one gives null.
-  async function gitPaths(t: ProcessTarget, args: string[], count: number): Promise<string[] | null> {
+  // `steps` gets the step when it has an exit, so the caller sees its deadline.
+  async function gitPaths(t: ProcessTarget, args: string[], count: number, steps?: Step[]): Promise<string[] | null> {
     const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
     const step = await run(t, args, out);
+    if ("exit" in step) steps?.push(step);
     if ("refused" in step || step.exit.exitCode !== 0 || out.limited) return null;
     const raw = out.take();
     if (raw.length === 0 || raw[raw.length - 1] !== NEWLINE) return null;
@@ -459,10 +461,10 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     return paths.length === count && paths.every((path): path is string => path !== null && isChannelPath(path)) ? paths : null;
   }
 
-  // Git resolves the marker paths once for each workspace. A failed resolution is not kept.
-  function markerPaths(t: ProcessTarget, st: WorkspaceState): Promise<Record<OperationMarker, string> | null> {
+  // Git resolves the marker paths once for each workspace. A failed resolution is not kept. Only the caller that runs the step gets it in `steps`.
+  function markerPaths(t: ProcessTarget, st: WorkspaceState, steps: Step[]): Promise<Record<OperationMarker, string> | null> {
     st.markers ??= (async (): Promise<Record<OperationMarker, string> | null> => {
-      const lines = await gitPaths(t, markerPathArgs(), OPERATION_MARKERS.length);
+      const lines = await gitPaths(t, markerPathArgs(), OPERATION_MARKERS.length, steps);
       return lines === null ? null : (Object.fromEntries(OPERATION_MARKERS.map((name, i) => [name, lines[i]!])) as Record<OperationMarker, string>);
     })().catch(() => null);
     const pending = st.markers;
@@ -474,9 +476,9 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
 
   // OS file facts of the Git-resolved marker paths. Null: the fact is unknown.
   async function markerFacts(t: ProcessTarget, st: WorkspaceState): Promise<{ present: Record<OperationMarker, boolean | null>; steps: Step[] }> {
-    const paths = await markerPaths(t, st);
-    const present = Object.fromEntries(OPERATION_MARKERS.map((name) => [name, null])) as Record<OperationMarker, boolean | null>;
     const steps: Step[] = [];
+    const paths = await markerPaths(t, st, steps);
+    const present = Object.fromEntries(OPERATION_MARKERS.map((name) => [name, null])) as Record<OperationMarker, boolean | null>;
     if (paths === null) return { present, steps };
     const exists = async (path: string) => {
       try {

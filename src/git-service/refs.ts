@@ -55,10 +55,12 @@ export function createRefsReader({ runner, trust, listingTuple }: Pick<HistoryRe
         if (!listed.ok || gate !== null) {
           // Contract §7 "Held history steps": a refused gate ends the held step and discards its output.
           step.abort();
-          await pending.catch(() => null);
+          const held = await pending.catch(() => null);
           if (t.signal.aborted) return { result: "canceled" };
           if (listed.ok) return refusal(gate!);
-          return "stop" in listed ? { result: listed.stop } : refusal(listed.code, listed.text);
+          if ("stop" in listed) return { result: listed.stop };
+          // 001 contract §5 "Deadline outcomes": a held step at its deadline closes the Job of the listing processes.
+          return held !== null && "exit" in held && held.exit.deadline !== undefined ? { result: "deadline" } : refusal(listed.code, listed.text);
         }
         const ran = await pending;
         if (t.signal.aborted || ran === null) return { result: "canceled" };

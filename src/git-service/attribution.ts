@@ -56,7 +56,7 @@ export function windowOf(bytes: Uint8Array, tip: ReflogRecord | null, capped: bo
   return start === bytes.length ? { records } : null;
 }
 
-// The window read keeps at most one record above the record cap. It reports `limited` after the tip record, so the runner cancels the read.
+// The window read keeps at most one record above the record cap. It reports `limited` after the tip record, so the runner stops the read.
 function windowCollector(tip: ReflogRecord | null): Collector & { readonly capped: boolean; take(): Uint8Array } {
   const kept = createCollector({ maxBytes: ATTRIBUTION_EVIDENCE_BYTES, maxRecords: FIELDS * (ATTRIBUTION_EVIDENCE_RECORDS + 1), separator: NUL });
   let found = false;
@@ -115,7 +115,7 @@ export async function readWindow(ctx: ObserveContext, tip: ReflogRecord | null):
   const out = windowCollector(tip);
   const step = await stepOf(ctx, reflogArgs(), out);
   if (!("exit" in step)) return step;
-  // The runner cancels a limited read, so its exit status tells nothing then.
+  // The runner stops a limited read, so its exit status tells nothing then.
   if (!out.limited && step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
   const window = windowOf(out.take(), tip, out.capped, ctx.workspace.objectFormat);
   return window === null ? { code: "MALFORMED_GIT_OUTPUT" } : { value: window };

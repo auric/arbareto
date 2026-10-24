@@ -124,6 +124,8 @@ pub trait Native {
     fn pick_folder(&self) -> Result<Option<PathBuf>, &'static str>;
     /// The folder picker of `chooseWorktreeFolder`, with its own title. `Ok(None)` is Cancel.
     fn pick_parent_folder(&self) -> Result<Option<PathBuf>, &'static str>;
+    /// The folder picker with `title`. `Ok(None)` is Cancel. `Err` is a picker call failure.
+    fn pick_titled_folder(&self, title: &str) -> Result<Option<PathBuf>, &'static str>;
     /// The file picker of one `FileKind`. `Ok(None)` is Cancel. `Err` is a picker call failure.
     fn pick_file(&self, kind: FileKind) -> Result<Option<PathBuf>, &'static str>;
     /// The button ID that `TaskDialogIndirect` returns. `None` is a call failure.
@@ -302,6 +304,21 @@ pub fn choose_worktree_folder(
         }
         _ => return Err("UNSUPPORTED_REPOSITORY"),
     }
+    Ok(Some(text.to_string()))
+}
+
+/// Feature 006 contract Δ3 `importDictionary`: the picked folder as a channel path. `language` is the catalog name. `Ok(None)` is Cancel.
+/// The service reads a WSL folder through its UNC path (plan.md D6), so no route rule applies.
+pub fn choose_dictionary_folder(
+    native: &dyn Native,
+    language: &str,
+) -> Result<Option<String>, &'static str> {
+    let title = format!("Choose the folder with the {language} dictionary files");
+    let Some(folder) = native.pick_titled_folder(&title)? else {
+        return Ok(None);
+    };
+    let text = folder.to_str().ok_or(INVALID)?;
+    native_path(text).map_err(|_| INVALID)?;
     Ok(Some(text.to_string()))
 }
 
@@ -903,10 +920,11 @@ pub const PICKER_FAILED: &str = "PICKER_FAILED";
 const PARENT_FOLDER_TITLE: PCWSTR = w!("Select the parent folder of the new worktree");
 
 /// What one picker shows. `Git` is the executable picker of `chooseGit`. `ParentFolder` is the folder picker of `chooseWorktreeFolder`.
-#[derive(Clone, Copy)]
 enum Picker {
     Folder,
     ParentFolder,
+    /// A folder picker with this title.
+    TitledFolder(HSTRING),
     Git,
     File(FileKind),
 }
@@ -949,8 +967,8 @@ fn show(
     let dialog: IFileOpenDialog =
         unsafe { CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER) }
             .map_err(at("CoCreateInstance"))?;
-    let (picks, filter) = match picker {
-        Picker::Folder | Picker::ParentFolder => (FOS_PICKFOLDERS, None),
+    let (picks, filter) = match &picker {
+        Picker::Folder | Picker::ParentFolder | Picker::TitledFolder(_) => (FOS_PICKFOLDERS, None),
         Picker::Git => (FILEOPENDIALOGOPTIONS(0), Some((w!("Git"), w!("*.exe")))),
         Picker::File(kind) => (FILEOPENDIALOGOPTIONS(0), Some(kind.filter())),
     };
@@ -967,9 +985,14 @@ fn show(
         // SAFETY: the dialog copies the filter strings, which are static.
         unsafe { dialog.SetFileTypes(&filter) }.map_err(at("SetFileTypes"))?;
     }
-    if let Picker::ParentFolder = picker {
-        // SAFETY: the dialog copies the title, which is static.
-        unsafe { dialog.SetTitle(PARENT_FOLDER_TITLE) }.map_err(at("SetTitle"))?;
+    let title = match &picker {
+        Picker::ParentFolder => Some(PARENT_FOLDER_TITLE),
+        Picker::TitledFolder(title) => Some(PCWSTR(title.as_ptr())),
+        _ => None,
+    };
+    if let Some(title) = title {
+        // SAFETY: the dialog copies the title, and `picker` holds it until this call returns.
+        unsafe { dialog.SetTitle(title) }.map_err(at("SetTitle"))?;
     }
     // SAFETY: `owner` is null or a window handle. A destroyed owner makes `Show` fail, and that failure is no memory access.
     if let Err(error) = unsafe { dialog.Show(Some(owner)) } {
@@ -1001,6 +1024,13 @@ impl Native for Dialogs {
 
     fn pick_parent_folder(&self) -> Result<Option<PathBuf>, &'static str> {
         pick(self.owner_hwnd(), Picker::ParentFolder)
+    }
+
+    fn pick_titled_folder(&self, title: &str) -> Result<Option<PathBuf>, &'static str> {
+        pick(
+            self.owner_hwnd(),
+            Picker::TitledFolder(HSTRING::from(title)),
+        )
     }
 
     fn pick_file(&self, kind: FileKind) -> Result<Option<PathBuf>, &'static str> {
@@ -1095,6 +1125,8 @@ pub(crate) mod tests {
         pub(crate) pick_wait: Duration,
         pub(crate) presses: RefCell<Vec<Press>>,
         pub(crate) calls: RefCell<Vec<&'static str>>,
+        /// The title of each `pick_titled_folder` call.
+        pub(crate) titles: RefCell<Vec<String>>,
     }
 
     impl Fake {
@@ -1125,6 +1157,12 @@ pub(crate) mod tests {
 
         fn pick_parent_folder(&self) -> Result<Option<PathBuf>, &'static str> {
             self.calls.borrow_mut().push("pick_parent_folder");
+            self.pick_failure.map_or(Ok(self.folder.clone()), Err)
+        }
+
+        fn pick_titled_folder(&self, title: &str) -> Result<Option<PathBuf>, &'static str> {
+            self.calls.borrow_mut().push("pick_titled_folder");
+            self.titles.borrow_mut().push(title.to_string());
             self.pick_failure.map_or(Ok(self.folder.clone()), Err)
         }
 
@@ -2193,6 +2231,7 @@ pub(crate) mod tests {
             recent: Vec::new(),
             sync: Default::default(),
             switch_choice: Default::default(),
+            spelling: Default::default(),
         };
         assert_eq!(
             restore_workspace(&settings, &contexts, Instant::now()),
@@ -2224,6 +2263,7 @@ pub(crate) mod tests {
             recent: Vec::new(),
             sync: Default::default(),
             switch_choice: Default::default(),
+            spelling: Default::default(),
         };
         let saved_git = startup_context(&settings, &contexts, Instant::now()).expect("savedGit");
         let bootstrap_id = saved_git["bootstrapId"].as_str().expect("bootstrapId");
@@ -2254,6 +2294,7 @@ pub(crate) mod tests {
             recent: Vec::new(),
             sync: Default::default(),
             switch_choice: Default::default(),
+            spelling: Default::default(),
         };
         let saved_git = startup_context(&settings, &contexts, Instant::now()).expect("savedGit");
         let bootstrap_id = saved_git["bootstrapId"].as_str().expect("bootstrapId");
@@ -2285,6 +2326,7 @@ pub(crate) mod tests {
             recent: Vec::new(),
             sync: Default::default(),
             switch_choice: Default::default(),
+            spelling: Default::default(),
         };
         assert_eq!(
             startup_context(&settings, &contexts, Instant::now()),
@@ -2306,6 +2348,7 @@ pub(crate) mod tests {
             recent: Vec::new(),
             sync: Default::default(),
             switch_choice: Default::default(),
+            spelling: Default::default(),
         };
         assert_eq!(startup_context(&settings, &contexts, Instant::now()), None);
     }
@@ -2323,6 +2366,7 @@ pub(crate) mod tests {
             recent: Vec::new(),
             sync: Default::default(),
             switch_choice: Default::default(),
+            spelling: Default::default(),
         };
         let chosen = restore_workspace(&settings, &contexts, Instant::now());
         assert_eq!(
@@ -2554,6 +2598,53 @@ pub(crate) mod tests {
             unknown.calls().is_empty(),
             "no picker for an unknown repository"
         );
+    }
+
+    /// Feature 006 plan.md D17 and contract Δ3 `importDictionary`: the picker title names the language.
+    /// Cancel gives `None`, and a picker failure gives `PICKER_FAILED`. A path without a string form gives `INVALID_REQUEST`.
+    #[test]
+    fn the_dictionary_folder_picker_names_the_language_and_refuses_a_path_without_a_string_form() {
+        let picked = |folder: PathBuf| Fake {
+            folder: Some(folder),
+            ..Fake::default()
+        };
+        for folder in [
+            r"D:\dictionaries\uk",
+            r"\\wsl.localhost\Ubuntu-26.04\home\u\uk",
+        ] {
+            let native = picked(PathBuf::from(folder));
+            assert_eq!(
+                choose_dictionary_folder(&native, "Ukrainian"),
+                Ok(Some(folder.to_string()))
+            );
+            assert_eq!(native.calls(), ["pick_titled_folder"]);
+            assert_eq!(
+                *native.titles.borrow(),
+                ["Choose the folder with the Ukrainian dictionary files"]
+            );
+        }
+        assert_eq!(
+            choose_dictionary_folder(&Fake::default(), "Ukrainian"),
+            Ok(None)
+        );
+        let failed = Fake {
+            pick_failure: Some(PICKER_FAILED),
+            ..Fake::default()
+        };
+        assert_eq!(
+            choose_dictionary_folder(&failed, "Ukrainian"),
+            Err(PICKER_FAILED)
+        );
+        let lone = PathBuf::from(OsString::from_wide(&[0x43, 0x3a, 0x5c, 0xd800]));
+        for folder in [lone, PathBuf::from("uk"), PathBuf::from(r"\\?\D:\uk")] {
+            let native = picked(folder.clone());
+            assert_eq!(
+                choose_dictionary_folder(&native, "Ukrainian"),
+                Err(INVALID),
+                "{}",
+                folder.display()
+            );
+        }
     }
 
     // ---- context age ----

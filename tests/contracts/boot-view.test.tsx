@@ -256,9 +256,10 @@ describe("no network request", () => {
     for (const path of sources) expect({ path, hit: network.exec(await Bun.file(`${import.meta.dir}/../../${path}`).text())?.[0] }).toEqual({ path, hit: undefined });
   });
 
-  test("the CSP connect-src allows only the IPC origins", async () => {
+  // Feature 006 contract Δ7: `'self'` is the app origin, which serves the bundled `hunspell.wasm`.
+  test("the CSP connect-src allows only the IPC origins and the app origin", async () => {
     const config = await Bun.file(`${import.meta.dir}/../../src-tauri/tauri.conf.json`).json();
-    expect(config.app.security.csp["connect-src"].split(" ")).toEqual(["ipc:", "http://ipc.localhost"]);
+    expect(config.app.security.csp["connect-src"].split(" ")).toEqual(["ipc:", "http://ipc.localhost", "'self'"]);
   });
 });
 

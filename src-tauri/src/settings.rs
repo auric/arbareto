@@ -56,6 +56,8 @@ pub struct Settings {
     pub sync: SyncSettings,
     /// Feature 004 data-model §13.
     pub switch_choice: SwitchChoice,
+    /// Feature 006 data-model §8.
+    pub spelling: Spelling,
 }
 
 /// Feature 004 data-model §13 `switchChoice`: the preselected switch choice. `discard` is no stored choice (spec FR-010).
@@ -73,6 +75,221 @@ impl SwitchChoice {
             SwitchChoice::Stash => "stash",
         }
     }
+}
+
+// ---- Feature 006 language selection and catalog (data-model §1, §2, §8) ----
+
+/// Feature 006 data-model §1: the ID of the `bundled` record.
+pub const BUNDLED: &str = "en";
+/// Feature 006 data-model §2: `src/contracts/dictionaries.ts` `LANGUAGE_ID_BYTES`.
+const LANGUAGE_ID_BYTES: usize = 32;
+/// Feature 006 contract Δ5: `src/contracts/limits.ts` `DICTIONARY_LANGUAGE_BYTES`.
+const DICTIONARY_LANGUAGE_BYTES: u64 = 12_582_912;
+/// Feature 006 contract Δ5: `src/contracts/limits.ts` `DICTIONARY_CATALOG_ENTRIES`.
+const DICTIONARY_CATALOG_ENTRIES: usize = 92;
+/// Feature 006 data-model §2: the `licences` forms.
+const LICENCE_FORMS: [&[&str]; 4] = [
+    &["license"],
+    &["licence"],
+    &["license", "licence"],
+    &["readme.md"],
+];
+
+/// Feature 006 data-model §8 `spelling`. The default is also the value of a read failure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Spelling {
+    pub enabled: bool,
+    /// 0 to `SPELLING_LANGUAGES` unique IDs in the user's order.
+    pub languages: Vec<String>,
+}
+
+impl Default for Spelling {
+    fn default() -> Spelling {
+        Spelling {
+            enabled: true,
+            languages: vec![BUNDLED.to_string()],
+        }
+    }
+}
+
+impl Spelling {
+    /// The data-model §8 form: `enabled`, and at most `SPELLING_LANGUAGES` unique strings. The caller checks the IDs.
+    pub fn parse(value: &Value) -> Option<Spelling> {
+        let fields = value.as_object().filter(|fields| fields.len() == 2)?;
+        let enabled = fields.get("enabled")?.as_bool()?;
+        let languages = fields
+            .get("languages")?
+            .as_array()?
+            .iter()
+            .map(|id| id.as_str().map(str::to_string))
+            .collect::<Option<Vec<String>>>()?;
+        let unique = languages
+            .iter()
+            .enumerate()
+            .all(|(at, id)| !languages[..at].contains(id));
+        (languages.len() <= schema::SPELLING_LANGUAGES && unique)
+            .then_some(Spelling { enabled, languages })
+    }
+
+    pub fn to_json(&self) -> Value {
+        json!({ "enabled": self.enabled, "languages": self.languages })
+    }
+}
+
+/// Feature 006 data-model §8: `en` or an ID of the embedded catalog.
+pub fn is_spelling_language(id: &str) -> bool {
+    id == BUNDLED || catalog().entry(id).is_some()
+}
+
+/// Feature 006 data-model §2: the catalog fields that the shell reads.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Dictionary {
+    pub id: String,
+    /// The English name, 1 to 64 code points.
+    pub name: String,
+    /// The URL of `licences[0]` (plan.md D12).
+    pub licence_url: String,
+}
+
+/// Feature 006 data-model §1: the `bundled` record and the entries in their file order.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Catalog {
+    pub bundled: Dictionary,
+    pub entries: Vec<Dictionary>,
+}
+
+impl Catalog {
+    /// The entry of a catalog ID. `en` has no entry.
+    pub fn entry(&self, id: &str) -> Option<&Dictionary> {
+        self.entries.iter().find(|entry| entry.id == id)
+    }
+}
+
+/// Feature 006 contract Δ1: the embedded `src/contracts/dictionaries.json`. A file outside its rules stops the shell start.
+pub fn catalog() -> &'static Catalog {
+    static CATALOG: OnceLock<Catalog> = OnceLock::new();
+    CATALOG.get_or_init(|| {
+        parse_catalog(include_str!("../../src/contracts/dictionaries.json"))
+            .expect("dictionaries.json follows the Catalog rules of data-model §1 and §2")
+    })
+}
+
+/// The `Catalog` schema of `src/contracts/dictionaries.ts`. `None` when any rule fails.
+fn parse_catalog(text: &str) -> Option<Catalog> {
+    let file: Value = serde_json::from_str(text).ok()?;
+    let source = &file["source"];
+    let commit = source["commit"]
+        .as_str()
+        .filter(|commit| is_hex(commit, 40))?;
+    let prefix =
+        format!("https://raw.githubusercontent.com/wooorm/dictionaries/{commit}/dictionaries/");
+    let package = &file["bundled"]["package"];
+    let fits = has_keys(&file, &["version", "source", "bundled", "entries"])
+        && file["version"] == 1
+        && has_keys(source, &["repository", "commit", "urlPrefix"])
+        && source["repository"] == "wooorm/dictionaries"
+        && source["urlPrefix"] == prefix.as_str()
+        && file["bundled"]["id"] == BUNDLED
+        && has_keys(package, &["name", "version"])
+        && package["name"] == "dictionary-en"
+        && package["version"].is_string();
+    if !fits {
+        return None;
+    }
+    let bundled = dictionary(&file["bundled"], &prefix, commit, true)?;
+    let entries = file["entries"]
+        .as_array()?
+        .iter()
+        .map(|entry| dictionary(entry, &prefix, commit, false))
+        .collect::<Option<Vec<Dictionary>>>()?;
+    let mut ids: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
+    ids.push(BUNDLED);
+    ids.sort_unstable();
+    let unique = ids.windows(2).all(|pair| pair[0] != pair[1]);
+    let ordered = entries
+        .windows(2)
+        .all(|pair| name_order(&pair[0].name, &pair[1].name).is_le());
+    (unique && ordered && entries.len() <= DICTIONARY_CATALOG_ENTRIES)
+        .then_some(Catalog { bundled, entries })
+}
+
+/// One data-model §2 entry. The `bundled` record also holds `package`.
+fn dictionary(entry: &Value, prefix: &str, commit: &str, bundled: bool) -> Option<Dictionary> {
+    let mut fields = vec!["id", "name", "license", "commit", "files", "licences"];
+    if bundled {
+        fields.push("package");
+    }
+    let id = entry["id"].as_str().filter(|id| is_language_id(id))?;
+    let name = entry["name"]
+        .as_str()
+        .filter(|name| (1..=64).contains(&name.chars().count()))?;
+    let licences = entry["licences"]
+        .as_array()?
+        .iter()
+        .map(Value::as_str)
+        .collect::<Option<Vec<&str>>>()?;
+    let mut names = Vec::new();
+    let mut total = 0;
+    for file in entry["files"].as_array()? {
+        let file_name = file["name"].as_str()?;
+        let size = file["size"]
+            .as_u64()
+            .filter(|size| (1..=DICTIONARY_LANGUAGE_BYTES).contains(size))?;
+        let fits = has_keys(file, &["name", "url", "size", "sha256"])
+            && file["url"] == format!("{prefix}{id}/{file_name}").as_str()
+            && file["sha256"].as_str().is_some_and(|sha| is_hex(sha, 64));
+        if !fits {
+            return None;
+        }
+        names.push(file_name);
+        total += size;
+    }
+    let order: Vec<&str> = ["index.aff", "index.dic"]
+        .into_iter()
+        .chain(licences.iter().copied())
+        .collect();
+    let fits = has_keys(entry, &fields)
+        && entry["license"]
+            .as_str()
+            .is_some_and(|license| (1..=128).contains(&license.len()))
+        && entry["commit"] == commit
+        && LICENCE_FORMS
+            .iter()
+            .any(|form| *form == licences.as_slice())
+        && names == order
+        && total <= DICTIONARY_LANGUAGE_BYTES;
+    fits.then(|| Dictionary {
+        id: id.to_string(),
+        name: name.to_string(),
+        licence_url: format!("{prefix}{id}/{}", licences[0]),
+    })
+}
+
+/// True for an object with exactly these keys.
+fn has_keys(value: &Value, names: &[&str]) -> bool {
+    value.as_object().is_some_and(|fields| {
+        fields.len() == names.len() && names.iter().all(|name| fields.contains_key(*name))
+    })
+}
+
+/// Data-model §2 `id`: `^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$`, at most 32 bytes.
+fn is_language_id(id: &str) -> bool {
+    let mut parts = id.split('-');
+    let first = parts.next().unwrap_or_default();
+    id.len() <= LANGUAGE_ID_BYTES
+        && (2..=3).contains(&first.len())
+        && first.bytes().all(|b| b.is_ascii_lowercase())
+        && parts.all(|part| {
+            (2..=8).contains(&part.len()) && part.bytes().all(|b| b.is_ascii_alphanumeric())
+        })
+}
+
+/// The 005 `compareNames` order over UTF-8 bytes: the bytes with A to Z folded to a to z, then the raw bytes.
+fn name_order(a: &str, b: &str) -> std::cmp::Ordering {
+    let folded = |text: &str| -> Vec<u8> { text.bytes().map(|b| b.to_ascii_lowercase()).collect() };
+    folded(a)
+        .cmp(&folded(b))
+        .then_with(|| a.as_bytes().cmp(b.as_bytes()))
 }
 
 // ---- Feature 003 shell settings (data-model §10) ----
@@ -509,6 +726,15 @@ pub fn load(path: &Path) -> Settings {
             Some("stash") => SwitchChoice::Stash,
             _ => SwitchChoice::Keep,
         },
+        // Feature 006 data-model §8: an ID that left the catalog drops at load.
+        spelling: file
+            .get("spelling")
+            .and_then(Spelling::parse)
+            .map(|mut spelling| {
+                spelling.languages.retain(|id| is_spelling_language(id));
+                spelling
+            })
+            .unwrap_or_default(),
     }
 }
 
@@ -569,6 +795,9 @@ fn save_with(path: &Path, settings: &Settings, fault: Fault) -> io::Result<()> {
             "switchChoice".to_string(),
             json!(settings.switch_choice.text()),
         );
+    }
+    if settings.spelling != Spelling::default() {
+        file.insert("spelling".to_string(), settings.spelling.to_json());
     }
     if let Some(window) = settings.window {
         file.insert(
@@ -1928,6 +2157,7 @@ mod tests {
             recent: Vec::new(),
             sync: Default::default(),
             switch_choice: Default::default(),
+            spelling: Default::default(),
         }
     }
 
@@ -2313,6 +2543,322 @@ mod tests {
         ] {
             std::fs::write(&path, json!({ "switchChoice": value }).to_string()).expect("write");
             assert_eq!(load(&path).switch_choice, SwitchChoice::Keep, "{value}");
+        }
+    }
+
+    // ---- Feature 006 language selection and catalog (data-model §1, §2, §8) ----
+
+    fn spelling(enabled: bool, languages: &[&str]) -> Spelling {
+        Spelling {
+            enabled,
+            languages: languages.iter().map(|id| id.to_string()).collect(),
+        }
+    }
+
+    /// Data-model §8: the selection round-trips with its order. The default and a read failure give `{enabled: true, languages: ["en"]}`.
+    /// The default writes no key.
+    #[test]
+    fn the_spelling_setting_round_trips_and_a_read_failure_gives_the_default() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        assert_eq!(Settings::default().spelling, spelling(true, &["en"]));
+        for stored in [
+            spelling(false, &["uk", "en"]),
+            spelling(true, &[]),
+            spelling(true, &["oc", "uk", "de"]),
+            spelling(true, &["en"]),
+        ] {
+            let settings = Settings {
+                spelling: stored.clone(),
+                ..Settings::default()
+            };
+            save(&path, &settings).expect("save");
+            assert_eq!(load(&path).spelling, stored);
+            let file: Value =
+                serde_json::from_slice(&std::fs::read(&path).expect("read")).expect("JSON");
+            let expected = (stored != Spelling::default())
+                .then(|| json!({ "enabled": stored.enabled, "languages": stored.languages }));
+            assert_eq!(file.get("spelling").cloned(), expected, "{stored:?}");
+        }
+        for value in [
+            json!(null),
+            json!("en"),
+            json!([]),
+            json!({}),
+            json!({ "enabled": "yes", "languages": ["uk"] }),
+            json!({ "enabled": false }),
+            json!({ "enabled": false, "languages": "uk" }),
+            json!({ "enabled": false, "languages": ["uk", "de", "fr", "oc"] }),
+            json!({ "enabled": false, "languages": ["uk", "uk"] }),
+            json!({ "enabled": false, "languages": ["uk", 1] }),
+            json!({ "enabled": false, "languages": ["uk"], "order": [] }),
+        ] {
+            std::fs::write(&path, json!({ "spelling": value }).to_string()).expect("write");
+            assert_eq!(load(&path).spelling, Spelling::default(), "{value}");
+        }
+        std::fs::write(&path, "{").expect("write");
+        assert_eq!(
+            load(&path).spelling,
+            Spelling::default(),
+            "an unreadable file"
+        );
+    }
+
+    /// Data-model §8 and spec FR-017: at load, each ID that is not `en` and not a catalog ID drops, and the order stays.
+    #[test]
+    fn at_load_an_id_outside_the_catalog_drops_and_the_order_stays() {
+        let fixture = Fixture::new();
+        let path = fixture.path("settings.json");
+        let file =
+            json!({ "spelling": { "enabled": false, "languages": ["uk", "xx-Gone", "en"] } });
+        std::fs::write(&path, file.to_string()).expect("write");
+        assert_eq!(load(&path).spelling, spelling(false, &["uk", "en"]));
+        let file = json!({ "spelling": { "enabled": true, "languages": ["EN", "../uk"] } });
+        std::fs::write(&path, file.to_string()).expect("write");
+        assert_eq!(load(&path).spelling, spelling(true, &[]));
+        for (id, known) in [
+            ("en", true),
+            ("uk", true),
+            ("ca-valencia", true),
+            ("xx-Gone", false),
+            ("EN", false),
+            ("", false),
+        ] {
+            assert_eq!(is_spelling_language(id), known, "{id}");
+        }
+    }
+
+    /// Rewrites the ID of a catalog entry and the URLs of its files.
+    fn set_id(entry: &mut Value, prefix: &str, id: &str) {
+        entry["id"] = json!(id);
+        for file in entry["files"].as_array_mut().expect("files") {
+            let name = file["name"].as_str().expect("name").to_string();
+            file["url"] = json!(format!("{prefix}{id}/{name}"));
+        }
+    }
+
+    /// Contract Δ1 and data-model §1, §2: the embedded catalog follows the `Catalog` rules, and each broken rule refuses the file.
+    #[test]
+    fn the_embedded_catalog_follows_the_catalog_rules_and_each_broken_rule_refuses_it() {
+        let text = include_str!("../../src/contracts/dictionaries.json");
+        let file: Value = serde_json::from_str(text).expect("JSON");
+        assert_eq!(parse_catalog(text).as_ref(), Some(catalog()));
+        let prefix = "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/";
+        let dictionary = |id: &str, name: &str, licence: &str| Dictionary {
+            id: id.to_string(),
+            name: name.to_string(),
+            licence_url: format!("{prefix}{id}/{licence}"),
+        };
+        assert_eq!(catalog().bundled, dictionary("en", "English", "license"));
+        assert_eq!(
+            catalog().entries.len(),
+            file["entries"].as_array().expect("entries").len()
+        );
+        for (id, name, licence) in [
+            ("uk", "Ukrainian", "license"),
+            ("oc", "Occitan", "license"),
+            ("eu", "Basque", "readme.md"),
+        ] {
+            assert_eq!(
+                catalog().entry(id),
+                Some(&dictionary(id, name, licence)),
+                "{id}"
+            );
+        }
+        assert_eq!(catalog().entry("en"), None, "en is no entry");
+
+        type Edit = Box<dyn Fn(&mut Value)>;
+        let first =
+            |edit: fn(&mut Value)| -> Edit { Box::new(move |file| edit(&mut file["entries"][0])) };
+        let id = |id: &'static str| -> Edit {
+            Box::new(move |file| set_id(&mut file["entries"][0], prefix, id))
+        };
+        let refused: Vec<(&str, Edit)> = vec![
+            ("version 2", Box::new(|file| file["version"] = json!(2))),
+            ("a field more", Box::new(|file| file["extra"] = json!(1))),
+            (
+                "another repository",
+                Box::new(|file| file["source"]["repository"] = json!("someone/dictionaries")),
+            ),
+            (
+                "an upper-case commit",
+                Box::new(|file| {
+                    file["source"]["commit"] = json!("8CFEA406B505E4D7DF52D5A19BCE525DF98C54AB")
+                }),
+            ),
+            (
+                "a prefix of another commit",
+                Box::new(|file| {
+                    file["source"]["urlPrefix"] = json!(format!(
+                        "https://raw.githubusercontent.com/wooorm/dictionaries/{}/dictionaries/",
+                        "0".repeat(40)
+                    ))
+                }),
+            ),
+            (
+                "another bundled ID",
+                Box::new(move |file| set_id(&mut file["bundled"], prefix, "de")),
+            ),
+            (
+                "another bundled package",
+                Box::new(|file| file["bundled"]["package"]["name"] = json!("dictionary-de")),
+            ),
+            (
+                "a bundled record without its package",
+                Box::new(|file| {
+                    file["bundled"]
+                        .as_object_mut()
+                        .expect("bundled")
+                        .remove("package");
+                }),
+            ),
+            (
+                "an entry field more",
+                first(|entry| entry["extra"] = json!(1)),
+            ),
+            (
+                "an entry without its licence value",
+                first(|entry| {
+                    entry.as_object_mut().expect("entry").remove("license");
+                }),
+            ),
+            ("an upper-case ID", id("UK")),
+            ("a one-letter ID", id("u")),
+            ("a four-letter ID", id("ukra")),
+            ("a one-letter subtag", id("uk-x")),
+            ("a subtag of 9 letters", id("uk-abcdefghi")),
+            ("an underscore", id("uk_UA")),
+            ("an ID of 33 bytes", id("uk-abcdefgh-abcdefgh-abcdefgh-abc")),
+            ("an empty name", first(|entry| entry["name"] = json!(""))),
+            (
+                "a name of 65 code points",
+                first(|entry| entry["name"] = json!("a".repeat(65))),
+            ),
+            (
+                "an empty licence value",
+                first(|entry| entry["license"] = json!("")),
+            ),
+            (
+                "a licence value of 129 bytes",
+                first(|entry| entry["license"] = json!("x".repeat(129))),
+            ),
+            (
+                "an entry of another commit",
+                first(|entry| entry["commit"] = json!("0".repeat(40))),
+            ),
+            (
+                "a file URL of another host",
+                first(|entry| entry["files"][0]["url"] = json!("https://example.test/index.aff")),
+            ),
+            (
+                "an http URL",
+                first(|entry| {
+                    let url = entry["files"][2]["url"]
+                        .as_str()
+                        .expect("url")
+                        .replacen("https:", "http:", 1);
+                    entry["files"][2]["url"] = json!(url);
+                }),
+            ),
+            (
+                "a file of 0 bytes",
+                first(|entry| entry["files"][0]["size"] = json!(0)),
+            ),
+            (
+                "a file above 12 MiB",
+                first(|entry| entry["files"][1]["size"] = json!(12_582_913)),
+            ),
+            (
+                "files above 12 MiB together",
+                first(|entry| entry["files"][1]["size"] = json!(12_582_912)),
+            ),
+            (
+                "a fractional size",
+                first(|entry| entry["files"][0]["size"] = json!(10.5)),
+            ),
+            (
+                "a short SHA-256",
+                first(|entry| entry["files"][0]["sha256"] = json!("abc")),
+            ),
+            (
+                "an upper-case SHA-256",
+                first(|entry| entry["files"][0]["sha256"] = json!("A".repeat(64))),
+            ),
+            (
+                "a file field more",
+                first(|entry| entry["files"][0]["extra"] = json!(1)),
+            ),
+            (
+                "swapped files",
+                first(|entry| entry["files"].as_array_mut().expect("files").swap(0, 1)),
+            ),
+            (
+                "a licence document missing from the files",
+                first(|entry| entry["licences"] = json!(["licence"])),
+            ),
+            (
+                "a licence form outside the list",
+                first(|entry| entry["licences"] = json!(["license", "license"])),
+            ),
+            (
+                "no licence document",
+                first(|entry| {
+                    entry["licences"] = json!([]);
+                    entry["files"].as_array_mut().expect("files").truncate(2);
+                }),
+            ),
+            (
+                "a repeated ID",
+                Box::new(|file| {
+                    let entries = file["entries"].as_array_mut().expect("entries");
+                    entries[1] = entries[0].clone();
+                }),
+            ),
+            ("an en entry", id("en")),
+            (
+                "names out of order",
+                Box::new(|file| file["entries"].as_array_mut().expect("entries").swap(0, 1)),
+            ),
+        ];
+        for (name, edit) in refused {
+            let mut broken = file.clone();
+            edit(&mut broken);
+            assert_eq!(parse_catalog(&broken.to_string()), None, "{name}");
+        }
+        let accepted: Vec<(&str, Edit)> = vec![
+            ("an ID of 32 bytes", id("uk-abcdefgh-abcdefgh-abcdefgh-ab")),
+            (
+                "a name of 64 code points",
+                first(|entry| entry["name"] = json!("a".repeat(64))),
+            ),
+            (
+                "a licence value of 128 bytes",
+                first(|entry| entry["license"] = json!("x".repeat(128))),
+            ),
+        ];
+        for (name, edit) in accepted {
+            let mut edited = file.clone();
+            edit(&mut edited);
+            assert!(parse_catalog(&edited.to_string()).is_some(), "{name}");
+        }
+        // Contract Δ5: at most 92 entries.
+        for (count, fits) in [(92, true), (93, false)] {
+            let mut bounded = file.clone();
+            let template = file["entries"][0].clone();
+            let entries: Vec<Value> = (0..count)
+                .map(|n| {
+                    let mut entry = template.clone();
+                    set_id(&mut entry, prefix, &format!("aa-x{n:03}"));
+                    entry["name"] = json!(format!("N{n:03}"));
+                    entry
+                })
+                .collect();
+            bounded["entries"] = json!(entries);
+            assert_eq!(
+                parse_catalog(&bounded.to_string()).is_some(),
+                fits,
+                "{count}"
+            );
         }
     }
 

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-set-spelling"
+description = "Enables the set_spelling command without any pre-configured scope."
+commands.allow = ["set_spelling"]
+
+[[permission]]
+identifier = "deny-set-spelling"
+description = "Denies the set_spelling command without any pre-configured scope."
+commands.deny = ["set_spelling"]

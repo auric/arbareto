@@ -11,11 +11,11 @@
     "security": {
       "csp": {
         "default-src": "'self'",
-        "script-src": "'self'",
+        "script-src": "'self' 'wasm-unsafe-eval'",
         "style-src": "'self'",
         "style-src-elem": "'self' 'unsafe-inline'",
         "style-src-attr": "'unsafe-inline'",
-        "connect-src": "ipc: http://ipc.localhost",
+        "connect-src": "ipc: http://ipc.localhost 'self'",
         "object-src": "'none'",
         "base-uri": "'none'",
         "form-action": "'none'"

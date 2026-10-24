@@ -94,13 +94,9 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead, 
   const [read, setRead] = useState<{ oid: string; details: Details } | null>(null);
   // A canceled read shows Loading… and reads again. The store runs one text read at a time, so the list never cancels it.
   const [attempt, setAttempt] = useState(0);
-  // A new view (Refresh, a scope switch) reads the commit again. The History selection reads only after the new view selects it again,
-  // because the view holds its row only then (feature 005 T068). Another commit, such as a blame line commit, reads at once.
-  const viewIdOf = () => {
-    const s = view.getState();
-    return s.selection?.id === oid && s.selectedIn !== s.view?.viewId ? null : (s.view?.viewId ?? null);
-  };
-  const viewId = useSyncExternalStore(view.subscribe, viewIdOf);
+  // A new view (Refresh, a scope switch) reads the commit again. A blame line commit reads at once (feature 005 T068).
+  const readView = () => view.readView(oid, true);
+  const viewId = useSyncExternalStore(view.subscribe, readView);
   useEffect(() => {
     if (viewId === null) return;
     let current = true;

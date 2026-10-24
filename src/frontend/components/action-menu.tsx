@@ -75,6 +75,18 @@ function Item({ item, below }: { item: ActionItem; below: boolean }) {
   const reasonId = useId();
   const reason = item.reason ?? null;
   const quiet = reason !== null && item.running === true;
+  const text = (
+    <>
+      <span data-slot="menu-label" className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
+        {item.label}
+      </span>
+      {reason === null ? null : (
+        <span id={reasonId} data-slot="menu-reason" aria-hidden="true" hidden={quiet} className={`${below ? "" : "ml-auto pl-4 "}min-w-0 text-xs whitespace-normal text-muted-text [overflow-wrap:anywhere]`}>
+          {reason}
+        </span>
+      )}
+    </>
+  );
   const element = (
     <DropdownMenuItem
       disabled={reason !== null}
@@ -89,26 +101,10 @@ function Item({ item, below }: { item: ActionItem; below: boolean }) {
       </span>
       {below ? (
         <span data-slot="menu-text" className="flex min-w-0 flex-1 flex-col">
-          <span data-slot="menu-label" className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
-            {item.label}
-          </span>
-          {reason === null ? null : (
-            <span id={reasonId} data-slot="menu-reason" aria-hidden="true" hidden={quiet} className="min-w-0 text-xs whitespace-normal text-muted-text [overflow-wrap:anywhere]">
-              {reason}
-            </span>
-          )}
+          {text}
         </span>
       ) : (
-        <>
-          <span data-slot="menu-label" className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
-            {item.label}
-          </span>
-          {reason === null ? null : (
-            <span id={reasonId} data-slot="menu-reason" aria-hidden="true" hidden={quiet} className="ml-auto min-w-0 pl-4 text-xs whitespace-normal text-muted-text [overflow-wrap:anywhere]">
-              {reason}
-            </span>
-          )}
-        </>
+        text
       )}
       {item.keys === undefined ? null : (
         <DropdownMenuShortcut aria-hidden="true" className={`${reason === null || below ? "ml-auto " : ""}pl-4 text-xs tracking-normal whitespace-nowrap text-muted-text`}>

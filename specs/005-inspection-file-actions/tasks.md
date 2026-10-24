@@ -51,7 +51,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 | 2. File action service, History UI | 5, 6 | P0.1, P0.2, P1, P5, P7 | T028–T047, T065 | US2, US4, US5, US6 service (WP5); US1, US7 UI (WP6); US7 service (T065, WP4) | A: WP5 (implementer-xhigh, after WP4). B: WP6 (frontend-implementer, after WP2 and WP4). C: T065 (WP4, implementer). |
 | 3. Commit view UI | 7 | P8 | T048–T058 | US2, US4, US5, US6 UI, and the Commit view Blame entry of US7 | WP7 alone (frontend-implementer). Then the WP3 removal step T057 (implementer-xhigh). |
 | 4. Qualification | 8 | P9 | T059–T064 | Cross-cutting | WP8 (implementer writes, scout runs; WSL alone, then packaged). |
-| Board comparison fixes | 6 | P3, P7, P8 | T066–T076 | US1, US2, US5 to US9 | One package after the board comparisons of T027, T047, and T058 (frontend-implementer; implementer for T066). Before batch 4. |
+| Board comparison fixes | 6 | P3, P7, P8 | T066–T077 | US1, US2, US5 to US9 | One package after the board comparisons of T027, T047, and T058 (frontend-implementer; implementer for T066). Before batch 4. |
 
 ---
 
@@ -238,6 +238,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - [ ] T074 [US5] Stack the preview groups in `src/frontend/ignore/IgnoreEditor.tsx` (D15 "Ignore editor", IgnoreEditor board). Cause: each open group grows, so the two groups split the height. Fix: a group takes its content height and shrinks only when the space ends. Tests first in `tests/contracts/inspection-ignore.test.tsx`. Spec: FR-038.
 - [ ] T075 [US8] Show "References <n>" and the filter placeholder in `src/frontend/refs/ReferencesSidebar.tsx` (004 plan.md:528, Main board). Cause: the 004 frame text was not built. Fix: the count of the listed references after the heading, outside the heading name; the placeholder "Filter references" equals the accessible name. Tests first in `tests/contracts/references-sidebar.test.tsx`. Spec: 001 FR-057.
 - [ ] T076 [US2] Use the alert icon in the Delete confirmation title in `src/frontend/changes/DeleteConfirm.tsx` (D15 "Delete confirmation"). Cause: the recycle title uses the trash icon. Fix: both titles use the alert icon. Tests first in `tests/contracts/inspection-delete.test.tsx`. Spec: FR-026.
+- [ ] T077 [US1] Select a commit in the new view when a Refresh search selects none, in `src/frontend/state/history-view.ts` (D3 "Selection", 002 FR-008). Cause: after T068 the panes read only after a `select()` in the new view. A Refresh with a search goes to `runSearch`, and four paths call no `select()`: highlight mode without the commit, a canceled, refused, or failed search in highlight mode, filter mode with no match, and the fallback of an empty repository. The changed files then show "Arbareto reads the changed files." without end, and the details keep the old view. Fix: when `runSearch` ends without a `select()` in the new view, `open()` keeps the commit by the 002 FR-008 rule, as without a search: load to the commit unless the view is complete, `readAt({oid})`, then `select()`, else `selectFallback()`. `selectFallback()` clears the selection when row 0 gives `none` (contract Δ3), and `src/frontend/app/Workbench.tsx` then docks no commit panel. The store function `readView(oid, others)` replaces the two selected-in-view checks of `CommitChanges.tsx` and `CommitDetails.tsx`. `action-menu.tsx` renders one label and reason span set. Tests first in `tests/contracts/inspection-history.test.tsx`: one case per path; each expects `readCommitChanges` in the new view, or no selection for the empty repository. Control mutation: undo the store fix; the four cases must fail. Spec: FR-007, 002 FR-008. Depends on T068.
 
 ### Batch 2 verification
 
@@ -304,8 +305,8 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - Batch 1 (T006–T027): after T005. WP2 (T006–T011), WP3 (T012–T015), and WP4 (T016–T026) run in parallel. T027 after all three.
 - Batch 2 (T028–T047, T065): after T027. WP5 (T028–T042), WP6 (T043–T046), and T065 run in parallel. T047 after all three.
 - Batch 3 (T048–T058): after T047. WP7 (T048–T056) alone, then T057, then T058.
-- Batch 4 (T059–T064): after T058 and T076. T059 alone first. Then T060 and T061. Then T062, T063, and T064.
-- Board comparison fixes (T066–T076): after the board comparisons of T027, T047, and T058. One package in order. T047 and T058 repeat their board comparison after T076.
+- Batch 4 (T059–T064): after T058 and T077. T059 alone first. Then T060 and T061. Then T062, T063, and T064.
+- Board comparison fixes (T066–T077): after the board comparisons of T027, T047, and T058. One package in order. T047 and T058 repeat their board comparison after T077.
 
 ### Changes to earlier requirements and their tasks
 
@@ -344,7 +345,7 @@ Then:          T027
 | Requirement | Tasks |
 | --- | --- |
 | FR-001 to FR-004 (common) | T002, T004, T013, T018, T021, T022, T030, T034, T035, T036, T061, T062 |
-| FR-005 to FR-014 (US1) | T016 to T019, T021, T023, T025, T043, T045, T051, T061, T068, T070 |
+| FR-005 to FR-014 (US1) | T016 to T019, T021, T023, T025, T043, T045, T051, T061, T068, T070, T077 |
 | FR-015 to FR-017 (US3) | T001, T003, T007, T010, T032, T034, T043, T048 |
 | FR-018 to FR-019 (US4) | T012, T013, T015, T036, T038, T048, T052, T060 |
 | FR-020 to FR-033 (US2) | T012 to T014, T028 to T030, T032, T039, T048, T053, T059, T060, T073, T076 |

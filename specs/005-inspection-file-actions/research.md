@@ -449,7 +449,7 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
   - (a) The blame author was cut, and the gutter tooltip held only the date and the path. T071 fixes it: the tooltip starts with the author, and plan D15 follows. After: `after-t071-blame-dark.png`.
   - (a) After Escape, the focus went to the History filter button. T071 fixes it: the focus goes to the History list. After: `after-t071-back-focus-dark.png`.
   - (a) In forced colors, the number of the selected line stayed Text on Highlight, and a Canvas age bar stayed on it. T072 fixes it. After: `after-t072-blame-forced.png`.
-  - (a, before 005) The diff stayed dark in Light. T396 on main fixes it (2439ac41, merged into f005-impl by 1af32a56), not a task of T066 to T077.
+  - (a, before 005) The diff stayed dark in Light. T396 on main fixes it (2439ac41, merged into f005-impl by 7dcbbcf0), not a task of T066 to T077.
   - (b) The board draws two line-number columns and `@@` headers, but plan D3 names the 001 PatchView. The board shows a cube icon on the submodule fact row, but the plan names the info icon. The board keeps "[text TBD]" for the legend, progress, stopped, and limit texts, which the plan holds.
   - Not reached: the shallow, limit, rename, mode, and binary cells of HistoryStates, because the sample has none.
 - T058, boards CommitActions, DeleteConfirm, IgnoreEditor, SubmoduleOpen, BranchCard, Light, and ForcedColors. Shots: `t058-menu-untracked-folder-dark.png`, `t058-menu-tracked-file-dark.png`, `t058-menu-submodule-row-dark.png`, `t058-commit-view-dark.png`, `t058-delete-folder-recycle-dark.png`, `t058-delete-tracked-recycle-dark.png`, `t058-delete-permanent-dark.png`, `t058-ignore-editor-dark.png`, `t058-ignore-discard-dark.png`, `t058-submodule-unavailable-menu-dark.png`, `t058-menu-tracked-file-light.png`, `t058-menu-untracked-folder-forced.png`, `t058-menu-tracked-file-forced.png`, `t058-delete-permanent-forced.png`, and the T027 shots for BranchCard.
@@ -465,7 +465,7 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
   - Not reached: the WSL variant of the Delete confirmation.
 - Run notes: the driver mode `seq` keeps one CDP session, because each new session reset the 1600×1000 override. A script-sent Ctrl+S saved `/notes/` into the sample repository only. The texts were compared by reading the rendered board PNGs.
 
-**Review of the board comparison fixes, 2026-10-24.** Independent reviewer agent on fe6c69f4 (T066 to T076). Verdict: fix needed. The fixes are in feb51099 (T077), merged by 520fd09d.
+**Review of the board comparison fixes, 2026-10-24.** Independent reviewer agent on cdbf9b66 (T066 to T076). Verdict: fix needed. The fixes are in 9f15a492 (T077), merged by 39a89600.
 - Medium: a Refresh during an active search left the Changed files pane on "Arbareto reads the changed files." without end. T077 fixes it.
 - Low: two copies of the selected-in-view check. T077 fixes it with the store function `readView`.
 - Low: duplicated menu markup in `action-menu.tsx`. T077 fixes it with one label and reason span set.
@@ -473,9 +473,9 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - Verified: the `submodule_path` traversal rules (`is_component`, 001 §6), the WSL UNC branch, the parity with `openWorktree`, that `stopPropagation` takes no other Escape, and that the tests were red before the fixes.
 - Suspicions, not verified: a junction at a gitlink path, the WSL path length cap, and no `prepare` test with a WSL root.
 
-**T398 follow-up on main, 2026-10-24.** The frontend network scan of `tests/contracts/boot-view.test.tsx` matched the `fetch` local and the "cargo fetch" message text that T398 (c7e2f68e) added to `src/frontend/build/notices.ts`. 9a4fa109 names the cargo command once in `fetchCommand` and calls the result `cargoFetch`, so the scan finds no network API.
+**T398 follow-up on main, 2026-10-24.** The frontend network scan of `tests/contracts/boot-view.test.tsx` matched the `fetch` local and the "cargo fetch" message text that T398 (c7e2f68e) added to `src/frontend/build/notices.ts`. 23bbcd48 names the cargo command once in `fetchCommand` and calls the result `cargoFetch`, so the scan finds no network API.
 
-**Batch 4 tests T059 to T061, written 2026-10-24.** In `C:\Projects\arbareto-l6` on 005-batch4 at 520fd09d. No task is ticked: the T063 run decides.
+**Batch 4 tests T059 to T061, written 2026-10-24.** In `C:\Projects\arbareto-l6` on 005-batch4 at 39a89600. No task is ticked: the T063 run decides.
 - T059 `tests/wsl/inspection-wsl.test.ts`, alone on Ubuntu-26.04 with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`: 34 pass, 6 skip, 0 fail, 40 tests, 307 s. All 21 `ORIGIN` lines are under the worktree. The distro Git is 2.55.0.
 - F1 to F14 and F16 to F19 hold on Git 2.55.0. F15 is a Windows fact, so it skips with `windows-path-rules`. F13: `OBSERVATION T059: F13 ./:x.log matches the pattern :x.log and Git echoes ./:x.log; the bare :x.log gives pattern "" holds (git version 2.55.0)`. So a stdin path that starts with `:` is literal in the `./` form in WSL too, and the contract needs no change.
 - The `wslFiles` cases run the Perl text through the wrapper with the operation IDs `0f0f0f0f-0000-4000-8009-*`. `delete`: listed files, a link as a link, and folders deepest first go; a stale entry with and without a digest and an absent entry stay. A folder swapped for a link before the walk gives `not-regular`. A swap during the walk, held by a test seam in place of `sha256sum`, deletes only the reviewed file in the held folder, the next entry gives `not-regular`, and the link target stays. Cancel during the walk ends the scope and every process within 1 s, and the reply is `interrupted`. `replace`: a present and an absent target, `stale`, and `refused` for a link at the target and for a folder link before the walk; during the walk, the held folder gets the bytes. `scratch`: `create` at mode 0700, `sweep`, `remove` without following a link, and refusals for other names.
@@ -493,7 +493,7 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - Open coverage, not a heuristic: the T059 rows that skip with `shell-double-wsl-file-actions`, the T060 and T061 rows until T063 runs the package, N2 and the FR-028 warning (`volume-without-recycle-bin`), and the 001 capture check of T061.
 - Plan question: SC-007 names "a normal open" without a definition. T060 takes Repository ▸ Open folder… with the folder picker, driven by UI Automation without human time, as the normal open.
 
-**Batch 4 follow-ups T078 to T080, 2026-10-24.** In `C:\Projects\arbareto-l6` on 005-batch4 after a1f883d8. No task is ticked: the T063 run decides.
+**Batch 4 follow-ups T078 to T080, 2026-10-24.** In `C:\Projects\arbareto-l6` on 005-batch4 after 3642738c. No task is ticked: the T063 run decides.
 - T078: `tests/git/bun-runner.ts` now serves a WSL `fileDelete`, `fileReplace`, `shadow`, and `ignorePreview` run by the shell route, with a `file:line` reference to `src-tauri/src` at each rule. The five T059 rows that skipped with `shell-double-wsl-file-actions` now run. `tests/wsl/inspection-wsl.test.ts` alone on Ubuntu-26.04: 39 pass, 1 skip (F15), 0 fail, 40 tests, 438 s. All 21 `ORIGIN` lines are under the worktree. All 50 `OBSERVATION` lines hold on Git 2.55.0.
 - T078 no regression: `tests/git/delete.test.ts` and `tests/git/ignore-editor.test.ts` gave 40 pass, 1 skip (`fifo`), 0 fail. `tests/git/ignore-preview.test.ts` gave 21 pass, 0 fail.
 - T078 control mutation: the leftover rule of `shadow.rs:138` without the gone-owner branch made the Q22 row fail ("the leftover shadow folder: not within 60000 ms"). After the undo, the file had its original SHA-256.

@@ -20,6 +20,16 @@
 - Start the subject with a type, for example `fix:`, `build:`, or `merge:`. Name the task ID when one exists, for example `(T394)`.
 - Do not add AI attribution lines, such as `Co-Authored-By` lines for an AI tool.
 
+## Private string check before a push
+
+- `.githooks/pre-push` refuses a push when a new commit holds a private string. It checks the added lines, the commit message, and the author and committer.
+- The built-in rules find user profile paths, home folders, Claude scratch folders, and Arbareto fixture folders. `scripts/private-paths.ts` holds them.
+- To enable the hook in your clone, run `git config core.hooksPath .githooks`. The hook needs Bun on `PATH`.
+- To add your own rules, write `.git/info/private-patterns`. Put one JavaScript regular expression on each line. The hook skips empty lines and lines that start with `#`.
+- In a linked worktree, use the file in the common Git folder that `git rev-parse --git-common-dir` prints.
+- For a hit, the hook prints the commit, the path and line, and `<private pattern N>`, where N is the line number in the file. It never prints your pattern text.
+- An invalid regular expression refuses the push.
+
 ## License of contributions
 
 Arbareto uses the `AGPL-3.0-or-later` license. You license your contribution under the same terms (inbound = outbound). See [LICENSE](LICENSE) and [NOTICE.md](NOTICE.md).

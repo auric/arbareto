@@ -18,6 +18,8 @@ const alias = [
   { find: /^shiki\/engine\/oniguruma$/, replacement: highlight("oniguruma.ts") },
   { find: /^shiki\/wasm$/, replacement: highlight("wasm.ts") },
   { find: /^@pierre\/theming\/themes$/, replacement: highlight("themes.ts") },
+  // 006 plan.md D9: `dictionary-en` 4.0.0 exports only `index.js`, so the `?raw` imports of its files take the package folder.
+  { find: /^dictionary-en\//, replacement: fileURLToPath(new URL("./node_modules/dictionary-en/", import.meta.url)) },
 ];
 
 /** Fails the build when a chunk holds a grammar or theme outside the shipped set, or Oniguruma WASM. */

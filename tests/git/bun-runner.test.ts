@@ -390,6 +390,39 @@ describeGit("bun runner", (git) => {
     TEST_TIMEOUT_MS,
   );
 
+  // Mirrors `close_job_of` in src-tauri/src/process_requests.rs: a Job close ends every process in the operation Job, also a descendant of a call that exited by itself.
+  test(
+    "T395: a deadline or an abort of one call ends a recorded descendant that an earlier call of the same operation left",
+    async () => {
+      for (const form of ["deadline", "abort"] as const) {
+        const operationId = id();
+        const ready = fixturePath(`ready-t395-${form}`);
+        const hold = `"${slash(process.execPath)}" "${slash(HOST_SCRIPT)}" "${slash(runner.recordsDirectory)}" 60000 "${slash(ready)}"`;
+        const wait = `i=0; while [ $i -lt 400 ] && [ ! -e "${slash(ready)}" ]; do sleep 0.05; i=$((i+1)); done`;
+        const before = new Set(readdirSync(runner.recordsDirectory));
+        const left = call({ operationId, environmentPolicy: "mutation", arguments: ["--no-lazy-fetch", "-c", `alias.h=!${hold} & ${wait}`, "h"] });
+        expect({ form, exit: await runner.run(left) }).toEqual({ form, exit: { exitCode: 0, activeDescendants: 1 } });
+        const [pid, created] = readdirSync(runner.recordsDirectory).find((name) => !before.has(name))!.split("-") as [string, string];
+        const alive = () => processCreationTime(Number(pid)) === BigInt(created);
+        expect({ form, alive: alive() }).toEqual({ form, alive: true });
+        const started = fixturePath(`started-t395-${form}`);
+        const sleeper = (fields: Partial<GitCall>) => call({ operationId, arguments: ["--no-lazy-fetch", "-c", `alias.s=!: > "${slash(started)}"; sleep 20`, "s"], ...fields });
+        if (form === "deadline") {
+          expect({ form, exit: await runner.run(sleeper({ limits: { deadlineMs: 1500 } })) }).toMatchObject({ form, exit: { exitCode: null, deadline: "deadline" } });
+        } else {
+          const controller = new AbortController();
+          const result = runner.run(sleeper({ signal: controller.signal }));
+          for (let i = 0; i < 400 && !existsSync(started); i++) await Bun.sleep(25);
+          controller.abort();
+          expect({ form, exit: (await result).exitCode }).toEqual({ form, exit: null });
+        }
+        for (let i = 0; i < 400 && alive(); i++) await Bun.sleep(25);
+        expect({ form, alive: alive() }).toEqual({ form, alive: false });
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
   // The double ends only the spawned Git, so the `head` grandchild can still write after the cancel.
   test("4 MiB of forwarded stderr ends the process", async () => {
     const c = call({ arguments: ["--no-lazy-fetch", "-c", `alias.z=!head -c ${5 * MIB} /dev/zero >&2`, "z"] });

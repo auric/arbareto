@@ -71,6 +71,9 @@ export type EnvironmentPolicy = z.infer<typeof EnvironmentPolicySchema>;
 // Feature 003 contract Δ6: these policies take the network limits, and each process counts its own diagnostic bytes.
 const NETWORK_POLICIES: ReadonlySet<string> = new Set(["network", "remote", "integrate"]);
 
+// Contract §6 "Byte caps": only a `run` with one of these policies gets `stop` at a full stdout collector. A run of another policy can still run hooks.
+export const stopsAtBound = (policy: EnvironmentPolicy): boolean => policy === "probe" || policy === "read" || policy === "search";
+
 // Contract §5: `git` is the 30-second deadline of every other Git process. `network` is a §12 update process.
 export type ProcessKind = "git" | "commit" | "network";
 

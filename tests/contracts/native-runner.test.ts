@@ -307,8 +307,8 @@ describe("native runner run requests", () => {
     expect(c.stdout.limited).toBe(true);
   });
 
-  // Contract §6 "Byte caps" (T394): a run of another policy keeps its process, so its hooks and later Git work still run.
-  test("T394: a run stdout above its bound gets stop only under the read or search policy; a run of every other policy gets no stop and no cancel, and its streamed input goes on", async () => {
+  // Contract §6 "Byte caps" (T394, T395): a run of another policy keeps its process, so its hooks and later Git work still run.
+  test("T394: a run stdout above its bound gets stop only under the probe, read, or search policy; a run of every other policy gets no stop and no cancel, and its streamed input goes on", async () => {
     const probe: ProcessContext = { contextKind: "gitProbe", bootstrapId: id() };
     const forms: [GitCall["environmentPolicy"], Partial<GitCall>][] = [
       ["read", {}],
@@ -321,7 +321,7 @@ describe("native runner run requests", () => {
       ["mergetool", { limits: { ceilingMs: SUBMODULE_UPDATE_CEILING_MS } }],
     ];
     for (const [policy, fields] of forms) {
-      const stops = policy === "read" || policy === "search";
+      const stops = policy === "probe" || policy === "read" || policy === "search";
       // Contract §6: a `mergetool` child gets a closed stdin pipe, so it takes no input.
       const streamed = policy !== "mergetool";
       const channel = createChannelDouble();

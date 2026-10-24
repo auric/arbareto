@@ -33,4 +33,4 @@
 
 - The feature is a release process, so the spec names GitHub Releases, GitHub Actions, SignPath, NSIS, and Bun. The user decisions of 2026-10-24 fix these names. The spec states no workflow file layout, job names, or commands; research.md R1 to R3 hold those proposals for the plan.
 - SC-006 gives starting time budgets, not measurements.
-- No [NEEDS CLARIFICATION] marker is in the spec. The assumptions take the recommended defaults of research.md R6. Q1 (tag form) and Q2 (gate reading) need the user's answer before `/speckit-plan`.
+- No [NEEDS CLARIFICATION] marker is in the spec. The user answered research.md R6 on 2026-10-24; spec Clarifications records the answers.

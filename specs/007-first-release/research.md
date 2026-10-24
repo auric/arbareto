@@ -164,6 +164,8 @@ Research date: 2026-10-24. Each fact cites a source URL or a repository file. A 
 
 Each question is a real user choice. Each has a recommended default.
 
+Answered on 2026-10-24 (spec Clarifications): Q2 takes option (a), and the constitution text stays unchanged. Immutable releases: yes, switched on by the orchestrator at the public switch. Q1, Q3, Q5, Q6, Q7, Q8, and Q9 take the recommended defaults. Q4 keeps the "no tag ruleset" decision.
+
 - **Q1. Version and tag form.** Options: `v0.1.0` with the GitHub pre-release flag, or `v0.1.0-preview.1`. Recommendation: `v0.1.0` with the pre-release flag and "Preview" in the title. The user named "v0.1.0", 0.x already marks pre-1.0, and a SemVer suffix complicates the Windows file version (four numbers) and a later updater order.
 - **Q2. Gate reading for the preview.** The constitution blocks a "production release" until update authenticity has evidence, and 001 B-RELEASE says "Public release blocked". Options: (a) record in this feature that a pre-release without an updater is not a production release, and amend 001 plan.md B-RELEASE and research.md R7 to name v1.0; (b) a PATCH amendment of the constitution that defines "production release". Recommendation: (a) now, and (b) only if a later review finds the reading unclear.
 - **Q3. Sign the uninstaller and the NSIS plugin DLL.** With SignPath, the R1 two-stage design leaves both unsigned. Options: accept that and record it, or ask SignPath for a flow that signs them (more approvals per release). Recommendation: ask SignPath at onboarding; until then, accept and record the limit.
@@ -209,3 +211,7 @@ Each question is a real user choice. Each has a recommended default.
 - SmartScreen overview: https://learn.microsoft.com/en-us/windows/security/operating-system-security/virus-and-threat-protection/microsoft-defender-smartscreen/
 - Smart App Control overview: https://learn.microsoft.com/windows/apps/develop/smart-app-control/overview
 - Application and driver control: https://learn.microsoft.com/windows/security/book/application-security-application-and-driver-control
+
+## R7. Results
+
+Fact results F1 to F6 (plan.md "Facts to verify"), the action commit IDs (plan.md D2), the dry-run record, the Sandbox install, and the release checks go here. Each entry names the date, the build commit, the runner image or the host, the tool versions that ran, and the result.

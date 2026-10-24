@@ -26,6 +26,19 @@ The user gave these decisions on 2026-10-24. They are fixed inputs for this feat
 - Q: What do the release notes contain? → A: Only changes that a user of the application sees. No internal history, review rounds, or test runs (FR-025).
 - Q: Must the repository be public? → A: Yes, before the release. The user gives that OK separately (FR-004).
 
+### Session 2026-10-24 (answers to research.md R6)
+
+- Q: Is the preview a production release under the constitution delivery gate on update authenticity? → A: No. A GitHub pre-release with no updater is not a production release. Feature 007 records this reading. 001 plan.md B-RELEASE and 001 research.md R7 change so that they gate v1.0, not every public release. The constitution text stays unchanged (FR-003, FR-007).
+- Q: Are releases immutable? → A: Yes. The orchestrator switches on immutable releases at the public switch. It is a repository setting step, not a workflow step (FR-028).
+- Q: Which tag form? → A: `v0.1.0` with the GitHub pre-release flag and "Preview" in the title (FR-001).
+- Q: Which signing scope with SignPath? → A: The two executables and the installer. The uninstaller and the Tauri NSIS plugin DLL stay unsigned until SignPath confirms a flow for them. The release notes record this limit (FR-041, FR-046).
+- Q: Which Tauri CLI builds v0.1.0? → A: tauri-cli `2.12.0` with NSIS `3.11`, the pins of all 001 evidence. The 2.12.4 and NSIS 3.13 update comes after the preview (FR-011).
+- Q: Which "Installed apps" name? → A: "Arbareto" for a release build. The local package keeps "Arbareto (Unsigned local test package)" (FR-033).
+- Q: Is a code of conduct needed? → A: No, not for v0.1.0.
+- Q: Where do the release notes come from? → A: `CHANGELOG.md`, one section per release, user-visible changes only (FR-025).
+- Q: In which order do public switch, release, and SignPath come? → A: Public switch, then v0.1.0 unsigned, then the SignPath application with the release URL, then signing for a later version (FR-045).
+- Q: What do users learn about Smart App Control? → A: The release notes and the README download section state that unsigned builds do not run when Smart App Control is on (FR-026, FR-029).
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Download and install the preview (Priority: P1)
@@ -144,6 +157,7 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 - **FR-004**: The release workflow MUST publish only from the public `auric/arbareto` repository. It MUST refuse to publish when the repository is private. The public switch stays the user's own step.
 - **FR-005**: The preview MUST NOT contain an in-app updater or an update check. Users update by a manual download from GitHub Releases.
 - **FR-006**: Features 005 and 006 MUST be merged into `main` before the release tag is created.
+- **FR-007**: 001 plan.md B-RELEASE and 001 research.md R7 MUST gate v1.0, not every public release. Feature 007 MUST record the reading that a GitHub pre-release without an updater is not a production release under the constitution delivery gate.
 
 #### Build
 
@@ -168,7 +182,8 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 - **FR-025**: The release notes MUST list only changes that a user of the application sees. They MUST NOT contain internal history, review rounds, task IDs, or test runs. The maintainer writes them in the repository before the tag.
 - **FR-026**: The release notes MUST state the signing state. For an unsigned release, they MUST describe the SmartScreen prompt, the Smart App Control block, and the checksum and attestation checks.
 - **FR-027**: The release notes MUST list the prerequisites: Windows 11 x64 (Windows 10 x64 runs unqualified), Git for Windows `2.55.0.windows.3` or later, the Microsoft Edge WebView2 Runtime, and, for WSL repositories, WSL 2 with Git `2.55.0` or later.
-- **FR-028**: The release MUST be immutable after publication: its files and its tag MUST NOT change.
+- **FR-028**: The release MUST be immutable after publication: its files and its tag MUST NOT change. The repository setting "immutable releases" provides this. The orchestrator switches it on at the public switch.
+- **FR-029**: The README MUST have a download section. It MUST link the Releases page, list the prerequisites, show the checksum and attestation checks, and state that an unsigned build does not run when Smart App Control is on.
 
 #### Application changes
 
@@ -185,7 +200,8 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 - **FR-042**: When signing is on, the checksums and the attestations MUST cover the signed files.
 - **FR-043**: When signing is on and a signing request fails, is rejected, or exceeds its time bound, the run MUST fail. It MUST NOT publish unsigned files.
 - **FR-044**: Before the first signed release, the README and the release notes MUST carry a "Code signing policy" section with the text and the team roles that SignPath Foundation requires.
-- **FR-045**: The maintainer's SignPath application MUST meet the published SignPath Foundation conditions (research.md R1). The application is the user's own step.
+- **FR-045**: The maintainer's SignPath application MUST meet the published SignPath Foundation conditions (research.md R1). The application is the user's own step. It follows the v0.1.0 release, because SignPath accepts only released projects.
+- **FR-046**: When signing is on, the release notes MUST state that the uninstaller and the NSIS plugin DLL are unsigned.
 
 ### Key Entities
 
@@ -212,8 +228,7 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 
 - The repository is public before the tag. The user gives that OK separately, and the main ruleset and security features follow the public switch (user decisions, 2026-10-24).
 - SignPath Foundation approves only released projects (research.md R1). So v0.1.0 ships unsigned, and the application follows the release.
-- The version stays `0.1.0` in `src-tauri/Cargo.toml`, and Tauri takes the application version from there (research.md R4). The tag is `v0.1.0`, not a SemVer pre-release suffix, because 0.x already marks pre-1.0 software (open question Q1 in research.md).
-- The preview is not a production release in the sense of the constitution delivery gate on update authenticity, because it has no updater and is a pre-release. The maintainer records this reading before the tag (open question Q2 in research.md).
+- The version stays `0.1.0` in `src-tauri/Cargo.toml`, and Tauri takes the application version from there (research.md R4).
 - A GitHub-hosted runner for a public repository is free (research.md R2).
 - The installer stays current-user NSIS and does not install the WebView2 Runtime, as `bun run package` builds it today.
 - English is the only bundled dictionary. Downloaded dictionaries do not ship with the release (006 plan.md D18).

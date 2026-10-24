@@ -133,4 +133,4 @@ Each section names its source. Field names are contract names. "001 data-model Â
 ## 14. View state (renderer, not stored)
 
 - Per worktree for the window session: `view` (`history`, `commit`, `settings`), `settingsScope`, `settingsPage`, `commitLayout` (`tree` or `flat` per list), `untrackedExpanded` (false at open), the multi-selection per list, the line selection of the shown diff, and `amend` (null at open). While the box is checked, `amend` is `{headOid, message, text}`: the HEAD commit, the HEAD message from the review, and the editor text. The draft that the HEAD message replaced stays in the drafts store, and clearing the box restores it (spec FR-098).
-- A new snapshot keeps the selection of entries whose IDs still exist, and drops the others.
+- A new snapshot keeps the selection of entries whose list, category, and path bytes still exist, and drops the others. This also applies to the multi-selection and its Shift anchor. Each status read gives new entry IDs, so the entry ID does not identify an entry across snapshots.

@@ -19,7 +19,7 @@ import { fixtureDir, FIXTURE_ROOT, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { blameLarge, buildWide, wideLarge } from "../git/history-diff-fixtures";
 import { untrackedFixture } from "../git/workbench-fixtures";
-import { connectPage, freePort, MOD, type Cdp } from "./cdp";
+import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
 import { appEnv, COMMIT_VIEW, descendants, findInstalledApp, powershellJson, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess, type ProcessRecord } from "./installed-app";
 import { PERF_CACHE_ROOT } from "./perf-fixtures";
 import { close, ControlType, expand, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
@@ -112,20 +112,11 @@ async function focusOn(c: Cdp, expression: string, what: string): Promise<void> 
 // ---- Page timing ----
 
 // The page helpers. `arm` records the `timeStamp` of the next input event and resolves with the frame time at which each check first holds.
-// The frame loop runs only while the page is visible (HTML "update the rendering"). `__t061Previews` counts the `previewIgnore` replies:
-// `@tauri-apps/api` `invoke` reads `window.__TAURI_INTERNALS__.invoke` at each call, so the wrapper sees each reply.
+// The frame loop runs only while the page is visible (HTML "update the rendering"). `__t061Previews` is the count of `preview_ignore` replies.
+// The CDP `Network` record of the calls sets it (`session`), because `window.__TAURI_INTERNALS__.invoke` is read-only and non-configurable.
 const PAGE = `(() => {
   if (window.__t061 !== undefined) return true;
-  const internals = window.__TAURI_INTERNALS__;
-  const original = internals.invoke.bind(internals);
   window.__t061Previews = 0;
-  window.__t061Reads = 0;
-  internals.invoke = async (cmd, args, options) => {
-    const reply = await original(cmd, args, options);
-    if (cmd === 'preview_ignore') window.__t061Previews++;
-    if (cmd === 'read_workspace') window.__t061Reads++;
-    return reply;
-  };
   window.__t061Keys = [];
   window.__t061Events = [];
   addEventListener('keydown', (e) => window.__t061Keys.push(e.timeStamp), { capture: true });
@@ -196,7 +187,12 @@ async function probing<T>(c: Cdp, label: string, probe: () => Promise<void>, tri
   await openWindow(c);
   await trigger();
   let finished = false;
-  const running = finish().finally(() => void (finished = true));
+  // A rejection must stay handled until `await running`: Bun 1.4.4 fails the case at an unhandled rejection and starts the next case first.
+  const running = finish();
+  running.then(
+    () => void (finished = true),
+    () => void (finished = true),
+  );
   while (!finished) {
     await probe();
     await Bun.sleep(PROBE_INTERVAL_MS);
@@ -296,7 +292,7 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
   const uia = <T>(pid: number, name: string, type: number | undefined, body: (element: Element) => T) => use(find(pid, name, MAX_WAIT_MS, type), body);
 
   // A read-only session may open the 001 fixture cache in place, as tests/git/file-actions-facts.test.ts reads it.
-  async function session(label: string, repo: string): Promise<{ app: OwnedProcess; c: Cdp }> {
+  async function session(label: string, repo: string): Promise<{ app: OwnedProcess; c: Cdp; ipc: IpcLog }> {
     const under = (root: string) => !relative(root, repo).startsWith("..") && !isAbsolute(relative(root, repo));
     if (repo === "" || !isAbsolute(repo) || !(under(FIXTURE_ROOT) || under(PERF_CACHE_ROOT))) throw new Error(`the repository is outside the fixture roots: ${JSON.stringify(repo)}`);
     const env = appEnv(fixtureDir(`${label}-app`), false);
@@ -317,7 +313,10 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
     // A hidden page runs no animation frame, so page timing needs the visible window.
     expect(await c.evaluate<string>("document.visibilityState")).toBe("visible");
     expect(await c.evaluate<boolean>(PAGE)).toBe(true);
-    return { app, c };
+    let previews = 0;
+    // A preview reply arrives after "Updating preview…" renders, so a late count update only delays the check. A lost update fails it at its limit.
+    const ipc = await watchIpc(c, (call) => void (call.command === "preview_ignore" && c.evaluate(`window.__t061Previews = ${++previews}`).catch(() => {})));
+    return { app, c, ipc };
   }
   async function end(s: { app: OwnedProcess; c: Cdp }): Promise<void> {
     s.c.close();
@@ -329,8 +328,8 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
 
   const list = `document.querySelector('[data-history-list]')`;
   const activeRow = `document.getElementById(${list}.getAttribute('aria-activedescendant'))?.dataset.rowId ?? null`;
-  const heading = `document.querySelector('[data-section=changedFiles] h3')?.textContent ?? ''`;
-  const diffHeader = `document.querySelector('[data-section=historyDiff] [data-slot=diff-header]')?.textContent ?? ''`;
+  const heading = `(document.querySelector('[data-section=changedFiles] h3')?.textContent ?? '')`;
+  const diffHeader = `(document.querySelector('[data-section=historyDiff] [data-slot=diff-header]')?.textContent ?? '')`;
   const changedRows = `document.querySelectorAll('[data-section=changedFiles] [role=tree] [role=treeitem]').length`;
   const historyProbe = (c: Cdp) => async () => {
     if ((await c.evaluate<string | null>("document.activeElement?.getAttribute('aria-label') ?? null")) !== HISTORY_FILTER) await c.evaluate(`document.querySelector('[aria-label=${js(HISTORY_FILTER)}]').focus(); true`);
@@ -434,18 +433,19 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
     await until<boolean>(c, "the ignore editor", `!!${field}`, (v) => v, OPEN_WAIT_MS);
     return field;
   }
-  const previewText = `document.querySelector('[data-section=ignorePreview]')?.textContent ?? ''`;
+  const previewText = `(document.querySelector('[data-section=ignorePreview]')?.textContent ?? '')`;
   // A new `previewIgnore` reply, rendered: the groups show and "Updating preview…" is gone (src/frontend/ignore/IgnoreEditor.tsx `Preview`).
   const previewShown = (replies: number) => `window.__t061Previews > ${replies} && !${previewText}.includes('Updating preview') && ${previewText}.includes('Newly ignored')`;
   // A typed line at the end of the editor text starts one preview after the 400 ms pause of the renderer (contract Δ3 `previewIgnore`).
-  async function typeLine(c: Cdp, field: string, n: number): Promise<number> {
-    const replies = await c.evaluate<number>(`(${field}.focus(), ${field}.setSelectionRange(${field}.value.length, ${field}.value.length), window.__t061Previews)`);
+  async function typeLine(c: Cdp, ipc: IpcLog, field: string, n: number): Promise<number> {
+    const replies = ipc.finished("preview_ignore").length;
+    await c.evaluate(`${field}.focus(); ${field}.setSelectionRange(${field}.value.length, ${field}.value.length); true`);
     await c.send("Input.insertText", { text: `# t061 ${n}\n` });
     return replies;
   }
-  async function previewRun(c: Cdp, field: string, n: number): Promise<number> {
-    const replies = await c.evaluate<number>("window.__t061Previews");
-    const [shown] = await timed(c, [previewShown(replies)], () => typeLine(c, field, n).then(() => {}));
+  async function previewRun(c: Cdp, ipc: IpcLog, field: string, n: number): Promise<number> {
+    const replies = ipc.finished("preview_ignore").length;
+    const [shown] = await timed(c, [previewShown(replies)], () => typeLine(c, ipc, field, n).then(() => {}));
     return shown!;
   }
 
@@ -462,12 +462,12 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
         let n = 0;
         for (let run = 0; run <= RUNS; run++) {
           // Plan.md D9: a new snapshot builds a new base, so the next preview is the first one of that snapshot. F5 reads a new snapshot.
-          const reads = await s.c.evaluate<number>("window.__t061Reads");
+          const reads = s.ipc.finished("read_workspace").length;
           await s.c.evaluate(`${field}.blur(); true`);
           await press(s.c, "F5");
-          await until<boolean>(s.c, "the refreshed snapshot", `window.__t061Reads > ${reads}`, (v) => v);
-          const a = await previewRun(s.c, field, ++n);
-          const b = await previewRun(s.c, field, ++n);
+          await s.ipc.wait("read_workspace", reads + 1, STEP_LIMIT_MS);
+          const a = await previewRun(s.c, s.ipc, field, ++n);
+          const b = await previewRun(s.c, s.ipc, field, ++n);
           if (run === 0) continue;
           first.push(a);
           later.push(b);
@@ -480,7 +480,7 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
           s.c,
           "the 100,000-path preview",
           messageProbe(s.c),
-          async () => void (replies = await typeLine(s.c, field, ++n)),
+          async () => void (replies = await typeLine(s.c, s.ipc, field, ++n)),
           () => until<boolean>(s.c, "the preview", previewShown(replies), (v) => v),
         );
       } finally {
@@ -499,7 +499,7 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
       const s = await session("blame", repo);
       try {
         const blameButton = `[...document.querySelectorAll('[data-section=historyDiff] button')].find((e) => e.textContent.trim() === 'Blame')`;
-        const status = `document.querySelector('[data-slot=blame-view] [role=status]')?.textContent ?? ''`;
+        const status = `(document.querySelector('[data-slot=blame-view] [role=status]')?.textContent ?? '')`;
         const cancel = `[...document.querySelectorAll('[data-slot=blame-view] button')].find((e) => e.textContent.trim() === 'Cancel')`;
         const blameGit = () => descendants(s.app.pid).filter((r) => r.name.toLowerCase() === "git.exe" && / blame /.test(r.commandLine ?? "")).map((r) => r.pid);
         // One run: Blame from the History diff, then Cancel. The exit time of each Git blame process gives the Cancel time.
@@ -594,7 +594,7 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
           s.c,
           "the name-case preview",
           messageProbe(s.c),
-          async () => void (replies = await typeLine(s.c, field, 1)),
+          async () => void (replies = await typeLine(s.c, s.ipc, field, 1)),
           () => until<boolean>(s.c, "the preview", previewShown(replies), (v) => v),
         );
         console.log(`OBSERVATION ${TASK}: name-case fileFacts cost: the first preview with 2,000 name-case entries ended ${(performance.now() - start).toFixed(0)} ms after the typed line, the 400 ms pause included`);

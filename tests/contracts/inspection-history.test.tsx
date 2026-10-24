@@ -101,6 +101,8 @@ function inspectionDouble() {
   return { bridge, calls, canceled, last, of: (operation: string) => calls.filter((c) => c.operation === operation) };
 }
 const succeeded = (result: unknown): BridgeResponse => ({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "succeeded", repositoryGeneration: 1, result }) as BridgeResponse;
+// The service replies `limited` with `OUTPUT_LIMIT` for a cut listing (src/git-service/commit-changes.ts).
+const limited = (result: unknown): BridgeResponse => ({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "limited", code: "OUTPUT_LIMIT", repositoryGeneration: 1, result }) as BridgeResponse;
 const failed = (code: string, result?: unknown): BridgeResponse => ({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "failed", code, ...(result === undefined ? {} : { result }) }) as BridgeResponse;
 async function answer(call: Call, response: BridgeResponse) {
   await act(async () => call.resolve(response));
@@ -167,7 +169,7 @@ async function mountChanges(oid = fakeOid(2), profile: "wide" | "narrow" | "cons
 async function loaded(files: FileSpec[], fields: Record<string, unknown> = {}, oid = fakeOid(2), profile: "wide" | "narrow" | "constrained" = "wide") {
   const m = await mountChanges(oid, profile);
   const result = changesResult(m.viewId, oid, files, fields);
-  await answer(m.double.last("readCommitChanges"), succeeded(result));
+  await answer(m.double.last("readCommitChanges"), result.completeness.state === "limited" ? limited(result) : succeeded(result));
   return { ...m, result };
 }
 const tree = (host: HTMLElement) => host.querySelector<HTMLElement>('[data-slot="changed-files"] [role="tree"]')!;

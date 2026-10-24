@@ -131,7 +131,7 @@ export function changedSet(ts: readonly ExpectedChange[], candidate: readonly Ra
   return { staged };
 }
 
-// Proof A output: the SHA-256 of the first `size` bytes. Above `size`, `limited` makes the runner cancel the process (contract §6 "Byte caps").
+// Proof A output: the SHA-256 of the first `size` bytes. Above `size`, `limited` makes the runner stop the process (contract §6 "Byte caps").
 export function digestSink(size: number): Collector & { digest(): string } {
   const hasher = new Bun.CryptoHasher("sha256");
   let bytes = 0;

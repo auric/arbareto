@@ -719,6 +719,7 @@ Sources: [git-show-ref --exists](https://github.com/git/git/blob/v2.55.0/Documen
 - Rejected: serial bounded reads. Each extra `wsl.exe` start costs 200 to 250 ms (R13 "Probe P10"). Two or three more starts do not fit the 1.5-second WSL full-read budget (plan.md "WSL budgets"). Serial reads also undo contract §7 "Held history steps".
 - Rejected: no stop at a bound. Contract §5 "Status or index listing" and "Reference listing" require the stop. A listing of 1,000,000 records would run to the 30-second deadline and end with `DEADLINE`.
 - Rejected: a nested Job for each call. `Shared::message` in `src-tauri/src/jobs.rs` removes a lingering Job at each `JOB_OBJECT_MSG_ACTIVE_PROCESS_ZERO` message, with no process count check. A nested Job can send that message while the operation Job still holds live lingering processes. The removal would then end them.
+- Policy limit (2026-10-24, T394): only a `run` with the policy `read` or `search` gets `stop`. A run with another policy can run hooks after its stdout bound, such as the `post-merge` hook after the merge diffstat (Git `builtin/merge.c` `finish()`). So that run gets no `stop` and no `cancel` at the bound. It ends at its own exit or at its `limits` (contract §6 "Byte caps").
 
 ### Watcher event source
 

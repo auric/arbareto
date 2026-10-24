@@ -20,7 +20,7 @@ Six facts drive the design (research R2 to R15):
 
 ## Technical Context
 
-**Language/Version**: The 001 to 003 versions stay: TypeScript `7.0.2`, Bun `1.4.3` (exact), Rust/Cargo `1.98.0`.
+**Language/Version**: The 001 to 003 versions stay: TypeScript `7.0.2`, Bun `1.4.4` (exact), Rust/Cargo `1.98.0`.
 
 **Primary Dependencies**: No new runtime dependency for P1 and P2. React `19.3.0`, `@base-ui/react` `^1.8.0`, `@tanstack/react-virtual` `^3.14.13`, `@pierre/diffs` `^1.5.1` (its `enableLineSelection` and `controlledSelection` options), and Tauri `2.12.0` as installed. P3 spell check, moved to a later feature, adds `nspell` and `dictionary-en` after the D17 license and bundle check.
 

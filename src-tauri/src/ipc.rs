@@ -20,7 +20,7 @@ use crate::text_scale::{self, Current};
 pub const MAIN_WINDOW: &str = "main";
 
 /// Contract §3: the closed allowlist of public operations, as `src/contracts/operations.ts` lists them.
-pub const OPERATIONS: [&str; 51] = [
+pub const OPERATIONS: [&str; 58] = [
     "getEnvironment",
     "chooseGit",
     "chooseRepository",
@@ -74,11 +74,19 @@ pub const OPERATIONS: [&str; 51] = [
     "revealPath",
     "setSwitchChoice",
     "chooseWorktreeFolder",
+    // Feature 006 contract Δ1.
+    "listDictionaries",
+    "readDictionary",
+    "downloadDictionary",
+    "importDictionary",
+    "removeDictionary",
+    "setSpelling",
+    "openLicenceLink",
 ];
 
 /// Contract §3: the shell runs these first. The shell answers `requestClose` itself and never forwards it.
 /// Feature 004 contract Δ1: only the `worktree-add` form of `reviewWorkbench` is native-first, so `submit` decides it by its action.
-const NATIVE_FIRST: [&str; 18] = [
+const NATIVE_FIRST: [&str; 21] = [
     "requestClose",
     "chooseGit",
     "chooseRepository",
@@ -99,10 +107,14 @@ const NATIVE_FIRST: [&str; 18] = [
     "openWorktree",
     "setSwitchChoice",
     "chooseWorktreeFolder",
+    // Feature 006 contract Δ1.
+    "importDictionary",
+    "setSpelling",
+    "openLicenceLink",
 ];
 
-/// Contract §3 "Recent repositories" and feature 003 and feature 004 contract Δ1: the shell answers these itself and never forwards them.
-const NATIVE_ANSWERS: [&str; 10] = [
+/// Contract §3 "Recent repositories" and feature 003, 004, and 006 contract Δ1: the shell answers these itself and never forwards them.
+const NATIVE_ANSWERS: [&str; 12] = [
     "listRecentRepositories",
     "removeRecentRepository",
     "readSyncSettings",
@@ -113,6 +125,8 @@ const NATIVE_ANSWERS: [&str; 10] = [
     "launchPuttygen",
     "setSwitchChoice",
     "chooseWorktreeFolder",
+    "setSpelling",
+    "openLicenceLink",
 ];
 
 /// Feature 004 contract Δ1: the `reviewWorkbench` action whose path the shell binds first.
@@ -1011,6 +1025,69 @@ pub async fn choose_worktree_folder(
 }
 
 #[tauri::command]
+pub async fn list_dictionaries(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "listDictionaries", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_dictionary(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readDictionary", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn download_dictionary(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "downloadDictionary", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn import_dictionary(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "importDictionary", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn remove_dictionary(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "removeDictionary", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn set_spelling(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "setSpelling", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn open_licence_link(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "openLicenceLink", request.body().clone()).await
+}
+
+#[tauri::command]
 pub async fn launch_puttygen(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
@@ -1735,6 +1812,169 @@ mod tests {
         assert!(schema::native_first(&good).is_ok(), "254 bytes pass");
         assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
         assert!(frames.lock().expect("frames").is_empty());
+    }
+
+    // ---- Feature 006 (contract Δ1, Δ3, Δ7) ----
+
+    /// Feature 006 contract Δ1: the four dictionary service operations reach the service byte for byte, and no native step runs.
+    #[test]
+    fn the_feature_006_service_requests_are_forwarded_byte_for_byte() {
+        let cases = [
+            request("listDictionaries", json!({})),
+            request(
+                "readDictionary",
+                json!({ "language": "uk", "file": "index.dic", "offset": 1_048_576 }),
+            ),
+            request("downloadDictionary", json!({ "language": "uk" })),
+            request("removeDictionary", json!({ "language": "uk" })),
+        ];
+        for envelope in cases {
+            let operation = envelope["operation"]
+                .as_str()
+                .expect("operation")
+                .to_string();
+            assert!(OPERATIONS.contains(&operation.as_str()), "{operation}");
+            assert!(!NATIVE_FIRST.contains(&operation.as_str()), "{operation}");
+            let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+            let body = envelope.to_string();
+            assert_eq!(
+                ipc.handle(MAIN_WINDOW, LOCAL, &raw(&body), &operation),
+                Outcome::Forwarded,
+                "{envelope}"
+            );
+            assert_eq!(
+                *frames.lock().expect("frames"),
+                vec![frame_of(&body)],
+                "{operation}"
+            );
+            assert_eq!(*native.prepares.lock().expect("prepares"), 0, "{operation}");
+        }
+    }
+
+    /// Feature 006 contract Δ1 and Δ3: the shell answers `setSpelling` and `openLicenceLink` itself, also without a service session.
+    #[test]
+    fn set_spelling_and_open_licence_link_are_answered_natively_and_never_forwarded() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        let cases = [
+            (
+                "setSpelling",
+                json!({ "enabled": false, "languages": ["uk", "en"] }),
+            ),
+            ("openLicenceLink", json!({ "language": "en" })),
+        ];
+        for session in [Some(SESSION_ID.to_string()), None] {
+            ipc.set_session(session);
+            for (operation, payload) in &cases {
+                assert!(
+                    NATIVE_FIRST.contains(operation) && NATIVE_ANSWERS.contains(operation),
+                    "{operation}"
+                );
+                assert_eq!(
+                    send(&ipc, &request(operation, payload.clone())),
+                    Outcome::Answer(
+                        json!({ "requestId": REQUEST_ID, "state": "succeeded", "result": { "operation": operation, "entries": [] } })
+                    ),
+                    "{operation}"
+                );
+            }
+        }
+        assert_eq!(*native.prepares.lock().expect("prepares"), 4);
+        assert!(
+            native.prepared.lock().expect("prepared").is_empty(),
+            "no prepare step"
+        );
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0);
+    }
+
+    /// Feature 006 contract Δ3 `importDictionary`: the native step runs first, and the service gets the native payload.
+    #[test]
+    fn import_dictionary_runs_its_native_step_and_forwards_the_native_payload() {
+        assert!(NATIVE_FIRST.contains(&"importDictionary"));
+        assert!(!NATIVE_ANSWERS.contains(&"importDictionary"));
+        let native_payload = json!({ "language": "uk", "folder": "D:\\dictionaries\\uk" });
+        let forwarded = native_payload.clone();
+        let (ipc, frames, native) = connected(Box::new(move || {
+            Ok(Some(Prepared {
+                payload: forwarded.clone(),
+                path: None,
+            }))
+        }));
+        let envelope = request("importDictionary", json!({ "language": "uk" }));
+        assert_eq!(send(&ipc, &envelope), Outcome::Forwarded);
+        assert_eq!(
+            *native.prepared.lock().expect("prepared"),
+            vec![("importDictionary".to_string(), json!({ "language": "uk" }))]
+        );
+        let frames = frames.lock().expect("frames");
+        let frame: Value = serde_json::from_str(&frames[0]).expect("frame");
+        assert_eq!(
+            frame,
+            json!({ "kind": "public", "request": request("importDictionary", native_payload) })
+        );
+    }
+
+    /// Feature 006 data-model §8 and contract Δ3: the checks that typify drops, and the strict payloads, refuse before any dialog.
+    #[test]
+    fn the_feature_006_rust_checks_refuse_before_any_dialog() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        for envelope in [
+            request(
+                "setSpelling",
+                json!({ "enabled": true, "languages": ["en", "uk", "de", "fr"] }),
+            ),
+            request(
+                "setSpelling",
+                json!({ "enabled": true, "languages": ["uk", "uk"] }),
+            ),
+            request("setSpelling", json!({ "enabled": "yes", "languages": [] })),
+            request(
+                "setSpelling",
+                json!({ "enabled": true, "languages": ["EN"] }),
+            ),
+            request(
+                "openLicenceLink",
+                json!({ "language": "en", "url": "https://example.test/" }),
+            ),
+            request(
+                "importDictionary",
+                json!({ "language": "uk", "folder": "C:\\uk" }),
+            ),
+            request("importDictionary", json!({})),
+        ] {
+            assert_eq!(
+                send(&ipc, &envelope),
+                rejected("INVALID_REQUEST"),
+                "{envelope}"
+            );
+        }
+        assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
+        assert!(frames.lock().expect("frames").is_empty());
+    }
+
+    /// Feature 006 contract Δ7: the renderer CSP admits WebAssembly compilation and the app origin.
+    /// Every other directive keeps its earlier value.
+    #[test]
+    fn the_csp_admits_wasm_compilation_and_the_app_origin_and_keeps_every_other_directive() {
+        let config: Value = serde_json::from_str(
+            &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json"))
+                .expect("tauri.conf.json"),
+        )
+        .expect("JSON");
+        assert_eq!(
+            config["app"]["security"]["csp"],
+            json!({
+                "default-src": "'self'",
+                "script-src": "'self' 'wasm-unsafe-eval'",
+                "style-src": "'self'",
+                "style-src-elem": "'self' 'unsafe-inline'",
+                "style-src-attr": "'unsafe-inline'",
+                "connect-src": "ipc: http://ipc.localhost 'self'",
+                "object-src": "'none'",
+                "base-uri": "'none'",
+                "form-action": "'none'",
+            })
+        );
     }
 
     /// Feature 002 plan.md P7 and contract Δ3 "readHistory": no allowlist entry, command, handler, or grant remains.

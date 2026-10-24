@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-read-dictionary"
+description = "Enables the read_dictionary command without any pre-configured scope."
+commands.allow = ["read_dictionary"]
+
+[[permission]]
+identifier = "deny-read-dictionary"
+description = "Denies the read_dictionary command without any pre-configured scope."
+commands.deny = ["read_dictionary"]

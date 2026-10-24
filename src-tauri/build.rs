@@ -57,6 +57,13 @@ const COMMANDS: &[&str] = &[
     "reveal_path",
     "set_switch_choice",
     "choose_worktree_folder",
+    "list_dictionaries",
+    "read_dictionary",
+    "download_dictionary",
+    "import_dictionary",
+    "remove_dictionary",
+    "set_spelling",
+    "open_licence_link",
 ];
 
 /// The exported JSON Schema files of the values that the shell reads (contract §1 "Schemas").

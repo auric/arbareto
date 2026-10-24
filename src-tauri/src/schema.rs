@@ -30,7 +30,7 @@ const BRANCH_NAME_BYTES: usize = 255;
 /// Feature 004 data-model §1: a local branch lies under this prefix.
 const LOCAL_BRANCH_PREFIX: &str = "refs/heads/";
 /// Feature 006 contract Δ5: `src/contracts/limits.ts` `SPELLING_LANGUAGES`.
-const SPELLING_LANGUAGES: usize = 3;
+pub(crate) const SPELLING_LANGUAGES: usize = 3;
 
 macro_rules! generated {
     ($($module:ident),*) => {

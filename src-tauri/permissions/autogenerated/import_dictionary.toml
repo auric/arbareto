@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-import-dictionary"
+description = "Enables the import_dictionary command without any pre-configured scope."
+commands.allow = ["import_dictionary"]
+
+[[permission]]
+identifier = "deny-import-dictionary"
+description = "Denies the import_dictionary command without any pre-configured scope."
+commands.deny = ["import_dictionary"]

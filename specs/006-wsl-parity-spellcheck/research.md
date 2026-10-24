@@ -13,7 +13,7 @@
 - Tauri source `tauri-2.12.1/src/manager/mod.rs` in the Cargo registry. `src-tauri/Cargo.lock` resolves `tauri` 2.12.1.
 - Git source: the Git 2.56 tree at `scratchpad\gitrepo` (commit a018953), read on 2026-10-22. Line numbers below are Git 2.56.
 - Microsoft Learn: `ShellExecuteW` and its remarks on COM initialization.
-- Repository code at main 2949620 (equal to this branch apart from the 006 documents), read through CodeGraph and by line: `src/contracts/{limits,operations,envelope}.ts`, `src/git-service/{git-settings,git-runner,session,operations,log,trust}.ts`, `src/frontend/{commit/CommitTray.tsx,components/action-menu.tsx,state/draft-store.ts,settings/SettingsView.tsx,settings/git/GitSettingsPage.tsx,settings/git/texts.ts,changes/PatchPool.tsx,app/Workbench.tsx,about/AboutDialog.tsx,build/notices.ts,index.css}`, `src-tauri/src/{service,profile,env_sanitize,process_requests,wsl,settings,ipc}.rs`, `src-tauri/{tauri.conf.json,Cargo.toml,Cargo.lock}`, `scripts/windows/measure-ram.ps1`, `tests/git/bun-runner.ts`, `tests/wsl/workbench-wsl.test.ts`, `tests/groups.json`, `tests/groups.ts`, `vite.config.ts`, `package.json`.
+- Repository code at main 5f82057 (equal to this branch apart from the 006 documents), read through CodeGraph and by line: `src/contracts/{limits,operations,envelope}.ts`, `src/git-service/{git-settings,git-runner,session,operations,log,trust}.ts`, `src/frontend/{commit/CommitTray.tsx,components/action-menu.tsx,state/draft-store.ts,settings/SettingsView.tsx,settings/git/GitSettingsPage.tsx,settings/git/texts.ts,changes/PatchPool.tsx,app/Workbench.tsx,about/AboutDialog.tsx,build/notices.ts,index.css}`, `src-tauri/src/{service,profile,env_sanitize,process_requests,wsl,settings,ipc}.rs`, `src-tauri/{tauri.conf.json,Cargo.toml,Cargo.lock}`, `scripts/windows/measure-ram.ps1`, `tests/git/bun-runner.ts`, `tests/wsl/workbench-wsl.test.ts`, `tests/groups.json`, `tests/groups.ts`, `vite.config.ts`, `package.json`.
 - 004 research R20 (spell check) and R21 (open facts, the WSL rows), and the 004 quickstart rows Q8 to Q23.
 - Marks: "doc" is a documentation statement. "source" is a Git or library source statement. "code" is this repository. "registry" and "tree" are the 2026-10-22 reads. "measured" is a 2026-10-22 run. "experiment" needs a P0 test, listed in R12. "unverified" has no source and no test yet.
 
@@ -330,7 +330,7 @@ OBSERVATION T008: tlh fixture refused: no-positive-words positives=0 bun=1.4.4
 
 ### Batch 0 verification (T014), 2026-10-24
 
-Run in `C:\Projects\arbareto-l3` on `006-wsl-parity-spellcheck` at 1fdeff6, Windows 11 10.0.26300, Bun 1.4.4, Vite 8.3.5, Git 2.56.0.windows.2.
+Run in `C:\Projects\arbareto-l3` on `006-wsl-parity-spellcheck` at 9b96efe, Windows 11 10.0.26300, Bun 1.4.4, Vite 8.3.5, Git 2.56.0.windows.2.
 - `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, and `cargo check --locked --manifest-path src-tauri/Cargo.toml`: exit 0.
 - `bun run test:contracts`: exit 0, 5,046 pass, 37 skip, 0 fail, 5,083 tests in 104 files.
 - `bun test tests/gate` with the cache: exit 0, 90 pass, 0 fail, 90 tests in 2 files.
@@ -446,7 +446,7 @@ OBSERVATION T008: fy load=667 rss=73.2 nfc=true/true fixture=0/0 positives=200 s
 
 ### Batch 0 review, 2026-10-24
 
-Independent batch 0 review, reviewer agent, read-only, on e85aa5b (`git diff e36f56a e85aa5b`). Skills: `ponytail-review`, and a manual correctness, security, licence, heuristics, and constitution review. `web-design-guidelines` did not run, because the diff has no markup. Verdict: no data-loss or security bug, and no heuristic. Resolution: a2b0838 fixes items 1, 2, and 4 to 8.
+Independent batch 0 review, reviewer agent, read-only, on 9623d6f (`git diff a843682 9623d6f`). Skills: `ponytail-review`, and a manual correctness, security, licence, heuristics, and constitution review. `web-design-guidelines` did not run, because the diff has no markup. Verdict: no data-loss or security bug, and no heuristic. Resolution: f30c440 fixes items 1, 2, and 4 to 8.
 - Medium: the `.wasm` bundle check decided by file name (`endsWith(".wasm")`). Fix: each asset with bytes is tested for the WebAssembly magic `00 61 73 6D`, and an asset with the magic must have the SHA-256 of the reviewed `hunspell.wasm`.
 - Medium: the `listDictionaries` `removed` list had no bound (constitution III). Fix: at most `DICTIONARY_CATALOG_ENTRIES` (92) notices and a required `more` count, with vectors at and above the bound.
 - Medium: the cargo ipc grant test stays red until T015. Fix: T014 names the exception.

@@ -2,28 +2,33 @@
 
 # Arbareto
 
-Keyboard-first, local-first Git client for Windows and WSL.
+Fast, free and open-source Git GUI client.
+
+Arbareto is a desktop Git client inspired by Git Extensions. It covers the full commit graph, hunk and line staging, branches, merge, rebase, worktrees, submodules, and WSL repositories. It runs on Tauri 2 and Rust, not Electron, and needs no account or cloud service.
 
 ## Screenshots
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/history-dark.png">
-  <img src="docs/assets/screenshots/history-light.png" alt="Arbareto history view: the commit graph with branch lanes, branch and tag labels, the references sidebar with branches, remotes, tags, and worktrees, and the details of the selected commit">
+  <img src="docs/assets/screenshots/history-light.png" alt="Arbareto Git GUI history view: the commit graph with branch lanes, branch and tag labels, the references sidebar with branches, remotes, tags, and worktrees, and the details of the selected commit">
 </picture>
 
-<img src="docs/assets/screenshots/changes-light.png" alt="Arbareto commit view: changed files in a folder tree, a diff with Stage hunk buttons, the staged files, and the commit message box with a 72-column guide, Amend last commit, and Commit and push">
+<img src="docs/assets/screenshots/changes-light.png" alt="Arbareto Git client commit view: changed files in a folder tree, a diff with Stage hunk buttons, the staged files, and the commit message box with a 72-column guide, Amend last commit, and Commit and push">
 
 ## Status
 
 - Arbareto is pre-release software. Expect missing features and changes.
-- Windows comes first. The qualification target is Windows 11 x64. macOS and Linux come later.
+- Arbareto is cross-platform by design. The frontend, the Git service, and the operation contracts are shared code. A thin Tauri shell layer holds the platform parts.
+- Windows 11 x64 is the first platform that the project qualifies.
+- Linux comes next. macOS comes later, because no Mac test hardware is available yet.
+- WSL repositories work from the Windows app.
 - No installer release exists yet. Build the app from source.
 
 ## Features
 
 These features work on the `main` branch today.
 
-- History of the whole repository, with a commit graph in branch lanes and the details of the selected commit.
+- Git GUI history of the whole repository, with a commit graph in branch lanes and the details of the selected commit.
 - Commit message search, with steps through the matches in the full graph.
 - Working changes and a diff view. Stage and unstage files, folders, hunks, or selected lines.
 - Commit, amend the last commit, and commit and push in one step.
@@ -35,14 +40,14 @@ These features work on the `main` branch today.
 - Git settings by scope: system, global, and local.
 - Repositories inside WSL 2 distros, through the Git of the distro.
 - A repository trust prompt before Arbareto runs programs that the repository configures.
-- Keyboard-first: shortcuts and keyboard focus for the main actions.
+- Keyboard shortcuts and keyboard focus for the main actions.
 - System, light, and dark themes, with three dark palettes. The interface supports Windows contrast themes.
 
 ### Planned
 
 - Changed files of a commit in the history view, blame, file delete, and an ignore editor.
 - Spell check of the commit message.
-- macOS and Linux builds.
+- Linux build and qualification, then macOS.
 
 ## Requirements
 
@@ -50,6 +55,7 @@ These features work on the `main` branch today.
 - Git for Windows 2.55.0.windows.3 or later.
 - For WSL repositories: WSL 2 and Git 2.55.0 or later inside the distro. Arbareto refuses WSL 1 distros.
 - The Microsoft Edge WebView2 Runtime. The installer does not install it.
+- These requirements are for Windows. The Linux and macOS requirements come with their builds.
 
 ## Build from source
 

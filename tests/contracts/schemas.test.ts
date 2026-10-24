@@ -80,6 +80,7 @@ describe("envelope schemas", () => {
     expect(names(ServiceEnvelope)).toEqual(OPERATIONS.filter((name) => !(SHELL_ONLY as readonly string[]).includes(name)));
     // Feature 003 contract Δ1: `clone` is native-first, and the shell answers the six settings operations.
     // Feature 004 contract Δ1: `openWorktree` and the `worktree-add` review are native-first, and the shell answers `setSwitchChoice`.
+    // Feature 005 contract Δ1: `openSubmodule` is native-first.
     // Feature 006 contract Δ1: `importDictionary` is native-first, and the shell answers `setSpelling` and `openLicenceLink`.
     expect(names(NativeFirstEnvelope).toSorted()).toEqual([
       "chooseGit",
@@ -94,6 +95,7 @@ describe("envelope schemas", () => {
       "listRecentRepositories",
       "openLicenceLink",
       "openRecentRepository",
+      "openSubmodule",
       "openWorktree",
       "readSyncSettings",
       "removeRecentRepository",

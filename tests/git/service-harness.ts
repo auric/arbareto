@@ -13,7 +13,10 @@ import type { Handshake, MutationStarted, TrustAction, TrustDetails } from "../.
 import {
   DictionaryRunResult,
   ListDictionariesResult,
+  ReadBlameResult,
   ReadBranchesResult,
+  ReadCommitChangesResult,
+  ReadCommitFileResult,
   ReadDictionaryResult,
   ReadGitSettingsResult,
   ReadWorktreesResult,
@@ -463,7 +466,7 @@ export function checkFrame(frame: object): void {
 
 const isResponse =(value: unknown): value is ServiceResponse => isObject(value) && typeof value.state === "string" && (value.requestId === null || typeof value.requestId === "string");
 
-// Feature 004 contract Δ10 (T034, T060) and Δ3 `reviewCommit`: every result of these operations must fit its schema.
+// Feature 004 contract Δ10 (T034, T060), Δ3 `reviewCommit`, and the feature 005 reads: every result of these operations must fit its schema.
 const RESULT_SCHEMAS: Readonly<Record<string, { safeParse(value: unknown): { success: boolean } }>> = {
   readBranches: ReadBranchesResult,
   readWorktrees: ReadWorktreesResult,
@@ -471,6 +474,9 @@ const RESULT_SCHEMAS: Readonly<Record<string, { safeParse(value: unknown): { suc
   reviewWorkbench: ReviewWorkbenchResult,
   reviewCommit: ReviewCommitResult,
   runWorkbench: RunWorkbenchResult,
+  readCommitChanges: ReadCommitChangesResult,
+  readCommitFile: ReadCommitFileResult,
+  readBlame: ReadBlameResult,
   // Feature 006 contract Δ3 (T019).
   listDictionaries: ListDictionariesResult,
   readDictionary: ReadDictionaryResult,

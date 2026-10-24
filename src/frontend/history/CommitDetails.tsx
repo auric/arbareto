@@ -2,16 +2,18 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { Copy01Icon } from "@hugeicons/core-free-icons";
-import { useEffect, useId, useState, useSyncExternalStore } from "react";
+import { useEffect, useId, useState, useSyncExternalStore, type ReactNode } from "react";
 import type { HistoryRow } from "../../contracts/envelope";
 import { unknownReadText, useCopy } from "../app/RepositoryStates";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
+import { FILE_LANE, type Profile } from "../layout/profiles";
+import { Splitter } from "../layout/Splitter";
 import type { Details, HistoryView } from "../state/history-view";
 
 // plan.md "History graph design" (commit details rules), "Keyboard and focus" (Roles), and "Selection, scroll, and stored context".
 
-const NO_FILES = "Changed files are not shown in this version.";
 const CUT_TEXT = "Arbareto shows the first 16 KiB of this message.";
 const encodingText = (encoding: string) => `Declared encoding: ${encoding}`;
 const ENCODING_NOTE = "Arbareto shows the subject and the author as UTF-8 without conversion. Bytes that are not valid UTF-8 show as replacement characters.";
@@ -28,7 +30,7 @@ export const messageText = (row: Pick<HistoryRow, "subject" | "body">) => (row.b
 function Person({ person, seconds, dateFormat }: { person: HistoryRow["author"]; seconds: number; dateFormat: Intl.DateTimeFormat }) {
   return (
     <dd className="flex flex-wrap gap-x-2 break-words">
-      <span>
+      <span className="min-w-0 [overflow-wrap:anywhere]">
         {person.name} &lt;{person.email}&gt;
       </span>
       <time dateTime={isoText(seconds)}>{dateFormat.format(seconds * 1000)}</time>
@@ -37,10 +39,11 @@ function Person({ person, seconds, dateFormat }: { person: HistoryRow["author"];
   );
 }
 
+/** Feature 005 plan.md D15 "History view" (Main board): the 268 px region shows the short ID. The name and the tooltip give the full ID. */
 function CommitLink({ oid, onSelect }: { oid: string; onSelect(oid: string): void }) {
   return (
-    <Button variant="outline" size="sm" className="font-mono" onClick={() => onSelect(oid)}>
-      {oid}
+    <Button variant="outline" size="sm" className="font-mono" aria-label={oid} title={oid} onClick={() => onSelect(oid)}>
+      {shortId(oid)}
     </Button>
   );
 }
@@ -69,18 +72,33 @@ export type ViewCommitDetailsProps = {
   dateFormat?: Intl.DateTimeFormat;
   /** Runs after a `found` details read of `oid` rendered. A failed or absent target never runs it. */
   onRead?: () => void;
+  /** Feature 005 spec FR-005: the Changed files and diff regions beside the details. Without them, the region shows the details only. */
+  changes?: ReactNode;
+  /** The constrained profile shows the details and the changes as the tabs "Commit" and "Changes". */
+  profile?: Profile;
+  /** The details width. The Workbench keeps it, so it survives the blame view. Without it, the region keeps its own. */
+  width?: number;
+  onWidth?(width: number): void;
 };
 
+// Feature 005 plan.md D15 "History view": the Commit details region is 268 px wide.
+export const DETAILS_WIDTH = 268;
+
 /** The docked "Selected commit" region of a feature 002 view. It reads the commit when it shows, and it holds no Git action. */
-export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead }: ViewCommitDetailsProps) {
+export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead, changes, profile = "wide", width: given, onWidth }: ViewCommitDetailsProps) {
+  const [own, setOwn] = useState(DETAILS_WIDTH);
+  const width = given ?? own;
+  const setWidth = onWidth ?? setOwn;
   const headingId = useId();
   const copy = useCopy();
   const [read, setRead] = useState<{ oid: string; details: Details } | null>(null);
   // A canceled read shows Loading… and reads again. The store runs one text read at a time, so the list never cancels it.
   const [attempt, setAttempt] = useState(0);
-  // A new view (Refresh, a scope switch) reads the commit again.
-  const viewId = useSyncExternalStore(view.subscribe, () => view.getState().view?.viewId ?? null);
+  // A new view (Refresh, a scope switch) reads the commit again. A blame line commit reads at once (feature 005 T068).
+  const readView = () => view.readView(oid, true);
+  const viewId = useSyncExternalStore(view.subscribe, readView);
   useEffect(() => {
+    if (viewId === null) return;
     let current = true;
     void view.readDetails(oid).then((details) => {
       if (!current) return;
@@ -96,14 +114,8 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead }
   const row = details?.state === "found" ? details.row : details === undefined || details.state === "canceled" || details.state === "ended" ? undefined : null;
   const head = view.getState().view?.head;
   const references = row === undefined || row === null ? [] : [...(row.checkout && head !== undefined ? [head.state === "detached" ? "HEAD, detached" : "HEAD"] : []), ...row.labels.map((l) => `${LABEL_WORD[l.kind]} ${l.name}`)];
-  return (
-    <section aria-labelledby={headingId} className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center gap-1 border-b border-divider px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
-        <h2 id={headingId} className="font-semibold">
-          Selected commit
-        </h2>
-      </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-1 overflow-auto p-2 select-text">
+  const body = (
+    <>
         {row === undefined ? (
           <p className="text-muted-text">Loading…</p>
         ) : row === null ? (
@@ -122,7 +134,7 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead }
               <span className="min-w-0 break-words font-semibold">{row.subject}</span>
               {row.subject === undefined ? null : <IconButton icon={Copy01Icon} label="Copy message" onClick={() => copy(messageText({ subject: row.subject!, body: row.body ?? "" }))} />}
             </p>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-1">
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1">
               <dt className="text-muted-text">ID</dt>
               <dd className="flex items-start gap-1">
                 <span className="min-w-0 font-mono break-all">{row.oid}</span>
@@ -173,10 +185,45 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead }
             {row.encoding == null && !row.invalidUtf8 ? null : (
               <p>{row.encoding == null ? INVALID_UTF8_TEXT : `${encodingText(row.encoding)}. ${ENCODING_NOTE}${row.invalidUtf8 ? ` ${INVALID_UTF8_TEXT}` : ""}`}</p>
             )}
-            <p className="text-muted-text">{NO_FILES}</p>
           </>
         )}
+    </>
+  );
+  const bodyClass = "flex min-h-0 flex-col gap-1 overflow-auto select-text";
+  return (
+    <section aria-labelledby={headingId} className="flex h-full min-h-0 flex-col">
+      <div className="flex shrink-0 items-center gap-1 border-b border-divider px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
+        <h2 id={headingId} className="font-semibold">
+          Selected commit
+        </h2>
       </div>
+      {changes === undefined ? (
+        <div data-slot="commit-details-body" className={`${bodyClass} flex-1 p-2`}>
+          {body}
+        </div>
+      ) : profile === "constrained" ? (
+        // Feature 005 spec FR-005 (HistoryStates board, cell 8): two tabs. The Changes panel stays mounted, so its reads follow the selection.
+        <Tabs defaultValue="commit" className="min-h-0 flex-1 gap-0">
+          <TabsList variant="line" className="shrink-0 px-2">
+            <TabsTrigger value="commit">Commit</TabsTrigger>
+            <TabsTrigger value="changes">Changes</TabsTrigger>
+          </TabsList>
+          <TabsContent value="commit" data-slot="commit-details-body" className={`${bodyClass} p-3`}>
+            {body}
+          </TabsContent>
+          <TabsContent value="changes" keepMounted className="flex min-h-0 flex-col data-[hidden]:hidden">
+            {changes}
+          </TabsContent>
+        </Tabs>
+      ) : (
+        <div className="flex min-h-0 flex-1">
+          <div data-slot="commit-details-body" className={`${bodyClass} shrink-0 p-3`} style={{ width }}>
+            {body}
+          </div>
+          <Splitter label="Resize commit details" orientation="vertical" value={width} min={FILE_LANE.min} max={FILE_LANE.max} onChange={setWidth} />
+          {changes}
+        </div>
+      )}
     </section>
   );
 }

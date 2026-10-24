@@ -1,0 +1,308 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "preview": {
+          "type": "object",
+          "properties": {
+            "newlyIgnored": {
+              "type": "object",
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "paths": {
+                  "maxItems": 1000,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "format": "base64",
+                    "contentEncoding": "base64",
+                    "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+                  }
+                }
+              },
+              "required": [
+                "count",
+                "paths"
+              ],
+              "additionalProperties": false,
+              "title": "PreviewGroup"
+            },
+            "noLongerIgnored": {
+              "type": "object",
+              "properties": {
+                "count": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                },
+                "paths": {
+                  "maxItems": 1000,
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1,
+                    "format": "base64",
+                    "contentEncoding": "base64",
+                    "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+                  }
+                }
+              },
+              "required": [
+                "count",
+                "paths"
+              ],
+              "additionalProperties": false,
+              "title": "PreviewGroup"
+            },
+            "trackedMatched": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 9007199254740991
+            },
+            "notices": {
+              "type": "object",
+              "properties": {
+                "entries": {
+                  "maxItems": 100,
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "enum": [
+                          "link",
+                          "inside-ignored"
+                        ]
+                      },
+                      "pathBytes": {
+                        "type": "string",
+                        "minLength": 1,
+                        "format": "base64",
+                        "contentEncoding": "base64",
+                        "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "pathBytes"
+                    ],
+                    "additionalProperties": false,
+                    "title": "PreviewNotice"
+                  }
+                },
+                "more": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 9007199254740991
+                }
+              },
+              "required": [
+                "entries",
+                "more"
+              ],
+              "additionalProperties": false,
+              "title": "PreviewNotices"
+            }
+          },
+          "required": [
+            "newlyIgnored",
+            "noLongerIgnored",
+            "trackedMatched",
+            "notices"
+          ],
+          "additionalProperties": false,
+          "title": "PreviewGroups"
+        }
+      },
+      "required": [
+        "preview"
+      ],
+      "additionalProperties": false,
+      "title": "IgnorePreview"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "unavailable": {
+          "type": "object",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "enum": [
+                "paths",
+                "listing",
+                "name-case",
+                "shadow-copy",
+                "self-check",
+                "unreadable",
+                "deadline"
+              ]
+            },
+            "bound": {
+              "type": "string",
+              "enum": [
+                "APPROVAL_LIFETIME_MS",
+                "ATTRIBUTION_EVIDENCE_BYTES",
+                "ATTRIBUTION_EVIDENCE_RECORDS",
+                "BLAME_FILE_BYTES",
+                "BLAME_FILE_LINES",
+                "BLAME_OUTPUT_BYTES",
+                "BLAME_PROGRESS_EVENTS_PER_SECOND",
+                "BLAME_RESULT_BYTES",
+                "BOOTSTRAP_DEADLINE_CAP_MS",
+                "CANONICAL_DIFF_BYTES",
+                "CANONICAL_DIFF_LINES",
+                "CHANNEL_PATH_UNITS",
+                "CLONE_URL_BYTES",
+                "CLOSE_CLEANUP_TARGET_MS",
+                "COMMIT_CHANGES_RESULT_BYTES",
+                "COMMIT_MESSAGE_BYTES",
+                "COMMIT_OUTPUT_TAIL_BYTES",
+                "COMMIT_OUTPUT_TAIL_LINES",
+                "COMMIT_PROCESS_DEADLINE_MS",
+                "COMPARED_NORMALIZED_VERSION_BYTES",
+                "COMPARED_RAW_VERSION_BYTES",
+                "CONCURRENT_READS_GLOBAL",
+                "CONCURRENT_READS_PER_WORKSPACE",
+                "DAMAGED_MARKERS_PER_HANDSHAKE",
+                "DAMAGED_MARKER_FILE_NAME_UNITS",
+                "DIAGNOSTIC_RETAINED_BYTES_PER_STREAM",
+                "DICTIONARY_CATALOG_ENTRIES",
+                "DICTIONARY_CHUNK_BYTES",
+                "DICTIONARY_DOWNLOAD_DEADLINE_MS",
+                "DICTIONARY_LANGUAGE_BYTES",
+                "DICTIONARY_LANGUAGE_MEMORY_BYTES",
+                "DICTIONARY_LOAD_DEADLINE_MS",
+                "DICTIONARY_LOAD_GATE_MS",
+                "DICTIONARY_MANIFEST_BYTES",
+                "DICTIONARY_PROGRESS_EVENTS_PER_SECOND",
+                "DISCARD_CHECK_PATHS",
+                "FILE_FACT_COMPONENT_UNITS",
+                "FILE_FACT_ENTRIES",
+                "FILTER_TEXT_BYTES",
+                "FINISHED_OPERATION_RECORDS",
+                "GIT_EXECUTABLE_DIGEST_BYTES",
+                "GIT_PROCESS_DEADLINE_MS",
+                "GRAPH_LANES",
+                "HISTORY_CHECKPOINT_ROWS",
+                "HISTORY_COMMIT_OBJECT_BYTES",
+                "HISTORY_LOAD_MARGIN",
+                "HISTORY_PAGE_BYTES",
+                "HISTORY_PARENTS_PER_COMMIT",
+                "HISTORY_PARENTS_PER_PAGE",
+                "HISTORY_PROCESSES_PER_VIEW",
+                "HISTORY_PROCESS_DEADLINE_MS",
+                "HISTORY_PROGRESS_EVENTS_PER_SECOND",
+                "HISTORY_RENDERER_CACHE_BYTES",
+                "HISTORY_ROWS_PER_REQUEST",
+                "HISTORY_TEXT_DEADLINE_MS",
+                "HISTORY_VIEWS_PER_SESSION",
+                "HISTORY_VIEW_COMMITS",
+                "IDENTIFIER_BYTES",
+                "IDENTITY_PATHS",
+                "IGNORE_TARGET_BYTES",
+                "INLINE_PROCESS_INPUT_BYTES",
+                "JSON_NESTING_LEVELS",
+                "KEY_FILE_ENTRIES",
+                "MERGE_MESSAGE_BYTES",
+                "MULTI_FILE_ACTION_BYTES",
+                "MULTI_FILE_ACTION_FILES",
+                "MULTI_FILE_ATTRIBUTE_BYTES",
+                "MULTI_FILE_PROOF_CONCURRENCY",
+                "MULTI_FILE_STEP_MS_PER_FILE",
+                "MUTATIONS_PER_COMMON_REPOSITORY",
+                "MUTATION_RAW_INDEX_BYTES",
+                "NATIVE_CHUNK_BYTES",
+                "PAGEANT_READY_MS",
+                "PENDING_READS_GLOBAL",
+                "PERSONAL_WORDS",
+                "PERSONAL_WORD_CODE_POINTS",
+                "PIPE_FRAME_BYTES",
+                "PREVIEW_GROUP_PATHS",
+                "PREVIEW_IGNORE_FILES",
+                "PREVIEW_PATHS",
+                "PROCESS_EXIT_CODE_MAX",
+                "PUBLIC_FRAME_BODY_BYTES",
+                "PUBLIC_REQUEST_BYTES",
+                "QUEUED_PIPE_CHUNKS_PER_STREAM",
+                "READ_DEADLINE_MS",
+                "RECONCILIATION_TARGET_MS",
+                "RECORDED_REQUEST_IDS",
+                "RECOVERY_MARKERS_PER_HANDSHAKE",
+                "RECOVERY_MARKER_BYTES",
+                "REFLOG_SCAN_ENTRIES",
+                "REF_LISTING_BYTES",
+                "REF_LISTING_RECORDS",
+                "REGISTERED_DEADLINE_CAP_MS",
+                "REGISTERED_WORKSPACES",
+                "REGISTER_VERSION_BYTES",
+                "RETAINED_COMPARISONS",
+                "RETAINED_COMPARISON_BYTES",
+                "SESSION_LOG_ENTRIES",
+                "SHALLOW_METADATA_BYTES",
+                "SPELLING_LANGUAGES",
+                "SPELLING_SUGGESTIONS",
+                "STALL_NOTICE_MS",
+                "STATUS_LISTING_BYTES",
+                "STATUS_LISTING_RECORDS",
+                "STATUS_PAGE_BYTES",
+                "STREAMED_PROCESS_INPUT_BYTES",
+                "SUBMODULE_GITMODULES_BYTES",
+                "SUBMODULE_PROGRESS_EVENTS_PER_SECOND",
+                "SUBMODULE_REVIEW_NESTING_LEVELS",
+                "SUBMODULE_REVIEW_SUBMODULES",
+                "SUBMODULE_UPDATE_CEILING_MS",
+                "SUBMODULE_UPDATE_INACTIVITY_MS",
+                "SYNC_FETCH_LISTED_REFS",
+                "SYNC_LEASE_COMMITS",
+                "SYNC_REBASE_TODO_BYTES",
+                "SYNC_REFS_BYTES",
+                "SYNC_REFS_RECORDS",
+                "SYNC_REMOTES",
+                "TRACKING_COUNT_DISPLAY",
+                "TRUST_DIGEST_FILES",
+                "TRUST_DIGEST_FILE_BYTES",
+                "TRUST_DIGEST_TOTAL_BYTES",
+                "TRUST_INPUT_BYTES",
+                "TRUST_LINK_HOPS",
+                "TRUST_RECORDS",
+                "TRUST_RECORD_BYTES",
+                "TRUST_REPORT_ENTRIES",
+                "TRUST_REPORT_HOOKS",
+                "UNACKNOWLEDGED_INPUT_CHUNKS",
+                "UNEXPECTED_DIAGNOSTIC_BYTES_PER_OPERATION",
+                "WEBVIEW2_VERSION_BYTES",
+                "WHOLE_FILE_STAGE_INPUT_BYTES",
+                "WINDOWS_COMMAND_LINE_UNITS",
+                "WORKTREE_LISTING_BYTES",
+                "WORKTREE_RECORDS",
+                "WSL_ANCHOR_LINE_INTERVAL_MS",
+                "WSL_DISTRO_START_MS",
+                "WSL_POLL_GAP_MS"
+              ]
+            }
+          },
+          "required": [
+            "reason"
+          ],
+          "additionalProperties": false,
+          "title": "PreviewUnavailableReason"
+        }
+      },
+      "required": [
+        "unavailable"
+      ],
+      "additionalProperties": false,
+      "title": "PreviewUnavailable"
+    }
+  ],
+  "title": "PreviewIgnoreResult"
+}

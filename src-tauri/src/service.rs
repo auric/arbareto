@@ -4,7 +4,7 @@
 use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf, Prefix};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak, mpsc};
 use std::thread::JoinHandle;
@@ -17,7 +17,7 @@ use crate::bootstrap::{ContextKind, Contexts, PhysicalIdentity};
 use crate::close::{self, Decision, Mutation, Owner, Running};
 use crate::dialogs::{self, Chosen, Dialogs, Native, Proposal, Registered, WslProposal};
 use crate::env_sanitize::sanitize;
-use crate::file_facts::is_wsl_path;
+use crate::file_facts::{is_component, is_wsl_path};
 use crate::framing::{FrameError, read_frame, write_frame};
 use crate::ipc::{
     Ended, FrameSink, Ipc, MAIN_WINDOW, NativeFirst, Prepared, ToRenderer, renderer_message,
@@ -600,6 +600,11 @@ impl Service {
     pub fn relaunch(&self) -> bool {
         self.relaunch.load(Ordering::SeqCst)
     }
+
+    /// Feature 005 plan.md D7: binds the main window handle for the Recycle Bin `SetOwnerWindow`.
+    pub fn bind_owner_window(&self, hwnd: isize) {
+        self.requests.set_owner_window(Box::new(move || Some(hwnd)));
+    }
 }
 
 /// Ends the event loop through the destruction of the main window.
@@ -762,10 +767,15 @@ fn release_workspaces(stores: Option<&Stores>) -> String {
 
 /// The `worktreeRoot` of a `succeeded` registration (contract §3 "Recent repositories").
 fn registered_root(operation: &str, response: &Value) -> Option<PathBuf> {
-    // Feature 003 contract Δ3 `clone` and feature 004 contract Δ3 `openWorktree` end with the `chooseRepository` result.
+    // Feature 003 contract Δ3 `clone`, feature 004 contract Δ3 `openWorktree`, and feature 005 contract Δ3 `openSubmodule` end with the `chooseRepository` result.
     let registers = matches!(
         operation,
-        "chooseRepository" | "restoreWorkspace" | "openRecentRepository" | "clone" | "openWorktree"
+        "chooseRepository"
+            | "restoreWorkspace"
+            | "openRecentRepository"
+            | "clone"
+            | "openWorktree"
+            | "openSubmodule"
     );
     (registers && response["state"] == "succeeded")
         .then(|| path(&response["result"]["worktreeRoot"]).ok())
@@ -888,6 +898,28 @@ fn merge(current: &mut SyncSettings, before: &SyncSettings, after: SyncSettings)
     }
 }
 
+/// Feature 005 contract Δ3 `openSubmodule`: `path` joined under `root`. Each `/` component follows the 001 §6 rule.
+/// A WSL root takes the §11 UNC form of the joined Linux path. `None` is an invalid path.
+fn submodule_path(root: &Path, text: &str) -> Option<PathBuf> {
+    if !text.split('/').all(is_component) {
+        return None;
+    }
+    if !is_wsl_path(root) {
+        let joined = text
+            .split('/')
+            .fold(root.to_path_buf(), |path, part| path.join(part));
+        return native_path(joined.to_str()?).ok();
+    }
+    let Some(Component::Prefix(prefix)) = root.components().next() else {
+        return None;
+    };
+    let Prefix::UNC(_, distro) = prefix.kind() else {
+        return None;
+    };
+    let linux = wsl::linux_path(root, distro.to_str()?)?;
+    wsl::unc_path(root, &format!("{}/{text}", linux.trim_end_matches('/')))
+}
+
 /// The native step before the forward (contract §3). `Ok(None)` is a canceled dialog.
 fn prepare(
     stores: &Stores,
@@ -915,6 +947,20 @@ fn prepare(
             let bootstrap_id = contexts.create(ContextKind::RepositoryDiscovery, &path, now)?;
             return Ok(Some(Prepared {
                 payload: json!({ "repositoryId": repository_id, "bootstrapId": bootstrap_id }),
+                path: Some(path),
+            }));
+        }
+        // Feature 005 contract Δ3 and Δ6 `openSubmodule`: as `openWorktree`, with the joined path. The service also gets `path`.
+        "openSubmodule" => {
+            let repository_id = payload["repositoryId"].as_str().ok_or(INVALID)?;
+            let text = payload["path"].as_str().ok_or(INVALID)?;
+            let root = requests
+                .worktree_root(repository_id)
+                .ok_or("UNKNOWN_TARGET")?;
+            let path = submodule_path(&root, text).ok_or(INVALID)?;
+            let bootstrap_id = contexts.create(ContextKind::RepositoryDiscovery, &path, now)?;
+            return Ok(Some(Prepared {
+                payload: json!({ "repositoryId": repository_id, "bootstrapId": bootstrap_id, "path": text }),
                 path: Some(path),
             }));
         }
@@ -1055,7 +1101,7 @@ fn finish(
             response
         }
         // Data-model §1: the settings keep the last explicitly opened repository, from the native context.
-        "chooseRepository" | "openRecentRepository" | "openWorktree" => {
+        "chooseRepository" | "openRecentRepository" | "openWorktree" | "openSubmodule" => {
             if let Some(path) = &prepared.path {
                 let mut settings = lock(&stores.settings);
                 settings.last_repository = Some(path.clone());
@@ -2622,6 +2668,86 @@ mod tests {
                 Err(Ended::Rejected(code)),
                 "{payload}"
             );
+        }
+    }
+
+    /// Feature 005 contract Δ3 and Δ6 `openSubmodule`: the native step joins `path` under the worktree root,
+    /// binds a discovery context for the joined path, and forwards the IDs and the path. A registration stores a recent entry.
+    #[test]
+    fn open_submodule_binds_a_discovery_context_for_the_joined_path_and_forwards_the_ids_and_path()
+    {
+        let shell = Shell::new();
+        let core = shell.folder(r"repo\lib\core");
+        let root = core
+            .parent()
+            .and_then(Path::parent)
+            .expect("worktree root")
+            .to_path_buf();
+        shell.folder(r"repo\.git");
+        let repository = register_repository(&shell, &root);
+        let prepared = shell
+            .prepare(
+                &Fake::default(),
+                "openSubmodule",
+                json!({ "repositoryId": repository, "path": "lib/core" }),
+            )
+            .expect("bound")
+            .expect("context");
+        let payload = prepared.payload.as_object().expect("payload");
+        let mut keys: Vec<&String> = payload.keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["bootstrapId", "path", "repositoryId"]);
+        assert_eq!(payload["repositoryId"], json!(repository));
+        assert_eq!(payload["path"], json!("lib/core"));
+        let context = shell
+            .contexts
+            .get(payload["bootstrapId"].as_str().expect("ID"), Instant::now())
+            .expect("context");
+        assert_eq!(
+            (context.kind, context.path),
+            (ContextKind::RepositoryDiscovery, root.join(r"lib\core"))
+        );
+        assert_eq!(prepared.path, Some(root.join(r"lib\core")));
+        assert!(registered_root("openSubmodule", &registered(r"C:\repo\lib\core", KEY)).is_some());
+        for (payload, code) in [
+            (
+                json!({ "repositoryId": uuid(), "path": "lib/core" }),
+                "UNKNOWN_TARGET",
+            ),
+            (
+                json!({ "repositoryId": repository, "path": "lib/../core" }),
+                "INVALID_REQUEST",
+            ),
+            (
+                json!({ "repositoryId": repository, "path": "lib//core" }),
+                "INVALID_REQUEST",
+            ),
+        ] {
+            assert_eq!(
+                shell.prepare(&Fake::default(), "openSubmodule", payload.clone()),
+                Err(Ended::Rejected(code)),
+                "{payload}"
+            );
+        }
+    }
+
+    /// Contract §11 "Route": a WSL worktree root joins the submodule path in the UNC form of the joined Linux path.
+    #[test]
+    fn a_wsl_submodule_path_joins_in_the_unc_form_of_the_linux_path() {
+        let root = Path::new(r"\\wsl.localhost\Ubuntu-26.04\home\u\repo");
+        assert_eq!(
+            submodule_path(root, "lib/core"),
+            Some(PathBuf::from(
+                r"\\wsl.localhost\Ubuntu-26.04\home\u\repo\lib\core"
+            ))
+        );
+        assert_eq!(
+            submodule_path(root, "lib/core")
+                .and_then(|path| wsl::linux_path(&path, "Ubuntu-26.04")),
+            Some("/home/u/repo/lib/core".to_string())
+        );
+        for text in ["lib/../core", "lib//core", "./lib", "lib/\u{f001}"] {
+            assert_eq!(submodule_path(root, text), None, "{text}");
         }
     }
 

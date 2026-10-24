@@ -798,24 +798,32 @@ async function render(node: () => ReactNode) {
 }
 
 describe("comparison mount", () => {
-  test("the Pierre worker pool mounts once at the first diff and stays across selections, Loading, and patch changes", async () => {
+  // @pierre/diffs 1.5.1 WorkerPoolContext.js ends the pool when its last provider unmounts. PatchView is a double here, so the counter sees only the Workbench keeper.
+  test("the first comparison diff mounts the session-wide Pierre pool once; it stays when the comparison view unmounts and across Commit view visits (T125)", async () => {
     pool.mounts = 0;
     pool.unmounts = 0;
-    const [a, b] = [changeEntry("a.txt"), changeEntry("b.txt")];
-    const base = { repository: REGISTRATION, entries: [a, b], selectedHunk: null } as const;
-    const view = (fields: Record<string, unknown>) => () => <ComparisonViewMount {...PANE} requests={{ refresh: () => {} } as never} state={{ ...base, ...fields } as never} />;
-    const shown = await render(view({ selection: { entryId: a.entryId }, comparison: null }));
+    const double = await mount(succeeded(REGISTRATION));
+    await serveHistory(double);
+    const entry = changeEntry("a.txt");
+    const first = snapshot({ entries: [entry], entryCount: 1 });
+    await resolve(latest(double, "readWorkspace"), succeeded(first));
+    await openCommitView();
+    await act(async () => document.querySelector<HTMLElement>(`[role="treeitem"][data-entry-id="${entry.entryId}"]`)!.click());
+    await settle();
     expect(pool.mounts).toBe(0);
-    await shown.rerender(view({ selection: { entryId: a.entryId }, comparison: shownComparison(a.entryId, DIFF) }));
-    await settle();
-    expect(shown.host.querySelector('[data-slot="patch-double"]')).not.toBeNull();
-    await shown.rerender(view({ selection: { entryId: b.entryId }, comparison: shownComparison(a.entryId, DIFF) }));
-    await settle();
-    expect(shown.host.textContent).toContain("Loading…");
-    await shown.rerender(view({ selection: { entryId: b.entryId }, comparison: shownComparison(b.entryId, DIFF.replace("+n", "+m")) }));
-    await settle();
-    await shown.rerender(view({ selection: null, comparison: null }));
-    await settle();
+    const copy = document.querySelector<HTMLElement>(`${COMMIT_VIEW} [data-section="comparison"] button[aria-label="Copy path"]`)!;
+    expect(copy).not.toBeNull();
+    const shown = shownComparison(entry.entryId, DIFF);
+    await resolve(latest(double, "readComparison"), { ...shown, result: { ...(shown.result as object), snapshotId: first.snapshotId } });
+    expect(document.querySelector('[data-slot="patch-double"]')).not.toBeNull();
+    // T125: the comparison view keeps one parent tree across the first diff.
+    expect(copy.isConnected).toBe(true);
+    expect(document.querySelector(`${COMMIT_VIEW} [data-section="comparison"] button[aria-label="Copy path"]`)).toBe(copy);
+    expect(pool).toEqual({ mounts: 1, unmounts: 0 });
+    await switchView("History");
+    expect(document.querySelector('[data-section="comparison"]')).toBeNull();
+    expect(pool).toEqual({ mounts: 1, unmounts: 0 });
+    await openCommitView();
     expect(pool).toEqual({ mounts: 1, unmounts: 0 });
   });
 
@@ -1176,7 +1184,9 @@ describe("single view", () => {
     ];
     expect(items.map((i) => i !== null)).toEqual([true, true, true, true, true, true]);
     for (let i = 1; i < items.length; i++) expect(follows(items[i - 1]!, items[i]!)).toBe(true);
-    expect(header.querySelector('[data-slot="branch-text"]')!.getAttribute("title")).toBe("main");
+    // Feature 005: the branch card and the hidden text carry the full name, so the name has no native title.
+    expect(header.querySelector('[data-slot="branch-text"]')!.getAttribute("title")).toBeNull();
+    expect(header.querySelector('[data-slot="branch-text"] .sr-only')!.textContent).toBe("main");
     expect(header.querySelector('button[aria-label="Refresh"]')!.getAttribute("aria-keyshortcuts")).toBe("F5");
   });
 
@@ -1222,7 +1232,9 @@ describe("single view", () => {
     expect(double.calls.slice(before).map((c) => c.operation)).toEqual([]);
     await selectRow(HEAD);
     expect(document.querySelector('section[aria-label="Dock"]')!.textContent).toContain("Selected commit");
-    expect(double.calls.slice(before).map((c) => [c.operation, (c.args[1] as { text?: string }).text])).toEqual([["readHistoryRows", "details"]]);
+    // Feature 005 plan.md D3 "Selection": a commit row also reads its changed files.
+    const reads = double.calls.slice(before).map((c) => `${c.operation} ${(c.args[1] as { text?: string }).text ?? ""}`);
+    expect(reads.sort()).toEqual(["readCommitChanges ", "readHistoryRows details"]);
   });
 
   test("the History-ready, Commit-panel-ready, and Details-ready marks follow their states once each", async () => {
@@ -1441,8 +1453,8 @@ describe("menus", () => {
     const menu = await openMenu("Repository");
     const items = [...menu.querySelectorAll<HTMLElement>('[role="menuitem"]')];
     const label = (e: HTMLElement) => [...e.childNodes].filter((n) => !(n instanceof HTMLElement && n.dataset.slot === "menubar-shortcut")).map((n) => n.textContent).join("").trim();
-    // Feature 003 plan.md D12 adds Clone… and Settings….
-    expect(items.map(label)).toEqual(["Open folder…", "Recent repositories", "Clone…", "Select Git", "Settings…", "Update submodules"]);
+    // Feature 003 plan.md D12 adds Clone… and Settings…. Feature 005 spec FR-034 adds the ignore editor items.
+    expect(items.map(label)).toEqual(["Open folder…", "Recent repositories", "Clone…", "Select Git", "Settings…", "Update submodules", "Edit .gitignore", "Edit info/exclude"]);
     const keys = [...menu.querySelectorAll<HTMLElement>('[data-slot="menubar-shortcut"]')];
     expect(keys.map((k) => k.textContent)).toEqual(["Ctrl+O", "Ctrl+R"]);
     for (const k of keys) expect(k.className.split(/\s+/)).toEqual(expect.arrayContaining(["ml-auto", "whitespace-nowrap", "text-muted-text"]));
@@ -1468,11 +1480,11 @@ describe("menus", () => {
 // T362: plan.md "Header layout" and "Long text": the branch text of a very long branch name.
 describe("toolbar branch text", () => {
   const LONG = "feature/ACS-10545-a-very-long-branch-name-that-goes-on-and-on-and-on";
-  test('it shows a middle ellipsis, holds the full name in its tooltip and accessible text, and the branch button takes the free width (004 plan.md D15 "Top bar row")', async () => {
+  test('it shows a middle ellipsis, holds the full name in its hidden text and the branch card (feature 005), and the branch button takes the free width (004 plan.md D15 "Top bar row")', async () => {
     const double = await mount(succeeded(REGISTRATION));
     await resolve(double.pending("readWorkspace"), succeeded(snapshot({ head: { state: "branch", target: `refs/heads/${LONG}`, oid: HEAD } })));
     const branch = document.querySelector<HTMLElement>('header [data-slot="branch-text"]')!;
-    expect(branch.getAttribute("title")).toBe(LONG);
+    expect(branch.getAttribute("title")).toBeNull();
     expect(branch.querySelector(".sr-only")?.textContent).toBe(LONG);
     const parts = [...branch.querySelectorAll<HTMLElement>("[data-branch-part]")].map((p) => [p.dataset.branchPart, p.textContent, p.className.split(/\s+/).includes("truncate")]);
     expect(parts).toEqual([

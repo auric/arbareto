@@ -11,7 +11,9 @@ import { isWindows, NATIVE } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import { RunnerRefusal, type GitRunner, type SyncRunner, type WslRunner } from "./git-runner";
 import { createApprovals } from "./approvals";
+import { createBlameReader, type BlameOptions } from "./blame";
 import { createBranchesReader } from "./branches";
+import { createCommitChanges } from "./commit-changes";
 import { createCloner, type RouteTarget } from "./clone";
 import { createCommitter } from "./commit";
 import { createDictionaries, type DictionaryFetch, type DictionaryTimer } from "./dictionaries";
@@ -45,6 +47,10 @@ import { createTrust, type ServiceEnvironment, type TrustOutcome } from "./trust
 import { watchWorkspace } from "./watch";
 import { createWorkbench } from "./workbench-review";
 import type { Fact } from "./hunk-publish";
+import { readIgnoreFile } from "./ignore";
+import { createIgnorePreview } from "./ignore-preview";
+import { checkSubmodule, submoduleOutcome, type SubmoduleRefusal } from "./submodule-open";
+import "./file-delete";
 import "./switch";
 import "./branch-ops";
 import "./merge-rebase";
@@ -106,11 +112,11 @@ type ReadResult =
 
 const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
-// Feature 004 contract Δ3 `revealPath`: the native path of an entry below the worktree root. A WSL root is its UNC form. Null: the path bytes are no valid UTF-8.
-function revealTarget(w: Workspace, entry: ChangeEntry): string | null {
+// Feature 004 contract Δ3 `revealPath`: the native path of entry path bytes below the worktree root. A WSL root is its UNC form. Null: the bytes are no valid UTF-8.
+function revealTarget(w: Workspace, bytes: Uint8Array): string | null {
   let text: string;
   try {
-    text = strictUtf8.decode(Buffer.from(entry.pathBytes, "base64"));
+    text = strictUtf8.decode(bytes);
   } catch {
     return null;
   }
@@ -194,7 +200,20 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const refs = createRefsReader({ runner, trust, listingTuple: reader.listingTuple });
   const tracking = createTrackingReader({ runner, trust, listingTuple: reader.listingTuple });
   const branches = createBranchesReader({ runner, trust, reader, listingTuple: reader.listingTuple });
-  const views = createHistoryViews({ runner, trust, listingTuple: reader.listingTuple, markUnavailable: reader.markUnavailable, registry, viewCommits: historyViewCommits, ...(historyProbeRuns === undefined ? {} : { probeRuns: historyProbeRuns }), reject: (requestId, code) => reject(requestId, code) });
+  // Feature 005 contract Δ8: a view release drops the retained commit listing of that view.
+  const commitChanges = createCommitChanges({ runner, trust });
+  const blames = createBlameReader({ runner, trust });
+  const views = createHistoryViews({
+    runner,
+    trust,
+    listingTuple: reader.listingTuple,
+    markUnavailable: reader.markUnavailable,
+    registry,
+    viewCommits: historyViewCommits,
+    ...(historyProbeRuns === undefined ? {} : { probeRuns: historyProbeRuns }),
+    reject: (requestId, code) => reject(requestId, code),
+    onRelease: (viewId) => commitChanges.dropView(viewId),
+  });
   const approvals = createApprovals(approvalClock);
   // Contract §5: comparison eviction invalidates its approvals.
   const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
@@ -216,6 +235,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const syncReviews = createSyncReviewer({ runner, trust, reader, approvals, listingTuple: reader.listingTuple });
   const syncs = createSyncer({ runner, trust, reader, approvals, registry, exclusion, respond });
   const workbench = createWorkbench({ runner, trust, reader, registry, exclusion, respond, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
+  // Feature 005 data-model §7: one preview base per workspace and target, dropped at the workspace release.
+  const previews = createIgnorePreview({ runner, trust });
   const recovery = createRecovery({ runner, registry, trust, reader, publications: publisher.retained, commits: committer.retained, updates: updater.retained });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();
@@ -233,6 +254,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       watchers.delete(workspace.repositoryId);
       scheduler.release(workspace.repositoryId);
       views.releaseRepository(workspace.repositoryId);
+      commitChanges.release(workspace.repositoryId);
+      blames.release(workspace.repositoryId);
       reader.release(workspace.repositoryId);
       comparisons.release(workspace.repositoryId);
       reviews.release(workspace.repositoryId);
@@ -240,6 +263,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       syncs.release(workspace.repositoryId);
       approvals.release(workspace.repositoryId);
       workbench.release(workspace.repositoryId);
+      previews.release(workspace.repositoryId);
       for (const owners of [committer.owners, syncs.owners, updater.owners, publisher.owners]) for (const [operationId, id] of owners) if (id === workspace.repositoryId) owners.delete(operationId);
       trust.release(workspace, replaced);
       recovery.release(workspace);
@@ -337,7 +361,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     }
   }
 
-  const registrationEnd = (operationId: string) => (outcome: RegistrationOutcome) => {
+  const registrationEnd = (operationId: string) => (outcome: RegistrationOutcome | SubmoduleRefusal) => {
     if (registry.get(operationId)?.state === "cancel-requested") return registry.apply(operationId, { type: "processes-stopped" });
     // Cancel in the WSL Git confirmation: the registration ends `canceled` (contract §11 "Git per distro").
     if (!outcome.ok && outcome.code === "CANCELED") {
@@ -422,7 +446,25 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const scheduleRead = (
     request: {
       requestId: string;
-      operation: "readWorkspace" | "openHistory" | "readRefs" | "readTrust" | "readComparison" | "reviewCommit" | "reviewSubmodules" | "readTracking" | "reviewSync" | "reviewWorkbench" | "readBranches" | "readWorktrees" | "readGitSettings";
+      operation:
+        | "readWorkspace"
+        | "openHistory"
+        | "readRefs"
+        | "readTrust"
+        | "readComparison"
+        | "reviewCommit"
+        | "reviewSubmodules"
+        | "readTracking"
+        | "reviewSync"
+        | "reviewWorkbench"
+        | "readBranches"
+        | "readWorktrees"
+        | "readGitSettings"
+        | "readCommitChanges"
+        | "readCommitFile"
+        | "readBlame"
+        | "readIgnoreFile"
+        | "previewIgnore";
       repositoryId: string;
     },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
@@ -438,7 +480,9 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       repositoryId: request.repositoryId,
       signal,
       ...(selection === undefined ? {} : { selection }),
-      ...(request.operation === "reviewSubmodules" ? { deadline: false as const } : {}),
+      // Feature 005 contract Δ3 `readBlame`: each step has its own deadline, and the blame step takes HISTORY_PROCESS_DEADLINE_MS.
+      // Contract Δ3 `previewIgnore`: 30 s per process, and no deadline for the whole preview.
+      ...(request.operation === "reviewSubmodules" || request.operation === "readBlame" || request.operation === "previewIgnore" ? { deadline: false as const } : {}),
       run: (work) => run({ operationId, signal: work }).catch(() => failed),
       failed: (outcome) => outcome.result === "failed" || outcome.result === "deadline",
       reread: (target) => reread(target).catch(() => null),
@@ -625,20 +669,28 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   // Feature 004 contract Δ3 `revealPath`: the entry of the current read, then the private `reveal` request. It takes no read slot and starts no Git process.
   // `repositoryId` sits in the payload. An unknown repository or entry, and path bytes that are no valid UTF-8, give UNKNOWN_TARGET before any request.
   const revealPath: Handler<"revealPath"> = (request) => {
-    const { repositoryId, entryId } = request.payload;
+    const { repositoryId, entryId, folder } = request.payload;
     if (!registrations.has(repositoryId)) return reject(request.requestId, "UNKNOWN_TARGET");
     const workspace = workspaceOf(repositoryId);
-    const { operationId, signal } = registry.start("revealPath", request.requestId);
     const entry = reader.currentEntry(repositoryId, entryId);
-    const path = entry === null ? null : revealTarget(workspace, entry);
+    let bytes = entry === null ? null : Buffer.from(entry.pathBytes, "base64");
+    // Feature 005 contract Δ3 `revealPath`: `folder` is a proper prefix of the entry path that a `/` follows.
+    if (bytes !== null && folder !== undefined) {
+      const prefix = Buffer.from(folder, "base64");
+      if (!(prefix.length < bytes.length && bytes[prefix.length] === 0x2f && bytes.subarray(0, prefix.length).equals(prefix))) return reject(request.requestId, "INVALID_REQUEST");
+      bytes = prefix;
+    }
+    const { operationId, signal } = registry.start("revealPath", request.requestId);
+    const path = bytes === null ? null : revealTarget(workspace, bytes);
     if (path === null) return void registry.apply(operationId, { type: "invalid-approval", code: "UNKNOWN_TARGET" });
     registry.apply(operationId, { type: "valid-read" });
-    const finish = (code: ErrorCode | null) => {
+    const finish = (code: ErrorCode | null, result?: unknown) => {
       if (registry.get(operationId)?.state === "cancel-requested") return registry.apply(operationId, { type: "processes-stopped" });
-      registry.apply(operationId, code === null ? { type: "read-complete", result: "succeeded" } : { type: "read-complete", result: "failed", code });
+      registry.apply(operationId, code === null ? { type: "read-complete", result: "succeeded" } : { type: "read-complete", result: "failed", code }, result);
     };
     runner.reveal({ operationId, repositoryId, path }, signal).then(
-      (reply) => finish(reply === "shown" ? null : reply.stop === "deadline" ? "DEADLINE" : "CANCELED"),
+      // Contract Δ3: the reply `absent` gives UNKNOWN_TARGET with reason `absent`.
+      (reply) => (reply === "absent" ? finish("UNKNOWN_TARGET", { reason: "absent" }) : finish(reply === "shown" ? null : reply.stop === "deadline" ? "DEADLINE" : "CANCELED")),
       (error: unknown) => finish(error instanceof RunnerRefusal ? error.code : "GIT_FAILED"),
     );
   };
@@ -813,6 +865,155 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     connect().catch((error: unknown) => finish(error instanceof RunnerRefusal ? error.code : "GIT_FAILED"));
   };
 
+  // The re-read of a failed inspection read (data-model §7 read rows).
+  const inspectionReread = (workspace: Workspace) => async (t: RereadTarget): Promise<ReadResult | null> => ((await reader.recheck({ ...t, workspace })) === null ? null : { result: "failed", code: "REPOSITORY_UNAVAILABLE" });
+  // A read that ends at acceptance with a result and no Git process.
+  const answered = (request: { requestId: string; operation: "readBlame" }, outcome: ReadResult) => {
+    const { operationId } = registry.start(request.operation, request.requestId);
+    registry.apply(operationId, { type: "valid-read" });
+    settleRead(operationId, outcome);
+  };
+
+  // Feature 005 contract Δ3 `readCommitChanges`. The view, the row, and the parent index decide at acceptance, and no Git process starts.
+  // Contract §5 "Pending reads": a new read of the workspace cancels each unfinished one.
+  const readCommitChanges: Handler<"readCommitChanges"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    if (request.repositoryGeneration !== workspace.generation) {
+      const { operationId } = registry.start("readCommitChanges", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+    }
+    const { viewId, oid, parent } = request.payload;
+    const target = views.commitTarget(request.repositoryId, viewId, oid);
+    if (target === null) return reject(request.requestId, "UNKNOWN_TARGET");
+    // Contract Δ3: a row without parents takes only parent 0.
+    if (parent >= Math.max(1, target.parents.length)) return reject(request.requestId, "INVALID_REQUEST");
+    scheduleRead(
+      request,
+      (t) => commitChanges.readCommitChanges({ ...t, workspace, installation }, { viewId, oid, ...target }, parent),
+      inspectionReread(workspace),
+      { result: "failed", code: "GIT_FAILED" },
+      "readCommitChanges",
+    );
+  };
+
+  // Feature 005 contract Δ3 `readCommitFile`. The retained listing and the file ID decide at acceptance.
+  const readCommitFile: Handler<"readCommitFile"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const { changesId, fileId } = request.payload;
+    const found = commitChanges.entry(changesId, fileId);
+    if ("refused" in found || found.listing.repositoryId !== request.repositoryId) return reject(request.requestId, "refused" in found ? found.refused : "UNKNOWN_TARGET");
+    scheduleRead(
+      request,
+      (t) => commitChanges.readCommitFile({ ...t, workspace, installation }, changesId, fileId),
+      inspectionReread(workspace),
+      { result: "failed", code: "GIT_FAILED" },
+      "readCommitFile",
+    );
+  };
+
+  // Feature 005 contract Δ3 `readBlame`. The source decides at acceptance. No read gate: no command of the read loads the index (plan.md D2).
+  const readBlame: Handler<"readBlame"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const { source } = request.payload;
+    const options: BlameOptions = request.payload.options;
+    const progress = (operationId: string) => (counters: Record<string, number>) => registry.progress(operationId, "blame", counters);
+    let run: (t: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>;
+    if ("changesId" in source) {
+      const found = commitChanges.entry(source.changesId, source.fileId);
+      if ("refused" in found || found.listing.repositoryId !== request.repositoryId) return reject(request.requestId, "refused" in found ? found.refused : "UNKNOWN_TARGET");
+      // Plan.md D12 "Sources": a deleted row blames its path at the chosen parent.
+      const target = { commit: found.entry.status === "D" ? found.listing.base! : found.listing.oid, path: found.entry.path };
+      run = (t) => blames.readBlame({ ...t, workspace, installation }, target, options, progress(t.operationId));
+    } else if ("snapshotId" in source) {
+      const found = reader.entry(request.repositoryId, request.repositoryGeneration, source.snapshotId, source.entryId);
+      if (!found.ok) {
+        const { operationId } = registry.start("readBlame", request.requestId);
+        return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
+      }
+      const head = found.snapshot.head;
+      // Spec FR-053: an unborn HEAD has no history. No Git process starts.
+      if (head.state === "unborn") return answered(request, { result: "failed", code: "BLAME_UNAVAILABLE", value: { reason: "no-history" } });
+      const target = { commit: head.oid, path: new Uint8Array(Buffer.from(found.entry.pathBytes, "base64")) };
+      run = (t) => blames.readBlame({ ...t, workspace, installation }, target, options, progress(t.operationId));
+    } else if (!("line" in source)) {
+      // Contract Δ3: the generation is not checked, as for `{blameId, line}`.
+      const target = blames.rerun(request.repositoryId, source.blameId);
+      if ("refused" in target) return reject(request.requestId, target.refused);
+      run = (t) => blames.readBlame({ ...t, workspace, installation }, target, options, progress(t.operationId));
+    } else {
+      const found = blames.before(request.repositoryId, source.blameId, source.line);
+      if ("refused" in found) return reject(request.requestId, found.refused);
+      if ("reason" in found) return answered(request, { result: "failed", code: "BLAME_UNAVAILABLE", value: { reason: found.reason } });
+      run = (t) => blames.readBefore({ ...t, workspace, installation }, found, options, progress(t.operationId));
+    }
+    scheduleRead(request, run, inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "readBlame");
+  };
+
+  // Feature 005 contract Δ3 `readIgnoreFile`: one read slot and no read gate, because no command loads the index.
+  const readIgnore: Handler<"readIgnoreFile"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    if (installationOf(workspace) === null) return reject(request.requestId, gitCode());
+    if (request.repositoryGeneration !== workspace.generation) {
+      const { operationId } = registry.start("readIgnoreFile", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: "REPOSITORY_CHANGED" });
+    }
+    const run = async (t: { operationId: string; signal: AbortSignal }): Promise<ReadResult> => {
+      const read = await readIgnoreFile({ runner, ...t, workspace }, request.payload.target);
+      if ("value" in read) return { result: "succeeded", value: read.value };
+      if ("stop" in read) return { result: read.stop === "deadline" ? "deadline" : "canceled" };
+      return { result: "failed", code: read.code, ...(read.reason === undefined ? {} : { value: { reason: read.reason } }) };
+    };
+    scheduleRead(request, run, inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "readIgnoreFile");
+  };
+
+  // Feature 005 contract Δ3 `previewIgnore`: the snapshot decides at acceptance. The preview waits behind the 001 read gate.
+  const previewIgnore: Handler<"previewIgnore"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    // Contract Δ3: the editor text holds LF line ends only, so a CR byte gives INVALID_REQUEST.
+    if (Buffer.from(request.payload.text, "base64").includes(0x0d)) return reject(request.requestId, "INVALID_REQUEST");
+    const found = reader.snapshot(request.repositoryId, request.repositoryGeneration, request.payload.snapshotId);
+    if (!found.ok) {
+      const { operationId } = registry.start("previewIgnore", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
+    }
+    scheduleRead(request, (t) => previews.preview({ ...t, workspace, installation }, request.payload), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "previewIgnore");
+  };
+
+  // Feature 005 contract Δ3 `openSubmodule`, plan.md D11: the checks in the parent, then the 001 registration of the bound folder.
+  // The top level of the discovery must be the bound folder (the `destination` of the registration).
+  const openSubmodule: Handler<"openSubmodule"> = (request) => {
+    const { repositoryId, bootstrapId, path } = request.payload;
+    if (!registrations.has(repositoryId)) return reject(request.requestId, "UNKNOWN_TARGET");
+    if (exclusion.holds(repositoryId)) return reject(request.requestId, "BUSY");
+    const workspace = workspaceOf(repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const { operationId, signal } = registry.start("openSubmodule", request.requestId);
+    registry.apply(operationId, { type: "valid-read" });
+    const finish = registrationEnd(operationId);
+    const target = { operationId, bootstrapId, signal };
+    const open = async (): Promise<RegistrationOutcome | SubmoduleRefusal> => {
+      const refused = await checkSubmodule({ runner, trust, operationId, signal, workspace, installation }, path);
+      if (refused !== null) return refused;
+      const routed = await routeGit(target);
+      if (!routed.ok) return routed;
+      if (routed.wsl !== undefined) return submoduleOutcome(await registrations.registerWsl({ ...target, destination: routed.wsl.identityPath }, routed.wsl.git));
+      if (!git?.ok) return { ok: false, code: gitCode() };
+      return submoduleOutcome(await registrations.register({ ...target, installation: git.installation, destination: routed.path }));
+    };
+    open()
+      .catch((error: unknown) => refusedRoute(error, signal))
+      .then(finish, () => finish({ ok: false, code: "GIT_FAILED" }));
+  };
+
   // `undefined`: a later task adds the handler. The request then gets SERVICE_UNAVAILABLE.
   const handlers: { [K in ServiceOperation]: Handler<K> | undefined } = {
     getEnvironment: (request) => {
@@ -947,6 +1148,12 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     },
     openWorktree,
     revealPath,
+    readCommitChanges,
+    readCommitFile,
+    readBlame,
+    readIgnoreFile: readIgnore,
+    previewIgnore,
+    openSubmodule,
     listDictionaries: dictionaries?.listDictionaries,
     readDictionary: dictionaries?.readDictionary,
     downloadDictionary: dictionaries?.downloadDictionary,

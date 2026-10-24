@@ -84,6 +84,13 @@
               "upstreamPresent": {
                 "type": "boolean"
               },
+              "nameBytes": {
+                "type": "string",
+                "minLength": 1,
+                "format": "base64",
+                "contentEncoding": "base64",
+                "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+              },
               "commitId": {
                 "anyOf": [
                   {
@@ -179,12 +186,18 @@
                     "APPROVAL_LIFETIME_MS",
                     "ATTRIBUTION_EVIDENCE_BYTES",
                     "ATTRIBUTION_EVIDENCE_RECORDS",
+                    "BLAME_FILE_BYTES",
+                    "BLAME_FILE_LINES",
+                    "BLAME_OUTPUT_BYTES",
+                    "BLAME_PROGRESS_EVENTS_PER_SECOND",
+                    "BLAME_RESULT_BYTES",
                     "BOOTSTRAP_DEADLINE_CAP_MS",
                     "CANONICAL_DIFF_BYTES",
                     "CANONICAL_DIFF_LINES",
                     "CHANNEL_PATH_UNITS",
                     "CLONE_URL_BYTES",
                     "CLOSE_CLEANUP_TARGET_MS",
+                    "COMMIT_CHANGES_RESULT_BYTES",
                     "COMMIT_MESSAGE_BYTES",
                     "COMMIT_OUTPUT_TAIL_BYTES",
                     "COMMIT_OUTPUT_TAIL_LINES",
@@ -229,6 +242,7 @@
                     "HISTORY_VIEW_COMMITS",
                     "IDENTIFIER_BYTES",
                     "IDENTITY_PATHS",
+                    "IGNORE_TARGET_BYTES",
                     "INLINE_PROCESS_INPUT_BYTES",
                     "JSON_NESTING_LEVELS",
                     "KEY_FILE_ENTRIES",
@@ -246,6 +260,9 @@
                     "PERSONAL_WORDS",
                     "PERSONAL_WORD_CODE_POINTS",
                     "PIPE_FRAME_BYTES",
+                    "PREVIEW_GROUP_PATHS",
+                    "PREVIEW_IGNORE_FILES",
+                    "PREVIEW_PATHS",
                     "PROCESS_EXIT_CODE_MAX",
                     "PUBLIC_FRAME_BODY_BYTES",
                     "PUBLIC_REQUEST_BYTES",
@@ -381,6 +398,8 @@
                     "WORKBENCH_UNAVAILABLE",
                     "UNTRACKED_IN_WAY",
                     "STASH_KEPT",
+                    "BLAME_UNAVAILABLE",
+                    "SUBMODULE_UNAVAILABLE",
                     "DICTIONARY_UNAVAILABLE"
                   ]
                 }
@@ -446,12 +465,18 @@
                     "APPROVAL_LIFETIME_MS",
                     "ATTRIBUTION_EVIDENCE_BYTES",
                     "ATTRIBUTION_EVIDENCE_RECORDS",
+                    "BLAME_FILE_BYTES",
+                    "BLAME_FILE_LINES",
+                    "BLAME_OUTPUT_BYTES",
+                    "BLAME_PROGRESS_EVENTS_PER_SECOND",
+                    "BLAME_RESULT_BYTES",
                     "BOOTSTRAP_DEADLINE_CAP_MS",
                     "CANONICAL_DIFF_BYTES",
                     "CANONICAL_DIFF_LINES",
                     "CHANNEL_PATH_UNITS",
                     "CLONE_URL_BYTES",
                     "CLOSE_CLEANUP_TARGET_MS",
+                    "COMMIT_CHANGES_RESULT_BYTES",
                     "COMMIT_MESSAGE_BYTES",
                     "COMMIT_OUTPUT_TAIL_BYTES",
                     "COMMIT_OUTPUT_TAIL_LINES",
@@ -496,6 +521,7 @@
                     "HISTORY_VIEW_COMMITS",
                     "IDENTIFIER_BYTES",
                     "IDENTITY_PATHS",
+                    "IGNORE_TARGET_BYTES",
                     "INLINE_PROCESS_INPUT_BYTES",
                     "JSON_NESTING_LEVELS",
                     "KEY_FILE_ENTRIES",
@@ -513,6 +539,9 @@
                     "PERSONAL_WORDS",
                     "PERSONAL_WORD_CODE_POINTS",
                     "PIPE_FRAME_BYTES",
+                    "PREVIEW_GROUP_PATHS",
+                    "PREVIEW_IGNORE_FILES",
+                    "PREVIEW_PATHS",
                     "PROCESS_EXIT_CODE_MAX",
                     "PUBLIC_FRAME_BODY_BYTES",
                     "PUBLIC_REQUEST_BYTES",
@@ -648,6 +677,8 @@
                     "WORKBENCH_UNAVAILABLE",
                     "UNTRACKED_IN_WAY",
                     "STASH_KEPT",
+                    "BLAME_UNAVAILABLE",
+                    "SUBMODULE_UNAVAILABLE",
                     "DICTIONARY_UNAVAILABLE"
                   ]
                 }

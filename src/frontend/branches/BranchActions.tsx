@@ -286,6 +286,10 @@ export function useBranchActions(options: BranchActionsOptions) {
       nextHunk: null,
       primary: null,
       save: null,
+      deleteFiles: null,
+      deletePermanently: null,
+      openSubmodule: null,
+      closeEditor: null,
     };
   }
 

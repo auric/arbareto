@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 import { decodeRequest } from "../../src/contracts/envelope";
-import { HISTORY_ROWS_PER_REQUEST, HISTORY_VIEW_COMMITS, PIPE_FRAME_BYTES, STATUS_PAGE_BYTES } from "../../src/contracts/limits";
+import { HISTORY_ROWS_PER_REQUEST, HISTORY_VIEW_COMMITS, PIPE_FRAME_BYTES, PUBLIC_REQUEST_BYTES, STATUS_PAGE_BYTES } from "../../src/contracts/limits";
 import { isWindows } from "../../src/contracts/native-path";
 import { OPERATIONS } from "../../src/contracts/operations";
 
@@ -118,6 +118,16 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
   revealPath: { renderer: () => ({ repositoryId: id(), entryId: id() }), service: () => ({ repositoryId: id(), entryId: id() }) },
   setSwitchChoice: { renderer: () => ({ choice: "stash" }) },
   chooseWorktreeFolder: { renderer: () => ({ repositoryId: id() }) },
+  // Feature 005 contract Δ1 and Δ3.
+  readCommitChanges: { renderer: () => ({ viewId: id(), oid: "a".repeat(40), parent: 0 }), service: () => ({ viewId: id(), oid: "a".repeat(40), parent: 0 }) },
+  readCommitFile: { renderer: () => ({ changesId: id(), fileId: 0 }), service: () => ({ changesId: id(), fileId: 0 }) },
+  readBlame: {
+    renderer: () => ({ source: { snapshotId: id(), entryId: id() }, options: { ignoreWhitespace: true, detectMoves: false, detectCopies: false, ignoreList: true } }),
+    service: () => ({ source: { blameId: id(), line: 7 }, options: { ignoreWhitespace: false, detectMoves: true, detectCopies: true, ignoreList: false } }),
+  },
+  readIgnoreFile: { renderer: () => ({ target: "gitignore" }), service: () => ({ target: "exclude" }) },
+  previewIgnore: { renderer: () => ({ target: "gitignore", text: "Ki5sb2cK", snapshotId: id() }), service: () => ({ target: "gitignore", text: "", snapshotId: id() }) },
+  openSubmodule: { renderer: () => ({ repositoryId: id(), path: "lib/core" }), service: () => ({ repositoryId: id(), bootstrapId: id(), path: "lib/core" }) },
   // Feature 006 contract Δ1 and Δ3.
   listDictionaries: { renderer: () => ({}), service: () => ({}) },
   readDictionary: { renderer: () => ({ language: "uk", file: "index.dic", offset: 0 }), service: () => ({ language: "uk", file: "index.dic", offset: 0 }) },
@@ -146,6 +156,12 @@ const GENERATION_REQUIRED = [
   "readBranches",
   "readWorktrees",
   "reviewWorkbench",
+  // Feature 005 contract Δ2.
+  "readCommitChanges",
+  "readCommitFile",
+  "readBlame",
+  "readIgnoreFile",
+  "previewIgnore",
 ];
 const GENERATION_ABSENT = NAMES.filter((n) => !GENERATION_REQUIRED.includes(n) && n !== "readWorkspace");
 
@@ -176,6 +192,11 @@ const REPOSITORY_BOUND = [
   "reviewWorkbench",
   "runWorkbench",
   "applyFiles",
+  "readCommitChanges",
+  "readCommitFile",
+  "readBlame",
+  "readIgnoreFile",
+  "previewIgnore",
 ];
 // Feature 003 data-model §11: a sync target names its repository, and a clone target without a workspace names none.
 // Feature 004 contract Δ3 `readGitSettings`: without `repositoryId`, the read runs in the `globalConfig` context.
@@ -215,9 +236,9 @@ const sidesOf = (name: string) =>
 
 describe("operation list", () => {
   // Feature 002 plan.md P7 retires the contract §3 `readHistory`.
-  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, the 10 feature 004 contract Δ1 operations, and the 7 feature 006 contract Δ1 operations", () => {
+  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, the 10 feature 004 contract Δ1 operations, the 6 feature 005 contract Δ1 operations, and the 7 feature 006 contract Δ1 operations", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(58);
+    expect(OPERATIONS.length).toBe(64);
   });
 
   for (const name of NAMES) {
@@ -407,6 +428,20 @@ describe("approveTrust action", () => {
   });
 });
 
+// Feature 005 contract Δ1 and Δ15 (T057): the 004 `reviewWorkbench` action `ignore` goes. `ignore-save` replaces it.
+describe("reviewWorkbench action ignore", () => {
+  for (const side of ["renderer", "service"] as const) {
+    test(`ignore gives INVALID_REQUEST on the ${side} side`, () => {
+      for (const payload of [
+        { action: "ignore", snapshotId: id(), entryId: id(), target: "gitignore" },
+        { action: "ignore", snapshotId: id(), entryId: id(), target: "exclude", folder: "bG9ncw==" },
+      ]) {
+        expectCode(envelope("reviewWorkbench", side, payload), "INVALID_REQUEST", side);
+      }
+    });
+  }
+});
+
 describe("explicit approval fields", () => {
   const cases: Array<[string, string]> = [
     ["commit", "confirmFullScope"],
@@ -488,25 +523,29 @@ describe("frame limit", () => {
     return new TextEncoder().encode(" ".repeat(size - body.length) + body);
   };
 
-  test("an encoded request of exactly 1 MiB decodes", () => {
-    const bytes = padded(MIB);
-    expect(bytes.length).toBe(MIB);
+  // Feature 005 contract \u03945: the public request bound is 2 MiB.
+  const LIMIT = 2 * MIB;
+  test("the public request bound is 2 MiB", () => expect(PUBLIC_REQUEST_BYTES).toBe(LIMIT));
+
+  test("an encoded request of exactly 2 MiB decodes", () => {
+    const bytes = padded(LIMIT);
+    expect(bytes.length).toBe(LIMIT);
     expect(decodeRequest(bytes, "renderer")).toMatchObject({ ok: true });
   });
 
-  test("an encoded request above 1 MiB gives FRAME_LIMIT", () => {
-    const bytes = padded(MIB + 1);
-    expect(bytes.length).toBe(MIB + 1);
+  test("an encoded request above 2 MiB gives FRAME_LIMIT", () => {
+    const bytes = padded(LIMIT + 1);
+    expect(bytes.length).toBe(LIMIT + 1);
     expect(decodeRequest(bytes, "renderer")).toEqual({ ok: false, code: "FRAME_LIMIT" });
   });
 
-  test("a 1 MiB request of multi-byte text counts bytes, not characters", () => {
+  test("a 2 MiB request of multi-byte text counts bytes, not characters", () => {
     const request = envelope("commit");
     const base = encode(request).length;
-    const message = "\u00e9".repeat(Math.ceil((MIB - base) / 2) + 16);
+    const message = "\u00e9".repeat(Math.ceil((LIMIT - base) / 2) + 16);
     const bytes = encode({ ...request, payload: { ...(request.payload as Json), message } });
-    expect(bytes.length).toBeGreaterThan(MIB);
-    expect(JSON.stringify({ ...request, payload: { ...(request.payload as Json), message } }).length).toBeLessThan(MIB);
+    expect(bytes.length).toBeGreaterThan(LIMIT);
+    expect(JSON.stringify({ ...request, payload: { ...(request.payload as Json), message } }).length).toBeLessThan(LIMIT);
     expect(decodeRequest(bytes, "renderer")).toEqual({ ok: false, code: "FRAME_LIMIT" });
   });
 });

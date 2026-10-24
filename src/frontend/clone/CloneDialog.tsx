@@ -80,6 +80,8 @@ export type CloneDialogProps = {
   /** A succeeded clone. Its result is the `chooseRepository` result (contract Δ3 `clone` step 5). */
   onOpened(response: BridgeResponse): void;
   onClose(): void;
+  /** Feature 005 spec FR-044: runs the start, or asks first about unsaved ignore editor text. */
+  guard?(start: () => void): void;
 };
 
 // plan.md D12 "Clone panel".
@@ -89,7 +91,7 @@ const CANCEL_WAITS = "Cancel is available after the clone starts.";
 type Run = { destination: string; operationId?: string; percent?: number; cancelRequested: boolean };
 
 /** The non-modal clone panel (plan.md D12). Clone starts only at the explicit start, with the destination that the panel shows. */
-export function CloneDialog({ bridge, separator, onOpened, onClose }: CloneDialogProps) {
+export function CloneDialog({ bridge, separator, onOpened, onClose, guard = (start) => start() }: CloneDialogProps) {
   const ids = { heading: useId(), url: useId(), destination: useId(), key: useId(), reason: useId(), close: useId(), cancel: useId() };
   const [settings, setSettings] = useState<SettingsRead>({ state: "loading" });
   const [url, setUrl] = useState("");
@@ -170,7 +172,7 @@ export function CloneDialog({ bridge, separator, onOpened, onClose }: CloneDialo
         className="flex min-h-0 max-w-[720px] flex-col gap-2 overflow-auto p-3"
         onSubmit={(event) => {
           event.preventDefault();
-          void start();
+          if (reason === null && run === null) guard(() => void start());
         }}
       >
         {settings.state === "failed" ? <p className="text-muted-text">{settings.text}</p> : null}

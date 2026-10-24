@@ -345,8 +345,9 @@ describe("modal state (plan.md Keyboard and focus)", () => {
 });
 
 // plan.md "Pane navigation": header, notice band, references sidebar, history list, the docked panel sections, and status region.
-const COMMIT_ORDER = ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "statusRegion"];
-const DETAILS_ORDER = ["header", "noticeHeading", "references", "historyList", "commitDetails", "statusRegion"];
+// Feature 005 plan.md D15: the ignore editor preview is a stop after the diff while the editor shows.
+const COMMIT_ORDER = ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "ignorePreview", "composer", "statusRegion"];
+const DETAILS_ORDER = ["header", "noticeHeading", "references", "historyList", "commitDetails", "changedFiles", "historyDiff", "statusRegion"];
 
 const state = (fields: Partial<SectionState> = {}): SectionState => ({
   panel: "commit",
@@ -374,10 +375,10 @@ describe("F6 section order", () => {
   });
 
   test("F6 walks the order and wraps; Shift+F6 reverses it", () => {
-    expect(walk(state(), "next", "header", 9)).toEqual([...COMMIT_ORDER.slice(1), "header"]);
-    expect(walk(state(), "previous", "header", 9)).toEqual([...COMMIT_ORDER].reverse());
-    expect(walk(state({ panel: "details" }), "next", "header", 6)).toEqual([...DETAILS_ORDER.slice(1), "header"]);
-    expect(walk(state({ panel: "details" }), "previous", "header", 6)).toEqual([...DETAILS_ORDER].reverse());
+    expect(walk(state(), "next", "header", 10)).toEqual([...COMMIT_ORDER.slice(1), "header"]);
+    expect(walk(state(), "previous", "header", 10)).toEqual([...COMMIT_ORDER].reverse());
+    expect(walk(state({ panel: "details" }), "next", "header", 8)).toEqual([...DETAILS_ORDER.slice(1), "header"]);
+    expect(walk(state({ panel: "details" }), "previous", "header", 8)).toEqual([...DETAILS_ORDER].reverse());
   });
 
   test("the band stop targets the band heading, and a band without rows is skipped", () => {
@@ -389,8 +390,8 @@ describe("F6 section order", () => {
 
   test("hidden sections are skipped", () => {
     expect(nextSection(state({ hidden: ["staged"] }), "workingChanges", "next")).toBe("comparison");
-    expect(nextSection(state({ hidden: ["composer"] }), "comparison", "next")).toBe("statusRegion");
-    expect(nextSection(state({ hidden: ["staged", "comparison"] }), "composer", "previous")).toBe("workingChanges");
+    expect(nextSection(state({ hidden: ["ignorePreview", "composer"] }), "comparison", "next")).toBe("statusRegion");
+    expect(nextSection(state({ hidden: ["staged", "comparison", "ignorePreview"] }), "composer", "previous")).toBe("workingChanges");
     expect(nextSection(state({ hidden: ["references"] }), "noticeHeading", "next")).toBe("historyList");
   });
 
@@ -398,7 +399,7 @@ describe("F6 section order", () => {
     const empty = { text: false, toggle: false, cancel: false };
     expect(nextSection(state({ status: empty }), "composer", "next")).toBe("header");
     expect(nextSection(state({ status: empty }), "header", "previous")).toBe("composer");
-    expect(nextSection(state({ panel: "details", status: empty }), "commitDetails", "next")).toBe("header");
+    expect(nextSection(state({ panel: "details", status: empty, hidden: ["changedFiles", "historyDiff"] }), "commitDetails", "next")).toBe("header");
     for (const status of [
       { text: true, toggle: false, cancel: false },
       { text: false, toggle: true, cancel: false },

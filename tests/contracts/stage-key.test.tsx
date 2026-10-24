@@ -105,7 +105,8 @@ const REFUSAL = "Stage file is unavailable: the file has a conflict";
 const LABEL: Record<ChangeEntry["category"], string> = { conflicted: "Changes", unstaged: "Changes", untracked: "Changes", staged: "Staged" };
 
 const [unstagedA, unstagedB, untracked, stagedA] = entries as [ChangeEntry, ChangeEntry, ChangeEntry, ChangeEntry];
-const conflicted = entry("conflicted", "src/c.ts");
+// Feature 005 spec FR-015: the lists sort by name, so "src/0.ts" keeps the conflicted entry first in the Changes list.
+const conflicted = entry("conflicted", "src/0.ts");
 const id = () => crypto.randomUUID();
 const never = () => new Promise<FileActionResult>(() => {});
 

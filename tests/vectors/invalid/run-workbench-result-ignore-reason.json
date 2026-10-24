@@ -1,8 +1,0 @@
-{
-  "schema": "run-workbench-result",
-  "expected": "INVALID_REQUEST",
-  "text": "{\"action\":\"ignore\",\"reason\":\"ignore-exists\"}",
-  "repair": {
-    "reason": "ignore-not-regular"
-  }
-}

@@ -1,0 +1,5 @@
+{
+  "schema": "process-request",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"type\":\"fileFacts\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000002\",\"contextKind\":\"registeredOperation\",\"gitInstallationId\":\"0f0f0f0f-0000-4000-8000-000000000003\",\"repositoryId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"digest\":true,\"files\":[{\"root\":\"worktreeRoot\",\"path\":[\".gitignore\"]},{\"root\":\"worktreeRoot\",\"path\":[\"a\"]}],\"content\":true}"
+}

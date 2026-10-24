@@ -20,7 +20,7 @@ use crate::text_scale::{self, Current};
 pub const MAIN_WINDOW: &str = "main";
 
 /// Contract §3: the closed allowlist of public operations, as `src/contracts/operations.ts` lists them.
-pub const OPERATIONS: [&str; 58] = [
+pub const OPERATIONS: [&str; 64] = [
     "getEnvironment",
     "chooseGit",
     "chooseRepository",
@@ -74,6 +74,13 @@ pub const OPERATIONS: [&str; 58] = [
     "revealPath",
     "setSwitchChoice",
     "chooseWorktreeFolder",
+    // Feature 005 contract Δ1.
+    "readCommitChanges",
+    "readCommitFile",
+    "readBlame",
+    "readIgnoreFile",
+    "previewIgnore",
+    "openSubmodule",
     // Feature 006 contract Δ1.
     "listDictionaries",
     "readDictionary",
@@ -86,7 +93,7 @@ pub const OPERATIONS: [&str; 58] = [
 
 /// Contract §3: the shell runs these first. The shell answers `requestClose` itself and never forwards it.
 /// Feature 004 contract Δ1: only the `worktree-add` form of `reviewWorkbench` is native-first, so `submit` decides it by its action.
-const NATIVE_FIRST: [&str; 21] = [
+const NATIVE_FIRST: [&str; 22] = [
     "requestClose",
     "chooseGit",
     "chooseRepository",
@@ -107,6 +114,8 @@ const NATIVE_FIRST: [&str; 21] = [
     "openWorktree",
     "setSwitchChoice",
     "chooseWorktreeFolder",
+    // Feature 005 contract Δ1.
+    "openSubmodule",
     // Feature 006 contract Δ1.
     "importDictionary",
     "setSpelling",
@@ -1025,6 +1034,60 @@ pub async fn choose_worktree_folder(
 }
 
 #[tauri::command]
+pub async fn read_commit_changes(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readCommitChanges", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_commit_file(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readCommitFile", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_blame(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readBlame", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_ignore_file(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "readIgnoreFile", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn preview_ignore(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "previewIgnore", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn open_submodule(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "openSubmodule", request.body().clone()).await
+}
+
+#[tauri::command]
 pub async fn list_dictionaries(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
@@ -1252,7 +1315,7 @@ mod tests {
     }
 
     #[test]
-    fn a_raw_body_above_1_mib_gets_frame_limit_before_any_parse() {
+    fn a_raw_body_above_2_mib_gets_frame_limit_before_any_parse() {
         let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
         // Not JSON: a parse first would give INVALID_REQUEST.
         let above = InvokeBody::Raw(vec![b'x'; PUBLIC_REQUEST_BYTES + 1]);
@@ -1269,7 +1332,7 @@ mod tests {
     }
 
     #[test]
-    fn a_raw_body_of_exactly_1_mib_is_forwarded_byte_for_byte() {
+    fn a_raw_body_of_exactly_2_mib_is_forwarded_byte_for_byte() {
         let (ipc, frames) = ipc();
         // Spaces and key order that a parse and a new encoding would not keep.
         let head = format!(
@@ -2238,7 +2301,7 @@ mod tests {
     }
 
     #[test]
-    fn a_prepared_request_above_1_mib_gets_frame_limit_and_leaves_no_pending_request() {
+    fn a_prepared_request_above_2_mib_gets_frame_limit_and_leaves_no_pending_request() {
         let (ipc, frames, _native) = connected(Box::new(|| {
             Ok(Some(Prepared {
                 payload: json!({ "bootstrapId": "a".repeat(PUBLIC_REQUEST_BYTES) }),

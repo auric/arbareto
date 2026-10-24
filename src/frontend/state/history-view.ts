@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import type { z } from "zod";
-import type { Head as HeadSchema, HistoryViewRow, LoadHistoryResult, OpenHistoryResult, ReadHistoryRowsResult, SearchHistoryResult } from "../../contracts/envelope";
+import type { Blame, CommitChanges, CommitFile, Head as HeadSchema, HistoryViewRow, LoadHistoryResult, OpenHistoryResult, ReadHistoryRowsResult, SearchHistoryResult } from "../../contracts/envelope";
+import type { BlameUnavailableReason } from "../../contracts/errors";
 import { filterText } from "../../contracts/filter-text";
 import { FILTER_TEXT_BYTES, HISTORY_LOAD_MARGIN, HISTORY_RENDERER_CACHE_BYTES, HISTORY_ROWS_PER_REQUEST } from "../../contracts/limits";
 import type { BridgeResponse, createBridge } from "../bridge";
@@ -74,6 +75,8 @@ export type HistoryState = {
   /** A match move waits for the search to reach its target (spec FR-037). */
   waiting: boolean;
   selection: Selection | null;
+  /** The view ID at the last `select()`. A new view sets it to null and keeps the selection until `readAt` finds the row (contract Δ3 `commitTarget`). */
+  selectedIn: string | null;
   /** A row that the list must scroll into view. `seq` changes with each request. */
   reveal: { item: number; seq: number } | null;
   /** Changes with each cache change. */
@@ -103,6 +106,7 @@ const INITIAL: Omit<HistoryState, "scope"> = {
   matchEnd: null,
   waiting: false,
   selection: null,
+  selectedIn: null,
   reveal: null,
   version: 0,
 };
@@ -183,7 +187,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
 
   function select(id: string, index: number | null, mode: Selection["mode"] = filterMode() ? "filter" : "full", reveal = true) {
     const item = id === "working-directory" ? 0 : id === "index" ? 1 : index === null ? null : SPECIAL_ROWS + index;
-    set({ selection: { id, index, mode }, matchEnd: null, ...(reveal && item !== null ? { reveal: { item, seq: ++revealSeq } } : {}) });
+    set({ selection: { id, index, mode }, selectedIn: state.view?.viewId ?? null, matchEnd: null, ...(reveal && item !== null ? { reveal: { item, seq: ++revealSeq } } : {}) });
   }
 
   // ---- Row reads ----
@@ -416,6 +420,8 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     if (checkout?.target === "found") return select(checkout.rows[0]!.oid, checkout.rows[0]!.index, "full");
     const first = await readAt({ row: 0 }, "full", "none");
     if (first?.target === "found") select(first.rows[0]!.oid, 0, "full");
+    // Contract Δ3 `none`: the view holds no commit row, so no commit stays selected.
+    else if (first?.target === "none") set({ selection: null });
   }
 
   /** Opens a new view. Refresh and a scope switch keep the selected commit (spec FR-008, FR-049) and the filter text and mode. */
@@ -443,11 +449,15 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     const again = search !== null && (search.state === "running" || search.state === "finished");
     // A running search blocks scroll loads from the first render of the new view: the filter sends only `searchHistory` (plan.md D6).
     set({ view: result, openedSeq: nextRequestSeq(), opening: false, complete: result.startCount === 0, ...(again ? { search: { ...search, state: "running", searchId: null, matches: 0, settled: 0 } } : {}) });
-    if (again) return void runSearch(search.text, search.mode, oid);
-    if (oid === null) return pump();
-    const loaded = await runLoad({ oid }, "oid");
-    if (mine !== epoch || loaded === null) return;
-    if (loaded.state === "succeeded") {
+    if (again) {
+      await runSearch(search.text, search.mode, oid);
+      // Plan.md D3 "Selection": the panes read only after a select() in this view. A search end without one keeps the commit by the FR-008 rule.
+      if (mine !== epoch || oid === null || searching() || state.selectedIn === state.view?.viewId) return;
+    } else if (oid === null) return pump();
+    // Contract Δ3: a finished search and an empty repository give a complete view.
+    const loaded = state.complete ? null : await runLoad({ oid }, "oid");
+    if (mine !== epoch) return;
+    if (loaded === null || loaded.state === "succeeded") {
       const found = await readAt({ oid }, "full", "none");
       if (found?.target === "found") return select(oid, found.rows[0]!.index, "full");
     }
@@ -609,10 +619,31 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     if (searching() && state.search!.searchId !== null) void bridge.cancel({ operationId: state.search!.searchId });
   }
 
+  /** Plan.md D3 "Selection": the view that reads `oid`, or null. The selection reads only after a select() in this view, because the view holds its row only then. With `others`, another commit reads at once. */
+  function readView(oid: string, others: boolean): string | null {
+    const viewId = state.view?.viewId ?? null;
+    if (state.selection?.id !== oid) return others ? viewId : null;
+    return state.selectedIn === viewId ? viewId : null;
+  }
+
   /** Selects a commit of the shown list by OID, as a details link or a reference does. It gives the contract Δ3 target, or null without a result. */
   async function selectOid(oid: string): Promise<"found" | "none" | "unknown" | null> {
     const found = await readAt({ oid }, filterMode() ? "filter" : "full", "none");
     if (found?.target === "found") select(oid, found.rows[0]!.index);
+    return found?.target ?? null;
+  }
+
+  /** Feature 005 spec FR-056: selects a commit, and first loads the full list up to it when the view has not loaded it, as `open` does. */
+  async function revealOid(oid: string): Promise<"found" | "none" | "unknown" | null> {
+    const target = await selectOid(oid);
+    if (target !== "unknown" || state.view === null || filterMode() || state.stale !== null || state.limit !== null || searching()) return target;
+    // plan.md D6: a running End or OID load keeps its turn. A scroll load is canceled first, as End does.
+    if (state.load !== null && state.load.kind !== "scroll") return target;
+    await settleLoad();
+    const loaded = await runLoad({ oid }, "oid");
+    if (loaded?.state !== "succeeded") return target;
+    const found = await readAt({ oid }, "full", "none");
+    if (found?.target === "found") select(oid, found.rows[0]!.index, "full");
     return found?.target ?? null;
   }
 
@@ -641,7 +672,9 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     const view = state.view;
     stopSearch();
     epoch++;
-    if (view !== null) void bridge.closeHistory(repository(), { viewId: view.viewId });
+    // After a service session the requests name no repository, and contract Δ8 already ended the view.
+    const current = target() as ReturnType<typeof target> | null;
+    if (view !== null && current !== null) void bridge.closeHistory({ repositoryId: current.repositoryId }, { viewId: view.viewId });
     pages.clear();
     cacheBytes = 0;
     set({ ...INITIAL, scope: state.scope });
@@ -672,11 +705,247 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     match,
     cancelSearch,
     selectOid,
+    revealOid,
+    readView,
     readDetails,
     markStale,
     close,
     /** The renderer cache in bytes, for the T038 bound check. */
     cacheBytes: () => cacheBytes,
     cachedPages: () => [...pages.keys()],
+  };
+}
+
+// ---- Feature 005 plan.md D3, D12, and D15 "State": the commit changes, the selected file, the parent index, and the blame ----
+
+export type InspectionBridge = Pick<ReturnType<typeof createBridge>, "readCommitChanges" | "readCommitFile" | "readBlame" | "cancel">;
+type ProgressHandler = NonNullable<Parameters<InspectionBridge["readBlame"]>[2]>;
+type ProgressEvent = Parameters<ProgressHandler>[0];
+export type BlameOptions = { ignoreWhitespace: boolean; detectMoves: boolean; detectCopies: boolean; ignoreList: boolean };
+export type BlameSource = { changesId: string; fileId: number } | { snapshotId: string; entryId: string } | { blameId: string; line: number } | { blameId: string };
+/** A blame to run: the source, and the path and commit that the heading names until the result arrives. */
+export type BlameRequest = { source: BlameSource; path: string; oid: string };
+/** `code` null: a `succeeded` response with a result of unknown form (feature 004 plan.md D15 "Malformed result"). */
+type Failure = { code: string | null; remedy?: { text: string } };
+type ChangesKey = { viewId: string; oid: string; parent: number };
+export type ChangesRead = ChangesKey & ({ state: "loading" } | { state: "loaded"; result: CommitChanges } | ({ state: "failed"; trust: boolean } & Failure));
+// `reason` is the `UNSUPPORTED_COMPARISON` reason (contract Δ3 `readCommitFile`).
+export type FileRead = { changesId: string; fileId: number } & ({ state: "loading" } | { state: "loaded"; result: CommitFile } | ({ state: "failed"; reason?: string } & Failure));
+export type BlameRun =
+  | { state: "running"; operationId: string | null; blamed?: number; total?: number }
+  | { state: "done"; result: Blame }
+  | { state: "refused"; reason: BlameUnavailableReason; path?: string }
+  | ({ state: "failed"; outputTail?: string } & Failure)
+  | { state: "stopped" };
+/** `ignoreList` is the effective list state of the last result, null before the first one (spec FR-059). `line` is the selected line. */
+export type BlameState = { request: BlameRequest; options: BlameOptions; line: number; ignoreList: Blame["ignoreList"] | null; run: BlameRun };
+export type InspectionState = { changes: ChangesRead | null; file: FileRead | null; blame: BlameState | null };
+export type Inspection = ReturnType<typeof createInspection>;
+
+/** Spec FR-057 and FR-059: the toggles start off, and the ignore list starts on. */
+export const BLAME_START: BlameOptions = { ignoreWhitespace: false, detectMoves: false, detectCopies: false, ignoreList: true };
+const TRUST_CODES = new Set(["TRUST_REQUIRED", "TRUST_CHANGED"]);
+const utf8 = new TextDecoder("utf-8");
+/** The display text of base64 bytes. Bytes that are not valid UTF-8 show as replacement characters. */
+export const textOf = (base64: string) => utf8.decode(Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)));
+
+/** The group of the final line `line` (1-based). The groups cover the lines 1 to N in order (contract `Blame`). */
+export function groupAt(blame: Pick<Blame, "groups">, line: number): Blame["groups"][number] | undefined {
+  const groups = blame.groups;
+  let low = 0;
+  let high = groups.length - 1;
+  while (low <= high) {
+    const mid = (low + high) >> 1;
+    const g = groups[mid]!;
+    if (line < g.finalStart) high = mid - 1;
+    else if (line >= g.finalStart + g.count) low = mid + 1;
+    else return g;
+  }
+  return undefined;
+}
+
+/** The 001 latest-wins rule of one read kind: a new read supersedes the older one, cancels it, and its response shows nothing. */
+function latestRead(cancel: InspectionBridge["cancel"]) {
+  type Read = { operationId: string | null; dropped: boolean; stop: boolean };
+  let current: Read | null = null;
+  const end = (read: Read) => {
+    if (read.operationId !== null) void cancel({ operationId: read.operationId });
+  };
+  const drop = () => {
+    if (current === null) return;
+    current.dropped = true;
+    end(current);
+    current = null;
+  };
+  return {
+    drop,
+    /** Cancels the running read. Its `canceled` response still arrives. */
+    stop() {
+      if (current === null) return;
+      current.stop = true;
+      end(current);
+    },
+    async run(send: (onProgress: ProgressHandler) => Promise<BridgeResponse>, onEvent?: (event: ProgressEvent) => void): Promise<BridgeResponse | null> {
+      drop();
+      const mine: Read = { operationId: null, dropped: false, stop: false };
+      current = mine;
+      // Contract §2: the accepted event carries the `operationId` that `cancel` names. A read dropped or stopped before it ends here.
+      const response = await send((event) => {
+        if (mine.operationId === null) {
+          mine.operationId = event.operationId;
+          if (mine.dropped || mine.stop) return end(mine);
+        }
+        if (!mine.dropped) onEvent?.(event);
+      });
+      if (mine.dropped) return null;
+      current = null;
+      return response;
+    },
+  };
+}
+
+const failureOf = (response: BridgeResponse): Failure => {
+  const remedy = (response.result as { remedy?: { text?: unknown } } | undefined)?.remedy;
+  return { code: response.state === "succeeded" ? null : (response.code ?? response.state), ...(response.code === "OBJECT_MISSING" && typeof remedy?.text === "string" ? { remedy: { text: remedy.text } } : {}) };
+};
+
+/** The History inspection of one repository: the changes of the selected commit, its shown file, and the blame view. */
+export function createInspection(bridge: InspectionBridge, target: () => { repositoryId: string; repositoryGeneration: number }) {
+  let state: InspectionState = { changes: null, file: null, blame: null };
+  const listeners = new Set<() => void>();
+  const set = (next: Partial<InspectionState>) => {
+    state = { ...state, ...next };
+    for (const listener of listeners) listener();
+  };
+  const setBlame = (next: Partial<BlameState>) => {
+    if (state.blame !== null) set({ blame: { ...state.blame, ...next } });
+  };
+  const changesRead = latestRead((payload) => bridge.cancel(payload));
+  const fileRead = latestRead((payload) => bridge.cancel(payload));
+  const blameRead = latestRead((payload) => bridge.cancel(payload));
+
+  /** Plan.md D3 "Selection": a commit row and a parent index give one listing. The same key reads again only after a failure or with `again`. */
+  async function readChanges(viewId: string, oid: string, parent: number, again = false) {
+    const c = state.changes;
+    if (!again && c !== null && c.viewId === viewId && c.oid === oid && c.parent === parent && c.state !== "failed") return;
+    fileRead.drop();
+    const key = { viewId, oid, parent };
+    set({ changes: { ...key, state: "loading" }, file: null });
+    const send = () => changesRead.run((onProgress) => bridge.readCommitChanges(target(), key, onProgress));
+    let response = await send();
+    // Feature 001 contract §9 rule: REPOSITORY_CHANGED sends one new request with the current generation.
+    if (response?.code === "REPOSITORY_CHANGED") response = await send();
+    if (response === null) return;
+    const result = response.result as CommitChanges | undefined;
+    if (response.state === "succeeded" && Array.isArray(result?.files) && Array.isArray(result.parents) && result.base !== undefined) set({ changes: { ...key, state: "loaded", result } });
+    else set({ changes: { ...key, state: "failed", trust: TRUST_CODES.has(response.code ?? ""), ...failureOf(response) } });
+  }
+
+  /** Spec FR-007: a file of the listing shows its diff. Null clears the selection (004 FR-101). */
+  async function selectFile(fileId: number | null) {
+    const c = state.changes;
+    if (fileId === null || c?.state !== "loaded") {
+      fileRead.drop();
+      return set({ file: null });
+    }
+    const changesId = c.result.changesId;
+    const f = state.file;
+    if (f !== null && f.changesId === changesId && f.fileId === fileId && f.state !== "failed") return;
+    set({ file: { changesId, fileId, state: "loading" } });
+    const response = await fileRead.run((onProgress) => bridge.readCommitFile(target(), { changesId, fileId }, onProgress));
+    if (response === null) return;
+    const result = response.result as CommitFile | undefined;
+    if ((response.state === "succeeded" || response.state === "limited") && typeof result?.fileId === "number" && result.facts !== undefined) set({ file: { changesId, fileId, state: "loaded", result } });
+    else {
+      const reason = (result as { reason?: unknown } | undefined)?.reason;
+      set({ file: { changesId, fileId, state: "failed", ...failureOf(response), ...(response.code === "UNSUPPORTED_COMPARISON" && typeof reason === "string" ? { reason } : {}) } });
+    }
+  }
+
+  async function runBlame(keepLine: boolean) {
+    const blame = state.blame;
+    if (blame === null) return;
+    const { source } = blame.request;
+    setBlame({ run: { state: "running", operationId: null } });
+    const response = await blameRead.run(
+      (onProgress) => bridge.readBlame(target(), { source, options: blame.options }, onProgress),
+      (event) => {
+        if (state.blame?.run.state !== "running") return;
+        // Spec FR-063: `blamed` and `total` without an ignore list, no counters with one.
+        setBlame({ run: { state: "running", operationId: event.operationId, blamed: event.counters.blamed, total: event.counters.total } });
+      },
+    );
+    if (response === null || state.blame === null) return;
+    const result = response.result as (Blame & { reason?: BlameUnavailableReason; path?: string; outputTail?: string }) | undefined;
+    if (response.state === "succeeded" && Array.isArray(result?.groups) && Array.isArray(result.commits) && typeof result.lines === "number") {
+      const line = result.focusLine ?? (keepLine ? Math.min(Math.max(1, state.blame.line), Math.max(1, result.lines)) : 1);
+      return setBlame({ run: { state: "done", result }, line, ignoreList: result.ignoreList });
+    }
+    if (response.state === "canceled") return setBlame({ run: { state: "stopped" } });
+    if (response.code === "BLAME_UNAVAILABLE" && typeof result?.reason === "string") return setBlame({ run: { state: "refused", reason: result.reason, ...(typeof result.path === "string" ? { path: result.path } : {}) } });
+    setBlame({ run: { state: "failed", ...failureOf(response), ...(typeof result?.outputTail === "string" ? { outputTail: result.outputTail } : {}) } });
+  }
+
+  /** The `previous` of the selected line's commit (git-blame(1) porcelain), or null. */
+  function previousOf(): { blameId: string; line: number; oid: string; path: string } | null {
+    const blame = state.blame;
+    if (blame?.run.state !== "done") return null;
+    const result = blame.run.result;
+    const group = groupAt(result, blame.line);
+    const previous = group === undefined ? null : (result.commits[group.commit]?.previous ?? null);
+    return previous === null ? null : { blameId: result.blameId, line: blame.line, oid: previous.oid, path: textOf(previous.pathBytes) };
+  }
+
+  return {
+    getState: () => state,
+    subscribe(listener: () => void) {
+      listeners.add(listener);
+      return () => void listeners.delete(listener);
+    },
+    readChanges,
+    selectFile,
+    previousOf,
+    /** Plan.md D15 "Blame view": the blame view opens with the options of spec FR-057 and FR-059. */
+    openBlame(request: BlameRequest) {
+      set({ blame: { request, options: BLAME_START, line: 1, ignoreList: null, run: { state: "running", operationId: null } } });
+      void runBlame(false);
+    },
+    /** The commit of the selected line, or null without a result. */
+    lineCommit(): string | null {
+      const blame = state.blame;
+      if (blame?.run.state !== "done") return null;
+      const group = groupAt(blame.run.result, blame.line);
+      return group === undefined ? null : (blame.run.result.commits[group.commit]?.oid ?? null);
+    },
+    selectLine: (line: number) => setBlame({ line }),
+    /** Spec FR-057 and FR-059: a changed option runs the blame of the same source again. */
+    setBlameOptions(next: Partial<BlameOptions>) {
+      const blame = state.blame;
+      if (blame === null) return;
+      // Plan.md D12: an option change sends `{blameId}` of the shown result. Without a result, the request keeps its source.
+      const shown = blame.run.state === "done" ? blame.run.result : null;
+      const request = shown === null ? blame.request : { source: { blameId: shown.blameId }, path: textOf(shown.pathBytes), oid: shown.commit };
+      setBlame({ request, options: { ...blame.options, ...next } });
+      void runBlame(true);
+    },
+    /** Spec FR-056: "Blame before this commit" of the selected line. A line without `previous` does nothing. */
+    blameBefore() {
+      const previous = previousOf();
+      if (previous === null) return;
+      setBlame({ request: { source: { blameId: previous.blameId, line: previous.line }, path: previous.path, oid: previous.oid }, line: 1 });
+      void runBlame(false);
+    },
+    cancelBlame: () => blameRead.stop(),
+    closeBlame() {
+      blameRead.drop();
+      set({ blame: null });
+    },
+    /** A repository change or a service restart: every retained ID is void. */
+    reset() {
+      changesRead.drop();
+      fileRead.drop();
+      blameRead.drop();
+      set({ changes: null, file: null, blame: null });
+    },
   };
 }

@@ -61,6 +61,12 @@
         "revealPath",
         "setSwitchChoice",
         "chooseWorktreeFolder",
+        "readCommitChanges",
+        "readCommitFile",
+        "readBlame",
+        "readIgnoreFile",
+        "previewIgnore",
+        "openSubmodule",
         "listDictionaries",
         "readDictionary",
         "downloadDictionary",
@@ -119,8 +125,11 @@
         "mergetool",
         "worktree",
         "config",
-        "ignore",
         "stage-files",
+        "blame",
+        "delete-files",
+        "ignore-save",
+        "preview",
         "dictionary"
       ]
     },
@@ -184,6 +193,8 @@
         "WORKBENCH_UNAVAILABLE",
         "UNTRACKED_IN_WAY",
         "STASH_KEPT",
+        "BLAME_UNAVAILABLE",
+        "SUBMODULE_UNAVAILABLE",
         "DICTIONARY_UNAVAILABLE"
       ]
     },

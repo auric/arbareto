@@ -142,6 +142,17 @@ export function createBridge(onSessionChange?: () => void, onTextScale?: (value:
     revealPath: (payload: Payload<"revealPath">, onProgress?: OnProgress) => call("revealPath", {}, payload, onProgress),
     setSwitchChoice: (payload: Payload<"setSwitchChoice">, onProgress?: OnProgress) => call("setSwitchChoice", {}, payload, onProgress),
     chooseWorktreeFolder: (payload: Payload<"chooseWorktreeFolder">, onProgress?: OnProgress) => call("chooseWorktreeFolder", {}, payload, onProgress),
+    // Feature 005 contract Δ1.
+    readCommitChanges: <T extends Target<"readCommitChanges">>(target: Exact<"readCommitChanges", T>, payload: Payload<"readCommitChanges">, onProgress?: OnProgress) =>
+      call("readCommitChanges", target, payload, onProgress),
+    readCommitFile: <T extends Target<"readCommitFile">>(target: Exact<"readCommitFile", T>, payload: Payload<"readCommitFile">, onProgress?: OnProgress) =>
+      call("readCommitFile", target, payload, onProgress),
+    readBlame: <T extends Target<"readBlame">>(target: Exact<"readBlame", T>, payload: Payload<"readBlame">, onProgress?: OnProgress) => call("readBlame", target, payload, onProgress),
+    readIgnoreFile: <T extends Target<"readIgnoreFile">>(target: Exact<"readIgnoreFile", T>, payload: Payload<"readIgnoreFile">, onProgress?: OnProgress) =>
+      call("readIgnoreFile", target, payload, onProgress),
+    previewIgnore: <T extends Target<"previewIgnore">>(target: Exact<"previewIgnore", T>, payload: Payload<"previewIgnore">, onProgress?: OnProgress) =>
+      call("previewIgnore", target, payload, onProgress),
+    openSubmodule: (payload: Payload<"openSubmodule">, onProgress?: OnProgress) => call("openSubmodule", {}, payload, onProgress),
     // Feature 006 contract Δ1.
     listDictionaries: (onProgress?: OnProgress) => call("listDictionaries", {}, {}, onProgress),
     readDictionary: (payload: Payload<"readDictionary">, onProgress?: OnProgress) => call("readDictionary", {}, payload, onProgress),

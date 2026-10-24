@@ -3,10 +3,12 @@
 
 import { describe, expect, test } from "bun:test";
 import { CANONICAL_DIFF_BYTES, CANONICAL_DIFF_LINES } from "../../src/contracts/limits";
+import { parseRawListing, splitPatch } from "../../src/git-service/commit-changes";
 import { type NumstatResult, parseNumstat, parsePatch, type PatchResult } from "../../src/git-service/diff-parser";
 import { printOrigin } from "../origin";
 
 printOrigin("../../src/git-service/diff-parser.ts", import.meta.dir);
+printOrigin("../../src/git-service/commit-changes.ts", import.meta.dir);
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 
 // T102: contract §5 "Canonical diff" and data-model §5 "Hunk". The byte fixtures copy Git 2.56.0.windows.1 output of the T101 builders (probe of 2026-10-08).
@@ -167,6 +169,149 @@ describe("contract §5 canonical diff bounds", () => {
     const text = creation(CANONICAL_DIFF_LINES - 5).replace("@@ -0,0 +1,", "@@ -0,0 +2,");
     expect(parsePatch(bytes(text), bytes("f"))).toEqual(limited("CANONICAL_DIFF_LINES") as PatchResult);
   });
+});
+
+// T019: feature 005 contract Δ3 `readCommitFile` "Parse". The byte fixtures copy Git 2.56.0.windows.2 output of `diff-tree -p -M -l1000` (probe of 2026-10-22).
+// diff.c `builtin_diff` prints the mode lines, then `fill_metainfo` prints `similarity index`, `rename from`, `rename to`, and the `index` line.
+describe("rename headers of a path-pair patch (feature 005 T019)", () => {
+  const RENAME =
+    "diff --git a/old.txt b/new.txt\nsimilarity index 96%\nrename from old.txt\nrename to new.txt\nindex 5c039f4..fc99ce9 100644\n--- a/old.txt\n+++ b/new.txt\n@@ -1,6 +1,6 @@\n line number 1\n line number 2\n-line number 3\n+LINE 3\n line number 4\n line number 5\n line number 6\n";
+  const RENAME_MODE =
+    "diff --git a/ren.sh b/ren2.sh\nold mode 100644\nnew mode 100755\nsimilarity index 75%\nrename from ren.sh\nrename to ren2.sh\nindex 53b9551..fc95bb1\n--- a/ren.sh\n+++ b/ren2.sh\n@@ -1,4 +1,4 @@\n aaaaaaaaaa\n bbbbbbbbbb\n cccccccccc\n-dddddddddd\n+ddddddddde\n";
+  const PURE = "diff --git a/o.txt b/n.txt\nsimilarity index 100%\nrename from o.txt\nrename to n.txt\n";
+  const PURE_MODE = "diff --git a/o.sh b/n.sh\nold mode 100644\nnew mode 100755\nsimilarity index 100%\nrename from o.sh\nrename to n.sh\n";
+  const QUOTED_RENAME = 'diff --git "a/\\303\\251.txt" "b/\\303\\251 2.txt"\nsimilarity index 100%\nrename from "\\303\\251.txt"\nrename to "\\303\\251 2.txt"\n';
+
+  test("a rename with a content change gives its hunk after the rename lines", () => {
+    const patch = ok(parsePatch(bytes(RENAME), bytes("new.txt"), bytes("old.txt")));
+    expect(patch.hunks.map((h) => [h.oldStart, h.oldCount, h.newStart, h.newCount])).toEqual([[1, 6, 1, 6]]);
+    expect(new TextDecoder().decode(patch.header)).toBe(RENAME.slice(0, RENAME.indexOf("@@")));
+  });
+
+  test("a rename with a mode change keeps the mode lines first and the index line without a mode", () => {
+    expect(ok(parsePatch(bytes(RENAME_MODE), bytes("ren2.sh"), bytes("ren.sh"))).hunks).toHaveLength(1);
+  });
+
+  test("a pure rename and a pure rename with a mode change have no hunk", () => {
+    expect(ok(parsePatch(bytes(PURE), bytes("n.txt"), bytes("o.txt"))).hunks).toEqual([]);
+    expect(ok(parsePatch(bytes(PURE_MODE), bytes("n.sh"), bytes("o.sh"))).hunks).toEqual([]);
+  });
+
+  test("C-quoted rename paths match the path bytes", () => {
+    expect(ok(parsePatch(bytes(QUOTED_RENAME), bytes("é 2.txt"), bytes("é.txt"))).hunks).toEqual([]);
+  });
+
+  const cases: [string, string, string, string | null][] = [
+    ["a rename header for a one-path read", PURE, "n.txt", null],
+    ["a two-path read without rename lines", MODIFIED, "sp ace.txt", "sp ace.txt"],
+    ["rename lines in another order", PURE.replace("rename from o.txt\nrename to n.txt\n", "rename to n.txt\nrename from o.txt\n"), "n.txt", "o.txt"],
+    ["a missing similarity line", PURE.replace("similarity index 100%\n", ""), "n.txt", "o.txt"],
+    ["a similarity line after the rename lines", "diff --git a/o.txt b/n.txt\nrename from o.txt\nrename to n.txt\nsimilarity index 100%\n", "n.txt", "o.txt"],
+    ["a similarity above 100", PURE.replace("100%", "101%"), "n.txt", "o.txt"],
+    ["a similarity with a leading zero", RENAME.replace("96%", "096%"), "new.txt", "old.txt"],
+    ["a rename from line of another path", PURE.replace("rename from o.txt", "rename from x.txt"), "n.txt", "o.txt"],
+    ["a rename to line of another path", PURE.replace("rename to n.txt", "rename to x.txt"), "n.txt", "o.txt"],
+    ["a diff --git line of another pair", PURE.replace("b/n.txt", "b/x.txt"), "n.txt", "o.txt"],
+    ["a new file mode in a rename", PURE.replace("similarity", "new file mode 100644\nsimilarity"), "n.txt", "o.txt"],
+    ["mode lines after the rename lines", "diff --git a/o.sh b/n.sh\nsimilarity index 100%\nrename from o.sh\nrename to n.sh\nold mode 100644\nnew mode 100755\n", "n.sh", "o.sh"],
+    ["an index line with a mode after mode lines", RENAME_MODE.replace("index 53b9551..fc95bb1\n", "index 53b9551..fc95bb1 100755\n"), "ren2.sh", "ren.sh"],
+    ["an old label of the new path", RENAME.replace("--- a/old.txt", "--- a/new.txt"), "new.txt", "old.txt"],
+  ];
+  for (const [name, text, path, from] of cases) {
+    test(`${name} gives MALFORMED_GIT_OUTPUT`, () => expect(parsePatch(bytes(text), bytes(path), from === null ? null : bytes(from))).toEqual(MALFORMED as PatchResult));
+  }
+});
+
+// T019: a type change prints two sections of one path (research.md R16 F3). Each section starts at a line that begins with `diff --git `.
+describe("patch sections (feature 005 T019)", () => {
+  const TYPE_CHANGE =
+    "diff --git a/typ b/typ\ndeleted file mode 100644\nindex 718f4d2..0000000\n--- a/typ\n+++ /dev/null\n@@ -1 +0,0 @@\n-t\n" +
+    "diff --git a/typ b/typ\nnew file mode 120000\nindex 0000000..1de5659\n--- /dev/null\n+++ b/typ\n@@ -0,0 +1 @@\n+target\n\\ No newline at end of file\n";
+
+  test("a type change gives two sections, and a body line that holds `diff --git` stays in its section", () => {
+    const sections = splitPatch(bytes(TYPE_CHANGE))!;
+    expect(sections.map((s) => new TextDecoder().decode(s))).toEqual([TYPE_CHANGE.slice(0, TYPE_CHANGE.indexOf("diff --git", 1)), TYPE_CHANGE.slice(TYPE_CHANGE.indexOf("diff --git", 1))]);
+    const inBody = "diff --git a/f b/f\nindex 1234567..89abcde 100644\n--- a/f\n+++ b/f\n@@ -1 +1 @@\n-diff --git a/x b/x\n+y\n";
+    expect(splitPatch(bytes(inBody))!).toHaveLength(1);
+  });
+
+  test("an empty output has no section, and output before the first section is malformed", () => {
+    expect(splitPatch(new Uint8Array())).toEqual([]);
+    expect(splitPatch(bytes(`x\n${TYPE_CHANGE}`))).toBeNull();
+  });
+});
+
+// T019: feature 005 contract Δ3 `readCommitChanges` "Parse" (diff-format(5) "Raw output format" with `-z`).
+describe("raw -z records of diff-tree (feature 005 T019)", () => {
+  const Z = "0".repeat(40);
+  const A1 = "a".repeat(40);
+  const B1 = "b".repeat(40);
+  const rec = (head: string, ...paths: string[]) => `${head}\0${paths.map((p) => `${p}\0`).join("")}`;
+  const LIST =
+    rec(`:000000 100644 ${Z} ${A1} A`, "added.txt") +
+    rec(`:100644 000000 ${A1} ${Z} D`, "del.txt") +
+    rec(`:100644 100755 ${A1} ${A1} M`, "mode.sh") +
+    rec(`:100644 120000 ${A1} ${B1} T`, "typ") +
+    rec(`:100644 100644 ${A1} ${B1} R092`, "ren.txt", "renamed.txt") +
+    rec(`:160000 160000 ${A1} ${B1} M`, "lib") +
+    rec(`:000000 120000 ${Z} ${B1} A`, "lnk");
+
+  test("A, D, M, T, and R with three score digits; R lists the old path, then the new path; kinds follow the modes", () => {
+    const entries = parseRawListing(bytes(LIST), "sha1", false)!;
+    expect(entries.map((e) => [e.status, e.score ?? null, new TextDecoder().decode(e.path), e.oldPath === undefined ? null : new TextDecoder().decode(e.oldPath), e.kind])).toEqual([
+      ["A", null, "added.txt", null, "file"],
+      ["D", null, "del.txt", null, "file"],
+      ["M", null, "mode.sh", null, "file"],
+      ["T", null, "typ", null, "link"],
+      ["R", 92, "renamed.txt", "ren.txt", "file"],
+      ["M", null, "lib", null, "submodule"],
+      ["A", null, "lnk", null, "link"],
+    ]);
+    expect(entries[2]!.modes).toEqual(["100644", "100755"]);
+    expect(entries[4]!.oids).toEqual([A1, B1]);
+    // Each entry keeps its byte range in the listing.
+    expect(entries.map((e) => [e.start, e.end])).toEqual(entries.map((_, i) => [i === 0 ? 0 : entries[i - 1]!.end, entries[i]!.end]));
+    expect(entries.at(-1)!.end).toBe(bytes(LIST).length);
+  });
+
+  test("R000 and R100 pass, and SHA-256 IDs pass in a SHA-256 listing", () => {
+    expect(parseRawListing(bytes(rec(`:100644 100644 ${A1} ${B1} R000`, "a", "b") + rec(`:100644 100644 ${A1} ${A1} R100`, "c", "d")), "sha1", false)!.map((e) => e.score)).toEqual([0, 100]);
+    expect(parseRawListing(bytes(rec(`:000000 100644 ${"0".repeat(64)} ${"c".repeat(64)} A`, "x")), "sha256", false)).toHaveLength(1);
+  });
+
+  test("an empty listing has no entry, and a cut listing keeps only its whole records", () => {
+    expect(parseRawListing(new Uint8Array(), "sha1", false)).toEqual([]);
+    const cut = bytes(LIST).subarray(0, bytes(LIST).length - 3);
+    expect(parseRawListing(cut, "sha1", true)!.map((e) => e.status)).toEqual(["A", "D", "M", "T", "R", "M"]);
+    expect(parseRawListing(cut, "sha1", false)).toBeNull();
+  });
+
+  const refused: [string, string][] = [
+    ["status C", rec(`:100644 100644 ${A1} ${B1} C075`, "a", "b")],
+    ["status U", rec(`:100644 100644 ${A1} ${B1} U`, "a")],
+    ["status X", rec(`:100644 100644 ${A1} ${B1} X`, "a")],
+    ["status B", rec(`:100644 100644 ${A1} ${B1} B`, "a")],
+    ["an unknown status byte", rec(`:100644 100644 ${A1} ${B1} Q`, "a")],
+    ["R with two score digits", rec(`:100644 100644 ${A1} ${B1} R92`, "a", "b")],
+    ["R above 100", rec(`:100644 100644 ${A1} ${B1} R101`, "a", "b")],
+    ["R without a score", rec(`:100644 100644 ${A1} ${B1} R`, "a", "b")],
+    ["M with a score", rec(`:100644 100644 ${A1} ${B1} M100`, "a")],
+    ["R with one path", rec(`:100644 100644 ${A1} ${B1} R092`, "a")],
+    ["a record without its path", `:100644 100644 ${A1} ${B1} M\0`],
+    ["five mode digits", rec(`:10644 100644 ${A1} ${B1} M`, "a")],
+    ["a non-octal mode digit", rec(`:100648 100644 ${A1} ${B1} M`, "a")],
+    ["an OID of the other object format", rec(`:100644 100644 ${"a".repeat(64)} ${B1} M`, "a")],
+    ["an uppercase OID", rec(`:100644 100644 ${"A".repeat(40)} ${B1} M`, "a")],
+    ["no leading colon", rec(`100644 100644 ${A1} ${B1} M`, "a")],
+    ["an added entry with an old OID", rec(`:000000 100644 ${A1} ${B1} A`, "a")],
+    ["an added entry with an old mode", rec(`:100644 100644 ${Z} ${B1} A`, "a")],
+    ["a deleted entry with a new OID", rec(`:100644 000000 ${A1} ${B1} D`, "a")],
+    ["a modified entry with an absent side", rec(`:000000 100644 ${Z} ${B1} M`, "a")],
+    ["an empty path", rec(`:100644 100644 ${A1} ${B1} M`, "")],
+  ];
+  for (const [name, text] of refused) {
+    test(`${name} refuses the whole listing`, () => expect(parseRawListing(bytes(rec(`:000000 100644 ${Z} ${A1} A`, "ok.txt") + text), "sha1", false)).toBeNull());
+  }
 });
 
 // git-diff(1) "Other diff formats", `--numstat` with `-z`: added, TAB, deleted, TAB, then `path NUL`, or `NUL preimage NUL postimage NUL` for two paths.

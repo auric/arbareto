@@ -61,6 +61,13 @@ export const OPERATION_NAMES = [
   "revealPath",
   "setSwitchChoice",
   "chooseWorktreeFolder",
+  // Feature 005 contract Δ1.
+  "readCommitChanges",
+  "readCommitFile",
+  "readBlame",
+  "readIgnoreFile",
+  "previewIgnore",
+  "openSubmodule",
   // Feature 006 contract Δ1.
   "listDictionaries",
   "readDictionary",
@@ -170,20 +177,27 @@ export const PHASES = [
   "mergetool",
   "worktree",
   "config",
-  "ignore",
   "stage-files",
+  // Feature 005 contract Δ2.
+  "blame",
+  "delete-files",
+  "ignore-save",
+  "preview",
   // Feature 006 contract Δ2.
   "dictionary",
 ] as const;
 export const Phase = z.enum(PHASES);
 export type Phase = z.infer<typeof Phase>;
-// Feature 003, 004, and 006 contract Δ2: these phases carry only these counters. A workbench phase without counters carries none.
+// Feature 003 to 006 contract Δ2: these phases carry only these counters. A workbench phase without counters carries none.
 const SYNC_COUNTERS = ["percent", "remoteIndex", "remoteCount"];
 const PHASE_COUNTERS: Readonly<Record<string, readonly string[]>> = {
   ...Object.fromEntries(["sync-fetch", "sync-merge", "sync-rebase", "sync-push", "sync-continue", "clone", "pageant"].map((phase) => [phase, SYNC_COUNTERS])),
-  ...Object.fromEntries(["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "ignore"].map((phase) => [phase, []])),
+  ...Object.fromEntries(["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "ignore-save", "preview"].map((phase) => [phase, []])),
   config: ["keyIndex", "keyCount"],
   "stage-files": ["fileIndex", "fileCount"],
+  // Feature 005 contract Δ2: a porcelain blame carries no counter.
+  blame: ["blamed", "total"],
+  "delete-files": ["fileIndex", "fileCount"],
   dictionary: ["received", "total"],
 };
 

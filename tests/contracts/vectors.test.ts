@@ -30,7 +30,20 @@ const HOST_PLATFORM = process.platform === "win32" ? "windows" : "posix";
 
 // Every invalid vector of these schemas carries `repair`. The repaired text must pass, so a second fault cannot mask the named one.
 // Feature 004 T034 adds the workbench result schemas, and T060 the worktree and Git settings result schemas. Contract Δ3 adds the `reviewCommit` result schema.
-const FAULT_SCHEMAS = ["registration-result", "open-recent-repository-result", "recent-repositories-result", "review-workbench-result", "run-workbench-result", "read-branches-result", "read-worktrees-result", "read-git-settings-result", "review-commit-result"];
+// Feature 005 T002 adds its result schemas.
+const INSPECTION_RESULTS = ["read-commit-changes-result", "read-commit-file-result", "read-blame-result", "read-ignore-file-result", "preview-ignore-result", "open-submodule-result", "reveal-path-result"];
+const FAULT_SCHEMAS = [
+  "registration-result",
+  "open-recent-repository-result",
+  "recent-repositories-result",
+  "review-workbench-result",
+  "run-workbench-result",
+  "read-branches-result",
+  "read-worktrees-result",
+  "read-git-settings-result",
+  "review-commit-result",
+  ...INSPECTION_RESULTS,
+];
 
 function repaired(value: unknown, repair: Record<string, unknown>): unknown {
   const copy = structuredClone(value) as Record<string, unknown>;
@@ -143,17 +156,63 @@ describe("golden vectors", () => {
     expect(requests.map((t) => t.environmentPolicy)).toContain("mergetool");
     expect(requests.map((t) => t.contextKind)).toEqual(expect.arrayContaining(["globalConfig", "worktreeAdd"]));
     expect(requests.some((t) => t.type === "destinationFacts" && "bootstrapId" in t)).toBe(true);
-    for (const schema of ["process-request", "process-reply"]) expect(texts("valid", schema).map((t) => t.type)).toEqual(expect.arrayContaining(["fileAppend", "reveal"]));
+    // Feature 005 T057: `fileAppend` goes, so it has only invalid vectors.
+    for (const schema of ["process-request", "process-reply"]) expect(texts("valid", schema).map((t) => t.type)).toContain("reveal");
     const started = (kind: string) => texts(kind, "mutation-request").map((t) => `${String(t.kind)}:${String(t.action ?? t.direction ?? "")}`);
     expect(started("valid")).toEqual(expect.arrayContaining(["workbench:choose-ours", "applyFiles:unstage"]));
     expect(started("invalid")).toEqual(expect.arrayContaining(["workbench:", "applyFiles:resolve"]));
     const markers = texts("valid", "handshake").flatMap((t) => t.markers as { kind: string }[]);
     expect(markers.map((m) => m.kind)).toEqual(expect.arrayContaining(["workbench", "applyFiles"]));
-    // T034: the result schemas of the batch 2 actions.
+    // T034: the result schemas of the batch 2 actions. Feature 005 T057 removes the action `ignore`.
     const actions = (schema: string) => texts("valid", schema).map((t) => t.action ?? t.reason);
-    expect(actions("review-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "rebase", "ignore", "config-save", "untracked-in-way"]));
-    expect(actions("run-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "ignore", "rebase", "config-save"]));
+    expect(actions("review-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "rebase", "config-save", "untracked-in-way"]));
+    expect(actions("run-workbench-result")).toEqual(expect.arrayContaining(["switch", "delete-branch", "merge", "rebase", "config-save"]));
     for (const schema of ["review-workbench-result", "run-workbench-result", "read-branches-result", "read-worktrees-result", "read-git-settings-result", "review-commit-result"]) for (const kind of ["valid", "invalid"]) expect({ schema, kind, count: texts(kind, schema).length > 0 }).toEqual({ schema, kind, count: true });
+  });
+
+  // Feature 005 contract Δ10: vectors for the new operations, codes, phases, private requests, replies, marker actions, and results.
+  test("each feature 005 operation, code, phase, private request, reply, marker action, and result has its vectors", () => {
+    const texts = (kind: string, schema: string) => vectors.filter((v) => v.kind === kind && v.vector.schema === schema).map(({ vector }) => JSON.parse(vector.text) as Record<string, unknown>);
+    const operations = ["renderer-envelope", "service-envelope", "native-first-envelope"].flatMap((schema) => texts("valid", schema)).map((t) => t.operation);
+    expect(operations).toEqual(expect.arrayContaining(["readCommitChanges", "readCommitFile", "readBlame", "readIgnoreFile", "previewIgnore", "openSubmodule"]));
+    expect(texts("valid", "native-first-envelope").map((t) => t.operation)).toContain("openSubmodule");
+    expect(texts("invalid", "native-first-envelope").map((t) => t.operation)).toContain("openSubmodule");
+    const payloads = (kind: string) => texts(kind, "renderer-envelope").filter((t) => t.operation === "reviewWorkbench").map((t) => (t.payload as { action: string }).action);
+    for (const kind of ["valid", "invalid"]) expect(payloads(kind)).toEqual(expect.arrayContaining(["delete", "ignore-save"]));
+    expect(texts("valid", "response").map((t) => t.code)).toEqual(expect.arrayContaining(["BLAME_UNAVAILABLE", "SUBMODULE_UNAVAILABLE"]));
+    expect(texts("valid", "progress").map((t) => t.phase)).toEqual(expect.arrayContaining(["blame", "delete-files", "ignore-save", "preview"]));
+    expect(texts("invalid", "progress").map((t) => t.phase)).toEqual(expect.arrayContaining(["blame", "preview"]));
+    for (const kind of ["valid", "invalid"]) {
+      expect(texts(kind, "process-request").map((t) => t.type)).toEqual(expect.arrayContaining(["fileDelete", "fileReplace", "shadow"]));
+      expect(texts(kind, "process-request").some((t) => t.type === "fileFacts" && "content" in t)).toBe(true);
+      expect(texts(kind, "process-request").some((t) => t.type === "run" && t.contextKind === "ignorePreview")).toBe(true);
+    }
+    expect(texts("valid", "process-reply").map((t) => t.type)).toEqual(expect.arrayContaining(["fileDelete", "fileReplace", "shadow"]));
+    expect(texts("valid", "process-reply").some((t) => t.type === "reveal" && t.result === "absent")).toBe(true);
+    const started = (kind: string) => texts(kind, "mutation-request").map((t) => String(t.action ?? ""));
+    expect(started("valid")).toEqual(expect.arrayContaining(["delete-files", "ignore-save-exclude"]));
+    expect(started("invalid")).toContain("delete");
+    const actions = (schema: string) => texts("valid", schema).map((t) => t.action ?? t.reason);
+    expect(actions("review-workbench-result")).toEqual(expect.arrayContaining(["delete", "ignore-save", "ignore-changed", "no-recycle-bin"]));
+    expect(actions("run-workbench-result")).toEqual(expect.arrayContaining(["delete", "ignore-save"]));
+    // T057: the 004 action `ignore`, `fileAppend`, the reasons `ignore-exists` and `ignore-not-text`, and the markers `ignore-gitignore` and `ignore-exclude` give INVALID_REQUEST.
+    for (const schema of ["process-request", "process-reply"]) {
+      expect(texts("valid", schema).map((t) => t.type)).not.toContain("fileAppend");
+      expect(texts("invalid", schema).map((t) => t.type)).toContain("fileAppend");
+    }
+    expect(payloads("valid")).not.toContain("ignore");
+    expect(payloads("invalid")).toContain("ignore");
+    for (const schema of ["review-workbench-result", "run-workbench-result"]) {
+      expect(texts("valid", schema).map((t) => t.action)).not.toContain("ignore");
+      expect(texts("invalid", schema).map((t) => t.action)).toContain("ignore");
+    }
+    const reasons = (kind: string) => texts(kind, "review-workbench-result").map((t) => t.reason);
+    expect(reasons("invalid")).toEqual(expect.arrayContaining(["ignore-exists", "ignore-not-text"]));
+    for (const reason of ["ignore-exists", "ignore-not-text"]) expect(reasons("valid")).not.toContain(reason);
+    expect(started("invalid")).toEqual(expect.arrayContaining(["ignore-gitignore", "ignore-exclude"]));
+    for (const action of ["ignore-gitignore", "ignore-exclude"]) expect(started("valid")).not.toContain(action);
+    expect(texts("valid", "read-branches-result").some((t) => ((t.entries ?? []) as Record<string, unknown>[]).some((e) => "upstreamPresent" in e))).toBe(true);
+    for (const schema of INSPECTION_RESULTS) for (const kind of ["valid", "invalid"]) expect({ schema, kind, count: texts(kind, schema).length > 0 }).toEqual({ schema, kind, count: true });
   });
 
   // Feature 006 contract Δ10: vectors for each new operation, the code, every reason, the phase, `spelling` in `readSyncSettings`, and the shell setting.

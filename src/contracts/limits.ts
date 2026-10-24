@@ -7,7 +7,8 @@ const KIB = 1024;
 const MIB = 1024 * KIB;
 const SECOND_MS = 1000;
 
-export const PUBLIC_REQUEST_BYTES = 1 * MIB;
+// Feature 005 contract Δ5 and plan.md O-6: 2 MiB, so a 1 MiB editor text fits as base64.
+export const PUBLIC_REQUEST_BYTES = 2 * MIB;
 // The shell wraps the envelope in `{"kind":"public","request":` and `}`, which add 28 bytes.
 export const PUBLIC_FRAME_BODY_BYTES = PUBLIC_REQUEST_BYTES + 28;
 export const PIPE_FRAME_BYTES = 16 * MIB;
@@ -157,6 +158,26 @@ export const WORKTREE_LISTING_BYTES = 4 * MIB;
 export const REFLOG_SCAN_ENTRIES = 10_000;
 // The `-m` item of the merge argv. Plan D5: 2 × 8,192 + 3 units leave 16,380 of the 32,767 command-line units.
 export const MERGE_MESSAGE_BYTES = 8 * KIB;
+
+// Feature 005 contract Δ5 "Finite bounds". The 001 to 004 bounds above stay in force.
+// The encoded `readCommitChanges` result: the history page frame budget.
+export const COMMIT_CHANGES_RESULT_BYTES = HISTORY_PAGE_BYTES;
+// The blamed file: the canonical diff byte bound, so one file never exceeds what a diff shows.
+export const BLAME_FILE_BYTES = CANONICAL_DIFF_BYTES;
+// The blamed file lines: the line bound of the virtual list budget.
+export const BLAME_FILE_LINES = 100_000;
+// The blame Git output: the status listing byte bound.
+export const BLAME_OUTPUT_BYTES = STATUS_LISTING_BYTES;
+// The encoded `readBlame` result fits the 16 MiB pipe frame with its JSON framing.
+export const BLAME_RESULT_BYTES = 12 * MIB;
+export const BLAME_PROGRESS_EVENTS_PER_SECOND = 4;
+// The ignore file, the editor text, and the saved bytes.
+export const IGNORE_TARGET_BYTES = 1 * MIB;
+// Inputs of one `check-ignore` run of the preview (spec SC-005).
+export const PREVIEW_PATHS = 100_000;
+export const PREVIEW_IGNORE_FILES = 10_000;
+// Paths of one preview result group (spec FR-038).
+export const PREVIEW_GROUP_PATHS = 1_000;
 
 // Feature 006 contract Δ5 "Finite bounds". The 001 to 004 bounds above stay in force.
 // Contract Δ5 "Catalog entries": the folders of the pinned commit.

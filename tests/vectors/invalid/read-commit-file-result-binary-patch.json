@@ -1,0 +1,8 @@
+{
+  "schema": "read-commit-file-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"changesId\":\"0f0f0f0f-0000-4000-8000-000000000007\",\"fileId\":1,\"facts\":{\"rename\":{\"oldPath\":\"c3JjL29sZC50cw==\",\"score\":92}},\"binary\":true,\"patch\":\"ZGlmZiAtLWdpdCBhL3NyYy9vbGQudHMgYi9zcmMvbmV3LnRzCnNpbWlsYXJpdHkgaW5kZXggOTIlCnJlbmFtZSBmcm9tIHNyYy9vbGQudHMKcmVuYW1lIHRvIHNyYy9uZXcudHMK\",\"completeness\":{\"state\":\"complete\"}}",
+  "repair": {
+    "binary": false
+  }
+}

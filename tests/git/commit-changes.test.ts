@@ -10,7 +10,7 @@ import { ReadCommitChangesResult, ReadCommitFileResult } from "../../src/contrac
 import { COMMIT_CHANGES_RESULT_BYTES, GIT_PROCESS_DEADLINE_MS, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { OBJECT_MISSING_REMEDY } from "../../src/git-service/status";
 import { printOrigin } from "../origin";
-import { once } from "./service-harness";
+import { once, siblingDeadline } from "./service-harness";
 import { FIXTURE_ROOT, fixturePath, serviceEnv, useFixtureRoot } from "./fixture-root";
 import {
   buildHistory,
@@ -41,6 +41,8 @@ const TASK = "T021";
 const SHELL = ["shell-double"] as const;
 const TIMEOUT_MS = 300_000;
 const LARGE_TIMEOUT_MS = 20 * 60_000;
+// A `siblingDeadline` case that never releases its target ends here, not at the read timeout.
+const SIBLING_TIMEOUT_MS = 120_000;
 const READ = ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs"];
 const STATUS: Record<string, string> = { A: "added", D: "deleted", M: "modified", R: "renamed", T: "type-changed" };
 
@@ -413,6 +415,25 @@ describe("sibling steps and refused reads", () => {
       expect(service.runner.liveRecorded()).toBe(0);
     }),
     TIMEOUT_MS,
+  );
+
+  // T399 guard, 001 contract §5 "Deadline outcomes": the deadline closes the operation Job, so the patch step ends with `exitCode` null and no `deadline`.
+  caseTest("T399", "readCommitFile gives DEADLINE when the numstat step expires and the Job close ends the patch step first", SHELL, () =>
+    withService("t399-commit-file", async (service) => {
+      const built = buildHistory(gitPath(), "t399-commit-file");
+      const v = await viewOf(service, built.repo);
+      const changes = (await readChanges(service, v, built.oids.normal!)).result!;
+      const entry = changes.files.find((f) => Buffer.from(f.pathBytes, "base64").toString() === "a.txt")!;
+      const isNumstat = (call: { arguments: readonly string[] }) => isDiffTree(call) && call.arguments.includes("--numstat");
+      const isPatch = (call: { arguments: readonly string[] }) => isDiffTree(call) && call.arguments.includes("-p");
+      const before = service.runner.calls.length;
+      const release = siblingDeadline(service, isNumstat, isPatch);
+      const response = await readFile(service, v, changes.changesId, entry.fileId).finally(release);
+      const exits = service.runner.calls.slice(before).filter(isDiffTree).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+      console.log(`OBSERVATION T399: commit file diff-tree exits=${exits.join(",")} state=${response.state} code=${response.code}`);
+      expect({ exits: exits.toSorted(), state: response.state, code: response.code }).toEqual({ exits: ["closed", "deadline"], state: "failed", code: "DEADLINE" });
+    }),
+    SIBLING_TIMEOUT_MS,
   );
 
   caseTest(TASK, "a readCommitChanges that gets BUSY keeps the retained listing of the view", SHELL, () =>

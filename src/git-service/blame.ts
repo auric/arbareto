@@ -20,10 +20,10 @@ import {
 import { NATIVE } from "../contracts/native-path";
 import { BlameStream, countLines, type ParsedBlame } from "./blame-parser";
 import { blameArgs, blameNumstatArgs, blameTreeArgs, blobArgs, blobDiffArgs, ignoreRevsArgs, isObjectId, type BlameFlags, type ObjectFormat } from "./commands";
-import { b64, both, emptyTreeOf, fail, Stop, type InspectionOutcome, type InspectionTarget } from "./commit-changes";
+import { b64, both, CLOSED, emptyTreeOf, fail, Stop, type InspectionOutcome, type InspectionTarget } from "./commit-changes";
 import { parseNumstat } from "./diff-parser";
 import { createTailCollector } from "./discovery";
-import { createCollector, RunnerRefusal, type Collector, type GitExit, type GitRunner } from "./git-runner";
+import { createCollector, exitKind, RunnerRefusal, type Collector, type GitExit, type GitRunner } from "./git-runner";
 import { readShallow } from "./history";
 import { topologyPaths } from "./history-view";
 import { mapLine, parseHunks } from "./line-map";
@@ -108,6 +108,7 @@ export function createBlameReader({ runner, trust }: BlameReaderOptions) {
     if (t.signal.aborted) throw new Stop({ result: "canceled" });
     if (exit.deadline !== undefined) throw new Stop({ result: "deadline" });
     if (exit.diagnosticLimit) throw fail("OUTPUT_LIMIT");
+    if (exitKind(exit, "read", stdout) === "jobClosed") throw CLOSED;
     return exit;
   }
 

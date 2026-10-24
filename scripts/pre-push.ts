@@ -10,11 +10,12 @@ import { join, resolve } from "node:path";
 import { BUILT_IN_RULES, privatePathHits } from "./private-paths";
 
 const ZERO_OID = /^0+$/;
-const HUNK = /^@@ -\d+(?:,\d+)? \+(\d+)(?:,\d+)? @@/;
+// git-diff(1) "Combined diff format": a merge hunk header has one `@` per parent plus one, and a line has one prefix column per parent.
+const HUNK = /^(@@+) (?:-\d+(?:,\d+)? )+\+(\d+)(?:,\d+)? \1(?: |$)/;
 // A commit record starts with NUL. Git shows a file with a NUL byte as binary, so patch lines hold no NUL.
 const FORMAT = "--format=%x00%H%x00%an%x00%ae%x00%cn%x00%ce%x00%B%x00";
 // These options override user configuration that changes the patch form or adds lines.
-const LOG_OPTIONS = ["--no-color", "--no-ext-diff", "--no-textconv", "--no-show-signature", "--no-relative", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "--diff-merges=first-parent", "-p", FORMAT];
+const LOG_OPTIONS = ["--no-color", "--no-ext-diff", "--no-textconv", "--no-show-signature", "--no-relative", "--no-renames", "--src-prefix=a/", "--dst-prefix=b/", "--diff-merges=combined", "-p", FORMAT];
 
 function refuse(message: string): never {
   console.error(`pre-push: ${message}`);
@@ -50,8 +51,11 @@ function rules(text: string, patterns: [number, RegExp][]): string[] {
   return found;
 }
 
-function rangeArgs(remote: string, localOid: string, remoteOid: string): string[] {
+// A commit that a remote-tracking ref of the named remote holds was checked when it was pushed.
+// githooks(5): Git passes the URL as both arguments when the push does not use a named remote.
+function rangeArgs(remote: string, url: string | undefined, localOid: string, remoteOid: string): string[] {
   const known = !ZERO_OID.test(remoteOid) && git(["cat-file", "-e", `${remoteOid}^{commit}`], [0, 1, 128]).exitCode === 0;
+  if (remote !== url) return [localOid, "--not", `--remotes=${remote}`, ...(known ? [remoteOid] : [])];
   return known ? [localOid, "--not", remoteOid] : [localOid, "--not", `--remotes=${remote}`];
 }
 
@@ -69,22 +73,25 @@ function scanLog(output: string, patterns: [number, RegExp][], seen: Set<string>
     message!.split("\n").forEach((line, index) => report(`message:${index + 1}`, line));
     let path = "";
     let line = 0;
-    let inHunk = false;
+    // The number of prefix columns in the current hunk. Zero means outside a hunk.
+    let columns = 0;
     for (const text of patch!.split("\n")) {
-      if (text.startsWith("diff --git ")) {
-        inHunk = false;
+      const hunk = HUNK.exec(text);
+      if (text.startsWith("diff --git ") || text.startsWith("diff --combined ")) {
+        columns = 0;
         path = "";
-      } else if (!inHunk && text.startsWith("+++ ")) {
+      } else if (columns === 0 && text.startsWith("+++ ")) {
         const target = text.slice(4);
         path = target.startsWith("b/") ? target.slice(2) : target;
-      } else if (HUNK.test(text)) {
-        inHunk = true;
-        line = Number(HUNK.exec(text)![1]);
-      } else if (inHunk && text.startsWith("+")) {
-        report(`${path}:${line}`, text.slice(1));
+      } else if (hunk !== null) {
+        columns = hunk[1]!.length - 1;
+        line = Number(hunk[2]);
+      } else if (columns > 0 && text === "") {
+        // `diff.suppressBlankEmpty` prints an empty context line without its prefix.
         line += 1;
-      } else if (inHunk && (text.startsWith(" ") || text === "")) {
-        // `diff.suppressBlankEmpty` prints an empty context line without its space.
+      } else if (columns > 0 && /^[ +]+$/.test(text.slice(0, columns)) && text.length >= columns) {
+        // A line that a parent holds came from commits that this push scans or that a remote holds.
+        if (!text.slice(0, columns).includes(" ")) report(`${path}:${line}`, text.slice(columns));
         line += 1;
       }
     }
@@ -92,7 +99,7 @@ function scanLog(output: string, patterns: [number, RegExp][], seen: Set<string>
 }
 
 if (import.meta.main) {
-  const remote = process.argv[2];
+  const [remote, url] = process.argv.slice(2);
   if (remote === undefined) refuse("Git passes the remote name as the first argument.");
   const patterns = privatePatterns();
   const seen = new Set<string>();
@@ -103,7 +110,7 @@ if (import.meta.main) {
     if (fields.length !== 4) refuse("a stdin line does not have four fields.");
     const [, localOid, , remoteOid] = fields as [string, string, string, string];
     if (ZERO_OID.test(localOid)) continue;
-    scanLog(git(["log", ...LOG_OPTIONS, ...rangeArgs(remote, localOid, remoteOid), "--"]).stdout, patterns, seen, hits);
+    scanLog(git(["log", ...LOG_OPTIONS, ...rangeArgs(remote, url, localOid, remoteOid), "--"]).stdout, patterns, seen, hits);
   }
   for (const hit of hits) console.error(`pre-push: ${hit}`);
   if (hits.length > 0) refuse(`${hits.length} private string hits. Remove them from the commits, then push again.`);

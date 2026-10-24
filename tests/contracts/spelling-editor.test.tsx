@@ -35,6 +35,15 @@ const flush = () => act(async () => void (await new Promise((resolve) => setTime
 async function settle() {
   for (let i = 0; i < 12; i++) await flush();
 }
+// A real Hunspell load ends after wall time, not after a fixed count of event-loop turns. The timeout bounds the wait.
+async function until(done: () => boolean, timeoutMs: number) {
+  const end = Date.now() + timeoutMs;
+  while (!done()) {
+    if (Date.now() > end) throw new Error(`wait: ${timeoutMs} ms`);
+    await flush();
+  }
+  await settle();
+}
 
 // The English fixture message (SC-001): three misspellings, correct words, and skipped tokens.
 const FIXTURE = "Fix the sync job so it does not recieve stale data\n\nThe parser now handels `fixtureName` in src/app.ts for v1.2.3.\nAsk user@host about snake_case and teh results.";
@@ -774,6 +783,8 @@ describe("real engine (F15)", () => {
   test("hunspell-wasm with the bundled English files marks the fixture misspellings and suggests receive", async () => {
     const t = await mount({ real: true });
     await t.type(FIXTURE);
+    await until(() => t.store.state().languages.get("en") !== "loading", 20_000);
+    expect(t.store.state().languages.get("en")).toBe("loaded");
     expect(t.marks()).toEqual(MISSPELT);
     rects.clear();
     rects.set("recieve", new DOMRect(100, 20, 50, 18));

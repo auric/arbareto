@@ -4,7 +4,8 @@
 // T001: the dictionary catalog (data-model §1, §2; plan.md D3; spec FR-015, FR-017) and the dependency check of contract Δ10.
 
 import { describe, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import catalogFile from "../../src/contracts/dictionaries.json";
 import { Catalog, compareNames } from "../../src/contracts/dictionaries";
@@ -161,4 +162,27 @@ describe("dependency check (contract Δ10)", () => {
     const wasm = readFileSync(join(ROOT, "node_modules", "hunspell-wasm", "wasm", "hunspell.wasm"));
     expect(sha256(wasm)).toBe("72152324049c9215da17abceb12555b3ef9094c0524327e660f8145aaa9c68e0");
   });
+});
+
+describe("catalog script tree check (data-model §2)", () => {
+  const SCRIPT = printOrigin("../../scripts/dictionary-catalog.ts", import.meta.dir);
+  const RUN_TIMEOUT_MS = 30_000;
+  test(
+    "a tree folder that is no language ID refuses before any file access",
+    async () => {
+      const cache = mkdtempSync(join(tmpdir(), "arbareto-catalog-"));
+      try {
+        const blob = (path: string) => ({ path, type: "blob", sha: "0".repeat(40), size: 1 });
+        const items = ["index.aff", "index.dic", "license", "package.json"].map((name) => blob(`dictionaries/../${name}`));
+        mkdirSync(join(cache, COMMIT), { recursive: true });
+        writeFileSync(join(cache, COMMIT, "tree.json"), JSON.stringify({ truncated: false, tree: items }));
+        const run = Bun.spawn([process.execPath, SCRIPT, "--offline"], { cwd: ROOT, env: { ...process.env, ARBARETO_DICTIONARY_CACHE: cache }, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: RUN_TIMEOUT_MS });
+        const [, err] = await Promise.all([new Response(run.stdout).text(), new Response(run.stderr).text(), run.exited]);
+        expect([run.exitCode, err.trim()]).toEqual([1, "DICTIONARY_CATALOG dictionaries/../index.aff: the folder name is no language ID"]);
+      } finally {
+        rmSync(cache, { recursive: true, force: true });
+      }
+    },
+    RUN_TIMEOUT_MS + 5_000,
+  );
 });

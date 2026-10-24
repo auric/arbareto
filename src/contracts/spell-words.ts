@@ -135,7 +135,7 @@ export function mergeMarks<T extends WordRange>(refused: readonly (readonly T[])
   return refused[0].filter((r) => others.every((set) => set.has(key(r))) && !accepts(r.word));
 }
 
-// Contract Δ5 `SPELLING_SUGGESTIONS`. The renderer imports no limits module here, so the value repeats.
+// Contract Δ5 `SPELLING_SUGGESTIONS`. This module has no runtime import (plan.md Structure Decision), so the value repeats. spell-words.test.ts checks it.
 const SPELLING_SUGGESTIONS = 5;
 
 // Data-model §15: the lists in selection order, repeats dropped by equality after NFC, cut to 5.

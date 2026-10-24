@@ -56,7 +56,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 | `changed` | The folder exists, and the §3 language check fails. |
 | `ready` | The §3 language check passes. |
 
-- `notice`: `catalog-changed` or absent. `removed`: the `catalog-removed` names of this service process.
+- `notice`: `catalog-changed` or absent. `removed`: the first `DICTIONARY_CATALOG_ENTRIES` (92) `catalog-removed` names of this service process. `more`: the count of the other `catalog-removed` notices.
 - Row state in the renderer (plan D17 texts):
 
 | Row | Source |

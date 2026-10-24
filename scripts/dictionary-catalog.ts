@@ -7,7 +7,8 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
-import { Catalog, compareNames, DICTIONARY_LANGUAGE_BYTES, type CatalogEntry } from "../src/contracts/dictionaries";
+import { Catalog, compareNames, DICTIONARY_FILE_NAMES, LanguageId, type CatalogEntry } from "../src/contracts/dictionaries";
+import { DICTIONARY_LANGUAGE_BYTES } from "../src/contracts/limits";
 
 const COMMIT = "8cfea406b505e4d7df52d5a19bce525df98c54ab";
 const REPOSITORY = "wooorm/dictionaries";
@@ -22,6 +23,8 @@ const ENGLISH = join(ROOT, "node_modules", "dictionary-en");
 // Reviewed names for the IDs that `Intl.DisplayNames("en", {type: "language"})` returns unchanged in Bun 1.4.4.
 // `hyw`: the ISO 639-3 reference name.
 const NAME_OVERRIDES: Record<string, string> = { hyw: "Western Armenian" };
+
+const TREE_FILE_NAMES: readonly string[] = [...DICTIONARY_FILE_NAMES, "package.json"];
 
 type TreeItem = { path: string; type: string; sha: string; size?: number };
 type Gate = { failures: { id: string }[] };
@@ -87,6 +90,9 @@ async function main(): Promise<number> {
     const match = /^dictionaries\/([^/]+)\/([^/]+)$/.exec(item.path);
     if (item.type !== "blob" || match === null) continue;
     const [, id, name] = match as unknown as [string, string, string];
+    // Data-model §2: the folder name is the language ID. It becomes a cache path, so it must pass before any file access.
+    if (!LanguageId.safeParse(id).success) throw new Refusal(`${item.path}: the folder name is no language ID`);
+    if (!TREE_FILE_NAMES.includes(name)) continue;
     if (!folders.has(id)) folders.set(id, new Map());
     folders.get(id)!.set(name, item);
   }

@@ -39,6 +39,7 @@
       }
     },
     "removed": {
+      "maxItems": 92,
       "type": "array",
       "items": {
         "type": "object",
@@ -60,11 +61,17 @@
         "additionalProperties": false,
         "title": "RemovedLanguage"
       }
+    },
+    "more": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
     }
   },
   "required": [
     "languages",
-    "removed"
+    "removed",
+    "more"
   ],
   "additionalProperties": false,
   "title": "ListDictionariesResult"

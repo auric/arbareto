@@ -1358,7 +1358,7 @@ const dictionaryRefusal = (reasons: readonly [DictionaryReason, ...DictionaryRea
     .refine((r) => (r.reason === "http-status") === (r.status !== undefined) && FOLDER_REASONS.includes(r.reason) === (r.folder !== undefined) && (r.reason === "link") === (r.url !== undefined))
     .meta({ title });
 export const DictionaryRefusal = dictionaryRefusal(DICTIONARY_UNAVAILABLE_REASONS, "DictionaryRefusal");
-// Data-model §4. `removed` holds the `catalog-removed` notices of this service process.
+// Data-model §4. `removed` holds the first DICTIONARY_CATALOG_ENTRIES `catalog-removed` notices of this service process, and `more` counts the rest.
 export const ListDictionariesResult = z
   .strictObject({
     languages: z
@@ -1366,7 +1366,8 @@ export const ListDictionariesResult = z
       .max(DICTIONARY_CATALOG_ENTRIES)
       .refine((rows) => new Set(rows.map((row) => row?.language)).size === rows.length),
     // Data-model §2 `name`: 1 to 64 code points.
-    removed: z.array(z.strictObject({ language: LanguageId, name: Text.refine((name) => [...name].length >= 1 && [...name].length <= 64) }).meta({ title: "RemovedLanguage" })),
+    removed: z.array(z.strictObject({ language: LanguageId, name: Text.refine((name) => [...name].length >= 1 && [...name].length <= 64) }).meta({ title: "RemovedLanguage" })).max(DICTIONARY_CATALOG_ENTRIES),
+    more: Count,
   })
   .meta({ title: "ListDictionariesResult" });
 // Data-model §7: the base64 of the bytes from `offset`, up to DICTIONARY_CHUNK_BYTES.

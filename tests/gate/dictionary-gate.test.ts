@@ -142,7 +142,7 @@ function languageFixture(aff: string, dic: string): Fixture {
   const all = positives.flatMap((w) => [...w.normalize("NFC")]).filter((c) => /^\p{L}$/u.test(c));
   const unlisted = all.find((c) => scriptOf(c) === undefined);
   if (unlisted !== undefined) return fail(`script-unlisted U+${unlisted.codePointAt(0)!.toString(16).toUpperCase().padStart(4, "0")}`);
-  // The script of the language holds the most letters of the positive words; fr and sv also list Greek letter names such as `α`.
+  // Data-model §16: the Script value with the most `\p{L}` letters of the positive words; a tie refuses.
   const counts = new Map<string, number>();
   for (const c of all) counts.set(scriptOf(c)!, (counts.get(scriptOf(c)!) ?? 0) + 1);
   const most = Math.max(...counts.values());

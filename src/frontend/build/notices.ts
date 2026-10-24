@@ -217,7 +217,7 @@ async function readLicenseFiles(dir: string, named: string | undefined | null): 
 // 006 plan.md D18: no tarball file names the Hunspell source, so this fixed note joins its entry.
 export const PACKAGE_NOTES: Record<string, string> = {
   "hunspell-wasm":
-    "Arbareto uses Hunspell under LGPL-2.1. Source: https://github.com/rotemdan/hunspell-wasm (commit 8f755ef64e8b047b77b676f9698b3dfa5cb1887d) and https://github.com/hunspell/hunspell.",
+    "Arbareto uses Hunspell under LGPL-2.1. Source used: https://github.com/rotemdan/hunspell-wasm (commit 8f755ef64e8b047b77b676f9698b3dfa5cb1887d, lib/hunspell/ and Makefile). The lib/hunspell/ files equal https://github.com/hunspell/hunspell (commit edb619100791110d3e34f09ec35392ad327c1135).",
 };
 
 /** The npm entries with their installed licence files, a vendored folder when the package has none, and the fixed notes. */

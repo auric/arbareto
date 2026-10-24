@@ -6,6 +6,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { printOrigin } from "../origin";
+import { SPELLING_SUGGESTIONS } from "../../src/contracts/limits";
 import { acceptedSet, changedLines, createRounds, mergeMarks, mergeSuggestions, shiftRanges, sizeText, words } from "../../src/contracts/spell-words";
 
 const SOURCE = printOrigin("../../src/contracts/spell-words.ts", import.meta.dir);
@@ -172,6 +173,11 @@ describe("data-model §15 suggestion merge", () => {
     expect(mergeSuggestions([["receive", "relieve"], ["receive", "recite"], ["a", "b", "c", "d"]])).toEqual(["receive", "relieve", "recite", "a", "b"]);
     expect(mergeSuggestions([["café"], ["café", "cafe"]])).toEqual(["café", "cafe"]);
     expect(mergeSuggestions([])).toEqual([]);
+  });
+
+  // The module repeats the contract Δ5 value, because it has no runtime import.
+  test("the cut equals SPELLING_SUGGESTIONS of limits.ts", () => {
+    expect(mergeSuggestions([Array.from({ length: SPELLING_SUGGESTIONS + 1 }, (_, i) => `w${i}`)])).toHaveLength(SPELLING_SUGGESTIONS);
   });
 });
 

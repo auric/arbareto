@@ -268,7 +268,7 @@ describe("licence texts and inventory (T130)", () => {
 describe("hunspell-wasm and dictionary-en notices (006 T002)", () => {
   const root = join(import.meta.dir, "..", "..");
   const HUNSPELL_NOTE =
-    "Arbareto uses Hunspell under LGPL-2.1. Source: https://github.com/rotemdan/hunspell-wasm (commit 8f755ef64e8b047b77b676f9698b3dfa5cb1887d) and https://github.com/hunspell/hunspell.";
+    "Arbareto uses Hunspell under LGPL-2.1. Source used: https://github.com/rotemdan/hunspell-wasm (commit 8f755ef64e8b047b77b676f9698b3dfa5cb1887d, lib/hunspell/ and Makefile). The lib/hunspell/ files equal https://github.com/hunspell/hunspell (commit edb619100791110d3e34f09ec35392ad327c1135).";
 
   test("the licence name set holds COPYING, COPYING.LESSER, and COPYING.MPL", () => {
     expect(licenseFileNames(["COPYING", "COPYING.LESSER", "COPYING.MPL", "README.md", "package.json"])).toEqual(["COPYING", "COPYING.LESSER", "COPYING.MPL"]);

@@ -185,6 +185,8 @@ describe("frontend bridge", () => {
   test("the command list in build.rs covers each operation", () => {
     const settled = (commands: string[]) => commands.filter((command) => !PENDING_COMMANDS.includes(command)).toSorted();
     expect(settled(COMMANDS)).toEqual(settled(OPERATIONS.map(commandOf)));
+    // T015 adds the commands to build.rs. Then this case fails until PENDING_COMMANDS goes.
+    expect(COMMANDS.filter((c) => PENDING_COMMANDS.includes(c))).toEqual([]);
   });
 
   test("at load, the bridge calls currentSession without a sessionId", async () => {

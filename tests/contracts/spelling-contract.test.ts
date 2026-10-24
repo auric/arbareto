@@ -40,6 +40,7 @@ const REASONS = ["busy", "not-https", "redirect", "http-not-found", "http-rate-l
 describe("contract Δ5 bounds", () => {
   test("each bound has its exact value", () => {
     expect({
+      DICTIONARY_CATALOG_ENTRIES: L.DICTIONARY_CATALOG_ENTRIES,
       DICTIONARY_LANGUAGE_BYTES: L.DICTIONARY_LANGUAGE_BYTES,
       DICTIONARY_MANIFEST_BYTES: L.DICTIONARY_MANIFEST_BYTES,
       DICTIONARY_CHUNK_BYTES: L.DICTIONARY_CHUNK_BYTES,
@@ -51,6 +52,7 @@ describe("contract Δ5 bounds", () => {
       PERSONAL_WORDS: L.PERSONAL_WORDS,
       PERSONAL_WORD_CODE_POINTS: L.PERSONAL_WORD_CODE_POINTS,
     }).toEqual({
+      DICTIONARY_CATALOG_ENTRIES: 92,
       DICTIONARY_LANGUAGE_BYTES: 12_582_912,
       DICTIONARY_MANIFEST_BYTES: 65_536,
       DICTIONARY_CHUNK_BYTES: 1_048_576,
@@ -226,7 +228,7 @@ describe("contract Δ2 progress", () => {
 });
 
 describe("data-model §4 and §7 results", () => {
-  test("listDictionaries gives one state per catalog entry and the removed names", () => {
+  test("listDictionaries gives one state per catalog entry, at most DICTIONARY_CATALOG_ENTRIES removed names, and the count of the rest", () => {
     const S = R.ListDictionariesResult;
     const languages = [
       { language: "uk", state: "ready" },
@@ -235,14 +237,19 @@ describe("data-model §4 and §7 results", () => {
       { language: "oc", state: "downloading" },
       { language: "eu", state: "importing" },
     ];
-    expect(ok(S, { languages, removed: [{ language: "xx", name: "Old language" }] })).toBe(true);
-    expect(ok(S, { languages: [], removed: [] })).toBe(true);
-    expect(ok(S, { languages: [{ language: "uk", state: "failed" }], removed: [] })).toBe(false);
-    expect(ok(S, { languages: [{ language: "uk", state: "ready", notice: "catalog-removed" }], removed: [] })).toBe(false);
-    expect(ok(S, { languages: [languages[0], languages[0]], removed: [] })).toBe(false);
-    expect(ok(S, { languages, removed: [{ language: "xx", name: "" }] })).toBe(false);
-    expect(ok(S, { languages, removed: [{ language: "xx", name: "x".repeat(65) }] })).toBe(false);
-    expect(ok(S, { languages })).toBe(false);
+    const removed = (n: number) => Array.from({ length: n }, () => ({ language: "xx", name: "Old language" }));
+    expect(ok(S, { languages, removed: removed(1), more: 0 })).toBe(true);
+    expect(ok(S, { languages: [], removed: [], more: 0 })).toBe(true);
+    expect(ok(S, { languages, removed: removed(92), more: 7 })).toBe(true);
+    expect(ok(S, { languages, removed: removed(93), more: 0 })).toBe(false);
+    expect(ok(S, { languages, removed: [], more: -1 })).toBe(false);
+    expect(ok(S, { languages, removed: [] })).toBe(false);
+    expect(ok(S, { languages: [{ language: "uk", state: "failed" }], removed: [], more: 0 })).toBe(false);
+    expect(ok(S, { languages: [{ language: "uk", state: "ready", notice: "catalog-removed" }], removed: [], more: 0 })).toBe(false);
+    expect(ok(S, { languages: [languages[0], languages[0]], removed: [], more: 0 })).toBe(false);
+    expect(ok(S, { languages, removed: [{ language: "xx", name: "" }], more: 0 })).toBe(false);
+    expect(ok(S, { languages, removed: [{ language: "xx", name: "x".repeat(65) }], more: 0 })).toBe(false);
+    expect(ok(S, { languages, more: 0 })).toBe(false);
   });
 
   test("readDictionary gives one chunk of at most DICTIONARY_CHUNK_BYTES bytes from the offset, or a refusal", () => {

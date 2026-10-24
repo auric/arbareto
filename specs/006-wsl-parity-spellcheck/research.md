@@ -208,6 +208,12 @@ Package review (T003, constitution VIII):
 - `dictionary-en` 4.0.0: licence `(MIT AND BSD)`. No dependencies. The `bun.lock` integrity is `sha512-3NHnE1uq33ZE/CIwaZ6gqxa4BnglHnxeAcTM0GJ7cmtRGcvX9InMK/IqLtYcUMFCUpUNgybH+DzkqdgAo3F1zg==`. `index.aff`, `index.dic`, and `license` (3,086, 551,762, and 15,731 bytes) equal the pinned `dictionaries/en` files in size and SHA-256 (catalog script check). Upkeep: no release since 2023-11-03 (R3).
 - `bun run build:notices` puts the three `hunspell-wasm` texts, the D18 note, and the full `dictionary-en` `license` text into the inventory.
 
+Licence facts of the batch 0 review (2026-10-24). These are facts only. The legal reading stays open for the user.
+- LGPL 2.1 §4 covers the object code of the Library itself. It asks that the source comes with the object code, or that the source is offered "from the same place".
+- The `hunspell-wasm` note names the source used: `rotemdan/hunspell-wasm` commit `8f755ef` (`lib/hunspell/`, `Makefile`). The 30 files of `lib/hunspell/` equal `src/hunspell/` of `hunspell/hunspell` commit `edb619100791110d3e34f09ec35392ad327c1135` (F16).
+- The emsdk version is not recorded (`docs/Building.md` names emsdk `latest`). So a byte-equal rebuild of `hunspell.wasm` stays unverified.
+- Open: `hunspell.wasm` and `hunspell.js` hold Emscripten runtime parts, and the inventory has no notice for them yet. The Emscripten repository (main branch, read through DeepWiki on 2026-10-24, not pinned to a version) names these licences: Emscripten itself MIT or University of Illinois/NCSA (`LICENSE`); musl MIT (`system/lib/libc/musl/COPYRIGHT`); libc++, libc++abi, and compiler-rt the LLVM licence (`LICENSE.TXT` in each folder). The emsdk version is unknown, so the linked parts and their licence texts at that version are not verified.
+
 Catalog (T007): `bun scripts/dictionary-catalog.ts` wrote 86 entries from the pinned commit, before the gate step 2 report. Gate step 1 left out el-polyton (16,691,753 bytes), el (19,444,263), ko (13,961,541), mn (17,909,512), and rw (38,239,631). `--offline` wrote the same bytes (SHA-256 `bcb12e49247f7f15e5e5230c7f3eed36f2a3bc5133251cae2b99ee83d7400cb6`). The script checks each download against the Git blob ID of the tree. `Intl.DisplayNames` in Bun 1.4.4 returns the ID itself only for `hyw`. The override table names it "Western Armenian", the ISO 639-3 reference name.
 
 Facts (mark, then the observation line):
@@ -230,7 +236,7 @@ Early gate report (T008, F12 and F13), with the data-model §16 rule of 2026-10-
 - F13: `index.aff` and `index.dic` are in NFC for 81 of the 86 languages. Not in NFC: `fr` (both), `ia` (both), `gl` (`index.dic`), `oc` (`index.dic`), and `fa` (`index.aff`).
 - Fixture size: 76 languages have 200 positive words, 9 have 199, and `hu` has 197 (data-model §16: a step without an eligible stem at or after its line gives no word).
 - F3 after the change to run-time certificates (no committed key; openssl `C:\Program Files\Git\usr\bin\openssl.exe` from the selected Git) holds again with the same observation. F14 with the changed bundle check gives `appGuard=[]`: `OBSERVATION T005: F14 exit=0 wasm=["assets/hunspell-B7u9vk2r.wasm"] sha256=["72152324049c9215da17abceb12555b3ef9094c0524327e660f8145aaa9c68e0"] newUrl=["assets/hunspell-B2QpINDD.js"] appGuard=[] vite=8.3.2 bun=1.4.4`
-- The bundle check (`src/frontend/highlight/guard.ts`) now admits a `.wasm` file only when its bytes have the SHA-256 of the reviewed `hunspell.wasm`. Another `.wasm` file stays a problem.
+- The bundle check (`src/frontend/highlight/guard.ts`) tests each emitted asset with bytes for the WebAssembly magic `00 61 73 6D` at offset 0. The file name does not count. An asset with the magic passes only when its bytes have the SHA-256 of the reviewed `hunspell.wasm`.
 
 ```
 OBSERVATION T008: en load=133 rss=22.2 nfc=true/true fixture=0/0 positives=200 script=Latin latinAccepted=0/5 bun=1.4.4

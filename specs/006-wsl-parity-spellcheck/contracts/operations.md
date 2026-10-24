@@ -25,7 +25,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 - Payload: `{}`.
 - Steps: the release reconcile once per service process (plan D5, data-model §3), then the data-model §3 language check of each installed catalog entry.
-- Result: `{languages, removed}`. `languages` holds one `{language, state, notice?}` per catalog entry in catalog order, with `state` one of `not-downloaded`, `ready`, `changed`, `downloading`, `importing`, and `notice` `catalog-changed` when it applies. `removed` holds the `{language, name}` of each `catalog-removed` notice of this service process.
+- Result: `{languages, removed, more}`. `languages` holds one `{language, state, notice?}` per catalog entry in catalog order, with `state` one of `not-downloaded`, `ready`, `changed`, `downloading`, `importing`, and `notice` `catalog-changed` when it applies. `removed` holds the `{language, name}` of the first `DICTIONARY_CATALOG_ENTRIES` `catalog-removed` notices of this service process, and `more` counts the rest. The reconcile still removes every folder that left the catalog.
 - Deadline: `READ_DEADLINE_MS` (30 s). It never takes the run lock.
 - Errors: `DEADLINE`; `CANCELED` after a `cancel {operationId}`.
 
@@ -100,7 +100,8 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 | Limit | Value |
 |---|---|
 | Files of one language (`DICTIONARY_LANGUAGE_BYTES`) | 12 MiB (12,582,912 bytes), the FR-017 gate |
-| Catalog entries | 92 (the folders of the pinned commit) |
+| Catalog entries (`DICTIONARY_CATALOG_ENTRIES`) | 92 (the folders of the pinned commit) |
+| Removed notices in one `listDictionaries` result (`DICTIONARY_CATALOG_ENTRIES`) | 92, plus the `more` count of the rest |
 | Manifest read (`DICTIONARY_MANIFEST_BYTES`) | 64 KiB (65,536 bytes) |
 | Read chunk (`DICTIONARY_CHUNK_BYTES`) | 1 MiB (1,048,576 bytes), 1,398,104 bytes as base64 |
 | Concurrent `readDictionary` calls | 3 (`SPELLING_LANGUAGES`) |

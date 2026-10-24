@@ -1,5 +1,5 @@
 {
   "schema": "list-dictionaries-result",
   "expected": "INVALID_REQUEST",
-  "text": "{\"languages\":[{\"language\":\"uk\",\"state\":\"failed\"}],\"removed\":[]}"
+  "text": "{\"languages\":[{\"language\":\"uk\",\"state\":\"failed\"}],\"removed\":[],\"more\":0}"
 }

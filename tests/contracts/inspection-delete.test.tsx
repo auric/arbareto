@@ -104,6 +104,21 @@ describe("row menu (CommitActions board, plan D15)", () => {
     ["a nested repository", () => [entry("untracked", "vendor/x/")], "This folder holds another Git repository."],
     ["an unstaged deletion", () => [entry("unstaged", "gone.ts", { xy: ".D" })], "This file is already deleted from the working tree."],
   ];
+  // Review fix 3: each path component takes the Windows name rule of the shell (src/contracts/native-path.ts).
+  reasons.push(
+    ["a name that ends in a period", () => [entry("untracked", "a.")], "Windows does not allow this file name."],
+    ["a name that ends in a space", () => [entry("untracked", "trail ")], "Windows does not allow this file name."],
+    ["a reserved device name", () => [entry("unstaged", "con.txt")], "Windows does not allow this file name."],
+  );
+
+  test("a file below a folder name that Windows refuses is unavailable with the name text (review fix 3)", async () => {
+    await setup([entry("untracked", "dir./x.txt"), entry("untracked", "ok.txt")]);
+    await contextMenu(item("Changes", "dir."));
+    expect(describedBy(menuItem("Delete…"))).toBe("Windows does not allow this file name.");
+    await pressKey(document.activeElement ?? document.body, "Escape");
+    await contextMenu(item("Changes", "ok.txt"));
+    expect(describedBy(menuItem("Delete…"))).toBe("");
+  });
   for (const [name, entries, reason] of reasons) {
     test(`Delete is unavailable for ${name} with its reason from the status read (FR-021, US2-7)`, async () => {
       const list = entries();
@@ -169,6 +184,23 @@ describe("Delete keys (FR-023, plan D15 keyboard map)", () => {
     await act(async () => filter.focus());
     await pressKey(filter, "Delete");
     expect(double.count("reviewWorkbench")).toBe(0);
+  });
+
+  test("Del with marked rows and an unmarked focused row acts on the focused row only (decision U5)", async () => {
+    const files = [entry("untracked", "a.txt"), entry("untracked", "b.txt"), entry("untracked", "c.txt")];
+    const { double } = await setup(files);
+    await click(item("Changes", "a.txt"));
+    await act(async () => void item("Changes", "b.txt").dispatchEvent(new MouseEvent("click", { bubbles: true, shiftKey: true })));
+    await settle();
+    await deleteBy(item("Changes", "c.txt"));
+    expect((double.pending("reviewWorkbench")!.args[1] as { entryIds: string[] }).entryIds).toEqual([files[2]!.entryId]);
+  });
+
+  test("Del on a name that Windows refuses states the reason and sends no review (review fix 3)", async () => {
+    const { double } = await setup([entry("untracked", "a.")]);
+    await deleteBy(item("Changes", "a."));
+    expect(double.count("reviewWorkbench")).toBe(0);
+    expect(statusBar()).toContain("Windows does not allow this file name.");
   });
 
   test("Del on an unavailable row states the reason and sends no review", async () => {
@@ -251,21 +283,51 @@ describe("Delete confirmation (DeleteConfirm board, FR-026 to FR-029)", () => {
     expect(text(d)).toContain("You cannot undo this.");
   });
 
-  test("the long-path refusal shows its text in place of the confirmation", async () => {
+  test("the long-path refusal shows its text with Close in place of the confirmation (decision U3)", async () => {
     const files = [entry("untracked", "deep.txt")];
     const { double } = await setup(files);
     await deleteBy(item("Changes", "deep.txt"));
     await answer(double.pending("reviewWorkbench"), rejected("WORKBENCH_UNAVAILABLE", { reason: "long-path" }));
+    const d = dialog()!;
+    expect(text(d.querySelector("h2")!)).toBe("Arbareto does not move a path of 260 or more characters to the Recycle Bin. Use Delete permanently…");
+    expect([...d.querySelectorAll("button")].map((b) => text(b))).toEqual(["Close"]);
+    expect(text(document.activeElement!)).toBe("Close");
+    await click(button("Close", d));
     expect(dialog()).toBeNull();
-    expect(statusBar()).toContain("Arbareto does not move a path of 260 or more characters to the Recycle Bin. Use Delete permanently…");
+    expect(double.count("runWorkbench")).toBe(0);
   });
 
   test("the review refusal path states the Windows name text", async () => {
-    const files = [entry("untracked", "a.")];
+    const files = [entry("untracked", "a.txt")];
     const { double } = await setup(files);
-    await deleteBy(item("Changes", "a."));
+    await deleteBy(item("Changes", "a.txt"));
     await answer(double.pending("reviewWorkbench"), rejected("WORKBENCH_UNAVAILABLE", { reason: "path" }));
     expect(statusBar()).toContain("Windows does not allow this file name.");
+  });
+
+  const refusalTexts: [unknown, string][] = [
+    [rejected("WORKBENCH_UNAVAILABLE", { reason: "unreadable" }), "Arbareto cannot read one of these files, so Delete is unavailable."],
+    [rejected("WORKBENCH_UNAVAILABLE", { reason: "no-recycle-bin" }), "Files in a WSL distro have no Recycle Bin. Use Delete permanently…"],
+    [rejected("STALE_SELECTION"), "The files changed after the status read. Select Refresh (F5), then delete again."],
+  ];
+  for (const [response, sentence] of refusalTexts) {
+    test(`the review refusal states "${sentence}" (review fix 5)`, async () => {
+      const files = [entry("untracked", "a.txt")];
+      const { double } = await setup(files);
+      await deleteBy(item("Changes", "a.txt"));
+      await answer(double.pending("reviewWorkbench"), response);
+      expect(statusBar()).toContain(sentence);
+      expect(statusBar()).not.toContain("did not start");
+    });
+  }
+
+  test("the notices block is the dialog description, so the tracked, WSL, and irreversible lines are read (review fix 8)", async () => {
+    const files = [entry("unstaged", "a.ts")];
+    await confirmFor(files, plan(files, { mode: "permanent", wsl: true }), true);
+    const described = describedBy(dialog()!);
+    expect(described).toContain("Git tracks 1 of these files.");
+    expect(described).toContain("Files in a WSL distro have no Recycle Bin.");
+    expect(described).toContain("You cannot undo this.");
   });
 
   test("Cancel closes the dialog and runs nothing", async () => {

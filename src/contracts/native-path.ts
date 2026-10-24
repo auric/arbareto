@@ -4,6 +4,7 @@
 import { posix, win32 } from "node:path";
 import { hasDosDrivePrefix } from "./drive-prefix";
 import { foldAscii } from "./fold-ascii";
+import { isWindowsComponent } from "./windows-name";
 
 // Contract §6 "Channel frames": the native path rules. Shared code takes every platform path rule from this module.
 export const PATH_RULES = {
@@ -16,14 +17,8 @@ export const PATH_RULES = {
     isUncOrDevice: (path: string) => /^[\\/]{2}/.test(path),
     hasDrivePrefix: hasDosDrivePrefix,
     isGitExecutable: (path: string) => /[\\/]git\.exe$/i.test(path),
-    // Contract §6 "File facts". Microsoft Learn "Naming Files, Paths, and Namespaces", "Naming Conventions": no character of `<>:"/\|?*`,
-    // no U+0000 to U+001F, and no trailing space or period. So `.` and `..` fail too.
-    // The page reserves CON, PRN, AUX, NUL, COM1 to COM9, COM¹ to COM³, LPT1 to LPT9, and LPT¹ to LPT³, without case sensitivity.
-    // "NUL.txt and NUL.tar.gz are both equivalent to NUL", so the part before the first period decides.
-    isComponent: (name: string) =>
-      /^[^<>:"/\\|?*\u0000-\u001f]+$/.test(name) &&
-      !/[. ]$/.test(name) &&
-      !/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/.test(foldAscii(name)),
+    // Contract §6 "File facts": the Windows name rule of `windows-name.ts`.
+    isComponent: isWindowsComponent,
     // Contract §7 "Program file digests": an absolute link target is the `SubstituteName`, an NT object namespace path.
     // Sources: MS-FSCC 2.1.2.4 and 2.1.2.5 (`SubstituteName`), Microsoft Learn "Naming Files, Paths, and Namespaces", "NT Namespaces".
     // `\??\X:\…` maps to `X:\…`, and `\??\UNC\server\share\…` maps to `\\server\share\…`. Every other form gives null.

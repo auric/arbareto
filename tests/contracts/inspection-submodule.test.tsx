@@ -131,8 +131,19 @@ describe("availability (SubmoduleOpen board, FR-048, US6-3)", () => {
       await act(async () => groupRow(path).focus());
       await pressKey(groupRow(path), "Enter");
       expect(double.count("openSubmodule")).toBe(0);
+      // Review fix 6: Enter and a double-click show the reason in the status line.
+      expect(statusBar()).toContain(reason);
     });
   }
+
+  test("a double-click on an unavailable row shows its reason and sends nothing (review fix 6)", async () => {
+    const { double } = await setup([{ path: "lib", action: "clone" }]);
+    expect(statusBar()).not.toContain("Initialize this submodule first.");
+    await act(async () => void groupRow("lib").dispatchEvent(new MouseEvent("dblclick", { bubbles: true })));
+    await settle();
+    expect(double.count("openSubmodule")).toBe(0);
+    expect(statusBar()).toContain("Initialize this submodule first. Select Update submodules.");
+  });
 
   test("the Commit view row takes the reason of the group row with the same path bytes", async () => {
     const world = createWorld({ entries: [entry("unstaged", "lib", { submodule: "SC..", xy: ".M" })] });

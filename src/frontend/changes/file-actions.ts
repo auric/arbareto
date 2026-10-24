@@ -2,9 +2,11 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import type { ChangeEntry, WorkspaceSnapshot } from "../../contracts/envelope";
-import { MULTI_FILE_ACTION_FILES } from "../../contracts/limits";
+import { FILE_FACT_COMPONENT_UNITS, MULTI_FILE_ACTION_FILES } from "../../contracts/limits";
+import { isWindowsComponent } from "../../contracts/windows-name";
 import type { BridgeResponse, createBridge } from "../bridge";
 import { TEXTS } from "../integrate/texts";
+import type { IgnoreTarget } from "../state/workbench";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { folderEntries, formatCount, type FilesRequest } from "./file-tree";
 import { LIMITATION_TEXT } from "./limitation-text";
@@ -12,11 +14,9 @@ import { LIMITATION_TEXT } from "./limitation-text";
 // Feature 004 contract Δ3 `applyFiles` and `revealPath`; feature 005 contract Δ3 `reviewWorkbench` and `runWorkbench` with action `delete`, plan.md D5, D6, D15; spec FR-018 to FR-033.
 
 type Bridge = ReturnType<typeof createBridge>;
-export type IgnoreTarget = "gitignore" | "exclude";
 
-// Feature 005 plan.md D15 "Commit view row menu" and "Ignore editor".
+// Feature 005 plan.md D15 "Commit view row menu".
 export const IGNORE_LABEL: Record<IgnoreTarget, string> = { gitignore: "Add to .gitignore…", exclude: "Add to info/exclude…" };
-export const IGNORE_FILE: Record<IgnoreTarget, string> = { gitignore: ".gitignore", exclude: "info/exclude" };
 // Feature 004 plan.md D9: the `ignoreLine` refusals.
 export const IGNORE_LINE_REASON = { path: "The path holds a control character or bytes that are not UTF-8.", limit: "The ignore line is longer than 4,096 bytes." } as const;
 export const LIMIT_TEXT = "One action covers at most 10,000 files and 512 MiB of working files.";
@@ -33,7 +33,10 @@ export const DELETE_REASON: Record<string, string> = {
   "long-path": "Arbareto does not move a path of 260 or more characters to the Recycle Bin. Use Delete permanently…",
   "nothing-to-delete": "This file is already deleted from the working tree.",
   path: "Windows does not allow this file name.",
+  unreadable: "Arbareto cannot read one of these files, so Delete is unavailable.",
+  "no-recycle-bin": "Files in a WSL distro have no Recycle Bin. Use Delete permanently…",
 };
+const STALE_SELECTION_TEXT = "The files changed after the status read. Select Refresh (F5), then delete again.";
 export const NO_HISTORY = "Git has no history for this file.";
 export const DELETE_TEXTS: [string, string, string] = ["Delete files", "Deleting files", "Delete files details"];
 
@@ -65,7 +68,19 @@ export function deleteReason(entries: readonly ChangeEntry[]): string | null {
   if (entries.some((e) => e.category === "untracked" && atob(e.pathBytes).endsWith("/"))) return DELETE_REASON["nested-repository"]!;
   if (entries.length > MULTI_FILE_ACTION_FILES) return DELETE_REASON.limit!;
   if (entries.length > 0 && entries.every((e) => e.xy?.[1] === "D")) return DELETE_REASON["nothing-to-delete"]!;
+  if (!entries.every((e) => namesOk(e.pathBytes))) return DELETE_REASON.path!;
   return null;
+}
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+// Plan D6 `path`: the name rule of the service review (git-service/file-delete.ts `namesOf`) and of the shell `below` rule.
+function namesOk(pathBytes: string): boolean {
+  let text: string;
+  try {
+    text = strictUtf8.decode(Uint8Array.from(atob(pathBytes), (c) => c.charCodeAt(0)));
+  } catch {
+    return false;
+  }
+  return text.split("/").every((name) => name.length > 0 && name.length <= FILE_FACT_COMPONENT_UNITS && name.isWellFormed() && isWindowsComponent(name));
 }
 /** The 004 common refusals of a mutation (feature 004 plan D15): the conflicted count first, then an unfinished operation. */
 export function deleteBlock(operationState: WorkspaceSnapshot["operationState"], conflicted: number): string | null {
@@ -76,7 +91,8 @@ export function deleteBlock(operationState: WorkspaceSnapshot["operationState"],
 export const deleteEntries = (entries: readonly ChangeEntry[], folder: string) => folderEntries(entries, folder, "stage");
 
 export type DeletePlan = { mode: "recycle" | "permanent"; entryIds: string[]; files: { count: number; paths: string[] }; tracked: number; folder: string | null; wsl: boolean };
-export type DeleteReview = { ok: true; token: string; plan: DeletePlan } | { ok: false; text: string };
+/** `inPlace`: the refusal shows in the dialog area in place of the confirmation (plan D15, decision U3). */
+export type DeleteReview = { ok: true; token: string; plan: DeletePlan } | { ok: false; text: string; inPlace?: true };
 
 const utf8 = new TextDecoder("utf-8");
 /** The display text of base64 path bytes. */
@@ -164,7 +180,8 @@ export function fileActions(deps: FilesDeps) {
       const result = response.result as { action?: unknown; workbenchToken?: unknown; plan?: DeletePlan; unmerged?: unknown } | undefined;
       if (response.state === "succeeded" && result?.action === "delete" && typeof result.workbenchToken === "string" && result.plan !== undefined) return { ok: true, token: result.workbenchToken, plan: result.plan };
       const reason = reasonOf(response);
-      if (response.code === "WORKBENCH_UNAVAILABLE" && reason !== undefined && DELETE_REASON[reason] !== undefined) return { ok: false, text: DELETE_REASON[reason]! };
+      if (response.code === "WORKBENCH_UNAVAILABLE" && reason !== undefined && DELETE_REASON[reason] !== undefined) return { ok: false, text: DELETE_REASON[reason]!, ...(reason === "long-path" ? { inPlace: true as const } : {}) };
+      if (response.code === "STALE_SELECTION") return { ok: false, text: STALE_SELECTION_TEXT };
       if (response.code === "OPERATION_IN_PROGRESS") return { ok: false, text: TEXTS.operationInProgress };
       if (response.code === "CONFLICTED" && typeof result?.unmerged === "number") return { ok: false, text: TEXTS.conflicted(result.unmerged) };
       return { ok: false, text: `${DELETE_TEXTS[0]} did not start: ${coded(response)}` };

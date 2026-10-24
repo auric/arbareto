@@ -164,6 +164,20 @@ function base64(text: string): string {
   return btoa(binary);
 }
 const reasonOf = (response: BridgeResponse) => (response.result as { reason?: unknown } | undefined)?.reason;
+/** Git dir.c `trim_trailing_spaces`: drops the trailing U+0020 run unless a backslash quotes it. A final lone backslash keeps the line. */
+export function trimTrailingSpaces(line: string): string {
+  let lastSpace = -1;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === " ") {
+      if (lastSpace < 0) lastSpace = i;
+    } else if (c === "\\") {
+      if (++i === line.length) return line;
+      lastSpace = -1;
+    } else lastSpace = -1;
+  }
+  return lastSpace < 0 ? line : line.slice(0, lastSpace);
+}
 const TRUST = new Set(["TRUST_REQUIRED", "TRUST_CHANGED"]);
 
 /** One store per window: the docked ignore editor and its discard modal (spec FR-034 to FR-046). */
@@ -207,22 +221,17 @@ export function createIgnoreEditor(deps: IgnoreEditorDeps) {
     patch({ refusal: response.code === "WORKBENCH_UNAVAILABLE" && typeof reason === "string" ? reason : `code:${response.code ?? response.state}` });
   }
 
-  /** Spec FR-034: a line of the text equal to `line` adds nothing and is selected. Otherwise a LF first when the text does not end with one, then the line and LF. */
+  /** Spec FR-034 and plan D8: a line of the text equal to `line` by Git's trailing-space rule adds nothing and is selected. Otherwise a LF first when the text does not end with one, then the line and LF. */
   function addLine(line: string) {
     const e = state.editor;
     if (e === null) return;
-    let found = -1;
     for (let at = 0; at <= e.text.length; ) {
       const end = e.text.indexOf("\n", at);
       const stop = end < 0 ? e.text.length : end;
-      if (e.text.slice(at, stop) === line) {
-        found = at;
-        break;
-      }
+      if (trimTrailingSpaces(e.text.slice(at, stop)) === line) return patch({ selection: { start: at, end: stop, seq: ++seq } });
       if (end < 0) break;
       at = end + 1;
     }
-    if (found >= 0) return patch({ selection: { start: found, end: found + line.length, seq: ++seq } });
     const base = e.text === "" || e.text.endsWith("\n") ? e.text : `${e.text}\n`;
     edit(`${base}${line}\n`, { start: base.length, end: base.length + line.length });
   }

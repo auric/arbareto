@@ -72,7 +72,7 @@ const STARTED_ACTIONS = [
   "ignore-save-gitignore",
   "ignore-save-exclude",
 ];
-const WORKBENCH_PHASES = ["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "config", "ignore", "stage-files"];
+const WORKBENCH_PHASES = ["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "config", "stage-files"];
 
 const request = (operation: string, payload: unknown, target: Record<string, unknown> = {}) => ({ version: 1, sessionId: id(), requestId: id(), operation, ...target, payload });
 const check = (value: unknown, side: "renderer" | "service" = "renderer") => {

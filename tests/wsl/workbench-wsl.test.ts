@@ -22,7 +22,7 @@ import { objectsWith } from "../git/submodule-harness";
 import { ANY_EXIT, gitExe, INTEGRATE_ENV, sendSync } from "../git/sync-harness";
 import { buildWorkbench, FIXTURE_MERGE_RESULT, repoOf, wb, type WbFixture, type WbFixtureName } from "../git/workbench-fixtures";
 import { buildF31, distroGitHost, distroSubmoduleOracle, distroSubmoduleState, globalConfig, sh } from "./fixtures";
-import { inDistro, listScopes, pgrep, uncPath, useWslFolder, WSL_FILES_TEXT, wslExec, wslTest, type WslCapability, type WslHost } from "./wsl-host";
+import { inDistro, listScopes, pgrep, uncPath, useWslFolder, wslExec, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
 for (const module of ["session", "workbench-review", "switch", "branch-ops", "merge-rebase", "resolve", "worktrees", "git-settings", "trust", "file-publish", "hunk-publish", "submodule-review", "submodule-update"]) {
   printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
@@ -43,8 +43,6 @@ const RESPONSE_MS = 300_000;
 const MERGETOOL_MS = 60_000;
 // Contract §11 "Process ownership": no Linux process of the operation remains 1 second after the Job close.
 const AFTER_CLOSE_MS = 1_000;
-// src-tauri/src/file_append.rs `IGNORE_TARGET_BYTES`: the bound of a `fileAppend` target.
-const IGNORE_TARGET_BYTES = 1_048_576;
 const TAR = join(process.env.SystemRoot ?? "C:\\Windows", "System32", "tar.exe");
 const L = "--no-lazy-fetch";
 // `check-ignore` refuses the literal pathspec magic (research.md R21 F1), so its reads omit it.
@@ -943,46 +941,6 @@ describe("Git facts F1 to F24 and F29 to F31 in the distro (T081, research.md R2
       for (const o of observations) console.log(observationLine(TASK, o, versionOf(w)));
     }, FACT_MS);
   }
-});
-
-// ---- Contract Δ6 `fileAppend` in the distro: `wslFiles` mode `append` (plan.md D18) ----
-
-// The stdin of `src-tauri/src/wsl.rs` `append_command`: the bound, the root index, the component count and names, the expected state, and the bytes in hex, each ended by NUL.
-// The shell runs the text through the wrapper in `probe` mode, which adds the start byte. This direct run has no wrapper, so the output is the record alone.
-function append(w: WslHost, roots: [string, string, string], root: number, path: string[], expected: Buffer | null, data: string): string[] {
-  const tokens = [String(IGNORE_TARGET_BYTES), String(root), String(path.length), ...path, ...(expected === null ? ["absent"] : [String(expected.length), sha256(expected)]), Buffer.from(data, "utf8").toString("hex")];
-  const res = wslExec(["--distribution", w.distro, "--cd", "/", "--exec", "/usr/bin/perl", "-e", WSL_FILES_TEXT, "--", "append", ...roots, w.probe.paths.git!, w.probe.paths.sha256sum!], { input: bytes(tokens.map((t) => `${t}\0`).join("")) });
-  expect({ exit: res.exitCode, stderr: res.stderr }).toEqual({ exit: 0, stderr: "" });
-  return nul(res.stdout);
-}
-
-describe("fileAppend through wslFiles mode append (T081, contract Δ6, plan.md D18)", () => {
-  wslTest("an absent target is created with the bytes; an expected state appends; a changed state gives stale; a link gives refused; check-ignore then matches the line", NEEDS, (w) => {
-    const f = copy(w, "staging-tree");
-    const r = at(f);
-    const [top, gitDir, common] = out(r, ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-dir", "--git-common-dir"]).trimEnd().split("\n") as [string, string, string];
-    const roots: [string, string, string] = [top, gitDir, common];
-    expect(f.h.existing([`${f.repo}/.gitignore`])).toEqual([]);
-    expect(append(w, roots, 0, [".gitignore"], null, "/top-new.txt\n")).toEqual(["appended"]);
-    expect(f.h.read(`${f.repo}/.gitignore`)!.toString("utf8")).toBe("/top-new.txt\n");
-    // `absent` with an existing file is a changed state.
-    expect(append(w, roots, 0, [".gitignore"], null, "/x\n")).toEqual(["stale"]);
-    // A missing `info/exclude` takes the `absent` form.
-    const exclude = f.h.read(`${common}/info/exclude`);
-    const old = exclude?.toString("utf8") ?? "";
-    expect(append(w, roots, 2, ["info", "exclude"], exclude, "/docs/\n")).toEqual(["appended"]);
-    expect(f.h.read(`${common}/info/exclude`)!.toString("utf8")).toBe(`${old}/docs/\n`);
-    expect(append(w, roots, 2, ["info", "exclude"], exclude ?? Buffer.alloc(0), "/again/\n")).toEqual(["stale"]);
-    expect(f.h.read(`${common}/info/exclude`)!.toString("utf8")).toBe(`${old}/docs/\n`);
-    sh(w, "ln -s -- top.txt linked", [], { cwd: f.repo });
-    const target = f.h.read(`${f.repo}/top.txt`)!;
-    expect(append(w, roots, 0, ["linked"], target, "/y\n")).toEqual(["refused"]);
-    expect(f.h.read(`${f.repo}/top.txt`)).toEqual(target);
-    // git-check-ignore(1) exits 0 when the path is ignored.
-    // `--no-index` also reports the tracked `docs/d.txt`.
-    expect(run(r, [...READ_IGNORE, "check-ignore", "-q", "--no-index", "--", "top-new.txt"]).exitCode).toBe(0);
-    expect(run(r, [...READ_IGNORE, "check-ignore", "-q", "--no-index", "--", "docs/d.txt"]).exitCode).toBe(0);
-  }, CASE_MS);
 });
 
 // ---- Service cases (quickstart.md Q26) ----

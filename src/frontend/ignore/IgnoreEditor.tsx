@@ -26,7 +26,7 @@ const OPEN_REFUSAL: Record<string, (file: string) => string> = {
   "ignore-not-utf8": (f) => `${f} is not valid UTF-8 text. Arbareto does not edit it.`,
   "ignore-nul": (f) => `${f} holds a NUL character. Arbareto does not edit it.`,
   "mixed-line-endings": (f) => `${f} has mixed line endings, or a CR without an LF. Arbareto does not edit it.`,
-  unreadable: (f) => `Arbareto cannot read ${f}: unreadable.`,
+  unreadable: (f) => `Arbareto cannot read ${f}.`,
   path: () => "Git names an info/exclude path outside the Git folder. Arbareto does not edit it.",
 };
 const PREVIEW_REASON: Record<string, string> = {
@@ -102,7 +102,7 @@ export function IgnoreEditor({ store, onTrust }: IgnoreEditorProps) {
         <div className="flex min-h-0 flex-1">
           <TextPane editor={editor} label={heading} onEdit={store.edit} />
           <Splitter label="Resize editor and preview" orientation="vertical" value={width} min={PREVIEW_WIDTH.min} max={PREVIEW_WIDTH.max} reverse onChange={setWidth} />
-          <div role="region" aria-label="Preview" className="flex min-h-0 shrink-0 flex-col" style={{ width }}>
+          <div role="region" aria-label="Preview" data-section="ignorePreview" tabIndex={-1} className="flex min-h-0 shrink-0 flex-col" style={{ width }}>
             <Preview preview={editor.preview} onTrust={onTrust} />
           </div>
         </div>
@@ -192,19 +192,35 @@ function TextPane({ editor, label, onEdit }: { editor: IgnoreEditorState; label:
   );
 }
 
+function warningOf(preview: IgnorePreview): string | null {
+  if (preview.state === "invalid") return INVALID_TEXT;
+  if (preview.state === "unavailable") return `Preview not available: ${PREVIEW_REASON[preview.reason] ?? preview.reason}.`;
+  if (preview.state === "failed") return `Preview not available: Git failed with ${preview.code}.`;
+  return null;
+}
+
 function Preview({ preview, onTrust }: { preview: IgnorePreview; onTrust(): void }) {
-  const status = <p role="status" className={preview.state === "updating" ? "p-2" : "sr-only"}>{preview.state === "updating" ? "Updating preview…" : ""}</p>;
-  if (preview.state === "trust") return <ReadsTrustNotice onTrust={onTrust} />;
-  const warning = (text: string) => (
-    <p className="flex items-start gap-2 bg-warning-fill p-2">
-      <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" className="mt-px size-(--icon-size) shrink-0 text-warning" />
-      <span>{text}</span>
+  const warning = warningOf(preview);
+  // One status element stays mounted across the states, so each new text is announced.
+  const status = (
+    <p role="status" className={warning !== null ? "flex items-start gap-2 bg-warning-fill p-2" : preview.state === "updating" ? "p-2" : "sr-only"}>
+      {warning !== null ? (
+        <>
+          <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" className="mt-px size-(--icon-size) shrink-0 text-warning" />
+          <span>{warning}</span>
+        </>
+      ) : preview.state === "updating" ? (
+        "Updating preview…"
+      ) : null}
     </p>
   );
-  if (preview.state === "invalid") return warning(INVALID_TEXT);
-  if (preview.state === "unavailable") return warning(`Preview not available: ${PREVIEW_REASON[preview.reason] ?? preview.reason}.`);
-  if (preview.state === "failed") return warning(`Preview not available: Git failed with ${preview.code}.`);
-  if (preview.state !== "shown") return status;
+  if (preview.state !== "shown")
+    return (
+      <>
+        {status}
+        {preview.state === "trust" ? <ReadsTrustNotice onTrust={onTrust} /> : null}
+      </>
+    );
   const { newlyIgnored, noLongerIgnored, trackedMatched, notices } = preview.result;
   return (
     <>
@@ -221,6 +237,7 @@ function Preview({ preview, onTrust }: { preview: IgnorePreview; onTrust(): void
           {notices.entries.map((notice) => (
             <li key={`${notice.kind}:${notice.pathBytes}`} className="break-all">{`${pathText(notice.pathBytes)} ${NOTICE[notice.kind]}`}</li>
           ))}
+          {notices.more > 0 ? <li className="text-muted-text">{`and ${formatCount(notices.more)} more`}</li> : null}
         </ul>
       )}
       <Group title="Newly ignored" group={newlyIgnored} />

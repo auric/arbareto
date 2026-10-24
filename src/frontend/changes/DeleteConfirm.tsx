@@ -3,7 +3,7 @@
 
 import { Alert02Icon, AlertCircleIcon, Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { useRef, type ReactNode } from "react";
+import { useId, useRef, type ReactNode } from "react";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { pathText, type DeletePlan } from "./file-actions";
@@ -35,9 +35,11 @@ export function DeleteConfirm({ plan, onConfirm, onCancel, finalFocus }: DeleteC
   const files = n === 1 ? "1 file" : `${formatCount(n)} files`;
   const permanent = plan.mode === "permanent";
   const more = n - plan.files.paths.length;
+  const notices = useId();
+  const noticed = plan.tracked > 0 || plan.wsl || permanent;
   return (
     <Dialog open onOpenChange={(next) => void (next || onCancel())}>
-      <DialogContent showCloseButton={false} initialFocus={cancel} finalFocus={finalFocus ?? true} className="flex flex-col gap-0 p-0 sm:max-w-lg">
+      <DialogContent showCloseButton={false} initialFocus={cancel} finalFocus={finalFocus ?? true} aria-describedby={noticed ? notices : undefined} className="flex flex-col gap-0 p-0 sm:max-w-lg">
         <div className="flex items-start gap-2 px-4 pt-4 pb-2">
           <HugeiconsIcon icon={permanent ? Alert02Icon : Delete02Icon} strokeWidth={2} aria-hidden="true" className={`mt-0.5 size-(--icon-size) shrink-0 ${permanent ? "text-removed" : ""}`} />
           <DialogTitle className="text-sm/5 font-semibold">{permanent ? `Delete ${files} permanently?` : `Move ${files} to the Recycle Bin?`}</DialogTitle>
@@ -58,18 +60,22 @@ export function DeleteConfirm({ plan, onConfirm, onCancel, finalFocus }: DeleteC
             ))}
           </ul>
           {more > 0 ? <p>{more === 1 ? "and 1 more file." : `and ${formatCount(more)} more files.`}</p> : null}
-          {plan.tracked > 0 ? (
-            <Notice icon={Alert02Icon} fill="bg-warning-fill" tone="text-warning">{`Git tracks ${formatCount(plan.tracked)} of these files. The index does not change. Git then shows them as deleted.`}</Notice>
-          ) : null}
-          {plan.wsl ? (
-            <Notice icon={Alert02Icon} fill="bg-warning-fill" tone="text-warning">
-              Files in a WSL distro have no Recycle Bin.
-            </Notice>
-          ) : null}
-          {permanent ? (
-            <Notice icon={AlertCircleIcon} fill="bg-removed-fill" tone="text-removed">
-              You cannot undo this.
-            </Notice>
+          {noticed ? (
+            <div id={notices} className="flex flex-col gap-2">
+              {plan.tracked > 0 ? (
+                <Notice icon={Alert02Icon} fill="bg-warning-fill" tone="text-warning">{`Git tracks ${formatCount(plan.tracked)} of these files. The index does not change. Git then shows them as deleted.`}</Notice>
+              ) : null}
+              {plan.wsl ? (
+                <Notice icon={Alert02Icon} fill="bg-warning-fill" tone="text-warning">
+                  Files in a WSL distro have no Recycle Bin.
+                </Notice>
+              ) : null}
+              {permanent ? (
+                <Notice icon={AlertCircleIcon} fill="bg-removed-fill" tone="text-removed">
+                  You cannot undo this.
+                </Notice>
+              ) : null}
+            </div>
           ) : null}
         </div>
         <div className="flex justify-end gap-2 border-t border-divider px-3 py-2">
@@ -78,6 +84,26 @@ export function DeleteConfirm({ plan, onConfirm, onCancel, finalFocus }: DeleteC
           </Button>
           <Button className="bg-removed text-surface hover:bg-removed/80" onClick={onConfirm}>
             {permanent ? "Delete permanently" : "Move to Recycle Bin"}
+          </Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** Plan D15 "Delete review refusal in place" (decision U3): the refusal takes the dialog area. Close has the initial focus. */
+export function DeleteRefusal({ text, onClose, finalFocus }: { text: string; onClose(): void; finalFocus?: () => HTMLElement | null }) {
+  const close = useRef<HTMLButtonElement>(null);
+  return (
+    <Dialog open onOpenChange={(next) => void (next || onClose())}>
+      <DialogContent showCloseButton={false} initialFocus={close} finalFocus={finalFocus ?? true} className="flex flex-col gap-0 p-0 sm:max-w-lg">
+        <div className="flex items-start gap-2 px-4 pt-4 pb-3">
+          <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" className="mt-0.5 size-(--icon-size) shrink-0 text-warning" />
+          <DialogTitle className="text-sm/5 font-semibold">{text}</DialogTitle>
+        </div>
+        <div className="flex justify-end gap-2 border-t border-divider px-3 py-2">
+          <Button ref={close} variant="outline" onClick={onClose}>
+            Close
           </Button>
         </div>
       </DialogContent>

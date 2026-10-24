@@ -9,7 +9,7 @@ import { printOrigin } from "../origin";
 import { fixtureId } from "./bridge-contract";
 import { b64, contextMenu, entry, expectChromiumFocus, item, menuItem, openCommitView, pressKey, statusBar, typeInto } from "./commit-fake";
 import { stubLayout } from "./history-fake";
-import { answer, button, click, createWorld, succeeded, text, unmountAll, type Call } from "./sync-fake";
+import { answer, button, click, createWorld, settle, succeeded, text, unmountAll, type Call } from "./sync-fake";
 
 // tasks.md T049 (feature 005, WP7). Story US5. Spec FR-034 to FR-046, FR-067, FR-068. Plan D8, D9, D10, D15 ("Ignore editor", "Ignore editor keys", "Ignore editor texts").
 
@@ -397,5 +397,160 @@ describe("save, close, and keys (FR-042, FR-044, FR-046, plan D15)", () => {
     await opened();
     const tab = await pressKey(field(), "Tab");
     expect(tab.defaultPrevented).toBe(false);
+  });
+});
+
+// ---- Batch 3 review fixes ----
+
+const comparison = () => document.querySelector<HTMLElement>('[data-section="comparison"]')!;
+const composer = () => document.querySelector<HTMLElement>('[data-section="composer"]')!;
+
+describe("F6 with the editor (plan D15 F6 order)", () => {
+  test("a remembered diff control in the hidden diff does not take F6: F6 reaches the editor (review fix 1)", async () => {
+    const { double } = await setup();
+    await click(item("Changes", "notes.txt"));
+    const copy = button("Copy path", comparison());
+    await act(async () => copy.focus());
+    expect(document.activeElement).toBe(copy);
+    // A refused read shows no textarea, so the editor takes no focus of its own.
+    await openFrom(double, "notes.txt", "Add to .gitignore…", rejected("WORKBENCH_UNAVAILABLE", { reason: "ignore-link" }));
+    expect(copy.closest("[hidden]")).not.toBeNull();
+    const message = composer().querySelector<HTMLElement>("textarea")!;
+    await act(async () => message.focus());
+    await pressKey(message, "F6", { shiftKey: true });
+    expect(editor()!.contains(document.activeElement)).toBe(true);
+  });
+
+  test("the preview is its own F6 stop after the editor (review fix 13)", async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt");
+    expect(document.activeElement).toBe(field());
+    await pressKey(field(), "F6");
+    expect(preview().contains(document.activeElement)).toBe(true);
+    await pressKey(document.activeElement!, "F6");
+    expect(composer().contains(document.activeElement)).toBe(true);
+    await pressKey(document.activeElement!, "F6", { shiftKey: true });
+    expect(preview().contains(document.activeElement)).toBe(true);
+    await pressKey(document.activeElement!, "F6", { shiftKey: true });
+    expect(document.activeElement).toBe(field());
+  });
+});
+
+describe("every open asks first with unsaved text (FR-044, review fix 2)", () => {
+  async function dirty(world = createWorld({ entries: [entry("untracked", "notes.txt")] })) {
+    const double = await openCommitView(workbench, world);
+    await openFrom(double, "notes.txt");
+    return double;
+  }
+  // The switcher popup is a dialog too, so the modal is found by its title.
+  const discard = async () => {
+    const modal = [...document.querySelectorAll<HTMLElement>('[role="dialog"]')].find((d) => d.querySelector("h2") !== null)!;
+    expect(text(modal.querySelector("h2")!)).toBe("Discard changes to .gitignore?");
+    await click(button("Discard", modal));
+  };
+
+  test("a recent entry of the repository switcher", async () => {
+    const world = createWorld({ entries: [entry("untracked", "notes.txt")] });
+    world.answers.listRecentRepositories = () => succeeded({ entries: [{ entryId: fixtureId(0x8f0), path: "C:\\other", location: { kind: "native" }, openedAt: "2026-10-10T08:00:00Z", current: false }] });
+    const double = await dirty(world);
+    await click(document.querySelector<HTMLElement>('header button[aria-keyshortcuts="Control+R"]')!);
+    const option = [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Recent repositories"] [role="option"]')][1]!;
+    await click(option);
+    expect(double.count("openRecentRepository")).toBe(0);
+    await discard();
+    expect(double.count("openRecentRepository")).toBe(1);
+  });
+
+  test("Open of another worktree", async () => {
+    const world = createWorld({ entries: [entry("untracked", "notes.txt")] });
+    const wt = (path: string, fields: Record<string, unknown> = {}) => ({ path, invalidUtf8: false, head: "1".repeat(40), branch: null, bare: false, detached: false, headUnresolved: false, locked: null, prunable: null, main: false, current: false, ...fields });
+    world.answers.readWorktrees = () => succeeded({ entries: [wt("C:/repo", { branch: "refs/heads/main", main: true, current: true }), wt("C:/wt/repo-other", { branch: "refs/heads/other" })] });
+    const double = await dirty(world);
+    const toggle = document.querySelector<HTMLElement>('button[aria-label="Show references"]');
+    if (toggle !== null && toggle.getAttribute("aria-expanded") !== "true") await click(toggle);
+    const row = [...document.querySelectorAll<HTMLElement>('[data-slot="worktrees-group"] [role="option"]')].find((r) => (r.getAttribute("aria-label") ?? "").startsWith("repo-other,"))!;
+    await act(async () => void row.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true })));
+    await settle();
+    expect(double.count("openWorktree")).toBe(0);
+    await discard();
+    expect(double.count("openWorktree")).toBe(1);
+  });
+
+  test("the clone start", async () => {
+    const double = await dirty();
+    await openMenubar("Repository");
+    await click(menuItem("Clone…"));
+    const panel = document.querySelector<HTMLElement>('section[data-slot="clone-panel"]')!;
+    const input = (label: string) => {
+      const found = [...panel.querySelectorAll<HTMLLabelElement>("label")].find((l) => text(l) === label)!;
+      return (found.control ?? found.querySelector("input")) as HTMLInputElement;
+    };
+    await typeInto(input("Remote URL"), "https://example.invalid/team/tool.git");
+    await typeInto(input("Destination folder"), "D:\\src\\tool");
+    await click(button("Clone", panel));
+    expect(double.count("clone")).toBe(0);
+    await discard();
+    expect(double.count("clone")).toBe(1);
+  });
+});
+
+describe("the added line follows Git's trailing-space rule (review fix 10)", () => {
+  test('an existing "/notes.txt " equals the line, so nothing is added and that line is selected', async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt", "Add to .gitignore…", loaded("a\n/notes.txt  \nb\n"));
+    expect(field().value).toBe("a\n/notes.txt  \nb\n");
+    expect(selected()).toBe("/notes.txt  ");
+  });
+
+  test("trimTrailingSpaces drops only an unquoted U+0020 run (dir.c trim_trailing_spaces)", async () => {
+    const { trimTrailingSpaces } = await import("../../src/frontend/state/workbench");
+    // Git 2.56.0.windows.2 check-ignore on a probe repository, 2026-10-24: "a  " matches a; "b\ " matches "b " only.
+    expect(trimTrailingSpaces("a  ")).toBe("a");
+    expect(trimTrailingSpaces("b\\ ")).toBe("b\\ ");
+    expect(trimTrailingSpaces("b\\  ")).toBe("b\\ ");
+    expect(trimTrailingSpaces("c\\")).toBe("c\\");
+    expect(trimTrailingSpaces("d \t")).toBe("d \t");
+    expect(trimTrailingSpaces("e f")).toBe("e f");
+  });
+
+  test('an escaped trailing space keeps the space, so "/notes.txt\\ " differs and the line is added', async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt", "Add to .gitignore…", loaded("/notes.txt\\ \n"));
+    expect(field().value).toBe("/notes.txt\\ \n/notes.txt\n");
+  });
+});
+
+describe("preview texts (review fixes 4, 5, 7)", () => {
+  test("the notices end with the count of the notices that the result leaves out", async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt");
+    await typeInto(field(), "*.log\n");
+    await pause(450);
+    await answer(previewCall(double), succeeded({ preview: { newlyIgnored: { count: 0, paths: [] }, noLongerIgnored: { count: 0, paths: [] }, trackedMatched: 0, notices: { entries: [{ kind: "link", pathBytes: b64("a/.gitignore") }], more: 3 } } }));
+    expect(text(preview())).toContain("and 3 more");
+  });
+
+  test("one status element stays above the state and carries the warnings", async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt");
+    await typeInto(field(), "*.log\n");
+    await pause(450);
+    const status = preview().querySelector('[role="status"]')!;
+    expect(text(status)).toBe("Updating preview…");
+    await answer(previewCall(double), succeeded({ unavailable: { reason: "paths" } }));
+    expect(preview().querySelector('[role="status"]')).toBe(status);
+    expect(text(status)).toBe("Preview not available: the preview checks more than 100,000 paths.");
+    await typeInto(field(), "*.log\nx\n");
+    await pause(450);
+    await answer(previewCall(double), { requestId: fixtureId(0x8d5), state: "failed", code: "GIT_FAILED" });
+    expect(preview().querySelector('[role="status"]')).toBe(status);
+    expect(text(status)).toBe("Preview not available: Git failed with GIT_FAILED.");
+  });
+
+  test("the open refusal unreadable has no code (contract Δ3 readIgnoreFile)", async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt", "Add to .gitignore…", rejected("WORKBENCH_UNAVAILABLE", { reason: "unreadable" }));
+    expect(text(editor()!)).toContain("Arbareto cannot read .gitignore.");
+    expect(text(editor()!)).not.toContain("unreadable");
   });
 });

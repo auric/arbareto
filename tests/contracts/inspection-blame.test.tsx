@@ -228,6 +228,16 @@ describe("the view (spec FR-054, US7-1, US7-2, Blame board)", () => {
     expect(m.host.querySelector('section[data-slot="blame-view"]')).toBeNull();
     expect(m.backs.length).toBe(2);
   });
+
+  test("Escape with the focus on Back returns at once", async () => {
+    const m = await answered();
+    const back = button(m.host, "Back");
+    await act(async () => back.focus());
+    expect(document.activeElement).toBe(back);
+    await key(back, "Escape");
+    expect(m.backs.length).toBe(1);
+    expect(m.host.querySelector('section[data-slot="blame-view"]')).toBeNull();
+  });
 });
 
 describe("gutter and age (spec FR-055)", () => {

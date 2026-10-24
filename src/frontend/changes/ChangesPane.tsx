@@ -17,8 +17,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/toolti
 import { KEYS, scopedAction } from "../keyboard/shortcuts";
 import { Splitter } from "../layout/Splitter";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
-import { DeleteConfirm } from "./DeleteConfirm";
-import { CUT_REASON, deleteEntries, deleteReason, IGNORE_LABEL, IGNORE_LINE_REASON, LIMIT_TEXT, NO_HISTORY, type DeletePlan, type DeleteReview, type FileActions, type IgnoreTarget } from "./file-actions";
+import { DeleteConfirm, DeleteRefusal } from "./DeleteConfirm";
+import { CUT_REASON, deleteEntries, deleteReason, IGNORE_LABEL, IGNORE_LINE_REASON, LIMIT_TEXT, NO_HISTORY, type DeletePlan, type DeleteReview, type FileActions } from "./file-actions";
+import type { IgnoreTarget } from "../state/workbench";
 import { changesRows, derivedRequest, folderEntries, formatCount, overLimit, stagedRows, type FilesRequest, type Layout, type TreeRow } from "./file-tree";
 
 // plan.md "Task flow and command placement", "Long text", "Keyboard and focus" (Roles, File list, Stage key row), and "Required visible states" (No selection, Empty/clean).
@@ -142,7 +143,7 @@ export function ChangesPane(props: ChangesPaneProps) {
   const [marked, setMarked] = useState<Marked | null>(null);
   const [menu, setMenu] = useState<{ key: string; list: ListName; anchor: HTMLElement; byKey: boolean } | null>(null);
   const closed = useRef<{ list: ListName; key: string; before: readonly TreeRow[] } | null>(null);
-  const [confirm, setConfirm] = useState<{ review: Extract<DeleteReview, { ok: true }>; anchor: HTMLElement } | null>(null);
+  const [confirm, setConfirm] = useState<{ review: DeleteReview; anchor: HTMLElement } | null>(null);
   const copy = useCopy();
   // Spec FR-101: Filter files filters only the shown rows. The derived actions and every count keep the status read.
   const [query, setQuery] = useState("");
@@ -359,7 +360,7 @@ export function ChangesPane(props: ChangesPaneProps) {
       files.wsl === true ? "permanent" : mode,
     );
     if (!mounted.current) return;
-    if (review.ok) setConfirm({ review, anchor });
+    if (review.ok || review.inPlace) setConfirm({ review, anchor });
     else status(review.text);
   }
 
@@ -613,7 +614,7 @@ export function ChangesPane(props: ChangesPaneProps) {
       {menu === null || menuRow === null ? null : (
         <ActionMenu label={menuRow.kind === "file" ? menuRow.entry.path : menuRow.kind === "folder" ? menuRow.path : "Untracked"} groups={menuGroups(menuRow, menu.list, menu.anchor)} open anchor={menu.anchor} byKey={menu.byKey} onOpenChange={(open) => !open && setMenu(null)} finalFocus={() => menu.anchor} />
       )}
-      {confirm === null ? null : (
+      {confirm === null ? null : confirm.review.ok ? (
         <DeleteConfirm
           plan={confirm.review.plan}
           finalFocus={() => (confirm.anchor.isConnected ? confirm.anchor : null)}
@@ -621,9 +622,11 @@ export function ChangesPane(props: ChangesPaneProps) {
           onConfirm={() => {
             const review = confirm.review;
             setConfirm(null);
-            void files?.actions.runDelete(review);
+            if (review.ok) void files?.actions.runDelete(review);
           }}
         />
+      ) : (
+        <DeleteRefusal text={confirm.review.text} finalFocus={() => (confirm.anchor.isConnected ? confirm.anchor : null)} onClose={() => setConfirm(null)} />
       )}
     </div>
   );

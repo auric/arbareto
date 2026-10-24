@@ -1141,7 +1141,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (!live.current.statusStop) present.delete("statusRegion");
     const sectionOf = (node: Element | null) => node?.closest<HTMLElement>(SECTION_SELECTOR)?.dataset.section as Section | undefined;
     let current = from ?? sectionOf(document.activeElement) ?? "header";
-    const order: Section[] = ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "commitDetails", "changedFiles", "historyDiff", "scopeBar", "pageList", "pageContent", "statusRegion"];
+    const order: Section[] = ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "ignorePreview", "composer", "commitDetails", "changedFiles", "historyDiff", "scopeBar", "pageList", "pageContent", "statusRegion"];
     const hidden = order.filter((s) => !present.has(s));
     // Plan D15 "F6 order per view": a section that takes no focus is skipped. One pass over the order bounds the loop.
     for (let step = 0; step < order.length; step++) {
@@ -1153,7 +1153,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       if (target === "statusRegion") {
         // The WSL start Cancel, else the T138 entry rule: the area heading once after it opens, then the last target.
         focus = (live.current.starting ? root.querySelector<HTMLElement>('[data-slot="status-area"] button') : null) ?? statusRegion.current?.entry() ?? null;
-      } else if (remembered?.isConnected && element.contains(remembered)) focus = remembered;
+      } else if (remembered?.isConnected && element.contains(remembered) && !remembered.closest("[hidden]")) focus = remembered;
       else if (target === "noticeHeading") focus = element.querySelector<HTMLElement>("h2");
       // A nested section, such as Changed files inside the commit details, is its own stop.
       else {
@@ -1506,7 +1506,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     onNotice: setNotice,
     onMerge: (entry, opener) => openIntegrate({ action: "merge", ref: entry.ref, name: entry.name }, opener),
     onRebase: (entry, opener) => openIntegrate({ action: "rebase", ref: entry.ref, name: entry.name }, opener),
-    onOpenWorktree: (path) => void (repositoryId === null ? undefined : bridge.openWorktree({ repositoryId, path }).then(openedWorktree)),
+    onOpenWorktree: (path) => void (repositoryId === null ? undefined : ignore.guard(() => void bridge.openWorktree({ repositoryId, path }).then(openedWorktree))),
     push: { reason: quietSync ?? reasons.pushReason, quiet: quietSync !== null, run: () => runSync.current("push") },
     onShowBranchHistory: () => void historyView.setScope("current"),
   });
@@ -1524,7 +1524,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     running,
     onOperation: setOperation,
     onNotice: setNotice,
-    onOpen: (worktree) => void (repositoryId === null ? undefined : bridge.openWorktree({ repositoryId, path: worktree }).then(openedWorktree)),
+    onOpen: (worktree) => void (repositoryId === null ? undefined : ignore.guard(() => void bridge.openWorktree({ repositoryId, path: worktree }).then(openedWorktree))),
     onDock: () => {
       setIntegrate(null);
       store.setView(viewKey, "history");
@@ -1805,6 +1805,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           onCancel={() => statusRegion.current?.requestCancel()}
           onTrustReads={() => void approveTrust("read")}
           onOpen={openSubmodule}
+          onRefused={setNotice}
           chain={parents.length}
         />
       </div>
@@ -1929,6 +1930,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               }}
               onOpenFolder={() => void openRepository()}
               onOpened={registered}
+              guard={ignore.guard}
             />
           </div>
           {distro === null ? null : (
@@ -2143,6 +2145,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             <CloneDialog
               bridge={bridge}
               separator={"\\"}
+              guard={ignore.guard}
               onOpened={(response) => {
                 setMainPanel(null);
                 registered(response);

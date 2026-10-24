@@ -190,6 +190,11 @@ describe("contract Δ2 envelope", () => {
 describe("contract Δ2 progress", () => {
   const event = (phase: string, counters: Record<string, number> = {}, extra: Record<string, unknown> = {}) => ({ requestId: id(), operationId: id(), state: "running", phase, counters, stalled: false, ...extra });
 
+  test("the 004 phase ignore goes with its producer (review fix 11)", () => {
+    expect<readonly string[]>(operations.PHASES).not.toContain("ignore");
+    expect(ok(envelope.ProgressEvent, event("ignore"))).toBe(false);
+  });
+
   test("the four new phases exist", () => {
     expect(operations.PHASES).toEqual(expect.arrayContaining(["blame", "delete-files", "ignore-save", "preview"]));
     for (const phase of ["blame", "delete-files", "ignore-save", "preview"]) expect(ok(envelope.ProgressEvent, event(phase))).toBe(true);

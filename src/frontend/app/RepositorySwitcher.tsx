@@ -36,6 +36,8 @@ export type RecentListProps = {
   onClose?(): void;
   /** Escape and Tab close the popup. The start page keeps them native. */
   popup?: boolean;
+  /** Feature 005 spec FR-044: runs the entry open, or asks first about unsaved ignore editor text. */
+  guard?(open: () => void): void;
 };
 
 /** The last folder name of a worktree root. A WSL root ends in the same name. */
@@ -81,7 +83,7 @@ const entryName = (e: Entry) => [folderName(e.path), e.path, ...(e.location.kind
 const isAbsent = (result: unknown): result is Absent => typeof result === "object" && result !== null && (result as { reason?: unknown }).reason === "absent";
 
 /** The filter, Open folder, and the recent entries. One combobox with `aria-activedescendant` over one listbox. */
-export function RecentList({ bridge, busy, onOpenFolder, onOpened, onClose, popup = false }: RecentListProps) {
+export function RecentList({ bridge, busy, onOpenFolder, onOpened, onClose, popup = false, guard = (open) => open() }: RecentListProps) {
   const ids = { list: useId(), busy: useId(), option: useId() };
   const [entries, setEntries] = useState<Entry[] | null>(null);
   const [listCode, setListCode] = useState<string | null>(null);
@@ -135,7 +137,7 @@ export function RecentList({ bridge, busy, onOpenFolder, onOpened, onClose, popu
       onClose?.();
     } else {
       const entry = shown[index - 1];
-      if (entry) void open(entry);
+      if (entry) guard(() => void open(entry));
     }
   }
 

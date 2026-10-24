@@ -16,7 +16,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - `readCommitChanges`, `readCommitFile`, `readBlame`, `readIgnoreFile`, and `previewIgnore` carry `repositoryId` and `repositoryGeneration`. `openSubmodule` carries `repositoryId` of the parent.
 - Generation rule: `readCommitChanges` gives `REPOSITORY_CHANGED` at acceptance when `repositoryGeneration` is not the workspace generation, as `openHistory` does. `readCommitFile` and `readBlame` with `{changesId, fileId}`, `{blameId, line}`, or `{blameId}` do not check it, because their retained listing or result names commit IDs, and these survive a generation change as 001 History pages do. `readBlame` with `{snapshotId, entryId}` checks it through the snapshot (001 §9).
 - `MUTATIONS` keeps `runWorkbench`. No new mutation operation.
-- Phases: `blame` (counters `blamed` and `total`, or none), `delete-files` (counters `fileIndex` and `fileCount`), `ignore-save`, `preview`. Events carry no path, ref name, or Git text.
+- Phases: `blame` (counters `blamed` and `total`, or none), `delete-files` (counters `fileIndex` and `fileCount`), `ignore-save`, `preview`. Events carry no path, ref name, or Git text. The 004 phase `ignore` goes with the `ignore` action, because no operation sends it.
 - Marker actions of kind `workbench` add `delete-files`, `ignore-save-gitignore`, and `ignore-save-exclude`. The actions `ignore-gitignore` and `ignore-exclude` go.
 
 ## Δ3 Public operations (001 §3)

@@ -11,7 +11,7 @@ import { isWindows, NATIVE } from "../contracts/native-path";
 import { compareKeys, treeKey } from "../contracts/tree-order";
 import { routeWslPath } from "../contracts/wsl-route";
 import { indexEntryArgs } from "./commands";
-import { createCollector, RunnerRefusal, stepUnits, type Collector, type FileFact, type GitExit, type GitRunner, type ProcessContext, type WalkStop } from "./git-runner";
+import { createCollector, exitKind, RunnerRefusal, settleSteps, stepUnits, type Collector, type FileFact, type GitExit, type GitRunner, type ProcessContext, type WalkStop } from "./git-runner";
 import { readIgnoreFile, targetOf, type IgnoreTarget } from "./ignore";
 import { encodeIgnore } from "./ignore-text";
 import { contextOf, latin1 } from "./read-steps";
@@ -38,9 +38,10 @@ class End {
 const limit = (reason: Reason, bound?: string) => new End({ result: "succeeded", value: { unavailable: { reason, ...(bound === undefined ? {} : { bound }) } } });
 const failed = (code: ErrorCode) => new End({ result: "failed", code });
 const CANCELED = new End({ result: "canceled" });
-// 001 contract §5: a Job close ends a step with `exitCode` null. The cause is a sibling exit, so `steps` prefers any other end.
+// 001 contract §5: a Job close ends a step with `exitCode` null. The cause is a sibling end, so `steps` takes a deadline first and a Job close last.
 const CLOSED = new End({ result: "failed", code: "GIT_FAILED" });
-const stopped = (stop: WalkStop["stop"]) => (stop === "deadline" ? limit("deadline") : CANCELED);
+const DEADLINE = limit("deadline");
+const stopped = (stop: WalkStop["stop"]) => (stop === "deadline" ? DEADLINE : CANCELED);
 // Contract Δ5 `PREVIEW_PATHS`: the inputs of the whole preview, without the folder probes (plan.md D9 `paths`). Each count includes every earlier input.
 const inputsFit = (count: number) => {
   if (count > PREVIEW_PATHS) throw limit("paths", "PREVIEW_PATHS");
@@ -576,20 +577,13 @@ async function git(runner: GitRunner, t: PreviewTarget, context: ProcessContext,
     throw error;
   }
   if (t.signal.aborted) throw CANCELED;
-  if (exit.deadline !== undefined) throw limit("deadline");
+  if (exit.deadline !== undefined) throw DEADLINE;
   if (exit.diagnosticLimit) throw failed("OUTPUT_LIMIT");
-  // 001 contract §5 "Byte caps": a `read` run gets `stop` only at its stdout bound. Any other null `exitCode` is a Job close.
-  if (exit.exitCode === null && !stdout.limited) throw CLOSED;
+  if (exitKind(exit, "read", stdout) === "jobClosed") throw CLOSED;
   return exit;
 }
 
-// Parallel steps of one operation. Each step ends before the first rejection in position order that is no Job close propagates.
-async function steps<T extends readonly unknown[] | []>(work: T): Promise<{ -readonly [K in keyof T]: Awaited<T[K]> }> {
-  const ends = await Promise.allSettled(work);
-  const rejected = ends.flatMap((end) => (end.status === "rejected" ? [end.reason as unknown] : []));
-  if (rejected.length > 0) throw rejected.find((reason) => reason !== CLOSED) ?? CLOSED;
-  return ends.map((end) => (end as PromiseFulfilledResult<unknown>).value) as { -readonly [K in keyof T]: Awaited<T[K]> };
-}
+const steps = <T extends readonly unknown[] | []>(work: T) => settleSteps(work, (end) => end === DEADLINE, (end) => end === CLOSED);
 
 // One folder probe for each folder above a `.gitignore`. The shadow holds each such folder, because it holds the file below it. `skip`: probes that ran.
 function probesOf(files: readonly IgnoreFile[], skip: ReadonlySet<string>): Input[] {

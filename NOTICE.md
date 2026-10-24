@@ -20,7 +20,7 @@ These terms apply to Arbareto's own code and documentation. Section 7 of the GNU
 
 ## Third-party material
 
-Third-party material keeps its own license. README.md lists the vendored skills and their licenses.
+Third-party material keeps its own license. CONTRIBUTING.md lists the vendored skills and their licenses.
 
 ### Spec Kit
 

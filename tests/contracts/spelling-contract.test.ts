@@ -250,6 +250,10 @@ describe("data-model §4 and §7 results", () => {
     expect(ok(S, { languages, removed: [{ language: "xx", name: "" }], more: 0 })).toBe(false);
     expect(ok(S, { languages, removed: [{ language: "xx", name: "x".repeat(65) }], more: 0 })).toBe(false);
     expect(ok(S, { languages, more: 0 })).toBe(false);
+    // Contract Δ3: a throw in a list check step ends the list with `changed`.
+    expect(ok(S, { reason: "changed" })).toBe(true);
+    expect(ok(S, { reason: "busy" })).toBe(false);
+    expect(ok(S, { reason: "changed", languages, removed: [], more: 0 })).toBe(false);
   });
 
   test("readDictionary gives one chunk of at most DICTIONARY_CHUNK_BYTES bytes from the offset, or a refusal", () => {

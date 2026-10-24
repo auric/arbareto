@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
+import { Catalog } from "./src/contracts/dictionaries.ts";
 import { bundleProblems } from "./src/frontend/highlight/guard.ts";
 
 const root = fileURLToPath(new URL("./src/frontend", import.meta.url));
@@ -42,9 +44,14 @@ function highlightGuard(complete: boolean): Plugin {
   };
 }
 
+/** 006 plan.md D3: a catalog outside the `Catalog` rules stops the renderer build. */
+export function catalogCheck(file = fileURLToPath(new URL("./src/contracts/dictionaries.json", import.meta.url))): Plugin {
+  return { name: "arbareto-catalog", buildStart: () => void Catalog.parse(JSON.parse(readFileSync(file, "utf8"))) };
+}
+
 export default defineConfig({
   root,
-  plugins: [react(), tailwindcss(), highlightGuard(true)],
+  plugins: [catalogCheck(), react(), tailwindcss(), highlightGuard(true)],
   resolve: { alias },
   worker: { format: "es", plugins: () => [highlightGuard(false)] },
   build: {

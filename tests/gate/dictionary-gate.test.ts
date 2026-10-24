@@ -112,6 +112,8 @@ describe("dictionary gate step 2, early report (T008)", () => {
         expect(problem).toBeNull();
         return;
       }
+      // Plan.md D3 "Script": the catalog value is the fixture Script of the cached files.
+      expect([catalog.bundled, ...catalog.entries].find((e) => e.id === id)!.script as string).toBe(script!);
       const jobFile = join(work, `${id}.json`);
       writeFileSync(jobFile, JSON.stringify({ aff, dic, hunspell: pathToFileURL(HUNSPELL).href, positives, negatives, latin: LATIN_NEGATIVES }));
       const proc = Bun.spawn([process.execPath, "-e", CHILD, jobFile], { stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: CHILD_TIMEOUT_MS });

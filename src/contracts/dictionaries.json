@@ -9,6 +9,7 @@
     "id": "en",
     "name": "English",
     "license": "(MIT AND BSD)",
+    "script": "Latin",
     "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
     "files": [
       {
@@ -43,6 +44,7 @@
       "id": "hy",
       "name": "Armenian",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1)",
+      "script": "Armenian",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -72,6 +74,7 @@
       "id": "en-AU",
       "name": "Australian English",
       "license": "(MIT AND BSD)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -101,6 +104,7 @@
       "id": "de-AT",
       "name": "Austrian German",
       "license": "(GPL-2.0 OR GPL-3.0)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -130,6 +134,7 @@
       "id": "eu",
       "name": "Basque",
       "license": "GPL-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -159,6 +164,7 @@
       "id": "br",
       "name": "Breton",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -188,6 +194,7 @@
       "id": "en-GB",
       "name": "British English",
       "license": "(MIT AND BSD)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -217,6 +224,7 @@
       "id": "bg",
       "name": "Bulgarian",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1)",
+      "script": "Cyrillic",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -246,6 +254,7 @@
       "id": "en-CA",
       "name": "Canadian English",
       "license": "(MIT AND BSD)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -275,6 +284,7 @@
       "id": "ca",
       "name": "Catalan",
       "license": "(GPL-2.0 OR LGPL-2.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -304,6 +314,7 @@
       "id": "ca-valencia",
       "name": "Catalan (Valencian)",
       "license": "(GPL-2.0 OR LGPL-2.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -333,6 +344,7 @@
       "id": "hr",
       "name": "Croatian",
       "license": "(LGPL-2.1 OR SISSL)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -362,6 +374,7 @@
       "id": "cs",
       "name": "Czech",
       "license": "GPL-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -391,6 +404,7 @@
       "id": "da",
       "name": "Danish",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -420,6 +434,7 @@
       "id": "nl",
       "name": "Dutch",
       "license": "(BSD-3-Clause OR CC-BY-3.0)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -449,6 +464,7 @@
       "id": "en-ZA",
       "name": "English (South Africa)",
       "license": "LGPL-2.1",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -478,6 +494,7 @@
       "id": "eo",
       "name": "Esperanto",
       "license": "GPL-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -507,6 +524,7 @@
       "id": "et",
       "name": "Estonian",
       "license": "LGPL-2.1",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -536,6 +554,7 @@
       "id": "pt-PT",
       "name": "European Portuguese",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -565,6 +584,7 @@
       "id": "fo",
       "name": "Faroese",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -594,6 +614,7 @@
       "id": "fr",
       "name": "French",
       "license": "MPL-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -623,6 +644,7 @@
       "id": "fur",
       "name": "Friulian",
       "license": "GPL-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -652,6 +674,7 @@
       "id": "gl",
       "name": "Galician",
       "license": "GPL-3.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -681,6 +704,7 @@
       "id": "ka",
       "name": "Georgian",
       "license": "MIT",
+      "script": "Georgian",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -710,6 +734,7 @@
       "id": "de",
       "name": "German",
       "license": "(GPL-2.0 OR GPL-3.0)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -739,6 +764,7 @@
       "id": "he",
       "name": "Hebrew",
       "license": "AGPL-3.0",
+      "script": "Hebrew",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -768,6 +794,7 @@
       "id": "hu",
       "name": "Hungarian",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -797,6 +824,7 @@
       "id": "is",
       "name": "Icelandic",
       "license": "CC-BY-SA-3.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -826,6 +854,7 @@
       "id": "ia",
       "name": "Interlingua",
       "license": "GPL-3.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -855,6 +884,7 @@
       "id": "ie",
       "name": "Interlingue",
       "license": "Apache-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -884,6 +914,7 @@
       "id": "ga",
       "name": "Irish",
       "license": "GPL-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -913,6 +944,7 @@
       "id": "it",
       "name": "Italian",
       "license": "GPL-3.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -942,6 +974,7 @@
       "id": "tlh-Latn",
       "name": "Klingon (Latin)",
       "license": "Apache-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -971,6 +1004,7 @@
       "id": "ltg",
       "name": "Latgalian",
       "license": "LGPL-2.1",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1000,6 +1034,7 @@
       "id": "la",
       "name": "Latin",
       "license": "GPL-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1029,6 +1064,7 @@
       "id": "lv",
       "name": "Latvian",
       "license": "LGPL-2.1",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1058,6 +1094,7 @@
       "id": "lt",
       "name": "Lithuanian",
       "license": "BSD-3-Clause",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1087,6 +1124,7 @@
       "id": "nds",
       "name": "Low German",
       "license": "GPL-3.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1116,6 +1154,7 @@
       "id": "lb",
       "name": "Luxembourgish",
       "license": "EUPL-1.1",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1145,6 +1184,7 @@
       "id": "mk",
       "name": "Macedonian",
       "license": "GPL-3.0",
+      "script": "Cyrillic",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1174,6 +1214,7 @@
       "id": "es-MX",
       "name": "Mexican Spanish",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1203,6 +1244,7 @@
       "id": "ne",
       "name": "Nepali",
       "license": "LGPL-2.1",
+      "script": "Devanagari",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1232,6 +1274,7 @@
       "id": "nb",
       "name": "Norwegian Bokmål",
       "license": "GPL-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1261,6 +1304,7 @@
       "id": "nn",
       "name": "Norwegian Nynorsk",
       "license": "GPL-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1290,6 +1334,7 @@
       "id": "oc",
       "name": "Occitan",
       "license": "GPL-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1326,6 +1371,7 @@
       "id": "fa",
       "name": "Persian",
       "license": "Apache-2.0",
+      "script": "Arabic",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1355,6 +1401,7 @@
       "id": "pl",
       "name": "Polish",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-2.0)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1384,6 +1431,7 @@
       "id": "pt",
       "name": "Portuguese",
       "license": "(LGPL-3.0 OR MPL-2.0)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1413,6 +1461,7 @@
       "id": "ro",
       "name": "Romanian",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1442,6 +1491,7 @@
       "id": "ru",
       "name": "Russian",
       "license": "BSD-3-Clause",
+      "script": "Cyrillic",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1471,6 +1521,7 @@
       "id": "gd",
       "name": "Scottish Gaelic",
       "license": "GPL-3.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1500,6 +1551,7 @@
       "id": "sr",
       "name": "Serbian",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1 OR CC-BY-SA-3.0)",
+      "script": "Cyrillic",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1529,6 +1581,7 @@
       "id": "sr-Latn",
       "name": "Serbian (Latin)",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1 OR CC-BY-SA-3.0)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1558,6 +1611,7 @@
       "id": "sk",
       "name": "Slovak",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1587,6 +1641,7 @@
       "id": "sl",
       "name": "Slovenian",
       "license": "(GPL-3.0 OR LGPL-2.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1616,6 +1671,7 @@
       "id": "es",
       "name": "Spanish",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1645,6 +1701,7 @@
       "id": "es-AR",
       "name": "Spanish (Argentina)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1674,6 +1731,7 @@
       "id": "es-BO",
       "name": "Spanish (Bolivia)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1703,6 +1761,7 @@
       "id": "es-CL",
       "name": "Spanish (Chile)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1732,6 +1791,7 @@
       "id": "es-CO",
       "name": "Spanish (Colombia)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1761,6 +1821,7 @@
       "id": "es-CR",
       "name": "Spanish (Costa Rica)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1790,6 +1851,7 @@
       "id": "es-CU",
       "name": "Spanish (Cuba)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1819,6 +1881,7 @@
       "id": "es-DO",
       "name": "Spanish (Dominican Republic)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1848,6 +1911,7 @@
       "id": "es-EC",
       "name": "Spanish (Ecuador)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1877,6 +1941,7 @@
       "id": "es-SV",
       "name": "Spanish (El Salvador)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1906,6 +1971,7 @@
       "id": "es-GT",
       "name": "Spanish (Guatemala)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1935,6 +2001,7 @@
       "id": "es-HN",
       "name": "Spanish (Honduras)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1964,6 +2031,7 @@
       "id": "es-NI",
       "name": "Spanish (Nicaragua)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -1993,6 +2061,7 @@
       "id": "es-PA",
       "name": "Spanish (Panama)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2022,6 +2091,7 @@
       "id": "es-PY",
       "name": "Spanish (Paraguay)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2051,6 +2121,7 @@
       "id": "es-PE",
       "name": "Spanish (Peru)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2080,6 +2151,7 @@
       "id": "es-PH",
       "name": "Spanish (Philippines)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2109,6 +2181,7 @@
       "id": "es-PR",
       "name": "Spanish (Puerto Rico)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2138,6 +2211,7 @@
       "id": "es-US",
       "name": "Spanish (United States)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2167,6 +2241,7 @@
       "id": "es-UY",
       "name": "Spanish (Uruguay)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2196,6 +2271,7 @@
       "id": "es-VE",
       "name": "Spanish (Venezuela)",
       "license": "(GPL-3.0 OR LGPL-3.0 OR MPL-1.1)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2225,6 +2301,7 @@
       "id": "sv",
       "name": "Swedish",
       "license": "LGPL-3.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2254,6 +2331,7 @@
       "id": "sv-FI",
       "name": "Swedish (Finland)",
       "license": "LGPL-3.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2283,6 +2361,7 @@
       "id": "de-CH",
       "name": "Swiss High German",
       "license": "(GPL-2.0 OR GPL-3.0)",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2312,6 +2391,7 @@
       "id": "tr",
       "name": "Turkish",
       "license": "MIT",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2341,6 +2421,7 @@
       "id": "tk",
       "name": "Turkmen",
       "license": "Apache-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2370,6 +2451,7 @@
       "id": "uk",
       "name": "Ukrainian",
       "license": "GPL-3.0",
+      "script": "Cyrillic",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2399,6 +2481,7 @@
       "id": "vi",
       "name": "Vietnamese",
       "license": "GPL-2.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2428,6 +2511,7 @@
       "id": "cy",
       "name": "Welsh",
       "license": "LGPL-3.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2457,6 +2541,7 @@
       "id": "hyw",
       "name": "Western Armenian",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1)",
+      "script": "Armenian",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {
@@ -2486,6 +2571,7 @@
       "id": "fy",
       "name": "Western Frisian",
       "license": "GPL-3.0",
+      "script": "Latin",
       "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
       "files": [
         {

@@ -41,6 +41,8 @@ export function createDictionaryStore(folder: string, catalog: Catalog) {
   const changed = new Set<string>();
   const removed: { language: string; name: string }[] = [];
   let reconciled: Promise<void> | null = null;
+  // Data-model §3: `.staging-<id>-<32 hex>`.
+  const stagingPath = (id: string) => join(folder, `${STAGING}${id}-${Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex")}`);
 
   // Data-model §3: at most DICTIONARY_MANIFEST_BYTES of `{version: 1, entry}`. Any other form is no valid manifest.
   async function manifest(dir: string): Promise<CatalogEntry | null> {
@@ -96,7 +98,9 @@ export function createDictionaryStore(folder: string, catalog: Catalog) {
     for (const name of names.sort(compareNames)) {
       const path = join(folder, name);
       const gone = () => rm(path, { recursive: true, force: true }).then(() => true, () => false);
-      if (name.startsWith(STAGING)) {
+      // Data-model §3: only the exact name form of `stagingPath` is a staging leftover.
+      const staged = /^\.staging-(.+)-[0-9a-f]{32}$/.exec(name);
+      if (staged !== null && byId.has(staged[1]!)) {
         await gone();
         continue;
       }
@@ -146,22 +150,31 @@ export function createDictionaryStore(folder: string, catalog: Catalog) {
       return (await checkedFile(dir, file)) ?? "changed";
     },
 
-    // `.staging-<id>-<32 hex>/`. A rejection is a file system error of the staging.
+    // A rejection is a file system error of the staging.
     async stage(id: string): Promise<string> {
       await mkdir(folder, { recursive: true });
-      const path = join(folder, `${STAGING}${id}-${Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("hex")}`);
+      const path = stagingPath(id);
       await mkdir(path);
       return path;
     },
 
     writeFile: (staging: string, name: string, bytes: Uint8Array) => writeFile(join(staging, name), bytes, { flag: "wx" }),
 
-    // Plan.md D5: the manifest, then the removal of an existing `<id>/`, then the rename.
+    // Plan.md D5: the manifest; the old `<id>/` moves aside; the staging folder moves into place; the old folder goes.
+    // A failed move into place moves the old folder back, so a reinstall that fails keeps the working install.
     async install(staging: string, entry: Entry): Promise<void> {
       await writeFile(join(staging, "entry.json"), JSON.stringify({ version: 1, entry }), { flag: "wx" });
       const target = join(folder, entry.id);
-      await rm(target, { recursive: true, force: true });
-      await rename(staging, target);
+      const old = (await isFolder(target)) === null ? null : stagingPath(entry.id);
+      if (old !== null) await rename(target, old);
+      try {
+        await rename(staging, target);
+      } catch (error) {
+        if (old !== null) await rename(old, target).catch(() => {});
+        throw error;
+      }
+      // A failed removal stays for the next reconcile.
+      if (old !== null) await rm(old, { recursive: true, force: true }).catch(() => {});
       changed.delete(entry.id);
     },
 

@@ -8,7 +8,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import catalogFile from "../../src/contracts/dictionaries.json";
-import { Catalog, compareNames } from "../../src/contracts/dictionaries";
+import { Catalog, compareNames, DICTIONARY_SCRIPTS } from "../../src/contracts/dictionaries";
 import { printOrigin } from "../origin";
 
 printOrigin("../../src/contracts/dictionaries.ts", import.meta.dir);
@@ -25,6 +25,7 @@ const entry = (id: string, name: string, licences: string[] = ["license"]) => ({
   id,
   name,
   license: "MIT",
+  script: "Latin",
   commit: COMMIT,
   files: [file(id, "index.aff"), file(id, "index.dic"), ...licences.map((l) => file(id, l))],
   licences,
@@ -106,6 +107,16 @@ describe("Catalog schema (data-model §1, §2)", () => {
     expect(refused((c) => (c.entries[3]!.licences = ["licence"]))).toBe(false);
   });
 
+  test("script: one Script value of the data-model §16 list, required", () => {
+    for (const script of ["Cyrillic", "Hebrew", "Canadian_Aboriginal", "Han"]) expect(refused((c) => (c.entries[3]!.script = script))).toBe(true);
+    for (const script of ["Common", "Inherited", "Latn", "latin", "", "Klingon"]) expect(refused((c) => (c.entries[3]!.script = script))).toBe(false);
+    expect(refused((c) => delete (c.entries[3] as Record<string, unknown>).script)).toBe(false);
+    expect(refused((c) => delete (c.bundled as Record<string, unknown>).script)).toBe(false);
+    expect(refused((c) => (c.bundled.script = "Cyrillic"))).toBe(false);
+    // Each value is a Script property value of the regular expression engine.
+    for (const script of DICTIONARY_SCRIPTS) expect(new RegExp(`\\p{Script=${script}}`, "u").test("")).toBe(false);
+  });
+
   test("no en entry, unique IDs, compareNames order, unknown fields", () => {
     expect(refused((c) => c.entries.push(entry("en", "Zz")))).toBe(false);
     expect(refused((c) => c.entries.push(entry("uk", "Zz")))).toBe(false);
@@ -131,6 +142,55 @@ describe("the shipped catalog (plan.md D3)", () => {
 
   test("the source is the pinned commit", () => {
     expect(catalog.source.commit).toBe(COMMIT);
+  });
+
+  // Contract Δ1: the shell reads sizes with `as_u64`, which refuses an exponent. JSON.stringify writes none for these sizes.
+  // A checkout with `core.autocrlf` writes CRLF line ends, so the compare uses LF.
+  test("the file is the JSON.stringify form with two spaces and a final line feed", () => {
+    const text = readFileSync(join(ROOT, "src", "contracts", "dictionaries.json"), "utf8").replaceAll("\r\n", "\n");
+    expect(text).toBe(`${JSON.stringify(JSON.parse(text), null, 2)}\n`);
+  });
+
+  // Plan.md D3 "Script": both values must match the same code points. A reviewed difference needs a row here; Bun 1.4.4 has none (2026-10-24).
+  test("each script equals the Script of Intl.Locale(id).maximize(), and bundled is Latin", () => {
+    expect(catalog.bundled.script).toBe("Latin");
+    const same = new Map<string, boolean>();
+    const equal = (a: string, b: string) => {
+      const x = new RegExp(`^\\p{Script=${a}}$`, "u");
+      const y = new RegExp(`^\\p{Script=${b}}$`, "u");
+      for (let cp = 0; cp <= 0x10ffff; cp++) {
+        if (cp >= 0xd800 && cp <= 0xdfff) continue;
+        const c = String.fromCodePoint(cp);
+        if (x.test(c) !== y.test(c)) return false;
+      }
+      return true;
+    };
+    const differ: string[] = [];
+    for (const e of [catalog.bundled, ...catalog.entries]) {
+      const code = new Intl.Locale(e.id).maximize().script;
+      if (code === undefined) {
+        differ.push(`${e.id} maximize() has no script`);
+        continue;
+      }
+      const key = `${code}=${e.script}`;
+      if (!same.has(key)) same.set(key, equal(code, e.script));
+      if (!same.get(key)) differ.push(`${e.id} ${code} ${e.script}`);
+    }
+    expect(differ).toEqual([]);
+  });
+
+  test("the renderer build parses the catalog: the buildStart hook refuses a broken file and passes the shipped one", async () => {
+    const { catalogCheck } = await import("../../vite.config");
+    const dir = mkdtempSync(join(tmpdir(), "arbareto-catalog-build-"));
+    try {
+      const broken = join(dir, "dictionaries.json");
+      writeFileSync(broken, JSON.stringify({ ...catalogFile, version: 2 }));
+      const hook = (file?: string) => (catalogCheck(file).buildStart as () => void).call({});
+      expect(() => hook(broken)).toThrow();
+      expect(() => hook()).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test("oc holds license and licence; eu and et hold readme.md", () => {

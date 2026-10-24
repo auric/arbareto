@@ -7,15 +7,17 @@ Each section names its source. Field names are contract names. "001 data-model �
 - Source: plan D3, spec FR-017. `scripts/dictionary-catalog.ts` writes it, from the network or with `--offline` from the cache. Only an application release changes it.
 - `version`: 1.
 - `source`: `{repository: "wooorm/dictionaries", commit, urlPrefix}`. `commit` is 40 lowercase hex digits. `urlPrefix` is `https://raw.githubusercontent.com/wooorm/dictionaries/<commit>/dictionaries/`.
-- `bundled`: the English record (§2 fields), with `id` `en`, the `dictionary-en` package name and version, and the files of that package.
+- `bundled`: the English record (§2 fields), with `id` `en`, `script` `Latin`, the `dictionary-en` package name and version, and the files of that package.
 - `entries`: 0 to 92 entries (§2), unique by `id`, in the 005 `compareNames` order of the UTF-8 bytes of `name`. No entry has the ID `en`.
 - Validation (the `Catalog` schema of `src/contracts/dictionaries.ts`): every field below; every URL equals `urlPrefix + id + "/" + name` exactly; every `commit` equals `source.commit`. A failure stops the service start, the renderer build, and the shell build.
+- Form: the file equals `JSON.stringify(value, null, 2)` plus a line feed, so no number has an exponent.
 
 ## 2. Catalog entry
 
 - `id`: a language ID. Form `^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$`, at most 32 bytes. Examples: `uk`, `de-CH`, `sr-Latn`, `ca-valencia`, `tlh-Latn`, `hyw`.
 - `name`: the English name, 1 to 64 code points (plan D3).
 - `license`: the `license` field of the folder's `package.json`, 1 to 128 bytes, as given (spec FR-015).
+- `script`: the Unicode `Script` property value (long name) of the language's words: the §16 fixture Script of the cached files, `Latin` for `bundled`. It is one of the §16 Script list. Spec FR-004 checks a word with this language only when the word holds a letter of this Script (§13). The catalog test compares it with `new Intl.Locale(id).maximize().script` by the code points of both values (plan D3).
 - `commit`: the pinned commit.
 - `files`: 3 or 4 entries `{name, url, size, sha256}`, in the order `index.aff`, `index.dic`, then the licence documents. `name` is one of `index.aff`, `index.dic`, `license`, `licence`, `readme.md`. `size` is 1 to 12,582,912. `sha256` is 64 lowercase hex digits.
 - `licences`: the licence document names, 1 or 2: `["license"]`, `["licence"]`, `["license", "licence"]` (`oc`), or `["readme.md"]` (`eu`, `et`).
@@ -27,15 +29,15 @@ Each section names its source. Field names are contract names. "001 data-model �
 - Source: plan D5, spec FR-013, FR-017.
 - Files: each `files` name of the entry, and `entry.json`.
 - `entry.json`: `{version: 1, entry}`. `entry` is the catalog entry (§2) that the files came from. The service reads at most `DICTIONARY_MANIFEST_BYTES` (65,536) of it. A larger file, invalid JSON, or another form counts as no valid manifest.
-- Staging: `.staging-<id>-<32 hex>/` in `dictionaries/`. It exists only during a run or after a crash.
-- Install: remove an existing `<id>/`, then rename the staging folder to `<id>/`.
+- Staging: `.staging-<id>-<32 hex>/` in `dictionaries/`, with `<id>` a catalog entry ID and 32 lowercase hex digits. It exists only during a run or after a crash.
+- Install: rename an existing `<id>/` to a new staging name, rename the staging folder to `<id>/`, then remove the old folder. When the second rename fails, the old folder goes back to `<id>/`.
 - Language check (`listDictionaries`): the folder exists; `entry.json` is valid and its `entry` equals the current catalog entry (same keys and values); each file exists as a regular file with the catalog size and SHA-256.
 - File check (`readDictionary`): the folder exists; `entry.json` is valid and equals the entry; the requested file exists as a regular file with the catalog size and SHA-256.
 - Release reconcile (once per service process; every dictionary operation waits for it):
 
 | Entry in `dictionaries/` | Action | Notice for this service process |
 |---|---|---|
-| A name that starts with `.staging-` | remove | none |
+| A name that matches `^\.staging-<id>-[0-9a-f]{32}$` exactly, with `<id>` a catalog entry ID | remove | none |
 | A catalog ID whose `entry.json` holds the current entry | keep | none |
 | A catalog ID whose `entry.json` holds another entry | remove | `catalog-changed` for that ID |
 | A catalog ID without a valid `entry.json` | keep (the check gives `changed`) | none |
@@ -153,13 +155,16 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 ## 13. Spelling marks and rounds
 
-- Source: spec FR-001, FR-004, SC-004, SC-009; plan D9.
+- Source: spec FR-001, FR-004, SC-004, SC-009; plan D8, D9.
 - Mark: `{start, end, raw, word}`. `start` and `end` are UTF-16 offsets in the text of its round. `raw` is the text of that range, as typed. `word` is its NFC form for the lookups.
-- Refused set: per loaded language, the refused ranges of the current text, kept per line.
+- Script (user decision of 2026-10-24): `scriptsOf(word, scripts)` gives the values of `scripts` that hold a `\p{L}` code point of the NFC `word` by the Unicode `Script` property. The catalog Script values hold no `Common` and no `Inherited`, so U+0027, U+2019, U+02BC (`Lm`, Script `Common`), and combining marks (`Inherited`) never count. The responsible languages of a word are the loaded languages whose catalog `script` is in `scriptsOf(word, <their scripts>)`.
+- Refused set: per loaded language, the refused ranges of the current text, kept per line. A language checks only the words that hold a letter of its own Script (§14), so its set holds only such words.
 - Changed lines: A is the old text, and B is the new text. p is the length of their common prefix. s is the length of their common suffix, at most `min(|A|, |B|) − p`. The changed lines of A are the lines that meet the range from p to `|A| − s`, both ends included. The changed lines of B are the lines that meet the range from p to `|B| − s`.
 - Shift: in each refused set and in the shown marks, the ranges in lines before the changed lines stay, the ranges in lines after them move by `|B| − |A|`, and the ranges in the changed lines go. This is exact, because §11 never crosses a line feed.
 - Round: a number, the text version, the changed lines of B (all lines for the first round of a worker), and the set of check workers that were loaded when it started. Each of those workers replies with the refused ranges of those lines.
-- Merge: when every worker of the round replied, the engine puts the replies into the refused sets. A range is a mark when every loaded language refused it, and neither list of §12 accepts its `word`. A round merges only when all its workers replied. A newer round drops an older one, and the engine then sends the union of the dropped and the new changed lines.
+- Merge: when every worker of the round replied, the engine puts the replies into the refused sets. A range of the union of the refused sets is a mark when it has at least one responsible language, every responsible language refused it, and neither list of §12 accepts its `word`. A range with no responsible language is no mark. A round merges only when all its workers replied. A newer round drops an older one, and the engine then sends the union of the dropped and the new changed lines.
+- Merge vectors (en Latin, uk Cyrillic, de Latin): `recieve` refused by en is a mark with en and uk. `привіт` that en never checks and uk accepts is no mark. `cир` (Latin `c`, Cyrillic `и` and `р`, a wrong-layout `сир`) refused by en and uk is a mark; refused by en only is no mark. `Ελλάδα` with en and uk is no mark. `Hausx` with en and de is a mark only when both refuse it.
+- A text change that starts no round, as during a composition, drops the running round, and the next round checks every line. The reply of the dropped round would merge at offsets of the old text.
 - Composition: from `compositionstart` to `compositionend`, no mark shows.
 - Count: the number of shown marks.
 
@@ -169,10 +174,10 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 | Message | Worker | Fields | Reply |
 |---|---|---|---|
-| `init` | both | `language` | for `en`: `loaded` or `load-failed` after the `?raw` import |
+| `init` | both | `language`, `script` | for `en`: `loaded` or `load-failed` after the `?raw` import |
 | `chunk` | both | `file` (`aff` or `dic`), `data` (base64) | none |
-| `build` | both | none | `loaded` or `load-failed` |
-| `check` | check | `round`, `lines` (each `{start, text}`) | `checked {round, ranges}`, `ranges` a transferred `Uint32Array` of start and end pairs in offsets of T |
+| `build` | both | `script` | `loaded` or `load-failed` |
+| `check` | check | `round`, `lines` (each `{start, text}`) | `checked {round, ranges}`, `ranges` a transferred `Uint32Array` of start and end pairs in offsets of T, only of words that hold a letter of the worker's `script` |
 | `suggest` | suggestion | `id`, `word` | `suggested {id, list}`, at most 5 strings |
 
 - A check worker gets the next `check` only after it replied to the last one. The engine keeps only the newest round for it.
@@ -181,7 +186,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 ## 15. Suggestions
 
-- Source: spec FR-005. The lists of the suggestion workers of the loaded languages in selection order, joined, with repeats dropped by exact string equality after NFC, cut to 5 (`SPELLING_SUGGESTIONS`).
+- Source: spec FR-005. The lists of the suggestion workers of the loaded languages that are responsible for the word (§13), in selection order, joined, with repeats dropped by exact string equality after NFC, cut to 5 (`SPELLING_SUGGESTIONS`).
 - A suggestion replaces the range of its mark only when the editor text in that range still equals the mark `raw` text. The NFC `word` is never the compare value.
 
 ## 16. Language fixture (SC-002)
@@ -196,7 +201,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 - Refusing flags: the `FORBIDDENWORD` flag (the last definition), the `NEEDAFFIX` flag (else the `PSEUDOROOT` flag), the `ONLYINCOMPOUND` flag, and the `WARN` flag when `FORBIDWARN` is present. `checkword` and `spell` refuse a bare stem that carries one of them (hunspell(5) "AFFIX FILE OTHER OPTIONS", "OPTIONS FOR COMPOUNDING", and "AFFIX FILE OPTIONS FOR SUGGESTION"). hunspell(5) has no `COMPOUNDONLY` directive.
 - Eligible stem: no line of the same word carries a refusing flag, because Hunspell keeps each line as a homonym. The word holds no space or TAB (a phrase line). The word is one §11 word with no skipped token.
 - Positive words: for i from 0 to 199, the first eligible stem at or after line ⌊i × (n − 1) / 199⌋ + 1 of the n dictionary lines. When no eligible stem lies at or after that line, step i gives no word. Each word must pass Hunspell `testSpelling` after NFC.
-- Script: the Unicode `Script` value that holds the most `\p{L}` code points of the positive words after NFC, each occurrence counted. A tie refuses. fr and sv also list Greek letter names such as `α`, so their positive words hold two Script values. The fixture names these values: Latin, Cyrillic, Greek, Armenian, Hebrew, Arabic, Syriac, Thaana, Georgian, Ethiopic, Cherokee, Canadian_Aboriginal, Mongolian, Tifinagh, Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam, Sinhala, Thai, Lao, Tibetan, Myanmar, Khmer, Hangul, Han, Hiragana, and Katakana.
+- Script: the Unicode `Script` value that holds the most `\p{L}` code points of the positive words after NFC, each occurrence counted. A tie refuses. fr and sv also list Greek letter names such as `α`, so their positive words hold two Script values. The fixture names these values: Latin, Cyrillic, Greek, Armenian, Hebrew, Arabic, Syriac, Thaana, Georgian, Ethiopic, Cherokee, Canadian_Aboriginal, Mongolian, Tifinagh, Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam, Sinhala, Thai, Lao, Tibetan, Myanmar, Khmer, Hangul, Han, Hiragana, and Katakana. The catalog `script` of §2 is this value, and the list is its value set.
 - Negative words, Latin script: `qzxqzxqzx`, `xkcdqwvjz`, `zzqqxxjj`, `vvbbqqzz`, `jjqqxxzz`, and the first 5 positive words with `qzxqzx` appended.
 - Negative words, another script: A is the distinct code points of that Script value among the `\p{L}` code points of the positive words, in code point order. T(k) is A[k] A[k+1] A[k+2]. The words are T(k) three times for k from 0 to 4, and the first 5 positive words with T(0) twice appended.
 - Each negative word must fail `testSpelling`.
@@ -211,6 +216,6 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 ## 18. View state (renderer, not stored)
 
-- Spelling store: the selection (§8), the language states (§4), the per-language load state of each worker (`idle`, `loading`, `loaded`, `failed`), the refused sets (§13), the word list state (§9), the Ignore list (§10), the shown marks (§13), and the open menu `{mark, suggestions, pending}`.
+- Spelling store: the selection (§8), the language states (§4), the per-language load state of each worker (`idle`, `loading`, `loaded`, `failed`), the refused sets (§13), the word list state (§9), the Ignore list (§10), the shown marks (§13), the open menu `{mark, suggestions, pending}`, and the catalog name and `script` of each language, loaded at the first editor show (plan D3 "Renderer load").
 - Spelling page: the focused row of each list, the open licence `{language, documents}` or none, and the running run `{language, kind, operationId, received, total}` or none.
 - Settings view: `wslDistro` (string or null) from `workspace.location`.

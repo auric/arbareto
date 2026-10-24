@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// Data-model §11 to §13 and §15, plan.md D17: the word rules of the commit message spell check.
+// Data-model §11 to §13 and §15, plan.md D9 and D17: the word rules of the commit message spell check.
 // The renderer and the spell workers import this module. It has no runtime import and does not use `process`.
 // Offsets are UTF-16 code unit offsets of the editor text.
 
@@ -127,12 +127,33 @@ export function createRounds() {
   };
 }
 
-// Data-model §13 "Merge": a range that every loaded language refused, and whose `word` no list accepts.
-export function mergeMarks<T extends WordRange>(refused: readonly (readonly T[])[], accepts: (word: string) => boolean): T[] {
-  if (refused.length === 0) return [];
+// Data-model §13 "Script": the values of `scripts` that hold a `\p{L}` code point of `word` by the Unicode Script property.
+// The catalog values hold no Common and no Inherited, so apostrophes and combining marks never count.
+const scriptTests = new Map<string, RegExp>();
+export function scriptsOf(word: string, scripts: Iterable<string>): Set<string> {
+  const found = new Set<string>();
+  for (const script of scripts) {
+    let test = scriptTests.get(script);
+    if (test === undefined) scriptTests.set(script, (test = new RegExp(`(?=\\p{L})\\p{Script=${script}}`, "u")));
+    if (test.test(word)) found.add(script);
+  }
+  return found;
+}
+
+// Data-model §13 "Merge": a range of the union with a responsible language, refused by every responsible language, whose `word` no list accepts.
+export function mergeMarks<T extends WordRange>(languages: readonly { script: string; refused: readonly T[] }[], accepts: (word: string) => boolean): T[] {
   const key = (r: T) => `${r.start}:${r.end}`;
-  const others = refused.slice(1).map((list) => new Set(list.map(key)));
-  return refused[0].filter((r) => others.every((set) => set.has(key(r))) && !accepts(r.word));
+  const sets = languages.map((l) => new Set(l.refused.map(key)));
+  const union = new Map<string, T>();
+  for (const l of languages) for (const r of l.refused) if (!union.has(key(r))) union.set(key(r), r);
+  const scripts = languages.map((l) => l.script);
+  const marks: T[] = [];
+  for (const [k, r] of union) {
+    const own = scriptsOf(r.word, scripts);
+    const responsible = languages.flatMap((l, i) => (own.has(l.script) ? [i] : []));
+    if (responsible.length > 0 && responsible.every((i) => sets[i]!.has(k)) && !accepts(r.word)) marks.push(r);
+  }
+  return marks.sort((a, b) => a.start - b.start);
 }
 
 // Contract Δ5 `SPELLING_SUGGESTIONS`. This module has no runtime import (plan.md Structure Decision), so the value repeats. spell-words.test.ts checks it.

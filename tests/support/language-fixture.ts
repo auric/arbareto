@@ -3,12 +3,12 @@
 
 // 006 data-model §16: the language fixture of spec SC-002. T023 moved it here from tests/gate/dictionary-gate.test.ts.
 
+import { DICTIONARY_SCRIPTS } from "../../src/contracts/dictionaries";
+
 const encoder = new TextEncoder();
 export const LATIN_NEGATIVES = ["qzxqzxqzx", "xkcdqwvjz", "zzqqxxjj", "vvbbqqzz", "jjqqxxzz"];
-// The Script property values that the fixture names. A letter of another script refuses the fixture.
-const SCRIPTS = ["Latin", "Cyrillic", "Greek", "Armenian", "Hebrew", "Arabic", "Syriac", "Thaana", "Georgian", "Ethiopic", "Cherokee", "Canadian_Aboriginal", "Mongolian", "Tifinagh",
-  "Devanagari", "Bengali", "Gurmukhi", "Gujarati", "Oriya", "Tamil", "Telugu", "Kannada", "Malayalam", "Sinhala", "Thai", "Lao", "Tibetan", "Myanmar", "Khmer", "Hangul", "Han", "Hiragana", "Katakana"];
-const SCRIPT_TESTS = SCRIPTS.map((name) => [name, new RegExp(`^\\p{Script=${name}}$`, "u")] as const);
+// The Script property values that the fixture names (the catalog `script` values). A letter of another script refuses the fixture.
+const SCRIPT_TESTS = DICTIONARY_SCRIPTS.map((name) => [name, new RegExp(`^\\p{Script=${name}}$`, "u")] as const);
 
 type FlagMode = "char" | "long" | "num" | "uni";
 // Hunspell edb6191 hashmgr.cxx `decode_flags` (hunspell(5) "AFFIX FILE GENERAL OPTIONS", FLAG): bytes by default, byte pairs for `long`, comma-separated decimals for `num`, UTF-16 units for `UTF-8`.

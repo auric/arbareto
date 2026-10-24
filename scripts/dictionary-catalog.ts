@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { Catalog, compareNames, DICTIONARY_FILE_NAMES, LanguageId, type CatalogEntry } from "../src/contracts/dictionaries";
 import { DICTIONARY_LANGUAGE_BYTES } from "../src/contracts/limits";
+import { languageFixture } from "../tests/support/language-fixture";
 
 const COMMIT = "8cfea406b505e4d7df52d5a19bce525df98c54ab";
 const REPOSITORY = "wooorm/dictionaries";
@@ -32,6 +33,7 @@ type Gate = { failures: { id: string }[] };
 class Refusal extends Error {}
 
 const sha256 = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
+const utf8 = new TextDecoder("utf-8", { fatal: true });
 // The Git blob ID: SHA-1 of "blob <size>\0" and the bytes. The tree names each file by it.
 const blobId = (bytes: Uint8Array) => new Bun.CryptoHasher("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
 
@@ -119,13 +121,18 @@ async function main(): Promise<number> {
       continue;
     }
     const files = [];
+    const texts: Record<string, string> = {};
     for (const name of names) {
       const bytes = await file(cache, offline, items.get(name)!);
       files.push({ name, url: `${URL_PREFIX}${id}/${name}`, size: bytes.length, sha256: sha256(bytes) });
+      if (name === "index.aff" || name === "index.dic") texts[name] = utf8.decode(bytes);
     }
-    const manifest = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(await file(cache, offline, items.get("package.json")!))) as { license?: unknown };
+    const manifest = JSON.parse(utf8.decode(await file(cache, offline, items.get("package.json")!))) as { license?: unknown };
     if (typeof manifest.license !== "string") throw new Refusal(`${id}: package.json has no string license field`);
-    const entry = { id, name: id === "en" ? "English" : displayName(id), license: manifest.license, commit: COMMIT, files, licences };
+    // plan.md D3 "Script": the Script value of the data-model §16 language fixture.
+    const { script, problem } = languageFixture(texts["index.aff"]!, texts["index.dic"]!);
+    if (script === null) throw new Refusal(`${id}: the language fixture gives no Script (${problem}); enter it in scripts/dictionary-gate.json`);
+    const entry = { id, name: id === "en" ? "English" : displayName(id), license: manifest.license, script, commit: COMMIT, files, licences };
     if (id === "en") english = entry;
     else entries.push(entry);
   }

@@ -87,6 +87,42 @@ const LANGUAGE_ID_BYTES: usize = 32;
 const DICTIONARY_LANGUAGE_BYTES: u64 = 12_582_912;
 /// Feature 006 contract Δ5: `src/contracts/limits.ts` `DICTIONARY_CATALOG_ENTRIES`.
 const DICTIONARY_CATALOG_ENTRIES: usize = 92;
+/// Feature 006 data-model §2 `script`: `src/contracts/dictionaries.ts` `DICTIONARY_SCRIPTS`. `bundled` holds `Latin`.
+const DICTIONARY_SCRIPTS: [&str; 33] = [
+    "Latin",
+    "Cyrillic",
+    "Greek",
+    "Armenian",
+    "Hebrew",
+    "Arabic",
+    "Syriac",
+    "Thaana",
+    "Georgian",
+    "Ethiopic",
+    "Cherokee",
+    "Canadian_Aboriginal",
+    "Mongolian",
+    "Tifinagh",
+    "Devanagari",
+    "Bengali",
+    "Gurmukhi",
+    "Gujarati",
+    "Oriya",
+    "Tamil",
+    "Telugu",
+    "Kannada",
+    "Malayalam",
+    "Sinhala",
+    "Thai",
+    "Lao",
+    "Tibetan",
+    "Myanmar",
+    "Khmer",
+    "Hangul",
+    "Han",
+    "Hiragana",
+    "Katakana",
+];
 /// Feature 006 data-model §2: the `licences` forms.
 const LICENCE_FORMS: [&[&str]; 4] = [
     &["license"],
@@ -215,10 +251,13 @@ fn parse_catalog(text: &str) -> Option<Catalog> {
 
 /// One data-model §2 entry. The `bundled` record also holds `package`.
 fn dictionary(entry: &Value, prefix: &str, commit: &str, bundled: bool) -> Option<Dictionary> {
-    let mut fields = vec!["id", "name", "license", "commit", "files", "licences"];
+    let mut fields = vec![
+        "id", "name", "license", "script", "commit", "files", "licences",
+    ];
     if bundled {
         fields.push("package");
     }
+    let script = entry["script"].as_str()?;
     let id = entry["id"].as_str().filter(|id| is_language_id(id))?;
     let name = entry["name"]
         .as_str()
@@ -249,6 +288,8 @@ fn dictionary(entry: &Value, prefix: &str, commit: &str, bundled: bool) -> Optio
         .chain(licences.iter().copied())
         .collect();
     let fits = has_keys(entry, &fields)
+        && DICTIONARY_SCRIPTS.contains(&script)
+        && (!bundled || script == "Latin")
         && entry["license"]
             .as_str()
             .is_some_and(|license| (1..=128).contains(&license.len()))
@@ -2721,6 +2762,24 @@ mod tests {
                 first(|entry| {
                     entry.as_object_mut().expect("entry").remove("license");
                 }),
+            ),
+            (
+                "an entry without its Script",
+                first(|entry| {
+                    entry.as_object_mut().expect("entry").remove("script");
+                }),
+            ),
+            (
+                "the Script Common",
+                first(|entry| entry["script"] = json!("Common")),
+            ),
+            (
+                "a Script code instead of its name",
+                first(|entry| entry["script"] = json!("Latn")),
+            ),
+            (
+                "a bundled Script other than Latin",
+                Box::new(|file| file["bundled"]["script"] = json!("Cyrillic")),
             ),
             ("an upper-case ID", id("UK")),
             ("a one-letter ID", id("u")),

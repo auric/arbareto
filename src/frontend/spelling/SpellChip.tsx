@@ -5,18 +5,22 @@ import { Alert02Icon, SpellCheckIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import type { SpellView } from "./engine";
-import { languageName, type SpellingState } from "./store";
+import type { SpellingState } from "./store";
 import { SPELLING_TEXTS as T } from "./texts";
 
 // 006 plan.md D8 "Chip" and "Count", D16 "Commit editor", D17 "Commit editor".
 
 export type SpellStatus = { text: string; lines: string[]; tone: "normal" | "off" | "warning"; count: string | null };
 
-/** The chip, its tooltip lines, and the count. Null until the first settings response. */
+/** The chip, its tooltip lines, and the count. Null until the first settings response, and with spell check on until the catalog loads. */
 export function spellStatus(state: SpellingState, view: SpellView): SpellStatus | null {
   const setting = state.setting;
   if (setting === null) return null;
   if (!setting.enabled) return { text: T.off, lines: [T.off], tone: "off", count: null };
+  const catalog = state.catalog;
+  if (catalog === null) return null;
+  // The shell drops every ID outside the catalog (plan.md D11).
+  const languageName = (id: string) => catalog.get(id)?.name ?? id;
   const loaded = setting.languages.filter((id) => state.languages.get(id) === "loaded");
   const failed = setting.languages.filter((id) => state.languages.get(id) === "failed");
   const loading = setting.languages.filter((id) => !loaded.includes(id) && !failed.includes(id));

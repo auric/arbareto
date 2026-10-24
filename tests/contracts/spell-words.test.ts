@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { printOrigin } from "../origin";
 import { SPELLING_SUGGESTIONS } from "../../src/contracts/limits";
-import { acceptedSet, changedLines, createRounds, mergeMarks, mergeSuggestions, shiftRanges, sizeText, words } from "../../src/contracts/spell-words";
+import { acceptedSet, changedLines, createRounds, mergeMarks, mergeSuggestions, scriptsOf, shiftRanges, sizeText, words } from "../../src/contracts/spell-words";
 
 const SOURCE = printOrigin("../../src/contracts/spell-words.ts", import.meta.dir);
 
@@ -159,12 +159,70 @@ describe("data-model §13 rounds and the mark merge", () => {
     expect(rounds.start(["en"], [1], { first: 1, lastA: 1, lastB: 1 }).lines).toEqual([1]);
   });
 
-  test("a range is a mark only when every loaded language refused it and no list accepts its word", () => {
-    const en = [mark(0, 7, "recieve"), mark(8, 14, "привіт"), mark(15, 22, "kubectl")];
-    const uk = [mark(0, 7, "recieve"), mark(15, 22, "kubectl")];
+  // Data-model §13 "Merge vectors" (user decision of 2026-10-24): en and de are Latin, uk is Cyrillic.
+  const none = () => false;
+  test("a word of one Script: only the languages of that Script decide", () => {
+    const en = { script: "Latin", refused: [mark(0, 7, "recieve")] };
+    const uk = { script: "Cyrillic", refused: [mark(8, 14, "прывіт")] };
+    expect(mergeMarks([en, uk], none)).toEqual([mark(0, 7, "recieve"), mark(8, 14, "прывіт")]);
+  });
+
+  test("a wrong-layout word with Latin and Cyrillic letters is a mark only when en and uk both refused it", () => {
+    const word = mark(0, 3, "cир");
+    expect(mergeMarks([{ script: "Latin", refused: [word] }, { script: "Cyrillic", refused: [word] }], none)).toEqual([word]);
+    expect(mergeMarks([{ script: "Latin", refused: [word] }, { script: "Cyrillic", refused: [] }], none)).toEqual([]);
+    expect(mergeMarks([{ script: "Latin", refused: [] }, { script: "Cyrillic", refused: [word] }], none)).toEqual([]);
+  });
+
+  test("a word with no responsible language is no mark", () => {
+    const greek = mark(0, 6, "Ελλάδα");
+    expect(mergeMarks([{ script: "Latin", refused: [greek] }, { script: "Cyrillic", refused: [greek] }], none)).toEqual([]);
+    expect(mergeMarks([{ script: "Latin", refused: [mark(0, 1, "'")] }], none)).toEqual([]);
+  });
+
+  test("two languages of the same Script must both refuse a word", () => {
+    const haus = mark(0, 5, "Hausx");
+    expect(mergeMarks([{ script: "Latin", refused: [haus] }, { script: "Latin", refused: [haus] }], none)).toEqual([haus]);
+    expect(mergeMarks([{ script: "Latin", refused: [haus] }, { script: "Latin", refused: [] }], none)).toEqual([]);
+  });
+
+  test("a listed word is no mark, the marks come in text order, and no language gives no mark", () => {
     const accepted = acceptedSet(["kubectl"]);
-    expect(mergeMarks([en, uk], (word) => accepted.has(word))).toEqual([mark(0, 7, "recieve")]);
-    expect(mergeMarks([], () => false)).toEqual([]);
+    const en = { script: "Latin", refused: [mark(15, 22, "kubectl"), mark(23, 26, "cир"), mark(0, 7, "recieve")] };
+    const uk = { script: "Cyrillic", refused: [mark(23, 26, "cир"), mark(8, 14, "прывіт")] };
+    expect(mergeMarks([en, uk], (word) => accepted.has(word))).toEqual([mark(0, 7, "recieve"), mark(8, 14, "прывіт"), mark(23, 26, "cир")]);
+    expect(mergeMarks([], none)).toEqual([]);
+  });
+});
+
+describe("data-model §13 Script of a word (user decision of 2026-10-24)", () => {
+  const SCRIPTS = ["Latin", "Cyrillic"];
+  // U+0027 and U+2019 are no letters. U+02BC is a letter of Script Common. U+0301 is Inherited.
+  test.each([
+    ["recieve", ["Latin"]],
+    ["привіт", ["Cyrillic"]],
+    ["cир", ["Cyrillic", "Latin"]],
+    ["Ελλάδα", []],
+    ["don't", ["Latin"]],
+    ["don’t", ["Latin"]],
+    ["пʼять", ["Cyrillic"]],
+    ["ʼ", []],
+    ["'", []],
+    ["é", ["Latin"]],
+    ["é", ["Latin"]],
+    ["й", ["Cyrillic"]],
+    ["й", ["Cyrillic"]],
+    ["́", []],
+  ])("scriptsOf(%j) gives %j", (word, want) => {
+    expect([...scriptsOf(word, SCRIPTS)].sort()).toEqual(want);
+    expect([...scriptsOf(word.normalize("NFC"), SCRIPTS)].sort()).toEqual(want);
+    expect([...scriptsOf(word.normalize("NFD"), SCRIPTS)].sort()).toEqual(want);
+  });
+
+  test("only the given Script values count", () => {
+    expect([...scriptsOf("cир", ["Cyrillic"])]).toEqual(["Cyrillic"]);
+    expect([...scriptsOf("Ελλάδα", ["Greek", "Latin"])]).toEqual(["Greek"]);
+    expect([...scriptsOf("recieve", [])]).toEqual([]);
   });
 });
 

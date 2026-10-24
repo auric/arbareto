@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import catalog from "../../contracts/dictionaries.json";
 import { SPELLING_LANGUAGES } from "../../contracts/limits";
 import { acceptedSet } from "../../contracts/spell-words";
 import type { BridgeResponse } from "../bridge";
@@ -19,13 +18,12 @@ export type SpellingState = {
   words: WordListState;
   /** Data-model §10: the NFC words of the Ignore list. */
   ignored: ReadonlySet<string>;
+  /** The catalog name and Script of each language. Null until the first editor show loads the catalog (plan.md D3 "Renderer load"). */
+  catalog: ReadonlyMap<string, { name: string; script: string }> | null;
 };
 
 // Data-model §8: the default and the value after a read failure.
 const DEFAULT: SpellingSetting = { enabled: true, languages: ["en"] };
-const NAMES = new Map<string, string>([[catalog.bundled.id, catalog.bundled.name], ...catalog.entries.map((entry) => [entry.id, entry.name] as [string, string])]);
-/** The catalog name of a language. The shell drops every ID outside the catalog (plan.md D11). */
-export const languageName = (id: string) => NAMES.get(id) ?? id;
 
 /** Data-model §8 `spelling` of a `readSyncSettings` or `setSpelling` result. The renderer bundle holds no zod, so this reads the fields it uses. */
 function settingOf(response: BridgeResponse): SpellingSetting {
@@ -37,13 +35,13 @@ function settingOf(response: BridgeResponse): SpellingSetting {
 }
 
 export function createSpellingStore(wordList: WordList = createWordList()) {
-  let state: SpellingState = { setting: null, languages: new Map(), words: { kind: "loading" }, ignored: new Set() };
+  let state: SpellingState = { setting: null, languages: new Map(), words: { kind: "loading" }, ignored: new Set(), catalog: null };
   let accepted = new Set<string>();
   const listeners = new Set<() => void>();
   // 001 latest-wins rule: a response applies only when no later request has applied.
   let issued = 0;
   let applied = 0;
-  let wordsRead = false;
+  let opened = false;
 
   function set(next: Partial<SpellingState>) {
     state = { ...state, ...next };
@@ -75,11 +73,15 @@ export function createSpellingStore(wordList: WordList = createWordList()) {
       else languages.set(id, language);
       set({ languages });
     },
-    /** Plan.md D10: the first editor show reads the list once. */
-    readWords() {
-      if (wordsRead) return;
-      wordsRead = true;
+    /** Plan.md D10 and D3: the first editor show reads the word list and the catalog once. A failed catalog load leaves no language with a Script, so each load fails. */
+    open() {
+      if (opened) return;
+      opened = true;
       void wordList.read().then((words) => set({ words }));
+      void import("../../contracts/dictionaries.json").then(
+        ({ default: c }) => set({ catalog: new Map([c.bundled, ...c.entries].map((e) => [e.id, { name: e.name, script: e.script }] as const)) }),
+        () => set({ catalog: new Map() }),
+      );
     },
     ignore(word: string) {
       set({ ignored: new Set(state.ignored).add(word) });

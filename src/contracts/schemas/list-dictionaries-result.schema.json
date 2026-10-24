@@ -1,78 +1,114 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "type": "object",
-  "properties": {
-    "languages": {
-      "maxItems": 92,
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "language": {
-            "type": "string",
-            "maxLength": 32,
-            "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
-          },
-          "state": {
-            "type": "string",
-            "enum": [
-              "not-downloaded",
-              "ready",
-              "changed",
-              "downloading",
-              "importing"
-            ]
-          },
-          "notice": {
-            "type": "string",
-            "enum": [
-              "catalog-changed"
-            ]
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "languages": {
+          "maxItems": 92,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "language": {
+                "type": "string",
+                "maxLength": 32,
+                "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
+              },
+              "state": {
+                "type": "string",
+                "enum": [
+                  "not-downloaded",
+                  "ready",
+                  "changed",
+                  "downloading",
+                  "importing"
+                ]
+              },
+              "notice": {
+                "type": "string",
+                "enum": [
+                  "catalog-changed"
+                ]
+              }
+            },
+            "required": [
+              "language",
+              "state"
+            ],
+            "additionalProperties": false,
+            "title": "DictionaryLanguage"
           }
         },
-        "required": [
-          "language",
-          "state"
-        ],
-        "additionalProperties": false,
-        "title": "DictionaryLanguage"
-      }
-    },
-    "removed": {
-      "maxItems": 92,
-      "type": "array",
-      "items": {
-        "type": "object",
-        "properties": {
-          "language": {
-            "type": "string",
-            "maxLength": 32,
-            "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
-          },
-          "name": {
-            "type": "string",
-            "pattern": "^[^\\u0000]*$"
+        "removed": {
+          "maxItems": 92,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "language": {
+                "type": "string",
+                "maxLength": 32,
+                "pattern": "^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$"
+              },
+              "name": {
+                "type": "string",
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "required": [
+              "language",
+              "name"
+            ],
+            "additionalProperties": false,
+            "title": "RemovedLanguage"
           }
         },
-        "required": [
-          "language",
-          "name"
-        ],
-        "additionalProperties": false,
-        "title": "RemovedLanguage"
-      }
+        "more": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        }
+      },
+      "required": [
+        "languages",
+        "removed",
+        "more"
+      ],
+      "additionalProperties": false,
+      "title": "DictionaryStates"
     },
-    "more": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 9007199254740991
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "changed"
+          ]
+        },
+        "status": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "folder": {
+          "type": "string",
+          "maxLength": 32767,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "additionalProperties": false,
+      "title": "ListDictionariesRefusal"
     }
-  },
-  "required": [
-    "languages",
-    "removed",
-    "more"
   ],
-  "additionalProperties": false,
   "title": "ListDictionariesResult"
 }

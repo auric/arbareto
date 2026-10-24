@@ -370,11 +370,23 @@ describe("marks (Q6, SC-001)", () => {
     ]);
   });
 
+  test("each language checks only the words of its Script: a wrong-layout word gets a mark, a Greek word gets none (Q10)", async () => {
+    const t = await mount({ languages: ["en", "uk"] });
+    await t.type("привіт recieve cир Ελλάδα");
+    expect(t.marks()).toEqual(["recieve", "cир"]);
+  });
+
+  test("a wrong-layout word that one responsible language accepts gets no mark", async () => {
+    const t = await mount({ languages: ["en", "uk"], files: { uk: { ...UKRAINIAN, "index.dic": dicOf(["привіт", "cир"]) } } });
+    await t.type("привіт recieve cир");
+    expect(t.marks()).toEqual(["recieve"]);
+  });
+
   test("a round merges only when every check worker of the round replied (data-model §13)", async () => {
     const t = await mount({ languages: ["en", "uk"], hold: ["uk"] });
-    await t.type("привіт recieve");
-    // Only English has loaded, so its refusals alone decide.
-    expect(t.marks()).toEqual(["привіт", "recieve"]);
+    await t.type("привіт прывіт recieve");
+    // Only English has loaded. It checks no Cyrillic word, so only its Latin refusal decides.
+    expect(t.marks()).toEqual(["recieve"]);
     // Ukrainian loads, and its first round goes to both workers. English holds its reply.
     await act(async () => {
       t.worker("en")!.held = true;
@@ -382,10 +394,28 @@ describe("marks (Q6, SC-001)", () => {
     });
     await settle();
     expect(t.worker("uk")!.checks().length).toBe(1);
-    expect(t.marks()).toEqual(["привіт", "recieve"]);
+    expect(t.marks()).toEqual(["recieve"]);
     await act(async () => t.worker("en")!.release());
     await settle();
+    expect(t.marks()).toEqual(["прывіт", "recieve"]);
+  });
+
+  test("a text change during a composition drops the running round, so its old offsets never merge (data-model §13)", async () => {
+    const t = await mount();
+    await t.type("Fix the\nrecieve it");
     expect(t.marks()).toEqual(["recieve"]);
+    const text = "Fix the\nrecieve it\nteh data";
+    await act(async () => void (t.worker("en")!.held = true));
+    await t.type(text);
+    await act(async () => void t.field.dispatchEvent(new Event("compositionstart", { bubbles: true })));
+    const composed = `abc${text}`;
+    await t.type(composed);
+    // The reply of the round of `text` arrives during the composition.
+    await act(async () => t.worker("en")!.release());
+    await settle();
+    await act(async () => void t.field.dispatchEvent(new Event("compositionend", { bubbles: true })));
+    await settle();
+    expect(t.marks()).toEqual(["abcFix", "recieve", "teh"]);
   });
 
   test("the merge message field, the diff views, and the file lists get no mirror (FR-002)", () => {
@@ -612,6 +642,13 @@ describe("spelling menu (Q7, FR-005)", () => {
     await act(async () => t.worker("en", 1)!.release());
     await settle();
     expect(menuLabels().slice(0, 3)).toEqual(["receive", "relieve", "Ignore"]);
+  });
+
+  test("the menu asks only the suggestion workers of the languages responsible for the word (data-model §15)", async () => {
+    const t = await ready({ languages: ["en", "uk"] });
+    await rightClick(t, 120, 30);
+    expect(menuLabels().slice(0, 3)).toEqual(["receive", "relieve", "Ignore"]);
+    expect(t.workers.filter((w) => w.language === "uk").length).toBe(1);
   });
 
   test("the suggestion worker loads at the first menu only", async () => {

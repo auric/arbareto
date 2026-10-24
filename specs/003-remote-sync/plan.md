@@ -19,7 +19,7 @@ Five facts drive the design (research R1, R2, R5, R8, R10):
 
 ## Technical Context
 
-**Language/Version**: The 001 and 002 versions stay: TypeScript `7.0.2`, Bun `1.4.3` (exact, T366), Rust/Cargo `1.98.0`.
+**Language/Version**: The 001 and 002 versions stay: TypeScript `7.0.2`, Bun `1.4.4` (exact, T366, T390), Rust/Cargo `1.98.0`.
 
 **Primary Dependencies**: No new runtime dependency. The test-only devDependency `ssh2` 1.17.0 follows the O-5 record (T007, T008). User-installed optional programs: PuTTY 0.75 or later (plink, Pageant, PuTTYgen; O-6). The Git floor stays 2.55.0 (001). It covers `fetch --porcelain` (Git 2.41) and `%(push:remoteref)` (Git 2.22).
 

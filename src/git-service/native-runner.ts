@@ -175,15 +175,22 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
     let sentBytes = 0;
     let unacknowledged = 0;
     let canceled = false;
+    let stopped = false;
     let broken = false;
     const cancel = () => {
       if (canceled) return;
       canceled = true;
       send("process", { type: "cancel", callId });
     };
+    // Contract §6 `stop`: it ends only the process of this `run`, and the operation Job stays open.
+    const stop = () => {
+      if (canceled || stopped) return;
+      stopped = true;
+      send("process", { type: "stop", callId });
+    };
     // Contract §6 "Streamed input": at most 8 chunks of one call wait for `inputWritten`.
     const pump = () => {
-      while (streamed && !canceled && unacknowledged < UNACKNOWLEDGED_INPUT_CHUNKS && sentBytes < streamed.length) {
+      while (streamed && !canceled && !stopped && unacknowledged < UNACKNOWLEDGED_INPUT_CHUNKS && sentBytes < streamed.length) {
         const chunk = streamed.subarray(sentBytes, sentBytes + NATIVE_CHUNK_BYTES);
         send("process", { type: "input", callId, data: chunk.toBase64() });
         sentBytes += chunk.length;
@@ -233,8 +240,8 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
             if (!bytes) return malformed();
             if (output.data.stream === "stdout") {
               call.stdout.push(bytes);
-              // Contract §6 "Byte caps": a stream above its result bound gets `cancel`.
-              if (call.stdout.limited) cancel();
+              // Contract §6 "Byte caps": a `run` stream that its collector stops gets `stop`, and a `wslProbe` stream gets `cancel`.
+              if (call.stdout.limited) (body.type === "run" ? stop : cancel)();
             } else {
               call.stderr.push(bytes);
               if (diagnostics.add(call, bytes.length)) cancel();

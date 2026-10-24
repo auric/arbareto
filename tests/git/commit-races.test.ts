@@ -324,8 +324,8 @@ describe("changes after handoff (contract §4, §8)", () => {
   }
 });
 
-describe("reconciliation reads and the Job close of a limited read (contract §6 `cancel`)", () => {
-  // The window read stops at the preflight tip, so the native runner cancels it, and the shell closes the Job of the operation.
+describe("reconciliation reads beside the stop of a limited read (contract §6 `stop`)", () => {
+  // The window read stops at the preflight tip, so the native runner sends `stop`, and the shell ends only that process.
   // The first HEAD read after the commit process gets the output of Git's own read as injected bytes. The stdout barrier holds them, so the call runs until the release.
   // The release comes when every other call of the operation after the commit process has an exit.
   caseTest("T391", `T391: F09: a reconciliation HEAD read that runs while the window read stops at the preflight tip gives succeeded with commitOid at HEAD and resolves the marker`, SHELL, () => {

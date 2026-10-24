@@ -75,6 +75,8 @@ export type HistoryState = {
   /** A match move waits for the search to reach its target (spec FR-037). */
   waiting: boolean;
   selection: Selection | null;
+  /** The view ID at the last `select()`. A new view sets it to null and keeps the selection until `readAt` finds the row (contract Δ3 `commitTarget`). */
+  selectedIn: string | null;
   /** A row that the list must scroll into view. `seq` changes with each request. */
   reveal: { item: number; seq: number } | null;
   /** Changes with each cache change. */
@@ -104,6 +106,7 @@ const INITIAL: Omit<HistoryState, "scope"> = {
   matchEnd: null,
   waiting: false,
   selection: null,
+  selectedIn: null,
   reveal: null,
   version: 0,
 };
@@ -184,7 +187,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
 
   function select(id: string, index: number | null, mode: Selection["mode"] = filterMode() ? "filter" : "full", reveal = true) {
     const item = id === "working-directory" ? 0 : id === "index" ? 1 : index === null ? null : SPECIAL_ROWS + index;
-    set({ selection: { id, index, mode }, matchEnd: null, ...(reveal && item !== null ? { reveal: { item, seq: ++revealSeq } } : {}) });
+    set({ selection: { id, index, mode }, selectedIn: state.view?.viewId ?? null, matchEnd: null, ...(reveal && item !== null ? { reveal: { item, seq: ++revealSeq } } : {}) });
   }
 
   // ---- Row reads ----

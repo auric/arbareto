@@ -416,7 +416,7 @@ Each step writes its tests first. P0.2 and P0.3 are the riskiest proofs and run 
   - Stopped: "Blame stopped before Git finished."
   - Marks: "?" with the tooltip "Ignored. Git skipped the commit of this line." and "*" with the tooltip "Unblamable. Git found no commit for this line after the skip.". The line name adds ", ignored" or ", unblamable".
   - Shallow: "Earlier history is not in this clone." on the second line of the run, or in the tooltip of a run of one line.
-  - Tooltip of the gutter: the 001 date form, then "Path in this commit: <name>" when `filename` differs from the blamed path.
+  - Tooltip of the gutter: the author, then the 001 date form, then "Path in this commit: <name>" when `filename` differs from the blamed path. One line each.
   - Line name: "Line <n>, <short ID>, <author>, <relative date>", plus the marks. The line text is its accessible description.
   - Legend: "Older" and "Newer" around the seven shades. Tooltip "The shade ranks the commits of this file by author date. Today's date has no effect.". The legend group name is "Commit age, older to newer".
   - Refusals: `no-history` "Git has no history for this file."; `binary` "Arbareto does not blame a binary file."; `submodule` "This path is a submodule. Open the submodule to blame its files."; `size` "Arbareto does not blame a file larger than 4 MiB."; `lines` "Arbareto does not blame a file with more than 100,000 lines."; `ignore-revs-file-missing` "Git cannot run blame. The file <path> that blame.ignoreRevsFile names does not exist."; `no-previous` "Git names no earlier version of this line."; `path` "Arbareto cannot pass this file name to Git, because it is not valid UTF-8.". A failure: "Blame did not complete: <code>." with "Show output" for `GIT_FAILED`.

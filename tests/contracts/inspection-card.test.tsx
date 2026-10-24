@@ -443,6 +443,30 @@ describe("the branch list rows (spec FR-064, FR-065)", () => {
     expect(options()).toEqual([]);
   });
 
+  test("the Upstream gone note and the gone mark keep their width, only the name cuts, and the card anchors to the option row (T069)", async () => {
+    const { fake } = actions(BRANCHES);
+    await openList(fake);
+    const note = (name: string) => [...option(name).children].at(-1) as HTMLElement;
+    const classes = note("fix-old-cache").className.split(" ");
+    expect([classes.includes("shrink-0"), classes.includes("flex-1"), classes.includes("min-w-0")]).toEqual([true, false, false]);
+    expect(listName(option("fix-old-cache")).className.split(" ")).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
+    expect(text(note("fix-old-cache"))).toBe("Upstream gone");
+    // Feature 004 T116 keeps its rule: the name of a held row gets its width first, and the Open note shrinks first.
+    expect(note(LONG).className.split(" ")).toEqual(expect.arrayContaining(["flex-1", "min-w-0", "truncate"]));
+    expect(option("fix-old-cache").querySelector('[data-slot="gone-mark"]')!.className.split(" ")).toContain("shrink-0");
+    // Plan.md D15 "Branch card": beside the row at its end edge, so the anchor is the option row.
+    const rect = (left: number, right: number) => ({ x: left, y: 100, left, right, top: 100, bottom: 126, width: right - left, height: 26, toJSON: () => ({}) }) as DOMRect;
+    const target = option("fix-old-cache");
+    target.getBoundingClientRect = () => rect(0, 546);
+    listName(target).getBoundingClientRect = () => rect(40, 300);
+    stubCut(listName(target), true);
+    await hover(listName(target));
+    await wait(OPEN_DELAY + 100);
+    expect(card()).not.toBeNull();
+    // Floating UI sizes `--anchor-width` from the rectangle of the anchor: the row gives 546 px, the name span 260 px. happy-dom has no viewport for the side.
+    expect(card()!.parentElement!.style.getPropertyValue("--anchor-width")).toBe("546px");
+  });
+
   test("a cut remote row card shows only the full name", async () => {
     const { fake } = actions(BRANCHES);
     await openList(fake);

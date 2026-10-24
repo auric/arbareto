@@ -105,6 +105,20 @@ async function type(host: HTMLElement, value: string) {
 }
 const click = (element: HTMLElement) => act(async () => element.click());
 
+describe("heading and filter field (004 plan.md:528, Main board, T075)", () => {
+  test("the heading row shows References and the reference count; the heading names the tree without the count", async () => {
+    const { host } = await sidebar();
+    const heading = host.querySelector("h2")!;
+    expect(text(heading)).toBe("References");
+    expect(text(heading.parentElement!.querySelector('[data-slot="references-count"]')!)).toBe("9");
+    expect(tree(host).getAttribute("aria-labelledby")).toBe(heading.id);
+    expect(host.querySelector<HTMLInputElement>('input[type="search"]')!.placeholder).toBe("Filter references");
+    // Before the first result, no count shows.
+    const loading = await sidebar({ refs: null });
+    expect(loading.host.querySelector('[data-slot="references-count"]')).toBeNull();
+  });
+});
+
 describe("groups and folders", () => {
   test("three groups carry their counts and aria-expanded; by default Branches is open and Remotes and Tags are closed", async () => {
     const { host } = await sidebar();

@@ -75,6 +75,8 @@ export function IgnoreEditor({ store, onTrust }: IgnoreEditorProps) {
       store.save();
     } else if (action === "closeEditor") {
       event.preventDefault();
+      // A real key press can mount the discard modal during this keydown. Its dismiss listener on `document` must not get the same Escape.
+      event.stopPropagation();
       store.close();
     }
   }
@@ -240,8 +242,11 @@ function Preview({ preview, onTrust }: { preview: IgnorePreview; onTrust(): void
           {notices.more > 0 ? <li className="text-muted-text">{`and ${formatCount(notices.more)} more`}</li> : null}
         </ul>
       )}
-      <Group title="Newly ignored" group={newlyIgnored} />
-      <Group title="No longer ignored" group={noLongerIgnored} />
+      {/* Each row takes at most its content height, so the second group starts below the first list. */}
+      <div data-slot="preview-groups" className="grid min-h-0 flex-1 content-start grid-rows-[minmax(0,max-content)_minmax(0,max-content)]">
+        <Group title="Newly ignored" group={newlyIgnored} />
+        <Group title="No longer ignored" group={noLongerIgnored} />
+      </div>
     </>
   );
 }
@@ -254,7 +259,7 @@ function Group({ title, group }: { title: string; group: { count: number; paths:
   const virtualizer = useVirtualizer({ count: group.paths.length, getScrollElement: () => scroller.current, estimateSize: () => ROW, overscan: 8 });
   const more = group.count - group.paths.length;
   return (
-    <div className={`flex min-h-0 flex-col border-t border-divider first:border-t-0 ${open ? "flex-1" : ""}`}>
+    <div className="flex min-h-0 flex-col border-t border-divider">
       <h3 id={headingId} className="flex h-7 shrink-0 items-center px-2 font-semibold">
         <button type="button" aria-expanded={open} className="flex items-center gap-1" onClick={() => setOpen((o) => !o)}>
           <HugeiconsIcon icon={open ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />

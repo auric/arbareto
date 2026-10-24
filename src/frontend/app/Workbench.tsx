@@ -1235,7 +1235,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   function blameBack() {
     const back = blameReturn.current;
     blameReturn.current = null;
-    if (back === null) return;
+    if (back === null) {
+      // Plan.md D15 "Blame keys": Back returns to the selected History row, so the list shows it again.
+      const selected = historyView.getState().selection;
+      if (selected !== null) historyView.select(selected.id, selected.index, selected.mode);
+      return;
+    }
     const entry = requests.state().entries.find((e) => e.pathBytes === back.pathBytes && e.category === back.category);
     if (entry !== undefined) requests.selectEntry(entry.entryId);
     focusReturn.current = back;

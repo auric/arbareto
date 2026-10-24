@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { ArrowDown01Icon, ArrowRight01Icon, CubeIcon, Delete02Icon, Folder01Icon, ListIcon, ListTreeIcon, MinusSignIcon, PlusSignIcon, Search01Icon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowRight01Icon, Copy01Icon, CubeIcon, Delete02Icon, Delete04Icon, File01Icon, Folder01Icon, FolderSearchIcon, ListIcon, ListTreeIcon, MinusSignIcon, PlusSignIcon, Search01Icon, Tick02Icon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref } from "react";
@@ -114,6 +114,10 @@ const VIRTUAL_MIN = 200;
 const listOf = (category: Category): ListName => (category === "staged" ? "staged" : "changes");
 const directionOf = (category: Category): FileDirection => (category === "staged" ? "unstage" : category === "conflicted" ? "resolve" : "stage");
 const ROW_LABEL: Record<FileDirection, string> = { stage: "Stage file", unstage: "Unstage file", resolve: "Mark resolved" };
+// The CommitActions board icons of the row menu items.
+const ROW_ICON = { stage: PlusSignIcon, unstage: MinusSignIcon, resolve: Tick02Icon } as const;
+// Feature 005 plan.md D15 "Commit view row menu".
+const ROW_MENU_WIDTH = 300;
 
 type ListHandle = { focusKey(key: string): void; focusHeading(): void };
 type Marked = { list: ListName; ids: ReadonlySet<string>; anchor: string };
@@ -367,22 +371,22 @@ export function ChangesPane(props: ChangesPaneProps) {
   // Spec FR-053: an untracked row, an index addition (porcelain v2 X = `A`), and an unborn HEAD have no path at HEAD.
   const blameReason = (entry: ChangeEntry) => (entry.category === "untracked" || entry.xy?.[0] === "A" || files?.unborn === true ? NO_HISTORY : null);
   function menuGroups(row: TreeRow, list: ListName, anchor: HTMLElement): ActionGroup[] {
-    if (row.kind === "section") return [[{ label: "Stage all untracked", keys: KEYS.stageEntry, reason: filesReason(derived.untracked), onSelect: () => void runFiles(derived.untracked, "Stage all untracked") }]];
+    if (row.kind === "section") return [[{ label: "Stage all untracked", icon: PlusSignIcon, keys: KEYS.stageEntry, reason: filesReason(derived.untracked), onSelect: () => void runFiles(derived.untracked, "Stage all untracked") }]];
     const first: ActionItem[] = [];
     if (row.kind === "file") {
       const entry = row.entry;
       const submodule = entry.submodule?.startsWith("S") === true;
-      first.push({ label: ROW_LABEL[directionOf(entry.category)], keys: KEYS.stageEntry, onSelect: () => actOnEntry(entry) });
+      first.push({ label: ROW_LABEL[directionOf(entry.category)], icon: ROW_ICON[directionOf(entry.category)], keys: KEYS.stageEntry, onSelect: () => actOnEntry(entry) });
       const open = files?.onOpenSubmodule;
       if (submodule && open !== undefined) first.push({ label: "Open submodule", icon: CubeIcon, reason: files?.submoduleReason?.(entry.pathBytes) ?? null, onSelect: () => open(entry.path) });
       const blame = files?.onBlame;
       if (!submodule && blame !== undefined) first.push({ label: "Blame", reason: blameReason(entry), onSelect: () => blame(entry) });
     } else if (files !== undefined) {
       const request = folderRequest(row, list);
-      first.push({ label: folderLabel(list), keys: KEYS.stageEntry, reason: filesReason(request), onSelect: () => void runFiles(request, folderLabel(list)) });
+      first.push({ label: folderLabel(list), icon: list === "staged" ? MinusSignIcon : PlusSignIcon, keys: KEYS.stageEntry, reason: filesReason(request), onSelect: () => void runFiles(request, folderLabel(list)) });
     }
     const path = row.kind === "file" ? row.entry.path : row.path;
-    first.push({ label: "Copy path", onSelect: () => copy(path) });
+    first.push({ label: "Copy path", icon: Copy01Icon, onSelect: () => copy(path) });
     if (files !== undefined) {
       // Plan.md D5: a folder reveals through an entry below it, and the folder bytes replace the entry path.
       const reveal = () => {
@@ -390,7 +394,7 @@ export function ChangesPane(props: ChangesPaneProps) {
         const below = folderEntries(entries, row.folder, list === "staged" ? "unstage" : "stage")[0];
         if (below !== undefined) files.actions.reveal(below.entryId, row.path, row.folder);
       };
-      first.push({ label: "Show in Explorer", onSelect: reveal });
+      first.push({ label: "Show in Explorer", icon: FolderSearchIcon, onSelect: reveal });
     }
     const groups: ActionGroup[] = [first];
     const untracked = row.kind === "file" ? row.entry.category === "untracked" : row.untracked;
@@ -400,7 +404,7 @@ export function ChangesPane(props: ChangesPaneProps) {
       const raw = Uint8Array.from(atob(row.kind === "file" ? row.entry.pathBytes : row.folder), (c) => c.charCodeAt(0));
       const slash = raw.at(-1) === 0x2f;
       const line = ignoreLine(slash ? raw.subarray(0, -1) : raw, row.kind === "folder" || slash);
-      groups.push((["gitignore", "exclude"] as const).map((target) => ({ label: IGNORE_LABEL[target], reason: line.ok ? null : IGNORE_LINE_REASON[line.reason], onSelect: () => void (line.ok && onIgnore(target, line.line)) })));
+      groups.push((["gitignore", "exclude"] as const).map((target) => ({ label: IGNORE_LABEL[target], icon: ViewOffSlashIcon, reason: line.ok ? null : IGNORE_LINE_REASON[line.reason], onSelect: () => void (line.ok && onIgnore(target, line.line)) })));
     }
     if (list === "changes" && files !== undefined) {
       const why = deleteWhy(deleteSet(row).entries);
@@ -409,7 +413,7 @@ export function ChangesPane(props: ChangesPaneProps) {
         label: "Delete from disk",
         items: [
           { label: "Delete…", icon: Delete02Icon, danger: true, keys: KEYS.deleteFiles, reason: why, running: quiet, onSelect: () => void startDelete(row, "recycle", anchor) },
-          { label: "Delete permanently…", icon: Delete02Icon, danger: true, keys: KEYS.deletePermanently, reason: why, running: quiet, onSelect: () => void startDelete(row, "permanent", anchor) },
+          { label: "Delete permanently…", icon: Delete04Icon, danger: true, keys: KEYS.deletePermanently, reason: why, running: quiet, onSelect: () => void startDelete(row, "permanent", anchor) },
         ],
       });
     }
@@ -612,7 +616,7 @@ export function ChangesPane(props: ChangesPaneProps) {
         </section>
       </div>
       {menu === null || menuRow === null ? null : (
-        <ActionMenu label={menuRow.kind === "file" ? menuRow.entry.path : menuRow.kind === "folder" ? menuRow.path : "Untracked"} groups={menuGroups(menuRow, menu.list, menu.anchor)} open anchor={menu.anchor} byKey={menu.byKey} onOpenChange={(open) => !open && setMenu(null)} finalFocus={() => menu.anchor} />
+        <ActionMenu label={menuRow.kind === "file" ? menuRow.entry.path : menuRow.kind === "folder" ? menuRow.path : "Untracked"} groups={menuGroups(menuRow, menu.list, menu.anchor)} open anchor={menu.anchor} byKey={menu.byKey} onOpenChange={(open) => !open && setMenu(null)} finalFocus={() => menu.anchor} width={ROW_MENU_WIDTH} />
       )}
       {confirm === null ? null : confirm.review.ok ? (
         <DeleteConfirm
@@ -992,8 +996,10 @@ const Row = memo(function Row({ row, list, layout, sectionReason, sectionReasonI
   const [folder, name] = splitPath(entry.path, GIT_SEPARATORS);
   const direction = directionOf(entry.category);
   const mark = letter(entry);
+  const submodule = entry.submodule?.startsWith("S") === true;
   return (
     <div {...common} data-entry-id={entry.entryId} aria-selected={selected} aria-label={entry.path}>
+      <HugeiconsIcon icon={submodule ? CubeIcon : File01Icon} strokeWidth={2} aria-hidden="true" data-slot="row-icon" className={submodule ? "size-(--icon-size) shrink-0 text-muted-text" : "size-(--icon-size) shrink-0"} />
       <span aria-hidden="true" className="flex min-w-0 flex-1 whitespace-nowrap">
         {layout === "tree" ? null : <span className="min-w-0 shrink-[1000] truncate">{folder}</span>}
         <span className="min-w-0 truncate">{name}</span>

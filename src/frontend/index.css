@@ -497,8 +497,17 @@
   .list-row[aria-selected="true"]::before {
     background: HighlightText;
   }
-  .list-row[aria-selected="true"] :is([data-slot="status-letter"], [data-slot="row-icon"], .text-muted-text, .text-accent-role, .text-removed) {
+  .list-row[aria-selected="true"] :is([data-slot="status-letter"], [data-slot="row-icon"], .text-text, .text-muted-text, .text-accent-role, .text-removed) {
     color: HighlightText;
+  }
+  /* Feature 005 plan.md D16: on the selected line the age bar takes the row fill. Its shade is an inline style, so the rule needs the priority. */
+  .list-row[aria-selected="true"] .age-bar {
+    forced-color-adjust: none;
+    background: Highlight !important;
+  }
+  /* The `outline-hidden` utility of the menu items draws a transparent outline, and forced colors show it as CanvasText. */
+  [role="menu"] :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):not(:focus-visible) {
+    outline: none;
   }
   /* The selected row turns off the forced colors for its subtree, so a button in it needs system colors too. */
   .list-row[aria-selected="true"] button {

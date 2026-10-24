@@ -8,6 +8,7 @@ import { diffLanguage } from "../highlight/language";
 import { DIFF_THEME } from "../highlight/set";
 import { PATCH_CSS } from "./patch-css";
 import PatchPool from "./PatchPool";
+import { useDiffThemeType } from "./theme-type";
 
 export type PatchViewProps = {
   /** The decoded canonical patch. */
@@ -42,6 +43,7 @@ export default function PatchView({ patch, selected, anchor = null, lines = null
     const lang = diffLanguage(file);
     return lang === undefined ? file : setLanguageOverride(file, lang);
   }, [patch]);
+  const themeType = useDiffThemeType();
   const range = selected ? hunkRange(selected) : null;
   // Each hunk start carries its hunk button. The selected hunk adds its label there.
   const annotations: DiffLineAnnotation<Mark>[] =
@@ -87,6 +89,7 @@ export default function PatchView({ patch, selected, anchor = null, lines = null
             disableFileHeader: true,
             preferredHighlighter: "shiki-js",
             theme: DIFF_THEME,
+            themeType,
             unsafeCSS: PATCH_CSS,
             // Spec FR-043: drag over the line numbers. The view owns the selection, so a new patch clears it.
             enableLineSelection: onLines !== undefined,

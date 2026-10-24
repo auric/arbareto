@@ -169,7 +169,7 @@ description: "Task list for the First Release (Preview v0.1.0) feature"
 
 **Agent**: implementer.
 
-- [ ] T027 Amend the 001 artifacts (plan.md D12) (P5, WP7): `specs/001-desktop-qualification/plan.md` B-RELEASE row (current state "v1.0 release blocked", with the 007 reading that a GitHub pre-release without an updater is not a production release), plan.md:613 and plan.md:1047; research.md R7 "Corresponding Source location" (a dated paragraph: public before the preview, user decision 2026-10-24); tasks.md T176 and T177 ("the v1.0 release"; T177 passes on a B-RELEASE row that says the v1.0 release is blocked). Do not change 001 spec.md. Then run `/speckit-analyze` for 001 with `SPECIFY_FEATURE_NO_PERSIST=1` and fix its findings. Spec: FR-003, FR-007.
+- [ ] T027 Amend the 001 artifacts (plan.md D12) (P5, WP7): `specs/001-desktop-qualification/plan.md` B-RELEASE row (current state "v1.0 release blocked", with a note that cites the constitution 4.0.1 definition of a production release), plan.md:613 and plan.md:1047; research.md R7 "Corresponding Source location" (a dated paragraph: public before the preview, user decision 2026-10-24); tasks.md T176 and T177 ("the v1.0 release"; T177 passes on a B-RELEASE row that says the v1.0 release is blocked). `specs/001-desktop-qualification/spec.md` line 23 (Clarification), line 529 (Assumption), and FR-033: "public release" becomes "the v1.0 release", with a dated note (2026-10-24) that cites constitution 4.0.1. Then run `/speckit-analyze` for 001 with `SPECIFY_FEATURE_NO_PERSIST=1` and fix its findings. Spec: FR-003, FR-007.
 
 ### Batch 2 verification
 

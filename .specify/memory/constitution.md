@@ -1,12 +1,12 @@
 <!--
 Sync Impact Report
-- Version change: 3.0.0 -> 4.0.0 (MAJOR). An obligation of principle I is relaxed for one class of actions. Maintainer decision of 2026-10-22 (feature 006). Principle I now names the scope of the confirmation rule: repository data, Git state, and user files. Removal of app-managed data that the user can restore at once from the same view MAY act without confirmation.
-- Modified principles: I. Preserve User Data (title unchanged). The second bullet changes its second sentence. The non-discard rule and the rebase pull exception are unchanged.
+- Version change: 4.0.0 -> 4.0.1 (PATCH). Maintainer decision of 2026-10-24 (feature 007). The delivery gate on update authenticity gets a definition of "production release". No obligation changes.
+- Modified principles: none. Delivery Gates gains one definition bullet after the update-authenticity gate.
 - Added sections: none.
 - Removed sections: none.
 - Templates: .specify/templates/plan-template.md, spec-template.md, tasks-template.md, and checklist-template.md cite no principle text or version. They stay unchanged (upstream).
-- Dependent artifacts: specs/001 to 004 plan.md cite version 3.0.0. Their principle I rows stay correct. specs/004-workbench-ux/plan.md note N-1 quotes the old sentence "Destructive actions and history rewrites MUST require explicit confirmation". The quote is now out of date, but its conclusion stays valid. Feature specs stay unchanged.
-- Follow-up TODOs: CLAUDE.md says "Version 2.0.0 is ratified". Fix it through claude-md-improver.
+- Dependent artifacts: specs/007-first-release plan.md and research.md cite 4.0.1. specs/001 to 006 plan.md cite earlier versions; their rows stay correct. 001 plan.md B-RELEASE changes through 007 task T027.
+- Follow-up TODOs: CLAUDE.md says "Version 2.0.0 is ratified". Fix it to 4.0.1 through claude-md-improver.
 -->
 # Arbareto Constitution
 
@@ -102,6 +102,7 @@ Sync Impact Report
 - Feature completion MUST include success, failure, applicable cancellation, external-change, and safeguard evidence.
 - Reviews MUST record failures, causes, attempted remedies, and unverified claims in the active feature artifacts.
 - Production release MUST remain blocked until update authenticity and tampered-update rejection have verified evidence.
+- A production release is a release that users get through an in-app updater or a stable (not pre-release) distribution channel. A GitHub pre-release that users download by hand is not a production release.
 
 ## Governance
 
@@ -112,4 +113,4 @@ Sync Impact Report
 - Plans and reviews MUST identify compliance evidence or unresolved blockers for each applicable principle.
 - Unresolved violations MUST block affected merges or releases. Conflicting changes MUST wait for an approved constitutional amendment.
 
-**Version**: 4.0.0 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-10-22
+**Version**: 4.0.1 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-10-24

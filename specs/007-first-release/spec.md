@@ -28,7 +28,7 @@ The user gave these decisions on 2026-10-24. They are fixed inputs for this feat
 
 ### Session 2026-10-24 (answers to research.md R6)
 
-- Q: Is the preview a production release under the constitution delivery gate on update authenticity? → A: No. A GitHub pre-release with no updater is not a production release. Feature 007 records this reading. 001 plan.md B-RELEASE and 001 research.md R7 change so that they gate v1.0, not every public release. The constitution text stays unchanged (FR-003, FR-007).
+- Q: Is the preview a production release under the constitution delivery gate on update authenticity? → A: No. A GitHub pre-release with no updater is not a production release. Constitution 4.0.1 (PATCH, 2026-10-24) defines the term at the delivery gate: "A production release is a release that users get through an in-app updater or a stable (not pre-release) distribution channel. A GitHub pre-release that users download by hand is not a production release." 001 plan.md B-RELEASE, 001 research.md R7, and the three 001 spec.md "public release" lines change so that they gate v1.0, not every public release (FR-003, FR-007).
 - Q: Are releases immutable? → A: Yes. The orchestrator switches on immutable releases at the public switch. It is a repository setting step, not a workflow step (FR-028).
 - Q: Which tag form? → A: `v0.1.0` with the GitHub pre-release flag and "Preview" in the title (FR-001).
 - Q: Which signing scope with SignPath? → A: The two executables and the installer. The uninstaller and the Tauri NSIS plugin DLL stay unsigned until SignPath confirms a flow for them. The release notes record this limit (FR-041, FR-046).
@@ -157,7 +157,7 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 - **FR-004**: The release workflow MUST publish only from the public `auric/arbareto` repository. It MUST refuse to publish when the repository is private. The public switch stays the user's own step.
 - **FR-005**: The preview MUST NOT contain an in-app updater or an update check. Users update by a manual download from GitHub Releases.
 - **FR-006**: Features 005 and 006 MUST be merged into `main` before the release tag is created.
-- **FR-007**: 001 plan.md B-RELEASE and 001 research.md R7 MUST gate v1.0, not every public release. Feature 007 MUST record the reading that a GitHub pre-release without an updater is not a production release under the constitution delivery gate.
+- **FR-007**: 001 plan.md B-RELEASE, 001 research.md R7, and 001 spec.md (the Clarification at line 23, the Assumption at line 529, and FR-033) MUST gate the v1.0 release, not every public release. They MUST cite the constitution 4.0.1 definition of a production release.
 
 #### Build
 

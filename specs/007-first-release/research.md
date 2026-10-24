@@ -146,8 +146,8 @@ Research date: 2026-10-24. Each fact cites a source URL or a repository file. A 
 11. The service sidecar carries Bun file properties, not Arbareto's (FR-034, SignPath metadata rule).
 12. No release notes source and no changelog file.
 13. README says "No installer release exists yet" and has no download, verification, or code signing policy section.
-14. 001 B-RELEASE and research R7 ("private until version 1") conflict with the 2026-10-24 decisions. The preview needs a recorded reading or an amendment there (open question Q2).
-15. Constitution delivery gate: "Production release MUST remain blocked until update authenticity and tampered-update rejection have verified evidence." The preview needs a recorded reading that a pre-release without an updater is not a production release (open question Q2).
+14. 001 B-RELEASE and research R7 ("private until version 1") conflict with the 2026-10-24 decisions. Resolved: T027 amends them (Q2).
+15. Constitution delivery gate: "Production release MUST remain blocked until update authenticity and tampered-update rejection have verified evidence." Resolved: constitution 4.0.1 defines a production release, and a GitHub pre-release that users download by hand is not one (Q2).
 16. No `CODE_OF_CONDUCT.md` (optional).
 
 ## R5. Windows SmartScreen and Smart App Control
@@ -164,7 +164,7 @@ Research date: 2026-10-24. Each fact cites a source URL or a repository file. A 
 
 Each question is a real user choice. Each has a recommended default.
 
-Answered on 2026-10-24 (spec Clarifications): Q2 takes option (a), and the constitution text stays unchanged. Immutable releases: yes, switched on by the orchestrator at the public switch. Q1, Q3, Q5, Q6, Q7, Q8, and Q9 take the recommended defaults. Q4 keeps the "no tag ruleset" decision.
+Answered on 2026-10-24 (spec Clarifications): Q2: first option (a); then, after the analyze finding C1, option (b): a PATCH amendment to constitution 4.0.1 adds the definition at the delivery gate, and T027 also amends the three 001 spec.md lines. Immutable releases: yes, switched on by the orchestrator at the public switch. Q1, Q3, Q5, Q6, Q7, Q8, and Q9 take the recommended defaults. Q4 keeps the "no tag ruleset" decision.
 
 - **Q1. Version and tag form.** Options: `v0.1.0` with the GitHub pre-release flag, or `v0.1.0-preview.1`. Recommendation: `v0.1.0` with the pre-release flag and "Preview" in the title. The user named "v0.1.0", 0.x already marks pre-1.0, and a SemVer suffix complicates the Windows file version (four numbers) and a later updater order.
 - **Q2. Gate reading for the preview.** The constitution blocks a "production release" until update authenticity has evidence, and 001 B-RELEASE says "Public release blocked". Options: (a) record in this feature that a pre-release without an updater is not a production release, and amend 001 plan.md B-RELEASE and research.md R7 to name v1.0; (b) a PATCH amendment of the constitution that defines "production release". Recommendation: (a) now, and (b) only if a later review finds the reading unclear.

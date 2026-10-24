@@ -43,7 +43,7 @@ A tag `v0.1.0` on `main` starts one GitHub Actions workflow on `windows-2025`. T
 | VII. Accessible and Measured Interface | The two About links are buttons with names, focus, and keyboard access, as the 006 licence link. No new budget. | Pass |
 | VIII. Locked Dependencies | Every tool and action has an exact pin. `bun install --frozen-lockfile` and Cargo `--locked` stay. The run record lists every version (spec FR-016). | Pass |
 | IX. One Upstream Planning Process | All records stay in `specs/007-first-release/`. The 001 amendments edit 001 artifacts only where the user asked (D12). | Pass |
-| Delivery gate: update authenticity | Recorded reading (user, 2026-10-24): a GitHub pre-release with no updater is not a production release. The constitution text stays unchanged. 001 B-RELEASE gates v1.0 (D12). | Pass with recorded reading |
+| Delivery gate: update authenticity | Constitution 4.0.1 defines a production release as a release that users get through an in-app updater or a stable (not pre-release) distribution channel. The preview is a GitHub pre-release that users download by hand, with no updater, so the gate does not apply to it. 001 B-RELEASE gates v1.0 (D12). | Pass |
 
 Post-design re-check: no change. No violation needs the Complexity Tracking table.
 
@@ -204,11 +204,11 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 
 ### D12 001 amendments (user, 2026-10-24)
 
-- 001 plan.md B-RELEASE row: the current state says "v1.0 release blocked". The condition keeps licences, signing, update authenticity, and tampered-update rejection. A note names the 007 reading: a GitHub pre-release with no updater is not a production release.
+- 001 plan.md B-RELEASE row: the current state says "v1.0 release blocked". The condition keeps licences, signing, update authenticity, and tampered-update rejection. A note cites the constitution 4.0.1 definition: a GitHub pre-release that users download by hand is not a production release.
 - 001 plan.md:613 and :1047: "private until version 1" and "public release blocked" change to the public preview and the v1.0 gate.
 - 001 research.md R7 "Corresponding Source location": add a dated paragraph: the repository becomes public before the preview (user, 2026-10-24); the v1.0 gate stays.
 - 001 tasks.md T176 and T177: "public release" changes to "the v1.0 release". T177's pass condition reads "says that the v1.0 release is blocked". Then `/speckit-analyze` runs for 001 with `SPECIFY_FEATURE_NO_PERSIST=1`.
-- 001 spec.md lines 23 and 529 and FR-033 also say "public release". They stay unchanged unless the user asks (open question in the report).
+- 001 spec.md line 23 (Clarification), line 529 (Assumption), and FR-033: "public release" changes to "the v1.0 release", with a dated note that cites constitution 4.0.1 (user, 2026-10-24).
 
 ## Facts to verify before the dependent work
 

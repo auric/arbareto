@@ -6,6 +6,7 @@
 // Each fact prints `OBSERVATION T059: <fact> holds|DOES NOT HOLD (<Git version>)`. A failed fact is a finding for research.md R17.
 // The `wslFiles` cases run the Perl text of `src/contracts/wsl-process.json` through the contract §11 wrapper, with the arguments and the stdin tokens
 // of `src-tauri/src/wsl.rs` `files_perl`. Their operation IDs start with `0f0f0f0f-0000-4000-8009-`, and no other test uses that prefix.
+// T078: the Delete, preview, and Save rows run through the WSL file actions of the shell test double `tests/git/bun-runner.ts`.
 
 import { describe, expect, test } from "bun:test";
 import { readFileSync, unlinkSync } from "node:fs";
@@ -19,9 +20,11 @@ import { fixturePath, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { sha256 } from "../git/git-oracle";
 import { buildBlame, buildBranches, buildHistory, buildPartialClone, buildRenames, EMPTY_TREE, HISTORY_LABELS, RENAME_PAIRS, type Built, type ObjectFormat } from "../git/history-diff-fixtures";
-import { outcome, readOk, SUCCEEDED } from "../git/hunk-harness";
+import { outcome, readOk, subcommand, SUCCEEDED, until } from "../git/hunk-harness";
 import { gitOut, gitRun, type GitHost, type RunOptions } from "../git/remote-fixtures";
 import { OPERATION_MARKERS } from "../../src/git-service/commands";
+import { PREVIEW_GROUP_PATHS } from "../../src/contracts/limits";
+import { comparePaths } from "../../src/contracts/tree-order";
 import { openService, withFsCalls, type Envelope, type FsCall, type RegistrationResult, type Service, type ServiceResponse } from "../git/service-harness";
 import { distroGitHost, globalConfig, sh } from "./fixtures";
 import { inDistro, listScopes, OWN_SCOPE_OPERATIONS, pgrep, uncPath, useWslFolder, WSL_ENV, WSL_EXE, WSL_FILES_TEXT, wslExec, wslTest, type WslCapability, type WslHost } from "./wsl-host";
@@ -1297,17 +1300,232 @@ describe("T059 service rows through the shell test double and the distro Git (qu
   });
 });
 
-// ---- Rows that need the WSL file actions of the shell test double ----
+// ---- Delete, preview, and Save through the WSL file actions of the shell test double (T078) ----
 
-// `tests/git/bun-runner.ts` refuses a WSL `fileDelete`, `fileReplace`, and `shadow` (bun-runner.ts:1612, :1645, :1663) and a WSL `ignorePreview` run (:778).
-// These rows stay unverified until the double serves them or a packaged WSL run covers them. The `wslFiles` cases above run their distro part.
-for (const name of [
-  "Q16: Delete through the service in a WSL repository: the listed paths go, every other byte stays, and a folder swapped for a link changes nothing outside the reviewed paths",
-  "Q16: Cancel during a WSL Delete states each file outcome from the fresh read",
-  "Q18 to Q20, Q25: each preview of a WSL repository equals the distro Git's listings after a real save, with the text and the lists on stdin only",
-  "Q22: the WSL shadow folder goes after Cancel, and a killed run's folder goes at the next preview",
-  "Q23, Q25: Save in a WSL repository replaces the file through wslFiles replace and keeps CRLF and the BOM",
-]) {
-  console.log(`SKIP ${TASK} ${name}: missing capability shell-double-wsl-file-actions (unverified)`);
-  test.skip(`${name} (SKIP: shell-double-wsl-file-actions)`, () => {});
+// 001 contract §11 "Paths and file access" keeps the seven operation-marker `stat` calls through UNC (`commands.ts` `OPERATION_MARKERS`),
+// and the raw index bytes after a changed index digest in a read ("Change polling"). Every other `\\wsl.localhost` call of a WSL repository fails FR-043.
+function crossingIn(w: WslHost, repo: string): (calls: FsCall[]) => FsCall[] {
+  const git = uncPath(w, `${repo}/.git`);
+  const markers = OPERATION_MARKERS.map((m) => `${git}\\${m.replaceAll("/", "\\")}`.toLowerCase());
+  const index = `${git}\\index`.toLowerCase();
+  return (calls) => calls.filter((c) => /^[\\/]{2}(?:wsl\$|wsl\.localhost)[\\/]/i.test(c.path) && !(c.name === "stat" && markers.includes(c.path.toLowerCase())) && !(c.name === "open" && c.path.toLowerCase() === index));
 }
+
+type DeleteRun = { action: "delete"; entries: { entryId: string; outcome: string }[]; folders: { pathBytes: string; outcome: string }[] };
+type Group = { count: number; paths: string[] };
+type Preview = { preview: { newlyIgnored: Group; noLongerIgnored: Group; trackedMatched: number } } | { unavailable: { reason: string } };
+type IgnoreRead = { expected: "absent" | { size: number; sha256: string } };
+const isCheck = (call: { arguments: readonly string[] }) => subcommand(call.arguments) === "check-ignore";
+const shadowCalls = (s: Service, from = 0) => s.runner.calls.slice(from).filter((c) => c.contextKind === "ignorePreview");
+
+// Data-model §7 groups: the full count and the first 1,000 paths by `comparePaths`. A record that ends with `/` is a folder row.
+function group(paths: string[]): Group {
+  const sorted = [...paths].sort((a, b) => comparePaths(Buffer.from(a.replace(/\/$/, "")), Buffer.from(b.replace(/\/$/, "")), a.endsWith("/"), b.endsWith("/")));
+  return { count: paths.length, paths: sorted.slice(0, PREVIEW_GROUP_PATHS).map((p) => b64(p)) };
+}
+
+// SC-005: the distro Git's change of the ignored set and of the matched tracked set after a real save of `bytes` on a copy.
+function previewOracle(h: GitHost, repo: string, name: string, file: string, bytes: Uint8Array): { newlyIgnored: Group; noLongerIgnored: Group; trackedMatched: number } {
+  const copy = copyOf(h, repo, name);
+  h.write(`${copy}/${file}`, bytes);
+  const matched = ["--no-optional-locks", "ls-files", "-c", "-i", "--exclude-standard", "-z"];
+  const before = new Set(records(g(h, repo, ["--no-optional-locks", ...IGNORED_ARGS])));
+  const after = new Set(records(g(h, copy, ["--no-optional-locks", ...IGNORED_ARGS])));
+  const matchedBefore = new Set(records(g(h, repo, matched)));
+  return {
+    newlyIgnored: group([...after].filter((p) => !before.has(p))),
+    noLongerIgnored: group([...before].filter((p) => !after.has(p))),
+    trackedMatched: records(g(h, copy, matched)).filter((p) => !matchedBefore.has(p)).length,
+  };
+}
+
+// The `arbareto-preview-<pid>-*` folders of this test process below the distro `/tmp` (contract Δ11 `scratch`).
+const shadowsOf = (w: WslHost) => sh(w, 'find /tmp -maxdepth 1 -name "arbareto-preview-$1-*" -printf "%f\\n"', [String(process.pid)]).stdout.split("\n").filter((n) => n !== "");
+
+async function deleteRun(s: Service, r: RegistrationResult, read: { snapshotId: string; generation: number }, entryIds: string[], folder?: string): Promise<ServiceResponse<DeleteRun>> {
+  const review = await request<{ workbenchToken: string; plan: { wsl: boolean } }>(s, "reviewWorkbench", { action: "delete", snapshotId: read.snapshotId, entryIds, mode: "permanent", ...(folder === undefined ? {} : { folder: b64(folder) }) }, { repositoryId: r.repositoryId, repositoryGeneration: read.generation });
+  expect({ ...outcome(review), wsl: review.result?.plan.wsl }).toEqual({ ...SUCCEEDED, wsl: true });
+  return request<DeleteRun>(s, "runWorkbench", { workbenchToken: review.result!.workbenchToken, start: true }, { repositoryId: r.repositoryId });
+}
+
+describe("T078 Delete, preview, and Save through the WSL file actions of the shell test double (quickstart.md Q16, Q18 to Q25)", () => {
+  W("Q16 FR-029, FR-031, SC-003: Delete through the service in a WSL repository: the listed paths go, every other byte and the index stay, and a folder swapped for a link during the walk changes nothing outside the reviewed paths", async (w) => {
+    const h = hostOf(w);
+    const { dest, repo } = filesIn(w, "t059-q16-delete");
+    sh(w, 'ln -s ../outside/keep.txt "$1/lnk" && mkdir -p "$1/swap" "$2" && printf one > "$1/swap/1.txt" && printf two > "$1/swap/2.txt" && cp -a "$1/swap/." "$2/"', [repo, `${dest}/outside-swap`]);
+    const outside = { keep: h.digests(`${dest}/outside`), swap: h.digests(`${dest}/outside-swap`) };
+    const before = h.digests(repo);
+    const index = indexSha(h, repo);
+    const hold = seam(w, h, "q16-delete");
+    await withWsl(w, "t059-q16-delete", async (s) => {
+      const r = await s.register(uncPath(w, repo));
+      // Each run changes the workspace, so each review takes a new snapshot.
+      const fresh = async () => {
+        const read = await readOk(s, r.repositoryId);
+        return { read, id: (path: string) => read.entries.find((e) => e.path === path && e.category !== "staged")!.entryId };
+      };
+      let { read, id } = await fresh();
+      const plain = await deleteRun(s, r, read, [id("u1.txt"), id("lnk")]);
+      expect({ ...outcome(plain), entries: plain.result?.entries }).toEqual({ ...SUCCEEDED, entries: [id("lnk"), id("u1.txt")].map((entryId) => ({ entryId, outcome: "deleted" })) });
+      const logs = ["logs/1.log", "logs/2.log", "logs/3.log", "logs/4.log"];
+      ({ read, id } = await fresh());
+      const folder = await deleteRun(s, r, read, logs.map(id), "logs");
+      // The ignored `logs/skip.tmp` is not in the review, so the candidate folder stays (plan.md D7).
+      expect({ ...outcome(folder), entries: folder.result?.entries.map((e) => e.outcome), folders: folder.result?.folders }).toEqual({ ...SUCCEEDED, entries: logs.map(() => "deleted"), folders: [{ pathBytes: b64("logs"), outcome: "kept" }] });
+      const gone = ["u1.txt", "lnk", ...logs];
+      expect(kinds(w, [...gone, "logs", "logs/skip.tmp"].map((p) => `${repo}/${p}`))).toEqual([...gone.map(() => "a"), "d", "f"]);
+      // A folder with only reviewed files goes with its emptied parents, deepest first.
+      ({ read, id } = await fresh());
+      const nested = await deleteRun(s, r, read, [id("a/b/c/x.txt")], "a");
+      expect({ ...outcome(nested), entries: nested.result?.entries.map((e) => e.outcome), folders: nested.result?.folders.map((f) => f.outcome) }).toEqual({ ...SUCCEEDED, entries: ["deleted"], folders: ["removed", "removed", "removed"] });
+      expect(kinds(w, [`${repo}/a`])).toEqual(["a"]);
+      // The seam holds the walk inside `swap` after its first check. Then `swap` becomes a link to the outside copy.
+      ({ read, id } = await fresh());
+      s.runner.inject.wslSha256sum = hold.path;
+      try {
+        const pending = deleteRun(s, r, read, [id("swap/1.txt"), id("swap/2.txt")], "swap");
+        try {
+          await waitHeld(w, hold.held);
+          sh(w, 'mv "$1/swap" "$1/swap.held" && ln -s "$2" "$1/swap"', [repo, `${dest}/outside-swap`]);
+        } finally {
+          h.write(hold.go, "");
+        }
+        const swapped = await pending;
+        // The fresh read finds both paths through the link, so the walk's delete in the held folder shows as `changed` (plan.md D6 "Outcome per file").
+        expect({ ...outcome(swapped), entries: swapped.result?.entries.map((e) => e.outcome), folders: swapped.result?.folders.map((f) => f.outcome) }).toEqual({ state: "failed", code: "STALE_REVIEW", entries: ["changed", "not-regular"], folders: ["not-regular"] });
+      } finally {
+        s.runner.inject.wslSha256sum = null;
+      }
+    });
+    expect(kinds(w, [`${repo}/swap.held/1.txt`, `${repo}/swap.held/2.txt`, `${repo}/swap`])).toEqual(["a", "f", "l"]);
+    expect({ keep: h.digests(`${dest}/outside`), swap: h.digests(`${dest}/outside-swap`) }).toEqual(outside);
+    // The swap test step adds the link `swap` and moves `swap/2.txt` to `swap.held/2.txt`.
+    const after = without(h.digests(repo), ["swap", "swap.held/2.txt"]);
+    expect(after).toEqual(without(before, ["u1.txt", "lnk", "logs/1.log", "logs/2.log", "logs/3.log", "logs/4.log", "a/b/c/x.txt", "swap/1.txt", "swap/2.txt"]));
+    expect(indexSha(h, repo)).toBe(index);
+  });
+
+  W("Q16 FR-029: Cancel during a WSL Delete walk ends its processes, and each file outcome comes from the fresh read", async (w) => {
+    const h = hostOf(w);
+    const { repo } = filesIn(w, "t059-q16-cancel");
+    const hold = seam(w, h, "q16-cancel");
+    await withWsl(w, "t059-q16-cancel", async (s) => {
+      const r = await s.register(uncPath(w, repo));
+      const read = await readOk(s, r.repositoryId);
+      const id = (path: string) => read.entries.find((e) => e.path === path && e.category !== "staged")!.entryId;
+      const review = await request<{ workbenchToken: string }>(s, "reviewWorkbench", { action: "delete", snapshotId: read.snapshotId, entryIds: [id("u1.txt"), id("u2.txt")], mode: "permanent" }, { repositoryId: r.repositoryId, repositoryGeneration: read.generation });
+      expect(outcome(review)).toEqual(SUCCEEDED);
+      s.runner.inject.wslSha256sum = hold.path;
+      try {
+        const requestId = s.send("runWorkbench", { workbenchToken: review.result!.workbenchToken, start: true }, { repositoryId: r.repositoryId });
+        await waitHeld(w, hold.held);
+        const operation = await s.operationId(requestId);
+        await s.cancel(operation);
+        const done = await s.response<DeleteRun>(requestId, RESPONSE_MS);
+        expect({ state: done.state, code: done.code, entries: done.result?.entries }).toEqual({ state: "canceled", code: "CANCELED", entries: [id("u1.txt"), id("u2.txt")].map((entryId) => ({ entryId, outcome: "stopped" })) });
+        await noneLeft(w, operation, hold.path);
+      } finally {
+        h.write(hold.go, "");
+        s.runner.inject.wslSha256sum = null;
+      }
+    });
+    expect(kinds(w, [`${repo}/u1.txt`, `${repo}/u2.txt`])).toEqual(["f", "f"]);
+  });
+
+  W("Q18 to Q20, Q25 FR-043, SC-005: each preview of a WSL repository equals the distro Git's listings after a real save on a copy, with the text on stdin and no \\\\wsl.localhost call besides the operation markers", async (w) => {
+    const h = hostOf(w);
+    const repo = reportIn(w, "t059-q18");
+    const crossing = crossingIn(w, repo);
+    const cases: [label: string, target: "gitignore" | "exclude", text: string][] = [
+      ["US5-1 *.txt on top", "gitignore", `${REPORT_ROOT_TEXT}emptyign/\n*.txt\n`],
+      ["C1 root: drop folders, add *.txt and !a.txt", "gitignore", "*.log\n!keep.log\n**/tmp/**\n*.txt\n!a.txt\n"],
+      ["C3 info/exclude", "exclude", "*.txt\n!untr/b.txt\nnode_modules/pkg/\n"],
+      ["C5 ignored folder with a negation inside, ** forms", "gitignore", "node_modules\n!node_modules/pkg/index.js\n**/sub/**/local\nuntr/**\n!untr/b.txt\n"],
+    ];
+    await withWsl(w, "t059-q18", async (s) => {
+      const r = await s.register(uncPath(w, repo));
+      const read = await readOk(s, r.repositoryId);
+      expect(read.location.kind).toBe("wsl");
+      for (const [label, target, text] of cases) {
+        const from = s.runner.calls.length;
+        const { value: got, calls } = await withFsCalls(() => request<Preview>(s, "previewIgnore", { target, text: b64(text), snapshotId: read.snapshotId }, { repositoryId: r.repositoryId, repositoryGeneration: read.generation }));
+        expect({ label, crossing: crossing(calls) }).toEqual({ label, crossing: [] });
+        expect({ label, ...outcome(got), kind: got.result === undefined ? null : Object.keys(got.result)[0] }).toEqual({ label, ...SUCCEEDED, kind: "preview" });
+        const preview = (got.result as Extract<Preview, { preview: unknown }>).preview;
+        const want = previewOracle(h, repo, "t059-q18-copy", target === "gitignore" ? ".gitignore" : ".git/info/exclude", Buffer.from(text));
+        expect({ label, newlyIgnored: preview.newlyIgnored, noLongerIgnored: preview.noLongerIgnored, trackedMatched: preview.trackedMatched }).toEqual({ label, ...want });
+        // Contract Δ6 fixed shadow arrays: the candidate text reaches the distro Git only as the stdin of one shadow call.
+        expect({ label, onStdin: shadowCalls(s, from).some((c) => c.input !== undefined && Buffer.from(c.input).equals(Buffer.from(text))) }).toEqual({ label, onStdin: true });
+      }
+    });
+  });
+
+  W("Q22 FR-041: the WSL shadow folder goes after the preview end and after Cancel, and a killed run's folder goes at the next preview", async (w) => {
+    const repo = reportIn(w, "t059-q22");
+    // A killed run leaves the folder of another process: this PID with another creation time (plan.md D14).
+    const leftover = `/tmp/arbareto-preview-${process.pid}-1-0123456789abcdef`;
+    const own = () => shadowsOf(w).filter((n) => `/tmp/${n}` !== leftover);
+    await withWsl(w, "t059-q22", async (s) => {
+      const r = await s.register(uncPath(w, repo));
+      const read = await readOk(s, r.repositoryId);
+      const envelope = { repositoryId: r.repositoryId, repositoryGeneration: read.generation };
+      const preview = async (text: string) => expect(outcome(await request<Preview>(s, "previewIgnore", { target: "gitignore", text: b64(text), snapshotId: read.snapshotId }, envelope))).toEqual(SUCCEEDED);
+      await preview("*.md\n");
+      await until(() => own().length === 0, "the shadow folder of the finished preview", HELD_MS);
+      const release = s.runner.holdStart(isCheck);
+      const from = s.runner.calls.length;
+      const requestId = s.send("previewIgnore", { target: "gitignore", text: b64("*.txt\n"), snapshotId: read.snapshotId }, envelope);
+      try {
+        await until(() => shadowCalls(s, from).some(isCheck), "the held check", HELD_MS);
+        expect(own().length).toBe(1);
+        await s.cancel(await s.operationId(requestId));
+      } finally {
+        release();
+      }
+      expect(outcome(await s.response(requestId, RESPONSE_MS))).toEqual({ state: "canceled", code: "CANCELED" });
+      await until(() => own().length === 0, "the shadow folder of the canceled preview", HELD_MS);
+      sh(w, 'mkdir -p "$1/s" && : > "$1/s/left.txt"', [leftover]);
+      try {
+        await preview("*.md\n");
+        await until(() => kinds(w, [leftover])[0] === "a", "the leftover shadow folder", HELD_MS);
+      } finally {
+        sh(w, 'rm -rf --one-file-system -- "$1"', [leftover]);
+      }
+    });
+  });
+
+  W("Q23, Q25 FR-043: Save in a WSL repository replaces the file through wslFiles replace: CRLF and the BOM stay, an absent file saves with LF, and info/exclude saves in the common folder", async (w) => {
+    const h = hostOf(w);
+    const cases: [form: "crlf" | "bom" | "absent", target: "gitignore" | "exclude", text: string, bytes: Buffer][] = [
+      ["crlf", "gitignore", "*.log\n/out/\n/new/\n", Buffer.from("*.log\r\n/out/\r\n/new/\r\n")],
+      ["bom", "gitignore", "*.log\n/new/\n", Buffer.from("\u{feff}*.log\n/new/\n")],
+      ["absent", "gitignore", "/new/\n", Buffer.from("/new/\n")],
+      // The exclude case replaces the LF template with CRLF text first, so its save keeps CRLF too.
+      ["crlf", "exclude", "secret.txt\n", Buffer.from("secret.txt\r\n")],
+    ];
+    for (const [form, target, text, bytes] of cases) {
+      const f = buildIgnoreForm(gitPath(), `t059-q23-${form}-${target}`, form);
+      const repo = `${copyIn(w, f.root, `t059-q23-${form}-${target}`)}/repo`;
+      prepare(h, [repo]);
+      const file = target === "gitignore" ? `${repo}/.gitignore` : `${repo}/.git/info/exclude`;
+      if (target === "exclude") h.write(file, "# exclude\r\n");
+      const crossing = crossingIn(w, repo);
+      await withWsl(w, `t059-q23-${form}-${target}`, async (s) => {
+        const r = await s.register(uncPath(w, repo));
+        const envelope = { repositoryId: r.repositoryId, repositoryGeneration: r.generation };
+        const read = await request<IgnoreRead>(s, "readIgnoreFile", { target }, envelope);
+        expect(outcome(read)).toEqual(SUCCEEDED);
+        const from = s.runner.frames.length;
+        const { value: saved, calls } = await withFsCalls(async () => {
+          const review = await request<{ workbenchToken: string }>(s, "reviewWorkbench", { action: "ignore-save", target, text: b64(text), expected: read.result!.expected }, envelope);
+          expect({ form, target, ...outcome(review) }).toEqual({ form, target, ...SUCCEEDED });
+          return request<{ action: string; outcome?: string }>(s, "runWorkbench", { workbenchToken: review.result!.workbenchToken, start: true }, { repositoryId: r.repositoryId });
+        });
+        expect({ form, target, ...outcome(saved), result: saved.result, crossing: crossing(calls) }).toEqual({ form, target, ...SUCCEEDED, result: { action: "ignore-save", outcome: "replaced" }, crossing: [] });
+        expect({ form, target, frames: s.runner.frames.slice(from).filter((frame) => frame.type === "fileReplace").length }).toEqual({ form, target, frames: 1 });
+      });
+      expect({ form, target, bytes: [...h.read(file)!] }).toEqual({ form, target, bytes: [...bytes] });
+      expect(sh(w, 'find "$1" "$1/.git/info" -maxdepth 1 -name ".arbareto-*" -print', [repo]).stdout).toBe("");
+    }
+  });
+});

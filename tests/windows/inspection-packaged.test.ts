@@ -17,7 +17,7 @@ import { fixtureDir, FIXTURE_ROOT, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { workingFileDigests } from "../git/git-oracle";
 import { buildHistory } from "../git/history-diff-fixtures";
-import { connectPage, freePort, MOD, type Cdp } from "./cdp";
+import { connectPage, freePort, keyEvents, MOD, type Cdp } from "./cdp";
 import { decodePng, formatMeasurement, measure, THRESHOLD } from "./contrast";
 import { appEnv, COMMIT_VIEW, explorerReveal, explorerWindows, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
 import { close, ControlType, expand, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
@@ -70,38 +70,9 @@ const MANUAL = [
 
 // ---- CDP keys ----
 
-// DOM `key` and `code`, the winuser.h virtual-key code, and the text of a key that types one, as CDP `Input.dispatchKeyEvent` needs them.
-// A key with text goes as `keyDown`, so Chromium also fires the activation of a focused button (Puppeteer `Keyboard.down`).
-const KEYS: Record<string, { key: string; code: string; vk: number; text?: string }> = {
-  Enter: { key: "Enter", code: "Enter", vk: 0x0d, text: "\r" },
-  Escape: { key: "Escape", code: "Escape", vk: 0x1b },
-  Tab: { key: "Tab", code: "Tab", vk: 0x09 },
-  Delete: { key: "Delete", code: "Delete", vk: 0x2e },
-  Home: { key: "Home", code: "Home", vk: 0x24 },
-  ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", vk: 0x25 },
-  ArrowUp: { key: "ArrowUp", code: "ArrowUp", vk: 0x26 },
-  ArrowRight: { key: "ArrowRight", code: "ArrowRight", vk: 0x27 },
-  ArrowDown: { key: "ArrowDown", code: "ArrowDown", vk: 0x28 },
-  F5: { key: "F5", code: "F5", vk: 0x74 },
-  F6: { key: "F6", code: "F6", vk: 0x75 },
-  F10: { key: "F10", code: "F10", vk: 0x79 },
-  s: { key: "s", code: "KeyS", vk: 0x53 },
-};
-const MODIFIER_KEYS = [
-  { bit: MOD.Alt, key: "Alt", code: "AltLeft", vk: 0x12 },
-  { bit: MOD.Ctrl, key: "Control", code: "ControlLeft", vk: 0x11 },
-  { bit: MOD.Shift, key: "Shift", code: "ShiftLeft", vk: 0x10 },
-];
-
+// `cdp.ts` `keyEvents` with `typed`: Enter goes as `keyDown` with its text, so Chromium also fires the activation of a focused button.
 async function press(c: Cdp, name: string, modifiers = 0): Promise<void> {
-  const k = KEYS[name];
-  if (k === undefined) throw new Error(`no key ${JSON.stringify(name)}`);
-  const held = MODIFIER_KEYS.filter((m) => modifiers & m.bit);
-  const typed = k.text !== undefined && modifiers === 0;
-  for (const m of held) await c.send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: m.key, code: m.code, windowsVirtualKeyCode: m.vk, modifiers });
-  await c.send("Input.dispatchKeyEvent", { type: typed ? "keyDown" : "rawKeyDown", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, modifiers, ...(typed ? { text: k.text, unmodifiedText: k.text } : {}) });
-  await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, modifiers });
-  for (const m of held.toReversed()) await c.send("Input.dispatchKeyEvent", { type: "keyUp", key: m.key, code: m.code, windowsVirtualKeyCode: m.vk, modifiers: 0 });
+  for (const params of keyEvents(name, modifiers, { typed: true })) await c.send("Input.dispatchKeyEvent", params);
   console.log(`KEY ${TASK}: ${name} mods=${modifiers}`);
 }
 

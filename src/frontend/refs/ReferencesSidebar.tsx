@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { ArrowDown01Icon, ArrowRight01Icon, CancelCircleIcon, SidebarLeftIcon } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { ArrowDown01Icon, ArrowRight01Icon, CancelCircleIcon, Folder01Icon, FolderGitIcon, GitBranchIcon, SidebarLeftIcon, Tag01Icon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import type { RefEntry, RefsResult } from "../../contracts/envelope";
@@ -22,12 +22,14 @@ import { scopedAction, type ScopedAction } from "../keyboard/shortcuts";
 // Feature 002 spec FR-049 and FR-055, plan.md D6 "References sidebar" and "Branch scope".
 
 type Kind = RefEntry["kind"];
-// Contract Δ3: the sidebar does not show the stash.
-const GROUPS: { kind: Exclude<Kind, "stash">; label: string; empty: string; noun: string }[] = [
-  { kind: "branch", label: "Branches", empty: "No branches", noun: "local branch" },
-  { kind: "remote", label: "Remotes", empty: "No remote-tracking branches", noun: "remote-tracking branch" },
-  { kind: "tag", label: "Tags", empty: "No tags", noun: "tag" },
+// Contract Δ3: the sidebar does not show the stash. Feature 005 T080: the row icon of each kind (Main and BranchCard boards; the History list tag icon).
+const GROUPS: { kind: Exclude<Kind, "stash">; label: string; empty: string; noun: string; icon: IconSvgElement }[] = [
+  { kind: "branch", label: "Branches", empty: "No branches", noun: "local branch", icon: GitBranchIcon },
+  { kind: "remote", label: "Remotes", empty: "No remote-tracking branches", noun: "remote-tracking branch", icon: GitBranchIcon },
+  { kind: "tag", label: "Tags", empty: "No tags", noun: "tag", icon: Tag01Icon },
 ];
+// Feature 005 spec FR-066: the text of the card worktree line.
+const checkedOut = (path: string) => `Checked out in ${path}`;
 const LOADING = "Loading references…";
 const NO_MATCH = "No reference matches the filter.";
 // Feature 003 data-model §1 label text.
@@ -363,6 +365,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
           className={`list-row flex min-w-0 items-center gap-1 pr-2 ${sticky} ${group ? "bg-surface font-semibold" : ""}`}
         >
           <HugeiconsIcon icon={expanded ? ArrowDown01Icon : ArrowRight01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
+          {group ? null : <HugeiconsIcon icon={Folder01Icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0 text-muted-text" />}
           <span aria-hidden="true" className="min-w-0 truncate">
             {node.label}
           </span>
@@ -372,8 +375,10 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
         </div>
       );
     }
-    const noun = GROUPS.find((g) => g.kind === kind)!.noun;
+    const { noun, icon } = GROUPS.find((g) => g.kind === kind)!;
     const current = isCurrent(row);
+    // Spec FR-066: only another worktree. The open worktree holds the current branch. Undefined: no `readBranches` result is loaded.
+    const heldBy = kind !== "branch" || entry.symref !== null || held === null || entry.invalidUtf8 ? undefined : current ? null : (held.get(`refs/heads/${entry.name}`)?.heldBy ?? null);
     const upstream = upstreamText(entry);
     const notShown = entry.commitId === null ? undefined : missing.get(entry.commitId);
     // Feature 005 spec FR-064: the 003 track state `gone` gives the mark, and the mark replaces the 003 "Upstream gone" label of the row.
@@ -384,7 +389,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
     const noUpstream = kind === "branch" && entry.upstream === null;
     const name =
       entry.symref === null
-        ? [entry.name, noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream]), ...(gone ? [UPSTREAM_GONE_NAME] : []), ...(noUpstream ? [NO_UPSTREAM] : track === null ? [] : [track.label])].join(", ")
+        ? [entry.name, noun, ...(current ? ["Current"] : []), ...(upstream === null ? [] : [upstream]), ...(gone ? [UPSTREAM_GONE_NAME] : []), ...(noUpstream ? [NO_UPSTREAM] : track === null ? [] : [track.label]), ...(heldBy == null ? [] : [checkedOut(heldBy)])].join(", ")
         : `${entry.name}, ${noun}, → ${shortRef(entry.symref)}`;
     // Feature 005 spec FR-065: the branch and remote rows without a symbolic target have the card.
     const carded = (kind === "branch" || kind === "remote") && entry.symref === null;
@@ -408,8 +413,11 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
         aria-describedby={describedBy}
         aria-haspopup={actionable(row) || (current && onShowBranchHistory !== undefined) ? "menu" : undefined}
         aria-current={current ? "true" : undefined}
-        className="list-row flex min-w-0 items-center gap-2 pr-2"
+        className="list-row flex min-w-0 items-center gap-1 pr-2"
       >
+        {/* The Main board: an entry keeps the chevron column free, so its icon and name align with the folder rows. */}
+        <span aria-hidden="true" className="size-(--icon-size) shrink-0" />
+        <HugeiconsIcon icon={icon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
         {entry.symref === null ? (
           <>
             {/* Git Extensions shows the current branch in bold. The weight survives forced colors. */}
@@ -427,6 +435,12 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
                 {track.text}
               </span>
             )}
+            {/* The BranchCard board: the worktree mark at the row end. The row name states it. */}
+            {heldBy == null ? null : (
+              <span data-slot="worktree-mark" aria-hidden="true" title={checkedOut(heldBy)} className={track === null || noUpstream ? "ml-auto flex shrink-0 text-muted-text" : "flex shrink-0 text-muted-text"}>
+                <HugeiconsIcon icon={FolderGitIcon} strokeWidth={2} className="size-4" />
+              </span>
+            )}
           </>
         ) : (
           <span aria-hidden="true" className="min-w-0 truncate">
@@ -436,19 +450,7 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
       </div>
     );
     if (!carded) return view;
-    const holder = held?.get(`refs/heads/${entry.name}`);
-    const facts: CardFacts =
-      kind === "remote"
-        ? { kind: "name", name: entry.name }
-        : {
-            kind: "local",
-            name: entry.name,
-            upstream: entry.upstream === null ? null : shortRef(entry.upstream),
-            gone,
-            track: label,
-            // Spec FR-066: only another worktree. The open worktree holds the current branch.
-            heldBy: held === null || entry.invalidUtf8 ? undefined : current ? null : (holder?.heldBy ?? null),
-          };
+    const facts: CardFacts = kind === "remote" ? { kind: "name", name: entry.name } : { kind: "local", name: entry.name, upstream: entry.upstream === null ? null : shortRef(entry.upstream), gone, track: label, heldBy };
     return (
       <BranchCard
         key={node.key}

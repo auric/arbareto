@@ -331,6 +331,8 @@ export interface RecordedCall {
   input?: Uint8Array;
   refused?: string;
   exit?: GitExit;
+  // The `limited` state of the stdout collector at the exit.
+  stdoutLimited?: boolean;
   // Microseconds from `Subprocess.resourceUsage()`. A call without a process has none.
   cpuMicros?: number;
   // Milliseconds from `at` to the resolved exit. A refused call has none.
@@ -424,6 +426,9 @@ function destinationOf(path: string): DestinationFactsReply {
   }
 }
 
+// Contract §6 "Byte caps": only a `read` or `search` run gets `stop` at a stdout bound. A run of another policy drops the later bytes and runs on.
+const stopsAtBound = (call: GitCall) => call.environmentPolicy === "read" || call.environmentPolicy === "search";
+
 export function createBunRunner(options: BunRunnerOptions) {
   if (options.wslGlobalConfig !== undefined && !options.wslGlobalConfig.endsWith("/.gitconfig")) throw new Error(`wslGlobalConfig is not <home>/.gitconfig: ${options.wslGlobalConfig}`);
   const launchDirectory = join(options.directory, "launch");
@@ -476,8 +481,15 @@ export function createBunRunner(options: BunRunnerOptions) {
     jobs.set(operationId, job.add(end));
     return () => void job.delete(end);
   };
+  // Contract §6 `stop`: a descendant of a stopped process stays in the operation Job, so a Job close ends it.
+  const stoppedTrees = new Map<string, Set<ReturnType<typeof ownTree>>>();
+  const endStopped = (operationId: string) => {
+    for (const tree of stoppedTrees.get(operationId) ?? []) tree.end();
+    stoppedTrees.delete(operationId);
+  };
   const cancelRun = (operationId: string) => {
     for (const end of [...(jobs.get(operationId) ?? [])]) end();
+    endStopped(operationId);
   };
   const drains = new Set<Promise<void>>();
   const diagnostics = createDiagnosticCounter();
@@ -504,7 +516,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     afterWslExit: null as ((call: GitCall) => Promise<void>) | null,
     // Each walk waits for this promise before it reads (contract §6 "Walks"). `kind` names the request type, such as `fileFacts` or `fileDelete`.
     holdWalk: null as ((kind: string) => Promise<void>) | null,
-    // Bytes replace the process of a call. No process starts, and the bytes go to stdout in 64 KiB chunks. The exit code is 0, or null after abort, closeJob, or a limited stdout collector.
+    // Bytes replace the process of a call. No process starts, and the bytes go to stdout in 64 KiB chunks. The exit code is 0, or null after abort, closeJob, or a limited stdout collector of a `read` or `search` call.
     stdout: undefined as ((call: { operationId: string; arguments: readonly string[]; input?: Uint8Array }) => Uint8Array | undefined) | undefined,
     // An exit code replaces the process of a call. No process starts, and no byte goes out (T223 read failures).
     exit: undefined as ((call: { arguments: readonly string[] }) => number | undefined) | undefined,
@@ -1036,7 +1048,7 @@ export function createBunRunner(options: BunRunnerOptions) {
         if (halted) break;
         call.stdout.push(injected.subarray(at, at + NATIVE_CHUNK_BYTES));
         // Contract §6 `stop`: a limited stdout ends only this call.
-        if (call.stdout.limited) halt();
+        if (call.stdout.limited && stopsAtBound(call)) halt();
         await new Promise((resolve) => setImmediate(resolve));
       }
       return { exitCode: halted ? null : 0, activeDescendants: 0 };
@@ -1103,17 +1115,20 @@ export function createBunRunner(options: BunRunnerOptions) {
       tree?.end();
       proc.kill();
     };
-    // Contract §6 `stop`: the shell ends only this process. Its descendants stay, as after an exit by itself.
+    // Contract §6 `stop`: the shell ends only this process. Its descendants stay, as after an exit by itself. A process that already ended keeps its exit code.
     const stop = () => {
       halt();
-      if (killed || stopped) return;
+      if (killed || stopped || proc.exitCode !== null) return;
       stopped = true;
       proc.kill();
+      if (tree) stoppedTrees.set(call.operationId, (stoppedTrees.get(call.operationId) ?? new Set()).add(tree));
     };
     const leave = joinJob(call.operationId, kill);
+    // `watch` and the activity sink of src-tauri/src/process_requests.rs close the operation Job at a deadline and at an inactivity end.
     const expire = (reason: NonNullable<GitExit["deadline"]>) => {
       expired ??= reason;
       kill();
+      cancelRun(call.operationId);
     };
     const shorter = (limit: number, injected: number | null | undefined) => Math.min(limit, injected ?? limit);
     // Contract §6 "Process fields": a `network` request has an inactivity limit and a ceiling, every other request a deadline.
@@ -1180,7 +1195,7 @@ export function createBunRunner(options: BunRunnerOptions) {
           if (data.length === 0) return;
           touch();
           call.stdout.push(data);
-          if (call.stdout.limited) stop();
+          if (call.stdout.limited && stopsAtBound(call)) stop();
         },
         heldStdout,
       ),
@@ -1318,6 +1333,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       try {
         recorded.exit = await start(call, recorded);
         recorded.durationMs = performance.now() - recorded.at;
+        recorded.stdoutLimited = call.stdout.limited;
         // Mirrors `watch` of `src-tauri/src/process_requests.rs`: the destination identity binds only after exit status 0. A failed read binds nothing.
         const peer = call.context.contextKind === "clone" ? contexts.get(call.context.cloneId)?.peer : undefined;
         const discovery = peer === undefined ? undefined : contexts.get(peer);
@@ -1468,6 +1484,7 @@ export function createBunRunner(options: BunRunnerOptions) {
         proc.kill();
       }
       for (const halt of halts.get(operationId) ?? []) halt();
+      endStopped(operationId);
       wslAnchors.delete(operationId);
       end((r) => r.operationId === operationId);
       inactive.add(operationId);
@@ -1802,6 +1819,8 @@ export function createBunRunner(options: BunRunnerOptions) {
           seen.push(kept);
           seenBytes += kept.length;
           call.stdout.push(chunk);
+          // Contract §6 "Byte caps": the native runner sends `cancel` for a limited `wslProbe` stream.
+          if (call.stdout.limited) cancelRun(call.operationId);
         },
         get bytes() {
           return call.stdout.bytes;

@@ -306,6 +306,36 @@ describe("native runner run requests", () => {
     expect(await result).toEqual({ exitCode: null, activeDescendants: 2 });
     expect(c.stdout.limited).toBe(true);
   });
+
+  // Contract §6 "Byte caps" (T394): a run of another policy keeps its process, so its hooks and later Git work still run.
+  test("T394: a run stdout above its bound gets stop only under the read or search policy; a run of every other policy gets no stop and no cancel, and its streamed input goes on", async () => {
+    const probe: ProcessContext = { contextKind: "gitProbe", bootstrapId: id() };
+    const forms: [GitCall["environmentPolicy"], Partial<GitCall>][] = [
+      ["read", {}],
+      ["search", {}],
+      ["probe", { context: probe, arguments: ["version", "--build-options"], limits: { deadlineMs: 30_000 } }],
+      ["mutation", {}],
+      ["network", { limits: PROCESS_LIMITS.network }],
+      ["remote", { limits: PROCESS_LIMITS.network }],
+      ["integrate", { limits: PROCESS_LIMITS.network }],
+      ["mergetool", { limits: { ceilingMs: SUBMODULE_UPDATE_CEILING_MS } }],
+    ];
+    for (const [policy, fields] of forms) {
+      const stops = policy === "read" || policy === "search";
+      // Contract §6: a `mergetool` child gets a closed stdin pipe, so it takes no input.
+      const streamed = policy !== "mergetool";
+      const channel = createChannelDouble();
+      const c = call({ environmentPolicy: policy, stdout: createCollector({ maxBytes: 10 }), ...(streamed ? { input: new Uint8Array(20 * NATIVE_CHUNK_BYTES) } : {}), ...fields });
+      const result = channel.runner.run(c);
+      const { callId } = channel.last("run");
+      for (let i = 0; i < 3; i++) channel.reply("process", { type: "output", callId, stream: "stdout", data: chunk(10) });
+      if (streamed) expect(channel.reply("process", { type: "inputWritten", callId })).toBe(true);
+      const inputs = streamed ? UNACKNOWLEDGED_INPUT_CHUNKS + (stops ? 0 : 1) : 0;
+      expect({ policy, stop: channel.bodies("stop"), cancel: channel.bodies("cancel"), inputs: channel.bodies("input").length }).toEqual({ policy, stop: stops ? [{ type: "stop", callId }] : [], cancel: [], inputs });
+      channel.reply("process", exit(callId, { exitCode: stops ? null : 0 }));
+      expect({ policy, exit: await result, limited: c.stdout.limited, bytes: c.stdout.bytes }).toEqual({ policy, exit: { exitCode: stops ? null : 0, activeDescendants: 0 }, limited: true, bytes: 30 });
+    }
+  });
 });
 
 describe("native runner stderr bound", () => {

@@ -48,6 +48,8 @@ function ListName({ entry, facts, active, card, cardId, setCard }: ListNameProps
       instant={open && card?.instant === true}
       onOpenChange={(next) => setCard(next ? { key, instant: false } : (shown) => (shown?.key === key ? null : shown))}
       names={() => [name.current]}
+      // Plan.md D15 "Branch card": beside the row at its end edge, so the card does not cover the gone mark or the note.
+      anchor={() => name.current?.closest('[role="option"]') ?? null}
       trigger={
         // Git Extensions shows the current branch in bold.
         <span ref={name} data-slot="branch-name" className={entry.current ? "min-w-0 truncate font-semibold" : "min-w-0 truncate"}>
@@ -166,9 +168,9 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
             <HugeiconsIcon icon={e.kind === "local" ? GitBranchIcon : CloudIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
             <ListName entry={e} facts={factsOf(e, tracking)} active={active} card={card} cardId={cardId} setCard={setCard} />
             {gone(e) ? <GoneMark upstream={shortRef(e.upstream!)} /> : null}
-            {/* Plan D15 "Rows": a zero basis gives the note only the width that the name leaves. */}
+            {/* Feature 004 T116: a zero basis gives the note only the width that the name leaves. Feature 005 plan.md D13: the note "Upstream gone" keeps its width beside the mark. */}
             {n === null ? null : (
-              <span title={n} className="num min-w-0 flex-1 truncate text-right text-muted-text">
+              <span title={n} className={gone(e) && !held(e) ? "num ml-auto shrink-0 whitespace-nowrap text-muted-text" : "num min-w-0 flex-1 truncate text-right text-muted-text"}>
                 {n}
               </span>
             )}

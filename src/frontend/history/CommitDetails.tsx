@@ -30,7 +30,7 @@ export const messageText = (row: Pick<HistoryRow, "subject" | "body">) => (row.b
 function Person({ person, seconds, dateFormat }: { person: HistoryRow["author"]; seconds: number; dateFormat: Intl.DateTimeFormat }) {
   return (
     <dd className="flex flex-wrap gap-x-2 break-words">
-      <span>
+      <span className="min-w-0 [overflow-wrap:anywhere]">
         {person.name} &lt;{person.email}&gt;
       </span>
       <time dateTime={isoText(seconds)}>{dateFormat.format(seconds * 1000)}</time>
@@ -39,10 +39,11 @@ function Person({ person, seconds, dateFormat }: { person: HistoryRow["author"];
   );
 }
 
+/** Feature 005 plan.md D15 "History view" (Main board): the 268 px region shows the short ID. The name and the tooltip give the full ID. */
 function CommitLink({ oid, onSelect }: { oid: string; onSelect(oid: string): void }) {
   return (
-    <Button variant="outline" size="sm" className="font-mono" onClick={() => onSelect(oid)}>
-      {oid}
+    <Button variant="outline" size="sm" className="font-mono" aria-label={oid} title={oid} onClick={() => onSelect(oid)}>
+      {shortId(oid)}
     </Button>
   );
 }
@@ -93,9 +94,15 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead, 
   const [read, setRead] = useState<{ oid: string; details: Details } | null>(null);
   // A canceled read shows Loading… and reads again. The store runs one text read at a time, so the list never cancels it.
   const [attempt, setAttempt] = useState(0);
-  // A new view (Refresh, a scope switch) reads the commit again.
-  const viewId = useSyncExternalStore(view.subscribe, () => view.getState().view?.viewId ?? null);
+  // A new view (Refresh, a scope switch) reads the commit again. The History selection reads only after the new view selects it again,
+  // because the view holds its row only then (feature 005 T068). Another commit, such as a blame line commit, reads at once.
+  const viewIdOf = () => {
+    const s = view.getState();
+    return s.selection?.id === oid && s.selectedIn !== s.view?.viewId ? null : (s.view?.viewId ?? null);
+  };
+  const viewId = useSyncExternalStore(view.subscribe, viewIdOf);
   useEffect(() => {
+    if (viewId === null) return;
     let current = true;
     void view.readDetails(oid).then((details) => {
       if (!current) return;
@@ -131,7 +138,7 @@ export function ViewCommitDetails({ view, oid, dateFormat = LOCAL_DATE, onRead, 
               <span className="min-w-0 break-words font-semibold">{row.subject}</span>
               {row.subject === undefined ? null : <IconButton icon={Copy01Icon} label="Copy message" onClick={() => copy(messageText({ subject: row.subject!, body: row.body ?? "" }))} />}
             </p>
-            <dl className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-1">
+            <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 gap-y-1">
               <dt className="text-muted-text">ID</dt>
               <dd className="flex items-start gap-1">
                 <span className="min-w-0 font-mono break-all">{row.oid}</span>

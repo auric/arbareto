@@ -87,10 +87,12 @@ export type BranchCardProps = {
   /** The element that opens the card on hover. */
   trigger: ReactElement;
   side?: "inline-end" | "bottom";
+  /** The element that the card opens beside. Without it, the card opens beside the trigger. */
+  anchor?: () => Element | null;
 };
 
 /** Base UI PreviewCard opens it after its default hover delay. The caller opens it at once on keyboard focus. Escape closes it. It starts no bridge call. */
-export function BranchCard({ facts, id, open, instant = false, onOpenChange, names, trigger, side = "inline-end" }: BranchCardProps) {
+export function BranchCard({ facts, id, open, instant = false, onOpenChange, names, trigger, side = "inline-end", anchor }: BranchCardProps) {
   return (
     <HoverCard open={open} onOpenChange={(next) => void ((!next || isCut(names())) && next !== open && onOpenChange(next))}>
       <HoverCardTrigger render={trigger} />
@@ -98,6 +100,7 @@ export function BranchCard({ facts, id, open, instant = false, onOpenChange, nam
         id={id}
         side={side}
         align="start"
+        anchor={anchor}
         {...(instant ? { "data-instant": "" } : {})}
         className="flex w-[360px] max-w-[calc(100vw-32px)] flex-col gap-1.5 rounded-[6px] border border-control-border p-3 text-text ring-0"
       >

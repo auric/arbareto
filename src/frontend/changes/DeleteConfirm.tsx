@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { Alert02Icon, AlertCircleIcon, Delete02Icon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, AlertCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useId, useRef, type ReactNode } from "react";
 import { Button } from "../components/ui/button";
@@ -41,7 +41,7 @@ export function DeleteConfirm({ plan, onConfirm, onCancel, finalFocus }: DeleteC
     <Dialog open onOpenChange={(next) => void (next || onCancel())}>
       <DialogContent showCloseButton={false} initialFocus={cancel} finalFocus={finalFocus ?? true} aria-describedby={noticed ? notices : undefined} className="flex flex-col gap-0 p-0 sm:max-w-lg">
         <div className="flex items-start gap-2 px-4 pt-4 pb-2">
-          <HugeiconsIcon icon={permanent ? Alert02Icon : Delete02Icon} strokeWidth={2} aria-hidden="true" className={`mt-0.5 size-(--icon-size) shrink-0 ${permanent ? "text-removed" : ""}`} />
+          <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" data-slot="dialog-title-icon" className={`mt-0.5 size-(--icon-size) shrink-0 ${permanent ? "text-removed" : ""}`} />
           <DialogTitle className="text-sm/5 font-semibold">{permanent ? `Delete ${files} permanently?` : `Move ${files} to the Recycle Bin?`}</DialogTitle>
         </div>
         <div className="flex min-h-0 flex-col gap-2 px-4 pb-3">

@@ -54,7 +54,7 @@ function commitFacts(result: Blame, now: number): CommitFacts[] {
       short: shortId(c.oid),
       author: textOf(c.author),
       date: relativeDate(c.authorTime, now),
-      title: [LOCAL_DATE.format(c.authorTime * 1000), ...(filename === null ? [] : [`Path in this commit: ${filename}`])].join("\n"),
+      title: [textOf(c.author), LOCAL_DATE.format(c.authorTime * 1000), ...(filename === null ? [] : [`Path in this commit: ${filename}`])].join("\n"),
       age: ages[i]!,
       shallow: c.shallow,
     };

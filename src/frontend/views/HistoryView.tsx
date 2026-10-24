@@ -32,9 +32,9 @@ export function HistoryListSlot({ inspection, onSelectCommit, onBack, now, child
   const open = useSyncExternalStore(inspection.subscribe, () => inspection.getState().blame !== null, () => inspection.getState().blame !== null);
   const list = useRef<HTMLDivElement>(null);
   const wasOpen = useRef(open);
-  // Spec FR-054: Back and Escape return to the History list, so the focus goes to its Tab stop.
+  // Spec FR-054: Back and Escape return to the History list. Its listbox holds the selected row as the active option.
   useEffect(() => {
-    if (wasOpen.current && !open) list.current?.querySelector<HTMLElement>('[tabindex="0"]')?.focus();
+    if (wasOpen.current && !open) list.current?.querySelector<HTMLElement>('[role="listbox"]')?.focus();
     wasOpen.current = open;
   }, [open]);
   return (

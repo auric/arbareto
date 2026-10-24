@@ -2,6 +2,8 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
+import { readFileSync } from "node:fs";
+import { Alert02Icon, Copy01Icon, CubeIcon, File01Icon, FolderSearchIcon, PlusSignIcon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
 import { act, type ReactNode } from "react";
 import type { ChangeEntry } from "../../src/contracts/envelope";
 import { registerDom } from "../dom";
@@ -18,6 +20,7 @@ printOrigin("../../src/frontend/changes/file-actions.ts", import.meta.dir);
 printOrigin("../../src/frontend/changes/DeleteConfirm.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
 printOrigin("../../src/frontend/keyboard/shortcuts.ts", import.meta.dir);
+printOrigin("../../src/frontend/components/action-menu.tsx", import.meta.dir);
 
 mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ children }: { children?: ReactNode }) => <>{children}</> }));
 mock.module("../../src/frontend/changes/PatchView", () => ({ default: ({ patch }: { patch: string }) => <pre data-slot="patch-double">{patch}</pre> }));
@@ -154,6 +157,62 @@ describe("row menu (CommitActions board, plan D15)", () => {
   });
 });
 
+// The `d` values of a Hugeicons icon, as HugeiconsIcon renders them.
+const iconPaths = (icon: readonly (readonly [string, Record<string, unknown>])[]) => icon.filter(([tag]) => tag === "path").map(([, attrs]) => attrs.d as string);
+const svgPaths = (element: Element | null | undefined) => [...(element?.querySelectorAll("svg path") ?? [])].map((p) => p.getAttribute("d"));
+
+describe("row menu geometry and icons (plan D15, CommitActions board, T073)", () => {
+  test("the row menu is 300 px wide, and an unavailable reason wraps below its label", async () => {
+    await setup([entry("unstaged", "lib", { submodule: "SC..", xy: ".M" })]);
+    await contextMenu(item("Changes", "lib"));
+    const menu = document.querySelector<HTMLElement>('[data-slot="dropdown-menu-content"]')!;
+    expect(menu.style.width).toBe("300px");
+    const reason = menuItem("Delete…").querySelector<HTMLElement>('[data-slot="menu-reason"]')!;
+    expect(text(reason)).toBe("Arbareto does not delete a submodule.");
+    // The label and the reason share one column, so the reason starts below the label at the label start.
+    const column = reason.parentElement!;
+    expect(column.dataset.slot).toBe("menu-text");
+    expect(text(column.querySelector('[data-slot="menu-label"]')!)).toBe("Delete…");
+    expect(column.className.split(" ")).toContain("flex-col");
+  });
+
+  test("each item shows the icon of the board, hidden from assistive technology", async () => {
+    await setup([entry("untracked", "notes.txt"), entry("unstaged", "lib", { submodule: "SC..", xy: ".M" })]);
+    await contextMenu(item("Changes", "notes.txt"));
+    const icon = (label: string) => menuItem(label).querySelector('[data-slot="menu-icon"]');
+    for (const [label, expected] of [
+      ["Stage file", PlusSignIcon],
+      ["Copy path", Copy01Icon],
+      ["Show in Explorer", FolderSearchIcon],
+      ["Add to .gitignore…", ViewOffSlashIcon],
+      ["Add to info/exclude…", ViewOffSlashIcon],
+    ] as const)
+      expect([label, svgPaths(icon(label))]).toEqual([label, iconPaths(expected)]);
+    expect(icon("Copy path")!.getAttribute("aria-hidden")).toBe("true");
+    await pressKey(document.activeElement ?? document.body, "Escape");
+    await contextMenu(item("Changes", "lib"));
+    expect(svgPaths(icon("Open submodule"))).toEqual(iconPaths(CubeIcon));
+  });
+
+  test("file rows show the file icon and submodule rows the cube icon, hidden from assistive technology", async () => {
+    await setup([entry("untracked", "notes.txt"), entry("unstaged", "lib", { submodule: "SC..", xy: ".M" })]);
+    const rowIcon = (path: string) => item("Changes", path).querySelector('[data-slot="row-icon"]');
+    expect(svgPaths(rowIcon("notes.txt"))).toEqual(iconPaths(File01Icon));
+    expect(svgPaths(rowIcon("lib"))).toEqual(iconPaths(CubeIcon));
+    expect(rowIcon("notes.txt")!.getAttribute("aria-hidden")).toBe("true");
+    expect(item("Changes", "notes.txt").getAttribute("aria-label")).toBe("notes.txt");
+  });
+
+  test("in forced colors, an unfocused menu item draws no outline box, and the focused item keeps the 004 outline (T072)", () => {
+    const css = readFileSync(printOrigin("../../src/frontend/index.css", import.meta.dir), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const block = css.slice(css.indexOf("@media (forced-colors: active)"));
+    const rules = [...block.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.replace(/\s+/g, " ").trim(), body: m[2]!.replace(/\s+/g, " ").trim() }));
+    const unfocused = rules.find((r) => r.selector.startsWith('[role="menu"]') && r.selector.includes(":not(:focus-visible)"));
+    expect(unfocused?.selector).toBe('[role="menu"] :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):not(:focus-visible)');
+    expect(unfocused?.body).toBe("outline: none;");
+  });
+});
+
 describe("Delete keys (FR-023, plan D15 keyboard map)", () => {
   test("Del on 3 marked untracked rows reviews them with mode recycle; Shift+Del reviews mode permanent", async () => {
     const files = [entry("untracked", "a.txt"), entry("untracked", "b.txt"), entry("untracked", "c.txt")];
@@ -230,6 +289,15 @@ describe("Delete confirmation (DeleteConfirm board, FR-026 to FR-029)", () => {
     expect(text(document.activeElement!)).toBe("Cancel");
     expectChromiumFocus(document.activeElement);
     expect(text(d)).not.toContain("You cannot undo this.");
+  });
+
+  test("both titles use the alert icon (plan D15 \"Delete confirmation\", T076)", async () => {
+    const files = [entry("untracked", "notes.txt")];
+    await confirmFor(files, plan(files));
+    expect(svgPaths(dialog()!.querySelector('[data-slot="dialog-title-icon"]'))).toEqual(iconPaths(Alert02Icon));
+    await unmountAll();
+    await confirmFor(files, plan(files, { mode: "permanent" }), true);
+    expect(svgPaths(dialog()!.querySelector('[data-slot="dialog-title-icon"]'))).toEqual(iconPaths(Alert02Icon));
   });
 
   test("Shift+Delete: the permanent title, the warning, and the button (US2-2)", async () => {

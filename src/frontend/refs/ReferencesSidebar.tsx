@@ -535,16 +535,23 @@ export function ReferencesSidebar({ refs, failure, onSelectCommit, onRefresh, co
   return (
     <section aria-labelledby={ids.heading} className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-1 px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
-        <h2 id={ids.heading} className="mr-auto font-semibold">
+        <h2 id={ids.heading} className="font-semibold">
           References
         </h2>
-        {collapsible ? <IconButton icon={SidebarLeftIcon} label="Show references" aria-expanded={shown} onClick={() => (onExpandedChange ?? setOwnShown)(!shown)} /> : null}
+        {/* 004 plan.md:528 "References <n>": the count stays outside the heading, so the tree name stays "References". */}
+        {refs === null ? null : (
+          <span data-slot="references-count" className="num text-muted-text">
+            {groups.reduce((sum, g) => sum + g.tree.count, 0)}
+          </span>
+        )}
+        {collapsible ? <IconButton icon={SidebarLeftIcon} label="Show references" className="ml-auto" aria-expanded={shown} onClick={() => (onExpandedChange ?? setOwnShown)(!shown)} /> : null}
       </div>
       {shown ? (
         <>
           <input
             type="search"
             aria-label="Filter references"
+            placeholder="Filter references"
             className="mx-2 mb-1 h-(--h-button) shrink-0 rounded-sm border border-control-border bg-surface px-2"
             value={query}
             onChange={(event) => {

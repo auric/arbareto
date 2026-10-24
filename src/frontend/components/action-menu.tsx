@@ -41,24 +41,26 @@ export type ActionMenuProps = {
   /** Shift+F10 or the Menu key opened the menu. The focus then goes to the first item, also an unavailable one (spec FR-014). A right-click keeps the Base UI popup focus. */
   byKey?: boolean;
   finalFocus?: ComponentProps<typeof DropdownMenuContent>["finalFocus"];
+  /** A fixed menu width in DIPs. An unavailable reason then wraps below its label (feature 005 plan.md D15 "Commit view row menu"). */
+  width?: number;
 };
 
 /** The menu of D15. The accessible name of an item is its label only: the key goes to `aria-keyshortcuts`, and the key column is hidden from assistive technology. */
-export function ActionMenu({ label, groups, open, onOpenChange, trigger, anchor, byKey = false, finalFocus }: ActionMenuProps) {
+export function ActionMenu({ label, groups, open, onOpenChange, trigger, anchor, byKey = false, finalFocus, width }: ActionMenuProps) {
   // Base UI 1.8.0 records no open method without a trigger, so it focuses the popup. The focused item becomes the highlighted item.
   const focusFirst = useCallback((popup: HTMLDivElement | null) => void (byKey && popup?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()), [byKey]);
   return (
     <DropdownMenu open={open} onOpenChange={(next) => onOpenChange(next)}>
       {trigger === undefined ? null : <DropdownMenuTrigger render={trigger} />}
       {/* D16 "Geometry": a row menu opens beside its row, so the row stays visible. */}
-      <DropdownMenuContent aria-label={label} anchor={anchor ?? undefined} side={anchor ? "inline-end" : "bottom"} sideOffset={2} ref={focusFirst} finalFocus={finalFocus} className="w-auto max-w-[calc(100vw-32px)] min-w-[220px]">
+      <DropdownMenuContent aria-label={label} anchor={anchor ?? undefined} side={anchor ? "inline-end" : "bottom"} sideOffset={2} ref={focusFirst} finalFocus={finalFocus} className="w-auto max-w-[calc(100vw-32px)] min-w-[220px]" style={width === undefined ? undefined : { width }}>
         {groups.map((group, index) => (
           <Fragment key={index}>
             {index === 0 ? null : <DropdownMenuSeparator />}
             <DropdownMenuGroup>
               {"label" in group ? <DropdownMenuLabel className="flex h-6 items-center font-semibold text-muted-text">{group.label}</DropdownMenuLabel> : null}
               {("items" in group ? group.items : group).map((item) => (
-                <Item key={item.label} item={item} />
+                <Item key={item.label} item={item} below={width !== undefined} />
               ))}
             </DropdownMenuGroup>
           </Fragment>
@@ -69,7 +71,7 @@ export function ActionMenu({ label, groups, open, onOpenChange, trigger, anchor,
 }
 
 /** D16 "Geometry": icon, label, the Muted reason of an unavailable item, then the key column, on one line. The texts wrap only beyond the menu width cap. */
-function Item({ item }: { item: ActionItem }) {
+function Item({ item, below }: { item: ActionItem; below: boolean }) {
   const reasonId = useId();
   const reason = item.reason ?? null;
   const quiet = reason !== null && item.running === true;
@@ -85,16 +87,31 @@ function Item({ item }: { item: ActionItem }) {
       <span data-slot="menu-icon" aria-hidden="true" className="flex size-4 shrink-0 items-center">
         {item.icon === undefined ? null : <HugeiconsIcon icon={item.icon} strokeWidth={2} className="size-4" />}
       </span>
-      <span data-slot="menu-label" className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
-        {item.label}
-      </span>
-      {reason === null ? null : (
-        <span id={reasonId} data-slot="menu-reason" aria-hidden="true" hidden={quiet} className="ml-auto min-w-0 pl-4 text-xs whitespace-normal text-muted-text [overflow-wrap:anywhere]">
-          {reason}
+      {below ? (
+        <span data-slot="menu-text" className="flex min-w-0 flex-1 flex-col">
+          <span data-slot="menu-label" className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
+            {item.label}
+          </span>
+          {reason === null ? null : (
+            <span id={reasonId} data-slot="menu-reason" aria-hidden="true" hidden={quiet} className="min-w-0 text-xs whitespace-normal text-muted-text [overflow-wrap:anywhere]">
+              {reason}
+            </span>
+          )}
         </span>
+      ) : (
+        <>
+          <span data-slot="menu-label" className="min-w-0 whitespace-normal [overflow-wrap:anywhere]">
+            {item.label}
+          </span>
+          {reason === null ? null : (
+            <span id={reasonId} data-slot="menu-reason" aria-hidden="true" hidden={quiet} className="ml-auto min-w-0 pl-4 text-xs whitespace-normal text-muted-text [overflow-wrap:anywhere]">
+              {reason}
+            </span>
+          )}
+        </>
       )}
       {item.keys === undefined ? null : (
-        <DropdownMenuShortcut aria-hidden="true" className={`${reason === null ? "ml-auto " : ""}pl-4 text-xs tracking-normal whitespace-nowrap text-muted-text`}>
+        <DropdownMenuShortcut aria-hidden="true" className={`${reason === null || below ? "ml-auto " : ""}pl-4 text-xs tracking-normal whitespace-nowrap text-muted-text`}>
           {item.keys.text}
         </DropdownMenuShortcut>
       )}

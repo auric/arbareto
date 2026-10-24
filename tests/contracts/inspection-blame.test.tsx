@@ -4,6 +4,7 @@
 // Feature 005 T044: the blame view (spec FR-053 to FR-063, FR-067, FR-068, plan.md D12, D15 "Blame view", D16 age shades).
 
 import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { act, useEffect, type ReactNode } from "react";
 import type { BridgeResponse, OnProgress } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
@@ -240,8 +241,20 @@ describe("the view (spec FR-054, US7-1, US7-2, Blame board)", () => {
   });
 });
 
+describe("forced colors (plan.md D16, T072)", () => {
+  test("the selected line number takes HighlightText, and the selected age bar takes Highlight", () => {
+    const css = readFileSync(printOrigin("../../src/frontend/index.css", import.meta.dir), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    const block = css.slice(css.indexOf("@media (forced-colors: active)"));
+    const rules = [...block.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.replace(/\s+/g, " ").trim(), body: m[2]!.replace(/\s+/g, " ").trim() }));
+    const selected = rules.find((r) => r.selector.startsWith('.list-row[aria-selected="true"] :is(') && r.selector.includes(".text-muted-text"));
+    expect(selected?.selector).toContain(".text-text");
+    expect(selected?.body).toBe("color: HighlightText;");
+    expect(rules.find((r) => r.selector === '.list-row[aria-selected="true"] .age-bar')?.body).toBe("forced-color-adjust: none; background: Highlight !important;");
+  });
+});
+
 describe("gutter and age (spec FR-055)", () => {
-  test("the first line of each run shows the short ID, the author, and the relative date; the tooltip gives the date and the other path", async () => {
+  test("the first line of each run shows the short ID, the author, and the relative date; the tooltip gives the author, the date, and the other path (T071)", async () => {
     const m = await answered();
     const gutter = (n: number) => line(m.host, n).querySelector<HTMLElement>('[data-slot="blame-gutter"]')!;
     const parts = (n: number) => [...gutter(n).children].map((e) => e.textContent);
@@ -250,8 +263,8 @@ describe("gutter and age (spec FR-055)", () => {
     expect(parts(3)).toEqual([C2.slice(0, 12), "Bo Chen", "1 year ago"]);
     expect(parts(6)).toEqual([C1.slice(0, 12), "Ann Lee", "2 days ago"]);
     const date = (s: number) => new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(s * 1000);
-    expect(gutter(1).title).toBe(date(NOW_S - 2 * DAY));
-    expect(gutter(3).title).toBe(`${date(NOW_S - 400 * DAY)}\nPath in this commit: src/auth.ts`);
+    expect(gutter(1).title).toBe(`Ann Lee\n${date(NOW_S - 2 * DAY)}`);
+    expect(gutter(3).title).toBe(`Bo Chen\n${date(NOW_S - 400 * DAY)}\nPath in this commit: src/auth.ts`);
     // Two distinct times: the older gets step 1, the newer step floor(7 × 1 / 2) + 1 = 4.
     expect(line(m.host, 1).querySelector<HTMLElement>('[data-slot="age-bar"]')!.dataset.age).toBe("4");
     expect(line(m.host, 3).querySelector<HTMLElement>('[data-slot="age-bar"]')!.dataset.age).toBe("1");
@@ -446,9 +459,15 @@ describe("workbench dock swap", () => {
     expect(text(section.querySelector('section[data-slot="blame-view"] h2')!)).toBe(`Blame: src/a.txt at ${HEAD.slice(0, 12)}`);
     expect(text(document.querySelector('section[aria-label="Dock"]')!)).toContain("Selected commit");
     const first = section.querySelector<HTMLElement>('[data-slot="blame-view"] [role="option"]')!;
+    await act(async () => first.focus());
     await key(first, "Escape");
     expect(section.querySelector('section[data-slot="blame-view"]')).toBeNull();
     expect(section.querySelector<HTMLElement>("[data-history-list]")!.closest("[hidden]")).toBeNull();
+    // T071, plan.md D15 "Blame keys": the focus returns to the History list, whose active option is the selected row.
+    const list = section.querySelector<HTMLElement>("[data-history-list]")!;
+    expect(document.activeElement === list).toBe(true);
+    const active = document.getElementById(list.getAttribute("aria-activedescendant") ?? "");
+    expect(active?.getAttribute("aria-selected")).toBe("true");
   });
 });
 

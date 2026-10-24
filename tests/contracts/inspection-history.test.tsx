@@ -141,8 +141,12 @@ async function historyView(): Promise<HistoryView> {
 }
 
 type Mounted = { host: HTMLElement; view: HistoryView; inspection: Inspection; double: ReturnType<typeof inspectionDouble>; viewId: string; trusts: number[]; blames: unknown[]; rerender(oid: string): Promise<void> };
-async function mountChanges(oid = fakeOid(2), profile: "wide" | "narrow" | "constrained" = "wide"): Promise<Mounted> {
-  const view = await historyView();
+// The Workbench passes the selected commit, and T068 reads only a commit that the current view selected.
+const rowOf = (oid: string) => Array.from({ length: 10 }, (_, i) => fakeOid(i)).indexOf(oid);
+const selectIn = (view: HistoryView, oid: string) => act(async () => view.select(oid, rowOf(oid), "full"));
+async function mountChanges(oid = fakeOid(2), profile: "wide" | "narrow" | "constrained" = "wide", given?: HistoryView): Promise<Mounted> {
+  const view = given ?? (await historyView());
+  await selectIn(view, oid);
   const double = inspectionDouble();
   const inspection = createInspection(double.bridge, TARGET);
   const trusts: number[] = [];
@@ -157,7 +161,7 @@ async function mountChanges(oid = fakeOid(2), profile: "wide" | "narrow" | "cons
   );
   const { host, rerender } = await show(node(oid));
   await settle();
-  return { host, view, inspection, double, viewId: view.getState().view!.viewId, trusts, blames, rerender: async (o) => (await rerender(node(o)), await settle()) };
+  return { host, view, inspection, double, viewId: view.getState().view!.viewId, trusts, blames, rerender: async (o) => (await selectIn(view, o), await rerender(node(o)), await settle()) };
 }
 /** Mounts and answers the first `readCommitChanges` with `files`. */
 async function loaded(files: FileSpec[], fields: Record<string, unknown> = {}, oid = fakeOid(2), profile: "wide" | "narrow" | "constrained" = "wide") {
@@ -230,6 +234,63 @@ describe("reads (spec FR-007, plan.md D3 Selection)", () => {
     expect(diff(m.host).querySelector('[data-slot="patch-double"]')!.textContent).toBe(PATCH);
   });
 
+  test("Refresh with a selected commit sends readCommitChanges only after the new view loads the commit (T068)", async () => {
+    const fake = createFake({ total: 10, loaded: 10, hold: { load: true } });
+    const view = createHistoryView(fake.bridge, TARGET);
+    await act(async () => void (await view.open("all", false)));
+    const m = await mountChanges(fakeOid(2), "wide", view);
+    await answer(m.double.last("readCommitChanges"), succeeded(changesResult(m.viewId, fakeOid(2), [{ path: "a.txt" }])));
+    const heading = () => text(m.host.querySelector('[data-slot="changed-files"] h3')!);
+    expect(heading()).toBe("Changed files (1)");
+    // The act scope ends before the held load ends, so a failed check leaves no open scope.
+    let refreshed: Promise<void> = Promise.resolve();
+    await act(async () => void (refreshed = view.refresh()));
+    await settle();
+    // `open()` holds the load of the selected commit. The new view does not hold the row yet (contract Δ3 `commitTarget`).
+    expect(fake.held()).toBe(1);
+    const newView = view.getState().view!.viewId;
+    expect(newView).not.toBe(m.viewId);
+    expect(m.double.of("readCommitChanges")).toHaveLength(1);
+    await act(async () => (fake.release(), await refreshed));
+    await settle();
+    expect(m.double.of("readCommitChanges").map((c) => c.payload)).toEqual([
+      { viewId: m.viewId, oid: fakeOid(2), parent: 0 },
+      { viewId: newView, oid: fakeOid(2), parent: 0 },
+    ]);
+    await answer(m.double.last("readCommitChanges"), succeeded(changesResult(newView, fakeOid(2), [{ path: "a.txt" }, { path: "b.txt" }])));
+    expect(heading()).toBe("Changed files (2)");
+  });
+
+  test("Refresh in filter mode keeps the selected match and reads its changes only after the new search selects it (T068)", async () => {
+    const fake = createFake({ total: 10, loaded: 10, matches: (i) => i % 2 === 0, hold: { search: true } });
+    const view = createHistoryView(fake.bridge, TARGET);
+    await act(async () => void (await view.open("all", false)));
+    let searched: Promise<void> = Promise.resolve();
+    await act(async () => void (searched = view.search("Commit", "filter")));
+    await settle();
+    await act(async () => (fake.release(), await searched));
+    await settle();
+    expect(view.filterMode()).toBe(true);
+    const m = await mountChanges(fakeOid(4), "wide", view);
+    await act(async () => view.select(fakeOid(4), 2, "filter"));
+    await settle();
+    expect(m.double.of("readCommitChanges").map((c) => c.payload)).toEqual([{ viewId: m.viewId, oid: fakeOid(4), parent: 0 }]);
+    let refreshed: Promise<void> = Promise.resolve();
+    await act(async () => void (refreshed = view.refresh()));
+    await settle();
+    // The new view runs the search again (plan.md D6). The selection waits for it.
+    expect(fake.held()).toBe(1);
+    expect(m.double.of("readCommitChanges")).toHaveLength(1);
+    await act(async () => (fake.release(), await refreshed));
+    await settle();
+    const newView = view.getState().view!.viewId;
+    expect(view.getState().selection).toEqual({ id: fakeOid(4), index: 2, mode: "filter" });
+    expect(m.double.of("readCommitChanges").map((c) => c.payload)).toEqual([
+      { viewId: m.viewId, oid: fakeOid(4), parent: 0 },
+      { viewId: newView, oid: fakeOid(4), parent: 0 },
+    ]);
+  });
+
   test("another commit sends a new readCommitChanges and cancels the running one", async () => {
     const m = await mountChanges();
     const first = m.double.last("readCommitChanges");
@@ -240,6 +301,16 @@ describe("reads (spec FR-007, plan.md D3 Selection)", () => {
 });
 
 describe("rows (spec FR-006, FR-017, 004 D16 colors)", () => {
+  test("a file row shows the file icon and a submodule row the cube icon; the icon has no name (Main board, T073)", async () => {
+    const { File01Icon, CubeIcon } = await import("@hugeicons/core-free-icons");
+    const paths = (icon: readonly (readonly [string, Record<string, unknown>])[]) => icon.filter(([tag]) => tag === "path").map(([, a]) => a.d as string);
+    const { host } = await loaded([{ path: "a.txt" }, { status: "added", path: "units-data", kind: "submodule" }]);
+    const icon = (label: string) => item(host, label).querySelector('[data-slot="row-icon"]')!;
+    expect([...icon("a.txt, modified").querySelectorAll("path")].map((p) => p.getAttribute("d"))).toEqual(paths(File01Icon));
+    expect([...icon("units-data, submodule, added").querySelectorAll("path")].map((p) => p.getAttribute("d"))).toEqual(paths(CubeIcon));
+    expect(icon("a.txt, modified").getAttribute("aria-hidden")).toBe("true");
+  });
+
   test("names, rename and submodule suffixes, status letters, and their colors", async () => {
     const { host } = await loaded([
       { status: "added", path: "n.txt" },

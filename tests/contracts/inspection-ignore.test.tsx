@@ -212,6 +212,20 @@ describe("preview (FR-038 to FR-041, plan D9)", () => {
     expect(rows.length).toBeLessThan(200);
   }
 
+  test("No longer ignored stacks under the Newly ignored list and does not split the height (IgnoreEditor board, T074)", async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt");
+    await typeInto(field(), "*.log\n");
+    await pause(450);
+    await answer(previewCall(double), succeeded({ preview: { newlyIgnored: { count: 2, paths: [b64("a.log"), b64("b.log")] }, noLongerIgnored: { count: 0, paths: [] }, trackedMatched: 0, notices: { entries: [], more: 0 } } }));
+    // A grid row of `minmax(0, max-content)` takes the content height and gives the free space to no group, so the second group starts below the first list.
+    const stack = preview().querySelector<HTMLElement>('[data-slot="preview-groups"]')!;
+    expect(stack.className.split(" ")).toEqual(expect.arrayContaining(["grid", "content-start", "grid-rows-[minmax(0,max-content)_minmax(0,max-content)]"]));
+    const groups = [...stack.children] as HTMLElement[];
+    expect(groups.map((g) => text(g.querySelector("h3")!))).toEqual(["Newly ignored (2)", "No longer ignored (0)"]);
+    for (const group of groups) expect(group.className.split(" ")).not.toContain("flex-1");
+  });
+
   test("the more line follows the 1,000 rows of a group", async () => {
     const { double } = await setup();
     await openFrom(double, "notes.txt");
@@ -319,7 +333,13 @@ describe("save, close, and keys (FR-042, FR-044, FR-046, plan D15)", () => {
     await pressKey(field(), "Escape", { isComposing: true } as KeyboardEventInit);
     expect(dialog()).toBeNull();
     expect(editor()).not.toBeNull();
+    // T067: a real key press can mount the modal during the same keydown, so the Base UI dismiss listener on `document` must not see it.
+    const seen: string[] = [];
+    const spy = (event: KeyboardEvent) => void seen.push(event.key);
+    document.addEventListener("keydown", spy);
     await pressKey(field(), "Escape");
+    document.removeEventListener("keydown", spy);
+    expect(seen).toEqual([]);
     const d = dialog()!;
     expect(text(d.querySelector("h2")!)).toBe("Discard changes to .gitignore?");
     expect([...d.querySelectorAll("button")].map((b) => text(b))).toEqual(["Keep editing", "Discard"]);

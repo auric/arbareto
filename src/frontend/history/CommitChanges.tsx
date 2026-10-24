@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { ArrowDown01Icon, ArrowRight01Icon, ArrowUp01Icon, Copy01Icon, Folder01Icon, InformationCircleIcon, ListIcon, ListTreeIcon, Search01Icon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowRight01Icon, ArrowUp01Icon, Copy01Icon, CubeIcon, File01Icon, Folder01Icon, InformationCircleIcon, ListIcon, ListTreeIcon, Search01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { lazy, memo, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from "react";
@@ -156,7 +156,12 @@ export const HISTORY_PANES: HistoryPanes = { width: 288, layout: "tree" };
 
 /** The Changed files and diff regions of the selected commit (spec FR-005). Wide and narrow: side by side with a splitter. Constrained: the list above the diff. */
 export function CommitChanges({ inspection, view, oid, profile, onTrust, onBlame, filterRef, panes, onPanes }: CommitChangesProps) {
-  const viewId = useSyncExternalStore(view.subscribe, () => view.getState().view?.viewId ?? null, () => view.getState().view?.viewId ?? null);
+  // Plan.md D3 "Selection": only a commit that the current view selected has a loaded row there, so only it is read.
+  const selectedIn = () => {
+    const s = view.getState();
+    return s.selectedIn !== null && s.selectedIn === s.view?.viewId && s.selection?.id === oid ? s.selectedIn : null;
+  };
+  const viewId = useSyncExternalStore(view.subscribe, selectedIn, selectedIn);
   const state = useSyncExternalStore(inspection.subscribe, inspection.getState, inspection.getState);
   const [parent, setParent] = useState({ oid, index: 0 });
   const index = parent.oid === oid ? parent.index : 0;
@@ -465,8 +470,10 @@ const Row = memo(function Row({ row, selected, tabStop, top, events }: { row: Ch
       </div>
     );
   const status = row.entry.status;
+  const submodule = row.entry.kind === "submodule";
   return (
     <div {...common} aria-selected={selected} aria-label={rowName(row)}>
+      <HugeiconsIcon icon={submodule ? CubeIcon : File01Icon} strokeWidth={2} aria-hidden="true" data-slot="row-icon" className={submodule ? "size-(--icon-size) shrink-0 text-muted-text" : "size-(--icon-size) shrink-0"} />
       <span aria-hidden="true" className="flex min-w-0 flex-1 whitespace-nowrap">
         {row.folder === "" ? null : <span className="min-w-0 shrink-[1000] truncate text-muted-text">{row.folder}</span>}
         <span className="min-w-0 truncate">{row.name}</span>

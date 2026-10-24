@@ -51,12 +51,17 @@ export function ComparisonHeading({ path, scope, sides, controls }: { path: stri
     const measure = () => {
       const span = (name: string) => h.querySelector<HTMLElement>(`[data-part="${name}"]`);
       const ellipsis = span("ellipsis")!.getBoundingClientRect().width;
+      // T397: `scrollWidth` and `clientWidth` round to whole pixels, so a part that fits got an ellipsis. A range rectangle keeps the fractional text width.
+      const range = document.createRange();
       const part = (name: string): Part => {
-        const full = span(name)?.scrollWidth ?? 0;
+        const element = span(name);
+        if (!element) return { full: 0, min: 0 };
+        range.selectNodeContents(element);
+        const full = range.getBoundingClientRect().width;
         return { full, min: Math.min(full, ellipsis) };
       };
       const gap = Number.parseFloat(getComputedStyle(h).columnGap) || 0;
-      setWidths(fitComparisonHeading({ width: h.clientWidth - (sides ? 2 : 1) * gap, copyPath: 0, folder: part("folder"), file: part("file"), sides: part("sides"), scope: part("scope") }));
+      setWidths(fitComparisonHeading({ width: h.getBoundingClientRect().width - (sides ? 2 : 1) * gap, copyPath: 0, folder: part("folder"), file: part("file"), sides: part("sides"), scope: part("scope") }));
     };
     measure();
     if (typeof ResizeObserver === "undefined") return;

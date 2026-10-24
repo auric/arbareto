@@ -2,7 +2,7 @@
   "private": true,
   "type": "module",
   "version": "0.1.0",
-  "description": "Keyboard-first, local-first Git client for Windows and WSL.",
+  "description": "Fast, free and open-source Git GUI client.",
   "license": "AGPL-3.0-or-later",
   "repository": {
     "type": "git",

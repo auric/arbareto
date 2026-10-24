@@ -366,6 +366,65 @@ describe("comparison heading", () => {
     expect(fitComparisonHeading({ ...parts, width: 100 })).toEqual({ folder: 20, file: 30, sides: 20, scope: 20 });
   });
 
+  // T397: a text width is fractional. Chromium rounds `scrollWidth` and `clientWidth` to whole pixels (the README screenshot run: a 23 px box for 23.48 px of text).
+  test("T397: parts with fractional text widths keep their full width when the sum fits, and shrink in order when it does not", async () => {
+    const { ComparisonHeading } = await comparisonView();
+    const textWidth: Record<string, number> = { folder: 300.4, file: 100.3, scope: 60.2, sides: 120.1 };
+    const partOf = (node: Node) => (node instanceof Element ? node.getAttribute("data-part") : null);
+    const rect = (width: number) => ({ x: 0, y: 0, top: 0, left: 0, right: width, bottom: 0, width, height: 0, toJSON: () => ({}) }) as DOMRect;
+    let headingWidth = 0;
+    const prototype = HTMLElement.prototype as unknown as Record<string, unknown>;
+    const saved = ["scrollWidth", "clientWidth"].map((key) => [key, Object.getOwnPropertyDescriptor(prototype, key)] as const);
+    const elementRect = Element.prototype.getBoundingClientRect;
+    const rangeRect = Range.prototype.getBoundingClientRect;
+    Object.defineProperty(prototype, "scrollWidth", { configurable: true, get: function (this: Element) { return Math.round(textWidth[partOf(this) ?? ""] ?? 0); } });
+    Object.defineProperty(prototype, "clientWidth", { configurable: true, get: function (this: Element) { return this.tagName === "H2" ? Math.round(headingWidth) : 0; } });
+    Element.prototype.getBoundingClientRect = function (this: Element) {
+      if (this.tagName === "H2") return rect(headingWidth);
+      if (partOf(this) === "ellipsis") return rect(7.5);
+      const max = Number.parseFloat((this as HTMLElement).style.maxWidth);
+      return rect(Math.min(textWidth[partOf(this) ?? ""] ?? 0, Number.isNaN(max) ? Infinity : max));
+    };
+    Range.prototype.getBoundingClientRect = function (this: Range) {
+      return rect(textWidth[partOf(this.startContainer) ?? ""] ?? 0);
+    };
+    const shown = async (width: number) => {
+      headingWidth = width;
+      const host = document.body.appendChild(document.createElement("div"));
+      const root = createRoot(host);
+      await act(async () => root.render(<ComparisonHeading {...heading} />));
+      const widths = Object.fromEntries(Object.keys(textWidth).map((name) => [name, Number.parseFloat(host.querySelector<HTMLElement>(`[data-part="${name}"]`)!.style.maxWidth)]));
+      await act(async () => root.unmount());
+      host.remove();
+      return widths;
+    };
+    try {
+      // The sum is 581 DIPs. The gap is 0, because the test loads no style sheet.
+      const fits = await shown(600.6);
+      for (const [name, width] of Object.entries(textWidth)) expect(fits[name]!).toBeGreaterThanOrEqual(width);
+      // 0.4 DIPs too wide. A rounded heading width of 581 would show every part in full and overflow.
+      const tight = await shown(580.6);
+      expect(Object.values(tight).reduce((sum, w) => sum + w, 0)).toBeLessThanOrEqual(580.6 + 1e-9);
+      expect(tight.folder!).toBeCloseTo(textWidth.folder! - 0.4, 6);
+      // 81 DIPs too wide: only the folder shrinks.
+      const over = await shown(500);
+      expect(over.folder!).toBeCloseTo(textWidth.folder! - 81, 6);
+      for (const name of ["file", "scope", "sides"]) expect(over[name]!).toBeGreaterThanOrEqual(textWidth[name]!);
+      // 350 DIPs too wide: the folder goes to the ellipsis width, then the file name shrinks.
+      const far = await shown(231);
+      expect(far.folder!).toBe(7.5);
+      expect(far.file!).toBeCloseTo(textWidth.file! - (350 - (textWidth.folder! - 7.5)), 6);
+      for (const name of ["scope", "sides"]) expect(far[name]!).toBeGreaterThanOrEqual(textWidth[name]!);
+    } finally {
+      Element.prototype.getBoundingClientRect = elementRect;
+      Range.prototype.getBoundingClientRect = rangeRect;
+      for (const [key, descriptor] of saved) {
+        if (descriptor === undefined) delete prototype[key];
+        else Object.defineProperty(prototype, key, descriptor);
+      }
+    }
+  });
+
   // Alt+Up and Alt+Down reach the selection through the comparison pane and the T127 handler. The test mounts the controls in a pane with that handler.
   test(`at hunk 3, Alt+Down selects nothing, and at hunk 1, Alt+Up selects nothing`, async () => {
     const { HunkControls } = await hunkControls();

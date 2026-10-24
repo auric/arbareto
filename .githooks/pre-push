@@ -1,0 +1,3 @@
+#!/bin/sh
+# Git passes the remote name and URL as arguments and one line per ref on stdin.
+exec bun "$(dirname "$0")/../scripts/pre-push.ts" "$@"

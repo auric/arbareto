@@ -12,20 +12,48 @@ const POLL_MS = 50;
 // The CDP `Input.dispatchKeyEvent` modifier bits.
 export const MOD = { Alt: 1, Ctrl: 2, Meta: 4, Shift: 8 } as const;
 
-// DOM `key` and `code`, and the winuser.h virtual-key code.
-const KEYS: Record<string, { key: string; code: string; vk: number }> = {
-  Enter: { key: "Enter", code: "Enter", vk: 0x0d },
+// DOM `key` and `code`, the winuser.h virtual-key code, and the text of a key that types one.
+const KEYS: Record<string, { key: string; code: string; vk: number; text?: string }> = {
+  Enter: { key: "Enter", code: "Enter", vk: 0x0d, text: "\r" },
   Escape: { key: "Escape", code: "Escape", vk: 0x1b },
+  Tab: { key: "Tab", code: "Tab", vk: 0x09 },
+  Delete: { key: "Delete", code: "Delete", vk: 0x2e },
   Home: { key: "Home", code: "Home", vk: 0x24 },
+  ArrowLeft: { key: "ArrowLeft", code: "ArrowLeft", vk: 0x25 },
   ArrowUp: { key: "ArrowUp", code: "ArrowUp", vk: 0x26 },
+  ArrowRight: { key: "ArrowRight", code: "ArrowRight", vk: 0x27 },
   ArrowDown: { key: "ArrowDown", code: "ArrowDown", vk: 0x28 },
+  F5: { key: "F5", code: "F5", vk: 0x74 },
   F6: { key: "F6", code: "F6", vk: 0x75 },
+  F10: { key: "F10", code: "F10", vk: 0x79 },
   a: { key: "a", code: "KeyA", vk: 0x41 },
+  s: { key: "s", code: "KeyS", vk: 0x53 },
 };
 const MODIFIER_KEYS = [
   { bit: MOD.Alt, key: "Alt", code: "AltLeft", vk: 0x12 },
   { bit: MOD.Ctrl, key: "Control", code: "ControlLeft", vk: 0x11 },
+  { bit: MOD.Shift, key: "Shift", code: "ShiftLeft", vk: 0x10 },
 ];
+
+// The parameters of one CDP `Input.dispatchKeyEvent` call.
+export type KeyEvent = { type: "rawKeyDown" | "keyDown" | "keyUp"; key: string; code: string; windowsVirtualKeyCode: number; modifiers: number; commands?: string[]; text?: string; unmodifiedText?: string };
+
+// One key press: each held modifier down, the key down and up, then each modifier up in reverse order.
+// `commands` names the editing commands that the native key binding gives the key, as CDP needs them.
+// `typed` sends a key with text and no modifier as `keyDown`, so Chromium also fires the activation of a focused button (Puppeteer `Keyboard.down`).
+export function keyEvents(name: string, modifiers = 0, options: { commands?: string[]; typed?: boolean } = {}): KeyEvent[] {
+  const k = KEYS[name];
+  if (k === undefined) throw new Error(`no CDP key ${JSON.stringify(name)}`);
+  const held = MODIFIER_KEYS.filter((m) => modifiers & m.bit);
+  const typed = options.typed === true && k.text !== undefined && modifiers === 0;
+  const event = (type: KeyEvent["type"], m: { key: string; code: string; vk: number }, bits: number): KeyEvent => ({ type, key: m.key, code: m.code, windowsVirtualKeyCode: m.vk, modifiers: bits });
+  return [
+    ...held.map((m) => event("rawKeyDown", m, modifiers)),
+    { ...event(typed ? "keyDown" : "rawKeyDown", k, modifiers), ...(options.commands ? { commands: options.commands } : {}), ...(typed ? { text: k.text, unmodifiedText: k.text } : {}) },
+    event("keyUp", k, modifiers),
+    ...held.toReversed().map((m) => event("keyUp", m, 0)),
+  ];
+}
 
 // A free loopback TCP port at the moment of the call.
 export function freePort(): number {
@@ -103,15 +131,8 @@ export async function connectPage(port: number, ms: number): Promise<Cdp> {
     }
   }
 
-  // `commands` names the editing commands that the native key binding gives the key, as CDP needs them (CDP `Input.dispatchKeyEvent`).
   async function key(name: string, modifiers = 0, commands?: string[]): Promise<void> {
-    const k = KEYS[name];
-    if (k === undefined) throw new Error(`no CDP key ${JSON.stringify(name)}`);
-    const held = MODIFIER_KEYS.filter((m) => modifiers & m.bit);
-    for (const m of held) await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: m.key, code: m.code, windowsVirtualKeyCode: m.vk, modifiers });
-    await send("Input.dispatchKeyEvent", { type: "rawKeyDown", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, modifiers, ...(commands ? { commands } : {}) });
-    await send("Input.dispatchKeyEvent", { type: "keyUp", key: k.key, code: k.code, windowsVirtualKeyCode: k.vk, modifiers });
-    for (const m of held.toReversed()) await send("Input.dispatchKeyEvent", { type: "keyUp", key: m.key, code: m.code, windowsVirtualKeyCode: m.vk, modifiers: 0 });
+    for (const params of keyEvents(name, modifiers, { commands })) await send("Input.dispatchKeyEvent", params);
   }
 
   return { url: url!, send, evaluate, poll, key, close: () => ws.close() };

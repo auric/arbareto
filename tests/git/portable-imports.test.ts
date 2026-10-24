@@ -42,10 +42,10 @@ test("the generic harness holds no static import of a host module or bun:ffi", (
   expect(hits).toEqual([]);
 });
 
-// Shared TypeScript takes native path rules only from `src/contracts/native-path.ts`, and the renderer takes the DOS drive rule from `drive-prefix.ts`.
+// Shared TypeScript takes native path rules only from `src/contracts/native-path.ts`, and the renderer takes the DOS drive rule from `drive-prefix.ts` and the Windows name rule from `windows-name.ts`.
 // The transpiler drops comments and type-only imports.
 const SRC = join(import.meta.dir, "..", "..", "src");
-const PLATFORM_FILES = ["contracts/native-path.ts", "contracts/drive-prefix.ts", "contracts/remedy-command.ts", "contracts/wsl-route.ts"];
+const PLATFORM_FILES = ["contracts/native-path.ts", "contracts/windows-name.ts", "contracts/drive-prefix.ts", "contracts/remedy-command.ts", "contracts/wsl-route.ts"];
 const BANNED: [string, RegExp][] = [
   ["win32", /win32/g],
   ["git.exe", /git\\?\.exe(?![A-Za-z0-9_])/gi],

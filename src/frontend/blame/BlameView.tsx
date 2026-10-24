@@ -86,12 +86,16 @@ export function BlameView({ inspection, onBack, onSelectCommit, now = Date.now }
   const beforeReason = result !== null && previous === null ? NO_PREVIOUS : null;
   const showSkip = blame.ignoreList === "on" || blame.ignoreList === "off";
 
+  // A tooltip trigger, such as Back, stops Escape in its own key handler (Floating UI `useDismiss`), so Escape acts in the capture phase.
+  // A popup in a portal is outside the section element and keeps its own Escape.
+  function onEscape(event: KeyboardEvent<HTMLElement>) {
+    if (event.nativeEvent.isComposing || event.key !== "Escape" || event.altKey || event.ctrlKey || event.shiftKey || event.metaKey) return;
+    if (!event.currentTarget.contains(event.target as Node)) return;
+    event.preventDefault();
+    onBack();
+  }
   function onKeyDown(event: KeyboardEvent<HTMLElement>) {
     if (event.nativeEvent.isComposing) return;
-    if (event.key === "Escape" && !event.altKey && !event.ctrlKey && !event.shiftKey && !event.metaKey) {
-      event.preventDefault();
-      return onBack();
-    }
     // WebView2 maps Alt+Left to back navigation (plan.md D15 "Blame keys").
     if (event.key === "ArrowLeft" && event.altKey && !event.ctrlKey && !event.shiftKey && !event.metaKey) {
       event.preventDefault();
@@ -100,7 +104,7 @@ export function BlameView({ inspection, onBack, onSelectCommit, now = Date.now }
   }
 
   return (
-    <section aria-labelledby={headingId} data-slot="blame-view" className="flex min-h-0 flex-1 flex-col" onKeyDown={onKeyDown}>
+    <section aria-labelledby={headingId} data-slot="blame-view" className="flex min-h-0 flex-1 flex-col" onKeyDownCapture={onEscape} onKeyDown={onKeyDown}>
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-divider px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
         <IconButton ref={back} icon={ArrowLeft01Icon} label="Back" keys={{ aria: "Escape", text: "Esc" }} onClick={onBack} />
         <h2 id={headingId} className="min-w-0 flex-1 truncate font-semibold" title={path}>

@@ -13,6 +13,8 @@ export type Section =
   | "workingChanges"
   | "staged"
   | "comparison"
+  // Feature 005 plan.md D15 "F6 order": the ignore editor preview after the editor.
+  | "ignorePreview"
   | "composer"
   | "commitDetails"
   // Feature 005 plan.md D15 "F6 order": the History dock regions after the commit details.
@@ -208,7 +210,7 @@ export type SectionState = {
 };
 
 const ORDERS: Record<Panel, readonly Section[]> = {
-  commit: ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "statusRegion"],
+  commit: ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "ignorePreview", "composer", "statusRegion"],
   details: ["header", "noticeHeading", "references", "historyList", "commitDetails", "changedFiles", "historyDiff", "statusRegion"],
   settings: ["header", "noticeHeading", "scopeBar", "pageList", "pageContent", "statusRegion"],
 };

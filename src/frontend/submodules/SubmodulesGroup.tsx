@@ -345,12 +345,14 @@ export type SubmodulesGroupProps = {
   onTrustReads(): void;
   /** Feature 005 spec FR-047: opens the submodule of a row in this window. */
   onOpen?(path: string): void;
+  /** Feature 005 plan.md D15 "Submodules": Enter or a double-click on an unavailable row shows its reason in the status line. */
+  onRefused?(reason: string): void;
   /** The depth of the parent chain (feature 005 data-model §9). */
   chain?: number;
 };
 
 /** The Submodules group of the references sidebar. One Tab stop for the rows, with roving focus (D16). */
-export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel, onTrustReads, onOpen, chain = 0 }: SubmodulesGroupProps) {
+export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel, onTrustReads, onOpen, onRefused, chain = 0 }: SubmodulesGroupProps) {
   const headingId = useId();
   const reasonId = useId();
   const [active, setActive] = useState(0);
@@ -384,7 +386,12 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
   };
 
   const openReason = (row: GroupRow) => openSubmoduleReason(rows, row.pathBytes, chain);
-  const openRow = (row: GroupRow) => void (onOpen !== undefined && openReason(row) === null && onOpen(row.path));
+  const openRow = (row: GroupRow) => {
+    if (onOpen === undefined) return;
+    const why = openReason(row);
+    if (why === null) onOpen(row.path);
+    else onRefused?.(why);
+  };
 
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>, index: number) {
     // Feature 005 plan.md D15 keyboard map: Enter on the row itself opens the submodule.

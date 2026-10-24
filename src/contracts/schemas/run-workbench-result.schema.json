@@ -1009,7 +1009,6 @@
             "mergetool",
             "worktree",
             "config",
-            "ignore",
             "stage-files",
             "blame",
             "delete-files",

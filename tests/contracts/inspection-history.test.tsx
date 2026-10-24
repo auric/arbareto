@@ -509,6 +509,27 @@ describe("workbench keys", () => {
     await key(document.activeElement!, "F6", { shiftKey: true });
     expect(files.contains(document.activeElement)).toBe(true);
   });
+
+  test("a remembered control in the hidden Changes tab does not take F6 (review fix 1)", async () => {
+    const { mountWorkbench } = await import("./inspection-workbench");
+    const w = await mountWorkbench();
+    unmounts.push(w.unmount);
+    await w.selectCommit();
+    const tab = (name: string) => [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((t) => text(t) === name)!;
+    await click(tab("Changes"));
+    const files = document.querySelector<HTMLElement>('[data-slot="changed-files"]')!;
+    const first = files.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]')!;
+    await act(async () => first.focus());
+    await click(tab("Commit"));
+    expect(first.closest("[hidden]")).not.toBeNull();
+    const list = document.querySelector<HTMLElement>('section[aria-label="History"] [data-history-list]')!;
+    await act(async () => list.focus());
+    await key(list, "F6");
+    expect(document.activeElement?.closest('[data-section="commitDetails"]')).not.toBeNull();
+    await key(document.activeElement!, "F6");
+    expect(first.closest("[hidden]")?.contains(document.activeElement) ?? false).toBe(false);
+    expect(document.activeElement).not.toBe(document.body);
+  });
 });
 
 // ---- Review fixes of WP6 (4, 5) ----

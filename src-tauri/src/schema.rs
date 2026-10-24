@@ -310,7 +310,6 @@ pub fn progress(value: &Value) -> bool {
                 | P::Resolve
                 | P::Mergetool
                 | P::Worktree
-                | P::Ignore
                 | P::IgnoreSave
                 | P::Preview,
             ) => Some(&[]),
@@ -1363,9 +1362,10 @@ mod tests {
         // T013 adds the 4 `fileReplace` vectors (valid present and absent, an over-bound size, and a relative path).
         // The WP3 review adds the `fileDelete` digest above 1 MiB.
         // T057 removes the 2 `fileAppend` vectors from this check and adds the 2 `started` vectors of the 004 ignore actions.
+        // The batch 3 review adds the `progress` vector of the removed phase `ignore`.
         assert_eq!(
             checked,
-            if cfg!(windows) { 210 } else { 205 },
+            if cfg!(windows) { 211 } else { 206 },
             "shell-read vectors"
         );
     }
@@ -1965,7 +1965,6 @@ mod tests {
             "resolve",
             "mergetool",
             "worktree",
-            "ignore",
         ];
         for phase in bare {
             assert!(progress(&event(phase, json!({}))), "{phase}");

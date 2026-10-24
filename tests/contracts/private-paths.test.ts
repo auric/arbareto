@@ -18,8 +18,6 @@ const VENDORED =
   /^(?:third-party-licenses\/|\.claude\/skills\/(?:animate|animation-vocabulary|find-animation-opportunities|review-animations|frontend-design|shadcn|vercel-react-best-practices|web-design-guidelines|speckit-[^/]+)\/|\.claude\/skills\/ponytail-review\/(?:SKILL\.md|LICENSE)$)/;
 // Git's binary rule: a NUL byte in the first 8000 bytes (xdiff-interface.c `FIRST_FEW_BYTES`).
 const BINARY_PROBE_BYTES = 8000;
-// The control fixtures below hold private path shapes.
-const SELF = "tests/contracts/private-paths.test.ts";
 
 function trackedFiles(): string[] {
   const child = Bun.spawnSync(["git", "ls-files", "-z"], { cwd: ROOT, stdin: "ignore", stdout: "pipe", stderr: "pipe" });
@@ -43,7 +41,7 @@ test("no tracked text file names a private local path", () => {
   const hits: string[] = [];
   let scanned = 0;
   for (const file of trackedFiles()) {
-    if (file === SELF || VENDORED.test(file)) continue;
+    if (VENDORED.test(file)) continue;
     const bytes = readTracked(file);
     if (bytes === undefined || bytes.subarray(0, BINARY_PROBE_BYTES).includes(0)) continue;
     scanned += 1;
@@ -56,18 +54,21 @@ test("no tracked text file names a private local path", () => {
   expect(hits).toEqual([]);
 }, 60_000);
 
+// Joined at run time, so the tree scan and the pre-push hook find no private path in this source.
+const path = (separator: string, ...parts: string[]) => parts.join(separator);
+
 // Control fixtures: each line must give a hit.
 test.each([
-  "C:\\Users\\jdoe\\repo",
-  "c:/users/Jane Doe/repo",
-  '"C:\\\\Users\\\\jdoe\\\\.gitconfig"',
-  "D:/Users/U2/x",
-  "/home/jdoe/repo",
-  "//wsl.localhost/Ubuntu/home/jdoe/repo",
-  "/home/user-c5156947/repo",
-  "C:\\Users\\u\\AppData\\Local\\Temp\\claude\\C--x\\scratchpad\\a.txt",
-  "C:/Users/u/AppData/Local/Temp/arbareto-fixtures-a7cb5252/t030-f18/repo",
-  "/tmp/Temp/arbareto-fixtures-1/x",
+  path("\\", "C:", "Users", "jdoe", "repo"),
+  path("/", "c:", "users", "Jane Doe", "repo"),
+  `"${path("\\\\", "C:", "Users", "jdoe", ".gitconfig")}"`,
+  path("/", "D:", "Users", "U2", "x"),
+  path("/", "", "home", "jdoe", "repo"),
+  path("/", "", "", "wsl.localhost", "Ubuntu", "home", "jdoe", "repo"),
+  path("/", "", "home", "user-c5156947", "repo"),
+  path("\\", "C:", "Users", "u", "AppData", "Local", "Temp", "claude", "C--x", "scratchpad", "a.txt"),
+  path("/", "C:", "Users", "u", "AppData", "Local", "Temp", "arbareto-fixtures-a7cb5252", "t030-f18", "repo"),
+  path("/", "", "tmp", "Temp", "arbareto-fixtures-1", "x"),
 ])("the scan finds a private path in %s", (line) => {
   expect(lineHits(line)).not.toEqual([]);
 });

@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a problem in Arbareto.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: Do not report a vulnerability here. Read SECURITY.md for private reports.
+  - type: input
+    id: version
+    attributes:
+      label: Arbareto version or commit
+      description: Help > About Arbareto shows the build version and commit. For a source build, give the commit.
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version and build
+      description: For example, Windows 11 24H2, build 26100. Run `winver` to see it.
+    validations:
+      required: true
+  - type: input
+    id: git
+    attributes:
+      label: Git version
+      description: The output of `git --version`.
+    validations:
+      required: true
+  - type: input
+    id: wsl
+    attributes:
+      label: WSL distro
+      description: For a repository inside WSL, give the distro name and its Git version. Leave it empty otherwise.
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps
+      description: Give the steps that show the problem.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Remove private paths, user names, and tokens before you paste a log.
+      render: text

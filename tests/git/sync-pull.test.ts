@@ -26,6 +26,7 @@ import {
   PULL_ROWS,
   refMap,
   revParse,
+  setConfig,
   type GitHost,
   type PullFixture,
   type PullRow,
@@ -62,6 +63,8 @@ useFixtureRoot();
 
 const TASK = "T044";
 const SHELL = ["shell-double"] as const;
+// About 160 bytes of diffstat and summary per path, so the T394 merge prints far more than the 64 KiB collector, the 64 KiB pipe, and the stdio buffer hold.
+const DIFFSTAT_FILES = 4_000;
 const outcome = (r: { state: string; code?: string }) => ({ state: r.state, code: r.code });
 const SUCCEEDED = { state: "succeeded", code: undefined };
 const WITH_EFFECTS = { state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" };
@@ -375,6 +378,33 @@ describeGit("sync pull and integrate (T044)", () => {
     const commit = gitOut(h, repo, ["cat-file", "commit", "HEAD"]);
     expect({ signed: commit.includes("\ngpgsig "), parents: parentCount(h, repo), message: message(repo) }).toEqual({ signed: true, parents: 2, message: message(oracle) });
     expect(message(repo).startsWith("Merge remote-tracking branch 'origin/p-diverged' into p-diverged\n")).toBe(true);
+  }, TIMEOUT_MS);
+
+  // builtin/merge.c `finish()`: the diffstat comes after the HEAD update and before the `post-merge` hook. Each added path gives one diffstat line and one summary line.
+  caseTest("T394", "T394: 001 contract §6 \"Byte caps\": a pull merge whose diffstat passes the 64 KiB stdout collector runs to its own exit 0, and its post-merge hook runs", SHELL, async () => {
+    const h = hostFor("t394-diffstat");
+    const origin = `${h.root}/origin.git`;
+    gitRun(h, h.root, ["init", "-q", "--bare", "-b", "main", "--", origin]);
+    const marks = importStream(h, origin, [fc({ mark: 1, message: "base\n", files: { "base.txt": "base\n" } })]);
+    const repo = `${h.root}/clone`;
+    gitRun(h, h.root, ["clone", "-q", "--", origin, repo]);
+    setConfig(h, repo, [["core.autocrlf", "false"]]);
+    const files = Object.fromEntries(Array.from({ length: DIFFSTAT_FILES }, (_, i) => [`many/f${String(i).padStart(5, "0")}-${"x".repeat(48)}.txt`, `${i}\n`]));
+    importStream(h, origin, [fc({ mark: 2, message: "many\n", from: 1, files })], { marksIn: marks });
+    // A fetch that moves no ref keeps the outcome at `succeeded` (sync-integrate.ts: a fetched ref is a differing effect).
+    gitRun(h, repo, ["fetch", "-q", "origin"]);
+    const marker = `${h.root}/post-merge.ran`;
+    h.write(`${repo}/.git/hooks/post-merge`, `#!/bin/sh\n: > '${marker}'\n`);
+    await withSync("t394-diffstat", async (service) => {
+      const r = await register(service, repo);
+      await service.readTrust(r.repositoryId);
+      expect((await service.approveTrust(r.repositoryId)).state).toBe("succeeded");
+      const from = service.runner.calls.length;
+      const response = await run(service, r, { action: "pull" });
+      const merge = service.runner.calls.slice(from).find((c) => subcommandOf(c.arguments) === "merge");
+      expect({ state: response.state, exitCode: merge?.exit?.exitCode, limited: merge?.stdoutLimited }).toEqual({ state: "succeeded", exitCode: 0, limited: true });
+    });
+    expect({ hook: existsSync(native(marker)), head: revParse(h, repo, "HEAD") }).toEqual({ hook: true, head: revParse(h, origin, "refs/heads/main") });
   }, TIMEOUT_MS);
 
   caseTest(TASK, "FR-007: a pull that moves a gitlink starts no Git inside the submodule, and readWorkspace shows the 001 submodule notice", SHELL, async () => {

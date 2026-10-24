@@ -1161,12 +1161,12 @@ mod tests {
                 .and_then(|value| wsl_request(&value).map(drop).map_err(|code| text_of(&code))),
             // `ProcessRequests::dispatch` reads the `type` value, then its generated type (contract §6 "Channel frames").
             // Feature 003 contract Δ10: the `run`, `pageant`, `destinationFacts`, and `terminal` vectors check the generated type.
-            // T030 and T031 add the handlers of the `clone` context and the new requests.
+            // T030 and T031 add the handlers of the `clone` context and the new requests. T392 adds the `stop` vectors.
             "process-request" => match strict(text) {
                 Ok(value)
                     if matches!(
                         value["type"].as_str(),
-                        Some("run" | "pageant" | "destinationFacts" | "terminal")
+                        Some("run" | "stop" | "pageant" | "destinationFacts" | "terminal")
                     ) =>
                 {
                     valid(typed::<process_request::ProcessRequest>(&value).is_some())
@@ -1237,9 +1237,10 @@ mod tests {
         // WP23 adds 2 `confirm` vectors for the `repository` action (contract Δ6).
         // T094 adds 3 `native-first-envelope` vectors for `chooseWorktreeFolder` (contract Δ3).
         // Feature 006 T010 adds 11 `native-first-envelope` vectors and 2 `progress` vectors (contract Δ10).
+        // T392 adds 2 `stop` vectors.
         assert_eq!(
             checked,
-            if cfg!(windows) { 193 } else { 188 },
+            if cfg!(windows) { 195 } else { 190 },
             "shell-read vectors"
         );
     }

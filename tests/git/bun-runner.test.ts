@@ -248,6 +248,181 @@ describeGit("bun runner", (git) => {
     TEST_TIMEOUT_MS,
   );
 
+  // Contract §6 `stop`: the native runner sends it for a limited stdout. The shell ends only the process of that call, and the operation Job stays open.
+  // Mirrors `stop_ends_only_the_process_of_its_call_and_the_job_stays_open` in src-tauri/src/process_requests.rs.
+  test(
+    "T392: a limited stdout ends only its own call with exitCode null, a sibling and a call of another operation exit 0, and the operation stays active",
+    async () => {
+      // The limited call is a spawned Git, then injected stdout bytes.
+      for (const form of ["spawned", "injected"] as const) {
+        const go = fixturePath(`go-t392-${form}`);
+        // A `!` alias that marks `ready`, then waits at most 20 s for `go` and exits 0 only when `go` exists.
+        const waiting = (ready: string, operationId: string) =>
+          call({ operationId, arguments: ["--no-lazy-fetch", "-c", `alias.w=!: > "${slash(ready)}"; i=0; while [ $i -lt 400 ] && [ ! -e "${slash(go)}" ]; do sleep 0.05; i=$((i+1)); done; [ -e "${slash(go)}" ]`, "w"] });
+        const operationId = id();
+        const readies = [fixturePath(`ready-t392-${form}-sibling`), fixturePath(`ready-t392-${form}-other`)];
+        const sibling = runner.run(waiting(readies[0]!, operationId));
+        const other = runner.run(waiting(readies[1]!, id()));
+        for (let i = 0; i < 400 && !readies.every((r) => existsSync(r)); i++) await Bun.sleep(25);
+        expect({ form, ready: readies.map((r) => existsSync(r)) }).toEqual({ form, ready: [true, true] });
+        const limited = call({ operationId, arguments: ["--no-lazy-fetch", "cat-file", "blob", blob], stdout: createCollector({ maxBytes: 1024 }) });
+        if (form === "injected") runner.inject.stdout = (c) => (c.arguments.includes(blob) ? new Uint8Array(BLOB_BYTES) : undefined);
+        try {
+          expect({ form, exit: await runner.run(limited) }).toEqual({ form, exit: { exitCode: null, activeDescendants: 0 } });
+        } finally {
+          runner.inject.stdout = undefined;
+        }
+        writeFileSync(go, "");
+        expect({ [`${form} sibling`]: await sibling, [`${form} other`]: await other }).toEqual({ [`${form} sibling`]: { exitCode: 0, activeDescendants: 0 }, [`${form} other`]: { exitCode: 0, activeDescendants: 0 } });
+        expect({ form, next: await runner.run(call({ operationId })) }).toEqual({ form, next: { exitCode: 0, activeDescendants: 0 } });
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  // Contract §6 "Byte caps" (T394): only a `read` or `search` run gets `stop` at a stdout bound. A run of another policy drops the later bytes and runs to its own exit.
+  test(
+    "T394: a limited stdout of a mutation or integrate call ends no process, and the call exits 0 with every byte counted, as a spawned Git and as injected stdout bytes",
+    async () => {
+      for (const form of ["spawned", "injected"] as const) {
+        for (const [policy, limits] of [["mutation", PROCESS_LIMITS.git], ["integrate", PROCESS_LIMITS.network]] as const) {
+          const c = call({ environmentPolicy: policy, limits, arguments: ["--no-lazy-fetch", "cat-file", "blob", blob], stdout: createCollector({ maxBytes: 1024 }) });
+          if (form === "injected") runner.inject.stdout = (x) => (x.arguments.includes(blob) ? new Uint8Array(BLOB_BYTES) : undefined);
+          try {
+            const exit = await runner.run(c);
+            expect({ form, policy, exit, limited: c.stdout.limited, bytes: c.stdout.bytes }).toEqual({ form, policy, exit: { exitCode: 0, activeDescendants: 0 }, limited: true, bytes: BLOB_BYTES });
+          } finally {
+            runner.inject.stdout = undefined;
+          }
+        }
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  // Contract §6 `stop`: a descendant of a stopped process stays in the operation Job until the Job closes. Its record lies outside the records folder of the double.
+  test.skipIf(process.platform !== "win32")(
+    "T394: closeJob ends a descendant that a stopped call left (needs a Windows Job: the Linux tree walk of linux.ts loses an orphan of an ended root)",
+    async () => {
+      const operationId = id();
+      const own = fixtureDir("t394-own-records");
+      const ready = fixturePath("ready-t394-stopped");
+      const hold = `"${slash(process.execPath)}" "${slash(HOST_SCRIPT)}" "${slash(own)}" 60000 "${slash(ready)}"`;
+      const wait = `i=0; while [ $i -lt 400 ] && [ ! -e "${slash(ready)}" ]; do sleep 0.05; i=$((i+1)); done`;
+      const c = call({ operationId, arguments: ["--no-lazy-fetch", "-c", `alias.s=!${hold} & ${wait}; echo 0123456789abcdef; wait`, "s"], stdout: createCollector({ maxBytes: 8 }) });
+      expect(await runner.run(c)).toMatchObject({ exitCode: null });
+      const [pid, created] = readdirSync(own)[0]!.split("-") as [string, string];
+      const alive = () => processCreationTime(Number(pid)) === BigInt(created);
+      expect(alive()).toBe(true);
+      runner.closeJob(operationId);
+      for (let i = 0; i < 400 && alive(); i++) await Bun.sleep(25);
+      expect(alive()).toBe(false);
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  // Contract §6 `cancel`: the native runner sends it at an abort and at the 4 MiB stderr bound. The shell then closes the Job of the operation that owns the call.
+  // Mirrors `cancel_closes_only_the_job_of_that_operation_at_once_while_a_grandchild_sleeps` and `a_run_after_a_run_cancel_starts_in_a_new_job_of_the_same_operation` in src-tauri/src/process_requests.rs.
+  test(
+    "T393: an abort or the 4 MiB stderr bound of one call ends every running call of its operation with exitCode null, a call of another operation exits 0, and the operation stays active",
+    async () => {
+      for (const form of ["abort", "stderr"] as const) {
+        const go = fixturePath(`go-t393-${form}`);
+        // A `!` alias that marks `ready`, then waits at most 20 s for `go` and exits 0 only when `go` exists.
+        const waiting = (ready: string, operationId: string, fields: Partial<GitCall> = {}) =>
+          call({ operationId, arguments: ["--no-lazy-fetch", "-c", `alias.w=!: > "${slash(ready)}"; i=0; while [ $i -lt 400 ] && [ ! -e "${slash(go)}" ]; do sleep 0.05; i=$((i+1)); done; [ -e "${slash(go)}" ]`, "w"], ...fields });
+        const operationId = id();
+        const readies = [fixturePath(`ready-t393-${form}-sibling`), fixturePath(`ready-t393-${form}-other`), fixturePath(`ready-t393-${form}-canceled`)];
+        const ready = async (paths: string[]) => {
+          for (let i = 0; i < 400 && !paths.every((r) => existsSync(r)); i++) await Bun.sleep(25);
+          expect({ form, ready: paths.map((r) => existsSync(r)) }).toEqual({ form, ready: paths.map(() => true) });
+        };
+        const sibling = runner.run(waiting(readies[0]!, operationId));
+        const other = runner.run(waiting(readies[1]!, id()));
+        await ready(readies.slice(0, 2));
+        let result: Promise<{ exitCode: number | null }>;
+        if (form === "abort") {
+          const controller = new AbortController();
+          result = runner.run(waiting(readies[2]!, operationId, { signal: controller.signal }));
+          await ready(readies.slice(2));
+          controller.abort();
+        } else {
+          result = runner.run(call({ operationId, arguments: ["--no-lazy-fetch", "-c", `alias.z=!head -c ${5 * MIB} /dev/zero >&2`, "z"] }));
+        }
+        expect({ form, exit: (await result).exitCode }).toEqual({ form, exit: null });
+        writeFileSync(go, "");
+        // Contract §5 "Total unexpected diagnostic output": the 4 MiB count belongs to the operation, so each later exit of that operation carries `diagnosticLimit`.
+        const limit = form === "stderr" ? { diagnosticLimit: true as const } : {};
+        expect({ [`${form} sibling`]: await sibling, [`${form} other`]: await other }).toEqual({ [`${form} sibling`]: { exitCode: null, activeDescendants: null, ...limit }, [`${form} other`]: { exitCode: 0, activeDescendants: 0 } });
+        expect({ form, next: await runner.run(call({ operationId })) }).toEqual({ form, next: { exitCode: 0, activeDescendants: 0, ...limit } });
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  // `watch` and the activity sink of src-tauri/src/process_requests.rs close the operation Job at a deadline and at an inactivity end.
+  test(
+    "T394: a deadline or an inactivity end of one call ends every running call of its operation with exitCode null, a call of another operation exits 0, and the operation stays active",
+    async () => {
+      for (const form of ["deadline", "inactivity"] as const) {
+        const go = fixturePath(`go-t394-${form}`);
+        // A `!` alias that marks `ready`, then waits at most 20 s for `go` and exits 0 only when `go` exists.
+        const waiting = (ready: string, operationId: string, fields: Partial<GitCall> = {}) =>
+          call({ operationId, arguments: ["--no-lazy-fetch", "-c", `alias.w=!: > "${slash(ready)}"; i=0; while [ $i -lt 400 ] && [ ! -e "${slash(go)}" ]; do sleep 0.05; i=$((i+1)); done; [ -e "${slash(go)}" ]`, "w"], ...fields });
+        const operationId = id();
+        const readies = [fixturePath(`ready-t394-${form}-sibling`), fixturePath(`ready-t394-${form}-other`), fixturePath(`ready-t394-${form}-expired`)];
+        const sibling = runner.run(waiting(readies[0]!, operationId));
+        const other = runner.run(waiting(readies[1]!, id()));
+        for (let i = 0; i < 400 && !readies.slice(0, 2).every((r) => existsSync(r)); i++) await Bun.sleep(25);
+        expect({ form, ready: readies.slice(0, 2).map((r) => existsSync(r)) }).toEqual({ form, ready: [true, true] });
+        try {
+          if (form === "inactivity") runner.inject.limits = { inactivityMs: 300 };
+          const fields: Partial<GitCall> = form === "deadline" ? { limits: { deadlineMs: 1500 } } : { environmentPolicy: "network", limits: PROCESS_LIMITS.network };
+          expect({ form, exit: await runner.run(waiting(readies[2]!, operationId, fields)) }).toMatchObject({ form, exit: { exitCode: null, deadline: form } });
+        } finally {
+          runner.inject.limits = {};
+        }
+        writeFileSync(go, "");
+        expect({ [`${form} sibling`]: await sibling, [`${form} other`]: await other }).toEqual({ [`${form} sibling`]: { exitCode: null, activeDescendants: null }, [`${form} other`]: { exitCode: 0, activeDescendants: 0 } });
+        expect({ form, next: await runner.run(call({ operationId })) }).toEqual({ form, next: { exitCode: 0, activeDescendants: 0 } });
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  // Mirrors `close_job_of` in src-tauri/src/process_requests.rs: a Job close ends every process in the operation Job, also a descendant of a call that exited by itself.
+  test(
+    "T395: a deadline or an abort of one call ends a recorded descendant that an earlier call of the same operation left",
+    async () => {
+      for (const form of ["deadline", "abort"] as const) {
+        const operationId = id();
+        const ready = fixturePath(`ready-t395-${form}`);
+        const hold = `"${slash(process.execPath)}" "${slash(HOST_SCRIPT)}" "${slash(runner.recordsDirectory)}" 60000 "${slash(ready)}"`;
+        const wait = `i=0; while [ $i -lt 400 ] && [ ! -e "${slash(ready)}" ]; do sleep 0.05; i=$((i+1)); done`;
+        const before = new Set(readdirSync(runner.recordsDirectory));
+        const left = call({ operationId, environmentPolicy: "mutation", arguments: ["--no-lazy-fetch", "-c", `alias.h=!${hold} & ${wait}`, "h"] });
+        expect({ form, exit: await runner.run(left) }).toEqual({ form, exit: { exitCode: 0, activeDescendants: 1 } });
+        const [pid, created] = readdirSync(runner.recordsDirectory).find((name) => !before.has(name))!.split("-") as [string, string];
+        const alive = () => processCreationTime(Number(pid)) === BigInt(created);
+        expect({ form, alive: alive() }).toEqual({ form, alive: true });
+        const started = fixturePath(`started-t395-${form}`);
+        const sleeper = (fields: Partial<GitCall>) => call({ operationId, arguments: ["--no-lazy-fetch", "-c", `alias.s=!: > "${slash(started)}"; sleep 20`, "s"], ...fields });
+        if (form === "deadline") {
+          expect({ form, exit: await runner.run(sleeper({ limits: { deadlineMs: 1500 } })) }).toMatchObject({ form, exit: { exitCode: null, deadline: "deadline" } });
+        } else {
+          const controller = new AbortController();
+          const result = runner.run(sleeper({ signal: controller.signal }));
+          for (let i = 0; i < 400 && !existsSync(started); i++) await Bun.sleep(25);
+          controller.abort();
+          expect({ form, exit: (await result).exitCode }).toEqual({ form, exit: null });
+        }
+        for (let i = 0; i < 400 && alive(); i++) await Bun.sleep(25);
+        expect({ form, alive: alive() }).toEqual({ form, alive: false });
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
   // The double ends only the spawned Git, so the `head` grandchild can still write after the cancel.
   test("4 MiB of forwarded stderr ends the process", async () => {
     const c = call({ arguments: ["--no-lazy-fetch", "-c", `alias.z=!head -c ${5 * MIB} /dev/zero >&2`, "z"] });

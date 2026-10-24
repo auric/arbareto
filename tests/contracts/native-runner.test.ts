@@ -286,18 +286,55 @@ describe("native runner run requests", () => {
     expect(Buffer.from(collector.take()).toString("latin1")).toBe("abcdef");
   });
 
-  test("a stdout stream above its result bound gets cancel", async () => {
+  // Contract §6 "Byte caps" (T392): `stop` ends only the process of the call, so the other processes of the operation run on.
+  test("a run stdout stream above its result bound gets one stop and no cancel, streamed input stops, and a later abort still sends cancel", async () => {
     const channel = createChannelDouble();
-    const c = call({ stdout: createCollector({ maxBytes: 10 }) });
+    const controller = new AbortController();
+    const c = call({ stdout: createCollector({ maxBytes: 10 }), input: new Uint8Array(20 * NATIVE_CHUNK_BYTES), signal: controller.signal });
     const result = channel.runner.run(c);
     const { callId } = channel.last("run");
     channel.reply("process", { type: "output", callId, stream: "stdout", data: chunk(10) });
-    expect(channel.bodies("cancel")).toEqual([]);
+    expect(channel.bodies("stop")).toEqual([]);
     channel.reply("process", { type: "output", callId, stream: "stdout", data: chunk(1) });
-    expect(channel.bodies("cancel")).toEqual([{ type: "cancel", callId }]);
-    channel.reply("process", exit(callId, { exitCode: null }));
-    expect(await result).toEqual({ exitCode: null, activeDescendants: 0 });
+    channel.reply("process", { type: "output", callId, stream: "stdout", data: chunk(1) });
+    expect({ stop: channel.bodies("stop"), cancel: channel.bodies("cancel") }).toEqual({ stop: [{ type: "stop", callId }], cancel: [] });
+    expect(channel.reply("process", { type: "inputWritten", callId })).toBe(true);
+    expect(channel.bodies("input").length).toBe(UNACKNOWLEDGED_INPUT_CHUNKS);
+    controller.abort();
+    expect({ stop: channel.bodies("stop").length, cancel: channel.bodies("cancel") }).toEqual({ stop: 1, cancel: [{ type: "cancel", callId }] });
+    channel.reply("process", exit(callId, { exitCode: null, activeDescendants: 2 }));
+    expect(await result).toEqual({ exitCode: null, activeDescendants: 2 });
     expect(c.stdout.limited).toBe(true);
+  });
+
+  // Contract §6 "Byte caps" (T394, T395): a run of another policy keeps its process, so its hooks and later Git work still run.
+  test("T394: a run stdout above its bound gets stop only under the probe, read, or search policy; a run of every other policy gets no stop and no cancel, and its streamed input goes on", async () => {
+    const probe: ProcessContext = { contextKind: "gitProbe", bootstrapId: id() };
+    const forms: [GitCall["environmentPolicy"], Partial<GitCall>][] = [
+      ["read", {}],
+      ["search", {}],
+      ["probe", { context: probe, arguments: ["version", "--build-options"], limits: { deadlineMs: 30_000 } }],
+      ["mutation", {}],
+      ["network", { limits: PROCESS_LIMITS.network }],
+      ["remote", { limits: PROCESS_LIMITS.network }],
+      ["integrate", { limits: PROCESS_LIMITS.network }],
+      ["mergetool", { limits: { ceilingMs: SUBMODULE_UPDATE_CEILING_MS } }],
+    ];
+    for (const [policy, fields] of forms) {
+      const stops = policy === "probe" || policy === "read" || policy === "search";
+      // Contract §6: a `mergetool` child gets a closed stdin pipe, so it takes no input.
+      const streamed = policy !== "mergetool";
+      const channel = createChannelDouble();
+      const c = call({ environmentPolicy: policy, stdout: createCollector({ maxBytes: 10 }), ...(streamed ? { input: new Uint8Array(20 * NATIVE_CHUNK_BYTES) } : {}), ...fields });
+      const result = channel.runner.run(c);
+      const { callId } = channel.last("run");
+      for (let i = 0; i < 3; i++) channel.reply("process", { type: "output", callId, stream: "stdout", data: chunk(10) });
+      if (streamed) expect(channel.reply("process", { type: "inputWritten", callId })).toBe(true);
+      const inputs = streamed ? UNACKNOWLEDGED_INPUT_CHUNKS + (stops ? 0 : 1) : 0;
+      expect({ policy, stop: channel.bodies("stop"), cancel: channel.bodies("cancel"), inputs: channel.bodies("input").length }).toEqual({ policy, stop: stops ? [{ type: "stop", callId }] : [], cancel: [], inputs });
+      channel.reply("process", exit(callId, { exitCode: stops ? null : 0 }));
+      expect({ policy, exit: await result, limited: c.stdout.limited, bytes: c.stdout.bytes }).toEqual({ policy, exit: { exitCode: stops ? null : 0, activeDescendants: 0 }, limited: true, bytes: 30 });
+    }
   });
 });
 
@@ -972,7 +1009,7 @@ describe("native runner WSL frames (T212, contract §6 and §11)", () => {
     await expect(channel.runner.wslDistros({ ...ids, path: REPO } as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
   });
 
-  test("wslProbe streams output and exits as run, and Cancel sends cancel with its callId", async () => {
+  test("wslProbe streams output and exits as run, and Cancel and a limited stdout send cancel with its callId", async () => {
     const channel = createChannelDouble();
     const stdout = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
     const probe = { operationId: id(), bootstrapId: id(), distro: "Ubuntu-24.04", limits: { deadlineMs: 60_000 } };
@@ -991,6 +1028,14 @@ describe("native runner WSL frames (T212, contract §6 and §11)", () => {
     expect(channel.last("cancel")).toEqual({ type: "cancel", callId: second.callId });
     channel.reply("process", exit(second.callId, { exitCode: null }));
     expect(await canceled).toEqual({ exitCode: null, activeDescendants: 0 });
+
+    // Contract §6 "Byte caps": a `wslProbe` stream above its result bound gets `cancel`, never `stop`.
+    const limited = channel.runner.wslProbe({ ...probe, stdout: createCollector({ maxBytes: 4 }), stderr: createCollector({ maxBytes: 64 }), signal: new AbortController().signal });
+    const third = channel.last("wslProbe");
+    channel.reply("process", { type: "output", callId: third.callId, stream: "stdout", data: chunk(5) });
+    expect({ cancel: channel.last("cancel"), stop: channel.bodies("stop") }).toEqual({ cancel: { type: "cancel", callId: third.callId }, stop: [] });
+    channel.reply("process", exit(third.callId, { exitCode: null }));
+    expect(await limited).toEqual({ exitCode: null, activeDescendants: 0 });
 
     for (const limits of [{ deadlineMs: 60_001 }, { deadlineMs: 0 }]) {
       await expect(channel.runner.wslProbe({ ...probe, limits, stdout, stderr: stdout, signal: new AbortController().signal })).rejects.toMatchObject({ code: "INVALID_REQUEST" });

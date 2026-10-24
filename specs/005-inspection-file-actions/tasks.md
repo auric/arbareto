@@ -240,6 +240,12 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - [ ] T076 [US2] Use the alert icon in the Delete confirmation title in `src/frontend/changes/DeleteConfirm.tsx` (D15 "Delete confirmation"). Cause: the recycle title uses the trash icon. Fix: both titles use the alert icon. Tests first in `tests/contracts/inspection-delete.test.tsx`. Spec: FR-026.
 - [ ] T077 [US1] Select a commit in the new view when a Refresh search selects none, in `src/frontend/state/history-view.ts` (D3 "Selection", 002 FR-008). Cause: after T068 the panes read only after a `select()` in the new view. A Refresh with a search goes to `runSearch`, and four paths call no `select()`: highlight mode without the commit, a canceled, refused, or failed search in highlight mode, filter mode with no match, and the fallback of an empty repository. The changed files then show "Arbareto reads the changed files." without end, and the details keep the old view. Fix: when `runSearch` ends without a `select()` in the new view, `open()` keeps the commit by the 002 FR-008 rule, as without a search: load to the commit unless the view is complete, `readAt({oid})`, then `select()`, else `selectFallback()`. `selectFallback()` clears the selection when row 0 gives `none` (contract Δ3), and `src/frontend/app/Workbench.tsx` then docks no commit panel. The store function `readView(oid, others)` replaces the two selected-in-view checks of `CommitChanges.tsx` and `CommitDetails.tsx`. `action-menu.tsx` renders one label and reason span set. Tests first in `tests/contracts/inspection-history.test.tsx`: one case per path; each expects `readCommitChanges` in the new view, or no selection for the empty repository. Control mutation: undo the store fix; the four cases must fail. Spec: FR-007, 002 FR-008. Depends on T068.
 
+### Ignore preview fixes
+
+**Agent**: implementer. After T041. Tests first, with the red output kept.
+
+- [ ] T081 [US5] Keep the deadline of a parallel preview step when the Job close ends a sibling first, in `src/git-service/ignore-preview.ts` (plan.md D9, plan.md O-3, 001 contract §5). Cause: a step at its deadline closes the operation Job, so a sibling step ends with `exitCode` null and no `deadline`. `Shadow.check` and the listings map that null to `GIT_FAILED`, and `Promise.all` takes the first step that ends. Fix: `git()` throws the Job-close marker for a null `exitCode` without `deadline`, `diagnosticLimit`, or a `limited` stdout. A helper waits for every parallel step and throws the first rejection in position order that is no marker. A marker of a base step also waits for the self-check listings and takes their rejection. Only markers keep `GIT_FAILED`. Tests first in `tests/git/ignore-preview.test.ts`: one `check-ignore` gets a 1 ms deadline, and the paused sibling ends first, once for each shadow; each gives `unavailable.reason` `deadline`. Control mutation: map the marker to `GIT_FAILED`; the case must fail. Spec: FR-039, SC-005. Depends on T041.
+
 ### Batch 2 verification
 
 - [ ] T047 [US1] Run the batch 2 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `bun run test:contracts`, and `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `Local: WSL`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every `OBSERVATION` line of T030 into research.md R17. A failed fact changes contracts/operations.md and plan.md before batch 3. Control mutations, each undone and rerun green: (1) in `src/git-service/file-delete.ts`, skip the check phase; the US2-5 case of `tests/git/delete.test.ts` must fail. (2) In `src/git-service/ignore-preview.ts`, skip the self-check; the `self-check` case of `tests/git/ignore-preview.test.ts` must fail. (3) In `src/frontend/history/CommitChanges.tsx`, keep the service order; the tree-order case of `tests/contracts/inspection-history.test.tsx` must fail. Board comparison: start the app with `bun run dev` and `ARBARETO_PROFILE_ROOT` set to a scratch folder, and compare the History regions, the parent picker, the constrained tabs, and the blame view with the Main, HistoryStates, Blame, Light, and ForcedColors boards. Record the screenshots and every difference in research.md R17. The task passes only after one independent review of batch 2 is recorded in research.md, with `ponytail-review`, the heuristics review of the Delete and preview code, and `web-design-guidelines` for the UI diff. Spec: all IDs of T028 to T046 and T065, SC-001, SC-003, SC-005 to SC-007. Depends on T028 to T046 and T065.
@@ -307,6 +313,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - Batch 3 (T048–T058): after T047. WP7 (T048–T056) alone, then T057, then T058.
 - Batch 4 (T059–T064): after T058 and T077. T059 alone first. Then T060 and T061. Then T062, T063, and T064.
 - Board comparison fixes (T066–T077): after the board comparisons of T027, T047, and T058. One package in order. T047 and T058 repeat their board comparison after T077.
+- Ignore preview fixes (T081): after T041.
 
 ### Changes to earlier requirements and their tasks
 
@@ -349,7 +356,7 @@ Then:          T027
 | FR-015 to FR-017 (US3) | T001, T003, T007, T010, T032, T034, T043, T048 |
 | FR-018 to FR-019 (US4) | T012, T013, T015, T036, T038, T048, T052, T060 |
 | FR-020 to FR-033 (US2) | T012 to T014, T028 to T030, T032, T039, T048, T053, T059, T060, T073, T076 |
-| FR-034 to FR-046 (US5) | T013 to T015, T028 to T031, T033, T034, T037, T040, T041, T049, T054, T057, T059, T067, T074 |
+| FR-034 to FR-046 (US5) | T013 to T015, T028 to T031, T033, T034, T037, T040, T041, T049, T054, T057, T059, T067, T074, T081 |
 | FR-047 to FR-052 (US6) | T013, T015, T030, T035, T042, T050, T055, T059, T060, T066 |
 | FR-053 to FR-063 (US7) | T016 to T018, T020, T022, T024, T026, T065, T044, T046, T048, T052, T061, T071, T072 |
 | FR-064 to FR-066 (US8, US9) | T006, T008, T009, T011, T018, T069, T075 |
@@ -359,7 +366,7 @@ Then:          T027
 | SC-002 | T021, T061 |
 | SC-003 | T012, T032, T059, T060 |
 | SC-004 | T001, T007, T027 |
-| SC-005 | T034, T059, T061 |
+| SC-005 | T034, T059, T061, T081 |
 | SC-006 | T022, T061 |
 | SC-007 | T035, T060 |
 | SC-008 | T006, T008, T027 |

@@ -38,6 +38,8 @@ class End {
 const limit = (reason: Reason, bound?: string) => new End({ result: "succeeded", value: { unavailable: { reason, ...(bound === undefined ? {} : { bound }) } } });
 const failed = (code: ErrorCode) => new End({ result: "failed", code });
 const CANCELED = new End({ result: "canceled" });
+// 001 contract §5: a Job close ends a step with `exitCode` null. The cause is a sibling exit, so `steps` prefers any other end.
+const CLOSED = new End({ result: "failed", code: "GIT_FAILED" });
 const stopped = (stop: WalkStop["stop"]) => (stop === "deadline" ? limit("deadline") : CANCELED);
 // Contract Δ5 `PREVIEW_PATHS`: the inputs of the whole preview, without the folder probes (plan.md D9 `paths`). Each count includes every earlier input.
 const inputsFit = (count: number) => {
@@ -287,71 +289,77 @@ export function createIgnorePreview({ runner, trust }: { runner: GitRunner; trus
     const excludesFile = effectiveExcludesFile(entries, w);
     const exclude = settle(await targetOf({ runner, operationId: t.operationId, signal: t.signal, workspace: w }, "exclude"));
     // The self-check listings run at the same time as the first round (plan.md O-3). A failure ends the preview only when the self-check needs them.
-    const pending = [listing(t, ignoredArgs()), listing(t, matchedArgs())].map((read) => read.then((value) => ({ value }), (error: unknown) => ({ error })));
-    const [stage, universe] = await Promise.all([listing(t, indexEntryArgs()), listing(t, universeArgs())]);
-    const index = parseIndexListing(stage, w.objectFormat);
-    const untracked = records(universe);
-    if (index === null || untracked === null) throw failed("MALFORMED_GIT_OUTPUT");
-    // ls-files(1): the first record of each path counts, so unmerged stages count once.
-    const tracked = new Map<string, { oid: string; skip: boolean }>();
-    const inputs: Input[] = [];
-    for (const e of index) {
-      if (tracked.has(keyOf(e.path))) continue;
-      tracked.set(keyOf(e.path), { oid: e.oid, skip: e.skipWorktree });
-      inputs.push({ path: e.path, kind: "tracked", ...(e.mode === "160000" ? { gitlink: true as const } : {}) });
-    }
-    for (const r of untracked) inputs.push(r.at(-1) === SLASH ? { path: r.subarray(0, -1), kind: "folder", record: true } : { path: r, kind: "file" });
-    const base: Base = {
-      snapshotId: p.snapshotId,
-      ignoreCase,
-      excludesFile,
-      exclude: (await excludeGivesRules(t)) ? exclude.file : null,
-      ignoreFiles: [],
-      links: [],
-      inputs,
-      s: new Uint8Array(),
-      expansions: new Map(),
-      selfCheck: null,
-      listedFolders: new Set(),
-      probed: new Set(),
-    };
-    const first = await ignoreFiles(t, base, named(inputs), tracked);
-    base.ignoreFiles.push(...first.files);
-    base.links.push(...first.links);
-    await nameCase(t, base, p.target, inputs);
-    inputsFit(inputs.length);
-    await Promise.all([shadow.fill("s", base.ignoreFiles, inputs), shadow.fill("c", candidateFiles(base, p.target, candidate), inputs)]);
-    await Promise.all([
-      shadow.exclude("s", base.exclude === null ? null : { real: base.exclude }),
-      shadow.exclude("c", p.target === "exclude" ? { bytes: candidate } : base.exclude === null ? null : { real: base.exclude }),
-    ]);
-    const [s1, c1] = await Promise.all([shadow.check("s", inputs, ignoreCase, excludesFile), shadow.check("c", inputs, ignoreCase, excludesFile)]);
+    const pending = [listing(t, ignoredArgs()), listing(t, matchedArgs())] as const;
+    for (const read of pending) read.catch(() => undefined);
+    try {
+      const [stage, universe] = await steps([listing(t, indexEntryArgs()), listing(t, universeArgs())]);
+      const index = parseIndexListing(stage, w.objectFormat);
+      const untracked = records(universe);
+      if (index === null || untracked === null) throw failed("MALFORMED_GIT_OUTPUT");
+      // ls-files(1): the first record of each path counts, so unmerged stages count once.
+      const tracked = new Map<string, { oid: string; skip: boolean }>();
+      const inputs: Input[] = [];
+      for (const e of index) {
+        if (tracked.has(keyOf(e.path))) continue;
+        tracked.set(keyOf(e.path), { oid: e.oid, skip: e.skipWorktree });
+        inputs.push({ path: e.path, kind: "tracked", ...(e.mode === "160000" ? { gitlink: true as const } : {}) });
+      }
+      for (const r of untracked) inputs.push(r.at(-1) === SLASH ? { path: r.subarray(0, -1), kind: "folder", record: true } : { path: r, kind: "file" });
+      const base: Base = {
+        snapshotId: p.snapshotId,
+        ignoreCase,
+        excludesFile,
+        exclude: (await excludeGivesRules(t)) ? exclude.file : null,
+        ignoreFiles: [],
+        links: [],
+        inputs,
+        s: new Uint8Array(),
+        expansions: new Map(),
+        selfCheck: null,
+        listedFolders: new Set(),
+        probed: new Set(),
+      };
+      const first = await ignoreFiles(t, base, named(inputs), tracked);
+      base.ignoreFiles.push(...first.files);
+      base.links.push(...first.links);
+      await nameCase(t, base, p.target, inputs);
+      inputsFit(inputs.length);
+      await steps([shadow.fill("s", base.ignoreFiles, inputs), shadow.fill("c", candidateFiles(base, p.target, candidate), inputs)]);
+      await steps([
+        shadow.exclude("s", base.exclude === null ? null : { real: base.exclude }),
+        shadow.exclude("c", p.target === "exclude" ? { bytes: candidate } : base.exclude === null ? null : { real: base.exclude }),
+      ]);
+      const [s1, c1] = await steps([shadow.check("s", inputs, ignoreCase, excludesFile), shadow.check("c", inputs, ignoreCase, excludesFile)]);
 
-    // A U folder record that S does not ignore expands in the base. Its files join the inputs, and its subfolders join as folder inputs.
-    const open = inputs.map((input, i) => ({ input, i })).filter(({ input, i }) => input.kind === "folder" && s1[i] === 0);
-    const expanded = await expand(t, base, open.map(({ input }) => input.path));
-    const added: Input[] = [];
-    for (const { input, i } of open) {
-      const found = expanded.get(keyOf(input.path))!;
-      if (isNested(input.path, found)) inputs[i] = { path: input.path, kind: "nested" };
-      else added.push(...expansionInputs(input.path, found));
-    }
-    const { files: fresh, links } = await ignoreFiles(t, base, named(added), tracked);
-    base.ignoreFiles.push(...fresh);
-    base.links.push(...links);
-    await nameCase(t, base, p.target, added);
-    inputs.push(...added);
-    inputsFit(inputs.length);
-    await Promise.all([shadow.fill("s", fresh, added), shadow.fill("c", fresh, added)]);
-    const probes = probesOf(base.ignoreFiles, new Set());
-    const [s2, c2] = await Promise.all([shadow.check("s", added, ignoreCase, excludesFile), shadow.check("c", [...added, ...probes], ignoreCase, excludesFile)]);
-    base.s = Buffer.concat([s1, s2]);
+      // A U folder record that S does not ignore expands in the base. Its files join the inputs, and its subfolders join as folder inputs.
+      const open = inputs.map((input, i) => ({ input, i })).filter(({ input, i }) => input.kind === "folder" && s1[i] === 0);
+      const expanded = await expand(t, base, open.map(({ input }) => input.path));
+      const added: Input[] = [];
+      for (const { input, i } of open) {
+        const found = expanded.get(keyOf(input.path))!;
+        if (isNested(input.path, found)) inputs[i] = { path: input.path, kind: "nested" };
+        else added.push(...expansionInputs(input.path, found));
+      }
+      const { files: fresh, links } = await ignoreFiles(t, base, named(added), tracked);
+      base.ignoreFiles.push(...fresh);
+      base.links.push(...links);
+      await nameCase(t, base, p.target, added);
+      inputs.push(...added);
+      inputsFit(inputs.length);
+      await steps([shadow.fill("s", fresh, added), shadow.fill("c", fresh, added)]);
+      const probes = probesOf(base.ignoreFiles, new Set());
+      const [s2, c2] = await steps([shadow.check("s", added, ignoreCase, excludesFile), shadow.check("c", [...added, ...probes], ignoreCase, excludesFile)]);
+      base.s = Buffer.concat([s1, s2]);
 
-    // Plan.md D9 "Self-check", exact by the RI and RT record forms.
-    const [ri, rt] = await Promise.all(pending);
-    for (const read of [ri!, rt!]) if ("error" in read) throw read.error;
-    base.selfCheck = selfCheck(base, (ri as { value: Uint8Array }).value, (rt as { value: Uint8Array }).value);
-    return { base, c: { inputs: Buffer.concat([c1, c2.subarray(0, added.length)]), probes, probed: c2.subarray(added.length) } };
+      // Plan.md D9 "Self-check", exact by the RI and RT record forms.
+      const [ri, rt] = await steps(pending);
+      base.selfCheck = selfCheck(base, ri, rt);
+      return { base, c: { inputs: Buffer.concat([c1, c2.subarray(0, added.length)]), probes, probed: c2.subarray(added.length) } };
+    } catch (error) {
+      // A self-check listing at its deadline closes the Job of the other steps.
+      if (error === CLOSED) await steps(pending);
+      throw error;
+    }
   }
 
   // Plan.md D9 "Classification" and "Results".
@@ -570,7 +578,17 @@ async function git(runner: GitRunner, t: PreviewTarget, context: ProcessContext,
   if (t.signal.aborted) throw CANCELED;
   if (exit.deadline !== undefined) throw limit("deadline");
   if (exit.diagnosticLimit) throw failed("OUTPUT_LIMIT");
+  // 001 contract §5 "Byte caps": a `read` run gets `stop` only at its stdout bound. Any other null `exitCode` is a Job close.
+  if (exit.exitCode === null && !stdout.limited) throw CLOSED;
   return exit;
+}
+
+// Parallel steps of one operation. Each step ends before the first rejection in position order that is no Job close propagates.
+async function steps<T extends readonly unknown[] | []>(work: T): Promise<{ -readonly [K in keyof T]: Awaited<T[K]> }> {
+  const ends = await Promise.allSettled(work);
+  const rejected = ends.flatMap((end) => (end.status === "rejected" ? [end.reason as unknown] : []));
+  if (rejected.length > 0) throw rejected.find((reason) => reason !== CLOSED) ?? CLOSED;
+  return ends.map((end) => (end as PromiseFulfilledResult<unknown>).value) as { -readonly [K in keyof T]: Awaited<T[K]> };
 }
 
 // One folder probe for each folder above a `.gitignore`. The shadow holds each such folder, because it holds the file below it. `skip`: probes that ran.

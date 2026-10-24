@@ -117,4 +117,32 @@ describeGit("pre-push hook", (git) => {
     expect(push(r, [":topic"]).exitCode).toBe(0);
     expect(remoteRefs(r)).toBe("refs/heads/main");
   }, TIMEOUT_MS * 5);
+
+  test("a branch update that merges a hit from another remote branch pushes", () => {
+    const r = setup(git);
+    commit(r, "a.txt", "a\n", "base");
+    expect(push(r, ["main"]).exitCode).toBe(0);
+    run(r, ["branch", "topic"]);
+    expect(push(r, ["topic"]).exitCode).toBe(0);
+    commit(r, "old.txt", `${PROFILE}\\x\n`, "old");
+    expect(push(r, ["--no-verify", "main"]).exitCode).toBe(0);
+    run(r, ["switch", "-q", "topic"]);
+    commit(r, "c.txt", "c\n", "topic");
+    run(r, ["merge", "-q", "--no-edit", "--no-verify", "main"]);
+    expect(push(r, ["topic"]).exitCode).toBe(0);
+  }, TIMEOUT_MS * 5);
+
+  test("a merge that adds a hit line to neither parent refuses the push", () => {
+    const r = setup(git);
+    commit(r, "a.txt", "a\n", "base");
+    run(r, ["switch", "-q", "-c", "side"]);
+    commit(r, "b.txt", "b\n", "side");
+    run(r, ["switch", "-q", "main"]);
+    commit(r, "c.txt", "c\n", "main");
+    run(r, ["merge", "-q", "--no-commit", "side"]);
+    commit(r, "c.txt", `c\n${PROFILE}\\x\n`, "merge");
+    const result = push(r, ["main"]);
+    expect(result.exitCode).toBe(1);
+    expect(result.stderr).toContain(`pre-push: ${head(r)} c.txt:2 built-in 1 (Windows user profile)`);
+  }, TIMEOUT_MS * 5);
 });

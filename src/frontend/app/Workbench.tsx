@@ -912,7 +912,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     approvalRead.current = null;
   }, [approvalEnds]);
 
-  const kept = row.repository === state.repository ? row.id : null;
+  // An empty repository after Refresh selects no commit, so the dock shows its hint.
+  const kept = row.repository === state.repository && historyState.selection !== null ? row.id : null;
   // The row epoch whose details read returned. The Details-ready mark waits for it.
   const [detailsRead, setDetailsRead] = useState(-1);
   if (row.repository !== state.repository) setRow({ repository: state.repository, id: null, epoch: row.epoch });

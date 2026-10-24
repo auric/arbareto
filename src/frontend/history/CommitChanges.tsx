@@ -156,12 +156,8 @@ export const HISTORY_PANES: HistoryPanes = { width: 288, layout: "tree" };
 
 /** The Changed files and diff regions of the selected commit (spec FR-005). Wide and narrow: side by side with a splitter. Constrained: the list above the diff. */
 export function CommitChanges({ inspection, view, oid, profile, onTrust, onBlame, filterRef, panes, onPanes }: CommitChangesProps) {
-  // Plan.md D3 "Selection": only a commit that the current view selected has a loaded row there, so only it is read.
-  const selectedIn = () => {
-    const s = view.getState();
-    return s.selectedIn !== null && s.selectedIn === s.view?.viewId && s.selection?.id === oid ? s.selectedIn : null;
-  };
-  const viewId = useSyncExternalStore(view.subscribe, selectedIn, selectedIn);
+  const readView = () => view.readView(oid, false);
+  const viewId = useSyncExternalStore(view.subscribe, readView, readView);
   const state = useSyncExternalStore(inspection.subscribe, inspection.getState, inspection.getState);
   const [parent, setParent] = useState({ oid, index: 0 });
   const index = parent.oid === oid ? parent.index : 0;

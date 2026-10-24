@@ -9,7 +9,7 @@ import type { BridgeResponse, OnProgress } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
-import { createFake, oid as fakeOid, stubLayout, TARGET } from "./history-fake";
+import { createFake, oid as fakeOid, stubLayout, TARGET, type FakeOptions } from "./history-fake";
 import { latinKeyCode } from "./key-codes";
 
 printOrigin("../../src/frontend/history/CommitChanges.tsx", import.meta.dir);
@@ -140,7 +140,7 @@ async function historyView(): Promise<HistoryView> {
   return view;
 }
 
-type Mounted = { host: HTMLElement; view: HistoryView; inspection: Inspection; double: ReturnType<typeof inspectionDouble>; viewId: string; trusts: number[]; blames: unknown[]; rerender(oid: string): Promise<void> };
+type Mounted = { host: HTMLElement; view: HistoryView; inspection: Inspection; double: ReturnType<typeof inspectionDouble>; viewId: string; trusts: number[]; blames: unknown[]; rerender(oid: string): Promise<void>; display(oid: string): Promise<void> };
 // The Workbench passes the selected commit, and T068 reads only a commit that the current view selected.
 const rowOf = (oid: string) => Array.from({ length: 10 }, (_, i) => fakeOid(i)).indexOf(oid);
 const selectIn = (view: HistoryView, oid: string) => act(async () => view.select(oid, rowOf(oid), "full"));
@@ -161,7 +161,7 @@ async function mountChanges(oid = fakeOid(2), profile: "wide" | "narrow" | "cons
   );
   const { host, rerender } = await show(node(oid));
   await settle();
-  return { host, view, inspection, double, viewId: view.getState().view!.viewId, trusts, blames, rerender: async (o) => (await selectIn(view, o), await rerender(node(o)), await settle()) };
+  return { host, view, inspection, double, viewId: view.getState().view!.viewId, trusts, blames, rerender: async (o) => (await selectIn(view, o), await rerender(node(o)), await settle()), display: async (o) => (await rerender(node(o)), await settle()) };
 }
 /** Mounts and answers the first `readCommitChanges` with `files`. */
 async function loaded(files: FileSpec[], fields: Record<string, unknown> = {}, oid = fakeOid(2), profile: "wide" | "narrow" | "constrained" = "wide") {
@@ -289,6 +289,90 @@ describe("reads (spec FR-007, plan.md D3 Selection)", () => {
       { viewId: m.viewId, oid: fakeOid(4), parent: 0 },
       { viewId: newView, oid: fakeOid(4), parent: 0 },
     ]);
+  });
+
+  // T077: each Refresh path that selects nothing in the new view keeps the commit by the spec FR-008 rule, so the panes read in the new view.
+  async function opened(fake: ReturnType<typeof createFake>) {
+    const view = createHistoryView(fake.bridge, TARGET);
+    await act(async () => void (await view.open("all", false)));
+    return view;
+  }
+  const refresh = async (view: HistoryView) => {
+    await act(async () => void (await view.refresh()));
+    await settle();
+  };
+
+  test("Refresh in highlight mode without the selected commit selects the checkout commit, and its changes read in the new view (T077)", async () => {
+    const options: FakeOptions = { total: 10, loaded: 10, matches: (i) => i % 2 === 0 };
+    const fake = createFake(options);
+    const view = await opened(fake);
+    await act(async () => void (await view.search("Commit", "highlight")));
+    await settle();
+    const m = await mountChanges(fakeOid(7), "wide", view);
+    expect(m.double.of("readCommitChanges")).toHaveLength(1);
+    // The new refs reach 5 commits, so the view has no row of commit 7 (contract Δ3 `none`).
+    options.loaded = 5;
+    fake.setTotal(5);
+    await refresh(view);
+    const s = view.getState();
+    expect(s.search).toMatchObject({ state: "finished", mode: "highlight" });
+    expect(s.selection).toEqual({ id: fakeOid(0), index: 0, mode: "full" });
+    expect(s.selectedIn).toBe(s.view!.viewId);
+    await m.display(fakeOid(0));
+    expect(m.double.last("readCommitChanges").payload).toEqual({ viewId: s.view!.viewId, oid: fakeOid(0), parent: 0 });
+  });
+
+  test("Refresh in highlight mode with a failed search keeps the selected commit, and its changes read in the new view (T077)", async () => {
+    const options: FakeOptions = { total: 10, loaded: 10, matches: (i) => i % 2 === 0 };
+    const fake = createFake(options);
+    const view = await opened(fake);
+    await act(async () => void (await view.search("Commit", "highlight")));
+    await settle();
+    const m = await mountChanges(fakeOid(2), "wide", view);
+    options.searchResponse = () => ({ requestId: "r", state: "failed", code: "DEADLINE", result: { remedy: { text: "Write a commit-graph.", command: null } } });
+    await refresh(view);
+    const s = view.getState();
+    expect(s.search).toMatchObject({ state: "failed", code: "DEADLINE" });
+    expect(s.selection).toEqual({ id: fakeOid(2), index: 2, mode: "full" });
+    expect(m.double.of("readCommitChanges").map((c) => c.payload)).toEqual([
+      { viewId: m.viewId, oid: fakeOid(2), parent: 0 },
+      { viewId: s.view!.viewId, oid: fakeOid(2), parent: 0 },
+    ]);
+  });
+
+  test("Refresh in filter mode with no match keeps the selected commit, and its changes read in the new view (T077)", async () => {
+    let match = (i: number) => i % 2 === 0;
+    const fake = createFake({ total: 10, loaded: 10, matches: (i) => match(i) });
+    const view = await opened(fake);
+    await act(async () => void (await view.search("Commit", "filter")));
+    await settle();
+    const m = await mountChanges(fakeOid(4), "wide", view);
+    await act(async () => view.select(fakeOid(4), 2, "filter"));
+    await settle();
+    match = () => false;
+    await refresh(view);
+    const s = view.getState();
+    expect(s.search).toMatchObject({ state: "finished", mode: "filter", matches: 0 });
+    expect(s.selection).toEqual({ id: fakeOid(4), index: 4, mode: "full" });
+    expect(m.double.of("readCommitChanges").map((c) => c.payload)).toEqual([
+      { viewId: m.viewId, oid: fakeOid(4), parent: 0 },
+      { viewId: s.view!.viewId, oid: fakeOid(4), parent: 0 },
+    ]);
+  });
+
+  test("Refresh to an empty repository selects no commit, so no pane waits for a read (T077)", async () => {
+    const options: FakeOptions = { total: 10, loaded: 10 };
+    const fake = createFake(options);
+    const view = await opened(fake);
+    const m = await mountChanges(fakeOid(2), "wide", view);
+    options.loaded = 0;
+    fake.setTotal(0);
+    await refresh(view);
+    const s = view.getState();
+    expect(s.view!.startCount).toBe(0);
+    // The Workbench docks no commit panel without a selection (plan.md D15 dock hint).
+    expect(s.selection).toBeNull();
+    expect(m.double.of("readCommitChanges")).toHaveLength(1);
   });
 
   test("another commit sends a new readCommitChanges and cancels the running one", async () => {

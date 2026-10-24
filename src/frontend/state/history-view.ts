@@ -420,6 +420,8 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     if (checkout?.target === "found") return select(checkout.rows[0]!.oid, checkout.rows[0]!.index, "full");
     const first = await readAt({ row: 0 }, "full", "none");
     if (first?.target === "found") select(first.rows[0]!.oid, 0, "full");
+    // Contract Δ3 `none`: the view holds no commit row, so no commit stays selected.
+    else if (first?.target === "none") set({ selection: null });
   }
 
   /** Opens a new view. Refresh and a scope switch keep the selected commit (spec FR-008, FR-049) and the filter text and mode. */
@@ -447,11 +449,15 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     const again = search !== null && (search.state === "running" || search.state === "finished");
     // A running search blocks scroll loads from the first render of the new view: the filter sends only `searchHistory` (plan.md D6).
     set({ view: result, openedSeq: nextRequestSeq(), opening: false, complete: result.startCount === 0, ...(again ? { search: { ...search, state: "running", searchId: null, matches: 0, settled: 0 } } : {}) });
-    if (again) return void runSearch(search.text, search.mode, oid);
-    if (oid === null) return pump();
-    const loaded = await runLoad({ oid }, "oid");
-    if (mine !== epoch || loaded === null) return;
-    if (loaded.state === "succeeded") {
+    if (again) {
+      await runSearch(search.text, search.mode, oid);
+      // Plan.md D3 "Selection": the panes read only after a select() in this view. A search end without one keeps the commit by the FR-008 rule.
+      if (mine !== epoch || oid === null || searching() || state.selectedIn === state.view?.viewId) return;
+    } else if (oid === null) return pump();
+    // Contract Δ3: a finished search and an empty repository give a complete view.
+    const loaded = state.complete ? null : await runLoad({ oid }, "oid");
+    if (mine !== epoch) return;
+    if (loaded === null || loaded.state === "succeeded") {
       const found = await readAt({ oid }, "full", "none");
       if (found?.target === "found") return select(oid, found.rows[0]!.index, "full");
     }
@@ -613,6 +619,13 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     if (searching() && state.search!.searchId !== null) void bridge.cancel({ operationId: state.search!.searchId });
   }
 
+  /** Plan.md D3 "Selection": the view that reads `oid`, or null. The selection reads only after a select() in this view, because the view holds its row only then. With `others`, another commit reads at once. */
+  function readView(oid: string, others: boolean): string | null {
+    const viewId = state.view?.viewId ?? null;
+    if (state.selection?.id !== oid) return others ? viewId : null;
+    return state.selectedIn === viewId ? viewId : null;
+  }
+
   /** Selects a commit of the shown list by OID, as a details link or a reference does. It gives the contract Δ3 target, or null without a result. */
   async function selectOid(oid: string): Promise<"found" | "none" | "unknown" | null> {
     const found = await readAt({ oid }, filterMode() ? "filter" : "full", "none");
@@ -693,6 +706,7 @@ export function createHistoryView(bridge: HistoryBridge, target: () => { reposit
     cancelSearch,
     selectOid,
     revealOid,
+    readView,
     readDetails,
     markStale,
     close,

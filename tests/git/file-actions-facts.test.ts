@@ -488,7 +488,7 @@ describe("T030 F15: long shadow paths on Windows (plan.md D9)", () => {
     writeFileSync(global, `${readFileSync(FIXTURE_GLOBAL_CONFIG, "utf8")}[core]\n\tlongpaths = false\n`);
     const r = longShadow(root, global);
     const effective = spawn(root, ["-c", "core.longpaths=true", "config", "--get", "core.longpaths"], { GIT_CONFIG_GLOBAL: global }).stdout.toString().trim();
-    observe(`F15 at ${r.units} units with a global core.longpaths=false: the checkout with -c core.longpaths=true exits ${r.checkout} (${JSON.stringify(r.stderr)}), and git config names ${effective}`, r.checkout === 0);
+    observe(`F15 at ${r.units} units with a global core.longpaths=false: the global value wins over -c core.longpaths=true; the checkout exits ${r.checkout} (${JSON.stringify(r.stderr)}), and git config names ${effective}`, r.checkout === 128 && effective === "true");
     expect({ checkout: r.checkout, effective }).toEqual({ checkout: 128, effective: "true" });
   });
 });

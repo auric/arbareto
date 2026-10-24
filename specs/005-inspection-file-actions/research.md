@@ -325,6 +325,112 @@ WP4 (T016 to T026), review of ce6dfa0, fixes in 3d6c5e3. No heuristic, and no re
 - The patch bound counts dropped sections. Contract Δ3 records it as a known limit.
 - Text: the data-model §11 zero-count hunk rule (xdiff `xdl_format_hunk_hdr`, F9), the plan D12 `ls-tree -l` size `%7s`, the reason `path` for paths that are not valid UTF-8, one `commits` entry per (oid, previous, filename) origin, and the Δ2 generation rule.
 
+**Batch 2 and 3 verification (T047 and T058) part A, 2026-10-24.** Run 2 in `C:\Projects\arbareto-l2` on f005-impl at 66c19f3, with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. One run covers the commands of T047 and T058.
+- `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, and `bun run export:schemas --check`: exit 0.
+- `cargo test --locked`: exit 0, 588 passed, 0 failed, 9 ignored.
+- `bun run test:contracts`: exit 0, 5,409 pass, 33 skip, 0 fail, 5,442 tests in 114 files.
+- `ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0, 136 min. Parallel group: 7,249 pass, 41 skip, 0 fail, 7,290 tests in 210 files. Serial group: 710 pass, 10 skip, 0 fail, 720 tests in 36 files.
+- Every `ORIGIN` line is under `C:\Projects\arbareto-l2`: 335 in the contract run, 1,958 in the full run (229 on stdout, 1,729 on stderr). All 90 `GIT_CORE` lines of the full run name one Git.
+- Skips: one new skip against batch 1, "T033 a FIFO .gitignore refuses with ignore-not-regular" (missing capability `fifo`).
+- Kernel pool from 08:27 to 12:42: paged 2,802 to 4,977 MiB, nonpaged 1,438 to 1,991 MiB. During `test:all`, the lowest free memory was 12,827 MB, and the Bun processes of the run peaked at 4,883 MB private.
+- Control mutations, each red, then undone with the original SHA-256 and a clean `git diff`, then green:
+  - T047 (1): in `file-delete.ts`, `observe` memoizes `observeDelete` per request, so the check phase reuses the review facts. The US2-5 case of `tests/git/delete.test.ts` failed. Deviation: the task says "skip the check phase"; the mutation removes only its fresh fact read.
+  - T047 (2): in `ignore-preview.ts`, `base.selfCheck = null`. The case "a changed RI or RT record gives self-check" of `tests/git/ignore-preview.test.ts` failed.
+  - T047 (3): in `CommitChanges.tsx`, the `compareKeys` sort is gone, so the service order stays. Two cases of `tests/contracts/inspection-history.test.tsx` failed: the first file in tree order after a row selection, and "the rows follow comparePaths order". Deviation: the task names one case.
+  - T058 (1): in `shortcuts.ts`, `deleteFiles` also gets the scope `fileList`. The case "Delete and Shift+Delete act only in the Changes list (FR-023)" of `tests/contracts/shortcuts-005.test.ts` failed (16 pass, 1 fail).
+  - T058 (2): in `DeleteConfirm.tsx`, the first focus moves to the danger button. The case "Cancel with the first focus" of `tests/contracts/inspection-delete.test.tsx` failed.
+  - T058 (3): in `IgnoreEditor.tsx`, Close discards the text first, so the discard modal does not open. The US5-7 case of `tests/contracts/inspection-ignore.test.tsx` failed. Deviation: the mutation discards the text in place of a skip of the modal call.
+- Still open: the board comparisons of T047 and T058. They and the batch 2 and batch 3 review records complete T047 and T058. Both tasks stay unticked until then.
+
+T030 facts, on Git 2.56.0.windows.2, from the full run above:
+- `OBSERVATION T030: F10 ls-files -o --directory --no-empty-directory gives one record per folder without tracked entries, nested/ for a repository, and no emptyign/: ["Upper.LOG","build/out.o","deep/","ign/","keep.log","local","nested/","node_modules/","secret.txt","sub/deeper/","sub/local","sub/secret.txt","sub/y.log","swt/a.swt","swt/b.txt","untr/","x.log"] holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F10 the expansion of untr/ lists every untracked file below it holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F10 the expansion of deep/ lists every untracked file below it holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F10 the expansion of ign/ lists every untracked file below it holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F10 the expansion of node_modules/ lists every untracked file below it holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F10 the expansion of sub/deeper/ lists every untracked file below it holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F10 a nested repository expands to the one record nested/: ["nested/"] holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F10 RI gives nested/ for an excluded repository whose parent is not excluded, and ign/ alone covers ign/inner-repo: ["Upper.LOG","build/out.o","deep/","deep/tmp/","deep/tmp/sub/","deep/tmp/z","ign/","nested/","node_modules/","secret.txt","sub/local","sub/secret.txt","swt/a.swt","untr/a.bak","x.log"] holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F10 RI with the pathspec ign/inner-repo/ below the excluded ign/ exits 128 holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F11 the S shadow equals Git's ignored and tracked-matched listings: {"ignored":["Upper.LOG","build/out.o","deep/tmp/sub/w","deep/tmp/z","ign/inner.txt","ign/other.txt","node_modules/pkg/.gitignore","node_modules/pkg/index.js","secret.txt","sub/local","sub/secret.txt","swt/a.swt","untr/a.bak","x.log"],"trackedMatched":["build/keep.txt"]} holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F11 C0 unchanged root: the C shadow equals the real save holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F11 C1 root: drop folders, add *.txt and !a.txt: the C shadow equals the real save holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F11 C2 sub: anchored and negation: the C shadow equals the real save holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F11 C3 info/exclude: the C shadow equals the real save holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F11 C4 case: *.LOG, DEEP/, nested/: the C shadow equals the real save holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F11 C5 ignored folder with a negation inside, ** forms: the C shadow equals the real save holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F11 C6 sub: folder-only and leading **: the C shadow equals the real save holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F11 C7 empty root: the C shadow equals the real save holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F11 C8 CRLF, BOM, and trailing spaces: the C shadow equals the real save holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F11 E1 gitlink against mod/: the C shadow equals the real save holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F11 W1: the C shadow equals the real save holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F12 every file below the ignored folder ign/ is ignored holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F12 every file below the ignored folder node_modules/ is ignored holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F13 ./:x.log matches the pattern :x.log and Git echoes ./:x.log; the bare :x.log gives pattern "" holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F13 on Windows sub\y.log gives the verdict of sub/y.log: [{"source":"sub/.gitignore","pattern":"!*.log","path":"sub\\y.log"},{"source":"sub/.gitignore","pattern":"!*.log","path":"sub/y.log"}] holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F14 init with GIT_DIR <dir>/.git gives core.bare false holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F14 on Windows init with a GIT_DIR that ends in a backslash and .git gives core.bare true, so checkout-index finds no work tree holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F14 init --template= creates no info/exclude holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F14 a C-quoted --stdin-paths line gives the OID of the bytes holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F14 checkout-index writes equal bytes (true) and an empty folder for a gitlink (true) holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F14 checkout-index --prefix=.git/info/ of the entry exclude writes .git/info/exclude with equal bytes holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F15 at 357 units without a global core.longpaths: {"units":357,"info":0,"without":128,"checkout":0,"stderr":"","same":true,"matched":true} holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F15 at 363 units with a global core.longpaths=false: the global value wins over -c core.longpaths=true; the checkout exits 128 ("fatal: cannot create directory at 'nnnnn"), and git config names true holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F16 ls-files -z --stage -- solo gives one stage-0 gitlink record: ["160000 0159e6a3b1218140f459361bb9f9f37689703ba9 0\tsolo"] holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F16 the uninitialized folder bare resolves to the superproject top level holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F16 rev-parse in broken, whose .git file names a missing folder, exits 128 holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F18 the linked worktree gives "C:/Users/user/AppData/Local/Temp/arbareto-fixtures-a7cb5252-a7fb-46a8-bdf0-ae9200b1dfea/t030-f18/repo/.git/info/exclude\n" holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F19 RI records ["Upper.LOG","build/out.o","deep/","deep/tmp/","deep/tmp/sub/","deep/tmp/z","emptyign/","ign/","node_modules/","secret.txt","sub/deeper/","sub/local","sub/secret.txt","swt/a.swt","untr/a.bak","x.log"]; RT records ["build/keep.txt"] holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F19 an excluded folder is one record without records below it holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F19 a folder of only ignored paths gives deep/ beside deep/tmp/z holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F19 RI reads the skip-worktree swt/.gitignore from its index blob holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F19 RT holds build/keep.txt below the excluded /build/: true holds (git version 2.56.0.windows.2)`
+- `OBSERVATION T030: F19 name case: up/a.txt source "up/.gitignore", dot/a.txt pattern "", ignored ["up/a.txt"] holds (git version 2.56.0.windows.2)`
+- F15 global case: the global `core.longpaths=false` wins over `-c core.longpaths=true`. The checkout exits 128, and `git config` names `true`. This is the expected result. The shadow reads no global or system file, so the cargo F15 tests exit 0. Source: Git for Windows `compat/mingw.c` `are_long_paths_enabled()` caches the first system or global value.
+- The full run printed the F15 global line with an old label and "DOES NOT HOLD" for the same values. The test pins this negative fact on purpose. The line above comes from the corrected label, in a run of `tests/git/file-actions-facts.test.ts` alone on 2026-10-24 (24 pass, 0 fail, both `ORIGIN` lines under `C:\Projects\arbareto-l2`).
+- Every other fact holds, so contracts/operations.md and plan.md need no change.
+
+**Batch 2 reviews, 2026-10-22.** Two independent reviewer agents, one per work package. Skills: `ponytail-review` and a manual correctness, security, and heuristics review; `web-design-guidelines` and `arbareto-ux` for WP6. Neither review ran the tests.
+
+WP5 (T028 to T042), review of d4ca6a9 (diff fef5c75..d4ca6a9), fixes in b3887a0, with the shell fix d52ac3c and the test double fix 427c3fe. No path deletes an unreviewed file, a file in a submodule or a nested repository, a junction target, or a file outside the worktree.
+- High: a Cancel after the shell removed files replied `canceled` without effects (001 data-model §7). Fix: the removed counts come before the cancel check, plan D6 follows, and a test cancels during the delete phase.
+- High: a file that went absent during a request without a reply counted as no effect. Fix: a null, `stopped`, or `interrupted` reply with an absent fresh fact counts as an effect, so the state is `failed-with-effects` (plan D6 table).
+- High (shell, outside WP5): every Windows shadow `checkout-index` exited 128, so each preview gave `shadow-copy`. The test double used `/` separators and hid the defect. Fix: d52ac3c sets `GIT_DIR=.git` (see "Shadow `GIT_DIR`" above). The review proposed `GIT_WORK_TREE=<cwd>`. 427c3fe makes the double copy the shell form exactly.
+- Medium, heuristic: `DEADLINE` came from "not aborted". Fix: the code comes from the timeout signal or the walk stop; another end gives `GIT_FAILED`.
+- Medium: `PREVIEW_PATHS` was checked per `check-ignore` call. Fix: one check per preview, on the inputs without the folder probes, before the first check.
+- Medium: save refused a CR, but the preview accepted it. Fix: a CR gives `INVALID_REQUEST` for `previewIgnore` and `ignore-save`.
+- Medium: Delete and Save had no `core.fsmonitor` canary in an untrusted repository. Fix: one canary test per action.
+- Low: the submodule check compared lossy UTF-8 text. Fix: a byte compare.
+- Low: every run-time refusal became `STALE_REVIEW` `files-changed`, also `OPERATION_IN_PROGRESS` and `UNKNOWN_TARGET`. Fix: only the fact refusal of the action gives it. Other refusals pass through.
+- F15 answer: a global `core.longpaths=false` wins over `-c`, `GIT_CONFIG_COUNT`, and a local value. Fix: d52ac3c gives the Windows shadow an empty global and system configuration (contract Δ6).
+- Lean: the two binary-search prefix helpers of `ignore-preview.ts` can be one function.
+
+WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7, with the T065 source in fe3eaf0 (service) and d3945ba (renderer). No heuristic, injection, or data-loss issue.
+- High: an option toggle after "Blame before this commit" gave `UNKNOWN_TARGET`, because the service keeps one blame result per workspace. Fix: the new source `{blameId}` (T065). A renderer-only replay is not exact, because `-w`, `-M`, and `-C` can change the owner commit of a line.
+- High: Enter or a click on a blame line did nothing when History had not loaded that commit (FR-056). Fix: the store loads the commit by its ID, then selects it.
+- Medium: the History diff ended the shared Pierre worker pool at each blame open and dock change. Fix: one `PatchPool` for the session in `Workbench.tsx`.
+- Medium: no test covered the `REPOSITORY_CHANGED` retry, `inspection.reset()`, or a toggle after "Blame before this commit". Fix: one case each.
+- Medium: visible texts without a plan line: "1 hunk", the two splitter names, the 240 to 400 px bounds, "Diff of the selected file", and the `path` and `DISPLAY_MAPPING_FAILED` diff texts. Fix: plan D3 lines.
+- Low: Back reset the Changed files width and layout. Fix: the widths stay in Workbench state.
+- Low: History shortcuts acted on the hidden History list while blame was open. Low, lean: one hunk count, and the formatter. The fix commit does not name these items.
+- Suspicions, not verified: a stale first blame source after a History Refresh (the `{blameId}` source covers it); no Trust… action for a file read that needs trust; F6 stops in a hidden tab panel.
+
+**Batch 3 review.** Independent review of WP7 and T057, reviewer agent, on 6e131f7 (diff 794efca..6e131f7). Fixes in a6411bd. Skills: `ponytail-review`, `web-design-guidelines`, `arbareto-ux`, and a manual correctness, security, and heuristics review. Verdict: nothing deletes or writes a file that the Delete confirmation did not show. No heuristic: `deleteReason` and `blameReason` use exact porcelain v2 fields.
+- Medium: F6 skipped the ignore editor, because the remembered element sat in a hidden wrapper. Fix: F6 reaches the ignore editor and then the preview (D15 "F6 order").
+- Medium: a recent entry, a worktree open, or a clone start dropped unsaved ignore text without the modal. Fix (U1): every open of another repository guards the text (FR-044, D8).
+- Low-medium: the Delete items did not show the `path` reason for a name such as `a.`. Fix: `deleteReason` checks each component with the contract Windows name rule.
+- Low: the preview notices dropped the count. Fix (U2): "and <n> more" after the notices.
+- Low: refusals without a plan text showed raw codes. Fix (U2): plan texts for `unreadable`, `no-recycle-bin`, and `STALE_SELECTION`, and the ignore open text `unreadable` without a code.
+- Low: Enter or a double-click on an unavailable submodule row gave no feedback. Fix: the reason shows in the status line.
+- Low: some ignore editor outcomes had no live region. Fix: one persistent status element above the preview state.
+- Low: the Delete dialog announced only its title. Fix: the notices block is the dialog description (`aria-describedby`).
+- Low: the duplicate-line check did not follow Git's trailing-space rule (gitignore(5), dir.c `trim_trailing_spaces`). Fix (U4): the compare trims the existing line, and D8 follows.
+- Low, lean: T057 leftovers. Fix: the phase `ignore`, the WSL `append` mode with its test block, the plan walk line, and the duplicate `IGNORE_FILE` and `IgnoreTarget` are gone.
+- Low: the delete review state lives in `ChangesPane`, not in `state/workbench.ts`. Fix (U6): D15 "State" names `ChangesPane`.
+- Low: the preview was not its own F6 stop. Fix: D15 "F6 order" names the preview stop.
+- User decisions of 2026-10-24: U3 shows a `long-path` refusal in place of the confirmation. U5 lets Del with an unmarked focused row act on that row only (plan D15).
+- Suspicions, not verified: Escape on a focused Back in the blame view may close the tooltip first; a cancel before the first preview progress event has no `operationId`; `reviewDelete` relies on the shell envelope check for `result.plan`.
+
 ## Plan review 2026-10-21
 
 The independent plan review of 2026-10-21 found no Critical issue and three High issues in the Delete design. First, the `PreDeleteItem` check compares the held handle with itself and must compare the identity of `psiItem` instead. Second, the WSL `delete` and `replace` modes act by full path and must hold each folder through `chdir` with a device and inode check. Third, the held folder handles block the deepest-first folder removal. The review also found that a folder on the path can become a junction after it is emptied, so the FR-031 limit must name that case too. In the ignore preview, the `--no-index` self-check cannot agree with the shadow for a skip-worktree `.gitignore`. The fix is a typed limit or a self-check against the index-aware listings. The 2 MiB request bound needs base64 text, and the single-file patch read must keep only sections whose paths match exactly. The rest of the method is exact for the report cases, and it runs no repository program before trust approval. The blame and History diff commands are correct apart from two small fixes: `--inter-hunk-context=0` for the line map, and `config --type=path` for the ignore list.

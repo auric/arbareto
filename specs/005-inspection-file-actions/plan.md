@@ -459,6 +459,8 @@ Each step writes its tests first. P0.2 and P0.3 are the riskiest proofs and run 
 | Ctrl+F | Filter files | Changed files or the History diff | 002 Ctrl+F stays elsewhere in History. |
 | Escape | Close the card | Branch card open | None |
 
+User acceptance (2026-10-24): the user accepted the D15 texts and two UX calls. A `long-path` path gets the refusal in place of the Delete confirmation (U3). Delete with the focus on an unmarked row acts on the focused row only (U5).
+
 ### D16 UI standard additions
 
 - Tokens: the 001 and 004 tokens. New: seven age shades, Dark from the Blame board: `#323B4B`, `#3E4D66`, `#4A5F82`, `#56719D`, `#6283B9`, `#6E95D4`, `#7AA7F0` (step 1 to 7). Light (O-2, decided 2026-10-21): `#C2D4F0`, `#A7C0E6`, `#8DACDC`, `#7398D3`, `#5984C9`, `#3E70BF`, `#245CB5` (step 1 to 7). These are seven equal sRGB steps from the Light Selected fill `#DCE8FA` to the Light Accent `#245CB5`, without the fill itself. So step 1 is one step darker than the Selected fill, and the age bar stays visible on the selected line.

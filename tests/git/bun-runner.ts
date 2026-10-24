@@ -37,6 +37,7 @@ import {
   type IndexedFileFactsRequest,
   isChannelPath,
   RunnerRefusal,
+  stopsAtBound,
   type GitCall,
   type GitExit,
   type GitRunner,
@@ -403,9 +404,6 @@ function destinationOf(path: string): DestinationFactsReply {
   }
 }
 
-// Contract §6 "Byte caps": only a `read` or `search` run gets `stop` at a stdout bound. A run of another policy drops the later bytes and runs on.
-const stopsAtBound = (call: GitCall) => call.environmentPolicy === "read" || call.environmentPolicy === "search";
-
 export function createBunRunner(options: BunRunnerOptions) {
   if (options.wslGlobalConfig !== undefined && !options.wslGlobalConfig.endsWith("/.gitconfig")) throw new Error(`wslGlobalConfig is not <home>/.gitconfig: ${options.wslGlobalConfig}`);
   const launchDirectory = join(options.directory, "launch");
@@ -467,6 +465,9 @@ export function createBunRunner(options: BunRunnerOptions) {
   const cancelRun = (operationId: string) => {
     for (const end of [...(jobs.get(operationId) ?? [])]) end();
     endStopped(operationId);
+    // Mirrors `close_job_of`: the Job close also ends the recorded descendants of calls that exited. The `scan` at each exit sets `operationId`.
+    // `end` is not used here: its `scan` without an operation would claim the records of running calls of other operations.
+    for (const r of records.values()) if (r.operationId === operationId) terminateRecorded(r.pid, r.created);
   };
   const drains = new Set<Promise<void>>();
   const diagnostics = createDiagnosticCounter();
@@ -909,7 +910,7 @@ export function createBunRunner(options: BunRunnerOptions) {
         if (halted) break;
         call.stdout.push(injected.subarray(at, at + NATIVE_CHUNK_BYTES));
         // Contract §6 `stop`: a limited stdout ends only this call.
-        if (call.stdout.limited && stopsAtBound(call)) halt();
+        if (call.stdout.limited && stopsAtBound(call.environmentPolicy)) halt();
         await new Promise((resolve) => setImmediate(resolve));
       }
       return { exitCode: halted ? null : 0, activeDescendants: 0 };
@@ -1056,7 +1057,7 @@ export function createBunRunner(options: BunRunnerOptions) {
           if (data.length === 0) return;
           touch();
           call.stdout.push(data);
-          if (call.stdout.limited && stopsAtBound(call)) stop();
+          if (call.stdout.limited && stopsAtBound(call.environmentPolicy)) stop();
         },
         heldStdout,
       ),

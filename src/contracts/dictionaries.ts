@@ -5,6 +5,7 @@
 
 import { z } from "zod";
 import { DICTIONARY_CATALOG_ENTRIES, DICTIONARY_LANGUAGE_BYTES } from "./limits";
+import { compareNames as compareNameBytes } from "./tree-order";
 
 // Data-model §2: a language ID, at most 32 bytes. The form holds only ASCII, so the code point bound is the byte bound.
 export const LANGUAGE_ID_BYTES = 32;
@@ -34,19 +35,8 @@ const LICENCE_FORMS = ["license", "licence", "license,licence", "readme.md"];
 const utf8 = new TextEncoder();
 const bytes = (text: string) => utf8.encode(text).length;
 
-/**
- * The 005 name order over UTF-8 bytes: each byte 0x41 to 0x5A maps to that byte plus 0x20, the mapped bytes compare as unsigned values, and equal mapped bytes compare the raw bytes.
- * shortcut: 005 `src/contracts/tree-order.ts` is not in this branch; use its `compareNames` once 005 merges.
- */
-export function compareNames(a: string, b: string): number {
-  const x = utf8.encode(a);
-  const y = utf8.encode(b);
-  const fold = (v: number) => (v >= 0x41 && v <= 0x5a ? v + 0x20 : v);
-  for (let i = 0; i < Math.min(x.length, y.length); i++) if (fold(x[i]!) !== fold(y[i]!)) return fold(x[i]!) - fold(y[i]!);
-  if (x.length !== y.length) return x.length - y.length;
-  for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i]! - y[i]!;
-  return 0;
-}
+// The 005 name order over the UTF-8 bytes of the names.
+export const compareNames = (a: string, b: string): number => compareNameBytes(utf8.encode(a), utf8.encode(b));
 
 const CatalogFile = z.strictObject({
   name: DictionaryFileName,

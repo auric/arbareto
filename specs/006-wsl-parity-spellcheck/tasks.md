@@ -48,7 +48,7 @@ description: "Task list for the WSL Parity and Commit Message Spell Check featur
 | Batch | Phases | Plan steps | Tasks | Stories | Work packages (agent) |
 | --- | --- | --- | --- | --- | --- |
 | 0. Catalog, facts, and contracts | 1, 2 | P0.1, P0.2, P1, P2 | T001–T014 | Foundational | WP1 (implementer; T006 by scout), then WP2 (implementer). |
-| 1. Shell, service dictionaries, editor | 3, 4, 5, 9 | P3, P4, P6, P0.3 (N1, N2 early) | T015–T030, T047–T053 | US2 and US3 shell (WP3); US3 service (WP5); US1 (WP6); the review fixes and the decisions of 2026-10-24 (WP9) | A: WP3 (implementer-xhigh, local Rust). B: WP5 (implementer). C: WP6 (frontend-implementer; T028 by scout). Then WP9 (implementer, local Rust) before T030. |
+| 1. Shell, service dictionaries, editor | 3, 4, 5, 9 | P3, P4, P6, P0.3 (N1, N2 early) | T015–T030, T047–T054 | US2 and US3 shell (WP3); US3 service (WP5); US1 (WP6); the review fixes and the decisions of 2026-10-24 (WP9) | A: WP3 (implementer-xhigh, local Rust). B: WP5 (implementer). C: WP6 (frontend-implementer; T028 by scout). Then WP9 (implementer, local Rust) before T030. |
 | 2. WSL parity, Settings | 6, 7 | P5, P7 | T031–T039 | US2 and US4 (WP4); US3 and the US2 header (WP7) | A: WP4 (implementer-xhigh, local WSL, alone). B: WP7 (frontend-implementer; pauses its test runs during the WP4 WSL runs). |
 | 3. Qualification | 8 | P8, P0.3 (package) | T040–T046 | Cross-cutting | WP8 (implementer writes, scout runs; WSL alone, then packaged). |
 
@@ -256,7 +256,7 @@ description: "Task list for the WSL Parity and Commit Message Spell Check featur
 ### Phase dependencies
 
 - Batch 0 (T001–T014): feature 005 merged first (spec Dependencies). WP1 (T001–T009) first, then WP2 (T010–T013), then T014.
-- Batch 1 (T015–T030): after T014. WP3 (T015–T018), WP5 (T019–T023), and WP6 (T024–T029) run in parallel. T028 needs T017 of WP3. Then WP9 (T047–T052, Phase 9). T030 after all four. T053 waits for the first release script and the user decisions of plan.md O-20.
+- Batch 1 (T015–T030): after T014. WP3 (T015–T018), WP5 (T019–T023), and WP6 (T024–T029) run in parallel. T028 needs T017 of WP3. Then WP9 (T047–T052 and T054, Phase 9). T030 after all four. T053 waits for the first release script and the user decisions of plan.md O-20.
 - Batch 2 (T031–T039): after T030. WP4 (T031–T034) and WP7 (T035–T038) run in parallel, but WP7 pauses its test runs while T032 to T034 run in the distro. T039 after both.
 - Batch 3 (T040–T046): after T039. T040, then T041 beside T042, then T043, T044, T045, and T046.
 
@@ -288,7 +288,7 @@ description: "Task list for the WSL Parity and Commit Message Spell Check featur
 ### Parallel opportunities
 
 - Batch 0: T001 beside T002, then T003; T004, T005, and T006 in parallel; T007, then T008, then T009; T010 beside T011; T012 beside T013 after their tests.
-- Batch 1: Track A WP3: T015, then T016 beside T017, then T018. Track B WP5: T019 beside T020, then T021, then T022, then T023. Track C WP6: T024 beside T025, then T026, T027, T028, and T029 in order. Then WP9: T047 beside T049, then T048, then T050, T051, and T052.
+- Batch 1: Track A WP3: T015, then T016 beside T017, then T018. Track B WP5: T019 beside T020, then T021, then T022, then T023. Track C WP6: T024 beside T025, then T026, T027, T028, and T029 in order. Then WP9: T047 beside T049, then T048, then T050, T051, T052, and T054.
 - Batch 2: Track A WP4: T031, T032, T033, T034 in order. Track B WP7: T035 beside T036, then T037, then T038.
 - Batch 3: T040, then T041 beside T042.
 - Shared files: `src/frontend/bridge.ts` in WP2 (T013), then WP6 (T029), then WP7 (T037). `src/frontend/app/Workbench.tsx` in WP6 (T029), then WP9 (T051), then WP7 (T038). `src/frontend/about/AboutDialog.tsx` in WP9 (T052), then WP7 (T038). `src/frontend/settings/SettingsView.tsx` in WP7 only (T037, T038). `src/contracts/dictionaries.ts` in WP1 (T007), then WP2 (T013), then WP9 (T050). `src/contracts/dictionaries.json` in WP1 (T007), then WP9 (T050), then WP8 (T043). `src/contracts/envelope.ts` and `schemas/` in WP2 (T013), then WP9 (T051, the list refusal). `package.json` and `bun.lock` in T003 only. `tests/gate/dictionary-gate.test.ts` in WP1 (T008), then WP5 (T023), then WP9 (T047). `src-tauri/` in WP3 only, except the T013 ripple in `schema.rs` and the T050 `script` key in `settings.rs`. `tests/groups.json` in every WP; the orchestrator resolves merge conflicts.
@@ -312,21 +312,21 @@ Then:          T030
 | FR-005 (menu, suggestions, one undo step) | T011, T025, T028, T029, T041, T047, T050 |
 | FR-006 (personal word list, case rule) | T011, T024, T026, T035 |
 | FR-007 (offline, never blocks a commit) | T020, T025, T041, T048, T051 |
-| FR-008 (bundled English, lazy load, workers, load deadline) | T004, T005, T017, T025, T027, T028, T041, T042, T048, T051 |
+| FR-008 (bundled English, lazy load, workers, load deadline) | T004, T005, T017, T025, T027, T028, T041, T042, T048, T051, T054 |
 | FR-009 (Spelling page, selection setting) | T010, T015, T018, T026, T035, T037 |
 | FR-010, FR-011 (download rules, bytes, deadline, one run) | T004, T019, T022, T023, T048, T051 |
 | FR-012 (import) | T015, T018, T019, T022, T023, T035 |
 | FR-013, FR-014 (check before load, remove) | T019, T021, T035, T048, T051 |
 | FR-015 (licence value, link, documents) | T001, T007, T015, T018, T035, T037 |
 | FR-016 (failure texts) | T010, T019, T035, T037 |
-| FR-017 (catalog, gate, reconcile) | T001, T007, T008, T019, T021, T042, T043, T047, T048, T050, T051 |
+| FR-017 (catalog, gate, reconcile) | T001, T007, T008, T019, T021, T042, T043, T047, T048, T050, T051, T054 |
 | FR-018 to FR-022 (WSL Global save) | T015, T016, T032, T033, T036, T038 |
 | FR-023 to FR-025 (double routes, WSL rows, no real global write) | T032, T033, T034 |
 | FR-026 (controls) | T029, T035, T037, T041 |
 | FR-027 (typed bounded operations) | T010, T013, T019, T022, T048, T051 |
 | FR-028 (response targets) | T042 |
 | Design notes "Engine" (notices, the Hunspell source) | T002, T003, T006, T036, T038, T049, T052, T053 |
-| SC-001 | T020, T025, T041, T048, T051 |
+| SC-001 | T020, T025, T041, T048, T051, T054 |
 | SC-002 | T008, T019, T023, T043 |
 | SC-003 | T019 |
 | SC-004 | T011, T042, T043 |
@@ -370,6 +370,7 @@ Then:          T030
 - [ ] T050 [US1] Implement the per-script check (WP9). `Local: Rust`. `src/contracts/dictionaries.ts` (`DICTIONARY_SCRIPTS` and the `script` field), `scripts/dictionary-catalog.ts` (the fixture Script), `src/contracts/dictionaries.json` (the offline rebuild with the cache), `src/contracts/spell-words.ts` (`scriptsOf`, `mergeMarks`), `src/frontend/spelling/{engine,spell-worker,store}.ts` and `SpellChip.tsx` (the Script in `init` and `build`, a check worker checks only the words of its Script, the merge and the suggestions use the responsible languages), `tests/support/language-fixture.ts` (the Script list of the contract), and `src-tauri/src/settings.rs` (the `script` key). Make T047 pass. Spec: FR-004, FR-005, FR-017. Depends on T047.
 - [ ] T051 Implement the batch 1 review fixes (WP9). Item 1: `FRONTEND_PACKAGES` and `isLeafContract`, and the package note of research.md R2. Item 2: `engine.ts` `setText` drops the running round and sets `full` when no round starts (plan.md D8 "IME"). Item 3: `registry.apply` of `operations.ts` takes `count`, and `dictionaries.ts` passes the bytes (plan.md D2 "Logs"). Item 4: `Workbench.tsx` disposes an engine that it made. Item 5: `dictionary-store.ts` removes only `^\.staging-<catalog id>-[0-9a-f]{32}$` (data-model §3). Item 6: the install renames the old folder aside, then the new one into place, then removes the old one (plan.md D5). Item 7: plan.md D8 only. Item 8: `catalogCheck` in `vite.config.ts`. Item 9: `store.ts` loads the catalog with a dynamic `import()`; research.md R13 records the main chunk size before and after. Item 11: `listDictionaries` gets the fallback `changed`, `run` loses its null branch, and `ListDictionariesResult` of `src/contracts/envelope.ts` admits the `ListDictionariesRefusal`, with `bun run export:schemas` (contract Δ3). Item 12: `sync.ts` renames its local `fetch` to `fetchResult`. Item 13: the contract gap text follows the observation. Make T048 pass. Spec: as T048. Depends on T048, T050.
 - [ ] T052 [US3] Add the source line of plan.md D18 to `AboutOverview` in `src/frontend/about/AboutDialog.tsx` (WP9). Make T049 pass. Spec: Design notes "Engine". Depends on T049.
+- [ ] T054 [US1] Fix two batch 1 follow-ups (WP9). Item 1: the "real engine (F15)" case of `tests/contracts/spelling-editor.test.tsx` waits, with a 20 s timeout, until the store language `en` leaves `loading`, and then expects `loaded`; a fixed count of event-loop turns raced the Hunspell WebAssembly load. The suggestion step needs no wait, because `hunspell-wasm` keeps one WebAssembly instance per process. Control: a scratch preload delays `WebAssembly.instantiate` by 200 ms; the case fails without the wait and passes with it. Item 2: `compareNames` of `src/contracts/dictionaries.ts` encodes the names as UTF-8 and calls `compareNames` of `src/contracts/tree-order.ts` (005 data-model §3); the two orders are the same. Spec: FR-008, FR-017, SC-001. Depends on T029.
 
 ### Release packaging (blocked)
 

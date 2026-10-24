@@ -50,6 +50,7 @@ import {
   indexFits,
   wslResultsFit,
   RunnerRefusal,
+  stopsAtBound,
   type DestinationFactsReply,
   type FileDeleteReply,
   type FileReplaceReply,
@@ -247,9 +248,9 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
             if (!bytes) return malformed();
             if (output.data.stream === "stdout") {
               call.stdout.push(bytes);
-              // Contract §6 "Byte caps": only a `read` or `search` run gets `stop`. A run of another policy runs on, so its hooks still run. A `wslProbe` stream gets `cancel`.
+              // Contract §6 "Byte caps": a `wslProbe` stream gets `cancel`.
               if (call.stdout.limited && body.type === "wslProbe") cancel();
-              else if (call.stdout.limited && (body.environmentPolicy === "read" || body.environmentPolicy === "search")) stop();
+              else if (call.stdout.limited && stopsAtBound(call.environmentPolicy)) stop();
             } else {
               call.stderr.push(bytes);
               if (diagnostics.add(call, bytes.length)) cancel();

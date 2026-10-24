@@ -2,34 +2,65 @@
 
 # Arbareto
 
-Cross-platform, local-first Git client. Deliver and qualify Windows first; target macOS and Linux later. See [the project brief](docs/project-brief.md) for scope and architecture.
+Keyboard-first, local-first Git client for Windows and WSL.
 
-Name: see [docs/name.md](docs/name.md).
+## Screenshots
 
-## Tooling
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/screenshots/history-dark.png">
+  <img src="docs/assets/screenshots/history-light.png" alt="Arbareto history view: the commit graph with branch lanes, branch and tag labels, the references sidebar with branches, remotes, tags, and worktrees, and the details of the selected commit">
+</picture>
 
-Spec Kit v1.0.12 remains the only feature-planning process. No shadcn project configuration exists yet.
+<img src="docs/assets/screenshots/changes-light.png" alt="Arbareto commit view: changed files in a folder tree, a diff with Stage hunk buttons, the staged files, and the commit message box with a 72-column guide, Amend last commit, and Commit and push">
 
-### Claude Code helper skills
+## Status
 
-Installed with the existing `npx skills` v1.5.18 cache, using `add <local-source> --skill <name> --agent claude-code --copy --yes`. Git snapshots came from temporary sparse clones outside this repository. Each project skill contains the complete upstream directory, including supporting files.
+- Arbareto is pre-release software. Expect missing features and changes.
+- Windows comes first. The qualification target is Windows 11 x64. macOS and Linux come later.
+- No installer release exists yet. Build the app from source.
 
-| Installed name | Project path | Upstream directory | Source commit | Local adaptations |
-| --- | --- | --- | --- | --- |
-| `frontend-design` | `.claude/skills/frontend-design/` | [anthropics/skills: skills/frontend-design](https://github.com/anthropics/skills/tree/33375500bcea98d610eb30ce10ac4e59b89c390d/skills/frontend-design) | `33375500bcea98d610eb30ce10ac4e59b89c390d` | None. Reused a byte-identical installed copy. |
-| `shadcn` | `.claude/skills/shadcn/` | [shadcn-ui/ui: skills/shadcn](https://github.com/shadcn-ui/ui/tree/db2db460a26fa84fb65c8d903b213925fbdee9ed/skills/shadcn) | `db2db460a26fa84fb65c8d903b213925fbdee9ed` | Changed the embedded runner from `npx` to upstream-supported `bunx --bun`. Included the upstream root `LICENSE.md`. |
-| `vercel-react-best-practices` | `.claude/skills/vercel-react-best-practices/` | [vercel-labs/agent-skills: skills/react-best-practices](https://github.com/vercel-labs/agent-skills/tree/063bee94c3f4df8453406c830b0a7df0f2860278/skills/react-best-practices) | `063bee94c3f4df8453406c830b0a7df0f2860278` | Scoped the description and instructions to client-side React. Retained all upstream rules. Added `NOTICE.md`. |
-| `web-design-guidelines` | `.claude/skills/web-design-guidelines/` | [vercel-labs/agent-skills: skills/web-design-guidelines](https://github.com/vercel-labs/agent-skills/tree/063bee94c3f4df8453406c830b0a7df0f2860278/skills/web-design-guidelines) | `063bee94c3f4df8453406c830b0a7df0f2860278` | No guidance changes. Added `NOTICE.md`. |
+## Features
 
-- The reused frontend copy came from the existing `claude-plugins-official/frontend-design/1dd995193ba2` cache. Both files matched the recorded `anthropics/skills` snapshot byte-for-byte.
-- Preserved Anthropic's Apache-2.0 license and shadcn's MIT license. Vercel's root README declares MIT but supplies no separate license text. Each Vercel skill includes that declaration in `NOTICE.md`.
-- Spec Kit v1.0.12 generated the `.specify/` scripts, templates, and workflows and the `.claude/skills/speckit-*` skills. [GitHub licenses Spec Kit under MIT](https://github.com/github/spec-kit/blob/main/LICENSE). [NOTICE.md](NOTICE.md) reproduces the Spec Kit MIT license text. The project-owned `.specify/memory/constitution.md` is not third-party material.
-- Restored React's unchanged `metadata.json`, which the installer excludes. Removed the generated lock file because it referenced temporary and machine-specific paths. The table records the upstream revisions.
-- Audited pre-execution snippets before installation. The only snippet is `bunx --bun shadcn@latest info --json`. It runs on skill activation and can download the current CLI. No snippet ran during installation.
-- Web design reviews fetch upstream guidelines from a moving `main` URL. That external content is not pinned by this snapshot.
-- Apply React guidance only to the client. Exclude Next.js, server rendering, hydration, React Server Components, server actions, API routes, and deployment guidance. Keep all upstream references for completeness.
+These features work on the `main` branch today.
 
-No shadcn initialization, application scaffolding, deployment skills, or additional specification process was added.
+- History of the whole repository, with a commit graph in branch lanes and the details of the selected commit.
+- Commit message search, with steps through the matches in the full graph.
+- Working changes and a diff view. Stage and unstage files, folders, hunks, or selected lines.
+- Commit, amend the last commit, and commit and push in one step.
+- Fetch, pull, and push with the upstream branch. You choose the default pull mode. Ahead and behind counts show on each branch.
+- Recovery from a rejected push, with force push with lease after a confirmation.
+- Clone a repository.
+- Branches: switch, create, rename, delete, merge, and rebase. Resolve a conflicted file, or open it in your merge tool.
+- A sidebar with branches, remote-tracking branches, tags, worktrees, and submodules. Add and remove worktrees. Update submodules.
+- Git settings by scope: system, global, and local.
+- Repositories inside WSL 2 distros, through the Git of the distro.
+- A repository trust prompt before Arbareto runs programs that the repository configures.
+- Keyboard-first: shortcuts and keyboard focus for the main actions.
+- System, light, and dark themes, with three dark palettes. The interface supports Windows contrast themes.
+
+### Planned
+
+- Changed files of a commit in the history view, blame, file delete, and an ignore editor.
+- Spell check of the commit message.
+- macOS and Linux builds.
+
+## Requirements
+
+- Windows 11 x64. Windows 10 x64 also runs, with the label "Unqualified platform".
+- Git for Windows 2.55.0.windows.3 or later.
+- For WSL repositories: WSL 2 and Git 2.55.0 or later inside the distro. Arbareto refuses WSL 1 distros.
+- The Microsoft Edge WebView2 Runtime. The installer does not install it.
+
+## Build from source
+
+Install Bun 1.4.4, the Rust toolchain with the MSVC build tools, and the Tauri CLI (`cargo tauri`). Then use the commands in [Development](#development).
+
+## Architecture
+
+- A thin Tauri 2 shell in Rust. It owns the window, the native dialogs, and the process limits.
+- A Git service in TypeScript, compiled with Bun into one executable. It runs the installed Git with argument arrays and bounded output.
+- A React renderer. It has no shell access and sends only typed operations.
+- Shared operation contracts with zod schemas. No Electron.
 
 ## Development
 
@@ -54,6 +85,15 @@ Run these commands from the repository root. Run `bun run build` before `cargo c
 
 Cloud sessions: paste [.claude/cloud-setup.sh](.claude/cloud-setup.sh) into the cloud environment's setup script field. The cloud runs Bun and TypeScript work and the Linux portability check.
 
+## Acknowledgements
+
+The layout takes ideas from [Git Extensions](https://github.com/gitextensions/gitextensions) (GPL-3.0). Arbareto copies no code and no assets from Git Extensions.
+
 ## License
 
-Arbareto is free software under the GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`). See [LICENSE](LICENSE). [NOTICE.md](NOTICE.md) states the copyright and the section 7 additional terms. These terms require attribution and marked, renamed modified versions. They grant no trademark rights to the name "Arbareto". Third-party material listed above keeps its own license.
+Arbareto is free software under the GNU Affero General Public License v3.0 or later (`AGPL-3.0-or-later`). See [LICENSE](LICENSE). [NOTICE.md](NOTICE.md) states the copyright and the section 7 additional terms. These terms require attribution and marked, renamed modified versions. They grant no trademark rights to the name "Arbareto". Third-party material keeps its own license. [third-party-licenses/](third-party-licenses/) holds the license texts that the shipped packages do not carry.
+
+## Contributing and security
+
+- Read [CONTRIBUTING.md](CONTRIBUTING.md) before you open a pull request.
+- Report a vulnerability as [SECURITY.md](SECURITY.md) tells you. Do not open a public issue for it.

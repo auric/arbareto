@@ -9,7 +9,7 @@
 - The plan review probe of 2026-10-21 on Git 2.56.0.windows.2: a hand-made repository without commits under `scratchpad\f005-review\fx1`, read with `ls-files` only (R8, F10, F19).
 - The fact probes of 2026-10-21 (`scratchpad\f005\facts.md`, scripts and outputs in `scratchpad\f005-facts\`) on Git 2.56.0.windows.2 and WSL Git 2.55.0: F7, F10, F13, F19, and the `.gitignore` name case (R8, R11, R16, R17).
 - Microsoft Learn: `IFileOperation`, `IFileOperation::SetOperationFlags`, `IFileOperationProgressSink::PreDeleteItem` and `PostDeleteItem`, `FILE_DISPOSITION_INFO_EX`, `FILE_RENAME_INFO` (`FileRenameInfoEx`), `NtCreateFile`, `SHOpenFolderAndSelectItems`.
-- Repository code at main 3575a15, read through CodeGraph and by line: `src/git-service/{comparison,commands,diff-parser,history-view,history-topology,history-layout,ignore,session,registration,refs-parser,submodule-review}.ts`, `src/contracts/{limits,channel,envelope,ignore-line,submodules}.ts`, `src/frontend/{changes/file-tree.ts,changes/ChangesPane.tsx,changes/PatchView.tsx,refs/ReferencesSidebar.tsx,branches/BranchButton.tsx,history/CommitDetails.tsx}`, `src-tauri/src/{service,settings,process_requests,file_append,wsl}.rs`, `src/contracts/wsl-process.json`.
+- Repository code at main a42f4a4, read through CodeGraph and by line: `src/git-service/{comparison,commands,diff-parser,history-view,history-topology,history-layout,ignore,session,registration,refs-parser,submodule-review}.ts`, `src/contracts/{limits,channel,envelope,ignore-line,submodules}.ts`, `src/frontend/{changes/file-tree.ts,changes/ChangesPane.tsx,changes/PatchView.tsx,refs/ReferencesSidebar.tsx,branches/BranchButton.tsx,history/CommitDetails.tsx}`, `src-tauri/src/{service,settings,process_requests,file_append,wsl}.rs`, `src/contracts/wsl-process.json`.
 - Git Extensions source (GPL-3.0, ideas only), read on 2026-10-21 (spec "Research inputs").
 - Marks: "doc" is a documentation statement. "source" is a Git source statement. "code" is this repository. "report" is the ignore preview report. "probed" is a design probe of 2026-10-21. "experiment" needs a P0 test, listed in R16. "unverified" has no source and no test yet.
 
@@ -231,7 +231,7 @@ The fact probes of 2026-10-21 ran before the tests, on Git 2.56.0.windows.2 and 
 - F19: RI and RT read a skip-worktree `.gitignore` from its index blob, and the S shadow verdicts equal them. Windows NTFS opens `.GITIGNORE` for `.gitignore`, and Git reports the rules as `.gitignore`. NTFS does not open `.gıtignore` for `.gitignore`. WSL ext4 opens neither.
 - Not checked: the Git 2.55 blame source. Only the experiment covers Git 2.55.
 
-**Batch 0 verification (T005), 2026-10-22.** Run in `C:\Projects\arbareto-l2` on f005-impl at a50ec5b, with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`.
+**Batch 0 verification (T005), 2026-10-22.** Run in `C:\Projects\arbareto-l2` on f005-impl at 59feb9f, with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`.
 - `bun install --frozen-lockfile`, `bun run build`, `cargo check --locked`, `bun run build:service`, `bun run typecheck`, and `bun run export:schemas --check`: exit 0.
 - `bun run test:contracts`: exit 0, 5,048 pass, 33 skip, 0 fail, 5,081 tests in 103 files.
 - `ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0, 126 min. Parallel group: 6,862 pass, 40 skip, 0 fail, 6,902 tests in 196 files. Serial group: 602 pass, 10 skip, 0 fail, 612 tests in 31 files.
@@ -241,7 +241,7 @@ The fact probes of 2026-10-21 ran before the tests, on Git 2.56.0.windows.2 and 
 - Facts: batch 0 has no fact test, so no 005 test printed an `OBSERVATION` line.
 - Control mutation: without the raw-byte compare in `compareNames`, `tests/contracts/tree-order.test.ts` failed (9 pass, 5 fail), with the totality case. After the undo, the file had its original SHA-256, and 14 of 14 passed.
 
-**Batch 0 review, 2026-10-22.** Independent batch 0 review, reviewer agent, on 20df552. Skills: `ponytail-review`, and a manual correctness, security, heuristics, constitution, and contract review. Verdict: no crash, no security hole, and no heuristic. Resolution: a50ec5b fixes all items.
+**Batch 0 review, 2026-10-22.** Independent batch 0 review, reviewer agent, on 26f8de4. Skills: `ponytail-review`, and a manual correctness, security, heuristics, constitution, and contract review. Verdict: no crash, no security hole, and no heuristic. Resolution: 59feb9f fixes all items.
 - Medium: the five new `bridge.ts` target methods had no `Exact` guard. The fix adds the guard and five `@ts-expect-error` cases.
 - Medium: the schema export dropped `const`, so `Shadow.op` is now `z.enum(["create"])`. `DeleteExpected.kind` stays a serde tag, and the new vector `process-file-delete-link-as-file.json` checks it.
 - Medium: `comparePaths` split both paths for each compare (1,845 ms for 100,000 paths). `treeKey` and `compareKeys` build each key once (241 to 273 ms).
@@ -264,7 +264,7 @@ WP3 shell facts of 2026-10-22 (cargo tests in `file_delete.rs` and `file_replace
 - Dependency: `windows-core` `0.62.2` is a direct dependency, because the `#[implement]` macro of the `IFileOperationProgressSink` sink names that crate. It is the version that `windows` `0.62.2` already uses.
 - Crate features: WP3 added no `windows` crate feature. The installed list already holds `Win32_UI_Shell`, `Win32_System_Com`, and `Wdk_Storage_FileSystem`.
 
-**Batch 1 verification (T027) part A, 2026-10-22.** Run 2 in `C:\Projects\arbareto-l2` on f005-impl at 6f72152, with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`.
+**Batch 1 verification (T027) part A, 2026-10-22.** Run 2 in `C:\Projects\arbareto-l2` on f005-impl at ccc56c2, with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`.
 - `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo check --locked`, and `bun run build:service`: exit 0.
 - `cargo test --locked`: exit 0, 591 passed, 0 failed, 9 ignored.
 - `ARBARETO_TEST_WORKERS=6 bun run test:all`: exit 0, 124 min. Parallel group: 6,997 pass, 40 skip, 0 fail, 7,037 tests in 201 files. Serial group: 660 pass, 10 skip, 0 fail, 670 tests in 34 files.
@@ -272,7 +272,7 @@ WP3 shell facts of 2026-10-22 (cargo tests in `file_delete.rs` and `file_replace
 - Skips: 40 and 10, the same counts as batch 0.
 - Kernel pool from 12:11 to 14:17: paged 2,819 to 4,650 MiB, nonpaged 1,402 to 1,856 MiB. During `test:all`, the lowest free memory was 15,791 MB, and the Bun processes of the run peaked at 4,197 MB private.
 - Control mutations, each red, then undone with the original SHA-256 and green: (1) status `C` accepted in `commit-changes.ts`: `tests/contracts/diff-parser.test.ts` failed. (2) `--no-textconv` dropped in `blame.ts`: the textconv canary case of `tests/git/blame.test.ts` failed. (3) `FILE_NON_DIRECTORY_FILE` on the target open in `file_delete.rs`: `a_folder_link_deletes_the_link_and_keeps_the_target` failed.
-- Run 1 at 37fff42 stopped at `cargo test` on one real-WSL test, `the_real_destination_mode_reads_the_entry_then_one_child`. An investigator proved the code path unchanged since batch 0, and the test passed 5 of 5 times alone. Commit 6f72152 makes two real-WSL asserts print the deadline flag, the exit code, and stdout, so a next failure shows its cause.
+- Run 1 at fef5c75 stopped at `cargo test` on one real-WSL test, `the_real_destination_mode_reads_the_entry_then_one_child`. An investigator proved the code path unchanged since batch 0, and the test passed 5 of 5 times alone. Commit ccc56c2 makes two real-WSL asserts print the deadline flag, the exit code, and stdout, so a next failure shows its cause.
 - Still open: `bun run test:windows` (with T012) and the board comparison. Both wait for the user's open 001 T149 step, because `test:windows` tests the installed package and the board comparison starts the app.
 - T014 waits for the Recycle Bin cases (the ignored cargo tests and T012) in the T027 part B run.
 
@@ -292,7 +292,7 @@ T018 facts, on Git 2.56.0.windows.2. T012 printed no line yet (it is a `tests/wi
 
 **Batch 1 reviews, 2026-10-22.** Three independent reviewer agents, one per work package. Skills: `ponytail-review` and a manual correctness, security, heuristics, constitution, and contract review; `web-design-guidelines` and `arbareto-ux` for WP2. Control mutations of the fixes turned their cases red: one in WP2, four in WP3, and two in WP4.
 
-WP2 (T006 to T011), review of 9a9ed47, fixes in 9767fbe. No heuristic. Tree order, key cost, and the card accessibility were correct.
+WP2 (T006 to T011), review of acda0e9, fixes in a26a57f. No heuristic. Tree order, key cost, and the card accessibility were correct.
 - High: the gone mark came from the `readBranches` listing, so the upstream `refs/tags/v1` with remote `.` showed "gone". Fix: `upstreamPresent` from the 003 track state `gone` of the paired tracking entry, null without a pair, with a new T006 case.
 - Medium: the branch list hid the 003 note "Upstream gone" (contract Δ14). Fix: the note stays beside the mark.
 - Medium: `Workbench.tsx` did not pass `branches` to the sidebar, so "Checked out in" never showed (FR-066). Fix: the prop and a Workbench test.
@@ -300,7 +300,7 @@ WP2 (T006 to T011), review of 9a9ed47, fixes in 9767fbe. No heuristic. Tree orde
 - Low: Escape in the branch list also closed the list. Fix: `onEscape` on `SwitcherList`.
 - Low: a native `title` repeated the card. Fix: the title is gone.
 
-WP3 (T012 to T015), review of 87a2681, fixes in e95c175. No path deletes outside the root, follows a link, or removes an unlisted file.
+WP3 (T012 to T015), review of 709d32c, fixes in 820ea90. No path deletes outside the root, follows a link, or removes an unlisted file.
 - High: a cancelled Recycle Bin batch dropped the sink results, so recycled items replied `kept`. Fix: the shell always takes the outcomes after `Unadvise`, and a panic gives `error other-error`.
 - High: a WSL delete or replace that stopped after some unlinks replied that nothing changed. Fix: the reply `interrupted`.
 - High: a digest request with a huge size could abort the shell. Fix: `digest` above 1 MiB refuses.
@@ -314,7 +314,7 @@ WP3 (T012 to T015), review of 87a2681, fixes in e95c175. No path deletes outside
 - Text: contract Δ10 and plan D14 "Allowlist" state that the service builds the arrays (001 §6).
 - Follow-ups: a broken WSL `replace` output gives `interrupted`; the shadow-create sweep removes leftovers outside the state lock.
 
-WP4 (T016 to T026), review of acda7cd, fixes in bbade14. No heuristic, and no read runs a repository program in an untrusted repository.
+WP4 (T016 to T026), review of ce6dfa0, fixes in 3d6c5e3. No heuristic, and no read runs a repository program in an untrusted repository.
 - The "Blame before this commit" line never reached the renderer. Fix: `focusLine` in the result.
 - The focus clamp gave 1 for an empty previous version. Fix: no `focusLine`.
 - A binary or oversize previous version gave `MALFORMED_GIT_OUTPUT` or `OUTPUT_LIMIT`. Fix: the blame checks of (P, Q) run before the blob diff.

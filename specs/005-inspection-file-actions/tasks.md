@@ -283,7 +283,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 
 ### Phase dependencies
 
-- Batch 0 (T001–T005): no dependency. Main at 3575a15 holds features 001 to 004.
+- Batch 0 (T001–T005): no dependency. Main at a42f4a4 holds features 001 to 004.
 - Batch 1 (T006–T027): after T005. WP2 (T006–T011), WP3 (T012–T015), and WP4 (T016–T026) run in parallel. T027 after all three.
 - Batch 2 (T028–T047, T065): after T027. WP5 (T028–T042), WP6 (T043–T046), and T065 run in parallel. T047 after all three.
 - Batch 3 (T048–T058): after T047. WP7 (T048–T056) alone, then T057, then T058.

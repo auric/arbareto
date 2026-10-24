@@ -8,7 +8,7 @@ This guide lists the validation scenarios. It holds no implementation code. The 
 
 - Windows 11 x64 with the 001 qualification prerequisites.
 - Git for Windows 2.56 for the P0 facts. The 001 minimum Git 2.55.0 stays in force.
-- Main at 3575a15 or later, with features 001 to 004.
+- Main at a42f4a4 or later, with features 001 to 004.
 - WSL `Ubuntu-26.04` with Git 2.55 for the WSL scenarios. Set `ARBARETO_WSL_DISTRO`. Run the WSL tests alone.
 - For N2: a volume without a Recycle Bin (such as a removable FAT32 volume or a VHD with the Recycle Bin turned off for it). Without it, N2 skips with a recorded capability and stays unverified.
 - For app runs: set `ARBARETO_PROFILE_ROOT` to a scratch folder.

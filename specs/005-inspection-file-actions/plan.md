@@ -565,7 +565,7 @@ Parallel tracks use disjoint files in separate worktrees. These files are not di
 - `src/frontend/index.css`: WP2, then WP6.
 - `tests/contracts/bridge.test.ts`: WP6, then WP7.
 
-Dependencies: main at 3575a15 holds features 001 to 004. No 005 package waits for another feature.
+Dependencies: main at a42f4a4 holds features 001 to 004. No 005 package waits for another feature.
 
 ## Agent context
 

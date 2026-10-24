@@ -120,7 +120,9 @@ const ROW_ICON = { stage: PlusSignIcon, unstage: MinusSignIcon, resolve: Tick02I
 const ROW_MENU_WIDTH = 300;
 
 type ListHandle = { focusKey(key: string): void; focusHeading(): void };
-type Marked = { list: ListName; ids: ReadonlySet<string>; anchor: string };
+// Data-model §14: the marks and the Shift anchor keep their entry by category and path bytes, because each status read gives new entry IDs.
+type Marked = { list: ListName; keys: ReadonlySet<string>; anchor: string | null };
+const markKey = (e: ChangeEntry) => `${e.category}:${e.pathBytes}`;
 
 /** plan.md Stage key row order in one list: the shown row at the next row of `before`, then at the previous one, else null for the list heading. Row keys survive a read. */
 function survivor(before: readonly TreeRow[], key: string, shown: ReadonlyMap<string, TreeRow>): TreeRow | null {
@@ -174,21 +176,41 @@ export function ChangesPane(props: ChangesPaneProps) {
     return () => void (mounted.current = false);
   }, []);
 
-  // Data-model §14: a new snapshot keeps the marked entries whose IDs still exist.
   const alive = useMemo(() => new Map(entries.map((e) => [e.entryId, e])), [entries]);
+  const byKey = useMemo(() => new Map(entries.map((e) => [markKey(e), e])), [entries]);
+  const keyOf = (id: string) => {
+    const e = alive.get(id);
+    return e === undefined ? null : markKey(e);
+  };
+  // Data-model §14: a new snapshot keeps the marks and the anchor whose entries still exist.
+  const [markedIn, setMarkedIn] = useState(byKey);
+  if (markedIn !== byKey) {
+    setMarkedIn(byKey);
+    if (marked !== null) setMarked({ ...marked, keys: new Set([...marked.keys].filter((k) => byKey.has(k))), anchor: marked.anchor !== null && byKey.has(marked.anchor) ? marked.anchor : null });
+  }
   // One pass per snapshot for each derived set, so a key press does no work over 100,000 entries (spec SC-007).
   const derived = useMemo(
     () => ({ changes: derivedRequest(entries, "all-changes"), untracked: derivedRequest(entries, "all-untracked"), staged: derivedRequest(entries, "all-staged") }),
     [entries],
   );
   // Spec FR-101: a row that the filter hides leaves the selection.
-  const shownMarks = marked === null ? null : { ...marked, ids: new Set([...marked.ids].filter((id) => alive.has(id) && (query === "" || matches(alive.get(id)!.path, query)))) };
+  const shownMarks =
+    marked === null
+      ? null
+      : {
+          list: marked.list,
+          anchor: marked.anchor === null ? null : (byKey.get(marked.anchor)?.entryId ?? null),
+          ids: new Set([...marked.keys].flatMap((k) => {
+            const e = byKey.get(k);
+            return e !== undefined && (query === "" || matches(e.path, query)) ? [e.entryId] : [];
+          })),
+        };
   const onQuery = (next: string) => {
     setQuery(next);
     // Spec FR-101: a row that the filter hides leaves the selection. No other file gets selected.
     const selected = live.current.selection === null ? undefined : alive.get(live.current.selection.entryId);
     if (next !== "" && selected !== undefined && !matches(selected.path, next)) live.current.onClearSelection?.();
-    if (next !== "") setMarked((m) => (m === null ? m : { ...m, ids: new Set([...m.ids].filter((id) => !alive.has(id) || matches(alive.get(id)!.path, next))) }));
+    if (next !== "") setMarked((m) => (m === null ? m : { ...m, keys: new Set([...m.keys].filter((k) => !byKey.has(k) || matches(byKey.get(k)!.path, next))) }));
   };
 
   const reason = (text: string | null) => {
@@ -437,18 +459,19 @@ export function ChangesPane(props: ChangesPaneProps) {
     onMark: (entry: ChangeEntry, mode: "toggle" | "range", visible: readonly ChangeEntry[]) => {
       const current = shownMarks?.list === list ? shownMarks : null;
       const base = current?.ids ?? new Set(live.current.selection !== null && visible.some((e) => e.entryId === live.current.selection!.entryId) ? [live.current.selection.entryId] : []);
-      const anchor = current?.anchor ?? live.current.selection?.entryId ?? entry.entryId;
+      const anchor = current !== null ? current.anchor : (live.current.selection?.entryId ?? entry.entryId);
       let ids: Set<string>;
       if (mode === "toggle") {
         ids = new Set(base);
         if (ids.has(entry.entryId)) ids.delete(entry.entryId);
         else ids.add(entry.entryId);
       } else {
-        const a = visible.findIndex((e) => e.entryId === anchor);
+        const a = anchor === null ? -1 : visible.findIndex((e) => e.entryId === anchor);
         const b = visible.findIndex((e) => e.entryId === entry.entryId);
         ids = new Set(a < 0 ? [entry.entryId] : visible.slice(Math.min(a, b), Math.max(a, b) + 1).map((e) => e.entryId));
       }
-      setMarked({ list, ids, anchor: mode === "toggle" ? entry.entryId : anchor });
+      const next = mode === "toggle" ? entry.entryId : anchor;
+      setMarked({ list, keys: new Set([...ids].flatMap((id) => keyOf(id) ?? [])), anchor: next === null ? null : keyOf(next) });
       if (live.current.selection?.entryId !== entry.entryId && ids.has(entry.entryId)) live.current.onSelect(entry.entryId);
     },
     onSpace,

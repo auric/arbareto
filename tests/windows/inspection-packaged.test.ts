@@ -17,7 +17,7 @@ import { fixtureDir, FIXTURE_ROOT, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { workingFileDigests } from "../git/git-oracle";
 import { buildHistory } from "../git/history-diff-fixtures";
-import { connectPage, freePort, keyEvents, MOD, type Cdp } from "./cdp";
+import { connectPage, freePort, keyEvents, MOD, watchIpc, type Cdp } from "./cdp";
 import { decodePng, formatMeasurement, measure, THRESHOLD } from "./contrast";
 import { appEnv, COMMIT_VIEW, explorerReveal, explorerWindows, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
 import { close, ControlType, expand, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
@@ -178,23 +178,8 @@ async function contrast(c: Cdp, scheme: Scheme, targets: [string, string][]): Pr
   }
 }
 
-// ---- The Recycle Bin hook and purge ----
+// ---- The Recycle Bin reply and purge ----
 
-// `@tauri-apps/api` `invoke` reads `window.__TAURI_INTERNALS__.invoke` at each call, so the wrapper sees each `runWorkbench` reply.
-const HOOK = `(() => {
-  const internals = window.__TAURI_INTERNALS__;
-  if (internals.__t060 !== true) {
-    const original = internals.invoke.bind(internals);
-    window.__t060Replies = [];
-    internals.invoke = async (cmd, args, options) => {
-      const reply = await original(cmd, args, options);
-      if (cmd === "run_workbench") window.__t060Replies.push(reply);
-      return reply;
-    };
-    internals.__t060 = true;
-  }
-  return internals.__t060 === true;
-})()`;
 type DeleteReply = { state: string; result?: { action: string; entries: { entryId: string; outcome: string; recycledPath?: string }[] } };
 
 // Data-model §5: the test removes each item that it moved, and its `$I` partner beside the `$R` item, below `<drive>\$Recycle.Bin\<SID>\`.
@@ -329,7 +314,8 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
       const s = await session("recycle", f.repo);
       const recycled: string[] = [];
       try {
-        expect(await s.c.evaluate<boolean>(HOOK)).toBe(true);
+        // `window.__TAURI_INTERNALS__.invoke` is read-only and non-configurable, so the reply comes from the CDP `Network` record of the call.
+        const ipc = await watchIpc(s.c);
         await toCommitView(s.app.pid);
         await revealRow(s.c, "u1.txt");
         await focusOn(s.c, changesRow("u1.txt"), "u1.txt");
@@ -347,8 +333,7 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
         expect((await until<Active>(s.c, "the focus on the danger button", ACTIVE, (a) => a.text === RECYCLE_BUTTON)).text).toBe(RECYCLE_BUTTON);
         expect(focusVisible(await s.c.evaluate(FOCUS_STYLE))).toBe(true);
         await press(s.c, "Enter");
-        const replies = await until<DeleteReply[]>(s.c, "the runWorkbench reply", "window.__t060Replies", (v) => v.length > 0, ACTION_WAIT_MS);
-        const reply = replies[0]!;
+        const reply = await ipc.body<DeleteReply>((await ipc.wait("run_workbench", 1, ACTION_WAIT_MS))[0]!);
         for (const e of reply.result?.entries ?? []) if (e.recycledPath !== undefined) recycled.push(e.recycledPath);
         console.log(`DELETE_REPLY ${TASK}: state=${reply.state} outcomes=${js(reply.result?.entries.map((e) => e.outcome))}`);
         expect({ state: reply.state, outcomes: reply.result?.entries.map((e) => e.outcome), paths: recycled.length }).toEqual({ state: "succeeded", outcomes: ["recycled", "recycled", "recycled"], paths: 3 });

@@ -6,6 +6,8 @@
 
 // Tauri 2 on Windows serves the frontend from this origin when `useHttpsScheme` is false (src-tauri/tauri.conf.json sets no value).
 const PAGE_ORIGIN = "http://tauri.localhost";
+// Tauri 2 on Windows sends each `invoke` as a POST to this origin, and the path is the command name. CDP `Network` shows each call.
+const IPC_ORIGIN = "http://ipc.localhost";
 const CALL_MS = 10_000;
 const POLL_MS = 50;
 
@@ -70,7 +72,53 @@ export interface Cdp {
   // The last value, whether `done` holds or the bound passes.
   poll<T>(expression: string, done: (value: T) => boolean, ms: number): Promise<T>;
   key(name: string, modifiers?: number, commands?: string[]): Promise<void>;
+  // Calls `listener` with the `params` of each CDP event `method`. The result removes the listener.
+  on(method: string, listener: (params: Record<string, unknown>) => void): () => void;
   close(): void;
+}
+
+export type IpcCall = { command: string; requestId: string };
+export interface IpcLog {
+  // The calls of `command` whose reply has fully arrived, in arrival order.
+  finished(command: string): IpcCall[];
+  // Waits until `count` calls of `command` have their reply, at most `ms`.
+  wait(command: string, count: number, ms: number): Promise<IpcCall[]>;
+  // The JSON reply of the call, as `invoke` resolves it.
+  body<T>(call: IpcCall): Promise<T>;
+}
+
+// Records the IPC calls of the page from now on. `onFinished` runs when the reply of a call has fully arrived.
+export async function watchIpc(c: Cdp, onFinished?: (call: IpcCall) => void): Promise<IpcLog> {
+  const open = new Map<string, string>();
+  const done: IpcCall[] = [];
+  c.on("Network.requestWillBeSent", (p) => {
+    const request = p.request as { url: string; method: string };
+    // The cross-origin call first sends a CORS preflight (method OPTIONS). Only the POST carries the reply.
+    if (request.method === "POST" && request.url.startsWith(`${IPC_ORIGIN}/`)) open.set(p.requestId as string, decodeURIComponent(new URL(request.url).pathname.slice(1)));
+  });
+  c.on("Network.loadingFailed", (p) => void open.delete(p.requestId as string));
+  c.on("Network.loadingFinished", (p) => {
+    const requestId = p.requestId as string;
+    const command = open.get(requestId);
+    if (command === undefined) return;
+    open.delete(requestId);
+    const call = { command, requestId };
+    done.push(call);
+    onFinished?.(call);
+  });
+  await c.send("Network.enable");
+  const finished = (command: string) => done.filter((d) => d.command === command);
+  return {
+    finished,
+    async wait(command, count, ms) {
+      for (const end = performance.now() + ms; finished(command).length < count; await Bun.sleep(POLL_MS)) if (performance.now() >= end) throw new Error(`${count} ${command} replies did not arrive within ${ms} ms: ${finished(command).length}`);
+      return finished(command);
+    },
+    async body<T>(call: IpcCall) {
+      const r = (await c.send("Network.getResponseBody", { requestId: call.requestId })) as { body: string; base64Encoded: boolean };
+      return JSON.parse(r.base64Encoded ? Buffer.from(r.body, "base64").toString("utf8") : r.body) as T;
+    },
+  };
 }
 
 export async function connectPage(port: number, ms: number): Promise<Cdp> {
@@ -94,10 +142,18 @@ export async function connectPage(port: number, ms: number): Promise<Cdp> {
   });
   let id = 0;
   const waiting = new Map<number, (reply: Record<string, unknown>) => void>();
+  const listeners = new Map<string, Set<(params: Record<string, unknown>) => void>>();
+  // A CDP event has `method` and no `id`.
   ws.onmessage = (message) => {
     const reply = JSON.parse(String(message.data)) as Record<string, unknown>;
     if (typeof reply.id === "number") waiting.get(reply.id)?.(reply);
+    else if (typeof reply.method === "string") for (const listener of listeners.get(reply.method) ?? []) listener((reply.params ?? {}) as Record<string, unknown>);
   };
+  function on(method: string, listener: (params: Record<string, unknown>) => void): () => void {
+    const set = listeners.get(method) ?? new Set();
+    listeners.set(method, set.add(listener));
+    return () => void set.delete(listener);
+  }
 
   async function send(method: string, params: object = {}): Promise<Record<string, unknown>> {
     const n = ++id;
@@ -135,5 +191,5 @@ export async function connectPage(port: number, ms: number): Promise<Cdp> {
     for (const params of keyEvents(name, modifiers, { commands })) await send("Input.dispatchKeyEvent", params);
   }
 
-  return { url: url!, send, evaluate, poll, key, close: () => ws.close() };
+  return { url: url!, send, evaluate, poll, key, on, close: () => ws.close() };
 }

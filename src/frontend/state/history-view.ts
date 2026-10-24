@@ -837,7 +837,8 @@ export function createInspection(bridge: InspectionBridge, target: () => { repos
     if (response?.code === "REPOSITORY_CHANGED") response = await send();
     if (response === null) return;
     const result = response.result as CommitChanges | undefined;
-    if (response.state === "succeeded" && Array.isArray(result?.files) && Array.isArray(result.parents) && result.base !== undefined) set({ changes: { ...key, state: "loaded", result } });
+    // Contract Δ3: a cut listing replies `limited` with `OUTPUT_LIMIT`, and its result holds the shown files.
+    if ((response.state === "succeeded" || response.state === "limited") && Array.isArray(result?.files) && Array.isArray(result.parents) && result.base !== undefined) set({ changes: { ...key, state: "loaded", result } });
     else set({ changes: { ...key, state: "failed", trust: TRUST_CODES.has(response.code ?? ""), ...failureOf(response) } });
   }
 

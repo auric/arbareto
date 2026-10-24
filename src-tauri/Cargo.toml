@@ -1,6 +1,7 @@
 [package]
 name = "arbareto"
 version = "0.1.0"
+description = "Keyboard-first, local-first Git client for Windows and WSL."
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/auric/arbareto"
 edition = "2024"

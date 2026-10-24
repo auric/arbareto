@@ -54,12 +54,10 @@ import { ChannelPath, Identifier, isIdentifier, Text } from "../contracts/operat
 import wslProcess from "../contracts/wsl-process.json";
 import { routeWslPath, wslUnitName } from "../contracts/wsl-route";
 import { configGlobalPathArgs, configSystemPathArgs } from "./commands";
-import type { FileAppendReply, FileAppendRequest } from "./ignore";
 import type { Workspace } from "./registration";
 
 export { isChannelPath } from "../contracts/operations";
 export type { FileFact, FileIdentity, IdentityReply, MarkerFailure, MutationStarted, ProcessContext, ResolveGitRequest, TrustRecord, TrustRequest, WslDistrosCall, WslDistrosResult, WslIdentity };
-export type { FileAppendReply, FileAppendRequest };
 
 // Contract §6 "Channel frames" `register`: the Git form, the repository form, or the WSL form (§11).
 export type RegisterRequest = RegisterRequestBase | RegisterWslCall;
@@ -140,6 +138,23 @@ export type RegisterReply = { result: "approved" | "declined" } | { result: "ano
 // Feature 004 contract Δ6 `reveal {repositoryId, path}`: the frame without `type` and `callId`.
 export type RevealRequest = Omit<Extract<z.infer<typeof ProcessRequest>, { type: "reveal" }>, "type" | "callId">;
 
+// Feature 005 contract Δ6: the frames of `fileDelete`, `fileReplace`, and `shadow` without `type` and `callId`, and their replies without them.
+type FrameOf<T extends string> = Omit<Extract<z.infer<typeof ProcessRequest>, { type: T }>, "type" | "callId">;
+export type FileDeleteRequest = FrameOf<"fileDelete">;
+export type FileDeleteExpected = FileDeleteRequest["entries"][number]["expected"];
+export type DeleteEntryReply =
+  | { result: "deleted" | "stale" | "absent" | "not-regular" | "stopped" }
+  | { result: "recycled"; recycledPath: string }
+  | { result: "kept"; hresult: number }
+  | { result: "error"; code: FileFactError };
+export type DeleteFolderReply = { result: "removed" | "kept" | "absent" | "not-regular" } | { result: "error"; code: FileFactError };
+// `stopped`: a Windows stop or deadline before the delete phase, so nothing changed. `interrupted`: a WSL stop, deadline, or broken output, so the outcome is unknown.
+export type FileDeleteReply = { entries: DeleteEntryReply[]; folders: DeleteFolderReply[] } | { result: "stopped" | "interrupted" };
+export type FileReplaceRequest = FrameOf<"fileReplace">;
+export type FileReplaceReply = { result: "replaced" | "stale" | "stopped" | "interrupted" } | { result: "refused"; reason: "not-regular" } | { result: "error"; code: FileFactError };
+export type ShadowRequest = FrameOf<"shadow">;
+export type ShadowReply = { shadowId: string } | { result: "error"; code: FileFactError };
+
 // Contract §6 "File facts": the `FileFacts` frame without `type` and `callId`. `index` goes through `indexedFileFacts`.
 export type FileFactsRequest = Omit<Extract<z.infer<typeof ProcessRequest>, { type: "fileFacts" }>, "type" | "callId" | "index">;
 // Contract §6 "Index digest in a read": a WSL `fileFacts` request with `index`.
@@ -169,10 +184,13 @@ export interface GitRunner {
   resolved(markerId: string): void;
   // Only `revoke` can end with the deadline.
   trust(request: TrustRequest): Promise<TrustReply | WalkDeadline>;
-  // Feature 004 contract Δ6 `fileAppend`: a walk without a deadline form, so the shell gives `error` past its deadline. A `refused` frame throws RunnerRefusal.
-  fileAppend(request: FileAppendRequest, signal: AbortSignal): Promise<FileAppendReply | WalkStop>;
   // Feature 004 contract Δ3 `revealPath`: a walk. The shell refuses each failure with UNKNOWN_TARGET, so a `refused` frame throws RunnerRefusal.
-  reveal(request: RevealRequest, signal: AbortSignal): Promise<"shown" | WalkStop>;
+  // Feature 005 contract Δ6: a walk that finds no entry replies `absent`.
+  reveal(request: RevealRequest, signal: AbortSignal): Promise<"shown" | "absent" | WalkStop>;
+  // Feature 005 contract Δ6. Every request gets one reply, also after `cancel`, so a call waits for it within the walk deadline. No reply by then gives `canceled`.
+  fileDelete(request: FileDeleteRequest, signal: AbortSignal): Promise<FileDeleteReply | WalkStop>;
+  fileReplace(request: FileReplaceRequest, signal: AbortSignal): Promise<FileReplaceReply | WalkStop>;
+  shadow(request: ShadowRequest): Promise<ShadowReply>;
 }
 
 // Contract §6 "Channel frames" `wslProbe`: the frame fields and the output collectors of the streamed probe.
@@ -310,6 +328,8 @@ const CONTEXT_POLICIES: Record<ProcessContext["contextKind"], readonly Environme
   clone: ["remote"],
   globalConfig: ["read", "integrate"],
   worktreeAdd: ["integrate"],
+  // Feature 005 contract Δ6: the 001 `read` policy with the shadow cwd.
+  ignorePreview: ["read"],
 };
 
 // Feature 004 contract Δ6: the three `globalConfig` arrays, each with the policy of its contract Δ3 step (src-tauri `global_config_fits`).
@@ -334,6 +354,25 @@ function runsBoundCommand(args: readonly string[]): boolean {
 // Feature 004 contract Δ3 and Δ6: `worktree add [-b <new>] -- <path> <commit>`. The shell also checks the path against its binding (src-tauri `worktree_add_fits`).
 const worktreeAddForm = (args: readonly string[]): boolean =>
   args[0] === "--no-lazy-fetch" && args[1] === "worktree" && args[2] === "add" && (args.length === 6 ? args[3] === "--" : args.length === 8 && args[3] === "-b" && args[5] === "--");
+
+// Feature 005 contract Δ6: the fixed arrays of an `ignorePreview` context (src-tauri/src/shadow.rs `fits`).
+// The arrays that read or write a working-tree file carry `-c core.longpaths=true` after `--no-lazy-fetch` on Windows only.
+// The service does not know the route of a shadow here, so both forms pass. The shell admits only the form of its route.
+export function shadowArrayFits(args: readonly string[], windows: boolean): boolean {
+  const same = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((item, i) => item === b[i]);
+  const long = windows ? ["--no-lazy-fetch", "-c", "core.longpaths=true"] : ["--no-lazy-fetch"];
+  if (same(args, ["--no-lazy-fetch", "init", "-q", "--template="])) return true;
+  if (same(args, ["--no-lazy-fetch", "hash-object", "-w", "--no-filters", "--stdin"])) return true;
+  if (same(args, ["--no-lazy-fetch", "update-index", "-z", "--index-info"])) return true;
+  if (!same(args.slice(0, long.length), long)) return false;
+  const rest = args.slice(long.length);
+  const checkout = ["-c", "core.autocrlf=false", "-c", "core.eol=lf", "checkout-index", "-a", "-f"];
+  if (same(rest, ["hash-object", "-w", "--no-filters", "--stdin-paths"]) || same(rest, ["hash-object", "--no-filters", "--stdin-paths"])) return true;
+  if (same(rest, checkout) || same(rest, [...checkout, "--prefix=.git/info/"])) return true;
+  if (rest[0] !== "-c" || (rest[1] !== "core.ignorecase=true" && rest[1] !== "core.ignorecase=false")) return false;
+  const tail = rest[2] === "-c" && rest[3]?.startsWith("core.excludesFile=") ? rest.slice(4) : rest.slice(2);
+  return same(tail, ["check-ignore", "--no-index", "-z", "--stdin", "-v", "-n"]);
+}
 
 // Contract §6 "Process fields" and §7 "Missing objects". A refused call starts no process.
 // The schemas check each field. The rules between fields stay here.
@@ -361,6 +400,7 @@ export function checkCall(call: GitCall): void {
   if (!CONTEXT_POLICIES[kind].includes(policy)) refuse("environment policy");
   if (kind === "globalConfig" && !globalConfigFits(args, policy)) refuse("globalConfig");
   if (kind === "worktreeAdd" && !worktreeAddForm(args)) refuse("worktreeAdd");
+  if (kind === "ignorePreview" && !shadowArrayFits(args, true) && !shadowArrayFits(args, false)) refuse("ignorePreview");
   if (kind === "registeredOperation" && call.script === undefined && runsBoundCommand(args)) refuse("bound command");
   if (input !== undefined && (!(input instanceof Uint8Array) || input.length > STREAMED_PROCESS_INPUT_BYTES)) refuse("input");
   // Feature 004 contract Δ6: the shell gives a `mergetool` child a closed stdin pipe.
@@ -473,7 +513,7 @@ export function checkTrust(request: TrustRequest): void {
 }
 
 // Feature 003 and feature 004 contract Δ6. The `type` literal selects the frame schema. A request that holds `type` or `callId` breaks the field set.
-export function checkSyncRequest(type: "pageant" | "destinationFacts" | "terminal" | "fileAppend" | "reveal", request: object): void {
+export function checkSyncRequest(type: "pageant" | "destinationFacts" | "terminal" | "reveal" | "fileDelete" | "fileReplace" | "shadow", request: object): void {
   const valid = typeof request === "object" && request !== null && !("type" in request) && !("callId" in request);
   if (!valid || !fits(ProcessRequest, { type, callId: crypto.randomUUID(), ...request })) refuse(type);
 }

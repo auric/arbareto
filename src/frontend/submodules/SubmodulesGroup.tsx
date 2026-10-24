@@ -4,12 +4,14 @@
 import { ArrowDown01Icon, ArrowRight01Icon, CubeIcon, FolderSyncIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useId, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { SUBMODULE_REVIEW_NESTING_LEVELS } from "../../contracts/limits";
 import type { SubmoduleHost, SubmoduleHostLine, SubmodulePlanRow, SubmoduleProgram, SubmoduleRefusalReason, SubmoduleRowResult } from "../../contracts/submodules";
 import { CopyButton, unknownReadText, useCopy } from "../app/RepositoryStates";
 import type { createBridge, ProgressEvent } from "../bridge";
 import { ActionMenu, type ActionItem } from "../components/action-menu";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
+import { scopedAction } from "../keyboard/shortcuts";
 import { isObject } from "../lib/utils";
 import { shortId, trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { ReadsTrustNotice } from "../trust/TrustChip";
@@ -305,7 +307,31 @@ function stateText(path: string, run: Run | null, result: SubmoduleRowResult | u
   return head === null ? "" : shortId(head);
 }
 
-type GroupRow = { path: string; depth: number; head: string | null };
+type GroupRow = { path: string; pathBytes: string | null; depth: number; head: string | null };
+
+// Feature 005 plan.md D11 "Availability" and D15 "Submodules" texts.
+export const INITIALIZE_FIRST = "Initialize this submodule first. Select Update submodules.";
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true });
+const validUtf8 = (base64: string) => {
+  try {
+    strictUtf8.decode(Uint8Array.from(atob(base64), (c) => c.charCodeAt(0)));
+    return true;
+  } catch {
+    return false;
+  }
+};
+/**
+ * The reason that blocks Open submodule, or null. A `clone` or `reuse` row has no `.git` entry (001 contract §12 "Actions").
+ * A Commit view row without a group row of the same path bytes stays available, and the service checks decide.
+ */
+export function openSubmoduleReason(rows: readonly SubmodulePlanRow[] | null, pathBytes: string | null, chain: number): string | null {
+  const row = pathBytes === null ? undefined : rows?.find((r) => r.pathBytes === pathBytes);
+  if (row !== undefined && (row.action === "clone" || row.action === "reuse")) return INITIALIZE_FIRST;
+  if (row !== undefined && row.depth > 0) return `Open ${rows!.find((r) => r.rowId === row.parentRowId)?.path ?? row.path} first.`;
+  if (chain >= SUBMODULE_REVIEW_NESTING_LEVELS) return `Arbareto opens at most ${SUBMODULE_REVIEW_NESTING_LEVELS} nested submodules in a row. Open this submodule with Open repository.`;
+  if (pathBytes !== null && !validUtf8(pathBytes)) return "The submodule path is not valid UTF-8, so Arbareto cannot open it.";
+  return null;
+}
 
 export type SubmodulesGroupProps = {
   update: SubmoduleUpdate;
@@ -317,10 +343,16 @@ export type SubmodulesGroupProps = {
   onCancel(): void;
   /** Trust… of a list that needs trust: the `approveTrust("read")` path of `ReadsTrustNotice` (plan D12 "Reads"). */
   onTrustReads(): void;
+  /** Feature 005 spec FR-047: opens the submodule of a row in this window. */
+  onOpen?(path: string): void;
+  /** Feature 005 plan.md D15 "Submodules": Enter or a double-click on an unavailable row shows its reason in the status line. */
+  onRefused?(reason: string): void;
+  /** The depth of the parent chain (feature 005 data-model §9). */
+  chain?: number;
 };
 
 /** The Submodules group of the references sidebar. One Tab stop for the rows, with roving focus (D16). */
-export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel, onTrustReads }: SubmodulesGroupProps) {
+export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel, onTrustReads, onOpen, onRefused, chain = 0 }: SubmodulesGroupProps) {
   const headingId = useId();
   const reasonId = useId();
   const [active, setActive] = useState(0);
@@ -336,7 +368,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
 
   const known = new Set(rows?.map((row) => row.path));
   const found = [...results.values()].filter((row) => row.found && !known.has(row.path));
-  const list: GroupRow[] = rows === null ? [] : [...rows.map((row) => ({ path: row.path, depth: row.depth, head: row.head })), ...found.map((row) => ({ path: row.path, depth: 0, head: null }))];
+  const list: GroupRow[] = rows === null ? [] : [...rows.map((row) => ({ path: row.path, pathBytes: row.pathBytes, depth: row.depth, head: row.head })), ...found.map((row) => ({ path: row.path, pathBytes: null, depth: 0, head: null }))];
   const at = Math.min(active, Math.max(0, list.length - 1));
   const counters = run?.event?.counters;
   const lines = useRef<HTMLDivElement>(null);
@@ -353,7 +385,20 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
     return next;
   };
 
+  const openReason = (row: GroupRow) => openSubmoduleReason(rows, row.pathBytes, chain);
+  const openRow = (row: GroupRow) => {
+    if (onOpen === undefined) return;
+    const why = openReason(row);
+    if (why === null) onOpen(row.path);
+    else onRefused?.(why);
+  };
+
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>, index: number) {
+    // Feature 005 plan.md D15 keyboard map: Enter on the row itself opens the submodule.
+    if (event.target === event.currentTarget && scopedAction(event.nativeEvent, "submoduleRow") === "openSubmodule") {
+      event.preventDefault();
+      return openRow(list[index]!);
+    }
     if (event.ctrlKey || event.altKey || event.metaKey || event.nativeEvent.isComposing) return;
     // Windows sends Shift+F10 and the Menu key to the focused element.
     if ((event.key === "F10" && event.shiftKey) || event.key === "ContextMenu") {
@@ -374,6 +419,8 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
     const result = results.get(path);
     const failed = result?.state === "failed" && (run === null || !run.inScope.has(path));
     const actions: ActionItem[] = [{ label: "Update", icon: FolderSyncIcon, reason, onSelect: () => update.update(path) }];
+    const row = list.find((r) => r.path === path);
+    if (onOpen !== undefined && row !== undefined) actions.unshift({ label: "Open submodule", icon: CubeIcon, reason: openReason(row), onSelect: () => openRow(row) });
     if (failed) actions.push({ label: "Retry", reason, onSelect: () => update.update(path) });
     if (failed && (result.outputTail !== undefined || result.remedy !== undefined)) actions.push({ label: "Show output", onSelect: () => setOpened((s) => toggle(s, path)) });
     return [actions, [{ label: "Copy path", onSelect: () => copy(path) }]];
@@ -526,6 +573,7 @@ export function SubmodulesGroup({ update, runningReason, blockedReason, onCancel
                   style={{ paddingLeft: 8 + 12 * row.depth }}
                   onFocus={() => setActive(index)}
                   onKeyDown={(event) => onKeyDown(event, index)}
+                  onDoubleClick={() => openRow(row)}
                   onContextMenu={(event) => {
                     event.preventDefault();
                     setMenu({ path: row.path, anchor: event.currentTarget });

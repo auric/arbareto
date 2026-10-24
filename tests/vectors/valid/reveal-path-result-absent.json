@@ -1,0 +1,5 @@
+{
+  "schema": "reveal-path-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"absent\"}"
+}

@@ -1,0 +1,8 @@
+{
+  "schema": "read-branches-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"entries\":[{\"ref\":\"refs/heads/topic\",\"kind\":\"local\",\"name\":\"topic\",\"invalidUtf8\":false,\"oid\":\"0123456789abcdef0123456789abcdef01234567\",\"upstream\":null,\"tracking\":null,\"heldBy\":null,\"current\":false,\"localName\":null,\"upstreamPresent\":true}]}",
+  "repair": {
+    "entries.0.upstreamPresent": false
+  }
+}

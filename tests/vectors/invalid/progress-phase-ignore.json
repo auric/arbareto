@@ -1,0 +1,8 @@
+{
+  "schema": "progress",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"requestId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"state\":\"running\",\"phase\":\"ignore\",\"counters\":{},\"stalled\":false}",
+  "repair": {
+    "phase": "ignore-save"
+  }
+}

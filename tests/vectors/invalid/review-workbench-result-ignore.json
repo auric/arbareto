@@ -1,0 +1,14 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"action\":\"ignore\",\"plan\":{\"target\":\"gitignore\",\"path\":\"dG9wLW5ldy50eHQ=\",\"folder\":false,\"line\":\"/top-new.txt\",\"prefixNewline\":true,\"expected\":{\"size\":6,\"sha256\":\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\"}},\"workbenchToken\":\"6f1c2b3a-4d5e-4f60-8a7b-9c0d1e2f3a4b\"}",
+  "repair": {
+    "action": "ignore-save",
+    "plan": {
+      "target": "gitignore",
+      "file": "//host/repo/.gitignore",
+      "size": 20,
+      "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    }
+  }
+}

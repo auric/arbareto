@@ -834,6 +834,161 @@
           ],
           "additionalProperties": false,
           "title": "RunWorktreeAdd"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "run"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "operationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "arguments": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "input": {
+              "type": "string",
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            },
+            "inputBytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 536870912
+            },
+            "environmentPolicy": {
+              "$ref": "#/definitions/EnvironmentPolicy"
+            },
+            "transactionId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "indexFile": {
+              "type": "string",
+              "maxLength": 32767,
+              "pattern": "^[^\\u0000]*$"
+            },
+            "limits": {
+              "anyOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "deadlineMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 120000
+                    },
+                    "stallMs": {
+                      "type": "number",
+                      "const": 15000
+                    }
+                  },
+                  "required": [
+                    "deadlineMs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "DeadlineLimits"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "inactivityMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 300000
+                    },
+                    "ceilingMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 14400000
+                    },
+                    "stallMs": {
+                      "type": "number",
+                      "const": 15000
+                    }
+                  },
+                  "required": [
+                    "inactivityMs",
+                    "ceilingMs",
+                    "stallMs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "NetworkLimits"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "ceilingMs": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 14400000
+                    }
+                  },
+                  "required": [
+                    "ceilingMs"
+                  ],
+                  "additionalProperties": false,
+                  "title": "CeilingLimits"
+                }
+              ]
+            },
+            "contextKind": {
+              "type": "string",
+              "const": "ignorePreview"
+            },
+            "gitInstallationId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "shadowId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "shadowRepository": {
+              "type": "string",
+              "enum": [
+                "s",
+                "c"
+              ]
+            },
+            "shadowIndex": {
+              "type": "string",
+              "enum": [
+                "index",
+                "exclude"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "operationId",
+            "arguments",
+            "environmentPolicy",
+            "limits",
+            "contextKind",
+            "gitInstallationId",
+            "shadowId",
+            "shadowRepository",
+            "shadowIndex"
+          ],
+          "additionalProperties": false,
+          "title": "RunIgnorePreview"
         }
       ],
       "title": "RunGroup"
@@ -2077,10 +2232,16 @@
       "$ref": "#/definitions/Terminal"
     },
     {
-      "$ref": "#/definitions/FileAppend"
+      "$ref": "#/definitions/Reveal"
     },
     {
-      "$ref": "#/definitions/Reveal"
+      "$ref": "#/definitions/FileDelete"
+    },
+    {
+      "$ref": "#/definitions/FileReplace"
+    },
+    {
+      "$ref": "#/definitions/Shadow"
     }
   ],
   "definitions": {
@@ -2213,6 +2374,9 @@
             ],
             "additionalProperties": false
           }
+        },
+        "content": {
+          "type": "boolean"
         },
         "contextKind": {
           "type": "string",
@@ -2385,12 +2549,181 @@
       "additionalProperties": false,
       "title": "Terminal"
     },
-    "FileAppend": {
+    "Reveal": {
       "type": "object",
       "properties": {
         "type": {
           "type": "string",
-          "const": "fileAppend"
+          "const": "reveal"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "repositoryId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "path": {
+          "type": "string",
+          "maxLength": 32767,
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "required": [
+        "type",
+        "callId",
+        "operationId",
+        "repositoryId",
+        "path"
+      ],
+      "additionalProperties": false,
+      "title": "Reveal"
+    },
+    "FileDelete": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "fileDelete"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operationId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "repositoryId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "mode": {
+          "type": "string",
+          "enum": [
+            "recycle",
+            "permanent"
+          ]
+        },
+        "entries": {
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              },
+              "expected": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "file"
+                      },
+                      "size": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "lastWrite": {
+                        "type": "string",
+                        "pattern": "^(?:0|-?[1-9][0-9]{0,18})$"
+                      },
+                      "digest": {
+                        "type": "string",
+                        "pattern": "^[0-9a-f]{64}$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "size",
+                      "lastWrite"
+                    ],
+                    "additionalProperties": false,
+                    "title": "DeleteExpectedFile"
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "kind": {
+                        "type": "string",
+                        "const": "link"
+                      },
+                      "tag": {
+                        "type": "string",
+                        "enum": [
+                          "symlink",
+                          "junction",
+                          "other"
+                        ]
+                      },
+                      "target": {
+                        "type": "string",
+                        "pattern": "^[^\\u0000]*$"
+                      }
+                    },
+                    "required": [
+                      "kind",
+                      "tag"
+                    ],
+                    "additionalProperties": false,
+                    "title": "DeleteExpectedLink"
+                  }
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "expected"
+            ],
+            "additionalProperties": false,
+            "title": "FileDeleteEntry"
+          }
+        },
+        "folders": {
+          "maxItems": 64,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "maxLength": 32767,
+            "pattern": "^[^\\u0000]*$"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "callId",
+        "operationId",
+        "repositoryId",
+        "mode",
+        "entries",
+        "folders"
+      ],
+      "additionalProperties": false,
+      "title": "FileDelete"
+    },
+    "FileReplace": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "fileReplace"
         },
         "callId": {
           "type": "string",
@@ -2433,7 +2766,7 @@
                 "size": {
                   "type": "integer",
                   "minimum": 0,
-                  "maximum": 9007199254740991
+                  "maximum": 1048576
                 },
                 "sha256": {
                   "type": "string",
@@ -2445,7 +2778,7 @@
                 "sha256"
               ],
               "additionalProperties": false,
-              "title": "FileAppendExpected"
+              "title": "FileReplaceExpected"
             }
           ]
         },
@@ -2465,14 +2798,14 @@
         "bytes"
       ],
       "additionalProperties": false,
-      "title": "FileAppend"
+      "title": "FileReplace"
     },
-    "Reveal": {
+    "Shadow": {
       "type": "object",
       "properties": {
         "type": {
           "type": "string",
-          "const": "reveal"
+          "const": "shadow"
         },
         "callId": {
           "type": "string",
@@ -2489,10 +2822,11 @@
           "maxLength": 64,
           "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
         },
-        "path": {
+        "op": {
           "type": "string",
-          "maxLength": 32767,
-          "pattern": "^[^\\u0000]*$"
+          "enum": [
+            "create"
+          ]
         }
       },
       "required": [
@@ -2500,10 +2834,10 @@
         "callId",
         "operationId",
         "repositoryId",
-        "path"
+        "op"
       ],
       "additionalProperties": false,
-      "title": "Reveal"
+      "title": "Shadow"
     }
   },
   "title": "ProcessRequest"

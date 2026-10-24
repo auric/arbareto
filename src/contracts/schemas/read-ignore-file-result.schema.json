@@ -1,0 +1,108 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "target": {
+          "type": "string",
+          "enum": [
+            "gitignore",
+            "exclude"
+          ]
+        },
+        "file": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "state": {
+          "type": "string",
+          "enum": [
+            "absent",
+            "file"
+          ]
+        },
+        "text": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        },
+        "lineEnding": {
+          "type": "string",
+          "enum": [
+            "lf",
+            "crlf",
+            "none"
+          ]
+        },
+        "bom": {
+          "type": "boolean"
+        },
+        "expected": {
+          "anyOf": [
+            {
+              "type": "string",
+              "const": "absent"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "size": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 1048576
+                },
+                "sha256": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{64}$"
+                }
+              },
+              "required": [
+                "size",
+                "sha256"
+              ],
+              "additionalProperties": false,
+              "title": "IgnoreDigest"
+            }
+          ]
+        }
+      },
+      "required": [
+        "target",
+        "file",
+        "state",
+        "text",
+        "lineEnding",
+        "bom",
+        "expected"
+      ],
+      "additionalProperties": false,
+      "title": "IgnoreFile"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "ignore-link",
+            "ignore-folder",
+            "ignore-not-regular",
+            "ignore-size",
+            "ignore-not-utf8",
+            "ignore-nul",
+            "mixed-line-endings",
+            "unreadable",
+            "path"
+          ]
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "additionalProperties": false,
+      "title": "IgnoreFileRefused"
+    }
+  ],
+  "title": "ReadIgnoreFileResult"
+}

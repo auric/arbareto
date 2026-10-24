@@ -8,8 +8,9 @@ import {
   ConfirmRunReply,
   DestinationFactsReply as DestinationFactsReplySchema,
   ExitReply,
-  FileAppendReply as FileAppendReplySchema,
+  FileDeleteReply as FileDeleteReplySchema,
   FileFactsReply,
+  FileReplaceReply as FileReplaceReplySchema,
   IdentityListReply,
   InputWrittenReply,
   LingeringCountReply,
@@ -17,9 +18,11 @@ import {
   PageantReply as PageantReplySchema,
   Refused,
   RegisterReply as RegisterReplySchema,
+  RevealAbsentReply,
   RevealReply,
   ResolveGitReply,
   RevokeReply,
+  ShadowReply as ShadowReplySchema,
   StartedReply as StartedReplySchema,
   TerminalReply as TerminalReplySchema,
   WslDistrosReply,
@@ -49,7 +52,9 @@ import {
   RunnerRefusal,
   stopsAtBound,
   type DestinationFactsReply,
-  type FileAppendReply,
+  type FileDeleteReply,
+  type FileReplaceReply,
+  type ShadowReply,
   type FileFact,
   type FileFactsRequest,
   type GitCall,
@@ -97,10 +102,12 @@ function decodeChunk(data: string): Uint8Array | undefined {
 
 // Contract §6 "File facts": `component` counts from 1 for a link and from 0, the root, for an error.
 // Only `digest: true` gives `digest` or `bound`, and then each file has one of them.
+// Feature 005 contract Δ6: only a `content` request gets `bytes`, and then a digested file carries them.
 function factFits(request: FileFactsRequest, fact: FileFact, components: number): boolean {
   if (fact.kind === "link") return fact.component >= 1 && fact.component <= components;
   if (fact.kind === "error") return fact.component <= components;
   if (fact.kind !== "file") return true;
+  if ((fact.bytes !== undefined) !== (request.content === true && fact.digest !== undefined)) return false;
   return request.digest ? fact.digest !== undefined || fact.bound !== undefined : fact.digest === undefined && fact.bound === undefined;
 }
 
@@ -326,8 +333,8 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
 
     async fileFacts(request, signal) {
       checkFileFacts(request);
-      const { operationId, contextKind, gitInstallationId, repositoryId, digest, files } = request;
-      const body = { type: "fileFacts", operationId, contextKind, gitInstallationId, repositoryId, digest, files: files.map(({ root, path }) => ({ root, path: [...path] })) };
+      const { operationId, contextKind, gitInstallationId, repositoryId, digest, files, content } = request;
+      const body = { type: "fileFacts", operationId, contextKind, gitInstallationId, repositoryId, digest, files: files.map(({ root, path }) => ({ root, path: [...path] })), ...(content === undefined ? {} : { content }) };
       const parse = (r: Body): FileFact[] | WalkStop | undefined => {
         const reply = FileFactsReply.safeParse(r);
         if (!reply.success) return undefined;
@@ -452,9 +459,48 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
     },
 
     // Feature 004 contract Δ3 `revealPath`: a walk, so an abort sends `cancel`. Each failure arrives as a `refused` frame.
+    // Feature 005 contract Δ6: a walk that finds no entry replies `absent`.
     async reveal(request, signal) {
       checkSyncRequest("reveal", request);
-      return ask<"shown" | WalkStop>("process", { type: "reveal", ...request }, (r) => (RevealReply.safeParse(r).success ? "shown" : undefined), { signal, value: CANCELED });
+      const parse = (r: Body): "shown" | "absent" | undefined => (RevealReply.safeParse(r).success ? "shown" : RevealAbsentReply.safeParse(r).success ? "absent" : undefined);
+      return ask<"shown" | "absent" | WalkStop>("process", { type: "reveal", ...request }, parse, { signal, value: CANCELED });
+    },
+
+    // Feature 005 contract Δ6 `fileDelete`: a walk, so an abort sends `cancel`. Every request gets one reply, also after `cancel`,
+    // so the call waits for it within the walk deadline. No reply by then gives `canceled`.
+    async fileDelete(request, signal) {
+      checkSyncRequest("fileDelete", request);
+      const parse = (r: Body): FileDeleteReply | undefined => {
+        const reply = FileDeleteReplySchema.safeParse(r);
+        if (!reply.success) return undefined;
+        if ("result" in reply.data) return { result: reply.data.result };
+        const { entries, folders } = reply.data;
+        return entries.length === request.entries.length && folders.length === request.folders.length ? { entries, folders } : undefined;
+      };
+      return ask<FileDeleteReply | WalkStop>("process", { type: "fileDelete", ...structuredClone(request) }, parse, { signal, value: CANCELED, wait: GIT_PROCESS_DEADLINE_MS });
+    },
+
+    // Feature 005 contract Δ6 `fileReplace`: as `fileDelete`.
+    async fileReplace(request, signal) {
+      checkSyncRequest("fileReplace", request);
+      const parse = (r: Body): FileReplaceReply | undefined => {
+        const reply = FileReplaceReplySchema.safeParse(r);
+        if (!reply.success) return undefined;
+        const { type: _type, callId: _callId, ...result } = reply.data;
+        return result;
+      };
+      return ask<FileReplaceReply | WalkStop>("process", { type: "fileReplace", ...request }, parse, { signal, value: CANCELED, wait: GIT_PROCESS_DEADLINE_MS });
+    },
+
+    // Feature 005 contract Δ6 `shadow`: the shell creates the folder at once, so the call has no cancel.
+    async shadow(request) {
+      checkSyncRequest("shadow", request);
+      return ask<ShadowReply>("process", { type: "shadow", ...request }, (r) => {
+        const reply = ShadowReplySchema.safeParse(r);
+        if (!reply.success) return undefined;
+        const { type: _type, callId: _callId, ...result } = reply.data;
+        return result;
+      });
     },
 
     // Feature 003 contract Δ6: the shell waits up to 30 s for Pageant, so the call has no cancel.
@@ -477,23 +523,6 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
         const { type: _type, callId: _callId, ...result } = reply.data;
         return result;
       });
-    },
-
-    // Feature 004 contract Δ6 `fileAppend`: a walk, so an abort sends `cancel`. The reply group has no deadline form.
-    // Every request gets one reply, also after `cancel`, so the call waits for it within the walk deadline (contract §5). No reply by then gives `canceled`.
-    async fileAppend(request, signal) {
-      checkSyncRequest("fileAppend", request);
-      return ask<FileAppendReply | WalkStop>(
-        "process",
-        { type: "fileAppend", ...request },
-        (r) => {
-          const reply = FileAppendReplySchema.safeParse(r);
-          if (!reply.success) return undefined;
-          const { type: _type, callId: _callId, ...result } = reply.data;
-          return result;
-        },
-        { signal, value: CANCELED, wait: GIT_PROCESS_DEADLINE_MS },
-      );
     },
 
     async terminal(request) {

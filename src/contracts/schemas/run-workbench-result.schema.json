@@ -441,24 +441,6 @@
       "properties": {
         "action": {
           "type": "string",
-          "const": "ignore"
-        },
-        "reason": {
-          "type": "string",
-          "const": "ignore-not-regular"
-        }
-      },
-      "required": [
-        "action"
-      ],
-      "additionalProperties": false,
-      "title": "IgnoreRun"
-    },
-    {
-      "type": "object",
-      "properties": {
-        "action": {
-          "type": "string",
           "enum": [
             "worktree-add",
             "worktree-remove",
@@ -688,6 +670,170 @@
       "properties": {
         "action": {
           "type": "string",
+          "const": "delete"
+        },
+        "entries": {
+          "maxItems": 10000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "entryId": {
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "recycled",
+                  "deleted",
+                  "kept",
+                  "changed",
+                  "absent",
+                  "not-regular",
+                  "error",
+                  "stopped"
+                ]
+              },
+              "code": {
+                "type": "string",
+                "enum": [
+                  "access-denied",
+                  "sharing-violation",
+                  "io-error",
+                  "other-error"
+                ]
+              },
+              "recycledPath": {
+                "type": "string",
+                "maxLength": 32767,
+                "pattern": "^[^\\u0000]*$"
+              }
+            },
+            "required": [
+              "entryId",
+              "outcome"
+            ],
+            "additionalProperties": false,
+            "title": "DeleteFileOutcome"
+          }
+        },
+        "folders": {
+          "maxItems": 10000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pathBytes": {
+                "type": "string",
+                "minLength": 1,
+                "format": "base64",
+                "contentEncoding": "base64",
+                "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "removed",
+                  "kept",
+                  "absent",
+                  "not-regular",
+                  "error"
+                ]
+              },
+              "code": {
+                "type": "string",
+                "enum": [
+                  "access-denied",
+                  "sharing-violation",
+                  "io-error",
+                  "other-error"
+                ]
+              }
+            },
+            "required": [
+              "pathBytes",
+              "outcome"
+            ],
+            "additionalProperties": false,
+            "title": "DeleteFolderOutcome"
+          }
+        }
+      },
+      "required": [
+        "action",
+        "entries",
+        "folders"
+      ],
+      "additionalProperties": false,
+      "title": "DeleteRun"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "const": "ignore-save"
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "replaced",
+            "stale",
+            "not-regular",
+            "stopped",
+            "interrupted",
+            "error"
+          ]
+        },
+        "code": {
+          "type": "string",
+          "enum": [
+            "access-denied",
+            "sharing-violation",
+            "io-error",
+            "other-error"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "outcome"
+      ],
+      "additionalProperties": false,
+      "title": "IgnoreSaveRun"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
+            "delete",
+            "ignore-save"
+          ]
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "files-changed",
+            "ignore-changed"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "reason"
+      ],
+      "additionalProperties": false,
+      "title": "WorkbenchStale"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
           "enum": [
             "switch",
             "create-branch",
@@ -695,13 +841,14 @@
             "delete-branch",
             "merge",
             "rebase",
-            "ignore",
             "worktree-add",
             "worktree-remove",
             "worktree-prune",
             "choose-side",
             "mergetool",
-            "config-save"
+            "config-save",
+            "delete",
+            "ignore-save"
           ]
         }
       },
@@ -804,7 +951,13 @@
             "openWorktree",
             "revealPath",
             "setSwitchChoice",
-            "chooseWorktreeFolder"
+            "chooseWorktreeFolder",
+            "readCommitChanges",
+            "readCommitFile",
+            "readBlame",
+            "readIgnoreFile",
+            "previewIgnore",
+            "openSubmodule"
           ]
         },
         "state": {
@@ -856,8 +1009,11 @@
             "mergetool",
             "worktree",
             "config",
-            "ignore",
-            "stage-files"
+            "stage-files",
+            "blame",
+            "delete-files",
+            "ignore-save",
+            "preview"
           ]
         },
         "code": {
@@ -919,7 +1075,9 @@
             "DESTINATION_NOT_EMPTY",
             "WORKBENCH_UNAVAILABLE",
             "UNTRACKED_IN_WAY",
-            "STASH_KEPT"
+            "STASH_KEPT",
+            "BLAME_UNAVAILABLE",
+            "SUBMODULE_UNAVAILABLE"
           ]
         },
         "cause": {

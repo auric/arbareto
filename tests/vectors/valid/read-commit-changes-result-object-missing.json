@@ -1,0 +1,5 @@
+{
+  "schema": "read-commit-changes-result",
+  "expected": "valid",
+  "text": "{\"remedy\":{\"text\":\"Fetch the missing objects, then try again.\"}}"
+}

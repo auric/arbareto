@@ -1,0 +1,5 @@
+{
+  "schema": "process-reply",
+  "expected": "valid",
+  "text": "{\"type\":\"fileFacts\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"facts\":[{\"kind\":\"file\",\"size\":8,\"lastWrite\":\"1\",\"digest\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"bytes\":\"L2J1aWxkLwo=\"}]}"
+}

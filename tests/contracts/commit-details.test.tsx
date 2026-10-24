@@ -122,8 +122,8 @@ describe("Selected commit", () => {
 
   test("the parents keep Git order, and a parent action selects that commit in the history list", async () => {
     const host = await details(2, (i) => (i === 2 ? { parents: [fakeOid(5), fakeOid(3)] } : {}));
-    const buttons = [...field(host, "Parents").querySelectorAll<HTMLElement>("button:not([aria-label])")];
-    expect(buttons.map((b) => b.textContent)).toEqual([fakeOid(5), fakeOid(3)]);
+    const buttons = [...field(host, "Parents").querySelectorAll<HTMLElement>('button:not([aria-label^="Copy"])')];
+    expect(buttons.map((b) => b.getAttribute("aria-label"))).toEqual([fakeOid(5), fakeOid(3)]);
     await act(async () => buttons[1]!.click());
     await settle();
     expect(host.view.getState().selection?.id).toBe(fakeOid(3));
@@ -132,11 +132,28 @@ describe("Selected commit", () => {
   test("Children lists the child commits in Git order and selects them", async () => {
     const host = await details(2, (i) => (i === 2 ? { children: [fakeOid(1), fakeOid(0)] } : {}));
     const children = [...field(host, "Children").querySelectorAll("button")];
-    expect(children.map((b) => b.textContent)).toEqual([fakeOid(1), fakeOid(0)]);
+    expect(children.map((b) => b.getAttribute("aria-label"))).toEqual([fakeOid(1), fakeOid(0)]);
     await act(async () => children[1]!.click());
     await settle();
     expect(host.view.getState().selection?.id).toBe(fakeOid(0));
     expect(field(await details(0), "Children").querySelectorAll("button")).toHaveLength(0);
+  });
+
+  test("the 268 px region cuts no meaning: parent and child links show the short ID with the full ID as name and tooltip, and the values wrap (T070)", async () => {
+    const parents = ["a".repeat(40), "b".repeat(40)];
+    const host = await details(2, (i) => (i === 2 ? { parents, children: [fakeOid(1)], author: { name: "Ada", email: "ada.lovelace.with.a.very.long.address@analytical-engine.example.invalid" } } : {}));
+    const links = [...host.querySelectorAll<HTMLElement>('dd button:not([aria-label^="Copy"])')];
+    expect(links.map((b) => [text(b), b.getAttribute("aria-label"), b.getAttribute("title")])).toEqual([
+      ["a".repeat(12), parents[0], parents[0]],
+      ["b".repeat(12), parents[1], parents[1]],
+      [fakeOid(1).slice(0, 12), fakeOid(1), fakeOid(1)],
+    ]);
+    // 001 plan.md:396: the commit itself keeps its full ID.
+    expect(text(field(host, "ID"))).toBe(fakeOid(2));
+    // A grid track of `1fr` has the content width as its minimum, so a long value widens the region. The value track starts at zero.
+    expect(host.querySelector("dl")!.className.split(" ")).toContain("grid-cols-[auto_minmax(0,1fr)]");
+    const person = [...field(host, "Author").querySelectorAll("span")].find((e) => text(e).includes("@"))!;
+    expect(person.className.split(" ")).toContain("[overflow-wrap:anywhere]");
   });
 
   test("a root commit lists the root text as its parent text", async () => {
@@ -154,9 +171,9 @@ describe("Selected commit", () => {
     expect(host.querySelector("h2")!.closest(".select-text")).toBeNull();
   });
 
-  test("the static line stays, and the details hold no Git action", async () => {
+  test("the 001 static line is gone (feature 005 FR-005), and the details hold no Git action", async () => {
     const host = await details(4, (i) => (i === 4 ? { children: [] } : {}));
-    expect(text(host)).toContain("Changed files are not shown in this version.");
+    expect(text(host)).not.toContain("Changed files are not shown in this version.");
     const labels = [...host.querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? text(b));
     expect(labels).toEqual(["Copy message", "Copy commit ID", fakeOid(5), `Copy parent ID ${fakeOid(5).slice(0, 12)}`]);
   });
@@ -188,9 +205,30 @@ describe("Selected commit of a feature 002 view", () => {
     await settle();
     expect(detailReads(fake)).toEqual([{ viewId: viewIdOf(1), mode: "full", at: { oid: fakeOid(3) }, count: 1, text: "details" }]);
     expect(text(host)).toContain("Body of 3");
-    expect(text(field(host, "Parents"))).toContain(fakeOid(4));
-    expect(text(field(host, "Children"))).toContain(fakeOid(2));
+    expect(field(host, "Parents").querySelector(`button[aria-label="${fakeOid(4)}"]`)).not.toBeNull();
+    expect(field(host, "Children").querySelector(`button[aria-label="${fakeOid(2)}"]`)).not.toBeNull();
     expect(text(host)).not.toContain("Arbareto shows the first 16 KiB of this message.");
+  });
+
+  test("Refresh with the selected commit reads its details only after the new view loads it (T068)", async () => {
+    const fake = createFake({ total: 10, loaded: 10, hold: { load: true } });
+    const view = createHistoryView(fake.bridge, TARGET);
+    await act(async () => void (await view.open("all", false)));
+    await act(async () => view.select(fakeOid(3), 3, "full"));
+    const host = await show(<ViewCommitDetails view={view} oid={fakeOid(3)} dateFormat={dateFormat} />);
+    await settle();
+    expect(detailReads(fake)).toHaveLength(1);
+    let refreshed: Promise<void> = Promise.resolve();
+    await act(async () => void (refreshed = view.refresh()));
+    await settle();
+    // The new view does not hold the row before the held load ends (contract Δ3 target `unknown`).
+    expect(fake.held()).toBe(1);
+    expect(detailReads(fake)).toHaveLength(1);
+    await act(async () => (fake.release(), await refreshed));
+    await settle();
+    expect(detailReads(fake).map((p) => p.viewId)).toEqual([viewIdOf(1), viewIdOf(2)]);
+    expect(text(host)).toContain("Body of 3");
+    expect(text(host)).not.toContain("This commit is not in the loaded history rows.");
   });
 
   test("a cut body states that it is cut, and a root commit says so", async () => {

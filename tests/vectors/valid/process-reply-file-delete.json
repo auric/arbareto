@@ -1,0 +1,5 @@
+{
+  "schema": "process-reply",
+  "expected": "valid",
+  "text": "{\"type\":\"fileDelete\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"entries\":[{\"result\":\"recycled\",\"recycledPath\":\"//host/repo/$RA1.log\"},{\"result\":\"kept\",\"hresult\":2150039552},{\"result\":\"error\",\"code\":\"sharing-violation\"},{\"result\":\"stopped\"}],\"folders\":[{\"result\":\"removed\"},{\"result\":\"kept\"}]}"
+}

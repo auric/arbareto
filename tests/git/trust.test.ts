@@ -3346,7 +3346,7 @@ describe("trust class workbench (T033)", () => {
 
   caseTest(
     T033,
-    "ignore needs no class, and applyFiles and line staging keep the 001 rule: with an unapproved post-checkout hook each one runs, and each records its marker kind",
+    "ignore-save needs no class, and applyFiles and line staging keep the 001 rule: with an unapproved post-checkout hook each one runs, and each records its marker kind",
     W,
     () =>
       withService({ name: "t033-classless" }, async (service) => {
@@ -3355,14 +3355,14 @@ describe("trust class workbench (T033)", () => {
         hookAt(f, "post-checkout", run.command);
         const { repositoryId } = await service.register(f.repo);
         expect((await trustOf(service, repositoryId)).approvalRequired).toEqual({ reads: false, commit: false, sync: true, workbench: true, mergetool: false });
-        // Contract Δ7: `ignore` runs no repository program.
+        // Contract Δ7: `ignore` runs no repository program. Feature 005 contract Δ7 (T057): `ignore-save` replaces it and needs no class either.
         let read = await readOk(service, repositoryId);
-        const ignored = await review(service, repositoryId, read.generation, { action: "ignore", snapshotId: read.snapshotId, entryId: entryOf(read, "top-new.txt", "untracked").entryId, target: "gitignore" });
+        const ignored = await review(service, repositoryId, read.generation, { action: "ignore-save", target: "gitignore", text: Buffer.from("/top-new.txt\n").toString("base64"), expected: "absent" });
         expect({ ...outcome(ignored), token: typeof ignored.result?.workbenchToken }).toEqual({ ...SUCCEEDED, token: "string" });
         let frames = service.runner.frames.length;
         expect(outcome(await runWith(service, repositoryId, ignored.result!.workbenchToken!))).toEqual(SUCCEEDED);
         expect(readFileSync(join(f.repo, ".gitignore"), "latin1")).toBe("/top-new.txt\n");
-        expect(startedSince(service, frames)).toEqual([{ kind: "workbench", action: "ignore-gitignore", direction: undefined }]);
+        expect(startedSince(service, frames)).toEqual([{ kind: "workbench", action: "ignore-save-gitignore", direction: undefined }]);
         // Contract Δ6: kind `applyFiles` carries `direction`.
         read = await readOk(service, repositoryId);
         frames = service.runner.frames.length;

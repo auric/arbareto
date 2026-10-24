@@ -1,0 +1,242 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "blameId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "commit": {
+          "type": "string",
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+        },
+        "pathBytes": {
+          "type": "string",
+          "minLength": 1,
+          "format": "base64",
+          "contentEncoding": "base64",
+          "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+        },
+        "content": {
+          "type": "string",
+          "format": "base64",
+          "contentEncoding": "base64",
+          "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+        },
+        "lines": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100000
+        },
+        "ignoreList": {
+          "type": "string",
+          "enum": [
+            "none",
+            "on",
+            "off"
+          ]
+        },
+        "groups": {
+          "maxItems": 100000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "commit": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "origStart": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "finalStart": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 9007199254740991
+              },
+              "ignored": {
+                "type": "boolean"
+              },
+              "unblamable": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "commit",
+              "origStart",
+              "finalStart",
+              "count",
+              "ignored",
+              "unblamable"
+            ],
+            "additionalProperties": false,
+            "title": "BlameGroup"
+          }
+        },
+        "commits": {
+          "maxItems": 100000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "oid": {
+                "type": "string",
+                "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+              },
+              "author": {
+                "type": "string",
+                "format": "base64",
+                "contentEncoding": "base64",
+                "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+              },
+              "authorMail": {
+                "type": "string",
+                "format": "base64",
+                "contentEncoding": "base64",
+                "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+              },
+              "authorTime": {
+                "type": "integer",
+                "minimum": -9007199254740991,
+                "maximum": 9007199254740991
+              },
+              "authorTz": {
+                "type": "string",
+                "pattern": "^[+-][0-9]{4}$"
+              },
+              "summary": {
+                "type": "string",
+                "format": "base64",
+                "contentEncoding": "base64",
+                "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+              },
+              "previous": {
+                "anyOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "oid": {
+                        "type": "string",
+                        "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                      },
+                      "pathBytes": {
+                        "type": "string",
+                        "minLength": 1,
+                        "format": "base64",
+                        "contentEncoding": "base64",
+                        "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+                      }
+                    },
+                    "required": [
+                      "oid",
+                      "pathBytes"
+                    ],
+                    "additionalProperties": false,
+                    "title": "BlamePrevious"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "filenameBytes": {
+                "type": "string",
+                "minLength": 1,
+                "format": "base64",
+                "contentEncoding": "base64",
+                "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+              },
+              "shallow": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "oid",
+              "author",
+              "authorMail",
+              "authorTime",
+              "authorTz",
+              "summary",
+              "previous",
+              "filenameBytes",
+              "shallow"
+            ],
+            "additionalProperties": false,
+            "title": "BlameCommit"
+          }
+        },
+        "focusLine": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100000
+        }
+      },
+      "required": [
+        "blameId",
+        "commit",
+        "pathBytes",
+        "content",
+        "lines",
+        "ignoreList",
+        "groups",
+        "commits"
+      ],
+      "additionalProperties": false,
+      "title": "Blame"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "no-history",
+            "binary",
+            "submodule",
+            "size",
+            "lines",
+            "ignore-revs-file-missing",
+            "no-previous",
+            "path"
+          ]
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false
+        },
+        "outputTail": {
+          "type": "string",
+          "pattern": "^[^\\u0000]*$"
+        }
+      },
+      "additionalProperties": false,
+      "title": "BlameRefused"
+    }
+  ],
+  "title": "ReadBlameResult"
+}

@@ -4,14 +4,15 @@
 // T034: `revealPath` (contract Δ3 and Δ6 `reveal`). The service maps an entry of its current read to a path, and the shell double checks it as the shell does.
 
 import { describe, expect } from "bun:test";
-import { rmSync, writeFileSync } from "node:fs";
+import { existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { RevealPathResult } from "../../src/contracts/envelope";
 import { NATIVE } from "../../src/contracts/native-path";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
-import { entryOf, gitPath, readOk, withService } from "./hunk-harness";
+import { entryOf, git, gitPath, readOk, withService } from "./hunk-harness";
 import { caseTest, type Capability, type Service } from "./service-harness";
-import { buildWorkbench } from "./workbench-fixtures";
+import { buildWorkbench, canary } from "./workbench-fixtures";
 
 printOrigin("../../src/git-service/session.ts", import.meta.dir);
 printOrigin("../../src/git-service/native-runner.ts", import.meta.dir);
@@ -63,6 +64,19 @@ describe("revealPath (contract Δ3)", () => {
     TIMEOUT_MS,
   );
 
+  caseTest(TASK, "a file that vanished after the read gives UNKNOWN_TARGET with reason absent from the walk (feature 005 contract Δ3)", SHELL, () =>
+    withService({ name: "t036-reveal-absent-file" }, async (service) => {
+      const repo = tree();
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      rmSync(join(repo, "docs", "d.txt"));
+      const response = await reveal(service, repositoryId, entryOf(read, "docs/d.txt", "unstaged").entryId);
+      expect({ ...outcome(response), result: response.result }).toEqual({ state: "failed", code: "UNKNOWN_TARGET", result: { reason: "absent" } });
+      expect(RevealPathResult.safeParse(response.result).success).toBe(true);
+    }),
+    TIMEOUT_MS,
+  );
+
   caseTest(TASK, "Cancel during the reveal walk ends canceled, and the walk sends no reply", SHELL, () =>
     withService({ name: "t034-reveal-cancel" }, async (service) => {
       const repo = tree();
@@ -77,6 +91,73 @@ describe("revealPath (contract Δ3)", () => {
       } finally {
         service.runner.inject.holdWalk = null;
       }
+    }),
+    TIMEOUT_MS,
+  );
+});
+
+// T036: the folder form of `revealPath` (feature 005 contract Δ3, plan.md D5, spec FR-018, FR-019).
+const FOLDER_TASK = "T036";
+const revealFolder = (service: Service, repositoryId: string, entryId: string, folder: string) => service.request("revealPath", { repositoryId, entryId, folder: Buffer.from(folder).toString("base64") });
+
+describe("revealPath with folder (feature 005 contract Δ3)", () => {
+  caseTest(FOLDER_TASK, "a proper prefix of the entry path that a / follows reaches the shell as the native folder path below the worktree root", SHELL, () =>
+    withService({ name: "t036-reveal-folder" }, async (service) => {
+      const repo = tree();
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const from = service.runner.frames.length;
+      const n1 = entryOf(read, "src/new-dir/n1.txt", "untracked").entryId;
+      const c = entryOf(read, "src/lib/deep/c.txt", "unstaged").entryId;
+      for (const [entryId, folder] of [[n1, "src/new-dir"], [n1, "src"], [c, "src/lib/deep"], [c, "src/lib"]] as const) {
+        const response = await revealFolder(service, repositoryId, entryId, folder);
+        expect({ folder, ...outcome(response), result: response.result }).toEqual({ folder, state: "succeeded", code: undefined, result: undefined });
+      }
+      const root = read.identity.worktreeRoot;
+      expect(revealed(service, from)).toEqual([NATIVE.path.join(root, "src", "new-dir"), NATIVE.path.join(root, "src"), NATIVE.path.join(root, "src", "lib", "deep"), NATIVE.path.join(root, "src", "lib")]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(FOLDER_TASK, "a folder that is no proper prefix followed by / gives INVALID_REQUEST before any reveal request", SHELL, () =>
+    withService({ name: "t036-reveal-folder-invalid" }, async (service) => {
+      const repo = tree();
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const from = service.runner.frames.length;
+      const n1 = entryOf(read, "src/new-dir/n1.txt", "untracked").entryId;
+      for (const folder of ["src/new", "src/new-dir/n1.txt", "src/new-dir/", "/src", "docs", "src/new-dir/n1.txt/x", "SRC"]) {
+        expect({ folder, ...outcome(await revealFolder(service, repositoryId, n1, folder)) }).toEqual({ folder, state: "rejected", code: "INVALID_REQUEST" });
+      }
+      expect(revealed(service, from)).toEqual([]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(FOLDER_TASK, "a folder removed after the read gives UNKNOWN_TARGET with reason absent, and no Explorer window opens", SHELL, () =>
+    withService({ name: "t036-reveal-folder-absent" }, async (service) => {
+      const repo = tree();
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      rmSync(join(repo, "src", "new-dir"), { recursive: true });
+      const response = await revealFolder(service, repositoryId, entryOf(read, "src/new-dir/n1.txt", "untracked").entryId, "src/new-dir");
+      expect({ ...outcome(response), result: response.result }).toEqual({ state: "failed", code: "UNKNOWN_TARGET", result: { reason: "absent" } });
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(FOLDER_TASK, "the folder reveal starts no Git process and needs no trust approval: a command-valued core.fsmonitor set after the read never runs", SHELL, () =>
+    withService({ name: "t036-reveal-folder-trust" }, async (service) => {
+      const repo = tree();
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const monitor = canary(join(repo, ".."), "t036-fsmonitor");
+      git(repo, ["config", "core.fsmonitor", monitor.command]);
+      const calls = service.runner.calls.length;
+      const response = await revealFolder(service, repositoryId, entryOf(read, "src/new-dir/n1.txt", "untracked").entryId, "src/new-dir");
+      expect(outcome(response)).toEqual({ state: "succeeded", code: undefined });
+      expect(service.runner.calls.length).toBe(calls);
+      expect(existsSync(monitor.log)).toBe(false);
     }),
     TIMEOUT_MS,
   );

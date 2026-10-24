@@ -1,0 +1,5 @@
+{
+  "schema": "process-request",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"type\":\"run\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"contextKind\":\"ignorePreview\",\"gitInstallationId\":\"0f0f0f0f-0000-4000-8000-000000000009\",\"shadowId\":\"0f0f0f0f-0000-4000-8000-00000000000c\",\"shadowRepository\":\"x\",\"shadowIndex\":\"index\",\"arguments\":[\"--no-lazy-fetch\",\"init\",\"-q\",\"--template=\"],\"environmentPolicy\":\"read\",\"limits\":{\"deadlineMs\":30000}}"
+}

@@ -450,6 +450,7 @@ export const ProcessRequest = z.xor([
   ]).meta({ title: "RunGroup" }),
   named("Input", z.strictObject({ type: z.literal("input"), ...call, data: InlineInput })),
   named("Cancel", z.strictObject({ type: z.literal("cancel"), ...call })),
+  named("Stop", z.strictObject({ type: z.literal("stop"), ...call })),
   z.union([
     z.strictObject({ ...identity, ...GIT_PROBE }).meta({ title: "IdentityGitProbe" }),
     z.strictObject({ ...identity, ...DISCOVERY }).meta({ title: "IdentityDiscovery" }),

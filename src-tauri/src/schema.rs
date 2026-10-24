@@ -1276,14 +1276,16 @@ mod tests {
                 .and_then(|value| wsl_request(&value).map(drop).map_err(|code| text_of(&code))),
             // `ProcessRequests::dispatch` reads the `type` value, then its generated type (contract §6 "Channel frames").
             // Feature 003 contract Δ10: the `run`, `pageant`, `destinationFacts`, and `terminal` vectors check the generated type.
-            // T030 and T031 add the handlers of the `clone` context and the new requests.
+            // T030 and T031 add the handlers of the `clone` context and the new requests. T392 adds the `stop` vectors.
             // Feature 005 contract Δ15: `dispatch` has no `fileAppend` branch, so its vector gets no check here.
             // `process_requests::tests::a_file_append_frame_gets_invalid_request_and_writes_nothing` sends it through `dispatch`.
             "process-request" => match strict(text) {
                 Ok(value)
                     if matches!(
                         value["type"].as_str(),
-                        Some("run" | "pageant" | "destinationFacts" | "terminal" | "shadow")
+                        Some(
+                            "run" | "stop" | "pageant" | "destinationFacts" | "terminal" | "shadow"
+                        )
                     ) =>
                 {
                     valid(typed::<process_request::ProcessRequest>(&value).is_some())
@@ -1358,6 +1360,7 @@ mod tests {
         // The `unlisted` hooks item of plan D14 adds 2 `confirm` vectors.
         // WP23 adds 2 `confirm` vectors for the `repository` action (contract Δ6).
         // T094 adds 3 `native-first-envelope` vectors for `chooseWorktreeFolder` (contract Δ3).
+        // T392 adds 2 `stop` vectors.
         // Feature 005 T002 adds 15 shell-read vectors. The batch 0 review adds the 5 `fileDelete`, 2 `shadow`, and 3 `ignorePreview` vectors.
         // T013 adds the 4 `fileReplace` vectors (valid present and absent, an over-bound size, and a relative path).
         // The WP3 review adds the `fileDelete` digest above 1 MiB.
@@ -1365,7 +1368,7 @@ mod tests {
         // The batch 3 review adds the `progress` vector of the removed phase `ignore`.
         assert_eq!(
             checked,
-            if cfg!(windows) { 211 } else { 206 },
+            if cfg!(windows) { 213 } else { 208 },
             "shell-read vectors"
         );
     }

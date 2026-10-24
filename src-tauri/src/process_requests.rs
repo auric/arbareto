@@ -25,7 +25,7 @@ use windows::Win32::Foundation::{
 use windows::Win32::System::IO::CancelSynchronousIo;
 use windows::Win32::System::Pipes::PeekNamedPipe;
 use windows::Win32::System::Threading::{
-    CreateEventW, GetExitCodeProcess, SetEvent, WaitForSingleObject,
+    CreateEventW, GetExitCodeProcess, SetEvent, TerminateProcess, WaitForSingleObject,
 };
 
 use crate::bootstrap::{
@@ -188,8 +188,10 @@ struct Streamed {
 struct Call {
     operation_id: String,
     streamed: Option<Streamed>,
-    /// A Job close after the start of this call ended its process, so `exit` carries `exitCode` null.
+    /// A Job close or a `stop` after the start of this call ended its process, so `exit` carries `exitCode` null.
     closed: bool,
+    /// The process that the start of this `run` returned. Only a `stop` uses it (contract §6 "Process requests").
+    process: Option<Arc<Owned>>,
 }
 
 /// The end of the work of a walk. Only the watchdog runs it, and only when the work ends before a deadline or a stop.
@@ -886,6 +888,7 @@ impl ProcessRequests {
             Some("run") => self.run(&typed(request).ok_or(INVALID)?, call()?),
             Some("input") => self.input(request),
             Some("cancel") => self.cancel(&typed(request).ok_or(INVALID)?),
+            Some("stop") => self.stop(&typed(request).ok_or(INVALID)?),
             Some("identity") => self.identity(&typed(request).ok_or(INVALID)?, call()?),
             Some("fileFacts") => self.file_facts(&typed(request).ok_or(INVALID)?, call()?),
             Some("wslFiles") => self.wsl_files(request, &typed(request).ok_or(INVALID)?, call()?),
@@ -2202,9 +2205,13 @@ impl ProcessRequests {
                 let Ok(spawned) = spawned else {
                     return refused(OWNERSHIP);
                 };
-                let (process, pid) = (Owned(spawned.process), spawned.pid);
+                let (process, pid) = (Arc::new(Owned(spawned.process)), spawned.pid);
                 let (stdin, stdout, stderr) = (spawned.stdin, spawned.stdout, spawned.stderr);
                 Box::new(move || {
+                    // Contract §6: `stop` comes only after an `output` reply. So the call holds its process before the readers start.
+                    if let Some(entry) = me.state().calls.get_mut(&call) {
+                        entry.process = Some(Arc::clone(&process));
+                    }
                     let exited = Arc::new(Mutex::new(false));
                     if let (Some(declared), Some(stdin)) = (declared, stdin) {
                         Arc::clone(&me).write_input(
@@ -2255,6 +2262,7 @@ impl ProcessRequests {
                 operation_id: operation_id.to_string(),
                 streamed,
                 closed: false,
+                process: None,
             },
         );
         Ok(())
@@ -2589,6 +2597,24 @@ impl ProcessRequests {
         }
         if let Some(walk) = state.walks.get(call_id).filter(|walk| walk.stoppable) {
             let _ = walk.events.send(WalkEvent::Stop);
+        }
+        Ok(())
+    }
+
+    /// Contract §6 `stop`: ends only the process of one `run` call. The operation Job stays open.
+    /// The shell drops a stop for an ended call, for a `run` whose start did not end, and for a `wslProbe` call.
+    fn stop(&self, request: &frame::Stop) -> Result<(), Code> {
+        let mut state = self.state();
+        let Some(call) = state.calls.get_mut(request.call_id.as_str()) else {
+            return Ok(());
+        };
+        // `watch` reads `closed` under this lock after the handle signals.
+        // An ended process gives `ERROR_ACCESS_DENIED` and keeps its exit code (Microsoft Learn `TerminateProcess`).
+        // SAFETY: the call keeps the process handle open for the call.
+        if let Some(process) = &call.process
+            && unsafe { TerminateProcess(process.0, 1) }.is_ok()
+        {
+            call.closed = true;
         }
         Ok(())
     }
@@ -3325,6 +3351,7 @@ impl ProcessRequests {
                 operation_id: operation_id.to_string(),
                 streamed: None,
                 closed: false,
+                process: None,
             },
         );
         state.wsl_probing.insert(bootstrap_id.to_string());
@@ -3964,7 +3991,7 @@ impl ProcessRequests {
     fn watch(
         &self,
         run: &Run,
-        (process, pid): (Owned, u32),
+        (process, pid): (Arc<Owned>, u32),
         (limit, reason): (Duration, ExitDeadline),
     ) {
         let mut expired = None;
@@ -4009,7 +4036,7 @@ impl ProcessRequests {
                 expired = Some(ExitDeadline::Inactivity);
             }
         }
-        // Removing the call drops its input channel, so later `input` and `cancel` frames are dropped.
+        // Removing the call drops its input channel, so later `input`, `cancel`, and `stop` frames are dropped.
         self.state().calls.remove(&run.call_id);
         *lock(&run.exited) = true;
         // Contract §11 "Process launch": a WSL process that ended by itself without the start byte did not start in its scope.
@@ -4033,6 +4060,7 @@ pub(crate) struct Owned(pub(crate) HANDLE);
 
 // SAFETY: a process handle is a kernel handle that any thread can use. `Owned` is its only owner.
 unsafe impl Send for Owned {}
+unsafe impl Sync for Owned {}
 
 impl Drop for Owned {
     fn drop(&mut self) {
@@ -6158,6 +6186,16 @@ pub(crate) mod tests {
                 .map(|r| r.1),
             Some(refused(&run, "INVALID_REQUEST"))
         );
+        harness.send(json!({ "type": "stop", "callId": run, "extra": 1 }));
+        assert_eq!(
+            harness
+                .replies_for(&run)
+                .iter()
+                .filter(|(_, v)| *v == refused(&run, "INVALID_REQUEST"))
+                .count(),
+            2,
+            "a stop with an extra field is refused"
+        );
         harness.send(json!({ "type": "input", "callId": run, "data": encode(b"x"), "extra": 1 }));
         // A malformed request without `callId` is dropped and changes nothing.
         harness.send(json!({ "type": "release", "repositoryId": workspace.repository, "gitInstallationId": workspace.git }));
@@ -6841,6 +6879,100 @@ pub(crate) mod tests {
         assert_eq!(
             (exit["exitCode"].clone(), exit["activeDescendants"].clone()),
             (json!(0), json!(0))
+        );
+    }
+
+    /// T392, contract §6 `stop`: a stop ends only the process of its call. The Job stays open with every other process.
+    #[test]
+    fn stop_ends_only_the_process_of_its_call_and_the_job_stays_open() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        let stopped = harness.run(
+            &operation,
+            &workspace,
+            &["grandchild", "2", "60000", "stay"],
+        );
+        let sibling = harness.run(&operation, &workspace, &["sleep", "60000"]);
+        let other = harness.run(&uuid(), &workspace, &["sleep", "60000"]);
+        let mut pids = Vec::new();
+        assert!(
+            eventually(WAIT, || {
+                let text =
+                    String::from_utf8_lossy(&harness.output(&stopped, "stdout")).into_owned();
+                pids = text
+                    .lines()
+                    .filter_map(|line| line.strip_prefix("GRANDCHILD "))
+                    .map(|pid| pid.trim_end().parse::<u32>().expect("pid"))
+                    .collect();
+                pids.len() == 2
+            }),
+            "two GRANDCHILD lines"
+        );
+        let grandchildren: Vec<Proc> = pids.into_iter().map(Proc::open).collect();
+        let child = |call: &str| {
+            Proc::open(
+                harness
+                    .output_line(call, "stdout", "PID")
+                    .parse()
+                    .expect("pid"),
+            )
+        };
+        let (sibling_child, other_child) = (child(&sibling), child(&other));
+        let job = harness.jobs.job_handle(&operation).expect("operation Job");
+        harness.send(json!({ "type": "stop", "callId": stopped }));
+        let exit = harness.exit(&stopped, WAIT).expect("exit").1;
+        assert_eq!(
+            (exit["exitCode"].clone(), exit["activeDescendants"].clone()),
+            (Value::Null, json!(3)),
+            "the stop ended the process, and both grandchildren and the sibling stay in the Job"
+        );
+        assert_eq!(
+            harness.jobs.job_handle(&operation),
+            Some(job),
+            "the Job stays open"
+        );
+        assert!(
+            ends_by_test(grandchildren[0].handle),
+            "the stop never began to end a grandchild"
+        );
+        assert!(
+            ends_by_test(sibling_child.handle),
+            "the stop never began to end the sibling"
+        );
+        assert_eq!(
+            harness.exit(&sibling, WAIT).expect("exit").1["exitCode"],
+            TEST_END
+        );
+        assert!(
+            ends_by_test(other_child.handle),
+            "the stop never began to end the other operation"
+        );
+        assert_eq!(
+            harness.exit(&other, WAIT).expect("exit").1["exitCode"],
+            TEST_END
+        );
+        let next = harness.run(&operation, &workspace, &["sleep", "10"]);
+        assert_eq!(
+            harness.exit(&next, WAIT).expect("exit of the next run").1["exitCode"],
+            0
+        );
+        assert_eq!(
+            harness.jobs.job_handle(&operation),
+            Some(job),
+            "the next run starts in the same Job"
+        );
+        let replies = harness.replies_for(&stopped).len();
+        harness.send(json!({ "type": "stop", "callId": stopped }));
+        assert_eq!(
+            harness.replies_for(&stopped).len(),
+            replies,
+            "the shell drops a stop for an ended call"
+        );
+        harness.send(json!({ "type": "closeJob", "operationId": operation }));
+        assert!(
+            grandchildren[1].exits_within(CLOSE_BOUND),
+            "closeJob ends the other grandchild"
         );
     }
 
@@ -9876,6 +10008,48 @@ pub(crate) mod tests {
         );
         assert_eq!(harness.replies_for(&canceled).len(), 1, "one reply");
         assert_eq!(harness.replies_for(&closed).len(), 1, "one reply");
+    }
+
+    /// T392, contract §6 "Walks": a `stop` never stops a `run` start. The shell drops it, and the start goes on.
+    #[test]
+    fn a_stop_during_a_run_start_changes_nothing() {
+        let harness = Harness::child();
+        let (workspace, program) = copied_workspace(&harness, "repo");
+        let Some(oplock) = program_oplock(&program) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let call = uuid();
+        assert!(
+            harness.send_within(
+                run_body(
+                    &call,
+                    &uuid(),
+                    &workspace,
+                    &["sleep", "0"],
+                    "read",
+                    json!({ "deadlineMs": 30_000 }),
+                ),
+                CLOSE_WAIT
+            ),
+            "the frame reader never waits on the open"
+        );
+        assert!(oplock.broken(WAIT), "the image open waits on the break");
+        assert!(
+            harness.send_within(json!({ "type": "stop", "callId": call }), CLOSE_WAIT),
+            "stop never waits on the open"
+        );
+        assert!(
+            harness.replies_for(&call).is_empty(),
+            "the dropped stop has no reply"
+        );
+        drop(oplock);
+        let exit = harness.exit(&call, WAIT).expect("exit").1;
+        assert_eq!(
+            (exit["exitCode"].clone(), exit["activeDescendants"].clone()),
+            (json!(0), json!(0)),
+            "the start went on, and the process exited by itself"
+        );
     }
 
     #[test]

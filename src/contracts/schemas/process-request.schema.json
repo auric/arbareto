@@ -1000,6 +1000,9 @@
       "$ref": "#/definitions/Cancel"
     },
     {
+      "$ref": "#/definitions/Stop"
+    },
+    {
       "anyOf": [
         {
           "type": "object",
@@ -2299,6 +2302,26 @@
       ],
       "additionalProperties": false,
       "title": "Cancel"
+    },
+    "Stop": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "const": "stop"
+        },
+        "callId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        }
+      },
+      "required": [
+        "type",
+        "callId"
+      ],
+      "additionalProperties": false,
+      "title": "Stop"
     },
     "FileFacts": {
       "type": "object",

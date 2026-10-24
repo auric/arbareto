@@ -4,51 +4,46 @@
 // T020: the network call sites (006 spec FR-007, SC-001; contract Δ10). `src/frontend` holds no `fetch(` call. `src/git-service` holds one, in `dictionaries.ts`.
 
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { printOrigin } from "../origin";
 
 const ROOT = join(import.meta.dir, "..", "..");
 printOrigin("../../src/git-service/dictionaries.ts", import.meta.dir);
 
-// A call of the global `fetch`: a free `fetch` identifier that is called, or `fetch` read from a global object.
-// Bun renames every local binding with `minify.identifiers` and keeps each free name, so a local function named `fetch` (sync.ts) does not count.
+// A call of `fetch`: a `fetch` identifier that is called, or `fetch` read from a global object. The transpiler drops comments, as in portable-imports.test.ts.
+// A local binding named `fetch` counts too, so a new one fails the test.
 const CALL = /(?<![\w$.])fetch\s*\(|\b(?:globalThis|window|self)\s*\.\s*fetch\b/g;
+const count = (file: string, source: string) => (new Bun.Transpiler({ loader: file.endsWith(".tsx") ? "tsx" : "ts" }).transformSync(source).match(CALL) ?? []).length;
 
-async function sites(dir: string): Promise<Record<string, number>> {
+function sites(dir: string): Record<string, number> {
   const cwd = join(ROOT, "src", dir);
-  const files = [...new Bun.Glob("**/*.{ts,tsx}").scanSync({ cwd })].filter((f) => !f.endsWith(".d.ts")).map((f) => join(cwd, f));
-  expect(files.length).toBeGreaterThan(0);
-  const built = await Bun.build({ entrypoints: files, root: cwd, minify: { identifiers: true, whitespace: false, syntax: false }, packages: "external", external: ["*"], target: "browser", throw: false });
-  if (!built.success) throw new AggregateError(built.logs, `Bun.build of src/${dir} failed`);
-  expect(built.outputs.length).toBe(files.length);
   const found: Record<string, number> = {};
-  for (const output of built.outputs) {
-    const count = ((await output.text()).match(CALL) ?? []).length;
-    if (count > 0) found[relative(cwd, join(cwd, output.path)).replaceAll("\\", "/").replace(/\.js$/, ".ts")] = count;
+  let scanned = 0;
+  for (const file of new Bun.Glob("**/*.{ts,tsx}").scanSync({ cwd })) {
+    if (file.endsWith(".d.ts")) continue;
+    scanned += 1;
+    const n = count(file, readFileSync(join(cwd, file), "utf8"));
+    if (n > 0) found[file.replaceAll("\\", "/")] = n;
   }
+  expect(scanned).toBeGreaterThan(0);
   return found;
 }
 
-test("T020: the rule counts global fetch calls and no local function named fetch", async () => {
-  const dir = mkdtempSync(join(tmpdir(), "arbareto-network-sites-"));
-  try {
-    const write = (name: string, text: string) => writeFileSync(join(dir, name), text);
-    write("local.ts", "const fetch = (x: number) => x;\nexport const a = fetch(1);\nexport const o = { fetch: fetch(2) };\n");
-    write("global.ts", "export const a = (u: string) => fetch(u);\nexport const b = (u: string) => globalThis.fetch(u);\nexport const c = (f: { fetch(u: string): void }) => f.fetch(\"x\");\n");
-    const built = await Bun.build({ entrypoints: [join(dir, "local.ts"), join(dir, "global.ts")], root: dir, minify: { identifiers: true, whitespace: false, syntax: false }, packages: "external", external: ["*"], target: "browser" });
-    const counts = Object.fromEntries(await Promise.all(built.outputs.map(async (o) => [o.path.replace(/^\.\//, ""), ((await o.text()).match(CALL) ?? []).length] as const)));
-    expect(counts).toEqual({ "local.js": 0, "global.js": 2 });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+test.each([
+  ["export const a = (u: string) => fetch(u);", 1],
+  ["export const b = (u: string) => globalThis.fetch(u);", 1],
+  ["export const c = (f: { fetch(u: string): void }) => f.fetch(\"x\");", 0],
+  ["// git-fetch(1)\n/** fetch(x) */\nexport const d = 1;", 0],
+  ["const fetch = (x: number) => x;\nexport const e = fetch(1);", 1],
+] as const)("T020: the rule counts %j as %d", (source, n) => {
+  expect(count("x.ts", source)).toBe(n);
 });
 
-test("T020: src/frontend holds no fetch call", async () => {
-  expect(await sites("frontend")).toEqual({});
+test("T020: src/frontend holds no fetch call", () => {
+  expect(sites("frontend")).toEqual({});
 });
 
-test("T020: src/git-service holds exactly one fetch call, in dictionaries.ts", async () => {
-  expect(await sites("git-service")).toEqual({ "dictionaries.ts": 1 });
+test("T020: src/git-service holds exactly one fetch call, in dictionaries.ts", () => {
+  expect(sites("git-service")).toEqual({ "dictionaries.ts": 1 });
 });

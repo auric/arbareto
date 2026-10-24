@@ -52,7 +52,7 @@ function language(id: string, name: string, dicSize = 5_000): Language {
     bytes[file] = content(id, file, size);
     return { name: file as "index.aff", url: `${real.source.urlPrefix}${id}/${file}`, size, sha256: sha256(bytes[file]!) };
   });
-  return { entry: { id, name, license: "MIT", commit: real.source.commit, files, licences: ["license"] }, bytes };
+  return { entry: { id, name, license: "MIT", script: "Latin", commit: real.source.commit, files, licences: ["license"] }, bytes };
 }
 
 const NL = language("nl", "Dutch");
@@ -512,6 +512,8 @@ describe("T019 readDictionary", () => {
     }), TIMEOUT_MS);
 });
 
+const KEPT_STAGING = [".staging-notes", `.staging-zz-gone-${"b".repeat(32)}`, `.staging-nl-${"c".repeat(31)}`, `.staging-nl-${"D".repeat(32)}`, `.staging-nl-${"e".repeat(32)}-x`];
+
 describe("T019 listDictionaries and the release reconcile", () => {
   caseTest(TASK, "the states not-downloaded, ready, changed, downloading, and importing, with the full language check", SHELL, () => {
     const hold = deferred();
@@ -562,6 +564,8 @@ describe("T019 listDictionaries and the release reconcile", () => {
       setup: (folder) => {
         mkdirSync(join(folder, `.staging-nl-${"a".repeat(32)}`), { recursive: true });
         writeFileSync(join(folder, `.staging-nl-${"a".repeat(32)}`, "index.aff"), "partial");
+        // Data-model §3: only `.staging-<catalog id>-<32 lowercase hex>` is a staging leftover. These names stay.
+        for (const name of KEPT_STAGING) mkdirSync(join(folder, name));
         place(folder, FR, { version: 1, entry: other });
         place(folder, NL);
         place(folder, UK, null);
@@ -577,7 +581,7 @@ describe("T019 listDictionaries and the release reconcile", () => {
         removed: [{ language: "zz-gone", name: "Gone" }],
         more: 0,
       });
-      expect(readdirSync(folder).sort()).toEqual(["nl", "notes", "uk"]);
+      expect(readdirSync(folder).sort()).toEqual([...KEPT_STAGING, "nl", "notes", "uk"].sort());
       expect(readFileSync(notes, "utf8")).toBe("keep me");
       // The reconcile runs once per service process, so the notices stay.
       expect((await list(service)).result!.removed).toEqual([{ language: "zz-gone", name: "Gone" }]);
@@ -634,7 +638,71 @@ describe("T019 one run at a time and removeDictionary", () => {
       }
       expect(end(response)).toEqual(refused("remove", { folder: join(folder, "nl") }));
     }), TIMEOUT_MS);
+
+  // OS fact: a handle that shares only read access refuses the delete of its file. A Bun handle shares delete access, so a child pwsh holds the file.
+  caseTest(TASK, "Remove of a language whose index.dic another process holds gives remove with the folder, and the row then shows changed", [...SHELL, "windows-path-rules", "pwsh"], () =>
+    withDictionaries("remove-held", { setup: (folder) => place(folder, NL) }, async ({ service, folder }) => {
+      const dic = join(folder, "nl", "index.dic");
+      const script = `try { $f = [IO.File]::Open('${dic.replaceAll("'", "''")}', 'Open', 'Read', 'Read') } catch { exit 3 }; [Console]::Out.WriteLine('held'); [Console]::Out.Flush(); Start-Sleep -Seconds 60; $f.Close()`;
+      const holder = Bun.spawn(["pwsh", "-NoProfile", "-NonInteractive", "-Command", script], { stdin: "ignore", stdout: "pipe", stderr: "ignore" });
+      try {
+        expect(await heldLine(holder)).toBe("held");
+        expect(end(await remove(service, "nl"))).toEqual(refused("remove", { folder: join(folder, "nl") }));
+        expect(existsSync(dic)).toBe(true);
+        console.log(`OBSERVATION T048: files after a held Remove: ${JSON.stringify(readdirSync(join(folder, "nl")).sort())}`);
+        expect(await rowOf(service, "nl")).toEqual({ language: "nl", state: "changed" });
+      } finally {
+        holder.kill();
+        await holder.exited;
+      }
+    }), TIMEOUT_MS);
+
+  // Plan.md D5: the old folder moves aside first, so a failed rename keeps the working install.
+  caseTest(TASK, "a reinstall whose rename into place fails gives save, and the installed language stays ready", SHELL, () =>
+    withDictionaries("reinstall-rename", { setup: (folder) => place(folder, NL) }, async ({ service, folder }) => {
+      const target = join(folder, "nl");
+      const real = fsp.rename;
+      let failed = false;
+      const spy = spyOn(fsp, "rename").mockImplementation((async (from: string, to: string) => {
+        if (!failed && String(to) === target) {
+          failed = true;
+          throw fsError("EPERM");
+        }
+        return (real as (a: string, b: string) => Promise<void>)(from, to);
+      }) as never);
+      let response: ServiceResponse;
+      try {
+        response = await download(service, "nl");
+      } finally {
+        spy.mockRestore();
+      }
+      expect(failed).toBe(true);
+      expect(end(response)).toEqual(refused("save", { folder: target }));
+      expectInstalled(folder, NL);
+      expect(await rowOf(service, "nl")).toEqual({ language: "nl", state: "ready" });
+      expect(readdirSync(folder)).toEqual(["nl"]);
+    }), TIMEOUT_MS);
 });
+
+// The first line of a holder process, within 15 s.
+async function heldLine(holder: Bun.Subprocess<"ignore", "pipe", "ignore">): Promise<string> {
+  const reader = holder.stdout.getReader();
+  let text = "";
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const bound = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error("holder gave no line within 15 s")), 15_000)));
+  const exited = holder.exited.then((code) => Promise.reject(new Error(`holder exited with ${code}`)));
+  try {
+    while (!text.includes("\n")) {
+      const chunk = await Promise.race([reader.read(), bound, exited]);
+      if (chunk.done) throw new Error("holder closed stdout");
+      text += new TextDecoder().decode(chunk.value);
+    }
+    return text.slice(0, text.indexOf("\n")).trimEnd();
+  } finally {
+    clearTimeout(timer);
+    reader.releaseLock();
+  }
+}
 
 describe("T019 independence from Git and the session log", () => {
   caseTest(TASK, "a Git read and a commit run during a download, and neither waits", SHELL, () => {
@@ -664,6 +732,47 @@ describe("T019 independence from Git and the session log", () => {
       const entries = service.log().filter((e) => kinds.includes((e as { kind: string }).kind));
       expect(entries.map((e) => (e as { kind: string }).kind)).toEqual(kinds);
       for (const e of entries) for (const key of Object.keys(e as object)) expect(["kind", "operationId", "durationMs", "code", "count"]).toContain(key);
+    }), TIMEOUT_MS);
+
+  // Plan.md D2 "Logs" and contract Δ7: the bytes received, written, or returned, and 0 for a list or a remove.
+  caseTest(TASK, "each dictionary log entry holds its byte count", SHELL, () =>
+    withDictionaries("log-count", {}, async ({ service, folder }) => {
+      const total = (l: Language) => l.entry.files.reduce((sum, f) => sum + f.size, 0);
+      expect(end(await download(service, "nl"))).toEqual(READY("nl"));
+      expect((await read(service, "nl", "index.dic")).state).toBe("succeeded");
+      expect((await read(service, "de", "index.aff")).state).toBe("failed");
+      expect(end(await importFrom(service, "fr", source("log-count-src", FR)))).toEqual(READY("fr"));
+      await list(service);
+      await remove(service, "nl");
+      expect(readdirSync(folder).sort()).toEqual(["fr"]);
+      const counts = service.log().flatMap((e) => {
+        const { kind, count } = e as { kind: string; count?: number };
+        return kind.endsWith("Dictionary") || kind === "listDictionaries" ? [[kind, count]] : [];
+      });
+      expect(counts).toEqual([
+        ["downloadDictionary", total(NL)],
+        ["readDictionary", 5_000],
+        ["readDictionary", 0],
+        ["importDictionary", total(FR)],
+        ["listDictionaries", 0],
+        ["removeDictionary", 0],
+      ]);
+    }), TIMEOUT_MS);
+
+  // Contract Δ3 `listDictionaries`: a throw in a check step still ends the operation.
+  caseTest(TASK, "a throw in a list check step gives DICTIONARY_UNAVAILABLE changed", SHELL, () =>
+    withDictionaries("list-throw", { setup: (folder) => place(folder, NL) }, async ({ service }) => {
+      expect((await list(service)).state).toBe("succeeded");
+      const spy = spyOn(Bun, "deepEquals").mockImplementation(() => {
+        throw new Error("injected");
+      });
+      let response: ServiceResponse;
+      try {
+        response = await list(service);
+      } finally {
+        spy.mockRestore();
+      }
+      expect(end(response)).toEqual(refused("changed"));
     }), TIMEOUT_MS);
 
   caseTest(TASK, "the list, read, and remove deadline is READ_DEADLINE_MS", SHELL, () => {

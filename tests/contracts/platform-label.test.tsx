@@ -36,6 +36,12 @@ describe("Unqualified platform label", () => {
   }
 });
 
+// 006 tasks.md T049, plan.md D18 "About source line" (user decision of 2026-10-24).
+test("the About overview names the Hunspell source of the release of this version", () => {
+  const text = plain(renderToStaticMarkup(<AboutOverview scope="qualification-target" build={BUILD} repositoryUrl="https://github.com/auric/arbareto" />));
+  expect(text).toContain("Hunspell source (LGPL-2.1): https://github.com/auric/arbareto/releases (release 0.1.0)");
+});
+
 // T123 (plan.md D15 "About window"): `index.css` sets `user-select: none` on the body, so copyable text needs `select-text`.
 describe("About text selection", () => {
   const NOTICES = { repositoryUrl: "https://github.com/auric/arbareto", project: { license: "AGPL text", notice: "NOTICE text" }, texts: ["MIT text"], groups: [] };

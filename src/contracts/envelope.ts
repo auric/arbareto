@@ -1359,16 +1359,22 @@ const dictionaryRefusal = (reasons: readonly [DictionaryReason, ...DictionaryRea
     .meta({ title });
 export const DictionaryRefusal = dictionaryRefusal(DICTIONARY_UNAVAILABLE_REASONS, "DictionaryRefusal");
 // Data-model §4. `removed` holds the first DICTIONARY_CATALOG_ENTRIES `catalog-removed` notices of this service process, and `more` counts the rest.
+// Contract Δ3: a throw in a check step gives the refusal `changed`.
 export const ListDictionariesResult = z
-  .strictObject({
-    languages: z
-      .array(z.strictObject({ language: LanguageId, state: z.enum(LANGUAGE_STATES), notice: z.enum(LANGUAGE_NOTICES).optional() }).meta({ title: "DictionaryLanguage" }))
-      .max(DICTIONARY_CATALOG_ENTRIES)
-      .refine((rows) => new Set(rows.map((row) => row?.language)).size === rows.length),
-    // Data-model §2 `name`: 1 to 64 code points.
-    removed: z.array(z.strictObject({ language: LanguageId, name: Text.refine((name) => [...name].length >= 1 && [...name].length <= 64) }).meta({ title: "RemovedLanguage" })).max(DICTIONARY_CATALOG_ENTRIES),
-    more: Count,
-  })
+  .union([
+    z
+      .strictObject({
+        languages: z
+          .array(z.strictObject({ language: LanguageId, state: z.enum(LANGUAGE_STATES), notice: z.enum(LANGUAGE_NOTICES).optional() }).meta({ title: "DictionaryLanguage" }))
+          .max(DICTIONARY_CATALOG_ENTRIES)
+          .refine((rows) => new Set(rows.map((row) => row?.language)).size === rows.length),
+        // Data-model §2 `name`: 1 to 64 code points.
+        removed: z.array(z.strictObject({ language: LanguageId, name: Text.refine((name) => [...name].length >= 1 && [...name].length <= 64) }).meta({ title: "RemovedLanguage" })).max(DICTIONARY_CATALOG_ENTRIES),
+        more: Count,
+      })
+      .meta({ title: "DictionaryStates" }),
+    dictionaryRefusal(["changed"], "ListDictionariesRefusal"),
+  ])
   .meta({ title: "ListDictionariesResult" });
 // Data-model §7: the base64 of the bytes from `offset`, up to DICTIONARY_CHUNK_BYTES.
 const base64Bytes = (text: string) => (text.length / 4) * 3 - (text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0);

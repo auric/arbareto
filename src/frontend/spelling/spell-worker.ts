@@ -3,15 +3,16 @@
 
 import { createHunspellFromStrings } from "hunspell-wasm";
 import { SPELLING_SUGGESTIONS } from "../../contracts/limits";
-import { words } from "../../contracts/spell-words";
+import { scriptsOf, words } from "../../contracts/spell-words";
 import { englishFiles } from "./english";
 
 // 006 plan.md D9, data-model §14: one module worker per loaded language and kind. The engine sends `check` only to a check worker and `suggest` only to a suggestion worker.
 
+// `script`: the catalog Script value of the language. A check worker checks only the words that hold a letter of it (data-model §13, §14).
 export type WorkerMessage =
-  | { type: "init"; language: string }
+  | { type: "init"; language: string; script: string }
   | { type: "chunk"; file: "aff" | "dic"; data: string }
-  | { type: "build" }
+  | { type: "build"; script: string }
   | { type: "check"; round: number; lines: { start: number; text: string }[] }
   | { type: "suggest"; id: number; word: string };
 export type WorkerReply =
@@ -34,6 +35,7 @@ function joined(parts: Uint8Array[]): Uint8Array {
 /** The message handler of one worker. `post` sends a reply; `transfer` lists its transferable buffers. */
 export function createSpellWorker(post: (reply: WorkerReply, transfer?: Transferable[]) => void, deps: WorkerDeps) {
   let core: SpellCore | null = null;
+  let own: string[] = [];
   const chunks: Record<"aff" | "dic", Uint8Array[]> = { aff: [], dic: [] };
 
   async function load(files: () => Promise<{ aff: string; dic: string }>) {
@@ -49,6 +51,7 @@ export function createSpellWorker(post: (reply: WorkerReply, transfer?: Transfer
   return (message: WorkerMessage) => {
     switch (message.type) {
       case "init":
+        own = [message.script];
         void load(deps.english);
         return;
       case "chunk":
@@ -56,6 +59,7 @@ export function createSpellWorker(post: (reply: WorkerReply, transfer?: Transfer
         return;
       case "build": {
         // Plan.md D9: a byte sequence that is not UTF-8 fails the load.
+        own = [message.script];
         const decoder = new TextDecoder("utf-8", { fatal: true });
         void load(async () => ({ aff: decoder.decode(joined(chunks.aff)), dic: decoder.decode(joined(chunks.dic)) }));
         chunks.aff = [];
@@ -64,7 +68,7 @@ export function createSpellWorker(post: (reply: WorkerReply, transfer?: Transfer
       }
       case "check": {
         const refused: number[] = [];
-        for (const line of message.lines) for (const w of words(line.text, line.start)) if (!core!.testSpelling(w.word)) refused.push(w.start, w.end);
+        for (const line of message.lines) for (const w of words(line.text, line.start)) if (scriptsOf(w.word, own).size > 0 && !core!.testSpelling(w.word)) refused.push(w.start, w.end);
         const ranges = Uint32Array.from(refused);
         post({ type: "checked", round: message.round, ranges }, [ranges.buffer]);
         return;

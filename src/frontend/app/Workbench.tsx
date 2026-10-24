@@ -787,11 +787,13 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const sections = useRef<HTMLDivElement>(null);
   const lastFocus = useRef(new Map<Section, HTMLElement>());
   const [drafts] = useState(() => givenDrafts ?? createDrafts(createDraftStore()));
-  const [spelling] = useState<Spelling>(() => {
-    if (givenSpelling !== undefined) return givenSpelling;
+  const [[spelling, ownsSpelling]] = useState<[Spelling, boolean]>(() => {
+    if (givenSpelling !== undefined) return [givenSpelling, false];
     const store = createSpellingStore();
-    return { store, engine: createSpellEngine(store, { bridge }) };
+    return [{ store, engine: createSpellEngine(store, { bridge }) }, true];
   });
+  // main.tsx mounts a new Workbench after an environment failure, so an engine that this one made ends its workers here.
+  useEffect(() => (ownsSpelling ? () => spelling.engine.dispose() : undefined), [spelling, ownsSpelling]);
   // The latest mutation of this repository for the status region (T138). Another repository clears it.
   const [operation, setOperation] = useState<StatusOperation | null>(null);
   // Feature 003 data-model §1: the newest `readTracking` entries of the open repository.

@@ -54,12 +54,13 @@ export function createDictionaries({ folder, catalog, registry, reject, fetch: f
   let reads = 0;
 
   // Plan.md D2: the registry operation, its deadline flag, and Cancel. The flags decide DEADLINE and CANCELED, never an error object.
-  // The response follows the end of `work`, so the staging folder is gone before it.
-  function run(operation: ServiceRequest["operation"], requestId: string, deadlineMs: number, work: (o: { operationId: string; signal: AbortSignal }) => Promise<Outcome>, fallback: Refusal | null, done?: () => void): void {
+  // The response follows the end of `work`, so the staging folder is gone before it. `moved` adds to the logged byte count (plan.md D2 "Logs").
+  function run(operation: ServiceRequest["operation"], requestId: string, deadlineMs: number, work: (o: { operationId: string; signal: AbortSignal; moved(n: number): void }) => Promise<Outcome>, fallback: Refusal, done?: () => void): void {
     const { operationId, signal } = registry.start(operation, requestId);
     registry.apply(operationId, { type: "valid-read" });
     const stop = new AbortController();
     let deadline = false;
+    let count = 0;
     const abort = () => stop.abort();
     signal.addEventListener("abort", abort, { once: true });
     const clear = timer(deadlineMs, () => {
@@ -70,15 +71,12 @@ export function createDictionaries({ folder, catalog, registry, reject, fetch: f
       clear();
       signal.removeEventListener("abort", abort);
       done?.();
-      if (deadline) return void registry.apply(operationId, { type: "read-deadline" });
-      if (registry.get(operationId)?.state === "cancel-requested") return void registry.apply(operationId, { type: "processes-stopped" });
-      if ("value" in outcome) return void registry.apply(operationId, { type: "read-complete", result: "succeeded" }, outcome.value);
-      registry.apply(operationId, { type: "read-complete", result: "failed", code: "DICTIONARY_UNAVAILABLE" }, outcome.refusal);
+      if (deadline) return void registry.apply(operationId, { type: "read-deadline" }, undefined, undefined, count);
+      if (registry.get(operationId)?.state === "cancel-requested") return void registry.apply(operationId, { type: "processes-stopped" }, undefined, undefined, count);
+      if ("value" in outcome) return void registry.apply(operationId, { type: "read-complete", result: "succeeded" }, outcome.value, undefined, count);
+      registry.apply(operationId, { type: "read-complete", result: "failed", code: "DICTIONARY_UNAVAILABLE" }, outcome.refusal, undefined, count);
     };
-    work({ operationId, signal: stop.signal }).then(end, (error: unknown) => {
-      if (fallback === null) throw error;
-      end({ refusal: fallback });
-    });
+    work({ operationId, signal: stop.signal, moved: (n) => void (count += n) }).then(end, () => end({ refusal: fallback }));
   }
 
   const entryOf = (request: { requestId: string; payload: { language: string } }): Entry | null => {
@@ -149,7 +147,7 @@ export function createDictionaries({ folder, catalog, registry, reject, fetch: f
       "downloadDictionary",
       request.requestId,
       DICTIONARY_DOWNLOAD_DEADLINE_MS,
-      ({ operationId, signal }) =>
+      ({ operationId, signal, moved }) =>
         locked(entry, "downloading", signal, async (staging) => {
           // Plan.md D4 step 1: the check of every file comes before any request.
           if (entry.files.some((f) => new URL(f.url).protocol !== "https:")) return refuse("not-https");
@@ -157,6 +155,7 @@ export function createDictionaries({ folder, catalog, registry, reject, fetch: f
           let last = -Infinity;
           const progress = (n: number) => {
             received += n;
+            moved(n);
             const now = performance.now();
             if (signal.aborted || now - last < PROGRESS_INTERVAL_MS) return;
             last = now;
@@ -196,7 +195,7 @@ export function createDictionaries({ folder, catalog, registry, reject, fetch: f
       "importDictionary",
       request.requestId,
       DICTIONARY_DOWNLOAD_DEADLINE_MS,
-      ({ signal }) =>
+      ({ signal, moved }) =>
         locked(entry, "importing", signal, async (staging) => {
           for (const file of entry.files) {
             const path = join(picked, file.name);
@@ -215,6 +214,7 @@ export function createDictionaries({ folder, catalog, registry, reject, fetch: f
             } catch {
               return refuse("save", { folder: store.folderOf(entry.id) });
             }
+            moved(bytes.length);
           }
           return { value: null };
         }),
@@ -235,12 +235,13 @@ export function createDictionaries({ folder, catalog, registry, reject, fetch: f
       "readDictionary",
       request.requestId,
       readDeadlineMs,
-      async ({ signal }) => {
+      async ({ signal, moved }) => {
         await store.reconcile();
         if (signal.aborted) return refuse("changed");
         const bytes = await store.fileBytes(entry, file);
         if (typeof bytes === "string") return refuse(bytes);
         const chunk = bytes.subarray(offset, offset + DICTIONARY_CHUNK_BYTES);
+        moved(chunk.length);
         return { value: { language: entry.id, file: name, size: file.size, offset, bytes: Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength).toString("base64") } };
       },
       { reason: "changed" },
@@ -264,7 +265,8 @@ export function createDictionaries({ folder, catalog, registry, reject, fetch: f
         }
         return { value: { languages, ...store.removedNotices() } };
       },
-      null,
+      // Contract Δ3: a throw in a check step still ends the list.
+      { reason: "changed" },
     );
 
   const remove = (request: Request<"removeDictionary">) => {

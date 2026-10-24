@@ -65,8 +65,8 @@ export function createOperationRegistry(
       return { operationId, signal: controller.signal };
     },
 
-    // `result` goes into the terminal response only. `cause` goes only into the session log entry of the terminal response (contract §7, §9).
-    apply(operationId: string, event: OperationEvent, result?: unknown, cause?: DiagnosticCause): TransitionResult {
+    // `result` goes into the terminal response only. `cause` and `count` go only into the session log entry of the terminal response (contract §7, §9).
+    apply(operationId: string, event: OperationEvent, result?: unknown, cause?: DiagnosticCause, count?: number): TransitionResult {
       const e = entry(operationId);
       const next = transition(e.view, event);
       const { actions, terminalResponse, endedProcesses, rowResult, ...fields } = next;
@@ -87,6 +87,7 @@ export function createOperationRegistry(
           durationMs: Math.round(performance.now() - e.startedAt),
           ...(code ? { code } : {}),
           ...(cause === undefined ? {} : { cause }),
+          ...(count === undefined ? {} : { count }),
         });
         // Contract §6: `ended` follows the terminal response of a mutation with a marker. Every other operation gets `closeJob`.
         if (e.marker) runner.ended(operationId, e.view.endProcesses === true);

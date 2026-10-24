@@ -27,7 +27,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - Steps: the release reconcile once per service process (plan D5, data-model §3), then the data-model §3 language check of each installed catalog entry.
 - Result: `{languages, removed, more}`. `languages` holds one `{language, state, notice?}` per catalog entry in catalog order, with `state` one of `not-downloaded`, `ready`, `changed`, `downloading`, `importing`, and `notice` `catalog-changed` when it applies. `removed` holds the `{language, name}` of the first `DICTIONARY_CATALOG_ENTRIES` `catalog-removed` notices of this service process, and `more` counts the rest. The reconcile still removes every folder that left the catalog.
 - Deadline: `READ_DEADLINE_MS` (30 s). It never takes the run lock.
-- Errors: `DEADLINE`; `CANCELED` after a `cancel {operationId}`.
+- Errors: `DEADLINE`; `CANCELED` after a `cancel {operationId}`; `DICTIONARY_UNAVAILABLE` with `changed` when a check step throws, so the operation always ends (batch 1 review, item 11). No such throw is known today.
 
 ### `readDictionary`
 
@@ -132,7 +132,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - Download environment: the service passes `proxy: false`, so Bun reads no proxy variable. The shell keeps removing `NODE_USE_SYSTEM_CA` (`env_sanitize.rs`). The explicit `tls` options keep `NODE_EXTRA_CA_CERTS` and `NODE_TLS_REJECT_UNAUTHORIZED` out of the request (plan O-12, F3).
 - Trust: the dictionary operations use no trust class and run no repository program. A WSL Global save keeps the 004 marker of kind `workbench` with action `config-save`, runs no repository program, and needs no trust approval (spec FR-021).
 - Environment to WSL: no change. `WSLENV` stays empty, so no Windows variable reaches the distro (001 §11).
-- Logs: the 001 §7 allowlist of `log.ts` stays: `kind`, `operationId`, `durationMs`, `code`, `cause`, `count`, and `effects`. A dictionary operation records its kind, operation ID, duration, code, and byte count. No language, reason, status, URL, path, or word.
+- Logs: the 001 §7 allowlist of `log.ts` stays: `kind`, `operationId`, `durationMs`, `code`, `cause`, `count`, and `effects`. A dictionary operation records its kind, operation ID, duration, code, and byte count. The byte count is the decoded bytes received by a download, the bytes written by an import, the chunk length of a read, and 0 for a list or a remove (plan D2). No language, reason, status, URL, path, or word.
 
 ## Δ8 Freshness, cancellation, and outcome (001 §8)
 
@@ -152,10 +152,10 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 ## Δ10 Required contract checks (001 §10)
 
 - Schema tests and golden vectors for every new operation, the code, every reason, the phase, `spelling` in `readSyncSettings`, and the shell setting, in Bun and Rust.
-- A catalog test: the schema, the exact URL form, no `en` entry, unique IDs, the `compareNames` order, the 12 MiB sum, the `licences` rule, and the `bundled` sizes and SHA-256 values against `node_modules/dictionary-en`.
+- A catalog test: the schema, the exact URL form, no `en` entry, unique IDs, the `compareNames` order, the 12 MiB sum, the `licences` rule, the `bundled` sizes and SHA-256 values against `node_modules/dictionary-en`, the `script` value of each entry against `Intl.Locale(id).maximize().script` (`Latin` for `bundled`), and the file form `JSON.stringify(value, null, 2)` plus a line feed. The renderer build parses the file with the `Catalog` schema.
 - A dependency test: `bun.lock` names `hunspell-wasm` 0.3.0 with the integrity `sha512-D7/QLaeekJYYlE37D7KBq5v38vL4tQutTFIUBOUGBl0g9la8OUgfSd8+XbwNPV5uYMHS13umXR9MtdAxStpHJg==`, and `node_modules/hunspell-wasm/wasm/hunspell.wasm` has the SHA-256 `72152324049c9215da17abceb12555b3ef9094c0524327e660f8145aaa9c68e0`. Fact F14 checks that the build emits the same bytes.
 - A CSP test (cargo): `tauri.conf.json` holds the two sources of Δ7, and every other directive keeps its earlier value.
-- Vector tests for `spell-words.ts` (data-model §11), the case rule (§12), the line shift and the round merge (§13), the suggestion merge (§15), and the size text (plan D17).
+- Vector tests for `spell-words.ts` (data-model §11), the case rule (§12), the line shift, the Script rule, and the round merge (§13), the suggestion merge (§15), and the size text (plan D17).
 - A source test (`tests/contracts/network-sites.test.ts`): `src/frontend` holds no `fetch(` call, and `src/git-service` holds exactly one, in `dictionaries.ts`.
 - A Rust test admits the WSL `globalConfig` arrays and checks the WSL command: `-C /`, mode `integrate` for the writes, mode `read` for the listing, and an empty `WSLENV`.
 - The Rust check of `src-tauri/src/schema.rs` reads each new vector of `native-first-envelope` and of the shell-only operations.
@@ -186,7 +186,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 ## Contract gaps
 
 - Each `readDictionary` call hashes the requested file whole. A file can change between two calls. Each chunk still comes from a version that equals the catalog, so the joined bytes equal the catalog. An external change during a load can make one chunk call give `changed`.
-- A Remove can fail when another process holds a dictionary file open without delete sharing. The result names the folder, and the files stay.
+- A Remove can fail when another process holds a dictionary file open without delete sharing. The result names the folder. The recursive removal can delete other files before it fails, so the row then shows Changed (research R13, T048: `entry.json` and `index.aff` went, and the held `index.dic` and `license` stayed).
 - The release reconcile runs once per service process. A folder that another program adds later stays until the next service start.
 - A proxy, the Windows system proxy, and the Windows certificate store are not supported (spec Assumptions). Import is the fallback.
 - A suggestion list runs in one synchronous Hunspell call in the suggestion worker (up to about 300 ms measured). A newer menu waits for the running call to end, and the engine drops its stale reply. Check rounds never wait for it.

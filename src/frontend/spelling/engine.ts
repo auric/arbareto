@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { COMMIT_MESSAGE_BYTES, DICTIONARY_CHUNK_BYTES, DICTIONARY_LOAD_DEADLINE_MS } from "../../contracts/limits";
-import { changedLines, createRounds, mergeMarks, mergeSuggestions, shiftRanges, type LineChange, type WordRange } from "../../contracts/spell-words";
+import { changedLines, createRounds, mergeMarks, mergeSuggestions, scriptsOf, shiftRanges, type LineChange, type WordRange } from "../../contracts/spell-words";
 import type { BridgeResponse, OnProgress } from "../bridge";
 import type { WorkerMessage, WorkerReply } from "./spell-worker";
 import type { SpellingStore } from "./store";
@@ -32,6 +32,8 @@ type Asked = { id: number; word: string; sent: boolean; deliver(list: string[] |
 type Slot = {
   id: string;
   kind: "check" | "suggest";
+  /** The catalog Script value, or null for an ID outside the catalog. */
+  script: string | null;
   worker: WorkerLike | null;
   loaded: boolean;
   ended: boolean;
@@ -97,8 +99,8 @@ export function createSpellEngine(store: SpellingStore, deps: EngineDeps) {
     return setting?.enabled ? setting.languages : [];
   };
   const inSelection = (map: Map<string, Slot>, test: (slot: Slot) => boolean) => selected().flatMap((id) => (map.has(id) && test(map.get(id)!) ? [map.get(id)!] : []));
-  // Data-model §13 "Merge": a mark needs the refusal of every loaded language. A language joins after its first round merged.
-  const remerge = () => void (shown = limited ? [] : mergeMarks(inSelection(checks, (s) => s.ready).map((s) => s.refused), store.accepts));
+  // Data-model §13 "Merge": a mark needs the refusal of every responsible language. A language joins after its first round merged.
+  const remerge = () => void (shown = limited ? [] : mergeMarks(inSelection(checks, (s) => s.ready).map((s) => ({ script: s.script!, refused: s.refused })), store.accepts));
 
   function send(slot: Slot, message: WorkerMessage) {
     if (slot.busy) return void (slot.pending = message);
@@ -106,10 +108,10 @@ export function createSpellEngine(store: SpellingStore, deps: EngineDeps) {
     slot.worker!.postMessage(message);
   }
 
-  /** Data-model §13 "Round": the changed lines from `prev`, or every line after a load, a removal, or the 64 KiB limit. */
-  function startRound(prev: string | null) {
+  /** Data-model §13 "Round": the changed lines from `prev`, or every line after a load, a removal, or the 64 KiB limit. False when no round starts. */
+  function startRound(prev: string | null): boolean {
     const loaded = inSelection(checks, (s) => s.loaded);
-    if (loaded.length === 0 || composing || limited) return;
+    if (loaded.length === 0 || composing || limited) return false;
     const starts = lineStarts(text);
     let lines: number[];
     let change: LineChange | undefined;
@@ -129,6 +131,7 @@ export function createSpellEngine(store: SpellingStore, deps: EngineDeps) {
     round = { id: started.round, lines: inText, replies: new Map() };
     const message: WorkerMessage = { type: "check", round: started.round, lines: inText.map((i) => ({ start: starts[i]!, text: text.slice(starts[i]!, lineEnd(text, starts, i)) })) };
     for (const slot of loaded) send(slot, message);
+    return true;
   }
 
   function onChecked(slot: Slot, reply: Extract<WorkerReply, { type: "checked" }>) {
@@ -257,12 +260,13 @@ export function createSpellEngine(store: SpellingStore, deps: EngineDeps) {
         worker.postMessage({ type: "chunk", file: file === "index.aff" ? "aff" : "dic", data: chunk.bytes });
       }
     }
-    worker.postMessage({ type: "build" });
+    worker.postMessage({ type: "build", script: slot.script! });
   }
 
   /** Plan.md D9 "Load order": one load at a time. The deadline runs from `init`, or from the first `readDictionary` call. */
   async function load(slot: Slot): Promise<void> {
     if (slot.ended) return;
+    if (slot.script === null) return fail(slot);
     let worker: WorkerLike;
     try {
       worker = await createWorker();
@@ -276,20 +280,22 @@ export function createSpellEngine(store: SpellingStore, deps: EngineDeps) {
       worker.onmessage = (event) => onReply(slot, event.data);
       worker.onerror = () => fail(slot);
       slot.timer = clock.setTimeout(() => fail(slot), DICTIONARY_LOAD_DEADLINE_MS);
-      if (slot.id === "en") worker.postMessage({ type: "init", language: "en" });
+      if (slot.id === "en") worker.postMessage({ type: "init", language: "en", script: slot.script! });
       else void readFiles(slot, worker);
     });
   }
 
   function start(id: string, kind: Slot["kind"]): Slot {
-    const slot: Slot = { id, kind, worker: null, loaded: false, ended: false, busy: false, timer: undefined, done: null, read: null, pending: null, refused: [], ready: false, asked: null };
+    const script = store.state().catalog?.get(id)?.script ?? null;
+    const slot: Slot = { id, kind, script, worker: null, loaded: false, ended: false, busy: false, timer: undefined, done: null, read: null, pending: null, refused: [], ready: false, asked: null };
     loads = loads.then(() => load(slot)).catch(() => fail(slot));
     return slot;
   }
 
   /** Plan.md D9: Off, Remove, or a cleared selection terminates both workers of a language. */
   function sync() {
-    if (!showing) return;
+    // A worker needs the catalog Script of its language (data-model §14).
+    if (!showing || store.state().catalog === null) return;
     const wanted = selected();
     let removed = false;
     for (const [id, slot] of suggesters) if (!wanted.includes(id)) (end(slot), suggesters.delete(id));
@@ -327,7 +333,7 @@ export function createSpellEngine(store: SpellingStore, deps: EngineDeps) {
     show() {
       if (showing) return;
       showing = true;
-      store.readWords();
+      store.open();
       sync();
     },
     setText(next: string) {
@@ -351,7 +357,11 @@ export function createSpellEngine(store: SpellingStore, deps: EngineDeps) {
         for (const slot of checks.values()) slot.refused = shiftRanges(slot.refused, prev, next);
         shown = shiftRanges(shown, prev, next);
       }
-      startRound(prev);
+      if (!startRound(prev)) {
+        // Data-model §13: the reply of the running round holds offsets of the old text, so it never merges.
+        round = { id: -1, lines: [], replies: new Map() };
+        full = true;
+      }
       emit();
     },
     /** Plan.md D8 "IME": `compositionstart` hides every mark, and `compositionend` starts a round for the changed lines. */
@@ -368,7 +378,9 @@ export function createSpellEngine(store: SpellingStore, deps: EngineDeps) {
     },
     /** Data-model §15: `onList` gets the joined list and whether a worker still computes. The result stops the updates. */
     suggest(word: string, onList: (list: string[], pending: boolean) => void): () => void {
-      const order = inSelection(checks, (s) => s.loaded).map((s) => s.id);
+      const loaded = inSelection(checks, (s) => s.loaded);
+      const own = scriptsOf(word, loaded.map((s) => s.script!));
+      const order = loaded.filter((s) => own.has(s.script!)).map((s) => s.id);
       const lists = new Map<string, string[] | null>(order.map((id) => [id, null]));
       const id = ++requests;
       let open = true;

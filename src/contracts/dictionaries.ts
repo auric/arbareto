@@ -22,6 +22,12 @@ export const DictionaryFileName = z.enum(DICTIONARY_FILE_NAMES);
 export const LANGUAGE_STATES = ["not-downloaded", "ready", "changed", "downloading", "importing"] as const;
 export const LANGUAGE_NOTICES = ["catalog-changed"] as const;
 
+// Data-model §2 and §16: the Unicode Script property values (long names) of a catalog entry. No entry holds Common or Inherited.
+export const DICTIONARY_SCRIPTS = [
+  "Latin", "Cyrillic", "Greek", "Armenian", "Hebrew", "Arabic", "Syriac", "Thaana", "Georgian", "Ethiopic", "Cherokee", "Canadian_Aboriginal", "Mongolian", "Tifinagh",
+  "Devanagari", "Bengali", "Gurmukhi", "Gujarati", "Oriya", "Tamil", "Telugu", "Kannada", "Malayalam", "Sinhala", "Thai", "Lao", "Tibetan", "Myanmar", "Khmer", "Hangul", "Han", "Hiragana", "Katakana",
+] as const;
+
 const COMMIT = /^[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const LICENCE_FORMS = ["license", "licence", "license,licence", "readme.md"];
@@ -53,6 +59,7 @@ const entryFields = {
   id: LanguageId,
   name: z.string().refine((name) => [...name].length >= 1 && [...name].length <= 64),
   license: z.string().refine((license) => bytes(license) >= 1 && bytes(license) <= 128),
+  script: z.enum(DICTIONARY_SCRIPTS),
   commit: z.string().regex(COMMIT),
   files: z.array(CatalogFile).min(3).max(4),
   licences: z.array(z.enum(["license", "licence", "readme.md"])).min(1).max(2),
@@ -69,7 +76,7 @@ export const CatalogEntry = z.strictObject(entryFields).superRefine(entryRules);
 export type CatalogEntry = z.infer<typeof CatalogEntry>;
 
 const BundledEntry = z
-  .strictObject({ ...entryFields, id: z.literal("en"), package: z.strictObject({ name: z.literal("dictionary-en"), version: z.string() }) })
+  .strictObject({ ...entryFields, id: z.literal("en"), script: z.literal("Latin"), package: z.strictObject({ name: z.literal("dictionary-en"), version: z.string() }) })
   .superRefine(entryRules);
 
 export const Catalog = z

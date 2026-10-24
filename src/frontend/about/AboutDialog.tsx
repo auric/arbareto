@@ -40,6 +40,11 @@ export function AboutOverview({ scope, build, repositoryUrl }: OverviewProps) {
         Corresponding Source: <span className="font-mono break-all">{repositoryUrl}</span> at commit{" "}
         <span className="font-mono break-all">{build.commit}</span>
       </p>
+      {/* 006 plan.md D18 "About source line": the renderer has no link opener, so the line is text. */}
+      <p>
+        Hunspell source (LGPL-2.1): <span className="font-mono break-all">{`${repositoryUrl}/releases`}</span>
+        {` (release ${build.version})`}
+      </p>
     </div>
   );
 }

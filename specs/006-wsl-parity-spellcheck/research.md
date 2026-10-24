@@ -457,3 +457,11 @@ Independent batch 0 review, reviewer agent, read-only, on e85aa5b (`git diff e36
 - Low: the gate comment did not state the exact Script rule. Fix: the comment names the rule and the tie refusal.
 - Also fixed: the catalog script imported `DICTIONARY_LANGUAGE_BYTES` from its old module and stopped at start.
 - The review found the Script-based negative rule of data-model §16 exact: Unicode Script counts, typed refusals, and Hunspell `testSpelling` as the authority.
+
+### WP6 early facts (T028), 2026-10-24, `bun run dev`, WebView2 Edg/155.0.4283.62
+
+- The run used a scratch `ARBARETO_PROFILE_ROOT`, UI Automation patterns for the boot and the folder picker, and CDP for the page. It sent no OS input. The app ended by WM_CLOSE to its main window, and the Job of `bun run dev` ended by PID.
+- The T017 CSP had not landed. So the run used the 2026-10-24 CSP of `tauri.conf.json` (`script-src 'self'`, `connect-src ipc: http://ipc.localhost`). N1 under the T017 CSP stays open for WP8 (T041).
+- N1 holds under that CSP. The worker script response and the `hunspell.wasm` response carried no `Content-Security-Policy` header (research R6, Tauri sets it only on `.html`). CDP showed no `ContentSecurityPolicyIssue` and no `security` log entry. `OBSERVATION T028: N1 pass worker=assets/spell-worker-1TeTnzR1.js wasm=assets/hunspell-B7u9vk2r.wasm status=200 marks=["recieve"] chip="Spelling: English" cspIssues=0 webview2=155.0.4283.62`
+- N2 holds. The probe key ran `setSelectionRange` and `document.execCommand("insertText", false, "receive")`, which returned true with one `input` event. One Ctrl+Z (CDP `Input.dispatchKeyEvent` with the `undo` command) restored "recieve". `OBSERVATION T028: N2 pass insertText=true inputs=1 undo=restored webview2=155.0.4283.62`
+- Deviation: T028 names `tests/windows/inject.ts` for the keys. The batch preamble forbids OS input in app runs, so CDP sent the keys. A CDP key runs no native key binding, so the Ctrl+Z named the `undo` command. The native Ctrl+Z path stays for WP8 (Q8).

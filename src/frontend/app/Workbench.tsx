@@ -62,6 +62,8 @@ import { createRequests, isRegistration, wslDistro, type Clock, type RequestBrid
 import { metrics as densityMetrics } from "../layout/profiles";
 import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, storePanes, writePreferences, type DarkPalette, type Panes, type Preferences, type Theme } from "../state/preferences";
 import { createDrafts } from "../state/drafts";
+import { createSpellEngine, type Spelling } from "../spelling/engine";
+import { createSpellingStore } from "../spelling/store";
 import { createDraftStore } from "../state/draft-store";
 import { OperationStatus, SYNC_NAMES, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
@@ -130,6 +132,7 @@ export type WorkbenchBridge = RequestBridge &
     | "reviewSync"
     | "sync"
     | "readSyncSettings"
+    | "readDictionary"
     | "setDefaultPullAction"
     | "clone"
     | "connectInTerminal"
@@ -233,6 +236,8 @@ export type WorkbenchProps = {
   textScale?: number;
   /** The draft memory (plan.md "Stored drafts"). The default stores a copy in IndexedDB. */
   drafts?: ReturnType<typeof createDrafts>;
+  /** Feature 006 plan.md D15: the spelling store and engine of the window session. The default starts module workers. */
+  spelling?: Spelling;
   /** The timers of the change poll. The default uses the browser timers. */
   clock?: Clock;
 };
@@ -626,7 +631,7 @@ class AboutBoundary extends Component<{ onClose(): void; children: ReactNode }, 
   }
 }
 
-export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, restoreProgress, session = 0, onSelectGit, onEnvironment, textScale = 1, drafts: givenDrafts, clock }: WorkbenchProps) {
+export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, restoreProgress, session = 0, onSelectGit, onEnvironment, textScale = 1, drafts: givenDrafts, spelling: givenSpelling, clock }: WorkbenchProps) {
   // plan.md "Required visible states", Recovery statement: the statement stays until the next `refresh: true` read or another repository.
   const [recovery, setRecovery] = useState<{ repositoryId: string; statement: RecoveryStatement } | null>(null);
   // Contract §11 "Distro start": a registration, restore, or marker dismissal in phase `wsl-starting`, until its response. No event marks the probe end.
@@ -782,6 +787,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const sections = useRef<HTMLDivElement>(null);
   const lastFocus = useRef(new Map<Section, HTMLElement>());
   const [drafts] = useState(() => givenDrafts ?? createDrafts(createDraftStore()));
+  const [spelling] = useState<Spelling>(() => {
+    if (givenSpelling !== undefined) return givenSpelling;
+    const store = createSpellingStore();
+    return { store, engine: createSpellEngine(store, { bridge }) };
+  });
   // The latest mutation of this repository for the status region (T138). Another repository clears it.
   const [operation, setOperation] = useState<StatusOperation | null>(null);
   // Feature 003 data-model §1: the newest `readTracking` entries of the open repository.
@@ -958,9 +968,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   useEffect(() => {
     if (repositoryId === null) return;
     let current = true;
-    void bridge.readSyncSettings().then((response) => void (current && setSyncSettings(settingsOf(response))));
+    const read = bridge.readSyncSettings();
+    // Feature 006 data-model §8: the same result carries the spelling selection.
+    spelling.store.settings(read);
+    void read.then((response) => void (current && setSyncSettings(settingsOf(response))));
     return () => void (current = false);
-  }, [bridge, repositoryId]);
+  }, [bridge, repositoryId, spelling]);
   async function setDefaultPullAction(action: DefaultPullAction) {
     const response = await bridge.setDefaultPullAction({ action });
     if (response.state === "succeeded") setSyncSettings(settingsOf(response));
@@ -1528,6 +1541,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             pushReason={commitPushReason}
             operationState={workspace?.operationState}
             amend={{ value: commitState.amend, onChange: (amend) => store.setCommitView(viewKey, { amend }) }}
+            spelling={spelling}
           />
         </div>
       </div>

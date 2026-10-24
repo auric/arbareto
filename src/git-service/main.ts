@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import { join } from "node:path";
 import { createNativeRunner } from "./native-runner";
 import { createSession } from "./session";
 import { createFrameWriter, readFrames } from "./transport";
@@ -14,6 +15,8 @@ const session = createSession({
   fail: () => {
     failed = true;
   },
+  // Feature 006 contract Δ7: the shell starts the service in the launch directory.
+  dictionaryFolder: join(process.cwd(), "dictionaries"),
 });
 
 for await (const incoming of readFrames(Bun.stdin.stream())) {

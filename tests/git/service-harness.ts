@@ -10,7 +10,18 @@ import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Handshake, MutationStarted, TrustAction, TrustDetails } from "../../src/contracts/channel";
-import { ReadBranchesResult, ReadGitSettingsResult, ReadWorktreesResult, ReviewCommitResult, ReviewWorkbenchResult, RunWorkbenchResult } from "../../src/contracts/envelope";
+import {
+  DictionaryRunResult,
+  ListDictionariesResult,
+  ReadBranchesResult,
+  ReadDictionaryResult,
+  ReadGitSettingsResult,
+  ReadWorktreesResult,
+  RemoveDictionaryResult,
+  ReviewCommitResult,
+  ReviewWorkbenchResult,
+  RunWorkbenchResult,
+} from "../../src/contracts/envelope";
 import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
 import { isObject } from "../../src/contracts/strict-json";
 import type { HunkCheckpoint } from "../../src/git-service/hunk-publish";
@@ -254,6 +265,14 @@ export interface ServiceSeams {
   historyViewCommits?: number;
   // The expected matches of each matching probe run, changed for a probe mismatch (T033).
   historyProbeRuns?: SessionOptions["historyProbeRuns"];
+  // Feature 006 plan.md D5 (T019): the owned dictionary folder. Without it, the dictionary operations get SERVICE_UNAVAILABLE.
+  dictionaryFolder?: string;
+  // A synthetic catalog. The service does not parse it, so a case can name an `http:` URL.
+  catalog?: SessionOptions["catalog"];
+  // The injected `fetch`. No test uses the network.
+  fetch?: SessionOptions["fetch"];
+  // The fake clock of the dictionary deadlines.
+  dictionaryTimer?: SessionOptions["dictionaryTimer"];
 }
 
 // Contract §12 "Update protocol" step 5 and "Trust": `folder-check` comes before the folder check of a `reuse` row, `clone-check` before the clone check of a row,
@@ -400,6 +419,8 @@ export interface Service {
   sessionId: string;
   responses: ServiceResponse[];
   progress: unknown[];
+  // `performance.now()` at each progress event, in the order of `progress`.
+  progressAt: number[];
   // The frames that `refuseFrame` refused.
   refused: Frame[];
   // `performance.now()` at the first response of each `requestId`.
@@ -450,6 +471,12 @@ const RESULT_SCHEMAS: Readonly<Record<string, { safeParse(value: unknown): { suc
   reviewWorkbench: ReviewWorkbenchResult,
   reviewCommit: ReviewCommitResult,
   runWorkbench: RunWorkbenchResult,
+  // Feature 006 contract Δ3 (T019).
+  listDictionaries: ListDictionariesResult,
+  readDictionary: ReadDictionaryResult,
+  downloadDictionary: DictionaryRunResult,
+  importDictionary: DictionaryRunResult,
+  removeDictionary: RemoveDictionaryResult,
 };
 
 export async function openService(options: OpenOptions): Promise<Service> {
@@ -458,6 +485,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
   const runner = createBunRunner({ git: options.git, directory: fixtureDir(options.name), environment, trustStore, ...(options.wslGlobalConfig === undefined ? {} : { wslGlobalConfig: options.wslGlobalConfig }) });
   const responses: ServiceResponse[] = [];
   const progress: unknown[] = [];
+  const progressAt: number[] = [];
   const refused: Frame[] = [];
   const responseAt = new Map<string, number>();
   const firstResponse = new Map<string, ServiceResponse>();
@@ -533,6 +561,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
       if (frame.kind === "public" && isObject(frame.progress)) {
         const event = frame.progress;
         progress.push(event);
+        progressAt.push(performance.now());
         if (event.state === "accepted" && typeof event.requestId === "string" && typeof event.operationId === "string") acceptedBy.set(event.requestId, event.operationId);
       }
       notify();
@@ -549,6 +578,10 @@ export async function openService(options: OpenOptions): Promise<Service> {
     ...(options.submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint: options.submoduleCheckpoint }),
     ...(options.historyViewCommits === undefined ? {} : { historyViewCommits: options.historyViewCommits }),
     ...(options.historyProbeRuns === undefined ? {} : { historyProbeRuns: options.historyProbeRuns }),
+    ...(options.dictionaryFolder === undefined ? {} : { dictionaryFolder: options.dictionaryFolder }),
+    ...(options.catalog === undefined ? {} : { catalog: options.catalog }),
+    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+    ...(options.dictionaryTimer === undefined ? {} : { dictionaryTimer: options.dictionaryTimer }),
   };
   const sessionOptions: SessionOptions & ServiceSeams = {
     writer,
@@ -596,6 +629,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     sessionId,
     responses,
     progress,
+    progressAt,
     refused,
     responseAt,
     log: () => session.log.entries(),

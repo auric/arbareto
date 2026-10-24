@@ -10,6 +10,7 @@ import { printOrigin } from "../origin";
 printOrigin("../../src/frontend/changes/ComparisonView.tsx", import.meta.dir);
 printOrigin("../../src/frontend/changes/hunk-mapping.ts", import.meta.dir);
 printOrigin("../../src/frontend/changes/patch-css.ts", import.meta.dir);
+printOrigin("../../src/frontend/changes/theme-type.ts", import.meta.dir);
 // `ComparisonView.tsx` loads Base UI. Base UI must first evaluate with a DOM (tests/dom.ts).
 registerDom();
 const { createRoot } = await import("react-dom/client");
@@ -155,5 +156,40 @@ describe("selected lines (feature 004 plan.md D16)", () => {
     const style = getComputedStyle(line);
     expect(style.boxShadow).toBe("inset 3px 0 0 rgb(1, 2, 3)");
     expect(["", "none"]).toContain(style.backgroundImage);
+  });
+});
+
+describe("diff theme (T396)", () => {
+  // Pierre 1.5.1 defaults `themeType` to "system", and its `:host` rule sets `color-scheme: light dark`. So the diff follows the OS scheme unless the view passes the app theme.
+  test("the diff theme type follows View > Theme, not the OS scheme, also under forced colors", async () => {
+    const { useDiffThemeType } = await import("../../src/frontend/changes/theme-type");
+    const root = document.documentElement;
+    const matchMedia = window.matchMedia;
+    // The emulated OS scheme is dark, and forced colors are active.
+    window.matchMedia = ((query: string) =>
+      ({ matches: query.includes("dark") || query.includes("forced-colors"), media: query, onchange: null, addEventListener: noop, removeEventListener: noop, addListener: noop, removeListener: noop, dispatchEvent: () => false }) as unknown as MediaQueryList) as typeof window.matchMedia;
+    function Probe() {
+      return <span data-theme-type={useDiffThemeType()} />;
+    }
+    const settle = () => act(async () => await new Promise((resolve) => setTimeout(resolve, 0)));
+    try {
+      root.setAttribute("data-theme", "light");
+      const host = await show(<Probe />);
+      const type = () => host.querySelector("span")!.getAttribute("data-theme-type");
+      expect(type()).toBe("light");
+      root.setAttribute("data-theme", "dark");
+      await settle();
+      expect(type()).toBe("dark");
+      // index.css: an absent `data-theme` means System. Pierre "system" keeps its `color-scheme: light dark`, so the diff follows the OS as the window does.
+      root.removeAttribute("data-theme");
+      await settle();
+      expect(type()).toBe("system");
+      root.setAttribute("data-theme", "light");
+      await settle();
+      expect(type()).toBe("light");
+    } finally {
+      root.removeAttribute("data-theme");
+      window.matchMedia = matchMedia;
+    }
   });
 });

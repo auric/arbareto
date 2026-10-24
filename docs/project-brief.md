@@ -1,7 +1,7 @@
 # Arbareto — Windows-first, cross-platform Git client project brief
 
 Research reviewed: 28 September 2026.
-Status: planning input. Spec Kit v1.0.12 is initialized; no application code exists. Use Tauri 2 with a compiled TypeScript/Bun Git service for the first qualification feature. No packaged Windows, performance, or installer tests have run. Validate the selected architecture through packaged Windows tests.
+Status: planning input. Spec Kit v1.0.12 is initialized. The application code is in this repository; the README [Status](../README.md#status) section gives its state. Use Tauri 2 with a compiled TypeScript/Bun Git service for the first qualification feature. No packaged Windows, performance, or installer tests have run. Validate the selected architecture through packaged Windows tests.
 
 ## Product
 

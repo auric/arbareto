@@ -4843,30 +4843,33 @@ mod tests {
     /// The bound for the sleep to leave the operation scopes. It stays well below `LINGER_SECONDS`.
     const PREMISE_WAIT: Duration = Duration::from_secs(5);
 
+    /// The units `arbareto-<operation>-*` that the user manager lists now.
+    fn units(reference: &Reference, inst: &Installation, operation: &str) -> String {
+        let mut command = list_command(false, &std::env::vars_os().collect::<Vec<_>>());
+        command.arguments = strings(&[
+            "--distribution",
+            reference.distro.as_str(),
+            "--cd",
+            "/",
+            "--exec",
+            inst.systemctl.as_str(),
+            "--user",
+            "list-units",
+            "--all",
+            "--no-legend",
+            "--plain",
+            format!("arbareto-{operation}-*").as_str(),
+        ]);
+        let out = reference.host().run(&command).expect("list-units");
+        String::from_utf8(out.stdout)
+            .expect("UTF-8")
+            .trim()
+            .to_string()
+    }
+
     /// The units `arbareto-<operation>-*` that remain after at most 5 seconds.
     fn units_left(reference: &Reference, inst: &Installation, operation: &str) -> String {
-        let list = || {
-            let mut command = list_command(false, &std::env::vars_os().collect::<Vec<_>>());
-            command.arguments = strings(&[
-                "--distribution",
-                reference.distro.as_str(),
-                "--cd",
-                "/",
-                "--exec",
-                inst.systemctl.as_str(),
-                "--user",
-                "list-units",
-                "--all",
-                "--no-legend",
-                "--plain",
-                format!("arbareto-{operation}-*").as_str(),
-            ]);
-            let out = reference.host().run(&command).expect("list-units");
-            String::from_utf8(out.stdout)
-                .expect("UTF-8")
-                .trim()
-                .to_string()
-        };
+        let list = || units(reference, inst, operation);
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut left = list();
         while !left.is_empty() && Instant::now() < deadline {
@@ -4932,6 +4935,83 @@ mod tests {
             units_left(&reference, &inst, &operation),
             "",
             "no scope of the operation remains"
+        );
+    }
+
+    /// T392, contract §6 `stop`: the shell ends the `wsl.exe` of one `run` and keeps the Job open.
+    /// The wrapper trap ends only the scope of that run. The other scope of the operation stays until the Job closes.
+    #[test]
+    fn the_real_stop_of_one_wsl_exe_ends_only_its_scope() {
+        let Some(reference) = reference() else {
+            return;
+        };
+        let Some(inst) = probed(&reference) else {
+            return;
+        };
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let operation = format!("0f0f0f0f-0000-4000-8007-{:012x}", std::process::id());
+        let job = Job::create().expect("Job");
+        let names: Vec<String> = (1..=2)
+            .map(|n| unit_name(&operation, n).expect("unit"))
+            .collect();
+        let runs: Vec<(OwnedHandle, Arc<Mutex<Vec<u8>>>)> = names
+            .iter()
+            .map(|unit| {
+                let command = wrapped(
+                    &inst,
+                    Mode::Read,
+                    unit,
+                    None,
+                    "/bin/sh",
+                    &strings(&["-c", "sleep 60 & sleep 60"]),
+                    &environment,
+                    Stdin::Closed,
+                );
+                let spawned = spawn(&command.spawn_request(&reference.directory), job.handle())
+                    .expect("wsl.exe start");
+                let _stderr = retain(spawned.stderr, RETAINED_BYTES);
+                // SAFETY: `spawn` returned an open process handle that this test owns.
+                let process = unsafe { OwnedHandle::from_raw_handle(spawned.process.0) };
+                (process, retain(spawned.stdout, RETAINED_BYTES))
+            })
+            .collect();
+        for (n, (_, stdout)) in runs.iter().enumerate() {
+            assert!(
+                eventually(WAIT, || lock(stdout).first() == Some(&b'S')),
+                "the start byte of scope {}",
+                n + 1
+            );
+        }
+        let before = units(&reference, &inst, &operation);
+        assert!(
+            names.iter().all(|name| before.contains(name.as_str())),
+            "both scopes run: {before:?}"
+        );
+        let stopped = HANDLE(runs[0].0.as_raw_handle());
+        // SAFETY: `runs` keeps the process handle open for the calls.
+        unsafe { TerminateProcess(stopped, 1) }.expect("TerminateProcess");
+        // SAFETY: as above.
+        let ended = unsafe { WaitForSingleObject(stopped, 5_000) } == WAIT_OBJECT_0;
+        assert!(ended, "the stopped wsl.exe ends");
+        let mut left = String::new();
+        let gone = eventually(PREMISE_WAIT, || {
+            left = units(&reference, &inst, &operation);
+            !left.contains(names[0].as_str())
+        });
+        println!("OBSERVATION T392: units after the stop of scope 1: {left:?}");
+        assert!(
+            gone,
+            "the trap ends scope 1 within {PREMISE_WAIT:?}: {left:?}"
+        );
+        assert!(
+            left.contains(names[1].as_str()),
+            "scope 2 of the same operation stays: {left:?}"
+        );
+        drop(job);
+        assert_eq!(
+            units_left(&reference, &inst, &operation),
+            "",
+            "the Job close ends the other scope"
         );
     }
 

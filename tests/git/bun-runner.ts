@@ -445,6 +445,17 @@ export function createBunRunner(options: BunRunnerOptions) {
   }[] = [];
   // The functions that stop the running calls of each operation.
   const halts = new Map<string, Set<() => void>>();
+  // Contract §6 `cancel`: the native runner sends it at an abort and at the 4 MiB stderr bound. The shell then closes the Job of the operation that owns the call.
+  // So each running call of that operation ends with exitCode null, and the operation stays active.
+  const jobs = new Map<string, Set<() => void>>();
+  const joinJob = (operationId: string, end: () => void) => {
+    const job = jobs.get(operationId) ?? new Set<() => void>();
+    jobs.set(operationId, job.add(end));
+    return () => void job.delete(end);
+  };
+  const cancelRun = (operationId: string) => {
+    for (const end of [...(jobs.get(operationId) ?? [])]) end();
+  };
   const drains = new Set<Promise<void>>();
   const diagnostics = createDiagnosticCounter();
   const inject = {
@@ -471,7 +482,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     // Each `identity` and `fileFacts` walk waits for this promise before it reads (contract §6 "Walks").
     holdWalk: null as (() => Promise<void>) | null,
     // Bytes replace the process of a call. No process starts, and the bytes go to stdout in 64 KiB chunks. The exit code is 0, or null after abort, closeJob, or a limited stdout collector.
-    stdout: undefined as ((call: { arguments: readonly string[]; input?: Uint8Array }) => Uint8Array | undefined) | undefined,
+    stdout: undefined as ((call: { operationId: string; arguments: readonly string[]; input?: Uint8Array }) => Uint8Array | undefined) | undefined,
     // An exit code replaces the process of a call. No process starts, and no byte goes out (T223 read failures).
     exit: undefined as ((call: { arguments: readonly string[] }) => number | undefined) | undefined,
     // A code refuses a call as the shell refuses it. No process starts (T377).
@@ -865,28 +876,35 @@ export function createBunRunner(options: BunRunnerOptions) {
     const own = halts.get(call.operationId) ?? new Set<() => void>();
     halts.set(call.operationId, own.add(halt));
     call.signal.addEventListener("abort", halt, { once: true });
+    const cancelJob = () => cancelRun(call.operationId);
+    call.signal.addEventListener("abort", cancelJob, { once: true });
     const heldStdout = () => {
       const barrier = halted ? null : holding(stdoutBarriers, call);
       return barrier && Promise.race([barrier.promise, stopped.promise]);
     };
+    let leave = () => {};
     try {
       const refused = inject.refuse?.(call);
       if (refused !== undefined) throw new RunnerRefusal(refused, "injected");
       const exitCode = inject.exit?.({ arguments: call.arguments });
       if (exitCode !== undefined) return { exitCode, activeDescendants: 0 };
-      const injected = inject.stdout?.({ arguments: call.arguments, input: call.input });
+      const injected = inject.stdout?.({ operationId: call.operationId, arguments: call.arguments, input: call.input });
       if (injected === undefined) return await spawn(call, argv, cwd, env, recorded, halt, heldStdout, wrapped);
+      leave = joinJob(call.operationId, halt);
       // Contract §5 "Native stdout/stderr chunk": at most 64 KiB in one chunk.
       for (let at = 0; at < injected.length && !halted; at += NATIVE_CHUNK_BYTES) {
         for (let barrier = heldStdout(); barrier; barrier = heldStdout()) await barrier;
         if (halted) break;
         call.stdout.push(injected.subarray(at, at + NATIVE_CHUNK_BYTES));
+        // Contract §6 `stop`: a limited stdout ends only this call.
         if (call.stdout.limited) halt();
         await new Promise((resolve) => setImmediate(resolve));
       }
       return { exitCode: halted ? null : 0, activeDescendants: 0 };
     } finally {
+      leave();
       call.signal.removeEventListener("abort", halt);
+      call.signal.removeEventListener("abort", cancelJob);
       call.signal.removeEventListener("abort", cancel);
       own.delete(halt);
     }
@@ -936,8 +954,9 @@ export function createBunRunner(options: BunRunnerOptions) {
     })().catch(() => {});
 
     let killed = false;
+    let stopped = false;
     let expired: GitExit["deadline"];
-    // Contract §6 and §11: the shell closes the Job at a run `cancel`, a deadline, and a limit, with every descendant.
+    // Contract §6 and §11: the shell closes the Job at a run `cancel`, a deadline, and the stderr bound, with every descendant.
     const kill = () => {
       halt();
       if (killed) return;
@@ -945,6 +964,14 @@ export function createBunRunner(options: BunRunnerOptions) {
       tree?.end();
       proc.kill();
     };
+    // Contract §6 `stop`: the shell ends only this process. Its descendants stay, as after an exit by itself.
+    const stop = () => {
+      halt();
+      if (killed || stopped) return;
+      stopped = true;
+      proc.kill();
+    };
+    const leave = joinJob(call.operationId, kill);
     const expire = (reason: NonNullable<GitExit["deadline"]>) => {
       expired ??= reason;
       kill();
@@ -1014,7 +1041,7 @@ export function createBunRunner(options: BunRunnerOptions) {
           if (data.length === 0) return;
           touch();
           call.stdout.push(data);
-          if (call.stdout.limited) kill();
+          if (call.stdout.limited) stop();
         },
         heldStdout,
       ),
@@ -1024,13 +1051,14 @@ export function createBunRunner(options: BunRunnerOptions) {
           touch();
           call.stderr.push(chunk);
           recorded?.stderr?.push(chunk);
-          if (diagnostics.add(call, chunk.length)) kill();
+          if (diagnostics.add(call, chunk.length)) cancelRun(call.operationId);
         },
         () => null,
       ),
     ];
 
     await proc.exited;
+    leave();
     if (injectedEnd !== null && performance.now() >= injectedEnd) expire("deadline");
     exited = true;
     samples.delete(call);
@@ -1043,7 +1071,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     await Promise.all(streams.map((s) => s.done));
     scan(call.operationId);
     // Mirrors `src-tauri/src/process_requests.rs` `watch`: a wrapped process that ended by itself without the start byte did not start in its scope.
-    const exitCode = killed ? null : proc.exitCode;
+    const exitCode = killed || stopped ? null : proc.exitCode;
     if (wrapped && first !== true && exitCode !== null && expired === undefined) throw new RunnerRefusal("PROCESS_OWNERSHIP_FAILED", "no start byte");
     return {
       exitCode,

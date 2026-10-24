@@ -262,9 +262,10 @@ async function main(): Promise<number> {
   const lock = Bun.JSONC.parse(await Bun.file(`${root}/bun.lock`).text()) as BunLock;
   const css = await Bun.file(`${root}/src/frontend/index.css`).text();
   // The offline queries below need every locked crate in the local cache. `cargo fetch` uses the network only for a crate that the cache does not hold, and `--locked` refuses a lockfile change.
-  const fetch = Bun.spawnSync(["cargo", "fetch", "--locked", "--manifest-path", "src-tauri/Cargo.toml"], { cwd: root, stdin: "ignore", stdout: "inherit", stderr: "inherit", timeout: 600_000 });
-  if (fetch.exitCode !== 0) {
-    console.error(`cargo fetch --locked --manifest-path src-tauri/Cargo.toml exit code ${fetch.exitCode}. The build needs the locked crates of src-tauri/Cargo.lock in the Cargo cache. Connect to crates.io, or fill the cache, and run the build again.`);
+  const fetchCommand = ["cargo", "fetch", "--locked", "--manifest-path", "src-tauri/Cargo.toml"];
+  const cargoFetch = Bun.spawnSync(fetchCommand, { cwd: root, stdin: "ignore", stdout: "inherit", stderr: "inherit", timeout: 600_000 });
+  if (cargoFetch.exitCode !== 0) {
+    console.error(`${fetchCommand.join(" ")} exit code ${cargoFetch.exitCode}. The build needs the locked crates of src-tauri/Cargo.lock in the Cargo cache. Connect to crates.io, or fill the cache, and run the build again.`);
     return 1;
   }
   const cargo = Bun.spawnSync(

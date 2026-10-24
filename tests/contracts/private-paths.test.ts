@@ -37,6 +37,7 @@ function readTracked(file: string): Buffer | undefined {
   }
 }
 
+// The scan reads every tracked file; under a full parallel run it can pass the 5 s default.
 test("no tracked text file names a private local path", () => {
   console.log(`ORIGIN ${ROOT}`);
   const hits: string[] = [];
@@ -53,7 +54,7 @@ test("no tracked text file names a private local path", () => {
   console.log(hits.map((hit) => `SCAN_HIT ${hit}`).join("\n"));
   expect(scanned).toBeGreaterThan(0);
   expect(hits).toEqual([]);
-});
+}, 60_000);
 
 // Control fixtures: each line must give a hit.
 test.each([

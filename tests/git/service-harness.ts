@@ -212,6 +212,45 @@ export function once(match: CallMatch): CallMatch {
   };
 }
 
+// T399, contract §5 "Deadline outcomes": the first `target` call starts after the first `sibling` call starts, with a 1 ms deadline.
+// The sibling gets one stdout byte that its paused stdout holds. Only the Job close then ends it, with `exitCode` null and no `deadline`.
+// The target waits for the sibling start, so both calls must run in parallel. Call the returned function in `finally`.
+export function siblingDeadline(service: Service, target: CallMatch, sibling: CallMatch): () => void {
+  const { runner } = service;
+  const isTarget = once(target);
+  const isSibling = once(sibling);
+  const prior = runner.inject.stdout;
+  let siblingArgs: readonly string[] | null = null;
+  let armed = true;
+  const releaseTarget = runner.holdStart(isTarget);
+  const releaseHook = runner.holdStart((call) => {
+    if (siblingArgs === null && isSibling(call)) {
+      siblingArgs = call.arguments;
+      releaseTarget();
+    } else if (siblingArgs !== null && armed && isTarget(call)) {
+      armed = false;
+      // `spawn` reads the deadline synchronously after this check. The reset keeps every later process at its request deadline.
+      runner.inject.deadlineMs = 1;
+      queueMicrotask(() => void (runner.inject.deadlineMs = null));
+    }
+    return false;
+  });
+  const resumeStdout = runner.pauseStdout(isSibling);
+  // The double asks for injected stdout synchronously after the start check. One answer keeps a shared argument array off the target.
+  let unanswered = true;
+  runner.inject.stdout = (call) => {
+    if (!unanswered || call.arguments !== siblingArgs) return prior?.(call);
+    unanswered = false;
+    return new Uint8Array([0]);
+  };
+  return () => {
+    releaseTarget();
+    releaseHook();
+    resumeStdout();
+    runner.inject.stdout = prior;
+  };
+}
+
 // The `node:fs/promises` file calls of the in-process service while `body` runs, in call order. `onCall` runs before each call.
 export type FsCall = { name: "lstat" | "stat" | "access" | "open" | "readdir"; path: string };
 export async function withFsCalls<T>(body: () => Promise<T>, onCall: (call: FsCall) => void = () => {}): Promise<{ value: T; calls: FsCall[] }> {

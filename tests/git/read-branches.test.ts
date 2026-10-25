@@ -8,7 +8,9 @@ import { existsSync } from "node:fs";
 import { printOrigin } from "../origin";
 import { useFixtureRoot } from "./fixture-root";
 import { gitPath, withService } from "./hunk-harness";
-import { caseTest, type Capability, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
+import { trackingArgs } from "../../src/git-service/sync-commands";
+import { branchListArgs } from "../../src/git-service/workbench-commands";
+import { caseTest, siblingDeadline, type Capability, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 import { buildWorkbench, canary, repoOf, wb, type WbFixture, type WbFixtureName } from "./workbench-fixtures";
 
 printOrigin("../../src/git-service/branches.ts", import.meta.dir);
@@ -18,6 +20,9 @@ useFixtureRoot();
 const TASK = "T034";
 const SHELL: Capability[] = ["shell-double"];
 const TIMEOUT_MS = 120_000;
+// A `siblingDeadline` case that never releases its target ends here, not at the read timeout.
+const SIBLING_TIMEOUT_MS = 120_000;
+const FULL = { refresh: false, check: "full" } as const;
 
 interface Entry {
   ref: string;
@@ -162,4 +167,33 @@ describe("readBranches (contract Δ3, data-model §1)", () => {
     }),
     TIMEOUT_MS,
   );
+});
+
+// T399, 001 contract §5 "Deadline outcomes": a held step at its deadline closes the operation Job, so the sibling ends with `exitCode` null and no `deadline`.
+describe("held step deadline (T399)", () => {
+  const isArgs = (args: readonly string[]) => (call: { arguments: readonly string[] }) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]);
+  const isConfigList = (call: { arguments: readonly string[] }) => call.arguments.includes("config") && call.arguments.includes("list");
+  const cases = [
+    { tag: "listing", name: "the held branch listing expires and the Job close ends the own trust listing first", target: isArgs(branchListArgs()), sibling: isConfigList, shared: false },
+    // A `readWorkspace` of the same generation records the listing that this read reuses (contract §7 "Shared listing"), so only the held pair runs.
+    { tag: "pair", name: "the held tracking listing expires and the Job close ends the held branch listing first", target: isArgs(trackingArgs()), sibling: isArgs(branchListArgs()), shared: true },
+  ];
+  for (const { tag, name, target, sibling, shared } of cases)
+    caseTest("T399", `readBranches gives DEADLINE when ${name}`, SHELL, () =>
+      withService({ name: `t399-branches-${tag}` }, async (service) => {
+        const f = build("branches");
+        const r = await service.register(f.repo);
+        // T088 decision E6: the first full read after registration records no listing, so a second one records it.
+        const reads = shared ? [await service.readWorkspace(r.repositoryId, FULL), await service.readWorkspace(r.repositoryId, FULL)] : [];
+        expect(reads.map((read) => read.state)).toEqual(reads.map(() => "succeeded"));
+        const from = service.runner.calls.length;
+        const release = siblingDeadline(service, target, sibling);
+        const response = await readBranches(service, r, reads.at(-1)?.result!.generation).finally(release);
+        const exits = service.runner.calls.slice(from).filter((c) => target(c) || sibling(c)).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+        const listing = service.runner.calls.slice(from).filter(isConfigList).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+        console.log(`OBSERVATION T399: readBranches ${tag} exits=${exits.join(",")} listing=${listing.join(",")} ${JSON.stringify(outcome(response))}`);
+        expect({ exits: exits.toSorted(), listing, ...outcome(response) }).toEqual({ exits: ["closed", "deadline"], listing: shared ? [] : ["closed"], state: "failed", code: "DEADLINE" });
+      }),
+      SIBLING_TIMEOUT_MS,
+    );
 });

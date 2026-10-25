@@ -13,7 +13,7 @@ import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, fixtureEnv, ownedGit, useFixtureRoot } from "./fixture-root";
 import { buildF33, F33_BROKEN_REF, F33_BYTE_TAGS, F33_LIMIT_TAGS, type Built, type F33Variant } from "./fixtures";
 import { fixtureGitPath, GIT } from "./git-binary";
-import { caseTest, once, openService, type Service, type ServiceResponse } from "./service-harness";
+import { caseTest, once, openService, siblingDeadline, type Service, type ServiceResponse } from "./service-harness";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/commands.ts", import.meta.dir);
@@ -24,6 +24,8 @@ printOrigin("../../src/git-service/session.ts", import.meta.dir);
 const TASK = "T356";
 const TIMEOUT_MS = 180_000;
 const WAIT_MS = 30_000;
+// A `siblingDeadline` case that never releases its target ends here, not at the read timeout.
+const SIBLING_TIMEOUT_MS = 120_000;
 
 useFixtureRoot();
 
@@ -583,5 +585,25 @@ describe("trust gate, held step, and scheduling (contract §5 \"Pending reads\",
         expect(service.runner.calls.length).toBe(before);
       }),
     TIMEOUT_MS,
+  );
+});
+
+// T399, 001 contract §5 "Deadline outcomes": the held step at its deadline closes the operation Job, so the own trust listing ends with `exitCode` null and no `deadline`.
+describe("held step deadline (T399)", () => {
+  caseTest(
+    "T399",
+    "readRefs gives DEADLINE when the held for-each-ref expires and the Job close ends its own trust listing first",
+    ["shell-double"],
+    () =>
+      withService("t399-refs", async (service) => {
+        const { repositoryId, generation } = await opened(service, "t399-refs", "base");
+        const from = service.runner.calls.length;
+        const release = siblingDeadline(service, isForEachRef, isConfigList);
+        const response = await readRefs(service, repositoryId, generation).finally(release);
+        const exits = service.runner.calls.slice(from).filter((c) => isForEachRef(c) || isConfigList(c)).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+        console.log(`OBSERVATION T399: readRefs exits=${exits.join(",")} ${JSON.stringify(outcome(response))}`);
+        expect({ exits: exits.toSorted(), ...outcome(response) }).toEqual({ exits: ["closed", "deadline"], state: "failed", code: "DEADLINE" });
+      }),
+    SIBLING_TIMEOUT_MS,
   );
 });

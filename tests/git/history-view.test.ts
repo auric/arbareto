@@ -8,13 +8,15 @@ import { describe, expect, spyOn } from "bun:test";
 import { join } from "node:path";
 import { HISTORY_BODY_BYTES } from "../../src/contracts/envelope";
 import { HISTORY_COMMIT_OBJECT_BYTES, HISTORY_LOAD_MARGIN, HISTORY_PAGE_BYTES, HISTORY_PROGRESS_EVENTS_PER_SECOND } from "../../src/contracts/limits";
+import { headTargetArgs, historyRefsArgs, topologyPathArgs } from "../../src/git-service/commands";
 import { HistoryTopology } from "../../src/git-service/history-topology";
 import { printOrigin } from "../origin";
+import type { RecordedCall } from "./bun-runner";
 import { FIXTURE_ROOT, fixtureDir, useFixtureRoot } from "./fixture-root";
 import { fiCommit } from "./fixtures";
 import { buildSmallFixtures, H200K, LONG_BODY_WORD, largeCase, repositoryDigest, shallowCommits, startPoints, type SmallName } from "./history-fixtures";
 import { allRows, commitGraphFiles, copyLarge, fold, git, gitPath, gitText, isLoad, isReplaceRead, isTextRead, load, loadSteps, opened, openView, oracle, rows, waitFor } from "./history-view-harness";
-import { caseTest, openService, type Service } from "./service-harness";
+import { caseTest, openService, siblingDeadline, type Service } from "./service-harness";
 
 printOrigin("../../src/git-service/history-view.ts", import.meta.dir);
 printOrigin("../../src/git-service/history-topology.ts", import.meta.dir);
@@ -26,6 +28,8 @@ const T030 = "T030";
 const SHELL = ["shell-double"] as const;
 const TIMEOUT_MS = 300_000;
 const LARGE_TIMEOUT_MS = 20 * 60_000;
+// A `siblingDeadline` case that never releases its target ends here, not at the read timeout.
+const SIBLING_TIMEOUT_MS = 120_000;
 // Contract Δ3 `loadHistory`: S = max(n + 1 + 2·M, 2·L₀).
 const M = HISTORY_LOAD_MARGIN;
 const FIRST_STOP = 40 + 1 + 2 * M;
@@ -509,4 +513,39 @@ describe("special repositories (contract Δ3 `openHistory`)", () => {
       }),
     TIMEOUT_MS,
   );
+});
+
+// T399, 001 contract §5 "Deadline outcomes": a capture step at its deadline closes the operation Job, so a sibling ends with `exitCode` null and no `deadline`.
+describe("capture deadline (T399)", () => {
+  const isArgs = (args: readonly string[]) => (call: { arguments: readonly string[] }) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]);
+  const isConfigList = (call: { arguments: readonly string[] }) => call.arguments.includes("config") && call.arguments.includes("list");
+  const ends = (calls: readonly RecordedCall[], match: (call: RecordedCall) => boolean) => calls.filter(match).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+  const cases = [
+    // Two `readWorkspace` reads of the generation record the listing that the open reuses (contract §7 "Shared listing"), so no listing process runs.
+    { tag: "capture", name: "the topology path step expires and the Job close ends the HEAD capture first", target: isArgs(topologyPathArgs()), sibling: isArgs(headTargetArgs()), shared: true },
+    { tag: "listing", name: "the held ref capture expires and the Job close ends the own trust listing first", target: isArgs(historyRefsArgs()), sibling: isConfigList, shared: false },
+  ];
+  for (const { tag, name, target, sibling, shared } of cases)
+    caseTest(
+      "T399",
+      `openHistory gives DEADLINE when ${name}`,
+      SHELL,
+      () =>
+        withService(`t399-open-${tag}`, async (service) => {
+          const fixture = small(`t399-open-${tag}`, "criss-cross");
+          const { repositoryId, generation } = await service.register(fixture.repo);
+          // T088 decision E6: the first full read after registration records no listing, so a second one records it.
+          const reads = shared ? [await service.readWorkspace(repositoryId), await service.readWorkspace(repositoryId)] : [];
+          expect(reads.map((read) => read.state)).toEqual(reads.map(() => "succeeded"));
+          const from = service.runner.calls.length;
+          const release = siblingDeadline(service, target, sibling);
+          const response = await openView(service, repositoryId, reads.at(-1)?.result!.generation ?? generation).finally(release);
+          const calls = service.runner.calls.slice(from);
+          const exits = ends(calls, (c) => target(c) || sibling(c));
+          const listing = ends(calls, isConfigList);
+          console.log(`OBSERVATION T399: openHistory ${tag} exits=${exits.join(",")} listing=${listing.join(",")} state=${response.state} code=${response.code}`);
+          expect({ exits: exits.toSorted(), listing, state: response.state, code: response.code }).toEqual({ exits: ["closed", "deadline"], listing: shared ? [] : ["closed"], state: "failed", code: "DEADLINE" });
+        }),
+      SIBLING_TIMEOUT_MS,
+    );
 });

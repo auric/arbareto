@@ -13,7 +13,7 @@ import { buildRemedyCommand } from "../contracts/remedy-command";
 import { redactUrlUserInfo, type StallRemedy } from "../contracts/submodules";
 import type { ApprovalKey, Approvals, SyncReview } from "./approvals";
 import type { Entered, Exclusion, MutationEntry, NotEntered } from "./exclusion";
-import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit, type GitRunner, type PageantReply, type SyncRunner } from "./git-runner";
+import { createCollector, isDeadlineStop, PROCESS_LIMITS, RunnerRefusal, type GitExit, type GitRunner, type PageantReply, type SyncRunner } from "./git-runner";
 import { captureHead } from "./history";
 import { enterReconciling, isStop, notEntered, settled, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
 import type { OperationRegistry } from "./operations";
@@ -82,6 +82,8 @@ export interface FetchRemote {
 }
 
 const noCounts = () => Object.fromEntries(FETCH_FLAGS.map((flag) => [flag, 0])) as Record<FetchFlag, number>;
+// A reconciliation read that ended at its deadline: a `Stop`, a listing stop, or the operation-state result `deadline`.
+const isReadDeadline = (read: unknown) => isDeadlineStop(read) || read === "deadline";
 export const notStarted = (name: string): FetchRemote => ({ name, state: "not-started", updates: [], counts: noCounts(), outputTail: "" });
 
 // The facts of one remote fetch step of fetch, fetch-all, and pull. `end` is null when no fetch process started.
@@ -386,6 +388,8 @@ export function createSyncer(o: SyncerOptions) {
       const unread = { action: b.payload.action, fetch: fetchResult([]) };
       if (!(await processEnded(ends))) return unknown({ code: "GIT_FAILED" }, unread);
       const [after, head, state] = await Promise.all([listRefs(q), settled(q.signal, captureHead(q.runner, q)), settled(q.signal, q.reader.operationState(q, false))]);
+      // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other reads, so a deadline decides first.
+      if ([after, head, state].some(isReadDeadline)) return unknown({ stop: "deadline" }, unread);
       if (!("value" in after)) return unknown(after, unread);
       if (isStop(head) || "code" in head) return unknown(head, unread);
       if ("failed" in head) return unknown({ code: head.failed }, unread);
@@ -461,6 +465,8 @@ export function createSyncer(o: SyncerOptions) {
         settled(q.signal, o.trust.listTrust({ operationId, signal: q.signal, workspace: w })),
       ]);
       const failed = { action: b.payload.action, push: pushResult(null, false) };
+      // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other reads, so a deadline decides first.
+      if ([after, observedHead, state, listed].some(isReadDeadline)) return unknown({ stop: "deadline" }, failed);
       if (!("value" in after)) return unknown(after, failed);
       if (isStop(observedHead) || "code" in observedHead) return unknown(observedHead, failed);
       if ("failed" in observedHead) return unknown({ code: observedHead.failed }, failed);

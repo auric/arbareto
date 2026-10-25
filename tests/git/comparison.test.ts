@@ -8,6 +8,7 @@ import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync,
 import { basename, join } from "node:path";
 import { COMPARED_RAW_VERSION_BYTES, NATIVE_CHUNK_BYTES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { createApprovals } from "../../src/git-service/approvals";
+import { attributeArgs, lineEndingArgs, unstagedNumstatArgs, unstagedPatchArgs } from "../../src/git-service/commands";
 import { createComparisonReader, type ComparisonTarget } from "../../src/git-service/comparison";
 import { probeGit } from "../../src/git-service/git-installation";
 import { hunkApprovals } from "../../src/git-service/hunk-publish";
@@ -45,10 +46,12 @@ import {
   withService,
   type Comparison,
 } from "./hunk-harness";
-import { caseTest, type Capability, type Service } from "./service-harness";
+import { caseTest, siblingDeadline, type Capability, type Service } from "./service-harness";
 
 const TASK = "T093";
 const SHELL: Capability[] = ["shell-double"];
+// A `siblingDeadline` case that never releases its target ends here, not at the read timeout.
+const SIBLING_TIMEOUT_MS = 120_000;
 
 useFixtureRoot();
 
@@ -193,6 +196,32 @@ describe("comparison scopes and tracked hunks (contract §4, data-model §5)", (
     }),
     TIMEOUT_MS,
   );
+});
+
+// T399, 001 contract §5 "Deadline outcomes": the deadline closes the operation Job, so the sibling step ends with `exitCode` null and no `deadline`.
+describe("parallel comparison steps (T399)", () => {
+  const isArgs = (args: readonly string[]) => (call: { arguments: readonly string[] }) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]);
+  const cases = [
+    { tag: "eol", name: "the line-ending listing expires and the Job close ends the attribute step first", target: lineEndingArgs(), sibling: attributeArgs() },
+    // A guard: the patch step gives no code of its own for a null exit, so the deadline already wins.
+    { tag: "numstat", name: "the numstat step expires and the Job close ends the patch step first", target: unstagedNumstatArgs("multi.txt"), sibling: unstagedPatchArgs("multi.txt") },
+  ];
+  for (const { tag, name, target, sibling } of cases)
+    caseTest("T399", `an unstaged comparison gives DEADLINE when ${name}`, SHELL, () =>
+      withService({ name: `t399-${tag}` }, async (service) => {
+        const repo = repoOf(buildF02(gitPath(), `t399-${tag}`));
+        await underTest("comparison");
+        const { repositoryId } = await service.register(repo);
+        const read = await readOk(service, repositoryId);
+        const before = service.runner.calls.length;
+        const release = siblingDeadline(service, isArgs(target), isArgs(sibling));
+        const c = await compare(service, repositoryId, "multi.txt", "unstaged", read).finally(release);
+        const exits = service.runner.calls.slice(before).filter((call) => isArgs(target)(call) || isArgs(sibling)(call)).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+        console.log(`OBSERVATION T399: comparison ${name}: exits=${exits.join(",")} ${JSON.stringify(outcome(c.response))}`);
+        expect({ exits: exits.toSorted(), ...outcome(c.response) }).toEqual({ exits: ["closed", "deadline"], state: "failed", code: "DEADLINE" });
+      }),
+      SIBLING_TIMEOUT_MS,
+    );
 });
 
 describe("support decisions (data-model §5)", () => {

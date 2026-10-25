@@ -245,6 +245,24 @@ description: "Task list for the History Inspection and Commit View File Actions 
 **Agent**: implementer. After T041. Tests first, with the red output kept.
 
 - [ ] T081 [US5] Keep the deadline of a parallel preview step when the Job close ends a sibling first, in `src/git-service/ignore-preview.ts` (plan.md D9, plan.md O-3, 001 contract §5). Cause: a step at its deadline closes the operation Job, so a sibling step ends with `exitCode` null and no `deadline`. `Shadow.check` and the listings map that null to `GIT_FAILED`, and `Promise.all` takes the first step that ends. Fix: `git()` throws the Job-close marker for a null `exitCode` without `deadline`, `diagnosticLimit`, or a `limited` stdout. A helper waits for every parallel step and throws the first rejection in position order that is no marker. A marker of a base step also waits for the self-check listings and takes their rejection. Only markers keep `GIT_FAILED`. Tests first in `tests/git/ignore-preview.test.ts`: one `check-ignore` gets a 1 ms deadline, and the paused sibling ends first, once for each shadow; each gives `unavailable.reason` `deadline`. Control mutation: map the marker to `GIT_FAILED`; the case must fail. Spec: FR-039, SC-005. Depends on T041.
+- [ ] T087 [US5] Run each preview `check-ignore` in batches at the same time, in `src/git-service/ignore-preview.ts` (plan.md D9 step 6, 005 performance report of 2026-10-25). Cause: for a folder-only pattern, Git resolves the type of each stdin path (dir.c `last_matching_pattern_from_list`). That costs about 3.3 s per 100,000 paths on Windows. Fix: `Shadow.check` splits its stdin paths into batches of the same size in input order. The batches run at the same time, and the verdicts join in input order. Git decides each stdin path alone (builtin/check-ignore.c `check_ignore`), so the joined output equals one run. At most 4 `check-ignore` processes run at the same time in one preview (`CHECK_PROCESSES`): a C check alone gets 4 batches, and the S and C checks of a base build round get 2 each. The listing byte bound counts the output of all batches of a check together. `settleSteps` takes a deadline of any batch first (T081). Tests first in `tests/git/ignore-preview.test.ts`: "a base build check runs in 2 batches per shadow, and a built-base C check in 4; the joined output equals one run over the joined input, with folder-only patterns and non-ASCII paths" and "a deadline in one batch of a check gives deadline, also when the Job close ends a sibling batch first". Both were red before the fix. The T081 case now accepts the exits of all batches. Control mutation: one batch per check; both cases turn red. Measured on the `buildPathsBound` fixture (100,000 inputs, root `.gitignore` `big/`): the first preview fell from 6,345 ms to 4,590 ms, and later previews from 3,894 to 3,940 ms to 1,793 to 1,820 ms. 4 batches for each of S and C (8 processes) gave 7,291 ms for the first preview, and a standalone check took 1,353 ms with 4 batches and 1,494 ms with 8. The packaged Q21 rerun stays open. Spec: FR-039, SC-005.
+
+### T063 run fixes
+
+**Agent**: frontend-implementer for T082 and T083, implementer for T084 to T086. After T080. Tests first, with the red output kept. The packaged cases run against the installed app.
+
+- [ ] T082 [US2] Keep the marks and the Shift anchor across a new snapshot in `src/frontend/changes/ChangesPane.tsx` (004 data-model §14, 005 data-model §14). Cause: each status read gives each entry a new random ID (`src/git-service/status.ts`), and the pane keeps the marks by entry ID. Each full read then empties the marks, and the next Shift+Down has no anchor. The T063 run of Q12 marked only `u3.txt`. Fix: key the marks and the anchor by list, category, and path bytes, and map them to the entry IDs of each new snapshot, as the selection does. A new snapshot drops the marks and the anchor whose entry is gone. 004 data-model §14 and 005 data-model §14 state the rule. Tests first in `tests/contracts/workbench-commit.test.tsx`: Shift+ArrowDown marks u1 and u2, a read with the same paths and new IDs keeps them, and the next Shift+ArrowDown gives 3 marks. Control mutation: key the marks by entry ID; the case must fail. Spec: FR-020, 004 FR-034. Depends on T053.
+- [ ] T083 [US1] Show a limited changed-files listing as limited in `src/frontend/state/history-view.ts` (plan.md D3, contract Δ3 `readCommitChanges`). Cause: the store takes only a `succeeded` listing, but the service replies `limited` with `OUTPUT_LIMIT` for a cut listing (`tests/git/commit-changes.test.ts`). The T063 run of Q6 SC-002 showed "Arbareto cannot read the changed files: OUTPUT_LIMIT." The contract tests answered the cut listing with `succeeded`, so they missed it. Fix: the store takes a `succeeded` or `limited` listing. Tests first in `tests/contracts/inspection-history.test.tsx`: the two cut-listing cases get the `limited` reply of the service, and they expect the limit text and the "Changed files (<n>)" heading. Control mutation: take only `succeeded`; both cases must fail. Spec: FR-012, SC-002. Depends on T045.
+- [ ] T084 Correct the page expressions and the probe loop in `tests/windows/inspection-perf.test.ts` (P9, WP8). `Local: package`. Cause: the `heading`, `diffHeader`, `previewText`, and blame `status` fragments end in `?? ''` without parentheses. A composed `&&` then gives a JavaScript `SyntaxError`, and `${diffHeader}.includes(…)` checks only the `''`. In `probing`, `finish().finally(…)` leaves the rejection of a failed `finish` unhandled. Bun 1.4.4 then fails the case and starts the next case before the app closes, so Q21, Q29, and Q32 stop with `ANOTHER_INSTANCE`. Fix: each fragment is in parentheses. `probing` keeps the `finish` promise and adds a handler for both outcomes; `await` still gives the rejection. Rerun Q6 SC-001, Q21, Q29, and Q32 on the installed app. Spec: SC-001, SC-005, SC-006, SC-009. Depends on T061.
+- [ ] T085 Read the IPC replies through the CDP `Network` domain in `tests/windows/cdp.ts`, `tests/windows/inspection-packaged.test.ts`, and `tests/windows/inspection-perf.test.ts` (P9, WP8). `Local: package`. Cause: `window.__TAURI_INTERNALS__.invoke` is read-only and non-configurable, so the page hooks of Q12 and Q21 record nothing. Q12 then waits without end for its reply, and Q21 waits for a read count that stays 0. Fix: `cdp.ts` gives each CDP event (a message without `id`) to its subscribers. `watchIpc` records each POST to `http://ipc.localhost/<command>` at `Network.loadingFinished` and reads its reply with `Network.getResponseBody`. Q12 takes the `run_workbench` reply from it. Q21 counts the `read_workspace` and `preview_ignore` replies from it; the page check of a preview gets the count from the test. Tests first in `tests/windows/cdp.test.ts` against a local CDP double: the events reach their subscribers, a CORS preflight and other origins do not count, a failed load does not count, and the body is the JSON reply. Control mutation: drop the events in `onmessage`; the case must fail. Then show on the installed app that the `run_workbench` and `preview_ignore` replies arrive this way. Spec: SC-003, SC-005. Depends on T060 and T061.
+- [ ] T086 [US5] Open the Untracked section before the T067 row wait in `tests/windows/keys-cdp.test.ts` (P9, WP8). `Local: package`. Cause: the Untracked rows exist only while the section is open (`src/frontend/changes/file-tree.ts`), and the section starts closed. The case waited for the `t067-notes.txt` row without opening it. Fix: after F5, focus the Untracked section row, and press ArrowRight when `aria-expanded` is `"false"`. Rerun the case on the installed app. Spec: FR-044. Depends on T079.
+
+### Renderer performance fixes
+
+**Agent**: frontend-implementer. Tests first, with the red output kept. The cause comes from the 2026-10-25 profile of Q6 and Q32 (renderer allocation sampling and CPU profile).
+
+- [ ] T090 [US1] Build the changed-files sort keys and rows without per-row byte arrays or names in `src/frontend/history/CommitChanges.tsx` and `src/contracts/tree-order.ts` (plan.md D3, D4). Cause: `treeOrder` builds a `Uint8Array` and a `subarray` for each path component, and `commitRows` decodes a name for each of the 100,000 rows. The Q6 renderer peak grew by about 193 MiB, and the sort and rows took about 1 s. Fix: `tree-order.ts` gets `compareNameStrings`, `treeStringKey`, and `compareStringKeys` over byte strings (one code unit per byte, as `atob` gives), with the fold and compare rules of `compareNames` and `compareKeys`. A file row keeps only its entry, and the shown row decodes its name and folder. Tests first in `tests/contracts/tree-order.test.ts`: the string order equals `compareKeys` for upper and lower case, non-ASCII bytes, invalid UTF-8 bytes, file and folder ties, and submodule rows, over fixed vectors and a random table. Control mutation: drop the raw-byte tie in `compareNameStrings`; the cases must fail. Then rerun the packaged Q6. Spec: FR-015, FR-016, FR-068, SC-002.
+- [ ] T091 Render only the regions that read the operation state when it changes, in `src/frontend/app/Workbench.tsx` (plan.md D15). Cause: one `setOperation` at the Workbench root rendered the References sidebar, the History list, and the ignore editor, which stay mounted behind the Commit view. The Delete's Enter took about 55 ms of main-thread work in Q32. Fix: `React.memo` wraps `ReferencesSidebar`, `HistoryList`, and `IgnoreEditor`, and their callbacks keep one identity. The sidebar groups after the references read the operation state, so a context feeds them. Tests first in the new `tests/contracts/workbench-renders.test.tsx`: a Delete start and its progress call neither `ReferencesSidebar` nor `HistoryList`. Add the file to `tests/groups.json` `parallel`. Control mutation: drop the memo of `ReferencesSidebar`; the case must fail. Then rerun the packaged Q32. Spec: SC-009.
 
 ### Batch 2 verification
 
@@ -309,7 +327,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 
 ### Batch 4 verification
 
-- [ ] T063 Run the batch 4 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, then `bun run build:service` and `bun run test:windows`. `Local: Rust`. `Local: WSL`. `Local: package`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every record into research.md R17. Control mutation: in `tests/windows/inspection-perf.test.ts`, lower the 500 ms bound to 1 ms. The test must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 4 is recorded in research.md. Spec: SC-001 to SC-011. Depends on T059 to T062 and T078 to T080.
+- [ ] T063 Run the batch 4 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, then `bun run build:service` and `bun run test:windows`. `Local: Rust`. `Local: WSL`. `Local: package`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every record into research.md R17. Control mutation: in `tests/windows/inspection-perf.test.ts`, lower the 500 ms bound to 1 ms. The test must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 4 is recorded in research.md. Spec: SC-001 to SC-011. Depends on T059 to T062 and T078 to T086.
 - [ ] T064 Run `/speckit-converge` and record the result. Spec: all. Depends on T063.
 
 ---
@@ -324,7 +342,9 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - Batch 3 (T048–T058): after T047. WP7 (T048–T056) alone, then T057, then T058.
 - Batch 4 (T059–T064, T078–T080): after T058 and T077. T059 alone first. Then T060 and T061. Then T062. Then T078, T079, and T080. Then T063 and T064.
 - Board comparison fixes (T066–T077): after the board comparisons of T027, T047, and T058. One package in order. T047 and T058 repeat their board comparison after T077.
-- Ignore preview fixes (T081): after T041.
+- Ignore preview fixes (T081, T087): after T041.
+- T063 run fixes (T082–T086): after T080. T082 and T083 need a new package before their packaged rerun. Then T063 runs again.
+- Renderer performance fixes (T090, T091): after T083. Both need a new package before the packaged Q6 and Q32 reruns. Then T063 runs again.
 
 ### Changes to earlier requirements and their tasks
 
@@ -363,25 +383,25 @@ Then:          T027
 | Requirement | Tasks |
 | --- | --- |
 | FR-001 to FR-004 (common) | T002, T004, T013, T018, T021, T022, T030, T034, T035, T036, T061, T062 |
-| FR-005 to FR-014 (US1) | T016 to T019, T021, T023, T025, T043, T045, T051, T061, T068, T070, T077 |
-| FR-015 to FR-017 (US3) | T001, T003, T007, T010, T032, T034, T043, T048 |
+| FR-005 to FR-014 (US1) | T016 to T019, T021, T023, T025, T043, T045, T051, T061, T068, T070, T077, T083 |
+| FR-015 to FR-017 (US3) | T001, T003, T007, T010, T032, T034, T043, T048, T090 |
 | FR-018 to FR-019 (US4) | T012, T013, T015, T036, T038, T048, T052, T060 |
-| FR-020 to FR-033 (US2) | T012 to T014, T028 to T030, T032, T039, T048, T053, T059, T060, T073, T076, T078 |
-| FR-034 to FR-046 (US5) | T013 to T015, T028 to T031, T033, T034, T037, T040, T041, T049, T054, T057, T059, T067, T074, T078, T079, T081 |
+| FR-020 to FR-033 (US2) | T012 to T014, T028 to T030, T032, T039, T048, T053, T059, T060, T073, T076, T078, T082 |
+| FR-034 to FR-046 (US5) | T013 to T015, T028 to T031, T033, T034, T037, T040, T041, T049, T054, T057, T059, T067, T074, T078, T079, T081, T086, T087 |
 | FR-047 to FR-052 (US6) | T013, T015, T030, T035, T042, T050, T055, T059, T060, T066 |
 | FR-053 to FR-063 (US7) | T016 to T018, T020, T022, T024, T026, T065, T044, T046, T048, T052, T061, T071, T072 |
 | FR-064 to FR-066 (US8, US9) | T006, T008, T009, T011, T018, T069, T075, T080 |
 | FR-067 | T008, T043, T044, T048 to T051, T056, T060, T072, T073, T079, T080 |
-| FR-068 | T043, T044, T049 |
-| SC-001 | T021, T061 |
-| SC-002 | T021, T061 |
-| SC-003 | T012, T032, T059, T060, T078 |
+| FR-068 | T043, T044, T049, T090 |
+| SC-001 | T021, T061, T084 |
+| SC-002 | T021, T061, T083, T090 |
+| SC-003 | T012, T032, T059, T060, T078, T085 |
 | SC-004 | T001, T007, T027 |
-| SC-005 | T034, T059, T061, T078, T081 |
-| SC-006 | T022, T061 |
+| SC-005 | T034, T059, T061, T078, T081, T084, T085, T087 |
+| SC-006 | T022, T061, T084 |
 | SC-007 | T035, T060 |
 | SC-008 | T006, T008, T027 |
-| SC-009 | T061 |
+| SC-009 | T061, T084, T091 |
 | SC-010 | T051, T058, T060 |
 | SC-011 | T005, T027, T047, T058, T062 |
 

@@ -8,6 +8,8 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { APPROVAL_LIFETIME_MS, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
+import { batchCommandArgs, headTargetArgs, reflogArgs } from "../../src/git-service/commands";
+import type { RecordedCall } from "./bun-runner";
 import { useFixtureRoot } from "./fixture-root";
 import { buildChanged, buildF11, buildF20, CapabilitySkip, inflateHeadReflog, type F20Variant, type RefFormat } from "./fixtures";
 import { refState } from "./git-oracle";
@@ -42,10 +44,12 @@ import {
   withService,
 } from "./hunk-harness";
 import type { Built } from "./fixtures";
-import { caseTest, type Capability, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { caseTest, siblingDeadline, type Capability, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 const TASK = "T099";
 const SHELL: Capability[] = ["shell-double"];
+// A `siblingDeadline` case that never releases its target ends here, not at the case timeout.
+const SIBLING_TIMEOUT_MS = 120_000;
 
 useFixtureRoot();
 
@@ -368,6 +372,44 @@ describe("reconciliation reads beside the stop of a limited read (contract §6 `
       });
     });
   }, TIMEOUT_MS);
+});
+
+// T399, 001 contract §5 "Deadline outcomes": a reconciliation read at its deadline closes the operation Job, so a sibling read ends with `exitCode` null and no `deadline`.
+// Contract §8: a reconciliation read deadline gives `unknown`, and the session log cause is DEADLINE (§9).
+describe("reconciliation read deadline (T399)", () => {
+  const isArgs = (args: readonly string[]) => (call: { arguments: readonly string[] }) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]);
+  // `match` only for a call of an operation that started its commit process, so only reconciliation reads match.
+  const afterCommit = (service: Service, match: (call: { arguments: readonly string[] }) => boolean) => (call: { operationId: string; arguments: readonly string[] }) =>
+    match(call) && service.runner.calls.some((c) => c.operationId === call.operationId && isCommitCall(c));
+  const endOf = (call: RecordedCall | undefined) => call?.exit?.deadline ?? (call?.exit?.exitCode === null ? "closed" : String(call?.exit?.exitCode));
+  const cases = [
+    { tag: "window", name: "the window read expires and the Job close ends the HEAD read first", target: isArgs(reflogArgs()), sibling: isArgs(headTargetArgs()) },
+    { tag: "tree", name: "the tree read expires and the Job close ends the parent read first", target: (c: { arguments: readonly string[] }) => subcommand(c.arguments) === "ls-tree", sibling: isArgs(batchCommandArgs()) },
+  ];
+  for (const { tag, name, target, sibling } of cases)
+    caseTest(
+      "T399",
+      `F09: a commit reconciliation gives unknown with the cause DEADLINE when ${name}`,
+      SHELL,
+      () =>
+        withService({ name: `t399-commit-${tag}` }, async (service) => {
+          const repo = repoOf(buildChanged(gitPath(), `t399-commit-${tag}`, "F09"));
+          await underTest("reconcile");
+          const { repositoryId } = await service.register(repo);
+          const r = await reviewOk(service, repositoryId);
+          const [isTarget, isSibling] = [afterCommit(service, target), afterCommit(service, sibling)];
+          const from = service.runner.calls.length;
+          const release = siblingDeadline(service, isTarget, isSibling);
+          const response = await commit(service, repositoryId, r, "deadline\n").finally(release);
+          const own = service.runner.calls.slice(from).filter((c) => c.operationId === response.operationId);
+          const reconciliation = own.slice(own.findIndex(isCommitCall) + 1);
+          const exits = [reconciliation.find(target), reconciliation.find(sibling)].map(endOf);
+          const entry = service.log().find((e) => (e as { operationId?: string }).operationId === response.operationId) as { cause?: string } | undefined;
+          console.log(`OBSERVATION T399: commit ${tag} exits=${exits.join(",")} state=${response.state} code=${response.code} cause=${entry?.cause}`);
+          expect({ exits, ...outcome(response), cause: entry?.cause, commits: commitCalls(service, from).length }).toEqual({ exits: ["deadline", "closed"], state: "unknown", code: "STATE_UNKNOWN", cause: "DEADLINE", commits: 1 });
+        }),
+      SIBLING_TIMEOUT_MS,
+    );
 });
 
 describe("recovery refresh (contract §8)", () => {

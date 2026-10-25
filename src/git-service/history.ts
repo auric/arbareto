@@ -9,7 +9,7 @@ import type { ErrorCode } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES, SHALLOW_METADATA_BYTES } from "../contracts/limits";
 import { batchCommandArgs, headOidArgs, headRefExistsArgs, headTargetArgs, isObjectId, isRefName, objectCheckArgs, type ObjectFormat } from "./commands";
 import type { ReadInstallation } from "./snapshot";
-import { createCollector, type GitExit, type GitRunner, type WalkStop } from "./git-runner";
+import { createCollector, exitKind, type GitExit, type GitRunner, type WalkStop } from "./git-runner";
 import { boundedBody, HEADER_BYTES, isSpace, messageBody, parseCommitObjects, type CommitObject, type CommitObjects } from "./history-parser";
 import { latin1, objectCheckInput, objectCheckOutcome, readBounded, runRead, type ReadStep } from "./read-steps";
 import type { Workspace } from "./registration";
@@ -47,6 +47,9 @@ type Step = Ran | { refused: ErrorCode } | { aborted: true };
 // A held step chain that ends without a page. Only a passed gate lets it reach a response.
 export type Stop = { stop: "canceled" | "deadline" } | { failed: ErrorCode };
 
+// Contract §6 "Process replies": a step that a Job close ended. Its exit has no cause, and its cut output decides nothing. Compare it by identity.
+export const CLOSED: Stop = { failed: "GIT_FAILED" };
+
 export type Shallow = { kind: "absent" } | { kind: "file"; commits: ReadonlySet<string>; fingerprint: string } | { kind: "over" };
 
 const LF = 0x0a;
@@ -68,6 +71,7 @@ function stepStop(signal: AbortSignal, steps: readonly Step[]): Stop | null {
   if (exits.some((e) => e.deadline !== undefined)) return { stop: "deadline" };
   // Contract §9: unexpected diagnostic output above 4 MiB ends a read `failed` with OUTPUT_LIMIT.
   if (exits.some((e) => e.diagnosticLimit)) return { failed: "OUTPUT_LIMIT" };
+  if ((steps as readonly Ran[]).some((s) => exitKind(s.exit, "read", s.stdout) === "jobClosed")) return CLOSED;
   return null;
 }
 
@@ -204,7 +208,7 @@ async function runStep(runner: GitRunner, t: ProcessTarget, args: string[], stdo
 
 export const small = () => createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
 
-// One read-policy Git step. A refusal, an abort, a deadline, or a diagnostic limit gives its `Stop`.
+// One read-policy Git step. A refusal, an abort, a deadline, a diagnostic limit, or a Job close gives its `Stop`.
 export async function readStep(runner: GitRunner, t: ProcessTarget, args: string[], stdout: Bytes): Promise<GitExit | Stop> {
   const step = await runStep(runner, t, args, stdout);
   return stepStop(t.signal, [step]) ?? (step as Ran).exit;

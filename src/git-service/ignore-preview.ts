@@ -11,7 +11,7 @@ import { isWindows, NATIVE } from "../contracts/native-path";
 import { compareKeys, treeKey } from "../contracts/tree-order";
 import { routeWslPath } from "../contracts/wsl-route";
 import { indexEntryArgs } from "./commands";
-import { createCollector, RunnerRefusal, stepUnits, type Collector, type FileFact, type GitExit, type GitRunner, type ProcessContext, type WalkStop } from "./git-runner";
+import { createCollector, exitKind, RunnerRefusal, settleSteps, stepUnits, type Collector, type FileFact, type GitExit, type GitRunner, type ProcessContext, type WalkStop } from "./git-runner";
 import { readIgnoreFile, targetOf, type IgnoreTarget } from "./ignore";
 import { encodeIgnore } from "./ignore-text";
 import { contextOf, latin1 } from "./read-steps";
@@ -38,9 +38,10 @@ class End {
 const limit = (reason: Reason, bound?: string) => new End({ result: "succeeded", value: { unavailable: { reason, ...(bound === undefined ? {} : { bound }) } } });
 const failed = (code: ErrorCode) => new End({ result: "failed", code });
 const CANCELED = new End({ result: "canceled" });
-// 001 contract §5: a Job close ends a step with `exitCode` null. The cause is a sibling exit, so `steps` prefers any other end.
+// 001 contract §5: a Job close ends a step with `exitCode` null. The cause is a sibling end, so `steps` takes a deadline first and a Job close last.
 const CLOSED = new End({ result: "failed", code: "GIT_FAILED" });
-const stopped = (stop: WalkStop["stop"]) => (stop === "deadline" ? limit("deadline") : CANCELED);
+const DEADLINE = limit("deadline");
+const stopped = (stop: WalkStop["stop"]) => (stop === "deadline" ? DEADLINE : CANCELED);
 // Contract Δ5 `PREVIEW_PATHS`: the inputs of the whole preview, without the folder probes (plan.md D9 `paths`). Each count includes every earlier input.
 const inputsFit = (count: number) => {
   if (count > PREVIEW_PATHS) throw limit("paths", "PREVIEW_PATHS");
@@ -54,6 +55,9 @@ const BANG = 0x21;
 const READ = ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs"];
 // Contract Δ5: 100 notices, plus a count.
 const PREVIEW_NOTICES = 100;
+// Plan.md D9 step 6: the `check-ignore` processes that run at the same time in one preview. A round of the S and C checks gives each check half.
+// Git checks the type of each path for a folder-only pattern (dir.c `last_matching_pattern_from_list`). Above 4 processes, a check of 100,000 paths took longer (2026-10-25).
+const CHECK_PROCESSES = 4;
 const DIAGNOSTIC_BYTES = 64 * 1024;
 const GITIGNORE = Buffer.from(".gitignore");
 const OID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
@@ -153,7 +157,8 @@ const stdinPath = (path: Uint8Array) => (path[0] === COLON ? Buffer.concat([Buff
 
 // git-check-ignore(1) OUTPUT with `-z -v -n`: `<source> NUL <line> NUL <pattern> NUL <path> NUL`, one record per input in input order.
 // A record whose pattern is not empty and does not start with `!` is ignored (data-model §7). The parse keeps the verdicts, not the text.
-function verdictCollector(sent: readonly Uint8Array[]): Collector & { verdicts: Uint8Array; done(): boolean } {
+// `output` counts the bytes of every batch of one check, so the listing bound covers the whole check.
+function verdictCollector(sent: readonly Uint8Array[], output: { bytes: number }): Collector & { verdicts: Uint8Array; done(): boolean } {
   const verdicts = new Uint8Array(sent.length);
   let field = 0;
   let record = 0;
@@ -167,6 +172,7 @@ function verdictCollector(sent: readonly Uint8Array[]): Collector & { verdicts: 
     verdicts,
     push(chunk: Uint8Array): void {
       bytes += chunk.length;
+      output.bytes += chunk.length;
       for (const b of chunk) {
         if (b !== NUL) {
           if (field === 2 && empty) {
@@ -201,7 +207,7 @@ function verdictCollector(sent: readonly Uint8Array[]): Collector & { verdicts: 
     },
     // Contract Δ5: an output above the listing byte bound gives `listing`.
     get limited() {
-      return bytes > STATUS_LISTING_BYTES;
+      return output.bytes > STATUS_LISTING_BYTES;
     },
     done: () => !malformed && field === 0 && record === sent.length,
   };
@@ -329,7 +335,8 @@ export function createIgnorePreview({ runner, trust }: { runner: GitRunner; trus
         shadow.exclude("s", base.exclude === null ? null : { real: base.exclude }),
         shadow.exclude("c", p.target === "exclude" ? { bytes: candidate } : base.exclude === null ? null : { real: base.exclude }),
       ]);
-      const [s1, c1] = await steps([shadow.check("s", inputs, ignoreCase, excludesFile), shadow.check("c", inputs, ignoreCase, excludesFile)]);
+      const half = CHECK_PROCESSES / 2;
+      const [s1, c1] = await steps([shadow.check("s", inputs, ignoreCase, excludesFile, half), shadow.check("c", inputs, ignoreCase, excludesFile, half)]);
 
       // A U folder record that S does not ignore expands in the base. Its files join the inputs, and its subfolders join as folder inputs.
       const open = inputs.map((input, i) => ({ input, i })).filter(({ input, i }) => input.kind === "folder" && s1[i] === 0);
@@ -348,7 +355,7 @@ export function createIgnorePreview({ runner, trust }: { runner: GitRunner; trus
       inputsFit(inputs.length);
       await steps([shadow.fill("s", fresh, added), shadow.fill("c", fresh, added)]);
       const probes = probesOf(base.ignoreFiles, new Set());
-      const [s2, c2] = await steps([shadow.check("s", added, ignoreCase, excludesFile), shadow.check("c", [...added, ...probes], ignoreCase, excludesFile)]);
+      const [s2, c2] = await steps([shadow.check("s", added, ignoreCase, excludesFile, half), shadow.check("c", [...added, ...probes], ignoreCase, excludesFile, half)]);
       base.s = Buffer.concat([s1, s2]);
 
       // Plan.md D9 "Self-check", exact by the RI and RT record forms.
@@ -576,20 +583,13 @@ async function git(runner: GitRunner, t: PreviewTarget, context: ProcessContext,
     throw error;
   }
   if (t.signal.aborted) throw CANCELED;
-  if (exit.deadline !== undefined) throw limit("deadline");
+  if (exit.deadline !== undefined) throw DEADLINE;
   if (exit.diagnosticLimit) throw failed("OUTPUT_LIMIT");
-  // 001 contract §5 "Byte caps": a `read` run gets `stop` only at its stdout bound. Any other null `exitCode` is a Job close.
-  if (exit.exitCode === null && !stdout.limited) throw CLOSED;
+  if (exitKind(exit, "read", stdout) === "jobClosed") throw CLOSED;
   return exit;
 }
 
-// Parallel steps of one operation. Each step ends before the first rejection in position order that is no Job close propagates.
-async function steps<T extends readonly unknown[] | []>(work: T): Promise<{ -readonly [K in keyof T]: Awaited<T[K]> }> {
-  const ends = await Promise.allSettled(work);
-  const rejected = ends.flatMap((end) => (end.status === "rejected" ? [end.reason as unknown] : []));
-  if (rejected.length > 0) throw rejected.find((reason) => reason !== CLOSED) ?? CLOSED;
-  return ends.map((end) => (end as PromiseFulfilledResult<unknown>).value) as { -readonly [K in keyof T]: Awaited<T[K]> };
-}
+const steps = <T extends readonly unknown[] | []>(work: T) => settleSteps(work, (end) => end === DEADLINE, (end) => end === CLOSED);
 
 // One folder probe for each folder above a `.gitignore`. The shadow holds each such folder, because it holds the file below it. `skip`: probes that ran.
 function probesOf(files: readonly IgnoreFile[], skip: ReadonlySet<string>): Input[] {
@@ -819,11 +819,18 @@ class Shadow {
     await this.verify(repo, [{ rel: ".git/info/exclude", oid }]);
   }
 
-  // Step 6: one `check-ignore` over `inputs`. The caller bounds the inputs with `inputsFit`.
-  async check(repo: Repo, inputs: readonly Input[], ignoreCase: boolean, excludesFile: string | null): Promise<Uint8Array> {
+  // Step 6: `check-ignore` over `inputs` in `batches` parts at the same time, joined in input order. The caller bounds the inputs with `inputsFit`.
+  async check(repo: Repo, inputs: readonly Input[], ignoreCase: boolean, excludesFile: string | null, batches = CHECK_PROCESSES): Promise<Uint8Array> {
     if (inputs.length === 0) return new Uint8Array();
     const sent = inputs.map((i) => stdinPath(i.path));
-    const out = verdictCollector(sent);
+    const size = Math.ceil(sent.length / batches);
+    const output = { bytes: 0 };
+    const parts = Array.from({ length: Math.ceil(sent.length / size) }, (_, k) => this.checkPart(repo, sent.slice(k * size, (k + 1) * size), output, ignoreCase, excludesFile));
+    return Buffer.concat(await steps(parts));
+  }
+
+  private async checkPart(repo: Repo, sent: readonly Uint8Array[], output: { bytes: number }, ignoreCase: boolean, excludesFile: string | null): Promise<Uint8Array> {
+    const out = verdictCollector(sent, output);
     const exit = await this.run(repo, "index", SHADOW.check(this.windows, ignoreCase, excludesFile), Buffer.concat(sent.flatMap((path) => [path, Uint8Array.of(NUL)])), out);
     if (out.limited) throw limit("listing", "STATUS_LISTING_BYTES");
     // git-check-ignore(1) EXIT STATUS: 0 when a path is ignored, 1 when none is.

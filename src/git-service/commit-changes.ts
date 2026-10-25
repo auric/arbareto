@@ -7,7 +7,7 @@ import type { ErrorCode } from "../contracts/errors";
 import { CANONICAL_DIFF_BYTES, COMMIT_CHANGES_RESULT_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../contracts/limits";
 import { commitChangesArgs, commitNumstatArgs, commitPatchArgs, emptyTreeArgs, isObjectId, OID_HEX as OID, type ObjectFormat } from "./commands";
 import { parsePatch, unquote } from "./diff-parser";
-import { createCollector, type Collector, type GitExit, type GitRunner } from "./git-runner";
+import { createCollector, exitKind, settleSteps, type Collector, type GitExit, type GitRunner } from "./git-runner";
 import { contextOf, encodedBytes, latin1, runRead, strictUtf8 } from "./read-steps";
 import type { Workspace } from "./registration";
 import type { ReadInstallation } from "./snapshot";
@@ -59,6 +59,8 @@ export class Stop {
   constructor(readonly outcome: InspectionOutcome) {}
 }
 export const fail = (code: ErrorCode, value?: object) => new Stop({ result: "failed", code, ...(value === undefined ? {} : { value }) });
+// 001 contract §6 "Process replies": a Job close ends a step with `exitCode` null. The cause is a sibling end, so `both` takes a deadline first and a Job close last.
+export const CLOSED = fail("GIT_FAILED");
 
 // The empty tree OID of the object format: `hash-object -t tree --stdin` with empty stdin writes no object.
 export async function emptyTreeOf(run: (args: string[], out: Collector, input: Uint8Array) => Promise<GitExit>, objectFormat: ObjectFormat): Promise<string> {
@@ -71,12 +73,7 @@ export async function emptyTreeOf(run: (args: string[], out: Collector, input: U
 }
 
 // Both steps end before the first rejection propagates, so no sibling Git process outlives the read.
-export async function both<A, B>(a: Promise<A>, b: Promise<B>): Promise<[A, B]> {
-  const [x, y] = await Promise.allSettled([a, b]);
-  if (x.status === "rejected") throw x.reason;
-  if (y.status === "rejected") throw y.reason;
-  return [x.value, y.value];
-}
+export const both = <A, B>(a: Promise<A>, b: Promise<B>): Promise<[A, B]> => settleSteps([a, b], (end) => end instanceof Stop && end.outcome.result === "deadline", (end) => end === CLOSED);
 
 // Contract Δ3 `readCommitChanges` "Parse": diff-format(5) raw `-z` records. Any other status or form refuses the whole listing (null).
 // `truncated`: the output stopped at a bound, so an unfinished last record is dropped. A finished record that breaks the grammar still refuses.
@@ -281,6 +278,7 @@ export function createCommitChanges({ runner, trust }: CommitChangesOptions) {
     if ("refused" in s) throw fail(s.refused);
     if (s.exit.deadline !== undefined) throw new Stop({ result: "deadline" });
     if (s.exit.diagnosticLimit) throw fail("OUTPUT_LIMIT");
+    if (exitKind(s.exit, "read", out) === "jobClosed") throw CLOSED;
     return s.exit;
   }
 

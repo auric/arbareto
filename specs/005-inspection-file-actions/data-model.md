@@ -155,4 +155,4 @@ Each section names its source. Field names are contract names. "001 data-model �
 - History, per view: `changes` (§1), `parent` (index), `selectedFile` (`fileId`), `fileFilter`, `layout` (`tree` or `flat`), `blame` (§10 with the selected line and the source to return to), `tab` (`commit` or `changes` in the constrained profile).
 - Commit view: the delete review (§4) while its confirmation shows; `ignoreEditor`: `{target, loaded (§6), text, selection, preview (§7) or null, previewState: "idle" | "updating" | "unavailable", stale: boolean}`.
 - Window: the parent chain (§9).
-- A new snapshot keeps the selected file when its path still exists, and drops it otherwise. A new snapshot rebuilds the ignore preview base at the next preview.
+- A new snapshot keeps the selected file when its path still exists, and drops it otherwise. The Commit view marks and their Shift anchor follow the 004 data-model §14 rule: they stay by list, category, and path bytes. A new snapshot rebuilds the ignore preview base at the next preview.

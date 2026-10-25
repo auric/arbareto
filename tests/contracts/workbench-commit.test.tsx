@@ -604,6 +604,23 @@ describe("Untracked menu and ignore items (FR-045, FR-046, plan D9)", () => {
     expect(document.activeElement).toBe(item("Changes", "b.ts"));
   });
 
+  test("T082: a new read with new entry IDs keeps the marks and the Shift anchor by path (data-model §14)", async () => {
+    const old = ["u1.txt", "u2.txt", "u3.txt"].map((p) => entry("untracked", p));
+    const world = createWorld({ entries: old });
+    const double = await openCommitView(world);
+    const selected = () => items("Changes").filter((i) => i.getAttribute("aria-selected") === "true").map((i) => i.getAttribute("aria-label"));
+    await click(item("Changes", "Untracked"));
+    await click(item("Changes", "u1.txt"));
+    await act(async () => item("Changes", "u1.txt").focus());
+    await press(item("Changes", "u1.txt"), "ArrowDown", { shiftKey: true });
+    expect(selected()).toEqual(["u1.txt", "u2.txt"]);
+    await newRead(world, double, renewed(old));
+    expect(selected()).toEqual(["u1.txt", "u2.txt"]);
+    await act(async () => item("Changes", "u2.txt").focus());
+    await press(item("Changes", "u2.txt"), "ArrowDown", { shiftKey: true });
+    expect(selected()).toEqual(["u1.txt", "u2.txt", "u3.txt"]);
+  });
+
   for (const [name, init] of [
     ["Shift+F10", { key: "F10", shiftKey: true }],
     ["the Menu key", { key: "ContextMenu" }],

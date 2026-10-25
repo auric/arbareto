@@ -94,6 +94,9 @@ export type ReadOutcome =
   | { result: "canceled" }
   | { result: "deadline" };
 
+const outcomeOf = (value: WorkspaceSnapshot): ReadOutcome =>
+  value.completeness.state === "complete" ? { result: "succeeded", value } : { result: "limited", code: value.completeness.code as "OUTPUT_LIMIT" | "WORKTREE_CHANGING", value };
+
 export type EntriesOutcome = { ok: true; value: ReadEntriesResult } | { ok: false; code: "REPOSITORY_CHANGED" | "UNKNOWN_TARGET" };
 
 type ProcessTarget = Pick<ReadWorkspaceTarget, "operationId" | "signal" | "workspace">;
@@ -442,9 +445,11 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
 
   // The `count` paths that a `rev-parse --git-path` call prints, one per line. Null: the call or its output failed.
   // Contract §11 "Paths and file access": Linux Git prints Linux paths, and the service takes their UNC form. A name without one gives null.
-  async function gitPaths(t: ProcessTarget, args: string[], count: number): Promise<string[] | null> {
+  // `steps` gets the step when it has an exit, so the caller sees its deadline.
+  async function gitPaths(t: ProcessTarget, args: string[], count: number, steps?: Step[]): Promise<string[] | null> {
     const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
     const step = await run(t, args, out);
+    if ("exit" in step) steps?.push(step);
     if ("refused" in step || step.exit.exitCode !== 0 || out.limited) return null;
     const raw = out.take();
     if (raw.length === 0 || raw[raw.length - 1] !== NEWLINE) return null;
@@ -459,10 +464,10 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     return paths.length === count && paths.every((path): path is string => path !== null && isChannelPath(path)) ? paths : null;
   }
 
-  // Git resolves the marker paths once for each workspace. A failed resolution is not kept.
-  function markerPaths(t: ProcessTarget, st: WorkspaceState): Promise<Record<OperationMarker, string> | null> {
+  // Git resolves the marker paths once for each workspace. A failed resolution is not kept. Only the caller that runs the step gets it in `steps`.
+  function markerPaths(t: ProcessTarget, st: WorkspaceState, steps: Step[]): Promise<Record<OperationMarker, string> | null> {
     st.markers ??= (async (): Promise<Record<OperationMarker, string> | null> => {
-      const lines = await gitPaths(t, markerPathArgs(), OPERATION_MARKERS.length);
+      const lines = await gitPaths(t, markerPathArgs(), OPERATION_MARKERS.length, steps);
       return lines === null ? null : (Object.fromEntries(OPERATION_MARKERS.map((name, i) => [name, lines[i]!])) as Record<OperationMarker, string>);
     })().catch(() => null);
     const pending = st.markers;
@@ -474,9 +479,11 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
 
   // OS file facts of the Git-resolved marker paths. Null: the fact is unknown.
   async function markerFacts(t: ProcessTarget, st: WorkspaceState): Promise<{ present: Record<OperationMarker, boolean | null>; steps: Step[] }> {
-    const paths = await markerPaths(t, st);
-    const present = Object.fromEntries(OPERATION_MARKERS.map((name) => [name, null])) as Record<OperationMarker, boolean | null>;
     const steps: Step[] = [];
+    const shared = st.markers !== null;
+    // A failed shared step ran in the Job of another operation, so this operation runs its own step once.
+    const paths = (await markerPaths(t, st, steps)) ?? (shared ? await markerPaths(t, st, steps) : null);
+    const present = Object.fromEntries(OPERATION_MARKERS.map((name) => [name, null])) as Record<OperationMarker, boolean | null>;
     if (paths === null) return { present, steps };
     const exists = async (path: string) => {
       try {
@@ -1000,7 +1007,9 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       // Contract §8: an advance invalidates every token of the old generation, so its bound paths leave the observation.
       const dropped = advance && t.bound === undefined;
       if (dropped) st.bound.clear();
-      snapshot = snapshots.record(dropped ? { ...observation, workingVersions: [] } : observation, { entries, starts, cursors, pages: new Map(cursors.slice(1).map((cursor, i) => [cursor, i + 1])), entriesDigest, cut }, advance);
+      // Contract §8 "Equal full read": no advance means equal entries and an equal observation, so the retained snapshot and its entry IDs stay.
+      const same = !advance && retained !== null && retained.cut === cut && Bun.deepEquals(retained.completeness, completeness, true);
+      snapshot = same ? retained : snapshots.record(dropped ? { ...observation, workingVersions: [] } : observation, { entries, starts, cursors, pages: new Map(cursors.slice(1).map((cursor, i) => [cursor, i + 1])), entriesDigest, cut }, advance);
       st.recorded = sequence;
       w.generation = snapshot.generation;
       ownerGeneration ??= snapshot.generation;
@@ -1018,13 +1027,13 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       cursor: snapshot.cursors[1] ?? null,
     };
     if (recorded) {
-      // Contract §8 "Change check": only a complete read keeps a tuple. A HEAD with another branch ref file than the tuple keeps none.
+      // Contract §8 "Change check": a complete read and a read limited with OUTPUT_LIMIT keep a tuple. A HEAD with another branch ref file than the tuple keeps none.
       const sameRef = branchRef(w, assumed) === branchRef(w, head);
-      st.kept = value.completeness.state === "complete" && tuple !== null && sameRef ? { ...tuple, hints, listing: lst, policy, value } : null;
+      const keeps = value.completeness.state === "complete" || (value.completeness.state === "limited" && value.completeness.code === "OUTPUT_LIMIT");
+      st.kept = keeps && tuple !== null && sameRef ? { ...tuple, hints, listing: lst, policy, value } : null;
       st.head = head;
     }
-    if (value.completeness.state === "complete") return { kind: "done", outcome: { result: "succeeded", value } };
-    return { kind: "done", outcome: { result: "limited", code: value.completeness.code as "OUTPUT_LIMIT" | "WORKTREE_CHANGING", value } };
+    return { kind: "done", outcome: outcomeOf(value) };
   }
 
   return {
@@ -1048,7 +1057,8 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
         const sameWorking = working !== null && st.bound.size === bound.length && bound.every((key) => kept.working.get(key) === working.get(key));
         const unchanged = () => st.kept === kept && !st.unavailable && !st.unwatched;
         const same = facts !== null && sameWorking && tupleText(kept.files, kept.programs, facts) === kept.facts && unchanged() && decidable();
-        const retained = (): ReadOutcome => ({ result: "succeeded", value: { ...kept.value, recoveryState: recoveryOf(st, t.workspace), readKind: "retained" } });
+        // Contract §3 `readWorkspace`: a `retained` result holds no entries page.
+        const retained = (): ReadOutcome => outcomeOf({ ...kept.value, entries: [], cursor: null, recoveryState: recoveryOf(st, t.workspace), readKind: "retained" });
         if (same && policyOf(trust, t.workspace, kept.listing, t.installation) === kept.policy) {
           const count = st.hints;
           if (kept.hints === count) return retained();

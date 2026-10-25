@@ -217,7 +217,13 @@ describe.skipIf(process.platform !== "win32")("T124 packaged keys through CDP", 
       if (!isAbsolute(untracked) || relative(FIXTURE_ROOT, untracked).startsWith("..")) throw new Error(`the file path is outside the fixture root: ${JSON.stringify(untracked)}`);
       writeFileSync(untracked, "notes\n");
       await c.key("F5");
-      const row = `[...document.querySelectorAll('[data-section=workingChanges] [role=treeitem][aria-label="t067-notes.txt"]')]`;
+      // The Untracked rows exist only while the Untracked section is open (src/frontend/changes/file-tree.ts), and it starts closed.
+      const section = `document.querySelector('[data-section=workingChanges] [data-section-row=untracked]')`;
+      expect(await c.poll<boolean>(`!!${section}`, (v) => v, KEY_WAIT_MS)).toBe(true);
+      await c.evaluate(`${section}.focus(); true`);
+      if ((await c.evaluate<string | null>(`${section}.getAttribute('aria-expanded')`)) === "false") await c.key("ArrowRight");
+      expect(await c.poll<string | null>(`${section}.getAttribute('aria-expanded')`, (v) => v === "true", KEY_WAIT_MS)).toBe("true");
+      const row =`[...document.querySelectorAll('[data-section=workingChanges] [role=treeitem][aria-label="t067-notes.txt"]')]`;
       expect(await c.poll<number>(`${row}.length`, (n) => n === 1, KEY_WAIT_MS)).toBe(1);
       await c.evaluate(`${row}[0].focus(); true`);
       await c.key("F10", MOD.Shift);

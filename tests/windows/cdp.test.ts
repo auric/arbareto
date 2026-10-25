@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
-import { keyEvents, MOD } from "./cdp";
+import { connectPage, keyEvents, MOD, watchIpc } from "./cdp";
 
 printOrigin("./cdp.ts", import.meta.dir);
 
@@ -45,5 +45,64 @@ describe("T079 cdp.ts key events", () => {
 
   test("a key outside the table throws", () => {
     expect(() => keyEvents("F11")).toThrow('no CDP key "F11"');
+  });
+});
+
+// T085: a local double of the WebView2 CDP endpoint. Its events follow the CDP `Network` domain: a CORS preflight, then the POST of the IPC call.
+describe("T085 cdp.ts events and the IPC record", () => {
+  test("events reach their subscribers, and watchIpc keeps only the finished POST calls to ipc.localhost with their JSON body", async () => {
+    const reply = { state: "succeeded", result: { action: "delete" } };
+    const event = (method: string, params: object) => JSON.stringify({ method, params });
+    const request = (requestId: string, method: string, url: string) => event("Network.requestWillBeSent", { requestId, request: { method, url } });
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req, srv) {
+        if (new URL(req.url).pathname === "/ws") return srv.upgrade(req) ? undefined : new Response("no upgrade", { status: 400 });
+        return Response.json([{ type: "page", url: "http://tauri.localhost/", webSocketDebuggerUrl: `ws://127.0.0.1:${srv.port}/ws` }]);
+      },
+      websocket: {
+        message(ws, data) {
+          const { id, method, params } = JSON.parse(String(data)) as { id: number; method: string; params: { requestId?: string } };
+          if (method === "Network.getResponseBody") return void ws.send(JSON.stringify({ id, result: params.requestId === "2" ? { body: Buffer.from(JSON.stringify(reply)).toString("base64"), base64Encoded: true } : { body: "null", base64Encoded: false } }));
+          ws.send(JSON.stringify({ id, result: {} }));
+          if (method !== "Network.enable") return;
+          for (const m of [
+            request("1", "OPTIONS", "http://ipc.localhost/run_workbench"),
+            event("Network.loadingFinished", { requestId: "1" }),
+            request("2", "POST", "http://ipc.localhost/run_workbench"),
+            request("3", "POST", "http://tauri.localhost/assets/a.js"),
+            request("4", "POST", "http://ipc.localhost/read_workspace"),
+            event("Network.loadingFailed", { requestId: "4" }),
+            event("Network.loadingFinished", { requestId: "3" }),
+            event("Network.loadingFinished", { requestId: "4" }),
+            event("Network.loadingFinished", { requestId: "2" }),
+          ])
+            ws.send(m);
+        },
+      },
+    });
+    const c = await connectPage(server.port!, 5_000);
+    try {
+      const seen: unknown[] = [];
+      const off = c.on("Network.loadingFinished", (p) => seen.push(p.requestId));
+      const finished: string[] = [];
+      const ipc = await watchIpc(c, (call) => finished.push(call.command));
+      const calls = await ipc.wait("run_workbench", 1, 5_000);
+      expect(calls).toEqual([{ command: "run_workbench", requestId: "2" }]);
+      expect(seen).toEqual(["1", "3", "4", "2"]);
+      expect({ finished, reads: ipc.finished("read_workspace") }).toEqual({ finished: ["run_workbench"], reads: [] });
+      expect(await ipc.body(calls[0]!)).toEqual(reply);
+      off();
+      const again: unknown[] = [];
+      c.on("Network.loadingFinished", (p) => again.push(p.requestId));
+      await c.send("Network.enable");
+      await ipc.wait("run_workbench", 2, 5_000);
+      expect({ seen: seen.length, again }).toEqual({ seen: 4, again: ["1", "3", "4", "2"] });
+      await expect(ipc.wait("read_workspace", 1, 200)).rejects.toThrow("1 read_workspace replies did not arrive within 200 ms: 0");
+    } finally {
+      c.close();
+      server.stop(true);
+    }
   });
 });

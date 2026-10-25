@@ -215,8 +215,8 @@ async function decide(q: ObserveContext, r: CommitReconciliation, observed: Obse
     candidate === null ? null : listingOf(q, commitTreeArgs(candidate, objectFormat), (bytes) => parseTree(bytes, objectFormat)),
   ]);
   // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other reads. Only a deadline decides before `attribute`.
-  const expired = firstEnd([index, parents, tree].map((f) => (f === null || "value" in f ? null : f)), isDeadlineStop);
-  if (expired !== null && isDeadlineStop(expired)) return unknownOf(expired);
+  const expired = [index, parents, tree].map((f) => (f === null || "value" in f ? null : f)).find((f) => f !== null && isDeadlineStop(f));
+  if (expired) return unknownOf(expired);
   if (parents !== null && !("value" in parents)) return unknownOf(parents);
   const attribution = early ?? attribute(window, h0, h1, parents!.value, r.binding.amend?.parents ?? null);
   if ("unknown" in attribution) return undetermined(attribution.unknown);

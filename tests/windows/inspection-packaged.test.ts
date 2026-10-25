@@ -17,7 +17,7 @@ import { fixtureDir, FIXTURE_ROOT, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { workingFileDigests } from "../git/git-oracle";
 import { buildHistory } from "../git/history-diff-fixtures";
-import { connectPage, freePort, keyEvents, MOD, watchIpc, type Cdp } from "./cdp";
+import { connectPage, freePort, holdIpc, IPC_ORIGIN, keyEvents, MOD, watchIpc, type Cdp } from "./cdp";
 import { decodePng, formatMeasurement, measure, THRESHOLD } from "./contrast";
 import { appEnv, COMMIT_VIEW, explorerReveal, explorerWindows, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
 import { close, ControlType, expand, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
@@ -275,6 +275,7 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
       symlinkSync(String(f.notes.outside), join(f.repo, "linkdir"), "junction");
       const s = await session("reveal", f.repo);
       try {
+        const ipc = await watchIpc(s.c);
         await toCommitView(s.app.pid);
         const cases: [rowPath: string, parent: string, selected: string][] = [
           ["deep/nested/inner", join(f.repo, "deep", "nested"), join(f.repo, "deep", "nested", "inner")],
@@ -292,10 +293,17 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
         }
         // The folder goes after the status read, so the reveal finds no entry (contract Δ6 `reveal` reply `absent`).
         await revealRow(s.c, "gone");
-        rmSync(join(f.repo, "gone"), { recursive: true });
+        // A status read after the removal drops the row and its open menu (ChangesPane.tsx). The hold keeps each read of the status open.
+        // A held poll read proves that no other read runs: `tick` in src/frontend/state/requests.ts sends only when no read is pending.
         const before = explorerWindows();
-        await menuAction(s.c, changesRow("gone"), SHOW_IN_EXPLORER);
-        await until<boolean>(s.c, "the absent text", `document.body.innerText.includes(${js(absentText("gone"))})`, (v) => v, ACTION_WAIT_MS);
+        const hold = await holdIpc(s.c, ipc, "read_workspace", KEY_WAIT_MS);
+        try {
+          rmSync(join(f.repo, "gone"), { recursive: true });
+          await menuAction(s.c, changesRow("gone"), SHOW_IN_EXPLORER);
+          await until<boolean>(s.c, "the absent text", `document.body.innerText.includes(${js(absentText("gone"))})`, (v) => v, ACTION_WAIT_MS);
+        } finally {
+          await hold.release();
+        }
         expect(explorerReveal(f.repo, before).found).toBe(false);
       } finally {
         await end(s);
@@ -497,23 +505,44 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
       const w = buildSubmodules(GIT!, "t060-submodule");
       const sub = join(w.sup, "solo");
       const s = await session("submodule", w.sup);
-      // A normal open: Repository ▸ Open folder…, the folder picker, and the first read. The picker runs by UIA patterns without human time,
-      // so it is the fastest normal open that a user can make.
+      const ipc = await watchIpc(s.c);
+      // Each time is on the page clock and ends when the switcher shows the repository. A MutationObserver records that moment.
+      // A UIA pattern call takes about 2 s, so the UIA steps of a normal open stay outside its time.
+      const OPENED = `window.__t060Opened`;
+      const armOpened = (label: string) =>
+        s.c.evaluate(
+          `${OPENED} = null; window.__t060Observer?.disconnect(); window.__t060Observer = new MutationObserver(() => { if (${OPENED} === null && (${switcher}) === ${js(label)}) ${OPENED} = performance.now(); }); window.__t060Observer.observe(document.body, { subtree: true, childList: true, attributes: true }); true`,
+        );
+      async function opened(repo: string, label: string): Promise<number> {
+        await until<string | null>(s.c, `the open ${repo}`, switcher, (v) => v === label, ACTION_WAIT_MS);
+        return (await until<number | null>(s.c, `the recorded open of ${repo}`, OPENED, (v) => v !== null))!;
+      }
+      // A normal open: Repository ▸ Open folder…, the folder picker, and the first read. The time runs from the `choose_repository` reply.
+      const CHOOSE = `${IPC_ORIGIN}/choose_repository`;
       async function normalOpen(repo: string): Promise<number> {
-        const start = performance.now();
+        const label = switcherLabel(top(repo));
+        const replies = ipc.finished("choose_repository").length;
+        await armOpened(label);
+        // The Resource Timing buffer holds 250 entries, and the status poll adds one each second.
+        await s.c.evaluate("performance.clearResourceTimings(); true");
         await uia(s.app.pid, REPOSITORY, ControlType.MenuItem, expand);
         await uia(s.app.pid, OPEN_FOLDER_ITEM, ControlType.MenuItem, invoke);
         await uia(s.app.pid, "Folder:", ControlType.Edit, (field) => setValue(field, repo));
         await uia(s.app.pid, "Select Folder", ControlType.Button, invoke);
-        await until<string | null>(s.c, `the open ${repo}`, switcher, (v) => v === switcherLabel(top(repo)), ACTION_WAIT_MS);
-        return performance.now() - start;
+        await ipc.wait("choose_repository", replies + 1, ACTION_WAIT_MS);
+        const end = await opened(repo, label);
+        const reply = await until<number | null>(s.c, "the choose_repository resource entry", `performance.getEntriesByName(${js(CHOOSE)}).at(-1)?.responseEnd ?? null`, (v) => v !== null);
+        return end - reply!;
       }
+      // A key open: the time runs from the `timeStamp` of the Enter `keydown`.
       async function keyOpen(target: string, expression: string, repo: string): Promise<number> {
+        const label = switcherLabel(top(repo));
         await focusOn(s.c, expression, target);
-        const start = performance.now();
+        await armOpened(label);
+        await s.c.evaluate(`window.__t060Key = null; window.addEventListener('keydown', (e) => { if (e.key === 'Enter') window.__t060Key = e.timeStamp; }, { capture: true, once: true }); true`);
         await press(s.c, "Enter");
-        await until<string | null>(s.c, `the open ${repo}`, switcher, (v) => v === switcherLabel(top(repo)), ACTION_WAIT_MS);
-        return performance.now() - start;
+        const end = await opened(repo, label);
+        return end - (await until<number | null>(s.c, "the Enter keydown", `window.__t060Key`, (v) => v !== null))!;
       }
       const times = { normalParent: [] as number[], submodule: [] as number[], parentButton: [] as number[], normalSubmodule: [] as number[] };
       try {

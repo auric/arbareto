@@ -6,7 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
-import { connectPage, keyEvents, MOD, watchIpc } from "./cdp";
+import { connectPage, holdIpc, keyEvents, MOD, watchIpc } from "./cdp";
 
 printOrigin("./cdp.ts", import.meta.dir);
 
@@ -100,6 +100,68 @@ describe("T085 cdp.ts events and the IPC record", () => {
       await ipc.wait("run_workbench", 2, 5_000);
       expect({ seen: seen.length, again }).toEqual({ seen: 4, again: ["1", "3", "4", "2"] });
       await expect(ipc.wait("read_workspace", 1, 200)).rejects.toThrow("1 read_workspace replies did not arrive within 200 ms: 0");
+    } finally {
+      c.close();
+      server.stop(true);
+    }
+  });
+});
+
+// The double follows the CDP `Fetch` domain: `requestPaused` names the held call by `networkId`, and `continueRequest` lets its reply arrive.
+describe("holdIpc", () => {
+  test("holdIpc returns only when every pending call of the command is held and one is held; release continues each held call, then disables Fetch", async () => {
+    const event = (method: string, params: object) => JSON.stringify({ method, params });
+    const sent = (requestId: string, method: string, command: string) => event("Network.requestWillBeSent", { requestId, request: { method, url: `http://ipc.localhost/${command}` } });
+    const paused = (n: string) => event("Fetch.requestPaused", { requestId: `f${n}`, networkId: n, request: { method: "POST", url: "http://ipc.localhost/read_workspace" } });
+    const calls: [string, unknown][] = [];
+    let enables = 0;
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req, srv) {
+        if (new URL(req.url).pathname === "/ws") return srv.upgrade(req) ? undefined : new Response("no upgrade", { status: 400 });
+        return Response.json([{ type: "page", url: "http://tauri.localhost/", webSocketDebuggerUrl: `ws://127.0.0.1:${srv.port}/ws` }]);
+      },
+      websocket: {
+        message(ws, data) {
+          const { id, method, params } = JSON.parse(String(data)) as { id: number; method: string; params: { requestId?: string; patterns?: unknown } };
+          calls.push([method, method === "Fetch.enable" ? params.patterns : params.requestId]);
+          // Call 1 is in flight before the hold. Call 4 is another command. The events go before the reply, so they arrive before the call returns.
+          const events: Record<string, string[]> = {
+            "Network.enable": [sent("0", "OPTIONS", "read_workspace"), sent("1", "POST", "read_workspace")],
+            "Fetch.enable": [[sent("2", "POST", "read_workspace"), paused("2")], [event("Network.loadingFinished", { requestId: "1" })], [sent("4", "POST", "read_refs"), sent("3", "POST", "read_workspace"), paused("3")]][enables] ?? [],
+            "Fetch.continueRequest": [event("Network.loadingFinished", { requestId: params.requestId?.slice(1) })],
+          };
+          if (method === "Fetch.enable") enables++;
+          for (const m of events[method] ?? []) ws.send(m);
+          ws.send(JSON.stringify({ id, result: {} }));
+        },
+      },
+    });
+    const c = await connectPage(server.port!, 5_000);
+    try {
+      const ipc = await watchIpc(c);
+      expect(ipc.pending("read_workspace")).toEqual(["1"]);
+      // Call 2 is held, but call 1 still runs outside the hold.
+      await expect(holdIpc(c, ipc, "read_workspace", 300)).rejects.toThrow('the read_workspace calls were not held within 300 ms: held 1, in flight and not held ["1"]');
+      // No call is held.
+      await expect(holdIpc(c, ipc, "read_workspace", 300)).rejects.toThrow("the read_workspace calls were not held within 300 ms: held 0, in flight and not held []");
+      const hold = await holdIpc(c, ipc, "read_workspace", 5_000);
+      expect({ pending: ipc.pending("read_workspace"), refs: ipc.pending("read_refs") }).toEqual({ pending: ["3"], refs: ["4"] });
+      await hold.release();
+      const pattern = [{ urlPattern: "http://ipc.localhost/read_workspace*", requestStage: "Request" }];
+      expect(calls).toEqual([
+        ["Network.enable", undefined],
+        ["Fetch.enable", pattern],
+        ["Fetch.continueRequest", "f2"],
+        ["Fetch.disable", undefined],
+        ["Fetch.enable", pattern],
+        ["Fetch.disable", undefined],
+        ["Fetch.enable", pattern],
+        ["Fetch.continueRequest", "f3"],
+        ["Fetch.disable", undefined],
+      ]);
+      expect(ipc.finished("read_workspace").map((call) => call.requestId)).toEqual(["2", "1", "3"]);
     } finally {
       c.close();
       server.stop(true);

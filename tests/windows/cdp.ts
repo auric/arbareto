@@ -7,7 +7,7 @@
 // Tauri 2 on Windows serves the frontend from this origin when `useHttpsScheme` is false (src-tauri/tauri.conf.json sets no value).
 const PAGE_ORIGIN = "http://tauri.localhost";
 // Tauri 2 on Windows sends each `invoke` as a POST to this origin, and the path is the command name. CDP `Network` shows each call.
-const IPC_ORIGIN = "http://ipc.localhost";
+export const IPC_ORIGIN = "http://ipc.localhost";
 const CALL_MS = 10_000;
 const POLL_MS = 50;
 
@@ -86,6 +86,40 @@ export interface IpcLog {
   wait(command: string, count: number, ms: number): Promise<IpcCall[]>;
   // The JSON reply of the call, as `invoke` resolves it.
   body<T>(call: IpcCall): Promise<T>;
+  // The CDP `Network` request IDs of the calls of `command` that have no reply yet.
+  pending(command: string): string[];
+}
+
+export interface IpcHold {
+  // Continues each held call, then ends the hold.
+  release(): Promise<void>;
+}
+
+// Holds each new call of `command` in the page network layer (CDP `Fetch` at the request stage).
+// It returns when each call of `command` that `ipc` records in flight is held, and at least one call is held, at most `ms`.
+// A call sent before `watchIpc` started is not in `ipc`, so the caller starts `watchIpc` before the calls it must see.
+export async function holdIpc(c: Cdp, ipc: IpcLog, command: string, ms: number): Promise<IpcHold> {
+  // `networkId` is the `Network` request ID of the held call.
+  const held: { requestId: string; networkId: unknown }[] = [];
+  const off = c.on("Fetch.requestPaused", (p) => void held.push({ requestId: p.requestId as string, networkId: p.networkId }));
+  async function release(): Promise<void> {
+    try {
+      for (const h of held) await c.send("Fetch.continueRequest", { requestId: h.requestId });
+      // Chromium `FetchHandler::Disable` drops the interceptor, and `InterceptionJob::Detach` continues each call still held.
+      await c.send("Fetch.disable");
+    } finally {
+      off();
+    }
+  }
+  await c.send("Fetch.enable", { patterns: [{ urlPattern: `${IPC_ORIGIN}/${command}*`, requestStage: "Request" }] });
+  const free = () => ipc.pending(command).filter((id) => !held.some((h) => h.networkId === id));
+  for (const end = performance.now() + ms; held.length === 0 || free().length > 0; await Bun.sleep(POLL_MS)) {
+    if (performance.now() < end) continue;
+    const state = `held ${held.length}, in flight and not held ${JSON.stringify(free())}`;
+    await release();
+    throw new Error(`the ${command} calls were not held within ${ms} ms: ${state}`);
+  }
+  return { release };
 }
 
 // Records the IPC calls of the page from now on. `onFinished` runs when the reply of a call has fully arrived.
@@ -119,6 +153,7 @@ export async function watchIpc(c: Cdp, onFinished?: (call: IpcCall) => void): Pr
       const r = (await c.send("Network.getResponseBody", { requestId: call.requestId })) as { body: string; base64Encoded: boolean };
       return JSON.parse(r.base64Encoded ? Buffer.from(r.body, "base64").toString("utf8") : r.body) as T;
     },
+    pending: (command) => [...open].filter(([, c]) => c === command).map(([id]) => id),
   };
 }
 

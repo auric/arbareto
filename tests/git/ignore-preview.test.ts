@@ -466,3 +466,15 @@ describe("the read gate and the shadow lifetime (spec FR-003, FR-041, plan.md D1
     TIMEOUT_MS,
   );
 });
+
+describe("an equal full read keeps the snapshot (001 data-model §4 \"Status snapshot retention\")", () => {
+  caseTest("T400", "a preview with the snapshot of the first of two equal full reads gives a preview", SHELL, () =>
+    withService({ name: "t400-preview" }, async (service) => {
+      const { r, read } = await open(service, report());
+      const again = await readOk(service, r.repositoryId);
+      await previewed(service, r, read, "gitignore", "*.log\n");
+      expect({ generation: again.generation, snapshotId: again.snapshotId, entries: again.entries }).toEqual({ generation: read.generation, snapshotId: read.snapshotId, entries: read.entries });
+    }),
+    TIMEOUT_MS,
+  );
+});

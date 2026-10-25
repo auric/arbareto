@@ -127,19 +127,18 @@ const PAGE = `(() => {
       const onInput = (e) => { if (start === null) start = e.timeStamp; };
       for (const type of ['keydown', 'beforeinput']) addEventListener(type, onInput, { capture: true });
       const done = checks.map(() => null);
-      this.result = new Promise((resolve) => {
-        const end = (ok) => {
-          for (const type of ['keydown', 'beforeinput']) removeEventListener(type, onInput, { capture: true });
-          resolve({ ok, start, times: done.map((t) => (t === null || start === null ? null : t - start)) });
-        };
-        const step = (now) => {
-          if (start !== null) checks.forEach((check, i) => { if (done[i] === null && check()) done[i] = now; });
-          if (start !== null && done.every((t) => t !== null)) return end(true);
-          if (start !== null && now - start > limit) return end(false);
-          requestAnimationFrame(step);
-        };
+      this.value = null;
+      const end = (ok) => {
+        for (const type of ['keydown', 'beforeinput']) removeEventListener(type, onInput, { capture: true });
+        this.value = { ok, start, times: done.map((t) => (t === null || start === null ? null : t - start)) };
+      };
+      const step = (now) => {
+        if (start !== null) checks.forEach((check, i) => { if (done[i] === null && check()) done[i] = now; });
+        if (start !== null && done.every((t) => t !== null)) return end(true);
+        if (start !== null && now - start > limit) return end(false);
         requestAnimationFrame(step);
-      });
+      };
+      requestAnimationFrame(step);
       return true;
     },
   };
@@ -150,7 +149,8 @@ const PAGE = `(() => {
 async function timed(c: Cdp, checks: string[], act: () => Promise<void>): Promise<number[]> {
   await c.evaluate(`window.__t061.arm([${checks.map((check) => `() => (${check})`).join(", ")}], ${STEP_LIMIT_MS})`);
   await act();
-  const r = await c.evaluate<{ ok: boolean; start: number | null; times: (number | null)[] }>("window.__t061.result");
+  // `cdp.ts` ends one call after 10 s, so the page sets `value` and the test polls it up to the step limit.
+  const r = (await until<{ ok: boolean; start: number | null; times: (number | null)[] } | null>(c, "the timed step", "window.__t061.value", (v) => v !== null, STEP_LIMIT_MS + 5_000))!;
   if (!r.ok) throw new Error(`a step did not show within ${STEP_LIMIT_MS} ms: ${js(r)}`);
   return r.times as number[];
 }
@@ -344,6 +344,8 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
   // Moves the History selection to `oid` with Home and the arrow keys. The History list keeps the focus.
   async function selectRow(c: Cdp, oid: string): Promise<void> {
     await focusOn(c, list, "the History list");
+    // HistoryList.tsx: an arrow move to a row that is not loaded selects it only when its page arrives.
+    await until<boolean>(c, `the row ${oid}`, `!!${list}?.querySelector(${js(`[data-row-id="${oid}"]`)})`, (v) => v);
     await press(c, "Home");
     for (let i = 0; i < 8 && (await c.evaluate<string | null>(activeRow)) !== oid; i++) await press(c, "ArrowDown");
     if ((await c.evaluate<string | null>(activeRow)) !== oid) throw new Error(`the History list did not reach ${oid}`);
@@ -443,6 +445,30 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
     await c.send("Input.insertText", { text: `# t061 ${n}\n` });
     return replies;
   }
+  // Runs `act` and waits for the reply of a read with a new snapshot and, when it has a cursor, for its last `readEntries` page.
+  // The renderer commits a paged snapshot only after its last page (src/frontend/state/requests.ts `fetchPage`).
+  // The preview starts 400 ms after the typed line, so it names the committed snapshot.
+  async function newSnapshot(ipc: IpcLog, act: () => Promise<void>): Promise<void> {
+    type Reply = { result?: { snapshotId?: string; cursor?: string | null } };
+    const reads = ipc.finished("read_workspace");
+    const before = reads.length === 0 ? null : (await ipc.body<Reply>(reads.at(-1)!)).result?.snapshotId;
+    let pages = ipc.finished("read_entries").length;
+    await act();
+    const end = performance.now() + STEP_LIMIT_MS;
+    let paged: boolean | null = null;
+    for (let seen = reads.length; ; await Bun.sleep(50)) {
+      if (performance.now() >= end) throw new Error(`no new snapshot within ${STEP_LIMIT_MS} ms`);
+      const next = ipc.finished("read_workspace");
+      for (; paged === null && seen < next.length; seen++) {
+        const r = (await ipc.body<Reply>(next[seen]!)).result;
+        if (r?.snapshotId !== undefined && r.snapshotId !== before) paged = r.cursor !== null && r.cursor !== undefined;
+      }
+      if (paged === false) return;
+      if (paged === null) continue;
+      const list = ipc.finished("read_entries");
+      for (; pages < list.length; pages++) if ((await ipc.body<Reply>(list[pages]!)).result?.cursor === null) return;
+    }
+  }
   async function previewRun(c: Cdp, ipc: IpcLog, field: string, n: number): Promise<number> {
     const replies = ipc.finished("preview_ignore").length;
     const [shown] = await timed(c, [previewShown(replies)], () => typeLine(c, ipc, field, n).then(() => {}));
@@ -461,11 +487,12 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
         const later: number[] = [];
         let n = 0;
         for (let run = 0; run <= RUNS; run++) {
-          // Plan.md D9: a new snapshot builds a new base, so the next preview is the first one of that snapshot. F5 reads a new snapshot.
-          const reads = s.ipc.finished("read_workspace").length;
+          // Plan.md D9: a new snapshot builds a new base, so the next preview is the first one of that snapshot.
+          // 001 data-model §4: an equal full read keeps the snapshot. So each run adds or removes the `.M` entry of the tracked `t/.gitignore`.
+          // A comment line keeps its rules, and a tracked file adds no preview input. A new untracked file would pass PREVIEW_PATHS.
+          writeFileSync(join(f.repo, "t", ".gitignore"), run % 2 === 0 ? "x\n# t061\n" : "x\n");
           await s.c.evaluate(`${field}.blur(); true`);
-          await press(s.c, "F5");
-          await s.ipc.wait("read_workspace", reads + 1, STEP_LIMIT_MS);
+          await newSnapshot(s.ipc, () => press(s.c, "F5"));
           const a = await previewRun(s.c, s.ipc, field, ++n);
           const b = await previewRun(s.c, s.ipc, field, ++n);
           if (run === 0) continue;

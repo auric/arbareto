@@ -687,3 +687,42 @@ describe("refresh in the one view", () => {
     o.requests.dispose();
   });
 });
+
+// 001 contract §8 "Equal full read": the reply carries the kept `snapshotId`. The renderer applies its summary and reads the shown comparison again.
+describe("equal full read (T400)", () => {
+  test("T400: a full read with the known snapshotId reads the shown comparison again and keeps the entries and the selection", async () => {
+    const o = await shown();
+    const entries = o.requests.state().entries;
+    const comparisons = o.of("readComparison").length;
+    o.requests.refresh();
+    await flush();
+    workspaceResponse(o.last("readWorkspace"), { ...o.first, recoveryState: "ready" });
+    await flush();
+    expect(o.of("readComparison")).toHaveLength(comparisons + 1);
+    expect(o.last("readComparison").payload).toEqual({ snapshotId: o.first.snapshotId, entryId: o.target.entryId });
+    expect(o.of("readEntries")).toHaveLength(0);
+    expect(o.requests.state().entries).toBe(entries);
+    expect(o.requests.state().selection?.entryId).toBe(o.target.entryId);
+    expect(o.requests.state().comparison?.result).toEqual(o.value);
+    o.requests.dispose();
+  });
+
+  test("T400: a known-snapshot reply with recoveryState ready after a committed reconciling snapshot clears blocked", async () => {
+    const o = await opened();
+    o.requests.refresh();
+    await flush();
+    const reconciling = snapshot(1, o.first.entries, { recoveryState: "reconciling" });
+    workspaceResponse(o.last("readWorkspace"), reconciling);
+    await flush();
+    expect(o.requests.state().blocked).toBe(true);
+    const entries = o.requests.state().entries;
+    o.requests.refresh();
+    await flush();
+    workspaceResponse(o.last("readWorkspace"), { ...reconciling, recoveryState: "ready" });
+    await flush();
+    expect(o.requests.state().workspace?.recoveryState).toBe("ready");
+    expect(o.requests.state().blocked).toBe(false);
+    expect(o.requests.state().entries).toBe(entries);
+    o.requests.dispose();
+  });
+});

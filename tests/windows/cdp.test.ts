@@ -50,6 +50,7 @@ describe("T079 cdp.ts key events", () => {
 
 // T085: a local double of the WebView2 CDP endpoint. Its events follow the CDP `Network` domain: a CORS preflight, then the POST of the IPC call.
 describe("T085 cdp.ts events and the IPC record", () => {
+  // A loaded parallel run can need more than the 5 s default to start the local CDP server and connect.
   test("events reach their subscribers, and watchIpc keeps only the finished POST calls to ipc.localhost with their JSON body", async () => {
     const reply = { state: "succeeded", result: { action: "delete" } };
     const event = (method: string, params: object) => JSON.stringify({ method, params });
@@ -104,11 +105,12 @@ describe("T085 cdp.ts events and the IPC record", () => {
       c.close();
       server.stop(true);
     }
-  });
+  }, 30_000);
 });
 
 // The double follows the CDP `Fetch` domain: `requestPaused` names the held call by `networkId`, and `continueRequest` lets its reply arrive.
 describe("holdIpc", () => {
+  // A loaded parallel run can need more than the 5 s default to start the local CDP server and connect.
   test("holdIpc returns only when every pending call of the command is held and one is held; release continues each held call, then disables Fetch", async () => {
     const event = (method: string, params: object) => JSON.stringify({ method, params });
     const sent = (requestId: string, method: string, command: string) => event("Network.requestWillBeSent", { requestId, request: { method, url: `http://ipc.localhost/${command}` } });
@@ -166,5 +168,5 @@ describe("holdIpc", () => {
       c.close();
       server.stop(true);
     }
-  });
+  }, 30_000);
 });

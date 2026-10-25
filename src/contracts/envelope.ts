@@ -300,6 +300,8 @@ const editorText = (allowNul: boolean) =>
 const PreviewText = editorText(false);
 // Contract Δ3 `ignore-save`: a NUL in the text gives the review refusal `ignore-nul`, so the schema passes it.
 const SaveText = editorText(true);
+// Plan.md D8: the line-ending form that Save writes for all lines.
+const SaveLineEnding = z.enum(["lf", "crlf"]);
 // Data-model §6 `expected`: the loaded state of the ignore file.
 const IgnoreExpected = z.union([z.literal("absent"), z.strictObject({ size: Count.max(IGNORE_TARGET_BYTES), sha256: Fingerprint }).meta({ title: "IgnoreDigest" })]);
 const DeleteMode = z.enum(["recycle", "permanent"]);
@@ -329,7 +331,7 @@ const reviewWorkbench = <A extends z.ZodObject>(add: A) =>
       .strictObject({ action: z.literal("delete"), snapshotId: Identifier, entryIds: z.array(Identifier).min(1).max(MULTI_FILE_ACTION_FILES), folder: z.base64().min(1).optional(), mode: DeleteMode })
       .refine((p) => uniqueIds(p.entryIds))
       .meta({ title: "ReviewDelete" }),
-    z.strictObject({ action: z.literal("ignore-save"), target: IgnoreTarget, text: SaveText, expected: IgnoreExpected }).meta({ title: "ReviewIgnoreSave" }),
+    z.strictObject({ action: z.literal("ignore-save"), target: IgnoreTarget, text: SaveText, expected: IgnoreExpected, lineEnding: SaveLineEnding.optional() }).meta({ title: "ReviewIgnoreSave" }),
   ]);
 // Data-model §6 and plan D8: Stage all untracked and Stage all changes stage, and Unstage all unstages. `folder` holds the folder path bytes in base64.
 const STAGE_KINDS: readonly string[] = ["all-untracked", "all-changes"];
@@ -382,7 +384,7 @@ const BlameSource = z.union([
 const BlameOptions = z.strictObject({ ignoreWhitespace: z.boolean(), detectMoves: z.boolean(), detectCopies: z.boolean(), ignoreList: z.boolean() }).meta({ title: "BlameOptions" });
 const ReadBlame = op("readBlame", snapshot, z.strictObject({ source: BlameSource, options: BlameOptions }));
 const ReadIgnoreFile = op("readIgnoreFile", snapshot, z.strictObject({ target: IgnoreTarget }));
-const PreviewIgnore = op("previewIgnore", snapshot, z.strictObject({ target: IgnoreTarget, text: PreviewText, snapshotId: Identifier }));
+const PreviewIgnore = op("previewIgnore", snapshot, z.strictObject({ target: IgnoreTarget, text: PreviewText, snapshotId: Identifier, lineEnding: SaveLineEnding.optional() }));
 // Contract Δ3 `openSubmodule`: worktree-relative text with `/` separators. The shell also checks each component by the 001 §6 rule.
 const SubmodulePath = Text.min(1).refine((path) => path.split("/").every((part) => part !== "" && part !== "." && part !== ".."));
 const OpenSubmodule = op("openSubmodule", {}, z.strictObject({ repositoryId: Identifier, path: SubmodulePath }));
@@ -1888,18 +1890,25 @@ export const ReadCommitFileResult = z.union([CommitFile, InspectionObjectMissing
 export type CommitFile = z.infer<typeof CommitFile>;
 
 // Data-model §6. `text` has LF line ends and no BOM. The renderer shows it as plain text only.
-const READ_IGNORE_REASONS = ["ignore-link", "ignore-folder", "ignore-not-regular", "ignore-size", "ignore-not-utf8", "ignore-nul", "mixed-line-endings", "unreadable", "path"] as const;
+const READ_IGNORE_REASONS = ["ignore-link", "ignore-folder", "ignore-not-regular", "ignore-size", "ignore-not-utf8", "ignore-nul", "ignore-lone-cr", "unreadable", "path"] as const;
 export const IgnoreFile = z
   .strictObject({
     target: IgnoreTarget,
     file: Text.min(1),
     state: z.enum(["absent", "file"]),
     text: Text.refine((t) => new TextEncoder().encode(t).length <= IGNORE_TARGET_BYTES),
-    lineEnding: z.enum(["lf", "crlf", "none"]),
+    lineEnding: z.enum(["lf", "crlf", "none", "mixed"]),
+    // Data-model §6: only a mixed file carries the counts, and each form occurs at least once.
+    lineCounts: z.strictObject({ lf: Count.min(1), crlf: Count.min(1) }).optional(),
     bom: z.boolean(),
     expected: IgnoreExpected,
   })
-  .refine((f) => (f.state === "absent") === (f.expected === "absent") && (f.state === "file" || (f.text === "" && !f.bom && f.lineEnding === "none")))
+  .refine(
+    (f) =>
+      (f.state === "absent") === (f.expected === "absent") &&
+      (f.state === "file" || (f.text === "" && !f.bom && f.lineEnding === "none")) &&
+      (f.lineEnding === "mixed") === (f.lineCounts !== undefined),
+  )
   .meta({ title: "IgnoreFile" });
 export const ReadIgnoreFileResult = z.union([IgnoreFile, z.strictObject({ reason: z.enum(READ_IGNORE_REASONS) }).meta({ title: "IgnoreFileRefused" })]).meta({ title: "ReadIgnoreFileResult" });
 export type IgnoreFile = z.infer<typeof IgnoreFile>;

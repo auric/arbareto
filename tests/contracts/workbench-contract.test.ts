@@ -176,7 +176,7 @@ describe("contract Δ9 codes", () => {
       "ignore-folder",
       "ignore-not-utf8",
       "ignore-nul",
-      "mixed-line-endings",
+      "ignore-lone-cr",
     ]);
     expect([...(E.UNTRACKED_IN_WAY_REASONS ?? [])]).toEqual(["untracked-in-way"]);
     expect([...(E.STASH_KEPT_REASONS ?? [])]).toEqual(["conflicts", "failed-apply", "failed-checkout", "not-found", "stash-changed"]);

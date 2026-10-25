@@ -67,16 +67,17 @@ Each section names its source. Field names are contract names. "001 data-model Â
 - `file`: the path in Git's form: `<worktree root>/.gitignore`, or the `rev-parse --path-format=absolute --git-path info/exclude` result.
 - `state`: `absent` or `file`.
 - `text`: the decoded text, with each CRLF replaced by LF and without the BOM. Empty for `absent`.
-- `lineEnding`: `lf`, `crlf`, or `none` (no line break; Save uses LF).
+- `lineEnding`: `lf`, `crlf`, `none` (no line break; Save uses LF), or `mixed` (LF lines and CRLF lines; Save needs the form in the request).
+- `lineCounts`: `{lf, crlf}`, only for `mixed`. `lf` counts the LF without a CR before it, and `crlf` counts each CRLF. Both are at least 1. A last line without a line break counts in neither.
 - `bom`: true when the bytes start with EF BB BF.
 - `expected`: `absent`, or `{size, sha256}` of the bytes on disk.
-- Validation: at most 1 MiB, strict UTF-8, no NUL, one line-ending form. Refusals: `ignore-link`, `ignore-folder`, `ignore-not-regular`, `ignore-size`, `ignore-not-utf8`, `ignore-nul`, `mixed-line-endings`, `unreadable`, `path`.
+- Validation: at most 1 MiB, strict UTF-8, no NUL, no CR that no LF follows (also as the last byte). Refusals: `ignore-link`, `ignore-folder`, `ignore-not-regular`, `ignore-size`, `ignore-not-utf8`, `ignore-nul`, `ignore-lone-cr`, `unreadable`, `path`.
 - The text is untrusted. The renderer shows it as plain text only.
 
 ## 7. Ignore preview
 
 - Source: plan D9.
-- Request: `target`, `text` (base64 of the UTF-8 bytes of the editor text, LF form, at most 1 MiB decoded), `snapshotId` (the shown `readWorkspace` snapshot).
+- Request: `target`, `text` (base64 of the UTF-8 bytes of the editor text, LF form, at most 1 MiB decoded), `snapshotId` (the shown `readWorkspace` snapshot), and the optional `lineEnding` (`lf` or `crlf`, the user choice). The candidate takes `lineEnding` when present, else the file form, and LF for a `mixed` file. Git drops one CR before each LF, so the form changes no preview verdict (plan D9 "Trigger").
 - Base (service memory only, one per workspace and target):
   - `snapshotId`, `target`, the S text bytes (the file on disk at base build).
   - `tracked`: the T paths with mode, stage, and the skip-worktree tag.
@@ -97,7 +98,8 @@ Each section names its source. Field names are contract names. "001 data-model Â
 - Source: plan D10.
 - `workbenchToken`, lifetime 60 s.
 - `target`, `file`, `expected` (the loaded state).
-- `bytes`: the BOM when the file has one, then the text in the file's line-ending form.
+- Request `lineEnding`: optional, `lf` or `crlf`. A `mixed` file requires it, else `INVALID_REQUEST` after the size and digest check. Any other file may carry it as a conversion.
+- `bytes`: the BOM when the file has one, then the text in the request form for all lines, or in the file's line-ending form without a request form.
 - `after`: `{size, sha256}` of `bytes`.
 - `bound`: `expected`, the repository generation, and the Arbareto mutation markers (001 FR-015). The Git operation state and the conflicted count are not bound, because Save runs during an unfinished operation and with conflicts (spec FR-046).
 - Validation: the request text decodes from base64 to strict UTF-8 of at most 1 MiB. A CR byte gives `INVALID_REQUEST` (contract Î”3). A NUL passes the schema, and the review refuses it with `ignore-nul` (contract Î”3). `bytes` at most 1 MiB, else `ignore-size`.

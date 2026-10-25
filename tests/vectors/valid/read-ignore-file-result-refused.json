@@ -1,5 +1,5 @@
 {
   "schema": "read-ignore-file-result",
   "expected": "valid",
-  "text": "{\"reason\":\"mixed-line-endings\"}"
+  "text": "{\"reason\":\"ignore-lone-cr\"}"
 }

@@ -11,7 +11,7 @@ import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, IGNORE_TARGET_BYTES } from "../co
 import { NATIVE } from "../contracts/native-path";
 import { wslIdentityPath } from "../contracts/wsl-route";
 import { createCollector, RunnerRefusal, type FileReplaceReply, type FileReplaceRequest, type GitRunner, type WalkStop } from "./git-runner";
-import { decodeIgnore, encodeIgnore, type IgnoreForm } from "./ignore-text";
+import { decodeIgnore, encodeIgnore, saveForm } from "./ignore-text";
 import { contextOf, readBounded, runRead } from "./read-steps";
 import type { Workspace } from "./registration";
 import { excludePathArgs } from "./workbench-commands";
@@ -81,7 +81,7 @@ export interface LoadedIgnore {
   expected: "absent" | FileState;
 }
 
-export type IgnoreFileValue = { target: IgnoreTarget; file: string; state: "absent" | "file"; text: string; lineEnding: "lf" | "crlf" | "none"; bom: boolean; expected: "absent" | FileState };
+export type IgnoreFileValue = { target: IgnoreTarget; file: string; state: "absent" | "file"; text: string; lineEnding: "lf" | "crlf" | "none" | "mixed"; lineCounts?: { lf: number; crlf: number }; bom: boolean; expected: "absent" | FileState };
 
 const ROOTS = { gitignore: "worktreeRoot", exclude: "commonDirectory" } as const;
 
@@ -120,7 +120,8 @@ export async function readIgnoreFile(t: IgnoreContext, target: IgnoreTarget): Pr
   const decoded = decodeIgnore(loaded.bytes);
   if (!decoded.ok) return unavailable(decoded.reason);
   const { file, state, expected } = loaded;
-  return { value: { target, file, state, text: decoded.text, lineEnding: decoded.lineEnding, bom: decoded.bom, expected } };
+  const counts = decoded.lineEnding === "mixed" ? { lineCounts: decoded.lineCounts } : {};
+  return { value: { target, file, state, text: decoded.text, lineEnding: decoded.lineEnding, ...counts, bom: decoded.bom, expected } };
 }
 
 // Data-model §8 bound and the contract Δ3 plan. `bytes` is the base64 of the new file bytes.
@@ -135,15 +136,17 @@ export interface IgnoreSaveBound {
 
 export type IgnoreSaveReview = { bound: IgnoreSaveBound; plan: { target: IgnoreTarget; file: string; size: number; sha256: string } } | IgnoreRefusal | WalkStop;
 
-// Contract Δ3 `ignore-save` reads. `text` is the UTF-8 bytes of the LF text of the editor. The BOM and the line endings come from the file (plan.md D10).
-export async function reviewIgnoreSave(t: IgnoreContext, p: { target: IgnoreTarget; text: Uint8Array; expected: "absent" | FileState }): Promise<IgnoreSaveReview> {
+// Contract Δ3 `ignore-save` reads. `text` is the UTF-8 bytes of the LF text of the editor. The BOM comes from the file (plan.md D10).
+export async function reviewIgnoreSave(t: IgnoreContext, p: { target: IgnoreTarget; text: Uint8Array; expected: "absent" | FileState; lineEnding?: "lf" | "crlf" }): Promise<IgnoreSaveReview> {
   const loaded = await load(t, p.target, p.expected);
   if (loaded === "changed") return { code: "STALE_REVIEW", reason: "ignore-changed" };
   if (!("bytes" in loaded)) return loaded;
   const decoded = decodeIgnore(loaded.bytes);
   if (!decoded.ok) return unavailable(decoded.reason);
+  // An absent file decodes as `none`, which saves with LF.
+  const form = saveForm(decoded, p.lineEnding);
+  if (form === null) return { code: "INVALID_REQUEST" };
   if (p.text.includes(0)) return unavailable("ignore-nul");
-  const form: IgnoreForm = loaded.state === "absent" ? { lineEnding: "lf", bom: false } : decoded;
   const bytes = encodeIgnore(p.text, form);
   if (bytes.length > IGNORE_TARGET_BYTES) return unavailable("ignore-size");
   const after = { size: bytes.length, sha256: sha256(bytes) };

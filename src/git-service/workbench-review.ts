@@ -184,7 +184,7 @@ registerWorkbenchAction<"ignore-save", IgnoreSaveBound>("ignore-save", {
   // Contract Δ3: the editor text holds LF line ends only, so a CR byte gives INVALID_REQUEST before any Git process.
   precheck: (p) => (Buffer.from(p.text, "base64").includes(0x0d) ? { refused: "INVALID_REQUEST" } : null),
   async observe(ctx, p) {
-    const review = await reviewIgnoreSave(ctx, { target: p.target, text: new Uint8Array(Buffer.from(p.text, "base64")), expected: p.expected });
+    const review = await reviewIgnoreSave(ctx, { target: p.target, text: new Uint8Array(Buffer.from(p.text, "base64")), expected: p.expected, lineEnding: p.lineEnding });
     if (isStop(review)) return review;
     if ("code" in review) return review.reason !== undefined ? { refused: review.code, result: { reason: review.reason } } : { code: review.code };
     return review;

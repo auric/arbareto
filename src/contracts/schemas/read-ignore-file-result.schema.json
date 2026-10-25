@@ -32,8 +32,29 @@
           "enum": [
             "lf",
             "crlf",
-            "none"
+            "none",
+            "mixed"
           ]
+        },
+        "lineCounts": {
+          "type": "object",
+          "properties": {
+            "lf": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "crlf": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            }
+          },
+          "required": [
+            "lf",
+            "crlf"
+          ],
+          "additionalProperties": false
         },
         "bom": {
           "type": "boolean"
@@ -91,7 +112,7 @@
             "ignore-size",
             "ignore-not-utf8",
             "ignore-nul",
-            "mixed-line-endings",
+            "ignore-lone-cr",
             "unreadable",
             "path"
           ]

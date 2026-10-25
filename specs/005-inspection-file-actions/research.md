@@ -68,10 +68,12 @@
 
 ## R7 Ignore read and text codec
 
-- Decision: `readIgnoreFile` reuses `targetOf` and `factOf` (code, `ignore.ts:93-120`). WSL reads the one file through `fileFacts` `content` (recommendation Q1). The codec keeps the BOM, round-trips LF and CRLF, and refuses mixed endings (plan D8).
+- Decision: `readIgnoreFile` reuses `targetOf` and `factOf` (code, `ignore.ts:93-120`). WSL reads the one file through `fileFacts` `content` (recommendation Q1). The codec keeps the BOM and round-trips LF and CRLF. A file with LF and CRLF lines opens as `mixed`, and the user selects the Save form. A CR that no LF follows refuses (plan D8).
 - Rationale:
   - Git skips a UTF-8 BOM in an ignore file (source, dir.c:1242 `skip_utf8_bom`). So the BOM stays as the file has it.
-  - A `textarea` value normalizes CR and CRLF to LF (doc, HTML "textarea" API value). So only a file with one line-ending form can round-trip exactly. Mixed endings and a lone CR refuse.
+  - A `textarea` value normalizes CR and CRLF to LF (doc, HTML "textarea" API value). So the editor text holds one form only, and Save writes one form for all lines.
+  - User request of 2026-10-25: "Edit info/exclude" refused a file with LF and CRLF lines, and the user wants to edit such a file. The user chose the design: every editor has a "Line endings" control with "LF" and "CRLF". A mixed file opens editable with no preselection and its counts, and Save waits for a choice. A file of one form can convert on purpose.
+  - Git v2.56.0 (source, dir.c `add_patterns_from_buffer`, :1250-1251) splits the buffer at each LF and drops one CR before each LF. So an LF line and a CRLF line give the same pattern, and both Save forms keep every pattern. For the same reason, the preview of a mixed file before a choice uses LF and shows what either form gives. Git appends an LF to the buffer of a file on disk (:1198) and to an index blob without a last LF (:354-357). So a CR as the last byte is dropped too. The codec still refuses it, because no Save form writes that byte again. Any other CR without an LF stays in its pattern, such as the first CR of `a\r\r\n`.
   - Git drops a CR before an LF in a pattern line (code, `ignore.ts:84`). A file without a line ending saves with LF, as the 004 append wrote LF (code, `ignore.ts:162`; clarify F5).
   - The WSL `fileFacts` digest probe already sends the bytes to the shell, which hashes and drops them (code, `wsl.rs:1094` `fact`; recommendation Q1). Forwarding at most 1 MiB to the service needs no UNC read.
 - Alternatives considered: a code editor component (a new dependency and its own normalization rules); a UNC read of the file (user rule).

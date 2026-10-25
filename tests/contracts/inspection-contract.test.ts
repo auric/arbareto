@@ -121,7 +121,7 @@ describe("contract Δ9 codes", () => {
   });
 
   test("WORKBENCH_UNAVAILABLE adds the feature 005 reasons, keeps the other 004 ignore reasons, and removes ignore-exists and ignore-not-text (T057)", () => {
-    const added = ["conflicted", "submodule", "nested-repository", "no-recycle-bin", "long-path", "nothing-to-delete", "ignore-link", "ignore-folder", "ignore-not-utf8", "ignore-nul", "mixed-line-endings"];
+    const added = ["conflicted", "submodule", "nested-repository", "no-recycle-bin", "long-path", "nothing-to-delete", "ignore-link", "ignore-folder", "ignore-not-utf8", "ignore-nul", "ignore-lone-cr"];
     const kept = ["ignore-not-regular", "ignore-size", "limit", "path", "unreadable"];
     expect(errors.WORKBENCH_UNAVAILABLE_REASONS).toEqual(expect.arrayContaining([...added, ...kept] as never[]));
     expect(new Set(errors.WORKBENCH_UNAVAILABLE_REASONS).size).toBe(errors.WORKBENCH_UNAVAILABLE_REASONS.length);
@@ -265,6 +265,12 @@ describe("contract Δ3 payloads", () => {
     expect(read("previewIgnore", { target: "gitignore", text: "" })).toBe("INVALID_REQUEST");
   });
 
+  test("previewIgnore takes an optional lineEnding lf or crlf (plan.md D9)", () => {
+    const preview = (fields: Record<string, unknown>) => read("previewIgnore", { target: "gitignore", text: b64("a\n"), snapshotId: id(), ...fields });
+    for (const lineEnding of ["lf", "crlf"]) expect(preview({ lineEnding })).toBe("ok");
+    for (const lineEnding of ["none", "mixed", "cr", null]) expect(preview({ lineEnding })).toBe("INVALID_REQUEST");
+  });
+
   describe("reviewWorkbench", () => {
     const review = (payload: unknown, side: "renderer" | "service" = "renderer") => check(request("reviewWorkbench", payload, gen()), side);
     const del = (fields: Record<string, unknown> = {}) => ({ action: "delete", snapshotId: id(), entryIds: [id()], mode: "recycle", ...fields });
@@ -287,6 +293,8 @@ describe("contract Δ3 payloads", () => {
         expect(review(save({ expected: { size: 12, sha256: DIGEST } }), side)).toBe("ok");
       }
       expect(review(save({ text: "" }))).toBe("ok");
+      for (const lineEnding of ["lf", "crlf"]) expect(review(save({ lineEnding }))).toBe("ok");
+      for (const lineEnding of ["none", "mixed", "cr", null]) expect(review(save({ lineEnding }))).toBe("INVALID_REQUEST");
       // Contract Δ3: a NUL in the text gives the review refusal `ignore-nul`, so the schema passes it.
       expect(review(save({ text: b64("a\u0000b") }))).toBe("ok");
       for (const fields of [{ expected: "present" }, { expected: { size: 1 } }, { expected: { size: MIB + 1, sha256: DIGEST } }, { target: "both" }, { text: "/out/" }, { text: b64(new Uint8Array(MIB + 1).fill(0x61)) }, { text: b64(Uint8Array.of(0xc3)) }]) {
@@ -451,6 +459,13 @@ describe("data-model §6 ignore file", () => {
     expect(ok(R(), file({ state: "absent", text: "", lineEnding: "none", bom: false, expected: "absent" }))).toBe(true);
   });
 
+  test("a mixed file carries lineCounts with at least 1 of each form; no other result carries them", () => {
+    expect(ok(R(), file({ lineEnding: "mixed", lineCounts: { lf: 1, crlf: 2 } }))).toBe(true);
+    expect(ok(R(), file({ lineEnding: "mixed" }))).toBe(false);
+    for (const lineCounts of [{ lf: 0, crlf: 1 }, { lf: 1, crlf: 0 }, { lf: 1 }, { lf: 1, crlf: 1, cr: 1 }, { lf: -1, crlf: 1 }]) expect(ok(R(), file({ lineEnding: "mixed", lineCounts }))).toBe(false);
+    for (const lineEnding of ["lf", "crlf", "none"]) expect(ok(R(), file({ lineEnding, lineCounts: { lf: 1, crlf: 1 } }))).toBe(false);
+  });
+
   test("an absent file has no text, no BOM, no line ending, and expected absent", () => {
     expect(ok(R(), file({ state: "absent", text: "x", lineEnding: "none", bom: false, expected: "absent" }))).toBe(false);
     expect(ok(R(), file({ state: "absent", text: "", lineEnding: "none", bom: false }))).toBe(false);
@@ -466,7 +481,7 @@ describe("data-model §6 ignore file", () => {
   });
 
   test("a refusal names one readIgnoreFile reason", () => {
-    for (const reason of ["ignore-link", "ignore-folder", "ignore-not-regular", "ignore-size", "ignore-not-utf8", "ignore-nul", "mixed-line-endings", "unreadable", "path"]) expect(ok(R(), { reason })).toBe(true);
+    for (const reason of ["ignore-link", "ignore-folder", "ignore-not-regular", "ignore-size", "ignore-not-utf8", "ignore-nul", "ignore-lone-cr", "unreadable", "path"]) expect(ok(R(), { reason })).toBe(true);
     for (const reason of ["ignore-exists", "conflicted", "absent"]) expect(ok(R(), { reason })).toBe(false);
   });
 });
@@ -592,7 +607,7 @@ describe("contract Δ3 other results", () => {
 
   test("a review refusal names each new reason, and ignore-changed is a STALE_REVIEW reason of the review", () => {
     const R = envelope.ReviewWorkbenchResult;
-    for (const reason of ["conflicted", "submodule", "nested-repository", "no-recycle-bin", "long-path", "nothing-to-delete", "ignore-link", "ignore-folder", "ignore-not-utf8", "ignore-nul", "mixed-line-endings", "ignore-changed"]) {
+    for (const reason of ["conflicted", "submodule", "nested-repository", "no-recycle-bin", "long-path", "nothing-to-delete", "ignore-link", "ignore-folder", "ignore-not-utf8", "ignore-nul", "ignore-lone-cr", "ignore-changed"]) {
       expect({ reason, ok: ok(R, { reason }) }).toEqual({ reason, ok: true });
     }
   });

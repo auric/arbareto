@@ -128,6 +128,7 @@ export interface BunRunnerOptions {
   // Fixture isolation for WSL processes only: the Linux path `<home>/.gitconfig` of the owned global configuration.
   // The double forwards it, `GIT_CONFIG_NOSYSTEM=1`, and `XDG_CONFIG_HOME=<home>/.config` through `WSLENV`. The product shell forwards nothing (T205).
   // `wsl.exe` sets `HOME` from the distro user and ignores a `HOME` in `WSLENV`, so `XDG_CONFIG_HOME` replaces the default `core.excludesFile` and `core.attributesFile` (git-config(1)).
+  // Without it, the WSL `globalConfig`, `worktreeAdd`, and `destinationFacts` routes refuse before any process (feature 006 contract Δ11).
   wslGlobalConfig?: string;
   // Test only: the Linux `LOCPATH` of WSL processes, forwarded through `WSLENV` as `wslGlobalConfig` is. The product shell forwards nothing.
   wslLocalePath?: string;
@@ -178,6 +179,16 @@ function wslParts(path: string): { distro: string; linux: string } | null {
   const m = WSL_PREFIX.exec(path);
   if (!m) return null;
   return { distro: m[1]!, linux: `/${(m[2] ?? "").split(/[\\/]/).filter((s) => s !== "").join("/")}` };
+}
+
+// Mirrors `git_form` of `src-tauri/src/process_requests.rs`: a Windows Git takes a path without a WSL prefix as it is, and a WSL Git the Linux path
+// of a UNC path of its own distro. `wsl::linux_path` compares the distro name without ASCII case. Null: the path has no form for that Git.
+// shortcut: `wslParts` keeps `.` and `..` segments, which `linux_path` folds; fold them when a test binds such a path.
+function gitForm(path: string, wsl: Pick<WslInstallation, "distro"> | undefined): string | null {
+  const parts = wslParts(path);
+  if (wsl === undefined) return parts === null ? path : null;
+  const fold = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
+  return parts !== null && fold(parts.distro) === fold(wsl.distro) ? parts.linux : null;
 }
 
 // Mirrors `RETAINED_BYTES` of `src-tauri/src/wsl.rs`: the shell parses at most 64 KiB of probe output.
@@ -249,6 +260,17 @@ function wslReplaceReply(out: WslOut): FileReplaceReply {
   if (t?.length === 1 && t[0] === "refused") return { result: "refused", reason: "not-regular" };
   if (t?.length === 2 && t[0] === "error" && WSL_FACT_ERRORS.includes(t[1]!)) return { result: "error", code: t[1] as FileFactError };
   return { result: "interrupted" };
+}
+
+// Mirrors `src-tauri/src/wsl.rs` `DESTINATION_OUTPUT_BYTES` and `destination_reply`: one record of a kind, or `error 0 <code>`.
+// Another form, another exit, or no start byte gives `error other-error`.
+const WSL_DESTINATION_OUTPUT_BYTES = 64;
+const DESTINATION_KINDS: readonly string[] = ["absent", "empty", "not-empty", "file", "other"];
+function wslDestinationReply(out: WslOut): DestinationFactsReply {
+  const t = wslRecords(out, WSL_DESTINATION_OUTPUT_BYTES);
+  if (t?.length === 1 && DESTINATION_KINDS.includes(t[0]!)) return { result: t[0] as "absent" | "empty" | "not-empty" | "file" | "other" };
+  if (t?.length === 3 && t[0] === "error" && t[1] === "0" && WSL_FACT_ERRORS.includes(t[2]!)) return { result: "error", code: t[2] as FileFactError };
+  return { result: "error", code: "other-error" };
 }
 
 type ScratchReply = { result: "created" | "removed" } | { result: "swept"; names: string[] } | { result: "error"; code: FileFactError };
@@ -846,24 +868,34 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (args === undefined || args.length !== fixed.length || args.some((arg, i) => arg !== fixed[i])) throw new RunnerRefusal("INVALID_REQUEST", "clone arguments");
       return { program, cwd: launchDirectory };
     }
-    // Feature 004 contract Δ6, as `src-tauri/src/process_requests.rs` resolves it: the admitted Git in the launch folder. It has no WSL form.
+    // Feature 004 contract Δ6, as `src-tauri/src/process_requests.rs` resolves it: the admitted Git in the launch folder.
+    // Feature 006 contract Δ11: a WSL Git runs at `/` of its distro, so `cwd` is the UNC root of `/`. Without the owned global file, the route
+    // would write the global file of the distro user (spec FR-025), so it refuses before any process.
     if (context.contextKind === "globalConfig") {
       const program = gits.get(context.gitInstallationId);
       if (program === undefined) throw unknownTarget();
-      if (wslGits.has(context.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL globalConfig");
-      return { program, cwd: launchDirectory };
+      const wsl = wslGits.get(context.gitInstallationId);
+      if (wsl === undefined) return { program, cwd: launchDirectory };
+      if (options.wslGlobalConfig === undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL globalConfig without wslGlobalConfig");
+      return { program, cwd: `\\\\wsl.localhost\\${wsl.distro}\\`, wsl };
     }
-    // Feature 004 contract Δ6, as src-tauri/src/process_requests.rs `target` and `worktree_add_fits` check it: only a `run` of the two
-    // `worktree add` forms with the bound path, in the registered repository of the review. The double has no WSL `worktreeAdd` route.
+    // Feature 004 contract Δ6, as src-tauri/src/process_requests.rs `target`, `git_form`, and `worktree_add_fits` check it: only a `run` of the two
+    // `worktree add` forms with the bound path in Git's form, in the registered repository of the review. A WSL Git takes the Linux path of a
+    // UNC path of its own distro (feature 006 contract Δ11), and refuses without `wslGlobalConfig` before any process.
     if (context.contextKind === "worktreeAdd") {
       const bound = contexts.get(context.bootstrapId);
       const program = gits.get(context.gitInstallationId);
       const repository = repositories.get(context.repositoryId);
       if (bound?.kind !== "worktreeAdd" || bound.repositoryId !== context.repositoryId || program === undefined || repository === undefined || args === undefined) throw unknownTarget();
-      if (wslGits.has(context.gitInstallationId) || wslParts(bound.path) !== null) throw new RunnerRefusal("INVALID_REQUEST", "WSL worktreeAdd");
-      const fits = (args.length === 6 && args[3] === "--" && args[4] === bound.path) || (args.length === 8 && args[3] === "-b" && args[5] === "--" && args[6] === bound.path);
+      const wsl = wslGits.get(context.gitInstallationId);
+      if (wsl !== undefined && options.wslGlobalConfig === undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL worktreeAdd without wslGlobalConfig");
+      // Contract §11: a WSL repository never runs Git for Windows.
+      if (!wsl && wslParts(repository.worktreeRoot) !== null) throw new RunnerRefusal("INVALID_REQUEST", "Windows Git in a WSL repository");
+      const path = gitForm(bound.path, wsl);
+      if (path === null) throw new RunnerRefusal("INVALID_REQUEST", "worktreeAdd path");
+      const fits = (args.length === 6 && args[3] === "--" && args[4] === path) || (args.length === 8 && args[3] === "-b" && args[5] === "--" && args[6] === path);
       if (!fits) throw new RunnerRefusal("INVALID_REQUEST", "worktree add arguments");
-      return { program, cwd: repository.worktreeRoot };
+      return { program, cwd: repository.worktreeRoot, wsl };
     }
     // Feature 005 contract Δ6, as src-tauri/src/process_requests.rs `ignore_preview_target` (:2450) and `shadow::fits` (:2002) check it: the shadow of this operation,
     // the Git of its route, and the fixed shadow arrays. The cwd is `<shadow>/s` or `<shadow>/c`.
@@ -1040,7 +1072,7 @@ export function createBunRunner(options: BunRunnerOptions) {
 
   // Mirrors `src-tauri/src/wsl.rs:1805` `files_perl`: the `wslFiles` text in `mode` through the wrapper in mode `probe`, the three Linux roots,
   // the Git and `sha256sum` programs, and NUL-ended tokens on stdin. A request checks the command line (process_requests.rs:1407); an internal run does not.
-  function wslFilesCommand(inst: WslInstallation, operationId: string, mode: "delete" | "replace" | "scratch", roots: readonly string[], tokens: readonly string[], request = true): { args: string[]; input: Uint8Array } {
+  function wslFilesCommand(inst: WslInstallation, operationId: string, mode: "delete" | "replace" | "scratch" | "destination", roots: readonly string[], tokens: readonly string[], request = true): { args: string[]; input: Uint8Array } {
     const args = wslWrapped(inst, operationId, "probe", "", WSL_PERL, ["-e", WSL_FILES_TEXT, "--", mode, ...roots, inst.git, inject.wslSha256sum ?? inst.sha256sum]);
     if (request && commandLineUnits(WSL_EXE, args) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
     return { args, input: Buffer.from(tokens.map((token) => `${token}\0`).join("")) };
@@ -1481,6 +1513,7 @@ export function createBunRunner(options: BunRunnerOptions) {
         ? wslWrapped(inst, call.operationId, "read", shadowIndex, inst.git, ["--no-lazy-fetch", "-C", dir, "--git-dir=.git", ...call.arguments.slice(1)])
         : wslWrapped(inst, call.operationId, call.environmentPolicy, index, inst.git, ["--no-lazy-fetch", "-C", dir, ...call.arguments.slice(1)]);
     if (commandLineUnits(WSL_EXE, args) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
+    if (call.context.contextKind === "worktreeAdd") contexts.delete(call.context.bootstrapId);
     const anchor = call.environmentPolicy === "mutation" || call.environmentPolicy === "network" ? wslAnchor(call.operationId, inst) : null;
     // Contract §6 "Activity and stall notice": one anchor line each second while a tracked process runs. Any change of the CPU-time sum is activity.
     // A missing answer is an unknown sample.
@@ -1743,12 +1776,20 @@ export function createBunRunner(options: BunRunnerOptions) {
       checkSyncRequest("destinationFacts", request);
       frames.push({ type: "destinationFacts", ...request });
       // Feature 004 contract Δ6: the review and the run of one `worktree-add` read the binding, so no operation owns it.
-      // The reply adds the bound path in Git's form, which is the Windows path for a Windows Git.
+      // The reply adds the bound path in Git's form: the Windows path for a Windows Git, and the Linux path for a WSL Git.
       if (!("cloneId" in request)) {
         const bound = contexts.get(request.bootstrapId);
-        if (inactive.has(request.operationId) || bound?.kind !== "worktreeAdd" || !repositories.has(bound.repositoryId!)) throw unknownTarget();
-        if (wslParts(bound.path) !== null) throw new RunnerRefusal("INVALID_REQUEST", "WSL destination");
-        return { ...(inject.worktreeAddFacts?.(bound.path) ?? destinationOf(bound.path)), path: bound.path };
+        const repository = bound?.kind === "worktreeAdd" ? repositories.get(bound.repositoryId!) : undefined;
+        if (inactive.has(request.operationId) || bound?.kind !== "worktreeAdd" || repository === undefined) throw unknownTarget();
+        const wsl = wslGits.get(repository.gitInstallationId);
+        const path = gitForm(bound.path, wsl);
+        if (path === null) throw new RunnerRefusal("INVALID_REQUEST", "WSL destination");
+        if (wsl === undefined) return { ...(inject.worktreeAddFacts?.(bound.path) ?? destinationOf(bound.path)), path };
+        // Feature 006 contract Δ11, as process_requests.rs `destination_facts` and `wsl.rs` `destination_command` run it: the `wslFiles` text in mode
+        // `destination` through the wrapper in mode `probe`, with the roots `/` and the Linux path on stdin. Without the owned global file, it starts no process.
+        if (options.wslGlobalConfig === undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL destination without wslGlobalConfig");
+        const facts = inject.worktreeAddFacts?.(bound.path) ?? wslDestinationReply(await wslRun(request.operationId, wslFilesCommand(wsl, request.operationId, "destination", ["/", "/", "/"], [path]), null, walkBoundMs()));
+        return { ...facts, path };
       }
       inject.destinationFacts?.(request);
       const bound = contexts.get(request.cloneId);

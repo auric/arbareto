@@ -20,6 +20,7 @@ printOrigin("../../src/frontend/settings/git/presets.ts", import.meta.dir);
 registerDom();
 const { createRoot } = await import("react-dom/client");
 const { SettingsView } = await import("../../src/frontend/settings/SettingsView");
+const { createSpellingStore } = await import("../../src/frontend/spelling/store");
 
 const TARGET = { repositoryId: fixtureId(1), repositoryGeneration: 1 };
 const TOKEN = fixtureId(10);
@@ -70,7 +71,7 @@ function createDouble(git: unknown, app: unknown) {
         if (operation === "readSyncSettings") setTimeout(() => call.resolve(app), 0);
         if (operation === "readGitSettings") setTimeout(() => call.resolve(double.git), 0);
       });
-  const names = ["readSyncSettings", "setSshClient", "chooseSyncPath", "clearSyncPath", "launchPuttygen", "setDefaultPullAction", "setSwitchChoice", "readGitSettings", "reviewWorkbench", "runWorkbench"];
+  const names = ["readSyncSettings", "setSshClient", "chooseSyncPath", "clearSyncPath", "launchPuttygen", "setDefaultPullAction", "setSwitchChoice", "readGitSettings", "reviewWorkbench", "runWorkbench", "listDictionaries", "readDictionary", "downloadDictionary", "importDictionary", "removeDictionary", "setSpelling", "openLicenceLink", "cancel"];
   const bridge = contractChecked(Object.fromEntries(names.map((n) => [n, make(n)]))) as unknown as SettingsViewProps["bridge"];
   const of = (operation: string) => calls.filter((c) => c.operation === operation);
   const double = { bridge, calls, git, of, pending: (operation: string) => of(operation).find((c) => !c.done), writes: () => calls.filter((c) => !c.operation.startsWith("read")).map((c) => c.operation) };
@@ -81,7 +82,7 @@ const roots: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const unmount of roots.splice(0)) await unmount();
 });
-type Options = { git?: unknown; app?: unknown; target?: typeof TARGET | null; page?: string; wsl?: boolean };
+type Options = { git?: unknown; app?: unknown; target?: typeof TARGET | null; page?: string; wslDistro?: string | null };
 async function render(options: Options = {}) {
   const double = createDouble(options.git ?? gitSettings(), options.app ?? sync());
   const operations: StatusOperation[] = [];
@@ -95,7 +96,8 @@ async function render(options: Options = {}) {
       <SettingsView
         bridge={double.bridge}
         target={target}
-        wsl={options.wsl ?? false}
+        wslDistro={options.wslDistro ?? null}
+        spelling={createSpellingStore()}
         repository={target === null ? null : { worktreeKey: "a".repeat(64), proposals: [] }}
         operationRunning={false}
         onOperation={(op) => void operations.push(op)}
@@ -193,7 +195,7 @@ describe("scopes and sources (FR-058, FR-059)", () => {
   test("without a repository, Settings shows the app pages, and the Git pages need an open repository", async () => {
     const r = await render({ target: null });
     expect(r.double.of("readGitSettings").length).toBe(0);
-    expect(pageNames()).toEqual(["User", "Editor and tools", "Line endings", "Pull and push", "Fetch", "Merge and rebase", "Credentials", "Advanced", "SSH", "Clone", "Branch switch"]);
+    expect(pageNames()).toEqual(["User", "Editor and tools", "Line endings", "Pull and push", "Fetch", "Merge and rebase", "Credentials", "Advanced", "SSH", "Clone", "Branch switch", "Spelling"]);
     expect(text(content())).toContain("SSH client");
     await page("User");
     expect(text(content())).toContain("Git settings need an open repository.");
@@ -316,7 +318,7 @@ describe("pages and controls (FR-060 to FR-062, FR-067)", () => {
   });
 
   test("a WSL workspace offers no Windows presets: the editor and tool rows show Not set and Custom with the D15 note (FR-006, FR-062)", async () => {
-    await render({ wsl: true, git: gitSettings({ "core.editor": configValue("core.editor", [local("code --wait")]) }) });
+    await render({ wslDistro: "Ubuntu-26.04", git: gitSettings({ "core.editor": configValue("core.editor", [local("code --wait")]) }) });
     await page("Editor and tools");
     await scope("local");
     for (const key of ["core.editor", "diff.tool", "merge.tool"]) {
@@ -367,7 +369,7 @@ describe("Find a setting (plan D15)", () => {
     expect(pageNames()).toEqual([]);
     expect(text(content())).toContain("No setting matches the filter.");
     await type(find(), "");
-    expect(pageNames().length).toBe(11);
+    expect(pageNames().length).toBe(12);
   });
 
   test("the filter takes the text literally", async () => {
@@ -692,5 +694,61 @@ describe("T076 board fixes (tasks.md T111, plan D16 \"Geometry\")", () => {
     expect(save.parentElement).toBe(view());
     expect(save.className.split(" ")).not.toContain("sticky");
     expect(text(save)).toContain("1 change. Save writes it to This repository only.");
+  });
+});
+
+// 006 tasks.md T036. Spec FR-020, plan.md D13 and D16 "WSL Global header", data-model §17.
+describe("WSL Global scope (006 FR-020)", () => {
+  const HEADER = "Git in Ubuntu-26.04 writes its global file. It uses GIT_CONFIG_GLOBAL when set, else ~/.gitconfig, or the XDG file when only that exists.";
+
+  test("a WSL workspace with files.global null names Git's --global rule with the distro, keeps Global editable, and enables Save", async () => {
+    const r = await render({ wslDistro: "Ubuntu-26.04", git: gitSettings({ "fetch.prune": configValue("fetch.prune", [global("false")]) }, { global: null }) });
+    await scope("global");
+    const file = section("scopeBar").querySelector<HTMLElement>('[data-slot="scope-file"]')!;
+    expect(text(file)).toBe(HEADER);
+    expect(file.className.split(" ")).toContain("truncate");
+    expect([...file.querySelectorAll("code")].map((c) => c.textContent)).toEqual(["GIT_CONFIG_GLOBAL", "~/.gitconfig"]);
+    expect(text(section("scopeBar"))).not.toContain("Arbareto cannot name the global Git configuration file");
+    expect(text(content())).toContain("An empty field removes the key from this scope.");
+    const name = row("user.name").querySelector<HTMLInputElement>("input")!;
+    expect(name.readOnly).toBe(false);
+    await page("Fetch");
+    const on = labelInput(row("fetch.prune"), "On");
+    expect(on.disabled).toBe(false);
+    await click(on);
+    const save = button("Save (Ctrl+S)");
+    expect(save.hasAttribute("disabled") || save.getAttribute("aria-disabled") === "true").toBe(false);
+    await click(save);
+    expect(r.double.pending("reviewWorkbench")!.args).toEqual([TARGET, { action: "config-save", scope: "global", changes: [{ key: "fetch.prune", value: "true" }] }]);
+  });
+
+  test("the WSL Global header gives its full text in the tooltip", async () => {
+    await render({ wslDistro: "Ubuntu-26.04", git: gitSettings({}, { global: null }) });
+    await scope("global");
+    const file = section("scopeBar").querySelector<HTMLElement>('[data-slot="scope-file"]')!;
+    await act(async () => {
+      file.dispatchEvent(new PointerEvent("pointerover", { bubbles: true, pointerType: "mouse" }));
+      file.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      file.dispatchEvent(new MouseEvent("mouseenter"));
+      file.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+    });
+    await act(async () => void (await new Promise((done) => setTimeout(done, 700))));
+    await settle();
+    expect(tooltipText()).toBe(HEADER);
+  });
+
+  test("a Windows workspace with files.global null keeps the 004 read-only text and locks Global", async () => {
+    await render({ wslDistro: null, git: gitSettings({}, { global: null }) });
+    await scope("global");
+    expect(text(section("scopeBar"))).toContain("Arbareto cannot name the global Git configuration file, so Global is read only.");
+    expect(text(section("scopeBar"))).not.toContain("GIT_CONFIG_GLOBAL");
+    expect(text(content())).not.toContain("An empty field removes the key from this scope.");
+    expect(row("user.name").querySelector<HTMLInputElement>("input")!.readOnly).toBe(true);
+  });
+
+  test("a WSL workspace with a named global file keeps the 004 Writes to line", async () => {
+    await render({ wslDistro: "Ubuntu-26.04" });
+    await scope("global");
+    expect(text(section("scopeBar"))).toContain(`Writes to ${GLOBAL}`);
   });
 });

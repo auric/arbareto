@@ -85,3 +85,32 @@ describe("About text selection", () => {
     expect(selection.toString()).toContain(`Build: 0.1.0 ${BUILD.commit}`);
   });
 });
+
+// 006 tasks.md T036, plan.md D18: About shows the fixed `hunspell-wasm` note beside its licence texts.
+test("the Third-party notices tab shows the hunspell-wasm note beside its licence texts", async () => {
+  const NOTE =
+    "Arbareto uses Hunspell under LGPL-2.1. Source used: https://github.com/rotemdan/hunspell-wasm (commit 8f755ef64e8b047b77b676f9698b3dfa5cb1887d, lib/hunspell/ and Makefile). The lib/hunspell/ files equal https://github.com/hunspell/hunspell (commit edb619100791110d3e34f09ec35392ad327c1135).";
+  const notices = {
+    repositoryUrl: "https://github.com/auric/arbareto",
+    project: { license: "AGPL text", notice: "NOTICE text" },
+    texts: ["GPL 2 text", "LGPL 2.1 text", "MPL 1.1 text"],
+    groups: [{ license: "(LGPL-2.0 OR GPL-2.0 OR MPL-1.1)", packages: [{ name: "hunspell-wasm", version: "0.3.0", note: NOTE, files: [{ name: "COPYING", text: 0 }, { name: "COPYING.LESSER", text: 1 }, { name: "COPYING.MPL", text: 2 }] }] }],
+  };
+  const host = document.body.appendChild(document.createElement("div"));
+  const root = createRoot(host);
+  await act(async () => root.render(<AboutDialog open scope="qualification-target" build={BUILD} notices={notices as never} client={{ width: 1280, height: 800 }} finalFocus={() => null} onClose={() => {}} />));
+  try {
+    const tab = [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((t) => t.textContent === "Third-party notices")!;
+    await act(async () => tab.click());
+    const panel = [...document.querySelectorAll<HTMLElement>('[role="tabpanel"]')].find((p) => !p.hidden && p.textContent?.includes("hunspell-wasm 0.3.0"))!;
+    expect(panel !== undefined).toBe(true);
+    const entry = [...panel.querySelectorAll("h4")].find((h) => h.textContent === "hunspell-wasm 0.3.0")!.parentElement!;
+    expect([...entry.querySelectorAll("p")].map((p) => p.textContent)).toContain(NOTE);
+    expect(entry.textContent).toContain("GPL 2 text");
+    expect(entry.textContent).toContain("LGPL 2.1 text");
+    expect(entry.textContent).toContain("MPL 1.1 text");
+  } finally {
+    act(() => root.unmount());
+    host.remove();
+  }
+});

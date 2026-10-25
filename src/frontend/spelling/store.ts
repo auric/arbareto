@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import type { ReactNode } from "react";
 import { SPELLING_LANGUAGES } from "../../contracts/limits";
 import { acceptedSet } from "../../contracts/spell-words";
 import type { BridgeResponse } from "../bridge";
-import { createWordList, type AddOutcome, type WordList, type WordListState } from "./word-list";
+import { createWordList, type AddOutcome, type RemoveOutcome, type WordList, type WordListState } from "./word-list";
 
 // 006 plan.md D15: the selection, the language states, the word list state, the Ignore list, and the subscriptions.
 
 export type LanguageState = "loading" | "loaded" | "failed";
 export type SpellingSetting = { enabled: boolean; languages: readonly string[] };
+/** Data-model §18: the running download or import of the Spelling page. */
+export type DictionaryRun = { language: string; kind: "download" | "importFolder"; operationId?: string; cancel: boolean; received: number; total: number };
+/** Data-model §4: the message row of a run of this window session. `failed` gives the row state Failed, and `retry` offers Retry. */
+export type RowMessage = { text: ReactNode; failed: boolean; retry: boolean };
 export type SpellingState = {
   /** Null until the first settings response. */
   setting: SpellingSetting | null;
@@ -20,6 +25,9 @@ export type SpellingState = {
   ignored: ReadonlySet<string>;
   /** The catalog name and Script of each language. Null until the first editor show loads the catalog (plan.md D3 "Renderer load"). */
   catalog: ReadonlyMap<string, { name: string; script: string }> | null;
+  /** Data-model §4: the run and the row messages hold for the window session, also after Settings closes. */
+  run: DictionaryRun | null;
+  messages: ReadonlyMap<string, RowMessage>;
 };
 
 // Data-model §8: the default and the value after a read failure.
@@ -35,7 +43,7 @@ function settingOf(response: BridgeResponse): SpellingSetting {
 }
 
 export function createSpellingStore(wordList: WordList = createWordList()) {
-  let state: SpellingState = { setting: null, languages: new Map(), words: { kind: "loading" }, ignored: new Set(), catalog: null };
+  let state: SpellingState = { setting: null, languages: new Map(), words: { kind: "loading" }, ignored: new Set(), catalog: null, run: null, messages: new Map() };
   let accepted = new Set<string>();
   const listeners = new Set<() => void>();
   // 001 latest-wins rule: a response applies only when no later request has applied.
@@ -82,6 +90,24 @@ export function createSpellingStore(wordList: WordList = createWordList()) {
         ({ default: c }) => set({ catalog: new Map([c.bundled, ...c.entries].map((e) => [e.id, { name: e.name, script: e.script }] as const)) }),
         () => set({ catalog: new Map() }),
       );
+    },
+    setRun(run: DictionaryRun | null) {
+      set({ run });
+    },
+    setMessage(id: string, message: RowMessage | null) {
+      const messages = new Map(state.messages);
+      if (message === null) messages.delete(id);
+      else messages.set(id, message);
+      set({ messages });
+    },
+    /** Plan.md D10: the Spelling page reads the word list at each show and after each Remove. */
+    async readWords() {
+      set({ words: await wordList.read() });
+    },
+    async remove(word: string): Promise<RemoveOutcome> {
+      const outcome = await wordList.remove(word);
+      set({ words: await wordList.read() });
+      return outcome;
     },
     ignore(word: string) {
       set({ ignored: new Set(state.ignored).add(word) });

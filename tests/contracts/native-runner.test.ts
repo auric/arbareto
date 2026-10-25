@@ -1042,9 +1042,9 @@ describe("native runner WSL frames (T212, contract §6 and §11)", () => {
     }
   });
 
-  test("a WSL register gets approved or declined, and never another Git", async () => {
+  test("a WSL register gets approved or declined, and never another Git; without the confirmation it gets only approved", async () => {
     const channel = createChannelDouble();
-    const request = { operationId: id(), bootstrapId: id(), gitInstallationId: id(), confirm: true as const };
+    const request = { operationId: id(), bootstrapId: id(), gitInstallationId: id(), confirm: true };
     for (const result of ["approved", "declined"] as const) {
       const pending = channel.runner.register(request);
       channel.reply("process", { type: "register", callId: channel.last("register").callId, result });
@@ -1053,7 +1053,16 @@ describe("native runner WSL frames (T212, contract §6 and §11)", () => {
     const pending = channel.runner.register(request);
     channel.reply("process", { type: "register", callId: channel.last("register").callId, result: "another", bootstrapId: id(), executablePath: GIT_PATH });
     await expect(pending).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
-    await expect(channel.runner.register({ ...request, confirm: false } as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    // T407, contract §6 "Process replies": a WSL register with `confirm: false` gets `approved` or a refusal.
+    for (const [result, outcome] of [["approved", { result: "approved" }], ["declined", null]] as const) {
+      const saved = channel.runner.register({ ...request, confirm: false });
+      const sent = channel.last("register");
+      expect(sent).toMatchObject({ type: "register", ...request, confirm: false });
+      channel.reply("process", { type: "register", callId: sent.callId, result });
+      if (outcome) expect(await saved).toEqual(outcome);
+      else await expect(saved).rejects.toMatchObject({ code: "PROCESS_OWNERSHIP_FAILED" });
+    }
+    await expect(channel.runner.register({ ...request, confirm: "yes" } as never)).rejects.toMatchObject({ code: "INVALID_REQUEST" });
   });
 });
 

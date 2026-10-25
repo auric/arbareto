@@ -132,6 +132,21 @@ pub type WslConfirmation = Box<dyn Fn(&str, &str, &str) -> bool + Send + Sync>;
 /// Saves the WSL Git that Use this Git approved, for its distro GUID.
 pub type WslStore = Box<dyn Fn(SavedWslGit) + Send + Sync>;
 
+/// The settings record of the bound facts. The identity has the form `<file-system ID>:<inode>:<size>:<modification time>`.
+fn saved_wsl_git(bound: &wsl::Bound) -> SavedWslGit {
+    let (installation, file) = (&bound.installation, &bound.git_identity);
+    SavedWslGit {
+        guid: installation.guid.clone(),
+        distro: installation.distro.clone(),
+        git: installation.git.clone(),
+        version: bound.version.clone(),
+        identity: format!(
+            "{}:{}:{}:{}",
+            file.file_system_id, file.inode, file.size, file.modified
+        ),
+    }
+}
+
 /// Makes the host of the WSL processes of one operation. Without it, they run in the operation Job. Tests inject them.
 pub type WslHosts = Box<dyn Fn(&str) -> Box<dyn wsl::Host + Send> + Send + Sync>;
 
@@ -2991,13 +3006,9 @@ impl ProcessRequests {
                 git_installation_id.as_str(),
             ),
         };
-        // The WSL form holds only `confirm` (contract §6 "Channel frames", §11). typify drops its `confirm: true` const.
+        // The WSL form holds only `confirm` (contract §6 "WSL frames", §11 "Git per distro").
         if let RegisterGroup::Wsl { confirm, .. } = request {
-            return if *confirm {
-                self.register_wsl(operation_id, bootstrap_id, git_id, call_id)
-            } else {
-                Err(INVALID)
-            };
+            return self.register_wsl(operation_id, bootstrap_id, git_id, call_id, *confirm);
         }
         let now = Instant::now();
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
@@ -3411,14 +3422,25 @@ impl ProcessRequests {
 
     /// Contract §6 `register` WSL form: the shell issues the ID only from the facts that `wslProbe` bound, after Use this Git.
     /// It then saves those facts for the distro GUID. The service never sends a Linux program path.
+    /// Without `confirm`, the shell issues the ID only on a saved match in its own settings, and it saves nothing (§11 "Git per distro").
     fn register_wsl(
         &self,
         operation_id: &str,
         bootstrap_id: &str,
         git_id: &str,
         call_id: &str,
+        confirm: bool,
     ) -> Result<(), Code> {
         let now = Instant::now();
+        // The settings read takes the settings lock, so it runs before the state lock.
+        let saved = if confirm {
+            Vec::new()
+        } else {
+            self.wsl_saved
+                .get()
+                .map(|saved| saved())
+                .unwrap_or_default()
+        };
         let mut state = self.state();
         if state.issued.contains(git_id) {
             return Err(INVALID);
@@ -3430,9 +3452,28 @@ impl ProcessRequests {
         }
         self.own(&mut state, bootstrap_id, operation_id, now)?;
         let bound = state.wsl_bound.get(bootstrap_id).cloned().ok_or(INVALID)?;
+        let generation = self.current();
+        if !confirm {
+            let probed = saved_wsl_git(&bound);
+            if !saved.iter().any(|git| {
+                (&git.guid, &git.git, &git.version, &git.identity)
+                    == (&probed.guid, &probed.git, &probed.version, &probed.identity)
+            }) {
+                return Err(INVALID);
+            }
+            state.issued.insert(git_id.to_string());
+            state
+                .gits
+                .insert(git_id.to_string(), Git::Wsl(bound.installation));
+            drop(state);
+            self.send(
+                generation,
+                reply::register(call_id, RegisterResultResult::Approved),
+            );
+            return Ok(());
+        }
         drop(state);
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
-        let generation = self.current();
         let (git_id, call_id) = (git_id.to_string(), call_id.to_string());
         // The confirmation runs on its own thread, so the frame reader keeps running.
         std::thread::spawn(move || {
@@ -3450,17 +3491,7 @@ impl ProcessRequests {
                 }
             }
             if let (Some(store), RegisterResultResult::Approved) = (me.wsl_store.get(), result) {
-                let file = &bound.git_identity;
-                store(SavedWslGit {
-                    guid: installation.guid.clone(),
-                    distro: installation.distro.clone(),
-                    git: installation.git.clone(),
-                    version: bound.version.clone(),
-                    identity: format!(
-                        "{}:{}:{}:{}",
-                        file.file_system_id, file.inode, file.size, file.modified
-                    ),
-                });
+                store(saved_wsl_git(&bound));
             }
             me.send(generation, reply::register(&call_id, result));
         });
@@ -8881,6 +8912,73 @@ pub(crate) mod tests {
             } else {
                 assert!(saved.is_empty(), "Cancel saves nothing");
             }
+        }
+    }
+
+    /// T407, contract §11 "Git per distro": `confirm: false` issues the WSL Git only on a saved match in the shell's own settings.
+    #[test]
+    fn a_wsl_register_without_the_confirmation_issues_the_git_only_on_a_saved_match() {
+        let record = SavedWslGit {
+            guid: WSL_GUID.to_string(),
+            distro: "Ubuntu-24.04".to_string(),
+            git: "/usr/bin/git".to_string(),
+            version: "2.55.0".to_string(),
+            identity: "fedc9aa3bd65bc57:43750:4066232:1751487822".to_string(),
+        };
+        let changed = [
+            SavedWslGit {
+                guid: "{8f51b15e-5f05-4b6d-8d78-5765530f558a}".to_string(),
+                ..record.clone()
+            },
+            SavedWslGit {
+                git: "/usr/local/bin/git".to_string(),
+                ..record.clone()
+            },
+            SavedWslGit {
+                version: "2.55.1".to_string(),
+                ..record.clone()
+            },
+            SavedWslGit {
+                identity: "fedc9aa3bd65bc57:43750:4066232:1751487823".to_string(),
+                ..record.clone()
+            },
+        ];
+        let cases = std::iter::once((record.clone(), true)).chain(changed.map(|s| (s, false)));
+        for (saved, matched) in cases {
+            let wsl = wsl_harness(true);
+            let settings = vec![saved.clone()];
+            wsl.harness
+                .requests
+                .set_wsl_saved(Box::new(move || settings.clone()));
+            let (operation, bootstrap_id) = (uuid(), wsl.context());
+            wsl.host.push(0, wsl_probe_output(&[]).as_bytes());
+            wsl.probe(&operation, &bootstrap_id);
+            let (call, git) = (uuid(), uuid());
+            wsl.harness.send(json!({ "type": "register", "callId": call, "operationId": operation, "bootstrapId": bootstrap_id, "gitInstallationId": git, "confirm": false }));
+            let reply = wsl.harness.reply(&call);
+            assert!(
+                wsl.confirmations.lock().expect("shown").is_empty(),
+                "{saved:?}"
+            );
+            assert!(wsl.saved.lock().expect("saved").is_empty(), "{saved:?}");
+            if !matched {
+                assert_eq!(reply["code"], "INVALID_REQUEST", "{saved:?}");
+                assert_eq!(
+                    wsl.register_repository(&operation, &bootstrap_id, &git, WSL_PATH)["code"],
+                    "UNKNOWN_TARGET",
+                    "no ID is bound: {saved:?}"
+                );
+                continue;
+            }
+            assert_eq!(
+                reply,
+                json!({ "type": "register", "callId": call, "result": "approved" })
+            );
+            wsl.host.push(0, b"Sid 4242 ef53:fedc9aa3bd65bc57\n");
+            assert_eq!(
+                wsl.register_repository(&operation, &bootstrap_id, &git, WSL_PATH)["result"],
+                "approved"
+            );
         }
     }
 

@@ -320,7 +320,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - Remove of a dictionary and Remove of a personal word ask for no confirmation (user decision, 2026-10-22). Download, Import, and Add to dictionary undo them.
 - `HOME` is set for every process that `wsl.exe` starts. The 004 R21 note supports this. The plan verifies it.
 - Git applies `core.sharedRepository` to a new lock file only inside a repository (Git `calc_shared_perm`). The plan checks this against Git 2.55.
-- The Q11 force note can run with a local bare remote in the distro. The Q23 host line may need an SSH server that the distro reaches (003 T008 rule). Both are unverified. FR-024 records a row that cannot run as unverified.
+- The Q11 force note can run with a local bare remote in the distro. It is unverified. The Q23 host line needs no SSH server, because it comes from the submodule URL and no process reaches the host. T034 verified it on WSL. FR-024 records a row that cannot run as unverified.
 - The mockup of the Spelling page and of the editor marks comes first, through the arbareto-ux skill. The frontend work follows it.
 
 ## Design notes for planning
@@ -345,7 +345,7 @@ These notes come from the 006 recommendations of 2026-10-21 and the 005 recommen
 - Stale paths: a change before the review gives the renderer text `changedOutside` (`GitSettingsPage.tsx:132-141`). A change after the review gives the service `stale` and the text `staleKey` (`git-settings.ts:266`).
 - File naming on WSL: `git var GIT_CONFIG_GLOBAL` gives two lines in the product, and the choice needs an `access(R_OK)` check inside the distro. The double forwards `GIT_CONFIG_GLOBAL`, so it gives one line. So no naming rule can be tested through the double (user decision 4).
 - Test double: forwards `GIT_CONFIG_GLOBAL=<owned>/.gitconfig`, `GIT_CONFIG_NOSYSTEM=1`, and `XDG_CONFIG_HOME=<owned>/.config` (`bun-runner.ts`). `wsl.exe` ignores `HOME` in `WSLENV`. New routes: `globalConfig` WSL with the distro root as cwd; `worktreeAdd` WSL in `resolveTarget` with a Linux path check; the `destinationFacts` worktree-add WSL branch that runs the `wslFiles` `destination` mode. The safe control mutation runs the write in `registered(w)`, which the `core.sharedRepository=0660` mode test must catch. No control mutation may drop the forwarding. Risk: `wslParts` on the root UNC path for `/` (unverified).
-- WSL tests: `tests/wsl/workbench-wsl.test.ts`, already in `tests/groups.json` `serial`. Run alone on Ubuntu-26.04. The current run takes 1,302 s.
+- WSL tests: the four `tests/wsl/workbench-wsl-{facts,branches,staging,settings}.test.ts` files with the shared `workbench-wsl-harness.ts`, each in `tests/groups.json` `serial`. Run each alone on Ubuntu-26.04. T056 records the time of each file in research.md R13.
 - Cancel gap: Cancel can leave `config.lock`. Git then refuses the next write until the lock goes. The fresh listing decides.
 - Work packages, in run order, after 005 merges: WP1 facts and catalog; WP2 contracts; WP3 shell (`Local: Rust`); WP4 WSL parity (`Local: WSL`); WP5 service dictionaries; WP6 editor spell check (frontend); WP7 Settings (frontend); WP8 qualification (packaged budgets, the worker under the CSP, no network, the IME and right-to-left checks, one full WSL run alone).
 - Open 005 point: 005 T057 does not remove the WSL `append` Perl mode (`wsl.rs`, `wsl-process.json` `append`) or the T081 `fileAppend` block (`tests/wsl/workbench-wsl.test.ts`). The plan checks it after 005 merges.

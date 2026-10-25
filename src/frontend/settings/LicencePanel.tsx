@@ -18,6 +18,8 @@ export const LICENCE_TEXTS = {
   readmeRegion: (language: string) => `Readme text of ${language}`,
   readme: "This dictionary has no licence file. Its readme names the licence.",
   failed: "Arbareto could not read the licence text: ",
+  // Proposed 2026-10-25, pending user confirmation (plan.md D17).
+  loading: "Arbareto reads the licence text…",
 };
 
 /** An icon button whose accessible name and tooltip differ (plan.md D17), with an unavailable reason as its description. */
@@ -98,8 +100,12 @@ export function LicencePanel({ name, licence, documents, failure, onClose }: Lic
         <p role="alert" className="px-3 py-2">
           {failure}
         </p>
+      ) : documents === null ? (
+        <p role="status" className="px-3 py-2 text-muted-text">
+          {LICENCE_TEXTS.loading}
+        </p>
       ) : (
-        (documents ?? []).map((doc, i) => (
+        documents.map((doc, i) => (
           <div key={doc.file} className="flex min-h-0 flex-1 basis-0 flex-col">
             {single === null ? <div className="flex shrink-0 items-center gap-2 border-b border-divider px-3 py-1">{meta(doc)}</div> : null}
             {doc.file === "readme.md" ? (

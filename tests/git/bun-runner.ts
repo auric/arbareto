@@ -174,21 +174,31 @@ export interface WslProbeSeam {
   deadline?: true;
 }
 
-// The Linux path of a UNC WSL path. After the prefix, `\` and `/` both separate segments, as in `src/contracts/wsl-route.ts`.
-function wslParts(path: string): { distro: string; linux: string } | null {
+// The Linux path of a UNC WSL path, folded as `linux_path` of `src-tauri/src/wsl.rs`. After the prefix, `\` and `/` both separate segments, as in `src/contracts/wsl-route.ts`.
+// `reserved`: a segment has a character in U+F000 to U+F0FF, which `linux_path` refuses.
+function wslParts(path: string): { distro: string; linux: string; reserved: boolean } | null {
   const m = WSL_PREFIX.exec(path);
   if (!m) return null;
-  return { distro: m[1]!, linux: `/${(m[2] ?? "").split(/[\\/]/).filter((s) => s !== "").join("/")}` };
+  const segments: string[] = [];
+  let reserved = false;
+  for (const segment of (m[2] ?? "").split(/[\\/]/)) {
+    if (segment === "" || segment === ".") continue;
+    if (segment === "..") segments.pop();
+    else {
+      reserved ||= /[\uf000-\uf0ff]/.test(segment);
+      segments.push(segment);
+    }
+  }
+  return { distro: m[1]!, linux: `/${segments.join("/")}`, reserved };
 }
 
 // Mirrors `git_form` of `src-tauri/src/process_requests.rs`: a Windows Git takes a path without a WSL prefix as it is, and a WSL Git the Linux path
 // of a UNC path of its own distro. `wsl::linux_path` compares the distro name without ASCII case. Null: the path has no form for that Git.
-// shortcut: `wslParts` keeps `.` and `..` segments, which `linux_path` folds; fold them when a test binds such a path.
-function gitForm(path: string, wsl: Pick<WslInstallation, "distro"> | undefined): string | null {
+export function gitForm(path: string, wsl: Pick<WslInstallation, "distro"> | undefined): string | null {
   const parts = wslParts(path);
   if (wsl === undefined) return parts === null ? path : null;
   const fold = (s: string) => s.replace(/[A-Z]/g, (c) => c.toLowerCase());
-  return parts !== null && fold(parts.distro) === fold(wsl.distro) ? parts.linux : null;
+  return parts !== null && !parts.reserved && fold(parts.distro) === fold(wsl.distro) ? parts.linux : null;
 }
 
 // Mirrors `RETAINED_BYTES` of `src-tauri/src/wsl.rs`: the shell parses at most 64 KiB of probe output.

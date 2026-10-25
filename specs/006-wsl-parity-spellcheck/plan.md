@@ -61,7 +61,7 @@ Checked against `.specify/memory/constitution.md` version 3.0.0, before research
 Notes from the second check:
 - **N-1 (I, "Destructive actions … MUST require explicit confirmation")**: The user decided on 2026-10-22 that Remove of a dictionary and Remove of a personal word take no confirmation. This is the user's decision, not a plan default. Both remove app-owned data, never repository data. Download, Import, and Add to dictionary undo them. Both stay apart from routine actions, in their own column and in the Removed text style (FR-026, D16).
 - **N-2 (V, "Logs and diagnostics MUST NOT contain credentials")**: Download uses no proxy, so no proxy credential reaches the service. No log line, response, or event holds a URL.
-- **N-3 (VI, "Untested behavior MUST remain explicitly unverified")**: Research R12 lists every unverified point: the explicit `tls.ca` against `NODE_EXTRA_CA_CERTS` (F3), the Vite asset of `hunspell.wasm` (F14), `hunspell-wasm` under Bun (F15), the IME check without an installed Japanese IME (N5), the offline package run without Windows Sandbox (N6), the packaged WSL Global save, the XDG global file on WSL, the Q11 force note and the Q23 host line on WSL (D14), and the legal readings of a run-time download and of the LGPL-2.1 use (D18).
+- **N-3 (VI, "Untested behavior MUST remain explicitly unverified")**: Research R12 lists every unverified point: the explicit `tls.ca` against `NODE_EXTRA_CA_CERTS` (F3), the Vite asset of `hunspell.wasm` (F14), `hunspell-wasm` under Bun (F15), the IME check without an installed Japanese IME (N5), the offline package run without Windows Sandbox (N6), the packaged WSL Global save, the XDG global file on WSL, the Q11 force note on WSL (D14), and the legal readings of a run-time download and of the LGPL-2.1 use (D18).
 - **N-4 (Delivery Gates)**: Safety tests (SC-003, SC-005, the redirect and size refusals), trust boundaries (D2, FR-021), accessibility checks (SC-007), performance budgets (SC-004, FR-017, FR-028), and platform qualification (P8) are defined here.
 
 No violation, so Complexity Tracking stays empty.
@@ -108,7 +108,7 @@ tests/
 │                           #      network-sites.test.ts, spelling-editor.test.tsx, spelling-page.test.tsx; changed: workbench-settings.test.tsx
 ├── git/                    # new: dictionaries.test.ts, dictionary-facts.test.ts; changed: bun-runner.ts, service-harness.ts
 ├── gate/                   # new: dictionary-gate.test.ts, wasm-asset.test.ts (outside tests/groups.json, own command)
-├── wsl/                    # changed: workbench-wsl.test.ts
+├── wsl/                    # changed: workbench-wsl.test.ts, split by T056 into workbench-wsl-{facts,branches,staging,settings}.test.ts and workbench-wsl-harness.ts
 ├── windows/                # new: spelling-packaged.test.ts, spelling-perf.test.ts
 └── vectors/
 ```
@@ -318,7 +318,7 @@ Each step writes its tests first. P0.1 and P0.2 are the riskiest proofs and run 
 | Q20 | Open worktree; remove a locked worktree and the main worktree; Add worktree through the service | `tests/git/worktrees.test.ts` | the WSL `worktreeAdd` and `destination` routes |
 | Q21 | The Global saves above | `tests/git/git-settings.test.ts` | the WSL `globalConfig` route |
 | Q22 | Not now, Stop trusting, the version 1 record | `tests/git/trust-v2.test.ts` | none |
-| Q23 | A refusal, the host line, Retry, Cancel | `tests/git/submodule-scope.test.ts` | the host line needs an SSH server that the distro reaches (003 T008 rule, unverified until it runs) |
+| Q23 | A refusal, the host line, Retry, Cancel | `tests/git/submodule-scope.test.ts` | none: the host line comes from `submodule.<name>.url`, and no process reaches the host (verified by T034) |
 
 - Each cancel or close case ends with no Git process and no `arbareto-*` scope in the distro (SC-006).
 - A row that needs a resource the harness lacks records `OBSERVATION T<id> unverified <cause>` and stays unverified (spec FR-024).
@@ -402,6 +402,10 @@ Every visible text of this feature comes from this list. `<Language>` is the cat
     - A load failure, a load deadline, and `absent` of a selected language: "Arbareto cannot load the <Language> dictionary. Spell check uses the other languages." The chip tooltip and the row show it.
     - `catalog-changed`: "This Arbareto release has new <Language> dictionary files. Download the dictionary again."
     - `catalog-removed` (above the table): "This Arbareto release has no <Language> dictionary. Arbareto removed it."
+    - The `more` count of `listDictionaries` (above the table, after the named notices; proposed 2026-10-25, pending user confirmation): "This Arbareto release has no <n> other dictionaries. Arbareto removed them."; when n is 1: "This Arbareto release has no 1 other dictionary. Arbareto removed it."
+    - Import `DEADLINE` (proposed 2026-10-25, pending user confirmation): "The <Language> import did not end within 120 seconds. Arbareto did not import the files. Select Import… again."
+    - Import `PICKER_FAILED` (proposed 2026-10-25, pending user confirmation): "Arbareto could not open the folder picker. Select Import… again."
+    - Any other code (the 001 fallback; proposed 2026-10-25, pending user confirmation): "<item> did not complete: <code>.", with `<item>` the accessible name of the control, such as "Import… <Language>".
     - `busy`: "Another dictionary download or import runs. Wait for it to end."
     - A word list read failure: "Arbareto could not read the personal word list."
   - Message rows, plan texts: `import-unreadable`: "Arbareto could not read the <Language> files in <folder>."; `remove`: "Arbareto could not remove the <Language> dictionary from <folder>."; `link`: "Windows could not open the link. The address is <url>."
@@ -409,7 +413,7 @@ Every visible text of this feature comes from this list. `<Language>` is the cat
   - Selected languages panel: heading "Selected languages" and the count; Move up: name "Move <Language> up", tooltip "Move up (Alt+Up)", reason "<Language> is already first."; Move down: name "Move <Language> down", tooltip "Move down (Alt+Down)", reason "<Language> is already last."; preview "Chip: Spelling: <languages>"; empty: "No language is selected. Spell check marks no word."
   - Personal word list panel: heading "Personal word list" and the count; "<n> of 10,000 words"; Remove: name "Remove <word>", tooltip "Remove"; empty: "No words yet. Add a word from the spelling menu of the commit message."; read failure: "Arbareto could not read the personal word list."; no storage: "Arbareto cannot save words, because the app storage is not available."; a failed Remove: "Arbareto could not remove <word> from the personal word list."
   - Import picker title: "Choose the folder with the <Language> dictionary files".
-  - Licence panel: the language name; the licence value; the file name; "<n> bytes" ("1 byte"); close button name and tooltip "Close the licence text (Esc)"; text region name "Licence text of <Language>", or "Readme text of <Language>" for `readme.md`; the readme note "This dictionary has no licence file. Its readme names the licence."; read failure "Arbareto could not read the licence text: <code>."
+  - Licence panel: the language name; the licence value; the file name; "<n> bytes" ("1 byte"); close button name and tooltip "Close the licence text (Esc)"; text region name "Licence text of <Language>", or "Readme text of <Language>" for `readme.md`; the readme note "This dictionary has no licence file. Its readme names the licence."; read failure "Arbareto could not read the licence text: <code>."; while the text loads (proposed 2026-10-25, pending user confirmation): "Arbareto reads the licence text…"
 - About: the `hunspell-wasm` note of D18; the source line "Hunspell source (LGPL-2.1): <repositoryUrl>/releases (release <version>)" (D18).
 - WSL Global header: "Git in <distro> writes its global file. It uses GIT_CONFIG_GLOBAL when set, else ~/.gitconfig, or the XDG file when only that exists."
 - Copy rule: "Label (Key)" in tooltips. "…" only when a further step follows: "Import…" opens the picker. "Downloading", "Importing…", and "Finding suggestions…" are states.

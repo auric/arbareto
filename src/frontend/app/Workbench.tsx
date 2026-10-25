@@ -89,7 +89,6 @@ import { PushPanel } from "../sync/PushPanel";
 import { CloneDialog } from "../clone/CloneDialog";
 import { ConnectNoticeRow } from "../settings/ConnectTerminal";
 import type { KeyProposal } from "../settings/SettingsDialog";
-import { SettingsView } from "../settings/SettingsView";
 import { actionReason, quietReason, RECONCILING_REASON, RUNNING_REASON, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
 import { useSync } from "../sync/useSync";
 import { suppressPageMenu } from "../components/action-menu";
@@ -644,6 +643,8 @@ const FILE_TAB_STOP = '[data-file-tree] [role="treeitem"][tabindex="0"]';
 
 // The About dialog and the notices load on first open (plan.md "Startup chunk budget").
 const AboutMount = lazy(() => import("../about/AboutMount"));
+// The Settings view and its pages load on first open (plan.md "Startup chunk budget").
+const SettingsView = lazy(() => import("../settings/SettingsView").then((m) => ({ default: m.SettingsView })));
 
 // plan.md "Required visible states", About failed. `NOTICES_MISSING` comes from `AboutMount`. Any other failure, such as a chunk that did not load, is `LOAD_FAILED`.
 
@@ -2182,19 +2183,21 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             />
           ) : null}
           {mainPanel === null && view === "settings" ? (
-            <SettingsView
-              bridge={bridge}
-              target={state.repository !== null && workspace !== null ? { repositoryId: state.repository.repositoryId, repositoryGeneration: workspace.generation } : null}
-              wslDistro={workspace?.location.kind === "wsl" ? workspace.location.distro : null}
-              spelling={spelling.store}
-              repository={worktreeKey === null ? null : { worktreeKey, proposals: keyProposals(trust?.report) }}
-              operationRunning={running}
-              onOperation={setOperation}
-              onEnded={(response) => store.ended("runWorkbench", response)}
-              onSettings={(response) => setSyncSettings(settingsOf(response))}
-              page={store.settingsPage(viewKey)}
-              onClose={() => store.closeSettings(viewKey)}
-            />
+            <Suspense fallback={null}>
+              <SettingsView
+                bridge={bridge}
+                target={state.repository !== null && workspace !== null ? { repositoryId: state.repository.repositoryId, repositoryGeneration: workspace.generation } : null}
+                wslDistro={workspace?.location.kind === "wsl" ? workspace.location.distro : null}
+                spelling={spelling.store}
+                repository={worktreeKey === null ? null : { worktreeKey, proposals: keyProposals(trust?.report) }}
+                operationRunning={running}
+                onOperation={setOperation}
+                onEnded={(response) => store.ended("runWorkbench", response)}
+                onSettings={(response) => setSyncSettings(settingsOf(response))}
+                page={store.settingsPage(viewKey)}
+                onClose={() => store.closeSettings(viewKey)}
+              />
+            </Suspense>
           ) : null}
           <div hidden={mainPanel !== null || view === "settings"} className="contents">
             {refusal === null ? null : <RepositoryRefused code={responseCode(refusal)} result={refusal.result as RegistrationResult | undefined} onOpenRepository={() => void openRepository()} />}

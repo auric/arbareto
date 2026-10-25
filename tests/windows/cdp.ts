@@ -67,7 +67,8 @@ export function freePort(): number {
 
 export interface Cdp {
   url: string;
-  send(method: string, params?: object): Promise<Record<string, unknown>>;
+  // `sessionId` names a flat session of an attached target (CDP `Target.setAutoAttach` with `flatten`).
+  send(method: string, params?: object, sessionId?: string): Promise<Record<string, unknown>>;
   evaluate<T>(expression: string): Promise<T>;
   // The last value, whether `done` holds or the bound passes.
   poll<T>(expression: string, done: (value: T) => boolean, ms: number): Promise<T>;
@@ -155,14 +156,14 @@ export async function connectPage(port: number, ms: number): Promise<Cdp> {
     return () => void set.delete(listener);
   }
 
-  async function send(method: string, params: object = {}): Promise<Record<string, unknown>> {
+  async function send(method: string, params: object = {}, sessionId?: string): Promise<Record<string, unknown>> {
     const n = ++id;
     let timer: Timer | undefined;
     try {
       const reply = await Promise.race([
         new Promise<Record<string, unknown>>((resolve) => {
           waiting.set(n, resolve);
-          ws.send(JSON.stringify({ id: n, method, params }));
+          ws.send(JSON.stringify({ id: n, method, params, ...(sessionId === undefined ? {} : { sessionId }) }));
         }),
         new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`CDP ${method} gave no reply within ${CALL_MS} ms`)), CALL_MS))),
       ]);

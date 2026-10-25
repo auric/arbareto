@@ -273,7 +273,14 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
     if (headChanged || (result.readKind === "full" && !(isPoll && result.location.kind === "wsl"))) requestRefs();
     const known = result.snapshotId === state.workspace?.snapshotId || result.snapshotId === paging?.snapshot.snapshotId;
     if (known) {
-      update({ readFailure: null });
+      // Contract §8 "Equal full read": the snapshot fields are those of the known snapshot, so the entries stay. The summary fields are fresh.
+      // An equal read can follow a working-file change that no entry shows, so a full read reads the shown comparison again.
+      // A `retained` reply keeps the state object, so a no-change poll notifies no listener.
+      if (result.readKind !== "full") return void update({ readFailure: null });
+      if (paging?.snapshot.snapshotId === result.snapshotId) paging.snapshot = result;
+      if (state.workspace?.snapshotId !== result.snapshotId) return void update({ readFailure: null });
+      update({ workspace: result, readFailure: null });
+      if (state.selection) requestComparison(state.selection.entryId);
       return;
     }
     paging = null;

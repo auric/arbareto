@@ -647,3 +647,16 @@ describe("the run (plan.md D6, contract Δ3 `runWorkbench`)", () => {
     TIMEOUT_MS,
   );
 });
+
+describe("an equal full read keeps the snapshot (001 data-model §4 \"Status snapshot retention\")", () => {
+  caseTest("T400", "a delete review with the snapshot and entry IDs of the first of two equal full reads gives a token", SHELL, () =>
+    withService({ name: "t400-delete" }, async (service) => {
+      const { r, read } = await open(service, files());
+      const again = await readOk(service, r.repositoryId);
+      const plan = await reviewOk(service, r, read, [idOf(read, "u1.txt")], "permanent");
+      expect(typeof plan.workbenchToken).toBe("string");
+      expect({ generation: again.generation, snapshotId: again.snapshotId, entries: again.entries }).toEqual({ generation: read.generation, snapshotId: read.snapshotId, entries: read.entries });
+    }),
+    TIMEOUT_MS,
+  );
+});

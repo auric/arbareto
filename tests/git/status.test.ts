@@ -652,10 +652,10 @@ describe("readEntries (contract §3, data-model §4)", () => {
           expect(service.runner.calls.length).toBe(calls);
           return response.code;
         };
-        // An equal full read replaces the retained snapshot and keeps the generation.
+        // T400: an equal full read keeps the retained snapshot, its entry IDs, and the generation.
         const same = await fullRead();
-        expect(same.generation).toBe(old.generation);
-        expect(await entries(same.generation, old.snapshotId)).toBe("UNKNOWN_TARGET");
+        expect({ generation: same.generation, snapshotId: same.snapshotId, entries: same.entries }).toEqual({ generation: old.generation, snapshotId: old.snapshotId, entries: old.entries });
+        expect(await entries(same.generation, crypto.randomUUID())).toBe("UNKNOWN_TARGET");
         // Contract §2: a well-formed cursor that this snapshot did not issue.
         expect(await entries(same.generation, same.snapshotId)).toBe("UNKNOWN_TARGET");
         // A staged change advances the generation. The generation check comes before the snapshot check.
@@ -663,6 +663,9 @@ describe("readEntries (contract §3, data-model §4)", () => {
         ownedGit(git, FIXTURE_ROOT, repo, ["add", "--", "keep.txt"]);
         const changed = await fullRead();
         expect(changed.generation).toBe(same.generation + 1);
+        // T400: a changed read replaces the snapshot and its entry IDs.
+        expect(changed.snapshotId).not.toBe(same.snapshotId);
+        expect(changed.entries.map((e) => e.entryId).filter((id) => same.entries.some((e) => e.entryId === id))).toEqual([]);
         expect(await entries(same.generation, changed.snapshotId)).toBe("REPOSITORY_CHANGED");
         expect(await entries(same.generation, crypto.randomUUID())).toBe("REPOSITORY_CHANGED");
       }),

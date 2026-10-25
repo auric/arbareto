@@ -1000,7 +1000,9 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       // Contract §8: an advance invalidates every token of the old generation, so its bound paths leave the observation.
       const dropped = advance && t.bound === undefined;
       if (dropped) st.bound.clear();
-      snapshot = snapshots.record(dropped ? { ...observation, workingVersions: [] } : observation, { entries, starts, cursors, pages: new Map(cursors.slice(1).map((cursor, i) => [cursor, i + 1])), entriesDigest, cut }, advance);
+      // Contract §8 "Equal full read": no advance means equal entries and an equal observation, so the retained snapshot and its entry IDs stay.
+      const same = !advance && retained !== null && retained.cut === cut && Bun.deepEquals(retained.completeness, completeness, true);
+      snapshot = same ? retained : snapshots.record(dropped ? { ...observation, workingVersions: [] } : observation, { entries, starts, cursors, pages: new Map(cursors.slice(1).map((cursor, i) => [cursor, i + 1])), entriesDigest, cut }, advance);
       st.recorded = sequence;
       w.generation = snapshot.generation;
       ownerGeneration ??= snapshot.generation;

@@ -7,3 +7,6 @@ export async function englishFiles(): Promise<{ aff: string; dic: string }> {
   const [aff, dic] = await Promise.all([import("dictionary-en/index.aff?raw"), import("dictionary-en/index.dic?raw")]);
   return { aff: aff.default, dic: dic.default };
 }
+
+/** 006 plan.md D12: Show licence of English reads the bundled `license` text. */
+export const englishLicence = async (): Promise<string> => (await import("dictionary-en/license?raw")).default;

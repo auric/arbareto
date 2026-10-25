@@ -174,7 +174,7 @@ export function useGitSettings({ bridge, target, operationRunning, onOperation, 
 export type GitSettingsState = ReturnType<typeof useGitSettings>;
 
 /** The scope part of the scope bar: the four scopes and the file of the selected one (FR-058, FR-059). */
-export function ScopePicker({ scope, onScope, files }: { scope: Scope; onScope(scope: Scope): void; files: GitSettings["files"] | null }) {
+export function ScopePicker({ scope, onScope, files, wslDistro }: { scope: Scope; onScope(scope: Scope): void; files: GitSettings["files"] | null; wslDistro: string | null }) {
   const legend = useId();
   const fileId = useId();
   const options: { value: Scope; label: string; readOnly: boolean }[] = [
@@ -183,7 +183,7 @@ export function ScopePicker({ scope, onScope, files }: { scope: Scope; onScope(s
     { value: "global", label: TEXTS.scopeName("global"), readOnly: false },
     { value: "system", label: TEXTS.scopeName("system"), readOnly: true },
   ];
-  const file = files === null ? null : scopeFile(scope, files);
+  const file = files === null ? null : scopeFile(scope, files, wslDistro);
   return (
     <>
       <fieldset data-slot="scope-picker" aria-labelledby={legend} className="flex shrink-0 items-center rounded-sm border border-control-border">
@@ -212,12 +212,33 @@ export function ScopePicker({ scope, onScope, files }: { scope: Scope; onScope(s
   );
 }
 
-function scopeFile(scope: Scope, files: GitSettings["files"]): string | null {
+function scopeFile(scope: Scope, files: GitSettings["files"], wslDistro: string | null): ReactNode {
   if (scope === "effective") return TEXTS.effectiveNote;
   if (scope === "system") return files.system === null ? null : TEXTS.readsFrom(files.system);
   const file = files[scope];
-  return file !== null ? TEXTS.writesTo(file) : scope === "global" ? TEXTS.noGlobalFile : TEXTS.noLocalFile;
+  if (file !== null) return TEXTS.writesTo(file);
+  if (scope === "global" && wslDistro !== null) return <WslGlobal distro={wslDistro} />;
+  return scope === "global" ? TEXTS.noGlobalFile : TEXTS.noLocalFile;
 }
+
+/** 006 plan.md D16 "WSL Global header": the FR-020 text, with the variable and the file name in the code font. */
+function WslGlobal({ distro }: { distro: string }) {
+  const [head, tail] = TEXTS.wslGlobal(distro).split("GIT_CONFIG_GLOBAL");
+  const [middle, end] = tail!.split("~/.gitconfig");
+  const code = (text: string) => <code className="font-mono text-text">{text}</code>;
+  return (
+    <>
+      {head}
+      {code("GIT_CONFIG_GLOBAL")}
+      {middle}
+      {code("~/.gitconfig")}
+      {end}
+    </>
+  );
+}
+
+/** 006 plan.md D13: on WSL, a null global file means Git's `--global` rule, so Global stays writable. */
+const scopeWritable = (scope: Writable, files: GitSettings["files"], wslDistro: string | null) => files[scope] !== null || (scope === "global" && wslDistro !== null);
 
 const Code = ({ children }: { children: string }) => <code className="font-mono break-all">{children}</code>;
 const shownValue = (e: ConfigEntry) => e.value ?? "";
@@ -355,7 +376,8 @@ function PresetControl(props: RowProps & { presets: readonly Preset[]; wsl: bool
 }
 
 /** One key in the selected scope. Effective and System show the entries only (FR-058). */
-function KeyRow({ value, scope, files, pending, wsl, onChange }: { value: ConfigValue; scope: Scope; files: GitSettings["files"]; pending: Pending; wsl: boolean; onChange(next: string | null): void }) {
+function KeyRow({ value, scope, files, pending, wslDistro, onChange }: { value: ConfigValue; scope: Scope; files: GitSettings["files"]; pending: Pending; wslDistro: string | null; onChange(next: string | null): void }) {
+  const wsl = wslDistro !== null;
   const label = TEXTS.label(value.key);
   let body: ReactNode;
   if (scope === "effective") body = <Entries entries={value.effective === null ? [] : [value.effective]} />;
@@ -363,7 +385,7 @@ function KeyRow({ value, scope, files, pending, wsl, onChange }: { value: Config
   else {
     const reason = value.readOnly[scope];
     const entries = value.scopes[scope];
-    const props: RowProps = { value, scope, locked: reason !== null || files[scope] === null, pending, onChange };
+    const props: RowProps = { value, scope, locked: reason !== null || !scopeWritable(scope, files, wslDistro), pending, onChange };
     const presets = PRESETS.get(value.key);
     const control =
       reason === "multi-value" ? null : value.type.kind === "bool" ? <BoolControl {...props} /> : value.type.kind === "enum" ? <EnumControl {...props} /> : presets !== undefined ? <PresetControl {...props} presets={presets} wsl={wsl} /> : <TextControl {...props} />;
@@ -413,7 +435,7 @@ function pageValues(name: string, values: readonly ConfigValue[]): ConfigValue[]
 }
 
 /** One Git configuration page in the selected scope, with the pending changes and Save (FR-064, FR-065). */
-export function GitPage({ name, scope, query, settings, wsl }: { name: string; scope: Scope; query: string; settings: GitSettingsState; wsl: boolean }) {
+export function GitPage({ name, scope, query, settings, wslDistro }: { name: string; scope: Scope; query: string; settings: GitSettingsState; wslDistro: string | null }) {
   const { read, pending, message, epoch, change } = settings;
   if (read.state === "loading") return <p className="text-muted-text">{TEXTS.loading}</p>;
   if (read.state === "failed") return <p role="alert">{read.text}</p>;
@@ -421,11 +443,11 @@ export function GitPage({ name, scope, query, settings, wsl }: { name: string; s
   const scoped: Pending = writable(scope) ? pending[scope] : {};
   return (
     <div className="flex flex-col">
-      {writable(scope) && files[scope] !== null ? <p className="text-muted-text">{TEXTS.emptyRemoves}</p> : null}
+      {writable(scope) && scopeWritable(scope, files, wslDistro) ? <p className="text-muted-text">{TEXTS.emptyRemoves}</p> : null}
       {pageValues(name, values)
         .filter((value) => keyMatches(value.key, query))
         .map((value) => (
-        <KeyRow key={`${scope}:${value.key}:${epoch}`} value={value} scope={scope} files={files} pending={scoped} wsl={wsl} onChange={(next) => writable(scope) && change(scope, value, next)} />
+        <KeyRow key={`${scope}:${value.key}:${epoch}`} value={value} scope={scope} files={files} pending={scoped} wslDistro={wslDistro} onChange={(next) => writable(scope) && change(scope, value, next)} />
       ))}
       <div role="status" className="flex flex-col gap-1 pt-2">
         {message}

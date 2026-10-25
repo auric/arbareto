@@ -107,6 +107,8 @@ export function AboutDialog({ open, scope, build, notices, client, finalFocus, o
                 {group.packages.map((p) => (
                   <div key={`${p.name}@${p.version ?? ""}`} className="mt-2">
                     <h4 className="font-semibold">{p.version === undefined ? p.name : `${p.name} ${p.version}`}</h4>
+                    {/* 006 plan.md D18: the fixed note, such as the Hunspell source of `hunspell-wasm`, shows beside the licence texts. */}
+                    {p.note === undefined ? null : <p className="select-text">{p.note}</p>}
                     {p.files.map((file) => (
                       <pre key={file.name} className="font-mono break-words whitespace-pre-wrap select-text">
                         {notices.texts[file.text]}

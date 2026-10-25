@@ -114,6 +114,7 @@
     "tests/contracts/spell-words.test.ts",
     "tests/contracts/spelling-contract.test.ts",
     "tests/contracts/spelling-editor.test.tsx",
+    "tests/contracts/spelling-page.test.tsx",
     "tests/contracts/stage-key.test.tsx",
     "tests/contracts/stall-notice.test.tsx",
     "tests/contracts/static-frame.test.ts",

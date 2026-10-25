@@ -16,19 +16,24 @@ import { PULL_ACTIONS } from "../sync/PullSplitButton";
 import { puttyUnavailableText } from "./ConnectTerminal";
 import { GIT_PAGES, GitPage, keyMatches, pageKeys, SaveRow, ScopePicker, useGitSettings, type GitBridge } from "./git/GitSettingsPage";
 import { TEXTS, type Scope } from "./git/texts";
+import type { SpellingStore } from "../spelling/store";
 import { CloneFolderSettings, KeyFileSettings, SshClientSettings, syncSettingsOf, type Change, type KeyProposal, type SettingsBridge, type SyncSettings } from "./SettingsDialog";
+import { SpellingPage, type SpellingBridge } from "./SpellingPage";
 
 // Feature 004 plan.md D15 "Views", "Settings", and the F6 order, O-7. Spec FR-058 to FR-068. Contract Δ3 `readGitSettings`, `config-save`, `setSwitchChoice`, Δ14.
+// Feature 006 plan.md D15: "Spelling" follows "Branch switch".
 
-const APP_PAGES = ["SSH", "Clone", "Branch switch"];
+const APP_PAGES = ["SSH", "Clone", "Branch switch", "Spelling"];
 const PAGES = [...GIT_PAGES.map((p) => p.name), ...APP_PAGES];
 
 export type SettingsViewProps = {
-  bridge: SettingsBridge & GitBridge & Pick<ReturnType<typeof createBridge>, "setDefaultPullAction" | "setSwitchChoice">;
+  bridge: SettingsBridge & GitBridge & SpellingBridge & Pick<ReturnType<typeof createBridge>, "setDefaultPullAction" | "setSwitchChoice">;
   /** The open repository and its generation, or null. Without it, the Git pages need an open repository (plan D15). */
   target: { repositoryId: string; repositoryGeneration: number } | null;
-  /** True when the workspace snapshot has `location.kind` "wsl". The editor and tool presets are Windows commands (plan D15). */
-  wsl: boolean;
+  /** The distro of a WSL workspace (`location.distro`), else null. The editor and tool presets are Windows commands (004 plan D15). On WSL, Global follows Git's `--global` rule (006 plan D13). */
+  wslDistro: string | null;
+  /** Feature 006 plan.md D15: the spelling store of the window session. */
+  spelling: SpellingStore;
   /** The open repository: its `worktreeKey` and the `readTrust` key file proposals. Null without a repository. */
   repository: { worktreeKey: string; proposals: KeyProposal[] } | null;
   /** True while a Git operation runs (plan D15 running rule). */
@@ -70,7 +75,7 @@ function AppChoice<T extends string>({ slot, heading, note, options, value, onCh
 }
 
 /** The Settings view, a full view inside the main window (FR-068). It holds the Git configuration pages and the app pages. */
-export function SettingsView({ bridge, target, wsl, repository, operationRunning, onOperation, onEnded, onSettings, page: initialPage, onClose }: SettingsViewProps) {
+export function SettingsView({ bridge, target, wslDistro, spelling, repository, operationRunning, onOperation, onEnded, onSettings, page: initialPage, onClose }: SettingsViewProps) {
   const heading = useId();
   const [page, setPage] = useState(initialPage ?? (target === null ? "SSH" : "User"));
   const [scope, setScope] = useState<Scope>("local");
@@ -86,13 +91,16 @@ export function SettingsView({ bridge, target, wsl, repository, operationRunning
   const close = () => (Object.keys(git.pending.local).length + Object.keys(git.pending.global).length > 0 ? setClosing(true) : onClose());
   useEffect(() => {
     let current = true;
-    void bridge.readSyncSettings().then((response) => {
+    const read = bridge.readSyncSettings();
+    // Feature 006 data-model §8: the same result carries the spelling selection.
+    spelling.settings(read);
+    void read.then((response) => {
       if (!current) return;
       const value = syncSettingsOf(response);
       setRead(value !== null ? { state: "loaded", value } : { state: "failed", text: response.state === "succeeded" ? unknownReadText("The settings") : `The settings did not load: ${response.code ?? response.state}.` });
     });
     return () => void (current = false);
-  }, [bridge]);
+  }, [bridge, spelling]);
   // Focus moves into the view at open and back to the opener at close.
   useLayoutEffect(() => {
     const opener = document.activeElement;
@@ -124,7 +132,7 @@ export function SettingsView({ bridge, target, wsl, repository, operationRunning
 
   const app = (render: (settings: SyncSettings) => ReactNode) =>
     read.state === "loading" ? <p className="text-muted-text">The settings are still loading…</p> : read.state === "failed" ? <p role="alert">{read.text}</p> : render(read.value);
-  const gitPage = (name: string) => (target === null ? <p>{TEXTS.needsRepository}</p> : <GitPage name={name} scope={scope} query={query} settings={git} wsl={wsl} />);
+  const gitPage = (name: string) => (target === null ? <p>{TEXTS.needsRepository}</p> : <GitPage name={name} scope={scope} query={query} settings={git} wslDistro={wslDistro} />);
   // Plan D15 "Find a setting": a query keeps only the Git pages with a matching key. The app pages hold no Git key.
   const values = git.read.state === "loaded" ? git.read.value.values : null;
   const shown = query === "" ? PAGES : GIT_PAGES.map((p) => p.name).filter((name) => pageKeys(name, values).some((key) => keyMatches(key, query)));
@@ -152,6 +160,7 @@ export function SettingsView({ bridge, target, wsl, repository, operationRunning
           onChange={(choice) => void change(() => bridge.setSwitchChoice({ choice }))}
         />
       ));
+    if (name === "Spelling") return app(() => <SpellingPage bridge={bridge} store={spelling} change={change} />);
     if (name === "Pull and push")
       return (
         <>
@@ -195,7 +204,7 @@ export function SettingsView({ bridge, target, wsl, repository, operationRunning
         <h2 id={heading} tabIndex={-1} className="shrink-0 font-semibold">
           {TEXTS.heading}
         </h2>
-        {target === null ? null : <ScopePicker scope={scope} onScope={setScope} files={git.read.state === "loaded" ? git.read.value.files : null} />}
+        {target === null ? null : <ScopePicker scope={scope} onScope={setScope} files={git.read.state === "loaded" ? git.read.value.files : null} wslDistro={wslDistro} />}
         <span className="flex-1" />
         <IconButton ref={closeButton} icon={Cancel01Icon} label={TEXTS.close} keys={{ aria: "Escape", text: "Esc" }} onClick={close} />
       </div>
@@ -237,7 +246,7 @@ export function SettingsView({ bridge, target, wsl, repository, operationRunning
           {active === null ? (
             <p className="text-muted-text">{TEXTS.noMatch}</p>
           ) : (
-            <TabsContent value={active} className="flex max-w-[880px] flex-col gap-3">
+            <TabsContent value={active} className={active === "Spelling" ? "flex h-full min-h-0 flex-col" : "flex max-w-[880px] flex-col gap-3"}>
               {content(active)}
             </TabsContent>
           )}

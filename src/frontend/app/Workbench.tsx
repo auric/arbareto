@@ -136,6 +136,12 @@ export type WorkbenchBridge = RequestBridge &
     | "sync"
     | "readSyncSettings"
     | "readDictionary"
+    | "listDictionaries"
+    | "downloadDictionary"
+    | "importDictionary"
+    | "removeDictionary"
+    | "setSpelling"
+    | "openLicenceLink"
     | "setDefaultPullAction"
     | "clone"
     | "connectInTerminal"
@@ -2179,7 +2185,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             <SettingsView
               bridge={bridge}
               target={state.repository !== null && workspace !== null ? { repositoryId: state.repository.repositoryId, repositoryGeneration: workspace.generation } : null}
-              wsl={workspace?.location.kind === "wsl"}
+              wslDistro={workspace?.location.kind === "wsl" ? workspace.location.distro : null}
+              spelling={spelling.store}
               repository={worktreeKey === null ? null : { worktreeKey, proposals: keyProposals(trust?.report) }}
               operationRunning={running}
               onOperation={setOperation}

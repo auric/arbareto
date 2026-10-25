@@ -62,6 +62,8 @@ export const TEXTS = {
   readsFrom: (file: string) => `Reads from ${file}`,
   effectiveNote: "Shows the value that Git uses, and its source.",
   noGlobalFile: "Arbareto cannot name the global Git configuration file, so Global is read only.",
+  // 006 spec FR-020: the git-config(1) `--global` rule inside the distro.
+  wslGlobal: (distro: string) => `Git in ${distro} writes its global file. It uses GIT_CONFIG_GLOBAL when set, else ~/.gitconfig, or the XDG file when only that exists.`,
   noLocalFile: "Arbareto cannot name the repository configuration file, so This repository is read only.",
   pages: "Settings pages",
   // Plan D15 "Find a setting".

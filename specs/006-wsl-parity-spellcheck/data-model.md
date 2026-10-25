@@ -73,7 +73,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 - A Failed row keeps its failure text until the next run of that row or a restart. A load failure of a `ready` row shows Failed with the FR-016 load text and offers only Remove.
 - Row actions: Not downloaded: Download, Import…. Downloading: Cancel. Importing: none. Ready: Show licence, Remove. Changed: Download, Import…, Remove. Failed after a run: Retry, Import…, and Remove when files exist. Failed with reason `not-https`: Import… only. Bundled: Show licence.
-- Selection checkbox: available for Bundled and Ready, and for every selected row (to clear it). Otherwise unavailable with the limit reason when 3 languages are selected, else with the not-ready reason.
+- Selection checkbox: available for Bundled and Ready, and for every selected row (to clear it). Otherwise unavailable: a row that is not ready states the not-ready reason; a Ready row states the limit reason when 3 languages are selected.
 
 ## 5. Download run
 

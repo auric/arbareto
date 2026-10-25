@@ -653,6 +653,29 @@ describe("spelling menu (Q7, FR-005)", () => {
     expect(menuLabels().slice(0, 3)).toEqual(["receive", "relieve", "Ignore"]);
   });
 
+  // Spec FR-014 opens a key menu on its first item. The placeholder is not an item of the word, so the focus skips it.
+  test("Shift+F10 never focuses Finding suggestions…, and focus stays on an item when the suggestions replace it", async () => {
+    const t = await ready({ holdSuggestions: true });
+    await keyAt(t, FIXTURE.indexOf("recieve"), { key: "F10", code: "F10", shiftKey: true });
+    expect(menuLabels()[0]).toBe("Finding suggestions…");
+    expect(document.activeElement).toBe(menuItem("Ignore"));
+    await act(async () => t.worker("en", 1)!.release());
+    await settle();
+    expect(menuLabels().slice(0, 3)).toEqual(["receive", "relieve", "Ignore"]);
+    expect(document.activeElement).toBe(menuItem("Ignore"));
+  });
+
+  test("a key menu whose popup holds the focus when the list changes focuses its first enabled item", async () => {
+    const t = await ready({ holdSuggestions: true });
+    await keyAt(t, FIXTURE.indexOf("recieve"), { key: "F10", code: "F10", shiftKey: true });
+    const popup = document.querySelector<HTMLElement>('[role="menu"]')!;
+    await act(async () => popup.focus());
+    expect(document.activeElement).toBe(popup);
+    await act(async () => t.worker("en", 1)!.release());
+    await settle();
+    expect(document.activeElement).toBe(menuItem("receive"));
+  });
+
   test("the menu asks only the suggestion workers of the languages responsible for the word (data-model §15)", async () => {
     const t = await ready({ languages: ["en", "uk"] });
     await rightClick(t, 120, 30);

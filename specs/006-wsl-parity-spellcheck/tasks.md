@@ -49,7 +49,7 @@ description: "Task list for the WSL Parity and Commit Message Spell Check featur
 | --- | --- | --- | --- | --- | --- |
 | 0. Catalog, facts, and contracts | 1, 2 | P0.1, P0.2, P1, P2 | T001–T014 | Foundational | WP1 (implementer; T006 by scout), then WP2 (implementer). |
 | 1. Shell, service dictionaries, editor | 3, 4, 5, 9 | P3, P4, P6, P0.3 (N1, N2 early) | T015–T030, T047–T054 | US2 and US3 shell (WP3); US3 service (WP5); US1 (WP6); the review fixes and the decisions of 2026-10-24 (WP9) | A: WP3 (implementer-xhigh, local Rust). B: WP5 (implementer). C: WP6 (frontend-implementer; T028 by scout). Then WP9 (implementer, local Rust) before T030. |
-| 2. WSL parity, Settings | 6, 7 | P5, P7 | T031–T039, T055, T056 | US2 and US4 (WP4); US3 and the US2 header (WP7) | A: WP4 (implementer-xhigh, local WSL, alone). B: WP7 (frontend-implementer; pauses its test runs during the WP4 WSL runs). |
+| 2. WSL parity, Settings | 6, 7 | P5, P7 | T031–T039, T055–T057 | US2 and US4 (WP4); US3 and the US2 header (WP7) | A: WP4 (implementer-xhigh, local WSL, alone). B: WP7 (frontend-implementer; pauses its test runs during the WP4 WSL runs). |
 | 3. Qualification | 8 | P8, P0.3 (package) | T040–T046 | Cross-cutting | WP8 (implementer writes, scout runs; WSL alone, then packaged). |
 
 ---
@@ -231,10 +231,11 @@ description: "Task list for the WSL Parity and Commit Message Spell Check featur
 
 - [ ] T055 [US3] Fix the batch 2 review items 2, 3, 4, 6, 7, 8, 10, and 11, and add the proposed D17 texts (plan.md D16, D17; data-model §4, §18). Tests first in `tests/contracts/spelling-page.test.tsx` and `tests/git/bun-runner.test.ts`. `src/frontend/settings/SpellingPage.tsx`: when Remove empties the personal word list, focus goes to the count line (`tabIndex={-1}`); the not-ready and limit reasons show as the checkbox tooltip and keep `aria-describedby`; the own import shows "Importing…" with no actions; the switch knob and the focus bar use `forced-colors:bg-[CanvasText]`, and an unavailable checkbox drops its opacity under forced colors, so the GrayText rule of `index.css` shows; the `more` count, import `DEADLINE`, `PICKER_FAILED`, and the "<item> did not complete: <code>." fallback. `LicencePanel.tsx`: the loading text. `src/frontend/app/Workbench.tsx`: `SettingsView` loads through `lazy()`, as `AboutMount`. `tests/git/bun-runner.ts`: `wslParts` folds `.` and `..`, and `gitForm` refuses a segment with a character in U+F000 to U+F0FF, as `wsl::linux_path`. Docs: the Q23 host line on WSL is verified by T034 (plan.md D14, N-3, spec Assumptions, research.md R10 and R12); data-model §18 moves the running run to the store. Item 8: T037 also changed `src/frontend/spelling/{store,english}.ts`. Item 9 (failure states) waits for the user. Depends on T037, T038.
 - [ ] T056 [US4] Split `tests/wsl/workbench-wsl.test.ts` by its `describe` blocks into `tests/wsl/workbench-wsl-{facts,branches,staging,settings}.test.ts` with the shared `tests/wsl/workbench-wsl-harness.ts`, each file in `tests/groups.json` `serial` (batch 2 review item 5). No case changes, except the Q22 stale case: `written` is `["user.name"]` with `stale` `user.email` (review item 1, fixed in `git-settings.ts` on main). `Local: WSL`. Run each file alone with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, and record its time in research.md R13. A file above 30 minutes is split again. Depends on T034.
+- [ ] T057 [US3] Fix the app bugs of the board comparison of 2026-10-25 (board report section (a); plan.md D15 "Menu opening", D16; WP7). Tests first in `tests/contracts/spelling-editor.test.tsx` and `tests/contracts/spelling-page.test.tsx`. Item 1: a key menu never focuses "Finding suggestions…"; when the list changes while the popup holds the focus, the focus goes to the first enabled item (`src/frontend/components/action-menu.tsx`, `src/frontend/spelling/SpellMenu.tsx`). Item 2: the forced-colors 1 px CanvasText edge of `src/frontend/index.css` covers the dropdown menu content and sub-content, also while focused; 004 and 005 menus share it. Item 3: under forced colors the focused menu item fills with Highlight and takes HighlightText. Item 4: an unavailable checkbox takes opacity 0.5 after the unlayered disabled rule; under forced colors an unchecked one draws a GrayText box. Item 5: an unselected row that is not ready states the not-ready reason, also at the 3-language limit (`src/frontend/settings/SpellingPage.tsx`). Item 6: the folder of a message row uses the code font. Control mutations: undo each fix; its case must fail. Spec: FR-005, FR-009, FR-016, FR-026. Depends on T055.
 
 ### Batch 2 verification
 
-- [ ] T039 Run the batch 2 verification: first `bun test` of each `tests/wsl/workbench-wsl-{facts,branches,staging,settings}.test.ts` file (T056) with `ARBARETO_WSL_DISTRO=Ubuntu-26.04` alone on the host, then `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, and `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `Local: Rust`. `Local: Windows`. `Local: WSL`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every `OBSERVATION` line of T032 and T034 into research.md R13. Control mutations, each undone and rerun green: (1) the safe control of plan.md D14: the double runs the Global write in `registered(w)`; the mode case of T032 must fail with 0660. (2) In `src/frontend/settings/git/GitSettingsPage.tsx`, lock Global on WSL again; the T036 editable case must fail. Board comparison of the Spelling page and the WSL Global header against the SpellingPage, DictionaryFailures, LicenceView, WslGlobal, ForcedColors, and Light boards, recorded in research.md R13. The task passes only after one independent review of batch 2 is recorded in research.md, with `ponytail-review`, the heuristics review, and `web-design-guidelines` for the UI diff. Spec: all IDs of T031 to T038. Depends on T031 to T038.
+- [ ] T039 Run the batch 2 verification: first `bun test` of each `tests/wsl/workbench-wsl-{facts,branches,staging,settings}.test.ts` file (T056) with `ARBARETO_WSL_DISTRO=Ubuntu-26.04` alone on the host, then `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, and `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `Local: Rust`. `Local: Windows`. `Local: WSL`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every `OBSERVATION` line of T032 and T034 into research.md R13. Control mutations, each undone and rerun green: (1) the safe control of plan.md D14: the double runs the Global write in `registered(w)`; the mode case of T032 must fail with 0660. (2) In `src/frontend/settings/git/GitSettingsPage.tsx`, lock Global on WSL again; the T036 editable case must fail. Board comparison of the Spelling page and the WSL Global header against the SpellingPage, DictionaryFailures, LicenceView, WslGlobal, ForcedColors, and Light boards, recorded in research.md R13. The task passes only after one independent review of batch 2 is recorded in research.md, with `ponytail-review`, the heuristics review, and `web-design-guidelines` for the UI diff. Spec: all IDs of T031 to T038, T055, T056, and T057. Depends on T031 to T038, T055, T056, and T057.
 
 **Checkpoint**: All four user stories work. The WSL rows have results.
 
@@ -262,7 +263,7 @@ description: "Task list for the WSL Parity and Commit Message Spell Check featur
 
 - Batch 0 (T001–T014): feature 005 merged first (spec Dependencies). WP1 (T001–T009) first, then WP2 (T010–T013), then T014.
 - Batch 1 (T015–T030): after T014. WP3 (T015–T018), WP5 (T019–T023), and WP6 (T024–T029) run in parallel. T028 needs T017 of WP3. Then WP9 (T047–T052 and T054, Phase 9). T030 after all four. T053 waits for the first release script and the user decisions of plan.md O-20.
-- Batch 2 (T031–T039, T055, T056): after T030. WP4 (T031–T034) and WP7 (T035–T038) run in parallel, but WP7 pauses its test runs while T032 to T034 run in the distro. Then the batch 2 review fixes T055 and T056. T039 after all.
+- Batch 2 (T031–T039, T055–T057): after T030. WP4 (T031–T034) and WP7 (T035–T038) run in parallel, but WP7 pauses its test runs while T032 to T034 run in the distro. Then the batch 2 review fixes T055 and T056, then the board fixes T057. T039 after all.
 - Batch 3 (T040–T046): after T039. T040, then T041 beside T042, then T043, T044, T045, and T046.
 
 ### Early facts and the work they gate
@@ -294,7 +295,7 @@ description: "Task list for the WSL Parity and Commit Message Spell Check featur
 
 - Batch 0: T001 beside T002, then T003; T004, T005, and T006 in parallel; T007, then T008, then T009; T010 beside T011; T012 beside T013 after their tests.
 - Batch 1: Track A WP3: T015, then T016 beside T017, then T018. Track B WP5: T019 beside T020, then T021, then T022, then T023. Track C WP6: T024 beside T025, then T026, T027, T028, and T029 in order. Then WP9: T047 beside T049, then T048, then T050, T051, T052, and T054.
-- Batch 2: Track A WP4: T031, T032, T033, T034 in order. Track B WP7: T035 beside T036, then T037, then T038. Then T055, then T056.
+- Batch 2: Track A WP4: T031, T032, T033, T034 in order. Track B WP7: T035 beside T036, then T037, then T038. Then T055, then T056, then T057.
 - Batch 3: T040, then T041 beside T042.
 - Shared files: `src/frontend/bridge.ts` in WP2 (T013), then WP6 (T029), then WP7 (T037). `src/frontend/app/Workbench.tsx` in WP6 (T029), then WP9 (T051), then WP7 (T038). `src/frontend/about/AboutDialog.tsx` in WP9 (T052), then WP7 (T038). `src/frontend/settings/SettingsView.tsx` in WP7 only (T037, T038). `src/contracts/dictionaries.ts` in WP1 (T007), then WP2 (T013), then WP9 (T050). `src/contracts/dictionaries.json` in WP1 (T007), then WP9 (T050), then WP8 (T043). `src/contracts/envelope.ts` and `schemas/` in WP2 (T013), then WP9 (T051, the list refusal). `package.json` and `bun.lock` in T003 only. `tests/gate/dictionary-gate.test.ts` in WP1 (T008), then WP5 (T023), then WP9 (T047). `src-tauri/` in WP3 only, except the T013 ripple in `schema.rs` and the T050 `script` key in `settings.rs`. `tests/groups.json` in every WP; the orchestrator resolves merge conflicts.
 
@@ -314,20 +315,20 @@ Then:          T030
 | FR-001 (marks, count, chip) | T011, T025, T029, T041 |
 | FR-002 (only the commit message editor) | T025, T029 |
 | FR-003, FR-004 (words, the per-script check, NFC) | T011, T012, T025, T027, T041, T047, T050 |
-| FR-005 (menu, suggestions, one undo step) | T011, T025, T028, T029, T041, T047, T050 |
+| FR-005 (menu, suggestions, one undo step) | T011, T025, T028, T029, T041, T047, T050, T057 |
 | FR-006 (personal word list, case rule) | T011, T024, T026, T035 |
 | FR-007 (offline, never blocks a commit) | T020, T025, T041, T048, T051 |
 | FR-008 (bundled English, lazy load, workers, load deadline) | T004, T005, T017, T025, T027, T028, T041, T042, T048, T051, T054 |
-| FR-009 (Spelling page, selection setting) | T010, T015, T018, T026, T035, T037 |
+| FR-009 (Spelling page, selection setting) | T010, T015, T018, T026, T035, T037, T057 |
 | FR-010, FR-011 (download rules, bytes, deadline, one run) | T004, T019, T022, T023, T048, T051 |
 | FR-012 (import) | T015, T018, T019, T022, T023, T035 |
 | FR-013, FR-014 (check before load, remove) | T019, T021, T035, T048, T051 |
 | FR-015 (licence value, link, documents) | T001, T007, T015, T018, T035, T037 |
-| FR-016 (failure texts) | T010, T019, T035, T037 |
+| FR-016 (failure texts) | T010, T019, T035, T037, T057 |
 | FR-017 (catalog, gate, reconcile) | T001, T007, T008, T019, T021, T042, T043, T047, T048, T050, T051, T054 |
 | FR-018 to FR-022 (WSL Global save) | T015, T016, T032, T033, T036, T038 |
 | FR-023 to FR-025 (double routes, WSL rows, no real global write) | T032, T033, T034 |
-| FR-026 (controls) | T029, T035, T037, T041 |
+| FR-026 (controls) | T029, T035, T037, T041, T057 |
 | FR-027 (typed bounded operations) | T010, T013, T019, T022, T048, T051 |
 | FR-028 (response targets) | T042 |
 | Design notes "Engine" (notices, the Hunspell source) | T002, T003, T006, T036, T038, T049, T052, T053 |

@@ -3,7 +3,7 @@
 
 import { GitCommitIcon, RefreshIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { Component, lazy, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react";
+import { Component, createContext, lazy, memo, Suspense, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react";
 import type { ChangeEntry, Comparison as ComparisonResult, Environment, RecoveryStatement, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
 import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
@@ -36,7 +36,7 @@ import {
 } from "../components/ui/menubar";
 import { CommitChanges, HISTORY_PANES } from "../history/CommitChanges";
 import { DETAILS_WIDTH, ViewCommitDetails } from "../history/CommitDetails";
-import { HistoryList } from "../history/HistoryList";
+import { HistoryList, type HistoryListProps } from "../history/HistoryList";
 import { branchName, INDEX_ROW, WORKING_ROW } from "../history/HistoryView";
 import { createShortcutHandler, filterTarget, isEditable, nextSection, type Panel, type Section } from "../keyboard/shortcuts";
 import { isObject } from "../lib/utils";
@@ -57,7 +57,7 @@ import {
   type Size,
 } from "../layout/profiles";
 import { Splitter } from "../layout/Splitter";
-import { ReferencesSidebar } from "../refs/ReferencesSidebar";
+import { ReferencesSidebar, type ReferencesSidebarProps } from "../refs/ReferencesSidebar";
 import { createHistoryView, createInspection, refsChanged, type HistoryBridge, type HistoryView as HistoryStore } from "../state/history-view";
 import { createRequests, isRegistration, wslDistro, type Clock, type RequestBridge, type Requests, type RequestState } from "../state/requests";
 import { metrics as densityMetrics } from "../layout/profiles";
@@ -593,8 +593,11 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
 /** The feature 002 history list with the Working directory and Index rows (plan.md D6). */
 export function HistoryViewMount({ state, history, density, profile, textScale, onSelectRow, filterRef, tracking, branches }: WorkbenchPaneProps) {
   const entries = state.workspace?.completeness.state === "complete" ? state.entries : null;
+  const onScope = useLatest((scope: Parameters<HistoryListProps["onScope"]>[0]) => void history.setScope(scope));
+  const onLabelMenu = useLatest((label: Parameters<NonNullable<HistoryListProps["onLabelMenu"]>>[0], anchor: HTMLElement, byKey?: boolean) => branches?.onRef(label.kind as "branch" | "remote", label.name, "menu", anchor, byKey));
+  const onCreateBranch = useLatest((oid: string, anchor: HTMLElement) => branches?.create(oid, anchor));
   return (
-    <HistoryList
+    <HistoryListMemo
       unread={state.readFailure !== null && needsTrust(state.readFailure) ? READS_TRUST_TEXT : null}
       view={history}
       entries={entries}
@@ -602,13 +605,29 @@ export function HistoryViewMount({ state, history, density, profile, textScale, 
       profile={profile}
       textScale={textScale}
       onSelect={onSelectRow}
-      onScope={(scope) => void history.setScope(scope)}
+      onScope={onScope}
       filterRef={filterRef}
       tracking={tracking}
-      onLabelMenu={branches === undefined ? undefined : (label, anchor, byKey) => branches.onRef(label.kind as "branch" | "remote", label.name, "menu", anchor, byKey)}
-      onCreateBranch={branches?.create}
+      onLabelMenu={branches === undefined ? undefined : onLabelMenu}
+      onCreateBranch={branches === undefined ? undefined : onCreateBranch}
     />
   );
+}
+// A running operation renders the Workbench. These regions read no operation state, so they render only on their own prop changes (spec SC-009).
+const HistoryListMemo = memo(HistoryList);
+const ReferencesSidebarMemo = memo(ReferencesSidebar);
+const IgnoreEditorMemo = memo(IgnoreEditor);
+// The sidebar groups after the references read operation state. A context feeds them, so the memo sidebar can skip its render.
+const SidebarAfter = createContext<ReactNode>(null);
+const SidebarAfterSlot = () => useContext(SidebarAfter);
+const SIDEBAR_AFTER = <SidebarAfterSlot />;
+
+/** A callback with a fixed identity that calls the newest `run`. Call it only from events and effects. */
+function useLatest<A extends unknown[], R>(run: (...args: A) => R): (...args: A) => R {
+  const latest = useRef(run);
+  latest.current = run;
+  const [stable] = useState(() => (...args: A) => latest.current(...args));
+  return stable;
 }
 
 /** plan.md "Status area": the Git version at the right end of the status bar, outside every live region, and the "Unqualified platform" label when it applies. */
@@ -919,12 +938,17 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   if (row.repository !== state.repository) setRow({ repository: state.repository, id: null, epoch: row.epoch });
   const panel = panelOf(kept);
   // A row selection docks its panel at once (plan.md "Change the docked panel"). The history list reports each new selection once.
-  const onSelectRow = (id: string) => setRow((r) => (r.repository === state.repository && r.id === id ? r : { repository: state.repository, id, epoch: r.epoch + 1 }));
+  const onSelectRow = useLatest((id: string) => setRow((r) => (r.repository === state.repository && r.id === id ? r : { repository: state.repository, id, epoch: r.epoch + 1 })));
   // A Refresh also lists the submodule rows again after its read (spec FR-077).
-  const refresh = () => {
+  const refresh = useLatest(() => {
     submoduleUpdate.refreshed();
     requests.refresh();
-  };
+  });
+  const selectCommit = useLatest((oid: string) => historyView.selectOid(oid));
+  const showBranchHistory = useLatest(() => void historyView.setScope("current"));
+  const trustReads = useLatest(() => void approveTrust("read"));
+  const referencesElement = useLatest(() => referencesSection.current);
+  const onBranchAction = useLatest((...[entry, action, anchor, byKey]: Parameters<NonNullable<ReferencesSidebarProps["onBranchAction"]>>) => branches.onRef(entry.kind as "branch" | "remote", entry.name, action, anchor, byKey));
 
   const statusStop = operation !== null || starting !== null;
   // Plan.md D15 F6 order: each view has its own order.
@@ -1668,7 +1692,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           <div hidden={ignoreState.editor !== null} className="h-full min-h-0">
             <ComparisonView {...pane} />
           </div>
-          {ignoreState.editor === null ? null : <IgnoreEditor store={ignore} onTrust={() => void approveTrust("read")} />}
+          {ignoreState.editor === null ? null : <IgnoreEditorMemo store={ignore} onTrust={trustReads} />}
         </div>
         <div className="[grid-area:traySplit]">
           <Splitter label="Resize commit tray" orientation="horizontal" value={trayHeight} min={tray.min} max={tray.max} reverse onChange={resize("tray")} onCommit={keepPane("tray")} className={resizable ? undefined : "hidden"} />
@@ -1819,22 +1843,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // 001 plan.md "References sidebar": the constrained section collapses to its heading row, so the group scrolls with the references there.
   const constrained = profile === "constrained";
   const refsSidebar = (
-    <ReferencesSidebar
-      refs={state.refs}
-      failure={state.refsFailure}
-      rowHeight={m.row}
-      onSelectCommit={(oid) => historyView.selectOid(oid)}
-      onRefresh={refresh}
-      collapsible={profile === "constrained"}
-      scrollElement={constrained ? () => referencesSection.current : undefined}
-      expanded={constrained ? referencesShown : undefined}
-      onExpandedChange={constrained ? setReferencesShown : undefined}
-      repository={state.repository?.worktreeKey ?? ""}
-      onShowBranchHistory={() => void historyView.setScope("current")}
-      tracking={labels}
-      onBranchAction={branches.entries === null ? undefined : (entry, action, anchor, byKey) => branches.onRef(entry.kind as "branch" | "remote", entry.name, action, anchor, byKey)}
-      branches={branches.entries}
-      after={
+    <SidebarAfter
+      value={
         state.repository === null ? null : (
           <>
             <WorktreesGroup actions={worktrees} rowHeight={m.row} />
@@ -1842,7 +1852,25 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
           </>
         )
       }
-    />
+    >
+      <ReferencesSidebarMemo
+        refs={state.refs}
+        failure={state.refsFailure}
+        rowHeight={m.row}
+        onSelectCommit={selectCommit}
+        onRefresh={refresh}
+        collapsible={profile === "constrained"}
+        scrollElement={constrained ? referencesElement : undefined}
+        expanded={constrained ? referencesShown : undefined}
+        onExpandedChange={constrained ? setReferencesShown : undefined}
+        repository={state.repository?.worktreeKey ?? ""}
+        onShowBranchHistory={showBranchHistory}
+        tracking={labels}
+        onBranchAction={branches.entries === null ? undefined : onBranchAction}
+        branches={branches.entries}
+        after={SIDEBAR_AFTER}
+      />
+    </SidebarAfter>
   );
   // Outside the constrained profile, the Submodules group scrolls inside its own region.
   const sidebar =

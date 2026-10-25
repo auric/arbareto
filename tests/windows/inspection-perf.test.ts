@@ -15,7 +15,7 @@ import { cpSync, mkdirSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative } from "node:path";
 import { printOrigin } from "../origin";
 import { buildPathsBound, faGit } from "../git/file-actions-fixtures";
-import { fixtureDir, FIXTURE_ROOT, useFixtureRoot } from "../git/fixture-root";
+import { fixtureDir, FIXTURE_ROOT, ownedGit, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { blameLarge, buildWide, wideLarge } from "../git/history-diff-fixtures";
 import { untrackedFixture } from "../git/workbench-fixtures";
@@ -278,7 +278,9 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
   if (reason !== null) console.log(`SKIP installed app: ${reason}`);
 
   const git = (repo: string, args: string[]) => faGit(GIT!, repo, args).toString("utf8");
-  const top = (repo: string) => git(repo, ["rev-parse", "--show-toplevel"]).trim();
+  const under = (root: string, repo: string) => !relative(root, repo).startsWith("..") && !isAbsolute(relative(root, repo));
+  // A read-only case opens a PERF_CACHE_ROOT repository in place. `faGit` accepts only FIXTURE_ROOT.
+  const top = (repo: string) => ownedGit(GIT!, under(PERF_CACHE_ROOT, repo) ? PERF_CACHE_ROOT : FIXTURE_ROOT, repo, ["rev-parse", "--show-toplevel"]).toString("utf8").trim();
   const switcher = `document.querySelector('button[aria-keyshortcuts="Control+R"]')?.getAttribute('aria-label') ?? null`;
 
   async function use<T>(element: Promise<Element>, body: (element: Element) => T): Promise<T> {
@@ -293,8 +295,7 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
 
   // A read-only session may open the 001 fixture cache in place, as tests/git/file-actions-facts.test.ts reads it.
   async function session(label: string, repo: string): Promise<{ app: OwnedProcess; c: Cdp; ipc: IpcLog }> {
-    const under = (root: string) => !relative(root, repo).startsWith("..") && !isAbsolute(relative(root, repo));
-    if (repo === "" || !isAbsolute(repo) || !(under(FIXTURE_ROOT) || under(PERF_CACHE_ROOT))) throw new Error(`the repository is outside the fixture roots: ${JSON.stringify(repo)}`);
+    if (repo === "" || !isAbsolute(repo) || !(under(FIXTURE_ROOT, repo) || under(PERF_CACHE_ROOT, repo))) throw new Error(`the repository is outside the fixture roots: ${JSON.stringify(repo)}`);
     const env = appEnv(fixtureDir(`${label}-app`), false);
     const port = freePort();
     env.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${port}`;

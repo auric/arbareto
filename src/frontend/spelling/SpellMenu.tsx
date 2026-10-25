@@ -85,7 +85,7 @@ export function useSpellMenu(spelling: Spelling | undefined, field: RefObject<HT
       words.kind === "unreadable" ? T.unreadable : words.kind === "unavailable" ? T.unavailable : words.kind === "loaded" && words.words.length >= PERSONAL_WORDS ? T.full : wordFits(mark.word) ? null : T.long;
     const selectReason = menu.selection ? null : T.selectFirst;
     const first: ActionItem[] = menu.list.map((suggestion) => ({ label: suggestion, onSelect: () => replace(mark, suggestion) }));
-    if (menu.pending) first.push({ label: T.finding, reason: "", onSelect() {} });
+    if (menu.pending) first.push({ label: T.finding, reason: "", placeholder: true, onSelect() {} });
     const groups: ActionItem[][] = [
       ...(first.length > 0 ? [first] : []),
       [

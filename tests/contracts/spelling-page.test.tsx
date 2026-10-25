@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterEach, describe, expect, mock, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { act } from "react";
 import catalog from "../../src/contracts/dictionaries.json";
 import { DictionaryRunResult, ListDictionariesResult, OpenLicenceLinkResult, ReadDictionaryResult, RemoveDictionaryResult, SyncSettings } from "../../src/contracts/envelope";
@@ -126,6 +127,7 @@ const messageOf = (id: string) => {
   const next = row(id).nextElementSibling;
   return next !== null && !next.hasAttribute("data-grid-row") ? next : null;
 };
+const folderOf = (id: string) => messageOf(id)?.querySelector("code.font-mono")?.textContent ?? null;
 const parts = (element: Element) => [...element.children].map((c) => text(c)).filter((t) => t !== "");
 const cellTexts = (id: string) => [...row(id).cells].map((c) => text(c));
 const rowButtons = (id: string) => [...row(id).querySelectorAll("button")].map((b) => b.getAttribute("aria-label"));
@@ -296,6 +298,16 @@ describe("download, import, and their texts (FR-010 to FR-012, FR-016)", () => {
       expect(rowButtons("de")).toEqual(actions);
       expect(text(messageOf("de")!.querySelector('[role="status"]')!)).toBe(message);
     });
+
+  test("the folder in a message row uses the code font (plan.md D16)", async () => {
+    const r = await render();
+    await click(button("Download German"));
+    await answer(r.double.pending("downloadDictionary"), refused("save", { folder: "C:/Sample/dictionaries" }));
+    expect(folderOf("de")).toBe("C:/Sample/dictionaries");
+    await click(button("Import… Ukrainian"));
+    await answer(r.double.pending("importDictionary"), refused("import-unreadable", { folder: "D:/Offline/uk" }));
+    expect(folderOf("uk")).toBe("D:/Offline/uk");
+  });
 
   test("Retry downloads again and a ready end clears the Failed text", async () => {
     const r = await render();
@@ -475,7 +487,8 @@ describe("selection (FR-009, data-model §8)", () => {
     await click(he);
     expect(r.double.of("setSpelling").length).toBe(0);
     expect(he.checked).toBe(false);
-    expect(describedBy(checkbox("cs"))).toBe("You can select at most 3 languages. Clear one first.");
+    // A row that is not ready keeps the not-ready reason at the limit: clearing one language does not make it selectable.
+    expect(describedBy(checkbox("cs"))).toBe("Download or import the Czech dictionary first.");
     expect(checkbox("uk").getAttribute("aria-disabled")).toBeNull();
   });
 
@@ -548,6 +561,7 @@ describe("selection (FR-009, data-model §8)", () => {
     await click(button("Remove Ukrainian"));
     await answer(r.double.pending("removeDictionary"), failed("DICTIONARY_UNAVAILABLE", RemoveDictionaryResult.parse({ reason: "remove", folder: "C:/Sample/dictionaries/uk" })));
     expect(text(messageOf("uk")!)).toBe("Arbareto could not remove the Ukrainian dictionary from C:/Sample/dictionaries/uk.");
+    expect(folderOf("uk")).toBe("C:/Sample/dictionaries/uk");
     expect(r.double.of("setSpelling").length).toBe(0);
   });
 });
@@ -629,17 +643,48 @@ describe("keyboard (FR-026, SC-007, plan.md D16 \"Keys\")", () => {
     expect(document.activeElement).toBe(button("Remove b", words));
   });
 
-  // 006 T055: plan.md D16 "Forced colors": the knob and the focus bar draw in CanvasText; an unavailable checkbox keeps the GrayText rule at full opacity.
-  test("forced colors keep the switch knob, the focus bar, and the unavailable checkbox", async () => {
+  // 006 T055: plan.md D16 "Forced colors": the knob and the focus bar draw in CanvasText. The index.css cases below cover the unavailable checkbox.
+  test("forced colors keep the switch knob and the focus bar", async () => {
     await render({ languages: ["en", "uk"], states: { uk: { state: "ready" } } });
     const classes = (e: Element) => e.className.split(" ");
     expect(classes(page().querySelector('[role="switch"] > span')!)).toContain("forced-colors:bg-[CanvasText]");
     expect(classes(panel("Selected languages").querySelector('li > span[aria-hidden="true"]')!)).toContain("forced-colors:bg-[CanvasText]");
-    expect(classes(checkbox("cs"))).toContain("forced-colors:aria-disabled:opacity-100");
   });
 
   test("every row control has an accessible name", async () => {
     await render({ states: { uk: { state: "ready" } } });
     for (const control of page().querySelectorAll<HTMLElement>("[data-cell]")) expect((control.getAttribute("aria-label") ?? control.textContent ?? "").length > 0).toBe(true);
+  });
+});
+
+describe("index.css (plan.md D16 forced colors and unavailable items)", () => {
+  const css = readFileSync(printOrigin("../../src/frontend/index.css", import.meta.dir), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rulesOf = (source: string) => [...source.matchAll(/([^{}]+)\{([^{}]*)\}/g)].map((m) => ({ selector: m[1]!.replace(/\s+/g, " ").trim(), body: m[2]!.replace(/\s+/g, " ").trim() }));
+  const forcedStart = css.indexOf("@media (forced-colors: active)");
+  const forced = rulesOf(css.slice(forcedStart));
+  const ITEM = ':is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"])';
+
+  test("in forced colors, the menu content and the sub-content have the 1 px CanvasText edge", () => {
+    const edge = forced.find((r) => r.body === "outline: 1px solid CanvasText;");
+    const slots = edge?.selector.split(",").map((s) => s.trim()) ?? [];
+    // The 004 rule removes the outline of a focused menu popup, so the focused popup needs its own selector.
+    for (const slot of ['[data-slot="dropdown-menu-content"]', '[data-slot="dropdown-menu-sub-content"]']) expect(slots).toEqual(expect.arrayContaining([slot, `${slot}:focus-visible`]));
+  });
+
+  test("in forced colors, the focused menu item fills with Highlight and takes HighlightText", () => {
+    expect(forced.find((r) => r.selector === `[role="menu"] ${ITEM}:focus-visible`)?.body).toBe("forced-color-adjust: none; background: Highlight; color: HighlightText;");
+  });
+
+  test("an unavailable checkbox takes half opacity after the unlayered disabled rule; in forced colors an unchecked one draws a GrayText box", () => {
+    const top = rulesOf(css.slice(0, forcedStart));
+    const disabled = top.findIndex((r) => r.selector === ':is(:disabled, [aria-disabled="true"], [data-disabled])');
+    const checkbox = top.findIndex((r) => r.selector === 'input[type="checkbox"][aria-disabled="true"]');
+    expect(disabled).toBeGreaterThan(-1);
+    expect(checkbox).toBeGreaterThan(disabled);
+    expect(top[checkbox]!.body).toBe("opacity: 0.5;");
+    // A native box ignores `color`, so forced colors paint it GrayText only without its native appearance.
+    expect(forced.find((r) => r.selector === 'input[type="checkbox"][aria-disabled="true"]:not(:checked)')?.body).toBe(
+      "appearance: none; box-sizing: border-box; width: 13px; height: 13px; border: 1px solid GrayText; border-radius: 2px; opacity: 1;",
+    );
   });
 });

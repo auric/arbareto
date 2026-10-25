@@ -26,6 +26,9 @@ import type { Change } from "./SettingsDialog";
 const count = (n: number) => n.toLocaleString("en-US");
 
 // Plan.md D17 "Spelling page".
+/** Plan.md D16: a folder path in a message row uses the code font. */
+const folderCode = (folder: string) => <code className="font-mono break-all">{folder}</code>;
+
 export const SPELLING_PAGE = {
   page: "Spelling",
   spellCheck: "Spell check",
@@ -68,7 +71,7 @@ export const SPELLING_PAGE = {
   deadline: (l: string) => `The ${l} download did not end within 120 seconds. Arbareto kept no file. Select Retry, or use Import.`,
   mismatch: (l: string) => `The downloaded ${l} file does not match the catalog. Arbareto deleted it.`,
   canceled: "Download canceled. Arbareto kept no file.",
-  save: (l: string, folder: string) => `Arbareto could not save the ${l} dictionary in ${folder}.`,
+  save: (l: string, folder: string) => <>Arbareto could not save the {l} dictionary in {folderCode(folder)}.</>,
   changedFiles: (l: string) => `The ${l} dictionary files changed. Download the dictionary again.`,
   importMismatch: (l: string) => `These files are not the ${l} files of the catalog. Arbareto did not import them.`,
   catalogChanged: (l: string) => `This Arbareto release has new ${l} dictionary files. Download the dictionary again.`,
@@ -78,8 +81,8 @@ export const SPELLING_PAGE = {
   importDeadline: (l: string) => `The ${l} import did not end within 120 seconds. Arbareto did not import the files. Select Import… again.`,
   pickerFailed: "Arbareto could not open the folder picker. Select Import… again.",
   busy: "Another dictionary download or import runs. Wait for it to end.",
-  importUnreadable: (l: string, folder: string) => `Arbareto could not read the ${l} files in ${folder}.`,
-  removeFailed: (l: string, folder: string) => `Arbareto could not remove the ${l} dictionary from ${folder}.`,
+  importUnreadable: (l: string, folder: string) => <>Arbareto could not read the {l} files in {folderCode(folder)}.</>,
+  removeFailed: (l: string, folder: string) => <>Arbareto could not remove the {l} dictionary from {folderCode(folder)}.</>,
   link: (url: string) => `Windows could not open the link. The address is ${url}.`,
   note: "Select at most 3 languages. English counts as one.",
   limit: "You can select at most 3 languages. Clear one first.",
@@ -126,7 +129,7 @@ function runMessage(kind: "download" | "importFolder", name: string, response: B
   const item = kind === "download" ? SPELLING_PAGE.name.download(name) : SPELLING_PAGE.name.import(name);
   if (response.state === "canceled") return kind === "download" ? { text: SPELLING_PAGE.canceled, failed: false, retry: false } : null;
   const download = kind === "download";
-  const failed = (text: string, retry = download): RowMessage => ({ text, failed: download, retry });
+  const failed = (text: ReactNode, retry = download): RowMessage => ({ text, failed: download, retry });
   if (response.code === "DEADLINE") return download ? failed(SPELLING_PAGE.deadline(name)) : { text: SPELLING_PAGE.importDeadline(name), failed: false, retry: false };
   if (response.code === "PICKER_FAILED" && !download) return { text: SPELLING_PAGE.pickerFailed, failed: false, retry: false };
   const refusal = response.code === "DICTIONARY_UNAVAILABLE" ? (response.result as Refusal) : undefined;
@@ -482,7 +485,7 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
       (loadFailed ? SPELLING_TEXTS.cannotLoad(entry.name) : service?.notice === "catalog-changed" ? SPELLING_PAGE.catalogChanged(entry.name) : service?.state === "changed" && running === null ? SPELLING_PAGE.changedFiles(entry.name) : null);
     // Data-model §4 "Selection checkbox".
     const full = selection.languages.length >= SPELLING_LANGUAGES;
-    const reason = selected ? null : full ? SPELLING_PAGE.limit : ready ? null : SPELLING_PAGE.notReady(entry.name);
+    const reason = selected ? null : !ready ? SPELLING_PAGE.notReady(entry.name) : full ? SPELLING_PAGE.limit : null;
     return { entry, selected, label, tone, actions, removable, ready, status, reason, readme: entry.licences[0] === "readme.md" };
   }
 
@@ -588,7 +591,7 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
                                   aria-disabled={row.reason === null ? undefined : true}
                                   aria-describedby={row.reason === null ? undefined : reasonId}
                                   onChange={() => toggle(row)}
-                                  className="m-0 accent-(--accent-role) aria-disabled:opacity-50 forced-colors:aria-disabled:opacity-100"
+                                  className="m-0 accent-(--accent-role)"
                                 />
                               }
                             />

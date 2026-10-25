@@ -8,7 +8,7 @@ import type { ErrorCode, SyncUnavailableReason } from "../contracts/errors";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES } from "../contracts/limits";
 import type { OperationEvent } from "../contracts/outcome";
 import { batchCommandArgs } from "./commands";
-import { createCollector, type Collector } from "./git-runner";
+import { createCollector, firstEnd, isDeadlineStop, type Collector } from "./git-runner";
 import { captureHead } from "./history";
 import { HEADER_BYTES, parseCommitObjects } from "./history-parser";
 import { isStop, settled, stepOf, type Fact, type Failure, type ObserveContext, type Stop } from "./hunk-publish";
@@ -73,9 +73,8 @@ const headFact = (h: Awaited<ReturnType<typeof captureHead>> | Stop | Failure): 
 // Contract Δ3 `sync` step 7: the refs listing, HEAD, the index, the markers, and the unmerged count. Feature 004 `runWorkbench` reconciles with it too.
 export async function observe(q: ObserveContext, killed: boolean): Promise<Fact<Observed>> {
   const [refs, head, index] = await Promise.all([listRefs(q), settled(q.signal, captureHead(q.runner, q)).then(headFact), indexState(q)]);
-  if (!("value" in refs)) return refs;
-  if (!("value" in head)) return head;
-  if (!("value" in index)) return index;
+  // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other reads.
+  if (!("value" in refs) || !("value" in head) || !("value" in index)) return firstEnd([refs, head, index].map((f) => ("value" in f ? null : f)), isDeadlineStop)!;
   const state = await settled(q.signal, q.reader.operationState(q, index.value.unmerged > 0));
   if (typeof state === "object") return "refused" in state ? { code: state.refused } : state;
   if (state === "canceled" || state === "deadline") return { stop: "deadline" };
@@ -240,8 +239,8 @@ async function runPull(s: SyncSteps): Promise<void> {
           if (decision.kind === "refused") stop = { reason: decision.reason };
           else if (decision.kind !== "up-to-date" && decision.kind !== "mode-required") {
             const [index, message] = await Promise.all([indexState(ctx), decision.kind === "merge" ? mergeMessage(ctx, upstream.ref, u) : { value: null }]);
-            if (!("value" in index)) fail(index);
-            else if (!("value" in message)) fail(message);
+            // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other read.
+            if (!("value" in index) || !("value" in message)) fail(firstEnd([index, message].map((f) => ("value" in f ? null : f)), isDeadlineStop)!);
             else if (signal.aborted) stop = { canceled: true };
             else {
               indexBefore = index.value;
@@ -328,8 +327,8 @@ async function runConflictAction(s: SyncSteps): Promise<void> {
   const action = b.payload.action as "abort" | "continue" | "skip";
   const kind = b.operationState as "merging" | "rebasing";
   const [listed, index] = await Promise.all([listRefs(ctx), indexState(ctx)]);
-  if (!("value" in listed)) return s.refuse(listed);
-  if (!("value" in index)) return s.refuse(index);
+  // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other read.
+  if (!("value" in listed) || !("value" in index)) return s.refuse(firstEnd([listed, index].map((f) => ("value" in f ? null : f)), isDeadlineStop)!);
   if (ctx.signal.aborted) return s.refuse({ stop: "canceled" });
   const args = action === "abort" ? abortArgs(kind) : action === "continue" ? continueArgs(kind) : skipArgs();
   const phase: StepPhase = action === "continue" ? "sync-continue" : kind === "merging" ? "sync-merge" : "sync-rebase";

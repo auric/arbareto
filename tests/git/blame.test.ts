@@ -13,7 +13,7 @@ import { printOrigin } from "../origin";
 import { FIXTURE_HOME, FIXTURE_ROOT, fixturePath, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { blameLarge, buildBlame, buildHistory, buildPatchBounds, buildShallowHistory, copyRepo, gitExit, runGit, type Built } from "./history-diff-fixtures";
 import { fits, gitPath, load, waitFor } from "./history-view-harness";
-import { caseTest, openService, type Service, type ServiceResponse } from "./service-harness";
+import { caseTest, openService, siblingDeadline, type Service, type ServiceResponse } from "./service-harness";
 import { canary } from "./workbench-fixtures";
 
 printOrigin("../../src/git-service/blame.ts", import.meta.dir);
@@ -26,6 +26,8 @@ const TASK = "T022";
 const SHELL = ["shell-double"] as const;
 const TIMEOUT_MS = 300_000;
 const LARGE_TIMEOUT_MS = 20 * 60_000;
+// A `siblingDeadline` case that never releases its target ends here, not at the read timeout.
+const SIBLING_TIMEOUT_MS = 120_000;
 const READ = ["--no-lazy-fetch", "--no-optional-locks", "--literal-pathspecs"];
 const MARKS = ["-c", "blame.markIgnoredLines=true", "-c", "blame.markUnblamableLines=true"];
 
@@ -321,6 +323,33 @@ describe("sources (FR-053)", () => {
       expect((await readBlame(service, v, { blameId: first.blameId, line })).code).toBe("UNKNOWN_TARGET");
     }),
     TIMEOUT_MS,
+  );
+
+  // T399, 001 contract §5 "Deadline outcomes": the deadline closes the operation Job, so the previous-version ls-tree ends with `exitCode` null and no `deadline`.
+  caseTest("T399", "Blame before this commit gives DEADLINE when the ls-tree of the line's commit expires and the Job close ends the previous-version ls-tree first", SHELL, () =>
+    withService("t399-blame", async (service) => {
+      const built = buildBlame(gitPath(), "t399-blame");
+      const v = await viewOf(service, built.repo);
+      const blamed = (await readBlame(service, v, await historySource(service, v, built.oids.b7!, "tale.txt"))).result!;
+      const line = resultLines(blamed).findIndex((l) => l.oid === built.oids.b7) + 1;
+      const group = blamed.groups.find((g) => g.finalStart <= line && line < g.finalStart + g.count)!;
+      const origin = blamed.commits[group.commit]!;
+      const lsTree = (oid: string) => (call: { arguments: readonly string[] }) => call.arguments.includes("ls-tree") && call.arguments.includes(oid);
+      // Step 1 of the previous-version blame runs the first ls-tree of that version alone. The second one runs beside the ls-tree of the line's commit.
+      const seen: object[] = [];
+      const secondPrevious = (call: { arguments: readonly string[] }) => {
+        if (!lsTree(origin.previous!.oid)(call)) return false;
+        if (!seen.includes(call)) seen.push(call);
+        return seen.indexOf(call) === 1;
+      };
+      const before = service.runner.calls.length;
+      const release = siblingDeadline(service, lsTree(origin.oid), secondPrevious);
+      const response = await readBlame(service, v, { blameId: blamed.blameId, line }).finally(release);
+      const exits = service.runner.calls.slice(before).filter((c) => c.arguments.includes("ls-tree")).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+      console.log(`OBSERVATION T399: blame ls-tree exits=${exits.join(",")} state=${response.state} code=${response.code}`);
+      expect({ exits: exits.toSorted(), state: response.state, code: response.code }).toEqual({ exits: ["0", "closed", "deadline"], state: "failed", code: "DEADLINE" });
+    }),
+    SIBLING_TIMEOUT_MS,
   );
 
   caseTest("T065", "a {blameId} source reruns the commit and path of the retained result with new options after Blame before this commit; an unknown ID gives UNKNOWN_TARGET", SHELL, () =>

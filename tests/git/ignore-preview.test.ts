@@ -16,7 +16,7 @@ import { buildCaseNames, buildPathsBound, buildReport, faGit, REPORT_ROOT_TEXT, 
 import { fixtureDir, useFixtureRoot } from "./fixture-root";
 import { workingFileDigests } from "./git-oracle";
 import { approve, gitPath, outcome, readOk, shortDeadline, SUCCEEDED, subcommand, until, withService } from "./hunk-harness";
-import { caseTest, configDigests, type Capability, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { caseTest, configDigests, siblingDeadline, type Capability, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 import { canary, untrackedFixture } from "./workbench-fixtures";
 
 for (const module of ["ignore-preview", "git-runner", "native-runner", "session"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
@@ -375,43 +375,24 @@ describe("typed limits (spec FR-039, contract Δ5)", () => {
   );
 
   // T081, 001 contract §5: the deadline closes the operation Job, so the sibling check ends with `exitCode` null and no `deadline`.
-  // The paused sibling stdout makes the sibling exit arrive before the exit of the deadline check. Each shadow takes the deadline once.
+  // T399 `siblingDeadline`: the sibling check starts first, and only the Job close of the deadline check ends it. Each shadow is the sibling once.
   caseTest("T081", "a deadline in one of two parallel check-ignore steps gives deadline, also when the Job close ends the sibling first", SHELL, () =>
     withService({ name: "t081-sibling" }, async (service) => {
       const f = report();
       const { r, read } = await open(service, f);
-      let freed: "s" | "c" = "s";
-      let checks = 0;
-      const sibling = new WeakSet<object>();
-      const siblingInputs = new WeakSet<object>();
-      service.runner.holdStart((call) => {
-        if (!isCheck(call)) return false;
-        checks++;
-        // The start barrier gets the GitCall, which holds the shadow context and the stdin bytes.
-        const { context, input } = call as unknown as GitCall;
-        const repo = context.contextKind === "ignorePreview" ? context.shadowRepository : null;
-        service.runner.inject.deadlineMs = repo === freed ? null : 1;
-        if (repo === freed) {
-          sibling.add(call);
-          if (input) siblingInputs.add(input);
-        }
-        return false;
-      });
-      service.runner.inject.stdout = (c) => (c.input && siblingInputs.has(c.input) ? new Uint8Array([0]) : undefined);
-      const resume = service.runner.pauseStdout((call) => sibling.has(call));
-      try {
-        for (const repo of ["s", "c"] as const) {
-          freed = repo;
-          checks = 0;
-          const response = await preview(service, r, read, "gitignore", "*.md\n");
-          service.runner.inject.deadlineMs = null;
-          console.log(`OBSERVATION T081: sibling=${repo} checks=${checks} ${JSON.stringify(unavailable(response))}`);
-          expect({ repo, checks, ...unavailable(response) }).toEqual({ repo, checks: 2, state: "succeeded", code: undefined, result: { unavailable: { reason: "deadline" } } });
-        }
-      } finally {
-        resume();
-        service.runner.inject.stdout = undefined;
-        service.runner.inject.deadlineMs = null;
+      // The start barrier gets the GitCall, which holds the shadow context.
+      const checkOf = (repo: "s" | "c") => (call: { arguments: readonly string[] }) => {
+        const { context } = call as unknown as GitCall;
+        return isCheck(call) && context.contextKind === "ignorePreview" && context.shadowRepository === repo;
+      };
+      for (const repo of ["s", "c"] as const) {
+        const before = service.runner.calls.length;
+        const release = siblingDeadline(service, checkOf(repo === "s" ? "c" : "s"), checkOf(repo));
+        const response = await preview(service, r, read, "gitignore", "*.md\n").finally(release);
+        // Contract §6 "Process replies": the deadline check carries `deadline`. The closed sibling has `exitCode` null and no `deadline`.
+        const exits = service.runner.calls.slice(before).filter(isCheck).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+        console.log(`OBSERVATION T081: sibling=${repo} checks=${exits.join(",")} ${JSON.stringify(unavailable(response))}`);
+        expect({ repo, exits: exits.sort(), ...unavailable(response) }).toEqual({ repo, exits: ["closed", "deadline"], state: "succeeded", code: undefined, result: { unavailable: { reason: "deadline" } } });
       }
     }),
     TIMEOUT_MS,

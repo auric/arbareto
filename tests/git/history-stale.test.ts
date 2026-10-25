@@ -9,19 +9,23 @@ import { cpSync, existsSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { NATIVE_CHUNK_BYTES, HISTORY_LOAD_MARGIN } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
+import type { RecordedCall } from "./bun-runner";
 import { FIXED_IDENTITY, FIXTURE_ROOT, fixtureDir, fixturePath, useFixtureRoot } from "./fixture-root";
 import { buildF17, fiCommit } from "./fixtures";
 import { H200K, largeCase, repositoryDigest, startPoints } from "./history-fixtures";
-import { allRows, commitGraphFiles, copyLarge, git, gitPath, gitText, isLoad, isReplaceRead, load, loadSteps, opened, openView, oracle, rows, waitFor } from "./history-view-harness";
-import { caseTest, openService, type Service } from "./service-harness";
+import { allRows, commitGraphFiles, copyLarge, git, gitPath, gitText, isLoad, isReplaceRead, isSearch, load, loadSteps, opened, openView, oracle, rows, search, waitFor } from "./history-view-harness";
+import { caseTest, openService, siblingDeadline, type Service } from "./service-harness";
 
 printOrigin("../../src/git-service/history-view.ts", import.meta.dir);
 printOrigin("../../src/git-service/history-topology.ts", import.meta.dir);
+printOrigin("../../src/git-service/history.ts", import.meta.dir);
 
 const TASK = "T024";
 const SHELL = ["shell-double"] as const;
 const TIMEOUT_MS = 300_000;
 const LARGE_TIMEOUT_MS = 30 * 60_000;
+// A `siblingDeadline` case that never releases its target ends here, not at the read timeout.
+const SIBLING_TIMEOUT_MS = 120_000;
 // Contract Δ3: the first load with `{row: 0}` stops at 1 + 2·M rows.
 const FIRST_STOP = 1 + 2 * HISTORY_LOAD_MARGIN;
 // Spec SC-010 (proposed, O-2): a load cancel stops within 1 s, and no process of it remains after 5 s.
@@ -30,8 +34,8 @@ const END_MS = 5_000;
 
 useFixtureRoot();
 
-async function withService(name: string, body: (service: Service) => Promise<void>): Promise<void> {
-  const service = await openService({ git: gitPath(), name, watchHints: false });
+async function withService(name: string, body: (service: Service) => Promise<void>, options: { historyViewCommits?: number } = {}): Promise<void> {
+  const service = await openService({ git: gitPath(), name, watchHints: false, ...options });
   try {
     await body(service);
   } finally {
@@ -383,6 +387,107 @@ describe("failed loads (contract Δ3, Δ8 condition 1)", () => {
         });
       }),
     TIMEOUT_MS,
+  );
+});
+
+// T399, 001 contract §5 "Deadline outcomes": a view step at its deadline closes the operation Job, so a sibling ends with `exitCode` null and no `deadline`.
+// Contract Δ8: a deadline leaves the view fresh, so a later request of the view runs.
+describe("sibling deadline (T399)", () => {
+  const ends = (calls: readonly RecordedCall[], match: (call: RecordedCall) => boolean) => calls.filter(match).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+
+  caseTest(
+    "T399",
+    "loadHistory gives DEADLINE when rev-list expires and the Job close ends the replace check first, and the next load resumes",
+    SHELL,
+    () =>
+      withService("t399-load", async (service) => {
+        const { repo } = chainRepo("t399-load-repo");
+        const { repositoryId, generation } = await service.register(repo);
+        const view = await opened(service, repositoryId, generation);
+        const from = service.runner.calls.length;
+        const release = siblingDeadline(service, isLoad, isReplaceRead);
+        const late = await load(service, repositoryId, view.viewId, { end: true }).finally(release);
+        const exits = ends(service.runner.calls.slice(from), (c) => isLoad(c) || isReplaceRead(c));
+        console.log(`OBSERVATION T399: loadHistory exits=${exits.join(",")} state=${late.state} code=${late.code}`);
+        const resumed = await load(service, repositoryId, view.viewId, { end: true });
+        expect({ exits: exits.toSorted(), state: late.state, code: late.code, resumed: { state: resumed.state, code: resumed.code, result: resumed.result } }).toEqual({
+          exits: ["closed", "deadline"],
+          state: "failed",
+          code: "DEADLINE",
+          resumed: { state: "succeeded", code: undefined, result: { rows: CHAIN, complete: true } },
+        });
+      }),
+    SIBLING_TIMEOUT_MS,
+  );
+
+  // The view is incomplete, so the search loads it to the end beside the search process (contract Δ3 `searchHistory`).
+  for (const { tag, name, target, sibling } of [
+    { tag: "load", name: "its load expires and the Job close ends the search process first", target: isLoad, sibling: isSearch },
+    { tag: "search", name: "the search process expires and the Job close ends its load first", target: isSearch, sibling: isLoad },
+  ])
+    caseTest(
+      "T399",
+      `searchHistory gives DEADLINE when ${name}, and the next search runs`,
+      SHELL,
+      () =>
+        withService(`t399-search-${tag}`, async (service) => {
+          const { repo } = chainRepo(`t399-search-${tag}-repo`);
+          const { repositoryId, generation } = await service.register(repo);
+          const view = await opened(service, repositoryId, generation);
+          const from = service.runner.calls.length;
+          const release = siblingDeadline(service, target, sibling);
+          const late = await search(service, repositoryId, view.viewId, `c${CHAIN}`).finally(release);
+          const exits = ends(service.runner.calls.slice(from), (c) => target(c) || sibling(c));
+          console.log(`OBSERVATION T399: searchHistory ${tag} exits=${exits.join(",")} state=${late.state} code=${late.code}`);
+          const again = await search(service, repositoryId, view.viewId, `c${CHAIN}`);
+          expect({ exits: exits.toSorted(), state: late.state, code: late.code, again: { state: again.state, code: again.code, matches: again.result?.matches } }).toEqual({
+            exits: ["closed", "deadline"],
+            state: "failed",
+            code: "DEADLINE",
+            again: { state: "succeeded", code: undefined, matches: 1 },
+          });
+        }),
+      SIBLING_TIMEOUT_MS,
+    );
+
+  // 002 contract Δ6: the load ends at the view bound through the `cancel` of its call, which closes the Job of the search process too.
+  caseTest(
+    "T399",
+    "a search whose load reaches HISTORY_VIEW_COMMITS while the search process runs ends limited, and the view stays fresh",
+    SHELL,
+    () =>
+      withService(
+        "t399-over",
+        async (service) => {
+          const { repo } = chainRepo("t399-over-repo");
+          const { repositoryId, generation } = await service.register(repo);
+          const view = await opened(service, repositoryId, generation);
+          const from = service.runner.calls.length;
+          // The search keeps one held stdout byte, so only the Job close ends it.
+          const prior = service.runner.inject.stdout;
+          service.runner.inject.stdout = (call) => (isSearch(call) ? new Uint8Array([0]) : prior?.(call));
+          const resume = service.runner.pauseStdout(isSearch);
+          let limited: Awaited<ReturnType<typeof search>>;
+          try {
+            limited = await search(service, repositoryId, view.viewId, `c${CHAIN}`);
+          } finally {
+            resume();
+            service.runner.inject.stdout = prior;
+          }
+          const exits = ends(service.runner.calls.slice(from), isSearch);
+          console.log(`OBSERVATION T399: searchHistory over exits=${exits.join(",")} state=${limited.state} code=${limited.code}`);
+          const again = await load(service, repositoryId, view.viewId, { end: true });
+          expect({ exits, state: limited.state, code: limited.code, result: limited.result, again: { state: again.state, reason: again.result?.reason } }).toEqual({
+            exits: ["closed"],
+            state: "limited",
+            code: "OUTPUT_LIMIT",
+            result: { reason: "HISTORY_VIEW_COMMITS" },
+            again: { state: "limited", reason: "HISTORY_VIEW_COMMITS" },
+          });
+        },
+        { historyViewCommits: 1000 },
+      ),
+    SIBLING_TIMEOUT_MS,
   );
 });
 

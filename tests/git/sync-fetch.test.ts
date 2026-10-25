@@ -9,11 +9,14 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { APPROVAL_LIFETIME_MS, RECONCILIATION_TARGET_MS, STALL_NOTICE_MS, SUBMODULE_UPDATE_CEILING_MS, SUBMODULE_UPDATE_INACTIVITY_MS, SYNC_FETCH_LISTED_REFS } from "../../src/contracts/limits";
 import { startHttpRemote, type HttpRemote } from "../support/http-remote";
+import { headTargetArgs } from "../../src/git-service/commands";
+import { syncRefsArgs } from "../../src/git-service/sync-commands";
+import type { RecordedCall } from "./bun-runner";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit, fixtureGitPath } from "./git-binary";
 import { operationMarkers, rawIndexDigest, workingFileDigests } from "./git-oracle";
 import { buildCredentialRemote, buildFetchAll, buildFetchFlags, buildSubmodule, configDigests, fc, FETCH_ALL_REMOTES, gitRun, HTTP_PASSWORD, HTTP_USER, importStream, nativeEnv, refMap, revParse, type GitHost } from "./remote-fixtures";
-import { caseTest, type Service } from "./service-harness";
+import { caseTest, siblingDeadline, type Service } from "./service-harness";
 import { callsFrom, callsOf, gitExe, hostFor, native, register, remoteCalls, reviewed, reviewSync, run, sendSync, subcommandOf, sync, TIMEOUT_MS, withSync, type SyncResult, refusalOf, helperGlobal } from "./sync-harness";
 
 useFixtureRoot();
@@ -524,6 +527,32 @@ describeGit("sync fetch and fetch-all (T033)", () => {
       service.runner.inject.sshClient = "git";
     });
   }, TIMEOUT_MS);
+
+  // T399, 001 contract §5 "Deadline outcomes": a reconciliation read at its deadline closes the operation Job, so the sibling read ends with `exitCode` null and no `deadline`.
+  // 001 contract §8: a reconciliation read deadline gives `unknown`, and the session log cause is DEADLINE (§9).
+  caseTest("T399", "T399: a fetch reconciliation gives unknown with the cause DEADLINE when the HEAD read expires and the Job close ends the refs listing first", SHELL, async () => {
+    const h = hostFor("t399-fetch");
+    const { clone } = behindClone(h, "t399-fetch");
+    await withSync("t399-fetch", async (service) => {
+      const r = await register(service, clone);
+      const review = await reviewed(service, r, { action: "fetch" });
+      const isArgs = (args: readonly string[]) => (call: { arguments: readonly string[] }) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]);
+      // Only a read after the fetch step matches, so the reads before the step stay out.
+      const afterFetch = (match: (call: { arguments: readonly string[] }) => boolean) => (call: { operationId: string; arguments: readonly string[] }) =>
+        match(call) && service.runner.calls.some((c) => c.operationId === call.operationId && isFetch(c));
+      const [head, refs] = [isArgs(headTargetArgs()), isArgs(syncRefsArgs())];
+      const from = service.runner.calls.length;
+      const release = siblingDeadline(service, afterFetch(head), afterFetch(refs));
+      const response = await service.response<SyncResult>(sendSync(service, r, review.syncReviewToken)).finally(release);
+      const own = service.runner.calls.slice(from).filter((c) => c.operationId === response.operationId);
+      const tail = own.slice(own.findIndex(isFetch) + 1);
+      const endOf = (call: RecordedCall | undefined) => call?.exit?.deadline ?? (call?.exit?.exitCode === null ? "closed" : String(call?.exit?.exitCode));
+      const exits = [tail.find(head), tail.find(refs)].map(endOf);
+      const entry = service.log().find((e) => (e as { operationId?: string }).operationId === response.operationId) as { cause?: string } | undefined;
+      console.log(`OBSERVATION T399: fetch exits=${exits.join(",")} state=${response.state} code=${response.code} cause=${entry?.cause}`);
+      expect({ exits, ...outcome(response), cause: entry?.cause }).toEqual({ exits: ["deadline", "closed"], state: "unknown", code: "STATE_UNKNOWN", cause: "DEADLINE" });
+    });
+  }, 120_000);
 });
 
 // An empty `plink.exe` stand-in. The shell double checks only that it exists.

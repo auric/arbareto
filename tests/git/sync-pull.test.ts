@@ -7,6 +7,8 @@
 import { expect } from "bun:test";
 import { existsSync, rmSync } from "node:fs";
 import { RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
+import { indexStageArgs, mergeMessageArgs, syncRefsArgs } from "../../src/git-service/sync-commands";
+import type { RecordedCall } from "./bun-runner";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import {
@@ -31,7 +33,7 @@ import {
   type PullFixture,
   type PullRow,
 } from "./remote-fixtures";
-import { caseTest, type Service } from "./service-harness";
+import { caseTest, siblingDeadline, type Service } from "./service-harness";
 import {
   ANY_EXIT,
   callsOf,
@@ -503,4 +505,35 @@ describeGit("sync pull and integrate (T044)", () => {
       rmSync(lock, { force: true });
     }
   }, TIMEOUT_MS);
+
+  // T399, 001 contract §5 "Deadline outcomes": a read at its deadline closes the operation Job, so the sibling read ends with `exitCode` null and no `deadline`.
+  // The pull reads before the merge step give DEADLINE. A reconciliation read deadline gives `unknown` with the session log cause DEADLINE (001 contract §8, §9).
+  const isArgs = (args: readonly string[]) => (call: { arguments: readonly string[] }) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]);
+  const isCount = (c: { arguments: readonly string[] }) => subcommandOf(c.arguments) === "rev-list" && c.arguments.includes("--left-right");
+  const endOf = (call: RecordedCall | undefined) => call?.exit?.deadline ?? (call?.exit?.exitCode === null ? "closed" : String(call?.exit?.exitCode));
+  const T399_CASES = [
+    // `integrate` has no fetch, so no fetch effect hides the code of the read.
+    { tag: "merge-preview", payload: { action: "integrate", mode: "merge" }, name: "the merge message preview before the merge expires and the Job close ends the index read first", after: isCount, target: isArgs(mergeMessageArgs()), sibling: isArgs(indexStageArgs()), expected: { state: "failed", code: "DEADLINE", merges: 0 } },
+    { tag: "observe", payload: { action: "pull" }, name: "the index read after the merge expires and the Job close ends the refs listing first", after: (c: RecordedCall) => c.environmentPolicy === "integrate", target: isArgs(indexStageArgs()), sibling: isArgs(syncRefsArgs()), expected: { state: "unknown", code: "STATE_UNKNOWN", merges: 1, cause: "DEADLINE" } },
+  ];
+  for (const { tag, payload, name, after, target, sibling, expected } of T399_CASES)
+    caseTest("T399", `T399: ${payload.action} with a merge gives ${expected.code} when ${name}`, SHELL, async () => {
+      const app = rowCopy({ branch: "p-behind", config: [["pull.ff", "false"]] });
+      await withSync(`t399-pull-${tag}`, async (service) => {
+        const r = await register(service, app);
+        const token = (await reviewed(service, r, payload)).syncReviewToken;
+        // Only a read after the `after` call of the operation matches, so the earlier reads stay out.
+        const later = (match: (call: { arguments: readonly string[] }) => boolean) => (call: { operationId: string; arguments: readonly string[] }) =>
+          match(call) && service.runner.calls.some((c) => c.operationId === call.operationId && after(c));
+        const from = service.runner.calls.length;
+        const release = siblingDeadline(service, later(target), later(sibling));
+        const response = await service.response<SyncResult>(sendSync(service, r, token)).finally(release);
+        const own = service.runner.calls.slice(from).filter((c) => c.operationId === response.operationId);
+        const tail = own.slice(own.findIndex(after) + 1);
+        const exits = [tail.find(target), tail.find(sibling)].map(endOf);
+        const entry = service.log().find((e) => (e as { operationId?: string }).operationId === response.operationId) as { cause?: string } | undefined;
+        console.log(`OBSERVATION T399: pull ${tag} exits=${exits.join(",")} state=${response.state} code=${response.code} cause=${entry?.cause}`);
+        expect({ exits, ...outcome(response), merges: integrateCalls(service, from).length, ...("cause" in expected ? { cause: entry?.cause } : {}) }).toEqual({ exits: ["deadline", "closed"], ...expected });
+      });
+    }, 120_000);
 });

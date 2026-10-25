@@ -7,7 +7,7 @@
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, HISTORY_COMMIT_OBJECT_BYTES, REFLOG_SCAN_ENTRIES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS, SYNC_REFS_BYTES, SYNC_REFS_RECORDS, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
 import { nameRefusal, newName, refExists } from "./branch-ops";
 import { batchCommandArgs, isObjectId, isOneLevelRefName, isRefName } from "./commands";
-import { createCollector, stepUnits } from "./git-runner";
+import { createCollector, firstEnd, isDeadlineStop, stepUnits } from "./git-runner";
 import { stepOf, type Fact, type ObserveContext } from "./hunk-publish";
 import { latin1 } from "./read-steps";
 import type { Head } from "./snapshot";
@@ -326,8 +326,8 @@ registerWorkbenchAction("switch", {
     const settled = await r.reconcile(ends);
     if (settled === null) return r.unknown({ code: "GIT_FAILED" }, { action: "switch" });
     const [observed, status] = await Promise.all([observe(q, killed(ends)), trackedStatus(q)]);
-    if (!("value" in observed)) return r.unknown(observed, { action: "switch" });
-    if (!("value" in status)) return r.unknown(status, { action: "switch" });
+    // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other read.
+    if (!("value" in observed) || !("value" in status)) return r.unknown(firstEnd([observed, status].map((f) => ("value" in f ? null : f)), isDeadlineStop)!, { action: "switch" });
     const o = observed.value;
     const now = o.refs.get(refKey(STASH)) ?? null;
     let stash: { oid: string | null; state: string } | null = null;

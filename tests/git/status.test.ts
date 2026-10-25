@@ -17,7 +17,8 @@ import { buildF01, buildF02, buildF03, buildF05, buildF06, buildF10, F16_STATUS_
 import { GIT } from "./git-binary";
 import type { CallMatch } from "./bun-runner";
 import { indexEntries, rawIndexDigest } from "./git-oracle";
-import { caseTest, once, openService, withFsCalls, type ChangeEntry, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { markerPathArgs, statusArgs } from "../../src/git-service/commands";
+import { caseTest, once, openService, siblingDeadline, withFsCalls, type ChangeEntry, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/status.ts", import.meta.dir);
@@ -27,6 +28,8 @@ printOrigin("../../src/git-service/trust.ts", import.meta.dir);
 const TASK = "T069";
 const PAGING = "T284";
 const TIMEOUT_MS = 120_000;
+// A `siblingDeadline` case that never releases its target ends here, not at the read timeout.
+const SIBLING_TIMEOUT_MS = 120_000;
 const F16_TIMEOUT_MS = 600_000;
 const HELD_WAIT_MS = 30_000;
 
@@ -846,5 +849,28 @@ describe("bound working versions (contract §8 \"Token invalidation\")", () => {
         expect(policyOf(trust, workspace, listing.listing, installation)).toMatch(/^[0-9a-f]{64}$/);
       }),
     TIMEOUT_MS,
+  );
+});
+
+// T399, 001 contract §5 "Deadline outcomes": the marker path step at its deadline closes the operation Job, so the status step ends with `exitCode` null and no `deadline`.
+describe("parallel step deadline (T399)", () => {
+  caseTest(
+    "T399",
+    "the first read of a workspace gives DEADLINE when the marker path step expires and the Job close ends the status step first",
+    ["shell-double"],
+    () =>
+      withService("t399-status", async (service) => {
+        const built = buildF02(gitPath(), "t399-status");
+        const { repositoryId } = await service.register(f(built));
+        const isArgs = (args: readonly string[]) => (call: { arguments: readonly string[] }) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]);
+        const [isMarkerPaths, isStatus] = [isArgs(markerPathArgs()), isArgs(statusArgs())];
+        const from = service.runner.calls.length;
+        const release = siblingDeadline(service, isMarkerPaths, isStatus);
+        const response = await service.readWorkspace(repositoryId).finally(release);
+        const exits = service.runner.calls.slice(from).filter((c) => isMarkerPaths(c) || isStatus(c)).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+        console.log(`OBSERVATION T399: readWorkspace exits=${exits.join(",")} state=${response.state} code=${response.code}`);
+        expect({ exits: exits.toSorted(), state: response.state, code: response.code }).toEqual({ exits: ["closed", "deadline"], state: "failed", code: "DEADLINE" });
+      }),
+    SIBLING_TIMEOUT_MS,
   );
 });

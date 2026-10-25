@@ -72,6 +72,31 @@ const NETWORK_POLICIES: ReadonlySet<string> = new Set(["network", "remote", "int
 // Contract §6 "Byte caps": only a `run` with one of these policies gets `stop` at a full stdout collector. A run of another policy can still run hooks.
 export const stopsAtBound = (policy: EnvironmentPolicy): boolean => policy === "probe" || policy === "read" || policy === "search";
 
+// Contract §6 "Process replies": `exitCode` is null after a `stop` or a Job close. Only the expired call of a Job close carries `deadline` (§5 "Deadline outcomes").
+export function exitKind(exit: GitExit, policy: EnvironmentPolicy, stdout: Pick<Collector, "limited">): "deadline" | "diagnosticLimit" | "exited" | "stopped" | "jobClosed" {
+  if (exit.deadline !== undefined) return "deadline";
+  if (exit.diagnosticLimit) return "diagnosticLimit";
+  if (exit.exitCode !== null) return "exited";
+  return stdout.limited && stopsAtBound(policy) ? "stopped" : "jobClosed";
+}
+
+export const isDeadlineStop = (end: unknown): boolean => typeof end === "object" && end !== null && (end as { stop?: unknown }).stop === "deadline";
+
+// The end of parallel steps: a deadline first, then the first end in position order that is no Job close, then a Job close. Null and undefined: no end.
+// A sibling cannot see a deadline, because the deadline closes the Job of every sibling (contract §5 "Deadline outcomes").
+export function firstEnd<T>(ends: readonly (T | null | undefined)[], isDeadline: (end: T) => boolean, isClosed: (end: T) => boolean = () => false): T | null {
+  const ended = ends.filter((end): end is T => end !== null && end !== undefined);
+  return ended.find(isDeadline) ?? ended.find((end) => !isClosed(end)) ?? ended[0] ?? null;
+}
+
+// Parallel steps of one operation. Every step ends before the `firstEnd` rejection propagates.
+export async function settleSteps<T extends readonly unknown[] | []>(work: T, isDeadline: (end: unknown) => boolean, isClosed?: (end: unknown) => boolean): Promise<{ -readonly [K in keyof T]: Awaited<T[K]> }> {
+  const ends = await Promise.allSettled(work);
+  const rejected = ends.flatMap((end) => (end.status === "rejected" ? [end.reason as unknown] : []));
+  if (rejected.length > 0) throw firstEnd(rejected, isDeadline, isClosed) ?? rejected[0];
+  return ends.map((end) => (end as PromiseFulfilledResult<unknown>).value) as { -readonly [K in keyof T]: Awaited<T[K]> };
+}
+
 // Contract §5: `git` is the 30-second deadline of every other Git process. `network` is a §12 update process.
 export type ProcessKind = "git" | "commit" | "network";
 

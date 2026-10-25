@@ -277,10 +277,10 @@ registerWorkbenchAction<"config-save", { changes: BoundChange[] }>("config-save"
     const settledRun = await r.reconcile(ends);
     const base = { action: "config-save" as const, scope: p.scope };
     if (settledRun === null) return r.unknown({ code: "GIT_FAILED" }, base);
-    // Spec FR-065: the fresh listing decides which keys Git wrote.
+    // Spec FR-065: the fresh listing decides which keys Git wrote. Only a key whose step ran can be written.
     const fresh = await listing(r.q, registered(w));
     if (!("value" in fresh)) return r.unknown(fresh, base);
-    const written = b.changes.filter((c) => !sameEntries(fresh.value, c, p.scope)).map((c) => redactUrlUserInfo(c.key));
+    const written = b.changes.slice(0, ends.length).filter((c) => !sameEntries(fresh.value, c, p.scope)).map((c) => redactUrlUserInfo(c.key));
     const intended = b.changes.every((c) => {
       const own = ownEntries(fresh.value, c.key, p.scope);
       const last = own.at(-1);

@@ -477,7 +477,9 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
   // OS file facts of the Git-resolved marker paths. Null: the fact is unknown.
   async function markerFacts(t: ProcessTarget, st: WorkspaceState): Promise<{ present: Record<OperationMarker, boolean | null>; steps: Step[] }> {
     const steps: Step[] = [];
-    const paths = await markerPaths(t, st, steps);
+    const shared = st.markers !== null;
+    // A failed shared step ran in the Job of another operation, so this operation runs its own step once.
+    const paths = (await markerPaths(t, st, steps)) ?? (shared ? await markerPaths(t, st, steps) : null);
     const present = Object.fromEntries(OPERATION_MARKERS.map((name) => [name, null])) as Record<OperationMarker, boolean | null>;
     if (paths === null) return { present, steps };
     const exists = async (path: string) => {

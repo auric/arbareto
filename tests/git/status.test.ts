@@ -873,4 +873,39 @@ describe("parallel step deadline (T399)", () => {
       }),
     SIBLING_TIMEOUT_MS,
   );
+
+  caseTest(
+    "T401",
+    "an operation that shares a marker path step at its deadline runs its own step, not an unknown state without a cause",
+    ["shell-double"],
+    () =>
+      withService("t401-markers", async (service) => {
+        const git = gitPath();
+        const repo = f(buildF02(git, "t401-markers"));
+        const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", git), executablePath: git });
+        if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation: probed.installation, signal: new AbortController().signal });
+        if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+        const workspace = registrations.get(registered.result.repositoryId)!;
+        const reader = createWorkspaceReader({ runner: service.runner, trust: createTrust({ runner: service.runner, environment: serviceEnv() }) });
+        const signal = new AbortController().signal;
+        const args = markerPathArgs();
+        const isFirst = once((call) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]));
+        const releaseHook = service.runner.holdStart((call) => {
+          if (isFirst(call)) {
+            // `spawn` reads the deadline synchronously after this check.
+            service.runner.inject.deadlineMs = 1;
+            queueMicrotask(() => void (service.runner.inject.deadlineMs = null));
+          }
+          return false;
+        });
+        const from = service.runner.calls.length;
+        const states = await Promise.all([reader.operationState({ operationId: crypto.randomUUID(), signal, workspace }, false), reader.operationState({ operationId: crypto.randomUUID(), signal, workspace }, false)]).finally(releaseHook);
+        const exits = service.runner.calls.slice(from).map(({ exit }) => exit?.deadline ?? String(exit?.exitCode));
+        console.log(`OBSERVATION T401: operationState states=${states.join(",")} exits=${exits.join(",")}`);
+        expect({ states, exits }).toEqual({ states: ["deadline", "normal"], exits: ["deadline", "0"] });
+      }),
+    SIBLING_TIMEOUT_MS,
+  );
 });

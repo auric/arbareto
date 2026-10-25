@@ -34,6 +34,7 @@ const open = () => ({
   oleaut32: dlopen("oleaut32.dll", {
     SysAllocString: { args: [P], returns: P },
     SysFreeString: { args: [P], returns: FFIType.void },
+    SafeArrayDestroy: { args: [P], returns: i32 },
   }).symbols,
   kernel32: dlopen("kernel32.dll", {
     QueryPerformanceCounter: { args: [P], returns: i32 },
@@ -79,11 +80,13 @@ const IID_IUIAutomationTextPattern = "32eba289-3583-42c9-9c59-3b6d9a1e9b6a";
 const IID_IUIAutomationSelectionItemPattern = "a8efa66a-0fda-421a-9194-38021f3578ea";
 const IID_IUIAutomationValuePattern = "a94cd8b1-0844-4cd6-9d2d-640537ab39e9";
 const IID_IUIAutomationExpandCollapsePattern = "619be086-1f4e-4ee4-bafa-210128738730";
+const IID_IUIAutomationTogglePattern = "94cf8058-9b8d-4ab9-8bfd-4cd0a33c8c70";
 const UIA_InvokePatternId = 10000;
 const UIA_ValuePatternId = 10002;
 const UIA_ExpandCollapsePatternId = 10005;
 const UIA_SelectionItemPatternId = 10010;
 const UIA_TextPatternId = 10014;
+const UIA_TogglePatternId = 10015;
 const UIA_ControlTypePropertyId = 30003;
 const UIA_NamePropertyId = 30005;
 const UIA_LiveSettingPropertyId = 30135;
@@ -135,9 +138,13 @@ const SLOT = {
   // IUIAutomationValuePattern
   SetValue: 3,
   get_CurrentValue: 4,
+  // IUIAutomationTogglePattern
+  Toggle: 3,
   // IUIAutomationTextPattern
   get_DocumentRange: 7,
   // IUIAutomationTextRange
+  FindText: 8,
+  GetBoundingRectangles: 10,
   GetText: 12,
 } as const;
 const CLSCTX_INPROC_SERVER = 0x1;
@@ -483,6 +490,41 @@ export function showContextMenu(element: Element): number {
   } finally {
     release(element3);
   }
+}
+
+export function toggle(element: Element): void {
+  withPattern(element, UIA_TogglePatternId, IID_IUIAutomationTogglePattern, "Toggle", (self) => hr("Toggle", slotCall(self, SLOT.Toggle, [], [])));
+}
+
+// IUIAutomationTextRange::GetBoundingRectangles of the first match of `text` in the Text pattern document, case-sensitive. One rect per line of the match.
+// The SAFEARRAY holds VT_R8 left, top, width, height per rect. x64 SAFEARRAY: `pvData` at 16, `rgsabound[0].cElements` at 24.
+export function textRects(element: Element, text: string): Rect[] | null {
+  if (typeof text !== "string" || text === "") throw new UiaError("BAD_ARGUMENT", "text is empty");
+  return withPattern(element, UIA_TextPatternId, IID_IUIAutomationTextPattern, "Text", (pattern) => {
+    let document: Pointer | null = null;
+    let found: Pointer | null = null;
+    const value = allocBstr(text);
+    try {
+      document = outCall(pattern, "get_DocumentRange", [], [])!;
+      found = outCall(document, "FindText", [P, i32, i32], [value, 0, 0]);
+      if (found === null) return null;
+      const array = outCall(found, "GetBoundingRectangles", [], []);
+      if (array === null) return [];
+      try {
+        const data = read.ptr(array, 16) as Pointer;
+        const count = read.u32(array, 24);
+        const rects: Rect[] = [];
+        for (let i = 0; i + 3 < count; i += 4) rects.push({ x: read.f64(data, i * 8), y: read.f64(data, i * 8 + 8), width: read.f64(data, i * 8 + 16), height: read.f64(data, i * 8 + 24) });
+        return rects;
+      } finally {
+        hr("SafeArrayDestroy", lib().oleaut32.SafeArrayDestroy(array));
+      }
+    } finally {
+      release(found);
+      release(document);
+      lib().oleaut32.SysFreeString(value);
+    }
+  });
 }
 
 export function readValue(element: Element): string {

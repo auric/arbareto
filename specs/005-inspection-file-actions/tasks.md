@@ -245,6 +245,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 **Agent**: implementer. After T041. Tests first, with the red output kept.
 
 - [ ] T081 [US5] Keep the deadline of a parallel preview step when the Job close ends a sibling first, in `src/git-service/ignore-preview.ts` (plan.md D9, plan.md O-3, 001 contract §5). Cause: a step at its deadline closes the operation Job, so a sibling step ends with `exitCode` null and no `deadline`. `Shadow.check` and the listings map that null to `GIT_FAILED`, and `Promise.all` takes the first step that ends. Fix: `git()` throws the Job-close marker for a null `exitCode` without `deadline`, `diagnosticLimit`, or a `limited` stdout. A helper waits for every parallel step and throws the first rejection in position order that is no marker. A marker of a base step also waits for the self-check listings and takes their rejection. Only markers keep `GIT_FAILED`. Tests first in `tests/git/ignore-preview.test.ts`: one `check-ignore` gets a 1 ms deadline, and the paused sibling ends first, once for each shadow; each gives `unavailable.reason` `deadline`. Control mutation: map the marker to `GIT_FAILED`; the case must fail. Spec: FR-039, SC-005. Depends on T041.
+- [ ] T087 [US5] Run each preview `check-ignore` in batches at the same time, in `src/git-service/ignore-preview.ts` (plan.md D9 step 6, 005 performance report of 2026-10-25). Cause: for a folder-only pattern, Git resolves the type of each stdin path (dir.c `last_matching_pattern_from_list`). That costs about 3.3 s per 100,000 paths on Windows. Fix: `Shadow.check` splits its stdin paths into batches of the same size in input order. The batches run at the same time, and the verdicts join in input order. Git decides each stdin path alone (builtin/check-ignore.c `check_ignore`), so the joined output equals one run. At most 4 `check-ignore` processes run at the same time in one preview (`CHECK_PROCESSES`): a C check alone gets 4 batches, and the S and C checks of a base build round get 2 each. The listing byte bound counts the output of all batches of a check together. `settleSteps` takes a deadline of any batch first (T081). Tests first in `tests/git/ignore-preview.test.ts`: "a base build check runs in 2 batches per shadow, and a built-base C check in 4; the joined output equals one run over the joined input, with folder-only patterns and non-ASCII paths" and "a deadline in one batch of a check gives deadline, also when the Job close ends a sibling batch first". Both were red before the fix. The T081 case now accepts the exits of all batches. Control mutation: one batch per check; both cases turn red. Measured on the `buildPathsBound` fixture (100,000 inputs, root `.gitignore` `big/`): the first preview fell from 6,345 ms to 4,590 ms, and later previews from 3,894 to 3,940 ms to 1,793 to 1,820 ms. 4 batches for each of S and C (8 processes) gave 7,291 ms for the first preview, and a standalone check took 1,353 ms with 4 batches and 1,494 ms with 8. The packaged Q21 rerun stays open. Spec: FR-039, SC-005.
 
 ### T063 run fixes
 
@@ -341,7 +342,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - Batch 3 (T048–T058): after T047. WP7 (T048–T056) alone, then T057, then T058.
 - Batch 4 (T059–T064, T078–T080): after T058 and T077. T059 alone first. Then T060 and T061. Then T062. Then T078, T079, and T080. Then T063 and T064.
 - Board comparison fixes (T066–T077): after the board comparisons of T027, T047, and T058. One package in order. T047 and T058 repeat their board comparison after T077.
-- Ignore preview fixes (T081): after T041.
+- Ignore preview fixes (T081, T087): after T041.
 - T063 run fixes (T082–T086): after T080. T082 and T083 need a new package before their packaged rerun. Then T063 runs again.
 - Renderer performance fixes (T090, T091): after T083. Both need a new package before the packaged Q6 and Q32 reruns. Then T063 runs again.
 
@@ -386,7 +387,7 @@ Then:          T027
 | FR-015 to FR-017 (US3) | T001, T003, T007, T010, T032, T034, T043, T048, T090 |
 | FR-018 to FR-019 (US4) | T012, T013, T015, T036, T038, T048, T052, T060 |
 | FR-020 to FR-033 (US2) | T012 to T014, T028 to T030, T032, T039, T048, T053, T059, T060, T073, T076, T078, T082 |
-| FR-034 to FR-046 (US5) | T013 to T015, T028 to T031, T033, T034, T037, T040, T041, T049, T054, T057, T059, T067, T074, T078, T079, T081, T086 |
+| FR-034 to FR-046 (US5) | T013 to T015, T028 to T031, T033, T034, T037, T040, T041, T049, T054, T057, T059, T067, T074, T078, T079, T081, T086, T087 |
 | FR-047 to FR-052 (US6) | T013, T015, T030, T035, T042, T050, T055, T059, T060, T066 |
 | FR-053 to FR-063 (US7) | T016 to T018, T020, T022, T024, T026, T065, T044, T046, T048, T052, T061, T071, T072 |
 | FR-064 to FR-066 (US8, US9) | T006, T008, T009, T011, T018, T069, T075, T080 |
@@ -396,7 +397,7 @@ Then:          T027
 | SC-002 | T021, T061, T083, T090 |
 | SC-003 | T012, T032, T059, T060, T078, T085 |
 | SC-004 | T001, T007, T027 |
-| SC-005 | T034, T059, T061, T078, T081, T084, T085 |
+| SC-005 | T034, T059, T061, T078, T081, T084, T085, T087 |
 | SC-006 | T022, T061, T084 |
 | SC-007 | T035, T060 |
 | SC-008 | T006, T008, T027 |

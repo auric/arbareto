@@ -75,6 +75,8 @@ const outcome = (response: ServiceResponse) => ({ state: response.state, code: r
 
 // Contract §5 "Status page": the encoded result of one page.
 const pageBytes = (result: unknown) => Buffer.byteLength(JSON.stringify(result));
+// Contract §3 `readWorkspace`: `full` or `retained`.
+const readKind = (result: WorkspaceResult) => (result as WorkspaceResult & { readKind?: string }).readKind;
 
 // Contract §3: `readWorkspace` returns the first page, and `readEntries` serves each later page from the retained snapshot.
 // Each page must hold an entry, so the loop ends after at most `entryCount` pages.
@@ -526,6 +528,81 @@ describe("F16 status bounds (contract §5)", () => {
         // Contract §5 and §6 "Byte caps": the service stops `git status` when the parser reaches its byte bound.
         expect(service.runner.calls.filter((c) => isStatus(c.arguments)).map((c) => c.exit?.exitCode)).toEqual([null]);
       }),
+    TIMEOUT_MS,
+  );
+
+  // T402, contract §8 "Change check": a read limited with OUTPUT_LIMIT keeps the stat tuple, as a complete read does.
+  // Contract §8 "New candidates": the first listing can name candidates that its earlier tuple did not hold. So the second full read makes the compared tuple.
+  caseTest(
+    "T402",
+    `a check "changes" poll after a read limited with STATUS_LISTING_RECORDS gives retained with the same snapshot and starts no Git process`,
+    ["shell-double"],
+    async () => {
+      const service = await openService({ git: gitPath(), name: "t402-limited-poll", watchHints: false });
+      try {
+        const git = gitPath();
+        const repo = f(buildF02(git, "t402-limited-poll"));
+        const over = LIMITS.STATUS_LISTING_RECORDS + 16;
+        const listing = Buffer.concat([headers(git, repo), ...Array.from({ length: over }, (_, i) => Buffer.from(`? u/${String(i).padStart(6, "0")}\0`))]);
+        service.runner.inject.stdout = (call) => (isStatus(call.arguments) ? listing : undefined);
+        const { repositoryId } = await service.register(repo);
+        const read = async (check: "full" | "changes") => {
+          const before = service.runner.calls.length;
+          const started = performance.now();
+          const response = await service.readWorkspace(repositoryId, { refresh: false, check });
+          const ms = Math.round(performance.now() - started);
+          const result = response.result!;
+          return { response, result, ms, runs: service.runner.calls.length - before, bytes: pageBytes(result) };
+        };
+        await read("full");
+        const full = await read("full");
+        expect({ ...outcome(full.response), reason: (full.result.completeness as { reason?: string }).reason, readKind: readKind(full.result) }).toEqual({
+          state: "limited",
+          code: "OUTPUT_LIMIT",
+          reason: limitName("STATUS_LISTING_RECORDS"),
+          readKind: "full",
+        });
+        const poll = await read("changes");
+        console.log(`OBSERVATION T402: full read ms=${full.ms} runs=${full.runs} bytes=${full.bytes}; poll readKind=${readKind(poll.result)} ms=${poll.ms} runs=${poll.runs} bytes=${poll.bytes}`);
+        expect({ ...outcome(poll.response), readKind: readKind(poll.result), runs: poll.runs, snapshotId: poll.result.snapshotId, generation: poll.result.generation, completeness: poll.result.completeness }).toEqual({
+          ...outcome(full.response),
+          readKind: "retained",
+          runs: 0,
+          snapshotId: full.result.snapshotId,
+          generation: full.result.generation,
+          completeness: full.result.completeness,
+        });
+      } finally {
+        await service.dispose();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  // T403, contract §3 `readWorkspace`: a `retained` result holds the summary and `entryCount`, and no entries page.
+  caseTest(
+    "T403",
+    'a retained check "changes" result holds entryCount, an empty entries array, and cursor null',
+    ["shell-double"],
+    async () => {
+      const service = await openService({ git: gitPath(), name: "t403-retained-page", watchHints: false });
+      try {
+        const { repositoryId } = await service.register(f(buildF02(gitPath(), "t403-retained-page")));
+        await service.readWorkspace(repositoryId, { refresh: false, check: "full" });
+        const full = (await service.readWorkspace(repositoryId, { refresh: false, check: "full" })).result!;
+        expect(full.entries.length).toBeGreaterThan(0);
+        const poll = (await service.readWorkspace(repositoryId, { refresh: false, check: "changes" })).result!;
+        expect({ readKind: readKind(poll), snapshotId: poll.snapshotId, entryCount: poll.entryCount, entries: poll.entries, cursor: poll.cursor }).toEqual({
+          readKind: "retained",
+          snapshotId: full.snapshotId,
+          entryCount: full.entryCount,
+          entries: [],
+          cursor: null,
+        });
+      } finally {
+        await service.dispose();
+      }
+    },
     TIMEOUT_MS,
   );
 

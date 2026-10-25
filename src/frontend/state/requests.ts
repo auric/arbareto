@@ -283,6 +283,8 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
       if (state.selection) requestComparison(state.selection.entryId);
       return;
     }
+    // Contract §3: a `retained` reply holds no entries page, so the entries of an unknown snapshot need a full read.
+    if (result.readKind !== "full") return void readWorkspace(false, "full");
     paging = null;
     if (result.cursor === null) {
       commit(result, result.entries, {});

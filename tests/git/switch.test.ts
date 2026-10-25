@@ -8,11 +8,14 @@ import { expect, spyOn } from "bun:test";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
+import { syncRefsArgs } from "../../src/git-service/sync-commands";
+import { trackedStatusArgs } from "../../src/git-service/workbench-commands";
 import { localNameOf } from "../../src/git-service/workbench-parsers";
 import { printOrigin } from "../origin";
+import type { RecordedCall } from "./bun-runner";
 import { useFixtureRoot } from "./fixture-root";
 import { sha256, workingFileDigests } from "./git-oracle";
-import { caseTest, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
+import { caseTest, siblingDeadline, type RegistrationResult, type Service, type ServiceResponse } from "./service-harness";
 import { gitExe, native, TIMEOUT_MS, until, withSync } from "./sync-harness";
 import { buildWorkbench, repoOf, wb, type WbFixture, type WbFixtureName } from "./workbench-fixtures";
 
@@ -688,3 +691,28 @@ caseTest("T034", "a track target and a detach target that name an annotated tag 
   expect(branch(f)).toEqual(branch(o));
   expect(branch(f).anno).toBe(commit);
 }, TIMEOUT_MS);
+
+// T399, 001 contract §5 "Deadline outcomes": a reconciliation read at its deadline closes the operation Job, so the sibling read ends with `exitCode` null and no `deadline`.
+// 001 contract §8: a reconciliation read deadline gives `unknown`, and the session log cause is DEADLINE (§9).
+caseTest("T399", "T399: a switch reconciliation gives unknown with the cause DEADLINE when the tracked status read expires and the Job close ends the refs listing first", SHELL, async () => {
+  const f = build("switch-clean");
+  await withSync("t399-switch", async (service) => {
+    const r = await open(service, f.repo);
+    const rv = await reviewed(service, r, switchTo("keep"));
+    const isArgs = (args: readonly string[]) => (call: { arguments: readonly string[] }) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]);
+    // Only a read after the checkout step matches, so the reads before the step stay out.
+    const afterStep = (match: (call: { arguments: readonly string[] }) => boolean) => (call: { operationId: string; arguments: readonly string[] }) =>
+      match(call) && service.runner.calls.some((c) => c.operationId === call.operationId && c.environmentPolicy === "integrate");
+    const [status, refs] = [isArgs(trackedStatusArgs()), isArgs(syncRefsArgs())];
+    const from = service.runner.calls.length;
+    const release = siblingDeadline(service, afterStep(status), afterStep(refs));
+    const response = await service.response<SwitchResult>(sendRun(service, r, rv.workbenchToken)).finally(release);
+    const own = service.runner.calls.slice(from).filter((c) => c.operationId === response.operationId);
+    const reconciliation = own.slice(own.findIndex((c) => c.environmentPolicy === "integrate") + 1);
+    const endOf = (call: RecordedCall | undefined) => call?.exit?.deadline ?? (call?.exit?.exitCode === null ? "closed" : String(call?.exit?.exitCode));
+    const exits = [reconciliation.find(status), reconciliation.find(refs)].map(endOf);
+    const entry = service.log().find((e) => (e as { operationId?: string }).operationId === response.operationId) as { cause?: string } | undefined;
+    console.log(`OBSERVATION T399: switch exits=${exits.join(",")} state=${response.state} code=${response.code} cause=${entry?.cause}`);
+    expect({ exits, ...outcome(response), cause: entry?.cause, steps: subcommands(service, from) }).toEqual({ exits: ["deadline", "closed"], state: "unknown", code: "STATE_UNKNOWN", cause: "DEADLINE", steps: ["checkout"] });
+  });
+}, 120_000);

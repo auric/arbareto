@@ -9,12 +9,13 @@ import { mkdirSync, rmSync, truncateSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { MULTI_FILE_ACTION_FILES, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
+import type { RecordedCall } from "./bun-runner";
 import { cachedF16Status } from "../windows/fixture-cache";
 import { useFixtureRoot } from "./fixture-root";
 import { buildF04Stage, put } from "./fixtures";
 import { indexEntries, rawIndexDigest, workingFileDigests } from "./git-oracle";
 import { candidateFiles, copyRepo, git, gitPath, gitText, outcome, readOk, repoOf, review, subcommand, SUCCEEDED, valuesOf, withService as hunkService } from "./hunk-harness";
-import { caseTest, keepConfigs, type Capability, type ChangeEntry, type HunkCheckpoint, type Service, type WorkspaceResult } from "./service-harness";
+import { caseTest, keepConfigs, siblingDeadline, type Capability, type ChangeEntry, type HunkCheckpoint, type Service, type WorkspaceResult } from "./service-harness";
 import { buildWorkbench } from "./workbench-fixtures";
 
 // SC-009 (T096): each case keeps the bytes of every configuration file of the repositories that it registers.
@@ -380,5 +381,32 @@ describe("the status cut (contract Δ4 \"Status cut\", research.md R18 and R21 F
       expect((await readOk(service, repositoryId) as { cut?: unknown }).cut).toBeNull();
     }),
     TIMEOUT_MS,
+  );
+});
+
+// T399, 001 contract §5 "Deadline outcomes": a proof at its deadline closes the operation Job, so the proof beside it ends with `exitCode` null and no `deadline`.
+// The proofs run before publication, so the set ends failed with DEADLINE and stages nothing (001 contract §5, §9).
+describe("parallel proof deadline (T399)", () => {
+  caseTest("T399", `proof A of one file expires while the Job close ends proof B of another file first; the set gives DEADLINE, not the blob-proof refusal of the closed proof`, SHELL, () =>
+    withService({ name: "t399-proofs" }, async (service) => {
+      const repo = repoOf(buildF04Stage(gitPath(), "t399-proofs", "mixed-over-lf"));
+      // As in the proof B case above: `f.txt` takes proof B, and `extra.dat` holds proof A.
+      put(repo, "extra.dat", Uint8Array.of(0x65, 0x00, 0x0a));
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const ids = [...pick(read.entries, "unstaged", "f.txt"), ...pick(read.entries, "untracked", "extra.dat")].map((e) => e.entryId);
+      const before = rawIndexDigest(gitPath(), repo);
+      const target = (call: { arguments: readonly string[] }) => isProofA(call.arguments, "extra.dat");
+      const sibling = (call: { arguments: readonly string[] }) => isProofB(call.arguments, "f.txt");
+      const from = service.runner.calls.length;
+      const release = siblingDeadline(service, target, sibling);
+      const response = await applyFiles(service, repositoryId, read, ids, "stage", "selected").finally(release);
+      const calls = service.runner.calls.slice(from);
+      const endOf = (call: RecordedCall | undefined) => call?.exit?.deadline ?? (call?.exit?.exitCode === null ? "closed" : String(call?.exit?.exitCode));
+      const exits = [calls.find(target), calls.find(sibling)].map(endOf);
+      console.log(`OBSERVATION T399: proofs exits=${exits.join(",")} state=${response.state} code=${response.code}`);
+      expect({ exits, ...outcome(response), index: rawIndexDigest(gitPath(), repo), candidates: candidateFiles(repo) }).toEqual({ exits: ["deadline", "closed"], state: "failed", code: "DEADLINE", index: before, candidates: [] });
+    }),
+    120_000,
   );
 });

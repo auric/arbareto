@@ -551,6 +551,7 @@ describe("the menu of each label on a History row with several branch labels (FR
 });
 
 describe("virtual branch list (FR-086, SC-007, T100)", () => {
+  // The case presses 253 keys over 252 options in happy-dom: about 2.3 s alone and up to 5 s in a loaded run, near the 5 s Bun default.
   test("more than 200 branches create only the options near the view, the arrow keys reach the last option, and each option states its position and set size", async () => {
     const restore = sizeSwitcherList(300);
     try {
@@ -579,7 +580,7 @@ describe("virtual branch list (FR-086, SC-007, T100)", () => {
     } finally {
       restore();
     }
-  });
+  }, 30_000);
 });
 
 function buttons(label: string) {

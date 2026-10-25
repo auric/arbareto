@@ -1470,20 +1470,26 @@ export function createBunRunner(options: BunRunnerOptions) {
   async function registerWsl(request: RegisterWslCall): Promise<RegisterReply> {
     const fields = Object.keys(request).sort().join(",");
     const ids = [request.operationId, request.bootstrapId, request.gitInstallationId].every(isIdentifier);
-    if (fields !== "bootstrapId,confirm,gitInstallationId,operationId" || !ids || request.confirm !== true) throw new RunnerRefusal("INVALID_REQUEST", "WSL register");
+    if (fields !== "bootstrapId,confirm,gitInstallationId,operationId" || !ids || typeof request.confirm !== "boolean") throw new RunnerRefusal("INVALID_REQUEST", "WSL register");
     const bound = contexts.get(request.bootstrapId);
     if (inactive.has(request.operationId) || bound?.kind !== "repositoryDiscovery" || (bound.owner ?? request.operationId) !== request.operationId) throw unknownTarget();
     const facts = wslBound.get(request.bootstrapId);
     if (!facts || issued.has(request.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL register");
     bound.owner = request.operationId;
     const { version, gitIdentity, ...inst } = facts;
-    // The native confirmation shows the distro, the Git path, and the version. Cancel is its default (contract §11).
-    wslConfirmations.push({ distro: inst.distro, path: inst.git, version });
-    if (inject.wslConfirm === "declined") return { result: "declined" };
+    if (!request.confirm) {
+      // Mirrors `register_wsl`: only a saved match in the shell's own settings admits `confirm: false` (contract §11 "Git per distro").
+      const saved = wslSaved.get(inst.guid);
+      if (saved?.git !== inst.git || saved.version !== version || saved.gitIdentity !== gitIdentity) throw new RunnerRefusal("INVALID_REQUEST", "WSL register");
+    } else {
+      // The native confirmation shows the distro, the Git path, and the version. Cancel is its default (contract §11).
+      wslConfirmations.push({ distro: inst.distro, path: inst.git, version });
+      if (inject.wslConfirm === "declined") return { result: "declined" };
+      wslSaved.set(inst.guid, { distro: inst.distro, git: inst.git, version, gitIdentity });
+    }
     issued.add(request.gitInstallationId);
     gits.set(request.gitInstallationId, inst.git);
     wslGits.set(request.gitInstallationId, inst);
-    wslSaved.set(inst.guid, { distro: inst.distro, git: inst.git, version, gitIdentity });
     return { result: "approved" };
   }
 

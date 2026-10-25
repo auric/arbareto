@@ -508,7 +508,8 @@ export function checkRegister(request: RegisterRequest): "approved" | "confirm" 
   const git = RegisterGitCall.safeParse(request);
   if (git.success) return git.data.confirm ? "confirm" : "approved";
   if (fits(RegisterRepositoryCall, request)) return "approved";
-  return fits(RegisterWslCall, request) ? "wsl" : refuse("register");
+  const wsl = RegisterWslCall.safeParse(request);
+  return wsl.success ? (wsl.data.confirm ? "wsl" : "approved") : refuse("register");
 }
 
 export function checkWslDistros(call: WslDistrosCall): void {

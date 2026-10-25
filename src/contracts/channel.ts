@@ -394,8 +394,8 @@ const GitFileIdentity = z.string().regex(/^[0-9a-f]+:[0-9]+:[0-9]+:[0-9]+$/);
 export const WslDistrosCall = z.strictObject({ operationId: Identifier, bootstrapId: Identifier });
 export const WslProbeLimits = z.strictObject({ deadlineMs: ms(WSL_DISTRO_START_MS) }).meta({ title: "WslProbeLimits" });
 export const WslProbeCall = z.strictObject({ operationId: Identifier, bootstrapId: Identifier, distro: DistroName, limits: WslProbeLimits });
-// Only Use this Git binds the ID, so `confirm` is always true. The shell takes every Git fact from its own probe parse.
-export const RegisterWslCall = z.strictObject({ operationId: Identifier, bootstrapId: Identifier, gitInstallationId: Identifier, confirm: z.literal(true) });
+// `confirm: false` is valid only on a saved match in the shell settings (contract §11 "Git per distro"). The shell takes every Git fact from its own probe parse.
+export const RegisterWslCall = z.strictObject({ operationId: Identifier, bootstrapId: Identifier, gitInstallationId: Identifier, confirm: z.boolean() });
 export type WslDistrosCall = z.infer<typeof WslDistrosCall>;
 export type WslProbeCall = z.infer<typeof WslProbeCall>;
 export type RegisterWslCall = z.infer<typeof RegisterWslCall>;

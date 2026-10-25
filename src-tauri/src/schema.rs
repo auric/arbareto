@@ -216,14 +216,13 @@ pub fn trust_request(
     }
 }
 
-/// A WSL `process` request (contract §6 "Channel frames", §11). typify drops the `deadlineMs` range and the `confirm: true` constant.
+/// A WSL `process` request (contract §6 "Channel frames", §11). typify drops the `deadlineMs` range.
 pub fn wsl_request(value: &Value) -> Result<wsl_request::WslRequest, Code> {
     use wsl_request::WslRequest;
     let request: WslRequest = typed(value).ok_or(INVALID)?;
     let fits = match &request {
-        WslRequest::WslDistros { .. } => true,
+        WslRequest::WslDistros { .. } | WslRequest::Register { .. } => true,
         WslRequest::WslProbe { limits, .. } => limits.deadline_ms.get() <= WSL_START_DEADLINE_MS,
-        WslRequest::Register { confirm, .. } => *confirm,
     };
     if fits { Ok(request) } else { Err(INVALID) }
 }

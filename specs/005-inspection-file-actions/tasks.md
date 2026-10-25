@@ -256,6 +256,13 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - [ ] T085 Read the IPC replies through the CDP `Network` domain in `tests/windows/cdp.ts`, `tests/windows/inspection-packaged.test.ts`, and `tests/windows/inspection-perf.test.ts` (P9, WP8). `Local: package`. Cause: `window.__TAURI_INTERNALS__.invoke` is read-only and non-configurable, so the page hooks of Q12 and Q21 record nothing. Q12 then waits without end for its reply, and Q21 waits for a read count that stays 0. Fix: `cdp.ts` gives each CDP event (a message without `id`) to its subscribers. `watchIpc` records each POST to `http://ipc.localhost/<command>` at `Network.loadingFinished` and reads its reply with `Network.getResponseBody`. Q12 takes the `run_workbench` reply from it. Q21 counts the `read_workspace` and `preview_ignore` replies from it; the page check of a preview gets the count from the test. Tests first in `tests/windows/cdp.test.ts` against a local CDP double: the events reach their subscribers, a CORS preflight and other origins do not count, a failed load does not count, and the body is the JSON reply. Control mutation: drop the events in `onmessage`; the case must fail. Then show on the installed app that the `run_workbench` and `preview_ignore` replies arrive this way. Spec: SC-003, SC-005. Depends on T060 and T061.
 - [ ] T086 [US5] Open the Untracked section before the T067 row wait in `tests/windows/keys-cdp.test.ts` (P9, WP8). `Local: package`. Cause: the Untracked rows exist only while the section is open (`src/frontend/changes/file-tree.ts`), and the section starts closed. The case waited for the `t067-notes.txt` row without opening it. Fix: after F5, focus the Untracked section row, and press ArrowRight when `aria-expanded` is `"false"`. Rerun the case on the installed app. Spec: FR-044. Depends on T079.
 
+### Renderer performance fixes
+
+**Agent**: frontend-implementer. Tests first, with the red output kept. The cause comes from the 2026-10-25 profile of Q6 and Q32 (renderer allocation sampling and CPU profile).
+
+- [ ] T090 [US1] Build the changed-files sort keys and rows without per-row byte arrays or names in `src/frontend/history/CommitChanges.tsx` and `src/contracts/tree-order.ts` (plan.md D3, D4). Cause: `treeOrder` builds a `Uint8Array` and a `subarray` for each path component, and `commitRows` decodes a name for each of the 100,000 rows. The Q6 renderer peak grew by about 193 MiB, and the sort and rows took about 1 s. Fix: `tree-order.ts` gets `compareNameStrings`, `treeStringKey`, and `compareStringKeys` over byte strings (one code unit per byte, as `atob` gives), with the fold and compare rules of `compareNames` and `compareKeys`. A file row keeps only its entry, and the shown row decodes its name and folder. Tests first in `tests/contracts/tree-order.test.ts`: the string order equals `compareKeys` for upper and lower case, non-ASCII bytes, invalid UTF-8 bytes, file and folder ties, and submodule rows, over fixed vectors and a random table. Control mutation: drop the raw-byte tie in `compareNameStrings`; the cases must fail. Then rerun the packaged Q6. Spec: FR-015, FR-016, FR-068, SC-002.
+- [ ] T091 Render only the regions that read the operation state when it changes, in `src/frontend/app/Workbench.tsx` (plan.md D15). Cause: one `setOperation` at the Workbench root rendered the References sidebar, the History list, and the ignore editor, which stay mounted behind the Commit view. The Delete's Enter took about 55 ms of main-thread work in Q32. Fix: `React.memo` wraps `ReferencesSidebar`, `HistoryList`, and `IgnoreEditor`, and their callbacks keep one identity. The sidebar groups after the references read the operation state, so a context feeds them. Tests first in the new `tests/contracts/workbench-renders.test.tsx`: a Delete start and its progress call neither `ReferencesSidebar` nor `HistoryList`. Add the file to `tests/groups.json` `parallel`. Control mutation: drop the memo of `ReferencesSidebar`; the case must fail. Then rerun the packaged Q32. Spec: SC-009.
+
 ### Batch 2 verification
 
 - [ ] T047 [US1] Run the batch 2 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `bun run test:contracts`, and `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`. `Local: WSL`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every `OBSERVATION` line of T030 into research.md R17. A failed fact changes contracts/operations.md and plan.md before batch 3. Control mutations, each undone and rerun green: (1) in `src/git-service/file-delete.ts`, skip the check phase; the US2-5 case of `tests/git/delete.test.ts` must fail. (2) In `src/git-service/ignore-preview.ts`, skip the self-check; the `self-check` case of `tests/git/ignore-preview.test.ts` must fail. (3) In `src/frontend/history/CommitChanges.tsx`, keep the service order; the tree-order case of `tests/contracts/inspection-history.test.tsx` must fail. Board comparison: start the app with `bun run dev` and `ARBARETO_PROFILE_ROOT` set to a scratch folder, and compare the History regions, the parent picker, the constrained tabs, and the blame view with the Main, HistoryStates, Blame, Light, and ForcedColors boards. Record the screenshots and every difference in research.md R17. The task passes only after one independent review of batch 2 is recorded in research.md, with `ponytail-review`, the heuristics review of the Delete and preview code, and `web-design-guidelines` for the UI diff. Spec: all IDs of T028 to T046 and T065, SC-001, SC-003, SC-005 to SC-007. Depends on T028 to T046 and T065.
@@ -336,6 +343,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - Board comparison fixes (T066–T077): after the board comparisons of T027, T047, and T058. One package in order. T047 and T058 repeat their board comparison after T077.
 - Ignore preview fixes (T081): after T041.
 - T063 run fixes (T082–T086): after T080. T082 and T083 need a new package before their packaged rerun. Then T063 runs again.
+- Renderer performance fixes (T090, T091): after T083. Both need a new package before the packaged Q6 and Q32 reruns. Then T063 runs again.
 
 ### Changes to earlier requirements and their tasks
 
@@ -375,7 +383,7 @@ Then:          T027
 | --- | --- |
 | FR-001 to FR-004 (common) | T002, T004, T013, T018, T021, T022, T030, T034, T035, T036, T061, T062 |
 | FR-005 to FR-014 (US1) | T016 to T019, T021, T023, T025, T043, T045, T051, T061, T068, T070, T077, T083 |
-| FR-015 to FR-017 (US3) | T001, T003, T007, T010, T032, T034, T043, T048 |
+| FR-015 to FR-017 (US3) | T001, T003, T007, T010, T032, T034, T043, T048, T090 |
 | FR-018 to FR-019 (US4) | T012, T013, T015, T036, T038, T048, T052, T060 |
 | FR-020 to FR-033 (US2) | T012 to T014, T028 to T030, T032, T039, T048, T053, T059, T060, T073, T076, T078, T082 |
 | FR-034 to FR-046 (US5) | T013 to T015, T028 to T031, T033, T034, T037, T040, T041, T049, T054, T057, T059, T067, T074, T078, T079, T081, T086 |
@@ -383,16 +391,16 @@ Then:          T027
 | FR-053 to FR-063 (US7) | T016 to T018, T020, T022, T024, T026, T065, T044, T046, T048, T052, T061, T071, T072 |
 | FR-064 to FR-066 (US8, US9) | T006, T008, T009, T011, T018, T069, T075, T080 |
 | FR-067 | T008, T043, T044, T048 to T051, T056, T060, T072, T073, T079, T080 |
-| FR-068 | T043, T044, T049 |
+| FR-068 | T043, T044, T049, T090 |
 | SC-001 | T021, T061, T084 |
-| SC-002 | T021, T061, T083 |
+| SC-002 | T021, T061, T083, T090 |
 | SC-003 | T012, T032, T059, T060, T078, T085 |
 | SC-004 | T001, T007, T027 |
 | SC-005 | T034, T059, T061, T078, T081, T084, T085 |
 | SC-006 | T022, T061, T084 |
 | SC-007 | T035, T060 |
 | SC-008 | T006, T008, T027 |
-| SC-009 | T061, T084 |
+| SC-009 | T061, T084, T091 |
 | SC-010 | T051, T058, T060 |
 | SC-011 | T005, T027, T047, T058, T062 |
 

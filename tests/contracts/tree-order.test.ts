@@ -4,7 +4,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { printOrigin } from "../origin";
-import { compareKeys, compareNames, comparePaths, treeKey } from "../../src/contracts/tree-order";
+import { compareKeys, compareNames, compareNameStrings, comparePaths, compareStringKeys, treeKey, treeStringKey } from "../../src/contracts/tree-order";
 
 const SOURCE = printOrigin("../../src/contracts/tree-order.ts", import.meta.dir);
 
@@ -172,6 +172,60 @@ describe("comparePaths", () => {
     const list = ["a", "A", "a/b", "A/b", "a/B", "b", "a.txt", "a/b/c"].map(bytes);
     for (const a of list) for (const b of list) if (a !== b) expect(comparePaths(a, b)).not.toBe(0);
     expect(comparePaths(bytes("a/b"), bytes("a/b"))).toBe(0);
+  });
+});
+
+// T090: the renderer sorts byte strings, one code unit per byte, as `atob` gives them. The order must equal the byte-key order.
+describe("byte-string keys", () => {
+  const binary = (b: Uint8Array) => String.fromCharCode(...b);
+  const FIXED = [
+    ...["a", "A", "a/b", "A/b", "a/B", "b", "a.txt", "a/b/c", "_", "Readme", "README", "readme", "x/a", "x/a/b", "", "a/"].map(bytes),
+    Uint8Array.of(0xc3, 0xa9),
+    Uint8Array.of(0x41, 0xc3, 0xa9),
+    Uint8Array.of(0x61, 0xc3, 0xa9),
+    Uint8Array.of(0xff),
+    Uint8Array.of(0x80, 0x2f, 0x61),
+    Uint8Array.of(0x7f),
+    Uint8Array.of(0xe2, 0x82, 0xac, 0x2f, 0xff),
+  ];
+  // Random paths of 1 to 4 components over the generated alphabet, so `/` splits names that hold invalid UTF-8.
+  function randomPaths(count: number, seed: number): Uint8Array[] {
+    const next = generator(seed);
+    const pool = unique(names(200, seed + 1));
+    return Array.from({ length: count }, () => {
+      const parts = Array.from({ length: 1 + (next() % 4) }, () => pool[next() % pool.length]!);
+      return Uint8Array.from(parts.flatMap((p, i) => (i === 0 ? [...p] : [0x2f, ...p])));
+    });
+  }
+
+  test("compareNameStrings gives the sign of compareNames for case, non-ASCII, and invalid UTF-8 bytes", () => {
+    const list = unique([...names(400, 31), ...FIXED.filter((b) => !b.includes(0x2f))]);
+    const wrong: string[] = [];
+    for (const a of list) for (const b of list) if (sign(compareNameStrings(binary(a), binary(b))) !== sign(compareNames(a, b))) wrong.push(`${hex(a)} ${hex(b)}`);
+    expect(wrong).toEqual([]);
+  });
+
+  test("compareStringKeys gives the sign of compareKeys, with file and folder ties and submodule rows", () => {
+    const list = unique([...FIXED, ...randomPaths(150, 41)]);
+    const wrong: string[] = [];
+    for (const a of list)
+      for (const b of list)
+        for (const [af, bf] of [[false, false], [true, false], [false, true], [true, true]] as const)
+          if (sign(compareStringKeys(treeStringKey(binary(a), af), treeStringKey(binary(b), bf))) !== sign(compareKeys(treeKey(a, af), treeKey(b, bf)))) wrong.push(`${hex(a)}${af ? "/" : ""} ${hex(b)}${bf ? "/" : ""}`);
+    expect(wrong).toEqual([]);
+  });
+
+  test("a sort of 3,000 random rows gives the byte-key order", () => {
+    const next = generator(53);
+    const rows = unique(randomPaths(3000, 59)).map((path, i) => ({ i, path, folder: next() % 9 === 0 }));
+    const byBytes = rows.map((r) => ({ i: r.i, key: treeKey(r.path, r.folder) })).sort((a, b) => compareKeys(a.key, b.key)).map((r) => r.i);
+    const byStrings = rows.map((r) => ({ i: r.i, key: treeStringKey(binary(r.path), r.folder) })).sort((a, b) => compareStringKeys(a.key, b.key)).map((r) => r.i);
+    expect(rows.length).toBeGreaterThan(500);
+    expect(byStrings).toEqual(byBytes);
+  });
+
+  test("treeStringKey splits at each `/` byte, as treeKey does", () => {
+    for (const path of FIXED) expect(treeStringKey(binary(path)).parts).toEqual(treeKey(path).parts.map(binary));
   });
 });
 

@@ -6,7 +6,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { lazy, memo, Suspense, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import type { CommitChanges as Changes, CommitFile } from "../../contracts/envelope";
-import { compareKeys, treeKey } from "../../contracts/tree-order";
+import { compareStringKeys, treeStringKey } from "../../contracts/tree-order";
 import { LimitedOutput, unknownReadText, useCopy } from "../app/RepositoryStates";
 import { WarningIcon } from "../app/NoticeBand";
 import { IconButton } from "../components/icon-button";
@@ -29,7 +29,7 @@ const PatchPool = lazy(() => import("../changes/PatchPool"));
 
 type Entry = Changes["files"][number];
 export type ChangeRow =
-  | { kind: "file"; key: string; depth: number; entry: Entry; name: string; folder: string; pos: number; size: number }
+  | { kind: "file"; key: string; depth: number; entry: Entry; flat: boolean; pos: number; size: number }
   | { kind: "folder"; key: string; depth: number; name: string; path: string; count: number; expanded: boolean; pos: number; size: number };
 
 export const FILTER_FILES = "Filter files";
@@ -61,8 +61,8 @@ const SLASH = "/";
 /** Spec FR-015 to FR-017: the listing in tree order. A submodule sorts as a folder. One key per entry, built once per listing. */
 export function treeOrder(files: readonly Entry[]): Entry[] {
   return files
-    .map((entry) => ({ entry, key: treeKey(Uint8Array.from(atob(entry.pathBytes), (c) => c.charCodeAt(0)), entry.kind === "submodule") }))
-    .sort((a, b) => compareKeys(a.key, b.key))
+    .map((entry) => ({ entry, key: treeStringKey(atob(entry.pathBytes), entry.kind === "submodule") }))
+    .sort((a, b) => compareStringKeys(a.key, b.key))
     .map((k) => k.entry);
 }
 
@@ -74,12 +74,7 @@ const display = (binary: string) => textOf(btoa(binary));
 export function commitRows(sorted: readonly Entry[], layout: "tree" | "flat", collapsed: ReadonlySet<string>, keep?: (entry: Entry, path: string) => boolean): ChangeRow[] {
   const out: ChangeRow[] = [];
   const kept = (entry: Entry) => keep === undefined || keep(entry, textOf(entry.pathBytes));
-  // `folder` is the folder part of a flat row. A tree row shows it through its parents.
-  const fileRow = (entry: Entry, depth: number, pos: number, size: number): ChangeRow => {
-    const binary = atob(entry.pathBytes);
-    const cut = binary.lastIndexOf(SLASH);
-    return { kind: "file", key: entry.pathBytes, depth, entry, name: display(binary.slice(cut + 1)), folder: layout === "tree" || cut < 0 ? "" : display(binary.slice(0, cut + 1)), pos, size };
-  };
+  const fileRow = (entry: Entry, depth: number, pos: number, size: number): ChangeRow => ({ kind: "file", key: entry.pathBytes, depth, entry, flat: layout === "flat", pos, size });
   if (layout === "flat") {
     const shown = sorted.filter(kept);
     shown.forEach((entry, i) => out.push(fileRow(entry, 0, i + 1, shown.length)));
@@ -92,7 +87,8 @@ export function commitRows(sorted: readonly Entry[], layout: "tree" | "flat", co
     let node = root;
     node.count++;
     node.shown += k;
-    for (const part of parts.slice(0, -1)) {
+    for (let j = 0; j < parts.length - 1; j++) {
+      const part = parts[j]!;
       let next = node.children.get(`d${part}`) as Folder | undefined;
       if (next === undefined) node.children.set(`d${part}`, (next = { name: part, children: new Map(), count: 0, shown: 0 }));
       next.count++;
@@ -124,12 +120,20 @@ export function commitRows(sorted: readonly Entry[], layout: "tree" | "flat", co
   return out;
 }
 
+type FileRow = Extract<ChangeRow, { kind: "file" }>;
+/** The file name and, in a flat row, the folder part. A tree row shows the folder through its parents. Only shown rows decode (spec FR-068). */
+function fileNames(row: FileRow): { name: string; folder: string } {
+  const binary = atob(row.entry.pathBytes);
+  const cut = binary.lastIndexOf(SLASH);
+  return { name: display(binary.slice(cut + 1)), folder: !row.flat || cut < 0 ? "" : display(binary.slice(0, cut + 1)) };
+}
+
 /** Plan.md D3 "File row name". */
-export function rowName(row: Extract<ChangeRow, { kind: "file" }>): string {
+function rowName(row: FileRow, name: string): string {
   const e = row.entry;
   const kind = e.kind === "submodule" ? ", submodule" : "";
   const renamed = e.oldPathBytes === undefined ? "" : `, renamed from ${textOf(e.oldPathBytes)}`;
-  return `${row.name}${kind}, ${STATUS_WORD[e.status]}${renamed}`;
+  return `${name}${kind}, ${STATUS_WORD[e.status]}${renamed}`;
 }
 
 // ---- The region ----
@@ -467,12 +471,13 @@ const Row = memo(function Row({ row, selected, tabStop, top, events }: { row: Ch
     );
   const status = row.entry.status;
   const submodule = row.entry.kind === "submodule";
+  const { name, folder } = fileNames(row);
   return (
-    <div {...common} aria-selected={selected} aria-label={rowName(row)}>
+    <div {...common} aria-selected={selected} aria-label={rowName(row, name)}>
       <HugeiconsIcon icon={submodule ? CubeIcon : File01Icon} strokeWidth={2} aria-hidden="true" data-slot="row-icon" className={submodule ? "size-(--icon-size) shrink-0 text-muted-text" : "size-(--icon-size) shrink-0"} />
       <span aria-hidden="true" className="flex min-w-0 flex-1 whitespace-nowrap">
-        {row.folder === "" ? null : <span className="min-w-0 shrink-[1000] truncate text-muted-text">{row.folder}</span>}
-        <span className="min-w-0 truncate">{row.name}</span>
+        {folder === "" ? null : <span className="min-w-0 shrink-[1000] truncate text-muted-text">{folder}</span>}
+        <span className="min-w-0 truncate">{name}</span>
       </span>
       <span aria-hidden="true" data-slot="status-letter" className={`w-4 shrink-0 text-center ${LETTER_COLOR[status]}`}>
         {STATUS_LETTER[status]}

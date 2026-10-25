@@ -5,30 +5,36 @@
 // The Windows builder (`tests/git/workbench-fixtures.ts`) makes each fixture, and a `tar` stream on stdin copies it into the owned distro folder.
 // The oracle is the distro Git on a second copy. Fact cases print `OBSERVATION T081` lines: a `match=false` line is a finding for research.md R21, not a failure.
 // The service gives the distro Git no fixed commit dates, so service cases compare commits by tree, subject, and parent shapes, never by object ID (plan.md D19).
+// Feature 006 T032 and T034 (plan.md D14): the WSL Global save through the double and the 004 research.md R21 rows without a WSL case. Fact lines print `OBSERVATION T032` and `OBSERVATION T034`.
+// The wrapper runs of this file outside the double use operation IDs that start with `0f0f0f0f-0000-4000-800a-`. No other test uses that prefix.
 
-import { describe, expect, test } from "bun:test";
+import { describe, expect } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
+import { GIT_PROCESS_DEADLINE_MS, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import type { SubmoduleRowResult } from "../../src/contracts/submodules";
+import wslProcess from "../../src/contracts/wsl-process.json";
+import { createCollector, PROCESS_LIMITS, type GitCall } from "../../src/git-service/git-runner";
 import { printOrigin } from "../origin";
+import { createBunRunner, createTrustStore } from "../git/bun-runner";
 import { obs, observationLine, READ, same, STEP, type Observation } from "../git/fact-runner";
-import { serviceEnv, useFixtureRoot } from "../git/fixture-root";
+import { fixtureDir, serviceEnv, useFixtureRoot } from "../git/fixture-root";
 import { sha256 } from "../git/git-oracle";
-import { applyHunk, commit, compare, hunksOf, outcome, patchOf, readOk, resultOf, reviewOk, selectHunks, SUCCEEDED, valuesOf, type Comparison, type Direction } from "../git/hunk-harness";
+import { applyHunk, commit, commitCalls, compare, hunksOf, outcome, patchOf, readOk, resultOf, reviewOk, selectHunks, subcommand, SUCCEEDED, until, valuesOf, type Comparison, type Direction } from "../git/hunk-harness";
 import { fc, gitOut, gitPaths, gitRun, importStream, markers, refMap, stageEntries, type GitHost, type GitResult, type RunOptions } from "../git/remote-fixtures";
-import { openService, type ChangeEntry, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "../git/service-harness";
-import { objectsWith } from "../git/submodule-harness";
+import { openService, type ChangeEntry, type HunkCheckpoint, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "../git/service-harness";
+import { commandOf, objectsWith, refusalsOf, resultsOf, updateSteps } from "../git/submodule-harness";
 import { ANY_EXIT, gitExe, INTEGRATE_ENV, sendSync } from "../git/sync-harness";
 import { buildWorkbench, FIXTURE_MERGE_RESULT, repoOf, wb, type WbFixture, type WbFixtureName } from "../git/workbench-fixtures";
-import { buildF31, distroGitHost, distroSubmoduleOracle, distroSubmoduleState, globalConfig, sh } from "./fixtures";
-import { inDistro, listScopes, pgrep, uncPath, useWslFolder, wslExec, wslTest, type WslCapability, type WslHost } from "./wsl-host";
+import { buildF31, distroGit, distroGitHost, distroSubmoduleOracle, distroSubmoduleState, globalConfig, seamRepository, sh, startSession } from "./fixtures";
+import { inDistro, listScopes, OWN_SCOPE_OPERATIONS, pgrep, uncPath, useWslFolder, wslExec, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
-for (const module of ["session", "workbench-review", "switch", "branch-ops", "merge-rebase", "resolve", "worktrees", "git-settings", "trust", "file-publish", "hunk-publish", "submodule-review", "submodule-update"]) {
+for (const module of ["session", "workbench-review", "switch", "branch-ops", "merge-rebase", "resolve", "worktrees", "git-settings", "trust", "file-publish", "hunk-publish", "multi-publish", "submodule-review", "submodule-update"]) {
   printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 }
 printOrigin("../../src/contracts/wsl-process.json", import.meta.dir);
 printOrigin("../git/workbench-fixtures.ts", import.meta.dir);
+printOrigin("../git/bun-runner.ts", import.meta.dir);
 
 useFixtureRoot();
 useWslFolder();
@@ -1142,6 +1148,19 @@ describe("switch through the distro Git (quickstart.md Q5 to Q8)", () => {
     expect(shapeState(at(f))).toEqual(shapeState(at(o)));
     expect(shapeState(at(z))).toEqual(zero);
   });
+
+  W("T034 Q8 FR-013 and 004 research.md R21 F8: a remote branch with two mapping refspecs tracks as the distro Git's own checkout --track on a copy", async (w) => {
+    const f = copy(w, "switch-clean");
+    const o = copy(w, "switch-clean");
+    await withWsl(w, "t034-track-two", async (s) => {
+      const r = await open(s, w, f.repo);
+      const from = s.runner.calls.length;
+      expect(outcome(await reviewRun(s, r, switchTo("keep", { track: { ref: "refs/remotes/two/x/topic", name: "typed-two" } })))).toEqual(SUCCEEDED);
+      expect(steps(s, from)).toEqual([[L, "checkout", "--no-guess", "--no-recurse-submodules", "-b", "typed-two", "--track=direct", "refs/remotes/two/x/topic", "--"]]);
+    });
+    own(o, ["checkout", "-q", "-b", "typed-two", "--track", "two/x/topic", "--"]);
+    expect(shapeState(at(f))).toEqual(shapeState(at(o)));
+  });
 });
 
 describe("branches, merge, and rebase through the distro Git (quickstart.md Q9 to Q12)", () => {
@@ -1244,6 +1263,99 @@ describe("branches, merge, and rebase through the distro Git (quickstart.md Q9 t
       });
       expect({ fixture, flags, state: shapeState(at(f)) }).toEqual({ fixture, flags, state: shapeState(at(o)) });
     }
+  });
+
+  W("T034 Q9 FR-017 and FR-019: Delete of a branch that another worktree holds names its Linux path; a branch that moved after the review gives STALE_REVIEW before the run, update-ref refuses it during the run, and no ref changes", async (w) => {
+    const b = copy(w, "branches");
+    const holder = recordLines(out(at(b), ["worktree", "list", "--porcelain", "-z"])).find((lines) => lines.includes("branch refs/heads/wt-held"))!;
+    const f = copy(w, "branches");
+    const g = copy(w, "branches");
+    const DELETE = { action: "delete-branch", ref: "refs/heads/unmerged" };
+    await withWsl(w, "t034-delete", async (s) => {
+      const rb = await open(s, w, b.repo);
+      const held = shapeState(at(b));
+      let from = s.runner.calls.length;
+      expect(refusalOf(await review(s, rb, { action: "delete-branch", ref: "refs/heads/wt-held" }))).toEqual(unavailable("other-worktree", { worktree: valueOf(holder, "worktree") }));
+      expect(steps(s, from)).toEqual([]);
+      expect(shapeState(at(b))).toEqual(held);
+      const r = await open(s, w, f.repo);
+      const rv = await token(s, r, DELETE);
+      own(f, ["update-ref", "refs/heads/unmerged", f.oids.tagged!]);
+      const moved = shapeState(at(f));
+      from = s.runner.calls.length;
+      expect(outcome(await runToken(s, r, rv.workbenchToken))).toEqual({ state: "failed", code: "STALE_REVIEW" });
+      expect(steps(s, from)).toEqual([]);
+      expect(shapeState(at(f))).toEqual(moved);
+      const rg = await open(s, w, g.repo);
+      const during = await token(s, rg, DELETE);
+      const release = s.runner.holdStart((c) => c.arguments[1] === "update-ref");
+      from = s.runner.calls.length;
+      const requestId = sendRun(s, rg, during.workbenchToken);
+      await until(() => s.runner.calls.slice(from).some((c) => c.arguments[1] === "update-ref"), "the held update-ref", RESPONSE_MS);
+      own(g, ["update-ref", "refs/heads/unmerged", g.oids.tagged!]);
+      const external = shapeState(at(g));
+      release();
+      const response = await s.response<RunResult>(requestId, RESPONSE_MS);
+      // The fresh reads see the external move as an effect, and `update-ref` exited nonzero, so the delete failed.
+      expect({ ...outcome(response), refs: response.result!.refs }).toEqual({ ...WITH_EFFECTS, refs: [{ ref: "refs/heads/unmerged" }] });
+      expect(s.runner.calls.slice(from).find((c) => c.arguments[1] === "update-ref")!.exit!.exitCode).not.toBe(0);
+      expect(steps(s, from).map((a) => a[1])).toEqual(["update-ref"]);
+      expect(shapeState(at(g))).toEqual(external);
+    });
+    expect(out(at(g), ["rev-parse", "--verify", "-q", "refs/heads/unmerged"]).trim()).toBe(g.oids.tagged!);
+  });
+
+  W("T034 Q10 FR-022 and SC-005: No fast-forward, Don't commit, both, and Squash of a fast-forward equal the distro Git's own merge with the same options on a copy", async (w) => {
+    const MERGE = (o: object) => ({ action: "merge", ref: "refs/heads/topic", result: "merge", noFastForward: false, noCommit: false, message: null, ...o });
+    // The T081 Q10 case runs Merge commit and Squash of `merge-diverged` and the fast-forward of `merge-ff`, so these complete the 004 combinations.
+    const combinations: [WbFixtureName, object, string[]][] = [
+      ["merge-diverged", { noFastForward: true }, ["--no-ff"]],
+      ["merge-diverged", { noCommit: true }, ["--no-commit"]],
+      ["merge-diverged", { noFastForward: true, noCommit: true }, ["--no-ff", "--no-commit"]],
+      ["merge-ff", { noFastForward: true }, ["--no-ff"]],
+      ["merge-ff", { noFastForward: true, noCommit: true }, ["--no-ff", "--no-commit"]],
+      ["merge-ff", { result: "squash" }, ["--squash"]],
+    ];
+    for (const [fixture, options, flags] of combinations) {
+      const label = `${fixture} ${flags.join(" ")}`;
+      const f = copy(w, fixture);
+      const o = copy(w, fixture);
+      await withWsl(w, `t034-merge-${fixture}-${flags.join("")}`, async (s) => {
+        const r = await open(s, w, f.repo);
+        const rv = await token(s, r, MERGE(options));
+        const from = s.runner.calls.length;
+        expect({ label, ...outcome(await runToken(s, r, rv.workbenchToken)) }).toEqual({ label, ...SUCCEEDED });
+        const message = flags.includes("--squash") ? [] : ["--no-log", "-m", (rv.plan.preview as string).replace(/\n$/, "")];
+        expect({ label, steps: steps(s, from) }).toEqual({ label, steps: [[L, "merge", "--no-autostash", "--no-edit", ...flags, ...message, "--end-of-options", "refs/heads/topic"]] });
+      });
+      gitRun(o.h, o.repo, ["merge", "--no-edit", ...flags, "topic"]);
+      expect({ label, state: shapeState(at(f)) }).toEqual({ label, state: shapeState(at(o)) });
+    }
+  });
+
+  W("T034 Q11 FR-024: with a bare remote in the owned distro folder, the force note names the ref of the distro Git's own topic@{push}, the held count equals Git's counts, and the rebase equals Git's own rebase on a copy", async (w) => {
+    const h = hostOf(w);
+    const remote = `${h.root}/q11-origin-${crypto.randomUUID().slice(0, 8)}.git`;
+    gitRun(h, h.root, ["init", "-q", "--bare", "--", remote]);
+    const f = copy(w, "rebase-mix");
+    const o = copy(w, "rebase-mix");
+    // The fixture `origin` names a host that no test reaches. Both copies get the same bare remote, so their configuration bytes stay equal.
+    for (const x of [f, o]) own(x, ["config", "--local", "remote.origin.url", remote]);
+    own(f, ["push", "-q", remote, `${f.oids.empty}:refs/heads/topic`]);
+    for (const x of [f, o]) own(x, ["fetch", "-q", "origin"]);
+    const up = f.oids.up!;
+    const trackingRef = out(at(o), ["rev-parse", "--symbolic-full-name", "topic@{push}"]).trim();
+    const rewritten = count(at(o), [`${up}..HEAD`]);
+    const held = rewritten - count(at(o), [`${up}..HEAD`, "--not", "--remotes"]);
+    await withWsl(w, "t034-force-note", async (s) => {
+      const r = await open(s, w, f.repo);
+      const rv = await token(s, r, { action: "rebase", ref: "refs/heads/up", autostash: false, autosquash: false });
+      expect({ forceNote: rv.plan.forceNote, rewritten: rv.plan.rewritten, held: rv.plan.held }).toEqual({ forceNote: { trackingRef }, rewritten, held });
+      expect(outcome(await runToken(s, r, rv.workbenchToken))).toEqual(SUCCEEDED);
+    });
+    expect({ trackingRef, held: held > 0 }).toEqual({ trackingRef: "refs/remotes/origin/topic", held: true });
+    own(o, ["rebase", "--no-autostash", "--no-autosquash", "--end-of-options", "refs/heads/up"]);
+    expect(shapeState(at(f))).toEqual(shapeState(at(o)));
   });
 
   W("Q12 FR-023 and FR-027: a merge and a rebase that stop with conflicts; the 003 Abort, Skip, and Mark resolved with Continue finish them as the distro Git's own commands do", async (w) => {
@@ -1355,6 +1467,45 @@ describe("conflict resolve and the merge tool through the distro Git (quickstart
     expect(f.h.read(`${f.repo}/aa.txt`)!.toString("utf8")).toBe(FIXTURE_MERGE_RESULT);
   });
 
+  W("T034 Q13 FR-089 to FR-092: AU, UA, UD, DD, and the link stage give their kinds, plans, and refusals; Choose ours and Choose theirs equal the distro Git's own checkout on a copy and keep each path unmerged", async (w) => {
+    // The entries of `buildConflict` with their porcelain v2 XY code and the data-model §11 text.
+    const KINDS: Record<string, [string, string]> = { "uu.txt": ["UU", "Both modified"], "aa.txt": ["AA", "Both added"], "au.txt": ["AU", "Added by us"], "ua.txt": ["UA", "Added by them"], "du.txt": ["DU", "Deleted by us"], "ud.txt": ["UD", "Deleted by them"], "dd.txt": ["DD", "Both deleted"], link: ["UU", "Both modified"] };
+    for (const side of ["ours", "theirs"] as const) {
+      const f = copy(w, "conflict-merge");
+      const o = copy(w, "conflict-merge");
+      const stagesOf = (path: string) => stageEntries(f.h, f.repo, [path]).map((e) => ({ stage: e.stage, mode: e.mode, oid: e.oid }));
+      const names = { ours: { oid: out(at(f), ["rev-parse", "main"]).trim(), refs: ["refs/heads/main"] }, theirs: { oid: out(at(f), ["rev-parse", "topic"]).trim(), refs: ["refs/heads/topic"] } };
+      const ran: string[] = [];
+      await withWsl(w, `t034-choose-${side}`, async (s) => {
+        const r = await open(s, w, f.repo);
+        for (const [path, [xy, kind]] of Object.entries(KINDS)) {
+          const stages = stagesOf(path);
+          const response = await resolveReview(s, r, path, { action: "choose-side", side });
+          // FR-092: a link stage is no regular file, so the copy gets no command.
+          if (path === "link") {
+            expect({ path, ...refusalOf(response) }).toEqual({ path, ...unavailable("side-not-regular", { names }) });
+            continue;
+          }
+          // Git's own command on the copy decides whether the side exists.
+          if (run(at(o), ["--literal-pathspecs", "checkout", `--${side}`, "--", path]).exitCode !== 0) {
+            expect({ path, ...refusalOf(response) }).toEqual({ path, ...unavailable("side-missing", { names }) });
+            continue;
+          }
+          expect({ path, ...outcome(response) }).toEqual({ path, ...SUCCEEDED });
+          expect(response.result!.plan).toEqual({ path: Buffer.from(path).toString("base64"), kind: { xy, text: kind }, stages, names, operation: "merging", side });
+          const from = s.runner.calls.length;
+          const done = await runToken(s, r, response.result!.workbenchToken);
+          expect({ path, ...outcome(done), result: done.result }).toEqual({ path, ...SUCCEEDED, result: { action: "choose-side", staged: false, operationState: "merging" } });
+          expect(steps(s, from)).toEqual([[L, "--literal-pathspecs", "checkout", "--no-recurse-submodules", `--${side}`, "--", path]]);
+          expect(stagesOf(path)).toEqual(stages);
+          ran.push(path);
+        }
+      });
+      expect(ran).toEqual(side === "ours" ? ["uu.txt", "aa.txt", "au.txt", "ud.txt"] : ["uu.txt", "aa.txt", "ua.txt", "du.txt"]);
+      expect({ side, state: shapeState(at(f)) }).toEqual({ side, state: shapeState(at(o)) });
+    }
+  });
+
   W("Q14 FR-097: a merge tool from the repository scope in an untrusted repository gives TRUST_REQUIRED before any Git process of the action, and the canary does not run", async (w) => {
     const f = copy(w, "conflict-merge");
     const tool = canary(at(f), f.root, "repository-tool");
@@ -1445,8 +1596,8 @@ describe("staging through the distro Git (quickstart.md Q15, Q16, Q19)", () => {
     }
     return entries;
   }
-  const applyFiles = (s: Service, repositoryId: string, read: WorkspaceResult, ids: readonly string[], direction: Direction, kind: string) =>
-    s.response(s.send("applyFiles", { snapshotId: read.snapshotId, entryIds: ids, direction, kind }, { repositoryId }), RESPONSE_MS);
+  const applyFiles = (s: Service, repositoryId: string, read: WorkspaceResult, ids: readonly string[], direction: Direction, kind: string, folder?: string) =>
+    s.response(s.send("applyFiles", { snapshotId: read.snapshotId, entryIds: ids, direction, kind, ...(folder === undefined ? {} : { folder: Buffer.from(folder).toString("base64") }) }, { repositoryId }), RESPONSE_MS);
 
   W("Q15 FR-034 to FR-040: Stage selected, Stage all untracked, and Unstage all equal the distro Git's add and reset of the same paths, and every working byte stays", async (w) => {
     const cases: [string, Direction, string, (e: ChangeEntry) => boolean, string[], boolean][] = [
@@ -1477,6 +1628,77 @@ describe("staging through the distro Git (quickstart.md Q15, Q16, Q19)", () => {
       expect({ label, index: stageEntries(f.h, f.repo) }).toEqual({ label, index: stageEntries(o.h, o.repo) });
       expect({ label, files: f.h.digests(f.repo) }).toEqual({ label, files });
     }
+  });
+
+  // The owned candidate files of the multi-file publication (004 plan.md O-17) in the Git folder of the main worktree.
+  const candidates = (f: DistroFixture) => nul(sh(f.w, 'for p in "$1"/arbareto-candidate-*; do [ -e "$p" ] && printf "%s\\0" "$p"; done; exit 0', [`${f.repo}/.git`]).stdout);
+  const UNDER = ["src/a.txt", "src/lib/deep/c.txt", "src/lib/new.txt", "src/new-dir/n1.txt", "src/new-dir/n2.txt"];
+
+  W("T034 Q15 FR-034 to FR-036: Stage folder, Stage all changes, and Unstage folder equal the distro Git's add and reset of the same paths, and every working byte stays", async (w) => {
+    const cases: [string, Direction, string, (e: ChangeEntry) => boolean, string[], boolean][] = [
+      ["stage folder", "stage", "folder", (e) => e.category !== "staged" && UNDER.includes(e.path), ["add", "--", ...UNDER], false],
+      ["stage all changes", "stage", "all-changes", (e) => e.category !== "staged", ["add", "-A"], false],
+      ["unstage folder", "unstage", "folder", (e) => e.category === "staged" && UNDER.includes(e.path), ["reset", "-q", "--", ...UNDER], true],
+    ];
+    for (const [label, direction, kind, choose, oracle, addFirst] of cases) {
+      const f = copy(w, "staging-tree");
+      const o = copy(w, "staging-tree");
+      if (addFirst) for (const x of [f, o]) own(x, ["add", "-A"]);
+      const files = f.h.digests(f.repo);
+      await withWsl(w, `t034-files-${label.replaceAll(" ", "-")}`, async (s) => {
+        const r = await open(s, w, f.repo);
+        const read = await readOk(s, r.repositoryId);
+        const chosen = (await allEntries(s, r.repositoryId, read)).filter(choose);
+        expect({ label, paths: [...new Set(chosen.map((e) => e.path))].sort() }).toEqual({ label, paths: kind === "folder" ? UNDER : expect.any(Array) });
+        const response = await applyFiles(s, r.repositoryId, read, chosen.map((e) => e.entryId), direction, kind, kind === "folder" ? "src" : undefined);
+        expect({ label, ...outcome(response) }).toEqual({ label, ...SUCCEEDED });
+      });
+      own(o, oracle);
+      expect({ label, index: stageEntries(f.h, f.repo) }).toEqual({ label, index: stageEntries(o.h, o.repo) });
+      expect({ label, files: f.h.digests(f.repo) }).toEqual({ label, files });
+      expect(candidates(f)).toEqual([]);
+    }
+  });
+
+  W("T034 Q15 FR-038 to FR-040: one refused file refuses the whole set with its entry and reason; a change of the set after step 5 gives STALE_SELECTION; neither publishes anything", async (w) => {
+    const f = copy(w, "staging-tree");
+    // git-add(1) `-N`: an intent-to-add entry, which the 001 decision refuses with reason `index-flag`.
+    own(f, ["add", "-N", "--", "top-new.txt"]);
+    const g = copy(w, "staging-tree");
+    let fire = false;
+    const hunkCheckpoint = (c: HunkCheckpoint) => {
+      if (fire && c.step === 5) {
+        fire = false;
+        g.h.write(`${g.repo}/top-new.txt`, "changed during staging\n");
+      }
+    };
+    const s = await openService({ git: gitExe(), name: "t034-set-refusals", environment: serviceEnv(), wslGlobalConfig: globalConfig(w), hunkCheckpoint });
+    try {
+      const r = await open(s, w, f.repo);
+      const read = await readOk(s, r.repositoryId);
+      const entries = await allEntries(s, r.repositoryId, read);
+      const pick = (category: string, path: string) => entries.find((e) => e.category === category && e.path === path)!;
+      const ita = pick("unstaged", "top-new.txt");
+      const before = { index: indexDigest(at(f)), files: f.h.digests(f.repo) };
+      const response = await applyFiles(s, r.repositoryId, read, [pick("unstaged", "src/a.txt").entryId, ita.entryId], "stage", "selected");
+      expect({ ...outcome(response), reason: (response.result as { reason?: string }).reason, entryId: (response.result as { entryId?: string }).entryId }).toEqual({ state: "rejected", code: "UNSUPPORTED_COMPARISON", reason: "index-flag", entryId: ita.entryId });
+      expect(s.runner.calls.filter((c) => c.operationId === response.operationId && subcommand(c.arguments) === "update-index")).toEqual([]);
+      expect({ index: indexDigest(at(f)), files: f.h.digests(f.repo), candidates: candidates(f) }).toEqual({ ...before, candidates: [] });
+
+      const rg = await open(s, w, g.repo);
+      const gRead = await readOk(s, rg.repositoryId);
+      const gEntries = await allEntries(s, rg.repositoryId, gRead);
+      const ids = [gEntries.find((e) => e.category === "unstaged" && e.path === "src/a.txt")!, gEntries.find((e) => e.category === "untracked" && e.path === "top-new.txt")!].map((e) => e.entryId);
+      const index = indexDigest(at(g));
+      fire = true;
+      const stale = await applyFiles(s, rg.repositoryId, gRead, ids, "stage", "selected");
+      expect(outcome(stale)).toEqual({ state: "failed", code: "STALE_SELECTION" });
+      expect({ index: indexDigest(at(g)), candidates: candidates(g), changed: g.h.read(`${g.repo}/top-new.txt`)!.toString("utf8") }).toEqual({ index, candidates: [], changed: "changed during staging\n" });
+      expect(out(at(g), ["show", ":src/a.txt"])).toBe(out(at(g), ["show", "HEAD:src/a.txt"]));
+    } finally {
+      await s.dispose();
+    }
+    expect(listScopes(w)).toEqual([]);
   });
 
   // One hunk: its header values and its body lines without LF.
@@ -1527,6 +1749,85 @@ describe("staging through the distro Git (quickstart.md Q15, Q16, Q19)", () => {
     expect(f.h.digests(f.repo)).toEqual(files);
   });
 
+  W("T034 Q16 FR-041 to FR-044: every line selection of the added and removed hunks stages and unstages the expected blob; deleted-file, new-file, eof-newline, binary, an invalid ordinal, and a stale working file refuse and change nothing", async (w) => {
+    const f = copy(w, "staging-hunks");
+    const r = at(f);
+    const blob = (path: string) => stageEntries(f.h, f.repo, [path]).find((e) => e.stage === 0)?.oid ?? null;
+    const content = (oid: string) => gitRun(f.h, f.repo, ["cat-file", "blob", oid]).stdout;
+    const changeOrdinals = (body: string[]) => body.flatMap((line, i) => (line[0] === "+" || line[0] === "-" ? [i + 1] : []));
+    const subsets = (ordinals: number[]) => Array.from({ length: (1 << ordinals.length) - 1 }, (_, m) => ordinals.filter((_, i) => ((m + 1) & (1 << i)) !== 0));
+    const lines = (s: Service, id: string, c: Comparison, direction: Direction, picked: number[]) => applyHunk(s, id, c, c.hunkIds[0]!, direction, { lines: picked });
+    await withWsl(w, "t034-lines", async (s) => {
+      const reg = await open(s, w, f.repo);
+      const id = reg.repositoryId;
+      const files = f.h.digests(f.repo);
+      for (const path of ["added.txt", "removed.txt"]) {
+        for (const [direction, category] of [["stage", "unstaged"], ["unstage", "staged"]] as const) {
+          if (direction === "unstage") own(f, ["add", "--", path]);
+          const all = changeOrdinals(hunkOf(await selectHunks(s, id, path, category)).body);
+          for (const picked of subsets(all)) {
+            const c = await selectHunks(s, id, path, category);
+            const h = hunkOf(c);
+            const base = content(blob(path)!);
+            const expected = out(r, ["hash-object", "--stdin"], { input: expectedContent(base, h, picked, direction) }).trim();
+            expect({ path, direction, picked, ...outcome(await lines(s, id, c, direction, picked)) }).toEqual({ path, direction, picked, ...SUCCEEDED });
+            expect({ path, direction, picked, oid: blob(path) }).toEqual({ path, direction, picked, oid: expected });
+            // `reset` and `add` write only the index, so each selection starts from the same side.
+            own(f, direction === "stage" ? ["reset", "-q", "--", path] : ["add", "--", path]);
+          }
+          own(f, ["reset", "-q", "--", path]);
+        }
+      }
+      expect(f.h.digests(f.repo)).toEqual(files);
+
+      // Each refusal changes no index entry and no working byte.
+      const refused = async (path: string, category: "unstaged" | "staged", direction: Direction, pick: (all: number[], body: string[]) => number[], expected: { code: string; reason?: string }) => {
+        const before = { index: stageEntries(f.h, f.repo), files: f.h.digests(f.repo) };
+        const c = await selectHunks(s, id, path, category);
+        const h = hunkOf(c);
+        const response = await lines(s, id, c, direction, pick(changeOrdinals(h.body), h.body));
+        const reason = (response.result as { reason?: string } | undefined)?.reason;
+        expect({ path, state: response.state, code: response.code, ...(expected.reason === undefined ? {} : { reason }) }).toEqual({ path, state: "rejected", ...expected });
+        expect({ path, index: stageEntries(f.h, f.repo), files: f.h.digests(f.repo) }).toEqual({ path, ...before });
+        return response.operationId!;
+      };
+      f.h.write(`${f.repo}/fresh.txt`, "fresh 1\nfresh 2\n");
+      own(f, ["add", "--", "fresh.txt"]);
+      await refused("deleted.txt", "unstaged", "stage", (all) => all, { code: "UNSUPPORTED_COMPARISON", reason: "deleted-file" });
+      await refused("fresh.txt", "staged", "unstage", (all) => [all[0]!], { code: "UNSUPPORTED_COMPARISON", reason: "new-file" });
+      // 004 research.md R21 F25: each partial end-of-file selection refuses before `apply --cached` runs.
+      const eof = changeOrdinals(hunkOf(await selectHunks(s, id, "eof.txt", "unstaged")).body);
+      for (const picked of subsets(eof).filter((x) => x.length < eof.length)) {
+        const operationId = await refused("eof.txt", "unstaged", "stage", () => picked, { code: "UNSUPPORTED_COMPARISON", reason: "eof-newline" });
+        expect(s.runner.calls.filter((call) => call.operationId === operationId && subcommand(call.arguments) === "apply")).toEqual([]);
+      }
+      // The file holds one hunk, so the whole hunk stages the working bytes, as the distro Git's own hash-object of the file names them.
+      const c = await selectHunks(s, id, "eof.txt", "unstaged");
+      expect(outcome(await lines(s, id, c, "stage", changeOrdinals(hunkOf(c).body)))).toEqual(SUCCEEDED);
+      expect(blob("eof.txt")).toBe(out(r, ["hash-object", "--", "eof.txt"]).trim());
+      for (const pick of [(_: number[], body: string[]) => [body.findIndex((l) => l[0] === " ") + 1], (_: number[], body: string[]) => [body.length + 1], () => []]) {
+        await refused("mixed.txt", "unstaged", "stage", pick, { code: "INVALID_REQUEST" });
+      }
+      // A working file that changed after the line selection refuses as a stale selection, and its new bytes stay.
+      const index = stageEntries(f.h, f.repo);
+      const selected = await selectHunks(s, id, "mixed.txt", "unstaged");
+      f.h.write(`${f.repo}/mixed.txt`, "changed after the selection\n");
+      const changed = f.h.digests(f.repo);
+      expect(outcome(await lines(s, id, selected, "stage", [changeOrdinals(hunkOf(selected).body)[0]!])).code).toBe("STALE_SELECTION");
+      expect({ index: stageEntries(f.h, f.repo), files: f.h.digests(f.repo) }).toEqual({ index, files: changed });
+      // 001 FR-011: lines of a binary comparison give reason binary.
+      f.h.write(`${f.repo}/bin.dat`, Uint8Array.of(1, 0, 2, 0, 3));
+      own(f, ["add", "--", "bin.dat"]);
+      own(f, ["commit", "-q", "-m", "binary", "--", "bin.dat"]);
+      f.h.write(`${f.repo}/bin.dat`, Uint8Array.of(1, 0, 2, 0, 4));
+      const binaryBefore = { index: stageEntries(f.h, f.repo), files: f.h.digests(f.repo) };
+      const binary = await compare(s, id, "bin.dat", "unstaged");
+      const response = await applyHunk(s, id, binary, crypto.randomUUID(), "stage", { lines: [1] });
+      expect({ ...outcome(response), reason: (response.result as { reason?: string } | undefined)?.reason }).toEqual({ state: "rejected", code: "UNSUPPORTED_COMPARISON", reason: "binary" });
+      expect({ index: stageEntries(f.h, f.repo), files: f.h.digests(f.repo) }).toEqual(binaryBefore);
+    });
+  });
+
   W("Q19 FR-030 and FR-048: a read cut inside the untracked records gives cut untracked with the complete tracked and staged lists of the distro Git", async (w) => {
     const f = copy(w, "staging-tree");
     own(f, ["add", "--", "docs/d.txt"]);
@@ -1555,26 +1856,26 @@ describe("staging through the distro Git (quickstart.md Q15, Q16, Q19)", () => {
   });
 });
 
-describe("worktrees, settings, trust, and submodules through the distro Git (quickstart.md Q20 to Q23)", () => {
-  // Data-model §8 from the distro list. `current` names the record path of the opened worktree.
-  function oracleEntries(f: DistroFixture, current: string) {
-    return recordLines(out(at(f), ["worktree", "list", "--porcelain", "-z"])).map((lines, i) => {
-      const flag = (label: string) => valueOf(lines, label) !== undefined;
-      const reason = (label: string) => (flag(label) ? { reason: valueOf(lines, label) ?? null } : null);
-      const path = valueOf(lines, "worktree")!;
-      // Data-model §8 `headUnresolved`: a record without `bare`, `branch`, and `detached`.
-      const unresolved = !flag("bare") && !flag("branch") && !flag("detached");
-      return { path, invalidUtf8: false, head: unresolved ? null : (valueOf(lines, "HEAD") ?? null), branch: valueOf(lines, "branch") ?? null, bare: flag("bare"), detached: flag("detached"), headUnresolved: unresolved, locked: reason("locked"), prunable: reason("prunable"), main: i === 0, current: path === current };
-    });
-  }
-  // SC-008: the worktree list with the fixture root as `<root>`, the refs, and HEAD.
-  const worktreeState = (f: DistroFixture) => ({
-    list: recordLines(out(at(f), ["worktree", "list", "--porcelain", "-z"])).map((lines) => lines.join("\n").replaceAll(f.root, "<root>")),
-    refs: refMap(f.h, f.repo),
-    head: headOf(at(f)),
-    config: fileDigest(at(f), localConfig(at(f))),
+// Data-model §8 from the distro list. `current` names the record path of the opened worktree.
+function oracleEntries(f: DistroFixture, current: string) {
+  return recordLines(out(at(f), ["worktree", "list", "--porcelain", "-z"])).map((lines, i) => {
+    const flag = (label: string) => valueOf(lines, label) !== undefined;
+    const reason = (label: string) => (flag(label) ? { reason: valueOf(lines, label) ?? null } : null);
+    const path = valueOf(lines, "worktree")!;
+    // Data-model §8 `headUnresolved`: a record without `bare`, `branch`, and `detached`.
+    const unresolved = !flag("bare") && !flag("branch") && !flag("detached");
+    return { path, invalidUtf8: false, head: unresolved ? null : (valueOf(lines, "HEAD") ?? null), branch: valueOf(lines, "branch") ?? null, bare: flag("bare"), detached: flag("detached"), headUnresolved: unresolved, locked: reason("locked"), prunable: reason("prunable"), main: i === 0, current: path === current };
   });
+}
+// SC-008: the worktree list with the fixture root as `<root>`, the refs, and HEAD.
+const worktreeState = (f: DistroFixture) => ({
+  list: recordLines(out(at(f), ["worktree", "list", "--porcelain", "-z"])).map((lines) => lines.join("\n").replaceAll(f.root, "<root>")),
+  refs: refMap(f.h, f.repo),
+  head: headOf(at(f)),
+  config: fileDigest(at(f), localConfig(at(f))),
+});
 
+describe("worktrees, settings, trust, and submodules through the distro Git (quickstart.md Q20 to Q23)", () => {
   W("Q20 FR-049 to FR-057: readWorktrees gives the distro list with Linux paths; Remove of a dirty worktree needs force and Prune equal the distro Git's own commands on a copy", async (w) => {
     const f = copy(w, "worktrees");
     const o = copy(w, "worktrees");
@@ -1603,10 +1904,66 @@ describe("worktrees, settings, trust, and submodules through the distro Git (qui
     expect(f.h.existing([dirty])).toEqual([]);
   });
 
-  // The T206 double has no WSL `worktreeAdd` route and no WSL `destination` mode (tests/git/bun-runner.ts). The shell has both (src-tauri/src/process_requests.rs).
-  // F1 `worktree-add.new` and `worktree-add.existing` check the distro Git argv.
-  console.log("SKIP wsl-worktree-add-route: Q20 FR-052 Add worktree in a WSL repository");
-  test.skip("Q20 FR-052: Add worktree in a WSL repository (SKIP: wsl-worktree-add-route)", () => {});
+  // Spec FR-023: Add worktree through the double's WSL `worktreeAdd` route and its `destination` check.
+  W("T034 Q20 FR-052 and FR-053: Add worktree through the service with a new and an existing branch equals the distro Git's own worktree add on a copy; a folder that is not empty and a file give DESTINATION_NOT_EMPTY", async (w) => {
+    for (const variant of ["new", "existing"] as const) {
+      const f = copy(w, "worktrees");
+      const o = copy(w, "worktrees");
+      for (const x of [f, o]) own(x, ["branch", "free", x.oids.base!]);
+      // An empty folder is a valid destination (contract Δ3 `worktree-add`).
+      if (variant === "existing") for (const x of [f, o]) inDistro(w.distro, ["/usr/bin/mkdir", "--", `${x.root}/wt-new`]);
+      const dest = `${f.root}/wt-new`;
+      const start = f.oids.base!;
+      const branch = variant === "new" ? { new: "new-b", start } : { existing: "refs/heads/free" };
+      await withWsl(w, `t034-add-${variant}`, async (s) => {
+        const r = await open(s, w, f.repo);
+        const rv = await token(s, r, { action: "worktree-add", branch, bootstrapId: s.runner.addWorktreeAdd(uncPath(w, dest), r.repositoryId) });
+        expect(rv.plan).toEqual({ branch: variant === "new" ? branch : { existing: "refs/heads/free", oid: start }, path: dest, destination: variant === "new" ? "absent" : "empty" });
+        const from = s.runner.calls.length;
+        const response = await runToken(s, r, rv.workbenchToken);
+        expect(outcome(response)).toEqual(SUCCEEDED);
+        const run = s.runner.calls.slice(from).filter((c) => c.environmentPolicy === "integrate").map((c) => [c.contextKind, ...c.arguments]);
+        expect(run).toEqual([variant === "new" ? ["worktreeAdd", L, "worktree", "add", "-b", "new-b", "--", dest, start] : ["worktreeAdd", L, "worktree", "add", "--", dest, "free"]]);
+        expect(response.result!.head).toEqual({ state: "branch", target: "refs/heads/main", oid: start });
+      });
+      own(o, variant === "new" ? ["worktree", "add", "-q", "-b", "new-b", "--", `${o.root}/wt-new`, start] : ["worktree", "add", "-q", "--", `${o.root}/wt-new`, "free"]);
+      expect({ variant, state: worktreeState(f) }).toEqual({ variant, state: worktreeState(o) });
+    }
+    const f = copy(w, "worktrees");
+    f.h.write(`${f.root}/wt-full/keep.txt`, "keep\n");
+    f.h.write(`${f.root}/wt-file`, "file\n");
+    const before = worktreeState(f);
+    await withWsl(w, "t034-add-refused", async (s) => {
+      const r = await open(s, w, f.repo);
+      for (const [name, reason] of [["wt-full", "not-empty"], ["wt-file", "file"]] as const) {
+        const response = await review(s, r, { action: "worktree-add", branch: { new: "fresh", start: f.oids.base! }, bootstrapId: s.runner.addWorktreeAdd(uncPath(w, `${f.root}/${name}`), r.repositoryId) });
+        expect({ name, ...refusalOf(response) }).toEqual({ name, state: "failed", code: "DESTINATION_NOT_EMPTY", result: { reason } });
+      }
+      expect(steps(s)).toEqual([]);
+    });
+    expect(worktreeState(f)).toEqual(before);
+  });
+
+  W("T034 Q20 FR-051 and FR-054: Open worktree registers a listed worktree, and a folder that no record names gives UNKNOWN_TARGET; Remove is unavailable for the main and a locked worktree, and no step starts", async (w) => {
+    const f = copy(w, "worktrees");
+    inDistro(w.distro, ["/usr/bin/mkdir", "--", `${f.root}/elsewhere`]);
+    const before = worktreeState(f);
+    const spaces = `${f.root}/wt with spaces`;
+    await withWsl(w, "t034-open-remove", async (s) => {
+      const r = await open(s, w, f.repo);
+      expect(refusalOf(await review(s, r, { action: "worktree-remove", worktree: f.repo, force: true, deleteBranch: true }))).toEqual(unavailable("main-worktree"));
+      for (const name of ["wt-locked-reason", "wt-locked"]) expect({ name, ...refusalOf(await review(s, r, { action: "worktree-remove", worktree: `${f.root}/${name}`, force: true, deleteBranch: false })) }).toEqual({ name, ...unavailable("locked") });
+      const openWorktree = (path: string, repositoryId: string) => s.response<RegistrationResult>(s.send("openWorktree", { repositoryId, bootstrapId: s.runner.addContext("repositoryDiscovery", uncPath(w, path)) }), RESPONSE_MS);
+      const opened = await openWorktree(spaces, r.repositoryId);
+      expect(outcome(opened)).toEqual(SUCCEEDED);
+      const list = await request<{ entries: { path: string; current: boolean }[] }>(s, "readWorktrees", {}, { repositoryId: opened.result!.repositoryId, repositoryGeneration: opened.result!.generation });
+      expect(list.result!.entries.filter((e) => e.current).map((e) => e.path)).toEqual([spaces]);
+      expect(list.result!.entries).toEqual(oracleEntries(f, spaces));
+      expect(outcome(await openWorktree(`${f.root}/elsewhere`, opened.result!.repositoryId))).toEqual({ state: "failed", code: "UNKNOWN_TARGET" });
+      expect(steps(s)).toEqual([]);
+    });
+    expect(worktreeState(f)).toEqual(before);
+  });
 
   W("Q21 FR-064 and SC-009: a Local save writes only that key in the local file, as the distro Git's own config set on a copy; the global file stays", async (w) => {
     const f = copy(w, "branches");
@@ -1657,6 +2014,96 @@ describe("worktrees, settings, trust, and submodules through the distro Git (qui
     expect(subjects(at(f), [`${f.oids.base}..HEAD`])).toEqual(["no programs", "after approval", "after rewrite"]);
   });
 
+  // A pre-commit hook that records each run in `log`, and one staged change.
+  function hookedRepo(w: WslHost): { f: DistroFixture; log: string; stage: (path: string) => void } {
+    const f = copy(w, "switch-dirty");
+    const log = `${f.root}/pre-commit.log`;
+    f.h.write(`${f.repo}/.git/hooks/pre-commit`, `#!/bin/sh\n: >> '${log}'\n`);
+    const stage = (path: string) => {
+      f.h.write(`${f.repo}/${path}`, `${path} change\n`);
+      own(f, ["add", "--", path]);
+    };
+    stage("a.txt");
+    return { f, log, stage };
+  }
+  const records = (s: Service) => s.trustStore.records as unknown as Record<string, unknown>[];
+
+  W("T034 Q22 FR-072 and FR-074: Not now ends canceled with no Git process and no hook run; Stop trusting removes the record, and the next commit needs trust again", async (w) => {
+    const { f, log, stage } = hookedRepo(w);
+    await withWsl(w, "t034-not-now", async (s) => {
+      const r = await open(s, w, f.repo);
+      expect({ state: (await s.readTrust(r.repositoryId)).result!.state, commit: (await s.readTrust(r.repositoryId)).result!.approvalRequired.commit }).toEqual({ state: "untrusted", commit: true });
+      const from = s.runner.calls.length;
+      expect((await commit(s, r.repositoryId, await reviewOk(s, r.repositoryId), "needs trust\n")).code).toBe("TRUST_REQUIRED");
+      expect(commitCalls(s, from)).toEqual([]);
+      s.runner.inject.confirmResult = "declined";
+      expect(outcome(await s.approveTrust(r.repositoryId, "commit"))).toEqual({ state: "canceled", code: "CANCELED" });
+      const frames = confirms(s) as { callsBefore: number }[];
+      expect(frames.length).toBe(1);
+      // Spec FR-072: after Not now, no Git process starts.
+      expect(s.runner.calls.length).toBe(frames[0]!.callsBefore);
+      expect({ log: f.h.existing([log]), records: records(s), state: (await s.readTrust(r.repositoryId)).result!.state }).toEqual({ log: [], records: [], state: "untrusted" });
+      s.runner.inject.confirmResult = "approved";
+      expect(outcome(await s.approveTrust(r.repositoryId, "commit"))).toEqual(SUCCEEDED);
+      expect(outcome(await commit(s, r.repositoryId, await reviewOk(s, r.repositoryId), "approved\n"))).toEqual(SUCCEEDED);
+      expect(f.h.existing([log])).toEqual([log]);
+      const trust = (await s.readTrust(r.repositoryId)).result!;
+      const revoked = await s.revokeTrust(r.repositoryId, (trust as { trustId?: string }).trustId!);
+      expect(outcome(revoked)).toEqual(SUCCEEDED);
+      expect({ state: (await s.readTrust(r.repositoryId)).result!.state, records: records(s) }).toEqual({ state: "revoked", records: [] });
+      stage("b.txt");
+      const next = s.runner.calls.length;
+      expect((await commit(s, r.repositoryId, await reviewOk(s, r.repositoryId), "after revoke\n")).code).toBe("TRUST_REQUIRED");
+      expect(commitCalls(s, next)).toEqual([]);
+    });
+    expect(subjects(at(f), [`${f.oids.base}..HEAD`])).toEqual(["approved"]);
+  });
+
+  W("T034 Q22 plan.md O-5: a version 1 record gives changed and asks once, and its version 2 record replaces it; the next session asks nothing", async (w) => {
+    const { f, stage } = hookedRepo(w);
+    const store = createTrustStore();
+    // One session at application start with the shared record store. After the close, no scope of this process remains.
+    const inSession = async (name: string, body: (s: Service, r: RegistrationResult) => Promise<void>) => {
+      const s = await openService({ git: gitExe(), name, environment: serviceEnv(), wslGlobalConfig: globalConfig(w), trustStore: store });
+      try {
+        await body(s, await open(s, w, f.repo));
+      } finally {
+        await s.dispose();
+      }
+      expect(listScopes(w)).toEqual([]);
+    };
+    await inSession("t034-v1-first", async (s, r) => {
+      expect(outcome(await s.approveTrust(r.repositoryId, "commit"))).toEqual(SUCCEEDED);
+      // The 001 record form of the same worktree. Its fingerprint is the approved one when the store wrote a version 1 record.
+      const stored = records(s)[0]!;
+      const v1 = {
+        commonDirectory: stored.commonDirectory,
+        commonIdentity: stored.commonIdentity,
+        worktreeRoot: stored.worktreeRoot,
+        gitDirectory: stored.adminDirectory ?? stored.gitDirectory,
+        worktreeIdentity: stored.worktreeIdentity,
+        configurationFingerprint: stored.configurationFingerprint ?? "f".repeat(64),
+        approvedAt: stored.approvedAt,
+        gitSelectedPath: stored.gitSelectedPath,
+      };
+      store.records = [v1 as never];
+    });
+    await inSession("t034-v1-second", async (s, r) => {
+      expect((await s.readTrust(r.repositoryId)).result!.state).toBe("changed");
+      expect((await commit(s, r.repositoryId, await reviewOk(s, r.repositoryId), "v1\n")).code).toBe("TRUST_CHANGED");
+      expect(outcome(await s.approveTrust(r.repositoryId, "commit"))).toEqual(SUCCEEDED);
+      expect(confirms(s).length).toBe(1);
+      expect(records(s).map((x) => ({ policyVersion: x.policyVersion, fingerprint: "configurationFingerprint" in x }))).toEqual([{ policyVersion: 2, fingerprint: false }]);
+    });
+    await inSession("t034-v1-third", async (s, r) => {
+      expect((await s.readTrust(r.repositoryId)).result!.state).toBe("approved");
+      stage("b.txt");
+      expect(outcome(await commit(s, r.repositoryId, await reviewOk(s, r.repositoryId), "v2\n"))).toEqual(SUCCEEDED);
+      expect(confirms(s)).toEqual([]);
+    });
+    expect(subjects(at(f), [`${f.oids.base}..HEAD`])).toEqual(["v2"]);
+  });
+
   W("Q23 SC-011 and FR-076 to FR-082: a one-click update equals the distro Git's own update in a copy; a scoped update of one row touches only that row", async (w) => {
     const full = buildF31(w, "base");
     const oracle = distroSubmoduleOracle(full.sup, `${full.root}/oracle`);
@@ -1682,5 +2129,335 @@ describe("worktrees, settings, trust, and submodules through the distro Git (qui
     }
     expect({ oracle: oracle.exitCode, state: distroSubmoduleState(full.sup) }).toEqual({ oracle: 0, state: { heads: oracle.heads, gitDirs: oracle.gitDirs, keys: oracle.keys } });
     expect(distroSubmoduleState(scoped.sup)).toEqual(scopedExpected);
+  });
+
+  // `reviewSubmodules` of a fresh read, with `scope` when `path` is given (contract Δ12).
+  async function submoduleReview(s: Service, repositoryId: string, path?: string) {
+    const read = await readOk(s, repositoryId);
+    const response = await request(s, "reviewSubmodules", { snapshotId: read.snapshotId, ...(path === undefined ? {} : { scope: { path } }) }, { repositoryId, repositoryGeneration: read.generation });
+    return { response, generation: read.generation, token: valuesOf(response.result, "submoduleReviewToken")[0] as string | undefined, refusals: refusalsOf(response.result), hosts: valuesOf(response.result, "hosts")[0] };
+  }
+  type SubmoduleReviewed = Awaited<ReturnType<typeof submoduleReview>>;
+  const sendUpdate = (s: Service, repositoryId: string, r: SubmoduleReviewed, confirmHosts = false) =>
+    s.send("updateSubmodules", { submoduleReviewToken: r.token, start: true, ...(confirmHosts ? { confirmHosts: true } : {}) }, { repositoryId, repositoryGeneration: r.generation });
+  const runUpdate = (s: Service, repositoryId: string, r: SubmoduleReviewed, confirmHosts = false) => s.response(sendUpdate(s, repositoryId, r, confirmHosts), RESPONSE_MS);
+  const rowStates = (response: ServiceResponse) => Object.fromEntries(resultsOf(response).map((row) => [row.path, row.state]));
+
+  W("T034 Q23 FR-049 and FR-079: a refusal gives UNSUPPORTED_SUBMODULE and starts no step; a host line waits for confirmHosts, and the same token then runs and equals the distro Git's own update on a copy", async (w) => {
+    // `submodule.solo.active` holds no boolean, so the review refuses it (001 FR-049).
+    const refused = buildF31(w, "base");
+    distroGit(refused.sup, ["config", "submodule.solo.active", "maybe"]);
+    const before = distroSubmoduleState(refused.sup);
+    // `solo` fetches from its local `origin`, and the registered URL names another host. No process reaches that host.
+    const hosted = buildF31(w, "uploadpack");
+    distroGit({ host: w, dir: `${hosted.sup.dir}/solo` }, ["config", "--unset", "remote.origin.uploadpack"]);
+    distroGit(hosted.sup, ["config", "submodule.solo.url", "https://git.example.net/solo.git"]);
+    const oracle = distroSubmoduleOracle(hosted.sup, `${hosted.root}/oracle`);
+    await withWsl(w, "t034-submodule-refusal-hosts", async (s) => {
+      const rr = await open(s, w, refused.sup.dir);
+      const review = await submoduleReview(s, rr.repositoryId);
+      expect(review.refusals.map((x) => x.reason)).toContain("active-value");
+      let from = s.runner.calls.length;
+      const response = await runUpdate(s, rr.repositoryId, review);
+      expect({ code: response.code, reasons: refusalsOf(response.result).map((x) => x.reason), steps: updateSteps(s, from).length }).toEqual({ code: "UNSUPPORTED_SUBMODULE", reasons: review.refusals.map((x) => x.reason), steps: 0 });
+      const rh = await open(s, w, hosted.sup.dir);
+      const hosts = await submoduleReview(s, rh.repositoryId);
+      expect({ ...outcome(hosts.response), refusals: hosts.refusals, hosts: hosts.hosts }).toEqual({ ...SUCCEEDED, refusals: [], hosts: [{ path: "solo", fetch: { kind: "local" }, settings: { kind: "host", name: "git.example.net" } }] });
+      from = s.runner.calls.length;
+      const waiting = await runUpdate(s, rh.repositoryId, hosts);
+      expect({ ...outcome(waiting), reason: valuesOf(waiting.result, "reason"), steps: updateSteps(s, from).length }).toEqual({ state: "rejected", code: "STALE_REVIEW", reason: ["hosts"], steps: 0 });
+      expect(outcome(await runUpdate(s, rh.repositoryId, hosts, true))).toEqual(SUCCEEDED);
+    });
+    expect(distroSubmoduleState(refused.sup)).toEqual(before);
+    expect({ oracle: oracle.exitCode, state: distroSubmoduleState(hosted.sup) }).toEqual({ oracle: 0, state: { heads: oracle.heads, gitDirs: oracle.gitDirs, keys: oracle.keys } });
+  });
+
+  W("T034 Q23 FR-081 and 001 §12: a failed row, then Retry of that row, equal the distro Git's own update on a copy; Cancel states each row from a fresh read, and no process or scope remains", async (w) => {
+    const f = buildF31(w, "base");
+    const oracle = distroSubmoduleOracle(f.sup, `${f.root}/oracle`);
+    // Without its remote, the `solo` clone fails. The move back is the fix before Retry.
+    const remote = `${f.root}/solo.git`;
+    inDistro(w.distro, ["/usr/bin/mv", "--", remote, `${remote}.away`]);
+    const c = buildF31(w, "base");
+    await withWsl(w, "t034-submodule-retry-cancel", async (s) => {
+      const r = await open(s, w, f.sup.dir);
+      const failed = await runUpdate(s, r.repositoryId, await submoduleReview(s, r.repositoryId));
+      expect(rowStates(failed)).toEqual({ mid: "cloned", "mid/leaf": "cloned", solo: "failed" });
+      inDistro(w.distro, ["/usr/bin/mv", "--", `${remote}.away`, remote]);
+      // FR-081: Retry updates that row and its nested rows only.
+      const retry = await submoduleReview(s, r.repositoryId, "solo");
+      expect(outcome(retry.response)).toEqual(SUCCEEDED);
+      const retried = await runUpdate(s, r.repositoryId, retry);
+      expect({ ...outcome(retried), rows: rowStates(retried) }).toEqual({ ...SUCCEEDED, rows: { solo: "cloned" } });
+
+      const rc = await open(s, w, c.sup.dir);
+      const review = await submoduleReview(s, rc.repositoryId);
+      const isSoloClone = (call: { arguments: readonly string[] }) => commandOf(call.arguments).join(" ") === "submodule update --init --progress -- :(literal)solo";
+      const release = s.runner.holdStart(isSoloClone);
+      const from = s.runner.calls.length;
+      const requestId = sendUpdate(s, rc.repositoryId, review);
+      await until(() => s.runner.calls.slice(from).some(isSoloClone) || s.responseAt.has(requestId), "the held solo clone", RESPONSE_MS);
+      const operationId = await s.operationId(requestId);
+      await s.cancel(operationId);
+      release();
+      const response = await s.response(requestId, RESPONSE_MS);
+      expect(response.state).not.toBe("succeeded");
+      const rows = resultsOf(response);
+      const heads = distroSubmoduleState(c.sup).heads;
+      expect(rows.map((row) => [row.path, row.newCommit])).toEqual(rows.map((row) => [row.path, heads[row.path] ?? null]));
+      await Bun.sleep(AFTER_CLOSE_MS);
+      expect(pgrep(w, operationId)).toEqual([]);
+    });
+    expect({ oracle: oracle.exitCode, state: distroSubmoduleState(f.sup) }).toEqual({ oracle: 0, state: { heads: oracle.heads, gitDirs: oracle.gitDirs, keys: oracle.keys } });
+  });
+});
+
+// ---- Feature 006 T032: the Global save through the distro Git (quickstart.md Q22, plan.md D13 and D14, spec FR-018 to FR-025, SC-005) ----
+
+describe("the Global save through the distro Git (feature 006 T032)", () => {
+  const T032 = "T032";
+  const WRAPPER = wslProcess.wrapper.join("\n");
+  const factLine = (w: WslHost, o: Observation) => console.log(observationLine(T032, o, `git=${w.gitVersion ?? "unknown"}@${w.distro}`));
+  const ownedGlobal = (w: WslHost) => globalConfig(w);
+  const oracleGlobal = (w: WslHost) => `${w.folder}/home/oracle.gitconfig`;
+  const includedGlobal = (w: WslHost) => `${w.folder}/home/included.gitconfig`;
+  // Spec FR-060 in Git's canonical form (git-config(1)). The test keeps its own copy, as tests/git/git-settings.test.ts does.
+  const FR060 = ["user.name", "user.email", "core.editor", "commit.template", "credential.helper", "diff.tool", "merge.tool", "core.autocrlf", "i18n.filesencoding", "pull.rebase", "fetch.prune", "merge.autostash", "rebase.autostash", "rebase.autosquash", "rebase.updaterefs", "rerere.enabled", "rerere.autoupdate", "pull.ff", "push.default", "push.autosetupremote"];
+  const BOOLS = new Set(["fetch.prune", "merge.autostash", "rebase.autostash", "rebase.autosquash", "rebase.updaterefs", "rerere.enabled", "rerere.autoupdate", "push.autosetupremote"]);
+  const ENUMS: Record<string, string[]> = { "core.autocrlf": ["true", "false", "input"], "pull.rebase": ["true", "false", "merges", "interactive"], "pull.ff": ["true", "false", "only"], "push.default": ["nothing", "current", "upstream", "simple", "matching"] };
+  // A value that differs from the current one and that Git reads for the key type.
+  const newValue = (key: string, current: string | null): string => (BOOLS.has(key) ? (current === "true" ? "false" : "true") : (ENUMS[key]?.find((v) => v !== current) ?? `saved ${key}`));
+  // The FR-060 keys besides the `globalText` keys. Two `credential.helper` values are multi-valued, and `core.editor` comes from an include (004 plan.md D11).
+  const globalKeys = (w: WslHost) =>
+    `[include]\n\tpath = ${includedGlobal(w)}\n[commit]\n\ttemplate = global-template.txt\n[credential]\n\thelper = global-helper-1\n\thelper = global-helper-2\n` +
+    `[diff]\n\ttool = global-diff\n[difftool "global-diff"]\n\tpath = global-difftool-path\n\tcmd = global-difftool $LOCAL $REMOTE\n` +
+    `[merge]\n\ttool = global-merge\n\tautostash = false\n[mergetool "global-merge"]\n\tpath = global-mergetool-path\n\tcmd = global-mergetool $MERGED\n` +
+    `[i18n]\n\tfilesEncoding = utf-8\n[pull]\n\trebase = merges\n\tff = only\n[fetch]\n\tprune = false\n[rebase]\n\tautostash = false\n\tautosquash = false\n\tupdateRefs = false\n` +
+    `[rerere]\n\tenabled = false\n\tautoUpdate = false\n[push]\n\tdefault = current\n\tautoSetupRemote = false\n`;
+
+  type SaveResult = { action: string; scope: string; written: string[]; failed?: { key: string; exitCode: number | null; reason?: string }; stale?: string; outputTail?: string };
+  const save = (changes: { key: string; value: string | null }[]) => ({ action: "config-save", scope: "global", changes });
+  const writes = (s: Service, from = 0) => s.runner.calls.slice(from).filter((c) => c.environmentPolicy === "integrate").map((c) => [c.contextKind, ...c.arguments]);
+  const globalValues = (f: DistroFixture, key: string) => out(at(f), ["config", "get", "--all", "--global", key], { allowExit: [0, 1] }).split("\n").filter((l) => l !== "");
+  const globalDigest = (f: DistroFixture) => fileDigest(at(f), ownedGlobal(f.w));
+  const runSave = async (s: Service, r: RegistrationResult, changes: { key: string; value: string | null }[]) => s.response<SaveResult>(sendRun(s, r, (await token(s, r, save(changes))).workbenchToken), RESPONSE_MS);
+
+  let wrapperRuns = 0;
+  // The prefix of the file header. The unit of each run is `arbareto-<operation ID>-1.scope`.
+  function wrapperOperation(): string {
+    const id = `0f0f0f0f-0000-4000-800a-${(process.pid * 0x1000 + ++wrapperRuns).toString(16).padStart(12, "0")}`;
+    OWN_SCOPE_OPERATIONS.add(id);
+    return id;
+  }
+  // Contract §11 "Process launch": the wrapper in mode `integrate` around `program`, with no forwarded variable, as the shell starts a Git process.
+  // The stdout after the start byte, or null for another exit or no start byte.
+  function underWrapper(w: WslHost, program: string[]): string | null {
+    const p = w.probe.paths;
+    const r = wslExec(["--distribution", w.distro, "--cd", "/", "--exec", "/bin/sh", "-c", WRAPPER, "sh", `arbareto-${wrapperOperation()}-1.scope`, "integrate", "", p["systemd-run"]!, p.systemctl!, p.setsid!, w.probe.noexpand === "0" ? "1" : "", ...program], { timeoutMs: 60_000 });
+    return r.exitCode === 0 && r.bytes[0] === 0x53 ? Buffer.from(r.bytes.subarray(1)).toString("utf8") : null;
+  }
+
+  // Spec FR-025: the SHA-256 of the real `~/.gitconfig` and of the real XDG file, read inside the distro without the forwarding. `absent` stands for a missing file.
+  const REAL_FILES = 'for f in "$HOME/.gitconfig" "${XDG_CONFIG_HOME:-$HOME/.config}/git/config"; do if [ -e "$f" ]; then sha256sum < "$f"; else echo absent; fi; done';
+  function realDigests(w: WslHost): string[] {
+    const r = wslExec(["--distribution", w.distro, "--cd", "/", "--exec", "/bin/sh", "-c", REAL_FILES]);
+    if (r.exitCode !== 0) throw new Error(`the real file digests exited ${r.exitCode}: ${r.stderr}`);
+    const lines = r.stdout.split("\n").filter((l) => l !== "");
+    expect(lines.length).toBe(2);
+    return lines;
+  }
+
+  // The registration, and the Git installation ID of its `run` requests. The hook refuses nothing.
+  async function openWithGit(s: Service, w: WslHost, dir: string): Promise<{ r: RegistrationResult; gitInstallationId: string }> {
+    let gitInstallationId = "";
+    s.runner.inject.refuse = (call) => {
+      const context = (call as Partial<GitCall>).context;
+      if (context !== undefined && "gitInstallationId" in context) gitInstallationId = context.gitInstallationId;
+      return undefined;
+    };
+    const r = await open(s, w, dir);
+    s.runner.inject.refuse = undefined;
+    expect(gitInstallationId).not.toBe("");
+    return { r, gitInstallationId };
+  }
+
+  // Spec FR-023: before the first write, Git in the distro names the owned global file through the double.
+  async function expectOwnedGlobal(s: Service, w: WslHost, r: RegistrationResult, gitInstallationId: string): Promise<void> {
+    const stdout = createCollector({ maxBytes: 65_536 });
+    const stderr = createCollector({ maxBytes: 65_536 });
+    const context = { contextKind: "registeredOperation" as const, gitInstallationId, repositoryId: r.repositoryId };
+    const exit = await s.runner.run({ operationId: crypto.randomUUID(), context, arguments: [L, "var", "GIT_CONFIG_GLOBAL"], environmentPolicy: "read", limits: { deadlineMs: GIT_PROCESS_DEADLINE_MS }, stdout, stderr, signal: new AbortController().signal });
+    expect({ exitCode: exit.exitCode, stdout: new TextDecoder().decode(stdout.take()) }).toEqual({ exitCode: 0, stdout: `${ownedGlobal(w)}\n` });
+  }
+
+  // One Global case. The real files keep their SHA-256 (spec FR-025), and the owned global file is the target before the first write.
+  async function withGlobal(w: WslHost, f: DistroFixture, name: string, body: (s: Service, r: RegistrationResult) => Promise<void>): Promise<void> {
+    const real = realDigests(w);
+    await withWsl(w, name, async (s) => {
+      const { r, gitInstallationId } = await openWithGit(s, w, f.repo);
+      await expectOwnedGlobal(s, w, r, gitInstallationId);
+      await body(s, r);
+    });
+    expect(realDigests(w)).toEqual(real);
+  }
+
+  W("Q22 FR-018, FR-019, and SC-005: Save and remove of each FR-060 key in Global equal the distro Git's own config set and unset --global on a copy of the owned global file; a multi-valued key and an included value stay read only; every other configuration byte stays", async (w) => {
+    const h = hostOf(w, globalKeys(w));
+    h.write(includedGlobal(w), "[core]\n\teditor = included-editor\n");
+    h.copy(ownedGlobal(w), oracleGlobal(w));
+    const f = copy(w, "branches");
+    const oracle = (args: string[]) => gitRun(h, h.root, args, { env: { GIT_CONFIG_GLOBAL: oracleGlobal(w) } });
+    const xdg = `${w.folder}/home/.config/git/config`;
+    const before = { local: fileDigest(at(f), localConfig(at(f))), included: fileDigest(at(f), includedGlobal(w)), xdg: f.h.existing([xdg]) };
+    await withGlobal(w, f, "t032-global-save", async (s, r) => {
+      // The tool keys of the effective tools go first, because a later `diff.tool` or `merge.tool` save changes those tools.
+      for (const key of ["difftool.global-diff.path", "difftool.global-diff.cmd", "mergetool.global-merge.path", "mergetool.global-merge.cmd", ...FR060]) {
+        const current = globalValues(f, key);
+        // `config get --global` reads no include, so the included `core.editor` lists no value there.
+        const reason = key === "core.editor" ? "included" : current.length > 1 ? "multi-value" : null;
+        if (reason !== null) {
+          const global = globalDigest(f);
+          const from = s.runner.calls.length;
+          expect({ key, ...refusalOf(await review(s, r, save([{ key, value: "x" }]))) }).toEqual({ key, ...unavailable(reason) });
+          expect({ key, writes: writes(s, from), global: globalDigest(f) }).toEqual({ key, writes: [], global });
+          continue;
+        }
+        for (const value of [newValue(key, current[0] ?? null), null]) {
+          const from = s.runner.calls.length;
+          const response = await runSave(s, r, [{ key, value }]);
+          expect({ key, value, ...outcome(response), result: response.result }).toEqual({ key, value, ...SUCCEEDED, result: { action: "config-save", scope: "global", written: [key] } });
+          const args = value === null ? ["config", "unset", "--global", "--", key] : ["config", "set", "--global", "--", key, value];
+          expect({ key, value, writes: writes(s, from) }).toEqual({ key, value, writes: [["globalConfig", L, ...args]] });
+          oracle(args);
+          expect({ key, value, global: globalDigest(f) }).toEqual({ key, value, global: fileDigest(at(f), oracleGlobal(w)) });
+        }
+      }
+    });
+    expect({ local: fileDigest(at(f), localConfig(at(f))), included: fileDigest(at(f), includedGlobal(w)), xdg: f.h.existing([xdg]) }).toEqual(before);
+    // Research.md R9: `GIT_CONFIG_GLOBAL` wins over the XDG file, and the double forwards it. The spec edge case of a user without `HOME` needs no forwarding.
+    console.log(`OBSERVATION ${T032}: unverified XDG global file through the double`);
+    console.log(`OBSERVATION ${T032}: unverified save without HOME`);
+  });
+
+  W("Q22 FR-019 and FR-022: a change before the review shows in the plan and writes nothing; a change after the review gives stale and keeps the other value; Git's exit 5 and a held lock name the key and the output tail; Cancel writes nothing; the fresh listing decides each result", async (w) => {
+    const h = hostOf(w);
+    const f = copy(w, "branches");
+    const other = (args: string[]) => gitRun(h, h.root, ["config", "set", "--global", ...args]);
+    await withGlobal(w, f, "t032-global-stale", async (s, r) => {
+      const settings = await request<{ values: { key: string; scopes: { global: { value: string | null }[] } }[]; files: { global: string | null } }>(s, "readGitSettings", {}, { repositoryId: r.repositoryId });
+      expect(outcome(settings)).toEqual(SUCCEEDED);
+      // Contract §11 and 004 data-model §9: a WSL workspace names no global file, and Git's `--global` rule applies in the distro.
+      expect(settings.result!.files.global).toBeNull();
+      expect(settings.result!.values.find((v) => v.key === "user.name")!.scopes.global.map((e) => e.value)).toEqual(["Arbareto Fixture"]);
+      // A change before the review: the plan shows the other value, so the renderer gives the 004 `changedOutside` text and runs nothing.
+      other(["user.name", "Other Program"]);
+      let from = s.runner.calls.length;
+      const changed = await token(s, r, save([{ key: "user.name", value: "Mine" }]));
+      expect(changed.plan).toEqual({ scope: "global", changes: [{ key: "user.name", value: "Mine", earlier: { origin: `file:${ownedGlobal(w)}`, value: "Other Program" } }] });
+      expect(writes(s, from)).toEqual([]);
+
+      // A change after the review, before the write of its key.
+      const two = await token(s, r, save([{ key: "user.name", value: "Mine" }, { key: "user.email", value: "mine@arbareto.invalid" }]));
+      const release = s.runner.holdStart((c) => c.arguments[2] === "set" && c.arguments.includes("user.name"));
+      from = s.runner.calls.length;
+      const requestId = sendRun(s, r, two.workbenchToken);
+      await until(() => s.runner.calls.slice(from).some((c) => c.environmentPolicy === "integrate"), "the held user.name write", RESPONSE_MS);
+      other(["user.email", "other@arbareto.invalid"]);
+      release();
+      const stale = await s.response<SaveResult>(requestId, RESPONSE_MS);
+      // 004 plan.md D11: `written` comes from the fresh listing, so the other program's `user.email` entry counts as changed too.
+      expect({ ...outcome(stale), result: stale.result }).toEqual({ ...WITH_EFFECTS, result: { action: "config-save", scope: "global", written: ["user.name", "user.email"], stale: "user.email" } });
+      expect(writes(s, from)).toEqual([["globalConfig", L, "config", "set", "--global", "--", "user.name", "Mine"]]);
+      expect({ name: globalValues(f, "user.name"), email: globalValues(f, "user.email") }).toEqual({ name: ["Mine"], email: ["other@arbareto.invalid"] });
+
+      // git-config(1) exit 5: the owned global file holds no `rerere.autoUpdate` to remove.
+      const absent = await runSave(s, r, [{ key: "rerere.autoupdate", value: null }]);
+      expect({ ...outcome(absent), failed: absent.result!.failed, written: absent.result!.written }).toEqual({ state: "failed", code: "GIT_FAILED", failed: { key: "rerere.autoupdate", exitCode: 5, reason: "nothing-set" }, written: [] });
+      // A held lock: Git exits 255, which git-config(1) does not document, so the result names the key, the exit, and the output tail.
+      const lock = `${ownedGlobal(w)}.lock`;
+      const locked = await token(s, r, save([{ key: "pull.ff", value: "only" }]));
+      h.write(lock, "");
+      let global = globalDigest(f);
+      const failed = await s.response<SaveResult>(sendRun(s, r, locked.workbenchToken), RESPONSE_MS);
+      inDistro(w.distro, ["/usr/bin/rm", "-f", "--", lock]);
+      const tail = failed.result?.outputTail;
+      expect({ ...outcome(failed), failed: failed.result!.failed, written: failed.result!.written, tail: typeof tail === "string" && tail.length > 0 }).toEqual({ state: "failed", code: "GIT_FAILED", failed: { key: "pull.ff", exitCode: 255 }, written: [], tail: true });
+      expect(globalDigest(f)).toBe(global);
+
+      // Cancel while the write waits to start: no write, and the fresh listing names no written key.
+      const canceled = await token(s, r, save([{ key: "fetch.prune", value: "true" }]));
+      const hold = s.runner.holdStart((c) => c.arguments[2] === "set" && c.arguments.includes("fetch.prune"));
+      from = s.runner.calls.length;
+      const id = sendRun(s, r, canceled.workbenchToken);
+      await until(() => s.runner.calls.slice(from).some((c) => c.environmentPolicy === "integrate"), "the held fetch.prune write", RESPONSE_MS);
+      global = globalDigest(f);
+      const operationId = await s.operationId(id);
+      await s.cancel(operationId);
+      hold();
+      const done = await s.response<SaveResult>(id, RESPONSE_MS);
+      expect({ ...outcome(done), written: done.result?.written }).toEqual({ state: "canceled", code: "CANCELED", written: [] });
+      expect(globalDigest(f)).toBe(global);
+      await Bun.sleep(AFTER_CLOSE_MS);
+      expect(pgrep(w, operationId)).toEqual([]);
+    });
+  });
+
+  W("Q22 SC-005, F9, and F10: with core.sharedRepository=0660 in the repository and no owned global file, the save from / creates the global file with mode 0666 & ~umask of the wrapper", async (w) => {
+    hostOf(w);
+    const f = copy(w, "branches");
+    own(f, ["config", "--local", "core.sharedRepository", "0660"]);
+    const umaskText = underWrapper(w, ["/bin/sh", "-c", "umask"]);
+    expect(umaskText).toMatch(/^[0-7]{3,4}\n$/);
+    const mode = (0o666 & ~Number.parseInt(umaskText!.trim(), 8)).toString(8);
+    // SC-005: the mode cannot show the difference then.
+    if (mode === "660") throw new Error(`the wrapper umask ${umaskText!.trim()} gives mode 660, so the case cannot run`);
+    const home = underWrapper(w, ["/usr/bin/printenv", "HOME"]);
+    factLine(w, obs("F10 HOME set under the wrapper in mode integrate", true, home !== null && home.trim() !== ""));
+    await withGlobal(w, f, "t032-global-mode", async (s, r) => {
+      inDistro(w.distro, ["/usr/bin/rm", "-f", "--", ownedGlobal(w)]);
+      const from = s.runner.calls.length;
+      const response = await runSave(s, r, [{ key: "user.name", value: "Mode Case" }]);
+      const created = inDistro(w.distro, ["/usr/bin/stat", "-c", "%a", "--", ownedGlobal(w)]).trim();
+      factLine(w, obs("F9 global file mode of a save from / with core.sharedRepository=0660", mode, created));
+      expect(created).toBe(mode);
+      expect({ ...outcome(response), result: response.result }).toEqual({ ...SUCCEEDED, result: { action: "config-save", scope: "global", written: ["user.name"] } });
+      expect(writes(s, from)).toEqual([["globalConfig", L, "config", "set", "--global", "--", "user.name", "Mode Case"]]);
+    });
+    expect(f.h.read(ownedGlobal(w))!.toString("utf8")).toBe("[user]\n\tname = Mode Case\n");
+  });
+
+  // Spec FR-023: each WSL route fails closed without the owned global file. The seam registration starts no process, and `inject.exit` replaces every later process.
+  W("Q22 FR-023: the double without wslGlobalConfig refuses the WSL globalConfig, worktreeAdd, and destination routes before any process", async (w) => {
+    const runner = createBunRunner({ git: gitExe(), directory: fixtureDir(`t032-no-global-${crypto.randomUUID()}`), environment: serviceEnv() });
+    try {
+      const repo = seamRepository(w, runner);
+      const seam = runner.inject.stdout!;
+      let gitInstallationId = "";
+      // Without the forwarding, a Git process would read the real global file, so a call without a seam output starts no process.
+      runner.inject.refuse = (call) => {
+        const context = (call as Partial<GitCall>).context;
+        if (context !== undefined && "gitInstallationId" in context) gitInstallationId = context.gitInstallationId;
+        return seam({ operationId: call.operationId, arguments: call.arguments }) === undefined ? "INVALID_REQUEST" : undefined;
+      };
+      const s = startSession(runner);
+      const registered = await s.response(s.chooseRepository(repo.path));
+      expect(registered).toMatchObject({ state: "succeeded" });
+      expect(gitInstallationId).not.toBe("");
+      const repositoryId = (registered.result as unknown as { repositoryId: string }).repositoryId;
+      // A missing refusal then ends with exit 0 and no process, so the case fails without a Git run.
+      runner.inject.refuse = undefined;
+      runner.inject.exit = () => 0;
+      const spawned = runner.spawned;
+      const call = (context: GitCall["context"], args: string[], environmentPolicy: GitCall["environmentPolicy"]) =>
+        runner.run({ operationId: crypto.randomUUID(), context, arguments: args, environmentPolicy, limits: environmentPolicy === "read" ? { deadlineMs: GIT_PROCESS_DEADLINE_MS } : PROCESS_LIMITS.network, stdout: createCollector({ maxBytes: 1_024 }), stderr: createCollector({ maxBytes: 1_024 }), signal: new AbortController().signal });
+      await expect(call({ contextKind: "globalConfig", gitInstallationId }, [L, "--no-optional-locks", "--literal-pathspecs", "config", "list", "--show-scope", "--show-origin", "-z"], "read")).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      const dest = `${w.folder}/t032-wt`;
+      const bootstrapId = runner.addWorktreeAdd(uncPath(w, dest), repositoryId);
+      await expect(call({ contextKind: "worktreeAdd", gitInstallationId, repositoryId, bootstrapId }, [L, "worktree", "add", "--", dest, "main"], "integrate")).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      await expect(runner.destinationFacts({ operationId: crypto.randomUUID(), bootstrapId })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+      expect(runner.spawned).toBe(spawned);
+    } finally {
+      await runner.dispose();
+    }
   });
 });

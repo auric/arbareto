@@ -37,7 +37,10 @@
     "tests/wsl/lifecycle.test.ts": "asserts a close below 10,000 ms",
     "tests/wsl/submodules.test.ts": "asserts the stall event within 20,000 ms of a step start",
     "tests/wsl/sync-wsl.test.ts": "runs Git fact cases inside the distro",
-    "tests/wsl/workbench-wsl.test.ts": "runs Git fact cases inside the distro; builds 100,000 untracked files"
+    "tests/wsl/workbench-wsl-branches.test.ts": "runs Git fact cases inside the distro",
+    "tests/wsl/workbench-wsl-facts.test.ts": "runs Git fact cases inside the distro",
+    "tests/wsl/workbench-wsl-settings.test.ts": "runs Git fact cases inside the distro",
+    "tests/wsl/workbench-wsl-staging.test.ts": "runs Git fact cases inside the distro"
   },
   "parallel": [
     "tests/contracts/admission.test.ts",

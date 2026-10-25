@@ -43,9 +43,9 @@ const ready = (id: string) => ok(DictionaryRunResult.parse({ language: id, state
 const sync = (spelling: { enabled: boolean; languages: string[] }) => ok(SyncSettings.parse({ ...settings("pull"), spelling }));
 
 type States = Record<string, { state: string; notice?: string }>;
-function listed(states: States = {}, removed: { language: string; name: string }[] = []) {
+function listed(states: States = {}, removed: { language: string; name: string }[] = [], more = 0) {
   const languages = catalog.entries.map((e) => ({ language: e.id, ...(states[e.id] ?? { state: "not-downloaded" }) }));
-  return ok(ListDictionariesResult.parse({ languages, removed, more: 0 }));
+  return ok(ListDictionariesResult.parse({ languages, removed, more }));
 }
 const base64 = (text: string) => Buffer.from(text, "utf8").toString("base64");
 const chunk = (id: string, file: string, body: string) => ok(ReadDictionaryResult.parse({ language: id, file, size: Buffer.byteLength(body), offset: 0, bytes: base64(body) }));
@@ -91,9 +91,9 @@ const roots: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const unmount of roots.splice(0)) await unmount();
 });
-type Options = { languages?: string[]; enabled?: boolean; states?: States; removed?: { language: string; name: string }[]; words?: WordListState; removeOutcome?: "failed" };
+type Options = { languages?: string[]; enabled?: boolean; states?: States; removed?: { language: string; name: string }[]; more?: number; words?: WordListState; removeOutcome?: "failed" };
 async function render(options: Options = {}) {
-  const world: World = { spelling: { enabled: options.enabled ?? true, languages: options.languages ?? ["en"] }, list: listed(options.states, options.removed) };
+  const world: World = { spelling: { enabled: options.enabled ?? true, languages: options.languages ?? ["en"] }, list: listed(options.states, options.removed, options.more) };
   const double = createDouble(world);
   const words = wordListDouble(options.words, options.removeOutcome);
   const store = createSpellingStore(words.list);
@@ -203,6 +203,19 @@ describe("rows (data-model §4, FR-009, FR-015)", () => {
     expect(notice.className.split(" ")).toContain("bg-warning-fill");
   });
 
+  // 006 T055: the `more` count of removed languages (plan.md D17, proposed 2026-10-25).
+  test("the more count of removed languages follows the named notices, in the plural and the singular", async () => {
+    await render({ removed: [{ language: "xx", name: "Klingon" }], more: 1_204 });
+    const notices = () => [...panel("Languages").querySelectorAll("p")].map((p) => text(p));
+    expect(notices().slice(0, 2)).toEqual(["This Arbareto release has no Klingon dictionary. Arbareto removed it.", "This Arbareto release has no 1,204 other dictionaries. Arbareto removed them."]);
+    for (const unmount of roots.splice(0)) await unmount();
+    await render({ removed: [{ language: "xx", name: "Klingon" }], more: 1 });
+    expect(notices()[1]).toBe("This Arbareto release has no 1 other dictionary. Arbareto removed it.");
+    for (const unmount of roots.splice(0)) await unmount();
+    await render({ removed: [{ language: "xx", name: "Klingon" }] });
+    expect(notices().filter((t) => t.includes("other dictionar"))).toEqual([]);
+  });
+
   test("a failed load of a selected Ready language shows Failed with the load text and offers only Remove", async () => {
     const r = await render({ languages: ["en", "uk"], states: { uk: { state: "ready" } } });
     await act(async () => r.store.setLanguage("uk", "failed"));
@@ -307,6 +320,10 @@ describe("download, import, and their texts (FR-010 to FR-012, FR-016)", () => {
     ["import-mismatch", refused("import-mismatch"), "These files are not the Ukrainian files of the catalog. Arbareto did not import them."],
     ["import-unreadable", refused("import-unreadable", { folder: "D:/Offline/uk" }), "Arbareto could not read the Ukrainian files in D:/Offline/uk."],
     ["busy", refused("busy"), "Another dictionary download or import runs. Wait for it to end."],
+    // 006 T055: plan.md D17 texts proposed 2026-10-25.
+    ["DEADLINE", failed("DEADLINE"), "The Ukrainian import did not end within 120 seconds. Arbareto did not import the files. Select Import… again."],
+    ["PICKER_FAILED", { requestId: fixtureId(45), operationId: OP, state: "rejected", code: "PICKER_FAILED" }, "Arbareto could not open the folder picker. Select Import… again."],
+    ["another code", failed("INVALID_REQUEST"), "Import… Ukrainian did not complete: INVALID_REQUEST."],
   ];
   for (const [cause, response, message] of kept)
     test(`an import that ends with ${cause} keeps the row state and shows its text`, async () => {
@@ -318,6 +335,18 @@ describe("download, import, and their texts (FR-010 to FR-012, FR-016)", () => {
       expect(rowButtons("uk")).toEqual(["Download Ukrainian", "Import… Ukrainian"]);
       expect(text(messageOf("uk")!)).toBe(message);
     });
+
+  // 006 T055: data-model §4 "Importing… | importing" for the import of this window.
+  test("the own import shows Importing… with no actions until it ends", async () => {
+    const r = await render({ states: { pl: { state: "changed" } } });
+    await click(button("Import… Polish"));
+    expect(cellTexts("pl")[4]).toBe("Importing…");
+    expect(rowButtons("pl")).toEqual([]);
+    expect(rowButtons("cs")).toEqual(["Download Czech", "Import… Czech"]);
+    r.world.list = listed({ pl: { state: "ready" } });
+    await answer(r.double.pending("importDictionary"), ready("pl"));
+    expect(cellTexts("pl")[4]).toBe("Ready");
+  });
 
   test("a canceled import picker shows no text", async () => {
     const r = await render();
@@ -351,6 +380,8 @@ describe("licence link and licence text (FR-015, plan.md D12)", () => {
     const r = await render({ states: { uk: { state: "ready" } } });
     await click(button("Show licence of Ukrainian"));
     expect(r.double.pending("readDictionary")!.args[0]).toEqual({ language: "uk", file: "license", offset: 0 });
+    // 006 T055: plan.md D17 loading text, proposed 2026-10-25.
+    expect(text(page().querySelector('[data-slot="licence-panel"] [role="status"]')!)).toBe("Arbareto reads the licence text…");
     const body = "GNU GENERAL PUBLIC LICENSE\n<b>sample</b> **bold**\n";
     await answer(r.double.pending("readDictionary"), chunk("uk", "license", body));
     const licence = page().querySelector<HTMLElement>('[data-slot="licence-panel"]')!;
@@ -456,6 +487,10 @@ describe("selection (FR-009, data-model §8)", () => {
     expect(cellTexts("cs")[4]).toBe("Not downloaded");
     await click(cs);
     expect(r.double.of("setSpelling").length).toBe(0);
+    // 006 T055: plan.md D16, constitution VII: the reason also shows as the tooltip.
+    await hover(cs);
+    expect(tooltipText()).toBe("Download or import the Czech dictionary first.");
+    expect(describedBy(cs)).toBe("Download or import the Czech dictionary first.");
   });
 
   test("Selected languages lists the order with Move up and Move down, their tooltips, the first and last reasons, and the chip preview", async () => {
@@ -547,6 +582,17 @@ describe("personal word list (FR-006, plan.md D10)", () => {
     expect(text(panel("Personal word list"))).toContain("Arbareto cannot save words, because the app storage is not available.");
   });
 
+  // 006 T055: focus never falls to the page when the list becomes empty.
+  test("Remove of the last word moves focus to the count line", async () => {
+    await render({ words: { kind: "loaded", words: ["kubectl"] } });
+    const remove = button("Remove kubectl", panel("Personal word list"));
+    await act(async () => remove.focus());
+    await click(remove);
+    const line = [...panel("Personal word list").querySelectorAll("p")].find((p) => text(p) === "0 of 10,000 words")!;
+    expect(document.activeElement).toBe(line);
+    expect(line.tabIndex).toBe(-1);
+  });
+
   test("a failed Remove names the word", async () => {
     await render({ words: { kind: "loaded", words: ["kubectl"] }, removeOutcome: "failed" });
     await click(button("Remove kubectl", panel("Personal word list")));
@@ -581,6 +627,15 @@ describe("keyboard (FR-026, SC-007, plan.md D16 \"Keys\")", () => {
     await act(async () => stops(words)[0]!.focus());
     await press(document.activeElement!, "ArrowDown");
     expect(document.activeElement).toBe(button("Remove b", words));
+  });
+
+  // 006 T055: plan.md D16 "Forced colors": the knob and the focus bar draw in CanvasText; an unavailable checkbox keeps the GrayText rule at full opacity.
+  test("forced colors keep the switch knob, the focus bar, and the unavailable checkbox", async () => {
+    await render({ languages: ["en", "uk"], states: { uk: { state: "ready" } } });
+    const classes = (e: Element) => e.className.split(" ");
+    expect(classes(page().querySelector('[role="switch"] > span')!)).toContain("forced-colors:bg-[CanvasText]");
+    expect(classes(panel("Selected languages").querySelector('li > span[aria-hidden="true"]')!)).toContain("forced-colors:bg-[CanvasText]");
+    expect(classes(checkbox("cs"))).toContain("forced-colors:aria-disabled:opacity-100");
   });
 
   test("every row control has an accessible name", async () => {

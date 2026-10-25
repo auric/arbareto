@@ -216,6 +216,6 @@ Each section names its source. Field names are contract names. "001 data-model �
 
 ## 18. View state (renderer, not stored)
 
-- Spelling store: the selection (§8), the language states (§4), the per-language load state of each worker (`idle`, `loading`, `loaded`, `failed`), the refused sets (§13), the word list state (§9), the Ignore list (§10), the shown marks (§13), the open menu `{mark, suggestions, pending}`, and the catalog name and `script` of each language, loaded at the first editor show (plan D3 "Renderer load").
-- Spelling page: the focused row of each list, the open licence `{language, documents}` or none, and the running run `{language, kind, operationId, received, total}` or none.
+- Spelling store: the selection (§8), the language states (§4), the per-language load state of each worker (`idle`, `loading`, `loaded`, `failed`), the refused sets (§13), the word list state (§9), the Ignore list (§10), the shown marks (§13), the open menu `{mark, suggestions, pending}`, the running run `{language, kind, cancel, operationId, received, total}` or none, the row messages of the window session (§4), and the catalog name and `script` of each language, loaded at the first editor show (plan D3 "Renderer load").
+- Spelling page: the focused row of each list, and the open licence `{language, documents}` or none.
 - Settings view: `wslDistro` (string or null) from `workspace.location`.

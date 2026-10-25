@@ -73,6 +73,10 @@ export const SPELLING_PAGE = {
   importMismatch: (l: string) => `These files are not the ${l} files of the catalog. Arbareto did not import them.`,
   catalogChanged: (l: string) => `This Arbareto release has new ${l} dictionary files. Download the dictionary again.`,
   catalogRemoved: (l: string) => `This Arbareto release has no ${l} dictionary. Arbareto removed it.`,
+  // Proposed 2026-10-25, pending user confirmation (plan.md D17).
+  catalogRemovedMore: (n: number) => (n === 1 ? "This Arbareto release has no 1 other dictionary. Arbareto removed it." : `This Arbareto release has no ${count(n)} other dictionaries. Arbareto removed them.`),
+  importDeadline: (l: string) => `The ${l} import did not end within 120 seconds. Arbareto did not import the files. Select Import… again.`,
+  pickerFailed: "Arbareto could not open the folder picker. Select Import… again.",
   busy: "Another dictionary download or import runs. Wait for it to end.",
   importUnreadable: (l: string, folder: string) => `Arbareto could not read the ${l} files in ${folder}.`,
   removeFailed: (l: string, folder: string) => `Arbareto could not remove the ${l} dictionary from ${folder}.`,
@@ -98,7 +102,7 @@ export const SPELLING_PAGE = {
 
 export type SpellingBridge = Pick<ReturnType<typeof createBridge>, "listDictionaries" | "readDictionary" | "downloadDictionary" | "importDictionary" | "removeDictionary" | "setSpelling" | "openLicenceLink" | "cancel">;
 type Entry = Pick<Catalog["bundled"], "id" | "name" | "license" | "files" | "licences">;
-type Listed = { languages: ReadonlyMap<string, { state: string; notice?: string }>; removed: readonly { language: string; name: string }[] };
+type Listed = { languages: ReadonlyMap<string, { state: string; notice?: string }>; removed: readonly { language: string; name: string }[]; more: number };
 type ListRead = { state: "loading" } | { state: "loaded"; value: Listed } | { state: "failed"; text: ReactNode };
 type Refusal = { reason?: unknown; status?: unknown; folder?: unknown; url?: unknown } | undefined;
 type Action = "download" | "retry" | "cancel" | "importFolder" | "licence";
@@ -108,10 +112,13 @@ const VIRTUAL_MIN = 200;
 const WORD_ROW = 28;
 
 function listedOf(response: BridgeResponse): Listed | null {
-  const r = response.result as { languages?: unknown; removed?: unknown } | undefined;
-  if (response.state !== "succeeded" || !Array.isArray(r?.languages) || !Array.isArray(r.removed)) return null;
-  return { languages: new Map((r.languages as { language: string; state: string; notice?: string }[]).map((l) => [l.language, l])), removed: r.removed as Listed["removed"] };
+  const r = response.result as { languages?: unknown; removed?: unknown; more?: unknown } | undefined;
+  if (response.state !== "succeeded" || !Array.isArray(r?.languages) || !Array.isArray(r.removed) || typeof r.more !== "number") return null;
+  return { languages: new Map((r.languages as { language: string; state: string; notice?: string }[]).map((l) => [l.language, l])), removed: r.removed as Listed["removed"], more: r.more };
 }
+
+/** Plan.md D17: the fallback text of any other code, "<item> did not complete: <code>." */
+const otherText = (item: string, response: BridgeResponse): ReactNode => (response.state === "succeeded" ? failureText(item, response) : <>{failureText(item, response)}.</>);
 
 /** Contract Δ3 and Δ9: the D17 text of a run end. The reason and the code decide, never a message text (spec FR-016). */
 function runMessage(kind: "download" | "importFolder", name: string, response: BridgeResponse): RowMessage | null {
@@ -120,7 +127,8 @@ function runMessage(kind: "download" | "importFolder", name: string, response: B
   if (response.state === "canceled") return kind === "download" ? { text: SPELLING_PAGE.canceled, failed: false, retry: false } : null;
   const download = kind === "download";
   const failed = (text: string, retry = download): RowMessage => ({ text, failed: download, retry });
-  if (response.code === "DEADLINE" && download) return failed(SPELLING_PAGE.deadline(name));
+  if (response.code === "DEADLINE") return download ? failed(SPELLING_PAGE.deadline(name)) : { text: SPELLING_PAGE.importDeadline(name), failed: false, retry: false };
+  if (response.code === "PICKER_FAILED" && !download) return { text: SPELLING_PAGE.pickerFailed, failed: false, retry: false };
   const refusal = response.code === "DICTIONARY_UNAVAILABLE" ? (response.result as Refusal) : undefined;
   const folder = typeof refusal?.folder === "string" ? refusal.folder : "";
   switch (refusal?.reason) {
@@ -147,7 +155,7 @@ function runMessage(kind: "download" | "importFolder", name: string, response: B
     case "busy":
       return { text: SPELLING_PAGE.busy, failed: false, retry: false };
   }
-  return { text: failureText(item, response), failed: false, retry: false };
+  return { text: otherText(item, response), failed: false, retry: false };
 }
 
 const decode = (base64: string) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
@@ -297,6 +305,7 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
   const virtual = sorted.length > VIRTUAL_MIN;
   const virtualizer = useVirtualizer({ count: sorted.length, enabled: virtual, getScrollElement: () => scroller.current, estimateSize: () => WORD_ROW, overscan: 8 });
   const wordGrid = useGrid(sorted.length, (row) => virtualizer.scrollToIndex(row), scroller);
+  const countLine = useRef<HTMLParagraphElement>(null);
   // Move up and Move down: focus follows the language once the new order shows.
   const follow = useRef<{ id: string; to: number; col: number } | null>(null);
   useLayoutEffect(() => {
@@ -325,7 +334,7 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
     const tracked = store.state().run === null;
     store.setMessage(id, null);
     const total = entry.files.reduce((sum, f) => sum + f.size, 0);
-    if (tracked && kind === "download") store.setRun({ language: id, kind, cancel: false, received: 0, total });
+    if (tracked) store.setRun({ language: id, kind, cancel: false, received: 0, total });
     const onProgress = (event: ProgressEvent) => {
       const before = store.state().run;
       if (!tracked || (before !== null && before.language !== id)) return;
@@ -358,7 +367,7 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
       if (now !== null && now.languages.includes(entry.id)) send({ enabled: now.enabled, languages: now.languages.filter((l) => l !== entry.id) });
     } else
       store.setMessage(entry.id, {
-        text: refusal?.reason === "busy" ? SPELLING_PAGE.busy : refusal?.reason === "remove" ? SPELLING_PAGE.removeFailed(entry.name, String(refusal.folder)) : failureText(SPELLING_PAGE.name.remove(entry.name), response),
+        text: refusal?.reason === "busy" ? SPELLING_PAGE.busy : refusal?.reason === "remove" ? SPELLING_PAGE.removeFailed(entry.name, String(refusal.folder)) : otherText(SPELLING_PAGE.name.remove(entry.name), response),
         failed: false,
         retry: false,
       });
@@ -368,7 +377,7 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
     const response = await bridge.openLicenceLink({ language: entry.id });
     if (response.state === "succeeded") return;
     const refusal = response.result as Refusal;
-    store.setMessage(entry.id, { text: refusal?.reason === "link" && typeof refusal.url === "string" ? SPELLING_PAGE.link(refusal.url) : failureText(SPELLING_PAGE.licenceTip, response), failed: false, retry: false });
+    store.setMessage(entry.id, { text: refusal?.reason === "link" && typeof refusal.url === "string" ? SPELLING_PAGE.link(refusal.url) : otherText(SPELLING_PAGE.licenceTip, response), failed: false, retry: false });
   }
   /** Plan.md D12: the chunks of one licence document, decoded as UTF-8. */
   async function readDocument(entry: Entry, file: Entry["licences"][number]): Promise<{ doc: LicenceDocument } | { failure: ReactNode }> {
@@ -443,7 +452,7 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
         </span>
       );
       actions = running === null ? [] : ["cancel"];
-    } else if (service?.state === "importing") label = SPELLING_PAGE.importing;
+    } else if (running?.kind === "importFolder" || service?.state === "importing") label = SPELLING_PAGE.importing;
     else if (message?.failed) {
       label = SPELLING_PAGE.failed;
       tone = "text-warning";
@@ -515,7 +524,10 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
     setWordFailure(null);
     const outcome = await store.remove(word);
     if (outcome !== "removed") setWordFailure(SPELLING_PAGE.wordRemoveFailed(word));
-    else if (mounted.current) wordGrid.focus(Math.max(0, Math.min(index, sorted.length - 2)), 0);
+    else if (!mounted.current) return;
+    // The empty list has no cell, so focus goes to the count line, never to the page.
+    else if (sorted.length <= 1) countLine.current?.focus();
+    else wordGrid.focus(Math.max(0, Math.min(index, sorted.length - 2)), 0);
   }
 
   const languagesPanel = (
@@ -528,6 +540,12 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
               {SPELLING_PAGE.catalogRemoved(r.name)}
             </p>
           ))}
+          {listed.more === 0 ? null : (
+            <p className="flex items-start gap-2 border-b border-divider bg-warning-fill px-3 py-2">
+              <HugeiconsIcon icon={InformationCircleIcon} strokeWidth={2} aria-hidden="true" className="mt-px size-(--icon-size) shrink-0" />
+              {SPELLING_PAGE.catalogRemovedMore(listed.more)}
+            </p>
+          )}
           <table aria-labelledby={headingId} className="w-full border-collapse">
             <thead>
               <tr>
@@ -559,16 +577,23 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
                     ) : (
                       <>
                         <td className={cell}>
-                          <input
-                            type="checkbox"
-                            data-cell
-                            aria-label={SPELLING_PAGE.name.select(entry.name)}
-                            checked={row.selected}
-                            aria-disabled={row.reason === null ? undefined : true}
-                            aria-describedby={row.reason === null ? undefined : reasonId}
-                            onChange={() => toggle(row)}
-                            className="m-0 accent-(--accent-role) aria-disabled:opacity-50"
-                          />
+                          <Tooltip disabled={row.reason === null}>
+                            <TooltipTrigger
+                              render={
+                                <input
+                                  type="checkbox"
+                                  data-cell
+                                  aria-label={SPELLING_PAGE.name.select(entry.name)}
+                                  checked={row.selected}
+                                  aria-disabled={row.reason === null ? undefined : true}
+                                  aria-describedby={row.reason === null ? undefined : reasonId}
+                                  onChange={() => toggle(row)}
+                                  className="m-0 accent-(--accent-role) aria-disabled:opacity-50 forced-colors:aria-disabled:opacity-100"
+                                />
+                              }
+                            />
+                            <TooltipContent>{row.reason}</TooltipContent>
+                          </Tooltip>
                           {row.reason !== null && !row.ready ? (
                             <span id={reasonId} hidden>
                               {row.reason}
@@ -657,7 +682,7 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
                           move(index, event.key === "ArrowUp" ? -1 : 1);
                         }}
                       >
-                        <span aria-hidden="true" className="absolute top-1.5 left-px hidden h-4 w-0.5 rounded-[1px] bg-accent-role group-focus-within:block" />
+                        <span aria-hidden="true" className="absolute top-1.5 left-px hidden h-4 w-0.5 rounded-[1px] bg-accent-role group-focus-within:block forced-colors:bg-[CanvasText]" />
                         <span className="w-4 text-muted-text tabular-nums">{index + 1}</span>
                         <span className="min-w-0 flex-1 truncate">{name}</span>
                         <TipButton data-cell icon={ArrowUp01Icon} label={SPELLING_PAGE.moveUp(name)} tip={SPELLING_PAGE.moveUpTip} aria-keyshortcuts="Alt+ArrowUp" reason={index === 0 ? SPELLING_PAGE.first(name) : null} onClick={() => move(index, -1)} />
@@ -687,7 +712,11 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
         <>
           {state.words.kind === "unreadable" ? <p className="px-3 py-2">{SPELLING_TEXTS.unreadable}</p> : null}
           {state.words.kind === "unavailable" ? <p className="px-3 py-2">{SPELLING_TEXTS.unavailable}</p> : null}
-          {words === null ? null : <p className="px-3 pt-2 pb-1">{SPELLING_PAGE.wordCount(words.length)}</p>}
+          {words === null ? null : (
+            <p ref={countLine} tabIndex={-1} className="px-3 pt-2 pb-1 focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-accent-role">
+              {SPELLING_PAGE.wordCount(words.length)}
+            </p>
+          )}
           {words !== null && words.length === 0 ? <p className="px-3 pb-2 text-muted-text">{SPELLING_PAGE.noWords}</p> : null}
           <div role="status" className={wordFailure === null ? "" : "px-3 pb-1"}>
             {wordFailure}
@@ -729,7 +758,7 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
             onClick={() => send({ enabled: !selection.enabled, languages: selection.languages })}
             className={`relative h-5 w-10 rounded-full border focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent-role ${selection.enabled ? "border-accent-role bg-accent-role" : "border-control-border bg-canvas"}`}
           >
-            <span aria-hidden="true" className={`absolute top-[3px] size-3 rounded-full ${selection.enabled ? "left-[23px] bg-surface" : "left-[3px] bg-muted-text"}`} />
+            <span aria-hidden="true" className={`absolute top-[3px] size-3 rounded-full ${selection.enabled ? "left-[23px] bg-surface" : "left-[3px] bg-muted-text"} forced-colors:bg-[CanvasText]`} />
           </button>
           <span id={ids.switchLabel}>{SPELLING_PAGE.spellCheck}</span>
           <span className="text-muted-text">{selection.enabled ? TEXTS.on : TEXTS.off}</span>

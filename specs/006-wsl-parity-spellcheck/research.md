@@ -144,7 +144,7 @@
 - Double facts (code): `resolveTarget` refuses a WSL `globalConfig` and a WSL `worktreeAdd` (`bun-runner.ts:601-616`). `destinationFacts` refuses a WSL `worktreeAdd` binding (`bun-runner.ts:1349-1358`). The shell has the WSL `worktreeAdd` target and the `wslFiles` mode `destination` (`process_requests.rs:1920-1935`, `wsl.rs:1480-1505`).
 - `tests/wsl/workbench-wsl.test.ts` is in `tests/groups.json` `serial` already. Its last full run took 1,302 s (004 R21).
 - Risk: `wslParts` of the UNC root for `/` (`bun-runner.ts:164-168`) maps `\\wsl.localhost\<distro>` to `/`. A UNC form with a trailing separator must give the same path (unverified until WP4 tests it).
-- Q11 needs a bare remote in the owned distro folder. Q23 needs an SSH server that the distro reaches (003 T008 rule). Both are unverified until they run.
+- Q11 needs a bare remote in the owned distro folder. It is unverified until it runs. The Q23 host line needs no SSH server: it comes from `submodule.<name>.url`, and no process reaches the host. T034 verified it on WSL.
 
 ## R11 Licence link
 
@@ -189,7 +189,7 @@ Unverified points (they stay unverified until their test runs):
 - One undo step through `insertText` in WebView2 (N2).
 - The IME case without an installed Japanese IME (N5), and the offline run without Windows Sandbox (N6).
 - The packaged WSL Global save. No test runs it, by design (spec FR-025).
-- The XDG global file on WSL (R9), the Q11 force note, and the Q23 host line on WSL (R10).
+- The XDG global file on WSL (R9) and the Q11 force note on WSL (R10). T034 verified the Q23 host line on WSL.
 - `GIT_CONFIG_GLOBAL` set by a distro for `wsl.exe` processes (R9).
 - ICU dictionary word breaks for Thai, Lao, Khmer, Myanmar, and CJK text (R6).
 - Whether the hunspell-wasm repository at `8f755ef` holds the Hunspell sources and the build files of `hunspell.wasm`, and which Hunspell version it builds (F16, plan D18).
@@ -496,3 +496,23 @@ Run in `C:\Projects\arbareto-l7` from 823c26f8, before any commit. Every `ORIGIN
 - Main renderer chunk (`bun run build:frontend`): `index-*.js` 995.65 kB (gzip 305.43 kB) before, 924.24 kB (gzip 290.39 kB) after. The catalog is its own chunk `dictionaries-*.js`, 73.67 kB (gzip 13.22 kB). The build ran the `catalogCheck` hook.
 - Checks: `bun run typecheck` and `bun run export:schemas --check` exit 0. `bun test ./tests/contracts ./tests/git/portable-imports.test.ts ./tests/git/dictionaries.test.ts`: 5,199 pass, 37 skip, 0 fail in 109 files, 310 `ORIGIN` lines. `cargo test --locked --manifest-path src-tauri/Cargo.toml`: 573 passed, 0 failed, 4 ignored.
 - `bun test tests/gate/dictionary-gate.test.ts` with the cache: 174 pass, 0 fail. Each of the 86 T008 languages holds the Script of its fixture, and each of the 85 T023 lines gives `download=ready import=ready fixture=0/0`. `OBSERVATION T008: uk load=674 rss=70.8 nfc=true/true fixture=0/0 positives=200 script=Cyrillic latinAccepted=5/5 bun=1.4.4`: with the per-script check, the `uk` worker no longer checks Latin words.
+
+### Batch 2 review, 2026-10-25
+
+Independent batch 2 review, reviewer agent, read-only, on 4d4ba72a (the merges of WP4 and WP7).
+- High (1): `written` of a Global save named the stale key and later keys that Git never wrote. Fix on main: `written` counts only the keys whose step ran. The Q22 case of `workbench-wsl-settings.test.ts` now expects `written` `["user.name"]` with `stale` `user.email`.
+- Medium (2): Remove of the last personal word moved focus to the page. Fix: focus goes to the count line (T055).
+- Medium (3): the not-ready reason had no tooltip. Fix: the checkbox tooltip shows the reason, and `aria-describedby` stays (T055).
+- Medium (4): the own import showed "Not downloaded" with active actions. Fix: "Importing…" with no actions (T055).
+- Medium (5): `workbench-wsl.test.ts` ran about 44 minutes. Fix: four files and a shared harness (T056).
+- Low (6): the `gitForm` double kept `.` and `..` and accepted U+F000 to U+F0FF segments. Fix: it folds and refuses as `wsl::linux_path` (T055).
+- Low (7), (8): docs. The Q23 host line on WSL is verified by T034. Data-model §18 moves the running run to the store.
+- Low (9): the import failure states follow the DictionaryFailures board, not data-model §4. This waits for the user.
+- Low (10): the main renderer chunk was 1,032.67 kB. Fix: `SettingsView` loads through `lazy()` (T055).
+- Low (11): forced colors. Fix: the knob and the focus bar use CanvasText, and an unavailable checkbox keeps full opacity, so the GrayText rule of `index.css` shows (T055).
+
+### T055 and T056, 2026-10-25, Windows 11 10.0.26300, Ubuntu-26.04, Git 2.55.0 in the distro
+
+- Main renderer chunk (`bun run build:frontend`): `index-*.js` 1,032.67 kB (gzip 322.52 kB) before, 609.99 kB (gzip 188.81 kB) after. `SettingsView-*.js` is its own chunk of 61.23 kB (gzip 18.72 kB).
+- WSL file times, each file alone with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`: `workbench-wsl-facts.test.ts` 330 s (27 pass), `workbench-wsl-branches.test.ts` 740 s (12 pass), `workbench-wsl-staging.test.ts` 599 s (12 pass), `workbench-wsl-settings.test.ts` 799 s (13 pass, 1 fail). The sum is 2,468 s. No file passes 30 minutes.
+- The one fail is the Q22 stale case: `written` still holds `user.email`, because the item 1 fix is not yet merged from main into 006.

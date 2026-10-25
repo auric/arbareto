@@ -1105,7 +1105,9 @@ describe("change check with suppressed hints (contract §8 \"Change check\")", (
       withService({ name: "t075-selected", watchHints: false }, async (service) => {
         const repo = repoOf(buildF02(gitPath(), "t075-selected"));
         const { repositoryId } = await service.register(repo);
-        const first = (await settled(service, repositoryId)).result;
+        await settled(service, repositoryId);
+        // T403, contract §3: a `retained` result holds no entries page. An equal full read keeps the snapshot and gives its first page.
+        const first = (await read(service, repositoryId, FULL)).result;
         const entry = first.entries.find((e) => e.path === "multi.txt" && e.category === "unstaged")!;
         // The comparison binds the working file of the selected entry (`workingVersions`).
         const compared = await service.request("readComparison", { snapshotId: first.snapshotId, entryId: entry.entryId }, { repositoryId, repositoryGeneration: first.generation, selectionId: crypto.randomUUID() });

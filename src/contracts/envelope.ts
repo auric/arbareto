@@ -830,6 +830,7 @@ export const WorkspaceLocation = z
   .meta({ title: "WorkspaceLocation" });
 
 // Contract §3 `readWorkspace` with a retained snapshot: the summary, `entryCount`, the first page, and the cursor of the next page or null.
+// A `retained` result holds no page: `entries` is empty and `cursor` is null.
 export const WorkspaceSnapshot = z
   .strictObject({
     generation: Generation,
@@ -859,7 +860,11 @@ export const WorkspaceSnapshot = z
     // Contract §3 `readWorkspace`: `retained` when the change check returned the last snapshot without a Git process.
     readKind: z.enum(["full", "retained"]),
   })
-  .refine((r) => r.completeness.state !== "failed" && (r.cursor === null ? r.entries.length === r.entryCount : r.entries.length > 0 && r.entries.length < r.entryCount))
+  .refine(
+    (r) =>
+      r.completeness.state !== "failed" &&
+      (r.readKind === "retained" ? r.entries.length === 0 && r.cursor === null : r.cursor === null ? r.entries.length === r.entryCount : r.entries.length > 0 && r.entries.length < r.entryCount),
+  )
   .refine((r) => r.cut === undefined || r.cut === null || r.completeness.state === "limited")
   .meta({ title: "WorkspaceSnapshot" });
 

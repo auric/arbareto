@@ -94,6 +94,9 @@ export type ReadOutcome =
   | { result: "canceled" }
   | { result: "deadline" };
 
+const outcomeOf = (value: WorkspaceSnapshot): ReadOutcome =>
+  value.completeness.state === "complete" ? { result: "succeeded", value } : { result: "limited", code: value.completeness.code as "OUTPUT_LIMIT" | "WORKTREE_CHANGING", value };
+
 export type EntriesOutcome = { ok: true; value: ReadEntriesResult } | { ok: false; code: "REPOSITORY_CHANGED" | "UNKNOWN_TARGET" };
 
 type ProcessTarget = Pick<ReadWorkspaceTarget, "operationId" | "signal" | "workspace">;
@@ -1024,13 +1027,13 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       cursor: snapshot.cursors[1] ?? null,
     };
     if (recorded) {
-      // Contract §8 "Change check": only a complete read keeps a tuple. A HEAD with another branch ref file than the tuple keeps none.
+      // Contract §8 "Change check": a complete read and a read limited with OUTPUT_LIMIT keep a tuple. A HEAD with another branch ref file than the tuple keeps none.
       const sameRef = branchRef(w, assumed) === branchRef(w, head);
-      st.kept = value.completeness.state === "complete" && tuple !== null && sameRef ? { ...tuple, hints, listing: lst, policy, value } : null;
+      const keeps = value.completeness.state === "complete" || (value.completeness.state === "limited" && value.completeness.code === "OUTPUT_LIMIT");
+      st.kept = keeps && tuple !== null && sameRef ? { ...tuple, hints, listing: lst, policy, value } : null;
       st.head = head;
     }
-    if (value.completeness.state === "complete") return { kind: "done", outcome: { result: "succeeded", value } };
-    return { kind: "done", outcome: { result: "limited", code: value.completeness.code as "OUTPUT_LIMIT" | "WORKTREE_CHANGING", value } };
+    return { kind: "done", outcome: outcomeOf(value) };
   }
 
   return {
@@ -1054,7 +1057,8 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
         const sameWorking = working !== null && st.bound.size === bound.length && bound.every((key) => kept.working.get(key) === working.get(key));
         const unchanged = () => st.kept === kept && !st.unavailable && !st.unwatched;
         const same = facts !== null && sameWorking && tupleText(kept.files, kept.programs, facts) === kept.facts && unchanged() && decidable();
-        const retained = (): ReadOutcome => ({ result: "succeeded", value: { ...kept.value, recoveryState: recoveryOf(st, t.workspace), readKind: "retained" } });
+        // Contract §3 `readWorkspace`: a `retained` result holds no entries page.
+        const retained = (): ReadOutcome => outcomeOf({ ...kept.value, entries: [], cursor: null, recoveryState: recoveryOf(st, t.workspace), readKind: "retained" });
         if (same && policyOf(trust, t.workspace, kept.listing, t.installation) === kept.policy) {
           const count = st.hints;
           if (kept.hints === count) return retained();

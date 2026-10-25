@@ -10,13 +10,14 @@ import { join } from "node:path";
 import { PreviewIgnoreResult } from "../../src/contracts/envelope";
 import { PREVIEW_GROUP_PATHS } from "../../src/contracts/limits";
 import { comparePaths } from "../../src/contracts/tree-order";
-import type { GitCall } from "../../src/git-service/git-runner";
+import { createCollector, type GitCall } from "../../src/git-service/git-runner";
+import type { CallMatch } from "./bun-runner";
 import { printOrigin } from "../origin";
 import { buildCaseNames, buildPathsBound, buildReport, faGit, REPORT_ROOT_TEXT, write, type FaFixture } from "./file-actions-fixtures";
 import { fixtureDir, useFixtureRoot } from "./fixture-root";
 import { workingFileDigests } from "./git-oracle";
 import { approve, gitPath, outcome, readOk, shortDeadline, SUCCEEDED, subcommand, until, withService } from "./hunk-harness";
-import { caseTest, configDigests, siblingDeadline, type Capability, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { caseTest, configDigests, once, siblingDeadline, type Capability, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 import { canary, untrackedFixture } from "./workbench-fixtures";
 
 for (const module of ["ignore-preview", "git-runner", "native-runner", "session"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
@@ -210,8 +211,8 @@ describe("each preview equals Git's listing after a real save (spec FR-038, SC-0
       expect(service.runner.calls.slice(from).filter(riArgs).length).toBe(1);
       const second = service.runner.calls.length;
       await previewed(service, r, read, "gitignore", `${REPORT_ROOT_TEXT}emptyign/\n*.md\n`);
-      // A built base runs one C check and no repository listing.
-      expect({ ri: service.runner.calls.slice(second).filter(riArgs).length, checks: shadowCalls(service, second).filter(isCheck).length }).toEqual({ ri: 0, checks: 1 });
+      // A built base runs one C check, in 4 batches (T087), and no repository listing.
+      expect({ ri: service.runner.calls.slice(second).filter(riArgs).length, checks: shadowCalls(service, second).filter(isCheck).length }).toEqual({ ri: 0, checks: 4 });
       writeFileSync(join(f.repo, "new.txt"), "");
       const fresh = await readOk(service, r.repositoryId);
       expect(fresh.snapshotId).not.toBe(read.snapshotId);
@@ -376,6 +377,9 @@ describe("typed limits (spec FR-039, contract Δ5)", () => {
 
   // T081, 001 contract §5: the deadline closes the operation Job, so the sibling check ends with `exitCode` null and no `deadline`.
   // T399 `siblingDeadline`: the sibling check starts first, and only the Job close of the deadline check ends it. Each shadow is the sibling once.
+  // T087: each check runs in batches. The double reads its 1 ms deadline at each start until a microtask resets it, so batches that start
+  // beside the target can also get it. Every other batch ends at its own exit (0 or 1) or at the Job close.
+  const ends = (exits: readonly string[]) => ({ deadline: exits.includes("deadline"), closed: exits.includes("closed"), other: exits.filter((e) => !["deadline", "closed", "0", "1"].includes(e)) });
   caseTest("T081", "a deadline in one of two parallel check-ignore steps gives deadline, also when the Job close ends the sibling first", SHELL, () =>
     withService({ name: "t081-sibling" }, async (service) => {
       const f = report();
@@ -392,8 +396,101 @@ describe("typed limits (spec FR-039, contract Δ5)", () => {
         // Contract §6 "Process replies": the deadline check carries `deadline`. The closed sibling has `exitCode` null and no `deadline`.
         const exits = service.runner.calls.slice(before).filter(isCheck).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
         console.log(`OBSERVATION T081: sibling=${repo} checks=${exits.join(",")} ${JSON.stringify(unavailable(response))}`);
-        expect({ repo, exits: exits.sort(), ...unavailable(response) }).toEqual({ repo, exits: ["closed", "deadline"], state: "succeeded", code: undefined, result: { unavailable: { reason: "deadline" } } });
+        expect({ repo, ends: ends(exits), ...unavailable(response) }).toEqual({ repo, ends: { deadline: true, closed: true, other: [] }, state: "succeeded", code: undefined, result: { unavailable: { reason: "deadline" } } });
       }
+    }),
+    TIMEOUT_MS,
+  );
+
+  // T087, plan.md D9 step 6: a check splits its stdin paths into batches that run at the same time, at most 4 processes for each preview.
+  // Git decides each stdin path alone (builtin/check-ignore.c `check_ignore`), so the joined output equals one run.
+  const isShadowCheck = (repo: "s" | "c") => (call: { arguments: readonly string[] }) => {
+    const { context } = call as unknown as GitCall;
+    return isCheck(call) && context.contextKind === "ignorePreview" && context.shadowRepository === repo;
+  };
+  // Records the stdout of each check call of shadow `repo`. The first one waits until `count` batches started and one check over their joined input ran
+  // in the same shadow. The next check of that shadow cannot start while the first batch waits, so `started` counts the batches of one check.
+  async function joinedCheck<T>(service: Service, repo: "s" | "c", count: number, run: () => Promise<T>) {
+    const batches: { call: GitCall; out: Uint8Array[] }[] = [];
+    const record = service.runner.holdStart((call) => {
+      const c = call as unknown as GitCall;
+      if (isShadowCheck(repo)(call) && !batches.some((b) => b.call === c)) {
+        const batch = { call: c, out: [] as Uint8Array[] };
+        const push = c.stdout.push.bind(c.stdout);
+        c.stdout.push = (chunk) => (batch.out.push(new Uint8Array(chunk)), push(chunk));
+        batches.push(batch);
+      }
+      return false;
+    });
+    const release = service.runner.holdStart(once(isShadowCheck(repo)));
+    try {
+      const pending = run();
+      await until(() => batches.length >= count, `${count} batches of the ${repo} check`);
+      const parts = [...batches];
+      const input = Buffer.concat(parts.map((b) => b.call.input!));
+      const single = createCollector({ maxBytes: 64 * 1024 * 1024 });
+      await service.runner.run({ ...parts[0]!.call, input, stdout: single, stderr: createCollector({ maxBytes: 64 * 1024 }), signal: new AbortController().signal });
+      release();
+      const result = await pending;
+      // The paths of each batch, in start order.
+      const started = parts.map((b) => Buffer.from(b.call.input!).toString("utf8").split(NUL).length - 1);
+      return { result, started, input, joined: Buffer.concat(parts.flatMap((b) => b.out)), single: Buffer.from(single.take()) };
+    } finally {
+      release();
+      record();
+    }
+  }
+  // The `n`-th distinct call that `match` accepts, from 1. The double passes the same call object at each check of that call.
+  const nth = (match: CallMatch, n: number): CallMatch => {
+    const seen: object[] = [];
+    return (call) => {
+      if (!match(call)) return false;
+      if (!seen.includes(call)) seen.push(call);
+      return seen.indexOf(call) === n - 1;
+    };
+  };
+  const NON_ASCII = ["ü-file.txt", "日本.log", "ñ-dir/x.txt", "кир/файл.txt", "build/ö.o"];
+
+  caseTest("T087", "a base build check runs in 2 batches per shadow, and a built-base C check in 4; the joined output equals one run over the joined input, with folder-only patterns and non-ASCII paths", SHELL, () =>
+    withService({ name: "t087-batches" }, async (service) => {
+      const f = report();
+      for (const path of NON_ASCII) write(f.repo, path, "");
+      const { r, read } = await open(service, f);
+      const text = `${REPORT_ROOT_TEXT}emptyign/\nñ-dir/\nкир/\n*.txt\n`;
+      const want = oracle(f.repo, `t087-oracle-${++builds}`, ".gitignore", Buffer.from(text));
+      // The first preview builds the base, so S and C run together. The second preview of the same snapshot runs one C check.
+      for (const [repo, count] of [["s", 2], ["c", 4]] as const) {
+        const got = await joinedCheck(service, repo, count, () => previewed(service, r, read, "gitignore", text));
+        const paths = got.input.toString("utf8").split(NUL).slice(0, -1);
+        console.log(`OBSERVATION T087: ${repo} check batches=${got.started.join(",")} paths=${paths.length}`);
+        expect({
+          repo,
+          batches: got.started.length,
+          empty: got.started.includes(0),
+          nonAscii: NON_ASCII.some((p) => paths.includes(p) || paths.includes(p.split("/")[0]!)),
+          equal: Buffer.compare(got.joined, got.single) === 0,
+        }).toEqual({ repo, batches: count, empty: false, nonAscii: true, equal: true });
+        expect({ repo, newlyIgnored: got.result.newlyIgnored, noLongerIgnored: got.result.noLongerIgnored, trackedMatched: got.result.trackedMatched }).toEqual({ repo, ...want });
+      }
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T087", "a deadline in one batch of a check gives deadline, also when the Job close ends a sibling batch first", SHELL, () =>
+    withService({ name: "t087-deadline" }, async (service) => {
+      const f = report();
+      const { r, read } = await open(service, f);
+      const before = service.runner.calls.length;
+      const release = siblingDeadline(service, nth(isShadowCheck("s"), 2), isShadowCheck("s"));
+      const response = await preview(service, r, read, "gitignore", "*.md\n").finally(release);
+      const exits = service.runner.calls.slice(before).filter(isCheck).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+      console.log(`OBSERVATION T087: checks=${exits.join(",")} ${JSON.stringify(unavailable(response))}`);
+      expect({ ends: ends(exits), ...unavailable(response) }).toEqual({
+        ends: { deadline: true, closed: true, other: [] },
+        state: "succeeded",
+        code: undefined,
+        result: { unavailable: { reason: "deadline" } },
+      });
     }),
     TIMEOUT_MS,
   );

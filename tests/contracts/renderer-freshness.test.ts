@@ -141,6 +141,9 @@ function comparison(snapshotId: string, entryId: string, digests: string[]) {
   };
 }
 
+// Contract §3 `readWorkspace`: a `retained` reply of `shown` holds its summary and `entryCount`, and no entries page.
+const retainedOf = (shown: WorkspaceSnapshot, fields: Partial<WorkspaceSnapshot> = {}): WorkspaceSnapshot => ({ ...shown, readKind: "retained", entries: [], cursor: null, ...fields });
+
 const workspaceResponse = (call: Call, result: WorkspaceSnapshot) =>
   call.resolve({ requestId: crypto.randomUUID(), operationId: crypto.randomUUID(), state: "succeeded", repositoryGeneration: result.generation, result });
 const echo = (call: Call, fields: Partial<BridgeResponse>) =>
@@ -395,7 +398,7 @@ describe("history view opens", () => {
     const opens = o.of("openHistory").length;
     const refs = o.of("readRefs").length;
     await o.advance(1000);
-    workspaceResponse(o.last("readWorkspace"), snapshot(1, o.first.entries, { readKind: "retained", head: { state: "branch", target: "refs/heads/main", oid: HEAD_B } }));
+    workspaceResponse(o.last("readWorkspace"), retainedOf(o.first, { head: { state: "branch", target: "refs/heads/main", oid: HEAD_B } }));
     await flush();
     expect(o.of("openHistory")).toHaveLength(opens);
     expect(o.of("readRefs")).toHaveLength(refs + 1);
@@ -570,7 +573,7 @@ describe("reference reads", () => {
     const o = await opened();
     const before = o.of("readRefs").length;
     await o.advance(1000);
-    workspaceResponse(o.last("readWorkspace"), snapshot(1, o.first.entries, { readKind: "retained" }));
+    workspaceResponse(o.last("readWorkspace"), retainedOf(o.first));
     await flush();
     o.requests.selectEntry(o.first.entries[0]!.entryId);
     await flush();
@@ -627,7 +630,7 @@ describe("reference reads", () => {
 
 // T385: a poll that changes no field notifies no listener, so the workbench renders nothing.
 describe("no-change polls", () => {
-  const retained = (o: { first: WorkspaceSnapshot }, fields: Partial<WorkspaceSnapshot> = {}) => ({ ...o.first, readKind: "retained" as const, ...fields });
+  const retained = (o: { first: WorkspaceSnapshot }, fields: Partial<WorkspaceSnapshot> = {}) => retainedOf(o.first, fields);
   async function polls(o: Awaited<ReturnType<typeof shown>>, count: number, fields: Partial<WorkspaceSnapshot> = {}) {
     let notified = 0;
     const unsubscribe = o.requests.subscribe(() => void notified++);
@@ -668,6 +671,34 @@ describe("no-change polls", () => {
     expect(await polls(o, 1)).toBe(1);
     expect(o.requests.state().headRead!.seq).toBeGreaterThan(seq);
     expect(await polls(o, 3)).toBe(0);
+    o.requests.dispose();
+  });
+});
+
+// T403, 001 contract §3 `readWorkspace`: a `retained` reply holds no entries page, so the renderer keeps the entries of its committed snapshot.
+describe("retained reply without a page (T403)", () => {
+  test("T403: a retained reply of the known snapshot keeps the entries and the selection and reads no page", async () => {
+    const o = await shown();
+    const entries = o.requests.state().entries;
+    await o.advance(1000);
+    workspaceResponse(o.last("readWorkspace"), retainedOf(o.first));
+    await flush();
+    expect(o.requests.state().entries).toBe(entries);
+    expect(o.requests.state().selection?.entryId).toBe(o.target.entryId);
+    expect(o.of("readEntries")).toHaveLength(0);
+    o.requests.dispose();
+  });
+
+  test("T403: a retained reply of an unknown snapshot keeps the entries and the selection and sends one full read", async () => {
+    const o = await shown();
+    const entries = o.requests.state().entries;
+    await o.advance(1000);
+    const reads = o.of("readWorkspace").length;
+    workspaceResponse(o.last("readWorkspace"), retainedOf(o.first, { snapshotId: crypto.randomUUID() }));
+    await flush();
+    expect(o.requests.state().entries).toBe(entries);
+    expect(o.requests.state().selection?.entryId).toBe(o.target.entryId);
+    expect(o.of("readWorkspace").slice(reads).map((c) => c.payload)).toEqual([{ refresh: false, check: "full" }]);
     o.requests.dispose();
   });
 });

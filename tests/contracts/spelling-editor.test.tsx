@@ -57,6 +57,7 @@ function synthetic(aff: string, dic: string) {
   const suggestions = new Map(aff.split("\n").flatMap((line) => (line.startsWith("SUG ") ? [[line.split(" ")[1]!, line.split(" ")[2]!.split(",")] as const] : [])));
   return { testSpelling: (word: string) => accepted.has(word), getSpellingSuggestions: (word: string) => [...(suggestions.get(word) ?? [])] };
 }
+const asText = (file: string | Uint8Array) => (typeof file === "string" ? file : new TextDecoder().decode(file));
 const dicOf = (words: string[]) => `${words.length}\n${words.join("\n")}\n`;
 const ENGLISH = { aff: "SET UTF-8\nSUG recieve receive,relieve\nSUG zzq a,b,c,d,e,f,g\n", dic: dicOf([...CORRECT, "receive"]) };
 const UKRAINIAN = { "index.aff": "SET UTF-8\nSUG recieve отримати\n", "index.dic": dicOf(["привіт", "світ"]) };
@@ -70,7 +71,7 @@ class WorkerDouble {
   held: boolean;
   private queue: Message[] = [];
   private handle: (message: Message) => void;
-  constructor(held: boolean, create: (aff: string, dic: string) => Promise<ReturnType<typeof synthetic>>, english: () => Promise<{ aff: string; dic: string }>) {
+  constructor(held: boolean, create: (aff: string | Uint8Array, dic: string | Uint8Array) => Promise<ReturnType<typeof synthetic>>, english: () => Promise<{ aff: string; dic: string }>) {
     this.held = held;
     this.handle = createSpellWorker((reply) => setTimeout(() => this.terminated || this.onmessage?.({ data: reply })), { english, create }) as never;
   }
@@ -174,7 +175,8 @@ async function mount(setup: Setup = {}, extra: Record<string, unknown> = {}) {
     created++;
     // The engine names no language at creation, so the double learns it from the first message.
     const slot = { language: "", worker: null as unknown as WorkerDouble };
-    const worker = new WorkerDouble(false, async (aff, dic) => (realCreate ? ((await realCreate(aff, dic)) as never) : synthetic(aff, dic)), english);
+    // A downloaded language gives bytes (plan.md D9); `hunspell.js` `FS.writeFile` takes them as they are.
+    const worker = new WorkerDouble(false, async (aff, dic) => (realCreate ? ((await realCreate(aff as string, dic as string)) as never) : synthetic(asText(aff), asText(dic))), english);
     const post = worker.postMessage.bind(worker);
     worker.postMessage = (message: Message) => {
       if (slot.language === "") {
@@ -813,5 +815,155 @@ describe("real engine (F15)", () => {
     rects.set("recieve", new DOMRect(100, 20, 50, 18));
     await rightClick(t, 120, 30);
     expect(menuLabels()[0]).toBe("receive");
+  }, 30_000);
+});
+
+describe("dictionary bytes (T058, plan.md D9)", () => {
+  type Given = { aff: unknown; dic: unknown };
+  const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
+  const utf8 = (text: string) => new Uint8Array(Buffer.from(text, "utf8"));
+  const AFF = utf8("SET UTF-8\n");
+  // "привіт" holds 2-byte UTF-8 sequences, so a 7-byte chunk splits the second letter.
+  const DIC = utf8("1\nпривіт\n");
+  function worker() {
+    const replies: { type: string; reason?: string }[] = [];
+    const given: Given[] = [];
+    const handle = createSpellWorker((reply) => void replies.push(reply as never), {
+      english: async () => ENGLISH,
+      create: async (aff, dic) => (given.push({ aff, dic }), synthetic("", "0\n")),
+    });
+    const send = (file: "aff" | "dic", bytes: Uint8Array, step: number, size = bytes.length) => {
+      for (let offset = 0; offset === 0 || offset < bytes.length; offset += step) handle({ type: "chunk", file, size, offset, data: b64(bytes.subarray(offset, offset + step)) });
+    };
+    const build = async () => {
+      handle({ type: "build", script: "Cyrillic" });
+      for (let i = 0; i < 50 && replies.length === 0; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+      return replies;
+    };
+    return { handle, send, build, given };
+  }
+  let atobCalls = 0;
+  const savedAtob = globalThis.atob;
+  beforeAll(() => {
+    globalThis.atob = (data: string) => (atobCalls++, savedAtob(data));
+  });
+  afterAll(() => {
+    globalThis.atob = savedAtob;
+    expect(atobCalls).toBe(0);
+  });
+
+  test("the chunk messages carry the file size and the chunk offset", async () => {
+    const big = dicOf(Array.from({ length: 120_000 }, (_, i) => `слово${i}`));
+    const t = await mount({ languages: ["uk"], files: { uk: { "index.aff": UKRAINIAN["index.aff"], "index.dic": big } } });
+    await t.type("привіт");
+    await until(() => t.store.state().languages.get("uk") !== "loading", 5_000);
+    expect(t.store.state().languages.get("uk")).toBe("loaded");
+    const size = Buffer.byteLength(big, "utf8");
+    expect(size).toBeGreaterThan(1_048_576);
+    const chunks = t.worker("uk")!.posted.filter((m) => m.type === "chunk").map(({ file, size, offset }) => ({ file, size, offset }));
+    expect(chunks).toEqual([
+      { file: "aff", size: Buffer.byteLength(UKRAINIAN["index.aff"], "utf8"), offset: 0 },
+      { file: "dic", size, offset: 0 },
+      { file: "dic", size, offset: 1_048_576 },
+    ]);
+  });
+
+  test("a multi-byte character split across two chunks loads, and Hunspell gets the file bytes", async () => {
+    const w = worker();
+    w.send("aff", AFF, 4);
+    w.send("dic", DIC, 7);
+    expect(await w.build()).toEqual([{ type: "loaded" }]);
+    expect(w.given).toEqual([{ aff: AFF, dic: DIC }]);
+    expect(w.given[0]!.aff).toBeInstanceOf(Uint8Array);
+  });
+
+  test("a leading UTF-8 BOM loads, and Hunspell gets the bytes without it", async () => {
+    const w = worker();
+    w.send("aff", new Uint8Array([0xef, 0xbb, 0xbf, ...AFF]), 2);
+    w.send("dic", new Uint8Array([0xef, 0xbb, 0xbf, ...DIC]), 1_048_576);
+    expect(await w.build()).toEqual([{ type: "loaded" }]);
+    expect(w.given).toEqual([{ aff: AFF, dic: DIC }]);
+  });
+
+  test("invalid base64 refuses the load with reason base64", async () => {
+    const w = worker();
+    w.handle({ type: "chunk", file: "aff", size: 3, offset: 0, data: "A!B=" });
+    w.send("dic", DIC, 1_048_576);
+    expect(await w.build()).toEqual([{ type: "load-failed", reason: "base64" }]);
+    expect(w.given).toEqual([]);
+  });
+
+  test("an invalid UTF-8 sequence split across two chunks refuses the load with reason utf-8", async () => {
+    const w = worker();
+    w.send("aff", AFF, 1_048_576);
+    // E2 82 starts a 3-byte sequence; 41 is no continuation byte.
+    w.send("dic", new Uint8Array([0x31, 0x0a, 0xe2, 0x82, 0x41, 0x0a]), 4);
+    expect(await w.build()).toEqual([{ type: "load-failed", reason: "utf-8" }]);
+  });
+
+  test("a file that ends inside a UTF-8 sequence refuses the load with reason utf-8", async () => {
+    const w = worker();
+    w.send("aff", AFF, 1_048_576);
+    w.send("dic", new Uint8Array([0x31, 0x0a, 0xd0]), 2);
+    expect(await w.build()).toEqual([{ type: "load-failed", reason: "utf-8" }]);
+  });
+
+  test("a truncated last chunk refuses the load with reason short", async () => {
+    const w = worker();
+    w.send("aff", AFF, 1_048_576);
+    w.send("dic", DIC.subarray(0, DIC.length - 2), 1_048_576, DIC.length);
+    expect(await w.build()).toEqual([{ type: "load-failed", reason: "short" }]);
+  });
+
+  test("a file without a chunk refuses the load with reason short", async () => {
+    const w = worker();
+    w.send("dic", DIC, 1_048_576);
+    expect(await w.build()).toEqual([{ type: "load-failed", reason: "short" }]);
+  });
+
+  test("an oversized chunk refuses the load with reason chunk", async () => {
+    const w = worker();
+    w.send("aff", AFF, 1_048_576);
+    w.send("dic", DIC, 1_048_576, DIC.length - 1);
+    expect(await w.build()).toEqual([{ type: "load-failed", reason: "chunk" }]);
+  });
+
+  test("a chunk at a wrong offset or with another size refuses the load with reason chunk", async () => {
+    const gap = worker();
+    gap.send("aff", AFF, 1_048_576);
+    gap.handle({ type: "chunk", file: "dic", size: DIC.length, offset: 2, data: b64(DIC.subarray(2)) });
+    expect(await gap.build()).toEqual([{ type: "load-failed", reason: "chunk" }]);
+    const resized = worker();
+    resized.send("aff", AFF, 1_048_576);
+    resized.handle({ type: "chunk", file: "dic", size: DIC.length, offset: 0, data: b64(DIC.subarray(0, 4)) });
+    resized.handle({ type: "chunk", file: "dic", size: DIC.length + 1, offset: 4, data: b64(DIC.subarray(4)) });
+    expect(await resized.build()).toEqual([{ type: "load-failed", reason: "chunk" }]);
+  });
+
+  test("a failed create refuses the load with reason engine, and the next load starts empty", async () => {
+    const replies: unknown[] = [];
+    let calls = 0;
+    const handle = createSpellWorker((reply) => void replies.push(reply), {
+      english: async () => ENGLISH,
+      create: async () => {
+        if (calls++ === 0) throw new Error("create");
+        return synthetic("", "0\n");
+      },
+    });
+    for (let round = 0; round < 2; round++) {
+      handle({ type: "chunk", file: "aff", size: AFF.length, offset: 0, data: b64(AFF) });
+      handle({ type: "chunk", file: "dic", size: DIC.length, offset: 0, data: b64(DIC) });
+      handle({ type: "build", script: "Cyrillic" });
+      for (let i = 0; i < 50 && replies.length === round; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(replies).toEqual([{ type: "load-failed", reason: "engine" }, { type: "loaded" }]);
+  });
+
+  test("hunspell-wasm loads a downloaded language from bytes", async () => {
+    const en = { "index.aff": readFileSync(join(ROOT, "node_modules/dictionary-en/index.aff"), "utf8"), "index.dic": readFileSync(join(ROOT, "node_modules/dictionary-en/index.dic"), "utf8") };
+    const t = await mount({ real: true, languages: ["uk"], files: { uk: en } });
+    await t.type("привіт");
+    await until(() => t.store.state().languages.get("uk") !== "loading", 20_000);
+    expect(t.store.state().languages.get("uk")).toBe("loaded");
   }, 30_000);
 });

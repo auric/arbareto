@@ -174,12 +174,13 @@ Each section names its source. Field names are contract names. "001 data-model Â
 
 | Message | Worker | Fields | Reply |
 |---|---|---|---|
-| `init` | both | `language`, `script` | for `en`: `loaded` or `load-failed` after the `?raw` import |
-| `chunk` | both | `file` (`aff` or `dic`), `data` (base64) | none |
-| `build` | both | `script` | `loaded` or `load-failed` |
+| `init` | both | `language`, `script` | for `en`: `loaded` or `load-failed {reason}` after the `?raw` import |
+| `chunk` | both | `file` (`aff` or `dic`), `size` (the file bytes), `offset` (the chunk start), `data` (base64) | none |
+| `build` | both | `script` | `loaded` or `load-failed {reason}`, `reason` one of `chunk`, `short`, `base64`, `utf-8`, `engine` (plan D9) |
 | `check` | check | `round`, `lines` (each `{start, text}`) | `checked {round, ranges}`, `ranges` a transferred `Uint32Array` of start and end pairs in offsets of T, only of words that hold a letter of the worker's `script` |
 | `suggest` | suggestion | `id`, `word` | `suggested {id, list}`, at most 5 strings |
 
+- Chunk bytes (T058): the worker decodes each `data` into one byte array of `size` per file at `offset`. The chunks of a file come in order: `offset` equals the count of bytes written. The worker keeps no decoded text and gives the bytes, without a leading UTF-8 BOM, to Hunspell.
 - A check worker gets the next `check` only after it replied to the last one. The engine keeps only the newest round for it.
 - A suggestion worker gets the next `suggest` only after it replied to the last one. A newer request replaces a queued one, and the engine drops a reply whose `id` is not the newest.
 - Load deadline: `DICTIONARY_LOAD_DEADLINE_MS` (30,000 ms) from the first `readDictionary` call, or from `init` for `en`, until `loaded`. At the deadline, the engine calls `worker.terminate()`.

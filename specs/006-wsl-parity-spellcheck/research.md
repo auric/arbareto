@@ -531,3 +531,13 @@ Independent batch 2 review, reviewer agent, read-only, on 4d4ba72a (the merges o
   - F-3 (build, before 006): `src/frontend/highlight/guard.ts:53` refuses a bundle text that holds the marker strings `AGFzbQ` or `loadWasm`. The check only refuses. 006 added the exact WebAssembly magic and SHA-256 rule for binary assets.
   - F-4 (coverage): the map lists FR-028 only under T042, but no test can load during a real download without the network. The plan and tasks.md must name the download case as a manual or Sandbox check, or drop it from FR-028.
   - F-5 (coverage): SC-009 (N5) has no IME driver, and N4 covers one text scale per run. T043 or a manual run must cover the other two scales and the IME.
+
+### T043 first run and the T058 cause, 2026-10-26, Windows 11 10.0.26300, build 1d0cddc8
+
+- T043 ran the packaged gate of plan.md D3 on build 1d0cddc8. 77 of the 85 catalog languages passed. Each of these 8 languages added more than 256 MiB in at least one of its 3 runs (increase per run, MiB): eu 295, 218, 212; et 271, 206, 208; gl 350, 339, 333; ka 235, 263, 251; he 215, 290, 211; tr 288, 405, 388; uk 407, 268, 289; fy 380, 390, 393.
+- Hunspell is not the cost. After a load, the WebAssembly memory of the worker is 30 MiB for uk and 45 MiB for fy.
+- The cost is the copies of the dictionary files on the way to the worker. Each worker held the received base64 text, the `atob` text, the chunk bytes, the joined bytes, the decoded UTF-16 text, the UTF-8 copy of `FS.writeFile`, and the in-memory file. The gate loads two workers per language (plan.md D9), and V8 does not free the copies before the peak sample.
+- Repro (investigator, local scratch): headless Edge, one page with both workers and one suggestion list, the sum of the private bytes of the Edge processes. Increase in MiB, the old path against a byte path: uk 278 to 313 against 150 to 158, fy 326 to 401 against 174, gl 318 against 138 to 150, tr 322 against 129. With raw bytes and no base64, the floor is 117 to 129 MiB.
+- `hunspell-wasm` 0.3.0 `FS.writeFile` takes a byte array (the `ArrayBuffer.isView` branch of `wasm/hunspell.js`), so the bytes need no text form.
+- Fix: T058, the byte path of plan.md D9 "A downloaded language". T043 then runs again on all 85 languages.
+- T058 repro (local scratch, the same page with the bundled `spell-worker.ts` before and after T058, headless Edge 156, 2 runs each): peak increase in MiB, uk 286 and 281 before, 104 and 119 after; fy 372 and 375 before, 160 and 183 after. A Bun or Edge run decides nothing; the packaged T043 rerun decides.

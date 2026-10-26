@@ -13,13 +13,16 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/toolti
 import { TEXTS } from "../integrate/texts";
 import { splitPath, WINDOWS_SEPARATORS } from "../lib/path";
 import { isObject } from "../lib/utils";
+import { shortRef } from "../refs/ReferencesSidebar";
 import type { Workbench } from "../state/workbench";
 import { browseRefusal, W } from "./texts";
 
 // Feature 004 spec FR-052 and FR-053, plan.md D10 and D15 "Docked panel", the Worktrees board.
 
 /** The `worktree-add` payload parts, and "Switch to it after creating". */
-export type AddRequest = { branch: { new: string; start: string } | { existing: string }; path: string; switchTo: boolean };
+export type AddRequest = { branch: { new: string; start: string } | { existing: string } | { track: { ref: string; name: string } }; path: string; switchTo: boolean };
+/** The branch menu selection (spec FR-052): an existing local branch, or a new branch that tracks a remote-tracking branch. */
+export type AddSelection = { existing: string } | { track: { ref: string; name: string } };
 
 export type AddWorktreePanelProps = {
   workbench: Workbench;
@@ -29,6 +32,8 @@ export type AddWorktreePanelProps = {
   blockedReason: string | null;
   running: boolean;
   opener: Element | null;
+  /** The branch menu selection. Without it, the panel starts with New branch at `start`. */
+  initial?: AddSelection;
   /** Reviews and runs the add. It gives the refusal text, or null. */
   onSubmit(request: AddRequest): Promise<string | null>;
   /** The `chooseWorktreeFolder` response (contract Δ3). */
@@ -47,12 +52,14 @@ export function suggestFolder(root: string | null, branch: string): string {
   return last === "" ? "" : `${parent}${name}-${last}`;
 }
 
-export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason, running, opener, onSubmit, onBrowse, onClose }: AddWorktreePanelProps) {
+export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason, running, opener, initial, onSubmit, onBrowse, onClose }: AddWorktreePanelProps) {
   const ids = { mode: useId(), folder: useId(), hint: useId() };
   const branches = useSyncExternalStore(workbench.subscribe, () => workbench.getState().branches, () => workbench.getState().branches);
-  const [mode, setMode] = useState<"new" | "existing">("new");
-  const [name, setName] = useState("");
-  const [existing, setExisting] = useState<string | null>(null);
+  // A remote-tracking start is fixed. The new branch then tracks it (contract Δ3 `track`).
+  const track = initial !== undefined && "track" in initial ? initial.track.ref : null;
+  const [mode, setMode] = useState<"new" | "existing">(initial !== undefined && "existing" in initial ? "existing" : "new");
+  const [name, setName] = useState(initial !== undefined && "track" in initial ? initial.track.name : "");
+  const [existing, setExisting] = useState<string | null>(initial !== undefined && "existing" in initial ? initial.existing : null);
   // Null until the first folder edit. Then the folder stays.
   const [edited, setEdited] = useState<string | null>(null);
   // A parent from Browse before a suggested name. The folder follows the name in it until the first edit.
@@ -74,7 +81,7 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
 
   const nameReason = (() => {
     if (mode === "existing") return chosen === null ? W.noFreeBranch : chosen.name === "@" ? W.reservedName : null;
-    if (start === null) return TEXTS.unborn;
+    if (track === null && start === null) return TEXTS.unborn;
     if (name === "") return W.enterName;
     const refusal = branchNameRefusal(name);
     return refusal === null ? null : refusal.code === "INVALID_REQUEST" ? W.invalidName : W.reservedName;
@@ -82,7 +89,7 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
   const reason = running ? RUNNING_REASON : (blockedReason ?? (pending ? TEXTS.pending : (nameReason ?? (folder === "" ? W.enterFolder : null))));
 
   async function submit() {
-    const branch = mode === "new" ? { new: name, start: start! } : { existing: chosen!.ref };
+    const branch = mode === "existing" ? { existing: chosen!.ref } : track !== null ? { track: { ref: track, name } } : { new: name, start: start! };
     setPending(true);
     setError(null);
     try {
@@ -131,7 +138,7 @@ export function AddWorktreePanel({ workbench, worktreeRoot, start, blockedReason
               setError(null);
             }}
           />
-          {start === null ? null : <span className="text-muted-text">{W.start(start)}</span>}
+          {track !== null ? <span className="text-muted-text">{W.trackStart(shortRef(track))}</span> : start === null ? null : <span className="text-muted-text">{W.start(start)}</span>}
         </div>
         <label className="flex h-(--h-button) items-center gap-2">
           <input type="radio" name="worktree-branch" checked={mode === "existing"} onChange={() => setMode("existing")} />

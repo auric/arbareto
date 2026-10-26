@@ -592,12 +592,12 @@ describe("branch context menu (FR-014, FR-017, FR-020, 002 FR-049)", () => {
     await mountWorkbench(workbench, branchWorld());
     await contextMenu(await sidebarRow("login-form"));
     const items = openMenuItems();
-    expect(items.map(itemLabel)).toEqual(["Switch", "Merge into current branch (main)…", "Rebase current branch (main) onto login-form…", "Create branch here…", "Rename…", "Delete…", "Push", "Copy branch name"]);
-    expect(items.map((i) => i.getAttribute("aria-keyshortcuts"))).toEqual(["Control+.", "Control+M", "Control+Shift+E", "Control+B", "F2", "Delete", null, null]);
+    expect(items.map(itemLabel)).toEqual(["Switch", "Merge into current branch (main)…", "Rebase current branch (main) onto login-form…", "Create branch here…", "Add worktree for this branch…", "Rename…", "Delete…", "Push", "Copy branch name"]);
+    expect(items.map((i) => i.getAttribute("aria-keyshortcuts"))).toEqual(["Control+.", "Control+M", "Control+Shift+E", "Control+B", null, "F2", "Delete", null, null]);
     for (const item of items) expect(item.hasAttribute("aria-label")).toBe(false);
     for (const key of document.querySelectorAll('[data-slot="dropdown-menu-content"] [data-slot$="shortcut"]')) expect(key.getAttribute("aria-hidden")).toBe("true");
     // Push on another branch stays focusable and states its reason.
-    const push = items[6]!;
+    const push = items[7]!;
     expect(text(document.getElementById(push.getAttribute("aria-describedby")!)!)).toBe("Push sends the current branch only.");
   });
 
@@ -609,7 +609,7 @@ describe("branch context menu (FR-014, FR-017, FR-020, 002 FR-049)", () => {
     await contextMenu(await sidebarRow("login-form"));
     expect(groups()).toEqual([
       ["Switch", "Merge into current branch (main)…", "Rebase current branch (main) onto login-form…"],
-      ["Create branch here…", "Rename…", "Delete…"],
+      ["Create branch here…", "Add worktree for this branch…", "Rename…", "Delete…"],
       ["Push", "Copy branch name"],
     ]);
     expect(separators()).toBe(2);
@@ -619,13 +619,13 @@ describe("branch context menu (FR-014, FR-017, FR-020, 002 FR-049)", () => {
     expect(push.contains(document.getElementById(push.getAttribute("aria-describedby")!))).toBe(true);
     await press(document.activeElement!, "Escape");
     await contextMenu(await sidebarRow("origin/login-page"));
-    expect(groups()).toEqual([["Switch", "Merge into current branch (main)…", "Rebase current branch (main) onto origin/login-page…"], ["Create branch here…"], ["Copy branch name"]]);
+    expect(groups()).toEqual([["Switch", "Merge into current branch (main)…", "Rebase current branch (main) onto origin/login-page…"], ["Create branch here…", "Add worktree for this branch…"], ["Copy branch name"]]);
   });
 
   test("a remote branch menu holds the FR-014 subset", async () => {
     await mountWorkbench(workbench, branchWorld());
     await contextMenu(await sidebarRow("origin/login-page"));
-    expect(openMenuItems().map(itemLabel)).toEqual(["Switch", "Merge into current branch (main)…", "Rebase current branch (main) onto origin/login-page…", "Create branch here…", "Copy branch name"]);
+    expect(openMenuItems().map(itemLabel)).toEqual(["Switch", "Merge into current branch (main)…", "Rebase current branch (main) onto origin/login-page…", "Create branch here…", "Add worktree for this branch…", "Copy branch name"]);
   });
 
   test("the current branch keeps Show only this branch's history, and its unavailable items state their reasons", async () => {
@@ -647,6 +647,30 @@ describe("branch context menu (FR-014, FR-017, FR-020, 002 FR-049)", () => {
     await contextMenu(await sidebarRow("signup"));
     const item = openMenuItems().find((i) => itemLabel(i) === "Delete…")!;
     expect(text(document.getElementById(item.getAttribute("aria-describedby")!)!)).toBe("The worktree C:\\wt\\sample-signup holds this branch. Open that worktree, or remove it first.");
+  });
+
+  test("Add worktree for this branch has the worktree icon and no key, and states the D15 reasons (FR-014, FR-052, T128)", async () => {
+    const world = branchWorld();
+    world.answers.readBranches = () => succeeded({ entries: [...ENTRIES, remote("origin/signup", { localName: "signup" })] });
+    const double = await mountWorkbench(workbench, world);
+    const reason = async (row: string) => {
+      await contextMenu(await sidebarRow(row));
+      const item = openMenuItems().find((i) => itemLabel(i) === "Add worktree for this branch…")!;
+      expect(item.querySelector('[data-slot="menu-icon"] svg')).not.toBeNull();
+      expect(item.getAttribute("aria-keyshortcuts")).toBeNull();
+      const id = item.getAttribute("aria-describedby");
+      const out = id === null ? null : text(document.getElementById(id)!);
+      await press(document.activeElement!, "Escape");
+      return out;
+    };
+    const held = "The worktree C:\\wt\\sample-signup holds this branch. Open that worktree, or remove it first.";
+    expect(await reason("main")).toBe("This worktree holds the branch. Git allows each branch in one worktree only.");
+    expect(await reason("signup")).toBe(held);
+    expect(await reason("origin/main")).toBe("No refspec of exactly one remote maps this branch, so Git cannot set up tracking.");
+    expect(await reason("origin/signup")).toBe(held);
+    expect(await reason("login-form")).toBeNull();
+    expect(await reason("origin/login-page")).toBeNull();
+    expect(double.count("reviewWorkbench")).toBe(0);
   });
 
   test("Copy branch name writes the short name (FR-020)", async () => {
@@ -672,6 +696,7 @@ describe("branch context menu (FR-014, FR-017, FR-020, 002 FR-049)", () => {
     expect(chip).not.toBeNull();
     await contextMenu(chip!);
     expect(openMenuItems().map(itemLabel)[0]).toBe("Switch");
+    expect(openMenuItems().map(itemLabel)).toContain("Add worktree for this branch…");
     expect(openMenuItems().map(itemLabel)).toContain("Show only this branch's history");
   });
 });

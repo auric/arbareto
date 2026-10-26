@@ -820,6 +820,15 @@ describe("Add worktree (FR-052, FR-053)", () => {
   test("other-worktree names the worktree that holds the branch", () =>
     addRefusal(refused("WORKBENCH_UNAVAILABLE", { reason: "other-worktree", worktree: "C:/wt/repo-hotfix" }), "The worktree C:/wt/repo-hotfix holds this branch. Open that worktree, or remove it first."));
   test("current-branch states that this worktree holds the branch", () => addRefusal(refused("WORKBENCH_UNAVAILABLE", { reason: "current-branch" }), "This worktree holds the branch. Git allows each branch in one worktree only."));
+  // T128: the add texts of the D3 Track rule do not offer Check out the commit only.
+  test("no-tracking-refspec of an add states the add text", async () => {
+    await addRefusal(refused("WORKBENCH_UNAVAILABLE", { reason: "no-tracking-refspec" }), "No refspec of a remote maps this branch, so Git cannot set up tracking.");
+    expect(text(addPanel()!)).not.toContain("Check out the commit only.");
+  });
+  test("several-tracking-remotes of an add names the remotes", async () => {
+    await addRefusal(refused("WORKBENCH_UNAVAILABLE", { reason: "several-tracking-remotes", remotes: ["origin", "team"] }), "The refspecs of origin, team map this branch, so Git cannot set up tracking.");
+    expect(text(addPanel()!)).not.toContain("Check out the commit only.");
+  });
   test("a trust refusal points to the trust chip", () => addRefusal(refused("TRUST_REQUIRED"), "This action runs programs of this repository. Trust the repository first with the trust chip in the status bar."));
 
   // T094 (spec FR-052, plan D14 and D15, contract Δ3 `chooseWorktreeFolder`).
@@ -910,5 +919,99 @@ describe("Add worktree (FR-052, FR-053)", () => {
     const panel = addPanel()!;
     await press(panel.querySelector("input")!, "Escape");
     expect(addPanel()).toBeNull();
+  });
+});
+
+// T128 (spec FR-014, FR-052, plan D15 "Worktree texts", D16 "Branch menu groups", contract Δ3 `track`).
+describe("Add worktree for this branch in the branch menu (FR-014, FR-052)", () => {
+  const remote = (name: string, fields: Entry = {}): Entry => ({ ref: `refs/remotes/${name}`, kind: "remote", name, invalidUtf8: false, oid: oid(9), upstream: null, tracking: null, heldBy: null, current: false, localName: null, ...fields });
+  const ENTRIES = [...BRANCHES, remote("origin/feat", { localName: "feat" }), remote("origin/login", { localName: "login" })];
+  const pendingReview = () => new Promise(() => {});
+  function menuWorld(): World {
+    const world = worktreeWorld(ALL, pendingReview, {
+      branches: [
+        { name: "login", objectId: oid(4), upstream: null, upstreamObjectId: null, track: { state: "none" }, current: false },
+        { name: "signup", objectId: oid(1), upstream: null, upstreamObjectId: null, track: { state: "none" }, current: true },
+      ],
+      remotes: [
+        { name: "origin/feat", objectId: oid(9) },
+        { name: "origin/login", objectId: oid(9) },
+      ],
+    });
+    world.answers.readBranches = () => succeeded({ entries: ENTRIES });
+    return world;
+  }
+  /** A sidebar reference row by the start of its accessible name. The filter opens the folders on its path. */
+  async function sidebarRow(name: string): Promise<HTMLElement> {
+    const toggle = document.querySelector<HTMLElement>('button[aria-label="Show references"]');
+    if (toggle !== null && toggle.getAttribute("aria-expanded") !== "true") await click(toggle);
+    await type(document.querySelector<HTMLInputElement>('input[aria-label="Filter references"]')!, name);
+    const found = [...document.querySelectorAll<HTMLElement>('[role="treeitem"]')].filter((e) => (e.getAttribute("aria-label") ?? "").startsWith(`${name},`));
+    if (found.length !== 1) throw new Error(`expected one sidebar row "${name}", found ${found.length}`);
+    return found[0]!;
+  }
+  async function addFor(name: string) {
+    const double = await mountWorkbench(workbench, menuWorld());
+    await contextMenu(await sidebarRow(name));
+    await click(menuItem("Add worktree for this branch…")!);
+    return { double, panel: addPanel()! };
+  }
+  const nameField = (panel: HTMLElement) => panel.querySelector<HTMLInputElement>('input[aria-label="New branch name"]')!;
+  const branchSelect = (panel: HTMLElement) => panel.querySelector<HTMLSelectElement>('select[aria-label="Branch"]')!;
+
+  test("a local branch opens Existing branch with that branch selected, and Add sends it", async () => {
+    const { double, panel } = await addFor("login");
+    expect(panel).not.toBeNull();
+    expect(radio("Existing branch", panel)!.checked).toBe(true);
+    expect(branchSelect(panel).value).toBe("refs/heads/login");
+    expect(folderField(panel).value).toBe("C:\repo-login");
+    await click(button("Add worktree (Ctrl+Enter)", panel));
+    expect(reviews(double)).toEqual([{ action: "worktree-add", branch: { existing: "refs/heads/login" }, path: "C:\repo-login" }]);
+  });
+
+  test("a remote branch opens New branch with its localName, the fixed remote start and the D15 note, and Add sends track", async () => {
+    const { double, panel } = await addFor("origin/feat");
+    expect(radio("New branch", panel)!.checked).toBe(true);
+    expect(nameField(panel).value).toBe("feat");
+    expect(text(panel)).toContain("Starts at origin/feat. The new branch tracks it.");
+    expect(text(panel)).not.toContain("Starts at commit");
+    expect(folderField(panel).value).toBe("C:\repo-feat");
+    await click(button("Add worktree (Ctrl+Enter)", panel));
+    expect(reviews(double)).toEqual([{ action: "worktree-add", branch: { track: { ref: "refs/remotes/origin/feat", name: "feat" } }, path: "C:\repo-feat" }]);
+  });
+
+  test("an edited name keeps the remote start and the track form", async () => {
+    const { double, panel } = await addFor("origin/feat");
+    await type(nameField(panel), "feat/mine");
+    await click(button("Add worktree (Ctrl+Enter)", panel));
+    expect(reviews(double)[0]!.branch).toEqual({ track: { ref: "refs/remotes/origin/feat", name: "feat/mine" } });
+  });
+
+  test("a remote branch whose local name exists acts as the local branch item", async () => {
+    const { double, panel } = await addFor("origin/login");
+    expect(radio("Existing branch", panel)!.checked).toBe(true);
+    expect(branchSelect(panel).value).toBe("refs/heads/login");
+    await click(button("Add worktree (Ctrl+Enter)", panel));
+    expect(reviews(double)[0]!.branch).toEqual({ existing: "refs/heads/login" });
+  });
+
+  test("the current branch item states its reason and opens no panel", async () => {
+    const double = await mountWorkbench(workbench, menuWorld());
+    await contextMenu(await sidebarRow("signup"));
+    const item = menuItem("Add worktree for this branch…")!;
+    expect(reasonOf(item)).toBe("This worktree holds the branch. Git allows each branch in one worktree only.");
+    await click(item);
+    expect(addPanel()).toBeNull();
+    expect(reviews(double)).toHaveLength(0);
+  });
+
+  test("the panel of the worktree button keeps New branch and the selected commit", async () => {
+    await mountWorkbench(workbench, menuWorld());
+    await openList();
+    await click(options().find((o) => itemLabel(o) === "Add worktree…")!);
+    const panel = addPanel()!;
+    expect(radio("New branch", panel)!.checked).toBe(true);
+    expect(nameField(panel).value).toBe("");
+    expect(text(panel)).toContain(`Starts at commit ${oid(1).slice(0, 12)}.`);
   });
 });

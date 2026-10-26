@@ -125,7 +125,9 @@ function fullMessage(): { text: string; words: number; last: string } {
 
 // ---- Page timing (as tests/windows/inspection-perf.test.ts T061) ----
 
-// `arm` records the `timeStamp` of the next input event and resolves with the frame time at which the check first holds.
+// `arm` records the `timeStamp` of the next event of `types` and resolves with the time at which the check first holds in an animation frame callback.
+// That time is `performance.now()` in the callback, not its argument: the argument is the vsync time, which can precede a long task of that frame.
+// A check that holds at `arm`, an event before `arm`, or an end before the event gives `ok: false`.
 // The frame loop runs only while the page is visible (HTML "update the rendering"). The Long Tasks API reports each main thread task above 50 ms.
 const PAGE = `(() => {
   if (window.__t042 !== undefined) return true;
@@ -136,20 +138,28 @@ const PAGE = `(() => {
   new PerformanceObserver((list) => { for (const e of list.getEntries()) if (e.name === 'keydown') window.__t042Events.push({ start: e.startTime, duration: e.duration }); }).observe({ type: 'event', durationThreshold: ${EVENT_THRESHOLD_MS} });
   new PerformanceObserver((list) => { for (const e of list.getEntries()) window.__t042Long.push({ start: e.startTime, duration: e.duration }); }).observe({ type: 'longtask' });
   window.__t042 = {
-    arm(check, limit) {
+    arm(check, limit, types) {
+      const armed = performance.now();
       let start = null;
       let done = null;
       const onInput = (e) => { if (start === null) start = e.timeStamp; };
-      for (const type of ['keydown', 'beforeinput']) addEventListener(type, onInput, { capture: true });
+      for (const type of types) addEventListener(type, onInput, { capture: true });
       this.value = null;
-      const end = (ok) => {
-        for (const type of ['keydown', 'beforeinput']) removeEventListener(type, onInput, { capture: true });
-        this.value = { ok, start, end: done, time: done === null || start === null ? null : done - start };
+      const end = (ok, why) => {
+        for (const type of types) removeEventListener(type, onInput, { capture: true });
+        const time = done === null || start === null ? null : done - start;
+        const valid = ok && start >= armed && time !== null && time >= 0;
+        this.value = { ok: valid, why: valid ? null : why ?? 'the event time lies before arm or after the end', armed, start, end: done, time };
       };
-      const step = (now) => {
+      if (check()) {
+        end(false, 'the check held before the event');
+        return true;
+      }
+      const step = () => {
+        const now = performance.now();
         if (start !== null && done === null && check()) done = now;
         if (done !== null) return end(true);
-        if (start !== null && now - start > limit) return end(false);
+        if (start !== null && now - start > limit) return end(false, 'the check did not hold within the limit');
         requestAnimationFrame(step);
       };
       requestAnimationFrame(step);
@@ -159,15 +169,16 @@ const PAGE = `(() => {
   return true;
 })()`;
 
-type Timed = { ok: boolean; start: number | null; end: number | null; time: number | null };
+type Timed = { ok: boolean; why: string | null; armed: number; start: number | null; end: number | null; time: number | null };
 // Arms the page, runs `act` (which sends the input), and returns the time of the check after the input, in ms, with the long tasks of that span.
-async function timed(c: Cdp, check: string, act: () => Promise<void>): Promise<{ ms: number; long: number[] }> {
+// `types` names the page events whose first `timeStamp` starts the timer.
+async function timed(c: Cdp, check: string, act: () => Promise<void>, types = ["keydown", "beforeinput"]): Promise<{ ms: number; long: number[] }> {
   await c.evaluate(PAGE);
-  await c.evaluate(`(window.__t042Long = [], window.__t042.arm(() => (${check}), ${STEP_LIMIT_MS}))`);
+  await c.evaluate(`(window.__t042Long = [], window.__t042.arm(() => (${check}), ${STEP_LIMIT_MS}, ${js(types)}))`);
   await act();
   // `cdp.ts` ends one call after 10 s, so the page sets `value` and the test polls it up to the step limit.
   const r = (await until<Timed | null>(c, "the timed step", "window.__t042.value", (v) => v !== null, STEP_LIMIT_MS + 5_000))!;
-  if (!r.ok || r.time === null) throw new Error(`a step did not show within ${STEP_LIMIT_MS} ms: ${js(r)}`);
+  if (!r.ok || r.time === null || r.start === null || r.end === null || r.start < r.armed || r.time < 0) throw new Error(`a timed step is not valid: ${js(r)}`);
   const long = await c.evaluate<{ start: number; duration: number }[]>("window.__t042Long");
   return { ms: r.time, long: long.filter((l) => l.start + l.duration >= r.start! && l.start <= r.end!).map((l) => l.duration) };
 }
@@ -323,17 +334,27 @@ describe.skipIf(process.platform !== "win32")("T042 packaged spell check budgets
       for (let i = 0; i <= OPEN_RUNS; i++) {
         const s = await fresh(`open-${i}`);
         try {
-          const start = performance.now();
-          await toCommitView(s);
-          await writeMessage(s.app.pid, s.c, FIXTURE);
-          await until<string[]>(s.c, "the English marks", MARKS, (v) => js(v) === js([WRONG]), STEP_LIMIT_MS);
+          // Plan.md D3 and quickstart.md Q12: the timer starts at the page `click` of the Commit view button, not at the UIA call, which blocks before the page gets it.
+          // CDP `Input.insertText` writes the fixture, so no UIA `SetValue` block falls inside the timed span.
+          const open = await timed(
+            s.c,
+            `${js(js([WRONG]))} === JSON.stringify(${MARKS})`,
+            async () => {
+              await toCommitView(s);
+              await until<boolean>(s.c, "the message field", `!!${FIELD}`, (v) => v, STEP_LIMIT_MS);
+              await s.c.evaluate(`(${FIELD}.focus(), true)`);
+              await s.c.send("Input.insertText", { text: FIXTURE });
+            },
+            ["click"],
+          );
+          expect(await s.c.evaluate<string>(`${FIELD}.value`)).toBe(FIXTURE);
           // The first start warms the package files and the WebView2 runtime.
-          if (i > 0) runs.push(performance.now() - start);
+          if (i > 0) runs.push(open.ms);
         } finally {
           await stop(s);
         }
       }
-      expect(record("SC-004 first open to English marks (host clock, from the Commit view invoke, with the UIA SetValue)", runs, FIRST_MARKS_MS)).toBeLessThanOrEqual(FIRST_MARKS_MS);
+      expect(record("SC-004 first open to English marks (page clock, from the click of the Commit view button)", runs, FIRST_MARKS_MS)).toBeLessThanOrEqual(FIRST_MARKS_MS);
     },
     caseTimeout(10 * (OPEN_RUNS + 1)),
   );
@@ -347,7 +368,8 @@ describe.skipIf(process.platform !== "win32")("T042 packaged spell check budgets
         await toCommitView(s);
         await writeMessage(s.app.pid, s.c, full.text);
         await until<number>(s.c, "every word marked", `document.querySelectorAll('[data-slot="spell-mark"]').length`, (v) => v === full.words, STEP_LIMIT_MS);
-        const lastMark = `[...document.querySelectorAll('[data-slot="spell-mark"]')].at(-1)?.textContent ?? null`;
+        // The parentheses keep `??` out of a later `===`, which binds tighter.
+        const lastMark = `([...document.querySelectorAll('[data-slot="spell-mark"]')].at(-1)?.textContent ?? null)`;
         const runs: number[] = [];
         const stalls: number[] = [];
         for (let i = 0; i <= RUNS; i++) {
@@ -362,10 +384,14 @@ describe.skipIf(process.platform !== "win32")("T042 packaged spell check budgets
         console.log(`OBSERVATION ${TASK}: SC-004 long tasks during the typed runs: ${js(rounded(stalls))} ms`);
         expect(record(`SC-004 typed character to the mark update in ${MESSAGE_BYTES - 1} bytes with ${full.words} marks`, runs, MARK_UPDATE_MS)).toBeLessThanOrEqual(MARK_UPDATE_MS);
         expect(stalls.filter((d) => d > STALL_MS)).toEqual([]);
-        // The limit case: a paste of the whole text over a selection of the whole text. CDP `Input.insertText` fires `beforeinput` as a paste would.
+        // The limit case: a paste of the whole text over a selection of one other word. CDP `Input.insertText` fires `beforeinput` as a paste would.
+        // A paste of the same text changes no text, so the check would hold before the event.
         const pastes: number[] = [];
         for (let i = 0; i <= 3; i++) {
           await s.c.evaluate(`(${FIELD}.focus(), ${FIELD}.select(), true)`);
+          await s.c.send("Input.insertText", { text: NEGATIVE });
+          await until<number>(s.c, "the one-word text", `${FIELD}.value === ${js(NEGATIVE)} ? document.querySelectorAll('[data-slot="spell-mark"]').length : -1`, (v) => v === 1, STEP_LIMIT_MS);
+          await s.c.evaluate(`(${FIELD}.select(), true)`);
           const pasted = await timed(s.c, `document.querySelectorAll('[data-slot="spell-mark"]').length === ${full.words} && ${FIELD}.value.length === ${full.text.length}`, () => s.c.send("Input.insertText", { text: full.text }).then(() => {}));
           if (i > 0) pastes.push(pasted.ms);
         }

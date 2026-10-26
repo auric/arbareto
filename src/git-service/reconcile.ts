@@ -29,7 +29,7 @@ import {
 } from "./commands";
 import type { RetainedReview } from "./commit-review";
 import { IndexFormatError, rawIndexEntries } from "./eligibility";
-import { createCollector, type GitExit, type GitRunner } from "./git-runner";
+import { createCollector, firstEnd, isDeadlineStop, type GitExit, type GitRunner } from "./git-runner";
 import { HEADER_BYTES, parseCommitObjects } from "./history-parser";
 import { canonicalIndex, diagnosticCause, enterReconciling, observedLocks, observeState, settled, stepOf, type Fact, type Failure, type IndexFacts, type ObserveContext, type PublishContext, type Stop } from "./hunk-publish";
 import type { DiagnosticCause, EffectSummary } from "./log";
@@ -214,6 +214,9 @@ async function decide(q: ObserveContext, r: CommitReconciliation, observed: Obse
     candidate === null ? null : parentsOf(q, candidate),
     candidate === null ? null : listingOf(q, commitTreeArgs(candidate, objectFormat), (bytes) => parseTree(bytes, objectFormat)),
   ]);
+  // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other reads. Only a deadline decides before `attribute`.
+  const expired = [index, parents, tree].map((f) => (f === null || "value" in f ? null : f)).find((f) => f !== null && isDeadlineStop(f));
+  if (expired) return unknownOf(expired);
   if (parents !== null && !("value" in parents)) return unknownOf(parents);
   const attribution = early ?? attribute(window, h0, h1, parents!.value, r.binding.amend?.parents ?? null);
   if ("unknown" in attribution) return undetermined(attribution.unknown);
@@ -248,10 +251,12 @@ export async function reconcileCommit(r: CommitReconciliation): Promise<void> {
   // Git exits 128 for the window read of an unborn HEAD. With an unborn reviewed HEAD, the window read waits for the observed HEAD.
   const [state, early] = await Promise.all([observeState(q, EMPTY, false, canonicalIndex(q, binding.reviewedIndex)), binding.head.state === "unborn" ? null : readWindow(q, r.tip)]);
   const head = "value" in state.head ? state.head.value : null;
-  const window = head === null || head.state === "unborn" ? NO_RECORDS : (early ?? (await readWindow(q, r.tip)));
-  const failed = [state.head, state.index, state.operationState, window].find((f) => !("value" in f)) as Failure | Stop | undefined;
+  // A window read at its deadline also counts when the observed HEAD makes the window unneeded.
+  const window = head === null || head.state === "unborn" ? (early !== null && isDeadlineStop(early) ? early : NO_RECORDS) : (early ?? (await readWindow(q, r.tip)));
+  // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other reads.
+  const failed = firstEnd([state.head, state.index, state.operationState, window].map((f) => ("value" in f ? null : f)), isDeadlineStop);
   let decision =
-    failed !== undefined
+    failed !== null
       ? unknownOf(failed)
       : await decide(q, r, { head: head!, index: (state.index as { value: IndexFacts | WslIndexFacts }).value, operationState: (state.operationState as { value: OperationState }).value }, (window as { value: Window }).value, canceled, deadline);
 

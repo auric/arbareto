@@ -81,10 +81,14 @@ function parse(stdout: Uint8Array, objectFormat: ObjectFormat, replace: ReturnTy
   }
   const refs = parsed.map(({ kind, name, fields }): RefEntry => {
     const [, objectId, objectType, peeledId, peeledType, symref, upstream] = fields as [string, string, RefEntry["objectType"], string, string, string, string];
+    const raw = bytesOf(name);
+    const invalidUtf8 = !isUtf8(raw);
     return {
       kind,
       name: textOf(name),
-      invalidUtf8: !isUtf8(bytesOf(name)),
+      invalidUtf8,
+      // Feature 005 contract Δ3 (001 §3): the raw bytes give the tree order of a name that is not valid UTF-8.
+      ...(invalidUtf8 ? { nameBytes: raw.toString("base64") } : {}),
       objectId,
       objectType,
       peeledId: peeledId === "" ? null : peeledId,

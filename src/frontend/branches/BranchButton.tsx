@@ -3,18 +3,62 @@
 
 import { ArrowDown01Icon, CloudIcon, GitBranchIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useRef, useState } from "react";
+import { useId, useLayoutEffect, useRef, useState } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
 import { SwitcherPopover } from "../components/switcher-popover";
 import { KEYS } from "../keyboard/shortcuts";
 import { branchName } from "../history/HistoryView";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
+import { shortRef } from "../refs/ReferencesSidebar";
 import type { BranchEntry } from "../state/workbench";
 import type { TrackLabel } from "../state/tracking";
 import type { useBranchActions } from "./BranchActions";
+import { BranchCard, GoneMark, isCut, isGone, UPSTREAM_GONE_NAME, type CardFacts } from "./BranchCard";
 import { T } from "./texts";
 
 // Feature 004 spec FR-007, FR-008, FR-013, plan.md D15 "Branch button" and "Switcher popover", the BranchSwitcher board.
+// Feature 005 spec FR-064 to FR-066, plan.md D13: the gone mark in the branch list, and the branch card on the button and the list rows.
+
+type Card = { key: string; instant: boolean } | null;
+const BUTTON = "button";
+const gone = (e: BranchEntry) => e.kind === "local" && isGone(e.upstream, e.upstreamPresent);
+
+/** Spec FR-066. `heldBy` names another worktree only: the open worktree holds the current branch. */
+const factsOf = (e: BranchEntry, tracking: ReadonlyMap<string, TrackLabel>): CardFacts =>
+  e.kind === "remote"
+    ? { kind: "name", name: e.name }
+    : { kind: "local", name: e.name, upstream: e.upstream === null ? null : shortRef(e.upstream), gone: gone(e), track: tracking.get(e.name) ?? null, heldBy: e.current ? null : e.heldBy };
+
+type ListNameProps = { entry: BranchEntry; facts: CardFacts; active: boolean; card: Card; cardId: string; setCard(next: Card | ((open: Card) => Card)): void };
+
+/** A list row name. The active option is the keyboard focus of the list (`aria-activedescendant`), so it opens the card of a cut name at once. */
+function ListName({ entry, facts, active, card, cardId, setCard }: ListNameProps) {
+  const name = useRef<HTMLSpanElement>(null);
+  const key = entry.ref;
+  const open = card?.key === key;
+  useLayoutEffect(() => {
+    if (active && isCut([name.current])) setCard({ key, instant: true });
+    else if (!active) setCard((shown) => (shown?.key === key && shown.instant ? null : shown));
+  }, [active, key, setCard]);
+  return (
+    <BranchCard
+      facts={facts}
+      id={cardId}
+      open={open}
+      instant={open && card?.instant === true}
+      onOpenChange={(next) => setCard(next ? { key, instant: false } : (shown) => (shown?.key === key ? null : shown))}
+      names={() => [name.current]}
+      // Plan.md D15 "Branch card": beside the row at its end edge, so the card does not cover the gone mark or the note.
+      anchor={() => name.current?.closest('[role="option"]') ?? null}
+      trigger={
+        // Git Extensions shows the current branch in bold.
+        <span ref={name} data-slot="branch-name" className={entry.current ? "min-w-0 truncate font-semibold" : "min-w-0 truncate"}>
+          {entry.name}
+        </span>
+      }
+    />
+  );
+}
 
 export type BranchButtonProps = {
   /** The group heading height in DIPs (`metrics(...).subgroupHeading`). */
@@ -41,13 +85,24 @@ function buttonText(head: WorkspaceSnapshot["head"], operationState: WorkspaceSn
 
 export function BranchButton({ headingHeight, head, operationState, counts, tracking, actions, blockedReason, rowHeight }: BranchButtonProps) {
   const [open, setOpen] = useState(false);
+  const [card, setCard] = useState<Card>(null);
+  const cardId = useId();
   const trigger = useRef<HTMLButtonElement>(null);
+  const parts = useRef<HTMLSpanElement>(null);
   const text = buttonText(head, operationState);
   const [folder, last] = splitPath(text, GIT_SEPARATORS);
   const failure = blockedReason !== null ? <p>{blockedReason}</p> : actions.failure !== null ? <p role="alert">{actions.failure}</p> : undefined;
   // Spec FR-008: "No upstream" shows in the list. A held branch offers Open instead of a switch (FR-013).
-  const note = (e: BranchEntry) => (e.heldBy !== null && !e.current ? T.open(e.heldBy) : e.kind === "local" && e.upstream === null ? T.noUpstream : e.kind === "local" ? (tracking.get(e.name)?.text ?? null) : null);
-  const label = (e: BranchEntry) => [e.name, ...(e.current ? [T.current] : []), e.kind === "local" ? T.localNoun : T.remoteNoun, ...(e.kind === "local" && e.upstream !== null ? [tracking.get(e.name)?.label] : []), note(e)].filter((part) => part != null).join(", ");
+  const held = (e: BranchEntry) => e.heldBy !== null && !e.current;
+  const note = (e: BranchEntry) => (held(e) ? T.open(e.heldBy!) : e.kind === "local" && e.upstream === null ? T.noUpstream : e.kind === "local" ? (tracking.get(e.name)?.text ?? null) : null);
+  // Feature 005 contract Δ14: the 003 note "Upstream gone" stays visible beside the gone mark. The name states it once.
+  const label = (e: BranchEntry) =>
+    [e.name, ...(e.current ? [T.current] : []), e.kind === "local" ? T.localNoun : T.remoteNoun, ...(gone(e) ? [UPSTREAM_GONE_NAME] : e.kind === "local" && e.upstream !== null ? [tracking.get(e.name)?.label] : []), gone(e) && !held(e) ? null : note(e)]
+      .filter((part) => part != null)
+      .join(", ");
+  // The card of the button names the current branch of the newest `readBranches` result. Without it, or for another head state, the card shows the text only.
+  const currentEntry = head.state === "branch" && operationState !== "merging" && operationState !== "rebasing" ? actions.entries?.find((e) => e.current && e.ref === head.target) : undefined;
+  const buttonCard = card?.key === BUTTON;
   const pick = (run: () => void) => {
     setOpen(false);
     run();
@@ -58,6 +113,7 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
       onOpenChange={(next) => {
         if (next) actions.refresh();
         setOpen(next);
+        setCard(null);
       }}
       trigger={
         <button
@@ -65,6 +121,18 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
           type="button"
           data-slot="branch-button"
           aria-label={counts === null ? text : `${text}, ${counts.label}`}
+          aria-describedby={buttonCard ? cardId : undefined}
+          // Spec FR-065: a keyboard focus opens the card of a cut name at once.
+          onFocus={(event) => {
+            if (!open && event.currentTarget.matches(":focus-visible") && isCut([...(parts.current?.querySelectorAll("[data-branch-part]") ?? [])])) setCard({ key: BUTTON, instant: true });
+          }}
+          onBlur={() => setCard((shown) => (shown?.key === BUTTON ? null : shown))}
+          // Plan.md D15 keyboard map: Escape closes the card, and the focus stays on the button.
+          onKeyDown={(event) => {
+            if (event.key !== "Escape" || !buttonCard) return;
+            event.preventDefault();
+            setCard(null);
+          }}
           className="flex h-(--h-button) min-w-0 max-w-fit items-center gap-1 overflow-hidden rounded-sm border border-control-border px-2 hover:bg-hover-fill"
           // Plan.md D15 "Top bar row": the text basis moves the menu bar, Refresh, and Commit to the next row before the branch text shrinks.
           // The grow factor gives the branch text the free width before the sync reason line (grow 1).
@@ -82,7 +150,14 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
       itemText={(e) => e.name}
       itemLabel={label}
       itemGroup={(e) => (e.kind === "local" ? T.localGroup : T.remoteGroup)}
-      renderItem={(e) => {
+      itemDescribedBy={(e) => (card?.key === e.ref ? cardId : undefined)}
+      // Feature 005 plan.md D15: Escape closes an open row card first, and the list stays open.
+      onEscape={() => {
+        if (card === null || card.key === BUTTON) return false;
+        setCard(null);
+        return true;
+      }}
+      renderItem={(e, active) => {
         const n = note(e);
         return (
           <>
@@ -91,11 +166,11 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
               {e.current ? <HugeiconsIcon icon={Tick02Icon} strokeWidth={2} className="size-4" /> : null}
             </span>
             <HugeiconsIcon icon={e.kind === "local" ? GitBranchIcon : CloudIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
-            {/* Git Extensions shows the current branch in bold. */}
-            <span className={e.current ? "min-w-0 truncate font-semibold" : "min-w-0 truncate"}>{e.name}</span>
-            {/* Plan D15 "Rows": a zero basis gives the note only the width that the name leaves. */}
+            <ListName entry={e} facts={factsOf(e, tracking)} active={active} card={card} cardId={cardId} setCard={setCard} />
+            {gone(e) ? <GoneMark upstream={shortRef(e.upstream!)} /> : null}
+            {/* Feature 004 T116: a zero basis gives the note only the width that the name leaves. Feature 005 plan.md D13: the note "Upstream gone" keeps its width beside the mark. */}
             {n === null ? null : (
-              <span title={n} className="num min-w-0 flex-1 truncate text-right text-muted-text">
+              <span title={n} className={gone(e) && !held(e) ? "num ml-auto shrink-0 whitespace-nowrap text-muted-text" : "num min-w-0 flex-1 truncate text-right text-muted-text"}>
                 {n}
               </span>
             )}
@@ -108,18 +183,29 @@ export function BranchButton({ headingHeight, head, operationState, counts, trac
       noMatchText={T.noMatch}
     >
       <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
-      {/* plan.md "Header layout": the folder part shrinks first and the last `/` segment last. The title and the hidden text hold the full name. */}
-      <span data-slot="branch-text" title={text} className="flex min-w-0 items-center whitespace-nowrap" style={{ flex: "0 1 auto" }}>
-        <span className="sr-only">{text}</span>
-        {folder === "" ? null : (
-          <span data-branch-part="folder" aria-hidden="true" className="min-w-0 shrink-[1000] truncate">
-            {folder}
+      {/* plan.md "Header layout": the folder part shrinks first and the last `/` segment last. The hidden text and the branch card (feature 005) hold the full name. */}
+      <BranchCard
+        facts={currentEntry === undefined ? { kind: "name", name: text } : factsOf(currentEntry, tracking)}
+        id={cardId}
+        open={buttonCard}
+        instant={buttonCard && card?.instant === true}
+        onOpenChange={(next) => setCard(next && !open ? { key: BUTTON, instant: false } : (shown) => (shown?.key === BUTTON ? null : shown))}
+        names={() => [...(parts.current?.querySelectorAll("[data-branch-part]") ?? [])]}
+        side="bottom"
+        trigger={
+          <span ref={parts} data-slot="branch-text" className="flex min-w-0 items-center whitespace-nowrap" style={{ flex: "0 1 auto" }}>
+            <span className="sr-only">{text}</span>
+            {folder === "" ? null : (
+              <span data-branch-part="folder" aria-hidden="true" className="min-w-0 shrink-[1000] truncate">
+                {folder}
+              </span>
+            )}
+            <span data-branch-part="last" aria-hidden="true" className="min-w-0 truncate">
+              {last}
+            </span>
           </span>
-        )}
-        <span data-branch-part="last" aria-hidden="true" className="min-w-0 truncate">
-          {last}
-        </span>
-      </span>
+        }
+      />
       {/* The counts shrink before the branch name. One em keeps their ellipsis. The title and the accessible name hold the full counts. */}
       {counts === null ? null : (
         <span data-slot="branch-counts" aria-hidden="true" title={counts.label} className="num min-w-[1em] shrink-[1000] truncate">

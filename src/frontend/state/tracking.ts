@@ -10,8 +10,8 @@ import { isObject } from "../lib/utils";
 // Feature 003 data-model §1 label rule, plan.md D8, spec FR-019 to FR-022.
 
 export type TrackingEntry = z.infer<typeof TrackingEntrySchema>;
-/** The visible text and its text alternative. Null: no number shows (FR-021). */
-export type TrackLabel = { text: string; label: string } | null;
+/** The visible text, its text alternative, and the track state of the entry (feature 005 spec FR-064). Null: no number shows (FR-021). */
+export type TrackLabel = { text: string; label: string; state: TrackingEntry["track"]["state"] } | null;
 
 // FR-022.
 export const COUNTS_TOOLTIP = "Counts compare with the remote-tracking branch from the last fetch, not with the remote itself.";
@@ -36,11 +36,11 @@ const shown = (n: number) => (n > TRACKING_COUNT_DISPLAY ? `${TRACKING_COUNT_DIS
 /** The label of one entry. A count shows only when both OIDs equal the newest `readRefs` values (FR-021). */
 export function trackLabel(entry: TrackingEntry, index: ReadonlyMap<string, string>): TrackLabel {
   const track = entry.track;
-  if (track.state === "none") return { text: NO_UPSTREAM, label: NO_UPSTREAM };
-  if (track.state === "gone") return { text: UPSTREAM_GONE, label: UPSTREAM_GONE };
+  if (track.state === "none") return { text: NO_UPSTREAM, label: NO_UPSTREAM, state: "none" };
+  if (track.state === "gone") return { text: UPSTREAM_GONE, label: UPSTREAM_GONE, state: "gone" };
   if (index.get(KINDS.branch + entry.name) !== entry.objectId || entry.upstream === null || index.get(entry.upstream) !== entry.upstreamObjectId) return null;
   const label = `${shown(track.ahead)} ahead, ${shown(track.behind)} behind`;
-  return track.ahead === 0 && track.behind === 0 ? { text: "=", label } : { text: `↑${shown(track.ahead)} ↓${shown(track.behind)}`, label };
+  return track.ahead === 0 && track.behind === 0 ? { text: "=", label, state: "counts" } : { text: `↑${shown(track.ahead)} ↓${shown(track.behind)}`, label, state: "counts" };
 }
 
 /** The labels by local branch name (plan.md D8: the history labels join by branch name). */

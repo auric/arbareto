@@ -4,9 +4,12 @@
 // T358 and T362: the read-only references sidebar of `src/frontend/refs/ReferencesSidebar.tsx` (FR-057; plan.md "References sidebar", "Long text",
 // "Keyboard and focus" References sidebar row, "Task flow and command placement" Browse references row, "Required visible states" References, and "Status and fallback texts").
 
+import { ArrowDown01Icon, ArrowRight01Icon, Folder01Icon, FolderGitIcon, GitBranchIcon, Tag01Icon } from "@hugeicons/core-free-icons";
+import type { IconSvgElement } from "@hugeicons/react";
 import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { act, type ReactNode } from "react";
 import type { RefEntry, RefsResult } from "../../src/contracts/envelope";
+import type { BranchEntry } from "../../src/frontend/state/workbench";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
@@ -70,6 +73,8 @@ const REFS: RefsResult = {
 };
 // The history list reads A and B. C is not loaded yet (contract Δ3 target `unknown`).
 const LOADED = new Set([A, B]);
+// Feature 005 spec FR-064: the 003 track state `gone` of feature/x gives the gone mark.
+const GONE = new Map([["feature/x", { text: "Upstream gone", label: "Upstream gone", state: "gone" as const }]]);
 
 type Props = Partial<Parameters<typeof ReferencesSidebar>[0]>;
 let repositories = 0;
@@ -103,6 +108,20 @@ async function type(host: HTMLElement, value: string) {
 }
 const click = (element: HTMLElement) => act(async () => element.click());
 
+describe("heading and filter field (004 plan.md:528, Main board, T075)", () => {
+  test("the heading row shows References and the reference count; the heading names the tree without the count", async () => {
+    const { host } = await sidebar();
+    const heading = host.querySelector("h2")!;
+    expect(text(heading)).toBe("References");
+    expect(text(heading.parentElement!.querySelector('[data-slot="references-count"]')!)).toBe("9");
+    expect(tree(host).getAttribute("aria-labelledby")).toBe(heading.id);
+    expect(host.querySelector<HTMLInputElement>('input[type="search"]')!.placeholder).toBe("Filter references");
+    // Before the first result, no count shows.
+    const loading = await sidebar({ refs: null });
+    expect(loading.host.querySelector('[data-slot="references-count"]')).toBeNull();
+  });
+});
+
 describe("groups and folders", () => {
   test("three groups carry their counts and aria-expanded; by default Branches is open and Remotes and Tags are closed", async () => {
     const { host } = await sidebar();
@@ -114,21 +133,21 @@ describe("groups and folders", () => {
     ]);
   });
 
-  test("each / of a name starts a folder level, folders keep the Git order of their first name, and closed folders hide their entries", async () => {
+  test("each / of a name starts a folder level, folders come first (feature 005 spec FR-015), and closed folders hide their entries", async () => {
     const { host } = await sidebar();
-    expect(names(host)).toEqual(["Branches, 4", "feature, folder, 1", "main, local branch, Current, → origin/main", "release, folder, 2", "Remotes, 4", "Tags, 1"]);
+    expect(names(host)).toEqual(["Branches, 4", "feature, folder, 1", "release, folder, 2", "main, local branch, Current, → origin/main", "Remotes, 4", "Tags, 1"]);
     expect(item(host, "feature, folder").getAttribute("aria-expanded")).toBe("false");
     expect(item(host, "feature, folder").getAttribute("aria-level")).toBe("2");
     expect(item(host, "main,").getAttribute("aria-level")).toBe("2");
   });
 
   test("a folder with one child stays a folder, and an entry shows its last segment while its name holds the full name", async () => {
-    const { host } = await sidebar();
+    const { host } = await sidebar({ tracking: GONE });
     await click(item(host, "feature, folder"));
     const entry = item(host, "feature/x,");
     expect(entry.getAttribute("aria-level")).toBe("3");
     expect(text(entry).startsWith("x")).toBe(true);
-    expect(entry.getAttribute("aria-label")).toBe("feature/x, local branch, → origin/feature/x, not present");
+    expect(entry.getAttribute("aria-label")).toBe("feature/x, local branch, → origin/feature/x, upstream gone");
   });
 
   test("the folders on the path to the current branch start open", async () => {
@@ -155,8 +174,8 @@ describe("groups and folders", () => {
     expect(item(host, "origin/HEAD").getAttribute("aria-label")).toBe("origin/HEAD, remote-tracking branch, → origin/main");
   });
 
-  test("the current branch name is bold with aria-current and no Current text, other rows are not bold, and an upstream shows → <upstream> or not present", async () => {
-    const { host } = await sidebar();
+  test("the current branch name is bold with aria-current and no Current text, other rows are not bold, and an upstream shows → <upstream> and the gone mark (feature 005 spec FR-064)", async () => {
+    const { host } = await sidebar({ tracking: GONE });
     const main = item(host, "main,");
     expect(main.getAttribute("aria-current")).toBe("true");
     expect(main.getAttribute("aria-label")).toContain("Current");
@@ -166,7 +185,8 @@ describe("groups and folders", () => {
     await click(item(host, "feature, folder"));
     const marked = (h: HTMLElement) => items(h).filter((i) => i.hasAttribute("aria-current") || i.querySelector(".font-semibold") !== null);
     expect(marked(host)).toEqual([main]);
-    expect(text(item(host, "feature/x,"))).toContain("→ origin/feature/x, not present");
+    expect(text(item(host, "feature/x,"))).toContain("→ origin/feature/x");
+    expect(item(host, "feature/x,").querySelector("[data-slot=\"gone-mark\"]")).not.toBeNull();
   });
 
   test("a detached HEAD has no current branch, so no row is bold", async () => {
@@ -199,6 +219,59 @@ describe("groups and folders", () => {
     expect(host.querySelectorAll("button")).toHaveLength(0);
     await act(async () => void item(host, "main,").dispatchEvent(new MouseEvent("contextmenu", { bubbles: true, cancelable: true })));
     expect(document.querySelector('[role="menu"]')).toBeNull();
+  });
+});
+
+// T080: the row icons and the worktree mark of the Main and BranchCard boards. The icons are Hugeicons, hidden from assistive technology.
+describe("row icons and the worktree mark (Main and BranchCard boards, T080)", () => {
+  // The drawn shapes of an icon: each path `d` or circle `r`, in order, as `@hugeicons/react` renders the icon data.
+  const shapeOf = (icon: IconSvgElement) => icon.map(([, attributes]) => String(attributes.d ?? attributes.r));
+  const shapes = (row: HTMLElement) => [...row.querySelectorAll<SVGElement>(":scope > svg, :scope > span > svg")].map((svg) => [...svg.children].map((c) => c.getAttribute("d") ?? c.getAttribute("r") ?? ""));
+  const hidden = (row: HTMLElement) => [...row.querySelectorAll("svg")].every((svg) => svg.closest('[aria-hidden="true"]') !== null);
+  const held = (name: string, heldBy: string | null, current = false): BranchEntry => ({ ref: `refs/heads/${name}`, kind: "local", name, invalidUtf8: false, oid: A, upstream: null, tracking: null, heldBy, current, localName: null, upstreamPresent: false });
+
+  test("a folder row shows the Muted folder icon after its chevron; group rows show only the chevron", async () => {
+    const { host } = await sidebar();
+    const folder = item(host, "feature, folder");
+    expect(shapes(folder)).toEqual([shapeOf(ArrowRight01Icon), shapeOf(Folder01Icon)]);
+    expect(folder.querySelectorAll("svg")[1]!.getAttribute("class")).toContain("text-muted-text");
+    expect(shapes(item(host, "Branches"))).toEqual([shapeOf(ArrowDown01Icon)]);
+    expect(hidden(folder)).toBe(true);
+  });
+
+  test("a local and a remote-tracking branch row show the branch icon, and a tag row the tag icon, after a chevron-wide space", async () => {
+    const { host } = await sidebar();
+    await click(item(host, "Remotes"));
+    await click(item(host, "origin, folder"));
+    await click(item(host, "Tags"));
+    for (const [start, icon] of [["main,", GitBranchIcon], ["origin/main,", GitBranchIcon], ["origin/HEAD,", GitBranchIcon], ["v1.0,", Tag01Icon]] as const) {
+      const row = item(host, start);
+      const space = row.firstElementChild!;
+      expect({ start, space: [space.tagName, space.getAttribute("aria-hidden"), text(space)], shapes: shapes(row) }).toEqual({ start, space: ["SPAN", "true", ""], shapes: [shapeOf(icon)] });
+      expect(hidden(row)).toBe(true);
+    }
+    // The icons hold no text, so the visible name stays the last segment.
+    expect(text(item(host, "main,"))).toStartWith("main");
+  });
+
+  test("a local branch that another worktree holds shows the Muted worktree mark of the card at the row end, and its name says where (spec FR-066)", async () => {
+    const branches = [held("main", "C:/Repos/sample-repo", true), held("release/1.0", "C:/Repos/sample-repo-release"), held("release/2.0", null)];
+    const { host } = await sidebar({ branches });
+    await click(item(host, "release, folder"));
+    const row = item(host, "release/1.0,");
+    const mark = row.querySelector<HTMLElement>('[data-slot="worktree-mark"]')!;
+    expect({ last: row.lastElementChild === mark, hidden: mark.getAttribute("aria-hidden"), title: mark.getAttribute("title"), muted: mark.className.includes("text-muted-text") }).toEqual({ last: true, hidden: "true", title: "Checked out in C:/Repos/sample-repo-release", muted: true });
+    expect(shapes(row).at(-1)).toEqual(shapeOf(FolderGitIcon));
+    expect(row.getAttribute("aria-label")).toBe("release/1.0, local branch, No upstream, Checked out in C:/Repos/sample-repo-release");
+    // The open worktree holds the current branch, and a branch that no worktree holds has no mark.
+    for (const start of ["main,", "release/2.0,"]) {
+      expect({ start, mark: item(host, start).querySelector('[data-slot="worktree-mark"]') }).toEqual({ start, mark: null });
+      expect(item(host, start).getAttribute("aria-label")).not.toContain("Checked out in");
+    }
+    // Without a `readBranches` result, no row shows the mark.
+    const unread = await sidebar();
+    await click(item(unread.host, "release, folder"));
+    expect(unread.host.querySelector('[data-slot="worktree-mark"]')).toBeNull();
   });
 });
 
@@ -286,8 +359,8 @@ describe("tree keys", () => {
     await key(item(host, "feature, folder"), "ArrowLeft");
     expect(item(host, "feature, folder").getAttribute("aria-expanded")).toBe("false");
     await key(item(host, "feature, folder"), "ArrowDown");
-    expect(document.activeElement).toBe(item(host, "main,"));
-    await key(item(host, "main,"), "End");
+    expect(document.activeElement).toBe(item(host, "release, folder"));
+    await key(item(host, "release, folder"), "End");
     expect(document.activeElement).toBe(item(host, "Tags"));
     await key(item(host, "Tags"), "Home");
     expect(document.activeElement).toBe(item(host, "Branches"));

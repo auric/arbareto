@@ -3,8 +3,9 @@
 
 import { z } from "zod";
 import { BRANCH_NAME_BYTES } from "./branch-name";
-import { DamagedMarker, LinuxPath, SYNC_ACTIONS, SyncAction, TRUST_ACTIONS, TrustDetails, UtcTime } from "./channel";
+import { DamagedMarker, decodedBytes, FILE_FACT_ERRORS, LinuxPath, SYNC_ACTIONS, SyncAction, TRUST_ACTIONS, TrustDetails, UtcTime } from "./channel";
 import {
+  BLAME_UNAVAILABLE_REASONS,
   DESTINATION_NOT_EMPTY_REASONS,
   ERROR_CODES,
   HISTORY_CHANGED_REASONS,
@@ -13,10 +14,13 @@ import {
   PUTTY_PROGRAMS,
   PUTTY_UNAVAILABLE_REASONS,
   SEARCH_UNSUPPORTED_REASONS,
+  STALE_REVIEW_REASONS,
   STASH_KEPT_REASONS,
+  SUBMODULE_UNAVAILABLE_REASONS,
   SYNC_OUTPUT_LIMIT_REASONS,
   SYNC_UNAVAILABLE_REASONS,
   TERMINAL_STATES,
+  UNKNOWN_TARGET_REASONS,
   UNSUPPORTED_FILTER_TEXT_REASONS,
   UNTRACKED_IN_WAY_REASONS,
   WORKBENCH_UNAVAILABLE_REASONS,
@@ -26,6 +30,8 @@ import {
 import { FILE_ACTION_REASONS, LINE_ACTION_REASONS, type FileActionReason, type LineActionReason } from "./file-action";
 import * as limits from "./limits";
 import {
+  BLAME_FILE_BYTES,
+  BLAME_FILE_LINES,
   CANONICAL_DIFF_LINES,
   CLONE_URL_BYTES,
   COMMIT_MESSAGE_BYTES,
@@ -34,12 +40,15 @@ import {
   HISTORY_PARENTS_PER_COMMIT,
   HISTORY_ROWS_PER_REQUEST,
   HISTORY_VIEW_COMMITS,
+  IGNORE_TARGET_BYTES,
   KEY_FILE_ENTRIES,
   MERGE_MESSAGE_BYTES,
   MULTI_FILE_ACTION_FILES,
+  PREVIEW_GROUP_PATHS,
   PUBLIC_REQUEST_BYTES,
   REF_LISTING_RECORDS,
   REGISTERED_WORKSPACES,
+  STATUS_LISTING_RECORDS,
   SYNC_FETCH_LISTED_REFS,
   SYNC_LEASE_COMMITS,
   SYNC_REFS_RECORDS,
@@ -249,7 +258,7 @@ const refUnder = (...prefixes: string[]) => Text.refine((ref) => prefixes.some((
 const LocalRef = refUnder("refs/heads/");
 const RemoteRef = refUnder("refs/remotes/");
 const BranchRef = refUnder("refs/heads/", "refs/remotes/");
-// Contract Δ3 `choose-side`, `mergetool`, and `ignore` name an entry of the shown snapshot.
+// Contract Δ3 `choose-side` and `mergetool` name an entry of the shown snapshot.
 const shownEntry = { snapshotId: Identifier, entryId: Identifier };
 // Contract Δ5 "Config changes per Save". It is no output bound, so `limits.ts` does not list it.
 const CONFIG_CHANGES = 32;
@@ -270,6 +279,34 @@ const WorktreeBranch = z.union([
 // Contract Δ3: the renderer sends the path, and the shell forwards the `bootstrapId` of its `worktreeAdd` binding.
 const worktreeAdd = <T extends z.ZodRawShape>(binding: T) => z.strictObject({ action: z.literal("worktree-add"), branch: WorktreeBranch, ...binding }).meta({ title: "ReviewWorktreeAdd" });
 const WorktreeAddRenderer = worktreeAdd({ path: ChannelPath });
+
+// ---- Feature 005 payload parts (contract Δ3, data-model §7, §8, §10) ----
+
+const IgnoreTarget = z.enum(["gitignore", "exclude"]);
+const strictUtf8 = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+// Contract Δ3 `previewIgnore`: base64 of at most 1 MiB of strict UTF-8 bytes. `atob` exists in Bun and in WebView2.
+// zod runs a refinement also after a failed format check, and `atob` throws on other text.
+const editorText = (allowNul: boolean) =>
+  z.base64().refine((data) => {
+    try {
+      if (decodedBytes(data) > IGNORE_TARGET_BYTES) return false;
+      const bytes = Uint8Array.from(atob(data), (c) => c.charCodeAt(0));
+      strictUtf8.decode(bytes);
+      return allowNul || !bytes.includes(0);
+    } catch {
+      return false;
+    }
+  });
+const PreviewText = editorText(false);
+// Contract Δ3 `ignore-save`: a NUL in the text gives the review refusal `ignore-nul`, so the schema passes it.
+const SaveText = editorText(true);
+// Plan.md D8: the line-ending form that Save writes for all lines.
+const SaveLineEnding = z.enum(["lf", "crlf"]);
+// Data-model §6 `expected`: the loaded state of the ignore file.
+const IgnoreExpected = z.union([z.literal("absent"), z.strictObject({ size: Count.max(IGNORE_TARGET_BYTES), sha256: Fingerprint }).meta({ title: "IgnoreDigest" })]);
+const DeleteMode = z.enum(["recycle", "permanent"]);
+const uniqueIds = (ids: unknown) => Array.isArray(ids) && new Set(ids).size === ids.length;
+
 const reviewWorkbench = <A extends z.ZodObject>(add: A) =>
   z.discriminatedUnion("action", [
     z.strictObject({ action: z.literal("switch"), target: SwitchTarget, choice: z.enum(["keep", "stash", "discard"]) }).meta({ title: "ReviewSwitch" }),
@@ -284,13 +321,17 @@ const reviewWorkbench = <A extends z.ZodObject>(add: A) =>
     z.strictObject({ action: z.literal("rebase"), ref: BranchRef, autostash: z.boolean(), autosquash: z.boolean() }).meta({ title: "ReviewRebase" }),
     z.strictObject({ action: z.literal("choose-side"), ...shownEntry, side: z.enum(["ours", "theirs"]) }).meta({ title: "ReviewChooseSide" }),
     z.strictObject({ action: z.literal("mergetool"), ...shownEntry }).meta({ title: "ReviewMergetool" }),
-    // Data-model §7: `folder` holds the path bytes of an Untracked folder row above the entry, in base64.
-    z.strictObject({ action: z.literal("ignore"), ...shownEntry, target: z.enum(["gitignore", "exclude"]), folder: z.base64().min(1).optional() }).meta({ title: "ReviewIgnore" }),
     add,
     // Contract Δ11: the record path of a WSL repository is a Linux path, so the service matches the text with a fresh list.
     z.strictObject({ action: z.literal("worktree-remove"), worktree: Text.min(1), force: z.boolean(), deleteBranch: z.boolean() }).meta({ title: "ReviewWorktreeRemove" }),
     z.strictObject({ action: z.literal("worktree-prune") }).meta({ title: "ReviewWorktreePrune" }),
     z.strictObject({ action: z.literal("config-save"), scope: z.enum(["local", "global"]), changes: ConfigChanges }).meta({ title: "ReviewConfigSave" }),
+    // Feature 005 contract Δ3. `folder` holds the base64 folder bytes of a folder row.
+    z
+      .strictObject({ action: z.literal("delete"), snapshotId: Identifier, entryIds: z.array(Identifier).min(1).max(MULTI_FILE_ACTION_FILES), folder: z.base64().min(1).optional(), mode: DeleteMode })
+      .refine((p) => uniqueIds(p.entryIds))
+      .meta({ title: "ReviewDelete" }),
+    z.strictObject({ action: z.literal("ignore-save"), target: IgnoreTarget, text: SaveText, expected: IgnoreExpected, lineEnding: SaveLineEnding.optional() }).meta({ title: "ReviewIgnoreSave" }),
   ]);
 // Data-model §6 and plan D8: Stage all untracked and Stage all changes stage, and Unstage all unstages. `folder` holds the folder path bytes in base64.
 const STAGE_KINDS: readonly string[] = ["all-untracked", "all-changes"];
@@ -320,12 +361,33 @@ const ApplyFiles = op("applyFiles", repository, ApplyFilesPayload);
 // Contract Δ3: `path` is the record path. The shell checks it by the 001 Windows rules or the §11 WSL route.
 const OpenWorktree = op("openWorktree", {}, z.strictObject({ repositoryId: Identifier, path: Text.min(1) }));
 // Contract Δ3: the service maps the entry of its current read to a path and sends the private `reveal` request.
-const RevealPath = op("revealPath", {}, z.strictObject({ repositoryId: Identifier, entryId: Identifier }));
+// Feature 005 contract Δ3: `folder` holds the base64 bytes of a proper prefix of the entry path that a `/` follows. The service checks the prefix.
+const RevealPath = op("revealPath", {}, z.strictObject({ repositoryId: Identifier, entryId: Identifier, folder: z.base64().min(1).optional() }));
 // Data-model §13: `discard` is no stored choice (spec FR-010).
 const SwitchChoice = z.enum(["keep", "stash"]);
 const SetSwitchChoice = op("setSwitchChoice", {}, z.strictObject({ choice: SwitchChoice }));
 // Contract Δ3: the shell checks the picked folder against the route of this repository.
 const ChooseWorktreeFolder = op("chooseWorktreeFolder", {}, z.strictObject({ repositoryId: Identifier }));
+
+// ---- Feature 005 operations (contract Δ1 to Δ3) ----
+
+// `fileId` is the 0-based record ordinal of the retained listing (data-model §1).
+const changesFile = { changesId: Identifier, fileId: z.int().min(0).max(STATUS_LISTING_RECORDS - 1) };
+const ReadCommitChanges = op("readCommitChanges", snapshot, z.strictObject({ viewId: Identifier, oid: ObjectId, parent: z.int().min(0).max(HISTORY_PARENTS_PER_COMMIT - 1) }));
+const ReadCommitFile = op("readCommitFile", snapshot, z.strictObject(changesFile));
+const BlameSource = z.union([
+  z.strictObject(changesFile).meta({ title: "BlameCommitFile" }),
+  z.strictObject({ snapshotId: Identifier, entryId: Identifier }).meta({ title: "BlameWorkingFile" }),
+  z.strictObject({ blameId: Identifier, line: z.int().min(1).max(BLAME_FILE_LINES) }).meta({ title: "BlameBefore" }),
+  z.strictObject({ blameId: Identifier }).meta({ title: "BlameRerun" }),
+]);
+const BlameOptions = z.strictObject({ ignoreWhitespace: z.boolean(), detectMoves: z.boolean(), detectCopies: z.boolean(), ignoreList: z.boolean() }).meta({ title: "BlameOptions" });
+const ReadBlame = op("readBlame", snapshot, z.strictObject({ source: BlameSource, options: BlameOptions }));
+const ReadIgnoreFile = op("readIgnoreFile", snapshot, z.strictObject({ target: IgnoreTarget }));
+const PreviewIgnore = op("previewIgnore", snapshot, z.strictObject({ target: IgnoreTarget, text: PreviewText, snapshotId: Identifier, lineEnding: SaveLineEnding.optional() }));
+// Contract Δ3 `openSubmodule`: worktree-relative text with `/` separators. The shell also checks each component by the 001 §6 rule.
+const SubmodulePath = Text.min(1).refine((path) => path.split("/").every((part) => part !== "" && part !== "." && part !== ".."));
+const OpenSubmodule = op("openSubmodule", {}, z.strictObject({ repositoryId: Identifier, path: SubmodulePath }));
 
 export const RendererEnvelope = z.discriminatedUnion("operation", [
   GetEnvironment,
@@ -379,6 +441,12 @@ export const RendererEnvelope = z.discriminatedUnion("operation", [
   RevealPath,
   SetSwitchChoice,
   ChooseWorktreeFolder,
+  ReadCommitChanges,
+  ReadCommitFile,
+  ReadBlame,
+  ReadIgnoreFile,
+  PreviewIgnore,
+  OpenSubmodule,
 ]);
 export type RendererRequest = z.infer<typeof RendererEnvelope>;
 export type RequestOf<K extends OperationName> = Extract<RendererRequest, { operation: K }>;
@@ -405,6 +473,8 @@ export const NativeFirstEnvelope = z.discriminatedUnion("operation", [
   OpenWorktree,
   SetSwitchChoice,
   ChooseWorktreeFolder,
+  // Feature 005 contract Δ1.
+  OpenSubmodule,
 ]);
 
 // Contract §6 "Dismissal": without `bootstrapId`, the stored worktree path does not exist.
@@ -449,6 +519,13 @@ export const ServiceEnvelope = z.discriminatedUnion("operation", [
   ApplyFiles,
   op("openWorktree", {}, z.strictObject({ repositoryId: Identifier, bootstrapId: Identifier })),
   RevealPath,
+  ReadCommitChanges,
+  ReadCommitFile,
+  ReadBlame,
+  ReadIgnoreFile,
+  PreviewIgnore,
+  // Feature 005 contract Δ3: the shell binds the joined path to a `repositoryDiscovery` context and forwards its `bootstrapId`.
+  op("openSubmodule", {}, z.strictObject({ repositoryId: Identifier, bootstrapId: Identifier, path: SubmodulePath })),
 ]);
 export type ServiceRequest = z.infer<typeof ServiceEnvelope>;
 
@@ -755,6 +832,7 @@ export const WorkspaceLocation = z
   .meta({ title: "WorkspaceLocation" });
 
 // Contract §3 `readWorkspace` with a retained snapshot: the summary, `entryCount`, the first page, and the cursor of the next page or null.
+// A `retained` result holds no page: `entries` is empty and `cursor` is null.
 export const WorkspaceSnapshot = z
   .strictObject({
     generation: Generation,
@@ -784,7 +862,11 @@ export const WorkspaceSnapshot = z
     // Contract §3 `readWorkspace`: `retained` when the change check returned the last snapshot without a Git process.
     readKind: z.enum(["full", "retained"]),
   })
-  .refine((r) => r.completeness.state !== "failed" && (r.cursor === null ? r.entries.length === r.entryCount : r.entries.length > 0 && r.entries.length < r.entryCount))
+  .refine(
+    (r) =>
+      r.completeness.state !== "failed" &&
+      (r.readKind === "retained" ? r.entries.length === 0 && r.cursor === null : r.cursor === null ? r.entries.length === r.entryCount : r.entries.length > 0 && r.entries.length < r.entryCount),
+  )
   .refine((r) => r.cut === undefined || r.cut === null || r.completeness.state === "limited")
   .meta({ title: "WorkspaceSnapshot" });
 
@@ -851,8 +933,11 @@ export const RefEntry = z
     symref: z.string().nullable(),
     upstream: z.string().nullable(),
     upstreamPresent: z.boolean(),
+    // Feature 005 contract Δ3 (001 §3): the raw name bytes in base64, present exactly when `invalidUtf8` is true. The tree order keys on them.
+    nameBytes: z.base64().min(1).optional(),
     commitId: ObjectId.nullable(),
   })
+  .refine((r) => r.invalidUtf8 === (r.nameBytes !== undefined))
   .meta({ title: "RefEntry" });
 
 // Contract §3 `readRefs`: the complete list in Git's `refname` order, and the branch that `%(HEAD)` marks.
@@ -1356,17 +1441,6 @@ const RebasePlan = z
     autosquash: z.literal(false),
   })
   .meta({ title: "RebasePlan" });
-// Data-model §7. `path` holds the path bytes in base64.
-const IgnorePlan = z
-  .strictObject({
-    target: z.enum(["gitignore", "exclude"]),
-    path: z.base64().min(1),
-    folder: z.boolean(),
-    line: Text.min(1),
-    prefixNewline: z.boolean(),
-    expected: z.union([z.literal("absent"), z.strictObject({ size: Count, sha256: Fingerprint }).meta({ title: "IgnoreExpected" })]),
-  })
-  .meta({ title: "IgnorePlan" });
 // Plan.md D10. `path` is the bound path in Git's form for the route (contract Δ6).
 const WorktreeAddPlan = z
   .strictObject({
@@ -1430,6 +1504,31 @@ const ConfigSavePlan = z
   .meta({ title: "ConfigSavePlan" });
 // git-config(1) "EXIT STATUS" 1 to 6.
 export const CONFIG_EXIT_REASONS = ["invalid-key", "no-section-or-name", "invalid-file", "cannot-write", "nothing-set", "invalid-pattern"] as const;
+// Feature 005 contract Δ5 "Delete confirmation paths": 20 paths, plus a count. It is no output bound, so `limits.ts` does not list it.
+const DELETE_CONFIRMATION_PATHS = 20;
+// Data-model §4 plan fields. `files.paths` holds the first confirmation paths in tree order, as base64 bytes. `tracked` counts the tracked files.
+const DeletePlan = z
+  .strictObject({
+    mode: DeleteMode,
+    entryIds: z.array(Identifier).min(1).max(MULTI_FILE_ACTION_FILES),
+    files: z.strictObject({ count: Count, paths: z.array(z.base64().min(1)).max(DELETE_CONFIRMATION_PATHS) }).meta({ title: "DeleteFiles" }),
+    tracked: Count,
+    folder: z.base64().min(1).nullable(),
+    wsl: z.boolean(),
+  })
+  // Contract Δ6: a WSL workspace has no Recycle Bin request.
+  .refine(
+    (p) =>
+      uniqueIds(p.entryIds) &&
+      p.files?.count === p.entryIds.length &&
+      Array.isArray(p.files.paths) &&
+      p.files.paths.length === Math.min(p.files.count, DELETE_CONFIRMATION_PATHS) &&
+      p.tracked <= p.files.count &&
+      !(p.wsl && p.mode === "recycle"),
+  )
+  .meta({ title: "DeletePlan" });
+// Contract Δ3 `ignore-save` plan: the target file in Git's form, and the size and SHA-256 of the new bytes.
+const IgnoreSavePlan = z.strictObject({ target: IgnoreTarget, file: Text.min(1), size: Count.max(IGNORE_TARGET_BYTES), sha256: Fingerprint }).meta({ title: "IgnoreSavePlan" });
 const reviewed = <A extends string, P extends z.ZodType>(action: A, plan: P, title: string) => z.strictObject({ action: z.literal(action), plan, workbenchToken: Identifier }).meta({ title });
 // Contract Δ3 "Result": `{action, plan, workbenchToken}`, or a refusal value: the Δ9 reason with its facts, the in-the-way paths, or the CONFLICTED count.
 // A `merge` or `rebase` refusal after the counts carries the plan (contract Δ3).
@@ -1442,17 +1541,19 @@ export const ReviewWorkbenchResult = z
       reviewed("delete-branch", DeleteBranchPlan, "DeleteBranchReviewed"),
       reviewed("merge", MergePlan, "MergeReviewed"),
       reviewed("rebase", RebasePlan, "RebaseReviewed"),
-      reviewed("ignore", IgnorePlan, "IgnoreReviewed"),
       reviewed("worktree-add", WorktreeAddPlan, "WorktreeAddReviewed"),
       reviewed("worktree-remove", WorktreeRemovePlan, "WorktreeRemoveReviewed"),
       reviewed("worktree-prune", WorktreePrunePlan, "WorktreePruneReviewed"),
       reviewed("choose-side", ChooseSidePlan, "ChooseSideReviewed"),
       reviewed("mergetool", MergetoolPlan, "MergetoolReviewed"),
       reviewed("config-save", ConfigSavePlan, "ConfigSaveReviewed"),
+      reviewed("delete", DeletePlan, "DeleteReviewed"),
+      reviewed("ignore-save", IgnoreSavePlan, "IgnoreSaveReviewed"),
     ]),
     z
       .strictObject({
-        reason: z.enum([...WORKBENCH_UNAVAILABLE_REASONS, ...UNTRACKED_IN_WAY_REASONS, ...DESTINATION_NOT_EMPTY_REASONS]).optional(),
+        // Feature 005 contract Δ3: an `ignore-save` review gives STALE_REVIEW with reason `ignore-changed`.
+        reason: z.enum([...WORKBENCH_UNAVAILABLE_REASONS, ...UNTRACKED_IN_WAY_REASONS, ...DESTINATION_NOT_EMPTY_REASONS, ...STALE_REVIEW_REASONS]).optional(),
         worktree: Text.min(1).optional(),
         ref: FullRef.optional(),
         remotes: z.array(RemoteName).min(2).max(SYNC_REMOTES).optional(),
@@ -1535,8 +1636,10 @@ const BranchEntry = z
     heldBy: Text.min(1).nullable(),
     current: z.boolean(),
     localName: Text.min(1).nullable(),
+    // Feature 005 contract Δ3: false for no upstream or the 003 track state `gone` of the paired tracking entry. Null: no paired entry, so the state is unknown.
+    upstreamPresent: z.boolean().nullable(),
   })
-  .refine((e) => (e.kind === "local" ? e.localName === null : !e.current && e.tracking === null))
+  .refine((e) => (e.kind === "local" ? e.localName === null : !e.current && e.tracking === null) && (e.upstreamPresent !== true || e.upstream !== null))
   .meta({ title: "BranchEntry" });
 // Contract Δ3 `readBranches`: the entries, or the `readRefs` refusal form for a bound or a failed read. At most one entry is current.
 export const ReadBranchesResult = z
@@ -1615,7 +1718,24 @@ const STASH_STATES = ["dropped", ...STASH_KEPT_REASONS.map((reason) => `kept-${r
 const BRANCH_ACTIONS = ["create-branch", "rename-branch", "delete-branch"] as const;
 const WORKTREE_ACTIONS = ["worktree-add", "worktree-remove", "worktree-prune"] as const;
 const RESOLVE_ACTIONS = ["choose-side", "mergetool"] as const;
-const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", "ignore", ...WORKTREE_ACTIONS, ...RESOLVE_ACTIONS, "config-save"] as const;
+const RUN_ACTIONS = ["switch", ...BRANCH_ACTIONS, "merge", "rebase", ...WORKTREE_ACTIONS, ...RESOLVE_ACTIONS, "config-save", "delete", "ignore-save"] as const;
+// Data-model §5: the outcome of each path and each candidate folder. Only `error` carries `code`, and only `recycled` carries `recycledPath`.
+const DeleteFileOutcome = z
+  .strictObject({
+    entryId: Identifier,
+    outcome: z.enum(["recycled", "deleted", "kept", "changed", "absent", "not-regular", "error", "stopped"]),
+    code: z.enum(FILE_FACT_ERRORS).optional(),
+    recycledPath: ChannelPath.optional(),
+  })
+  .refine((o) => (o.code !== undefined) === (o.outcome === "error") && (o.recycledPath !== undefined) === (o.outcome === "recycled"))
+  .meta({ title: "DeleteFileOutcome" });
+const DeleteFolderOutcome = z
+  .strictObject({ pathBytes: z.base64().min(1), outcome: z.enum(["removed", "kept", "absent", "not-regular", "error"]), code: z.enum(FILE_FACT_ERRORS).optional() })
+  .refine((o) => (o.code !== undefined) === (o.outcome === "error"))
+  .meta({ title: "DeleteFolderOutcome" });
+// Data-model §8 result. `stale`, `not-regular`, `stopped`, `interrupted`, and `error` are the `fileReplace` replies.
+const IGNORE_SAVE_OUTCOMES = ["replaced", "stale", "not-regular", "stopped", "interrupted", "error"] as const;
+const STALE_ACTIONS: Readonly<Record<string, string>> = { delete: "files-changed", "ignore-save": "ignore-changed" };
 // Contract Δ3 `runWorkbench` "Results": the observed effects. A failed step adds its `outputTail`. An unknown outcome names the action only.
 // A refusal before any step can carry the CONFLICTED count. A repeated request gets the `getOperation` result of its operation (contract §2).
 export const RunWorkbenchResult = z
@@ -1643,7 +1763,6 @@ export const RunWorkbenchResult = z
         outputTail: OutputTail.optional(),
       })
       .meta({ title: "MergeRebaseRun" }),
-    z.strictObject({ action: z.literal("ignore"), reason: z.literal("ignore-not-regular").optional() }).meta({ title: "IgnoreRun" }),
     z.strictObject({ action: z.enum(WORKTREE_ACTIONS), head: Head, refs: RefChanges, outputTail: OutputTail.optional() }).meta({ title: "WorktreeRun" }),
     // Spec FR-096: `staged` comes from the fresh index read. It is true when the path has no stage above 0.
     z.strictObject({ action: z.enum(RESOLVE_ACTIONS), staged: z.boolean(), operationState: WorkspaceOperationState, outputTail: OutputTail.optional() }).meta({ title: "ResolveRun" }),
@@ -1661,6 +1780,19 @@ export const RunWorkbenchResult = z
         outputTail: OutputTail.optional(),
       })
       .meta({ title: "ConfigSaveRun" }),
+    // Feature 005 data-model §5 and §8.
+    z
+      .strictObject({ action: z.literal("delete"), entries: z.array(DeleteFileOutcome).max(MULTI_FILE_ACTION_FILES), folders: z.array(DeleteFolderOutcome).max(MULTI_FILE_ACTION_FILES) })
+      .meta({ title: "DeleteRun" }),
+    z
+      .strictObject({ action: z.literal("ignore-save"), outcome: z.enum(IGNORE_SAVE_OUTCOMES), code: z.enum(FILE_FACT_ERRORS).optional() })
+      .refine((r) => (r.code !== undefined) === (r.outcome === "error"))
+      .meta({ title: "IgnoreSaveRun" }),
+    // Feature 005 contract Δ3: a fact that changed after the review gives STALE_REVIEW with the reason of its action.
+    z
+      .strictObject({ action: z.enum(["delete", "ignore-save"]), reason: z.enum(STALE_REVIEW_REASONS) })
+      .refine((r) => STALE_ACTIONS[r.action] === r.reason)
+      .meta({ title: "WorkbenchStale" }),
     z.strictObject({ action: z.enum(RUN_ACTIONS) }).meta({ title: "WorkbenchUnread" }),
     z.strictObject({ unmerged: Count }).meta({ title: "WorkbenchConflicted" }),
     // Plan.md O-20: a TRUST_REQUIRED or TRUST_CHANGED run refusal names its gate, as the review refusal does.
@@ -1668,3 +1800,207 @@ export const RunWorkbenchResult = z
     OperationResult.meta({ title: "WorkbenchRepeat" }),
   ])
   .meta({ title: "RunWorkbenchResult" });
+
+// ---- Feature 005 results (contract Δ3, data-model §1, §2, §6, §7, §10) ----
+
+const PathBytes = z.base64().min(1);
+// Contract Δ3: a non-zero exit in a promisor repository gives OBJECT_MISSING with the 001 remedy and no value.
+const InspectionObjectMissing = z.strictObject({ remedy: Remedy }).meta({ title: "InspectionObjectMissing" });
+const FileKind = z.enum(["file", "link", "submodule"]);
+
+// Data-model §1. `score` and `oldPathBytes` exist only for `renamed`. `fileId` is the record ordinal.
+// The `empty-tree` base holds the `hash-object -t tree --stdin` result, so the schema checks only its form.
+const CommitChangeEntry = z
+  .strictObject({
+    fileId: Count,
+    status: z.enum(["added", "deleted", "modified", "renamed", "type-changed"]),
+    score: z.int().min(0).max(100).optional(),
+    pathBytes: PathBytes,
+    oldPathBytes: PathBytes.optional(),
+    kind: FileKind,
+  })
+  .refine((e) => (e.status === "renamed") === (e.score !== undefined) && (e.status === "renamed") === (e.oldPathBytes !== undefined))
+  .meta({ title: "CommitChangeEntry" });
+const CommitBase = z
+  .discriminatedUnion("kind", [
+    z.strictObject({ kind: z.literal("parent"), index: z.int().min(0).max(HISTORY_PARENTS_PER_COMMIT - 1), oid: ObjectId }).meta({ title: "ParentBase" }),
+    z.strictObject({ kind: z.literal("empty-tree"), oid: ObjectId }).meta({ title: "EmptyTreeBase" }),
+    z.strictObject({ kind: z.literal("shallow") }).meta({ title: "ShallowBase" }),
+  ])
+  .meta({ title: "CommitBase" });
+const COMMIT_CHANGES_BOUNDS = ["STATUS_LISTING_RECORDS", "STATUS_LISTING_BYTES", "COMMIT_CHANGES_RESULT_BYTES"] as const;
+export const CommitChanges = z
+  .strictObject({
+    changesId: Identifier,
+    viewId: Identifier,
+    oid: ObjectId,
+    parents: z.array(ObjectId).max(HISTORY_PARENTS_PER_COMMIT),
+    base: CommitBase,
+    files: z.array(CommitChangeEntry).max(STATUS_LISTING_RECORDS),
+    completeness: z
+      .discriminatedUnion("state", [
+        z.strictObject({ state: z.literal("complete") }).meta({ title: "ChangesComplete" }),
+        z.strictObject({ state: z.literal("limited"), code: z.literal("OUTPUT_LIMIT"), reason: z.enum(COMMIT_CHANGES_BOUNDS), shown: Count }).meta({ title: "ChangesLimited" }),
+      ])
+      .meta({ title: "ChangesCompleteness" }),
+  })
+  .refine((c) => {
+    if (!Array.isArray(c.files) || !Array.isArray(c.parents) || c.base === undefined || c.completeness === undefined) return false;
+    const base = c.base.kind === "parent" ? c.base.index < c.parents.length && c.parents[c.base.index] === c.base.oid : c.parents.length === 0;
+    const files = c.files.every((f, i) => f?.fileId === i) && (c.base.kind !== "shallow" || c.files.length === 0);
+    return base && files && (c.completeness.state !== "limited" || c.completeness.shown === c.files.length);
+  })
+  .meta({ title: "CommitChanges" });
+export const ReadCommitChangesResult = z.union([CommitChanges, InspectionObjectMissing]).meta({ title: "ReadCommitChangesResult" });
+export type CommitChanges = z.infer<typeof CommitChanges>;
+
+// Data-model §2. A binary file, a submodule, and a type change carry no patch. Only an OBJECT_MISSING patch carries `remedy`.
+export const CommitFile = z
+  .strictObject({
+    changesId: Identifier,
+    fileId: Count,
+    facts: z
+      .strictObject({
+        rename: z.strictObject({ oldPath: PathBytes, score: z.int().min(0).max(100) }).meta({ title: "RenameFact" }).optional(),
+        mode: z.strictObject({ old: FileMode, new: FileMode }).meta({ title: "ModeFact" }).optional(),
+        submodule: z.strictObject({ old: ObjectId.nullable(), new: ObjectId.nullable() }).meta({ title: "SubmoduleFact" }).optional(),
+        typeChange: z.strictObject({ old: FileKind, new: FileKind }).meta({ title: "TypeChangeFact" }).optional(),
+      })
+      .meta({ title: "CommitFileFacts" }),
+    binary: z.boolean(),
+    patch: z.base64().nullable(),
+    completeness: z
+      .union([
+        z.strictObject({ state: z.literal("complete") }).meta({ title: "PatchComplete" }),
+        z.strictObject({ state: z.literal("limited"), code: z.literal("OUTPUT_LIMIT"), reason: z.enum(["CANONICAL_DIFF_BYTES", "CANONICAL_DIFF_LINES"]) }).meta({ title: "PatchLimited" }),
+        z.strictObject({ state: z.literal("limited"), code: z.literal("OBJECT_MISSING") }).meta({ title: "PatchObjectMissing" }),
+      ])
+      .meta({ title: "PatchCompleteness" }),
+    remedy: Remedy.optional(),
+  })
+  .refine(
+    (f) =>
+      (f.remedy !== undefined) === (f.completeness?.state === "limited" && f.completeness.code === "OBJECT_MISSING") &&
+      (f.patch === null || (!f.binary && f.facts?.submodule === undefined && f.facts?.typeChange === undefined)),
+  )
+  .meta({ title: "CommitFile" });
+// Contract Δ3: UNSUPPORTED_COMPARISON with the 001 reason `path` for a path that is no valid UTF-8.
+const CommitFileRefused = z.strictObject({ reason: z.enum(["path"]) }).meta({ title: "CommitFileRefused" });
+export const ReadCommitFileResult = z.union([CommitFile, InspectionObjectMissing, CommitFileRefused]).meta({ title: "ReadCommitFileResult" });
+export type CommitFile = z.infer<typeof CommitFile>;
+
+// Data-model §6. `text` has LF line ends and no BOM. The renderer shows it as plain text only.
+const READ_IGNORE_REASONS = ["ignore-link", "ignore-folder", "ignore-not-regular", "ignore-size", "ignore-not-utf8", "ignore-nul", "ignore-lone-cr", "unreadable", "path"] as const;
+export const IgnoreFile = z
+  .strictObject({
+    target: IgnoreTarget,
+    file: Text.min(1),
+    state: z.enum(["absent", "file"]),
+    text: Text.refine((t) => new TextEncoder().encode(t).length <= IGNORE_TARGET_BYTES),
+    lineEnding: z.enum(["lf", "crlf", "none", "mixed"]),
+    // Data-model §6: only a mixed file carries the counts, and each form occurs at least once.
+    lineCounts: z.strictObject({ lf: Count.min(1), crlf: Count.min(1) }).optional(),
+    bom: z.boolean(),
+    expected: IgnoreExpected,
+  })
+  .refine(
+    (f) =>
+      (f.state === "absent") === (f.expected === "absent") &&
+      (f.state === "file" || (f.text === "" && !f.bom && f.lineEnding === "none")) &&
+      (f.lineEnding === "mixed") === (f.lineCounts !== undefined),
+  )
+  .meta({ title: "IgnoreFile" });
+export const ReadIgnoreFileResult = z.union([IgnoreFile, z.strictObject({ reason: z.enum(READ_IGNORE_REASONS) }).meta({ title: "IgnoreFileRefused" })]).meta({ title: "ReadIgnoreFileResult" });
+export type IgnoreFile = z.infer<typeof IgnoreFile>;
+
+// Data-model §7. Each group holds its count and at most 1,000 paths in `comparePaths` order. Contract Δ5: 100 notices, plus a count.
+const PREVIEW_NOTICES = 100;
+const PreviewGroup = z
+  .strictObject({ count: Count, paths: z.array(PathBytes).max(PREVIEW_GROUP_PATHS) })
+  .refine((g) => Array.isArray(g.paths) && g.paths.length === Math.min(g.count, PREVIEW_GROUP_PATHS))
+  .meta({ title: "PreviewGroup" });
+export const PreviewIgnoreResult = z
+  .union([
+    z
+      .strictObject({
+        preview: z
+          .strictObject({
+            newlyIgnored: PreviewGroup,
+            noLongerIgnored: PreviewGroup,
+            trackedMatched: Count,
+            notices: z
+              .strictObject({ entries: z.array(z.strictObject({ kind: z.enum(["link", "inside-ignored"]), pathBytes: PathBytes }).meta({ title: "PreviewNotice" })).max(PREVIEW_NOTICES), more: Count })
+              .meta({ title: "PreviewNotices" }),
+          })
+          .meta({ title: "PreviewGroups" }),
+      })
+      .meta({ title: "IgnorePreview" }),
+    z
+      .strictObject({
+        unavailable: z
+          .strictObject({ reason: z.enum(["paths", "listing", "name-case", "shadow-copy", "self-check", "unreadable", "deadline"]), bound: z.enum(LIMIT_NAMES).optional() })
+          .meta({ title: "PreviewUnavailableReason" }),
+      })
+      .meta({ title: "PreviewUnavailable" }),
+  ])
+  .meta({ title: "PreviewIgnoreResult" });
+
+// Data-model §10. Text fields hold Git's stored bytes in base64, because blame runs with `--encoding=none`.
+const RawBytes = z.base64();
+const BlameCommit = z
+  .strictObject({
+    oid: ObjectId,
+    author: RawBytes,
+    authorMail: RawBytes,
+    authorTime: z.int(),
+    authorTz: z.string().regex(/^[+-][0-9]{4}$/),
+    summary: RawBytes,
+    previous: z.strictObject({ oid: ObjectId, pathBytes: PathBytes }).meta({ title: "BlamePrevious" }).nullable(),
+    filenameBytes: PathBytes,
+    shallow: z.boolean(),
+  })
+  .meta({ title: "BlameCommit" });
+// `commit` is an index into `commits`. `ignored` and `unblamable` come only from the porcelain markers.
+const BlameGroup = z
+  .strictObject({ commit: Count, origStart: z.int().min(1), finalStart: z.int().min(1), count: z.int().min(1), ignored: z.boolean(), unblamable: z.boolean() })
+  .meta({ title: "BlameGroup" });
+// The groups cover the lines 1 to N exactly once, in final line order.
+const coversLines = (groups: readonly { finalStart: number; count: number; commit: number }[], lines: number, commits: number) => {
+  let next = 1;
+  for (const g of groups) {
+    if (g?.finalStart !== next || !(g.commit < commits)) return false;
+    next += g.count;
+  }
+  return next === lines + 1;
+};
+export const Blame = z
+  .strictObject({
+    blameId: Identifier,
+    commit: ObjectId,
+    pathBytes: PathBytes,
+    content: z.base64().refine((data) => decodedBytes(data) <= BLAME_FILE_BYTES),
+    lines: Count.max(BLAME_FILE_LINES),
+    ignoreList: z.enum(["none", "on", "off"]),
+    groups: z.array(BlameGroup).max(BLAME_FILE_LINES),
+    commits: z.array(BlameCommit).max(BLAME_FILE_LINES),
+    // Data-model §10 and §11: only a `{blameId, line}` source carries the mapped line. A result without lines has none.
+    focusLine: z.int().min(1).max(BLAME_FILE_LINES).optional(),
+  })
+  .refine((b) => Array.isArray(b.groups) && Array.isArray(b.commits) && coversLines(b.groups, b.lines, b.commits.length) && (b.focusLine === undefined || b.focusLine <= b.lines))
+  .meta({ title: "Blame" });
+// Contract Δ3 `readBlame` errors: the BLAME_UNAVAILABLE reason, the OBJECT_MISSING remedy, or the GIT_FAILED output tail.
+// Only `ignore-revs-file-missing` carries `path`, the value as configured.
+const BlameRefused = z
+  .strictObject({ reason: z.enum(BLAME_UNAVAILABLE_REASONS).optional(), path: Text.min(1).optional(), remedy: Remedy.optional(), outputTail: OutputTail.optional() })
+  .refine((r) => (r.path !== undefined) === (r.reason === "ignore-revs-file-missing") && [r.reason, r.remedy, r.outputTail].filter((v) => v !== undefined).length === 1)
+  .meta({ title: "BlameRefused" });
+export const ReadBlameResult = z.union([Blame, BlameRefused]).meta({ title: "ReadBlameResult" });
+export type Blame = z.infer<typeof Blame>;
+
+// Contract Δ3 `openSubmodule`: the 001 `chooseRepository` result, or the SUBMODULE_UNAVAILABLE reason.
+export const OpenSubmoduleResult = z
+  .union([RegistrationResult, z.strictObject({ reason: z.enum(SUBMODULE_UNAVAILABLE_REASONS) }).meta({ title: "SubmoduleRefused" })])
+  .meta({ title: "OpenSubmoduleResult" });
+
+// Contract Δ3 `revealPath`: the `reveal` reply `absent` gives UNKNOWN_TARGET with this reason. A shown path gives no value.
+export const RevealPathResult = z.strictObject({ reason: z.enum(UNKNOWN_TARGET_REASONS) }).meta({ title: "RevealPathResult" });

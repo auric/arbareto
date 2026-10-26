@@ -25,7 +25,7 @@ import { localFacts, rawRecord, wholeFileRemedy, workingParts } from "./comparis
 import { createTailCollector } from "./discovery";
 import { hunkEligibility } from "./eligibility";
 import { blobProof, changedSet, indexInfoInput } from "./file-publish";
-import { createCollector, RunnerRefusal, stepUnits, type Collector } from "./git-runner";
+import { createCollector, firstEnd, isDeadlineStop, RunnerRefusal, stepUnits, type Collector } from "./git-runner";
 import { ownedCandidate } from "./hunk-candidate";
 import {
   besideIndex,
@@ -125,9 +125,11 @@ async function firstOf<T>(count: number, stop: AbortController, work: (i: number
       const i = next++;
       try {
         const result = await work(i);
-        if (result !== null && first === null) {
-          first = result;
-          stop.abort();
+        if (result !== null) {
+          // 001 contract §5 "Deadline outcomes": a later deadline replaces an earlier result, which can come from the Job close of that deadline.
+          const earlier = first;
+          first = firstEnd([first, result], isDeadlineStop);
+          if (earlier === null) stop.abort();
         }
       } catch (error) {
         failure ??= { error };
@@ -142,6 +144,14 @@ async function firstOf<T>(count: number, stop: AbortController, work: (i: number
 
 // The context of one pooled run: its signal also ends when the run stops.
 const pooledContext = (ctx: PublishContext, stop: AbortController): PublishContext => ({ ...ctx, signal: AbortSignal.any([ctx.signal, stop.signal]) });
+
+// The context of one pooled call. `stepOf` checks the signal first, so a run stop after the deadline of the call gives `canceled`.
+// `expired` keeps that deadline from the exit reply (001 contract §5 "Deadline outcomes").
+function expiring(ctx: PublishContext): PublishContext & { expired: boolean } {
+  const own = { ...ctx, expired: false };
+  own.runner = { ...ctx.runner, run: (call) => ctx.runner.run(call).then((exit) => ((own.expired ||= exit.deadline !== undefined), exit)) };
+  return own;
+}
 
 // The git-status(1) porcelain v2 fields of a record, as one comparable key.
 const recordKey = (r: StatusRecord): string =>
@@ -449,12 +459,14 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
       let done = 0;
       const proof = await firstOf(proved.length, stop, async (k): Promise<Refusal | Stop | null> => {
         const { item, oid, working } = proved[k]!;
-        const held = await blobProof(pooled, item.path, oid, working, wholeFileRemedy({ entry: item.entry, workspace: w, installation, headUnborn }, item.path));
+        const own = expiring(pooled);
+        const held = await blobProof(own, item.path, oid, working, wholeFileRemedy({ entry: item.entry, workspace: w, installation, headUnborn }, item.path));
         if (held === null) {
           registry.progress(operationId, "stage-files", { fileIndex: ++done, fileCount: proved.length });
           return null;
         }
-        return isStop(held) ? held : { ...held, entryId: item.entry.entryId };
+        if (isStop(held)) return own.expired ? { stop: "deadline" } : held;
+        return { ...held, entryId: item.entry.entryId };
       });
       run.executionLast = rec.execution ?? 0;
       if (proof !== null) return proof;

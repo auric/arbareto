@@ -1,0 +1,8 @@
+{
+  "schema": "read-blame-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"reason\":\"ignore-revs-file-missing\"}",
+  "repair": {
+    "path": ".git-blame-ignore-revs"
+  }
+}

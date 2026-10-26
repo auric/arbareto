@@ -10,6 +10,7 @@ import {
   FILE_FACT_COMPONENT_UNITS,
   FILE_FACT_ENTRIES,
   IDENTITY_PATHS,
+  IGNORE_TARGET_BYTES,
   INLINE_PROCESS_INPUT_BYTES,
   MUTATION_RAW_INDEX_BYTES,
   PROCESS_EXIT_CODE_MAX,
@@ -22,6 +23,7 @@ import {
   SUBMODULE_REVIEW_SUBMODULES,
   SUBMODULE_UPDATE_CEILING_MS,
   SUBMODULE_UPDATE_INACTIVITY_MS,
+  TRUST_DIGEST_FILE_BYTES,
   TRUST_RECORD_BYTES,
   TRUST_RECORDS,
   WEBVIEW2_VERSION_BYTES,
@@ -193,6 +195,15 @@ const CLONE = { contextKind: z.literal("clone"), cloneId: Identifier, gitInstall
 const GLOBAL_CONFIG = { contextKind: z.literal("globalConfig"), gitInstallationId: Identifier };
 // Feature 004 contract Δ6: the native step of the `worktree-add` review binds the path to `bootstrapId`.
 const WORKTREE_ADD = { contextKind: z.literal("worktreeAdd"), gitInstallationId: Identifier, repositoryId: Identifier, bootstrapId: Identifier };
+// Feature 005 contract Δ6: the shadow folder of one `shadow` reply. `shadowRepository` picks the cwd `<shadow>/s` or `<shadow>/c`.
+// `shadowIndex` picks `GIT_INDEX_FILE`: `<cwd>/.git/index` or `<cwd>/.git/exclude.index`.
+const IGNORE_PREVIEW = {
+  contextKind: z.literal("ignorePreview"),
+  gitInstallationId: Identifier,
+  shadowId: Identifier,
+  shadowRepository: z.enum(["s", "c"]),
+  shadowIndex: z.enum(["index", "exclude"]),
+};
 // Contract §6 "Channel frames" `run` fields: the context IDs of each context kind.
 export const ProcessContext = z.discriminatedUnion("contextKind", [
   z.strictObject(GIT_PROBE).meta({ title: "GitProbeContext" }),
@@ -201,6 +212,7 @@ export const ProcessContext = z.discriminatedUnion("contextKind", [
   z.strictObject(CLONE).meta({ title: "CloneContext" }),
   z.strictObject(GLOBAL_CONFIG).meta({ title: "GlobalConfigContext" }),
   z.strictObject(WORKTREE_ADD).meta({ title: "WorktreeAddContext" }),
+  z.strictObject(IGNORE_PREVIEW).meta({ title: "IgnorePreviewContext" }),
 ]);
 export type ProcessContext = z.infer<typeof ProcessContext>;
 
@@ -249,7 +261,31 @@ const Component = z
   .max(FILE_FACT_COMPONENT_UNITS)
   .refine((name) => name.length <= FILE_FACT_COMPONENT_UNITS && name.isWellFormed() && NATIVE.isComponent(name));
 const FileFactEntry = z.strictObject({ root: z.enum(["worktreeRoot", "gitDirectory", "commonDirectory"]), path: z.array(Component).min(1) });
-const fileFacts = { type: z.literal("fileFacts"), ...call, operationId: Identifier, digest: z.boolean(), files: z.array(FileFactEntry).min(1).max(FILE_FACT_ENTRIES) };
+// Feature 005 contract Δ6: `content` asks for the bytes of one ignore file. The shell refuses it outside WSL.
+const fileFacts = { type: z.literal("fileFacts"), ...call, operationId: Identifier, digest: z.boolean(), files: z.array(FileFactEntry).min(1).max(FILE_FACT_ENTRIES), content: z.boolean().optional() };
+
+// Contract §6 "File facts": `lastWrite` is a signed 64-bit integer in decimal.
+const STAMP = /^(?:0|-?[1-9][0-9]{0,18})$/;
+const Stamp = z
+  .string()
+  .regex(STAMP)
+  // zod runs a refinement also after a failed pattern check, and `BigInt` throws on other text.
+  .refine((value) => STAMP.test(value) && BigInt.asIntN(64, BigInt(value)) === BigInt(value));
+
+// Feature 005 contract Δ6 `fileDelete`: the review fact of each entry. A file above the 1 MiB digest bound binds only size and `lastWrite` (Δ5).
+// typify tags this union by the `kind` consts, so the Rust type reads a link fact never as a file fact.
+const DeleteExpected = z.union([
+  z
+    .strictObject({ kind: z.literal("file"), size: Count, lastWrite: Stamp, digest: Fingerprint.optional() })
+    .refine((fact) => fact.digest === undefined || fact.size <= TRUST_DIGEST_FILE_BYTES)
+    .meta({ title: "DeleteExpectedFile" }),
+  z
+    .strictObject({ kind: z.literal("link"), tag: z.enum(["symlink", "junction", "other"]), target: Text.optional() })
+    .refine((fact) => (fact.tag !== "other") === (fact.target !== undefined))
+    .meta({ title: "DeleteExpectedLink" }),
+]);
+// Feature 005 contract Δ5 and Δ6 `fileReplace`: 0 to 1 MiB of bytes.
+const IgnoreBytes = Base64.refine((data) => decodedBytes(data) <= IGNORE_TARGET_BYTES);
 
 // ---- WSL file work (contract §6 "WSL file work", "Index digest in a read") ----
 
@@ -358,8 +394,8 @@ const GitFileIdentity = z.string().regex(/^[0-9a-f]+:[0-9]+:[0-9]+:[0-9]+$/);
 export const WslDistrosCall = z.strictObject({ operationId: Identifier, bootstrapId: Identifier });
 export const WslProbeLimits = z.strictObject({ deadlineMs: ms(WSL_DISTRO_START_MS) }).meta({ title: "WslProbeLimits" });
 export const WslProbeCall = z.strictObject({ operationId: Identifier, bootstrapId: Identifier, distro: DistroName, limits: WslProbeLimits });
-// Only Use this Git binds the ID, so `confirm` is always true. The shell takes every Git fact from its own probe parse.
-export const RegisterWslCall = z.strictObject({ operationId: Identifier, bootstrapId: Identifier, gitInstallationId: Identifier, confirm: z.literal(true) });
+// `confirm: false` is valid only on a saved match in the shell settings (contract §11 "Git per distro"). The shell takes every Git fact from its own probe parse.
+export const RegisterWslCall = z.strictObject({ operationId: Identifier, bootstrapId: Identifier, gitInstallationId: Identifier, confirm: z.boolean() });
 export type WslDistrosCall = z.infer<typeof WslDistrosCall>;
 export type WslProbeCall = z.infer<typeof WslProbeCall>;
 export type RegisterWslCall = z.infer<typeof RegisterWslCall>;
@@ -410,6 +446,7 @@ export const ProcessRequest = z.xor([
     // Feature 004 contract Δ6: the shell admits only the fixed arrays of each context.
     z.strictObject({ ...run, ...GLOBAL_CONFIG }).meta({ title: "RunGlobalConfig" }),
     z.strictObject({ ...run, ...WORKTREE_ADD }).meta({ title: "RunWorktreeAdd" }),
+    z.strictObject({ ...run, ...IGNORE_PREVIEW }).meta({ title: "RunIgnorePreview" }),
   ]).meta({ title: "RunGroup" }),
   named("Input", z.strictObject({ type: z.literal("input"), ...call, data: InlineInput })),
   named("Cancel", z.strictObject({ type: z.literal("cancel"), ...call })),
@@ -423,8 +460,8 @@ export const ProcessRequest = z.xor([
     "FileFacts",
     z
       .strictObject({ ...fileFacts, ...REGISTERED, index: WslIndexRequest.optional() })
-      // Only a request with `digest: false` takes `index`.
-      .refine((r) => r.index === undefined || r.digest === false),
+      // Only a request with `digest: false` takes `index`. `content` takes `digest: true` and exactly one entry.
+      .refine((r) => (r.index === undefined || r.digest === false) && (r.content !== true || (r.digest === true && Array.isArray(r.files) && r.files.length === 1))),
   ),
   named("LingeringCount", z.strictObject({ type: z.literal("lingeringCount"), ...call, operationId: Identifier, commonDirectory: ChannelPath })),
   z.union([
@@ -452,21 +489,38 @@ export const ProcessRequest = z.xor([
   ]).meta({ title: "PageantGroup" }),
   // The shell takes the Git path from `gitInstallationId` and the worktree root from `repositoryId`. A clone target has no repository.
   named("Terminal", z.strictObject({ type: z.literal("terminal"), ...call, operationId: Identifier, gitInstallationId: Identifier, repositoryId: Identifier.optional(), target: Text.min(1) })),
-  // Feature 004 contract Δ6. `expected` is `absent`, or the size and SHA-256 of the target (data-model §7).
+  named("Reveal", z.strictObject({ type: z.literal("reveal"), ...call, operationId: Identifier, repositoryId: Identifier, path: ChannelPath })),
+  // Feature 005 contract Δ6. The shell checks each path against the worktree root with `file_facts::below`.
   named(
-    "FileAppend",
+    "FileDelete",
+    z
+      .strictObject({
+        type: z.literal("fileDelete"),
+        ...call,
+        operationId: Identifier,
+        repositoryId: Identifier,
+        mode: z.enum(["recycle", "permanent"]),
+        entries: z.array(z.strictObject({ path: ChannelPath, expected: DeleteExpected }).meta({ title: "FileDeleteEntry" })).max(FILE_FACT_ENTRIES),
+        // Deepest first.
+        folders: z.array(ChannelPath).max(FILE_FACT_ENTRIES),
+      })
+      .refine((r) => Array.isArray(r.entries) && Array.isArray(r.folders) && r.entries.length + r.folders.length > 0),
+  ),
+  named(
+    "FileReplace",
     z.strictObject({
-      type: z.literal("fileAppend"),
+      type: z.literal("fileReplace"),
       ...call,
       operationId: Identifier,
       repositoryId: Identifier,
       target: z.enum(["gitignore", "exclude"]),
       path: ChannelPath,
-      expected: z.union([z.enum(["absent"]), z.strictObject({ size: Count, sha256: Fingerprint }).meta({ title: "FileAppendExpected" })]),
-      bytes: InlineInput,
+      expected: z.union([z.enum(["absent"]), z.strictObject({ size: Count.max(IGNORE_TARGET_BYTES), sha256: Fingerprint }).meta({ title: "FileReplaceExpected" })]),
+      bytes: IgnoreBytes,
     }),
   ),
-  named("Reveal", z.strictObject({ type: z.literal("reveal"), ...call, operationId: Identifier, repositoryId: Identifier, path: ChannelPath })),
+  // typify drops a const, so `op` is an enum of one value.
+  named("Shadow", z.strictObject({ type: z.literal("shadow"), ...call, operationId: Identifier, repositoryId: Identifier, op: z.enum(["create"]) })),
 ]);
 
 // Contract §6 "Process replies": the `refused` codes. The service refuses its own invalid request with INVALID_REQUEST.
@@ -509,13 +563,6 @@ export const ResolveGitReply = z.union([
   z.strictObject({ type: z.literal("resolveGit"), ...walkDeadline }).meta({ title: "ResolveGitDeadline" }),
 ]);
 
-// Contract §6 "File facts": `lastWrite` is a signed 64-bit integer in decimal.
-const STAMP = /^(?:0|-?[1-9][0-9]{0,18})$/;
-const Stamp = z
-  .string()
-  .regex(STAMP)
-  // zod runs a refinement also after a failed pattern check, and `BigInt` throws on other text.
-  .refine((value) => STAMP.test(value) && BigInt.asIntN(64, BigInt(value)) === BigInt(value));
 // Contract §6 "File facts": the codes of a component that exists but cannot be opened or read.
 export const FILE_FACT_ERRORS = ["access-denied", "sharing-violation", "io-error", "other-error"] as const;
 // `digest` and `bound` exclude each other. A link carries `target` and `relative` exactly when its tag is `symlink` or `junction`.
@@ -530,8 +577,10 @@ export const FileFact = z.union([
       // POSIX only. `executable` is the `access(X_OK)` result. `ownerExecute` is the `S_IXUSR` bit of `st_mode`.
       executable: z.boolean().optional(),
       ownerExecute: z.boolean().optional(),
+      // Feature 005 contract Δ6: the reply to a WSL `content` request adds the base64 bytes of a file up to 1 MiB, beside its digest.
+      bytes: IgnoreBytes.optional(),
     })
-    .refine((fact) => fact.digest === undefined || fact.bound === undefined)
+    .refine((fact) => (fact.digest === undefined || fact.bound === undefined) && (fact.bytes === undefined || fact.digest !== undefined))
     .meta({ title: "FileFactFile" }),
   z.strictObject({ kind: z.literal("directory"), executable: z.boolean().optional() }).meta({ title: "FileFactDirectory" }),
   z
@@ -640,16 +689,42 @@ export const TerminalReply = z.union([
 ]);
 // ---- Feature 004 contract Δ6 replies ----
 
-// `refused` names a reparse point or a non-regular file. `stale` names a size or SHA-256 other than `expected`.
-// Every request gets one reply, also after `cancel` or `closeJob`. `stopped`: the stop came before the write, so nothing was written.
-// `interrupted`: the stop came while a WSL `append` process could write, so the shell does not know whether it wrote.
-export const FileAppendReply = z.union([
-  z.strictObject({ type: z.literal("fileAppend"), ...call, result: z.enum(["appended", "stale", "stopped", "interrupted"]) }).meta({ title: "FileAppendResult" }),
-  z.strictObject({ type: z.literal("fileAppend"), ...call, result: z.literal("refused"), reason: z.enum(["not-regular"]) }).meta({ title: "FileAppendRefused" }),
-  z.strictObject({ type: z.literal("fileAppend"), ...call, result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "FileAppendError" }),
-]);
 // An error gives the `refused` frame with `UNKNOWN_TARGET` (contract Δ3 `revealPath`).
 export const RevealReply = z.strictObject({ type: z.literal("reveal"), ...call }).meta({ title: "RevealReply" });
+// ---- Feature 005 contract Δ6 replies ----
+
+// A walk that finds no entry. The service maps it to UNKNOWN_TARGET with reason `absent`.
+// typify drops a const, so an enum keeps the Rust reply union closed.
+export const RevealAbsentReply = z.strictObject({ type: z.literal("reveal"), ...call, result: z.enum(["absent"]) }).meta({ title: "RevealAbsent" });
+// One result per request entry and per folder, in request order. `kept` carries the `PostDeleteItem` HRESULT as an unsigned 32-bit value.
+// `stopped`: the Recycle Bin operation ended before the item.
+const DeleteEntryResult = z.union([
+  z.strictObject({ result: z.enum(["deleted", "stale", "absent", "not-regular", "stopped"]) }).meta({ title: "DeleteEntryResult" }),
+  z.strictObject({ result: z.literal("recycled"), recycledPath: ChannelPath }).meta({ title: "DeleteEntryRecycled" }),
+  z.strictObject({ result: z.literal("kept"), hresult: z.int().min(0).max(0xffff_ffff) }).meta({ title: "DeleteEntryKept" }),
+  z.strictObject({ result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "DeleteEntryError" }),
+]);
+const DeleteFolderResult = z.union([
+  z.strictObject({ result: z.enum(["removed", "kept", "absent", "not-regular"]) }).meta({ title: "DeleteFolderResult" }),
+  z.strictObject({ result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "DeleteFolderError" }),
+]);
+// Exactly one reply per request, also after `cancel`, `closeJob`, or a service exit.
+// `stopped`: a Windows stop or deadline before the delete phase, so nothing changed. `interrupted`: a WSL stop, deadline, or broken output, so the outcome is unknown.
+export const FileDeleteReply = z.union([
+  z
+    .strictObject({ type: z.literal("fileDelete"), ...call, entries: z.array(DeleteEntryResult).max(FILE_FACT_ENTRIES), folders: z.array(DeleteFolderResult).max(FILE_FACT_ENTRIES) })
+    .meta({ title: "FileDeleteResults" }),
+  z.strictObject({ type: z.literal("fileDelete"), ...call, result: z.enum(["stopped", "interrupted"]) }).meta({ title: "FileDeleteEnded" }),
+]);
+export const FileReplaceReply = z.union([
+  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.enum(["replaced", "stale", "stopped", "interrupted"]) }).meta({ title: "FileReplaceResult" }),
+  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("refused"), reason: z.enum(["not-regular"]) }).meta({ title: "FileReplaceRefused" }),
+  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "FileReplaceError" }),
+]);
+export const ShadowReply = z.union([
+  z.strictObject({ type: z.literal("shadow"), ...call, shadowId: Identifier }).meta({ title: "ShadowCreated" }),
+  z.strictObject({ type: z.literal("shadow"), ...call, result: z.literal("error"), code: z.enum(FILE_FACT_ERRORS) }).meta({ title: "ShadowError" }),
+]);
 
 export const ProcessReply = z.xor([
   OutputReply,
@@ -667,8 +742,12 @@ export const ProcessReply = z.xor([
   DestinationFactsReply.meta({ title: "DestinationFactsGroup" }),
   PageantReply.meta({ title: "PageantReplyGroup" }),
   TerminalReply.meta({ title: "TerminalGroup" }),
-  FileAppendReply.meta({ title: "FileAppendGroup" }),
   RevealReply,
+  // Feature 005 contract Δ6. `RevealAbsent` stays a root branch, so the shell keeps its `RevealReply` type.
+  RevealAbsentReply,
+  FileDeleteReply.meta({ title: "FileDeleteGroup" }),
+  FileReplaceReply.meta({ title: "FileReplaceGroup" }),
+  ShadowReply.meta({ title: "ShadowGroup" }),
 ]);
 
 // ---- `mutation` frames (contract §6 "Recovery markers") ----
@@ -676,7 +755,7 @@ export const ProcessReply = z.xor([
 // Feature 003 contract Δ3 `reviewSync`: the nine actions.
 export const SYNC_ACTIONS = ["fetch", "fetch-all", "pull", "integrate", "push", "force-push", "abort", "continue", "skip"] as const;
 export const SyncAction = z.enum(SYNC_ACTIONS);
-// Feature 004 contract Δ3 `reviewWorkbench`: the thirteen actions.
+// Feature 004 contract Δ3 and feature 005 contract Δ3 `reviewWorkbench`: the actions.
 export const WORKBENCH_ACTIONS = [
   "switch",
   "create-branch",
@@ -686,11 +765,13 @@ export const WORKBENCH_ACTIONS = [
   "rebase",
   "choose-side",
   "mergetool",
-  "ignore",
   "worktree-add",
   "worktree-remove",
   "worktree-prune",
   "config-save",
+  // Feature 005 contract Δ1.
+  "delete",
+  "ignore-save",
 ] as const;
 // Feature 004 contract Δ6: the action of a `started` frame of kind `workbench`. The close prompt names the side and the ignore target, so the action holds them.
 export const WORKBENCH_STARTED_ACTIONS = [
@@ -703,12 +784,14 @@ export const WORKBENCH_STARTED_ACTIONS = [
   "choose-ours",
   "choose-theirs",
   "mergetool",
-  "ignore-gitignore",
-  "ignore-exclude",
   "worktree-add",
   "worktree-remove",
   "worktree-prune",
   "config-save",
+  // Feature 005 contract Δ2.
+  "delete-files",
+  "ignore-save-gitignore",
+  "ignore-save-exclude",
 ] as const;
 
 const startedFields = {

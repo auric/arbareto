@@ -8,8 +8,8 @@ const MIB: usize = 1024 * KIB;
 
 /// Contract §5 "Private/reply frame": the bound of every pipe frame length header.
 pub const PIPE_FRAME_BYTES: usize = 16 * MIB;
-/// Contract §5 "Incoming public request": the bound of the encoded renderer envelope.
-pub const PUBLIC_REQUEST_BYTES: usize = MIB;
+/// Contract §5 "Incoming public request": the bound of the encoded renderer envelope. Feature 005 contract Δ5 raises it to 2 MiB.
+pub const PUBLIC_REQUEST_BYTES: usize = 2 * MIB;
 /// `{"kind":"public","request":` and `}` add 28 bytes to the envelope (contract §5).
 #[cfg_attr(
     not(test),
@@ -184,10 +184,12 @@ mod tests {
     }
 
     #[test]
-    fn a_public_request_above_1_mib_gives_frame_limit() {
+    fn a_public_request_above_2_mib_gives_frame_limit() {
+        // Feature 005 contract Δ5: the same value as `src/contracts/limits.ts`.
+        assert_eq!(PUBLIC_REQUEST_BYTES, 2_097_152);
         let at_bound = format!("{{\"pad\":\"{}\"}}", "a".repeat(PUBLIC_REQUEST_BYTES - 10));
         assert_eq!(at_bound.len(), PUBLIC_REQUEST_BYTES);
-        let body = public_request_body(&at_bound).expect("an envelope of exactly 1 MiB");
+        let body = public_request_body(&at_bound).expect("an envelope of exactly 2 MiB");
         assert_eq!(
             body,
             format!("{{\"kind\":\"public\",\"request\":{at_bound}}}")

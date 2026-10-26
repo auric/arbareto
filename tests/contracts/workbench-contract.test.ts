@@ -50,7 +50,8 @@ const b64 = (text: string) => Buffer.from(text).toString("base64");
 
 const NEW_RENDERER = ["readBranches", "readWorktrees", "readGitSettings", "reviewWorkbench", "runWorkbench", "applyFiles", "openWorktree", "revealPath"];
 const NEW_SHELL = ["setSwitchChoice", "chooseWorktreeFolder"];
-const WORKBENCH_ACTIONS = ["switch", "create-branch", "rename-branch", "delete-branch", "merge", "rebase", "choose-side", "mergetool", "ignore", "worktree-add", "worktree-remove", "worktree-prune", "config-save"];
+// Feature 005 T057 removes the action `ignore` and its markers `ignore-gitignore` and `ignore-exclude`.
+const WORKBENCH_ACTIONS = ["switch", "create-branch", "rename-branch", "delete-branch", "merge", "rebase", "choose-side", "mergetool", "worktree-add", "worktree-remove", "worktree-prune", "config-save", "delete", "ignore-save"];
 // Contract Δ6: the close prompt names each of these.
 const STARTED_ACTIONS = [
   "switch",
@@ -62,14 +63,16 @@ const STARTED_ACTIONS = [
   "choose-ours",
   "choose-theirs",
   "mergetool",
-  "ignore-gitignore",
-  "ignore-exclude",
   "worktree-add",
   "worktree-remove",
   "worktree-prune",
   "config-save",
+  // Feature 005 contract Δ2.
+  "delete-files",
+  "ignore-save-gitignore",
+  "ignore-save-exclude",
 ];
-const WORKBENCH_PHASES = ["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "config", "ignore", "stage-files"];
+const WORKBENCH_PHASES = ["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "config", "stage-files"];
 
 const request = (operation: string, payload: unknown, target: Record<string, unknown> = {}) => ({ version: 1, sessionId: id(), requestId: id(), operation, ...target, payload });
 const check = (value: unknown, side: "renderer" | "service" = "renderer") => {
@@ -147,8 +150,6 @@ describe("contract Δ9 codes", () => {
       "multi-value",
       "limit",
       "push-current-only",
-      "ignore-exists",
-      "ignore-not-text",
       "ignore-not-regular",
       "ignore-size",
       "path",
@@ -164,6 +165,18 @@ describe("contract Δ9 codes", () => {
       "config-in-include",
       "included",
       "unreadable-value",
+      // Feature 005 contract Δ9.
+      "conflicted",
+      "submodule",
+      "nested-repository",
+      "no-recycle-bin",
+      "long-path",
+      "nothing-to-delete",
+      "ignore-link",
+      "ignore-folder",
+      "ignore-not-utf8",
+      "ignore-nul",
+      "ignore-lone-cr",
     ]);
     expect([...(E.UNTRACKED_IN_WAY_REASONS ?? [])]).toEqual(["untracked-in-way"]);
     expect([...(E.STASH_KEPT_REASONS ?? [])]).toEqual(["conflicts", "failed-apply", "failed-checkout", "not-found", "stash-changed"]);
@@ -289,6 +302,9 @@ describe("contract Δ3 payloads", () => {
   const review = (payload: unknown, side: "renderer" | "service" = "renderer") => check(request("reviewWorkbench", payload, gen()), side);
 
   const FORMS = [
+    // Feature 005 contract Δ3.
+    { action: "delete", snapshotId: id(), entryIds: [id(), id()], folder: b64("logs"), mode: "recycle" },
+    { action: "ignore-save", target: "gitignore", text: b64("/build/\n"), expected: { size: 7, sha256: DIGEST } },
     { action: "switch", target: { ref: "refs/heads/feature/x" }, choice: "keep" },
     { action: "switch", target: { ref: "refs/heads/main" }, choice: "stash" },
     { action: "switch", target: { track: { ref: "refs/remotes/origin/topic", name: "topic" } }, choice: "discard" },
@@ -306,8 +322,6 @@ describe("contract Δ3 payloads", () => {
     { action: "choose-side", ...shown(), side: "ours" },
     { action: "choose-side", ...shown(), side: "theirs" },
     { action: "mergetool", ...shown() },
-    { action: "ignore", ...shown(), target: "gitignore" },
-    { action: "ignore", ...shown(), target: "exclude" },
     { action: "worktree-remove", worktree: WORKTREE, force: false, deleteBranch: true },
     // Contract Δ11: the worktree paths of a WSL repository are Linux paths.
     { action: "worktree-remove", worktree: "/home/u/repo-wt", force: true, deleteBranch: false },
@@ -373,8 +387,9 @@ describe("contract Δ3 payloads", () => {
       { action: "choose-side", entryId: id(), side: "ours" },
       { action: "choose-side", ...shown(), side: "both" },
       { action: "mergetool", ...shown(), tool: "vimdiff" },
-      { action: "ignore", ...shown(), target: "global" },
-      { action: "ignore", ...shown(), target: "gitignore", line: "/build/" },
+      // Feature 005 T057: the action `ignore` goes.
+      { action: "ignore", ...shown(), target: "gitignore" },
+      { action: "ignore", ...shown(), target: "exclude" },
       { action: "worktree-remove", worktree: "", force: false, deleteBranch: false },
       { action: "worktree-remove", worktree: WORKTREE, force: "yes", deleteBranch: false },
       { action: "worktree-prune", expire: "now" },
@@ -554,7 +569,7 @@ describe("contract Δ3 payloads", () => {
 
   // T105: the renderer and the shell read none of these fields, so the strict results refuse them.
   test("a branch entry has no hasLocal, a ref change names only its ref, and a worktree run has no worktree list", () => {
-    const entry = { ref: "refs/remotes/origin/main", kind: "remote", name: "origin/main", invalidUtf8: false, oid: OID, upstream: null, tracking: null, heldBy: null, current: false, localName: "main" };
+    const entry = { ref: "refs/remotes/origin/main", kind: "remote", name: "origin/main", invalidUtf8: false, oid: OID, upstream: null, tracking: null, heldBy: null, current: false, localName: "main", upstreamPresent: false };
     expect(ok(envelope.ReadBranchesResult, { entries: [entry] })).toBe(true);
     expect(ok(envelope.ReadBranchesResult, { entries: [{ ...entry, hasLocal: true }] })).toBe(false);
     const head = { state: "branch", target: "refs/heads/main", oid: OID };
@@ -630,35 +645,10 @@ describe("contract Δ6 private requests", () => {
     expect(frame({ type: "destinationFacts", ...call, bootstrapId: id(), path: WORKTREE })).toBe(false);
   });
 
-  const append = { type: "fileAppend", ...call, repositoryId: id(), target: "gitignore", path: `${REPO}${SEP}.gitignore`, expected: "absent", bytes: b64("/build/\n") };
-
-  test("fileAppend names the target, the path, the expected state, and the bytes", () => {
-    expect(frame(append)).toBe(true);
-    expect(frame({ ...append, target: "exclude", path: `${GIT_DIR}${SEP}info${SEP}exclude`, expected: { size: 12, sha256: DIGEST }, bytes: b64("\n/build/\n") })).toBe(true);
-    const bad = [
-      { ...append, target: "global" },
-      { ...append, path: ".gitignore" },
-      { ...append, expected: { size: 12 } },
-      { ...append, expected: { size: -1, sha256: DIGEST } },
-      { ...append, expected: "present" },
-      { ...append, bytes: "" },
-      { ...append, bytes: Buffer.alloc(limits.INLINE_PROCESS_INPUT_BYTES + 1).toString("base64") },
-      { ...append, line: "/build/" },
-    ];
-    for (const value of bad) expect(frame(value)).toBe(false);
-    const { repositoryId: _r, ...withoutRepository } = append;
-    expect(frame(withoutRepository)).toBe(false);
-  });
-
-  test("fileAppend replies appended, stale, stopped, interrupted, refused not-regular, or error with a file fact code", () => {
-    const callId = call.callId;
-    for (const result of ["appended", "stale", "stopped", "interrupted"]) expect(reply({ type: "fileAppend", callId, result })).toBe(true);
-    expect(reply({ type: "fileAppend", callId, result: "refused", reason: "not-regular" })).toBe(true);
-    for (const code of channel.FILE_FACT_ERRORS) expect(reply({ type: "fileAppend", callId, result: "error", code })).toBe(true);
-    expect(reply({ type: "fileAppend", callId, result: "refused" })).toBe(false);
-    expect(reply({ type: "fileAppend", callId, result: "refused", reason: "link" })).toBe(false);
-    expect(reply({ type: "fileAppend", callId, result: "error" })).toBe(false);
-    expect(reply({ type: "fileAppend", callId, result: "appended", code: "io-error" })).toBe(false);
+  // Feature 005 contract Δ15 (T057): `fileAppend` goes, and `fileReplace` replaces it.
+  test("a fileAppend frame and its replies give INVALID_REQUEST", () => {
+    expect(frame({ type: "fileAppend", ...call, repositoryId: id(), target: "gitignore", path: `${REPO}${SEP}.gitignore`, expected: "absent", bytes: b64("/build/\n") })).toBe(false);
+    for (const value of [{ result: "appended" }, { result: "refused", reason: "not-regular" }, { result: "error", code: "io-error" }]) expect(reply({ type: "fileAppend", callId: call.callId, ...value })).toBe(false);
   });
 
   test("reveal names the repository and the path, and its reply carries only the call", () => {

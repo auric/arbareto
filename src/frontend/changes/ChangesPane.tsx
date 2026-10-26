@@ -1,24 +1,26 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { ArrowDown01Icon, ArrowRight01Icon, Folder01Icon, ListIcon, ListTreeIcon, MinusSignIcon, PlusSignIcon, Search01Icon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowRight01Icon, Copy01Icon, CubeIcon, Delete02Icon, Delete04Icon, File01Icon, Folder01Icon, FolderSearchIcon, ListIcon, ListTreeIcon, MinusSignIcon, PlusSignIcon, Search01Icon, Tick02Icon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref } from "react";
 import type { ChangeEntry } from "../../contracts/envelope";
+import { ignoreLine } from "../../contracts/ignore-line";
 import { useCopy } from "../app/RepositoryStates";
-import { ActionMenu, type ActionItem } from "../components/action-menu";
-import { ConfirmPopover } from "../components/confirm-popover";
+import { ActionMenu, type ActionGroup, type ActionItem } from "../components/action-menu";
 import { IconButton } from "../components/icon-button";
 import { Button } from "../components/ui/button";
 import { RunningTooltip } from "../components/running-tooltip";
 import { matches } from "../components/switcher-popover";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
-import { KEYS } from "../keyboard/shortcuts";
+import { KEYS, scopedAction } from "../keyboard/shortcuts";
 import { Splitter } from "../layout/Splitter";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
-import { CUT_REASON, IGNORE_LABEL, LIMIT_TEXT, TARGET_TEXT, type FileActions, type IgnoreReview, type IgnoreTarget } from "./file-actions";
-import { changesRows, derivedRequest, formatCount, overLimit, stagedRows, type FilesRequest, type Layout, type TreeRow } from "./file-tree";
+import { DeleteConfirm, DeleteRefusal } from "./DeleteConfirm";
+import { CUT_REASON, deleteEntries, deleteReason, IGNORE_LABEL, IGNORE_LINE_REASON, LIMIT_TEXT, NO_HISTORY, type DeletePlan, type DeleteReview, type FileActions } from "./file-actions";
+import type { IgnoreTarget } from "../state/workbench";
+import { changesRows, derivedRequest, folderEntries, formatCount, overLimit, stagedRows, type FilesRequest, type Layout, type TreeRow } from "./file-tree";
 
 // plan.md "Task flow and command placement", "Long text", "Keyboard and focus" (Roles, File list, Stage key row), and "Required visible states" (No selection, Empty/clean).
 // Feature 004 plan.md D8, D15 ("Commit view layout", "Virtual tree", "Limited status", "Multi-select", "Row and hunk buttons", "Ignore items"), spec FR-029 to FR-040, FR-045, FR-086.
@@ -28,8 +30,6 @@ type ListName = "changes" | "staged";
 
 export const HELP_LINE = "Arrow keys show a file. Space stages or unstages it.";
 export const BUSY_REASON = "A file action is running. Wait for its result.";
-// Feature 004 plan.md D15 "Commit view texts".
-export const SHOW_FOLDER_REASON = "Show in Explorer takes one file. Select a file in the folder.";
 export const cutHeading = (n: number) => `At least ${formatCount(n)} untracked files. Git lists more than Arbareto reads.`;
 export const FILTER_FILES = "Filter files";
 export const NO_FILE_MATCH = "No file matches the filter.";
@@ -42,15 +42,29 @@ export type FileActionResult = { state: "succeeded" } | { state: "failed" } | { 
 /** The selected entry and the ID of its shown comparison. `comparisonId` is null while its read is pending. */
 export type PaneSelection = { entryId: string; comparisonId: string | null } | null;
 
-/** The multi-file, ignore, and reveal actions of feature 004. Without them, the lists show no header or folder action. */
+/** The multi-file, ignore, reveal, and Delete actions of features 004 and 005. Without them, the lists show no header or folder action. */
 export type FilesProps = {
-  actions: Pick<FileActions, "run" | "reviewIgnore" | "runIgnore" | "reveal">;
-  /** The reason that blocks every multi-file and ignore action, or null. */
+  actions: Pick<FileActions, "run" | "reviewDelete" | "runDelete" | "reveal">;
+  /** The reason that blocks every multi-file action, or null. */
   reason: string | null;
   /** A mutation runs. The reason then goes only into the tooltip and the accessible description (plan.md D15). */
   running: boolean;
   /** Contract Δ4 "Status cut" `untracked`. */
   cut: boolean;
+  /** Feature 005 plan.md D6: the reason that blocks every Delete, such as an unfinished operation, or null. */
+  deleteBlock?: string | null;
+  /** Feature 005 spec FR-029: a WSL distro has no Recycle Bin, so plain Delete reviews a permanent delete. */
+  wsl?: boolean;
+  /** Feature 005 spec FR-053: an unborn HEAD has no history. */
+  unborn?: boolean;
+  /** Feature 005 plan.md D8: opens the ignore editor with the line of the row. */
+  onIgnore?(target: IgnoreTarget, line: string): void;
+  /** Feature 005 spec FR-053: Blame of a file row at HEAD. */
+  onBlame?(entry: ChangeEntry): void;
+  /** Feature 005 spec FR-047: Open submodule of a submodule row, by its worktree-relative path text. */
+  onOpenSubmodule?(path: string): void;
+  /** Feature 005 plan.md D11 "Availability" of the submodule row with these path bytes. */
+  submoduleReason?(pathBytes: string): string | null;
 };
 
 export type ChangesPaneProps = {
@@ -100,9 +114,15 @@ const VIRTUAL_MIN = 200;
 const listOf = (category: Category): ListName => (category === "staged" ? "staged" : "changes");
 const directionOf = (category: Category): FileDirection => (category === "staged" ? "unstage" : category === "conflicted" ? "resolve" : "stage");
 const ROW_LABEL: Record<FileDirection, string> = { stage: "Stage file", unstage: "Unstage file", resolve: "Mark resolved" };
+// The CommitActions board icons of the row menu items.
+const ROW_ICON = { stage: PlusSignIcon, unstage: MinusSignIcon, resolve: Tick02Icon } as const;
+// Feature 005 plan.md D15 "Commit view row menu".
+const ROW_MENU_WIDTH = 300;
 
 type ListHandle = { focusKey(key: string): void; focusHeading(): void };
-type Marked = { list: ListName; ids: ReadonlySet<string>; anchor: string };
+// Data-model §14: the marks and the Shift anchor keep their entry by category and path bytes, because each status read gives new entry IDs.
+type Marked = { list: ListName; keys: ReadonlySet<string>; anchor: string | null };
+const markKey = (e: ChangeEntry) => `${e.category}:${e.pathBytes}`;
 
 /** plan.md Stage key row order in one list: the shown row at the next row of `before`, then at the previous one, else null for the list heading. Row keys survive a read. */
 function survivor(before: readonly TreeRow[], key: string, shown: ReadonlyMap<string, TreeRow>): TreeRow | null {
@@ -129,7 +149,7 @@ export function ChangesPane(props: ChangesPaneProps) {
   const [marked, setMarked] = useState<Marked | null>(null);
   const [menu, setMenu] = useState<{ key: string; list: ListName; anchor: HTMLElement; byKey: boolean } | null>(null);
   const closed = useRef<{ list: ListName; key: string; before: readonly TreeRow[] } | null>(null);
-  const [ignore, setIgnore] = useState<{ review: Extract<IgnoreReview, { ok: true }>; anchor: HTMLElement } | null>(null);
+  const [confirm, setConfirm] = useState<{ review: DeleteReview; anchor: HTMLElement } | null>(null);
   const copy = useCopy();
   // Spec FR-101: Filter files filters only the shown rows. The derived actions and every count keep the status read.
   const [query, setQuery] = useState("");
@@ -156,21 +176,41 @@ export function ChangesPane(props: ChangesPaneProps) {
     return () => void (mounted.current = false);
   }, []);
 
-  // Data-model §14: a new snapshot keeps the marked entries whose IDs still exist.
   const alive = useMemo(() => new Map(entries.map((e) => [e.entryId, e])), [entries]);
+  const byKey = useMemo(() => new Map(entries.map((e) => [markKey(e), e])), [entries]);
+  const keyOf = (id: string) => {
+    const e = alive.get(id);
+    return e === undefined ? null : markKey(e);
+  };
+  // Data-model §14: a new snapshot keeps the marks and the anchor whose entries still exist.
+  const [markedIn, setMarkedIn] = useState(byKey);
+  if (markedIn !== byKey) {
+    setMarkedIn(byKey);
+    if (marked !== null) setMarked({ ...marked, keys: new Set([...marked.keys].filter((k) => byKey.has(k))), anchor: marked.anchor !== null && byKey.has(marked.anchor) ? marked.anchor : null });
+  }
   // One pass per snapshot for each derived set, so a key press does no work over 100,000 entries (spec SC-007).
   const derived = useMemo(
     () => ({ changes: derivedRequest(entries, "all-changes"), untracked: derivedRequest(entries, "all-untracked"), staged: derivedRequest(entries, "all-staged") }),
     [entries],
   );
   // Spec FR-101: a row that the filter hides leaves the selection.
-  const shownMarks = marked === null ? null : { ...marked, ids: new Set([...marked.ids].filter((id) => alive.has(id) && (query === "" || matches(alive.get(id)!.path, query)))) };
+  const shownMarks =
+    marked === null
+      ? null
+      : {
+          list: marked.list,
+          anchor: marked.anchor === null ? null : (byKey.get(marked.anchor)?.entryId ?? null),
+          ids: new Set([...marked.keys].flatMap((k) => {
+            const e = byKey.get(k);
+            return e !== undefined && (query === "" || matches(e.path, query)) ? [e.entryId] : [];
+          })),
+        };
   const onQuery = (next: string) => {
     setQuery(next);
     // Spec FR-101: a row that the filter hides leaves the selection. No other file gets selected.
     const selected = live.current.selection === null ? undefined : alive.get(live.current.selection.entryId);
     if (next !== "" && selected !== undefined && !matches(selected.path, next)) live.current.onClearSelection?.();
-    if (next !== "") setMarked((m) => (m === null ? m : { ...m, ids: new Set([...m.ids].filter((id) => !alive.has(id) || matches(alive.get(id)!.path, next))) }));
+    if (next !== "") setMarked((m) => (m === null ? m : { ...m, keys: new Set([...m.keys].filter((k) => !byKey.has(k) || matches(byKey.get(k)!.path, next))) }));
   };
 
   const reason = (text: string | null) => {
@@ -327,36 +367,79 @@ export function ChangesPane(props: ChangesPaneProps) {
     actOnEntry(row.entry);
   }
 
-  async function startIgnore(row: TreeRow, target: IgnoreTarget, anchor: HTMLElement) {
-    if (files === undefined || row.kind === "section") return;
-    const entry = row.kind === "file" ? row.entry : entries.find((e) => e.category === "untracked" && atob(e.pathBytes).startsWith(`${atob(row.folder)}/`));
-    if (entry === undefined) return;
-    const review = await files.actions.reviewIgnore(entry.entryId, target, row.kind === "folder" ? row.folder : undefined);
+  // Feature 005 plan.md D6 and D15: Delete acts on the selection of the Changes list, else on the row.
+  const deleteSet = (row: Exclude<TreeRow, { kind: "section" }>): { entries: ChangeEntry[]; folder?: string } => {
+    if (row.kind === "folder") return { entries: deleteEntries(entries, row.folder), folder: row.folder };
+    const marks = shownMarks?.list === "changes" && shownMarks.ids.size > 1 && shownMarks.ids.has(row.entry.entryId) ? shownMarks.ids : null;
+    return { entries: marks === null ? [row.entry] : entries.filter((e) => marks.has(e.entryId)) };
+  };
+  const deleteWhy = (set: readonly ChangeEntry[]) => deleteReason(set) ?? (files === undefined ? null : files.running ? files.reason : (files.deleteBlock ?? null));
+  async function startDelete(row: TreeRow, mode: DeletePlan["mode"], anchor: HTMLElement) {
+    if (files === undefined || row.kind === "section" || running.current) return;
+    const set = deleteSet(row);
+    const why = deleteWhy(set.entries);
+    if (why !== null) return void (files.running || status(why));
+    // Spec FR-029: a WSL distro has no Recycle Bin.
+    const review = await files.actions.reviewDelete(
+      set.entries.map((e) => e.entryId),
+      set.folder,
+      files.wsl === true ? "permanent" : mode,
+    );
     if (!mounted.current) return;
-    if (review.ok) setIgnore({ review, anchor });
+    if (review.ok || review.inPlace) setConfirm({ review, anchor });
     else status(review.text);
   }
 
-  function menuGroups(row: TreeRow, list: ListName, anchor: HTMLElement): ActionItem[][] {
-    if (row.kind === "section") return [[{ label: "Stage all untracked", keys: KEYS.stageEntry, reason: filesReason(derived.untracked), onSelect: () => void runFiles(derived.untracked, "Stage all untracked") }]];
+  // Spec FR-053: an untracked row, an index addition (porcelain v2 X = `A`), and an unborn HEAD have no path at HEAD.
+  const blameReason = (entry: ChangeEntry) => (entry.category === "untracked" || entry.xy?.[0] === "A" || files?.unborn === true ? NO_HISTORY : null);
+  function menuGroups(row: TreeRow, list: ListName, anchor: HTMLElement): ActionGroup[] {
+    if (row.kind === "section") return [[{ label: "Stage all untracked", icon: PlusSignIcon, keys: KEYS.stageEntry, reason: filesReason(derived.untracked), onSelect: () => void runFiles(derived.untracked, "Stage all untracked") }]];
     const first: ActionItem[] = [];
     if (row.kind === "file") {
-      const direction = directionOf(row.entry.category);
-      first.push({ label: ROW_LABEL[direction], keys: KEYS.stageEntry, onSelect: () => actOnEntry(row.entry) });
+      const entry = row.entry;
+      const submodule = entry.submodule?.startsWith("S") === true;
+      first.push({ label: ROW_LABEL[directionOf(entry.category)], icon: ROW_ICON[directionOf(entry.category)], keys: KEYS.stageEntry, onSelect: () => actOnEntry(entry) });
+      const open = files?.onOpenSubmodule;
+      if (submodule && open !== undefined) first.push({ label: "Open submodule", icon: CubeIcon, reason: files?.submoduleReason?.(entry.pathBytes) ?? null, onSelect: () => open(entry.path) });
+      const blame = files?.onBlame;
+      if (!submodule && blame !== undefined) first.push({ label: "Blame", reason: blameReason(entry), onSelect: () => blame(entry) });
     } else if (files !== undefined) {
       const request = folderRequest(row, list);
-      first.push({ label: folderLabel(list), keys: KEYS.stageEntry, reason: filesReason(request), onSelect: () => void runFiles(request, folderLabel(list)) });
-    }
-    const untracked = row.kind === "file" ? row.entry.category === "untracked" : row.untracked;
-    const groups = [first];
-    if (untracked && files !== undefined) {
-      groups.push((["gitignore", "exclude"] as const).map((target) => ({ label: IGNORE_LABEL[target], reason: files.reason, onSelect: () => void startIgnore(row, target, anchor) })));
+      first.push({ label: folderLabel(list), icon: list === "staged" ? MinusSignIcon : PlusSignIcon, keys: KEYS.stageEntry, reason: filesReason(request), onSelect: () => void runFiles(request, folderLabel(list)) });
     }
     const path = row.kind === "file" ? row.entry.path : row.path;
-    const last: ActionItem[] = [{ label: "Copy path", onSelect: () => copy(path) }];
-    if (files !== undefined) last.push({ label: "Show in Explorer", reason: row.kind === "folder" ? SHOW_FOLDER_REASON : null, onSelect: () => row.kind === "file" && files.actions.reveal(row.entry.entryId) });
-    groups.push(last);
-    return groups.filter((g) => g.length > 0);
+    first.push({ label: "Copy path", icon: Copy01Icon, onSelect: () => copy(path) });
+    if (files !== undefined) {
+      // Plan.md D5: a folder reveals through an entry below it, and the folder bytes replace the entry path.
+      const reveal = () => {
+        if (row.kind === "file") return files.actions.reveal(row.entry.entryId, row.entry.path);
+        const below = folderEntries(entries, row.folder, list === "staged" ? "unstage" : "stage")[0];
+        if (below !== undefined) files.actions.reveal(below.entryId, row.path, row.folder);
+      };
+      first.push({ label: "Show in Explorer", icon: FolderSearchIcon, onSelect: reveal });
+    }
+    const groups: ActionGroup[] = [first];
+    const untracked = row.kind === "file" ? row.entry.category === "untracked" : row.untracked;
+    const onIgnore = files?.onIgnore;
+    if (untracked && onIgnore !== undefined) {
+      // A nested repository record ends with `/`, so its line names a folder (feature 004 plan.md D9).
+      const raw = Uint8Array.from(atob(row.kind === "file" ? row.entry.pathBytes : row.folder), (c) => c.charCodeAt(0));
+      const slash = raw.at(-1) === 0x2f;
+      const line = ignoreLine(slash ? raw.subarray(0, -1) : raw, row.kind === "folder" || slash);
+      groups.push((["gitignore", "exclude"] as const).map((target) => ({ label: IGNORE_LABEL[target], icon: ViewOffSlashIcon, reason: line.ok ? null : IGNORE_LINE_REASON[line.reason], onSelect: () => void (line.ok && onIgnore(target, line.line)) })));
+    }
+    if (list === "changes" && files !== undefined) {
+      const why = deleteWhy(deleteSet(row).entries);
+      const quiet = why !== null && files.running && why === files.reason;
+      groups.push({
+        label: "Delete from disk",
+        items: [
+          { label: "Delete…", icon: Delete02Icon, danger: true, keys: KEYS.deleteFiles, reason: why, running: quiet, onSelect: () => void startDelete(row, "recycle", anchor) },
+          { label: "Delete permanently…", icon: Delete04Icon, danger: true, keys: KEYS.deletePermanently, reason: why, running: quiet, onSelect: () => void startDelete(row, "permanent", anchor) },
+        ],
+      });
+    }
+    return groups;
   }
 
   const listProps = (list: ListName) => ({
@@ -376,18 +459,19 @@ export function ChangesPane(props: ChangesPaneProps) {
     onMark: (entry: ChangeEntry, mode: "toggle" | "range", visible: readonly ChangeEntry[]) => {
       const current = shownMarks?.list === list ? shownMarks : null;
       const base = current?.ids ?? new Set(live.current.selection !== null && visible.some((e) => e.entryId === live.current.selection!.entryId) ? [live.current.selection.entryId] : []);
-      const anchor = current?.anchor ?? live.current.selection?.entryId ?? entry.entryId;
+      const anchor = current !== null ? current.anchor : (live.current.selection?.entryId ?? entry.entryId);
       let ids: Set<string>;
       if (mode === "toggle") {
         ids = new Set(base);
         if (ids.has(entry.entryId)) ids.delete(entry.entryId);
         else ids.add(entry.entryId);
       } else {
-        const a = visible.findIndex((e) => e.entryId === anchor);
+        const a = anchor === null ? -1 : visible.findIndex((e) => e.entryId === anchor);
         const b = visible.findIndex((e) => e.entryId === entry.entryId);
         ids = new Set(a < 0 ? [entry.entryId] : visible.slice(Math.min(a, b), Math.max(a, b) + 1).map((e) => e.entryId));
       }
-      setMarked({ list, ids, anchor: mode === "toggle" ? entry.entryId : anchor });
+      const next = mode === "toggle" ? entry.entryId : anchor;
+      setMarked({ list, keys: new Set([...ids].flatMap((id) => keyOf(id) ?? [])), anchor: next === null ? null : keyOf(next) });
       if (live.current.selection?.entryId !== entry.entryId && ids.has(entry.entryId)) live.current.onSelect(entry.entryId);
     },
     onSpace,
@@ -403,6 +487,7 @@ export function ChangesPane(props: ChangesPaneProps) {
         return copy;
       });
     },
+    onDelete: (row: TreeRow, mode: DeletePlan["mode"], anchor: HTMLElement) => void startDelete(row, mode, anchor),
     onMenu: (row: TreeRow, anchor: HTMLElement, byKey = false) => {
       if (row.kind === "file") focused.current = row.entry;
       setMenu({ key: row.key, list, anchor, byKey });
@@ -554,26 +639,21 @@ export function ChangesPane(props: ChangesPaneProps) {
         </section>
       </div>
       {menu === null || menuRow === null ? null : (
-        <ActionMenu label={menuRow.kind === "file" ? menuRow.entry.path : menuRow.kind === "folder" ? menuRow.path : "Untracked"} groups={menuGroups(menuRow, menu.list, menu.anchor)} open anchor={menu.anchor} byKey={menu.byKey} onOpenChange={(open) => !open && setMenu(null)} finalFocus={() => menu.anchor} />
+        <ActionMenu label={menuRow.kind === "file" ? menuRow.entry.path : menuRow.kind === "folder" ? menuRow.path : "Untracked"} groups={menuGroups(menuRow, menu.list, menu.anchor)} open anchor={menu.anchor} byKey={menu.byKey} onOpenChange={(open) => !open && setMenu(null)} finalFocus={() => menu.anchor} width={ROW_MENU_WIDTH} />
       )}
-      {ignore === null ? null : (
-        <ConfirmPopover
-          open
-          anchor={ignore.anchor}
-          title={`${IGNORE_LABEL[ignore.review.target]}?`}
-          confirmLabel="Add line"
-          onCancel={() => setIgnore(null)}
+      {confirm === null ? null : confirm.review.ok ? (
+        <DeleteConfirm
+          plan={confirm.review.plan}
+          finalFocus={() => (confirm.anchor.isConnected ? confirm.anchor : null)}
+          onCancel={() => setConfirm(null)}
           onConfirm={() => {
-            const review = ignore.review;
-            setIgnore(null);
-            void files?.actions.runIgnore(review);
+            const review = confirm.review;
+            setConfirm(null);
+            if (review.ok) void files?.actions.runDelete(review);
           }}
-        >
-          <p>{`Arbareto adds this line to ${TARGET_TEXT[ignore.review.target]}:`}</p>
-          <code data-slot="ignore-line" className="block break-all select-text">
-            {ignore.review.line}
-          </code>
-        </ConfirmPopover>
+        />
+      ) : (
+        <DeleteRefusal text={confirm.review.text} finalFocus={() => (confirm.anchor.isConnected ? confirm.anchor : null)} onClose={() => setConfirm(null)} />
       )}
     </div>
   );
@@ -647,11 +727,12 @@ type TreeListProps = {
   onSpace(row: TreeRow, list: ListName, event: ReactKeyboardEvent): void;
   onToggle(row: TreeRow, open?: boolean): void;
   onMenu(row: TreeRow, anchor: HTMLElement, byKey?: boolean): void;
+  onDelete(row: TreeRow, mode: DeletePlan["mode"], anchor: HTMLElement): void;
   onRowAction(row: TreeRow): void;
 };
 
 /** One list: a WAI-ARIA tree with one Tab stop, roving focus, and multi-select. TanStack Virtual renders only the rows near the view (spec FR-086). */
-function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedId, marks, files, cut, untrackedCount, section, folderReason, register, onSelect, onMark, onSpace, onToggle, onMenu, onRowAction }: TreeListProps) {
+function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedId, marks, files, cut, untrackedCount, section, folderReason, register, onSelect, onMark, onSpace, onToggle, onMenu, onDelete, onRowAction }: TreeListProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const elements = useRef(new Map<string, HTMLElement>());
   const toFocus = useRef<string | null>(null);
@@ -706,6 +787,12 @@ function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedI
     const at = index(item?.dataset.key ?? null);
     if (at < 0) return;
     const row = rows[at]!;
+    // Feature 005 plan.md D15 keyboard map: Del and Shift+Del act only in the Changes list, on the row itself.
+    const del = list === "changes" && event.target === item && !event.repeat ? scopedAction(event.nativeEvent, "changesList") : null;
+    if (del === "deleteFiles" || del === "deletePermanently") {
+      event.preventDefault();
+      return onDelete(row, del === "deletePermanently" ? "permanent" : "recycle", item!);
+    }
     // Space and Enter act only on the row itself, never on a button inside it.
     if (event.key === " " || event.key === "Enter") {
       if (event.target !== item) return;
@@ -932,8 +1019,10 @@ const Row = memo(function Row({ row, list, layout, sectionReason, sectionReasonI
   const [folder, name] = splitPath(entry.path, GIT_SEPARATORS);
   const direction = directionOf(entry.category);
   const mark = letter(entry);
+  const submodule = entry.submodule?.startsWith("S") === true;
   return (
     <div {...common} data-entry-id={entry.entryId} aria-selected={selected} aria-label={entry.path}>
+      <HugeiconsIcon icon={submodule ? CubeIcon : File01Icon} strokeWidth={2} aria-hidden="true" data-slot="row-icon" className={submodule ? "size-(--icon-size) shrink-0 text-muted-text" : "size-(--icon-size) shrink-0"} />
       <span aria-hidden="true" className="flex min-w-0 flex-1 whitespace-nowrap">
         {layout === "tree" ? null : <span className="min-w-0 shrink-[1000] truncate">{folder}</span>}
         <span className="min-w-0 truncate">{name}</span>

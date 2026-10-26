@@ -3,6 +3,7 @@
 
 import type { ChangeEntry } from "../../contracts/envelope";
 import { MULTI_FILE_ACTION_FILES } from "../../contracts/limits";
+import { compareKeys, treeKey } from "../../contracts/tree-order";
 
 // Feature 004 plan.md D8 "Stage folder", D15 "Virtual tree", data-model §6 "File selection", spec FR-030, FR-031, FR-036.
 // The tree splits the path bytes at `/` (0x2F). UTF-8 never holds 0x2F inside a multi-byte sequence, so each folder prefix is exact.
@@ -27,11 +28,27 @@ const display = (binary: string) => utf8.decode(Uint8Array.from(binary, (c) => c
 
 type Folder = { name: string; children: Map<string, Folder | ChangeEntry>; count: number; shown: number };
 const isFolder = (node: Folder | ChangeEntry): node is Folder => "children" in node;
+// Feature 005 plan.md D4 "Cost": one key per entry and one sort per status read, so the cache holds each read's entries array.
+const ordered = new WeakMap<readonly ChangeEntry[], readonly ChangeEntry[]>();
+/** Feature 005 spec FR-015, FR-016, data-model §3: a submodule (`<sub>` starts with `S`) and a nested repository (a path that ends with `/`) sort as folders. */
+function inTreeOrder(entries: readonly ChangeEntry[]): readonly ChangeEntry[] {
+  let sorted = ordered.get(entries);
+  if (sorted !== undefined) return sorted;
+  const keyed = entries.map((entry) => {
+    const raw = Uint8Array.from(bytesOf(entry), (c) => c.charCodeAt(0));
+    const nested = raw.at(-1) === 0x2f;
+    return { entry, key: treeKey(nested ? raw.subarray(0, -1) : raw, nested || entry.submodule?.startsWith("S") === true) };
+  });
+  sorted = keyed.sort((a, b) => compareKeys(a.key, b.key)).map((k) => k.entry);
+  ordered.set(entries, sorted);
+  return sorted;
+}
+
 /** Spec FR-101: the rows that Filter files shows. Without it, every entry shows. */
 export type Keep = (entry: ChangeEntry) => boolean;
 
 /**
- * One tree of `entries` in service order. A folder with one folder child joins it, as "docs/drafts". `extra` siblings follow the top level. It returns the top-level count.
+ * One tree of `entries` in their given order. A folder with one folder child joins it, as "docs/drafts". `extra` siblings follow the top level. It returns the top-level count.
  * Folder counts stay the counts of the status read. `keep` hides the files that it rejects, and the folders without a kept file.
  */
 function treeRows(entries: readonly ChangeEntry[], scope: string, depth: number, toggled: ReadonlySet<string>, untracked: boolean, out: TreeRow[], extra: number, keep?: Keep): number {
@@ -100,7 +117,7 @@ function listRows(entries: readonly ChangeEntry[], layout: Layout, scope: string
 export function changesRows(entries: readonly ChangeEntry[], layout: Layout, toggled: ReadonlySet<string>, untrackedOpen: boolean, keep?: Keep): TreeRow[] {
   const tracked: ChangeEntry[] = [];
   let untracked = 0;
-  for (const e of entries) {
+  for (const e of inTreeOrder(entries)) {
     if (e.category === "conflicted" || e.category === "unstaged") tracked.push(e);
     else if (e.category === "untracked") untracked++;
   }
@@ -109,14 +126,14 @@ export function changesRows(entries: readonly ChangeEntry[], layout: Layout, tog
   const top = listRows(tracked, layout, "t", 0, toggled, false, out, untracked === 0 ? 0 : 1, keep);
   if (untracked === 0) return out;
   out.push({ kind: "section", key: "untracked", depth: 0, count: untracked, expanded: untrackedOpen, pos: top + 1, size: top + 1 });
-  if (untrackedOpen) listRows(entries.filter((e) => e.category === "untracked"), layout, "u", 1, toggled, true, out, 0, keep);
+  if (untrackedOpen) listRows(inTreeOrder(entries).filter((e) => e.category === "untracked"), layout, "u", 1, toggled, true, out, 0, keep);
   return out;
 }
 
 /** The rows of the Staged list. */
 export function stagedRows(entries: readonly ChangeEntry[], layout: Layout, toggled: ReadonlySet<string>, keep?: Keep): TreeRow[] {
   const out: TreeRow[] = [];
-  listRows(entries.filter((e) => e.category === "staged"), layout, "s", 0, toggled, false, out, 0, keep);
+  listRows(inTreeOrder(entries).filter((e) => e.category === "staged"), layout, "s", 0, toggled, false, out, 0, keep);
   return out;
 }
 

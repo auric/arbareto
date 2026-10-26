@@ -35,7 +35,7 @@ import {
 } from "./commands";
 import { parseNumstat, parsePatch, type NumstatResult, type PatchHunk, type PatchResult } from "./diff-parser";
 import { holdsSharedRepository } from "./eligibility";
-import { createCollector, RunnerRefusal, type Collector, type GitExit, type GitRunner, type WslRunner } from "./git-runner";
+import { createCollector, exitKind, RunnerRefusal, settleSteps, type Collector, type GitExit, type GitRunner, type WslRunner } from "./git-runner";
 import { noFileId } from "./index-lock";
 import { contextOf, isMissing, objectCheckInput, runRead, type ReadStep } from "./read-steps";
 import type { Workspace } from "./registration";
@@ -112,6 +112,9 @@ class Stop {
   constructor(readonly outcome: ComparisonOutcome) {}
 }
 const fail = (code: ErrorCode) => new Stop({ result: "failed", code });
+// 001 contract §6 "Process replies": a Job close ends a step with `exitCode` null. The cause is a sibling end, so `steps` takes a deadline first and a Job close last.
+const CLOSED = fail("GIT_FAILED");
+const steps = <T extends readonly unknown[] | []>(work: T) => settleSteps(work, (end) => end instanceof Stop && end.outcome.result === "deadline", (end) => end === CLOSED);
 // Contract §6: a working-file read with a sentinel file ID ends `failed` with UNSUPPORTED_HUNK_PROFILE. That code has no other cause here.
 const noIdentity = (c: Completeness) => c.state === "failed" && c.code === "UNSUPPORTED_HUNK_PROFILE";
 
@@ -300,6 +303,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
     if ("refused" in s) throw fail(s.refused);
     if (s.exit.deadline !== undefined) throw new Stop({ result: "deadline" });
     if (s.exit.diagnosticLimit) throw fail("OUTPUT_LIMIT");
+    if (exitKind(s.exit, "read", out) === "jobClosed") throw CLOSED;
     return s.exit;
   }
 
@@ -424,7 +428,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
           if (exit.exitCode !== 0 || raw[raw.length - 1] !== NEWLINE || !isObjectId(oid, w.objectFormat)) throw fail("GIT_FAILED");
           tree = oid;
         };
-        await Promise.all(conflicted ? [facts(), attrs()] : [facts(), attrs(), eol(), blobsRead(), emptyTree()]);
+        await steps(conflicted ? [facts(), attrs()] : [facts(), attrs(), eol(), blobsRead(), emptyTree()]);
       }
       const decide = () => (conflicted ? decideResolve({ record: rawRecord(e, path), attributes, working }) : decideFileAction({ category: e.category, record: rawRecord(e, path), headUnborn, indexFlags, attributes, working }));
 
@@ -461,7 +465,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
               : [untrackedPatchArgs(p), untrackedNumstatArgs(p)];
         const patchOut = createCollector({ maxBytes: CANONICAL_DIFF_BYTES + 1 });
         const numstatOut = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
-        const [patchExit, numstatExit] = await Promise.all([step(t, patchArgs, patchOut), step(t, numstatArgs, numstatOut)]);
+        const [patchExit, numstatExit] = await steps([step(t, patchArgs, patchOut), step(t, numstatArgs, numstatOut)]);
         // A reached bound stops the process, so its exit status proves nothing (contract §5).
         if (!patchOut.limited && !accepted.includes(patchExit.exitCode ?? -1)) failedStep = true;
         if (numstatOut.limited || !accepted.includes(numstatExit.exitCode ?? -1)) failedStep = true;

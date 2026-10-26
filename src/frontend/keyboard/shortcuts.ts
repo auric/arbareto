@@ -13,8 +13,13 @@ export type Section =
   | "workingChanges"
   | "staged"
   | "comparison"
+  // Feature 005 plan.md D15 "F6 order": the ignore editor preview after the editor.
+  | "ignorePreview"
   | "composer"
   | "commitDetails"
+  // Feature 005 plan.md D15 "F6 order": the History dock regions after the commit details.
+  | "changedFiles"
+  | "historyDiff"
   | "scopeBar"
   | "pageList"
   | "pageContent"
@@ -130,16 +135,38 @@ export function createShortcutHandler() {
   };
 }
 
-/** Feature 004 plan.md D15 keyboard map, Ctrl+F: the filter of the active view. History keeps the 002 history filter. Settings has "Find a setting". */
-export function filterTarget(view: "history" | "commit" | "settings"): "history" | "files" | "settings" {
-  return view === "history" ? "history" : view === "commit" ? "files" : "settings";
+/** Feature 005 plan.md D15: the History regions where Ctrl+F focuses Filter files. */
+export const HISTORY_FILES_SCOPE = '[data-slot="changed-files"], [data-slot="history-diff"]';
+
+/** Feature 004 and 005 plan.md D15 keyboard map, Ctrl+F: the filter of the active view. History keeps the 002 history filter outside Changed files and the diff. Settings has "Find a setting". */
+export function filterTarget(view: "history" | "commit" | "settings", focused: { closest(selector: string): unknown } | null = null): "history" | "historyFiles" | "files" | "settings" {
+  if (view === "history") return focused?.closest(HISTORY_FILES_SCOPE) ? "historyFiles" : "history";
+  return view === "commit" ? "files" : "settings";
 }
 
 // Feature 004 plan.md D15 keyboard map. A region calls `scopedAction` from its own key handler, so each key acts only there (spec FR-087).
 
 /** The focused region of a scoped key. */
-export type KeyScope = "localBranchRow" | "remoteBranchRow" | "historyRow" | "diff" | "fileList" | "message" | "panel" | "settingsView";
-export type ScopedAction = "switch" | "merge" | "rebase" | "createBranch" | "rename" | "delete" | "stageLines" | "unstageLines" | "stageEntry" | "previousHunk" | "nextHunk" | "primary" | "save";
+// Feature 005 plan.md D15 adds the Changes list, the Submodules group row, and the ignore editor panel.
+export type KeyScope = "localBranchRow" | "remoteBranchRow" | "historyRow" | "diff" | "fileList" | "message" | "panel" | "settingsView" | "changesList" | "submoduleRow" | "ignoreEditor";
+export type ScopedAction =
+  | "switch"
+  | "merge"
+  | "rebase"
+  | "createBranch"
+  | "rename"
+  | "delete"
+  | "stageLines"
+  | "unstageLines"
+  | "stageEntry"
+  | "previousHunk"
+  | "nextHunk"
+  | "primary"
+  | "save"
+  | "deleteFiles"
+  | "deletePermanently"
+  | "openSubmodule"
+  | "closeEditor";
 const BRANCH_ROWS: readonly KeyScope[] = ["localBranchRow", "remoteBranchRow"];
 /** `aria` is the `aria-keyshortcuts` value, `text` is the visible key text. */
 export const KEYS: Record<ScopedAction, { aria: string; text: string; scopes: readonly KeyScope[] }> = {
@@ -155,7 +182,11 @@ export const KEYS: Record<ScopedAction, { aria: string; text: string; scopes: re
   previousHunk: { aria: "Alt+ArrowUp", text: "Alt+Up", scopes: ["diff"] },
   nextHunk: { aria: "Alt+ArrowDown", text: "Alt+Down", scopes: ["diff"] },
   primary: { aria: "Control+Enter", text: "Ctrl+Enter", scopes: ["message", "panel"] },
-  save: { aria: "Control+S", text: "Ctrl+S", scopes: ["settingsView"] },
+  save: { aria: "Control+S", text: "Ctrl+S", scopes: ["settingsView", "ignoreEditor"] },
+  deleteFiles: { aria: "Delete", text: "Del", scopes: ["changesList"] },
+  deletePermanently: { aria: "Shift+Delete", text: "Shift+Del", scopes: ["changesList"] },
+  openSubmodule: { aria: "Enter", text: "Enter", scopes: ["submoduleRow"] },
+  closeEditor: { aria: "Escape", text: "Esc", scopes: ["ignoreEditor"] },
 };
 const BY_KEY = new Map(Object.entries(KEYS).flatMap(([action, k]) => k.scopes.map((scope) => [`${scope} ${k.aria}`, action as ScopedAction] as const)));
 
@@ -179,8 +210,8 @@ export type SectionState = {
 };
 
 const ORDERS: Record<Panel, readonly Section[]> = {
-  commit: ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "composer", "statusRegion"],
-  details: ["header", "noticeHeading", "references", "historyList", "commitDetails", "statusRegion"],
+  commit: ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "ignorePreview", "composer", "statusRegion"],
+  details: ["header", "noticeHeading", "references", "historyList", "commitDetails", "changedFiles", "historyDiff", "statusRegion"],
   settings: ["header", "noticeHeading", "scopeBar", "pageList", "pageContent", "statusRegion"],
 };
 

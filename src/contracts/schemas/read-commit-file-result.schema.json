@@ -1,0 +1,273 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "anyOf": [
+    {
+      "type": "object",
+      "properties": {
+        "changesId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "fileId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "facts": {
+          "type": "object",
+          "properties": {
+            "rename": {
+              "type": "object",
+              "properties": {
+                "oldPath": {
+                  "type": "string",
+                  "minLength": 1,
+                  "format": "base64",
+                  "contentEncoding": "base64",
+                  "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+                },
+                "score": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "maximum": 100
+                }
+              },
+              "required": [
+                "oldPath",
+                "score"
+              ],
+              "additionalProperties": false,
+              "title": "RenameFact"
+            },
+            "mode": {
+              "type": "object",
+              "properties": {
+                "old": {
+                  "type": "string",
+                  "pattern": "^[0-7]{6}$"
+                },
+                "new": {
+                  "type": "string",
+                  "pattern": "^[0-7]{6}$"
+                }
+              },
+              "required": [
+                "old",
+                "new"
+              ],
+              "additionalProperties": false,
+              "title": "ModeFact"
+            },
+            "submodule": {
+              "type": "object",
+              "properties": {
+                "old": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "new": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                }
+              },
+              "required": [
+                "old",
+                "new"
+              ],
+              "additionalProperties": false,
+              "title": "SubmoduleFact"
+            },
+            "typeChange": {
+              "type": "object",
+              "properties": {
+                "old": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "link",
+                    "submodule"
+                  ]
+                },
+                "new": {
+                  "type": "string",
+                  "enum": [
+                    "file",
+                    "link",
+                    "submodule"
+                  ]
+                }
+              },
+              "required": [
+                "old",
+                "new"
+              ],
+              "additionalProperties": false,
+              "title": "TypeChangeFact"
+            }
+          },
+          "additionalProperties": false,
+          "title": "CommitFileFacts"
+        },
+        "binary": {
+          "type": "boolean"
+        },
+        "patch": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "base64",
+              "contentEncoding": "base64",
+              "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "completeness": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "complete"
+                }
+              },
+              "required": [
+                "state"
+              ],
+              "additionalProperties": false,
+              "title": "PatchComplete"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "limited"
+                },
+                "code": {
+                  "type": "string",
+                  "const": "OUTPUT_LIMIT"
+                },
+                "reason": {
+                  "type": "string",
+                  "enum": [
+                    "CANONICAL_DIFF_BYTES",
+                    "CANONICAL_DIFF_LINES"
+                  ]
+                }
+              },
+              "required": [
+                "state",
+                "code",
+                "reason"
+              ],
+              "additionalProperties": false,
+              "title": "PatchLimited"
+            },
+            {
+              "type": "object",
+              "properties": {
+                "state": {
+                  "type": "string",
+                  "const": "limited"
+                },
+                "code": {
+                  "type": "string",
+                  "const": "OBJECT_MISSING"
+                }
+              },
+              "required": [
+                "state",
+                "code"
+              ],
+              "additionalProperties": false,
+              "title": "PatchObjectMissing"
+            }
+          ],
+          "title": "PatchCompleteness"
+        },
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "changesId",
+        "fileId",
+        "facts",
+        "binary",
+        "patch",
+        "completeness"
+      ],
+      "additionalProperties": false,
+      "title": "CommitFile"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "remedy"
+      ],
+      "additionalProperties": false,
+      "title": "InspectionObjectMissing"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "path"
+          ]
+        }
+      },
+      "required": [
+        "reason"
+      ],
+      "additionalProperties": false,
+      "title": "CommitFileRefused"
+    }
+  ],
+  "title": "ReadCommitFileResult"
+}

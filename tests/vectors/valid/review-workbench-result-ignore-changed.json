@@ -1,0 +1,5 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"ignore-changed\"}"
+}

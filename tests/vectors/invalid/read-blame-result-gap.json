@@ -1,0 +1,8 @@
+{
+  "schema": "read-blame-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"blameId\":\"0f0f0f0f-0000-4000-8000-000000000008\",\"commit\":\"0123456789abcdef0123456789abcdef01234567\",\"pathBytes\":\"c3JjL2EudHM=\",\"content\":\"YQpiCmMK\",\"lines\":3,\"ignoreList\":\"on\",\"groups\":[{\"commit\":0,\"origStart\":1,\"finalStart\":1,\"count\":2,\"ignored\":false,\"unblamable\":false},{\"commit\":1,\"origStart\":7,\"finalStart\":4,\"count\":1,\"ignored\":true,\"unblamable\":false}],\"commits\":[{\"oid\":\"0123456789abcdef0123456789abcdef01234567\",\"author\":\"QSBVIFRob3I=\",\"authorMail\":\"PGFAZXhhbXBsZS50ZXN0Pg==\",\"authorTime\":1700000000,\"authorTz\":\"+0200\",\"summary\":\"QWRkIHBhcnNlcg==\",\"previous\":{\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\",\"pathBytes\":\"c3JjL29sZC50cw==\"},\"filenameBytes\":\"c3JjL2EudHM=\",\"shallow\":false},{\"oid\":\"89abcdef0123456789abcdef0123456789abcdef\",\"author\":\"QSBVIFRob3I=\",\"authorMail\":\"PGFAZXhhbXBsZS50ZXN0Pg==\",\"authorTime\":1700000000,\"authorTz\":\"+0200\",\"summary\":\"QWRkIHBhcnNlcg==\",\"previous\":null,\"filenameBytes\":\"c3JjL2EudHM=\",\"shallow\":true}]}",
+  "repair": {
+    "groups.1.finalStart": 3
+  }
+}

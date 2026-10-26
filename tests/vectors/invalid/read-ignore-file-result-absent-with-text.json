@@ -1,0 +1,8 @@
+{
+  "schema": "read-ignore-file-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"target\":\"gitignore\",\"file\":\"//host/repo/.gitignore\",\"state\":\"absent\",\"text\":\"*.log\\n\",\"lineEnding\":\"none\",\"bom\":false,\"expected\":\"absent\"}",
+  "repair": {
+    "text": ""
+  }
+}

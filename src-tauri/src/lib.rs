@@ -10,9 +10,11 @@ mod dialogs;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod env_sanitize;
 #[cfg(windows)]
-mod file_append;
+mod file_delete;
 #[cfg(windows)]
 mod file_facts;
+#[cfg(windows)]
+mod file_replace;
 #[cfg_attr(not(windows), allow(dead_code))]
 mod framing;
 #[cfg_attr(not(windows), allow(dead_code))]
@@ -39,6 +41,8 @@ mod schema;
 mod service;
 #[cfg(windows)]
 mod settings;
+#[cfg(windows)]
+mod shadow;
 #[cfg(windows)]
 mod spawn;
 #[cfg(windows)]
@@ -138,6 +142,12 @@ pub fn run() {
             ipc::reveal_path,
             ipc::set_switch_choice,
             ipc::choose_worktree_folder,
+            ipc::read_commit_changes,
+            ipc::read_commit_file,
+            ipc::read_blame,
+            ipc::read_ignore_file,
+            ipc::preview_ignore,
+            ipc::open_submodule,
         ])
         .setup(move |app| start(app, root.as_deref()))
         .on_window_event(|window, event| {
@@ -231,6 +241,10 @@ fn start(app: &mut App, root: Option<&Path>) -> Result<(), Box<dyn std::error::E
     app.manage(text_scale::watch(ipc, app.handle().clone()));
 
     let window = main_window(app, stored_bounds, webview)?;
+    // Feature 005 plan.md D7: the Recycle Bin operation parents its warning dialog to the main window.
+    if let (Some(service), Ok(hwnd)) = (&service, window.hwnd()) {
+        service.bind_owner_window(hwnd.0 as isize);
+    }
     let shown = window.clone();
     let handle = app.handle().clone();
     window.with_webview(move |webview| {

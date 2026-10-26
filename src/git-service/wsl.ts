@@ -213,7 +213,7 @@ export function checkWslProbe(distro: string, probe: WslProbeFacts, wslExecutabl
 
 export type WslRoute =
   | { kind: "windows" }
-  | { kind: "wsl"; distro: string; guid: string; linuxPath: string; identityPath: string; running: boolean; saved?: { git: string; identity: string }; wslExecutable: string }
+  | { kind: "wsl"; distro: string; guid: string; linuxPath: string; identityPath: string; running: boolean; saved?: { git: string; version: string; identity: string }; wslExecutable: string }
   | WslRefusal;
 
 // Contract §11 "Route" and "Distro checks". The shell names the context path, because the service holds only the bootstrap ID.
@@ -231,7 +231,7 @@ export function routeRegistration(reply: WslDistrosResult): WslRoute {
     linuxPath: route.linuxPath,
     identityPath: route.identityPath,
     running: reply.running.includes(route.distro),
-    ...(saved ? { saved: { git: saved.git, identity: saved.gitIdentity } } : {}),
+    ...(saved ? { saved: { git: saved.git, version: saved.version, identity: saved.gitIdentity } } : {}),
     wslExecutable: reply.wslExecutable,
   };
 }
@@ -295,14 +295,19 @@ export function gitChanged(known: { identity: string } | undefined, probed: { id
   return known !== undefined && known.identity !== probed.identity;
 }
 
-// The WSL Git of a registration: the session Git of that distro when the probe found the same file, or a new Git after Use this Git.
+// Contract §11 "Git per distro", saved match: the path, version text, and identity equal the saved record by exact string equality.
+export function savedMatch(saved: { git: string; version: string; identity: string } | undefined, probed: { path: string; version: string; identity: string }): boolean {
+  return saved !== undefined && saved.git === probed.path && saved.version === probed.version && saved.identity === probed.identity;
+}
+
+// The WSL Git of a registration: the session Git of that distro when the probe found the same file, or a new Git after Use this Git or a saved match.
 // `changed`: the approved identity differs, so the registration ends GIT_CHANGED after the new confirmation.
 export async function approveWslGit(
   runner: GitRunner,
   target: { operationId: string; bootstrapId: string },
   probed: Omit<WslGit, "gitInstallationId">,
   session: WslGit | undefined,
-  saved: { identity: string } | undefined,
+  saved: { git: string; version: string; identity: string } | undefined,
 ): Promise<{ ok: true; git: WslGit; reused: boolean; changed: boolean } | { ok: false; code: "GIT_CHANGED" | "DEADLINE" } | { ok: false; canceled: true }> {
   if (session !== undefined && !gitChanged(session, probed) && session.path === probed.path) {
     // Linux Git reads `PATH` when it runs, so every workspace of this Git takes the `PATH` of the latest probe.
@@ -310,8 +315,10 @@ export async function approveWslGit(
     return { ok: true, git: session, reused: true, changed: false };
   }
   const changed = gitChanged(session ?? saved, probed);
+  // FR-040: a saved match needs no new confirmation. The shell admits `confirm: false` only when its own record equals its bound facts.
+  const match = session === undefined && savedMatch(saved, probed);
   const gitInstallationId = crypto.randomUUID();
-  const reply = await runner.register({ operationId: target.operationId, bootstrapId: target.bootstrapId, gitInstallationId, confirm: true });
+  const reply = await runner.register({ operationId: target.operationId, bootstrapId: target.bootstrapId, gitInstallationId, confirm: !match });
   // Contract §5 "Deadline outcomes": a walk deadline of a registration gives DEADLINE (T314).
   if ("stop" in reply) return { ok: false, code: "DEADLINE" };
   if (reply.result !== "approved") return changed ? { ok: false, code: "GIT_CHANGED" } : { ok: false, canceled: true };

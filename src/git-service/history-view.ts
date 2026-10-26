@@ -23,8 +23,8 @@ import { MATCHING_PROBE_RUNS } from "../contracts/matching-probe";
 import { NATIVE } from "../contracts/native-path";
 import { buildRemedyCommand } from "../contracts/remedy-command";
 import { batchCommandArgs, historyLoadArgs, historyRefsArgs, historySearchArgs, isObjectId, replaceRefsArgs, topologyPathArgs, type ObjectFormat } from "./commands";
-import { createCollector, isChannelPath, RunnerRefusal, type Collector, type GitExit, type GitRunner } from "./git-runner";
-import { captureHead, checkFailedRead, commitTextOf, DAMAGED_STORE_REMEDY, isStop, readShallow, readStep, sharedListing, small, type CommitText, type HistoryReaderOptions, type Shallow, type Stop } from "./history";
+import { createCollector, exitKind, firstEnd, isChannelPath, isDeadlineStop, RunnerRefusal, type Collector, type GitExit, type GitRunner } from "./git-runner";
+import { captureHead, checkFailedRead, CLOSED, commitTextOf, DAMAGED_STORE_REMEDY, isStop, readShallow, readStep, sharedListing, small, type CommitText, type HistoryReaderOptions, type Shallow, type Stop } from "./history";
 import { HistoryLayout } from "./history-layout";
 import { HEADER_BYTES, readHeaders } from "./history-parser";
 import { MATCHING_REMEDY, matchStream, probeMatching, SearchMerge, type ProbeRun } from "./history-search";
@@ -42,8 +42,8 @@ type Request<K extends ServiceRequest["operation"]> = Extract<ServiceRequest, { 
 type ProcessTarget = { operationId: string; signal: AbortSignal; workspace: Workspace };
 export type OpenTarget = ProcessTarget & { installation: ReadInstallation; generation: number };
 
-// The outcome forms that `session.ts` turns into registry events.
-export type ViewOutcome = { result: "succeeded" | "limited" | "failed"; code?: ErrorCode; value?: unknown } | { result: "canceled"; value?: unknown } | { result: "deadline"; value?: unknown };
+// The outcome forms that `session.ts` turns into registry events. `closed`: a load that a Job close ended (001 contract §6 "Process replies").
+export type ViewOutcome = { result: "succeeded" | "limited" | "failed"; code?: ErrorCode; value?: unknown; closed?: true } | { result: "canceled"; value?: unknown } | { result: "deadline"; value?: unknown };
 
 type ViewReason = HistoryChangedReason | HistoryOutputLimitReason | "object-missing" | "REF_LISTING_RECORDS" | "REF_LISTING_BYTES";
 type Remedy = { text: string; command: string | null };
@@ -63,6 +63,8 @@ export interface HistoryViewsOptions {
   // Contract Δ3 "Matching probe": the probe commits that each run must list. Only tests set other sets.
   probeRuns?: readonly ProbeRun[];
   reject(requestId: string, code: ErrorCode): void;
+  // Feature 005 contract Δ8: called once when a view ends, so the retained commit listing of that view goes.
+  onRelease?: (viewId: string) => void;
 }
 
 // Data-model §6: the one search of a view. Its `operationId` is the `searchId` (contract Δ2).
@@ -138,7 +140,7 @@ async function readRecords(runner: GitRunner, t: ProcessTarget, args: string[]):
 }
 
 // Contract Δ3 capture step 3: two LF-ended paths, relative to the worktree root, where Git ran.
-async function topologyPaths(runner: GitRunner, t: ProcessTarget): Promise<{ shallow: string; grafts: string } | Stop> {
+export async function topologyPaths(runner: GitRunner, t: ProcessTarget): Promise<{ shallow: string; grafts: string } | Stop> {
   const out = small();
   const exit = await readStep(runner, t, topologyPathArgs(), out);
   if (isStop(exit)) return exit;
@@ -250,7 +252,7 @@ export function objectStream(oids: readonly string[], objectFormat: ObjectFormat
   };
 }
 
-export function createHistoryViews({ runner, trust, listingTuple, markUnavailable, registry, viewCommits, probeRuns = MATCHING_PROBE_RUNS, reject }: HistoryViewsOptions) {
+export function createHistoryViews({ runner, trust, listingTuple, markUnavailable, registry, viewCommits, probeRuns = MATCHING_PROBE_RUNS, reject, onRelease }: HistoryViewsOptions) {
   let current: View | null = null;
   // Contract Δ3: the probe runs before the first search of each `gitInstallationId` in a service session. A failed probe gives no answer to keep.
   const probes = new Map<string, "pass" | "mismatch">();
@@ -277,6 +279,7 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     if (current === view) current = null;
     for (const operationId of [...view.operations]) registry.cancel(operationId);
     notify(view);
+    onRelease?.(view.viewId);
   }
 
   const find = (repositoryId: string, viewId: string): View | null => (current !== null && current.viewId === viewId && current.workspace.repositoryId === repositoryId ? current : null);
@@ -321,9 +324,8 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
   async function capture(t: ProcessTarget) {
     const [head, records, paths] = await Promise.all([captureHead(runner, t), readRecords(runner, t, historyRefsArgs()), topologyPaths(runner, t)]);
     if (t.signal.aborted) return { stop: "canceled" } as Stop;
-    if (isStop(head)) return head;
-    if (isStop(records) || "limit" in records) return records;
-    if (isStop(paths)) return paths;
+    // 001 contract §5 "Deadline outcomes": a capture step at its deadline closes the Job of the other capture steps.
+    if (isStop(head) || isStop(records) || "limit" in records || isStop(paths)) return firstEnd([head, records, paths].map((r) => (isStop(r) || "limit" in r ? r : null)), isDeadlineStop, (r) => r === CLOSED)!;
     const files = await fileFingerprint(paths, t.workspace.objectFormat);
     if (isStop(files)) return files;
     return { head, records, paths, files };
@@ -357,6 +359,8 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
   // Contract Δ3 `loadHistory` and plan.md D2. `quiet`: the load of a search, whose progress the search sends.
   async function runLoad(view: View, need: Request<"loadHistory">["payload"]["need"], t: ProcessTarget, quiet = false): Promise<ViewOutcome> {
     const value = (extra: object = {}) => ({ rows: view.rows, complete: view.complete, ...extra });
+    // 001 contract §6 "Process replies": a Job close leaves no cause, so the view stays fresh and no object check runs.
+    const closed = (): ViewOutcome => ({ result: "failed", code: "GIT_FAILED", value: value(), closed: true });
     const gate = gateOf(view);
     if (gate !== null) return failed(gate, value());
     if (view.stale !== null) return failed(view.stale.code, value(refusalOf(view.stale)));
@@ -471,6 +475,8 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
 
     if (t.signal.aborted || view.released) return { result: "canceled", value: value() };
     if (refused !== null) return failed(refused, value());
+    // The replace check ended at a Job close, so the fingerprint is unknown and no row passes. Only a `rev-list` deadline gives another result.
+    if (checked === CLOSED) return exit?.deadline !== undefined ? { result: "deadline", value: value({ remedy: deadlineRemedy(view) }) } : closed();
     if (checked === "changed") return topologyChanged();
     if (isStop(checked)) {
       if ("failed" in checked) return failed(checked.failed, value(refusalOf(stale(view, { code: checked.failed }))));
@@ -498,6 +504,7 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     if (exit === null) return { result: "canceled", value: value() };
     if (exit.deadline !== undefined) return { result: "deadline", value: value({ remedy: deadlineRemedy(view) }) };
     if (exit.diagnosticLimit) return failed("OUTPUT_LIMIT", value(refusalOf(stale(view, { code: "OUTPUT_LIMIT" }))));
+    if (exitKind(exit, "read", stdout) === "jobClosed") return closed();
     if (exit.exitCode === 0) {
       const end = topology.end();
       if (end !== null) {
@@ -602,6 +609,8 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
         return lines.limited || s.merge.broken;
       },
     };
+    // 001 contract §6 "Process replies": a Job close leaves no cause, so a closed side stops no other side.
+    const jobClosed = (exit: GitExit | ErrorCode | null) => typeof exit === "object" && exit !== null && exitKind(exit, "search", stdout) === "jobClosed";
     const searching = (async (): Promise<GitExit | ErrorCode | null> => {
       try {
         return await runner.run({
@@ -621,6 +630,7 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
         throw error;
       }
     })().then((exit) => {
+      if (jobClosed(exit)) return exit;
       if (exit === null || typeof exit === "string" || exit.exitCode !== 0 || exit.deadline !== undefined || exit.diagnosticLimit || lines.malformed) stop("search");
       else {
         s.merge.endStream(view.rows);
@@ -634,7 +644,7 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
           view.load = t.operationId;
           try {
             const outcome = await runLoad(view, { end: true }, { ...t, signal: call.signal }, true);
-            if (outcome.result !== "succeeded") stop("load");
+            if (outcome.result !== "succeeded" && !(outcome.result === "failed" && outcome.closed)) stop("load");
             return outcome;
           } finally {
             if (view.load === t.operationId) view.load = null;
@@ -653,6 +663,8 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     }
 
     if (t.signal.aborted || view.released) return { result: "canceled" };
+    // 001 contract §5 "Deadline outcomes": a deadline of either side closes the Job of the other side, so it decides first.
+    if ((typeof exit === "object" && exit?.deadline !== undefined) || loaded?.result === "deadline") return { result: "deadline", value: { remedy: deadlineRemedy(view) } };
     if (stopper === "load" && loaded !== null) {
       // The search result holds only the refusal fields of the load result.
       const v = ("value" in loaded ? loaded.value : undefined) as { reason?: ViewReason; remedy?: Remedy } | undefined;
@@ -661,12 +673,15 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
     // A break of the match order makes the view stale, as a re-read difference does (contract Δ8 condition 3).
     const orderBroken = () => failed("HISTORY_CHANGED", refusalOf(stale(view, { code: "HISTORY_CHANGED", reason: "order" })));
     if (s.merge.broken) return orderBroken();
+    // A Job close cuts the stream, so a partial last line is no malformed output.
+    if (jobClosed(exit)) return failed("GIT_FAILED");
     if (lines.malformed) return failed("MALFORMED_GIT_OUTPUT", refusalOf(stale(view, { code: "MALFORMED_GIT_OUTPUT" })));
     if (exit === null) return { result: "canceled" };
     if (typeof exit === "string") return failed(exit);
-    if (exit.deadline !== undefined) return { result: "deadline", value: { remedy: deadlineRemedy(view) } };
     if (exit.diagnosticLimit) return failed("OUTPUT_LIMIT", refusalOf(stale(view, { code: "OUTPUT_LIMIT" })));
     if (exit.exitCode !== 0) return failedRead(view, t, (extra = {}) => extra);
+    // A load that a Job close ended did not complete, so the match set is unknown.
+    if (loaded?.result === "failed" && loaded.closed) return failed("GIT_FAILED");
     // Contract Δ3 "Merge into the view": when the load completes, the queue must be empty.
     if (s.merge.waiting > 0) return orderBroken();
     return { result: "succeeded", value: { matches: s.merge.count, shallow: view.shallow.kind === "file" } };
@@ -833,11 +848,14 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
         const listed = await sharedListing({ trust, listingTuple }, t);
         const gate = listed.ok ? trust.gate(t.workspace, listed.listing, t.installation, "reads") : null;
         if (!listed.ok || gate !== null) {
-          steps.abort();
-          await pending.catch(() => null);
+          // 001 contract §7 "Held history steps": a refused gate ends the held steps. A listing code keeps them, so their deadline stays visible.
+          if (listed.ok || "stop" in listed) steps.abort();
+          const held = await pending.catch(() => null);
           if (t.signal.aborted) return { result: "canceled" };
           if (listed.ok) return failed(gate!);
           if ("stop" in listed) return { result: listed.stop };
+          // 001 contract §5 "Deadline outcomes": a held step at its deadline closes the Job of the listing processes.
+          if (isDeadlineStop(held)) return { result: "deadline" };
           return failed(listed.code, listed.text === undefined ? {} : { remedy: { text: listed.text, command: null } });
         }
         const captured = await pending;
@@ -983,6 +1001,16 @@ export function createHistoryViews({ runner, trust, listingTuple, markUnavailabl
       const { operationId } = registry.start("closeHistory", request.requestId);
       registry.apply(operationId, { type: "valid-read" });
       finish(null, operationId, { result: "succeeded" });
+    },
+
+    // Feature 005 contract Δ3 `readCommitChanges` "Target": a served row of the current view. The parents come in Git order from the
+    // view topology, and the view shallow set decides `shallow` (plan.md D3 step 1). Null for another view, a released view, or no row.
+    commitTarget(repositoryId: string, viewId: string, oid: string): { parents: string[]; shallow: boolean } | null {
+      const view = find(repositoryId, viewId);
+      if (view === null || !isObjectId(oid, view.workspace.objectFormat)) return null;
+      const row = view.topology.rowOf(oid);
+      if (row < 0 || row >= view.rows) return null;
+      return { parents: view.topology.parents(row), shallow: view.shallow.kind === "file" && view.shallow.commits.has(oid) };
     },
 
     // A workspace release ends its view.

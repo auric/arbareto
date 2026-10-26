@@ -465,63 +465,17 @@ describe("multi-select and multi-file actions (FR-034 to FR-036, FR-038 to FR-04
 // --- Untracked menu and ignore lines ---------------------------------------------------------------------------------
 
 describe("Untracked menu and ignore items (FR-045, FR-046, plan D9)", () => {
-  const PLAN = (line: string, target: "gitignore" | "exclude") => ({ target, path: b64("logs"), folder: true, line, prefixNewline: false, expected: "absent" });
-
-  test("an Untracked folder offers Stage folder, Add to .gitignore, Add to info/exclude, Copy path, and Show in Explorer, each named by its label only", async () => {
+  // Feature 005 T054: the ignore editor replaces the 004 one-line review (tests/contracts/inspection-ignore.test.tsx). Plan D5 gives a folder its own Show in Explorer.
+  test("an Untracked folder offers Stage folder, Copy path, Show in Explorer, the ignore items, and the Delete group, each named by its label only", async () => {
     await openCommitView(createWorld({ entries: board().all }));
     await click(item("Changes", "Untracked"));
     await contextMenu(item("Changes", "logs"));
-    expect(menuItems().map(itemLabel)).toEqual(["Stage folder", "Add to .gitignore", "Add to info/exclude", "Copy path", "Show in Explorer"]);
+    expect(menuItems().map(itemLabel)).toEqual(["Stage folder", "Copy path", "Show in Explorer", "Add to .gitignore…", "Add to info/exclude…", "Delete…", "Delete permanently…"]);
     for (const i of menuItems()) expect(i.getAttribute("aria-label")).toBeNull();
     expect(menuItem("Stage folder").getAttribute("aria-keyshortcuts")).toBe("Space");
     expect(menuItem("Stage folder").querySelector('[data-slot="dropdown-menu-shortcut"][aria-hidden="true"]')?.textContent).toBe("Space");
-    // Contract Δ3 `revealPath` takes one entry, so a folder row states the reason.
-    expect(describedBy(menuItem("Show in Explorer"))).toBe("Show in Explorer takes one file. Select a file in the folder.");
+    expect(describedBy(menuItem("Show in Explorer"))).toBe("");
   });
-
-  test("Add to .gitignore reviews the ignore, shows the exact line and the target before the write, and Add line runs the token", async () => {
-    const { all } = board();
-    const world = createWorld({ entries: all });
-    const double = await openCommitView(world);
-    await click(item("Changes", "Untracked"));
-    await contextMenu(item("Changes", "logs"));
-    await click(menuItem("Add to .gitignore"));
-    const review = double.pending("reviewWorkbench")!;
-    const logs = all.find((e) => e.path === "logs/1.log")!;
-    expect(review.args[0]).toEqual({ repositoryId: fixtureId(1), repositoryGeneration: 1 });
-    expect(review.args[1]).toEqual({ action: "ignore", snapshotId: expect.any(String), entryId: logs.entryId, target: "gitignore", folder: b64("logs") });
-    await act(async () => review.resolve(succeeded({ action: "ignore", plan: PLAN("/logs/", "gitignore"), workbenchToken: fixtureId(0x600) })));
-    await settle();
-    const popover = document.querySelector('[data-slot="popover-content"]')!;
-    expect(text(popover)).toContain("Add to .gitignore?");
-    expect(text(popover)).toContain("Arbareto adds this line to .gitignore in the worktree folder:");
-    expect(popover.querySelector('[data-slot="ignore-line"]')!.textContent).toBe("/logs/");
-    expect(double.count("runWorkbench")).toBe(0);
-    // Cancel has the first focus.
-    expect(document.activeElement?.textContent).toBe("Cancel");
-    await click(button("Add line"));
-    expect(double.pending("runWorkbench")!.args.slice(0, 2)).toEqual([{ repositoryId: fixtureId(1) }, { workbenchToken: fixtureId(0x600), start: true }]);
-  });
-
-  for (const [reason, expected] of [
-    ["ignore-exists", "Add to .gitignore is unavailable: .gitignore already holds this line."],
-    ["ignore-not-text", "Add to .gitignore is unavailable: .gitignore is not UTF-8 text, or it holds a NUL character."],
-    ["ignore-size", "Add to .gitignore is unavailable: .gitignore is larger than 1 MiB."],
-    ["ignore-not-regular", "Add to .gitignore is unavailable: .gitignore is a symbolic link, a folder, or another special file."],
-    ["limit", "Add to .gitignore is unavailable: The ignore line is longer than 4,096 bytes."],
-  ] as const) {
-    test(`a review refusal with reason ${reason} shows its plan D9 text and opens no confirmation`, async () => {
-      const double = await openCommitView(createWorld({ entries: board().all }));
-      await click(item("Changes", "Untracked"));
-      await contextMenu(item("Changes", "notes.txt"));
-      await click(menuItem("Add to .gitignore"));
-      await act(async () => double.pending("reviewWorkbench")!.resolve({ requestId: fixtureId(0x5ff), state: "rejected", code: "WORKBENCH_UNAVAILABLE", result: { reason } }));
-      await settle();
-      expect(text(document.querySelector("footer")!)).toContain(expected);
-      expect(document.querySelector('[data-slot="popover-content"]')).toBeNull();
-      expect(double.count("runWorkbench")).toBe(0);
-    });
-  }
 
   test("Show in Explorer on a file sends revealPath with the entry ID", async () => {
     const { all } = board();
@@ -565,10 +519,10 @@ describe("Untracked menu and ignore items (FR-045, FR-046, plan D9)", () => {
     expect((double.calls.findLast((c) => c.operation === "readComparison")!.args[1] as { entryId: string }).entryId).toBe(b!.entryId);
   });
 
-  test("T120: Add to .gitignore after a new read reviews the entry of the new read", async () => {
-    const { double, b } = await readWhileMenuOpen(renewed);
-    await click(menuItem("Add to .gitignore"));
-    expect((double.pending("reviewWorkbench")!.args[1] as { entryId: string }).entryId).toBe(b!.entryId);
+  test("T120: Add to .gitignore… after a new read opens the ignore editor of the shown read", async () => {
+    const { double } = await readWhileMenuOpen(renewed);
+    await click(menuItem("Add to .gitignore…"));
+    expect(double.pending("readIgnoreFile")!.args.slice(0, 2)).toEqual([{ repositoryId: fixtureId(1), repositoryGeneration: 1 }, { target: "gitignore" }]);
   });
 
   test("T120: after a new read, the menu anchor is the shown m.txt row, and Escape returns focus to it", async () => {
@@ -648,6 +602,23 @@ describe("Untracked menu and ignore items (FR-045, FR-046, plan D9)", () => {
     await newRead(world, double, renewed(old));
     expect(row.isConnected).toBe(true);
     expect(document.activeElement).toBe(item("Changes", "b.ts"));
+  });
+
+  test("T082: a new read with new entry IDs keeps the marks and the Shift anchor by path (data-model §14)", async () => {
+    const old = ["u1.txt", "u2.txt", "u3.txt"].map((p) => entry("untracked", p));
+    const world = createWorld({ entries: old });
+    const double = await openCommitView(world);
+    const selected = () => items("Changes").filter((i) => i.getAttribute("aria-selected") === "true").map((i) => i.getAttribute("aria-label"));
+    await click(item("Changes", "Untracked"));
+    await click(item("Changes", "u1.txt"));
+    await act(async () => item("Changes", "u1.txt").focus());
+    await press(item("Changes", "u1.txt"), "ArrowDown", { shiftKey: true });
+    expect(selected()).toEqual(["u1.txt", "u2.txt"]);
+    await newRead(world, double, renewed(old));
+    expect(selected()).toEqual(["u1.txt", "u2.txt"]);
+    await act(async () => item("Changes", "u2.txt").focus());
+    await press(item("Changes", "u2.txt"), "ArrowDown", { shiftKey: true });
+    expect(selected()).toEqual(["u1.txt", "u2.txt", "u3.txt"]);
   });
 
   for (const [name, init] of [
@@ -1213,17 +1184,17 @@ describe("virtual list (FR-086, SC-007 component check)", () => {
   test("tree rows report the position and the set size of their level", async () => {
     await openCommitView(createWorld({ entries: board().all }));
     const at = (label: string) => [item("Changes", label).getAttribute("aria-posinset"), item("Changes", label).getAttribute("aria-setsize")];
-    // Level 1 holds README.md, src, and the Untracked section row.
-    expect(at("README.md")).toEqual(["1", "3"]);
-    expect(at("src")).toEqual(["2", "3"]);
+    // Level 1 holds src, README.md, and the Untracked section row: folders first (feature 005 spec FR-015).
+    expect(at("README.md")).toEqual(["2", "3"]);
+    expect(at("src")).toEqual(["1", "3"]);
     expect(at("Untracked")).toEqual(["3", "3"]);
     expect(at("src/auth")).toEqual(["1", "2"]);
     expect(at("src/auth/session.ts")).toEqual(["2", "2"]);
     await click(item("Changes", "Untracked"));
-    // The untracked level: docs/drafts, logs, notes.txt, and src.
-    expect(at("notes.txt")).toEqual(["3", "4"]);
+    // The untracked level: docs/drafts, logs, src, and notes.txt.
+    expect(at("notes.txt")).toEqual(["4", "4"]);
     const staged = item("Staged", "CHANGELOG.md");
-    expect([staged.getAttribute("aria-posinset"), staged.getAttribute("aria-setsize")]).toEqual(["1", "2"]);
+    expect([staged.getAttribute("aria-posinset"), staged.getAttribute("aria-setsize")]).toEqual(["2", "2"]);
   });
 
   test("stage-files progress events re-render no visible file row", async () => {
@@ -1363,13 +1334,14 @@ describe("Filter files (FR-101, Q29)", () => {
     await openCommitView(createWorld({ entries: files }));
     await click(button("Flat layout"));
     await typeIn(filesField()!, "a.ts");
-    expect(labels("Changes")).toEqual(["a.ts", "dir/A.TS"]);
+    // Feature 005 spec FR-016: the flat layout shows the folder path first.
+    expect(labels("Changes")).toEqual(["dir/A.TS", "a.ts"]);
     expect(text(commitView()!)).not.toContain("No file matches the filter.");
     await typeIn(filesField()!, ".*");
     expect(labels("Changes")).toEqual([]);
     expect(text(commitView()!)).toContain("No file matches the filter.");
     await typeIn(filesField()!, "");
-    expect(labels("Changes")).toEqual(["a.ts", "axts", "dir/A.TS"]);
+    expect(labels("Changes")).toEqual(["dir/A.TS", "a.ts", "axts"]);
   });
 
   test("the no-match line is an always-present status region that holds the text only when nothing matches", async () => {

@@ -313,6 +313,45 @@ caseTest(TASK, "data-model §2: an entry set that changed after the review gives
   });
 }, TIMEOUT_MS);
 
+caseTest("T406", "plan.md D11: a key that another program changes after the first write is stale, and `written` names only the key whose step ran", SHELL, async () => {
+  const f = build("config-scopes");
+  await withConfig("t406-later-stale", f, async (service) => {
+    const { r } = await open(service, f.repo);
+    const shown = await reviewed(service, r, save("local", [{ key: "user.name", value: "first" }, { key: "user.email", value: "second@invalid" }]));
+    const from = service.runner.calls.length;
+    const release = service.runner.holdStart((call) => call.arguments.includes("user.name"));
+    const id = sendRun(service, r, shown.workbenchToken);
+    await until(() => writes(service, from).length > 0, "the held user.name write");
+    git(f, ["config", "set", "--local", "user.email", "theirs@invalid"]);
+    release();
+    const response = await service.response<SaveResult>(id);
+    expect({ ...outcome(response), written: response.result!.written, stale: response.result!.stale }).toEqual({ state: "failed-with-effects", code: "FAILED_WITH_EFFECTS", written: ["user.name"], stale: "user.email" });
+    expect(writes(service, from).length).toBe(1);
+    expect(git(f, ["config", "get", "--local", "user.email"])).toBe("theirs@invalid\n");
+  });
+}, TIMEOUT_MS);
+
+caseTest("T406", "plan.md D11: a first key that another program changes after the run-start check gives STALE_REVIEW, and `written` is empty", SHELL, async () => {
+  const f = build("config-scopes");
+  await withConfig("t406-first-stale", f, async (service) => {
+    const { r } = await open(service, f.repo);
+    const shown = await reviewed(service, r, save("local", [{ key: "user.name", value: "mine" }, { key: "user.email", value: "second@invalid" }]));
+    const from = service.runner.calls.length;
+    // The `for-each-ref` read of the pre-run observation starts after the run-start check and before the first stale check.
+    let held = false;
+    const release = service.runner.holdStart((call) => !held && call.arguments.includes("for-each-ref") && (held = true));
+    const id = sendRun(service, r, shown.workbenchToken);
+    await until(() => held, "the held for-each-ref read");
+    git(f, ["config", "set", "--local", "user.name", "theirs"]);
+    const after = digests(f);
+    release();
+    const response = await service.response<SaveResult>(id);
+    expect({ ...outcome(response), result: response.result }).toEqual({ state: "failed", code: "STALE_REVIEW", result: { action: "config-save", scope: "local", written: [], stale: "user.name" } });
+    expect(writes(service, from)).toEqual([]);
+    expect(digests(f)).toEqual(after);
+  });
+}, TIMEOUT_MS);
+
 caseTest(TASK, "research.md F22: a value that starts with - is written as that value", SHELL, async () => {
   const f = build("config-xdg");
   await withConfig("t050-dash", f, async (service) => {

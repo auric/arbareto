@@ -96,6 +96,15 @@
   --warning-fill: light-dark(#FFF4D4, #3A321C);
   --selected-row: light-dark(#DCE8FA, #2B3A50);
 
+  /* Feature 005 plan.md D16: the seven blame age shades, step 1 (oldest) to 7 (newest). */
+  --age-1: light-dark(#C2D4F0, #323B4B);
+  --age-2: light-dark(#A7C0E6, #3E4D66);
+  --age-3: light-dark(#8DACDC, #4A5F82);
+  --age-4: light-dark(#7398D3, #56719D);
+  --age-5: light-dark(#5984C9, #6283B9);
+  --age-6: light-dark(#3E70BF, #6E95D4);
+  --age-7: light-dark(#245CB5, #7AA7F0);
+
   /* Lane roles (plan.md "History graph design"). */
   --lane-teal: light-dark(#06726E, #34AFA4);
   --lane-sky: light-dark(#00516B, #88CEEF);
@@ -422,6 +431,7 @@
     [data-slot="menubar-content"],
     [data-slot="menubar-sub-content"],
     [data-slot="popover-content"],
+    [data-slot="hover-card-content"],
     [data-slot="dialog-content"]
   ) {
   border-radius: var(--radius-overlay);
@@ -451,6 +461,10 @@
 @media (forced-colors: active) {
   :focus-visible {
     outline-color: Highlight;
+  }
+  /* Feature 005 plan.md D16: the age bar is decoration. Forced colors remove it, and the relative date stays the cue. */
+  .age-bar {
+    forced-color-adjust: auto;
   }
   [data-slot="segmented"] [aria-current="page"] {
     forced-color-adjust: none;
@@ -483,8 +497,17 @@
   .list-row[aria-selected="true"]::before {
     background: HighlightText;
   }
-  .list-row[aria-selected="true"] :is([data-slot="status-letter"], [data-slot="row-icon"], .text-muted-text, .text-accent-role, .text-removed) {
+  .list-row[aria-selected="true"] :is([data-slot="status-letter"], [data-slot="row-icon"], .text-text, .text-muted-text, .text-accent-role, .text-removed) {
     color: HighlightText;
+  }
+  /* Feature 005 plan.md D16: on the selected line the age bar takes the row fill. Its shade is an inline style, so the rule needs the priority. */
+  .list-row[aria-selected="true"] .age-bar {
+    forced-color-adjust: none;
+    background: Highlight !important;
+  }
+  /* The `outline-hidden` utility of the menu items draws a transparent outline, and forced colors show it as CanvasText. */
+  [role="menu"] :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):not(:focus-visible) {
+    outline: none;
   }
   /* The selected row turns off the forced colors for its subtree, so a button in it needs system colors too. */
   .list-row[aria-selected="true"] button {
@@ -493,8 +516,10 @@
     border-color: HighlightText;
   }
   /* Forced colors drop the ring shadow, so a dialog and a tooltip need an edge against the content below. */
+  /* Feature 005 plan.md D16: the branch card too. */
   [data-slot="dialog-content"],
-  [data-slot="tooltip-content"] {
+  [data-slot="tooltip-content"],
+  [data-slot="hover-card-content"] {
     outline: 1px solid CanvasText;
   }
   .selected-hunk-bar {

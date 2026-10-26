@@ -7,11 +7,14 @@
 import { expect } from "bun:test";
 import { rmSync } from "node:fs";
 import { SUBMODULE_UPDATE_CEILING_MS, SUBMODULE_UPDATE_INACTIVITY_MS, STALL_NOTICE_MS } from "../../src/contracts/limits";
+import { configListArgs } from "../../src/git-service/commands";
+import { syncRefsArgs } from "../../src/git-service/sync-commands";
+import type { RecordedCall } from "./bun-runner";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { commit, psQuote, reviewOk } from "./hunk-harness";
 import { buildCounts, buildPush, configDigests, ESC_MESSAGE, fc, gitRun, importStream, PUSH_VARIANTS, pushVariant, refMap, revParse, setConfig, type GitHost, type PushFixture } from "./remote-fixtures";
-import { caseTest } from "./service-harness";
+import { caseTest, siblingDeadline } from "./service-harness";
 import { copyWithRemotes, gitExe, hostFor, localConfig, native, register, remoteCalls, reviewed, reviewSync, run, sendSync, subcommandOf, sync, TIMEOUT_MS, withSync, type SyncResult, refusalOf } from "./sync-harness";
 
 useFixtureRoot();
@@ -423,4 +426,29 @@ describeGit("sync push (T034)", () => {
       expect(revParse(a.h, a.repo, "HEAD")).toBe(committed);
     });
   }, TIMEOUT_MS);
+
+  // T399, 001 contract §5 "Deadline outcomes": a reconciliation read at its deadline closes the operation Job, so the sibling read ends with `exitCode` null and no `deadline`.
+  // 001 contract §8: a reconciliation read deadline gives `unknown`, and the session log cause is DEADLINE (§9).
+  caseTest("T399", "T399: a push reconciliation gives unknown with the cause DEADLINE when the trust listing expires and the Job close ends the refs listing first", SHELL, async () => {
+    const a = own("topic");
+    await withSync("t399-push", async (service) => {
+      const r = await register(service, a.repo);
+      const review = await reviewed(service, r, { action: "push" });
+      const isArgs = (args: readonly string[]) => (call: { arguments: readonly string[] }) => call.arguments.length === args.length && call.arguments.every((x, i) => x === args[i]);
+      // Only a read after the push step matches, so the reads before the step stay out.
+      const afterPush = (match: (call: { arguments: readonly string[] }) => boolean) => (call: { operationId: string; arguments: readonly string[] }) =>
+        match(call) && service.runner.calls.some((c) => c.operationId === call.operationId && isPush(c));
+      const [config, refs] = [isArgs(configListArgs()), isArgs(syncRefsArgs())];
+      const from = service.runner.calls.length;
+      const release = siblingDeadline(service, afterPush(config), afterPush(refs));
+      const response = await service.response<SyncResult>(sendSync(service, r, review.syncReviewToken)).finally(release);
+      const ownCalls = service.runner.calls.slice(from).filter((c) => c.operationId === response.operationId);
+      const tail = ownCalls.slice(ownCalls.findIndex(isPush) + 1);
+      const endOf = (call: RecordedCall | undefined) => call?.exit?.deadline ?? (call?.exit?.exitCode === null ? "closed" : String(call?.exit?.exitCode));
+      const exits = [tail.find(config), tail.find(refs)].map(endOf);
+      const entry = service.log().find((e) => (e as { operationId?: string }).operationId === response.operationId) as { cause?: string } | undefined;
+      console.log(`OBSERVATION T399: push exits=${exits.join(",")} state=${response.state} code=${response.code} cause=${entry?.cause}`);
+      expect({ exits, ...outcome(response), cause: entry?.cause }).toEqual({ exits: ["deadline", "closed"], state: "unknown", code: "STATE_UNKNOWN", cause: "DEADLINE" });
+    });
+  }, 120_000);
 });

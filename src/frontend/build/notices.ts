@@ -261,7 +261,13 @@ async function main(): Promise<number> {
   const manifest = (await Bun.file(`${root}/package.json`).json()) as { repository?: { url?: string } };
   const lock = Bun.JSONC.parse(await Bun.file(`${root}/bun.lock`).text()) as BunLock;
   const css = await Bun.file(`${root}/src/frontend/index.css`).text();
-  // `--offline` keeps the build off the network. Cargo then fails when a locked crate is not in the local registry cache.
+  // The offline queries below need every locked crate in the local cache. `cargo fetch` uses the network only for a crate that the cache does not hold, and `--locked` refuses a lockfile change.
+  const fetchCommand = ["cargo", "fetch", "--locked", "--manifest-path", "src-tauri/Cargo.toml"];
+  const cargoFetch = Bun.spawnSync(fetchCommand, { cwd: root, stdin: "ignore", stdout: "inherit", stderr: "inherit", timeout: 600_000 });
+  if (cargoFetch.exitCode !== 0) {
+    console.error(`${fetchCommand.join(" ")} exit code ${cargoFetch.exitCode}. The build needs the locked crates of src-tauri/Cargo.lock in the Cargo cache. Connect to crates.io, or fill the cache, and run the build again.`);
+    return 1;
+  }
   const cargo = Bun.spawnSync(
     ["cargo", "metadata", "--manifest-path", "src-tauri/Cargo.toml", "--format-version", "1", "--locked", "--offline", "--filter-platform", "x86_64-pc-windows-msvc"],
     { cwd: root, stdin: "ignore", stdout: "pipe", stderr: "inherit", timeout: 120_000 },

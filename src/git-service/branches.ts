@@ -7,7 +7,7 @@
 import { REF_RESULT_BYTES, type RefsRefusal } from "../contracts/envelope";
 import type { ErrorCode } from "../contracts/errors";
 import { REF_LISTING_BYTES, REF_LISTING_RECORDS } from "../contracts/limits";
-import { createCollector, type GitRunner } from "./git-runner";
+import { createCollector, firstEnd, type GitRunner } from "./git-runner";
 import { sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
 import { isStop, type ObserveContext } from "./hunk-publish";
 import { encodedBytes, runRead, type ReadStep } from "./read-steps";
@@ -30,6 +30,8 @@ export interface BranchEntry {
   heldBy: string | null;
   current: boolean;
   localName: string | null;
+  // Feature 005 contract Δ3: null when no tracking entry pairs with this read.
+  upstreamPresent: boolean | null;
 }
 
 export type BranchesOutcome =
@@ -87,16 +89,18 @@ export function createBranchesReader({ runner, trust, reader, listingTuple }: Pi
         if (!listed.ok || gate !== null) {
           // Contract §7 "Held history steps": a refused gate ends the held steps and discards their output.
           step.abort();
-          await Promise.all(steps.map((s) => s.pending.catch(() => null)));
+          const held = await Promise.all(steps.map((s) => s.pending.catch(() => null)));
           if (t.signal.aborted) return { result: "canceled" };
           if (listed.ok) return refusal(gate!);
-          return "stop" in listed ? { result: listed.stop } : refusal(listed.code, listed.text);
+          if ("stop" in listed) return { result: listed.stop };
+          // 001 contract §5 "Deadline outcomes": a held step at its deadline closes the Job of the listing processes.
+          return held.some((r) => r !== null && "exit" in r && r.exit.deadline !== undefined) ? { result: "deadline" } : refusal(listed.code, listed.text);
         }
         const ran = await Promise.all(steps.map((s) => s.pending));
         if (t.signal.aborted || ran.some((r) => r === null)) return { result: "canceled" };
         const [branchBytes, trackingBytes] = ran.map((r, i) => heldBytes(r!, steps[i]!.out));
-        if (!(branchBytes instanceof Uint8Array)) return branchBytes!;
-        if (!(trackingBytes instanceof Uint8Array)) return trackingBytes!;
+        // A held step at its deadline also closes the Job of the other held step.
+        if (!(branchBytes instanceof Uint8Array) || !(trackingBytes instanceof Uint8Array)) return firstEnd([branchBytes, trackingBytes].map((b) => (b instanceof Uint8Array ? null : b)), (b) => b.result === "deadline")!;
         const objectFormat = t.workspace.objectFormat;
         const records = parseBranches(branchBytes, objectFormat);
         const trackingEntries = parseTracking(trackingBytes, objectFormat);
@@ -134,6 +138,8 @@ export function createBranchesReader({ runner, trust, reader, listingTuple }: Pi
             heldBy: holders.get(r.ref) ?? null,
             current: r.current,
             localName,
+            // ref-filter.c prints `gone` when the upstream does not resolve. The branch listing alone cannot tell it: it holds only refs/heads and refs/remotes.
+            upstreamPresent: r.upstream === null ? false : tracking === null ? null : tracking.track.state !== "gone",
           };
         });
         const value = { entries };

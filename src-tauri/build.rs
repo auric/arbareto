@@ -57,6 +57,12 @@ const COMMANDS: &[&str] = &[
     "reveal_path",
     "set_switch_choice",
     "choose_worktree_folder",
+    "read_commit_changes",
+    "read_commit_file",
+    "read_blame",
+    "read_ignore_file",
+    "preview_ignore",
+    "open_submodule",
 ];
 
 /// The exported JSON Schema files of the values that the shell reads (contract §1 "Schemas").

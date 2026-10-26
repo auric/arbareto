@@ -1,0 +1,5 @@
+{
+  "schema": "preview-ignore-result",
+  "expected": "valid",
+  "text": "{\"preview\":{\"newlyIgnored\":{\"count\":2,\"paths\":[\"YnVpbGQv\",\"YS5sb2c=\"]},\"noLongerIgnored\":{\"count\":0,\"paths\":[]},\"trackedMatched\":1,\"notices\":{\"entries\":[{\"kind\":\"inside-ignored\",\"pathBytes\":\"b3V0Ly5naXRpZ25vcmU=\"}],\"more\":0}}}"
+}

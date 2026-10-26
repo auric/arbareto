@@ -6,7 +6,8 @@
 // It does not replace one live-input check of the native key path (tests/windows/inject.ts, ARBARETO_LIVE_INPUT).
 
 import { afterAll, describe, expect, test } from "bun:test";
-import { isAbsolute, relative } from "node:path";
+import { writeFileSync } from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
 import { sectionOrder } from "../../src/frontend/keyboard/shortcuts";
 import { printOrigin } from "../origin";
 import { fixtureDir, fixturePath, FIXTURE_ROOT, useFixtureRoot } from "../git/fixture-root";
@@ -70,6 +71,7 @@ describe.skipIf(process.platform !== "win32")("T124 packaged keys through CDP", 
   if (reason !== null) console.log(`SKIP installed app: ${reason}`);
 
   let session: Promise<{ pid: number; cdp: Cdp }> | null = null;
+  let repository = "";
   // One app session serves all cases in order. The first case starts it.
   const open = () => (session ??= start());
   async function start(): Promise<{ pid: number; cdp: Cdp }> {
@@ -77,6 +79,7 @@ describe.skipIf(process.platform !== "win32")("T124 packaged keys through CDP", 
     const repo = fixturePath(relative(FIXTURE_ROOT, built.root), "repo");
     if (repo === "" || !isAbsolute(repo)) throw new Error(`the repository path is not absolute: ${JSON.stringify(repo)}`);
     console.log(`REPO ${TASK}: ${repo}`);
+    repository = repo;
     const env = appEnv(fixtureDir("keys-app"), false);
     const port = freePort();
     env.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${port}`;
@@ -201,6 +204,45 @@ describe.skipIf(process.platform !== "win32")("T124 packaged keys through CDP", 
       expect(await c.evaluate<boolean>(`!!document.querySelector('[role=dialog]')`)).toBe(true);
       await c.key("Escape");
       expect(await c.poll<boolean>(`!!document.querySelector('[role=dialog]')`, (v) => !v, KEY_WAIT_MS)).toBe(false);
+    },
+    CASE_MS,
+  );
+
+  // Feature 005 T067: with unsaved text, a real Escape in the ignore editor opens the discard modal, and the same keydown must not close it.
+  test.skipIf(reason !== null)(
+    "Escape with unsaved text in the ignore editor leaves the discard dialog open",
+    async () => {
+      const { cdp: c } = await open();
+      const untracked = join(repository, "t067-notes.txt");
+      if (!isAbsolute(untracked) || relative(FIXTURE_ROOT, untracked).startsWith("..")) throw new Error(`the file path is outside the fixture root: ${JSON.stringify(untracked)}`);
+      writeFileSync(untracked, "notes\n");
+      await c.key("F5");
+      // The Untracked rows exist only while the Untracked section is open (src/frontend/changes/file-tree.ts), and it starts closed.
+      const section = `document.querySelector('[data-section=workingChanges] [data-section-row=untracked]')`;
+      expect(await c.poll<boolean>(`!!${section}`, (v) => v, KEY_WAIT_MS)).toBe(true);
+      await c.evaluate(`${section}.focus(); true`);
+      if ((await c.evaluate<string | null>(`${section}.getAttribute('aria-expanded')`)) === "false") await c.key("ArrowRight");
+      expect(await c.poll<string | null>(`${section}.getAttribute('aria-expanded')`, (v) => v === "true", KEY_WAIT_MS)).toBe("true");
+      const row =`[...document.querySelectorAll('[data-section=workingChanges] [role=treeitem][aria-label="t067-notes.txt"]')]`;
+      expect(await c.poll<number>(`${row}.length`, (n) => n === 1, KEY_WAIT_MS)).toBe(1);
+      await c.evaluate(`${row}[0].focus(); true`);
+      await c.key("F10", MOD.Shift);
+      const item = `[...document.querySelectorAll('[role=menuitem]')].filter((e) => e.textContent.includes('Add to .gitignore'))`;
+      expect(await c.poll<number>(`${item}.length`, (n) => n === 1, KEY_WAIT_MS)).toBe(1);
+      await c.evaluate(`${item}[0].focus(); true`);
+      await c.key("Enter");
+      const field = `document.querySelector('[data-slot=ignore-editor] textarea')`;
+      expect(await c.poll<boolean>(`!!${field} && document.activeElement === ${field}`, (v) => v, KEY_WAIT_MS)).toBe(true);
+      const dialog = `[...document.querySelectorAll('[role=dialog],[role=alertdialog]')].filter((d) => d.textContent.includes('Discard changes to .gitignore?') && !d.hasAttribute('data-closed') && !d.hasAttribute('data-ending-style')).length`;
+      expect(await c.evaluate<number>(dialog)).toBe(0);
+      await c.key("Escape");
+      // The defect mounts the modal and closes it in the same keydown. The exit animation keeps the closed popup in the DOM until it ends.
+      await c.evaluate(`Promise.all(document.getAnimations().map((a) => a.finished.catch(() => null))).then(() => new Promise((done) => requestAnimationFrame(() => done(true))))`);
+      const shown = await c.evaluate<number>(dialog);
+      console.log(`IGNORE_ESCAPE ${TASK}: dialogs=${shown}`);
+      expect(shown).toBe(1);
+      await c.evaluate(`[...document.querySelectorAll('[role=dialog] button')].find((b) => b.textContent === 'Discard')?.click(); true`);
+      expect(await c.poll<boolean>(`!!${field}`, (v) => !v, KEY_WAIT_MS)).toBe(false);
     },
     CASE_MS,
   );

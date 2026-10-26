@@ -166,11 +166,15 @@ pub(crate) fn environment_block(
     Ok(block)
 }
 
-/// A pipe with two non-inheritable ends: the parent end and the child end.
-fn pipe() -> Result<(OwnedHandle, OwnedHandle), SpawnError> {
+/// The buffer of each child stdout and stderr pipe: one contract §5 "Native stdout/stderr chunk".
+/// `CreatePipe` with size 0 gives 4,096 bytes (`GetNamedPipeInfo`, 2026-10-25), and a Git that flushes each line then waits for the reader.
+const OUTPUT_PIPE_BYTES: u32 = 65_536;
+
+/// A pipe with two non-inheritable ends: the parent end and the child end. `size` 0 takes the system default.
+fn pipe(size: u32) -> Result<(OwnedHandle, OwnedHandle), SpawnError> {
     let (mut read, mut write) = (HANDLE::default(), HANDLE::default());
     // SAFETY: no security attributes, so neither end is inheritable. The caller owns both ends.
-    unsafe { CreatePipe(&mut read, &mut write, None, 0) }
+    unsafe { CreatePipe(&mut read, &mut write, None, size) }
         .map_err(|_| SpawnError::OwnershipFailed)?;
     // SAFETY: CreatePipe returned two new handles that nothing else owns.
     Ok(unsafe {
@@ -213,9 +217,9 @@ pub fn create_suspended<'a>(
     let directory = null_terminated(request.current_dir.as_os_str())?;
     let environment = environment_block(request.environment)?;
 
-    let (child_stdin, parent_stdin) = pipe()?;
-    let (parent_stdout, child_stdout) = pipe()?;
-    let (parent_stderr, child_stderr) = pipe()?;
+    let (child_stdin, parent_stdin) = pipe(0)?;
+    let (parent_stdout, child_stdout) = pipe(OUTPUT_PIPE_BYTES)?;
+    let (parent_stderr, child_stderr) = pipe(OUTPUT_PIPE_BYTES)?;
     let inherited = [raw(&child_stdin), raw(&child_stdout), raw(&child_stderr)];
     for handle in inherited {
         // SAFETY: the handle is open. Only the handle list below passes it to the child.
@@ -350,6 +354,7 @@ pub(crate) mod tests {
         DUPLICATE_HANDLE_OPTIONS, DuplicateHandle, HANDLE_FLAG_INHERIT, SetHandleInformation,
     };
     use windows::Win32::System::JobObjects::IsProcessInJob;
+    use windows::Win32::System::Pipes::GetNamedPipeInfo;
     use windows::Win32::System::SystemServices::JOB_OBJECT_QUERY;
     use windows::Win32::System::Threading::{
         CREATE_NEW_CONSOLE, CREATE_NO_WINDOW, CREATE_SUSPENDED, DETACHED_PROCESS,
@@ -535,6 +540,39 @@ pub(crate) mod tests {
             report["inherited"], false,
             "the marker handle stays in the parent"
         );
+    }
+
+    /// T404: `check-ignore --stdin` flushes each record. A 4,096-byte pipe then makes Git wait on each 10 ms pump poll.
+    #[test]
+    fn the_stdout_and_stderr_pipes_of_a_child_hold_65536_bytes() {
+        let job = Job::create().expect("Job");
+        let program = test_exe();
+        let arguments = child_arguments(&["report"]);
+        let environment = environment();
+        let spawned = spawn(
+            &request(&program, &arguments, &environment, false, Input::Closed),
+            job.handle(),
+        )
+        .expect("spawn");
+        let _process = Proc {
+            handle: spawned.process,
+            pid: spawned.pid,
+        };
+        for (name, pipe) in [("stdout", &spawned.stdout), ("stderr", &spawned.stderr)] {
+            let (mut out, mut inn) = (0u32, 0u32);
+            // SAFETY: the parent end is open, and both pointers outlive the call.
+            unsafe {
+                GetNamedPipeInfo(
+                    HANDLE(pipe.as_raw_handle()),
+                    None,
+                    Some(&mut out),
+                    Some(&mut inn),
+                    None,
+                )
+            }
+            .expect("GetNamedPipeInfo");
+            assert_eq!((out, inn), (65_536, 65_536), "{name} pipe buffer");
+        }
     }
 
     #[test]

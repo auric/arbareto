@@ -9,13 +9,15 @@ import { REF_LISTING_RECORDS } from "../../src/contracts/limits";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { buildCounts, buildMany, COUNT_BRANCHES, COUNT_UNTRACKED, gitRun, leftRight, MANY_BRANCHES, manyCounts, manyName, refMap, UNRELATED_COMMITS, type GitHost } from "./remote-fixtures";
-import { caseTest, type Service } from "./service-harness";
+import { caseTest, siblingDeadline, type Service } from "./service-harness";
 import { callsOf, hostFor, register, remoteCalls, subcommandOf, TIMEOUT_MS, withSync } from "./sync-harness";
 
 useFixtureRoot();
 
 const TASK = "T032";
 const SHELL = ["shell-double"] as const;
+// A `siblingDeadline` case that never releases its target ends here, not at the read timeout.
+const SIBLING_TIMEOUT_MS = 120_000;
 
 interface Entry {
   name: string;
@@ -140,4 +142,23 @@ describeGit("readTracking (T032)", () => {
       service.runner.inject.stdout = undefined;
     });
   }, TIMEOUT_MS);
+});
+
+// T399, 001 contract §5 "Deadline outcomes": the held step at its deadline closes the operation Job, so the own trust listing ends with `exitCode` null and no `deadline`.
+describeGit("held step deadline (T399)", () => {
+  caseTest("T399", "readTracking gives DEADLINE when the held for-each-ref expires and the Job close ends its own trust listing first", SHELL, async () => {
+    const h = hostFor("t399-tracking");
+    const { clone } = buildCounts(h);
+    const isTracking = (call: { arguments: readonly string[] }) => subcommandOf(call.arguments) === "for-each-ref";
+    const isConfigList = (call: { arguments: readonly string[] }) => call.arguments.includes("config") && call.arguments.includes("list");
+    await withSync("t399-tracking", async (service) => {
+      const r = await register(service, clone);
+      const from = service.runner.calls.length;
+      const release = siblingDeadline(service, isTracking, isConfigList);
+      const response = await service.request("readTracking", {}, { repositoryId: r.repositoryId, repositoryGeneration: r.generation }).finally(release);
+      const exits = service.runner.calls.slice(from).filter((c) => isTracking(c) || isConfigList(c)).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+      console.log(`OBSERVATION T399: readTracking exits=${exits.join(",")} state=${response.state} code=${response.code}`);
+      expect({ exits: exits.toSorted(), state: response.state, code: response.code }).toEqual({ exits: ["closed", "deadline"], state: "failed", code: "DEADLINE" });
+    });
+  }, SIBLING_TIMEOUT_MS);
 });

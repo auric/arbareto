@@ -10,7 +10,7 @@ import * as fsp from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { Handshake, MutationStarted, TrustAction, TrustDetails } from "../../src/contracts/channel";
-import { ReadBranchesResult, ReadGitSettingsResult, ReadWorktreesResult, ReviewCommitResult, ReviewWorkbenchResult, RunWorkbenchResult } from "../../src/contracts/envelope";
+import { ReadBlameResult, ReadBranchesResult, ReadCommitChangesResult, ReadCommitFileResult, ReadGitSettingsResult, ReadWorktreesResult, ReviewCommitResult, ReviewWorkbenchResult, RunWorkbenchResult } from "../../src/contracts/envelope";
 import { PIPE_FRAME_BYTES, READ_DEADLINE_MS, RECONCILIATION_TARGET_MS } from "../../src/contracts/limits";
 import { isObject } from "../../src/contracts/strict-json";
 import type { HunkCheckpoint } from "../../src/git-service/hunk-publish";
@@ -195,6 +195,45 @@ export function once(match: CallMatch): CallMatch {
     if (!match(call)) return false;
     first = call;
     return true;
+  };
+}
+
+// T399, contract §5 "Deadline outcomes": the first `target` call starts after the first `sibling` call starts, with a 1 ms deadline.
+// The sibling gets one stdout byte that its paused stdout holds. Only the Job close then ends it, with `exitCode` null and no `deadline`.
+// The target waits for the sibling start, so both calls must run in parallel. Call the returned function in `finally`.
+export function siblingDeadline(service: Service, target: CallMatch, sibling: CallMatch): () => void {
+  const { runner } = service;
+  const isTarget = once(target);
+  const isSibling = once(sibling);
+  const prior = runner.inject.stdout;
+  let siblingArgs: readonly string[] | null = null;
+  let armed = true;
+  const releaseTarget = runner.holdStart(isTarget);
+  const releaseHook = runner.holdStart((call) => {
+    if (siblingArgs === null && isSibling(call)) {
+      siblingArgs = call.arguments;
+      releaseTarget();
+    } else if (siblingArgs !== null && armed && isTarget(call)) {
+      armed = false;
+      // `spawn` reads the deadline synchronously after this check. The reset keeps every later process at its request deadline.
+      runner.inject.deadlineMs = 1;
+      queueMicrotask(() => void (runner.inject.deadlineMs = null));
+    }
+    return false;
+  });
+  const resumeStdout = runner.pauseStdout(isSibling);
+  // The double asks for injected stdout synchronously after the start check. One answer keeps a shared argument array off the target.
+  let unanswered = true;
+  runner.inject.stdout = (call) => {
+    if (!unanswered || call.arguments !== siblingArgs) return prior?.(call);
+    unanswered = false;
+    return new Uint8Array([0]);
+  };
+  return () => {
+    releaseTarget();
+    releaseHook();
+    resumeStdout();
+    runner.inject.stdout = prior;
   };
 }
 
@@ -442,7 +481,7 @@ export function checkFrame(frame: object): void {
 
 const isResponse =(value: unknown): value is ServiceResponse => isObject(value) && typeof value.state === "string" && (value.requestId === null || typeof value.requestId === "string");
 
-// Feature 004 contract Δ10 (T034, T060) and Δ3 `reviewCommit`: every result of these operations must fit its schema.
+// Feature 004 contract Δ10 (T034, T060), Δ3 `reviewCommit`, and the feature 005 reads: every result of these operations must fit its schema.
 const RESULT_SCHEMAS: Readonly<Record<string, { safeParse(value: unknown): { success: boolean } }>> = {
   readBranches: ReadBranchesResult,
   readWorktrees: ReadWorktreesResult,
@@ -450,6 +489,9 @@ const RESULT_SCHEMAS: Readonly<Record<string, { safeParse(value: unknown): { suc
   reviewWorkbench: ReviewWorkbenchResult,
   reviewCommit: ReviewCommitResult,
   runWorkbench: RunWorkbenchResult,
+  readCommitChanges: ReadCommitChangesResult,
+  readCommitFile: ReadCommitFileResult,
+  readBlame: ReadBlameResult,
 };
 
 export async function openService(options: OpenOptions): Promise<Service> {

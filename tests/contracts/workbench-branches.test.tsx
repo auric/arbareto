@@ -153,7 +153,7 @@ describe("branch button (FR-007)", () => {
     expect(Number(branchButton()!.style.flexGrow)).toBeGreaterThanOrEqual(1000 * Number(wrapper.style.flexGrow));
   });
 
-  test("a narrow branch button keeps the branch name first: the counts shrink first and end with an ellipsis, and the title and the accessible name hold the full text (T112)", async () => {
+  test("a narrow branch button keeps the branch name first: the counts shrink first and end with an ellipsis, and the hidden text and the accessible name hold the full text (T112)", async () => {
     await mountWorkbench(workbench, branchWorld());
     const b = branchButton()!;
     const counts = b.querySelector<HTMLElement>('[data-slot="branch-counts"]')!;
@@ -163,8 +163,10 @@ describe("branch button (FR-007)", () => {
     expect(counts.getAttribute("title")).toBe("2 ahead, 3 behind");
     const name = b.querySelector<HTMLElement>('[data-slot="branch-text"]')!;
     expect(name.compareDocumentPosition(counts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(name.getAttribute("title")).toBe("main");
     expect(b.getAttribute("aria-label")).toBe("main, 2 ahead, 3 behind");
+    // Feature 005: the branch card and the hidden text hold the full name in place of the native title.
+    expect(name.getAttribute("title")).toBeNull();
+    expect(name.querySelector(".sr-only")!.textContent).toBe("main");
   });
 
   test("a rebase shows Rebasing", async () => {
@@ -269,6 +271,18 @@ describe("branch list (FR-008, FR-009, FR-013, SC-003)", () => {
     const row = await sidebarRow("login-form");
     expect(row.getAttribute("aria-label")).toContain("No upstream");
     expect(text(row)).not.toContain("No upstream");
+  });
+
+  // Feature 005 T011, spec FR-066: the Workbench passes the newest `readBranches` entries to the sidebar card.
+  test("the branch card of a cut sidebar row names the other worktree that holds the branch", async () => {
+    await mountWorkbench(workbench, branchWorld());
+    const row = await sidebarRow("signup");
+    const name = row.querySelector<HTMLElement>('[data-slot="ref-name"]')!;
+    Object.defineProperty(name, "clientWidth", { configurable: true, value: 100 });
+    Object.defineProperty(name, "scrollWidth", { configurable: true, value: 240 });
+    await act(async () => row.focus());
+    const card = document.querySelector<HTMLElement>('[data-slot="hover-card-content"]');
+    expect(text(card!)).toContain("Checked out in C:\\wt\\sample-signup");
   });
 
   test("open, type, and Enter switch to the first match on a clean tree: three inputs (SC-003)", async () => {
@@ -537,6 +551,7 @@ describe("the menu of each label on a History row with several branch labels (FR
 });
 
 describe("virtual branch list (FR-086, SC-007, T100)", () => {
+  // The case presses 253 keys over 252 options in happy-dom: about 2.3 s alone and up to 5 s in a loaded run, near the 5 s Bun default.
   test("more than 200 branches create only the options near the view, the arrow keys reach the last option, and each option states its position and set size", async () => {
     const restore = sizeSwitcherList(300);
     try {
@@ -565,7 +580,7 @@ describe("virtual branch list (FR-086, SC-007, T100)", () => {
     } finally {
       restore();
     }
-  });
+  }, 30_000);
 });
 
 function buttons(label: string) {

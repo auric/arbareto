@@ -22,12 +22,13 @@ const TEST_TIMEOUT_MS = 30_000;
 const MIB = 1024 * 1024;
 const FRAME_KINDS = ["public", "process", "mutation", "trust", "handshake"];
 const TERMINAL = ["succeeded", "limited", "failed", "canceled", "completed-with-effects", "failed-with-effects", "unknown", "rejected"];
-// Contract §9 codes, and the feature 002, feature 003, and feature 004 contract Δ9 codes.
+// Contract §9 codes, and the feature 002, feature 003, feature 004, and feature 005 contract Δ9 codes.
 const ERROR_CODES = new Set(
   (
     "HISTORY_CHANGED UNSUPPORTED_FILTER_TEXT SEARCH_UNSUPPORTED " +
     "SYNC_UNAVAILABLE PUSH_REJECTED PUTTY_UNAVAILABLE DESTINATION_NOT_EMPTY " +
     "WORKBENCH_UNAVAILABLE UNTRACKED_IN_WAY STASH_KEPT " +
+    "BLAME_UNAVAILABLE SUBMODULE_UNAVAILABLE " +
     "INVALID_REQUEST PROTOCOL_VERSION UNKNOWN_OPERATION UNKNOWN_TARGET FRAME_LIMIT BUSY WORKSPACE_LIMIT " +
     "GIT_UNAVAILABLE GIT_CHANGED GIT_UNSUPPORTED WEBVIEW_UNAVAILABLE WEBVIEW_UNSUPPORTED WSL_UNAVAILABLE " +
     "REPOSITORY_UNAVAILABLE REPOSITORY_CHANGED UNSUPPORTED_REPOSITORY " +
@@ -440,7 +441,7 @@ describe("service boundary", () => {
   );
 
   test(
-    "a public frame body above 1 MiB plus 28 bytes gives FRAME_LIMIT",
+    "a public frame body above 2 MiB plus 28 bytes gives FRAME_LIMIT",
     async () => {
       const service = start();
       const sessionId = await service.handshake();
@@ -452,11 +453,11 @@ describe("service boundary", () => {
         return bytes;
       };
       const atLimit = request(sessionId, "getEnvironment");
-      service.send(frameBytes(body(atLimit, MIB + 28)));
+      service.send(frameBytes(body(atLimit, 2 * MIB + 28)));
       const accepted = await service.responseFor(atLimit.request.requestId as string);
       expect(accepted.code).not.toBe("FRAME_LIMIT");
       const overLimit = request(sessionId, "getEnvironment");
-      service.send(frameBytes(body(overLimit, MIB + 29)));
+      service.send(frameBytes(body(overLimit, 2 * MIB + 29)));
       const response = await service.responseFor([null, overLimit.request.requestId as string]);
       expect(response.state).toBe("rejected");
       expect(response.code).toBe("FRAME_LIMIT");

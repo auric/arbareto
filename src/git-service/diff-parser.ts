@@ -54,6 +54,10 @@ const NUMBER = "(0|[1-9][0-9]{0,8})";
 // A function heading follows a space. It is file content, so it can hold any byte but LF.
 const HUNK = new RegExp(`^@@ -${NUMBER}(?:,${NUMBER})? \\+${NUMBER}(?:,${NUMBER})? @@(?: [^]+)?$`);
 const ZEROS = /^0+$/;
+// diff.c `fill_metainfo` prints `similarity_index(p)`, an integer from 0 to 100.
+const SIMILARITY = /^similarity index (?:[0-9]|[1-9][0-9]|100)%$/;
+const RENAME_FROM = new TextEncoder().encode("rename from ");
+const RENAME_TO = new TextEncoder().encode("rename to ");
 
 // quote.c `unquote_c_style`: letter escapes, `\\`, `\"`, and three octal digits with a first digit of 0 to 3.
 const ESCAPES: Record<number, number> = { 0x61: 0x07, 0x62: 0x08, 0x66: 0x0c, 0x6e: 0x0a, 0x72: 0x0d, 0x74: 0x09, 0x76: 0x0b, 0x5c: 0x5c, 0x22: 0x22 };
@@ -81,17 +85,27 @@ export function unquote(b: Uint8Array, at: number): { value: Uint8Array; end: nu
   return null;
 }
 
-// The `diff --git` names. Git prints both as `quote_two(prefix, path)`, so both are raw or both are C-quoted.
-// Returns the two printed labels, which the `---` and `+++` lines repeat.
-function gitNames(rest: Uint8Array, path: Uint8Array): [Uint8Array, Uint8Array] | null {
-  const a = Buffer.concat([PREFIX_A, path]);
+// The `diff --git` names. diff.c `builtin_diff` prints each name as `quote_two(prefix, path)`, so each one is raw or C-quoted on its own.
+// Returns the two printed labels, which the `---` and `+++` lines repeat. `from` is the old path of a rename.
+function gitNames(rest: Uint8Array, path: Uint8Array, from: Uint8Array): [Uint8Array, Uint8Array] | null {
+  const a = Buffer.concat([PREFIX_A, from]);
   const b = Buffer.concat([PREFIX_B, path]);
-  if (Buffer.compare(rest, Buffer.concat([a, Uint8Array.of(SPACE), b])) === 0) return [a, b];
-  const first = unquote(rest, 0);
-  if (!first || rest[first.end] !== SPACE) return null;
-  const second = unquote(rest, first.end + 1);
-  if (!second || second.end !== rest.length || Buffer.compare(first.value, a) !== 0 || Buffer.compare(second.value, b) !== 0) return null;
-  return [rest.subarray(0, first.end), rest.subarray(first.end + 1)];
+  // A raw name never starts with a quote, because quote.c `sq_must_quote` quotes that byte.
+  const first = rest[0] === QUOTE ? unquote(rest, 0) : Buffer.compare(rest.subarray(0, a.length), a) === 0 ? { value: a, end: a.length } : null;
+  if (!first || rest[first.end] !== SPACE || Buffer.compare(first.value, a) !== 0) return null;
+  const tail = rest.subarray(first.end + 1);
+  const second = tail[0] === QUOTE ? unquote(tail, 0) : { value: tail, end: tail.length };
+  if (!second || second.end !== tail.length || Buffer.compare(second.value, b) !== 0) return null;
+  return [rest.subarray(0, first.end), tail];
+}
+
+// A `rename from` or `rename to` line of diff.c `fill_metainfo`: the prefix, then the raw or C-quoted path.
+function nameLine(line: Uint8Array, prefix: Uint8Array, path: Uint8Array): boolean {
+  if (Buffer.compare(line.subarray(0, prefix.length), prefix) !== 0) return false;
+  const rest = line.subarray(prefix.length);
+  if (rest[0] !== QUOTE) return Buffer.compare(rest, path) === 0;
+  const quoted = unquote(rest, 0);
+  return quoted !== null && quoted.end === rest.length && Buffer.compare(quoted.value, path) === 0;
 }
 
 // diff.c `DIFF_SYMBOL_FILEPAIR_MINUS` and `_PLUS`: the label, and a TAB when the label holds a space.
@@ -111,11 +125,12 @@ function checkBounds(b: Uint8Array): { lines: number; limit?: "CANONICAL_DIFF_LI
   return b.length > CANONICAL_DIFF_BYTES ? { lines, limit: "CANONICAL_DIFF_BYTES" } : { lines };
 }
 
-export function parsePatch(raw: Uint8Array, path: Uint8Array): PatchResult {
+// `from`: the old path of a rename pair, which `diff-tree -M` prints with the feature 005 rename header lines (contract Δ3 `readCommitFile`).
+export function parsePatch(raw: Uint8Array, path: Uint8Array, from: Uint8Array | null = null): PatchResult {
   const bounds = checkBounds(raw);
   if (bounds.limit) return limited(bounds.limit);
   if (raw.length === 0) return { ok: true, patch: { header: raw, hunks: [], lines: 0 } };
-  if (raw[raw.length - 1] !== LF || path.length === 0) return MALFORMED;
+  if (raw[raw.length - 1] !== LF || path.length === 0 || from?.length === 0) return MALFORMED;
 
   // Line start offsets. Each line ends with LF, which `line()` excludes.
   const starts: number[] = [];
@@ -130,7 +145,7 @@ export function parsePatch(raw: Uint8Array, path: Uint8Array): PatchResult {
   const gitLine = line(n++);
   const head = new TextEncoder().encode("diff --git ");
   if (Buffer.compare(gitLine.subarray(0, head.length), head) !== 0) return MALFORMED;
-  const names = gitNames(gitLine.subarray(head.length), path);
+  const names = gitNames(gitLine.subarray(head.length), path, from ?? path);
   if (!names) return MALFORMED;
   let kind: "plain" | "new" | "deleted" | "mode" = "plain";
   let m: RegExpExecArray | null;
@@ -146,15 +161,23 @@ export function parsePatch(raw: Uint8Array, path: Uint8Array): PatchResult {
     kind = "mode";
     n += 2;
   }
+  // diff.c `fill_metainfo`: a rename pair prints its similarity and both paths after the mode lines. Equal objects print no `index` line.
+  if (from !== null) {
+    if (kind === "new" || kind === "deleted" || n + 2 >= count) return MALFORMED;
+    if (!SIMILARITY.test(text(n)) || !nameLine(line(n + 1), RENAME_FROM, from) || !nameLine(line(n + 2), RENAME_TO, path)) return MALFORMED;
+    n += 3;
+  }
+  let indexed = false;
   // The `index` line carries the mode only when both modes are equal (diff.c `fill_metainfo`).
   if (n < count && (m = INDEX.exec(text(n)))) {
     if ((m[3] !== undefined) !== (kind === "plain")) return MALFORMED;
     if ((kind === "new" && !ZEROS.test(m[1]!)) || (kind === "deleted" && !ZEROS.test(m[2]!))) return MALFORMED;
+    indexed = true;
     n++;
-  } else if (kind !== "mode") {
+  } else if (kind !== "mode" && from === null) {
     return MALFORMED;
   }
-  if (n === count) return kind === "plain" ? MALFORMED : { ok: true, patch: { header: raw, hunks: [], lines: bounds.lines } };
+  if (n === count) return kind === "plain" && (from === null || indexed) ? MALFORMED : { ok: true, patch: { header: raw, hunks: [], lines: bounds.lines } };
 
   if (n + 1 >= count) return MALFORMED;
   const oldLabel = kind === "new" ? DEV_NULL : names[0];

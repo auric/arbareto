@@ -8,7 +8,7 @@ import { describe, expect, test } from "bun:test";
 import wslProcess from "../../src/contracts/wsl-process.json";
 import { WINDOWS_COMMAND_LINE_UNITS } from "../../src/contracts/limits";
 import { printOrigin } from "../origin";
-import { commandLineUnits, wslCommandLineUnits, type WslLaunch } from "../../src/git-service/git-runner";
+import { commandLineUnits, exitKind, firstEnd, isDeadlineStop, settleSteps, wslCommandLineUnits, type EnvironmentPolicy, type GitExit, type WslLaunch } from "../../src/git-service/git-runner";
 import { gitlinkPatchArgs } from "../../src/git-service/commands";
 import { gitlinkBatches } from "../../src/git-service/submodule-review";
 
@@ -51,5 +51,69 @@ describe("wslCommandLineUnits (contract §6 \"Process fields\")", () => {
     const wsl = gitlinkBatches(paths, (args) => wslCommandLineUnits(LAUNCH, OPERATION, "read", "", ROOT, args));
     expect({ windows: windows.length, wsl: wsl.length, all: wsl.flat() }).toEqual({ windows: 1, wsl: 2, all: paths });
     for (const batch of wsl) expect(wslCommandLineUnits(LAUNCH, OPERATION, "read", "", ROOT, gitlinkPatchArgs(batch))).toBeLessThanOrEqual(WINDOWS_COMMAND_LINE_UNITS);
+  });
+});
+
+// T399, contract §5 "Deadline outcomes" and §6 "Process replies": a deadline closes the operation Job. Each sibling then ends with `exitCode` null and no `deadline`.
+describe("exitKind (contract §6 \"Process replies\" and \"Byte caps\")", () => {
+  const rows: [GitExit, EnvironmentPolicy, boolean, ReturnType<typeof exitKind>][] = [
+    [{ exitCode: null, activeDescendants: null, deadline: "deadline" }, "read", false, "deadline"],
+    [{ exitCode: 1, activeDescendants: 0, deadline: "inactivity" }, "network", false, "deadline"],
+    [{ exitCode: null, activeDescendants: null, deadline: "ceiling", diagnosticLimit: true }, "mergetool", true, "deadline"],
+    [{ exitCode: null, activeDescendants: null, diagnosticLimit: true }, "read", true, "diagnosticLimit"],
+    [{ exitCode: 0, activeDescendants: 0 }, "read", false, "exited"],
+    [{ exitCode: 1, activeDescendants: 0 }, "read", true, "exited"],
+    [{ exitCode: null, activeDescendants: 0 }, "read", true, "stopped"],
+    [{ exitCode: null, activeDescendants: 0 }, "probe", true, "stopped"],
+    [{ exitCode: null, activeDescendants: 0 }, "search", true, "stopped"],
+    [{ exitCode: null, activeDescendants: null }, "mutation", true, "jobClosed"],
+    [{ exitCode: null, activeDescendants: null }, "read", false, "jobClosed"],
+  ];
+  test("it checks the deadline, the diagnostic limit, the exit code, and a stop at the bound, and then gives a Job close", () => {
+    expect(rows.map(([exit, policy, limited]) => exitKind(exit, policy, { limited }))).toEqual(rows.map((row) => row[3]));
+  });
+});
+
+describe("firstEnd and settleSteps (T399)", () => {
+  const isDeadline = (end: unknown) => typeof end === "string" && end.startsWith("D");
+  const isClosed = (end: unknown) => end === "C";
+
+  test("firstEnd takes a deadline, then the first end that is no Job close in position order, then a Job close", () => {
+    const rows: [(string | null | undefined)[], string | null][] = [
+      [[], null],
+      [[null, undefined], null],
+      [["C", "X", "D1", "D2"], "D1"],
+      [["C", "X", "Y"], "X"],
+      [[null, "C", "C"], "C"],
+      [[undefined, "Y"], "Y"],
+    ];
+    expect(rows.map(([ends]) => firstEnd(ends, isDeadline, isClosed))).toEqual(rows.map((row) => row[1]));
+    expect(firstEnd(["C", "X"], isDeadline)).toBe("C");
+  });
+
+  test("isDeadlineStop is true only for the stop shape with `deadline`", () => {
+    expect([{ stop: "deadline" }, { stop: "canceled" }, "deadline", null, undefined, {}].map(isDeadlineStop)).toEqual([true, false, false, false, false, false]);
+  });
+
+  const settle = (work: readonly Promise<unknown>[]) => settleSteps(work, isDeadline, isClosed).then((values) => ({ values }), (end: unknown) => ({ end }));
+
+  test("settleSteps gives the values or throws the firstEnd rejection, and never turns an end into a success", async () => {
+    const ok = (v: unknown) => Promise.resolve(v);
+    const no = (v: unknown) => Promise.reject(v);
+    expect(await settle([ok(1), ok("C")])).toEqual({ values: [1, "C"] });
+    expect(await settle([no("C"), no("X"), no("D")])).toEqual({ end: "D" });
+    expect(await settle([no("C"), ok(1), no("X")])).toEqual({ end: "X" });
+    expect(await settle([no("C"), ok(1)])).toEqual({ end: "C" });
+    expect(await settle([ok(1), no(undefined)])).toStrictEqual({ end: undefined });
+  });
+
+  test("settleSteps waits for a pending sibling before it throws", async () => {
+    const sibling = Promise.withResolvers<number>();
+    let done = false;
+    const run = settle([Promise.reject("X"), sibling.promise]).finally(() => void (done = true));
+    await Bun.sleep(5);
+    expect(done).toBe(false);
+    sibling.resolve(1);
+    expect(await run).toEqual({ end: "X" });
   });
 });

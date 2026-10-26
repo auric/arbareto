@@ -6,11 +6,13 @@
 
 import { expect } from "bun:test";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { indexStageArgs, syncRefsArgs } from "../../src/git-service/sync-commands";
+import type { RecordedCall } from "./bun-runner";
 import { useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 import { compare } from "./hunk-harness";
 import { buildMergeConflict, buildPull, buildRebaseConflict, buildRebaseSkip, fc, gitOut, gitPaths, gitRun, importStream, markers, pullRowCopy, refMap, revParse, type GitHost } from "./remote-fixtures";
-import { caseTest, type Service } from "./service-harness";
+import { caseTest, siblingDeadline, type Service } from "./service-harness";
 import type { RegistrationResult } from "./service-harness";
 import {
   ANY_EXIT,
@@ -462,4 +464,25 @@ describeGit("conflict actions abort, continue, and skip (T045)", () => {
       });
     }
   }, TIMEOUT_MS);
+
+  // T399, 001 contract §5 "Deadline outcomes": a read at its deadline closes the operation Job, so the sibling read ends with `exitCode` null and no `deadline`.
+  // The reads before the step refuse with DEADLINE, and no step starts.
+  caseTest("T399", "T399: an Abort gives DEADLINE when its index read before the step expires and the Job close ends the refs listing first; no step starts", SHELL, async () => {
+    const h = host("t399-abort");
+    const repo = buildMergeConflict(h, "t399-merge").repo;
+    await withSync("t399-abort", async (service) => {
+      const r = await approved(service, repo);
+      const review = await reviewed(service, r, { action: "abort" });
+      const isArgs = (args: readonly string[]) => (call: { arguments: readonly string[] }) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]);
+      const [index, refs] = [isArgs(indexStageArgs()), isArgs(syncRefsArgs())];
+      const from = service.runner.calls.length;
+      const release = siblingDeadline(service, index, refs);
+      const response = await sync(service, r, review.syncReviewToken).finally(release);
+      const own = service.runner.calls.slice(from).filter((c) => c.operationId === response.operationId);
+      const endOf = (call: RecordedCall | undefined) => call?.exit?.deadline ?? (call?.exit?.exitCode === null ? "closed" : String(call?.exit?.exitCode));
+      const exits = [own.find(index), own.find(refs)].map(endOf);
+      console.log(`OBSERVATION T399: abort exits=${exits.join(",")} state=${response.state} code=${response.code}`);
+      expect({ exits, ...outcome(response), steps: integrateCalls(service, from).length }).toEqual({ exits: ["deadline", "closed"], state: "failed", code: "DEADLINE", steps: 0 });
+    });
+  }, 120_000);
 });

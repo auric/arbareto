@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import * as LIMITS from "../../src/contracts/limits";
 import { probeGit, type GitInstallation } from "../../src/git-service/git-installation";
@@ -13,11 +13,12 @@ import { createTrust, type ConfigEntry } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { cachedF16Status } from "../windows/fixture-cache";
-import { buildF01, buildF02, buildF03, buildF05, buildF06, buildF10, F16_STATUS_RECORDS, put, type Built } from "./fixtures";
+import { buildF01, buildF02, buildF03, buildF05, buildF06, buildF10, buildF17, F16_STATUS_RECORDS, put, type Built } from "./fixtures";
 import { GIT } from "./git-binary";
 import type { CallMatch } from "./bun-runner";
 import { indexEntries, rawIndexDigest } from "./git-oracle";
-import { caseTest, once, openService, withFsCalls, type ChangeEntry, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
+import { markerPathArgs, statusArgs } from "../../src/git-service/commands";
+import { caseTest, once, openService, siblingDeadline, withFsCalls, type ChangeEntry, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/status.ts", import.meta.dir);
@@ -27,6 +28,8 @@ printOrigin("../../src/git-service/trust.ts", import.meta.dir);
 const TASK = "T069";
 const PAGING = "T284";
 const TIMEOUT_MS = 120_000;
+// A `siblingDeadline` case that never releases its target ends here, not at the read timeout.
+const SIBLING_TIMEOUT_MS = 120_000;
 const F16_TIMEOUT_MS = 600_000;
 const HELD_WAIT_MS = 30_000;
 
@@ -72,6 +75,8 @@ const outcome = (response: ServiceResponse) => ({ state: response.state, code: r
 
 // Contract §5 "Status page": the encoded result of one page.
 const pageBytes = (result: unknown) => Buffer.byteLength(JSON.stringify(result));
+// Contract §3 `readWorkspace`: `full` or `retained`.
+const readKind = (result: WorkspaceResult) => (result as WorkspaceResult & { readKind?: string }).readKind;
 
 // Contract §3: `readWorkspace` returns the first page, and `readEntries` serves each later page from the retained snapshot.
 // Each page must hold an entry, so the loop ends after at most `entryCount` pages.
@@ -526,6 +531,121 @@ describe("F16 status bounds (contract §5)", () => {
     TIMEOUT_MS,
   );
 
+  // T402, contract §8 "Change check": a read limited with OUTPUT_LIMIT keeps the stat tuple, as a complete read does.
+  // Contract §8 "New candidates": the first listing can name candidates that its earlier tuple did not hold. So the second full read makes the compared tuple.
+  caseTest(
+    "T402",
+    `a check "changes" poll after a read limited with STATUS_LISTING_RECORDS gives retained with the same snapshot and starts no Git process`,
+    ["shell-double"],
+    async () => {
+      const service = await openService({ git: gitPath(), name: "t402-limited-poll", watchHints: false });
+      try {
+        const git = gitPath();
+        const repo = f(buildF02(git, "t402-limited-poll"));
+        const over = LIMITS.STATUS_LISTING_RECORDS + 16;
+        const listing = Buffer.concat([headers(git, repo), ...Array.from({ length: over }, (_, i) => Buffer.from(`? u/${String(i).padStart(6, "0")}\0`))]);
+        service.runner.inject.stdout = (call) => (isStatus(call.arguments) ? listing : undefined);
+        const { repositoryId } = await service.register(repo);
+        const read = async (check: "full" | "changes") => {
+          const before = service.runner.calls.length;
+          const started = performance.now();
+          const response = await service.readWorkspace(repositoryId, { refresh: false, check });
+          const ms = Math.round(performance.now() - started);
+          const result = response.result!;
+          return { response, result, ms, runs: service.runner.calls.length - before, bytes: pageBytes(result) };
+        };
+        await read("full");
+        const full = await read("full");
+        expect({ ...outcome(full.response), reason: (full.result.completeness as { reason?: string }).reason, readKind: readKind(full.result) }).toEqual({
+          state: "limited",
+          code: "OUTPUT_LIMIT",
+          reason: limitName("STATUS_LISTING_RECORDS"),
+          readKind: "full",
+        });
+        const poll = await read("changes");
+        console.log(`OBSERVATION T402: full read ms=${full.ms} runs=${full.runs} bytes=${full.bytes}; poll readKind=${readKind(poll.result)} ms=${poll.ms} runs=${poll.runs} bytes=${poll.bytes}`);
+        expect({ ...outcome(poll.response), readKind: readKind(poll.result), runs: poll.runs, snapshotId: poll.result.snapshotId, generation: poll.result.generation, completeness: poll.result.completeness }).toEqual({
+          ...outcome(full.response),
+          readKind: "retained",
+          runs: 0,
+          snapshotId: full.result.snapshotId,
+          generation: full.result.generation,
+          completeness: full.result.completeness,
+        });
+      } finally {
+        await service.dispose();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
+  // T408, contract §8 "Change check": a failed read and a read limited with OBJECT_MISSING clear the kept tuple.
+  // The tuple holds no object store file, so a moved pack folder keeps the tuple equal.
+  for (const [variant, expected] of [
+    ["partial", { state: "limited", code: "OBJECT_MISSING" }],
+    ["plain", { state: "failed", code: "GIT_FAILED" }],
+  ] as const) {
+    caseTest(
+      "T408",
+      `${variant}: a check "changes" poll after a read that ends ${expected.state} with ${expected.code} runs Git and gives ${expected.code} again`,
+      ["shell-double"],
+      async () => {
+        const service = await openService({ git: gitPath(), name: `t408-${variant}`, watchHints: false });
+        try {
+          const git = gitPath();
+          const repo = variant === "partial" ? f(buildF17(git, "t408-partial", "partial-reset-soft"), "clone") : f(buildF02(git, "t408-plain"));
+          // Without a promisor remote, a status that cannot read an object gives GIT_FAILED (contract §7 "Missing objects").
+          if (variant === "plain") ownedGit(git, FIXTURE_ROOT, repo, ["repack", "-a", "-d", "-q"]);
+          const { repositoryId } = await service.register(repo);
+          const read = async (payload: { refresh: boolean; check: "full" | "changes" }) => {
+            const before = service.runner.calls.length;
+            const response = await service.readWorkspace(repositoryId, payload);
+            return { response, runs: service.runner.calls.length - before };
+          };
+          // Contract §8 "New candidates": the second full read makes the compared tuple.
+          await read({ refresh: false, check: "full" });
+          expect(outcome((await read({ refresh: false, check: "full" })).response)).toEqual({ state: "succeeded", code: undefined });
+          const pack = join(repo, ".git", "objects", "pack");
+          renameSync(pack, `${pack}.moved`);
+          mkdirSync(pack);
+          expect(outcome((await read({ refresh: true, check: "full" })).response)).toEqual(expected);
+          const poll = await read({ refresh: false, check: "changes" });
+          expect({ ...outcome(poll.response), git: poll.runs > 0 }).toEqual({ ...expected, git: true });
+        } finally {
+          await service.dispose();
+        }
+      },
+      TIMEOUT_MS,
+    );
+  }
+
+  // T403, contract §3 `readWorkspace`: a `retained` result holds the summary and `entryCount`, and no entries page.
+  caseTest(
+    "T403",
+    'a retained check "changes" result holds entryCount, an empty entries array, and cursor null',
+    ["shell-double"],
+    async () => {
+      const service = await openService({ git: gitPath(), name: "t403-retained-page", watchHints: false });
+      try {
+        const { repositoryId } = await service.register(f(buildF02(gitPath(), "t403-retained-page")));
+        await service.readWorkspace(repositoryId, { refresh: false, check: "full" });
+        const full = (await service.readWorkspace(repositoryId, { refresh: false, check: "full" })).result!;
+        expect(full.entries.length).toBeGreaterThan(0);
+        const poll = (await service.readWorkspace(repositoryId, { refresh: false, check: "changes" })).result!;
+        expect({ readKind: readKind(poll), snapshotId: poll.snapshotId, entryCount: poll.entryCount, entries: poll.entries, cursor: poll.cursor }).toEqual({
+          readKind: "retained",
+          snapshotId: full.snapshotId,
+          entryCount: full.entryCount,
+          entries: [],
+          cursor: null,
+        });
+      } finally {
+        await service.dispose();
+      }
+    },
+    TIMEOUT_MS,
+  );
+
   // Contract §2 and §8: a late read that records nothing returns the first page of the snapshot that a newer read retained with an equal observation.
   caseTest(
     PAGING,
@@ -652,10 +772,10 @@ describe("readEntries (contract §3, data-model §4)", () => {
           expect(service.runner.calls.length).toBe(calls);
           return response.code;
         };
-        // An equal full read replaces the retained snapshot and keeps the generation.
+        // T400: an equal full read keeps the retained snapshot, its entry IDs, and the generation.
         const same = await fullRead();
-        expect(same.generation).toBe(old.generation);
-        expect(await entries(same.generation, old.snapshotId)).toBe("UNKNOWN_TARGET");
+        expect({ generation: same.generation, snapshotId: same.snapshotId, entries: same.entries }).toEqual({ generation: old.generation, snapshotId: old.snapshotId, entries: old.entries });
+        expect(await entries(same.generation, crypto.randomUUID())).toBe("UNKNOWN_TARGET");
         // Contract §2: a well-formed cursor that this snapshot did not issue.
         expect(await entries(same.generation, same.snapshotId)).toBe("UNKNOWN_TARGET");
         // A staged change advances the generation. The generation check comes before the snapshot check.
@@ -663,6 +783,9 @@ describe("readEntries (contract §3, data-model §4)", () => {
         ownedGit(git, FIXTURE_ROOT, repo, ["add", "--", "keep.txt"]);
         const changed = await fullRead();
         expect(changed.generation).toBe(same.generation + 1);
+        // T400: a changed read replaces the snapshot and its entry IDs.
+        expect(changed.snapshotId).not.toBe(same.snapshotId);
+        expect(changed.entries.map((e) => e.entryId).filter((id) => same.entries.some((e) => e.entryId === id))).toEqual([]);
         expect(await entries(same.generation, changed.snapshotId)).toBe("REPOSITORY_CHANGED");
         expect(await entries(same.generation, crypto.randomUUID())).toBe("REPOSITORY_CHANGED");
       }),
@@ -846,5 +969,63 @@ describe("bound working versions (contract §8 \"Token invalidation\")", () => {
         expect(policyOf(trust, workspace, listing.listing, installation)).toMatch(/^[0-9a-f]{64}$/);
       }),
     TIMEOUT_MS,
+  );
+});
+
+// T399, 001 contract §5 "Deadline outcomes": the marker path step at its deadline closes the operation Job, so the status step ends with `exitCode` null and no `deadline`.
+describe("parallel step deadline (T399)", () => {
+  caseTest(
+    "T399",
+    "the first read of a workspace gives DEADLINE when the marker path step expires and the Job close ends the status step first",
+    ["shell-double"],
+    () =>
+      withService("t399-status", async (service) => {
+        const built = buildF02(gitPath(), "t399-status");
+        const { repositoryId } = await service.register(f(built));
+        const isArgs = (args: readonly string[]) => (call: { arguments: readonly string[] }) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]);
+        const [isMarkerPaths, isStatus] = [isArgs(markerPathArgs()), isArgs(statusArgs())];
+        const from = service.runner.calls.length;
+        const release = siblingDeadline(service, isMarkerPaths, isStatus);
+        const response = await service.readWorkspace(repositoryId).finally(release);
+        const exits = service.runner.calls.slice(from).filter((c) => isMarkerPaths(c) || isStatus(c)).map(({ exit }) => exit?.deadline ?? (exit?.exitCode === null ? "closed" : String(exit?.exitCode)));
+        console.log(`OBSERVATION T399: readWorkspace exits=${exits.join(",")} state=${response.state} code=${response.code}`);
+        expect({ exits: exits.toSorted(), state: response.state, code: response.code }).toEqual({ exits: ["closed", "deadline"], state: "failed", code: "DEADLINE" });
+      }),
+    SIBLING_TIMEOUT_MS,
+  );
+
+  caseTest(
+    "T401",
+    "an operation that shares a marker path step at its deadline runs its own step, not an unknown state without a cause",
+    ["shell-double"],
+    () =>
+      withService("t401-markers", async (service) => {
+        const git = gitPath();
+        const repo = f(buildF02(git, "t401-markers"));
+        const probed = await probeGit(service.runner, { bootstrapId: service.runner.addContext("gitProbe", git), executablePath: git });
+        if (!("installation" in probed)) throw new Error(`probe failed: ${JSON.stringify(probed)}`);
+        const registrations = createRegistrations({ runner: service.runner, unfinishedMutation: () => false });
+        const registered = await registrations.register({ operationId: crypto.randomUUID(), bootstrapId: service.runner.addContext("repositoryDiscovery", repo), installation: probed.installation, signal: new AbortController().signal });
+        if (!registered.ok || !("repositoryId" in registered.result)) throw new Error(`registration failed: ${JSON.stringify(registered)}`);
+        const workspace = registrations.get(registered.result.repositoryId)!;
+        const reader = createWorkspaceReader({ runner: service.runner, trust: createTrust({ runner: service.runner, environment: serviceEnv() }) });
+        const signal = new AbortController().signal;
+        const args = markerPathArgs();
+        const isFirst = once((call) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]));
+        const releaseHook = service.runner.holdStart((call) => {
+          if (isFirst(call)) {
+            // `spawn` reads the deadline synchronously after this check.
+            service.runner.inject.deadlineMs = 1;
+            queueMicrotask(() => void (service.runner.inject.deadlineMs = null));
+          }
+          return false;
+        });
+        const from = service.runner.calls.length;
+        const states = await Promise.all([reader.operationState({ operationId: crypto.randomUUID(), signal, workspace }, false), reader.operationState({ operationId: crypto.randomUUID(), signal, workspace }, false)]).finally(releaseHook);
+        const exits = service.runner.calls.slice(from).map(({ exit }) => exit?.deadline ?? String(exit?.exitCode));
+        console.log(`OBSERVATION T401: operationState states=${states.join(",")} exits=${exits.join(",")}`);
+        expect({ states, exits }).toEqual({ states: ["deadline", "normal"], exits: ["deadline", "0"] });
+      }),
+    SIBLING_TIMEOUT_MS,
   );
 });

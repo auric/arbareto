@@ -1,0 +1,8 @@
+{
+  "schema": "preview-ignore-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"unavailable\":{\"reason\":\"partial\"}}",
+  "repair": {
+    "unavailable.reason": "listing"
+  }
+}

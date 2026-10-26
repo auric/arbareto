@@ -1,0 +1,5 @@
+{
+  "schema": "review-workbench-result",
+  "expected": "valid",
+  "text": "{\"action\":\"delete\",\"plan\":{\"mode\":\"recycle\",\"entryIds\":[\"0f0f0f0f-0000-4000-8000-00000000000a\",\"0f0f0f0f-0000-4000-8000-00000000000b\"],\"files\":{\"count\":2,\"paths\":[\"bG9ncy9hLmxvZw==\",\"bG9ncy9iLmxvZw==\"]},\"tracked\":1,\"folder\":\"bG9ncw==\",\"wsl\":false},\"workbenchToken\":\"0f0f0f0f-0000-4000-8000-00000000000e\"}"
+}

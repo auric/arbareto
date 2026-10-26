@@ -10,7 +10,7 @@ import { DISCOVERY_REMEDIES, discoverRepository, isMergedRefusal, type Discovere
 import type { GitInstallation } from "./git-installation";
 import { RunnerRefusal, type GitRunner, type WslRunner } from "./git-runner";
 import { IDENTITY_REMEDY, requestIdentities, requestWslIdentities, sameIdentity, type PhysicalIdentity } from "./identity";
-import { checkWslProbe, gitChanged, routeRegistration, runWslProbe, type WslGit, type WslProbeTarget } from "./wsl";
+import { approveWslGit, checkWslProbe, gitChanged, routeRegistration, runWslProbe, savedMatch, type WslGit, type WslProbeTarget } from "./wsl";
 
 // Data-model §2: one registered workspace of this service session.
 export interface Workspace extends DiscoveredRepository {
@@ -111,13 +111,13 @@ export async function dismissMarker(runner: GitRunner, target: RegistrationTarge
 
 // Contract §6 "Dismissal", WSL marker rule and decision W13. Allowed when `wslDistros` does not list the distro of the path,
 // when the §11 probe reports the path `absent`, when discovery call 1 gives the merged refusal, or when the common-directory identity differs from the marker.
-// A dismissal shows no Git confirmation, so discovery runs only with the approved session Git of the distro, unchanged since its probe.
-// `gits`: the approved session Git of each distro GUID. The path route selects the GUID, because a reimported distro has a new GUID.
+// A dismissal shows no Git confirmation, so discovery runs only with the approved session Git of the distro, unchanged since its probe, or with a saved match.
+// `gits`: the approved session Git of each distro GUID. A saved match adds its Git. The path route selects the GUID, because a reimported distro has a new GUID.
 export async function dismissWslMarker(
   runner: GitRunner & WslRunner,
   target: WslProbeTarget,
   marker: { commonIdentity: PhysicalIdentity },
-  gits: ReadonlyMap<string, WslGit>,
+  gits: Map<string, WslGit>,
 ): Promise<DismissalOutcome> {
   const { operationId, bootstrapId, signal } = target;
   const stopped = (code: ErrorCode): DismissalOutcome => (code === "DEADLINE" || code === "CANCELED" ? { ok: false, code } : dismissalRefused);
@@ -137,7 +137,14 @@ export async function dismissWslMarker(
     // Contract §11 "Git per distro": the program checks come first, so `absent` counts only when the path rule refuses.
     const checked = checkWslProbe(route.distro, probe.facts, route.wslExecutable);
     if (!checked.ok) return checked.code === "UNSUPPORTED_REPOSITORY" && probe.facts.facts.selstat === "absent" ? { ok: true } : dismissalRefused;
-    const session = gits.get(route.guid);
+    let session = gits.get(route.guid);
+    // Contract §6 "Dismissal" (T409): a saved match registers the Git with `confirm: false`, so the shell shows no confirmation.
+    if (session === undefined && savedMatch(route.saved, checked.git)) {
+      const approved = await approveWslGit(runner, target, { ...checked.git, guid: route.guid }, undefined, route.saved);
+      if (!approved.ok) return "code" in approved ? stopped(approved.code) : signal.aborted ? { ok: false, code: "CANCELED" } : dismissalRefused;
+      gits.set(route.guid, approved.git);
+      session = approved.git;
+    }
     if (session === undefined || session.path !== checked.git.path || gitChanged(session, checked.git)) return dismissalRefused;
     const { gitInstallationId } = session;
     const discovered = await discoverRepository(runner, { operationId, bootstrapId, gitInstallationId, gitSelectedPath: session.path, signal, wsl: { distro: route.distro } });

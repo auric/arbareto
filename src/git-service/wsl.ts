@@ -295,6 +295,11 @@ export function gitChanged(known: { identity: string } | undefined, probed: { id
   return known !== undefined && known.identity !== probed.identity;
 }
 
+// Contract §11 "Git per distro", saved match: the path, version text, and identity equal the saved record by exact string equality.
+export function savedMatch(saved: { git: string; version: string; identity: string } | undefined, probed: { path: string; version: string; identity: string }): boolean {
+  return saved !== undefined && saved.git === probed.path && saved.version === probed.version && saved.identity === probed.identity;
+}
+
 // The WSL Git of a registration: the session Git of that distro when the probe found the same file, or a new Git after Use this Git or a saved match.
 // `changed`: the approved identity differs, so the registration ends GIT_CHANGED after the new confirmation.
 export async function approveWslGit(
@@ -311,7 +316,7 @@ export async function approveWslGit(
   }
   const changed = gitChanged(session ?? saved, probed);
   // FR-040: a saved match needs no new confirmation. The shell admits `confirm: false` only when its own record equals its bound facts.
-  const match = session === undefined && saved !== undefined && saved.git === probed.path && saved.version === probed.version && saved.identity === probed.identity;
+  const match = session === undefined && savedMatch(saved, probed);
   const gitInstallationId = crypto.randomUUID();
   const reply = await runner.register({ operationId: target.operationId, bootstrapId: target.bootstrapId, gitInstallationId, confirm: !match });
   // Contract §5 "Deadline outcomes": a walk deadline of a registration gives DEADLINE (T314).

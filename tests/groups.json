@@ -217,6 +217,7 @@
     "tests/git/pre-push.test.ts",
     "tests/git/read-branches.test.ts",
     "tests/git/refs.test.ts",
+    "tests/git/release-check.test.ts",
     "tests/git/remote-facts.test.ts",
     "tests/git/remote-fixtures.test.ts",
     "tests/git/remote-servers.test.ts",

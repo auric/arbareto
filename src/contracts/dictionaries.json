@@ -2536,36 +2536,6 @@
       "licences": [
         "license"
       ]
-    },
-    {
-      "id": "fy",
-      "name": "Western Frisian",
-      "license": "GPL-3.0",
-      "script": "Latin",
-      "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
-      "files": [
-        {
-          "name": "index.aff",
-          "url": "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/fy/index.aff",
-          "size": 7020461,
-          "sha256": "10264e8cf0a21a448da15840422382c44c6f7592070a1cb8c103cf4f19ed03fd"
-        },
-        {
-          "name": "index.dic",
-          "url": "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/fy/index.dic",
-          "size": 3612120,
-          "sha256": "529dd768a52b833fd3be90074dfeaaace18a785bd881e3d92ec1691312b901b1"
-        },
-        {
-          "name": "license",
-          "url": "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/fy/license",
-          "size": 35149,
-          "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
-        }
-      ],
-      "licences": [
-        "license"
-      ]
     }
   ]
 }

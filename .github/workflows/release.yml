@@ -1,0 +1,271 @@
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (c) 2026 Ihor Lifanov
+
+# T025: the release workflow (specs/007-first-release plan.md D1 to D5, D9, D11; contracts/release.md §1).
+# tests/contracts/release-workflow.test.ts and tests/contracts/release-pins.test.ts check this file.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+    branches: ["release-dry-run"]
+  workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  BUN_VERSION: "1.4.4"
+  BUN_ZIP_URL: "https://github.com/oven-sh/bun/releases/download/bun-v1.4.4/bun-windows-x64.zip"
+  BUN_ZIP_SHA256: "cd2c0fccc78f3ede1f50ca827a15f063eda13d4d150a3d0674f4f6e323d864a5"
+  RUST_VERSION: "1.99.0"
+  TAURI_CLI_VERSION: "2.12.0"
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    env:
+      SIGNING: ${{ vars.ARBARETO_SIGNING || 'off' }}
+      SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+      SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+      SIGNPATH_POLICY_SLUG: ${{ vars.SIGNPATH_POLICY_SLUG }}
+      TARGET_DIR: src-tauri/target/x86_64-pc-windows-msvc/release
+      SIDECAR: src-tauri/binaries/arbareto-git-x86_64-pc-windows-msvc.exe
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install Bun
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'bun'
+          $zip = Join-Path $env:RUNNER_TEMP 'bun-windows-x64.zip'
+          Invoke-WebRequest -Uri $env:BUN_ZIP_URL -OutFile $zip
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:BUN_ZIP_SHA256) { [Console]::Error.WriteLine("RELEASE_CHECK pin bun-windows-x64.zip $hash"); exit 1 }
+          Expand-Archive -Path $zip -DestinationPath $dir
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $dir 'bun-windows-x64')
+
+      - name: Install Rust and the Tauri CLI
+        run: |
+          rustup toolchain install
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $rustc = rustc --version
+          if (-not $rustc.StartsWith("rustc $env:RUST_VERSION ")) { [Console]::Error.WriteLine("RELEASE_CHECK pin $rustc"); exit 1 }
+          cargo install tauri-cli --version $env:TAURI_CLI_VERSION --locked
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $cli = cargo tauri --version
+          if ($cli -ne "tauri-cli $env:TAURI_CLI_VERSION") { [Console]::Error.WriteLine("RELEASE_CHECK pin $cli"); exit 1 }
+          $bun = bun --version
+          if ($bun -ne $env:BUN_VERSION) { [Console]::Error.WriteLine("RELEASE_CHECK pin bun $bun"); exit 1 }
+
+      - name: Install packages
+        run: bun install --frozen-lockfile
+
+      - name: Check the tag, version, and tree before the build
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            bun scripts/release/check.ts --mode release --tag $env:GITHUB_REF_NAME --signing $env:SIGNING
+          } else {
+            bun scripts/release/check.ts --mode dry-run --signing $env:SIGNING
+          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - name: Build the executables
+        run: bun run package:preview:exes
+
+      - name: Upload the executables for signing
+        id: unsigned-executables
+        if: vars.ARBARETO_SIGNING == 'signpath'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-executables
+          path: |
+            ${{ env.TARGET_DIR }}/arbareto.exe
+            ${{ env.SIDECAR }}
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign the executables
+        if: vars.ARBARETO_SIGNING == 'signpath'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        timeout-minutes: 65
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned-executables.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: ${{ runner.temp }}/signed-executables
+
+      # The NSIS bundler reads the sidecar from its externalBin source path (tauri-bundler 2.10.0 nsis/mod.rs:864-866).
+      - name: Use the signed executables
+        if: vars.ARBARETO_SIGNING == 'signpath'
+        run: |
+          $signed = Join-Path $env:RUNNER_TEMP 'signed-executables'
+          Copy-Item -LiteralPath (Join-Path $signed 'target/x86_64-pc-windows-msvc/release/arbareto.exe') -Destination "$env:TARGET_DIR/arbareto.exe" -Force
+          Copy-Item -LiteralPath (Join-Path $signed 'binaries/arbareto-git-x86_64-pc-windows-msvc.exe') -Destination $env:SIDECAR -Force
+
+      - name: Build the installer
+        run: bun run package:preview:bundle
+
+      - name: Upload the installer for signing
+        id: unsigned-installer
+        if: vars.ARBARETO_SIGNING == 'signpath'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          path: ${{ env.TARGET_DIR }}/bundle/nsis/*-setup.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 1
+
+      - name: Sign the installer
+        if: vars.ARBARETO_SIGNING == 'signpath'
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
+        timeout-minutes: 65
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          github-artifact-id: ${{ steps.unsigned-installer.outputs.artifact-id }}
+          wait-for-completion: true
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: ${{ runner.temp }}/signed-installer
+
+      - name: Record the build tools
+        run: |
+          "ImageOS $env:ImageOS"
+          "ImageVersion $env:ImageVersion"
+          rustc --version
+          cargo --version
+          cargo tauri --version
+          bun --version
+          & "$env:LOCALAPPDATA\tauri\NSIS\makensis.exe" /VERSION
+          ''
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs = & $vswhere -latest -property installationPath
+          "Visual Studio $vs"
+          "MSVC toolset $(Get-Content -LiteralPath (Join-Path $vs 'VC\Auxiliary\Build\Microsoft.VCToolsVersion.default.txt'))"
+          # 001 T001 link probe: rustc prints no linker output, so a wrapper keeps the /VERBOSE:LIB lines.
+          $probe = Join-Path $env:RUNNER_TEMP 'link-probe'
+          New-Item -ItemType Directory -Path $probe | Out-Null
+          Set-Content -LiteralPath "$probe\main.rs" -Value 'fn main() {}'
+          Set-Content -LiteralPath "$probe\link.cmd" -Value "@echo off`r`nwhere link.exe > `"$probe\where.txt`"`r`nlink.exe %* > `"$probe\link.txt`" 2>&1"
+          rustc --target x86_64-pc-windows-msvc -C "linker=$probe\link.cmd" -C link-arg=/VERBOSE:LIB -o "$probe\main.exe" "$probe\main.rs"
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-Content -LiteralPath "$probe\where.txt"
+          Select-String -LiteralPath "$probe\link.txt" -Pattern '^\s*Searching ' | ForEach-Object { $_.Line.Trim() }
+
+      - name: Make the release files
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'release-files'
+          New-Item -ItemType Directory -Path $out | Out-Null
+          $installer = if ($env:SIGNING -eq 'signpath') { Join-Path $env:RUNNER_TEMP 'signed-installer' } else { "$env:TARGET_DIR/bundle/nsis" }
+          Copy-Item -Path (Join-Path $installer '*-setup.exe') -Destination $out
+          bun scripts/release/notices-text.ts --out $out
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          bun scripts/release/hunspell-source.ts --out $out
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          bun scripts/release/sums.ts write $out
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          Get-Content -LiteralPath (Join-Path $out 'SHA256SUMS.txt')
+
+      - name: Check the tag, version, and tree after the build
+        run: |
+          if ($env:GITHUB_REF_TYPE -eq 'tag') {
+            bun scripts/release/check.ts --mode release --tag $env:GITHUB_REF_NAME --signing $env:SIGNING
+          } else {
+            bun scripts/release/check.ts --mode dry-run --signing $env:SIGNING
+          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: ${{ runner.temp }}/release-files/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-2025
+    environment: release
+    timeout-minutes: 30
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+      SIGNING: ${{ vars.ARBARETO_SIGNING || 'off' }}
+      TAG: ${{ github.ref_name }}
+    steps:
+      - name: Refuse a private repository
+        run: |
+          if ($env:REPOSITORY_PRIVATE -ne 'false') { [Console]::Error.WriteLine('RELEASE_CHECK private'); exit 1 }
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: ${{ runner.temp }}/release-files
+
+      - name: Install Bun
+        run: |
+          $dir = Join-Path $env:RUNNER_TEMP 'bun'
+          $zip = Join-Path $env:RUNNER_TEMP 'bun-windows-x64.zip'
+          Invoke-WebRequest -Uri $env:BUN_ZIP_URL -OutFile $zip
+          $hash = (Get-FileHash -Path $zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($hash -ne $env:BUN_ZIP_SHA256) { [Console]::Error.WriteLine("RELEASE_CHECK pin bun-windows-x64.zip $hash"); exit 1 }
+          Expand-Archive -Path $zip -DestinationPath $dir
+          Add-Content -Path $env:GITHUB_PATH -Value (Join-Path $dir 'bun-windows-x64')
+
+      - name: Verify the release files
+        run: |
+          bun scripts/release/sums.ts verify (Join-Path $env:RUNNER_TEMP 'release-files')
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/release-files/*
+
+      - name: Publish the release
+        run: |
+          $files = Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'release-files') -File | ForEach-Object { $_.FullName }
+          $version = $env:TAG.Substring(1)
+          $notes = bun scripts/release/notes.ts --version $version --signing $env:SIGNING --out $env:RUNNER_TEMP
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $drafts = @(gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases" --jq '.[] | select(.tag_name == env.TAG) | .draft')
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          if ($drafts -contains 'false' -or $drafts.Count -gt 1) { [Console]::Error.WriteLine("RELEASE_CHECK exists $env:TAG"); exit 1 }
+          if ($drafts.Count -eq 0) {
+            gh release create $env:TAG --draft --prerelease --verify-tag --title "Arbareto Preview $env:TAG" --notes-file $notes @files
+          } else {
+            gh release edit $env:TAG --notes-file $notes
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            gh release upload $env:TAG @files --clobber
+          }
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          gh release edit $env:TAG --draft=false --prerelease --latest=false
+          if ($LASTEXITCODE -ne 0) { exit 1 }

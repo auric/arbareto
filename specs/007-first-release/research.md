@@ -215,3 +215,23 @@ Answered on 2026-10-24 (spec Clarifications): Q2: first option (a); then, after 
 ## R7. Results
 
 Fact results F1 to F6 (plan.md "Facts to verify"), the action commit IDs (plan.md D2), the dry-run record, the Sandbox install, and the release checks go here. Each entry names the date, the build commit, the runner image or the host, the tool versions that ran, and the result.
+
+### T008 Rust toolchain (2026-10-26, reference host, base commit 48e9e87c)
+
+- `rustc --version` in the repository root: `rustc 1.99.0 (b940084d7 2026-09-28)`.
+- `cargo --version`: `cargo 1.99.0 (5f94df478 2026-08-27)`.
+- `rust-toolchain.toml` pins `channel = "1.99.0"`. The local toolchain equals the pin.
+
+### T025 Action commit IDs (2026-10-26)
+
+Each commit ID comes from the release tag of the action repository: `git ls-remote https://github.com/<repo> refs/tags/<tag>` and `gh api repos/<repo>/git/ref/tags/<tag>` (object type `commit`, a lightweight tag). The date is the commit date from `gh api repos/<repo>/commits/<tag>`. Each version was at least two weeks old on 2026-10-26.
+
+| Action | Tag | Commit ID | Commit date |
+| --- | --- | --- | --- |
+| `actions/checkout` | `v7.0.1` | `3d3c42e5aac5ba805825da76410c181273ba90b1` | 2026-07-17 |
+| `actions/upload-artifact` | `v7.0.2` | `cf430e030ddbb5b0abf93d22962f4752f3646cd9` | 2026-10-07 |
+| `actions/download-artifact` | `v8.0.2` | `9000827ccba6bdab643e8b6fd33ac0654aef8333` | 2026-10-07 |
+| `actions/attest` | `v4.2.2` | `1e69f48acb82d1966a394da916b4c1698aa569d6` | 2026-08-04 |
+| `signpath/github-action-submit-signing-request` | `v3.0` | `f6d04783b4569d051e0c80105fe66e82819d0092` | 2026-09-10 |
+
+- `signpath/github-action-submit-signing-request` has GitHub releases only for `v1` and `v2`. The tag `v3.0` has no release entry. Its `action.yml` has the same inputs as `v2.3` and a new default `connector-url`.

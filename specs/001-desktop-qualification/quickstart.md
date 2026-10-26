@@ -295,6 +295,6 @@ Record `pass`, `fail`, or `unverified`; never treat “not run” as passing. In
 
 Keep raw trace/test artifact locations and digests in those records. Do not add a separate qualification report or planning hierarchy.
 
-Before public release, separately verify package signatures and authenticated updates. Include modified payloads, wrong keys, version substitution, downgrade attempts, and interrupted update handling.
+Before the v1.0 release, separately verify package signatures and authenticated updates. Include modified payloads, wrong keys, version substitution, downgrade attempts, and interrupted update handling.
 
-Automatic updates remain outside this slice. Therefore, completing local qualification cannot establish public release readiness.
+Automatic updates remain outside this slice. Therefore, completing local qualification cannot establish readiness for the v1.0 release.

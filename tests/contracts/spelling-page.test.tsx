@@ -478,15 +478,15 @@ describe("selection (FR-009, data-model §8)", () => {
   });
 
   test("with 3 languages selected, an unselected Ready row states the limit reason and sends nothing", async () => {
-    const r = await render({ languages: ["en", "uk", "ru"], states: { uk: { state: "ready" }, ru: { state: "ready" }, he: { state: "ready" } } });
+    const r = await render({ languages: ["en", "uk", "ru"], states: { uk: { state: "ready" }, ru: { state: "ready" }, fa: { state: "ready" } } });
     expect(text(panel("Selected languages"))).toContain("Select at most 3 languages. English counts as one.");
-    const he = checkbox("he");
-    expect(he.getAttribute("aria-disabled")).toBe("true");
-    expect(describedBy(he)).toBe("You can select at most 3 languages. Clear one first.");
-    expect(cellTexts("he")[4]).toBe("ReadyYou can select at most 3 languages. Clear one first.");
-    await click(he);
+    const fa = checkbox("fa");
+    expect(fa.getAttribute("aria-disabled")).toBe("true");
+    expect(describedBy(fa)).toBe("You can select at most 3 languages. Clear one first.");
+    expect(cellTexts("fa")[4]).toBe("ReadyYou can select at most 3 languages. Clear one first.");
+    await click(fa);
     expect(r.double.of("setSpelling").length).toBe(0);
-    expect(he.checked).toBe(false);
+    expect(fa.checked).toBe(false);
     // A row that is not ready keeps the not-ready reason at the limit: clearing one language does not make it selectable.
     expect(describedBy(checkbox("cs"))).toBe("Download or import the Czech dictionary first.");
     expect(checkbox("uk").getAttribute("aria-disabled")).toBeNull();

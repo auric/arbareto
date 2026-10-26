@@ -176,7 +176,7 @@ Each F fact runs on Windows with Bun 1.4.3, with local servers on 127.0.0.1 only
 - N1: in the package, the spell workers start under the CSP with `'wasm-unsafe-eval'` and `connect-src 'self'`, fetch `hunspell.wasm` from the app origin, and load English from the `?raw` chunk.
 - N2: in the package, `execCommand("insertText")` in the React-controlled textarea replaces the word, fires one `input` event, and one Ctrl+Z through live input restores the word.
 - N3: in the package, Shift+F10 and the Menu key with the caret in a marked word open the spelling menu. Elsewhere, the built-in menu with Cut, Copy, Paste, and Select all opens. A right-click on a mark opens the spelling menu (live input, the T082 harness).
-- N4: in the package, at 100%, 150%, and 225% text scale, the UI Automation `TextPattern` bounding rectangle of each marked word equals the client rect of its mirror span within 1 device pixel, also for a Hebrew line.
+- N4: in the package, at 100%, 150%, and 225% text scale, the UI Automation `TextPattern` bounding rectangle of each marked word equals the client rect of its mirror span within 1 device pixel, also for a Persian line.
 - N5: in the package, a Japanese IME composition shows no mark, and after it ends, the marks equal the marks of the same text typed without the IME. Without an installed Japanese IME, a capability skip records it as unverified.
 - N6: in a Windows Sandbox with `<Networking>Disable</Networking>`, US1 passes in the package, and Download shows the `transport` text and keeps no file. Without Windows Sandbox, a capability skip records it as unverified.
 - N7: in the package, per cached catalog language, the packaged gate of plan D3: the load time, the WebView2 private bytes increase with both workers, and the fixture count, 3 runs each.
@@ -541,3 +541,101 @@ Independent batch 2 review, reviewer agent, read-only, on 4d4ba72a (the merges o
 - `hunspell-wasm` 0.3.0 `FS.writeFile` takes a byte array (the `ArrayBuffer.isView` branch of `wasm/hunspell.js`), so the bytes need no text form.
 - Fix: T058, the byte path of plan.md D9 "A downloaded language". T043 then runs again on all 85 languages.
 - T058 repro (local scratch, the same page with the bundled `spell-worker.ts` before and after T058, headless Edge 156, 2 runs each): peak increase in MiB, uk 286 and 281 before, 104 and 119 after; fy 372 and 375 before, 160 and 183 after. A Bun or Edge run decides nothing; the packaged T043 rerun decides.
+
+### T043 rerun after T058, 2026-10-26, Windows 11 10.0.26300, build 604bd271
+
+- Method: the packaged gate of plan.md D3, unchanged from the first run. `tests/windows/spelling-perf.test.ts` ran once per catalog language, with `-t "packaged gate <id>:"` and the local cache (local scratch). Each run printed one `OBSERVATION T042: gate` line, and the values below come from these lines by a script.
+- Each of the 255 runs had the build `0.1.0 604bd2713a2076e6b0e5b60e06daaefa84c6a7de`, WebView2 `Edg/155.0.4283.62`, and the 004 reference PC (AMD Ryzen 7 4800H, 16 logical processors). The total test time was 7,795 s.
+- Result: 84 of the 85 catalog languages passed. Of the 8 first-run failures, uk, fy, tr, gl, eu, et, and ka passed, and he failed again. The highest passing increase was 234.6 MiB (pl, run 2). The longest load was 2,106 ms (eu, run 2).
+- he failed step 4: its increase per run was 234.0, 230.5, and 259.2 MiB, and the limit is 256 MiB (spec FR-017, SC-004). Its loads were 497 to 507 ms, and each run gave the count 10. `scripts/dictionary-gate.json` holds the he entry with its byte values.
+- Rebuild: `bun scripts/dictionary-catalog.ts --offline` printed `LEFT_OUT he gate` and wrote 84 entries. The he entry is the only change in `src/contracts/dictionaries.json`.
+- SC-009 change (coordinator decision, 2026-10-26): the right-to-left line of N4 (Q13, T041) uses Persian (`fa`), because `he` left the catalog. `fa` passed the gate. The test takes the line from the data-model §16 fixture of the cached `fa` files: positive words 0 and 1, and negative word 0. Hunspell with these files accepts `آئودی` and `آرام‌گرفته` (with U+200C) and refuses `ءآئءآئءآئ`.
+- Values per run (runs 1, 2, and 3; MiB is 1,048,576 bytes; the count is the number of the count text, and it equals the negative fixture word count in each run):
+
+| ID | Result | Baseline (MiB) | Peak (MiB) | Increase (MiB) | Load (ms) | Count |
+|---|---|---|---|---|---|---|
+| hy | pass | 215.9, 220.2, 216.5 | 383.4, 381.0, 380.3 | 167.6, 160.8, 163.8 | 282, 287, 291 | 10, 10, 10 |
+| en-AU | pass | 212.9, 218.1, 213.5 | 349.0, 349.7, 361.7 | 136.1, 131.6, 148.2 | 184, 185, 191 | 10, 10, 10 |
+| de-AT | pass | 219.6, 216.2, 212.0 | 355.7, 359.5, 358.0 | 136.1, 143.3, 145.9 | 243, 229, 250 | 10, 10, 10 |
+| eu | pass | 215.5, 215.9, 216.4 | 444.0, 431.8, 433.1 | 228.5, 215.9, 216.7 | 2098, 2106, 2013 | 10, 10, 10 |
+| br | pass | 215.2, 216.0, 215.2 | 417.9, 416.6, 404.8 | 202.7, 200.7, 189.6 | 390, 393, 394 | 10, 10, 10 |
+| en-GB | pass | 215.7, 215.4, 217.8 | 352.5, 361.0, 353.7 | 136.9, 145.6, 135.9 | 182, 199, 187 | 10, 10, 10 |
+| bg | pass | 213.6, 213.1, 215.9 | 363.5, 366.9, 370.8 | 149.9, 153.9, 154.9 | 229, 251, 240 | 10, 10, 10 |
+| en-CA | pass | 213.5, 214.6, 213.8 | 349.4, 350.8, 351.0 | 135.9, 136.1, 137.2 | 192, 179, 178 | 10, 10, 10 |
+| ca | pass | 214.1, 216.9, 215.1 | 394.6, 393.8, 393.0 | 180.5, 176.9, 177.9 | 334, 334, 335 | 10, 10, 10 |
+| ca-valencia | pass | 213.3, 217.1, 213.3 | 390.7, 406.5, 392.6 | 177.4, 189.4, 179.3 | 340, 339, 342 | 10, 10, 10 |
+| hr | pass | 216.4, 214.2, 213.6 | 353.7, 355.9, 357.9 | 137.4, 141.7, 144.3 | 241, 236, 234 | 10, 10, 10 |
+| cs | pass | 215.7, 209.5, 211.2 | 401.5, 402.9, 413.0 | 185.9, 193.4, 201.8 | 400, 388, 391 | 10, 10, 10 |
+| da | pass | 214.8, 216.8, 213.1 | 416.9, 415.4, 413.4 | 202.1, 198.6, 200.4 | 388, 393, 397 | 10, 10, 10 |
+| nl | pass | 213.1, 225.1, 212.8 | 381.0, 390.3, 386.7 | 167.9, 165.2, 173.9 | 291, 304, 332 | 10, 10, 10 |
+| en-ZA | pass | 218.1, 221.6, 214.1 | 356.6, 362.2, 352.0 | 138.5, 140.7, 137.9 | 178, 200, 180 | 10, 10, 10 |
+| eo | pass | 213.7, 215.3, 219.3 | 350.3, 358.2, 345.7 | 136.6, 142.9, 126.4 | 183, 183, 201 | 10, 10, 10 |
+| et | pass | 215.5, 211.9, 215.4 | 424.7, 429.3, 435.1 | 209.3, 217.4, 219.7 | 454, 435, 446 | 10, 10, 10 |
+| pt-PT | pass | 220.2, 217.8, 216.0 | 373.9, 370.6, 370.5 | 153.6, 152.8, 154.6 | 194, 242, 237 | 10, 10, 10 |
+| fo | pass | 212.7, 218.4, 216.2 | 367.8, 378.6, 364.7 | 155.1, 160.2, 148.5 | 283, 281, 291 | 10, 10, 10 |
+| fr | pass | 212.7, 216.3, 215.7 | 368.2, 365.5, 371.4 | 155.5, 149.2, 155.8 | 240, 245, 232 | 10, 10, 10 |
+| fur | pass | 223.6, 216.0, 214.1 | 349.8, 347.5, 347.9 | 126.1, 131.5, 133.9 | 188, 179, 180 | 10, 10, 10 |
+| gl | pass | 223.7, 213.7, 212.9 | 426.3, 409.3, 409.1 | 202.7, 195.6, 196.2 | 705, 707, 699 | 10, 10, 10 |
+| ka | pass | 221.8, 218.4, 221.4 | 426.6, 407.4, 410.2 | 204.8, 189.0, 188.9 | 339, 336, 338 | 10, 10, 10 |
+| de | pass | 215.4, 216.1, 213.0 | 362.4, 357.0, 355.6 | 147.0, 140.9, 142.6 | 229, 248, 231 | 10, 10, 10 |
+| he | fail | 217.2, 213.3, 212.2 | 451.2, 443.7, 471.4 | 234.0, 230.5, 259.2 | 507, 497, 498 | 10, 10, 10 |
+| hu | pass | 213.6, 215.7, 213.3 | 417.7, 414.4, 416.4 | 204.0, 198.7, 203.1 | 396, 395, 395 | 10, 10, 10 |
+| is | pass | 215.0, 216.2, 217.3 | 386.6, 381.2, 385.8 | 171.6, 165.0, 168.5 | 387, 386, 393 | 10, 10, 10 |
+| ia | pass | 214.3, 215.3, 215.5 | 355.2, 360.6, 356.4 | 140.9, 145.3, 140.8 | 186, 240, 183 | 10, 10, 10 |
+| ie | pass | 215.8, 216.7, 213.6 | 353.9, 346.2, 354.6 | 138.1, 129.5, 141.0 | 189, 197, 195 | 10, 10, 10 |
+| ga | pass | 211.2, 214.0, 211.6 | 367.5, 364.8, 373.2 | 156.3, 150.8, 161.7 | 290, 235, 237 | 10, 10, 10 |
+| it | pass | 216.8, 217.1, 217.5 | 361.8, 366.1, 367.9 | 145.0, 149.0, 150.4 | 234, 233, 228 | 10, 10, 10 |
+| tlh-Latn | pass | 213.9, 214.0, 214.0 | 368.0, 341.9, 349.6 | 154.1, 127.9, 135.7 | 179, 180, 183 | 10, 10, 10 |
+| ltg | pass | 215.1, 216.0, 214.4 | 349.7, 354.0, 351.4 | 134.6, 138.0, 137.0 | 182, 179, 183 | 10, 10, 10 |
+| la | pass | 217.2, 223.1, 215.0 | 381.6, 382.3, 387.8 | 164.4, 159.3, 172.7 | 339, 287, 290 | 10, 10, 10 |
+| lv | pass | 214.8, 211.8, 216.7 | 373.1, 379.3, 377.9 | 158.3, 167.5, 161.3 | 281, 281, 287 | 10, 10, 10 |
+| lt | pass | 213.0, 214.1, 212.5 | 367.8, 366.8, 364.7 | 154.8, 152.6, 152.2 | 235, 233, 235 | 10, 10, 10 |
+| nds | pass | 219.4, 214.8, 214.9 | 347.8, 342.8, 347.9 | 128.4, 128.0, 133.0 | 179, 182, 186 | 10, 10, 10 |
+| lb | pass | 215.1, 216.9, 213.8 | 413.3, 405.9, 405.8 | 198.2, 189.0, 192.1 | 338, 334, 341 | 10, 10, 10 |
+| mk | pass | 216.1, 214.5, 216.8 | 381.3, 383.9, 385.4 | 165.1, 169.4, 168.6 | 288, 280, 291 | 10, 10, 10 |
+| es-MX | pass | 224.8, 216.6, 213.8 | 359.3, 356.0, 361.7 | 134.5, 139.5, 147.9 | 231, 235, 186 | 10, 10, 10 |
+| ne | pass | 215.1, 215.2, 217.6 | 359.0, 355.0, 363.3 | 143.9, 139.8, 145.7 | 183, 239, 238 | 10, 10, 10 |
+| nb | pass | 215.0, 213.9, 219.8 | 420.9, 425.5, 426.6 | 206.0, 211.6, 206.8 | 513, 452, 453 | 10, 10, 10 |
+| nn | pass | 217.1, 215.6, 216.5 | 400.4, 397.5, 399.8 | 183.3, 181.9, 183.4 | 400, 339, 345 | 10, 10, 10 |
+| oc | pass | 220.0, 212.7, 217.4 | 401.2, 394.4, 388.9 | 181.3, 181.7, 171.5 | 295, 279, 467 | 10, 10, 10 |
+| fa | pass | 223.1, 221.7, 216.9 | 394.3, 385.5, 391.6 | 171.3, 163.8, 174.7 | 298, 283, 306 | 10, 10, 10 |
+| pl | pass | 213.9, 215.1, 215.0 | 446.4, 449.7, 446.6 | 232.5, 234.6, 231.5 | 453, 445, 444 | 10, 10, 10 |
+| pt | pass | 214.5, 216.9, 212.1 | 425.1, 424.3, 429.8 | 210.6, 207.4, 217.7 | 593, 602, 610 | 10, 10, 10 |
+| ro | pass | 214.6, 215.1, 216.0 | 377.6, 376.5, 382.6 | 162.9, 161.4, 166.6 | 281, 286, 287 | 10, 10, 10 |
+| ru | pass | 213.4, 222.8, 216.8 | 391.2, 403.4, 401.3 | 177.9, 180.6, 184.5 | 335, 335, 340 | 10, 10, 10 |
+| gd | pass | 215.9, 215.2, 215.4 | 386.3, 388.5, 378.4 | 170.3, 173.4, 163.0 | 289, 282, 293 | 10, 10, 10 |
+| sr | pass | 218.4, 216.4, 216.8 | 424.3, 423.0, 405.8 | 206.0, 206.6, 189.1 | 389, 391, 387 | 10, 10, 10 |
+| sr-Latn | pass | 213.0, 215.8, 218.0 | 385.9, 394.0, 393.2 | 172.9, 178.2, 175.2 | 286, 333, 350 | 10, 10, 10 |
+| sk | pass | 215.0, 219.3, 219.5 | 403.7, 411.3, 411.2 | 188.7, 192.0, 191.6 | 385, 342, 391 | 10, 10, 10 |
+| sl | pass | 216.7, 215.2, 215.5 | 404.3, 398.8, 405.6 | 187.6, 183.6, 190.1 | 338, 344, 334 | 10, 10, 10 |
+| es | pass | 216.4, 216.9, 213.5 | 368.5, 355.2, 360.8 | 152.1, 138.2, 147.3 | 232, 241, 188 | 10, 10, 10 |
+| es-AR | pass | 215.4, 216.1, 215.9 | 357.7, 359.4, 356.7 | 142.3, 143.3, 140.7 | 230, 232, 240 | 10, 10, 10 |
+| es-BO | pass | 212.4, 215.5, 216.4 | 356.7, 352.8, 360.7 | 144.3, 137.3, 144.2 | 232, 236, 234 | 10, 10, 10 |
+| es-CL | pass | 216.9, 218.3, 226.8 | 358.3, 362.7, 360.5 | 141.4, 144.4, 133.7 | 235, 192, 251 | 10, 10, 10 |
+| es-CO | pass | 214.4, 210.0, 212.7 | 361.9, 358.5, 354.3 | 147.5, 148.5, 141.5 | 233, 239, 250 | 10, 10, 10 |
+| es-CR | pass | 216.1, 217.1, 216.1 | 361.4, 360.3, 353.1 | 145.3, 143.1, 137.0 | 237, 231, 196 | 10, 10, 10 |
+| es-CU | pass | 216.2, 216.7, 219.7 | 361.1, 363.6, 361.7 | 145.0, 146.9, 142.0 | 235, 237, 237 | 10, 10, 10 |
+| es-DO | pass | 212.8, 214.1, 216.1 | 361.2, 358.3, 359.2 | 148.5, 144.1, 143.1 | 230, 246, 234 | 10, 10, 10 |
+| es-EC | pass | 216.2, 224.2, 213.8 | 359.5, 359.2, 359.8 | 143.3, 135.0, 146.0 | 231, 234, 240 | 10, 10, 10 |
+| es-SV | pass | 213.3, 212.2, 216.9 | 358.3, 353.4, 356.4 | 145.0, 141.2, 139.5 | 236, 235, 241 | 10, 10, 10 |
+| es-GT | pass | 216.0, 213.9, 214.5 | 363.6, 361.5, 353.8 | 147.6, 147.6, 139.4 | 235, 229, 238 | 10, 10, 10 |
+| es-HN | pass | 216.3, 218.6, 214.9 | 362.1, 358.8, 366.1 | 145.7, 140.2, 151.2 | 232, 252, 182 | 10, 10, 10 |
+| es-NI | pass | 209.4, 216.3, 214.8 | 360.2, 363.7, 356.6 | 150.8, 147.5, 141.8 | 228, 233, 247 | 10, 10, 10 |
+| es-PA | pass | 213.3, 212.1, 216.3 | 366.6, 360.2, 358.6 | 153.2, 148.1, 142.3 | 234, 231, 233 | 10, 10, 10 |
+| es-PY | pass | 215.9, 216.7, 217.4 | 358.9, 358.6, 359.1 | 143.1, 142.0, 141.6 | 184, 248, 239 | 10, 10, 10 |
+| es-PE | pass | 212.1, 216.5, 217.5 | 353.1, 357.6, 363.8 | 141.0, 141.1, 146.3 | 239, 200, 232 | 10, 10, 10 |
+| es-PH | pass | 225.7, 216.3, 215.6 | 358.0, 361.3, 359.6 | 132.4, 145.0, 144.0 | 234, 237, 234 | 10, 10, 10 |
+| es-PR | pass | 214.1, 212.8, 211.9 | 356.3, 365.0, 352.6 | 142.2, 152.2, 140.7 | 232, 231, 231 | 10, 10, 10 |
+| es-US | pass | 219.4, 217.0, 213.4 | 352.1, 364.8, 358.3 | 132.7, 147.8, 144.8 | 234, 238, 238 | 10, 10, 10 |
+| es-UY | pass | 215.9, 213.8, 213.3 | 360.3, 356.2, 367.4 | 144.4, 142.5, 154.1 | 236, 241, 232 | 10, 10, 10 |
+| es-VE | pass | 224.6, 214.3, 216.8 | 357.8, 363.0, 357.8 | 133.2, 148.6, 141.0 | 239, 231, 233 | 10, 10, 10 |
+| sv | pass | 214.6, 209.9, 215.3 | 381.4, 379.3, 390.5 | 166.8, 169.3, 175.1 | 295, 281, 286 | 10, 10, 10 |
+| sv-FI | pass | 216.3, 215.5, 215.5 | 387.2, 386.8, 382.5 | 170.8, 171.3, 167.1 | 286, 287, 247 | 10, 10, 10 |
+| de-CH | pass | 216.6, 213.2, 213.2 | 360.3, 361.6, 357.8 | 143.6, 148.4, 144.7 | 234, 234, 229 | 10, 10, 10 |
+| tr | pass | 213.0, 211.7, 211.7 | 400.3, 398.7, 410.9 | 187.3, 187.0, 199.2 | 707, 718, 698 | 10, 10, 10 |
+| tk | pass | 212.4, 212.4, 213.7 | 364.8, 354.2, 357.6 | 152.4, 141.8, 143.9 | 229, 234, 234 | 10, 10, 10 |
+| uk | pass | 216.8, 219.0, 216.0 | 401.5, 389.8, 397.8 | 184.7, 170.8, 181.8 | 761, 711, 707 | 10, 10, 10 |
+| vi | pass | 215.5, 213.7, 216.4 | 343.1, 344.1, 340.9 | 127.5, 130.3, 124.5 | 179, 186, 188 | 10, 10, 10 |
+| cy | pass | 214.0, 216.6, 221.7 | 358.0, 369.1, 356.7 | 144.0, 152.5, 135.0 | 233, 237, 228 | 10, 10, 10 |
+| hyw | pass | 225.5, 216.5, 216.7 | 384.2, 377.2, 380.3 | 158.6, 160.6, 163.6 | 281, 290, 281 | 10, 10, 10 |
+| fy | pass | 213.3, 216.6, 216.6 | 447.2, 447.9, 431.4 | 233.9, 231.3, 214.8 | 934, 868, 927 | 10, 10, 10 |

@@ -7,7 +7,7 @@ import { describe, expect, test } from "bun:test";
 import { printOrigin } from "../origin";
 
 printOrigin("../../src/git-service/ignore-text.ts", import.meta.dir);
-const { decodeIgnore, encodeIgnore } = await import("../../src/git-service/ignore-text");
+const { decodeIgnore, encodeIgnore, saveForm } = await import("../../src/git-service/ignore-text");
 
 const bytes = (...parts: (string | number[])[]) => Buffer.concat(parts.map((p) => (typeof p === "string" ? Buffer.from(p) : Buffer.from(p))));
 const BOM = [0xef, 0xbb, 0xbf];
@@ -28,8 +28,17 @@ describe("decodeIgnore (plan.md D8)", () => {
     expect(decodeIgnore(bytes("a\r\nb"))).toEqual({ ok: true, text: "a\nb", lineEnding: "crlf", bom: false });
   });
 
-  test("anything else gives mixed-line-endings: LF and CRLF together, a lone CR, and a CR at the end", () => {
-    for (const text of ["a\r\nb\n", "a\nb\r\n", "a\rb", "a\r", "\r", "a\r\r\n"]) expect({ text, decoded: decodeIgnore(bytes(text)) }).toEqual({ text, decoded: { ok: false, reason: "mixed-line-endings" } });
+  test("LF lines and CRLF lines give mixed with the count of each form; the text has LF only", () => {
+    expect(decodeIgnore(bytes("a\nb\r\n"))).toEqual({ ok: true, text: "a\nb\n", lineEnding: "mixed", lineCounts: { lf: 1, crlf: 1 }, bom: false });
+    expect(decodeIgnore(bytes(BOM, "a\r\nb\nc\r\nd"))).toEqual({ ok: true, text: "a\nb\nc\nd", lineEnding: "mixed", lineCounts: { lf: 1, crlf: 2 }, bom: true });
+  });
+
+  test("a CR that no LF follows gives ignore-lone-cr, inside a line and before a CRLF", () => {
+    for (const text of ["a\rb", "a\r\r\n", "a\nb\rc\r\n"]) expect({ text, decoded: decodeIgnore(bytes(text)) }).toEqual({ text, decoded: { ok: false, reason: "ignore-lone-cr" } });
+  });
+
+  test("a CR as the last byte gives ignore-lone-cr: Git adds an LF there (dir.c:1198), but no Save form writes the CR again", () => {
+    for (const text of ["a\r", "\r", "a\nb\r"]) expect({ text, decoded: decodeIgnore(bytes(text)) }).toEqual({ text, decoded: { ok: false, reason: "ignore-lone-cr" } });
   });
 
   test("the bytes must be strict UTF-8 without NUL; invalid UTF-8 comes before NUL, and NUL before the line endings", () => {
@@ -53,12 +62,39 @@ describe("encodeIgnore (plan.md D10)", () => {
     expect(encodeIgnore("é\n", { lineEnding: "lf", bom: false })).toEqual(new Uint8Array(bytes("é\n")));
   });
 
+  test("a chosen form applies to all lines of a mixed file", () => {
+    const decoded = decodeIgnore(bytes(BOM, "a\nb\r\nc"));
+    if (!decoded.ok) throw new Error("refused");
+    const lf = saveForm(decoded, "lf");
+    const crlf = saveForm(decoded, "crlf");
+    if (lf === null || crlf === null) throw new Error("no form");
+    expect([...encodeIgnore(decoded.text, lf)]).toEqual([...bytes(BOM, "a\nb\nc")]);
+    expect([...encodeIgnore(decoded.text, crlf)]).toEqual([...bytes(BOM, "a\r\nb\r\nc")]);
+  });
+
+  test("a mixed file needs a choice; a file of one form keeps it without a choice and converts with one (plan.md D10)", () => {
+    const of = (text: string) => {
+      const decoded = decodeIgnore(bytes(text));
+      if (!decoded.ok) throw new Error("refused");
+      return decoded;
+    };
+    expect(saveForm(of("a\nb\r\n"), undefined)).toBeNull();
+    expect(saveForm(of("a\r\n"), undefined)).toEqual({ lineEnding: "crlf", bom: false });
+    expect(saveForm(of("a\n"), undefined)).toEqual({ lineEnding: "lf", bom: false });
+    expect(saveForm(of("a"), undefined)).toEqual({ lineEnding: "none", bom: false });
+    expect(saveForm(of("a\r\n"), "lf")).toEqual({ lineEnding: "lf", bom: false });
+    expect(saveForm(of("a\n"), "crlf")).toEqual({ lineEnding: "crlf", bom: false });
+    expect(saveForm(of("a"), "crlf")).toEqual({ lineEnding: "crlf", bom: false });
+  });
+
   test("each round trip of a loaded file gives the loaded bytes", () => {
     const loaded = [bytes("*.log\n/out/\n"), bytes("*.log\r\n/out/\r\n"), bytes(BOM, "*.log\r\n"), bytes(BOM, "*.log\n"), bytes("*.log"), bytes(""), bytes(BOM), bytes("ä\r\nü"), bytes("a\n\n\n")];
     for (const file of loaded) {
       const decoded = decodeIgnore(file);
       if (!decoded.ok) throw new Error(`refused ${JSON.stringify(file.toString())}`);
-      expect({ file: [...file], again: [...encodeIgnore(decoded.text, decoded)] }).toEqual({ file: [...file], again: [...file] });
+      const form = saveForm(decoded, undefined);
+      if (form === null) throw new Error("no form");
+      expect({ file: [...file], again: [...encodeIgnore(decoded.text, form)] }).toEqual({ file: [...file], again: [...file] });
     }
   });
 });

@@ -1622,7 +1622,7 @@
             "ignore-folder",
             "ignore-not-utf8",
             "ignore-nul",
-            "mixed-line-endings",
+            "ignore-lone-cr",
             "untracked-in-way",
             "not-empty",
             "file",

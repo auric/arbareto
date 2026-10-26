@@ -24,6 +24,7 @@ printOrigin("../../src/contracts/ignore-line.ts", import.meta.dir);
 useFixtureRoot();
 
 const TASK = "T033";
+const MIXED_TASK = "T095";
 const SHELL: Capability[] = ["shell-double"];
 const TIMEOUT_MS = 120_000;
 
@@ -32,7 +33,7 @@ const form = (f: IgnoreForm): FaFixture => buildIgnoreForm(gitPath(), `t033-${f}
 const sha = (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
 const b64 = (text: string | Uint8Array) => Buffer.from(text).toString("base64");
 
-type IgnoreFile = { target: string; file: string; state: "absent" | "file"; text: string; lineEnding: string; bom: boolean; expected: "absent" | { size: number; sha256: string } };
+type IgnoreFile = { target: string; file: string; state: "absent" | "file"; text: string; lineEnding: string; lineCounts?: { lf: number; crlf: number }; bom: boolean; expected: "absent" | { size: number; sha256: string } };
 type SaveReview = { action: "ignore-save"; plan: { target: string; file: string; size: number; sha256: string }; workbenchToken: string };
 
 async function readIgnore(service: Service, r: RegistrationResult, target: "gitignore" | "exclude"): Promise<ServiceResponse<IgnoreFile>> {
@@ -41,13 +42,13 @@ async function readIgnore(service: Service, r: RegistrationResult, target: "giti
   return response;
 }
 
-function reviewSave(service: Service, r: RegistrationResult, target: "gitignore" | "exclude", text: string | Uint8Array, expected: IgnoreFile["expected"]): Promise<ServiceResponse<SaveReview>> {
-  return service.request<SaveReview>("reviewWorkbench", { action: "ignore-save", target, text: b64(text), expected }, { repositoryId: r.repositoryId, repositoryGeneration: r.generation });
+function reviewSave(service: Service, r: RegistrationResult, target: "gitignore" | "exclude", text: string | Uint8Array, expected: IgnoreFile["expected"], lineEnding?: "lf" | "crlf"): Promise<ServiceResponse<SaveReview>> {
+  return service.request<SaveReview>("reviewWorkbench", { action: "ignore-save", target, text: b64(text), expected, ...(lineEnding === undefined ? {} : { lineEnding }) }, { repositoryId: r.repositoryId, repositoryGeneration: r.generation });
 }
 
 const sendRun = (service: Service, r: RegistrationResult, token: string) => service.send("runWorkbench", { workbenchToken: token, start: true }, { repositoryId: r.repositoryId });
-async function save(service: Service, r: RegistrationResult, target: "gitignore" | "exclude", text: string, expected: IgnoreFile["expected"]): Promise<ServiceResponse<{ action: string; outcome?: string; reason?: string }>> {
-  const review = await reviewSave(service, r, target, text, expected);
+async function save(service: Service, r: RegistrationResult, target: "gitignore" | "exclude", text: string, expected: IgnoreFile["expected"], lineEnding?: "lf" | "crlf"): Promise<ServiceResponse<{ action: string; outcome?: string; reason?: string }>> {
+  const review = await reviewSave(service, r, target, text, expected, lineEnding);
   expect({ ...outcome(review), result: review.state === "succeeded" ? "plan" : review.result }).toEqual({ ...SUCCEEDED, result: "plan" });
   expect(ReviewWorkbenchResult.safeParse(review.result).success).toBe(true);
   const response = await service.response<{ action: string; outcome?: string }>(sendRun(service, r, review.result!.workbenchToken));
@@ -70,6 +71,7 @@ describe("readIgnoreFile (plan.md D8, contract Δ3)", () => {
         ["none", { state: "file", text: "*.log", lineEnding: "none", bom: false }],
         ["empty", { state: "file", text: "", lineEnding: "none", bom: false }],
         ["absent", { state: "absent", text: "", lineEnding: "none", bom: false, expected: "absent" }],
+        ["mixed", { state: "file", text: "*.log\n/out/\n", lineEnding: "mixed", lineCounts: { lf: 1, crlf: 1 }, bom: false }],
       ];
       for (const [name, want] of cases) {
         const f = form(name);
@@ -85,15 +87,14 @@ describe("readIgnoreFile (plan.md D8, contract Δ3)", () => {
     TIMEOUT_MS,
   );
 
-  caseTest(TASK, "a folder, a file above 1 MiB, invalid UTF-8, a NUL, mixed endings, and a lone CR each refuse with its reason and change no byte", SHELL, () =>
+  caseTest(TASK, "a folder, a file above 1 MiB, invalid UTF-8, a NUL, and a lone CR each refuse with its reason and change no byte", SHELL, () =>
     withService({ name: "t033-read-refusals" }, async (service) => {
       const cases: [IgnoreForm, string][] = [
         ["folder", "ignore-folder"],
         ["big", "ignore-size"],
         ["not-utf8", "ignore-not-utf8"],
         ["nul", "ignore-nul"],
-        ["mixed", "mixed-line-endings"],
-        ["lone-cr", "mixed-line-endings"],
+        ["lone-cr", "ignore-lone-cr"],
       ];
       for (const [name, reason] of cases) {
         const f = form(name);
@@ -187,6 +188,57 @@ describe("ignore-save (plan.md D10, contract Δ3 and Δ6)", () => {
       expect(refusal(response)).toEqual({ state: "failed", code: "STALE_REVIEW", result: { action: "ignore-save", reason: "ignore-changed" } });
       expect(replaceFrames(service)).toEqual([]);
       expect(readFileSync(join(f.repo, ".gitignore"), "utf8")).toBe("other program again\n");
+    }),
+    TIMEOUT_MS,
+  );
+
+  // Plan.md D10 and the user request of 2026-10-25: the request form applies to all lines, and a mixed file requires it.
+  async function saveForm(service: Service, r: RegistrationResult, path: string, text: string, lineEnding: "lf" | "crlf", want: string) {
+    const read = await readIgnore(service, r, "gitignore");
+    const review = await reviewSave(service, r, "gitignore", text, read.result!.expected, lineEnding);
+    expect({ lineEnding, ...outcome(review) }).toEqual({ lineEnding, ...SUCCEEDED });
+    const response = await service.response<{ action: string; outcome?: string }>(sendRun(service, r, review.result!.workbenchToken));
+    expect({ lineEnding, ...outcome(response), result: response.result }).toEqual({ lineEnding, ...SUCCEEDED, result: { action: "ignore-save", outcome: "replaced" } });
+    const bytes = readFileSync(path);
+    expect({ lineEnding, text: bytes.toString("latin1"), plan: review.result!.plan.sha256 }).toEqual({ lineEnding, text: want, plan: sha(bytes) });
+  }
+
+  caseTest(MIXED_TASK, "US5-11: a mixed file without lineEnding gives INVALID_REQUEST at the review; each chosen form writes all lines, the after digest matches, and the file then reads in that form", SHELL, () =>
+    withService({ name: "t095-save-mixed" }, async (service) => {
+      for (const [lineEnding, want] of [["crlf", "*.log\r\n/out/\r\n/new/\r\n"], ["lf", "*.log\n/out/\n/new/\n"]] as const) {
+        const f = form("mixed");
+        const path = join(f.repo, ".gitignore");
+        const r = await service.register(f.repo);
+        const read = await readIgnore(service, r, "gitignore");
+        const frames = replaceFrames(service).length;
+        expect(refusal(await reviewSave(service, r, "gitignore", "*.log\n/out/\n/new/\n", read.result!.expected))).toEqual({ state: "failed", code: "INVALID_REQUEST", result: undefined });
+        expect(replaceFrames(service).length).toBe(frames);
+        await saveForm(service, r, path, "*.log\n/out/\n/new/\n", lineEnding, want);
+        const again = await readIgnore(service, r, "gitignore");
+        expect({ lineEnding: again.result!.lineEnding, counts: again.result!.lineCounts }).toEqual({ lineEnding, counts: undefined });
+      }
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(MIXED_TASK, "US5-12: an LF file with crlf and a CRLF file with lf convert all lines, with the matching after digest", SHELL, () =>
+    withService({ name: "t095-save-convert" }, async (service) => {
+      for (const [name, lineEnding, want] of [["lf", "crlf", "*.log\r\n/out/\r\n"], ["crlf", "lf", "*.log\n/out/\n"]] as const) {
+        const f = form(name);
+        const r = await service.register(f.repo);
+        await saveForm(service, r, join(f.repo, ".gitignore"), "*.log\n/out/\n", lineEnding, want);
+      }
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(MIXED_TASK, "a mixed file changed on disk gives STALE_REVIEW ignore-changed before the line-ending check", SHELL, () =>
+    withService({ name: "t095-save-mixed-stale" }, async (service) => {
+      const f = form("mixed");
+      const r = await service.register(f.repo);
+      const read = await readIgnore(service, r, "gitignore");
+      writeFileSync(join(f.repo, ".gitignore"), "a\nb\r\n");
+      expect(refusal(await reviewSave(service, r, "gitignore", "/x/\n", read.result!.expected))).toEqual({ state: "failed", code: "STALE_REVIEW", result: { reason: "ignore-changed" } });
     }),
     TIMEOUT_MS,
   );

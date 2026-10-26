@@ -2,11 +2,15 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // Feature 005 plan.md D8 and D10, data-model §6: the codec of `.gitignore` and `info/exclude` (spec FR-036, FR-037, FR-042).
-// A `textarea` value normalizes CR and CRLF to LF (HTML "textarea" API value), so only a file with one line-ending form round-trips.
+// A `textarea` value normalizes CR and CRLF to LF (HTML "textarea" API value), so Save writes one line-ending form for all lines.
+// Git v2.56.0 dir.c:1250-1251 drops one CR before each LF, so LF and CRLF lines give the same patterns.
 
 export type LineEnding = "lf" | "crlf" | "none";
 export type IgnoreForm = { lineEnding: LineEnding; bom: boolean };
-export type DecodedIgnore = ({ ok: true; text: string } & IgnoreForm) | { ok: false; reason: "ignore-not-utf8" | "ignore-nul" | "mixed-line-endings" };
+export type Decoded =
+  | ({ ok: true; text: string } & IgnoreForm)
+  | { ok: true; text: string; lineEnding: "mixed"; lineCounts: { lf: number; crlf: number }; bom: boolean };
+export type DecodedIgnore = Decoded | { ok: false; reason: "ignore-not-utf8" | "ignore-nul" | "ignore-lone-cr" };
 
 const CR = 0x0d;
 const LF = 0x0a;
@@ -32,14 +36,22 @@ export function decodeIgnore(bytes: Uint8Array): DecodedIgnore {
   for (let i = 0; i < body.length; i++) {
     if (body[i] === LF) lf++;
     else if (body[i] === CR) {
-      if (body[i + 1] !== LF) return { ok: false, reason: "mixed-line-endings" };
+      // A last CR is dropped by Git too (dir.c:1198 adds an LF), but no Save form writes it again.
+      if (body[i + 1] !== LF) return { ok: false, reason: "ignore-lone-cr" };
       crlf++;
       i++;
     }
   }
-  if (lf > 0 && crlf > 0) return { ok: false, reason: "mixed-line-endings" };
+  const lfText = crlf > 0 ? text.replaceAll("\r\n", "\n") : text;
+  if (lf > 0 && crlf > 0) return { ok: true, text: lfText, lineEnding: "mixed", lineCounts: { lf, crlf }, bom };
   const lineEnding: LineEnding = crlf > 0 ? "crlf" : lf > 0 ? "lf" : "none";
-  return { ok: true, text: crlf > 0 ? text.replaceAll("\r\n", "\n") : text, lineEnding, bom };
+  return { ok: true, text: lfText, lineEnding, bom };
+}
+
+// Plan.md D10: the request form for all lines, else the file form. A mixed file without a request form has none.
+export function saveForm(decoded: Decoded, chosen: "lf" | "crlf" | undefined): IgnoreForm | null {
+  if (chosen !== undefined) return { lineEnding: chosen, bom: decoded.bom };
+  return decoded.lineEnding === "mixed" ? null : { lineEnding: decoded.lineEnding, bom: decoded.bom };
 }
 
 // Plan.md D10: the BOM when `bom`, then the text with each LF as CRLF for `crlf`. `lf` and `none` keep LF.

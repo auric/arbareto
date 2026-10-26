@@ -27,7 +27,7 @@ export interface PreviewTarget {
   workspace: Workspace;
   installation: ReadInstallation;
 }
-type Payload = { target: IgnoreTarget; text: string; snapshotId: string };
+type Payload = { target: IgnoreTarget; text: string; snapshotId: string; lineEnding?: "lf" | "crlf" };
 type Reason = "paths" | "listing" | "name-case" | "shadow-copy" | "self-check" | "unreadable" | "deadline";
 type Repo = "s" | "c";
 
@@ -254,9 +254,11 @@ export function createIgnorePreview({ runner, trust }: { runner: GitRunner; trus
     if (!listed.ok) return "stop" in listed ? { result: listed.stop } : { result: "failed", code: listed.code };
     const gate = trust.gate(w, listed.listing, t.installation, "reads");
     if (gate !== null) return { result: "failed", code: gate };
-    // The candidate takes the BOM and the line endings of the loaded file (plan.md D9 step 2).
+    // The candidate takes the BOM of the loaded file and the line endings of plan.md D9 "Trigger".
+    // A mixed file without a choice takes LF: Git drops one CR before each LF (dir.c v2.56.0 :1250-1251), so the verdicts do not change.
     const loaded = settle(await readIgnoreFile({ runner, operationId: t.operationId, signal: t.signal, workspace: w }, p.target)).value;
-    const candidate = encodeIgnore(new Uint8Array(Buffer.from(p.text, "base64")), loaded.state === "absent" ? { lineEnding: "lf", bom: false } : loaded);
+    const lineEnding = p.lineEnding ?? (loaded.lineEnding === "mixed" ? "lf" : loaded.lineEnding);
+    const candidate = encodeIgnore(new Uint8Array(Buffer.from(p.text, "base64")), { lineEnding, bom: loaded.bom });
     const own = bases.get(w.repositoryId) ?? new Map<IgnoreTarget, Base>();
     bases.set(w.repositoryId, own);
     const created = await runner.shadow({ operationId: t.operationId, repositoryId: w.repositoryId, op: "create" });

@@ -64,14 +64,15 @@ function oracle(repo: string, name: string, file: string, bytes: Uint8Array): { 
   };
 }
 
-async function preview(service: Service, r: RegistrationResult, read: WorkspaceResult, target: "gitignore" | "exclude", text: string): Promise<ServiceResponse<Preview>> {
-  const response = await service.request<Preview>("previewIgnore", { target, text: b64(text), snapshotId: read.snapshotId }, { repositoryId: r.repositoryId, repositoryGeneration: read.generation });
+async function preview(service: Service, r: RegistrationResult, read: WorkspaceResult, target: "gitignore" | "exclude", text: string, lineEnding?: "lf" | "crlf"): Promise<ServiceResponse<Preview>> {
+  const payload = { target, text: b64(text), snapshotId: read.snapshotId, ...(lineEnding === undefined ? {} : { lineEnding }) };
+  const response = await service.request<Preview>("previewIgnore", payload, { repositoryId: r.repositoryId, repositoryGeneration: read.generation });
   if (response.result !== undefined) expect(PreviewIgnoreResult.safeParse(response.result).success).toBe(true);
   return response;
 }
 
-async function previewed(service: Service, r: RegistrationResult, read: WorkspaceResult, target: "gitignore" | "exclude", text: string): Promise<Extract<Preview, { preview: unknown }>["preview"]> {
-  const response = await preview(service, r, read, target, text);
+async function previewed(service: Service, r: RegistrationResult, read: WorkspaceResult, target: "gitignore" | "exclude", text: string, lineEnding?: "lf" | "crlf"): Promise<Extract<Preview, { preview: unknown }>["preview"]> {
+  const response = await preview(service, r, read, target, text, lineEnding);
   expect({ ...outcome(response), kind: response.result === undefined ? null : Object.keys(response.result)[0], result: response.result && "unavailable" in response.result ? response.result : null }).toEqual({ ...SUCCEEDED, kind: "preview", result: null });
   return (response.result as Extract<Preview, { preview: unknown }>).preview;
 }
@@ -126,6 +127,25 @@ describe("each preview equals Git's listing after a real save (spec FR-038, SC-0
       const got = await previewed(service, r, read, "gitignore", text);
       const want = oracle(f.repo, `t034-c8-oracle-${++builds}`, ".gitignore", Buffer.concat([BOM, Buffer.from(text.replaceAll("\n", "\r\n"))]));
       expect({ newlyIgnored: got.newlyIgnored, noLongerIgnored: got.noLongerIgnored, trackedMatched: got.trackedMatched }).toEqual(want);
+    }),
+    TIMEOUT_MS,
+  );
+
+  // Plan.md D9 "Trigger": Git drops one CR before each LF (dir.c v2.56.0 :1250-1251), so both forms give one preview.
+  caseTest("T095", "a mixed file: the previews with lf, with crlf, and without a choice are equal, and each equals Git's listing after a real save in that form", SHELL, () =>
+    withService({ name: "t095-mixed" }, async (service) => {
+      const f = report();
+      writeFileSync(join(f.repo, ".gitignore"), Buffer.concat([BOM, Buffer.from(`${REPORT_ROOT_TEXT}emptyign/\n`.replace("\n", "\r\n"))]));
+      const { r, read } = await open(service, f);
+      const text = "*.log\n!keep.log\nnode_modules/\n*.txt\n";
+      const plain = await previewed(service, r, read, "gitignore", text);
+      for (const lineEnding of ["lf", "crlf"] as const) {
+        const got = await previewed(service, r, read, "gitignore", text, lineEnding);
+        const want = oracle(f.repo, `t095-mixed-oracle-${++builds}`, ".gitignore", Buffer.concat([BOM, Buffer.from(lineEnding === "crlf" ? text.replaceAll("\n", "\r\n") : text)]));
+        const shown = { newlyIgnored: got.newlyIgnored, noLongerIgnored: got.noLongerIgnored, trackedMatched: got.trackedMatched };
+        expect({ lineEnding, shown }).toEqual({ lineEnding, shown: want });
+        expect({ lineEnding, plain: { newlyIgnored: plain.newlyIgnored, noLongerIgnored: plain.noLongerIgnored, trackedMatched: plain.trackedMatched } }).toEqual({ lineEnding, plain: want });
+      }
     }),
     TIMEOUT_MS,
   );

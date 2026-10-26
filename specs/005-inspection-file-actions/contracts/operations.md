@@ -75,12 +75,12 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - Payload: `{target}`, `gitignore` or `exclude`. One read slot.
 - Commands: for `exclude`, `--no-lazy-fetch --no-optional-locks --literal-pathspecs rev-parse --path-format=absolute --git-path info/exclude` (004 Δ3). Then `fileFacts` with `digest: true` for the target (001 §6). Windows reads the bytes and compares size and SHA-256 with the fact (`ignore.ts:152-155`). WSL sends `fileFacts` with `content: true` (Δ6).
 - No read gate: no command loads the index.
-- Errors: `WORKBENCH_UNAVAILABLE` with `ignore-link`, `ignore-folder`, `ignore-not-regular`, `ignore-size`, `ignore-not-utf8`, `ignore-nul`, `mixed-line-endings`, `unreadable`, or `path`. `REPOSITORY_CHANGED` when the bytes differ from the fact.
-- Result: data-model §6.
+- Errors: `WORKBENCH_UNAVAILABLE` with `ignore-link`, `ignore-folder`, `ignore-not-regular`, `ignore-size`, `ignore-not-utf8`, `ignore-nul`, `ignore-lone-cr` (a CR that no LF follows, also as the last byte), `unreadable`, or `path`. `REPOSITORY_CHANGED` when the bytes differ from the fact.
+- Result: data-model §6. A file with LF lines and CRLF lines gives `lineEnding: "mixed"` and `lineCounts: {lf, crlf}`, both at least 1. Every other result has no `lineCounts`.
 
 ### `previewIgnore`
 
-- Payload: `{target, text, snapshotId}`. `text` is the base64 of the UTF-8 bytes of the editor text. The decoded bytes are at most 1 MiB, strict UTF-8, and hold no NUL, else `INVALID_REQUEST`. A CR byte in `text` gives `INVALID_REQUEST` for `previewIgnore` and `ignore-save`, because the editor text holds LF line ends only (plan D8). The renderer checks `isWellFormed()` before it encodes, because `TextEncoder` replaces a lone surrogate (plan D9). One read slot. The renderer sends it 400 ms after the last edit and cancels the running one (001 §5 "Pending reads").
+- Payload: `{target, text, snapshotId, lineEnding?}`. `lineEnding` is `lf` or `crlf`, the selected form of plan D8. The renderer sends it always when a form is selected, also a preselected form. The candidate bytes take it for all lines. Without it, a file of one form keeps its form, and a `mixed` file takes LF. Git drops one CR before each LF (dir.c v2.56.0), so both forms give the same preview. `text` is the base64 of the UTF-8 bytes of the editor text. The decoded bytes are at most 1 MiB, strict UTF-8, and hold no NUL, else `INVALID_REQUEST`. A CR byte in `text` gives `INVALID_REQUEST` for `previewIgnore` and `ignore-save`, because the editor text holds LF line ends only (plan D8). The renderer checks `isWellFormed()` before it encodes, because `TextEncoder` replaces a lone surrogate (plan D9). One read slot. The renderer sends it 400 ms after the last edit and cancels the running one (001 §5 "Pending reads").
 - Read gate: 001 §7 `reads`, because `ls-files` loads the index.
 - Repository commands:
   - `--no-lazy-fetch --no-optional-locks --literal-pathspecs ls-files -z --stage -v`.
@@ -111,13 +111,13 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 - New payload forms:
   - `{action: "delete", snapshotId, entryIds, folder?, mode: "recycle" | "permanent"}`. `entryIds` holds 1 to 10,000 unique IDs. `folder` holds the base64 folder bytes of a folder row.
-  - `{action: "ignore-save", target, text, expected}`. `text` as `previewIgnore` (base64 UTF-8 bytes). A CR byte in `text` gives `INVALID_REQUEST` before any Git process. `expected` is `"absent"` or `{size, sha256}`.
+  - `{action: "ignore-save", target, text, expected, lineEnding?}`. `text` as `previewIgnore` (base64 UTF-8 bytes). A CR byte in `text` gives `INVALID_REQUEST` before any Git process. `expected` is `"absent"` or `{size, sha256}`. `lineEnding` is `lf` or `crlf`. The renderer sends the selected form always when one is selected (plan D8).
 - The form `{action: "ignore", …}` goes.
 - Common refusals (004 Δ3) now apply to `delete` too: `OPERATION_IN_PROGRESS`, `unknown-operation`, and `CONFLICTED` with the count, because Delete counts as a mutation for 001 FR-015 and FR-016 (spec FR-033).
 - `ignore-save` keeps the 004 exception of the action `ignore`: `OPERATION_IN_PROGRESS`, `unknown-operation`, and `CONFLICTED` do not refuse it, because Save changes no Git state (spec FR-046). A running mutation gives `BUSY` (001 FR-015). The stale check stays.
 - `delete` reads: the snapshot entries (no Git process), then `fileFacts` with `digest: true`, 64 entries per frame. Refusals before a token: `WORKBENCH_UNAVAILABLE` with `conflicted`, `submodule`, `nested-repository`, `limit`, `no-recycle-bin`, `long-path` (mode `recycle` and a full Windows path of 260 or more UTF-16 units, plan D6), `nothing-to-delete`, `path` (a name that `isComponent` refuses, such as a name that ends in a period or a space, plan D7 N9), or `unreadable`; `STALE_SELECTION` for a folder set that differs from the snapshot or a fact of kind `directory` or `other`; `INVALID_REQUEST` for a `staged` entry or an entry of another snapshot.
 - `delete` plan: data-model §4 plan fields. No trust class: before the reconcile read, the run starts only the common reads `config`, `rev-parse`, and `symbolic-ref` of the stale check. None of them loads the index or runs a repository program.
-- `ignore-save` reads: `rev-parse --git-path info/exclude` for `exclude`, then `fileFacts` with `digest: true`, and the bytes as `readIgnoreFile`. A state other than `expected` gives `STALE_REVIEW` with reason `ignore-changed`. Refusals: the `readIgnoreFile` reasons, plus `ignore-size` for new bytes above 1 MiB and `ignore-nul` for a NUL in the text.
+- `ignore-save` reads: `rev-parse --git-path info/exclude` for `exclude`, then `fileFacts` with `digest: true`, and the bytes as `readIgnoreFile`. A state other than `expected` gives `STALE_REVIEW` with reason `ignore-changed`. Then the line-ending check of the current bytes: a `mixed` file without `lineEnding` gives `INVALID_REQUEST`. The new bytes take `lineEnding` for all lines when present, and the file form otherwise. Refusals: the `readIgnoreFile` reasons, plus `ignore-size` for new bytes above 1 MiB and `ignore-nul` for a NUL in the text.
 - `ignore-save` plan: `{target, file, size, sha256}` of the new bytes. No trust class.
 
 ### `runWorkbench` (004 Δ3)
@@ -227,7 +227,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 | `BLAME_UNAVAILABLE` | `no-history`, `binary`, `submodule`, `size`, `lines`, `ignore-revs-file-missing`, `no-previous`, `path` | Blame cannot run for this file. No blame process starts. |
 | `UNSUPPORTED_COMPARISON` (001) | `readCommitFile` uses the 001 reason `path` | The path is no valid UTF-8, so no argv item can carry it. |
 | `SUBMODULE_UNAVAILABLE` | `not-submodule`, `submodule-not-initialized`, `path` | The open cannot start. The parent stays open. |
-| `WORKBENCH_UNAVAILABLE` (004) | adds `conflicted`, `submodule`, `nested-repository`, `no-recycle-bin`, `long-path`, `nothing-to-delete`, `ignore-link`, `ignore-folder`, `ignore-not-utf8`, `ignore-nul`, `mixed-line-endings`; keeps the 004 reasons `ignore-not-regular`, `ignore-size`, `limit`, `path`, and `unreadable`; removes `ignore-exists`, `ignore-not-text` | The action cannot run. No file changes. |
+| `WORKBENCH_UNAVAILABLE` (004) | adds `conflicted`, `submodule`, `nested-repository`, `no-recycle-bin`, `long-path`, `nothing-to-delete`, `ignore-link`, `ignore-folder`, `ignore-not-utf8`, `ignore-nul`, `ignore-lone-cr`; keeps the 004 reasons `ignore-not-regular`, `ignore-size`, `limit`, `path`, and `unreadable`; removes `ignore-exists`, `ignore-not-text` | The action cannot run. No file changes. |
 | `STALE_REVIEW` (001) | adds `files-changed`, `ignore-changed` | A bound fact changed after the review. Nothing changes. |
 | `UNKNOWN_TARGET` (001) | adds `absent` | The reveal target does not exist on disk. |
 

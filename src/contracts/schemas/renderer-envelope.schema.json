@@ -3248,6 +3248,13 @@
                       "title": "IgnoreDigest"
                     }
                   ]
+                },
+                "lineEnding": {
+                  "type": "string",
+                  "enum": [
+                    "lf",
+                    "crlf"
+                  ]
                 }
               },
               "required": [
@@ -4041,6 +4048,13 @@
               "type": "string",
               "maxLength": 64,
               "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "lineEnding": {
+              "type": "string",
+              "enum": [
+                "lf",
+                "crlf"
+              ]
             }
           },
           "required": [

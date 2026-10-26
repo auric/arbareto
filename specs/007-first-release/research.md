@@ -216,6 +216,76 @@ Answered on 2026-10-24 (spec Clarifications): Q2: first option (a); then, after 
 
 Fact results F1 to F6 (plan.md "Facts to verify"), the action commit IDs (plan.md D2), the dry-run record, the Sandbox install, and the release checks go here. Each entry names the date, the build commit, the runner image or the host, the tool versions that ran, and the result.
 
+### T001 Fact F1, two clone paths (2026-10-26, reference host, build commit 80292e5a)
+
+- Tools: Bun 1.4.4, `rustc 1.99.0 (b940084d7 2026-09-28)`, `tauri-cli 2.12.0`, makensis `v3.11`.
+- Clone c1 ran `bun run build`, `cargo tauri build --target x86_64-pc-windows-msvc --no-bundle -- --locked`, and `cargo tauri bundle --target x86_64-pc-windows-msvc --bundles nsis`. All exited 0.
+- Clone c2 ran `bun run package`. It exited 0.
+- `arbareto-git.exe` is the same in both clones: SHA-256 `7e613c557eb7c33d17bbc289d8e2dd3e7c0c4f8b5e0862e2e6a9466378c794ab`.
+- `dist/` is the same in both clones: hash of the sorted per-file SHA-256 list `f10e8a68b361a661ad8043bca70b81974dc06bd96d8fe83b0c37312a7bcc66c1`.
+- `arbareto.exe` differs: c1 `4dc565f5cb26a82a67b801ed4e74724ae59ce35046ea448e6975ad74f68d1963`, c2 `d44f26c66dd06247462b30559f42c07a5ac18bf801a64efe24a2f068aa99a657`. Each file holds its own clone path 10 times and the other clone's path 0 times. The two clone paths have different names, so this run cannot tell a build-stage difference from the path difference. The same-path run below separates them.
+- Installer: c1 `5cde8d4a582dca7202fb9288a1c66632b9c72e00fcdb7c8e1f37a894cff3356d` (45922006 bytes), c2 `7e0557207e86a9133587cd9001cc544bfb93557baf7de25f7aa23920134190bd` (45914249 bytes).
+- No Sandbox install ran for this pair.
+- `OBSERVATION T001: differs arbareto.exe (embedded clone path c1 against c2), Arbareto_0.1.0_x64-setup.exe; same arbareto-git.exe, dist/ (tauri-cli 2.12.0); Sandbox step not run`
+
+### T001 Fact F1, one clone path (2026-10-26, reference host, build commit 80292e5a)
+
+- Tools: `rustc 1.99.0 (b940084d7 2026-09-28)`, `cargo 1.99.0 (5f94df478 2026-08-27)`, `tauri-cli 2.12.0`, Bun 1.4.4, makensis `v3.11`.
+- One clone path in local scratch. Run A: fresh clone, then the three-step build. Run B: delete the clone, fresh clone at the same path, then `bun run package`. Both exited 0.
+- Built `arbareto.exe`: A `af10412adc0d209cf81753a18ec09a229dd104406e942bd98ea9b93fcf0b50e7`, B `a3df03cd45afffc6f0134a677509355d13dc79e6e18431aec7e8054aa942c9ea`. Both 16219648 bytes.
+- The two files differ in 24 bytes in 5 ranges: offset 0xf0 (COFF `TimeDateStamp`), 0xc6b244, 0xc6b260, 0xc6b27c (debug directory `TimeDateStamp` values), and 16 bytes at 0xc6b87c (CodeView RSDS PDB GUID). The cause is the link time and PDB GUID of each link, not the build stage.
+- Installer: A `9af79113e479cb258cfc2b28b5afd41a3df9022bd026a04f887e23020e62e071`, B `dd762c6cbb1e843ca5b607672877ba35b75f7a17145cb6c44cb0707c9c94f8ee`. The installers hold the differing `arbareto.exe`. Other installer differences are not checked.
+- Windows Sandbox install, `/S`, exit 0 for each. Installed folder `%LOCALAPPDATA%\Arbareto`, three files each:
+  - `arbareto-git.exe` same: `7e613c557eb7c33d17bbc289d8e2dd3e7c0c4f8b5e0862e2e6a9466378c794ab`.
+  - `uninstall.exe` same: `ac10d423d81e938547a63d2cd1a71e0a5886f31933ef8b6d245968416ea94fbb`.
+  - `arbareto.exe` differs: A `1d4fcac3f9aa25227909be3419a49354c3fc596e0aa651b5750c4a283f761c51`, B `b943b4cbd0aac3237c9a273e5ec36465ed1b5a847be080525209a39f7d081c2e`.
+- `OBSERVATION T001: differs arbareto.exe (link TimeDateStamp and PDB GUID only, same clone path), Arbareto_0.1.0_x64-setup.exe; same arbareto-git.exe, uninstall.exe, dist/ (tauri-cli 2.12.0)`
+
+### T001 Bundler patch of the main executable (2026-10-26, reference host)
+
+- tauri-bundler 2.10.0 `src/bundle.rs:40-98` (`patch_binary`) replaces the 27-byte marker `__TAURI_BUNDLE_TYPE_VAR_UNK` with `__TAURI_BUNDLE_TYPE_VAR_NSS` in the target `arbareto.exe` before NSIS packs it. `src/bundle.rs:141-145` keeps an unpatched copy, and `src/bundle.rs:213-218` writes it back after each bundle type. So the target file after the bundle step is the unpatched file.
+- Check: the built run A and run B files with only that marker replaced give SHA-256 `1d4fcac3...1c51` and `b943b4cb...1c2e`. These are the installed hashes above. The marker is at offset 0xc0d5a2 once in each file. So the installed `arbareto.exe` differs from the built file only in the 3 marker bytes.
+- `cargo tauri bundle --help` (tauri-cli 2.12.0) lists `--no-binary-patching`. The help says that the patch rewrites the binary in place and invalidates an existing code signature. The skip costs only per-bundle-type updater support.
+
+### T005 /Brepro experiment (2026-10-26, reference host, build commit 80292e5a)
+
+- Same tools as the one-clone-path run. One clone path in local scratch. Each fresh clone got an untracked `.cargo/config.toml` with `[target.x86_64-pc-windows-msvc] rustflags = ["-C", "link-arg=/Brepro"]`. Run A: the three-step build. Run B: fresh clone, then `bun run package`. Both exited 0.
+- Built `arbareto.exe`: A and B both `e02955e4ea560c60bb9884775e927b67c48ff6c5c09b2029417edef35c0085e5`, 16219648 bytes. `cmp` reports 0 differing bytes.
+- The COFF `TimeDateStamp` is `0xbc3455e6` (a hash value, not the link time). Without the flag it was `0x6adf1ba0`, the link time.
+- With the NSIS marker replaced, both give `ff6e538d2c215095394191bd63611171bcc487211042646b077fcbf6322e14f2`.
+- Installers still differ: A `d60d33b70e05c7701b8fb268686428ef9ac768a965fcc5fcbfe9a6f97f983926`, B `c1526ababab0eb8b381a4d3f960419391888af5c97cf34c2cdf965b0a8e692e9`. The cause is not checked. No Sandbox install ran for this pair.
+- In the repository, `.cargo/config.toml` sets the flag. A `cargo build --locked --manifest-path src-tauri/Cargo.toml` from the repository root exited 0 without linker warnings, and its debug `arbareto.exe` has the hash `TimeDateStamp` `0xf8fd5fb1`.
+- `OBSERVATION T005: same arbareto.exe with /Brepro (e02955e4ea560c60bb9884775e927b67c48ff6c5c09b2029417edef35c0085e5), three-step build against bun run package (tauri-cli 2.12.0); installers differ, cause not checked`
+
+### T002 Fact F2, Bun file-property flags (2026-10-26, reference host, Bun 1.4.4)
+
+- Each flag compiled a one-line stub with `bun build stub.ts --compile --target=bun-windows-x64 <flag>`. Each compile exited 0. A compile with all five flags together also exited 0 and set all fields.
+- `OBSERVATION T002: --windows-title -> ProductName`
+- `OBSERVATION T002: --windows-publisher -> CompanyName`
+- `OBSERVATION T002: --windows-version=0.1.0 -> FileVersion and ProductVersion 0.1.0.0`
+- `OBSERVATION T002: --windows-description -> FileDescription`
+- `OBSERVATION T002: --windows-copyright -> LegalCopyright`
+- Without a flag, the defaults are ProductName `Bun`, CompanyName `Oven`, version `1.4.4`, FileDescription `Bun`, and LegalCopyright `https://bun.com/docs/project/licensing`.
+
+### T003 Fact F3, installer hooks overlay (2026-10-26, reference host, build commit 80292e5a)
+
+- The overlay sets only `bundle.windows.nsis.installerHooks` to the absolute path of a hook file. The hook file defines only an empty `NSIS_HOOK_PREINSTALL`. Both files are in local scratch, outside the repository.
+- Build in the run B clone: `cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis --config <overlay> -- --locked`. Exit 0. Installer `9ec4067206cfb95533b3d091292c4a57be4ddf811273741f5284f2c0bcf4e2c1`.
+- Windows Sandbox install, `/S`, exit 0. Key `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Arbareto`.
+- Without the overlay (runs A and B), the same key holds `DisplayName=Arbareto (Unsigned local test package)`.
+- `OBSERVATION T003: DisplayName=Arbareto DisplayVersion=0.1.0`
+
+### T004 Facts F4 and F5, Hunspell fetch and tar (2026-10-26, reference host, git 2.56.0.windows.2)
+
+- `OBSERVATION T004: https://github.com/hunspell/hunspell fetch 0 edb619100791110d3e34f09ec35392ad327c1135`
+- `OBSERVATION T004: https://github.com/rotemdan/hunspell-wasm fetch 0 8f755ef64e8b047b77b676f9698b3dfa5cb1887d`
+- `OBSERVATION T004: tar bsdtar 3.8.9 - libarchive 3.8.9 zlib/1.2.13.1-motley liblzma/5.8.3 bz2lib/1.0.8 libzstd/1.5.7 cng/2.0 libb2/bundled`
+
+### T005 Fact gate (2026-10-26)
+
+- F1 differs without `/Brepro` and is the same with it. plan.md D1 and D11 change: `.cargo/config.toml` sets `/Brepro`, the two build paths must give the same `arbareto.exe` bytes, and `package:preview:bundle` passes `--no-binary-patching` (plan.md D8).
+- F2, F3, F4, and F5 hold as expected. D6 and D8 keep their flag names and sources.
+
 ### T008 Rust toolchain (2026-10-26, reference host, base commit 48e9e87c)
 
 - `rustc --version` in the repository root: `rustc 1.99.0 (b940084d7 2026-09-28)`.

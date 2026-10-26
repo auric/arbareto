@@ -70,6 +70,7 @@ specs/007-first-release/
 .github/workflows/release.yml          new: the release workflow (D1 to D5)
 .github/release-notes/                 new: fixed release-note blocks (D9)
 rust-toolchain.toml                    new: Rust 1.99.0 (D2)
+.cargo/config.toml                     new: /Brepro link flag for x86_64-pc-windows-msvc (D1)
 CHANGELOG.md                           new: user-visible changes per release (D9)
 README.md                              Download section, code signing policy placeholder, Status text (D10)
 package.json                           build:service Windows file properties (D8)
@@ -109,6 +110,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
   - `workflow_dispatch`: a dry run from `main` after the merge. It runs `build` only.
 - `concurrency: group: release-${{ github.ref }}`, `cancel-in-progress: false`.
 - Job `build` (`runs-on: windows-2025`, `timeout-minutes: 120`, `permissions: { contents: read, actions: read }`): steps in D2 to D6. It uploads one workflow artifact `release-files` (retention 7 days).
+- Build bytes (fact F1, research R7 T001 and T005): the two-stage build (`package:preview:exes`, then `package:preview:bundle`) and the one-step `bun run package` from the same clone path give the same `arbareto.exe` bytes (SHA-256). The repository `.cargo/config.toml` sets `-C link-arg=/Brepro` for `x86_64-pc-windows-msvc`, so `link.exe` writes hash values for the PE `TimeDateStamp`, the debug directory timestamps, and the PDB GUID. Without the flag, these 24 bytes differ on each link. A workflow or job `RUSTFLAGS` value replaces the config `rustflags`, so the workflow sets no `RUSTFLAGS`.
 - Job `publish` (`runs-on: windows-2025`, because the only Bun pin is the Windows archive; `needs: build`, `if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')`, `environment: release`, `timeout-minutes: 30`, `permissions: { contents: write, id-token: write, attestations: write }`): steps in D5 and D9.
 - Environment `release` (orchestrator setting step, after the public switch): required reviewer the user; deployment tag rule `v*`; no branch. GitHub Free offers required reviewers only for public repositories (research R3). So the publish job cannot run before the public switch.
 - Public check: the publish job fails when `github.event.repository.private` is not `false` (spec FR-004). This is an event payload value.
@@ -176,7 +178,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 
 - `src-tauri/tauri.preview.conf.json` sets `bundle.windows.nsis.installerHooks` to `./installer-hooks.preview.nsh`. tauri-cli 2.12.0 merges `--config` files as a JSON merge patch (`src/helpers/config.rs`), so the string replaces the local hook path.
 - `installer-hooks.preview.nsh` defines no `NSIS_HOOK_POSTINSTALL`. The bundler then writes `DisplayName` `${PRODUCTNAME}` (tauri-bundler 2.10.0 `installer.nsi:702`), so "Installed apps" shows "Arbareto" and version `0.1.0`.
-- Two new `package.json` scripts carry both inputs together, so they cannot disagree: `package:preview:exes` (`ARBARETO_RELEASE_CHANNEL=preview cargo tauri build --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.preview.conf.json -- --locked`) and `package:preview:bundle` (`ARBARETO_RELEASE_CHANNEL=preview cargo tauri bundle --bundles nsis --target x86_64-pc-windows-msvc --config src-tauri/tauri.preview.conf.json`), followed by the same version prints as `package`. Bun Shell runs the `NAME=value command` form on Windows. The workflow and the local rehearsal call only these scripts. README "Development" lists them after they run green.
+- Two new `package.json` scripts carry both inputs together, so they cannot disagree: `package:preview:exes` (`ARBARETO_RELEASE_CHANNEL=preview cargo tauri build --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.preview.conf.json -- --locked`) and `package:preview:bundle` (`ARBARETO_RELEASE_CHANNEL=preview cargo tauri bundle --bundles nsis --no-binary-patching --target x86_64-pc-windows-msvc --config src-tauri/tauri.preview.conf.json`; D11 states why), followed by the same version prints as `package`. Bun Shell runs the `NAME=value command` form on Windows. The workflow and the local rehearsal call only these scripts. README "Development" lists them after they run green.
 - `build:service` adds the Bun Windows file properties. The property that becomes the PE `ProductName` gets "Arbareto", because SignPath requires the project name as the product name of every signed file (research R1). The others: publisher "Ihor Lifanov", version `0.1.0`, description "Arbareto Git service", copyright "Copyright (c) 2026 Ihor Lifanov". The exact CLI flag names and the PE fields they set are fact F2. The pins test compares the version with `Cargo.toml`.
 
 ### D9 Release notes and changelog
@@ -197,6 +199,8 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 - Repository variable `ARBARETO_SIGNING`: `off` (default when unset) or `signpath`. Any other value fails the build job.
 - With `signpath`, the build job also needs the variables `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_POLICY_SLUG`, and the repository secret `SIGNPATH_API_TOKEN`. A missing value fails the job.
 - Stage 1 sign: `actions/upload-artifact` of a ZIP with `arbareto.exe` and `arbareto-git.exe`, then the SignPath action with `wait-for-completion: true`, a 3,600 s bound, and `output-artifact-directory` below `RUNNER_TEMP`. The signed files replace the unsigned ones in the target folder. Then `cargo tauri bundle`.
+- Bundler patch (research R7 T001): without `--no-binary-patching`, `cargo tauri bundle` replaces the marker `__TAURI_BUNDLE_TYPE_VAR_UNK` with `__TAURI_BUNDLE_TYPE_VAR_NSS` in `arbareto.exe` before NSIS packs it (tauri-bundler 2.10.0 `src/bundle.rs:40-98`). This invalidates a stage 1 signature (tauri-cli 2.12.0 `bundle --help`). Only the updater reads the marker, and the preview has no updater (spec FR-005). So `package:preview:bundle` always passes `--no-binary-patching` (D8), with signing on and off.
+- Release comparison: each installed file equals its build input byte for byte. `arbareto.exe` equals the target file after stage 1 (or after the stage 1 sign), and `arbareto-git.exe` equals `src-tauri/binaries/arbareto-git-x86_64-pc-windows-msvc.exe`. The local `bun run package` keeps the patch, so its installed `arbareto.exe` differs from the built file in the 3 marker bytes only.
 - Stage 2 sign: `upload-artifact` with `archive: false` of the installer, then the SignPath action again.
 - A failed, rejected, or timed-out request fails the job (spec FR-043). No step continues on error.
 - The token is a repository secret, not an environment secret, so the build job needs no approval wait. SignPath requires a manual approval for each request, and its `github-scm-policies` can restrict the source refs (research R1).
@@ -215,7 +219,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 
 | ID | Fact | Check | Blocks |
 | --- | --- | --- | --- |
-| F1 | `cargo tauri build --no-bundle` then `cargo tauri bundle --bundles nsis` gives an installer with the same files as the one-step build. tauri-cli 2.12.0 has both (`src/build.rs:49`, `src/lib.rs:149`). | Local: package. Compare the file list and hashes of the installed folder. | D1, D11 |
+| F1 | `cargo tauri build --no-bundle` then `cargo tauri bundle --bundles nsis` gives an installer with the same files as the one-step build. tauri-cli 2.12.0 has both (`src/build.rs:49`, `src/lib.rs:149`). | Local: package. Compare the file list and hashes of the installed folder. Result (research R7 T001, T005): same with `/Brepro`; the bundler patches 3 marker bytes. | D1, D11 |
 | F2 | The Bun 1.4.4 CLI flags for the Windows title, publisher, version, description, and copyright, and the PE `VersionInfo` fields they set. The docs show the `Bun.build` form only (research R1). | Local: Windows. `bun build --compile` a stub, read `(Get-Item).VersionInfo`. | D8 |
 | F3 | A `--config` overlay replaces `installerHooks`, and the installed `DisplayName` is "Arbareto". | Local: package, Sandbox. Read the uninstall key. | D8 |
 | F4 | `git fetch --depth 1 <url> <commit>` works on github.com for both pins. | Local: network. | D6 |

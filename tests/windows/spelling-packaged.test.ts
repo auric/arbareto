@@ -16,6 +16,7 @@ import { fixtureDir, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { printOrigin } from "../origin";
 import { languageFixture } from "../support/language-fixture";
+import type { CatalogEntry } from "../../src/contracts/dictionaries";
 import { MOD, type Cdp } from "./cdp";
 import { decodePng, formatMeasurement, measure, THRESHOLD } from "./contrast";
 import { encodeInputs, INPUT_BYTES, keystroke, type KeyEvent as InputEvent } from "./inject";
@@ -23,7 +24,6 @@ import { appEnv, COMMIT_VIEW, powershellJson } from "./installed-app";
 import {
   ACTION_WAIT_MS,
   browserVersion,
-  CACHE_SKIP,
   cachedEntry,
   cachedText,
   caret,
@@ -425,44 +425,54 @@ describe.skipIf(process.platform !== "win32")("T041 packaged spell check", () =>
     caseTimeout(40),
   );
 
+  // N4 on the current text scale. With `fa`, the text adds a Persian line (spec SC-009).
+  async function n4(fa: CatalogEntry | null): Promise<void> {
+    const scale = textScale();
+    console.log(`OBSERVATION ${TASK}: N4 text scale ${scale}%`);
+    const persian = fa === null ? null : languageFixture(cachedText(fa, "index.aff"), cachedText(fa, "index.dic"));
+    const persianLine = persian === null ? null : `${persian.positives[0]} ${persian.negatives[0]} ${persian.positives[1]}`;
+    const { s } = await session(fa === null ? "n4" : "n4-fa", (profile) => {
+      if (fa === null) return;
+      installDictionary(profile, fa);
+      setSpelling(profile, { enabled: true, languages: ["en", "fa"] });
+    });
+    try {
+      await toCommitView(s);
+      const text = persianLine === null ? N4_TEXT : `${N4_TEXT}
+${persianLine}`;
+      await marked(s, text, persianLine === null ? N4_MARKS : [...N4_MARKS, persian!.negatives[0]!]);
+      await physical(async () => {
+        const spans = await markRects(s.app.pid, s.c);
+        const field = await find(s.app.pid, MESSAGE, MAX_WAIT_MS, ControlType.Edit);
+        try {
+          for (const { word, rect } of spans) {
+            const ranges = textRects(field, word);
+            console.log(`OBSERVATION ${TASK}: N4 scale=${scale} word=${word} uia=${js(ranges)} mirror=${js(rect)}`);
+            expect({ word, one: ranges?.length === 1, within: ranges?.length === 1 && within1(ranges[0]!, rect) }).toEqual({ word, one: true, within: true });
+          }
+        } finally {
+          field.release();
+        }
+      });
+    } finally {
+      await stop(s);
+    }
+  }
+
   test.skipIf(reason !== null)(
-    "N4, Q13: at the current text scale, the UIA TextPattern rect of each marked word equals its mirror span rect within 1 device pixel, also for a Persian line",
+    "N4, Q13: at the current text scale, the UIA TextPattern rect of each marked word equals its mirror span rect within 1 device pixel",
     async () => {
       const scale = textScale();
-      console.log(`OBSERVATION ${TASK}: N4 text scale ${scale}%`);
       for (const other of SCALES.filter((v) => v !== scale)) console.log(`SKIP ${TASK} N4 at ${other}%: missing capability text-scale-${other} (unverified; set Settings > Accessibility > Text size to ${other}% and run again)`);
-      const fa = cachedEntry("fa");
-      if (fa === null) console.log(`SKIP ${TASK} N4 Persian line: ${CACHE_SKIP} (unverified)`);
-      const persian = fa === null ? null : languageFixture(cachedText(fa, "index.aff"), cachedText(fa, "index.dic"));
-      const persianLine = persian === null ? null : `${persian.positives[0]} ${persian.negatives[0]} ${persian.positives[1]}`;
-      const { s } = await session("n4", (profile) => {
-        if (fa === null) return;
-        installDictionary(profile, fa);
-        setSpelling(profile, { enabled: true, languages: ["en", "fa"] });
-      });
-      try {
-        await toCommitView(s);
-        const text = persianLine === null ? N4_TEXT : `${N4_TEXT}\n${persianLine}`;
-        await marked(s, text, persianLine === null ? N4_MARKS : [...N4_MARKS, persian!.negatives[0]!]);
-        await physical(async () => {
-          const spans = await markRects(s.app.pid, s.c);
-          const field = await find(s.app.pid, MESSAGE, MAX_WAIT_MS, ControlType.Edit);
-          try {
-            for (const { word, rect } of spans) {
-              const ranges = textRects(field, word);
-              console.log(`OBSERVATION ${TASK}: N4 scale=${scale} word=${word} uia=${js(ranges)} mirror=${js(rect)}`);
-              expect({ word, one: ranges?.length === 1, within: ranges?.length === 1 && within1(ranges[0]!, rect) }).toEqual({ word, one: true, within: true });
-            }
-          } finally {
-            field.release();
-          }
-        });
-      } finally {
-        await stop(s);
-      }
+      await n4(null);
     },
     caseTimeout(30),
   );
+
+  const { entry: fa, skip: faCache } = cachedEntry("fa");
+  const faSkip = reason ?? faCache;
+  if (faSkip !== null) console.log(`SKIP ${TASK} N4 Persian line: ${faSkip} (unverified)`);
+  test.skipIf(faSkip !== null)("N4, Q13, SC-009: at the current text scale, each mark of a Persian line has the UIA TextPattern rect of its mirror span within 1 device pixel", () => n4(fa), caseTimeout(30));
 
   // Research.md R12 N5: the composition must come from the Japanese IME. No harness of tests/windows switches the input method of the app window.
   const imeSkip = reason ?? (japaneseIme() ? "ime-driver: no test harness drives a Japanese IME composition" : "japanese-ime: no Japanese input method in Get-WinUserLanguageList");

@@ -22,9 +22,10 @@ import { untrackedFixture } from "../git/workbench-fixtures";
 import { connectPage, freePort, MOD, watchIpc, type Cdp, type IpcLog } from "./cdp";
 import { appEnv, COMMIT_VIEW, descendants, findInstalledApp, powershellJson, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess, type ProcessRecord } from "./installed-app";
 import { PERF_CACHE_ROOT } from "./perf-fixtures";
+import { goneAt, seen, startPoller, type Sample } from "./process-poller";
 import { close, ControlType, expand, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
 
-for (const helper of ["./cdp.ts", "./uia.ts", "./installed-app.ts", "../git/file-actions-fixtures.ts", "../git/history-diff-fixtures.ts", "../git/workbench-fixtures.ts"]) printOrigin(helper, import.meta.dir);
+for (const helper of ["./cdp.ts", "./process-poller.ts", "./uia.ts", "./installed-app.ts", "../git/file-actions-fixtures.ts", "../git/history-diff-fixtures.ts", "../git/workbench-fixtures.ts"]) printOrigin(helper, import.meta.dir);
 
 const TASK = "T061";
 const STEP_MS = MAX_WAIT_MS + MAX_CALL_MS;
@@ -36,6 +37,8 @@ const STEP_LIMIT_MS = 60_000;
 const OPEN_WAIT_MS = 120_000;
 // Contract Δ3 `readBlame`: the blame step has the history process deadline (120 s).
 const BLAME_WAIT_MS = 120_000;
+// The poller loop ends by itself after this time. One blame run lasts far less.
+const POLLER_LIFETIME_MS = 5 * 60_000;
 
 // ---- Budgets (spec SC-001, SC-002, SC-005, SC-006, SC-009; 001 SC-005; 004 SC-007) ----
 
@@ -529,34 +532,47 @@ describe.skipIf(process.platform !== "win32")("T061 packaged inspection timing a
         const blameButton = `[...document.querySelectorAll('[data-section=historyDiff] button')].find((e) => e.textContent.trim() === 'Blame')`;
         const status = `(document.querySelector('[data-slot=blame-view] [role=status]')?.textContent ?? '')`;
         const cancel = `[...document.querySelectorAll('[data-slot=blame-view] button')].find((e) => e.textContent.trim() === 'Cancel')`;
-        const blameGit = () => descendants(s.app.pid).filter((r) => r.name.toLowerCase() === "git.exe" && / blame /.test(r.commandLine ?? "")).map((r) => r.pid);
+        // A Git blame process below the app, created at or after `start`. `base` holds the app tree before the blame.
+        const blameGit = (base: ProcessRecord[], start: bigint) => (r: ProcessRecord, sample: Sample) =>
+          / blame /.test(r.commandLine ?? "") && r.created !== null && BigInt(r.created) >= start && descendants(s.app.pid, [...base, ...sample.records]).includes(r);
         // One run: Blame from the History diff, then Cancel. The exit time of each Git blame process gives the Cancel time.
         async function run(ignoreList: boolean): Promise<{ progress: number | null; cancel: number }> {
           await selectRow(s.c, cached.oids.tip!);
           await until<string>(s.c, "the big.txt diff", diffHeader, (v) => v.includes("big.txt"));
           await focusOn(s.c, blameButton, "Blame");
-          // Spec FR-063: without an ignore list Git gives counts, so the first progress is the first "Blaming… <n> of <total> lines".
-          let progress: number | null = null;
-          if (ignoreList) {
+          const base = processRecords().filter((r) => r.name.toLowerCase() !== "git.exe");
+          const poller = await startPoller("git.exe", POLLER_LIFETIME_MS, PROBE_TIMEOUT_MS);
+          try {
+            const start = systemTime();
+            // Spec FR-063: without an ignore list Git gives counts, so the first progress is the first "Blaming… <n> of <total> lines".
+            let progress: number | null = null;
+            if (ignoreList) {
+              await press(s.c, "Enter");
+              await until<string>(s.c, "the busy state", status, (v) => v === "Blaming…");
+            } else progress = (await timed(s.c, [`/^Blaming… [\\d,]+ of [\\d,]+ lines$/.test(${status})`], () => press(s.c, "Enter")))[0]!;
+            const procs = await poller.until((samples) => {
+              const found = seen(samples, blameGit(base, start));
+              return found.length > 0 ? found : null;
+            }, STEP_LIMIT_MS);
+            const held = holdProcesses(procs.map((r) => r.pid));
+            await focusOn(s.c, cancel, "Cancel");
+            expect((await s.c.evaluate<string>(status)).startsWith("Blaming")).toBe(true);
+            const at = systemTime();
             await press(s.c, "Enter");
-            await until<string>(s.c, "the busy state", status, (v) => v === "Blaming…");
-          } else progress = (await timed(s.c, [`/^Blaming… [\\d,]+ of [\\d,]+ lines$/.test(${status})`], () => press(s.c, "Enter")))[0]!;
-          const pids = blameGit();
-          expect(pids.length).toBeGreaterThan(0);
-          const held = holdProcesses(pids);
-          await focusOn(s.c, cancel, "Cancel");
-          expect((await s.c.evaluate<string>(status)).startsWith("Blaming")).toBe(true);
-          const at = systemTime();
-          await press(s.c, "Enter");
-          const ended = held.exits(10 * CANCEL_MS);
-          expect(ended.every((t) => t !== null)).toBe(true);
-          const last = (ended as bigint[]).reduce((a, b) => (a > b ? a : b));
-          // FILETIME counts 100 ns units. A negative time means that Git ended before the Cancel, so the run measures nothing.
-          const cancelMs = Number(last - at) / 10_000;
-          expect(cancelMs).toBeGreaterThanOrEqual(0);
-          await press(s.c, "Escape");
-          await until<boolean>(s.c, "the History list", `!document.querySelector('[data-slot=blame-view]')`, (v) => v);
-          return { progress, cancel: cancelMs };
+            const ended = held.exits(10 * CANCEL_MS);
+            expect(ended.every((t) => t !== null)).toBe(true);
+            const last = (ended as bigint[]).reduce((a, b) => (a > b ? a : b));
+            // FILETIME counts 100 ns units. A negative time means that Git ended before the Cancel, so the run measures nothing.
+            const cancelMs = Number(last - at) / 10_000;
+            expect(cancelMs).toBeGreaterThanOrEqual(0);
+            await press(s.c, "Escape");
+            await until<boolean>(s.c, "the History list", `!document.querySelector('[data-slot=blame-view]')`, (v) => v);
+            // A sample after the Cancel holds none of the blame processes.
+            await poller.until((samples) => goneAt(samples, procs, at), 10 * CANCEL_MS);
+            return { progress, cancel: cancelMs };
+          } finally {
+            poller.stop();
+          }
         }
         const plain = { progress: [] as number[], cancel: [] as number[] };
         for (let i = 0; i <= RUNS; i++) {

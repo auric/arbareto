@@ -100,7 +100,12 @@ export interface IpcHold {
 export async function holdIpc(c: Cdp, ipc: IpcLog, command: string, ms: number): Promise<IpcHold> {
   // `networkId` is the `Network` request ID of the held call.
   const held: { requestId: string; networkId: unknown }[] = [];
-  const off = c.on("Fetch.requestPaused", (p) => void held.push({ requestId: p.requestId as string, networkId: p.networkId }));
+  let preflightError: unknown;
+  // WebView2 also pauses the CORS preflight (method OPTIONS) and sends the POST only after the preflight continues.
+  const off = c.on("Fetch.requestPaused", (p) => {
+    if ((p.request as { method: string }).method === "OPTIONS") void c.send("Fetch.continueRequest", { requestId: p.requestId }).catch((error) => void (preflightError ??= error));
+    else held.push({ requestId: p.requestId as string, networkId: p.networkId });
+  });
   async function release(): Promise<void> {
     try {
       for (const h of held) await c.send("Fetch.continueRequest", { requestId: h.requestId });
@@ -116,7 +121,7 @@ export async function holdIpc(c: Cdp, ipc: IpcLog, command: string, ms: number):
     if (performance.now() < end) continue;
     const state = `held ${held.length}, in flight and not held ${JSON.stringify(free())}`;
     await release();
-    throw new Error(`the ${command} calls were not held within ${ms} ms: ${state}`);
+    throw new Error(`the ${command} calls were not held within ${ms} ms: ${state}`, { cause: preflightError });
   }
   return { release };
 }

@@ -20,6 +20,20 @@
         { "run": 3, "baselineBytes": 222515200, "peakBytes": 494309376, "increaseBytes": 271794176, "loadMs": 498, "count": 10 }
       ],
       "note": "Run 3 added 259.2 MiB of WebView2 private bytes. The limit is 256 MiB (spec FR-017, SC-004)."
+    },
+    {
+      "id": "fy",
+      "step": 4,
+      "limitBytes": 268435456,
+      "date": "2026-10-26",
+      "build": "0.1.0 e7e8562627c731173ba80959029c78312419e08d",
+      "webview2": "Edg/155.0.4283.62",
+      "runs": [
+        { "run": 1, "baselineBytes": 225849344, "peakBytes": 507543552, "increaseBytes": 281694208, "loadMs": 1006, "count": 10 },
+        { "run": 2, "baselineBytes": 224870400, "peakBytes": 446562304, "increaseBytes": 221691904, "loadMs": 1002, "count": 10 },
+        { "run": 3, "baselineBytes": 228634624, "peakBytes": 512602112, "increaseBytes": 283967488, "loadMs": 1005, "count": 10 }
+      ],
+      "note": "Runs 1 and 3 added 268.6 and 270.8 MiB of WebView2 private bytes. The limit is 256 MiB (spec FR-017, SC-004)."
     }
   ]
 }

@@ -658,3 +658,14 @@ Independent batch 2 review, reviewer agent, read-only, on 4d4ba72a (the merges o
 - N2 (measured): a key opens the menu with the focus on "Ignore", because "Finding suggestions…" holds the first item. The focus stays on "Ignore" when the suggestions arrive (plan.md D15).
 - Q26 (measured): in forced colors, the focused item got `HighlightText` on `Highlight`, but its label span kept `var(--accent-foreground)` from the shadcn item class. The text contrast was 1.10:1.
 - Q26 (measured, build de9f673e-dirty): the Chromium accessibility tree gave the Selected languages row no name. WAI-ARIA 1.2 gives `listitem` "Name From: author", so the row text is not its name. Each row now has the name of plan.md D17.
+
+### T045 run 2, 2026-10-26, Windows 11 10.0.26300, build e7e85626, WebView2 Edg/155.0.4283.62
+
+- Method: the packaged gate of plan.md D3, unchanged from the T043 rerun. The values come from the `OBSERVATION T042: gate` lines and the `GATE_FAILURE T042` line by a script.
+- Result: 83 of the 84 catalog languages passed. The highest passing increase was 242.9 MiB (tr). The largest gap between two samples was 1,068 ms (eu).
+- fy failed step 4: its increase per run was 268.6, 211.4, and 270.8 MiB, and the limit is 256 MiB (spec FR-017, SC-004). Its loads were 1,002 to 1,006 ms, and each run gave the count 10. `scripts/dictionary-gate.json` holds the fy entry with its byte values. Alone, fy gave 287, 277, and 292 MiB.
+- Rebuild: `bun scripts/dictionary-catalog.ts --offline` wrote 83 entries. The fy entry is the only change in `src/contracts/dictionaries.json`.
+- Comparison with build 604bd271 (investigator): the median increase per language rose by about 5 MiB (73 languages up, 11 down). The run-to-run spread is 8 MiB.
+- The cause of the rise is not proven. The gate text is one line, so the mirror change cannot explain it. The harness change is ruled out.
+- The largest part of the increase is the WebAssembly memory of the two spell workers.
+- N4 (measured): Chromium clips UI Automation TextPattern rects to the visible text box. The Persian word on line 3 sat at the clipped bottom edge of the 34 CSS px field, so UI Automation gave the height 13 against 18 in the mirror. The test now scrolls the field to the line of each word before it measures.

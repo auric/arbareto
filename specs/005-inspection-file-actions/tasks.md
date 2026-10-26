@@ -265,6 +265,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 
 - [ ] T090 [US1] Build the changed-files sort keys and rows without per-row byte arrays or names in `src/frontend/history/CommitChanges.tsx` and `src/contracts/tree-order.ts` (plan.md D3, D4). Cause: `treeOrder` builds a `Uint8Array` and a `subarray` for each path component, and `commitRows` decodes a name for each of the 100,000 rows. The Q6 renderer peak grew by about 193 MiB, and the sort and rows took about 1 s. Fix: `tree-order.ts` gets `compareNameStrings`, `treeStringKey`, and `compareStringKeys` over byte strings (one code unit per byte, as `atob` gives), with the fold and compare rules of `compareNames` and `compareKeys`. A file row keeps only its entry, and the shown row decodes its name and folder. Tests first in `tests/contracts/tree-order.test.ts`: the string order equals `compareKeys` for upper and lower case, non-ASCII bytes, invalid UTF-8 bytes, file and folder ties, and submodule rows, over fixed vectors and a random table. Control mutation: drop the raw-byte tie in `compareNameStrings`; the cases must fail. Then rerun the packaged Q6. Spec: FR-015, FR-016, FR-068, SC-002.
 - [ ] T091 Render only the regions that read the operation state when it changes, in `src/frontend/app/Workbench.tsx` (plan.md D15). Cause: one `setOperation` at the Workbench root rendered the References sidebar, the History list, and the ignore editor, which stay mounted behind the Commit view. The Delete's Enter took about 55 ms of main-thread work in Q32. Fix: `React.memo` wraps `ReferencesSidebar`, `HistoryList`, and `IgnoreEditor`, and their callbacks keep one identity. The sidebar groups after the references read the operation state, so a context feeds them. Tests first in the new `tests/contracts/workbench-renders.test.tsx`: a Delete start and its progress call neither `ReferencesSidebar` nor `HistoryList`. Add the file to `tests/groups.json` `parallel`. Control mutation: drop the memo of `ReferencesSidebar`; the case must fail. Then rerun the packaged Q32. Spec: SC-009.
+- [ ] T102 Build the Changes and Staged tree rows one folder level at a time in `src/frontend/changes/file-tree.ts` (plan.md D4, 004 plan.md D15 "Virtual tree"). `Local: package`. Cause: the open of the Untracked section with 100,000 entries took 140 ms to 200 ms in Q32. `treeRows` decoded each path again with `atob` and built the full tree on each call, although the folders start collapsed. Fix: the cached sort of each read keeps the decoded paths and one root folder per list. A folder builds its children on first use, and the walk builds only the shown levels. The rows, the order, the counts, the keys, and the filter results stay the same. Tests first in `tests/contracts/inspection-tree.test.tsx`: the rows equal the rows of the eager feature 004 tree for closed, collapsed, partly open, and fully open states, with and without a filter, over nested folders, one-child chains, code-unit names, equal prefixes, and non-ASCII names; the open decodes no path again and calls the filter only for the shown folder row. Control: the eager tree fails the decode case. Then run the packaged Q32 three times. Spec: SC-009.
 
 ### Batch 2 verification
 
@@ -371,7 +372,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - T063 run fixes (T082–T086, T092, T099): after T080. T082 and T083 need a new package before their packaged rerun. Then T063 runs again.
 - Blame focus fix (T100): after T044. Then T063 runs again.
 - Packaged harness fixes (T101): after T099. Then T063 runs again.
-- Renderer performance fixes (T090, T091): after T083. Both need a new package before the packaged Q6 and Q32 reruns. Then T063 runs again.
+- Renderer performance fixes (T090, T091, T102): after T083. They need a new package before the packaged Q6 and Q32 reruns. Then T063 runs again.
 
 ### Changes to earlier requirements and their tasks
 
@@ -428,7 +429,7 @@ Then:          T027
 | SC-006 | T022, T061, T084, T099, T101 |
 | SC-007 | T035, T060, T092 |
 | SC-008 | T006, T008, T027 |
-| SC-009 | T061, T084, T091, T092 |
+| SC-009 | T061, T084, T091, T092, T102 |
 | SC-010 | T051, T058, T060 |
 | SC-011 | T005, T027, T047, T058, T062 |
 

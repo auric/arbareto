@@ -718,6 +718,8 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
     let ownerGeneration: number | null = t.requestGeneration ?? null;
     const end = (outcome: ReadOutcome): Attempt => {
       finish();
+      // Contract §8 "Change check" (T408): a failed read and a read limited with OBJECT_MISSING clear the tuple, so the next poll runs Git.
+      if (outcome.result === "failed" || outcome.result === "limited") st.kept = null;
       if (outcome.result === "failed") st.unavailable = outcome.code === "REPOSITORY_UNAVAILABLE";
       else if (outcome.result !== "canceled" && outcome.result !== "deadline") st.unavailable = false;
       if ("value" in outcome) outcome.value.recoveryState = recoveryOf(st, w);

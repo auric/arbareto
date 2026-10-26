@@ -183,9 +183,8 @@ export function trimTrailingSpaces(line: string): string {
 const TRUST = new Set(["TRUST_REQUIRED", "TRUST_CHANGED"]);
 // Plan D8: `none` takes LF, because `encodeIgnore` writes LF for it. A `mixed` file gets no form.
 const preselect = (form: IgnoreFile["lineEnding"]): LineEnding | null => (form === "mixed" ? null : form === "crlf" ? "crlf" : "lf");
-/** The request field: the choice when it differs from the preselection, so a `mixed` file always sends its choice. */
-const formField = (e: IgnoreEditorState): { lineEnding?: LineEnding } =>
-  e.loaded !== null && e.lineEnding !== null && e.lineEnding !== preselect(e.loaded.lineEnding) ? { lineEnding: e.lineEnding } : {};
+/** Plan D8: each request carries the selected form. The service decides from the bytes on disk, which a save can change. */
+const formField = (e: IgnoreEditorState): { lineEnding?: LineEnding } => (e.lineEnding === null ? {} : { lineEnding: e.lineEnding });
 
 /** One store per window: the docked ignore editor and its discard modal (spec FR-034 to FR-046). */
 export function createIgnoreEditor(deps: IgnoreEditorDeps) {

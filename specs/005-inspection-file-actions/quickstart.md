@@ -70,7 +70,7 @@ Use only the README "Development" commands:
 | Q32 | Input latency during each read and action of this feature (packaged). | `tests/windows/inspection-perf.test.ts` | 95% of inputs within 100 ms, every input within 500 ms. | SC-009 |
 | Q33 | The WSL rows of Q4, Q12 to Q16, Q18 to Q20, Q23, Q26, and Q27 in Ubuntu-26.04. | `tests/wsl/inspection-wsl.test.ts` | Same results through the distro's Git. No remaining process after Cancel or close. | FR-043, FR-052 |
 | Q34 | Review of the requirement-to-test map. | review checklist | No outcome depends on Git message text, timing, or a name pattern. | SC-011 |
-| Q35 | Open a `.gitignore` of 2,000 lines in the editor, and move the caret to the last line (packaged, CDP). | `tests/windows/inspection-packaged.test.ts` | Only the `textarea` scrolls. The editor panel and the comparison region have no scroll range (`scrollHeight` equals `clientHeight`). | FR-035 |
+| Q35 | Open a `.gitignore` of 200 lines in the editor with a row action, which puts the caret on the added last line. Scroll the text box to its top (packaged, CDP). | `tests/windows/inspection-packaged.test.ts` | Only the `textarea` scrolls. The editor panel and the comparison region have no scroll range (`scrollHeight` equals `clientHeight`). | FR-035 |
 
 ## Manual checks in the packaged build
 

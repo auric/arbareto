@@ -157,7 +157,7 @@ describe("preview (FR-038 to FR-041, plan D9)", () => {
     expect(double.count("previewIgnore")).toBe(0);
     await pause(450);
     const first = previewCall(double);
-    expect(first.args[1]).toEqual({ target: "gitignore", text: utf8("*.log\n"), snapshotId: expect.any(String) });
+    expect(first.args[1]).toEqual({ target: "gitignore", text: utf8("*.log\n"), snapshotId: expect.any(String), lineEnding: "lf" });
     const status = preview().querySelector('[role="status"]')!;
     expect(text(status)).toBe("Updating preview…");
     (first.args[2] as (event: unknown) => void)({ requestId: fixtureId(0x8d2), operationId: fixtureId(0x8d3), state: "running", phase: "preview", counters: {}, stalled: false });
@@ -304,7 +304,7 @@ describe("save, close, and keys (FR-042, FR-044, FR-046, plan D15)", () => {
     const { double } = await opened();
     await click(button("Save", editor()!));
     const review = double.pending("reviewWorkbench")!;
-    expect(review.args[1]).toEqual({ action: "ignore-save", target: "gitignore", text: utf8("node_modules/\n/notes.txt\n"), expected: { size: 13, sha256: SHA } });
+    expect(review.args[1]).toEqual({ action: "ignore-save", target: "gitignore", text: utf8("node_modules/\n/notes.txt\n"), expected: { size: 13, sha256: SHA }, lineEnding: "lf" });
     await answer(review, saveReviewed);
     const run = double.pending("runWorkbench")!;
     expect(run.args[1]).toEqual({ workbenchToken: fixtureId(0x8e0), start: true });
@@ -683,9 +683,9 @@ describe("Line endings (T097, FR-037, US5-11, US5-12)", () => {
     await answer(double.pending("runWorkbench"), succeeded({ action: "ignore-save", outcome: "replaced" }));
     expect(checked()).toEqual(["CRLF"]);
     expect(text(editor()!)).not.toContain("Mixed (");
-    // The saved form is the file form now, so the next save sends no form.
+    // Plan D8: each save carries the selected form.
     await click(button("Save", editor()!));
-    expect(double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "ignore-save", target: "exclude", text: utf8("a\nb\n"), expected: { size: 6, sha256: "b".repeat(64) } });
+    expect(double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "ignore-save", target: "exclude", text: utf8("a\nb\n"), expected: { size: 6, sha256: "b".repeat(64) }, lineEnding: "crlf" });
   });
 
   test("CRLF for an LF file converts it: both requests carry the form (US5-12)", async () => {
@@ -699,13 +699,27 @@ describe("Line endings (T097, FR-037, US5-11, US5-12)", () => {
     expect(double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "ignore-save", target: "gitignore", text: utf8("*.log\n"), expected: { size: 13, sha256: SHA }, lineEnding: "crlf" });
   });
 
-  test("a CRLF file without a choice sends no form in the preview and the save", async () => {
+  test("a CRLF file without a choice sends its preselected form in the preview and the save", async () => {
     const { double } = await setup();
     await openFrom(double, "notes.txt", "Add to .gitignore…", loaded("node_modules/", { lineEnding: "crlf" }));
     await typeInto(field(), "*.log\n");
     await pause(450);
-    expect(previewCall(double).args[1]).toEqual({ target: "gitignore", text: utf8("*.log\n"), snapshotId: expect.any(String) });
+    expect(previewCall(double).args[1]).toEqual({ target: "gitignore", text: utf8("*.log\n"), snapshotId: expect.any(String), lineEnding: "crlf" });
     await click(button("Save", editor()!));
-    expect(double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "ignore-save", target: "gitignore", text: utf8("*.log\n"), expected: { size: 13, sha256: SHA } });
+    expect(double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "ignore-save", target: "gitignore", text: utf8("*.log\n"), expected: { size: 13, sha256: SHA }, lineEnding: "crlf" });
+  });
+
+  test("a CRLF file saved down to one line without a line break keeps CRLF in the next save (plan D8)", async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt", "Add to .gitignore…", loaded("node_modules/", { lineEnding: "crlf" }));
+    await typeInto(field(), "foo");
+    await click(button("Save", editor()!));
+    expect(double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "ignore-save", target: "gitignore", text: utf8("foo"), expected: { size: 13, sha256: SHA }, lineEnding: "crlf" });
+    await answer(double.pending("reviewWorkbench"), succeeded({ action: "ignore-save", plan: { target: "gitignore", file: "C:\\repo\\.gitignore", size: 3, sha256: "b".repeat(64) }, workbenchToken: fixtureId(0x8e3) }));
+    await answer(double.pending("runWorkbench"), succeeded({ action: "ignore-save", outcome: "replaced" }));
+    expect(checked()).toEqual(["CRLF"]);
+    await typeInto(field(), "foo\nbar");
+    await click(button("Save", editor()!));
+    expect(double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "ignore-save", target: "gitignore", text: utf8("foo\nbar"), expected: { size: 3, sha256: "b".repeat(64) }, lineEnding: "crlf" });
   });
 });

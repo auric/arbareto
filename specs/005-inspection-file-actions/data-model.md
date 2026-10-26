@@ -77,7 +77,7 @@ Each section names its source. Field names are contract names. "001 data-model Â
 ## 7. Ignore preview
 
 - Source: plan D9.
-- Request: `target`, `text` (base64 of the UTF-8 bytes of the editor text, LF form, at most 1 MiB decoded), `snapshotId` (the shown `readWorkspace` snapshot), and the optional `lineEnding` (`lf` or `crlf`, the user choice). The candidate takes `lineEnding` when present, else the file form, and LF for a `mixed` file. Git drops one CR before each LF, so the form changes no preview verdict (plan D9 "Trigger").
+- Request: `target`, `text` (base64 of the UTF-8 bytes of the editor text, LF form, at most 1 MiB decoded), `snapshotId` (the shown `readWorkspace` snapshot), and the optional `lineEnding` (`lf` or `crlf`, the selected form). The renderer sends it always when a form is selected (plan D8). The candidate takes `lineEnding` when present, else the file form, and LF for a `mixed` file. Git drops one CR before each LF, so the form changes no preview verdict (plan D9 "Trigger").
 - Base (service memory only, one per workspace and target):
   - `snapshotId`, `target`, the S text bytes (the file on disk at base build).
   - `tracked`: the T paths with mode, stage, and the skip-worktree tag.
@@ -98,7 +98,7 @@ Each section names its source. Field names are contract names. "001 data-model Â
 - Source: plan D10.
 - `workbenchToken`, lifetime 60 s.
 - `target`, `file`, `expected` (the loaded state).
-- Request `lineEnding`: optional, `lf` or `crlf`. A `mixed` file requires it, else `INVALID_REQUEST` after the size and digest check. Any other file may carry it as a conversion.
+- Request `lineEnding`: optional, `lf` or `crlf`. A `mixed` file requires it, else `INVALID_REQUEST` after the size and digest check. Any other file may carry it. The renderer sends the selected form always when one is selected (plan D8). A form other than the file form is a conversion.
 - `bytes`: the BOM when the file has one, then the text in the request form for all lines, or in the file's line-ending form without a request form.
 - `after`: `{size, sha256}` of `bytes`.
 - `bound`: `expected`, the repository generation, and the Arbareto mutation markers (001 FR-015). The Git operation state and the conflicted count are not bound, because Save runs during an unfinished operation and with conflicts (spec FR-046).

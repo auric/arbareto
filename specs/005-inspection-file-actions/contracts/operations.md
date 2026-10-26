@@ -80,7 +80,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 ### `previewIgnore`
 
-- Payload: `{target, text, snapshotId, lineEnding?}`. `lineEnding` is `lf` or `crlf`, the user choice of plan D8. The candidate bytes take it for all lines. Without it, a file of one form keeps its form, and a `mixed` file takes LF. Git drops one CR before each LF (dir.c v2.56.0), so both forms give the same preview. `text` is the base64 of the UTF-8 bytes of the editor text. The decoded bytes are at most 1 MiB, strict UTF-8, and hold no NUL, else `INVALID_REQUEST`. A CR byte in `text` gives `INVALID_REQUEST` for `previewIgnore` and `ignore-save`, because the editor text holds LF line ends only (plan D8). The renderer checks `isWellFormed()` before it encodes, because `TextEncoder` replaces a lone surrogate (plan D9). One read slot. The renderer sends it 400 ms after the last edit and cancels the running one (001 §5 "Pending reads").
+- Payload: `{target, text, snapshotId, lineEnding?}`. `lineEnding` is `lf` or `crlf`, the selected form of plan D8. The renderer sends it always when a form is selected, also a preselected form. The candidate bytes take it for all lines. Without it, a file of one form keeps its form, and a `mixed` file takes LF. Git drops one CR before each LF (dir.c v2.56.0), so both forms give the same preview. `text` is the base64 of the UTF-8 bytes of the editor text. The decoded bytes are at most 1 MiB, strict UTF-8, and hold no NUL, else `INVALID_REQUEST`. A CR byte in `text` gives `INVALID_REQUEST` for `previewIgnore` and `ignore-save`, because the editor text holds LF line ends only (plan D8). The renderer checks `isWellFormed()` before it encodes, because `TextEncoder` replaces a lone surrogate (plan D9). One read slot. The renderer sends it 400 ms after the last edit and cancels the running one (001 §5 "Pending reads").
 - Read gate: 001 §7 `reads`, because `ls-files` loads the index.
 - Repository commands:
   - `--no-lazy-fetch --no-optional-locks --literal-pathspecs ls-files -z --stage -v`.
@@ -111,7 +111,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 - New payload forms:
   - `{action: "delete", snapshotId, entryIds, folder?, mode: "recycle" | "permanent"}`. `entryIds` holds 1 to 10,000 unique IDs. `folder` holds the base64 folder bytes of a folder row.
-  - `{action: "ignore-save", target, text, expected, lineEnding?}`. `text` as `previewIgnore` (base64 UTF-8 bytes). A CR byte in `text` gives `INVALID_REQUEST` before any Git process. `expected` is `"absent"` or `{size, sha256}`. `lineEnding` is `lf` or `crlf`.
+  - `{action: "ignore-save", target, text, expected, lineEnding?}`. `text` as `previewIgnore` (base64 UTF-8 bytes). A CR byte in `text` gives `INVALID_REQUEST` before any Git process. `expected` is `"absent"` or `{size, sha256}`. `lineEnding` is `lf` or `crlf`. The renderer sends the selected form always when one is selected (plan D8).
 - The form `{action: "ignore", …}` goes.
 - Common refusals (004 Δ3) now apply to `delete` too: `OPERATION_IN_PROGRESS`, `unknown-operation`, and `CONFLICTED` with the count, because Delete counts as a mutation for 001 FR-015 and FR-016 (spec FR-033).
 - `ignore-save` keeps the 004 exception of the action `ignore`: `OPERATION_IN_PROGRESS`, `unknown-operation`, and `CONFLICTED` do not refuse it, because Save changes no Git state (spec FR-046). A running mutation gives `BUSY` (001 FR-015). The stale check stays.

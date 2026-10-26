@@ -376,9 +376,12 @@ function runsBoundCommand(args: readonly string[]): boolean {
   return args[i] === "clone" || (args[i] === "worktree" && args[i + 1] === "add");
 }
 
-// Feature 004 contract Δ3 and Δ6: `worktree add [-b <new>] -- <path> <commit>`. The shell also checks the path against its binding (src-tauri `worktree_add_fits`).
+// Feature 004 contract Δ3 and Δ6: `worktree add [[--track] -b <new>] -- <path> <commit>`. The shell also checks the path against its binding (src-tauri `worktree_add_fits`).
 const worktreeAddForm = (args: readonly string[]): boolean =>
-  args[0] === "--no-lazy-fetch" && args[1] === "worktree" && args[2] === "add" && (args.length === 6 ? args[3] === "--" : args.length === 8 && args[3] === "-b" && args[5] === "--");
+  args[0] === "--no-lazy-fetch" &&
+  args[1] === "worktree" &&
+  args[2] === "add" &&
+  (args.length === 6 ? args[3] === "--" : args.length === 8 ? args[3] === "-b" && args[5] === "--" : args.length === 9 && args[3] === "--track" && args[4] === "-b" && args[6] === "--" && args[8]!.length > 13 && args[8]!.startsWith("refs/remotes/"));
 
 // Feature 005 contract Δ6: the fixed arrays of an `ignorePreview` context (src-tauri/src/shadow.rs `fits`).
 // The arrays that read or write a working-tree file carry `-c core.longpaths=true` after `--no-lazy-fetch` on Windows only.

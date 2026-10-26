@@ -673,6 +673,41 @@
                       ],
                       "additionalProperties": false,
                       "title": "WorktreeAddExisting"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "track": {
+                          "type": "object",
+                          "properties": {
+                            "ref": {
+                              "type": "string",
+                              "minLength": 1,
+                              "pattern": "^[^\\u0000]*$"
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "pattern": "^[^\\u0000]*$"
+                            }
+                          },
+                          "required": [
+                            "ref",
+                            "name"
+                          ],
+                          "additionalProperties": false
+                        },
+                        "oid": {
+                          "type": "string",
+                          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                        }
+                      },
+                      "required": [
+                        "track",
+                        "oid"
+                      ],
+                      "additionalProperties": false,
+                      "title": "WorktreeAddTrack"
                     }
                   ]
                 },

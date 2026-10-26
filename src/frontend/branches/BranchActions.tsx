@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { Copy01Icon, Delete02Icon, GitBranchIcon, GitCompareArrowsIcon, GitMergeIcon, PencilEdit02Icon, PlusSignIcon, Upload04Icon } from "@hugeicons/core-free-icons";
+import { Copy01Icon, Delete02Icon, FolderGitIcon, GitBranchIcon, GitCompareArrowsIcon, GitMergeIcon, PencilEdit02Icon, PlusSignIcon, Upload04Icon } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type RefObject } from "react";
 import type { WorkspaceSnapshot } from "../../contracts/envelope";
@@ -18,6 +18,7 @@ import { isObject } from "../lib/utils";
 import type { BranchEntry, Workbench } from "../state/workbench";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { reviewWithTrust, WORKBENCH_TRUST, type AskTrust } from "../trust/ask";
+import type { AddSelection } from "../worktrees/AddWorktreePanel";
 import { OUTCOME, refusalText, STASH, T } from "./texts";
 
 // Feature 004 spec FR-009 to FR-020, plan.md D3, D4, D15, D16, data-model §3 and §4, contract Δ3 and Δ14.
@@ -65,6 +66,8 @@ export type BranchActionsOptions = {
   /** The WP13 Merge and Rebase panels. Without one, its item states that it cannot start here. `opener` is the row or label that started the action. */
   onMerge?(entry: BranchEntry, opener: Element | null): void;
   onRebase?(entry: BranchEntry, opener: Element | null): void;
+  /** Opens the Add worktree panel with the selection (spec FR-052). Without it, the item states that it cannot start here. */
+  onAddWorktree?(selection: AddSelection, opener: Element | null): void;
   /** Feature 004 plan.md D12 "Ask": a review that needs trust asks once, then runs again. */
   askTrust?: AskTrust;
 };
@@ -82,7 +85,7 @@ const RUN_TEXTS: Record<string, [string, string, string]> = {
 
 /** The branch actions of the toolbar list, the references sidebar, and the history labels. It returns the actions and their overlays. */
 export function useBranchActions(options: BranchActionsOptions) {
-  const { bridge, target, repositoryId, refsDigest, onOperation, workbench, head, blockedReason, blockedRunning = false, onNotice, onOpenWorktree, push, onShowBranchHistory, onMerge, onRebase, askTrust } = options;
+  const { bridge, target, repositoryId, refsDigest, onOperation, workbench, head, blockedReason, blockedRunning = false, onNotice, onOpenWorktree, push, onShowBranchHistory, onMerge, onRebase, onAddWorktree, askTrust } = options;
   const snapshot = () => workbench.getState().branches;
   const branches = useSyncExternalStore(workbench.subscribe, snapshot, snapshot);
   const [overlay, setOverlay] = useState<Overlay | null>(null);
@@ -264,9 +267,26 @@ export function useBranchActions(options: BranchActionsOptions) {
     });
   }
 
+  /**
+   * Spec FR-052 branch menu: the Add worktree selection of `entry`, or its own unavailable reason.
+   * A remote branch acts as the local branch of its `localName` when that branch exists.
+   */
+  function addWorktreeOf(entry: BranchEntry): { reason: string; selection?: undefined } | { reason: null; selection: AddSelection } {
+    let local = entry;
+    if (entry.kind === "remote") {
+      if (entry.localName === null) return { reason: T.addNoLocalName };
+      const named = entryOf(`refs/heads/${entry.localName}`);
+      if (named === null) return { reason: null, selection: { track: { ref: entry.ref, name: entry.localName } } };
+      local = named;
+    }
+    if (local.current) return { reason: T.addCurrent };
+    if (local.heldBy !== null) return { reason: T.otherWorktree(local.heldBy) };
+    return { reason: null, selection: { existing: local.ref } };
+  }
+
   /** The unavailable reason of each action on `entry`, or null (spec FR-014, FR-017, plan D4). */
   /** `blocked` collects the actions whose reason is `blockedReason`. */
-  function reasons(entry: BranchEntry, blocked?: Set<string>): Record<ScopedAction | "push", string | null> {
+  function reasons(entry: BranchEntry, blocked?: Set<string>): Record<ScopedAction | "push" | "addWorktree", string | null> {
     const isCurrent = entry.kind === "local" && entry.current;
     const noCurrent = head?.state === "detached" ? T.detachedReason : head?.state === "unborn" ? T.noCommit : null;
     const block = (action: string) => (blockedReason !== null && blocked?.add(action), blockedReason);
@@ -276,6 +296,7 @@ export function useBranchActions(options: BranchActionsOptions) {
       merge: integrate("merge", T.mergeCurrent(entry.name), onMerge),
       rebase: integrate("rebase", T.rebaseCurrent(entry.name), onRebase),
       createBranch: block("createBranch"),
+      addWorktree: addWorktreeOf(entry).reason ?? block("addWorktree") ?? (onAddWorktree === undefined ? T.noPanel : null),
       rename: block("rename"),
       delete: isCurrent ? T.deleteCurrent : entry.heldBy !== null ? T.otherWorktree(entry.heldBy) : block("delete"),
       push: isCurrent ? push.reason : T.pushOther,
@@ -294,7 +315,7 @@ export function useBranchActions(options: BranchActionsOptions) {
   }
 
   /** Runs a D15 key or a menu item on `entry`. An unavailable action shows its reason in the status bar. */
-  function act(entry: BranchEntry, action: ScopedAction | "push", anchor: Element | null) {
+  function act(entry: BranchEntry, action: ScopedAction | "push" | "addWorktree", anchor: Element | null) {
     const reason = reasons(entry)[action];
     if (reason !== null) return onNotice(reason);
     if (action === "switch") startSwitch(entry, anchor, false);
@@ -304,31 +325,35 @@ export function useBranchActions(options: BranchActionsOptions) {
     else if (action === "rename" && entry.kind === "local") setOverlay({ kind: "rename", anchor, entry, name: entry.name, error: null });
     else if (action === "delete" && entry.kind === "local") startDelete(entry);
     else if (action === "push") push.run();
+    else if (action === "addWorktree") {
+      const { selection } = addWorktreeOf(entry);
+      if (selection !== undefined) onAddWorktree?.(selection, anchor);
+    }
   }
 
   function menuGroups(entry: BranchEntry, copy: (text: string) => void): ActionItem[][] {
     const blocked = new Set<string>();
     const r = reasons(entry, blocked);
-    const item = (label: string, action: ScopedAction | "push", icon: IconSvgElement, danger = false): ActionItem => ({
+    const item = (label: string, action: ScopedAction | "push" | "addWorktree", icon: IconSvgElement, danger = false): ActionItem => ({
       label,
       icon,
-      keys: action === "push" ? undefined : { aria: KEYS[action].aria, text: KEYS[action].text },
+      keys: action === "push" || action === "addWorktree" ? undefined : { aria: KEYS[action].aria, text: KEYS[action].text },
       reason: r[action],
       running: action === "push" ? entry.kind === "local" && entry.current && push.quiet === true : blockedRunning && blocked.has(action),
       danger,
       onSelect: () => {
         // Base UI returns the menu focus after the new panel or popover took it, so these items keep the focus where they put it.
-        handoff.current = r[action] === null && (action === "merge" || action === "rebase" || action === "createBranch" || action === "rename" || (action === "switch" && entry.kind === "remote"));
+        handoff.current = r[action] === null && (action === "merge" || action === "rebase" || action === "createBranch" || action === "addWorktree" || action === "rename" || (action === "switch" && entry.kind === "remote"));
         setMenu(null);
         act(entry, action, menu?.anchor ?? null);
       },
     });
-    // D16 "Branch menu groups": (1) Switch, Merge, Rebase; (2) Create branch here, Rename, Delete; (3) Push, Copy branch name.
+    // D16 "Branch menu groups": (1) Switch, Merge, Rebase; (2) Create branch here, Add worktree for this branch, Rename, Delete; (3) Push, Copy branch name.
     const copyItem: ActionItem = { label: T.copy, icon: Copy01Icon, onSelect: () => (setMenu(null), copy(entry.name)) };
     const integrate = [item(T.switch, "switch", GitBranchIcon), item(T.merge(current), "merge", GitMergeIcon), item(T.rebase(current, entry.name), "rebase", GitCompareArrowsIcon)];
-    const create = item(T.createHere, "createBranch", PlusSignIcon);
-    if (entry.kind === "remote") return [integrate, [create], [copyItem]];
-    const groups = [integrate, [create, item(T.rename, "rename", PencilEdit02Icon), item(T.delete, "delete", Delete02Icon, true)], [item(T.push, "push", Upload04Icon), copyItem]];
+    const create = [item(T.createHere, "createBranch", PlusSignIcon), item(T.addWorktree, "addWorktree", FolderGitIcon)];
+    if (entry.kind === "remote") return [integrate, create, [copyItem]];
+    const groups = [integrate, [...create, item(T.rename, "rename", PencilEdit02Icon), item(T.delete, "delete", Delete02Icon, true)], [item(T.push, "push", Upload04Icon), copyItem]];
     // 002 FR-049 change: the item stays on the current branch.
     if (entry.current) groups.push([{ label: SHOW_BRANCH_HISTORY, keys: { aria: "Control+Shift+B", text: "Ctrl+Shift+B" }, onSelect: () => (setMenu(null), onShowBranchHistory()) }]);
     return groups;

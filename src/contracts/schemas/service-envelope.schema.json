@@ -2569,6 +2569,36 @@
                       ],
                       "additionalProperties": false,
                       "title": "WorktreeExistingBranch"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "track": {
+                          "type": "object",
+                          "properties": {
+                            "ref": {
+                              "type": "string",
+                              "pattern": "^[^\\u0000]*$"
+                            },
+                            "name": {
+                              "type": "string",
+                              "minLength": 1,
+                              "maxLength": 255,
+                              "pattern": "^[^\\u0000]*$"
+                            }
+                          },
+                          "required": [
+                            "ref",
+                            "name"
+                          ],
+                          "additionalProperties": false
+                        }
+                      },
+                      "required": [
+                        "track"
+                      ],
+                      "additionalProperties": false,
+                      "title": "WorktreeTrackBranch"
                     }
                   ]
                 },

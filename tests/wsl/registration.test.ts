@@ -482,6 +482,52 @@ describe("WSL registration seams (T207)", () => {
     CASE_TIMEOUT_MS,
   );
 
+  // T409, contract §6 "Dismissal": without a session Git, a saved approval that matches exactly decides a WSL marker dismissal.
+  // A dismissal never shows the Git confirmation.
+  wslTest(
+    "T409: after a service restart, a WSL marker dismissal with a saved Git that matches exactly decides by the common-directory identity, and no confirmation shows",
+    ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "perl"],
+    async (host) => {
+      const other = wslMarker(host, folder(host), OTHER_INODE);
+      const same = wslMarker(host, folder(host), SEAM_GIT_INODE);
+      const { runner, s } = setup(host);
+      const repo = seamRepository(host, runner);
+      expect(await s.response(s.chooseRepository(repo.path))).toMatchObject({ state: "succeeded" });
+      expect(runner.wslConfirmations).toHaveLength(1);
+      const next = startSession(runner, { markers: [other, same] });
+      expect(await dismissed(next, runner, other.markerId, repo.path)).toMatchObject({ state: "succeeded", result: { outcome: "unknown" } });
+      expect(await dismissed(next, runner, same.markerId, repo.path)).toMatchObject(REFUSED);
+      expect(runner.wslConfirmations).toHaveLength(1);
+      expect(runner.spawned).toBe(0);
+      expectNoScope(host);
+    },
+    CASE_TIMEOUT_MS,
+  );
+
+  for (const [label, change] of [
+    ["version", { version: "2.55.1" }],
+    ["Git path", { git: "/usr/local/bin/git" }],
+    ["identity", { gitIdentity: "1:1:1:1" }],
+  ] as const) {
+    wslTest(
+      `T409: after a service restart, a WSL marker dismissal with a saved Git of another ${label} gives STATE_UNKNOWN, and no confirmation shows`,
+      ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "perl"],
+      async (host) => {
+        const other = wslMarker(host, folder(host), OTHER_INODE);
+        const { runner, s } = setup(host);
+        const repo = seamRepository(host, runner);
+        expect(await s.response(s.chooseRepository(repo.path))).toMatchObject({ state: "succeeded" });
+        const saved = runner.wslSaved.get(host.guid)!;
+        runner.wslSaved.set(host.guid, { ...saved, ...change });
+        const next = startSession(runner, { markers: [other] });
+        expect(await dismissed(next, runner, other.markerId, repo.path)).toMatchObject(REFUSED);
+        expect(runner.wslConfirmations).toHaveLength(1);
+        expectNoScope(host);
+      },
+      CASE_TIMEOUT_MS,
+    );
+  }
+
   wslTest(
     "T115: a WSL marker of an earlier distro GUID with the same name is decided with the approved Git of the current distro, and is allowed",
     ["wsl-fixture-fs-id", "systemd-user-manager", "setsid", "perl"],

@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import * as LIMITS from "../../src/contracts/limits";
 import { probeGit, type GitInstallation } from "../../src/git-service/git-installation";
@@ -13,7 +13,7 @@ import { createTrust, type ConfigEntry } from "../../src/git-service/trust";
 import { printOrigin } from "../origin";
 import { FIXTURE_ROOT, ownedGit, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { cachedF16Status } from "../windows/fixture-cache";
-import { buildF01, buildF02, buildF03, buildF05, buildF06, buildF10, F16_STATUS_RECORDS, put, type Built } from "./fixtures";
+import { buildF01, buildF02, buildF03, buildF05, buildF06, buildF10, buildF17, F16_STATUS_RECORDS, put, type Built } from "./fixtures";
 import { GIT } from "./git-binary";
 import type { CallMatch } from "./bun-runner";
 import { indexEntries, rawIndexDigest } from "./git-oracle";
@@ -578,6 +578,46 @@ describe("F16 status bounds (contract §5)", () => {
     },
     TIMEOUT_MS,
   );
+
+  // T408, contract §8 "Change check": a failed read and a read limited with OBJECT_MISSING clear the kept tuple.
+  // The tuple holds no object store file, so a moved pack folder keeps the tuple equal.
+  for (const [variant, expected] of [
+    ["partial", { state: "limited", code: "OBJECT_MISSING" }],
+    ["plain", { state: "failed", code: "GIT_FAILED" }],
+  ] as const) {
+    caseTest(
+      "T408",
+      `${variant}: a check "changes" poll after a read that ends ${expected.state} with ${expected.code} runs Git and gives ${expected.code} again`,
+      ["shell-double"],
+      async () => {
+        const service = await openService({ git: gitPath(), name: `t408-${variant}`, watchHints: false });
+        try {
+          const git = gitPath();
+          const repo = variant === "partial" ? f(buildF17(git, "t408-partial", "partial-reset-soft"), "clone") : f(buildF02(git, "t408-plain"));
+          // Without a promisor remote, a status that cannot read an object gives GIT_FAILED (contract §7 "Missing objects").
+          if (variant === "plain") ownedGit(git, FIXTURE_ROOT, repo, ["repack", "-a", "-d", "-q"]);
+          const { repositoryId } = await service.register(repo);
+          const read = async (payload: { refresh: boolean; check: "full" | "changes" }) => {
+            const before = service.runner.calls.length;
+            const response = await service.readWorkspace(repositoryId, payload);
+            return { response, runs: service.runner.calls.length - before };
+          };
+          // Contract §8 "New candidates": the second full read makes the compared tuple.
+          await read({ refresh: false, check: "full" });
+          expect(outcome((await read({ refresh: false, check: "full" })).response)).toEqual({ state: "succeeded", code: undefined });
+          const pack = join(repo, ".git", "objects", "pack");
+          renameSync(pack, `${pack}.moved`);
+          mkdirSync(pack);
+          expect(outcome((await read({ refresh: true, check: "full" })).response)).toEqual(expected);
+          const poll = await read({ refresh: false, check: "changes" });
+          expect({ ...outcome(poll.response), git: poll.runs > 0 }).toEqual({ ...expected, git: true });
+        } finally {
+          await service.dispose();
+        }
+      },
+      TIMEOUT_MS,
+    );
+  }
 
   // T403, contract §3 `readWorkspace`: a `retained` result holds the summary and `entryCount`, and no entries page.
   caseTest(

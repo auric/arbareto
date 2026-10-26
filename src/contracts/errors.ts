@@ -151,7 +151,7 @@ export const WORKBENCH_UNAVAILABLE_REASONS = [
   "ignore-folder",
   "ignore-not-utf8",
   "ignore-nul",
-  "mixed-line-endings",
+  "ignore-lone-cr",
 ] as const;
 export type WorkbenchUnavailableReason = (typeof WORKBENCH_UNAVAILABLE_REASONS)[number];
 export const UNTRACKED_IN_WAY_REASONS = ["untracked-in-way"] as const;

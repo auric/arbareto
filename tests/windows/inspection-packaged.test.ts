@@ -451,6 +451,39 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
   );
 
   test.skipIf(reason !== null)(
+    "Q35, FR-035, T093: with the caret on the last line of a 200-line .gitignore and the text box at its top, only the text box scrolls; the comparison region and the editor panel have no scroll range",
+    async () => {
+      const f = buildFiles(GIT!, "t093-scroll");
+      // Comment lines ignore nothing, so the Changes rows stay.
+      writeFileSync(join(f.repo, ".gitignore"), Array.from({ length: 200 }, (_, i) => `# line ${i + 1}\n`).join(""));
+      const s = await session("ignore-scroll", f.repo);
+      try {
+        await toCommitView(s.app.pid);
+        await revealRow(s.c, "u1.txt");
+        // The row action adds line 201 and puts the caret on it.
+        await menuAction(s.c, changesRow("u1.txt"), ADD_TO_GITIGNORE);
+        const field = `document.querySelector('[data-slot=ignore-editor] textarea')`;
+        await until<boolean>(s.c, "the editor with the added line", `!!${field} && ${field}.value.endsWith('/u1.txt\\n')`, (v) => v, ACTION_WAIT_MS);
+        await s.c.evaluate(`${field}.scrollTop = 0; ${field}.dispatchEvent(new Event('scroll')); true`);
+        await settle(s.c);
+        const box = (selector: string) => `(() => { const e = document.querySelector(${js(selector)}); return { scrollHeight: e.scrollHeight, clientHeight: e.clientHeight }; })()`;
+        const measured = {
+          field: await s.c.evaluate<{ scrollHeight: number; clientHeight: number }>(box("[data-slot=ignore-editor] textarea")),
+          comparison: await s.c.evaluate<{ scrollHeight: number; clientHeight: number }>(box("[data-section=comparison]")),
+          editor: await s.c.evaluate<{ scrollHeight: number; clientHeight: number }>(box("[data-slot=ignore-editor]")),
+        };
+        console.log(`SCROLL ${TASK}: ${js(measured)}`);
+        expect(measured.field.scrollHeight).toBeGreaterThan(measured.field.clientHeight);
+        expect(measured.comparison.scrollHeight).toBe(measured.comparison.clientHeight);
+        expect(measured.editor.scrollHeight).toBe(measured.editor.clientHeight);
+      } finally {
+        await end(s);
+      }
+    },
+    caseTimeout(30),
+  );
+
+  test.skipIf(reason !== null)(
     "SC-010: the row menu and the Delete confirmation have names, visible focus, and a text contrast of at least 4.5:1 in Dark, Light, and forced colors, also for the danger items",
     async () => {
       const f = buildFiles(GIT!, "t060-contrast");

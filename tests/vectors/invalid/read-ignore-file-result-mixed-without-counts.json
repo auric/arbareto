@@ -1,0 +1,11 @@
+{
+  "schema": "read-ignore-file-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"target\":\"exclude\",\"file\":\"//host/repo/.git/info/exclude\",\"state\":\"file\",\"text\":\"a\\nb\\n\",\"lineEnding\":\"mixed\",\"bom\":false,\"expected\":{\"size\":5,\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}}",
+  "repair": {
+    "lineCounts": {
+      "lf": 1,
+      "crlf": 1
+    }
+  }
+}

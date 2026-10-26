@@ -110,9 +110,10 @@ export type Workbench = ReturnType<typeof createWorkbench>;
 // ---- Feature 005 plan.md D8 to D10 and D15 "State": the ignore editor ----
 
 export type IgnoreTarget = "gitignore" | "exclude";
-type Loaded = Pick<IgnoreFile, "target" | "file" | "state" | "text" | "expected">;
+type Loaded = Pick<IgnoreFile, "target" | "file" | "state" | "text" | "expected" | "lineEnding" | "lineCounts">;
+export type LineEnding = "lf" | "crlf";
 type PreviewResult = Extract<z.infer<typeof PreviewIgnoreResult>, { preview: unknown }>["preview"];
-/** `invalid`: the text fails `isWellFormed()` (plan D9). `trust`: the read gate refused (contract Δ7). */
+/** `invalid`: the text fails `isWellFormed()` (plan D9). `trust`: the read gate refused (contract Δ7). The renderer reason `no-snapshot`: no target or status snapshot (plan D15). */
 export type IgnorePreview =
   | { state: "idle" }
   | { state: "updating" }
@@ -121,7 +122,7 @@ export type IgnorePreview =
   | { state: "failed"; code: string }
   | { state: "trust" }
   | { state: "invalid" };
-/** `refusal` names the open refusal reason, or `code:<code>` for a failed read. A programmatic selection takes a new `seq`. */
+/** `refusal` names the open refusal reason, or `code:<code>` for a failed read. A programmatic selection takes a new `seq`. `lineEnding` is the "Line endings" choice, null before a choice for a `mixed` file (plan D8). */
 export type IgnoreEditorState = {
   target: IgnoreTarget;
   loaded: Loaded | null;
@@ -132,6 +133,7 @@ export type IgnoreEditorState = {
   stale: boolean;
   notice: string | null;
   saving: boolean;
+  lineEnding: LineEnding | null;
 };
 export type IgnoreState = { editor: IgnoreEditorState | null; discard: { file: string; then: () => void } | null };
 
@@ -179,6 +181,10 @@ export function trimTrailingSpaces(line: string): string {
   return lastSpace < 0 ? line : line.slice(0, lastSpace);
 }
 const TRUST = new Set(["TRUST_REQUIRED", "TRUST_CHANGED"]);
+// Plan D8: `none` takes LF, because `encodeIgnore` writes LF for it. A `mixed` file gets no form.
+const preselect = (form: IgnoreFile["lineEnding"]): LineEnding | null => (form === "mixed" ? null : form === "crlf" ? "crlf" : "lf");
+/** Plan D8: each request carries the selected form. The service decides from the bytes on disk, which a save can change. */
+const formField = (e: IgnoreEditorState): { lineEnding?: LineEnding } => (e.lineEnding === null ? {} : { lineEnding: e.lineEnding });
 
 /** One store per window: the docked ignore editor and its discard modal (spec FR-034 to FR-046). */
 export function createIgnoreEditor(deps: IgnoreEditorDeps) {
@@ -206,14 +212,14 @@ export function createIgnoreEditor(deps: IgnoreEditorDeps) {
     stopPreview();
     const t = deps.target();
     const mine = ++readSeq;
-    set({ editor: { target, loaded: null, refusal: null, text: "", selection: { start: 0, end: 0, seq: ++seq }, preview: { state: "idle" }, stale: false, notice: null, saving: false } });
+    set({ editor: { target, loaded: null, refusal: null, text: "", selection: { start: 0, end: 0, seq: ++seq }, preview: { state: "idle" }, stale: false, notice: null, saving: false, lineEnding: null } });
     if (t === null) return;
     const response = await deps.bridge.readIgnoreFile(t, { target });
     if (mine !== readSeq || state.editor?.target !== target) return;
     const result = response.result as (Partial<IgnoreFile> & { reason?: unknown }) | undefined;
-    if (response.state === "succeeded" && typeof result?.text === "string" && typeof result.file === "string" && result.expected !== undefined && result.state !== undefined) {
-      const loaded = { target, file: result.file, state: result.state, text: result.text, expected: result.expected };
-      patch({ loaded, text: loaded.text, selection: { start: loaded.text.length, end: loaded.text.length, seq: ++seq } });
+    if (response.state === "succeeded" && typeof result?.text === "string" && typeof result.file === "string" && result.expected !== undefined && result.state !== undefined && result.lineEnding !== undefined) {
+      const loaded = { target, file: result.file, state: result.state, text: result.text, expected: result.expected, lineEnding: result.lineEnding, lineCounts: result.lineCounts };
+      patch({ loaded, text: loaded.text, lineEnding: preselect(loaded.lineEnding), selection: { start: loaded.text.length, end: loaded.text.length, seq: ++seq } });
       if (line !== undefined) addLine(line);
       return;
     }
@@ -251,11 +257,12 @@ export function createIgnoreEditor(deps: IgnoreEditorDeps) {
     const e = state.editor;
     const t = deps.target();
     const snapshotId = deps.snapshotId();
-    if (e === null || t === null || snapshotId === null) return;
+    if (e === null) return;
+    if (t === null || snapshotId === null) return patch({ preview: { state: "unavailable", reason: "no-snapshot" } });
     const mine = { operationId: null as string | null };
     running = mine;
     patch({ preview: { state: "updating" } });
-    const response = await deps.bridge.previewIgnore(t, { target: e.target, text: base64(e.text), snapshotId }, (event) => void (mine.operationId = event.operationId));
+    const response = await deps.bridge.previewIgnore(t, { target: e.target, text: base64(e.text), snapshotId, ...formField(e) }, (event) => void (mine.operationId = event.operationId));
     if (running !== mine) return;
     running = null;
     const result = response.result as { preview?: PreviewResult; unavailable?: { reason?: unknown } } | undefined;
@@ -282,10 +289,11 @@ export function createIgnoreEditor(deps: IgnoreEditorDeps) {
   async function save() {
     const e = state.editor;
     const t = deps.target();
-    if (e === null || e.loaded === null || e.saving || t === null || !e.text.isWellFormed()) return;
+    if (e === null || e.loaded === null || e.saving || e.lineEnding === null || t === null || !e.text.isWellFormed()) return;
     const text = e.text;
+    const form = e.lineEnding;
     patch({ saving: true, notice: null, stale: false });
-    const review = await deps.bridge.reviewWorkbench(t, { action: "ignore-save", target: e.target, text: base64(text), expected: e.loaded.expected });
+    const review = await deps.bridge.reviewWorkbench(t, { action: "ignore-save", target: e.target, text: base64(text), expected: e.loaded.expected, ...formField(e) });
     const reviewed = (review.result ?? {}) as { action?: unknown; workbenchToken?: unknown; plan?: { size: number; sha256: string } };
     const token = reviewed.workbenchToken;
     const plan = reviewed.plan;
@@ -297,7 +305,7 @@ export function createIgnoreEditor(deps: IgnoreEditorDeps) {
     const now = state.editor;
     if (now === null || now.target !== e.target || now.loaded === null) return;
     const outcome = (response.result as { outcome?: unknown } | undefined)?.outcome;
-    if (response.state === "succeeded") return patch({ saving: false, loaded: { ...now.loaded, state: "file", text, expected: { size: plan.size, sha256: plan.sha256 } } });
+    if (response.state === "succeeded") return patch({ saving: false, loaded: { ...now.loaded, state: "file", text, expected: { size: plan.size, sha256: plan.sha256 }, lineEnding: form, lineCounts: undefined } });
     if (outcome === "stale") return patch({ saving: false, stale: true });
     refused(response);
   }
@@ -315,6 +323,7 @@ export function createIgnoreEditor(deps: IgnoreEditorDeps) {
       guard(() => void load(target, line));
     },
     edit: (text: string) => edit(text),
+    setLineEnding: (lineEnding: LineEnding) => patch({ lineEnding }),
     guard,
     keepEditing: () => set({ discard: null }),
     discard() {

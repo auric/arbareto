@@ -37,6 +37,14 @@ The user gave these decisions, and accepted every recommended default of the fea
 - Q: Does Save of the ignore editor run during a merge or a rebase with conflicts? → A: Yes. Save changes no Git state, and the 004 ignore action ran then too. Delete stays blocked then (FR-033, FR-046).
 - Q: Which `blame.ignoreRevsFile` values count when one value is empty? → A: Blame follows Git exactly (user decision of 2026-10-21, fact F7). Git uses every non-empty value from every configuration scope. An empty configuration value does not reset the list. The Git doc says otherwise (`config/blame.adoc:24-28`), but `builtin/blame.c:771` and `:941-947` decide (FR-059).
 
+### Session 2026-10-25
+
+The user reported two ignore editor problems and asked to edit a file with mixed line endings.
+
+- Q: What does the editor do with a file that has both LF and CRLF lines? → A: It opens the file for editing at once. A "Line endings" control with "LF" and "CRLF" shows in every editor and preselects the form of the file. A mixed file has nothing preselected and the note "Mixed (<n> LF, <m> CRLF)". Save waits for a choice. Git reads both forms the same (research.md R7). The user can also convert a file of one form on purpose (FR-037).
+- Q: What does the editor do with a CR that no LF follows? → A: It refuses to open the file, as before, with its own reason (FR-037).
+- Q: What does the preview area show before the first edit? → A: "Change the text to see its effect on ignored files." (FR-041).
+
 ## User Scenarios & Testing *(mandatory)*
 
 Feature 001 shows the commit details of a selected history row, with the static line "Changed files are not shown in this version." Feature 004 adds the Commit view with file trees, Show in Explorer for a file, a one-line ignore action, and the Submodules group. This feature makes history inspectable and makes the Commit view a place to act on files. Git Extensions is the reference for the functions, and Arbareto must be faster and safer.
@@ -122,7 +130,7 @@ A developer selects "Add to .gitignore…" on a row. A docked editor shows the w
 
 **Why this priority**: The one-line dialog adds a fixed line. Users need a pattern, such as `*.log`, and need to see what it hides before the save.
 
-**Independent Test**: In disposable fixtures with negations, nested `.gitignore` files, ignored folders, CRLF files, a BOM, and an empty file, type each candidate text. Compare the preview with the ignored set that Git lists after a real save on a copy. Change the file on disk before Save and check that Save refuses.
+**Independent Test**: In disposable fixtures with negations, nested `.gitignore` files, ignored folders, CRLF files, files with both LF and CRLF lines, a BOM, and an empty file, type each candidate text. Compare the preview with the ignored set that Git lists after a real save on a copy. Change the file on disk before Save and check that Save refuses.
 
 **Acceptance Scenarios**:
 
@@ -136,6 +144,8 @@ A developer selects "Add to .gitignore…" on a row. A docked editor shows the w
 8. **Given** a `.gitignore` with CRLF line endings. **When** I add a line and save. **Then** every line of the saved file ends with CRLF.
 9. **Given** unsaved text in "Edit .gitignore". **When** I select "Add to .gitignore…" on another row. **Then** its line is added at the end and selected. **When** I select Open submodule. **Then** "Discard changes to .gitignore?" opens first.
 10. **Given** the editor text already holds the line "/logs/". **When** I select "Add to .gitignore…" on the logs row. **Then** the editor adds no line and selects the existing line.
+11. **Given** an `info/exclude` with 3 LF lines and 2 CRLF lines. **When** I select "Edit info/exclude". **Then** the editor opens for editing, "Line endings" has no option selected, and the note "Mixed (3 LF, 2 CRLF)" shows. Save is unavailable with "Select LF or CRLF before Save.", and the preview runs after an edit. **When** I select "CRLF" and save. **Then** every line of the saved file ends with CRLF, and "Line endings" shows "CRLF".
+12. **Given** a `.gitignore` with LF line endings. **When** I select "CRLF" in "Line endings" and save. **Then** every line of the saved file ends with CRLF.
 
 ---
 
@@ -230,7 +240,8 @@ A developer sees an icon on each local branch whose upstream branch no longer ex
 - A folder Delete covers more entries than the 004 multi-file limit. Delete is unavailable with the limit, and no file goes.
 - Delete is cancelled while it runs. Each file shows its observed state from a fresh read. Cancel is not reported as an undo.
 - `.gitignore` is a symbolic link, a folder, above 1 MiB, not valid UTF-8, or holds a NUL. The editor refuses to open it and names the reason.
-- `.gitignore` mixes LF and CRLF, or holds a lone CR. The editor refuses with the reason "mixed line endings".
+- `.gitignore` mixes LF and CRLF lines. The editor opens it for editing with the count of each form. Save waits until the user selects the form for all lines. Git reads both forms the same.
+- `.gitignore` holds a CR that no LF follows, also as its last byte. The editor refuses to open it and names the reason.
 - `.gitignore` does not exist. The editor opens empty, and Save creates the file with LF line endings.
 - A subfolder `.gitignore` is a symbolic link, or lies inside an ignored folder. Git does not read it. The preview states that it has no effect.
 - On a case-insensitive volume, a listed file name equals `.gitignore` except for letter case. The preview shows "Preview not available" with the reason.
@@ -331,13 +342,13 @@ This feature changes these requirements for builds that include it. The earlier 
 #### Ignore editor
 
 - **FR-034**: The row menus "Add to .gitignore…" and "Add to info/exclude…" MUST open the ignore editor. The editor MUST add the 004 FR-046 line at the end and select it. When the text already holds a line equal to it, the editor MUST add no line. It MUST then select the existing line. The repository menu MUST offer "Edit .gitignore" and "Edit info/exclude". The one-line "Add to .gitignore?" dialog goes.
-- **FR-035**: The editor MUST be a docked, non-modal panel. It MUST show the heading "Edit .gitignore" or "Edit info/exclude", the file path, and line numbers. It MUST offer Save and Close. The `info/exclude` path MUST come from Git.
+- **FR-035**: The editor MUST be a docked, non-modal panel. It MUST show the heading "Edit .gitignore" or "Edit info/exclude", the file path, and line numbers. It MUST offer Save and Close. The `info/exclude` path MUST come from Git. A long file MUST scroll only inside the text box. The panel MUST NOT show a second scroll bar.
 - **FR-036**: The editor MUST open only an absent file or a regular file. A regular file MUST be at most 1 MiB, valid UTF-8, and hold no NUL. A link, a folder, or any other refusal MUST name the reason. A BOM MUST be kept.
-- **FR-037**: Line endings MUST round-trip. A file with only LF MUST save with LF. A file with only CRLF MUST load as LF and save with CRLF. A file with mixed endings or a lone CR MUST refuse with the reason "mixed line endings".
+- **FR-037**: Line endings MUST round-trip. A file with only LF MUST save with LF. A file with only CRLF MUST load as LF and save with CRLF. The editor footer MUST show the control "Line endings" with the options "LF" and "CRLF". It MUST preselect the form of the file. A file without a line break MUST preselect "LF", the form that Save writes for it (FR-042). When the user selects the other form, Save MUST write that form for all lines. A file with both LF and CRLF lines MUST open for editing. It MUST preselect no option and show the note "Mixed (<n> LF, <m> CRLF)". Save MUST stay unavailable for it until the user selects a form, with the reason "Select LF or CRLF before Save." The application MUST NOT select a form for a mixed file by itself. After a save, the control MUST show the saved form. A file with a CR that no LF follows MUST refuse with the reason "CR without an LF".
 - **FR-038**: The preview MUST list exactly the untracked files that Git ignores after a save of the shown text. It MUST compare them with the files that Git ignores now. It MUST show "Newly ignored (<n>)" and "No longer ignored (<n>)". Each group MUST show at most 1,000 paths in tree order and the full count. It MUST state "Tracked files stay tracked." with a count when that count is not zero. The count MUST be the tracked files that the shown text matches and the saved text does not match. The preview MUST NOT write into the worktree, the index, or the Git configuration of the repository.
 - **FR-039**: Before it shows a preview, the application MUST check its method against Git's real listing with the saved text. A difference MUST show "Preview not available: <reason>." The same state MUST show, with a typed reason, when the preview input count exceeds 100,000. That count holds the tracked paths, the untracked paths and folder records of Git's listing, and the folders below an expanded folder. The folder probes above each `.gitignore` do not count (plan D9 `paths`). For this bound, a folder that both texts ignore MUST count as one path. On a case-insensitive volume, the state MUST also show for a listed name that equals `.gitignore` except for case. It MUST also show for every other case that the plan finds without an exact method. The preview MUST never show an approximate list.
 - **FR-040**: The preview MUST show a notice for each subfolder `.gitignore` that Git does not read. This covers a link and a file inside an ignored folder.
-- **FR-041**: The preview MUST update after a pause of the plan length after the last edit. A new update MUST cancel the preview that runs. The editor MUST show "Updating preview…" while a preview runs. Save MUST stay available while the preview runs or is not available. Each preview MUST remove its temporary files after it ends, also after Cancel. The next preview MUST remove the temporary files that a crash left, on Windows and inside the WSL distro.
+- **FR-041**: The preview MUST update after a pause of the plan length after the last edit. A new update MUST cancel the preview that runs. The editor MUST show "Updating preview…" while a preview runs. Before the first edit, the preview area MUST show "Change the text to see its effect on ignored files." When no status read exists for the preview, the preview area MUST show "The preview needs a file status read. Press F5, then change the text." Save MUST stay available while the preview runs or is not available. Each preview MUST remove its temporary files after it ends, also after Cancel. The next preview MUST remove the temporary files that a crash left, on Windows and inside the WSL distro.
 - **FR-042**: Save MUST compare the file on disk with the bytes that the editor loaded. A difference MUST refuse the save and ask for a reload. Save MUST replace the whole file in one atomic step, without following a link. When the loaded file holds no line ending, Save MUST use LF. This covers an absent file, an empty file, and a file of one line. Then the status MUST be read again.
 - **FR-043**: The ignore editor MUST work for a WSL repository. The file bytes MUST come from inside the distro, at most 1 MiB, never through a `\\wsl.localhost` read. The preview MUST run inside the distro. The unsaved text MUST cross into the distro for the preview and the save. The preview path lists MUST cross into the distro on the preview input.
 - **FR-044**: Close with unsaved text MUST open the modal "Discard changes to <file>?" with "Discard" and "Keep editing". The <file> is ".gitignore" or "info/exclude". With unsaved text, a row action for the same file MUST add its line to the current text. It MUST then select that line. A row action for the other file MUST first open the same modal. Every open of another repository MUST also first open it: Open repository, a recent entry, Open of a worktree, the clone start, Open submodule, and Open parent repository.
@@ -383,7 +394,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **Commit changes**: One commit, the chosen parent, and the list of changed files with status, paths, modes, and object IDs. It belongs to one history view.
 - **Delete review**: The paths, the mode (recycle or permanent), the file facts of each path at review, and the expiry time.
 - **Delete result**: The observed outcome of each path and the removed folders.
-- **Ignore file**: The target (root `.gitignore` or `info/exclude`), its bytes and digest at load, its line-ending form, and its BOM.
+- **Ignore file**: The target (root `.gitignore` or `info/exclude`), its bytes and digest at load, its line-ending form (LF, CRLF, none, or mixed with the count of LF lines and CRLF lines), and its BOM. The form that the user selects for Save, if any.
 - **Ignore preview**: The newly ignored files, the no longer ignored files, the count of newly matched tracked files, notices, or a typed reason why no preview exists.
 - **Submodule chain**: The stack of parent repositories, at most 8 levels, each with its recent-repository entry.
 - **Blame result**: The file content at the commit, the runs of lines with their commits, and per commit the author, time, summary, previous commit and path, file name, and boundary state.

@@ -9,7 +9,7 @@ import { printOrigin } from "../origin";
 import { fixtureId } from "./bridge-contract";
 import { b64, contextMenu, entry, expectChromiumFocus, item, menuItem, openCommitView, pressKey, statusBar, typeInto } from "./commit-fake";
 import { stubLayout } from "./history-fake";
-import { answer, button, click, createWorld, settle, succeeded, text, unmountAll, type Call } from "./sync-fake";
+import { answer, button, click, createWorld, REGISTRATION, settle, succeeded, text, unmountAll, type Call } from "./sync-fake";
 
 // tasks.md T049 (feature 005, WP7). Story US5. Spec FR-034 to FR-046, FR-067, FR-068. Plan D8, D9, D10, D15 ("Ignore editor", "Ignore editor keys", "Ignore editor texts").
 
@@ -130,7 +130,7 @@ describe("entry points and layout (FR-034, FR-035, IgnoreEditor board)", () => {
     ["ignore-size", ".gitignore is larger than 1 MiB. Arbareto does not edit it."],
     ["ignore-not-utf8", ".gitignore is not valid UTF-8 text. Arbareto does not edit it."],
     ["ignore-nul", ".gitignore holds a NUL character. Arbareto does not edit it."],
-    ["mixed-line-endings", ".gitignore has mixed line endings, or a CR without an LF. Arbareto does not edit it."],
+    ["ignore-lone-cr", ".gitignore holds a CR without an LF. Arbareto does not edit it."],
     ["path", "Git names an info/exclude path outside the Git folder. Arbareto does not edit it."],
   ];
   for (const [reason, sentence] of refusals) {
@@ -157,7 +157,7 @@ describe("preview (FR-038 to FR-041, plan D9)", () => {
     expect(double.count("previewIgnore")).toBe(0);
     await pause(450);
     const first = previewCall(double);
-    expect(first.args[1]).toEqual({ target: "gitignore", text: utf8("*.log\n"), snapshotId: expect.any(String) });
+    expect(first.args[1]).toEqual({ target: "gitignore", text: utf8("*.log\n"), snapshotId: expect.any(String), lineEnding: "lf" });
     const status = preview().querySelector('[role="status"]')!;
     expect(text(status)).toBe("Updating preview…");
     (first.args[2] as (event: unknown) => void)({ requestId: fixtureId(0x8d2), operationId: fixtureId(0x8d3), state: "running", phase: "preview", counters: {}, stalled: false });
@@ -304,7 +304,7 @@ describe("save, close, and keys (FR-042, FR-044, FR-046, plan D15)", () => {
     const { double } = await opened();
     await click(button("Save", editor()!));
     const review = double.pending("reviewWorkbench")!;
-    expect(review.args[1]).toEqual({ action: "ignore-save", target: "gitignore", text: utf8("node_modules/\n/notes.txt\n"), expected: { size: 13, sha256: SHA } });
+    expect(review.args[1]).toEqual({ action: "ignore-save", target: "gitignore", text: utf8("node_modules/\n/notes.txt\n"), expected: { size: 13, sha256: SHA }, lineEnding: "lf" });
     await answer(review, saveReviewed);
     const run = double.pending("runWorkbench")!;
     expect(run.args[1]).toEqual({ workbenchToken: fixtureId(0x8e0), start: true });
@@ -572,5 +572,154 @@ describe("preview texts (review fixes 4, 5, 7)", () => {
     await openFrom(double, "notes.txt", "Add to .gitignore…", rejected("WORKBENCH_UNAVAILABLE", { reason: "unreadable" }));
     expect(text(editor()!)).toContain("Arbareto cannot read .gitignore.");
     expect(text(editor()!)).not.toContain("unreadable");
+  });
+});
+
+// ---- tasks.md T093, T094, T097 (user report and request of 2026-10-25) ----
+
+describe("the selected-line fill stays inside the text box (T093, FR-035)", () => {
+  test("the wrapper of the fill clips it, and the preview region does not clip", async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt");
+    const wrapper = field().parentElement!;
+    expect(wrapper.querySelector('[aria-hidden="true"]')).not.toBeNull();
+    expect(wrapper.className.split(" ")).toContain("overflow-hidden");
+    // The notices list and the tracked note have no scroller of their own.
+    expect(preview().className.split(" ")).not.toContain("overflow-hidden");
+  });
+});
+
+describe("the preview states before a preview (T094, FR-041)", () => {
+  test("the idle preview shows its text after the open", async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt");
+    expect(text(preview())).toBe("Change the text to see its effect on ignored files.");
+  });
+
+  test("an edit without a status snapshot shows the no-snapshot text and sends no preview", async () => {
+    const { world, double } = await setup();
+    await openFrom(double, "notes.txt");
+    // Registration reuse (contract §6) gives the same repositoryId, so the editor stays open while the new full read runs.
+    world.answers.readWorkspace = undefined;
+    await openMenubar("Repository");
+    await click(menuItem("Open folder…"));
+    // The added line is unsaved text. Discard keeps the editor open with the loaded text.
+    await click(button("Discard", dialog()!));
+    await answer(double.pending("chooseRepository"), succeeded(REGISTRATION));
+    expect(editor()).not.toBeNull();
+    await typeInto(field(), "*.log\n");
+    await pause(450);
+    expect(double.count("previewIgnore")).toBe(0);
+    expect(text(preview())).toBe("The preview needs a file status read. Press F5, then change the text.");
+  });
+});
+
+describe("Line endings (T097, FR-037, US5-11, US5-12)", () => {
+  const group = () => editor()!.querySelector<HTMLElement>('[role="radiogroup"]')!;
+  const radios = () => [...group().querySelectorAll<HTMLInputElement>('input[type="radio"]')];
+  const radio = (label: "LF" | "CRLF") => radios().find((r) => text(r.closest("label")!) === label)!;
+  const checked = () => radios().filter((r) => r.checked).map((r) => text(r.closest("label")!));
+  const EXCLUDE = "C:\\repo\\.git\\info\\exclude";
+  const mixed = loaded("a\nb\nc\nd\ne\n", { target: "exclude", file: EXCLUDE, lineEnding: "mixed", lineCounts: { lf: 3, crlf: 2 } });
+  const reviewed = (size: number) => succeeded({ action: "ignore-save", plan: { target: "exclude", file: EXCLUDE, size, sha256: "b".repeat(64) }, workbenchToken: fixtureId(0x8e2) });
+  async function openMixed() {
+    const ctx = await setup();
+    await openFrom(ctx.double, "notes.txt", "Add to info/exclude…", mixed);
+    return ctx;
+  }
+
+  const forms: [string, Record<string, unknown>, string][] = [
+    ["lf", {}, "LF"],
+    ["crlf", { lineEnding: "crlf" }, "CRLF"],
+    ["none", { lineEnding: "none" }, "LF"],
+  ];
+  for (const [form, fields, shown] of forms) {
+    test(`a ${form} file preselects ${shown}`, async () => {
+      const { double } = await setup();
+      await openFrom(double, "notes.txt", "Add to .gitignore…", loaded("x", fields));
+      expect(text(document.getElementById(group().getAttribute("aria-labelledby")!)!)).toBe("Line endings");
+      expect(group().closest('[data-slot="ignore-actions"]')).not.toBeNull();
+      expect(checked()).toEqual([shown]);
+      expect(text(editor()!)).not.toContain("Mixed (");
+    });
+  }
+
+  test("an absent file preselects LF", async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt", "Add to info/exclude…", succeeded({ target: "exclude", file: EXCLUDE, state: "absent", text: "", lineEnding: "none", bom: false, expected: "absent" }));
+    expect(checked()).toEqual(["LF"]);
+  });
+
+  test("a mixed file opens editable with no option, the note, Save unavailable with its reason, and a preview (US5-11)", async () => {
+    const { double } = await openMixed();
+    expect(checked()).toEqual([]);
+    expect(text(document.getElementById(group().getAttribute("aria-describedby")!)!)).toBe("Mixed (3 LF, 2 CRLF)");
+    expect(field().readOnly || field().disabled).toBe(false);
+    const save = button("Save", editor()!);
+    expect(save.getAttribute("aria-disabled") === "true" || save.hasAttribute("disabled")).toBe(true);
+    expect(text(document.getElementById(save.getAttribute("aria-describedby")!)!)).toBe("Select LF or CRLF before Save.");
+    await click(save);
+    await pressKey(field(), "s", { ctrlKey: true });
+    expect(double.count("reviewWorkbench")).toBe(0);
+    await typeInto(field(), "a\nb\n");
+    await pause(450);
+    expect(previewCall(double).args[1]).toEqual({ target: "exclude", text: utf8("a\nb\n"), snapshotId: expect.any(String) });
+  });
+
+  test("CRLF for a mixed file goes in the preview and the save; after the save the control shows CRLF without the note", async () => {
+    const { double } = await openMixed();
+    await click(radio("CRLF"));
+    expect(checked()).toEqual(["CRLF"]);
+    const save = button("Save", editor()!);
+    expect(save.hasAttribute("disabled") || save.getAttribute("aria-disabled") === "true").toBe(false);
+    expect(save.getAttribute("aria-describedby")).toBeNull();
+    await typeInto(field(), "a\nb\n");
+    await pause(450);
+    expect(previewCall(double).args[1]).toEqual({ target: "exclude", text: utf8("a\nb\n"), snapshotId: expect.any(String), lineEnding: "crlf" });
+    await click(save);
+    const review = double.pending("reviewWorkbench")!;
+    expect(review.args[1]).toEqual({ action: "ignore-save", target: "exclude", text: utf8("a\nb\n"), expected: { size: 10, sha256: SHA }, lineEnding: "crlf" });
+    await answer(review, reviewed(6));
+    await answer(double.pending("runWorkbench"), succeeded({ action: "ignore-save", outcome: "replaced" }));
+    expect(checked()).toEqual(["CRLF"]);
+    expect(text(editor()!)).not.toContain("Mixed (");
+    // Plan D8: each save carries the selected form.
+    await click(button("Save", editor()!));
+    expect(double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "ignore-save", target: "exclude", text: utf8("a\nb\n"), expected: { size: 6, sha256: "b".repeat(64) }, lineEnding: "crlf" });
+  });
+
+  test("CRLF for an LF file converts it: both requests carry the form (US5-12)", async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt");
+    await click(radio("CRLF"));
+    await typeInto(field(), "*.log\n");
+    await pause(450);
+    expect(previewCall(double).args[1]).toEqual({ target: "gitignore", text: utf8("*.log\n"), snapshotId: expect.any(String), lineEnding: "crlf" });
+    await click(button("Save", editor()!));
+    expect(double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "ignore-save", target: "gitignore", text: utf8("*.log\n"), expected: { size: 13, sha256: SHA }, lineEnding: "crlf" });
+  });
+
+  test("a CRLF file without a choice sends its preselected form in the preview and the save", async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt", "Add to .gitignore…", loaded("node_modules/", { lineEnding: "crlf" }));
+    await typeInto(field(), "*.log\n");
+    await pause(450);
+    expect(previewCall(double).args[1]).toEqual({ target: "gitignore", text: utf8("*.log\n"), snapshotId: expect.any(String), lineEnding: "crlf" });
+    await click(button("Save", editor()!));
+    expect(double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "ignore-save", target: "gitignore", text: utf8("*.log\n"), expected: { size: 13, sha256: SHA }, lineEnding: "crlf" });
+  });
+
+  test("a CRLF file saved down to one line without a line break keeps CRLF in the next save (plan D8)", async () => {
+    const { double } = await setup();
+    await openFrom(double, "notes.txt", "Add to .gitignore…", loaded("node_modules/", { lineEnding: "crlf" }));
+    await typeInto(field(), "foo");
+    await click(button("Save", editor()!));
+    expect(double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "ignore-save", target: "gitignore", text: utf8("foo"), expected: { size: 13, sha256: SHA }, lineEnding: "crlf" });
+    await answer(double.pending("reviewWorkbench"), succeeded({ action: "ignore-save", plan: { target: "gitignore", file: "C:\\repo\\.gitignore", size: 3, sha256: "b".repeat(64) }, workbenchToken: fixtureId(0x8e3) }));
+    await answer(double.pending("runWorkbench"), succeeded({ action: "ignore-save", outcome: "replaced" }));
+    expect(checked()).toEqual(["CRLF"]);
+    await typeInto(field(), "foo\nbar");
+    await click(button("Save", editor()!));
+    expect(double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "ignore-save", target: "gitignore", text: utf8("foo\nbar"), expected: { size: 3, sha256: "b".repeat(64) }, lineEnding: "crlf" });
   });
 });

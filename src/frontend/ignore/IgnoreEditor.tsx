@@ -12,7 +12,7 @@ import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { scopedAction } from "../keyboard/shortcuts";
 import { Splitter } from "../layout/Splitter";
-import { IGNORE_FILE, type IgnoreEditor as IgnoreStore, type IgnoreEditorState, type IgnorePreview } from "../state/workbench";
+import { IGNORE_FILE, type IgnoreEditor as IgnoreStore, type IgnoreEditorState, type IgnorePreview, type LineEnding } from "../state/workbench";
 import { ReadsTrustNotice } from "../trust/TrustChip";
 
 // Feature 005 spec FR-034 to FR-046, FR-068, plan.md D8 to D10, D15 ("Ignore editor", "Ignore editor keys", "Ignore editor texts"), the IgnoreEditor board.
@@ -25,7 +25,7 @@ const OPEN_REFUSAL: Record<string, (file: string) => string> = {
   "ignore-size": (f) => `${f} is larger than 1 MiB. Arbareto does not edit it.`,
   "ignore-not-utf8": (f) => `${f} is not valid UTF-8 text. Arbareto does not edit it.`,
   "ignore-nul": (f) => `${f} holds a NUL character. Arbareto does not edit it.`,
-  "mixed-line-endings": (f) => `${f} has mixed line endings, or a CR without an LF. Arbareto does not edit it.`,
+  "ignore-lone-cr": (f) => `${f} holds a CR without an LF. Arbareto does not edit it.`,
   unreadable: (f) => `Arbareto cannot read ${f}.`,
   path: () => "Git names an info/exclude path outside the Git folder. Arbareto does not edit it.",
 };
@@ -38,6 +38,14 @@ const PREVIEW_REASON: Record<string, string> = {
   unreadable: "Arbareto cannot read an ignore file of this repository",
   deadline: "the preview took longer than 30 seconds",
 };
+const IDLE = "Change the text to see its effect on ignored files.";
+const NO_SNAPSHOT = "The preview needs a file status read. Press F5, then change the text.";
+const LINE_ENDINGS = "Line endings";
+const FORMS: readonly [LineEnding, string][] = [
+  ["lf", "LF"],
+  ["crlf", "CRLF"],
+];
+const SELECT_FORM = "Select LF or CRLF before Save.";
 export const INVALID_TEXT = "The text holds an invalid character. Arbareto cannot save it or show a preview.";
 const NOTICE: Record<string, string> = { link: "is a symbolic link. Git does not read it.", "inside-ignored": "is inside an ignored folder. Git does not read it." };
 // Plan D15: 18 px editor lines with 8 px padding, 22 px preview rows, and the 340 px preview with the 001 file lane bounds.
@@ -61,11 +69,14 @@ export type IgnoreEditorProps = {
 export function IgnoreEditor({ store, onTrust }: IgnoreEditorProps) {
   const editor = useSyncExternalStore(store.subscribe, () => store.getState().editor, () => store.getState().editor);
   const headingId = useId();
+  const reasonId = useId();
   const [width, setWidth] = useState(PREVIEW_WIDTH.start);
   if (editor === null) return null;
   const file = IGNORE_FILE[editor.target];
   const heading = editor.target === "gitignore" ? "Edit .gitignore" : "Edit info/exclude";
   const invalid = editor.preview.state === "invalid";
+  // Plan D8: Save of a `mixed` file waits for a "Line endings" choice.
+  const reason = editor.loaded !== null && editor.lineEnding === null ? SELECT_FORM : null;
 
   // Plan D15 "Ignore editor keys": Ctrl+S and Escape act in the panel. An IME composition takes no key (`scopedAction`).
   function onKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
@@ -121,16 +132,48 @@ export function IgnoreEditor({ store, onTrust }: IgnoreEditorProps) {
       <p role="status" className={editor.notice === null ? "sr-only" : "shrink-0 px-3 pt-2"}>
         {editor.notice}
       </p>
-      <div data-slot="ignore-actions" className="flex shrink-0 justify-end gap-2 border-t border-divider px-3 py-2">
+      <div data-slot="ignore-actions" className="flex shrink-0 flex-wrap items-center justify-end gap-2 border-t border-divider px-3 py-2">
+        {editor.loaded === null ? null : <LineEndings editor={editor} onChange={store.setLineEnding} />}
+        {reason === null ? null : (
+          <span id={reasonId} className="text-muted-text">
+            {reason}
+          </span>
+        )}
         <Button variant="outline" onClick={store.close}>
           Close
         </Button>
         {/* Plan D9: a text that fails `isWellFormed()` gets no Save. Save stays available while a preview runs or is not available (FR-041). */}
-        <Button disabled={editor.loaded === null || invalid || editor.saving} focusableWhenDisabled onClick={store.save}>
+        <Button disabled={editor.loaded === null || invalid || editor.saving || reason !== null} focusableWhenDisabled aria-describedby={reason === null ? undefined : reasonId} onClick={store.save}>
           Save
         </Button>
       </div>
     </section>
+  );
+}
+
+/** Plan D15 "Line endings": native radios give one Tab stop and arrow-key selection. A `mixed` file has no checked radio. */
+function LineEndings({ editor, onChange }: { editor: IgnoreEditorState; onChange(form: LineEnding): void }) {
+  const name = useId();
+  const labelId = useId();
+  const noteId = useId();
+  const counts = editor.loaded?.lineCounts;
+  return (
+    <div className="flex items-center gap-3">
+      <span id={labelId}>{LINE_ENDINGS}</span>
+      <div role="radiogroup" aria-labelledby={labelId} aria-describedby={counts === undefined ? undefined : noteId} className="flex items-center gap-3">
+        {FORMS.map(([form, label]) => (
+          <label key={form} className="flex items-center gap-1.5">
+            <input type="radio" name={name} checked={editor.lineEnding === form} onChange={() => onChange(form)} />
+            {label}
+          </label>
+        ))}
+      </div>
+      {counts === undefined ? null : (
+        <span id={noteId} className="text-muted-text">
+          {`Mixed (${formatCount(counts.lf)} LF, ${formatCount(counts.crlf)} CRLF)`}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -171,7 +214,8 @@ function TextPane({ editor, label, onEdit }: { editor: IgnoreEditorState; label:
           </span>
         ))}
       </div>
-      <div className="relative min-w-0 flex-1">
+      {/* Plan D15: the fill below the visible text must not extend the comparison region. */}
+      <div className="relative min-w-0 flex-1 overflow-hidden">
         <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bg-selected-row" style={{ top: PAD + caretLine * LINE - view.top, height: LINE }} />
         <textarea
           ref={field}
@@ -196,6 +240,7 @@ function TextPane({ editor, label, onEdit }: { editor: IgnoreEditorState; label:
 
 function warningOf(preview: IgnorePreview): string | null {
   if (preview.state === "invalid") return INVALID_TEXT;
+  if (preview.state === "unavailable" && preview.reason === "no-snapshot") return NO_SNAPSHOT;
   if (preview.state === "unavailable") return `Preview not available: ${PREVIEW_REASON[preview.reason] ?? preview.reason}.`;
   if (preview.state === "failed") return `Preview not available: Git failed with ${preview.code}.`;
   return null;
@@ -220,6 +265,7 @@ function Preview({ preview, onTrust }: { preview: IgnorePreview; onTrust(): void
     return (
       <>
         {status}
+        {preview.state === "idle" ? <p className="p-2 text-muted-text">{IDLE}</p> : null}
         {preview.state === "trust" ? <ReadsTrustNotice onTrust={onTrust} /> : null}
       </>
     );

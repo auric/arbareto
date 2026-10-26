@@ -337,6 +337,38 @@ describe("marks (Q6, SC-001)", () => {
     expect(t.marks()).toEqual([...MISSPELT, "resultsx"]);
   });
 
+  // SC-004: the mirror changes only the lines whose text or marks changed (plan.md D8 "Mirror content").
+  test("a typed character in a large message changes only the mirror nodes of its line, at the input and at the reply", async () => {
+    const t = await mount();
+    const lines = Array.from({ length: 400 }, () => "teh zzq teh zzq teh");
+    await t.type(lines.join("\n"));
+    expect(t.marks().length).toBe(2_000);
+    const mirror = t.host.querySelector('[data-slot="spell-mirror"]')!;
+    const changed: number[] = [];
+    const observer = new MutationObserver((records) => changed.push(records.reduce((n, r) => n + r.addedNodes.length + r.removedNodes.length + (r.type === "characterData" ? 1 : 0), 0)));
+    observer.observe(mirror, { childList: true, subtree: true, characterData: true });
+    lines[200] += "x";
+    const typed = lines.join("\n");
+    await t.type(typed);
+    observer.disconnect();
+    expect(t.marks()).toEqual(lines.flatMap((line) => line.split(" ")));
+    expect(mirror.textContent).toBe(`${typed}​`);
+    // One line holds 5 marks and 4 text nodes. The input and the reply each replace that line at most once.
+    const total = changed.reduce((a, b) => a + b, 0);
+    console.log(`MIRROR_MUTATIONS one typed character: ${total} nodes in ${changed.length} records`);
+    expect(total).toBeLessThanOrEqual(4 * 10);
+  });
+
+  test("the mirror text and marks follow a line split, a line join, and an empty last line", async () => {
+    const t = await mount();
+    const mirror = () => t.host.querySelector('[data-slot="spell-mirror"]')!.textContent;
+    for (const text of ["teh zzq\nFix teh\nzzq", "teh zzq\nFix\n teh\nzzq", "teh zzq Fix\n teh\nzzq\n", "\n\nteh\n\n", ""]) {
+      await t.type(text);
+      expect(mirror()).toBe(`${text}​`);
+      expect(t.marks()).toEqual(text.split(/\s+/).filter((w) => w === "teh" || w === "zzq"));
+    }
+  });
+
   test("marks in later lines move with an edit of an earlier line", async () => {
     const t = await mount();
     await t.type(FIXTURE);

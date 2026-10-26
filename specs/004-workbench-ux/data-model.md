@@ -28,7 +28,7 @@ Each section names its source. Field names are contract names. "001 data-model Â
   - `merge`, `rebase`: the source ref and OID, the counts, the options, the message digest;
   - `choose-side`, `mergetool`: the path, its index stages with modes and OIDs, the working file identity and SHA-256, the operation state;
   - `ignore`: the target file state (`absent`, or size and SHA-256), the line;
-  - `worktree-add`: the path facts, the branch or OID;
+  - `worktree-add`: the path facts, the branch or OID; for `track`, the remote ref, the new name, and the start commit of the remote ref;
   - `worktree-remove`: the worktree record, its status digest, the force flag, the branch delete facts;
   - `worktree-prune`: the prunable records;
   - `config-save`: each changed key with its scope, earlier entries, and new value or unset.

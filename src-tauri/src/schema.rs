@@ -31,6 +31,8 @@ const BRANCH_NAME_BYTES: usize = 255;
 const LOCAL_BRANCH_PREFIX: &str = "refs/heads/";
 /// Feature 006 contract Δ5: `src/contracts/limits.ts` `SPELLING_LANGUAGES`.
 pub(crate) const SPELLING_LANGUAGES: usize = 3;
+/// Feature 004 data-model §1: a remote-tracking branch lies under this prefix.
+const REMOTE_BRANCH_PREFIX: &str = "refs/remotes/";
 
 macro_rules! generated {
     ($($module:ident),*) => {
@@ -111,15 +113,26 @@ pub fn native_first(
             let key = payload["target"] == "remoteKey";
             key == payload.get("worktreeKey").is_some() && key == payload.get("remote").is_some()
         }
-        // Feature 004 contract Δ1 and Δ3: typify drops the `action` const, the byte bound of a new name, and the
-        // `refs/heads/` prefix of an existing branch.
+        // Feature 004 contract Δ1 and Δ3: typify drops the `action` const, the byte bound of a new or track name, the
+        // `refs/heads/` prefix of an existing branch, and the `refs/remotes/` prefix of a track ref.
         Some("reviewWorkbench") => {
             let branch = &payload["branch"];
-            let named = match (branch["new"].as_str(), branch["existing"].as_str()) {
-                (Some(name), None) => (1..=BRANCH_NAME_BYTES).contains(&name.len()),
-                (None, Some(name)) => name
-                    .strip_prefix(LOCAL_BRANCH_PREFIX)
-                    .is_some_and(|short| !short.is_empty()),
+            let track = &branch["track"];
+            let under = |name: &str, prefix: &str| {
+                name.strip_prefix(prefix)
+                    .is_some_and(|short| !short.is_empty())
+            };
+            let bytes = |name: &str| (1..=BRANCH_NAME_BYTES).contains(&name.len());
+            let named = match (
+                branch["new"].as_str(),
+                branch["existing"].as_str(),
+                track["ref"].as_str().zip(track["name"].as_str()),
+            ) {
+                (Some(name), None, None) => bytes(name),
+                (None, Some(name), None) => under(name, LOCAL_BRANCH_PREFIX),
+                (None, None, Some((remote, name))) => {
+                    under(remote, REMOTE_BRANCH_PREFIX) && bytes(name)
+                }
                 _ => false,
             };
             payload["action"] == "worktree-add" && named && paths(payload, &["path"]).is_ok()
@@ -1383,9 +1396,10 @@ mod tests {
         // The WP3 review adds the `fileDelete` digest above 1 MiB.
         // T057 removes the 2 `fileAppend` vectors from this check and adds the 2 `started` vectors of the 004 ignore actions.
         // The batch 3 review adds the `progress` vector of the removed phase `ignore`.
+        // Feature 004 T127 adds 2 `native-first-envelope` vectors for the `track` branch form (contract Δ3).
         assert_eq!(
             checked,
-            if cfg!(windows) { 226 } else { 221 },
+            if cfg!(windows) { 228 } else { 223 },
             "shell-read vectors"
         );
     }

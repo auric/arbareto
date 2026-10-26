@@ -17,8 +17,9 @@ import type { Workspace } from "./registration";
 import { changedRefs, changes } from "./sync";
 import { observe } from "./sync-integrate";
 import { readOut, refKey } from "./sync-review";
-import { worktreeAddExistingArgs, worktreeAddNewArgs, worktreeIndexArgs, worktreeLayoutArgs, worktreePruneArgs, worktreeRemoveArgs, worktreeStatusArgs } from "./workbench-commands";
-import { parseWorktreeStatus, type WorktreeRecord } from "./workbench-parsers";
+import { refCommit } from "./switch";
+import { worktreeAddExistingArgs, worktreeAddNewArgs, worktreeAddTrackArgs, worktreeIndexArgs, worktreeLayoutArgs, worktreePruneArgs, worktreeRemoveArgs, worktreeStatusArgs } from "./workbench-commands";
+import { parseWorktreeStatus, trackingRemotes, type WorktreeRecord } from "./workbench-parsers";
 import { conclude, heldElsewhere, killed, readWorktrees, refTarget, registerWorkbenchAction, unavailable, type PayloadOf, type Refused, type StepEnd, type WorkbenchRun } from "./workbench-review";
 
 const HEADS = "refs/heads/";
@@ -148,6 +149,7 @@ interface AddBound {
 // Research.md R21 F17: `worktree add` checks out a branch only for its short name.
 function addArgs(p: PayloadOf<"worktree-add">, path: string, objectFormat: ObjectFormat): string[] {
   const b = p.branch;
+  if ("track" in b) return worktreeAddTrackArgs(b.track.name, path, b.track.ref);
   return "existing" in b ? worktreeAddExistingArgs(path, b.existing.slice(HEADS.length)) : worktreeAddNewArgs(b.new, path, b.start, objectFormat);
 }
 
@@ -173,6 +175,7 @@ registerWorkbenchAction<"worktree-add", AddBound>("worktree-add", {
   precheck(p, w) {
     const b = p.branch;
     if ("existing" in b) return b.existing === `${HEADS}@` ? unavailable("reserved-name") : null;
+    if ("track" in b) return nameRefusal(b.track.name) ?? (isRefName(b.track.ref) ? null : { refused: "INVALID_REQUEST" });
     return nameRefusal(b.new) ?? (isObjectId(b.start, w.objectFormat) ? null : { refused: "INVALID_REQUEST" });
   },
   async observe(ctx, p, common) {
@@ -188,6 +191,16 @@ registerWorkbenchAction<"worktree-add", AddBound>("worktree-add", {
       const held = heldElsewhere(list.value.records, b.existing, common.head);
       if (held !== null) return held;
       oid = tip.value;
+    } else if ("track" in b) {
+      // Plan.md D3 Track rule. Git's own `branch --track` step refuses the other remote counts with exit 255 (research.md R13).
+      const remotes = trackingRemotes(b.track.ref, common.listing.entries, ctx.workspace.objectFormat);
+      if (remotes === null || remotes.length === 0) return unavailable("no-tracking-refspec");
+      if (remotes.length > 1) return unavailable("several-tracking-remotes", { remotes });
+      const fresh = await newName(ctx, b.track.name);
+      if (!("value" in fresh)) return fresh;
+      const start = await refCommit(ctx, b.track.ref);
+      if (!("value" in start)) return start;
+      oid = start.value;
     } else {
       const fresh = await newName(ctx, b.new);
       if (!("value" in fresh)) return fresh;
@@ -196,7 +209,7 @@ registerWorkbenchAction<"worktree-add", AddBound>("worktree-add", {
     const dest = await destination(ctx, p.bootstrapId);
     if (!("value" in dest)) return dest;
     if (!fits(ctx, "integrate", addArgs(p, dest.value.path, ctx.workspace.objectFormat))) return unavailable("limit");
-    const branch = "existing" in b ? { existing: b.existing, oid } : { new: b.new, start: b.start };
+    const branch = "existing" in b ? { existing: b.existing, oid } : "track" in b ? { track: b.track, oid } : { new: b.new, start: b.start };
     return { bound: { ...dest.value, oid }, plan: { branch, ...dest.value } };
   },
   started: () => "worktree-add",
@@ -204,7 +217,8 @@ registerWorkbenchAction<"worktree-add", AddBound>("worktree-add", {
     const w = r.ctx.workspace;
     const context: ProcessContext = { contextKind: "worktreeAdd", gitInstallationId: w.gitInstallationId, repositoryId: w.repositoryId, bootstrapId: p.bootstrapId };
     const end = await r.step(addArgs(p, b.path, w.objectFormat), "worktree", { context });
-    const ref = "existing" in p.branch ? p.branch.existing : `${HEADS}${p.branch.new}`;
+    const pb = p.branch;
+    const ref = "existing" in pb ? pb.existing : `${HEADS}${"track" in pb ? pb.track.name : pb.new}`;
     const refs = new Map(r.before.refs);
     if (!("existing" in p.branch)) refs.set(refKey(ref), b.oid);
     // Git prints its own form of the new path, so the record that holds the branch at the bound commit shows the add.

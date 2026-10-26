@@ -889,7 +889,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (options.wslGlobalConfig === undefined) throw new RunnerRefusal("INVALID_REQUEST", "WSL globalConfig without wslGlobalConfig");
       return { program, cwd: `\\\\wsl.localhost\\${wsl.distro}\\`, wsl };
     }
-    // Feature 004 contract Δ6, as src-tauri/src/process_requests.rs `target`, `git_form`, and `worktree_add_fits` check it: only a `run` of the two
+    // Feature 004 contract Δ6, as src-tauri/src/process_requests.rs `target`, `git_form`, and `worktree_add_fits` check it: only a `run` of the three
     // `worktree add` forms with the bound path in Git's form, in the registered repository of the review. A WSL Git takes the Linux path of a
     // UNC path of its own distro (feature 006 contract Δ11), and refuses without `wslGlobalConfig` before any process.
     if (context.contextKind === "worktreeAdd") {
@@ -903,7 +903,10 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (!wsl && wslParts(repository.worktreeRoot) !== null) throw new RunnerRefusal("INVALID_REQUEST", "Windows Git in a WSL repository");
       const path = gitForm(bound.path, wsl);
       if (path === null) throw new RunnerRefusal("INVALID_REQUEST", "worktreeAdd path");
-      const fits = (args.length === 6 && args[3] === "--" && args[4] === path) || (args.length === 8 && args[3] === "-b" && args[5] === "--" && args[6] === path);
+      const fits =
+        (args.length === 6 && args[3] === "--" && args[4] === path) ||
+        (args.length === 8 && args[3] === "-b" && args[5] === "--" && args[6] === path) ||
+        (args.length === 9 && args[3] === "--track" && args[4] === "-b" && args[6] === "--" && args[7] === path && args[8]!.length > 13 && args[8]!.startsWith("refs/remotes/"));
       if (!fits) throw new RunnerRefusal("INVALID_REQUEST", "worktree add arguments");
       return { program, cwd: repository.worktreeRoot, wsl };
     }

@@ -281,6 +281,7 @@ const SwitchTarget = z.union([
 const WorktreeBranch = z.union([
   z.strictObject({ new: BranchName, start: ObjectId }).meta({ title: "WorktreeNewBranch" }),
   z.strictObject({ existing: LocalRef }).meta({ title: "WorktreeExistingBranch" }),
+  z.strictObject({ track: z.strictObject({ ref: RemoteRef, name: BranchName }) }).meta({ title: "WorktreeTrackBranch" }),
 ]);
 // Contract Δ3: the renderer sends the path, and the shell forwards the `bootstrapId` of its `worktreeAdd` binding.
 const worktreeAdd = <T extends z.ZodRawShape>(binding: T) => z.strictObject({ action: z.literal("worktree-add"), branch: WorktreeBranch, ...binding }).meta({ title: "ReviewWorktreeAdd" });
@@ -1549,7 +1550,11 @@ const RebasePlan = z
 // Plan.md D10. `path` is the bound path in Git's form for the route (contract Δ6).
 const WorktreeAddPlan = z
   .strictObject({
-    branch: z.union([z.strictObject({ new: Text.min(1), start: ObjectId }).meta({ title: "WorktreeAddNew" }), z.strictObject({ existing: FullRef, oid: ObjectId }).meta({ title: "WorktreeAddExisting" })]),
+    branch: z.union([
+      z.strictObject({ new: Text.min(1), start: ObjectId }).meta({ title: "WorktreeAddNew" }),
+      z.strictObject({ existing: FullRef, oid: ObjectId }).meta({ title: "WorktreeAddExisting" }),
+      z.strictObject({ track: z.strictObject({ ref: FullRef, name: Text.min(1) }), oid: ObjectId }).meta({ title: "WorktreeAddTrack" }),
+    ]),
     path: Text.min(1),
     destination: z.enum(["absent", "empty"]),
   })

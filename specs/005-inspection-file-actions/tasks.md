@@ -344,9 +344,15 @@ description: "Task list for the History Inspection and Commit View File Actions 
 
 - [ ] T100 [US7] Keep the focus in the blame view after a state change in `src/frontend/blame/BlameView.tsx` and `tests/contracts/inspection-blame.test.tsx` (plan.md D15 "Blame focus", 001 spec FR-005, quickstart Q28, Q29). Cause: `Body` renders a different element for each run state. Cancel, a line, or Show output leaves the document when the state changes, and the focus goes to the body. Escape then does not close the blame view. Tests: Cancel focuses Back and Escape returns to History; a result while Cancel has the focus focuses the selected line; a failure while Cancel has the focus focuses Back; Alt+Left from a focused line focuses Cancel, then the line of the new result. Control: remove the refocus code; a new case fails.
 
+### Packaged harness fixes (2026-10-26)
+
+**Agent**: implementer. Tests first, with the red output kept.
+
+- [ ] T101 Start each owned process suspended in its Job, and validate the T061 timed steps, in `tests/git/win32.ts`, `tests/windows/installed-app.ts`, `tests/windows/installed-app.test.ts`, and `tests/windows/inspection-perf.test.ts` (P9, WP8). `Local: package`. Cause: (1) `spawnOwned` assigned the Job after `Bun.spawn`, so a child that the app started first was outside the Job. The stop audit then failed with "processes outside the owned Job still run: msedgewebview2.exe", and the profile files stayed locked. (2) The T061 `arm` took the frame end from the `requestAnimationFrame` argument, the vsync time, which can precede a long task. A check that held before the input also gave a time. Fix: `createSuspended` starts the process with `CREATE_SUSPENDED`, the `NUL` standard handles, and the exact environment block, as `src-tauri/src/spawn.rs` `create_suspended` does. `spawnOwned` assigns a kill-on-close Job, then resumes the thread. `arm` takes `performance.now()` in the frame callback, and fails a step whose check holds at `arm`, whose event comes before `arm`, or whose time is negative. Tests: a `cmd.exe` root that starts a Bun child at once, held 2 s before the assignment, has the child in the Job, and the stop audit finds nothing; each argument passes through the `CommandLineToArgvW` rules. Control: without `CREATE_SUSPENDED`, the Job case fails. Then run `tests/windows/inspection-packaged.test.ts` once and the T061 cases twice on the installed app. Spec: SC-001, SC-005, SC-006. Depends on T099.
+
 ### Batch 4 verification
 
-- [ ] T063 Run the batch 4 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, then `bun run build:service` and `bun run test:windows`. `Local: Rust`. `Local: WSL`. `Local: package`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every record into research.md R17. Control mutation: in `tests/windows/inspection-perf.test.ts`, lower the 500 ms bound to 1 ms. The test must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 4 is recorded in research.md. Spec: SC-001 to SC-011. Depends on T059 to T062, T078 to T086, and T093 to T097.
+- [ ] T063 Run the batch 4 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, then `bun run build:service` and `bun run test:windows`. `Local: Rust`. `Local: WSL`. `Local: package`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every record into research.md R17. Control mutation: in `tests/windows/inspection-perf.test.ts`, lower the 500 ms bound to 1 ms. The test must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 4 is recorded in research.md. Spec: SC-001 to SC-011. Depends on T059 to T062, T078 to T086, T093 to T097, and T101.
 - [ ] T064 Run `/speckit-converge` and record the result. Spec: all. Depends on T063.
 
 ---
@@ -364,6 +370,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - Ignore preview fixes (T081, T087): after T041.
 - T063 run fixes (T082–T086, T092, T099): after T080. T082 and T083 need a new package before their packaged rerun. Then T063 runs again.
 - Blame focus fix (T100): after T044. Then T063 runs again.
+- Packaged harness fixes (T101): after T099. Then T063 runs again.
 - Renderer performance fixes (T090, T091): after T083. Both need a new package before the packaged Q6 and Q32 reruns. Then T063 runs again.
 
 ### Changes to earlier requirements and their tasks
@@ -413,12 +420,12 @@ Then:          T027
 | FR-064 to FR-066 (US8, US9) | T006, T008, T009, T011, T018, T069, T075, T080 |
 | FR-067 | T008, T043, T044, T048 to T051, T056, T060, T072, T073, T079, T080 |
 | FR-068 | T043, T044, T049, T090 |
-| SC-001 | T021, T061, T084 |
+| SC-001 | T021, T061, T084, T101 |
 | SC-002 | T021, T061, T083, T090 |
 | SC-003 | T012, T032, T059, T060, T078, T085 |
 | SC-004 | T001, T007, T027 |
-| SC-005 | T034, T059, T061, T078, T081, T084, T085, T087 |
-| SC-006 | T022, T061, T084, T099 |
+| SC-005 | T034, T059, T061, T078, T081, T084, T085, T087, T101 |
+| SC-006 | T022, T061, T084, T099, T101 |
 | SC-007 | T035, T060, T092 |
 | SC-008 | T006, T008, T027 |
 | SC-009 | T061, T084, T091, T092 |

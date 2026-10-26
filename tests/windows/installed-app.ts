@@ -8,7 +8,7 @@ import { basename, isAbsolute, join, sep } from "node:path";
 import tauri from "../../src-tauri/tauri.conf.json";
 import { FIXED_IDENTITY, ownedPath, removedByT043 } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
-import { ownTree, processCreationTime } from "../git/win32";
+import { createSuspended, ownTree, processCreationTime, type ProcessTree } from "../git/win32";
 
 export type RefusalCode = "ENTRY_INVALID" | "OUTSIDE_LOCALAPPDATA" | "BAD_ROOT" | "ANOTHER_INSTANCE";
 
@@ -236,19 +236,37 @@ export function survivingRecords(directory: string): string[] {
 export interface OwnedProcess {
   pid: number;
   exited: Promise<number>;
+  // True when the live process `pid` is in the owned Job, before `stop`.
+  holds(pid: number): boolean;
   // Ends the owned tree only.
   stop(): void;
 }
 
-// The app is a GUI process, so no output is read.
-export function spawnOwned(argv: string[], cwd: string, env: Record<string, string>): OwnedProcess {
-  const proc = Bun.spawn(argv, { cwd, env, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
-  const tree = ownTree(proc.pid);
+// The app is a GUI process, so no output is read. The root joins the Job before its first instruction, so each child joins it too.
+// The Job ends the tree when its last handle closes, as the libuv Job of `Bun.spawn` did, so a test process that dies leaves no tree.
+// `beforeAssign` runs while the suspended root is outside the Job.
+export function spawnOwned(argv: string[], cwd: string, env: Record<string, string>, beforeAssign?: () => void): OwnedProcess {
+  const proc = createSuspended(argv, cwd, env);
+  let tree: ProcessTree;
+  try {
+    beforeAssign?.();
+    tree = ownTree(proc.pid, true);
+  } catch (error) {
+    proc.terminate();
+    throw error;
+  }
   const created = processCreationTime(proc.pid);
+  try {
+    proc.resume();
+  } catch (error) {
+    tree.close();
+    throw error;
+  }
   let open = true;
   return {
     pid: proc.pid,
     exited: proc.exited,
+    holds: (pid) => open && tree.holds(pid),
     stop() {
       if (!open) return;
       open = false;

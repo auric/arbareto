@@ -6,7 +6,7 @@
 import { dlopen, FFIType, ptr, type Pointer } from "bun:ffi";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 import { TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_TOTAL_BYTES } from "../../src/contracts/limits";
 import type { FileFact, FileFactsRequest } from "../../src/git-service/git-runner";
 
@@ -33,6 +33,9 @@ const open = () =>
     SetInformationJobObject: { args: [P, i32, P, u32], returns: i32 },
     IsProcessInJob: { args: [P, P, P], returns: i32 },
     WaitForMultipleObjects: { args: [u32, P, i32, u32], returns: u32 },
+    CreateProcessW: { args: [P, P, P, P, i32, u32, P, P, P, P], returns: i32 },
+    ResumeThread: { args: [P], returns: u32 },
+    CompareStringOrdinal: { args: [P, i32, P, i32, i32], returns: i32 },
   }).symbols;
 let symbols: ReturnType<typeof open> | undefined;
 
@@ -195,6 +198,8 @@ const MAXIMUM_WAIT_OBJECTS = 64;
 const WAIT_FAILED = 0xffff_ffff;
 
 export interface ProcessTree {
+  // True when the live process `pid` is in the Job (`IsProcessInJob`).
+  holds(pid: number): boolean;
   // Ends every process of the tree and waits a bounded time for their exits.
   end(): void;
   // Ends the Job and waits on the process handles of its members until the Job lists none. Returns the PIDs that the Job still lists at the bound.
@@ -204,7 +209,7 @@ export interface ProcessTree {
 
 // The shell Job of contract §6 (src-tauri/src/jobs.rs). A process that the root creates joins the Job, also after the root ends.
 // By default no `KILL_ON_JOB_CLOSE`: a child that outlives its root lingers until `end`, as a lingering Job does. With `killOnClose`, the close of the last Job handle also ends the tree, so an ended test process leaves no member.
-// ponytail: assignment follows the start, so a child created before it escapes. The shell assigns before the process runs; do the same when an escape shows.
+// A root that runs before the assignment can create a child outside the Job. Assign a root from `createSuspended` before its resume.
 export function ownTree(pid: number, killOnClose = false): ProcessTree {
   const job = kernel32().CreateJobObjectW(null, null);
   if (!valid(job)) throw new Error(`CreateJobObjectW failed: ${kernel32().GetLastError()}`);
@@ -246,6 +251,16 @@ export function ownTree(pid: number, killOnClose = false): ProcessTree {
     }
   };
   return {
+    holds(pid) {
+      const handle = openProcess(pid, 0);
+      if (handle === null) return false;
+      try {
+        const member = new Int32Array(1);
+        return kernel32().IsProcessInJob(handle, job, ptr(member)) !== 0 && member[0] !== 0;
+      } finally {
+        kernel32().CloseHandle(handle);
+      }
+    },
     end() {
       if (!kernel32().TerminateJobObject(job, 1)) return;
       for (const until = performance.now() + TERMINATE_WAIT_MS; active() > 0 && performance.now() < until; ) Bun.sleepSync(JOB_POLL_MS);
@@ -280,6 +295,130 @@ export function ownTree(pid: number, killOnClose = false): ProcessTree {
     },
     close() {
       kernel32().CloseHandle(job);
+    },
+  };
+}
+
+// Microsoft Learn constants of `CreateProcessW`, `STARTUPINFOW`, `CreateFileW`, and `CompareStringOrdinal`.
+const CREATE_SUSPENDED = 0x4;
+const CREATE_UNICODE_ENVIRONMENT = 0x400;
+const STARTF_USESTDHANDLES = 0x100;
+const GENERIC_READ_WRITE = 0xc000_0000;
+const CSTR_EQUAL = 2;
+const RESUME_FAILED = 0xffff_ffff;
+// x64 layouts: `STARTUPINFOW` is 104 bytes with `dwFlags` at 60 and the three standard handles from 80. `PROCESS_INFORMATION` is 24 bytes with `dwProcessId` at 16.
+// `SECURITY_ATTRIBUTES` is 24 bytes with `bInheritHandle` at 16.
+const STARTUPINFO_BYTES = 104;
+const PROCESS_INFORMATION_BYTES = 24;
+const SECURITY_ATTRIBUTES_BYTES = 24;
+// The `CreateProcessW` command-line limit in UTF-16 units, with the terminating null (src-tauri/src/spawn.rs `COMMAND_LINE_UNITS`).
+const COMMAND_LINE_UNITS = 32_767;
+const EXIT_POLL_MS = 20;
+
+// The rules of src-tauri/src/spawn.rs `command_line` (Rust std `make_command_line`), which `CommandLineToArgvW` parses back.
+export function commandLine(argv: readonly string[]): string {
+  const [program, ...args] = argv;
+  if (program === undefined || program.includes('"') || program.includes("\0")) throw new Error(`the program name is not valid: ${JSON.stringify(program)}`);
+  let line = `"${program}"`;
+  for (const arg of args) {
+    if (arg.includes("\0")) throw new Error("an argument holds NUL");
+    const quote = arg === "" || arg.includes(" ") || arg.includes("\t");
+    line += quote ? ' "' : " ";
+    let backslashes = 0;
+    for (const unit of arg) {
+      if (unit === "\\") backslashes++;
+      else {
+        if (unit === '"') line += "\\".repeat(backslashes + 1);
+        backslashes = 0;
+      }
+      line += unit;
+    }
+    if (quote) line += `${"\\".repeat(backslashes)}"`;
+  }
+  if (line.length + 1 > COMMAND_LINE_UNITS) throw new Error("the command line is too long");
+  return line;
+}
+
+// Microsoft Learn "Changing Environment Variables": the block is sorted by name without case, in Unicode order, not by locale.
+function environmentBlock(env: Record<string, string>): Buffer {
+  const entries = Object.entries(env);
+  for (const [name, value] of entries) if (name === "" || name.slice(1).includes("=") || name.includes("\0") || value.includes("\0")) throw new Error(`the environment entry ${JSON.stringify(name)} is not valid`);
+  const names = new Map(entries.map(([name]) => [name, Buffer.from(name, "utf16le")]));
+  entries.sort(([a], [b]) => kernel32().CompareStringOrdinal(ptr(names.get(a)!), names.get(a)!.length / 2, ptr(names.get(b)!), names.get(b)!.length / 2, 1) - CSTR_EQUAL);
+  keepAlive = names;
+  return Buffer.from(`${entries.map(([name, value]) => `${name}=${value}\0`).join("") || "\0"}\0`, "utf16le");
+}
+
+export interface SuspendedProcess {
+  pid: number;
+  // The exit code. Polled, because no Bun API waits on a raw process handle.
+  exited: Promise<number>;
+  // Starts the primary thread. A failed resume ends the process and throws.
+  resume(): void;
+  // Ends the process before its resume.
+  terminate(): void;
+}
+
+// Starts `argv` with no thread running, so the caller can assign a Job first, as src-tauri/src/spawn.rs `create_suspended` does.
+// The standard handles are `NUL`, as Bun `stdio: "ignore"` gives. `argv[0]` must be an absolute path: no search runs.
+export function createSuspended(argv: readonly string[], cwd: string, env: Record<string, string>): SuspendedProcess {
+  if (!isAbsolute(argv[0] ?? "")) throw new Error(`the program is not an absolute path: ${JSON.stringify(argv[0])}`);
+  const application = Buffer.from(`${argv[0]}\0`, "utf16le");
+  const line = Buffer.from(`${commandLine(argv)}\0`, "utf16le");
+  const directory = Buffer.from(`${cwd}\0`, "utf16le");
+  const block = environmentBlock(env);
+  const security = new Uint8Array(SECURITY_ATTRIBUTES_BYTES);
+  new DataView(security.buffer).setUint32(0, SECURITY_ATTRIBUTES_BYTES, true);
+  new DataView(security.buffer).setInt32(16, 1, true);
+  const nulName = Buffer.from("NUL\0", "utf16le");
+  const nul = kernel32().CreateFileW(ptr(nulName), GENERIC_READ_WRITE, FILE_SHARE_ALL, ptr(security), OPEN_EXISTING, 0, null);
+  if (!valid(nul)) throw new Error(`CreateFileW failed for NUL: ${kernel32().GetLastError()}`);
+  const startup = new Uint8Array(STARTUPINFO_BYTES);
+  const view = new DataView(startup.buffer);
+  view.setUint32(0, STARTUPINFO_BYTES, true);
+  view.setUint32(60, STARTF_USESTDHANDLES, true);
+  for (const at of [80, 88, 96]) view.setBigUint64(at, BigInt(nul), true);
+  const info = new Uint8Array(PROCESS_INFORMATION_BYTES);
+  const created = kernel32().CreateProcessW(ptr(application), ptr(line), null, null, 1, CREATE_SUSPENDED | CREATE_UNICODE_ENVIRONMENT, ptr(block), ptr(directory), ptr(startup), ptr(info));
+  const error = kernel32().GetLastError();
+  keepAlive = [application, line, directory, block, security, nulName, startup, info];
+  kernel32().CloseHandle(nul);
+  if (!created) throw new Error(`CreateProcessW failed for ${argv[0]}: ${error}`);
+  const out = new DataView(info.buffer);
+  // Null after the exit poll closed the handle, so a later call never reaches a reused handle value.
+  let handle: Pointer | null = Number(out.getBigUint64(0, true)) as Pointer;
+  let thread: Pointer | null = Number(out.getBigUint64(8, true)) as Pointer;
+  const closeThread = () => {
+    if (thread !== null) kernel32().CloseHandle(thread);
+    thread = null;
+  };
+  const exited = new Promise<number>((resolve, reject) => {
+    const timer = setInterval(() => {
+      if (handle === null || kernel32().WaitForSingleObject(handle, 0) === WAIT_TIMEOUT) return;
+      clearInterval(timer);
+      const code = exitCode(handle);
+      closeThread();
+      kernel32().CloseHandle(handle);
+      handle = null;
+      if (code === null) reject(new Error(`GetExitCodeProcess failed: ${kernel32().GetLastError()}`));
+      else resolve(code);
+    }, EXIT_POLL_MS);
+  });
+  return {
+    pid: out.getUint32(16, true),
+    exited,
+    resume() {
+      if (thread === null || handle === null) throw new Error("the process was already resumed or ended");
+      const failed = kernel32().ResumeThread(thread) === RESUME_FAILED;
+      const error = kernel32().GetLastError();
+      closeThread();
+      if (failed) {
+        kernel32().TerminateProcess(handle, 1);
+        throw new Error(`ResumeThread failed: ${error}`);
+      }
+    },
+    terminate() {
+      if (handle !== null) kernel32().TerminateProcess(handle, 1);
     },
   };
 }

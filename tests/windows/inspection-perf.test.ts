@@ -114,7 +114,9 @@ async function focusOn(c: Cdp, expression: string, what: string): Promise<void> 
 
 // ---- Page timing ----
 
-// The page helpers. `arm` records the `timeStamp` of the next input event and resolves with the frame time at which each check first holds.
+// The page helpers. `arm` records the `timeStamp` of the next input event and resolves with the time at which each check first holds in an animation frame callback.
+// That time is `performance.now()` in the callback, not its argument: the argument is the vsync time, which can precede a long task of that frame.
+// A check that holds at `arm`, an event before `arm`, or a negative time gives `ok: false`.
 // The frame loop runs only while the page is visible (HTML "update the rendering"). `__t061Previews` is the count of `preview_ignore` replies.
 // The CDP `Network` record of the calls sets it (`session`), because `window.__TAURI_INTERNALS__.invoke` is read-only and non-configurable.
 const PAGE = `(() => {
@@ -126,19 +128,28 @@ const PAGE = `(() => {
   new PerformanceObserver((list) => { for (const e of list.getEntries()) if (e.name === 'keydown') window.__t061Events.push({ start: e.startTime, duration: e.duration }); }).observe({ type: 'event', durationThreshold: ${EVENT_THRESHOLD_MS} });
   window.__t061 = {
     arm(checks, limit) {
+      const armed = performance.now();
       let start = null;
       const onInput = (e) => { if (start === null) start = e.timeStamp; };
       for (const type of ['keydown', 'beforeinput']) addEventListener(type, onInput, { capture: true });
       const done = checks.map(() => null);
       this.value = null;
-      const end = (ok) => {
+      const end = (ok, why) => {
         for (const type of ['keydown', 'beforeinput']) removeEventListener(type, onInput, { capture: true });
-        this.value = { ok, start, times: done.map((t) => (t === null || start === null ? null : t - start)) };
+        const times = done.map((t) => (t === null || start === null ? null : t - start));
+        const valid = ok && start >= armed && times.every((t) => t !== null && t >= 0);
+        this.value = { ok: valid, why: valid ? null : why ?? 'the event time lies before arm or after a check', armed, start, times };
       };
-      const step = (now) => {
+      const held = checks.findIndex((check) => check());
+      if (held >= 0) {
+        end(false, 'check ' + held + ' held before the event');
+        return true;
+      }
+      const step = () => {
+        const now = performance.now();
         if (start !== null) checks.forEach((check, i) => { if (done[i] === null && check()) done[i] = now; });
         if (start !== null && done.every((t) => t !== null)) return end(true);
-        if (start !== null && now - start > limit) return end(false);
+        if (start !== null && now - start > limit) return end(false, 'a check did not hold within the limit');
         requestAnimationFrame(step);
       };
       requestAnimationFrame(step);
@@ -153,8 +164,8 @@ async function timed(c: Cdp, checks: string[], act: () => Promise<void>): Promis
   await c.evaluate(`window.__t061.arm([${checks.map((check) => `() => (${check})`).join(", ")}], ${STEP_LIMIT_MS})`);
   await act();
   // `cdp.ts` ends one call after 10 s, so the page sets `value` and the test polls it up to the step limit.
-  const r = (await until<{ ok: boolean; start: number | null; times: (number | null)[] } | null>(c, "the timed step", "window.__t061.value", (v) => v !== null, STEP_LIMIT_MS + 5_000))!;
-  if (!r.ok) throw new Error(`a step did not show within ${STEP_LIMIT_MS} ms: ${js(r)}`);
+  const r = (await until<{ ok: boolean; why: string | null; armed: number; start: number | null; times: (number | null)[] } | null>(c, "the timed step", "window.__t061.value", (v) => v !== null, STEP_LIMIT_MS + 5_000))!;
+  if (!r.ok || r.start === null || r.start < r.armed || !r.times.every((t) => t !== null && t >= 0)) throw new Error(`a timed step is not valid: ${js(r)}`);
   return r.times as number[];
 }
 

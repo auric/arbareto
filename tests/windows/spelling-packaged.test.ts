@@ -426,24 +426,24 @@ describe.skipIf(process.platform !== "win32")("T041 packaged spell check", () =>
   );
 
   test.skipIf(reason !== null)(
-    "N4, Q13: at the current text scale, the UIA TextPattern rect of each marked word equals its mirror span rect within 1 device pixel, also for a Hebrew line",
+    "N4, Q13: at the current text scale, the UIA TextPattern rect of each marked word equals its mirror span rect within 1 device pixel, also for a Persian line",
     async () => {
       const scale = textScale();
       console.log(`OBSERVATION ${TASK}: N4 text scale ${scale}%`);
       for (const other of SCALES.filter((v) => v !== scale)) console.log(`SKIP ${TASK} N4 at ${other}%: missing capability text-scale-${other} (unverified; set Settings > Accessibility > Text size to ${other}% and run again)`);
-      const he = cachedEntry("he");
-      if (he === null) console.log(`SKIP ${TASK} N4 Hebrew line: ${CACHE_SKIP} (unverified)`);
-      const hebrew = he === null ? null : languageFixture(cachedText(he, "index.aff"), cachedText(he, "index.dic"));
-      const hebrewLine = hebrew === null ? null : `${hebrew.positives[0]} ${hebrew.negatives[0]} ${hebrew.positives[1]}`;
+      const fa = cachedEntry("fa");
+      if (fa === null) console.log(`SKIP ${TASK} N4 Persian line: ${CACHE_SKIP} (unverified)`);
+      const persian = fa === null ? null : languageFixture(cachedText(fa, "index.aff"), cachedText(fa, "index.dic"));
+      const persianLine = persian === null ? null : `${persian.positives[0]} ${persian.negatives[0]} ${persian.positives[1]}`;
       const { s } = await session("n4", (profile) => {
-        if (he === null) return;
-        installDictionary(profile, he);
-        setSpelling(profile, { enabled: true, languages: ["en", "he"] });
+        if (fa === null) return;
+        installDictionary(profile, fa);
+        setSpelling(profile, { enabled: true, languages: ["en", "fa"] });
       });
       try {
         await toCommitView(s);
-        const text = hebrewLine === null ? N4_TEXT : `${N4_TEXT}\n${hebrewLine}`;
-        await marked(s, text, hebrewLine === null ? N4_MARKS : [...N4_MARKS, hebrew!.negatives[0]!]);
+        const text = persianLine === null ? N4_TEXT : `${N4_TEXT}\n${persianLine}`;
+        await marked(s, text, persianLine === null ? N4_MARKS : [...N4_MARKS, persian!.negatives[0]!]);
         await physical(async () => {
           const spans = await markRects(s.app.pid, s.c);
           const field = await find(s.app.pid, MESSAGE, MAX_WAIT_MS, ControlType.Edit);

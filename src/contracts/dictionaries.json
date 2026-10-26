@@ -761,36 +761,6 @@
       ]
     },
     {
-      "id": "he",
-      "name": "Hebrew",
-      "license": "AGPL-3.0",
-      "script": "Hebrew",
-      "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
-      "files": [
-        {
-          "name": "index.aff",
-          "url": "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/he/index.aff",
-          "size": 78883,
-          "sha256": "e115a0a5014d17a8e904f9d4a67d7992039b396c5fa031eb036a13bf63dfb037"
-        },
-        {
-          "name": "index.dic",
-          "url": "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/he/index.dic",
-          "size": 5688111,
-          "sha256": "9bd95042a927e13ab422231e355caa8a7018456e7c49b889f2e6c62ddb5a0552"
-        },
-        {
-          "name": "license",
-          "url": "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/he/license",
-          "size": 461,
-          "sha256": "bb0a75c473e49224e0428b95c17ad90f1774a7f6cb97be921f9d6a93a3af80d7"
-        }
-      ],
-      "licences": [
-        "license"
-      ]
-    },
-    {
       "id": "hu",
       "name": "Hungarian",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1)",

@@ -306,7 +306,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **SC-006**: Each R21 row, the Q21 Global saves, and the WSL Add worktree equal Git's own commands on a copy. No process remains after Cancel or close.
 - **SC-007**: Keyboard-only users complete User Stories 1 to 3. Each new control has an accessible name, visible focus, and a contrast of at least 4.5:1.
 - **SC-008**: The requirement-to-test map has no outcome that Git message text, timing, a name pattern, or a language guess decides.
-- **SC-009**: On the packaged build, a composition with a Windows IME shows no mark during the composition. After it ends, the marks equal the marks of the same text typed without the IME. A Hebrew line shows each mark under its word. These checks give the packaged evidence of constitution VI.
+- **SC-009**: On the packaged build, a composition with a Windows IME shows no mark during the composition. After it ends, the marks equal the marks of the same text typed without the IME. A Persian line shows each mark under its word. These checks give the packaged evidence of constitution VI.
 
 ## Assumptions
 

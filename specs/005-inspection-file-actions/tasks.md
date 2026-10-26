@@ -338,6 +338,12 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - [ ] T097 [US5] Add the "Line endings" control to the editor footer in `src/frontend/ignore/IgnoreEditor.tsx` and `src/frontend/state/workbench.ts` (plan.md D8, D15 "Line endings", spec US5-11, US5-12). The control has the options "LF" and "CRLF" and preselects the file form; `none` and an absent file preselect "LF". A `mixed` file opens editable with no option selected and the note "Mixed (<n> LF, <m> CRLF)". Save is then unavailable with "Select LF or CRLF before Save.", and the preview runs. A selected form goes as `lineEnding` in each `previewIgnore` and `ignore-save` request. After a confirmed save, the loaded state takes the saved form, so the control shows it and the note goes. The open refusal text `ignore-lone-cr` replaces `mixed-line-endings`. Tests first in `tests/contracts/inspection-ignore.test.tsx`: the preselection for `lf`, `crlf`, and `none`; the mixed note, an editable `textarea`, a preview request, and the Save reason; the field in both requests after "CRLF"; a conversion of an LF file; the saved form after a save. Control mutation: send no field after the choice; the request case must fail. Spec: FR-037. Depends on T096.
 - [x] T098 [US5] Update the feature documents for T093 to T097: spec.md (clarification of 2026-10-25, FR-035, FR-037, FR-041, the edge cases, US5-11, US5-12, the "Ignore file" entity), plan.md D8 to D10 and D15, data-model.md §6 to §8, contracts/operations.md (`readIgnoreFile`, `previewIgnore`, `ignore-save`, the reason table), research.md R7 (the user request and the Git v2.56.0 dir.c facts), and quickstart.md Q23, Q24, and Q35. Spec: FR-035, FR-037, FR-041.
 
+### Blame focus fix (review finding of 2026-10-26)
+
+**Agent**: frontend-implementer. Tests first, with the red output kept.
+
+- [ ] T100 [US7] Keep the focus in the blame view after a state change in `src/frontend/blame/BlameView.tsx` and `tests/contracts/inspection-blame.test.tsx` (plan.md D15 "Blame focus", 001 spec FR-005, quickstart Q28, Q29). Cause: `Body` renders a different element for each run state. Cancel, a line, or Show output leaves the document when the state changes, and the focus goes to the body. Escape then does not close the blame view. Tests: Cancel focuses Back and Escape returns to History; a result while Cancel has the focus focuses the selected line; a failure while Cancel has the focus focuses Back; Alt+Left from a focused line focuses Cancel, then the line of the new result. Control: remove the refocus code; a new case fails.
+
 ### Batch 4 verification
 
 - [ ] T063 Run the batch 4 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, then `bun run build:service` and `bun run test:windows`. `Local: Rust`. `Local: WSL`. `Local: package`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every record into research.md R17. Control mutation: in `tests/windows/inspection-perf.test.ts`, lower the 500 ms bound to 1 ms. The test must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 4 is recorded in research.md. Spec: SC-001 to SC-011. Depends on T059 to T062, T078 to T086, and T093 to T097.
@@ -357,6 +363,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - Board comparison fixes (T066–T077): after the board comparisons of T027, T047, and T058. One package in order. T047 and T058 repeat their board comparison after T077.
 - Ignore preview fixes (T081, T087): after T041.
 - T063 run fixes (T082–T086, T092, T099): after T080. T082 and T083 need a new package before their packaged rerun. Then T063 runs again.
+- Blame focus fix (T100): after T044. Then T063 runs again.
 - Renderer performance fixes (T090, T091): after T083. Both need a new package before the packaged Q6 and Q32 reruns. Then T063 runs again.
 
 ### Changes to earlier requirements and their tasks
@@ -402,7 +409,7 @@ Then:          T027
 | FR-020 to FR-033 (US2) | T012 to T014, T028 to T030, T032, T039, T048, T053, T059, T060, T073, T076, T078, T082 |
 | FR-034 to FR-046 (US5) | T013 to T015, T028 to T031, T033, T034, T037, T040, T041, T049, T054, T057, T059, T067, T074, T078, T079, T081, T086, T087, T093 to T098 |
 | FR-047 to FR-052 (US6) | T013, T015, T030, T035, T042, T050, T055, T059, T060, T066 |
-| FR-053 to FR-063 (US7) | T016 to T018, T020, T022, T024, T026, T065, T044, T046, T048, T052, T061, T071, T072 |
+| FR-053 to FR-063 (US7) | T016 to T018, T020, T022, T024, T026, T065, T044, T046, T048, T052, T061, T071, T072, T100 |
 | FR-064 to FR-066 (US8, US9) | T006, T008, T009, T011, T018, T069, T075, T080 |
 | FR-067 | T008, T043, T044, T048 to T051, T056, T060, T072, T073, T079, T080 |
 | FR-068 | T043, T044, T049, T090 |

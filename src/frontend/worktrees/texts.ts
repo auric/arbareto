@@ -76,6 +76,7 @@ export const W = {
   branch: "Branch",
   heldNote: "Branches checked out in another worktree are not listed. Git allows each branch in one worktree only.",
   noFreeBranch: "Every local branch is checked out in a worktree.",
+  branchGone: (name: string) => `Branch ${name} no longer exists. Select another branch.`,
   folder: "Folder",
   folderHint: "Suggested from the branch name. The folder must not exist, or it must be empty.",
   // Browse (spec FR-052, plan D15, contract Δ3 `chooseWorktreeFolder`).

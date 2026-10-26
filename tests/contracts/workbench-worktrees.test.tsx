@@ -995,6 +995,45 @@ describe("Add worktree for this branch in the branch menu (FR-014, FR-052)", () 
     expect(reviews(double)[0]!.branch).toEqual({ existing: "refs/heads/login" });
   });
 
+  test("a menu branch that another worktree holds at the panel read stays unselected, states the held reason, and Add does nothing", async () => {
+    const world = menuWorld();
+    const double = await mountWorkbench(workbench, world);
+    await contextMenu(await sidebarRow("login"));
+    world.answers.readBranches = () => succeeded({ entries: ENTRIES.map((e) => (e.ref === "refs/heads/login" ? { ...e, heldBy: "C:/wt/repo-login" } : e)) });
+    await click(menuItem("Add worktree for this branch…")!);
+    const panel = addPanel()!;
+    expect(radio("Existing branch", panel)!.checked).toBe(true);
+    expect(branchSelect(panel).value).toBe("");
+    expect(folderField(panel).value).toBe("");
+    expect(text(panel)).toContain("The worktree C:/wt/repo-login holds this branch. Open that worktree, or remove it first.");
+    await click(button("Add worktree (Ctrl+Enter)", panel));
+    expect(reviews(double)).toHaveLength(0);
+  });
+
+  test("a menu branch that the panel read no longer lists stays unselected, states that it no longer exists, and Add does nothing", async () => {
+    const world = menuWorld();
+    const double = await mountWorkbench(workbench, world);
+    await contextMenu(await sidebarRow("login"));
+    world.answers.readBranches = () => succeeded({ entries: ENTRIES.filter((e) => e.ref !== "refs/heads/login") });
+    await click(menuItem("Add worktree for this branch…")!);
+    const panel = addPanel()!;
+    expect(branchSelect(panel).value).toBe("");
+    expect(text(panel)).toContain("Branch login no longer exists. Select another branch.");
+    expect(text(panel)).not.toContain("Every local branch is checked out in a worktree.");
+    await click(button("Add worktree (Ctrl+Enter)", panel));
+    expect(reviews(double)).toHaveLength(0);
+  });
+
+  const description = (e: Element) => (e.getAttribute("aria-describedby") ?? "").split(" ").filter((id) => id !== "").map((id) => text(document.getElementById(id)!)).join(" ");
+  test("the start note describes the New branch name field", async () => {
+    const { panel } = await addFor("origin/feat");
+    expect(description(nameField(panel))).toContain("Starts at origin/feat. The new branch tracks it.");
+    await press(panel.querySelector("input")!, "Escape");
+    await openList();
+    await click(options().find((o) => itemLabel(o) === "Add worktree…")!);
+    expect(description(nameField(addPanel()!))).toContain(`Starts at commit ${oid(1).slice(0, 12)}.`);
+  });
+
   test("the current branch item states its reason and opens no panel", async () => {
     const double = await mountWorkbench(workbench, menuWorld());
     await contextMenu(await sidebarRow("signup"));

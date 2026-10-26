@@ -298,6 +298,43 @@ caseTest("T127", "FR-052 and FR-053: Add worktree for a remote-tracking branch c
   }
 }, TIMEOUT_MS);
 
+// The local entries of `config --local --list -z`: each entry is `<key>\n<value>` and ends with NUL (git-config(1) `-z`).
+const localConfig = (f: WbFixture): string[] => git(f, ["config", "--local", "--list", "-z"]).split("\0").filter((e) => e !== "");
+
+caseTest("T127", "FR-053: with the local branch.autoSetupRebase=always, a track add writes only the remote, merge, and rebase keys of the new branch", SHELL, async () => {
+  const f = build();
+  withRemote(f, "origin", ["feature/x"]);
+  // git-config(1) `branch.autoSetupRebase`: `always` makes Git write `branch.<name>.rebase` for every tracking branch.
+  git(f, ["config", "--local", "branch.autoSetupRebase", "always"]);
+  const before = localConfig(f);
+  const track = { ref: "refs/remotes/origin/feature/x", name: "feature/x" };
+  const dest = folder(f, "wt-track");
+  await withSync("t127-track-rebase", async (service) => {
+    const r = await open(service, f.repo);
+    const rv = await reviewed(service, r, addPayload({ track }, service.runner.addWorktreeAdd(dest, r.repositoryId)));
+    expect(outcome(await service.response(sendRun(service, r, rv.workbenchToken)))).toEqual(SUCCEEDED);
+  });
+  expect(localConfig(f)).toEqual([...before, "branch.feature/x.remote\norigin", "branch.feature/x.merge\nrefs/heads/feature/x", "branch.feature/x.rebase\ntrue"]);
+}, TIMEOUT_MS);
+
+caseTest("T127", "plan.md D10: a remote ref that moves after the review gives STALE_REVIEW, and no worktree add starts", SHELL, async () => {
+  const f = build();
+  withRemote(f, "origin", ["feature/x"]);
+  const ref = "refs/remotes/origin/feature/x";
+  const moved = git(f, ["commit-tree", "-p", f.oids.base!, "-m", "moved", `${f.oids.base}^{tree}`]).trim();
+  const dest = folder(f, "wt-track");
+  await withSync("t127-track-stale", async (service) => {
+    const r = await open(service, f.repo);
+    const rv = await reviewed(service, r, addPayload({ track: { ref, name: "feature/x" } }, service.runner.addWorktreeAdd(dest, r.repositoryId)));
+    git(f, ["update-ref", ref, moved]);
+    const from = service.runner.calls.length;
+    expect(outcome(await service.response(sendRun(service, r, rv.workbenchToken)))).toEqual({ state: "failed", code: "STALE_REVIEW" });
+    expect(steps(service, from)).toEqual([]);
+  });
+  expect(existsSync(dest)).toBe(false);
+  expect(git(f, ["for-each-ref", "--format=%(refname)", "refs/heads/feature/x"])).toBe("");
+}, TIMEOUT_MS);
+
 caseTest("T127", "FR-052 and plan.md D3 Track rule: a track name @, a remote-tracking branch without exactly one mapping remote, and a name that exists as the current or a held branch refuse; no worktree add starts", SHELL, async () => {
   const f = build();
   withRemote(f, "team/a", ["feature/x", "main", "dirty-b"]);

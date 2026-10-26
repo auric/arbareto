@@ -4396,15 +4396,40 @@ fn runs_bound_command(arguments: &[String]) -> bool {
     matches!(items.as_slice(), ["clone", ..] | ["worktree", "add", ..])
 }
 
-/// Feature 004 contract Δ3 and Δ6 `worktreeAdd`: `worktree add [-b <new>] -- <path> <commit>` with the bound path.
+/// Feature 004 contract Δ3 and Δ6 `worktreeAdd`: `worktree add [[--track] -b <new>] -- <path> <commit>` with the bound path.
+/// The `--track` form starts from a remote-tracking ref only.
 fn worktree_add_fits(arguments: &[String], path: &str) -> bool {
     let items: Vec<&str> = arguments.iter().map(String::as_str).collect();
-    matches!(
-        items.as_slice(),
+    match items.as_slice() {
         ["--no-lazy-fetch", "worktree", "add", "--", bound, _]
-            | ["--no-lazy-fetch", "worktree", "add", "-b", _, "--", bound, _]
-            if *bound == path
-    )
+        | [
+            "--no-lazy-fetch",
+            "worktree",
+            "add",
+            "-b",
+            _,
+            "--",
+            bound,
+            _,
+        ] => *bound == path,
+        [
+            "--no-lazy-fetch",
+            "worktree",
+            "add",
+            "--track",
+            "-b",
+            _,
+            "--",
+            bound,
+            start,
+        ] => {
+            *bound == path
+                && start
+                    .strip_prefix("refs/remotes/")
+                    .is_some_and(|rest| !rest.is_empty())
+        }
+        _ => false,
+    }
 }
 
 /// Feature 004 contract Δ3 `revealPath`: an error, the deadline included, gives `UNKNOWN_TARGET`.
@@ -12661,6 +12686,51 @@ pub(crate) mod tests {
             set("gitInstallationId", json!(uuid())),
         )];
         expect_refusals(&harness, base, cases, "UNKNOWN_TARGET");
+    }
+
+    /// Feature 004 contract Δ3 `worktreeAdd` `track`: the exact `--track -b` form with a remote-tracking start.
+    #[test]
+    fn worktree_add_fits_admits_the_track_form_only_exactly() {
+        let path = r"D:\src\wt";
+        let owned = |items: &[&str]| {
+            items
+                .iter()
+                .map(|item| item.to_string())
+                .collect::<Vec<_>>()
+        };
+        let track = [
+            "--no-lazy-fetch",
+            "worktree",
+            "add",
+            "--track",
+            "-b",
+            "topic",
+            "--",
+            path,
+            "refs/remotes/origin/topic",
+        ];
+        assert!(worktree_add_fits(&owned(&track), path));
+        assert!(!worktree_add_fits(&owned(&track), r"D:\src\other"));
+        for start in [
+            "refs/heads/topic",
+            "origin/topic",
+            "refs/remotes/",
+            "0123456789abcdef0123456789abcdef01234567",
+        ] {
+            let mut items = track;
+            items[8] = start;
+            assert!(!worktree_add_fits(&owned(&items), path), "{start}");
+        }
+        let no_end = owned(&[&track[..6], &track[7..]].concat());
+        assert!(!worktree_add_fits(&no_end, path));
+        let extra = owned(&[&track[..], &["x"]].concat());
+        assert!(!worktree_add_fits(&extra, path));
+        let option = owned(&[&track[..3], &["--force"], &track[3..]].concat());
+        assert!(!worktree_add_fits(&option, path));
+        let no_name = owned(&[&track[..5], &track[6..]].concat());
+        assert!(!worktree_add_fits(&no_name, path));
+        let swapped = owned(&[&track[..3], &["-b", "--track"], &track[5..]].concat());
+        assert!(!worktree_add_fits(&swapped, path));
     }
 
     fn worktree_add_run(

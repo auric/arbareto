@@ -1175,6 +1175,8 @@ describe("native runner feature 004 requests", () => {
       call({ context: worktreeAdd, arguments: ["--no-lazy-fetch", "worktree", "add", "--", WORKTREE, OID] }),
       call({ context: worktreeAdd, arguments: ["--no-lazy-fetch", "worktree", "list"], ...integrate }),
       call({ context: worktreeAdd, arguments: ["--no-lazy-fetch", "worktree", "add", "--track", "--", WORKTREE, OID], ...integrate }),
+      call({ context: worktreeAdd, arguments: ["--no-lazy-fetch", "worktree", "add", "--track", "-b", "new", "--", WORKTREE, "refs/heads/new"], ...integrate }),
+      call({ context: worktreeAdd, arguments: ["--no-lazy-fetch", "worktree", "add", "--track", "-b", "new", "--", WORKTREE, "refs/remotes/"], ...integrate }),
       call({ arguments: ["--no-lazy-fetch", "-C", "x", "worktree", "add", "--", WORKTREE, OID], ...integrate }),
       call({ arguments: ["--no-lazy-fetch", "clone", "--", "https://host.invalid/x.git", WORKTREE], environmentPolicy: "remote", limits: PROCESS_LIMITS.network }),
     ];

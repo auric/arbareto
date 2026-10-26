@@ -272,7 +272,11 @@ caseTest("T127", "FR-052 and FR-053: Add worktree for a remote-tracking branch c
   for (const remote of ["origin", "team/a"]) {
     const f = build();
     const o = build();
-    for (const x of [f, o]) withRemote(x, remote, ["feature/x"]);
+    // Without the local `branch.autoSetupMerge=false`, Git sets the upstream for a `-b` from a remote-tracking start too (git-config(1)).
+    for (const x of [f, o]) {
+      withRemote(x, remote, ["feature/x"]);
+      git(x, ["config", "--local", "branch.autoSetupMerge", "false"]);
+    }
     const ref = `refs/remotes/${remote}/feature/x`;
     const dest = folder(f, "wt-track");
     const track = { ref, name: "feature/x" };
@@ -283,11 +287,11 @@ caseTest("T127", "FR-052 and FR-053: Add worktree for a remote-tracking branch c
       const from = service.runner.calls.length;
       const response = await service.response<WorktreeRun>(sendRun(service, r, rv.workbenchToken));
       expect(outcome(response)).toEqual(SUCCEEDED);
+      expect(git(f, ["for-each-ref", "--format=%(upstream)", "refs/heads/feature/x"])).toBe(`${ref}\n`);
       const run = service.runner.calls.slice(from).filter((c) => c.environmentPolicy === "integrate");
       expect(run.map((c) => [c.contextKind, ...c.arguments])).toEqual([["worktreeAdd", L, "worktree", "add", "--track", "-b", "feature/x", "--", dest, ref]]);
       expect(response.result!.refs).toEqual([{ ref: "refs/heads/feature/x" }]);
     });
-    expect(git(f, ["for-each-ref", "--format=%(upstream)", "refs/heads/feature/x"])).toBe(`${ref}\n`);
     git(o, ["worktree", "add", "-q", "--track", "-b", "feature/x", "--", folder(o, "wt-track"), ref]);
     expect(stateOf(f)).toEqual(stateOf(o));
     expect(readFileSync(f.configs.local!, "utf8")).toBe(readFileSync(o.configs.local!, "utf8"));
@@ -297,9 +301,10 @@ caseTest("T127", "FR-052 and FR-053: Add worktree for a remote-tracking branch c
 caseTest("T127", "FR-052 and plan.md D3 Track rule: a track name @, a remote-tracking branch without exactly one mapping remote, and a name that exists as the current or a held branch refuse; no worktree add starts", SHELL, async () => {
   const f = build();
   withRemote(f, "team/a", ["feature/x", "main", "dirty-b"]);
-  // The remote `team` maps the one ref `refs/remotes/team/a/feature/x` too, so two remotes map it.
-  git(f, ["remote", "add", "team", "../remote.git"]);
-  git(f, ["config", "--replace-all", "remote.team.fetch", "+refs/heads/a/feature/x:refs/remotes/team/a/feature/x"]);
+  // The remote `mirror` maps the one ref `refs/remotes/team/a/feature/x` too, so two remotes map it.
+  // Git `remote add` refuses a remote `team` beside the remote `team/a`.
+  git(f, ["remote", "add", "mirror", "../remote.git"]);
+  git(f, ["config", "--replace-all", "remote.mirror.fetch", "+refs/heads/feature/x:refs/remotes/team/a/feature/x"]);
   git(f, ["update-ref", "refs/remotes/stray/y", f.oids.base!]);
   const before = stateOf(f);
   await withSync("t127-track-refused", async (service) => {
@@ -309,7 +314,7 @@ caseTest("T127", "FR-052 and plan.md D3 Track rule: a track name @, a remote-tra
     expect(refused(await add({ track: { ref: "refs/remotes/team/a/main", name: "@" } }))).toEqual(unavailable("reserved-name"));
     expect(service.runner.calls.length).toBe(from);
     expect(refused(await add({ track: { ref: "refs/remotes/stray/y", name: "y" } }))).toEqual(unavailable("no-tracking-refspec"));
-    expect(refused(await add({ track: { ref: "refs/remotes/team/a/feature/x", name: "feature/x" } }))).toEqual(unavailable("several-tracking-remotes", { remotes: ["team/a", "team"] }));
+    expect(refused(await add({ track: { ref: "refs/remotes/team/a/feature/x", name: "feature/x" } }))).toEqual(unavailable("several-tracking-remotes", { remotes: ["team/a", "mirror"] }));
     expect(refused(await add({ track: { ref: "refs/remotes/team/a/main", name: "main" } }))).toEqual(unavailable("name-exists", { ref: "refs/heads/main" }));
     expect(refused(await add({ track: { ref: "refs/remotes/team/a/dirty-b", name: "dirty-b" } }))).toEqual(unavailable("name-exists", { ref: "refs/heads/dirty-b" }));
     // The local branch of that name keeps the existing-branch refusals (FR-052).

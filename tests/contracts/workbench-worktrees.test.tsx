@@ -964,9 +964,9 @@ describe("Add worktree for this branch in the branch menu (FR-014, FR-052)", () 
     expect(panel).not.toBeNull();
     expect(radio("Existing branch", panel)!.checked).toBe(true);
     expect(branchSelect(panel).value).toBe("refs/heads/login");
-    expect(folderField(panel).value).toBe("C:\repo-login");
+    expect(folderField(panel).value).toBe("C:\\repo-login");
     await click(button("Add worktree (Ctrl+Enter)", panel));
-    expect(reviews(double)).toEqual([{ action: "worktree-add", branch: { existing: "refs/heads/login" }, path: "C:\repo-login" }]);
+    expect(reviews(double)).toEqual([{ action: "worktree-add", branch: { existing: "refs/heads/login" }, path: "C:\\repo-login" }]);
   });
 
   test("a remote branch opens New branch with its localName, the fixed remote start and the D15 note, and Add sends track", async () => {
@@ -975,9 +975,9 @@ describe("Add worktree for this branch in the branch menu (FR-014, FR-052)", () 
     expect(nameField(panel).value).toBe("feat");
     expect(text(panel)).toContain("Starts at origin/feat. The new branch tracks it.");
     expect(text(panel)).not.toContain("Starts at commit");
-    expect(folderField(panel).value).toBe("C:\repo-feat");
+    expect(folderField(panel).value).toBe("C:\\repo-feat");
     await click(button("Add worktree (Ctrl+Enter)", panel));
-    expect(reviews(double)).toEqual([{ action: "worktree-add", branch: { track: { ref: "refs/remotes/origin/feat", name: "feat" } }, path: "C:\repo-feat" }]);
+    expect(reviews(double)).toEqual([{ action: "worktree-add", branch: { track: { ref: "refs/remotes/origin/feat", name: "feat" } }, path: "C:\\repo-feat" }]);
   });
 
   test("an edited name keeps the remote start and the track form", async () => {

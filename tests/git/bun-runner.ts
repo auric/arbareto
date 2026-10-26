@@ -864,7 +864,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       const fits =
         (args.length === 6 && args[3] === "--" && args[4] === bound.path) ||
         (args.length === 8 && args[3] === "-b" && args[5] === "--" && args[6] === bound.path) ||
-        (args.length === 9 && args[3] === "--track" && args[4] === "-b" && args[6] === "--" && args[7] === bound.path);
+        (args.length === 9 && args[3] === "--track" && args[4] === "-b" && args[6] === "--" && args[7] === bound.path && args[8]!.length > 13 && args[8]!.startsWith("refs/remotes/"));
       if (!fits) throw new RunnerRefusal("INVALID_REQUEST", "worktree add arguments");
       return { program, cwd: repository.worktreeRoot };
     }

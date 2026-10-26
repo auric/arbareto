@@ -257,7 +257,7 @@ export function createSpellEngine(store: SpellingStore, deps: EngineDeps) {
         const chunk = response.result as { size?: unknown; bytes?: unknown } | undefined;
         if (response.state !== "succeeded" || typeof chunk?.bytes !== "string" || typeof chunk.size !== "number") return fail(slot);
         size = chunk.size;
-        worker.postMessage({ type: "chunk", file: file === "index.aff" ? "aff" : "dic", data: chunk.bytes });
+        worker.postMessage({ type: "chunk", file: file === "index.aff" ? "aff" : "dic", size, offset, data: chunk.bytes });
       }
     }
     worker.postMessage({ type: "build", script: slot.script! });

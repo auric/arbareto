@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // T042: the feature 006 timing and memory budgets in the installed package (plan.md P8, WP8, D3). Quickstart.md Q12, Q25, and Q27. `Local: package`.
-// Spec FR-017, FR-028, SC-004. A timing case reports the median of its counted runs after one warm-up run ("warm package, median of N").
+// Spec FR-017, FR-028, SC-004. A timing case counts N runs after one warm-up run. Each counted run must meet the budget, and the OBSERVATION line also gives the median.
 // The cases drive the page through the WebView2 CDP endpoint and UI Automation patterns. They send no OS input and never move the pointer.
 // Page timing: the time from the `timeStamp` of the input event to the start of the first animation frame whose page holds the result (as T061).
 // It leaves out the OS input path and the compositor, so it is not the 001 visible response of the capture source (001 plan.md "Capture source").
@@ -20,12 +20,12 @@ import { appEnv, COMMIT_VIEW } from "./installed-app";
 import {
   ACTION_WAIT_MS,
   browserVersion,
-  CACHE_SKIP,
-  cachedEntries,
   cachedEntry,
+  cacheSkip,
   cachedText,
   caret,
   caseTimeout,
+  catalog,
   CHIP,
   copyProfile,
   DESCRIPTIONS,
@@ -179,10 +179,11 @@ const median = (xs: number[]) => {
 // 001 plan.md "Responsiveness metrics": the nearest-rank p95.
 const p95 = (xs: number[]) => xs.toSorted((a, b) => a - b)[Math.max(0, Math.ceil(0.95 * xs.length) - 1)]!;
 const rounded = (xs: number[]) => xs.map((x) => Math.round(x * 10) / 10);
+// Returns the maximum: spec SC-004 and quickstart.md Q12 bound each run.
 function record(what: string, runs: number[], budget?: number): number {
-  const m = median(runs);
-  console.log(`OBSERVATION ${TASK}: ${what}: runs ${js(rounded(runs))} ms, median ${m.toFixed(1)} ms${budget === undefined ? "" : `, budget ${budget} ms`}`);
-  return m;
+  const max = Math.max(...runs);
+  console.log(`OBSERVATION ${TASK}: ${what}: runs ${js(rounded(runs))} ms, median ${median(runs).toFixed(1)} ms, max ${max.toFixed(1)} ms${budget === undefined ? "" : `, budget ${budget} ms`}`);
+  return max;
 }
 
 // ---- FR-028 inputs (W3C Event Timing, as T061 SC-009) ----
@@ -316,7 +317,7 @@ describe.skipIf(process.platform !== "win32")("T042 packaged spell check budgets
   }
 
   test.skipIf(reason !== null)(
-    `Q12, SC-004: English marks show within ${FIRST_MARKS_MS} ms after the first open of the commit editor (median of ${OPEN_RUNS} app starts)`,
+    `Q12, SC-004: English marks show within ${FIRST_MARKS_MS} ms after the first open of the commit editor (each of ${OPEN_RUNS} app starts)`,
     async () => {
       const runs: number[] = [];
       for (let i = 0; i <= OPEN_RUNS; i++) {
@@ -338,7 +339,7 @@ describe.skipIf(process.platform !== "win32")("T042 packaged spell check budgets
   );
 
   test.skipIf(reason !== null)(
-    `Q12, SC-004: in a 64 KiB message with every word marked, a typed character updates the marks within ${MARK_UPDATE_MS} ms with no main thread task above ${STALL_MS} ms; a whole-text paste is the recorded limit case`,
+    `Q12, SC-004: in a 64 KiB message with every word marked, each typed character updates the marks within ${MARK_UPDATE_MS} ms with no main thread task above ${STALL_MS} ms; a whole-text paste is the recorded limit case`,
     async () => {
       const full = fullMessage();
       const s = await fresh("full");
@@ -417,8 +418,8 @@ describe.skipIf(process.platform !== "win32")("T042 packaged spell check budgets
     caseTimeout(30, 4 * STEP_LIMIT_MS),
   );
 
-  const uk = cachedEntry("uk");
-  const ukSkip = reason ?? (uk === null ? CACHE_SKIP : null);
+  const { entry: uk, skip: ukCache } = cachedEntry("uk");
+  const ukSkip = reason ?? ukCache;
   if (ukSkip !== null) console.log(`SKIP ${TASK} FR-028 Ukrainian load: ${ukSkip} (unverified)`);
   test.skipIf(ukSkip !== null)(
     `Q27, FR-028: 95% of inputs within ${INPUT_P95_MS} ms and every input within ${INPUT_MAX_MS} ms during a Ukrainian load`,
@@ -452,12 +453,17 @@ describe.skipIf(process.platform !== "win32")("T042 packaged spell check budgets
 
   // ---- The packaged gate of plan.md D3 (FR-017, Q25) ----
 
-  if (reason === null && cachedEntries.length === 0) {
-    console.log(`SKIP ${TASK} packaged gate: ${CACHE_SKIP} (unverified)`);
-    test.skip(`Q25, FR-017 packaged gate (SKIP: ${CACHE_SKIP})`, () => {});
-  }
-
-  type GateRun = { run: number; webview2: string; baselineBytes: number; peakBytes: number; increaseBytes: number; loadMs: number | null; descriptions: (string | null)[]; expected: string };
+  type GateRun = {
+    run: number;
+    webview2: string;
+    baselineBytes: number;
+    peakBytes: number;
+    increaseBytes: number;
+    maxGapMs: number;
+    loadMs: number | null;
+    descriptions: (string | null)[];
+    expected: string;
+  };
   async function gateRun(entry: CatalogEntry, text: string, negatives: string[], firstNegative: number, run: number): Promise<GateRun> {
     const s = await fresh(`gate-${entry.id}-${run}`, (profile) => {
       installDictionary(profile, entry);
@@ -483,23 +489,35 @@ describe.skipIf(process.platform !== "win32")("T042 packaged spell check budgets
       }
       await Bun.sleep(AFTER_MS);
       const descriptions = await s.c.evaluate<(string | null)[]>(DESCRIPTIONS);
-      await caret(s.c, firstNegative + 1);
-      await press(s.c, "F10", MOD.Shift);
-      const menu = spellMenu(negatives[0]!);
-      await until<string[]>(s.c, "the suggestions of the first negative word", MENU_LABELS(menu), (v) => v.includes(T.ignore) && !v.includes(T.finding), STEP_LIMIT_MS);
-      const listed = Date.now();
-      await sampler.at(listed + AFTER_MS, AFTER_MS + ACTION_WAIT_MS);
-      await press(s.c, "Escape");
+      // Without a load the language gives no suggestions. The run returns, so the gate records its values.
+      if (loadMs !== null) {
+        await caret(s.c, firstNegative + 1);
+        await press(s.c, "F10", MOD.Shift);
+        const menu = spellMenu(negatives[0]!);
+        await until<string[]>(s.c, "the suggestions of the first negative word", MENU_LABELS(menu), (v) => v.includes(T.ignore) && !v.includes(T.finding), STEP_LIMIT_MS);
+        const listed = Date.now();
+        await sampler.at(listed + AFTER_MS, AFTER_MS + ACTION_WAIT_MS);
+        await press(s.c, "Escape");
+      }
       const window = sampler.samples.filter((x) => x.timeMs >= from);
+      // A tree without a WebView2 process gives 0 bytes, and the bound would pass.
+      expect(window.filter((x) => x.rootPid !== s.app.pid || x.webView2PrivateBytes <= 0)).toEqual([]);
       const peakBytes = Math.max(...window.map((x) => x.webView2PrivateBytes));
-      return { run, webview2, baselineBytes, peakBytes, increaseBytes: peakBytes - baselineBytes, loadMs, descriptions, expected: T.count(negatives.length) };
+      const maxGapMs = Math.max(0, ...window.slice(1).map((x, i) => x.timeMs - window[i]!.timeMs));
+      return { run, webview2, baselineBytes, peakBytes, increaseBytes: peakBytes - baselineBytes, maxGapMs, loadMs, descriptions, expected: T.count(negatives.length) };
     } finally {
       await sampler.stop();
       await stop(s);
     }
   }
 
-  for (const entry of reason === null ? cachedEntries : []) {
+  for (const entry of reason === null ? catalog.entries : []) {
+    const skip = cacheSkip(entry);
+    if (skip !== null) {
+      console.log(`SKIP ${TASK} packaged gate ${entry.id}: ${skip} (unverified)`);
+      test.skip(`Q25, FR-017 packaged gate ${entry.id} (SKIP: ${skip})`, () => {});
+      continue;
+    }
     test(
       `Q25, FR-017 packaged gate ${entry.id}: ${GATE_RUNS} runs load within ${LOAD_MS} ms, add at most 256 MiB of WebView2 private bytes, and give the exact fixture count`,
       async () => {
@@ -520,7 +538,8 @@ describe.skipIf(process.platform !== "win32")("T042 packaged spell check budgets
         }
         const failed = runs.filter((r) => r.loadMs === null || r.loadMs > LOAD_MS || r.increaseBytes > GATE_BYTES || !r.descriptions.includes(r.expected));
         if (failed.length > 0) {
-          const step = failed.some((r) => !r.descriptions.includes(r.expected)) ? 2 : failed.some((r) => r.loadMs === null || r.loadMs > LOAD_MS) ? 3 : 4;
+          // A run without a load measured no fixture count, so it fails step 3.
+          const step = failed.some((r) => r.loadMs === null) ? 3 : failed.some((r) => !r.descriptions.includes(r.expected)) ? 2 : failed.some((r) => r.loadMs! > LOAD_MS) ? 3 : 4;
           console.log(`GATE_FAILURE ${TASK}: ${js({ id: entry.id, step, runs })}`);
         }
         expect(failed).toEqual([]);

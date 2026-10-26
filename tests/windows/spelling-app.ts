@@ -324,9 +324,18 @@ export function smallRepo(git: string, name: string): string {
 const CACHE = process.env.ARBARETO_DICTIONARY_CACHE;
 export const CACHE_SKIP = "dictionary cache absent: set ARBARETO_DICTIONARY_CACHE";
 export const cacheFolder = CACHE === undefined || CACHE === "" ? null : join(CACHE, catalog.source.commit);
-// The catalog entries whose every file the cache holds, in catalog order.
-export const cachedEntries: CatalogEntry[] = cacheFolder === null ? [] : catalog.entries.filter((e) => e.files.every((f) => existsSync(join(cacheFolder, e.id, f.name))));
-export const cachedEntry = (id: string) => cachedEntries.find((e) => e.id === id) ?? null;
+// The skip reason of a catalog entry, or null when the cache holds every file of it.
+export function cacheSkip(entry: CatalogEntry): string | null {
+  if (cacheFolder === null) return CACHE_SKIP;
+  const missing = entry.files.find((f) => !existsSync(join(cacheFolder, entry.id, f.name)));
+  return missing === undefined ? null : `not-cached ${entry.id}/${missing.name}`;
+}
+export function cachedEntry(id: string): { entry: CatalogEntry; skip: null } | { entry: null; skip: string } {
+  const entry = catalog.entries.find((e) => e.id === id);
+  if (entry === undefined) return { entry: null, skip: `not-in-catalog ${id}` };
+  const skip = cacheSkip(entry);
+  return skip === null ? { entry, skip } : { entry: null, skip };
+}
 
 // Data-model §3: the files of the entry with the catalog size and SHA-256, and `entry.json` as `{version: 1, entry}`.
 export function installDictionary(profileRoot: string, entry: CatalogEntry): void {

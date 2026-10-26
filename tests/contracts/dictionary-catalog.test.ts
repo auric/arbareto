@@ -144,6 +144,14 @@ describe("the shipped catalog (plan.md D3)", () => {
     expect(catalog.source.commit).toBe(COMMIT);
   });
 
+  // Plan.md D3 "Rebuild": the offline rebuild leaves out each failed entry.
+  test("no entry of scripts/dictionary-gate.json is in the catalog", () => {
+    const gate = JSON.parse(readFileSync(join(ROOT, "scripts", "dictionary-gate.json"), "utf8")) as { failures: { id: string }[] };
+    expect(gate.failures.length).toBeGreaterThan(0);
+    const ids = new Set(catalog.entries.map((e) => e.id));
+    expect(gate.failures.map((f) => f.id).filter((id) => ids.has(id))).toEqual([]);
+  });
+
   // Contract Δ1: the shell reads sizes with `as_u64`, which refuses an exponent. JSON.stringify writes none for these sizes.
   // A checkout with `core.autocrlf` writes CRLF line ends, so the compare uses LF.
   test("the file is the JSON.stringify form with two spaces and a final line feed", () => {

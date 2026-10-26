@@ -639,3 +639,11 @@ Independent batch 2 review, reviewer agent, read-only, on 4d4ba72a (the merges o
 | cy | pass | 214.0, 216.6, 221.7 | 358.0, 369.1, 356.7 | 144.0, 152.5, 135.0 | 233, 237, 228 | 10, 10, 10 |
 | hyw | pass | 225.5, 216.5, 216.7 | 384.2, 377.2, 380.3 | 158.6, 160.6, 163.6 | 281, 290, 281 | 10, 10, 10 |
 | fy | pass | 213.3, 216.6, 216.6 | 447.2, 447.9, 431.4 | 233.9, 231.3, 214.8 | 934, 868, 927 | 10, 10, 10 |
+
+### Batch 3 review fixes, 2026-10-26
+
+- The SC-004 timing cases compare the maximum of the counted runs with the budget. The OBSERVATION line also gives the median.
+- The packaged gate makes one case per catalog entry. An entry with a missing cache file skips with `not-cached <id>/<name>`, and the qualification run counts the skip as unverified (spec SC-002).
+- A gate run fails when a sample of its window has no WebView2 private bytes or another root PID. A run without a load skips the menu step, records its values, and fails step 3.
+- The N4 Persian line is its own case. Without `fa`, that case skips with its reason.
+- Open point: each gate run records `maxGapMs`, the largest gap between two samples. Plan.md D3 fixes 250 ms samples but no bound for the gap. A bound needs a plan decision.

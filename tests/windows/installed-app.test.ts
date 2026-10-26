@@ -27,6 +27,7 @@ printOrigin("./installed-app.ts", import.meta.dir);
 
 const TEST_TIMEOUT_MS = 30_000;
 const READY_MS = 10_000;
+const HOLD_MS = 2_000;
 const REPO = join(import.meta.dir, "..", "..");
 
 const refusal = (body: () => unknown) => {
@@ -193,6 +194,60 @@ describe.skipIf(process.platform !== "win32")("T151 installed-app helper", () =>
         }
         if (childRoot !== undefined && existsSync(childRoot)) removeTree(childRoot);
       }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "a root that starts a child at once is in the Job before its first instruction, so the child is in the Job and the stop audit finds nothing",
+    async () => {
+      const root = fixtureDir("suspended");
+      const records = join(root, "records");
+      mkdirSync(records);
+      const ready = join(root, "ready");
+      // `start /b` returns at once, so the `cmd.exe` root ends while its Bun child runs. The hold gives an unsuspended root the time to start that child.
+      const argv = [process.env.ComSpec!, "/d", "/c", "start", "/b", process.execPath, join(import.meta.dir, "..", "git", "win32.ts"), records, "60000", ready];
+      let readyBeforeAssign: boolean | undefined;
+      const owned = spawnOwned(argv, root, process.env as Record<string, string>, () => {
+        Bun.sleepSync(HOLD_MS);
+        readyBeforeAssign = existsSync(ready);
+      });
+      try {
+        expect(readyBeforeAssign).toBe(false);
+        for (const until = performance.now() + READY_MS; !existsSync(ready) && performance.now() < until; ) await Bun.sleep(10);
+        const [child] = survivingRecords(records);
+        expect(child).toBeDefined();
+        expect(owned.holds(Number(child!.split("-")[0]))).toBe(true);
+        expect(() => owned.stop()).not.toThrow();
+        expect(survivingRecords(records)).toEqual([]);
+      } finally {
+        for (const name of survivingRecords(records)) {
+          const [pid, created] = name.split("-");
+          terminateRecorded(Number(pid), BigInt(created!));
+        }
+        try {
+          owned.stop();
+        } catch {}
+      }
+    },
+    TEST_TIMEOUT_MS,
+  );
+
+  test(
+    "an owned start passes each argument through the CommandLineToArgvW rules",
+    async () => {
+      const root = fixtureDir("arguments");
+      const script = join(root, "argv.ts");
+      const out = join(root, "argv.json");
+      writeFileSync(script, 'require("node:fs").writeFileSync(process.argv[2], JSON.stringify(process.argv.slice(3)));\n');
+      const args = ["", "a b", 'q"uote', "tail\\", "space tail\\", 'back\\\\"slash', "tab\tx", "\\\\server\\share", "ünï", "%PATH%"];
+      const owned = spawnOwned([process.execPath, script, out, ...args], root, process.env as Record<string, string>);
+      try {
+        expect(await waitExit(owned)).toBe(0);
+      } finally {
+        owned.stop();
+      }
+      expect(JSON.parse(readFileSync(out, "utf8"))).toEqual(args);
     },
     TEST_TIMEOUT_MS,
   );

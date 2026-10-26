@@ -4,7 +4,7 @@
 import { ArrowLeft01Icon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type MouseEvent } from "react";
+import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type CSSProperties, type KeyboardEvent, type MouseEvent, type RefObject } from "react";
 import type { Blame } from "../../contracts/envelope";
 import type { BlameUnavailableReason } from "../../contracts/errors";
 import { OutputTail, unknownFormText } from "../app/RepositoryStates";
@@ -77,7 +77,15 @@ export function BlameView({ inspection, onBack, onSelectCommit, now = Date.now }
   const headingId = useId();
   const reasonId = useId();
   const back = useRef<HTMLButtonElement>(null);
+  const cancel = useRef<HTMLButtonElement>(null);
+  const focused = useRef<Element | null>(null);
   useEffect(() => back.current?.focus(), []);
+  // Plan.md D15 "Blame focus". The HTML focus fixup rule moves the focus to the body when the focused element leaves the document.
+  const focusLost = () => focused.current !== null && !focused.current.isConnected && (document.activeElement === null || document.activeElement === document.body);
+  // The line list takes the focus itself, because a virtual row can render after this effect.
+  useLayoutEffect(() => {
+    if (blame !== null && blame.run.state !== "done" && focusLost()) (cancel.current ?? back.current)?.focus();
+  });
   if (blame === null) return null;
   const result = blame.run.state === "done" ? blame.run.result : null;
   const path = result === null ? blame.request.path : textOf(result.pathBytes);
@@ -104,7 +112,7 @@ export function BlameView({ inspection, onBack, onSelectCommit, now = Date.now }
   }
 
   return (
-    <section aria-labelledby={headingId} data-slot="blame-view" className="flex min-h-0 flex-1 flex-col" onKeyDownCapture={onEscape} onKeyDown={onKeyDown}>
+    <section aria-labelledby={headingId} data-slot="blame-view" className="flex min-h-0 flex-1 flex-col" onKeyDownCapture={onEscape} onKeyDown={onKeyDown} onFocus={(event) => void (focused.current = event.target)}>
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-divider px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
         <IconButton ref={back} icon={ArrowLeft01Icon} label="Back" keys={{ aria: "Escape", text: "Esc" }} onClick={onBack} />
         <h2 id={headingId} className="min-w-0 flex-1 truncate font-semibold" title={path}>
@@ -145,7 +153,7 @@ export function BlameView({ inspection, onBack, onSelectCommit, now = Date.now }
         ) : null}
         {result === null ? null : <span className="num ml-auto text-muted-text">{linesText(result.lines)}</span>}
       </div>
-      <Body blame={blame} inspection={inspection} headingId={headingId} now={now} onSelectCommit={onSelectCommit} />
+      <Body blame={blame} inspection={inspection} headingId={headingId} now={now} onSelectCommit={onSelectCommit} cancel={cancel} focusLost={focusLost} />
       <div role="group" aria-label="Commit age, older to newer" title={LEGEND} className="flex shrink-0 items-center gap-2 border-t border-divider px-2" style={{ minHeight: 28 }}>
         <span className="text-muted-text">Older</span>
         <span aria-hidden="true" className="flex">
@@ -159,14 +167,16 @@ export function BlameView({ inspection, onBack, onSelectCommit, now = Date.now }
   );
 }
 
-function Body({ blame, inspection, headingId, now, onSelectCommit }: { blame: BlameState; inspection: Inspection; headingId: string; now: () => number; onSelectCommit(oid: string): void }) {
+type BodyProps = { blame: BlameState; inspection: Inspection; headingId: string; now: () => number; onSelectCommit(oid: string): void; cancel: RefObject<HTMLButtonElement | null>; focusLost(): boolean };
+
+function Body({ blame, inspection, headingId, now, onSelectCommit, cancel, focusLost }: BodyProps) {
   const [output, setOutput] = useState(false);
   const run = blame.run;
   if (run.state === "running")
     return (
       <div className="flex min-h-0 flex-1 flex-col items-start gap-2 p-2">
         <p role="status">{run.blamed !== undefined && run.total !== undefined ? `Blaming… ${count.format(run.blamed)} of ${linesText(run.total)}` : "Blaming…"}</p>
-        <Button variant="outline" size="sm" onClick={() => inspection.cancelBlame()}>
+        <Button ref={cancel} variant="outline" size="sm" onClick={() => inspection.cancelBlame()}>
           Cancel
         </Button>
       </div>
@@ -187,13 +197,13 @@ function Body({ blame, inspection, headingId, now, onSelectCommit }: { blame: Bl
         ) : null}
       </div>
     );
-  return <Lines result={run.result} line={blame.line} inspection={inspection} headingId={headingId} now={now} onSelectCommit={onSelectCommit} />;
+  return <Lines result={run.result} line={blame.line} inspection={inspection} headingId={headingId} now={now} onSelectCommit={onSelectCommit} focusLost={focusLost} />;
 }
 
-type LinesProps = { result: Blame; line: number; inspection: Inspection; headingId: string; now: () => number; onSelectCommit(oid: string): void };
+type LinesProps = { result: Blame; line: number; inspection: Inspection; headingId: string; now: () => number; onSelectCommit(oid: string): void; focusLost(): boolean };
 
 /** The line list: one Tab stop with roving focus (plan.md D15 "Blame keys"). TanStack Virtual renders only the rows near the view (spec FR-068). */
-function Lines({ result, line, inspection, headingId, now, onSelectCommit }: LinesProps) {
+function Lines({ result, line, inspection, headingId, now, onSelectCommit, focusLost }: LinesProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const elements = useRef(new Map<number, HTMLElement>());
   const focusWanted = useRef(false);
@@ -202,12 +212,13 @@ function Lines({ result, line, inspection, headingId, now, onSelectCommit }: Lin
   const virtual = result.lines > VIRTUAL_MIN;
   const virtualizer = useVirtualizer({ count: result.lines, enabled: virtual, getScrollElement: () => scroller.current, estimateSize: () => ROW_HEIGHT, overscan: 8 });
 
-  // A new result (Blame before this commit, an option) shows its selected line. Focus stays in the list when it was there.
+  // A new result (Blame before this commit, an option) shows its selected line. Focus stays in the list when it was there, and comes back when a state change removed it (plan.md D15 "Blame focus").
   useLayoutEffect(() => {
     if (virtual) virtualizer.scrollToIndex(line - 1);
-    if (scroller.current?.contains(document.activeElement) || focusWanted.current) {
-      focusWanted.current = false;
-      elements.current.get(line)?.focus();
+    if (scroller.current?.contains(document.activeElement) || focusWanted.current || focusLost()) {
+      const element = elements.current.get(line);
+      focusWanted.current = element === undefined;
+      element?.focus();
     }
   }, [result]);
 

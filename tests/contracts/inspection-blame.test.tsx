@@ -320,13 +320,17 @@ describe("keys (spec FR-056, US7-3, US7-10)", () => {
   test("Alt+Left runs Blame before this commit and calls preventDefault", async () => {
     const m = await answered();
     const result = THREE();
+    await act(async () => line(m.host, 1).focus());
     const event = await key(line(m.host, 1), "ArrowLeft", { altKey: true });
     expect(event.defaultPrevented).toBe(true);
     expect(m.d.last().payload).toEqual({ source: { blameId: m.result.blameId, line: 1 }, options: { ignoreWhitespace: false, detectMoves: false, detectCopies: false, ignoreList: true } });
-    // The result of the earlier version selects its `focusLine`.
+    // Plan.md D15 "Blame focus": the running state takes the focus to Cancel.
+    expect(document.activeElement).toBe(button(m.host, "Cancel"));
+    // The result of the earlier version selects its `focusLine`, and the new blame focuses that line (quickstart Q28).
     await act(async () => m.d.last().resolve(succeeded({ ...result, commit: P, focusLine: 2 })));
     await settle();
     expect(line(m.host, 2).getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(line(m.host, 2));
     expect(text(view(m.host).querySelector("h2")!)).toBe(`Blame: src/login.ts at ${P.slice(0, 12)}`);
   });
 
@@ -433,6 +437,41 @@ describe("refusals, progress, and stop (spec FR-060 to FR-063, US7-6 to US7-8)",
     expect(text(view(m.host))).toContain("Blaming…");
     expect(text(view(m.host))).not.toContain(" of ");
     expect(button(m.host, "Cancel")).not.toBeUndefined();
+  });
+});
+
+describe("focus after a state change (001 spec FR-005, plan.md D15 Blame focus)", () => {
+  async function cancelFocused() {
+    const m = await mountBlame();
+    const cancel = button(m.host, "Cancel");
+    await act(async () => cancel.focus());
+    expect(document.activeElement).toBe(cancel);
+    return m;
+  }
+
+  test("Cancel takes the focus to Back, and Escape then returns to History", async () => {
+    const m = await cancelFocused();
+    await click(button(m.host, "Cancel"));
+    await settle();
+    expect(text(view(m.host))).toContain("Blame stopped before Git finished.");
+    expect(document.activeElement).toBe(button(m.host, "Back"));
+    await key(document.activeElement!, "Escape");
+    expect(m.backs.length).toBe(1);
+    expect(m.host.querySelector('section[data-slot="blame-view"]')).toBeNull();
+  });
+
+  test("a result that arrives while Cancel has the focus focuses the selected line", async () => {
+    const m = await cancelFocused();
+    await act(async () => m.d.last().resolve(succeeded(THREE())));
+    await settle();
+    expect(document.activeElement).toBe(line(m.host, 1));
+  });
+
+  test("a failure that arrives while Cancel has the focus focuses Back", async () => {
+    const m = await cancelFocused();
+    await act(async () => m.d.last().resolve(failed("GIT_FAILED", { outputTail: "fatal: bad revision" })));
+    await settle();
+    expect(document.activeElement).toBe(button(m.host, "Back"));
   });
 });
 

@@ -130,7 +130,7 @@ Each section names its source. Field names are contract names. "001 data-model �
 - Source: spec FR-003, FR-004. Offsets are UTF-16 code unit offsets of the editor text T.
 - Lines: T splits at U+000A. Every rule below stays inside one line, because UAX #29 breaks at a line feed (WB3a, WB3b) and the token rules use White_Space, which holds U+000A.
 - Backtick ranges: in each line, the U+0060 code points pair in order: the first with the second, the third with the fourth. Each pair skips the range from the first backtick to the second backtick, both included. A last backtick without a pair skips nothing.
-- Tokens: the maximal runs of code points without the Unicode property `White_Space` (`/\P{White_Space}+/gu`). A token is skipped when it holds a code point of `\p{Nd}`, or U+005F `_`, U+002F `/`, U+005C `\`, U+0040 `@`, or U+003A `:`, or a U+002E `.` that is neither its first nor its last code point.
+- Tokens: the maximal runs of code points without the Unicode property `White_Space` (`/\P{White_Space}+/gu`). A token is skipped when it holds a code point of `\p{Nd}`, or U+005F `_`, U+002F `/`, U+005C `\`, U+0040 `@`, or U+003A `:`, U+FE55 `﹕`, or U+FF1A `：`, or a U+002E `.` or U+FF0E `．` that is neither its first nor its last code point. The ICU word rules of Chromium break between two letters at these five code points, and the rules of Bun do not (research.md R12 N8).
 - Words: the segments of `new Intl.Segmenter("und", {granularity: "word"})` over a line with `isWordLike` true, whose range meets no skipped range.
 - Lookup form: `word.normalize("NFC")`. The range keeps the offsets in T.
 - Vectors (the contract test holds these and more):
@@ -146,6 +146,9 @@ Each section names its source. Field names are contract names. "001 data-model �
 | `x1 ٣abc word` | word |
 | `привіт recieve` | привіт, recieve |
 | `תיקון סדר התויות` | תיקון, סדר, התויות |
+| `see e．g now` (U+FF0E) | see, now |
+| `see a：b now` (U+FF1A) | see, now |
+| `see a﹕b now` (U+FE55) | see, now |
 
 ## 12. Case rule
 

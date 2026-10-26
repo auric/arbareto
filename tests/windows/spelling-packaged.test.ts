@@ -11,6 +11,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { dlopen, FFIType, ptr } from "bun:ffi";
 import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { words } from "../../src/contracts/spell-words";
 import { HUNSPELL_WASM_SHA256 } from "../../src/frontend/highlight/guard";
 import { fixtureDir, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
@@ -65,7 +66,7 @@ import {
 } from "./spelling-app";
 import { boundingRect, close, ControlType, expand, find, foregroundPid, foregroundSkip, inputDesktopSkip, invoke, MAX_WAIT_MS, textRects, type Rect } from "./uia";
 
-for (const helper of ["./spelling-app.ts", "./contrast.ts", "./inject.ts", "../support/language-fixture.ts", "../../src/frontend/highlight/guard.ts"]) printOrigin(helper, import.meta.dir);
+for (const helper of ["./spelling-app.ts", "./contrast.ts", "./inject.ts", "../support/language-fixture.ts", "../../src/frontend/highlight/guard.ts", "../../src/contracts/spell-words.ts"]) printOrigin(helper, import.meta.dir);
 
 const TASK = "T041";
 const LIVE = process.env.ARBARETO_LIVE_INPUT === "1";
@@ -78,7 +79,7 @@ const N4_TEXT = "Fix the sync job so it does not recieve qzxqzxqzx data\nxkcdqwv
 const N4_MARKS = ["recieve", "qzxqzxqzx", "xkcdqwvjz"];
 // Research.md R12 N4: the text scales of the check.
 const SCALES = [100, 150, 225];
-// The data-model §11 vector texts (tests/contracts/spell-words.test.ts holds the expected words).
+// The data-model §11 vector texts (tests/contracts/spell-words.test.ts holds the expected words). The last three hold the Chromium ICU break points of research.md R12 N8.
 const VECTORS = [
   "Fix the sync job so it does not recieve stale data",
   "Rename `fixtureName` in src/app.ts for v1.2.3.",
@@ -89,6 +90,9 @@ const VECTORS = [
   "x1 ٣abc word",
   "привіт recieve",
   "תיקון סדר התויות",
+  "see e\uFF0Eg now",
+  "see a\uFF1Ab now",
+  "see a\uFE55b now",
 ];
 
 // quickstart.md "Manual checks in the packaged build". The tester confirms each line in the package.
@@ -338,10 +342,14 @@ describe.skipIf(process.platform !== "win32")("T041 packaged spell check", () =>
         expect(await caret(s.c, inWord)).toBe(true);
         await press(s.c, "F10", MOD.Shift);
         await until<boolean>(s.c, "the spelling menu", `!!(${menu})`, (v) => v);
-        // Plan.md D15 "Menu opening": a key opens the menu with the focus on its first item.
-        expect(await s.c.evaluate<boolean>(`document.activeElement === (${menu}).querySelector('[role=menuitem]')`)).toBe(true);
+        // Plan.md D15 "Menu opening": a key opens the menu with the focus on its first item that is not "Finding suggestions…" (`data-placeholder`, action-menu.tsx).
+        const firstItem = `(${menu}).querySelector('[role=menuitem]:not([data-placeholder])')`;
+        expect(await s.c.evaluate<boolean>(`document.activeElement === ${firstItem}`)).toBe(true);
+        const focused = await s.c.evaluate<string>("document.activeElement.textContent");
         const labels = await until<string[]>(s.c, "the suggestions", MENU_LABELS(menu), (v) => !v.includes(T.finding) && v.includes(T.ignore));
         console.log(`OBSERVATION ${TASK}: FR-005 menu of ${WRONG}: ${js(labels)}`);
+        // Plan.md D15: the suggestions that arrive do not move the focus.
+        expect(await s.c.evaluate<string>("document.activeElement.textContent")).toBe(focused);
         const tail = [T.ignore, T.add, T.cut, T.copy, T.selectAll];
         const suggestions = labels.slice(0, labels.length - tail.length);
         expect({ tail: labels.slice(-tail.length), atMost5: suggestions.length <= 5, right: suggestions.includes(RIGHT) }).toEqual({ tail, atMost5: true, right: true });
@@ -446,9 +454,14 @@ ${persianLine}`;
         const field = await find(s.app.pid, MESSAGE, MAX_WAIT_MS, ControlType.Edit);
         try {
           for (const { word, rect } of spans) {
-            const ranges = textRects(field, word);
+            // Research.md R12 N4: the first GetBoundingRectangles call of a session gives no rect, and later calls give the rects.
+            // The poll ends at MAX_WAIT_MS. Both rects are physical pixels: the thread is per-monitor aware, and the mirror offsets are scaled by devicePixelRatio.
+            const ranges = await waitFor(`the UIA rects of ${word}`, MAX_WAIT_MS, () => {
+              const r = textRects(field, word);
+              return r !== null && r.length > 0 && r;
+            });
             console.log(`OBSERVATION ${TASK}: N4 scale=${scale} word=${word} uia=${js(ranges)} mirror=${js(rect)}`);
-            expect({ word, one: ranges?.length === 1, within: ranges?.length === 1 && within1(ranges[0]!, rect) }).toEqual({ word, one: true, within: true });
+            expect({ word, one: ranges.length === 1, within: ranges.length === 1 && within1(ranges[0]!, rect) }).toEqual({ word, one: true, within: true });
           }
         } finally {
           field.release();
@@ -508,7 +521,7 @@ ${persianLine}`;
   );
 
   test.skipIf(reason !== null)(
-    "N8: the data-model §11 vector texts give the same Intl.Segmenter word segments in each WebView2 worker as in Bun",
+    "N8: the data-model §11 vector texts give the same §11 words from the Intl.Segmenter segments of each WebView2 worker as in Bun",
     async () => {
       const { s, workers } = await session("n8");
       try {
@@ -516,13 +529,19 @@ ${persianLine}`;
         await marked(s, FIXTURE, [WRONG]);
         const sessions = workers.sessions.filter((w) => w.type === "worker");
         expect(sessions.length).toBeGreaterThan(0);
-        const segments = `(${js(VECTORS)}).map((text) => text.split('\\n').map((line) => [...new Intl.Segmenter('und', { granularity: 'word' }).segment(line)].filter((x) => x.isWordLike).map((x) => [x.segment, x.index])))`;
-        const bun = (0, eval)(segments) as unknown;
+        // Research.md R12 N8: the ICU word rules of Chromium and Bun differ, so the check compares the §11 words, not the raw segments.
+        type Segment = { segment: string; index: number; isWordLike: boolean };
+        const segments = `(${js(VECTORS)}).map((text) => text.split('\\n').map((line) => [...new Intl.Segmenter('und', { granularity: 'word' }).segment(line)].map((x) => ({ segment: x.segment, index: x.index, isWordLike: !!x.isWordLike }))))`;
+        const bun = VECTORS.map((text) => words(text));
         for (const w of sessions) {
-          const r = (await s.c.send("Runtime.evaluate", { expression: segments, returnByValue: true }, w.sessionId)) as { result: { value?: unknown }; exceptionDetails?: unknown };
+          const r = (await s.c.send("Runtime.evaluate", { expression: segments, returnByValue: true }, w.sessionId)) as { result: { value?: Segment[][][] }; exceptionDetails?: unknown };
           expect(r.exceptionDetails).toBeUndefined();
-          console.log(`OBSERVATION ${TASK}: N8 worker=${w.url} same=${js(r.result.value) === js(bun)}`);
-          expect(r.result.value).toEqual(bun);
+          const worker = VECTORS.map((text, v) => {
+            let line = 0;
+            return words(text, 0, () => r.result.value![v]![line++]!);
+          });
+          console.log(`OBSERVATION ${TASK}: N8 worker=${w.url} same=${js(worker) === js(bun)} words=${js(worker.map((list) => list.map((x) => x.raw)))}`);
+          expect(worker).toEqual(bun);
         }
       } finally {
         await stop(s);

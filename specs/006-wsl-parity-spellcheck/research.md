@@ -180,7 +180,7 @@ Each F fact runs on Windows with Bun 1.4.3, with local servers on 127.0.0.1 only
 - N5: in the package, a Japanese IME composition shows no mark, and after it ends, the marks equal the marks of the same text typed without the IME. Without an installed Japanese IME, a capability skip records it as unverified.
 - N6: in a Windows Sandbox with `<Networking>Disable</Networking>`, US1 passes in the package, and Download shows the `transport` text and keeps no file. Without Windows Sandbox, a capability skip records it as unverified.
 - N7: in the package, per cached catalog language, the packaged gate of plan D3: the load time, the WebView2 private bytes increase with both workers, and the fixture count, 3 runs each.
-- N8: in the package, the data-model §11 vectors give the same segments in the WebView2 worker as in Bun.
+- N8: in the package, the data-model §11 vectors give the same §11 words from the segments of the WebView2 worker as in Bun. The raw segments differ by design (R13 "T041 first packaged run").
 
 Unverified points (they stay unverified until their test runs):
 - The explicit `tls.ca` against `NODE_EXTRA_CA_CERTS` (F3).
@@ -647,3 +647,14 @@ Independent batch 2 review, reviewer agent, read-only, on 4d4ba72a (the merges o
 - A gate run fails when a sample of its window has no WebView2 private bytes or another root PID. A run without a load skips the menu step, records its values, and fails step 3.
 - The N4 Persian line is its own case. Without `fa`, that case skips with its reason.
 - Open point: each gate run records `maxGapMs`, the largest gap between two samples. Plan.md D3 fixes 250 ms samples but no bound for the gap. A bound needs a plan decision.
+
+### T041 first packaged run, 2026-10-26, Windows 11 10.0.26300, build 73a9eb7b, WebView2 Edg/155
+
+- N8 (source): Chromium builds ICU with `patches/wordbrk.patch` of chromium.googlesource.com/chromium/deps/icu. In `word.txt` and `word_POSIX.txt`, the patch removes U+002E and U+FF0E from `$MidNumLet` and adds them to `$MidNum`. It removes U+003A, U+FE55, and U+FF1A from `$MidLetter`. So UAX #29 WB6 and WB7 do not join two letters across these code points in WebView2. Bun uses the unpatched rules.
+- N8 (measured): the worker and the page split `app.ts`, `e.g`, `a:b`, `e．g`, `a：b`, and `a﹕b` into two word segments. Bun keeps each as one segment. `don't`, `a·b`, and `a’b` are one segment in both.
+- N8 (rule): data-model §11 skips each token with U+003A, U+FE55, or U+FF1A, and each token with an inner U+002E or U+FF0E. So every token where the two rule sets differ by this patch gives no word. N8 now compares the §11 words from the worker segments with the Bun words.
+- N8 (remaining risk, unverified): Chromium and Bun can use other ICU versions or data. Another difference in the word rules or in the Unicode data gives other words in the worker than in Bun. N8 finds such a difference only for the vectors that it checks.
+- N4 (measured): the first UI Automation `GetBoundingRectangles` call of a session gives an empty array. Later calls give the rects. The test polls each word until it gets a rect, with the bound `MAX_WAIT_MS` (10,000 ms). The test compares physical pixels on a per-monitor-aware thread, within 1 device pixel.
+- N2 (measured): a key opens the menu with the focus on "Ignore", because "Finding suggestions…" holds the first item. The focus stays on "Ignore" when the suggestions arrive (plan.md D15).
+- Q26 (measured): in forced colors, the focused item got `HighlightText` on `Highlight`, but its label span kept `var(--accent-foreground)` from the shadcn item class. The text contrast was 1.10:1.
+- Q26 (measured, build de9f673e-dirty): the Chromium accessibility tree gave the Selected languages row no name. WAI-ARIA 1.2 gives `listitem` "Name From: author", so the row text is not its name. Each row now has the name of plan.md D17.

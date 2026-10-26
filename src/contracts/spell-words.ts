@@ -14,18 +14,14 @@ export interface WordRange {
   word: string;
 }
 
-// Data-model §11: a token with one of these code points is skipped.
-const SKIPPED_TOKEN = /[\p{Nd}_/\\@:]/u;
+// Data-model §11: a token with one of these code points is skipped, or with U+002E or U+FF0E that is neither its first nor its last code point.
+// U+003A, U+FE55, U+FF1A, U+002E, and U+FF0E are the code points where the Chromium ICU word rules differ from Bun (research.md R12 N8).
+const SKIPPED_TOKEN = /[\p{Nd}_/\\@:\uFE55\uFF1A]|.[.\uFF0E]./su;
 const segmenter = new Intl.Segmenter("und", { granularity: "word" });
 
-function skipped(token: string): boolean {
-  if (SKIPPED_TOKEN.test(token)) return true;
-  const dot = token.indexOf(".", 1);
-  return dot !== -1 && dot < token.length - 1;
-}
-
 // Data-model §11. `base` is the offset of `text` in the editor text, so a worker can check one line.
-export function words(text: string, base = 0): WordRange[] {
+// `segment` gives the word segments of one line. The packaged N8 check passes the segments of a WebView2 worker.
+export function words(text: string, base = 0, segment: (line: string) => Iterable<Pick<Intl.SegmentData, "segment" | "index" | "isWordLike">> = (line) => segmenter.segment(line)): WordRange[] {
   const found: WordRange[] = [];
   let lineStart = 0;
   for (const line of text.split("\n")) {
@@ -33,11 +29,11 @@ export function words(text: string, base = 0): WordRange[] {
     const skips: [number, number][] = [];
     const ticks = [...line.matchAll(/`/g)].map((m) => m.index);
     for (let i = 0; i + 1 < ticks.length; i += 2) skips.push([ticks[i], ticks[i + 1] + 1]);
-    for (const token of line.matchAll(/\P{White_Space}+/gu)) if (skipped(token[0])) skips.push([token.index, token.index + token[0].length]);
-    for (const { segment, index, isWordLike } of segmenter.segment(line)) {
-      const end = index + segment.length;
+    for (const token of line.matchAll(/\P{White_Space}+/gu)) if (SKIPPED_TOKEN.test(token[0])) skips.push([token.index, token.index + token[0].length]);
+    for (const { segment: raw, index, isWordLike } of segment(line)) {
+      const end = index + raw.length;
       if (!isWordLike || skips.some(([s, e]) => index < e && s < end)) continue;
-      found.push({ start: base + lineStart + index, end: base + lineStart + end, raw: segment, word: segment.normalize("NFC") });
+      found.push({ start: base + lineStart + index, end: base + lineStart + end, raw, word: raw.normalize("NFC") });
     }
     lineStart += line.length + 1;
   }

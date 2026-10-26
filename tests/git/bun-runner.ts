@@ -853,7 +853,7 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (wslGits.has(context.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL globalConfig");
       return { program, cwd: launchDirectory };
     }
-    // Feature 004 contract Δ6, as src-tauri/src/process_requests.rs `target` and `worktree_add_fits` check it: only a `run` of the two
+    // Feature 004 contract Δ6, as src-tauri/src/process_requests.rs `target` and `worktree_add_fits` check it: only a `run` of the three
     // `worktree add` forms with the bound path, in the registered repository of the review. The double has no WSL `worktreeAdd` route.
     if (context.contextKind === "worktreeAdd") {
       const bound = contexts.get(context.bootstrapId);
@@ -861,7 +861,10 @@ export function createBunRunner(options: BunRunnerOptions) {
       const repository = repositories.get(context.repositoryId);
       if (bound?.kind !== "worktreeAdd" || bound.repositoryId !== context.repositoryId || program === undefined || repository === undefined || args === undefined) throw unknownTarget();
       if (wslGits.has(context.gitInstallationId) || wslParts(bound.path) !== null) throw new RunnerRefusal("INVALID_REQUEST", "WSL worktreeAdd");
-      const fits = (args.length === 6 && args[3] === "--" && args[4] === bound.path) || (args.length === 8 && args[3] === "-b" && args[5] === "--" && args[6] === bound.path);
+      const fits =
+        (args.length === 6 && args[3] === "--" && args[4] === bound.path) ||
+        (args.length === 8 && args[3] === "-b" && args[5] === "--" && args[6] === bound.path) ||
+        (args.length === 9 && args[3] === "--track" && args[4] === "-b" && args[6] === "--" && args[7] === bound.path);
       if (!fits) throw new RunnerRefusal("INVALID_REQUEST", "worktree add arguments");
       return { program, cwd: repository.worktreeRoot };
     }

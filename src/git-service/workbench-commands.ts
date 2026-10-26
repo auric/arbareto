@@ -311,6 +311,11 @@ export function worktreeAddNewArgs(name: string, path: string, start: string, ob
   return [L, "worktree", "add", "-b", named(name), "--", item(path), oid(start, objectFormat)];
 }
 
+// git-worktree(1) `--track`: the new branch gets the remote-tracking start as its upstream, as git-branch(1) `--track` sets it (research.md R13).
+export function worktreeAddTrackArgs(name: string, path: string, remoteRef: string): string[] {
+  return [L, "worktree", "add", "--track", "-b", named(name), "--", item(path), under("refs/remotes/", remoteRef)];
+}
+
 // Research.md R21 F17: `worktree add` checks out a branch only for its short name.
 export function worktreeAddExistingArgs(path: string, branch: string): string[] {
   return [L, "worktree", "add", "--", item(path), named(branch)];

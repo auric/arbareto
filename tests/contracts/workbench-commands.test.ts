@@ -91,6 +91,7 @@ const STEPS: [string, string[], string[]][] = [
   ["choose theirs", wb.chooseSideArgs("theirs", "a[b].txt"), [L, "--literal-pathspecs", "checkout", "--no-recurse-submodules", "--theirs", "--", "a[b].txt"]],
   ["mergetool", wb.mergetoolArgs("fixture", "uu.txt"), [L, "--literal-pathspecs", "mergetool", "--tool=fixture", "--no-prompt", "--", "uu.txt"]],
   ["worktree add a new branch", wb.worktreeAddNewArgs("wt-new", "D:\\src\\wt new", A, "sha1"), [L, "worktree", "add", "-b", "wt-new", "--", "D:\\src\\wt new", A]],
+  ["worktree add a tracking branch", wb.worktreeAddTrackArgs("team/x", "D:\src\wt", "refs/remotes/team/a/team/x"), [L, "worktree", "add", "--track", "-b", "team/x", "--", "D:\src\wt", "refs/remotes/team/a/team/x"]],
   ["worktree add an existing branch", wb.worktreeAddExistingArgs("D:\\src\\wt", "merged"), [L, "worktree", "add", "--", "D:\\src\\wt", "merged"]],
   ["worktree remove", wb.worktreeRemoveArgs("D:\\src\\wt", false), [L, "worktree", "remove", "--", "D:\\src\\wt"]],
   ["worktree remove --force", wb.worktreeRemoveArgs("D:\\src\\wt", true), [L, "worktree", "remove", "--force", "--", "D:\\src\\wt"]],
@@ -190,6 +191,7 @@ describe("names stay after --end-of-options or --", () => {
     expect(wb.mergetoolArgs("fixture", "--x").slice(-2)).toEqual(["--", "--x"]);
     expect(wb.stagesArgs(["-n.txt"]).slice(-2)).toEqual(["--", "-n.txt"]);
     expect(wb.worktreeAddExistingArgs("-p", "merged").slice(-3)).toEqual(["--", "-p", "merged"]);
+    expect(wb.worktreeAddTrackArgs("topic", "-p", "refs/remotes/origin/topic").slice(-3)).toEqual(["--", "-p", "refs/remotes/origin/topic"]);
     expect(wb.worktreeRemoveArgs("-p", false).slice(-2)).toEqual(["--", "-p"]);
     expect(wb.configSetArgs("local", "user.name", "-value").slice(-3)).toEqual(["--", "user.name", "-value"]);
   });
@@ -229,6 +231,8 @@ describe("refused inputs", () => {
     throws(() => wb.mergeMessageInput("refs/heads/a~1", A, "sha1"));
     throws(() => wb.rebaseOntoArgs("-x", false, false));
     throws(() => wb.trackArgs("topic", "refs/heads/topic"));
+    throws(() => wb.worktreeAddTrackArgs("topic", "D:\wt", "refs/heads/topic"));
+    throws(() => wb.worktreeAddTrackArgs("@", "D:\wt", "refs/remotes/origin/x"));
     throws(() => wb.forceNoteCountArgs(A, "origin/topic", "sha1"));
     throws(() => wb.upstreamOfArgs("main"));
     throws(() => wb.mergeMessageInput("refs/tags/v1", A, "sha1"));

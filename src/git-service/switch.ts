@@ -109,7 +109,7 @@ const OBJECT_TYPES: readonly string[] = ["commit", "tree", "blob", "tag"];
 
 // Contract Δ3 `switch`: the commit of a branch ref from its exact record. An annotated tag gives its peeled commit (git-for-each-ref(1) `*` fields).
 // A missing ref or another object type gives UNKNOWN_TARGET.
-async function refCommit(ctx: ObserveContext, ref: string): Promise<Fact<string> | Refused> {
+export async function refCommit(ctx: ObserveContext, ref: string): Promise<Fact<string> | Refused> {
   const of = ctx.workspace.objectFormat;
   const out = createCollector({ maxBytes: SYNC_REFS_BYTES, maxRecords: SYNC_REFS_RECORDS, separator: 0x0a });
   const step = await stepOf(ctx, refPeelArgs(ref), out);

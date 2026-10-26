@@ -111,6 +111,10 @@
 - `worktree prune` uses `TIME_MAX` as the default expiry and does not prune locked worktrees (source).
 - `worktree remove` refuses a worktree with changes or untracked files without `--force`, and a locked one without a second `--force` (doc).
 - Git Extensions sets `worktree.useRelativePaths`; the app does not (spec FR-053).
+- User question, 2026-10-26: "Why is it impossible to create a worktree from a branch in the branch context menu?" Feature 004 planned no such item (spec Clarifications 2026-10-26).
+- git-worktree(1) `--track`: "When creating a new branch, if <commit-ish> is a branch, mark it as "upstream" from the new branch." It refers to `--track` of git-branch(1), where `--track` means `--track=direct`: the start-point branch itself is the upstream (doc).
+- Git 2.56.0.windows.2, measured on 2026-10-26: `worktree add --track -b feature/x -- <path> refs/remotes/team/a/feature/x` with the remote `team/a` and `branch.autoSetupMerge=false` exits 0. It writes `branch.feature/x.remote=team/a` and `branch.feature/x.merge=refs/heads/feature/x`. `%(upstream)` gives the remote ref.
+- The same command for a remote-tracking ref that no fetch refspec maps exits 255 with "cannot set up tracking information". It creates no branch and no folder, but it prints "Preparing worktree" first. So the review applies the plan D3 Track rule before any step.
 
 ## R14 Git configuration read and write
 

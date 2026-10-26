@@ -15,7 +15,7 @@ const raws = (text: string) => words(text).map((w) => w.raw);
 const mark = (start: number, end: number, raw: string) => ({ start, end, raw, word: raw.normalize("NFC") });
 
 describe("data-model §11 words and skip rules", () => {
-  // The table of data-model §11, and one vector for each skip code point alone.
+  // The table of data-model §11, and one vector for each skip code point alone. U+FF0E, U+FF1A, and U+FE55 are the Chromium ICU break points of research.md R12 N8.
   test.each([
     ["Fix the sync job so it does not recieve stale data", ["Fix", "the", "sync", "job", "so", "it", "does", "not", "recieve", "stale", "data"]],
     ["Rename `fixtureName` in src/app.ts for v1.2.3.", ["Rename", "in", "for"]],
@@ -34,6 +34,10 @@ describe("data-model §11 words and skip rules", () => {
     ["see v2 now", ["see", "now"]],
     ["see a.b now", ["see", "now"]],
     [".hidden trailing. now", ["hidden", "trailing", "now"]],
+    ["see e\uFF0Eg now", ["see", "now"]],
+    ["see a\uFF1Ab now", ["see", "now"]],
+    ["see a\uFE55b now", ["see", "now"]],
+    ["\uFF0Ehidden trailing\uFF0E now", ["hidden", "trailing", "now"]],
   ])("%j gives %j", (text, expected) => {
     expect(raws(text)).toEqual(expected);
   });

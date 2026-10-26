@@ -655,6 +655,12 @@ describe("keyboard (FR-026, SC-007, plan.md D16 \"Keys\")", () => {
     await render({ states: { uk: { state: "ready" } } });
     for (const control of page().querySelectorAll<HTMLElement>("[data-cell]")) expect((control.getAttribute("aria-label") ?? control.textContent ?? "").length > 0).toBe(true);
   });
+
+  // WAI-ARIA 1.2 `listitem`: "Name From: author", so Chromium computes no name from the row text (T041 Q26).
+  test("every list item has the accessible name of plan.md D17: the language or the word", async () => {
+    await render({ languages: ["en", "uk"], states: { uk: { state: "ready" } }, words: { kind: "loaded", words: ["kubectl", "Tauri"] } });
+    expect([...page().querySelectorAll("li")].map((li) => li.getAttribute("aria-label"))).toEqual(["English", "Ukrainian", "kubectl", "Tauri"]);
+  });
 });
 
 describe("index.css (plan.md D16 forced colors and unavailable items)", () => {
@@ -673,6 +679,8 @@ describe("index.css (plan.md D16 forced colors and unavailable items)", () => {
 
   test("in forced colors, the focused menu item fills with Highlight and takes HighlightText", () => {
     expect(forced.find((r) => r.selector === `[role="menu"] ${ITEM}:focus-visible`)?.body).toBe("forced-color-adjust: none; background: Highlight; color: HighlightText;");
+    // The shadcn item class colors the label span, and `forced-color-adjust: none` keeps that color (T041 Q26, 1.10:1).
+    expect(forced.find((r) => r.selector === `[role="menu"] ${ITEM}:focus-visible *`)?.body).toBe("color: HighlightText;");
   });
 
   test("an unavailable checkbox takes half opacity after the unlayered disabled rule; in forced colors an unchecked one draws a GrayText box", () => {

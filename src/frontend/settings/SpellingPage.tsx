@@ -678,6 +678,7 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
                         key={id}
                         data-grid-row={index}
                         data-language={id}
+                        aria-label={name}
                         className="group relative flex h-7 items-center gap-2 pr-1 pl-3 focus-within:bg-selected-row"
                         onKeyDown={(event) => {
                           if (!event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
@@ -704,7 +705,7 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
   );
 
   const wordRow = (word: string, index: number, style?: CSSProperties) => (
-    <li key={word} data-grid-row={index} className="flex h-7 items-center gap-2 pr-1 pl-3" style={style}>
+    <li key={word} data-grid-row={index} aria-label={word} className="flex h-7 items-center gap-2 pr-1 pl-3" style={style}>
       <span className="min-w-0 flex-1 truncate font-mono">{word}</span>
       <TipButton data-cell icon={Delete02Icon} label={SPELLING_PAGE.removeWord(word)} tip={SPELLING_PAGE.remove} className="text-removed" onClick={() => void removeWord(word, index)} />
     </li>

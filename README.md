@@ -29,6 +29,7 @@ Arbareto is a desktop Git client inspired by Git Extensions. It covers the full 
 These features work on the `main` branch today.
 
 - Git GUI history of the whole repository, with a commit graph in branch lanes and the details of the selected commit.
+- Changed files of a commit in the history view, blame, file delete, and an ignore editor.
 - Commit message search, with steps through the matches in the full graph.
 - Working changes and a diff view. Stage and unstage files, folders, hunks, or selected lines.
 - Commit, amend the last commit, and commit and push in one step.
@@ -45,7 +46,6 @@ These features work on the `main` branch today.
 
 ### Planned
 
-- Changed files of a commit in the history view, blame, file delete, and an ignore editor.
 - Spell check of the commit message.
 - Linux build and qualification, then macOS.
 

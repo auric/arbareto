@@ -11,18 +11,21 @@
 | Every `uses:` value is `<owner>/<repo>[/path]@<40 hex>`. | Workflow test. |
 | No `actions/cache` and no `continue-on-error: true`. | Workflow test. |
 | Sign steps carry `if: vars.ARBARETO_SIGNING == 'signpath'`. | Workflow test. |
-| No step writes below the checkout. Every output path starts with `${{ runner.temp }}` or `$env:RUNNER_TEMP`, except the Tauri target folder. | Workflow test, dry-run `git status` check. |
+| No step writes below the checkout. Every output path starts with `${{ runner.temp }}` or `$env:RUNNER_TEMP`, except the Tauri target folder and the Git-ignored externalBin source folder `src-tauri/binaries/`. The NSIS bundler reads the sidecar from its externalBin source path (tauri-bundler 2.10.0 `nsis/mod.rs:864-866`), so the signed sidecar replaces the file there. | Workflow test, dry-run `git status` check. |
 
 ## 2. Script exit codes and output lines
 
 | Script | Success | Failures (exit 1, one line on stderr) |
 | --- | --- | --- |
+| Workflow tool install | exit 0 | `RELEASE_CHECK pin <name or version line>` (Bun archive hash, `rustc`, `cargo tauri`, or `bun` version differs from its pin) |
 | `check.ts` | exit 0 | `RELEASE_CHECK tag-version <tag> <version>`, `RELEASE_CHECK version-mismatch <cargo> <package.json>`, `RELEASE_CHECK config-version <file>`, `RELEASE_CHECK not-on-main`, `RELEASE_CHECK git-failed <code>`, `RELEASE_CHECK dirty`, `RELEASE_CHECK signing-value <value>`, `RELEASE_CHECK signing-missing <name>` |
-| `sums.ts verify` | exit 0 | `RELEASE_SUMS mismatch <name>`, `RELEASE_SUMS missing <name>`, `RELEASE_SUMS extra <name>` |
-| `hunspell-source.ts` | exit 0, prints the archive path | `RELEASE_SOURCE fetch <repo> <code>`, `RELEASE_SOURCE commit <repo> <expected> <actual>`, `RELEASE_SOURCE tar <code>` |
+| `sums.ts write` | exit 0, prints the sums file path | `RELEASE_SUMS name <JSON name>` (a non-file entry, or a name outside `[A-Za-z0-9._-]+`) |
+| `sums.ts verify` | exit 0 | `RELEASE_SUMS mismatch <name>`, `RELEASE_SUMS missing <name>` (also `SHA256SUMS.txt` itself), `RELEASE_SUMS extra <name>`, `RELEASE_SUMS format SHA256SUMS.txt` (a line outside the §3 form, an unsorted or repeated name, or no final LF) |
+| `hunspell-source.ts` | exit 0, prints the archive path | `RELEASE_SOURCE fetch <repo> <code>` (also a failed `git init`), `RELEASE_SOURCE commit <repo> <expected> <actual>` (`<actual>` is `none` when `rev-parse` fails), `RELEASE_SOURCE archive <repo> <code>`, `RELEASE_SOURCE tar <code>` |
 | `notes.ts` | exit 0, prints the notes path | `RELEASE_NOTES missing <version>` |
-| `notices-text.ts` | exit 0, prints the file path | `RELEASE_NOTICES input <path>` |
-| publish release lookup | exit 0 | `RELEASE_CHECK exists <tag>`, `RELEASE_CHECK private` |
+| `notices-text.ts` | exit 0, prints the file path | `RELEASE_NOTICES input <path>` (absent, not JSON, or not the notices.json shape) |
+| publish release lookup | exit 0 | `RELEASE_CHECK exists <tag>` (a published release with the tag, or more than one draft), `RELEASE_CHECK private` |
+| any script, wrong arguments | — | `RELEASE_SUMS usage`, `RELEASE_SOURCE usage`, `RELEASE_NOTES usage` (also a `--signing` value other than `off` or `signpath`), `RELEASE_NOTICES usage`, each followed by the usage text |
 
 Tests assert the exit code and the first token pair, never free text.
 

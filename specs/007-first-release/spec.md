@@ -157,7 +157,7 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 - **FR-004**: The release workflow MUST publish only from the public `auric/arbareto` repository. It MUST refuse to publish when the repository is private. The public switch stays the user's own step.
 - **FR-005**: The preview MUST NOT contain an in-app updater or an update check. Users update by a manual download from GitHub Releases.
 - **FR-006**: Features 005 and 006 MUST be merged into `main` before the release tag is created.
-- **FR-007**: 001 plan.md B-RELEASE, 001 research.md R7, and 001 spec.md (the Clarification at line 23, the Assumption at line 529, and FR-033) MUST gate the v1.0 release, not every public release. They MUST cite the constitution 4.0.1 definition of a production release.
+- **FR-007**: 001 plan.md B-RELEASE, 001 research.md R7, and 001 spec.md (the Clarifications at lines 23 and 37, the Assumption at line 529, FR-033, and SC-011) MUST gate the v1.0 release, not every public release. They MUST cite the constitution 4.0.1 definition of a production release.
 
 #### Build
 

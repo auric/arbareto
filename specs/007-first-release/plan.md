@@ -109,7 +109,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
   - `workflow_dispatch`: a dry run from `main` after the merge. It runs `build` only.
 - `concurrency: group: release-${{ github.ref }}`, `cancel-in-progress: false`.
 - Job `build` (`runs-on: windows-2025`, `timeout-minutes: 120`, `permissions: { contents: read, actions: read }`): steps in D2 to D6. It uploads one workflow artifact `release-files` (retention 7 days).
-- Job `publish` (`needs: build`, `if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')`, `environment: release`, `timeout-minutes: 30`, `permissions: { contents: write, id-token: write, attestations: write }`): steps in D5 and D9.
+- Job `publish` (`runs-on: windows-2025`, because the only Bun pin is the Windows archive; `needs: build`, `if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')`, `environment: release`, `timeout-minutes: 30`, `permissions: { contents: write, id-token: write, attestations: write }`): steps in D5 and D9.
 - Environment `release` (orchestrator setting step, after the public switch): required reviewer the user; deployment tag rule `v*`; no branch. GitHub Free offers required reviewers only for public repositories (research R3). So the publish job cannot run before the public switch.
 - Public check: the publish job fails when `github.event.repository.private` is not `false` (spec FR-004). This is an event payload value.
 
@@ -208,7 +208,8 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 - 001 plan.md:613 and :1047: "private until version 1" and "public release blocked" change to the public preview and the v1.0 gate.
 - 001 research.md R7 "Corresponding Source location": add a dated paragraph: the repository becomes public before the preview (user, 2026-10-24); the v1.0 gate stays.
 - 001 tasks.md T176 and T177: "public release" changes to "the v1.0 release". T177's pass condition reads "says that the v1.0 release is blocked". Then `/speckit-analyze` runs for 001 with `SPECIFY_FEATURE_NO_PERSIST=1`.
-- 001 spec.md line 23 (Clarification), line 529 (Assumption), and FR-033: "public release" changes to "the v1.0 release", with a dated note that cites constitution 4.0.1 (user, 2026-10-24).
+- 001 spec.md line 23 (Clarification), line 529 (Assumption), FR-033, and SC-011: "public release" changes to "the v1.0 release", with a dated note that cites constitution 4.0.1 (user, 2026-10-24).
+- 001 spec.md line 37 (Clarification, "stays private"): the answer states that the repository is public since 2026-10-25, with a dated note that cites constitution 4.0.1.
 
 ## Facts to verify before the dependent work
 

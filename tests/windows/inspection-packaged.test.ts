@@ -17,10 +17,10 @@ import { fixtureDir, FIXTURE_ROOT, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { workingFileDigests } from "../git/git-oracle";
 import { buildHistory } from "../git/history-diff-fixtures";
-import { connectPage, freePort, holdIpc, IPC_ORIGIN, keyEvents, MOD, watchIpc, type Cdp } from "./cdp";
+import { connectPage, freePort, holdIpc, keyEvents, MOD, watchIpc, type Cdp } from "./cdp";
 import { decodePng, formatMeasurement, measure, THRESHOLD } from "./contrast";
 import { appEnv, COMMIT_VIEW, explorerReveal, explorerWindows, findInstalledApp, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
-import { close, ControlType, expand, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
+import { close, ControlType, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
 
 for (const helper of ["./cdp.ts", "./uia.ts", "./installed-app.ts", "./contrast.ts", "../git/file-actions-fixtures.ts", "../git/history-diff-fixtures.ts"]) printOrigin(helper, import.meta.dir);
 
@@ -34,14 +34,20 @@ const KEY_WAIT_MS = 10_000;
 const ACTION_WAIT_MS = 30_000;
 // SC-007 compares the medians of this many opens of each kind.
 const OPEN_RUNS = 3;
+// Spec SC-007: the parent safety checks before the registration may add at most this time to Open submodule and Open parent repository.
+const OPEN_ALLOWANCE_MS = 150;
+// Ctrl+R (src/frontend/keyboard/shortcuts.ts `openSwitcher`). The `cdp.ts` key table has no R key.
+const RECENT_KEYS = [
+  { type: "rawKeyDown", key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 0x11, modifiers: MOD.Ctrl },
+  { type: "rawKeyDown", key: "r", code: "KeyR", windowsVirtualKeyCode: 0x52, modifiers: MOD.Ctrl },
+  { type: "keyUp", key: "r", code: "KeyR", windowsVirtualKeyCode: 0x52, modifiers: MOD.Ctrl },
+  { type: "keyUp", key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 0x11, modifiers: 0 },
+];
 
 // ---- App texts (the source of each value is named) ----
 
 // `OPEN_FOLDER` in src/frontend/app/RepositorySwitcher.tsx.
 const OPEN_FOLDER = "Open folder… (Ctrl+O)";
-// src/frontend/app/RepositoryMenu.tsx: the MenubarTrigger text and the item text.
-const REPOSITORY = "Repository";
-const OPEN_FOLDER_ITEM = "Open folder…";
 // src/frontend/changes/ChangesPane.tsx `menuGroups` and src/frontend/changes/file-actions.ts `IGNORE_LABEL`.
 const SHOW_IN_EXPLORER = "Show in Explorer";
 const DELETE_ITEM = "Delete…";
@@ -533,14 +539,12 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
   );
 
   test.skipIf(reason !== null)(
-    "SC-007, FR-051: Open submodule and Open parent repository each take at most the time of a normal open of that repository through Open folder",
+    "SC-007, FR-051: Open submodule and Open parent repository each take at most 150 ms more than a normal open of that repository through Recent repositories",
     async () => {
       const w = buildSubmodules(GIT!, "t060-submodule");
       const sub = join(w.sup, "solo");
       const s = await session("submodule", w.sup);
-      const ipc = await watchIpc(s.c);
-      // Each time is on the page clock and ends when the switcher shows the repository. A MutationObserver records that moment.
-      // A UIA pattern call takes about 2 s, so the UIA steps of a normal open stay outside its time.
+      // Each time is on the page clock, from the Enter keydown to the moment the switcher shows the repository. A MutationObserver records that moment.
       const OPENED = `window.__t060Opened`;
       const armOpened = (label: string) =>
         s.c.evaluate(
@@ -550,27 +554,23 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
         await until<string | null>(s.c, `the open ${repo}`, switcher, (v) => v === label, ACTION_WAIT_MS);
         return (await until<number | null>(s.c, `the recorded open of ${repo}`, OPENED, (v) => v !== null))!;
       }
-      // A normal open: Repository ▸ Open folder…, the folder picker, and the first read. The time runs from the `choose_repository` reply.
-      const CHOOSE = `${IPC_ORIGIN}/choose_repository`;
-      async function normalOpen(repo: string): Promise<number> {
-        const label = switcherLabel(top(repo));
-        const replies = ipc.finished("choose_repository").length;
-        await armOpened(label);
-        // The Resource Timing buffer holds 250 entries, and the status poll adds one each second.
-        await s.c.evaluate("performance.clearResourceTimings(); true");
-        await uia(s.app.pid, REPOSITORY, ControlType.MenuItem, expand);
-        await uia(s.app.pid, OPEN_FOLDER_ITEM, ControlType.MenuItem, invoke);
-        await uia(s.app.pid, "Folder:", ControlType.Edit, (field) => setValue(field, repo));
-        await uia(s.app.pid, "Select Folder", ControlType.Button, invoke);
-        await ipc.wait("choose_repository", replies + 1, ACTION_WAIT_MS);
-        const end = await opened(repo, label);
-        const reply = await until<number | null>(s.c, "the choose_repository resource entry", `performance.getEntriesByName(${js(CHOOSE)}).at(-1)?.responseEnd ?? null`, (v) => v !== null);
-        return end - reply!;
+      // A normal open: Ctrl+R, then Enter on the Recent repositories entry of the repository (spec SC-007). An open registers the repository as a recent entry.
+      const list = `document.querySelector('[data-history-list]')`;
+      const RECENT_FILTER = `document.querySelector('[role=combobox][aria-label="Filter recent repositories"]')`;
+      const activeOption = `document.getElementById(${RECENT_FILTER}?.getAttribute('aria-activedescendant') ?? '')?.getAttribute('aria-label') ?? null`;
+      async function toRecentEntry(label: string): Promise<void> {
+        await focusOn(s.c, list, "the History list");
+        for (const params of RECENT_KEYS) await s.c.send("Input.dispatchKeyEvent", params);
+        await focusOn(s.c, RECENT_FILTER, "the recent repositories filter");
+        await until<boolean>(s.c, `the recent entry ${label}`, `[...document.querySelectorAll('[role=listbox][aria-label="Recent repositories"] [role=option]')].some((e) => e.getAttribute('aria-label') === ${js(label)})`, (v) => v);
+        for (let i = 0; i < 8 && (await s.c.evaluate<string | null>(activeOption)) !== label; i++) await press(s.c, "ArrowDown");
+        expect(await s.c.evaluate<string | null>(activeOption)).toBe(label);
       }
       // A key open: the time runs from the `timeStamp` of the Enter `keydown`.
-      async function keyOpen(target: string, expression: string, repo: string): Promise<number> {
+      async function keyOpen(target: string, expression: string | null, repo: string): Promise<number> {
         const label = switcherLabel(top(repo));
-        await focusOn(s.c, expression, target);
+        if (expression === null) await toRecentEntry(label);
+        else await focusOn(s.c, expression, target);
         await armOpened(label);
         await s.c.evaluate(`window.__t060Key = null; window.addEventListener('keydown', (e) => { if (e.key === 'Enter') window.__t060Key = e.timeStamp; }, { capture: true, once: true }); true`);
         await press(s.c, "Enter");
@@ -583,13 +583,13 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
         for (let i = 0; i < OPEN_RUNS; i++) {
           times.submodule.push(await keyOpen("the Submodules row solo", `document.querySelector('[data-slot=submodules-group] [role=treeitem][data-path="solo"]')`, sub));
           times.parentButton.push(await keyOpen("the parent button", `document.querySelector('[data-slot=parent-button]')`, w.sup));
-          times.normalSubmodule.push(await normalOpen(sub));
-          times.normalParent.push(await normalOpen(w.sup));
+          times.normalSubmodule.push(await keyOpen("the recent entry solo", null, sub));
+          times.normalParent.push(await keyOpen("the recent entry super", null, w.sup));
         }
         const median = (xs: number[]) => xs.toSorted((a, b) => a - b)[Math.floor(xs.length / 2)]!;
         const report = Object.fromEntries(Object.entries(times).map(([k, v]) => [k, { runs: v.map((ms) => Math.round(ms)), median: Math.round(median(v)) }]));
-        console.log(`OBSERVATION ${TASK}: SC-007 open times in ms ${js(report)}`);
-        expect({ submodule: median(times.submodule) <= median(times.normalSubmodule), parent: median(times.parentButton) <= median(times.normalParent) }).toEqual({ submodule: true, parent: true });
+        console.log(`OBSERVATION ${TASK}: SC-007 open times in ms ${js(report)}, allowance ${OPEN_ALLOWANCE_MS} ms`);
+        expect({ submodule: median(times.submodule) <= median(times.normalSubmodule) + OPEN_ALLOWANCE_MS, parent: median(times.parentButton) <= median(times.normalParent) + OPEN_ALLOWANCE_MS }).toEqual({ submodule: true, parent: true });
       } finally {
         await end(s);
       }

@@ -97,6 +97,7 @@
     "tests/contracts/native-path.test.ts",
     "tests/contracts/native-runner.test.ts",
     "tests/contracts/network-sites.test.ts",
+    "tests/contracts/no-native-title.test.tsx",
     "tests/contracts/notice-band.test.tsx",
     "tests/contracts/notices.test.ts",
     "tests/contracts/operation-registry.test.ts",

@@ -136,6 +136,8 @@ type Setup = {
   holdSuggestions?: boolean;
   failCreate?: string[];
   hangRead?: string[];
+  /** Languages whose `readDictionary` refuses with this reason (contract Δ1). */
+  refuseRead?: Record<string, "absent" | "changed">;
   clock?: ReturnType<typeof fakeClock>;
   words?: ReturnType<typeof wordListDouble>;
   real?: boolean;
@@ -161,6 +163,8 @@ async function mount(setup: Setup = {}, extra: Record<string, unknown> = {}) {
         hung.push(operationId);
         return new Promise(() => {});
       }
+      const reason = setup.refuseRead?.[payload.language];
+      if (reason !== undefined) return Promise.resolve({ requestId: crypto.randomUUID(), operationId, state: "failed", code: "DICTIONARY_UNAVAILABLE", result: { reason } } as BridgeResponse);
       const file = Buffer.from(files[payload.language]![payload.file]!, "utf8");
       // The bridge result of 006 contract Δ1: the file size and the chunk bytes in their own buffer.
       const bytes = new Uint8Array(file.subarray(payload.offset, payload.offset + 1_048_576));
@@ -508,6 +512,16 @@ describe("chip and load states (Q11, FR-008)", () => {
     expect(t.described().join("\n")).toContain("Arbareto cannot load the Ukrainian dictionary. Spell check uses the other languages.");
     expect(t.marks()).toEqual(MISSPELT);
   });
+
+  // 006 T067: the row on the Spelling page names the cause. The chip tooltip keeps the load text (plan.md D17).
+  for (const reason of ["changed", "absent"] as const)
+    test(`a read refused as ${reason}: the chip names the loaded ones, and its tooltip holds the load text`, async () => {
+      const t = await mount({ languages: ["en", "uk"], refuseRead: { uk: reason } });
+      await t.type(FIXTURE);
+      expect(t.chip()).toBe("Spelling: English");
+      expect(t.described().join("\n")).toContain("Arbareto cannot load the Ukrainian dictionary. Spell check uses the other languages.");
+      expect(t.marks()).toEqual(MISSPELT);
+    });
 
   test("a language that still loads: the chip names the loaded ones, and its tooltip holds the loading text", async () => {
     const t = await mount({ languages: ["en", "uk"], hold: ["uk"] });

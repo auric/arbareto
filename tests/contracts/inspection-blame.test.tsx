@@ -12,6 +12,7 @@ import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
 import { stubLayout, TARGET } from "./history-fake";
 import { latinKeyCode } from "./key-codes";
+import { hoverTooltip } from "./sync-fake";
 
 printOrigin("../../src/frontend/blame/BlameView.tsx", import.meta.dir);
 printOrigin("../../src/frontend/blame/blame-time.ts", import.meta.dir);
@@ -263,13 +264,17 @@ describe("gutter and age (spec FR-055)", () => {
     expect(parts(3)).toEqual([C2.slice(0, 12), "Bo Chen", "1 year ago"]);
     expect(parts(6)).toEqual([C1.slice(0, 12), "Ann Lee", "2 days ago"]);
     const date = (s: number) => new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(s * 1000);
-    expect(gutter(1).title).toBe(`Ann Lee\n${date(NOW_S - 2 * DAY)}`);
-    expect(gutter(3).title).toBe(`Bo Chen\n${date(NOW_S - 400 * DAY)}\nPath in this commit: src/auth.ts`);
+    // 001 plan.md "Icons": the house tooltip replaces the native title, and the line description holds the same facts.
+    expect(view(m.host).querySelector("[title]")).toBeNull();
+    expect(await hoverTooltip(gutter(1))).toEqual(["Ann Lee", date(NOW_S - 2 * DAY)]);
+    expect(await hoverTooltip(gutter(3))).toEqual(["Bo Chen", date(NOW_S - 400 * DAY), "Path in this commit: src/auth.ts"]);
+    expect(line(m.host, 3).getAttribute("aria-description")).toBe(`line 3\n${date(NOW_S - 400 * DAY)}\nPath in this commit: src/auth.ts`);
+    expect(line(m.host, 2).getAttribute("aria-description")).toBe("line 2");
     // Two distinct times: the older gets step 1, the newer step floor(7 × 1 / 2) + 1 = 4.
     expect(line(m.host, 1).querySelector<HTMLElement>('[data-slot="age-bar"]')!.dataset.age).toBe("4");
     expect(line(m.host, 3).querySelector<HTMLElement>('[data-slot="age-bar"]')!.dataset.age).toBe("1");
     expect(line(m.host, 1).getAttribute("aria-label")).toBe(`Line 1, ${C1.slice(0, 12)}, Ann Lee, 2 days ago`);
-    expect(line(m.host, 1).getAttribute("aria-description")).toBe("line 1");
+    expect(line(m.host, 1).getAttribute("aria-description")).toBe(`line 1\n${date(NOW_S - 2 * DAY)}`);
   });
 
   test("the legend and its group name", async () => {
@@ -277,7 +282,12 @@ describe("gutter and age (spec FR-055)", () => {
     const legend = view(m.host).querySelector<HTMLElement>('[role="group"][aria-label="Commit age, older to newer"]')!;
     expect([...legend.children].filter((e) => !e.hasAttribute("aria-hidden")).map((e) => e.textContent)).toEqual(["Older", "Newer"]);
     expect(legend.querySelectorAll('[data-age]').length).toBe(7);
-    expect(legend.title).toBe("The shade ranks the commits of this file by author date. Today's date has no effect.");
+    expect(legend.hasAttribute("title")).toBe(false);
+    expect(legend.getAttribute("aria-description")).toBe("The shade ranks the commits of this file by author date. Today's date has no effect.");
+    expect(await hoverTooltip(legend)).toEqual(["The shade ranks the commits of this file by author date. Today's date has no effect."]);
+    const heading = view(m.host).querySelector<HTMLElement>("h2")!;
+    expect(heading.hasAttribute("title")).toBe(false);
+    expect(await hoverTooltip(heading)).toEqual(["src/login.ts"]);
   });
 
   test("the shallow text on the second line of the run, or in the tooltip of a run of one line", async () => {
@@ -294,7 +304,9 @@ describe("gutter and age (spec FR-055)", () => {
       ),
     );
     expect(text(line(m.host, 2).querySelector('[data-slot="blame-gutter"]')!)).toBe("Earlier history is not in this clone.");
-    expect(line(m.host, 3).querySelector<HTMLElement>('[data-slot="blame-gutter"]')!.title).toContain("Earlier history is not in this clone.");
+    expect(await hoverTooltip(line(m.host, 3).querySelector<HTMLElement>('[data-slot="blame-gutter"]')!)).toContain("Earlier history is not in this clone.");
+    expect(line(m.host, 1).getAttribute("aria-description")).toEndWith("\nEarlier history is not in this clone.");
+    expect(line(m.host, 3).getAttribute("aria-description")).toEndWith("\nEarlier history is not in this clone.");
   });
 });
 
@@ -379,9 +391,11 @@ describe("options (spec FR-057, FR-059)", () => {
     expect(skip.getAttribute("aria-pressed")).toBe("true");
     const mark = (n: number) => line(m.host, n).querySelector<HTMLElement>('[data-slot="blame-mark"]')!;
     expect(mark(1).textContent).toBe("?");
-    expect(mark(1).title).toBe("Ignored. Git skipped the commit of this line.");
+    expect(await hoverTooltip(mark(1))).toEqual(["Ignored. Git skipped the commit of this line."]);
     expect(mark(2).textContent).toBe("*");
-    expect(mark(2).title).toBe("Unblamable. Git found no commit for this line after the skip.");
+    expect(await hoverTooltip(mark(2))).toEqual(["Unblamable. Git found no commit for this line after the skip."]);
+    expect(line(m.host, 1).getAttribute("aria-description")).toEndWith("\nIgnored. Git skipped the commit of this line.");
+    expect(line(m.host, 2).getAttribute("aria-description")).toEndWith("\nUnblamable. Git found no commit for this line after the skip.");
     expect(line(m.host, 1).getAttribute("aria-label")).toEndWith(", ignored");
     expect(line(m.host, 2).getAttribute("aria-label")).toEndWith(", unblamable");
     await click(skip);

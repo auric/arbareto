@@ -9,6 +9,7 @@ import { CopyButton, unknownFormText, unknownReadText } from "../app/RepositoryS
 import { WarningIcon } from "../app/NoticeBand";
 import { Button } from "../components/ui/button";
 import { IconButton } from "../components/icon-button";
+import { TextTooltip } from "../components/text-tooltip";
 import { metrics, type Density, type Profile } from "../layout/profiles";
 import type { TrackLabel } from "../state/tracking";
 import { scopedAction } from "../keyboard/shortcuts";
@@ -224,14 +225,21 @@ function checkoutText(head: Head): string {
 const noEarlier = (cell: NonNullable<ViewRow["cell"]>) => !cell.limited && cell.marks.length === 0 && !cell.segments.some((s) => s.shape === "line" && s.from.at === "node");
 const skips = (cell: NonNullable<ViewRow["cell"]>) => cell.segments.some((s) => s.shape === "line" && s.skip === true);
 
+/** One part per label kind, as in "Branches: main, topic". The row name and the label tooltip share them. */
+function labelParts(labels: ViewRow["labels"], tracking?: Tracking): string[] {
+  const parts: string[] = [];
+  for (const { kind, label } of LABEL_KINDS) {
+    const names = labels.filter((l) => l.kind === kind).map((l) => [l.name, countOf(l, tracking)?.label].filter(Boolean).join(" "));
+    if (names.length > 0) parts.push(`${label}: ${names.join(", ")}`);
+  }
+  return parts;
+}
+
 /** The full row text. Parents stay readable without color or pointer (spec FR-016). */
 export function viewRowName(row: ViewRow, head: Head, filter: boolean, dateFormat: Intl.DateTimeFormat = LOCAL_DATE, tracking?: Tracking): string {
   const parts: string[] = [];
   if (row.checkout) parts.push(checkoutText(head));
-  for (const { kind, label } of LABEL_KINDS) {
-    const names = row.labels.filter((l) => l.kind === kind).map((l) => [l.name, countOf(l, tracking)?.label].filter(Boolean).join(" "));
-    if (names.length > 0) parts.push(`${label}: ${names.join(", ")}`);
-  }
+  parts.push(...labelParts(row.labels, tracking));
   if (row.match === true) parts.push("Match");
   if (row.textLimit) parts.push(TEXT_LIMIT, shortId(row.oid));
   else if (row.subject !== undefined) parts.push(row.subject, shortId(row.oid), row.author!.name, dateFormat.format(row.date! * 1000));
@@ -527,10 +535,13 @@ export function HistoryList({ view, entries, density, profile, textScale = 1, da
         )}
         <span aria-hidden="true" className="flex min-w-0 flex-1 items-center gap-2 whitespace-nowrap">
           {row.checkout || row.labels.length > 0 ? (
-            <span data-slot="row-labels" title={row.labels.map((l) => l.name).join(", ")} className="relative flex min-w-0 max-w-[50%] shrink-0 items-center gap-1 overflow-hidden">
-              {row.checkout ? <span className="badge shrink-0">{head?.state === "detached" ? "HEAD, detached" : "HEAD"}</span> : null}
-              <RowLabels labels={row.labels} tracking={tracking} onMenu={onLabelMenu} active={row.oid === selectedRow?.oid ? activeLabel : null} />
-            </span>
+            // The list keeps one Tab stop, so the label tooltip opens on hover. The option name holds the same label parts.
+            <TextTooltip text={row.checkout && head ? [checkoutText(head), ...labelParts(row.labels, tracking)] : labelParts(row.labels, tracking)}>
+              <span data-slot="row-labels" className="relative flex min-w-0 max-w-[50%] shrink-0 items-center gap-1 overflow-hidden">
+                {row.checkout ? <span className="badge shrink-0">{head?.state === "detached" ? "HEAD, detached" : "HEAD"}</span> : null}
+                <RowLabels labels={row.labels} tracking={tracking} onMenu={onLabelMenu} active={row.oid === selectedRow?.oid ? activeLabel : null} />
+              </span>
+            </TextTooltip>
           ) : null}
           {row.match === true ? <HugeiconsIcon icon={Search01Icon} strokeWidth={2} aria-hidden="true" data-slot="match-mark" className="size-(--icon-size) shrink-0 text-accent-role" /> : null}
           <span className="min-w-0 truncate">{row.textLimit ? TEXT_LIMIT : (row.subject ?? "")}</span>

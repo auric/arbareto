@@ -8,6 +8,7 @@ import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalSto
 import { Loading } from "../app/RepositoryStates";
 import { formatCount } from "../changes/file-tree";
 import { pathText } from "../changes/file-actions";
+import { TextTooltip } from "../components/text-tooltip";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { scopedAction } from "../keyboard/shortcuts";
@@ -100,9 +101,11 @@ export function IgnoreEditor({ store, onTrust }: IgnoreEditorProps) {
           {heading}
         </h2>
         {editor.loaded === null ? null : (
-          <span data-slot="ignore-path" title={editor.loaded.file} className="min-w-0 truncate font-mono text-muted-text">
-            {editor.loaded.file}
-          </span>
+          <TextTooltip text={editor.loaded.file}>
+            <span data-slot="ignore-path" className="min-w-0 truncate font-mono text-muted-text">
+              {editor.loaded.file}
+            </span>
+          </TextTooltip>
         )}
       </div>
       {editor.refusal !== null ? (
@@ -316,9 +319,11 @@ function Group({ title, group }: { title: string; group: { count: number; paths:
         <div ref={scroller} data-slot="preview-list" className="min-h-0 flex-1 overflow-y-auto">
           <ul aria-labelledby={headingId} className="relative font-mono" style={{ height: virtualizer.getTotalSize() }}>
             {virtualizer.getVirtualItems().map((item) => (
-              <li key={item.key} data-slot="preview-path" className="absolute inset-x-0 truncate pr-2 pl-7" style={{ top: item.start, height: ROW, lineHeight: `${ROW}px` }} title={pathText(group.paths[item.index]!)}>
-                {pathText(group.paths[item.index]!)}
-              </li>
+              <TextTooltip key={item.key} text={pathText(group.paths[item.index]!)}>
+                <li data-slot="preview-path" className="absolute inset-x-0 truncate pr-2 pl-7" style={{ top: item.start, height: ROW, lineHeight: `${ROW}px` }}>
+                  {pathText(group.paths[item.index]!)}
+                </li>
+              </TextTooltip>
             ))}
           </ul>
           {more > 0 ? <p className="px-2 py-1 text-muted-text">{`and ${formatCount(more)} more paths`}</p> : null}

@@ -9,6 +9,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { useSyncExternalStore } from "react";
 import { createFake, oid as fakeOid, stubLayout, TARGET, viewIdOf } from "./history-fake";
+import { hoverTooltip } from "./sync-fake";
 
 printOrigin("../../src/frontend/history/CommitDetails.tsx", import.meta.dir);
 registerDom();
@@ -144,10 +145,12 @@ describe("Selected commit", () => {
     const host = await details(2, (i) => (i === 2 ? { parents, children: [fakeOid(1)], author: { name: "Ada", email: "ada.lovelace.with.a.very.long.address@analytical-engine.example.invalid" } } : {}));
     const links = [...host.querySelectorAll<HTMLElement>('dd button:not([aria-label^="Copy"])')];
     expect(links.map((b) => [text(b), b.getAttribute("aria-label"), b.getAttribute("title")])).toEqual([
-      ["a".repeat(12), parents[0], parents[0]],
-      ["b".repeat(12), parents[1], parents[1]],
-      [fakeOid(1).slice(0, 12), fakeOid(1), fakeOid(1)],
+      ["a".repeat(12), parents[0], null],
+      ["b".repeat(12), parents[1], null],
+      [fakeOid(1).slice(0, 12), fakeOid(1), null],
     ]);
+    // One hover stays below the 5 s case timeout: the Base UI open delay is 600 ms.
+    expect(await hoverTooltip(links[2]!)).toEqual([fakeOid(1)]);
     // 001 plan.md:396: the commit itself keeps its full ID.
     expect(text(field(host, "ID"))).toBe(fakeOid(2));
     // A grid track of `1fr` has the content width as its minimum, so a long value widens the region. The value track starts at zero.

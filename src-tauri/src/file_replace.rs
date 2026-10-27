@@ -487,4 +487,686 @@ mod tests {
             assert_eq!(frame(fields), Err(INVALID), "{name}");
         }
     }
+
+    /// Feature 008 T003: the replace-sequence probes of research.md R14 (`Local: Rust`). Each prints `OBSERVATION T003` lines.
+    /// Run: `cargo test --locked --manifest-path src-tauri/Cargo.toml -- --ignored --test-threads=1 file_replace::tests::revert_facts`.
+    /// A `match=false` line is a finding for research.md R15, not a failure.
+    mod revert_facts {
+        use std::io::{BufRead, BufReader, Write};
+        use std::os::windows::ffi::OsStrExt;
+        use std::os::windows::io::OwnedHandle;
+        use std::path::Path;
+        use std::process::{Command, Stdio};
+        use std::sync::mpsc;
+        use std::time::{Duration, Instant};
+
+        use serde_json::{Value, json};
+        use windows::Wdk::Storage::FileSystem::{
+            FILE_BASIC_INFORMATION, FILE_CREATE, FILE_DELETE_ON_CLOSE, FILE_DIRECTORY_FILE,
+            FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_RENAME_INFORMATION,
+            FILE_RENAME_POSIX_SEMANTICS, FILE_RENAME_REPLACE_IF_EXISTS,
+            FILE_SYNCHRONOUS_IO_NONALERT, FileBasicInformation, FileRenameInformationEx,
+            NtSetInformationFile,
+        };
+        use windows::Wdk::System::SystemServices::RtlGetVersion;
+        use windows::Win32::Foundation::NTSTATUS;
+        use windows::Win32::Security::{
+            DACL_SECURITY_INFORMATION, GROUP_SECURITY_INFORMATION, GetKernelObjectSecurity,
+            GetSecurityDescriptorControl, OBJECT_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+            PROTECTED_DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, SE_DACL_AUTO_INHERIT_REQ,
+            SE_DACL_PROTECTED, SetKernelObjectSecurity, SetSecurityDescriptorControl,
+            UNPROTECTED_DACL_SECURITY_INFORMATION,
+        };
+        use windows::Win32::Storage::FileSystem::{
+            DELETE, FILE_ATTRIBUTE_HIDDEN, FILE_ATTRIBUTE_NORMAL,
+            FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, FILE_ATTRIBUTE_READONLY,
+            FILE_ATTRIBUTE_SPARSE_FILE, FILE_ATTRIBUTE_SYSTEM, FILE_DISPOSITION_FLAG_DO_NOT_DELETE,
+            FILE_DISPOSITION_FLAG_ON_CLOSE, FILE_DISPOSITION_INFO_EX,
+            FILE_DISPOSITION_INFO_EX_FLAGS, FILE_FLAGS_AND_ATTRIBUTES, FILE_LIST_DIRECTORY,
+            FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ,
+            FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
+            FileDispositionInfoEx, FlushFileBuffers, GetFileAttributesW, READ_CONTROL,
+            SYNCHRONIZE, SetFileAttributesW, SetFileInformationByHandle, WRITE_DAC, WriteFile,
+        };
+        use windows::Win32::System::IO::{DeviceIoControl, IO_STATUS_BLOCK};
+        use windows::Win32::System::Ioctl::{FSCTL_SET_COMPRESSION, FSCTL_SET_SPARSE};
+        use windows::Win32::System::SystemInformation::OSVERSIONINFOW;
+        use windows::core::PCWSTR;
+
+        use super::RUN;
+        use crate::file_facts::{create_relative, is_reparse_point, open_root, query, raw};
+        use crate::jobs::tests::Fixture;
+        use crate::process_requests::tests::junction;
+
+        const CHILD_ENV: &str = "ARBARETO_T003_W6";
+        const CHILD_WAIT: Duration = Duration::from_secs(30);
+        const OLD: &[u8] = b"old\n";
+        const NEW: &[u8] = b"new\n";
+        /// 2020-01-01T00:00:00Z as FILETIME.
+        const OLD_CREATION: i64 = 132_223_104_000_000_000;
+
+        fn os() -> String {
+            let mut info = OSVERSIONINFOW {
+                dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
+                ..Default::default()
+            };
+            // SAFETY: `info` is a live local with its size set.
+            let status = unsafe { RtlGetVersion(&raw mut info) };
+            if status.is_err() {
+                return "unknown".to_string();
+            }
+            format!(
+                "{}.{}.{}",
+                info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber
+            )
+        }
+
+        /// JSON without spaces, so each `key=value` field is one token (the `tests/git/fact-runner.ts` form).
+        fn token(value: &Value) -> String {
+            value.to_string().replace(' ', "\\u0020")
+        }
+
+        fn observe(fact: &str, expected: Value, observed: Value) {
+            let matched = expected == observed;
+            println!(
+                "OBSERVATION T003: {fact} expected={} observed={} match={matched} os={}",
+                token(&expected),
+                token(&observed),
+                os()
+            );
+        }
+
+        fn record(fact: &str, observed: Value) {
+            println!(
+                "OBSERVATION T003: {fact} expected=\"record\" observed={} match=true os={}",
+                token(&observed),
+                os()
+            );
+        }
+
+        fn status_text(status: NTSTATUS) -> String {
+            format!("0x{:08x}", status.0 as u32)
+        }
+
+        fn wide(path: &Path) -> Vec<u16> {
+            path.as_os_str().encode_wide().chain(Some(0)).collect()
+        }
+
+        fn attributes(path: &Path) -> u32 {
+            let name = wide(path);
+            // SAFETY: `name` is a live, NUL-terminated wide string.
+            unsafe { GetFileAttributesW(PCWSTR(name.as_ptr())) }
+        }
+
+        fn set_attributes(path: &Path, bits: u32) -> bool {
+            let name = wide(path);
+            // SAFETY: `name` is a live, NUL-terminated wide string.
+            unsafe { SetFileAttributesW(PCWSTR(name.as_ptr()), FILE_FLAGS_AND_ATTRIBUTES(bits)) }
+                .is_ok()
+        }
+
+        fn parent(dir: &Path) -> OwnedHandle {
+            open_root(dir, &RUN).expect("open the probe folder")
+        }
+
+        /// The held target of `check`, with `READ_CONTROL` for the security read.
+        fn hold(parent: &OwnedHandle, name: &str) -> OwnedHandle {
+            create_relative(
+                raw(parent),
+                name,
+                FILE_READ_DATA | FILE_READ_ATTRIBUTES | READ_CONTROL | SYNCHRONIZE,
+                FILE_SHARE_READ | FILE_SHARE_DELETE,
+                FILE_OPEN,
+                FILE_OPEN_REPARSE_POINT | FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+            )
+            .expect("hold the target")
+        }
+
+        fn temp(
+            parent: &OwnedHandle,
+            name: &str,
+            delete_on_close: bool,
+        ) -> Result<OwnedHandle, NTSTATUS> {
+            let mut options = FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE;
+            if delete_on_close {
+                options |= FILE_DELETE_ON_CLOSE;
+            }
+            create_relative(
+                raw(parent),
+                name,
+                DELETE | FILE_WRITE_DATA | FILE_WRITE_ATTRIBUTES | READ_CONTROL | WRITE_DAC | SYNCHRONIZE,
+                FILE_SHARE_READ,
+                FILE_CREATE,
+                options,
+            )
+        }
+
+        fn write(handle: &OwnedHandle, bytes: &[u8]) -> bool {
+            let mut written = 0u32;
+            // SAFETY: `handle` is open, and `bytes` and `written` are live locals.
+            let wrote = unsafe { WriteFile(raw(handle), Some(bytes), Some(&raw mut written), None) };
+            // SAFETY: `handle` is open.
+            wrote.and_then(|()| unsafe { FlushFileBuffers(raw(handle)) }).is_ok()
+                && written as usize == bytes.len()
+        }
+
+        fn set_basic(handle: &OwnedHandle, creation: i64, attributes: u32) -> NTSTATUS {
+            let info = FILE_BASIC_INFORMATION {
+                CreationTime: creation,
+                FileAttributes: attributes,
+                ..Default::default()
+            };
+            let mut io = IO_STATUS_BLOCK::default();
+            // SAFETY: `handle` is open, and `info` is a live local of the passed size.
+            unsafe {
+                NtSetInformationFile(
+                    raw(handle),
+                    &raw mut io,
+                    (&raw const info).cast(),
+                    size_of::<FILE_BASIC_INFORMATION>() as u32,
+                    FileBasicInformation,
+                )
+            }
+        }
+
+        fn clear_disposition(handle: &OwnedHandle) -> windows::core::Result<()> {
+            let info = FILE_DISPOSITION_INFO_EX {
+                Flags: FILE_DISPOSITION_INFO_EX_FLAGS(
+                    FILE_DISPOSITION_FLAG_DO_NOT_DELETE.0 | FILE_DISPOSITION_FLAG_ON_CLOSE.0,
+                ),
+            };
+            // SAFETY: `handle` is open, and `info` is a live local of the passed size.
+            unsafe {
+                SetFileInformationByHandle(
+                    raw(handle),
+                    FileDispositionInfoEx,
+                    (&raw const info).cast(),
+                    size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+                )
+            }
+        }
+
+        /// `FileRenameInformationEx` with POSIX semantics and replace, as `write_and_rename` builds it, with the raw status.
+        fn rename(temp: &OwnedHandle, parent: &OwnedHandle, name: &str) -> NTSTATUS {
+            let units: Vec<u16> = name.encode_utf16().collect();
+            let name_bytes = units.len() * 2;
+            let header = std::mem::offset_of!(FILE_RENAME_INFORMATION, FileName);
+            let mut buffer = vec![0u64; (header + name_bytes).div_ceil(8)];
+            // SAFETY: the aligned buffer holds a `FILE_RENAME_INFORMATION` followed by the name.
+            unsafe {
+                let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFORMATION>();
+                (*info).Anonymous.Flags = FILE_RENAME_POSIX_SEMANTICS | FILE_RENAME_REPLACE_IF_EXISTS;
+                (*info).RootDirectory = raw(parent);
+                (*info).FileNameLength = name_bytes as u32;
+                std::ptr::copy_nonoverlapping(
+                    units.as_ptr().cast::<u8>(),
+                    buffer.as_mut_ptr().cast::<u8>().add(header),
+                    name_bytes,
+                );
+            }
+            let mut io = IO_STATUS_BLOCK::default();
+            // SAFETY: `temp` is open, and the buffer is live with the passed length.
+            unsafe {
+                NtSetInformationFile(
+                    raw(temp),
+                    &raw mut io,
+                    buffer.as_ptr().cast(),
+                    (header + name_bytes) as u32,
+                    FileRenameInformationEx,
+                )
+            }
+        }
+
+        fn security(handle: &OwnedHandle, info: OBJECT_SECURITY_INFORMATION) -> Vec<u8> {
+            let mut needed = 0u32;
+            // SAFETY: a null buffer of length 0 asks for the needed length only.
+            let _ = unsafe { GetKernelObjectSecurity(raw(handle), info.0, None, 0, &raw mut needed) };
+            let mut buffer = vec![0u8; needed as usize];
+            // SAFETY: `buffer` is live with the passed length.
+            unsafe {
+                GetKernelObjectSecurity(
+                    raw(handle),
+                    info.0,
+                    Some(PSECURITY_DESCRIPTOR(buffer.as_mut_ptr().cast())),
+                    needed,
+                    &raw mut needed,
+                )
+            }
+            .expect("GetKernelObjectSecurity");
+            buffer
+        }
+
+        fn protected(descriptor: &mut [u8]) -> bool {
+            let mut control = 0u16;
+            let mut revision = 0u32;
+            // SAFETY: `descriptor` holds a self-relative descriptor from `GetKernelObjectSecurity`.
+            unsafe {
+                GetSecurityDescriptorControl(
+                    PSECURITY_DESCRIPTOR(descriptor.as_mut_ptr().cast()),
+                    &raw mut control,
+                    &raw mut revision,
+                )
+            }
+            .expect("GetSecurityDescriptorControl");
+            control & SE_DACL_PROTECTED.0 != 0
+        }
+
+        /// The owner, group, and DACL of a path as the self-relative descriptor bytes.
+        fn descriptor_at(path: &Path) -> Vec<u8> {
+            // `GENERIC_READ` of `File::open` includes `READ_CONTROL`.
+            let file = std::fs::File::open(path).expect("open for READ_CONTROL");
+            security(
+                &OwnedHandle::from(file),
+                OWNER_SECURITY_INFORMATION | GROUP_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+            )
+        }
+
+        #[derive(Clone, Copy, PartialEq)]
+        enum Dacl {
+            None,
+            Kernel,
+            KernelFlag,
+            /// The copied descriptor carries `SE_DACL_AUTO_INHERIT_REQ`.
+            KernelAutoInherit,
+        }
+
+        /// The 005 replace sequence with the R8 additions that `basic`, `dacl`, and `delete_on_close` select.
+        fn replace(dir: &Path, name: &str, basic: bool, dacl: Dacl, delete_on_close: bool) -> Value {
+            let parent = parent(dir);
+            let held = hold(&parent, name);
+            let old = query::<FILE_BASIC_INFORMATION>(&held, FileBasicInformation, &RUN)
+                .expect("FileBasicInformation");
+            let mut old_dacl = (dacl != Dacl::None).then(|| security(&held, DACL_SECURITY_INFORMATION));
+            let temp_name = format!(".arbareto-t003-{}.tmp", std::process::id());
+            let temp = match temp(&parent, &temp_name, delete_on_close) {
+                Ok(handle) => handle,
+                Err(status) => return json!({ "step": "temp-create", "status": status_text(status) }),
+            };
+            let fail = |step: &str, status: String| json!({ "step": step, "status": status });
+            let result = (|| {
+                if !write(&temp, NEW) {
+                    return fail("write", String::new());
+                }
+                if basic {
+                    let status = set_basic(&temp, old.CreationTime, old.FileAttributes);
+                    if status.is_err() {
+                        return fail("basic", status_text(status));
+                    }
+                }
+                if let Some(descriptor) = old_dacl.as_mut() {
+                    let mut info = DACL_SECURITY_INFORMATION;
+                    if dacl == Dacl::KernelAutoInherit {
+                        // SAFETY: `descriptor` is a live self-relative descriptor.
+                        let set = unsafe {
+                            SetSecurityDescriptorControl(
+                                PSECURITY_DESCRIPTOR(descriptor.as_mut_ptr().cast()),
+                                SE_DACL_AUTO_INHERIT_REQ,
+                                SE_DACL_AUTO_INHERIT_REQ,
+                            )
+                        };
+                        if let Err(error) = set {
+                            return fail("control", format!("{:?}", error.code()));
+                        }
+                    }
+                    if dacl == Dacl::KernelFlag {
+                        info |= if protected(descriptor) {
+                            PROTECTED_DACL_SECURITY_INFORMATION
+                        } else {
+                            UNPROTECTED_DACL_SECURITY_INFORMATION
+                        };
+                    }
+                    // SAFETY: `temp` is open with `WRITE_DAC`, and `descriptor` is a live self-relative descriptor.
+                    let set = unsafe {
+                        SetKernelObjectSecurity(
+                            raw(&temp),
+                            info,
+                            PSECURITY_DESCRIPTOR(descriptor.as_mut_ptr().cast()),
+                        )
+                    };
+                    if let Err(error) = set {
+                        return fail("dacl", format!("{:?}", error.code()));
+                    }
+                }
+                if delete_on_close && let Err(error) = clear_disposition(&temp) {
+                    return fail("clear", format!("{:?}", error.code()));
+                }
+                let status = rename(&temp, &parent, name);
+                if status.is_err() {
+                    return fail("rename", status_text(status));
+                }
+                json!({ "step": "renamed" })
+            })();
+            if result["step"] != "renamed" {
+                let _ = crate::file_facts::set_disposition(&temp);
+            }
+            result
+        }
+
+        /// R8 W1: the attributes after the 005 replace and with the `FileBasicInformation` copy.
+        #[test]
+        #[ignore = "feature 008 T003 probe, Local: Rust"]
+        fn w1_attribute_copy() {
+            let fixture = Fixture::new();
+            let dir = fixture.path("w1");
+            std::fs::create_dir(&dir).expect("w1");
+            let mask = 0x2 | 0x4 | 0x20 | 0x2000 | 0x800 | 0x200;
+            for (id, bits) in [
+                ("hidden", FILE_ATTRIBUTE_HIDDEN.0),
+                ("system", FILE_ATTRIBUTE_SYSTEM.0),
+                ("archive-clear", FILE_ATTRIBUTE_NORMAL.0),
+                ("not-content-indexed", FILE_ATTRIBUTE_NOT_CONTENT_INDEXED.0),
+                ("compressed", 0),
+                ("sparse", FILE_ATTRIBUTE_SPARSE_FILE.0),
+            ] {
+                for basic in [false, true] {
+                    let name = format!("{id}-{}.txt", if basic { "copy" } else { "005" });
+                    let path = dir.join(&name);
+                    std::fs::write(&path, OLD).expect("old");
+                    let set = match id {
+                        "compressed" | "sparse" => {
+                            let file = std::fs::OpenOptions::new()
+                                .read(true)
+                                .write(true)
+                                .open(&path)
+                                .expect("open");
+                            let handle = OwnedHandle::from(file);
+                            let format = 1u16;
+                            let mut returned = 0u32;
+                            let (code, input) = if id == "compressed" {
+                                (FSCTL_SET_COMPRESSION, Some((&raw const format).cast()))
+                            } else {
+                                (FSCTL_SET_SPARSE, None)
+                            };
+                            // SAFETY: `handle` is open, and `format` and `returned` are live locals.
+                            unsafe {
+                                DeviceIoControl(
+                                    raw(&handle),
+                                    code,
+                                    input,
+                                    if input.is_some() { 2 } else { 0 },
+                                    None,
+                                    0,
+                                    Some(&raw mut returned),
+                                    None,
+                                )
+                            }
+                            .is_ok()
+                        }
+                        _ => set_attributes(&path, bits),
+                    };
+                    let before = attributes(&path) & mask;
+                    let result = replace(&dir, &name, basic, Dacl::None, false);
+                    let after = attributes(&path) & mask;
+                    observe(
+                        &format!("W1.{name}"),
+                        json!({ "set": true, "result": { "step": "renamed" }, "attributes": format!("0x{before:x}") }),
+                        json!({ "set": set, "result": result, "attributes": format!("0x{after:x}") }),
+                    );
+                }
+            }
+        }
+
+        /// R8 W2: the descriptor after the replace and with the `SetKernelObjectSecurity` DACL copy.
+        /// `SetSecurityInfo` and the SDDL conversion need the `windows` feature `Win32_Security_Authorization`, so this probe compares the descriptor bytes.
+        #[test]
+        #[ignore = "feature 008 T003 probe, Local: Rust"]
+        fn w2_dacl_copy() {
+            observe(
+                "W2.set-security-info-feature",
+                json!({ "Win32_Security_Authorization": "enabled" }),
+                json!({ "Win32_Security_Authorization": "not enabled in src-tauri/Cargo.toml" }),
+            );
+            let icacls = |path: &Path, arguments: &[&str]| {
+                let status = Command::new("icacls")
+                    .arg(path)
+                    .args(arguments)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .expect("icacls");
+                assert!(status.success(), "icacls {arguments:?}");
+            };
+            let fixture = Fixture::new();
+            // `auto-inherited`: an icacls grant rewrites the folder DACL with inheritable ACEs and `SE_DACL_AUTO_INHERITED`.
+            for (folder, folder_acl) in [
+                ("plain", None),
+                ("auto-inherited", Some(&["/grant", "*S-1-5-32-545:(OI)(CI)(RX)"][..])),
+            ] {
+                let dir = fixture.path(&format!("w2-{folder}"));
+                std::fs::create_dir(&dir).expect("w2");
+                if let Some(arguments) = folder_acl {
+                    icacls(&dir, arguments);
+                }
+                for (kind, file_acl) in [
+                    ("inherited-only", None),
+                    ("explicit-ace", Some(&["/grant", "*S-1-5-32-545:(R)"][..])),
+                    ("protected", Some(&["/inheritance:d"][..])),
+                ] {
+                    // Per method: `same` when the owner, group, and DACL descriptor bytes equal the old file.
+                    let mut results = serde_json::Map::new();
+                    for (method, dacl) in [
+                        ("none", Dacl::None),
+                        ("kernel", Dacl::Kernel),
+                        ("kernel-flag", Dacl::KernelFlag),
+                        ("kernel-auto-inherit", Dacl::KernelAutoInherit),
+                    ] {
+                        let name = format!("{kind}-{method}.txt");
+                        let path = dir.join(&name);
+                        std::fs::write(&path, OLD).expect("old");
+                        if let Some(arguments) = file_acl {
+                            icacls(&path, arguments);
+                        }
+                        let before = descriptor_at(&path);
+                        let result = replace(&dir, &name, false, dacl, false);
+                        let after = descriptor_at(&path);
+                        let value = if result["step"] != "renamed" {
+                            result
+                        } else {
+                            json!(if before == after { "same" } else { "differs" })
+                        };
+                        results.insert(method.to_string(), value);
+                    }
+                    record(&format!("W2.{folder}.{kind}"), Value::Object(results));
+                }
+            }
+        }
+
+        /// R8 W3: the creation time without a copy (tunneling) and with the `FileBasicInformation` copy.
+        #[test]
+        #[ignore = "feature 008 T003 probe, Local: Rust"]
+        fn w3_creation_time() {
+            let fixture = Fixture::new();
+            let dir = fixture.path("w3");
+            std::fs::create_dir(&dir).expect("w3");
+            for basic in [false, true] {
+                let name = format!("c-{}.txt", if basic { "copy" } else { "005" });
+                std::fs::write(dir.join(&name), OLD).expect("old");
+                let parent = parent(&dir);
+                let set = {
+                    let handle = create_relative(
+                        raw(&parent),
+                        &name,
+                        FILE_WRITE_ATTRIBUTES | FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+                        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                        FILE_OPEN,
+                        FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE,
+                    )
+                    .expect("open");
+                    set_basic(&handle, OLD_CREATION, 0).is_ok()
+                };
+                let result = replace(&dir, &name, basic, Dacl::None, false);
+                let after = query::<FILE_BASIC_INFORMATION>(&hold(&parent, &name), FileBasicInformation, &RUN)
+                    .expect("FileBasicInformation");
+                let observed = json!({ "set": set, "result": result, "keepsOldCreation": after.CreationTime == OLD_CREATION });
+                if basic {
+                    observe(
+                        "W3.creation.copy",
+                        json!({ "set": true, "result": { "step": "renamed" }, "keepsOldCreation": true }),
+                        observed,
+                    );
+                } else {
+                    record("W3.creation.005", observed);
+                }
+            }
+        }
+
+        /// R8 W5: the rename over a read-only target fails with its NT status, and the target keeps its bytes.
+        #[test]
+        #[ignore = "feature 008 T003 probe, Local: Rust"]
+        fn w5_read_only_target() {
+            let fixture = Fixture::new();
+            let dir = fixture.path("w5");
+            std::fs::create_dir(&dir).expect("w5");
+            let path = dir.join("ro.txt");
+            std::fs::write(&path, OLD).expect("old");
+            assert!(set_attributes(&path, FILE_ATTRIBUTE_READONLY.0), "read-only");
+            let result = replace(&dir, "ro.txt", false, Dacl::None, false);
+            let bytes = std::fs::read(&path).expect("read");
+            set_attributes(&path, FILE_ATTRIBUTE_NORMAL.0);
+            let temps: Vec<String> = std::fs::read_dir(&dir)
+                .expect("dir")
+                .filter_map(Result::ok)
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with(".arbareto-"))
+                .collect();
+            // ntstatus.h: STATUS_ACCESS_DENIED is 0xc0000022.
+            observe(
+                "W5.read-only-target",
+                json!({ "result": { "step": "rename", "status": "0xc0000022" }, "bytes": "old\n", "temps": [] }),
+                json!({ "result": result, "bytes": String::from_utf8_lossy(&bytes), "temps": temps }),
+            );
+        }
+
+        /// The W6 child: creates the temporary file with the delete disposition on close, optionally clears it, and waits to be terminated.
+        #[test]
+        #[ignore = "child of w6_delete_on_close_and_terminate"]
+        fn w6_child() {
+            let Ok(spec) = std::env::var(CHILD_ENV) else {
+                return;
+            };
+            let (dir, rest) = spec.split_once('|').expect("dir|name|clear");
+            let (name, clear) = rest.split_once('|').expect("name|clear");
+            let parent = parent(Path::new(dir));
+            let handle = temp(&parent, name, true).expect("temporary file");
+            assert!(write(&handle, b"temp\n"), "write");
+            let mut line = "READY held".to_string();
+            if clear == "1" {
+                line.push_str(if clear_disposition(&handle).is_ok() { " cleared" } else { " clear-failed" });
+            }
+            println!("{line}");
+            std::io::stdout().flush().expect("flush");
+            std::thread::sleep(Duration::from_secs(60));
+            drop(handle);
+        }
+
+        /// Starts `w6_child`, waits for its READY line, ends it by `TerminateProcess` (`Child::kill`), and returns the line.
+        fn terminate_child(dir: &Path, name: &str, clear: bool) -> String {
+            let mut child = Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    "file_replace::tests::revert_facts::w6_child",
+                    "--exact",
+                    "--ignored",
+                    "--nocapture",
+                    "--test-threads=1",
+                ])
+                .env(CHILD_ENV, format!("{}|{name}|{}", dir.display(), if clear { 1 } else { 0 }))
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .spawn()
+                .expect("spawn the child");
+            let stdout = child.stdout.take().expect("stdout");
+            let (send, receive) = mpsc::channel();
+            // libtest prints `test <name> ... ` without a line end before the test runs, so the READY text can follow it on one line.
+            std::thread::spawn(move || {
+                for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                    if let Some(at) = line.find("READY") {
+                        let _ = send.send(line[at..].to_string());
+                        return;
+                    }
+                }
+            });
+            let line = receive.recv_timeout(CHILD_WAIT);
+            child.kill().expect("TerminateProcess");
+            let deadline = Instant::now() + CHILD_WAIT;
+            while child.try_wait().expect("try_wait").is_none() {
+                assert!(Instant::now() < deadline, "the child did not end");
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            line.expect("READY line")
+        }
+
+        /// R8 W6: the delete disposition on close, its clear with `FileDispositionInformationEx`, and `TerminateProcess` before and after the clear.
+        #[test]
+        #[ignore = "feature 008 T003 probe, Local: Rust"]
+        fn w6_delete_on_close_and_terminate() {
+            let fixture = Fixture::new();
+            let dir = fixture.path("w6");
+            std::fs::create_dir(&dir).expect("w6");
+            for (stage, clear) in [("before-clear", false), ("after-clear", true)] {
+                let name = format!("{stage}.tmp");
+                let line = terminate_child(&dir, &name, clear);
+                observe(
+                    &format!("W6.terminate-{stage}"),
+                    json!({ "ready": if clear { "READY held cleared" } else { "READY held" }, "exists": clear }),
+                    json!({ "ready": line, "exists": dir.join(&name).exists() }),
+                );
+            }
+            std::fs::write(dir.join("target.txt"), OLD).expect("old");
+            let result = replace(&dir, "target.txt", false, Dacl::None, true);
+            observe(
+                "W6.rename-after-clear",
+                json!({ "result": { "step": "renamed" }, "bytes": "new\n" }),
+                json!({ "result": result, "bytes": String::from_utf8_lossy(&std::fs::read(dir.join("target.txt")).expect("read")) }),
+            );
+        }
+
+        /// R8 W10: a missing folder chain below the held parent; a reparse point at a folder name refuses.
+        #[test]
+        #[ignore = "feature 008 T003 probe, Local: Rust"]
+        fn w10_folders_and_reparse_point() {
+            let fixture = Fixture::new();
+            let dir = fixture.path("w10");
+            std::fs::create_dir(&dir).expect("w10");
+            let parent = parent(&dir);
+            let folder = |at: &OwnedHandle, name: &str| {
+                create_relative(
+                    raw(at),
+                    name,
+                    FILE_LIST_DIRECTORY | FILE_TRAVERSE | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    FILE_CREATE,
+                    FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+                )
+            };
+            let a = folder(&parent, "a");
+            let b = a.as_ref().map(|a| folder(a, "b"));
+            let chain = json!({
+                "a": a.as_ref().map(|_| "0x00000000".to_string()).unwrap_or_else(|s| status_text(*s)),
+                "b": match &b { Ok(Ok(_)) => "0x00000000".to_string(), Ok(Err(s)) => status_text(*s), Err(_) => "not-run".to_string() },
+                "exists": dir.join("a").join("b").is_dir(),
+            });
+            observe("W10.folder-chain", json!({ "a": "0x00000000", "b": "0x00000000", "exists": true }), chain);
+            let outside = fixture.path("w10-outside");
+            std::fs::create_dir(&outside).expect("outside");
+            if junction(&dir.join("j"), &outside) {
+                let open = create_relative(
+                    raw(&parent),
+                    "j",
+                    FILE_LIST_DIRECTORY | SYNCHRONIZE,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                    FILE_OPEN,
+                    FILE_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+                );
+                observe(
+                    "W10.junction-at-folder-name",
+                    json!({ "refused": true, "reparse": true }),
+                    json!({ "refused": open.is_err(), "reparse": open.as_ref().err().is_some_and(|s| is_reparse_point(*s)) }),
+                );
+            } else {
+                println!("OBSERVATION T003: unverified W10.junction-at-folder-name (missing capability ntfs-junction)");
+            }
+        }
+    }
 }

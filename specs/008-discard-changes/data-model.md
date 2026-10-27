@@ -97,7 +97,7 @@ Cases for the G5 probe and the unit vectors of `tests/git/revert-bytes.test.ts`:
 | `in-the-way` | files | an untracked record at a bound-absent path |
 | `attributes` | all | `check-attr` against `check-attr --cached` |
 | `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, `xattr` | all | `fileFacts` with `detail` (plan D8, D9) |
-| `checkout-temp` | files, unstaged | the probe G9 case list (research R14) |
+| `checkout-temp` | files, unstaged | the probe G9 case list (research R14), which is empty (research R15), so no case gives it |
 | `limit` | files, unstaged | `MULTI_FILE_ACTION_FILES` |
 | `nothing-to-revert` | unstaged | no covered entry |
 | `LOCKED` (001 code, with the lock path and remedy) | all | the `index.lock` fact at the review and at the run start |

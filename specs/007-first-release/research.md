@@ -356,3 +356,30 @@ Findings and fixes on branch `f007-review-fixes`. T010 and T017 need a rerun on 
 6. `hunspell-source.ts` printed `null` for a process with no exit code, and `notes.ts` read a block file without a check. Fix: the code is the exit code or the signal name; an absent block gives `RELEASE_NOTES block <file>` (contracts §2).
 7. With `ARBARETO_SIGNING=signpath`, an absent `SIGNPATH_API_TOKEN` was not refused before the build. Fix: the build job env sets `SIGNPATH_TOKEN_SET: ${{ secrets.SIGNPATH_API_TOKEN != '' }}`; `check.ts --signing signpath` refuses with `signing-missing SIGNPATH_API_TOKEN` when it is not `true` (plan.md D11).
 8. The preview start page showed the local scope line. Plan D7 had no preview text. Fix: plan.md D7 adds "This preview is not a qualified release. The qualification of Windows 11 x64 continues." for About, the Help menu, and the start page.
+
+### T010 and T017 verification rerun (2026-10-27, reference host, build commit 8185cef5)
+
+- The build commit holds the review fixes (93e6e894, merged in f6123fb0) and the publisher fix eb4215bf. Run data is in local scratch.
+- Tools: Bun 1.4.4, `rustc 1.99.0 (b940084d7 2026-09-28)`, `cargo 1.99.0 (5f94df478 2026-08-27)`, `tauri-cli 2.12.0`, makensis `v3.11`. `git status --porcelain` printed nothing before and after the run.
+- The first driver attempt stopped on a regex error in the driver script before any test step. The second attempt ran all steps.
+- Exit 0: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo check --locked --manifest-path src-tauri/Cargo.toml`, and `cargo test --locked --manifest-path src-tauri/Cargo.toml` (617 pass, 0 fail, 9 ignored).
+- `bun run test:contracts`: exit 0, 6,006 pass, 37 skip, 0 fail, 128 files.
+- `bun run test:all`: exit 0, 268 of 268 files reported, 8,796 tests. Parallel step 7,950 pass, 45 skip, 0 fail (228 files). Serial step 791 pass, 10 skip, 0 fail (40 files). All 2,487 `ORIGIN` lines of `test:contracts` and `test:all` name the checkout under test.
+- Free memory before `test:all` 11.26 GB, paged pool 6465 MB, nonpaged pool 1810 MB. After it: 9.37 GB, 8274 MB, 2237 MB.
+- Linux check in WSL `Ubuntu-26.04`: the clone inside the distro fetched the branch from a Git bundle and checked out 8185cef5 detached. `git rev-parse HEAD` printed 8185cef5, and `git status --porcelain` printed nothing. `cargo check --locked --manifest-path src-tauri/Cargo.toml` exit 0.
+- Control mutations, each undone byte for byte and rerun green:
+  - `check.ts`: `merge-base` exit 1 passes. `tests/git/release-check.test.ts` exit 1, 1 of 20 fail. Rerun: 20 of 20 pass.
+  - `pins.ts`: one digit of the Bun hash changed. `tests/contracts/release-pins.test.ts` exit 1, 2 of 13 fail. Rerun: 13 of 13 pass.
+  - `build_channel.rs`: a dirty `preview` identity passes. `cargo test ... build_channel` exit 101, 1 of 4 fail. Rerun: 4 of 4 pass.
+  - `AboutDialog.tsx`: the release buttons show for `local`. `tests/contracts/about-dialog.test.tsx` exit 1, 1 of 8 fail. Rerun: 8 of 8 pass.
+  - One untracked file, then `bun run package:preview:exes`: exit 1, `a preview build needs a clean tree: 8185cef5920334836f8cad77a6d649f0ce7cf1c6-dirty`.
+- On the clean tree, `bun run package:preview:exes` and `bun run package:preview:bundle` exit 0. Installer `Arbareto_0.1.0_x64-setup.exe`, 46483719 bytes, SHA-256 `7bfd68a99fd82c88b09020dfe7ae627b93416a82dcad65feeef46773d5045749`. Built `arbareto.exe` `e14d09a716876b589acbbe540ba0b3fcd147b5d7937482dcee7ad1e853f8d807`, `arbareto-git.exe` `5438d50d61474ea6db702b1a5b77655502ae189f01c705d85138d9ee83a4bf95`.
+- Windows Sandbox install (quickstart.md Q4), `/S`, exit 0. Key `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Arbareto`: `DisplayName=Arbareto`, `DisplayVersion=0.1.0`, `Publisher=Ihor Lifanov`.
+  - `arbareto.exe`: CompanyName `Ihor Lifanov`, LegalCopyright `Copyright (c) 2026 Ihor Lifanov`, ProductVersion `0.1.0`.
+  - `arbareto-git.exe`: CompanyName `Ihor Lifanov`, LegalCopyright `Copyright (c) 2026 Ihor Lifanov`, ProductVersion `0.1.0.0`.
+- The app used the mapped host WebView2 runtime, as in the f87219d1 About run. The boot view read `Preview` and `Build 0.1.0 8185cef5920334836f8cad77a6d649f0ce7cf1c6`, without `-dirty`.
+- After Select Git, the start page read "This preview is not a qualified release. The qualification of Windows 11 x64 continues." About read `Build: 0.1.0 8185cef5920334836f8cad77a6d649f0ce7cf1c6` and `Preview`, and no `Unsigned local test package` line.
+- Uninstall exit 0. This run did not check the key or the installed folder after the uninstall, and it did not read the installed `uninstall.exe` hash. The f87219d1 run showed the removal, but its installer came before eb4215bf. No fact shows that the two uninstallers are equal. So the T017 condition "uninstall removes the app" has no evidence at 8185cef5, and T017 stays open for this one item.
+- Reviews: "Review of batches 0 and 1" above is the one independent review of batch 0 (T010) and of batch 1 (T017). Its eight fixes are in 93e6e894. This rerun verifies them.
+- `OBSERVATION T010: 8185cef5 every step exit 0; test:all 268 of 268 files, 8796 tests, 0 fail; WSL Ubuntu-26.04 cargo check --locked exit 0`
+- `OBSERVATION T017: DisplayName=Arbareto DisplayVersion=0.1.0 Publisher=Ihor Lifanov; CompanyName=Ihor Lifanov in both executables; About Build: 0.1.0 8185cef5920334836f8cad77a6d649f0ce7cf1c6, Preview; uninstall exit 0, removal not checked`

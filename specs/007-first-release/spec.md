@@ -16,7 +16,7 @@
 
 The user gave these decisions on 2026-10-24. They are fixed inputs for this feature.
 
-- Q: What is the first release? → A: A GitHub pre-release named "preview v0.1.0". It comes after features 005 and 006 merge into `main`, and before feature 008 (Linux). It is clearly marked as a preview (FR-001, FR-002).
+- Q: What is the first release? → A: A GitHub pre-release named "preview v0.1.0". It comes after features 005 and 006 merge into `main`, and before the Linux feature. It is clearly marked as a preview (FR-001, FR-002). Note (2026-10-27, user decision): the release also waits for feature 008 (`008-discard-changes`, discard of file, hunk, and line changes). Linux moves to feature 009.
 - Q: Does the preview end the 001 qualification? → A: No. The full 001 qualification and its release gate (001 T177) continue, and they gate v1.0 (FR-003).
 - Q: How is the release built? → A: A GitHub Actions workflow on a GitHub-hosted Windows runner. A pushed `v*` tag starts it. It builds the current-user NSIS installer (FR-010).
 - Q: Which files go with the release? → A: The installer, a SHA-256 checksum file, the third-party notices, and an archive of the exact Hunspell sources (FR-020 to FR-024).
@@ -156,7 +156,7 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 - **FR-003**: The preview MUST NOT claim the 001 qualification. The release notes MUST state that the qualification of Windows 11 x64 continues and that v1.0 needs it. The 001 release gate (T177, B-RELEASE) stays the gate for v1.0.
 - **FR-004**: The release workflow MUST publish only from the public `auric/arbareto` repository. It MUST refuse to publish when the repository is private. The public switch stays the user's own step.
 - **FR-005**: The preview MUST NOT contain an in-app updater or an update check. Users update by a manual download from GitHub Releases.
-- **FR-006**: Features 005 and 006 MUST be merged into `main` before the release tag is created.
+- **FR-006**: Features 005, 006, and 008 (`008-discard-changes`) MUST be merged into `main` before the release tag is created. Note (2026-10-27, user decision): 008 is a v0.1.0 blocker.
 - **FR-007**: 001 plan.md B-RELEASE, 001 research.md R7, and 001 spec.md (the Clarifications at lines 23 and 37, the Assumption at line 529, FR-033, and SC-011) MUST gate the v1.0 release, not every public release. They MUST cite the constitution 4.0.1 definition of a production release.
 
 #### Build
@@ -232,4 +232,4 @@ After SignPath Foundation approves the project, the maintainer switches on signi
 - A GitHub-hosted runner for a public repository is free (research.md R2).
 - The installer stays current-user NSIS and does not install the WebView2 Runtime, as `bun run package` builds it today.
 - English is the only bundled dictionary. Downloaded dictionaries do not ship with the release (006 plan.md D18).
-- Linux and macOS packages are out of scope. Feature 008 covers Linux.
+- Linux and macOS packages are out of scope. Feature 009 covers Linux (user decision 2026-10-27; 008 is `008-discard-changes`).

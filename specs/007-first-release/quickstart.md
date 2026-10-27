@@ -39,7 +39,7 @@ Run the local checks first. The GitHub runs need the orchestrator, and the user'
 - Download the `release-files` artifact. Run `sums.ts verify` on it. Record the run record (image, tool versions, MSVC toolset, SDK) in research.md R7.
 - Install the dry-run installer as in Q4.
 
-## Q6. Release (after the public switch, 005 and 006 on `main`)
+## Q6. Release (after the public switch, 005, 006, and 008 on `main`)
 
 - Settings (orchestrator): environment `release` with the user as required reviewer and the tag rule `v*`; immutable releases on.
 - Tag `v0.1.0` on `main`, push it, approve the `publish` job.

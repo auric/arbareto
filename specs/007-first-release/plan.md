@@ -186,7 +186,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 
 ### D9 Release notes and changelog
 
-- `CHANGELOG.md`: one `## [<version>] - <date>` section per release, user-visible changes only (global changelog rule). The 0.1.0 section lists the feature set of README "Features" after 005 and 006.
+- `CHANGELOG.md`: one `## [<version>] - <date>` section per release, user-visible changes only (global changelog rule). The 0.1.0 section lists the feature set of README "Features" after 005, 006, and 008.
 - `.github/release-notes/` holds the fixed blocks: `preview.md` (preview and qualification state, spec FR-003), `prerequisites.md` (spec FR-027), `unsigned.md` (SmartScreen prompt, Smart App Control block, checksum and attestation commands, spec FR-026), and `signed.md` (code signing policy, unsigned uninstaller and plugin DLL, spec FR-044, FR-046).
 - `scripts/release/notes.ts --version <v> --signing off|signpath` writes the notes: the CHANGELOG section, then the blocks. A missing section fails with `RELEASE_NOTES missing <version>`.
 - The publish job: `gh release create v<v> --draft --prerelease --verify-tag --title "Arbareto Preview v<v>" --notes-file <notes>` when no draft exists, `gh release upload --clobber` for the files of a draft, then `gh release edit v<v> --draft=false --prerelease --latest=false`.
@@ -238,7 +238,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 5. P4 workflow file and its contract test. Local end-to-end rehearsal of the build job steps (quickstart Q2).
 6. P5 001 amendments and `/speckit-analyze` for 001.
 7. P6 dry run on GitHub (`release-dry-run` branch push, orchestrator step after the user's OK), Sandbox install of the dry-run installer.
-8. P7 after the public switch and 005 and 006 on `main`: the settings steps, the tag, the approval, and the published-release checks.
+8. P7 after the public switch and 005, 006, and 008 on `main` (spec FR-006): the settings steps, the tag, the approval, and the published-release checks.
 
 ## Work packages, in run order
 
@@ -258,7 +258,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 - Batch 0: WP1, then WP2. Runs now, on `007-first-release` from `main`.
 - Batch 1: WP3, then WP4 (WP4 needs the WP3 contract). Needs 006 on `main` for `links.rs`. Until then, WP3 starts without the link command, and the link task waits.
 - Batch 2: WP5 and WP6 in disjoint files, then WP7.
-- Batch 3: WP8. Needs the user's OK for the dry-run branch push. The tag run needs the public switch and 005 and 006 merged.
+- Batch 3: WP8. Needs the user's OK for the dry-run branch push. The tag run needs the public switch and 005, 006, and 008 merged (spec FR-006).
 
 ## Risks
 

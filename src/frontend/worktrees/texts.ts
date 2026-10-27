@@ -71,10 +71,12 @@ export const W = {
   newBranch: "New branch",
   branchName: "New branch name",
   start: (oid: string) => `Starts at commit ${oid.slice(0, 12)}.`,
+  trackStart: (remoteBranch: string) => `Starts at ${remoteBranch}. The new branch tracks it.`,
   existing: "Existing branch",
   branch: "Branch",
   heldNote: "Branches checked out in another worktree are not listed. Git allows each branch in one worktree only.",
   noFreeBranch: "Every local branch is checked out in a worktree.",
+  branchGone: (name: string) => `Branch ${name} no longer exists. Select another branch.`,
   folder: "Folder",
   folderHint: "Suggested from the branch name. The folder must not exist, or it must be empty.",
   // Browse (spec FR-052, plan D15, contract Δ3 `chooseWorktreeFolder`).
@@ -137,7 +139,9 @@ export function worktreeRefusal(response: BridgeResponse, action: "worktree-add"
     if (reason === "prunable") return W.prunableReason;
     if (reason === "nothing-to-prune") return W.nothingToPrune;
     if (reason === "limit") return "The worktree path makes the Git command line too long.";
-    if (reason === "current-branch" && action === "worktree-add") return "This worktree holds the branch. Git allows each branch in one worktree only.";
+    if (reason === "current-branch" && action === "worktree-add") return B.addCurrent;
+    if (reason === "no-tracking-refspec" && action === "worktree-add") return "No refspec of a remote maps this branch, so Git cannot set up tracking.";
+    if (reason === "several-tracking-remotes" && action === "worktree-add" && Array.isArray(r.remotes)) return `The refspecs of ${r.remotes.join(", ")} map this branch, so Git cannot set up tracking.`;
   }
   return branchRefusal(response, branch);
 }

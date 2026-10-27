@@ -1,0 +1,11 @@
+{
+  "failures": [
+    {
+      "id": "tlh",
+      "step": 2,
+      "reason": "no-positive-words",
+      "lines": 4592,
+      "note": "Every stem is Private Use (General_Category Co, the pIqaD script), so no stem is one data-model 11 word."
+    }
+  ]
+}

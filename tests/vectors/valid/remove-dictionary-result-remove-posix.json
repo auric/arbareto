@@ -1,0 +1,6 @@
+{
+  "schema": "remove-dictionary-result",
+  "expected": "valid",
+  "platform": "posix",
+  "text": "{\"reason\":\"remove\",\"folder\":\"/opt/arbareto/dictionaries/uk\"}"
+}

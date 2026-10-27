@@ -5,22 +5,25 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 use tauri::async_runtime::{Receiver, Sender, channel};
-use tauri::ipc::{InvokeBody, Request};
+use tauri::ipc::{InvokeBody, InvokeResponseBody, Request, Response};
 use tauri::{State, Webview};
 
 use crate::close::{self, Decision};
 use crate::framing::{PUBLIC_REQUEST_BYTES, public_request_body};
 use crate::process_requests::{decode_strict, is_identifier};
 use crate::schema;
+use crate::settings;
 use crate::text_scale::{self, Current};
 
 /// The label of the only window that may call the public operations (contract §1).
 pub const MAIN_WINDOW: &str = "main";
 
 /// Contract §3: the closed allowlist of public operations, as `src/contracts/operations.ts` lists them.
-pub const OPERATIONS: [&str; 57] = [
+pub const OPERATIONS: [&str; 64] = [
     "getEnvironment",
     "chooseGit",
     "chooseRepository",
@@ -81,11 +84,19 @@ pub const OPERATIONS: [&str; 57] = [
     "readIgnoreFile",
     "previewIgnore",
     "openSubmodule",
+    // Feature 006 contract Δ1.
+    "listDictionaries",
+    "readDictionary",
+    "downloadDictionary",
+    "importDictionary",
+    "removeDictionary",
+    "setSpelling",
+    "openLicenceLink",
 ];
 
 /// Contract §3: the shell runs these first. The shell answers `requestClose` itself and never forwards it.
 /// Feature 004 contract Δ1: only the `worktree-add` form of `reviewWorkbench` is native-first, so `submit` decides it by its action.
-const NATIVE_FIRST: [&str; 19] = [
+const NATIVE_FIRST: [&str; 22] = [
     "requestClose",
     "chooseGit",
     "chooseRepository",
@@ -108,10 +119,14 @@ const NATIVE_FIRST: [&str; 19] = [
     "chooseWorktreeFolder",
     // Feature 005 contract Δ1.
     "openSubmodule",
+    // Feature 006 contract Δ1.
+    "importDictionary",
+    "setSpelling",
+    "openLicenceLink",
 ];
 
-/// Contract §3 "Recent repositories" and feature 003 and feature 004 contract Δ1: the shell answers these itself and never forwards them.
-const NATIVE_ANSWERS: [&str; 10] = [
+/// Contract §3 "Recent repositories" and feature 003, 004, and 006 contract Δ1: the shell answers these itself and never forwards them.
+const NATIVE_ANSWERS: [&str; 12] = [
     "listRecentRepositories",
     "removeRecentRepository",
     "readSyncSettings",
@@ -122,6 +137,8 @@ const NATIVE_ANSWERS: [&str; 10] = [
     "launchPuttygen",
     "setSwitchChoice",
     "chooseWorktreeFolder",
+    "setSpelling",
+    "openLicenceLink",
 ];
 
 /// Feature 004 contract Δ1: the `reviewWorkbench` action whose path the shell binds first.
@@ -528,6 +545,52 @@ async fn call(
         .map_err(|_| "SERVICE_UNAVAILABLE"),
         _ => Ok(response),
     }
+}
+
+/// Feature 006 contract Δ5: `src/contracts/limits.ts` `DICTIONARY_CHUNK_BYTES`.
+const DICTIONARY_CHUNK_BYTES: u64 = 1_048_576;
+/// Feature 006 data-model §2: `src/contracts/dictionaries.ts` `DICTIONARY_FILE_NAMES`.
+const DICTIONARY_FILE_NAMES: [&str; 5] =
+    ["index.aff", "index.dic", "license", "licence", "readme.md"];
+
+/// Feature 006 contract Δ1: a `succeeded` `readDictionary` response reaches the renderer as the raw chunk body.
+/// Every other response stays JSON. A result outside the `DictionaryChunk` rules gives `SERVICE_UNAVAILABLE`.
+fn dictionary_response(response: Value) -> Result<InvokeResponseBody, &'static str> {
+    if response["state"] != "succeeded" {
+        return Ok(InvokeResponseBody::Json(response.to_string()));
+    }
+    dictionary_chunk(&response["result"])
+        .map(InvokeResponseBody::Raw)
+        .ok_or("SERVICE_UNAVAILABLE")
+}
+
+/// The `DictionaryChunk` rules of `ReadDictionaryResult` in `src/contracts/envelope.ts`.
+/// The body is the file size as a 4-byte little-endian integer, then the decoded chunk.
+pub(crate) fn dictionary_chunk(result: &Value) -> Option<Vec<u8>> {
+    let size = result["size"]
+        .as_u64()
+        .filter(|size| (1..=settings::DICTIONARY_LANGUAGE_BYTES).contains(size))?;
+    let offset = result["offset"]
+        .as_u64()
+        .filter(|offset| offset % DICTIONARY_CHUNK_BYTES == 0 && *offset < size)?;
+    // The base64 length of DICTIONARY_CHUNK_BYTES bounds the decode.
+    let text = result["bytes"].as_str().filter(|text| {
+        u64::try_from(text.len()).is_ok_and(|n| n <= DICTIONARY_CHUNK_BYTES.div_ceil(3) * 4)
+    })?;
+    let fits = settings::has_keys(result, &["language", "file", "size", "offset", "bytes"])
+        && result["language"]
+            .as_str()
+            .is_some_and(settings::is_language_id)
+        && result["file"]
+            .as_str()
+            .is_some_and(|file| DICTIONARY_FILE_NAMES.contains(&file));
+    if !fits {
+        return None;
+    }
+    let mut body = u32::try_from(size).ok()?.to_le_bytes().to_vec();
+    STANDARD.decode_vec(text, &mut body).ok()?;
+    let chunk = u64::try_from(body.len() - 4).ok()?;
+    (chunk == DICTIONARY_CHUNK_BYTES.min(size - offset)).then_some(body)
 }
 
 // One command per contract §3 operation. Each name equals its entry in `COMMANDS` of `src-tauri/build.rs`.
@@ -1071,6 +1134,70 @@ pub async fn open_submodule(
     request: Request<'_>,
 ) -> Result<Value, &'static str> {
     call(webview, &ipc, "openSubmodule", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn list_dictionaries(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "listDictionaries", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn read_dictionary(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Response, &'static str> {
+    let response = call(webview, &ipc, "readDictionary", request.body().clone()).await?;
+    dictionary_response(response).map(Response::new)
+}
+
+#[tauri::command]
+pub async fn download_dictionary(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "downloadDictionary", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn import_dictionary(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "importDictionary", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn remove_dictionary(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "removeDictionary", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn set_spelling(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "setSpelling", request.body().clone()).await
+}
+
+#[tauri::command]
+pub async fn open_licence_link(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "openLicenceLink", request.body().clone()).await
 }
 
 #[tauri::command]
@@ -1798,6 +1925,247 @@ mod tests {
         assert!(schema::native_first(&good).is_ok(), "254 bytes pass");
         assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
         assert!(frames.lock().expect("frames").is_empty());
+    }
+
+    // ---- Feature 006 (contract Δ1, Δ3, Δ7) ----
+
+    /// Feature 006 contract Δ1: the four dictionary service operations reach the service byte for byte, and no native step runs.
+    #[test]
+    fn the_feature_006_service_requests_are_forwarded_byte_for_byte() {
+        let cases = [
+            request("listDictionaries", json!({})),
+            request(
+                "readDictionary",
+                json!({ "language": "uk", "file": "index.dic", "offset": 1_048_576 }),
+            ),
+            request("downloadDictionary", json!({ "language": "uk" })),
+            request("removeDictionary", json!({ "language": "uk" })),
+        ];
+        for envelope in cases {
+            let operation = envelope["operation"]
+                .as_str()
+                .expect("operation")
+                .to_string();
+            assert!(OPERATIONS.contains(&operation.as_str()), "{operation}");
+            assert!(!NATIVE_FIRST.contains(&operation.as_str()), "{operation}");
+            let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+            let body = envelope.to_string();
+            assert_eq!(
+                ipc.handle(MAIN_WINDOW, LOCAL, &raw(&body), &operation),
+                Outcome::Forwarded,
+                "{envelope}"
+            );
+            assert_eq!(
+                *frames.lock().expect("frames"),
+                vec![frame_of(&body)],
+                "{operation}"
+            );
+            assert_eq!(*native.prepares.lock().expect("prepares"), 0, "{operation}");
+        }
+    }
+
+    /// Feature 006 contract Δ1: a `readDictionary` success reaches the renderer as the file size and the chunk bytes.
+    /// Every other response stays the same JSON. A result outside the `DictionaryChunk` rules gives `SERVICE_UNAVAILABLE`.
+    #[test]
+    fn a_read_dictionary_success_reaches_the_renderer_as_the_raw_size_and_chunk() {
+        let succeeded = |result: Value| json!({ "requestId": REQUEST_ID, "operationId": OPERATION_ID, "state": "succeeded", "result": result });
+        let chunk = |file: &str, size: u64, offset: u64, bytes: &str| json!({ "language": "uk", "file": file, "size": size, "offset": offset, "bytes": bytes });
+        let raw = |result: Value| match dictionary_response(succeeded(result)) {
+            Ok(InvokeResponseBody::Raw(body)) => body,
+            other => panic!("raw body expected: {other:?}"),
+        };
+        assert_eq!(
+            raw(chunk("index.aff", 3, 0, "U0VU")),
+            [3, 0, 0, 0, b'S', b'E', b'T']
+        );
+        let full = vec![b'a'; 1_048_576];
+        let size = DICTIONARY_CHUNK_BYTES + 3;
+        let first = raw(chunk(
+            "index.dic",
+            size,
+            0,
+            &crate::process_requests::encode_base64(&full),
+        ));
+        assert_eq!(first[..4], 1_048_579_u32.to_le_bytes());
+        assert_eq!(first[4..], full[..]);
+        assert_eq!(
+            raw(chunk("index.dic", size, DICTIONARY_CHUNK_BYTES, "U0VU")),
+            [3, 0, 16, 0, b'S', b'E', b'T']
+        );
+        for response in [
+            json!({ "requestId": REQUEST_ID, "operationId": OPERATION_ID, "state": "failed", "code": "DICTIONARY_UNAVAILABLE", "result": { "reason": "changed" } }),
+            json!({ "requestId": REQUEST_ID, "operationId": OPERATION_ID, "state": "canceled", "code": "CANCELED" }),
+            json!({ "requestId": REQUEST_ID, "state": "rejected", "code": "BUSY" }),
+            json!({ "requestId": REQUEST_ID, "state": "unknown", "code": "STATE_UNKNOWN" }),
+        ] {
+            match dictionary_response(response.clone()) {
+                Ok(InvokeResponseBody::Json(text)) => {
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&text).expect("JSON"),
+                        response
+                    );
+                }
+                other => panic!("JSON expected for {response}: {other:?}"),
+            }
+        }
+        let good = chunk("index.aff", 3, 0, "U0VU");
+        let with = |key: &str, value: Value| {
+            let mut result = good.clone();
+            result[key] = value;
+            result
+        };
+        let mut without_file = good.clone();
+        without_file.as_object_mut().expect("object").remove("file");
+        // One base64 group above the 1,398,104 characters of DICTIONARY_CHUNK_BYTES.
+        let above = "A".repeat(4 * 349_527);
+        for result in [
+            json!("U0VU"),
+            with("sha256", json!("")),
+            without_file,
+            with("language", json!("UK")),
+            with("file", json!("entry.json")),
+            with("size", json!(0)),
+            with("size", json!(3.5)),
+            with("size", json!(12_582_913)),
+            with("offset", json!(1)),
+            with("offset", json!(DICTIONARY_CHUNK_BYTES)),
+            with("bytes", json!("U0V!")),
+            with("bytes", json!("U0VUVA==")),
+            with("bytes", json!(above)),
+            with("size", json!(4)),
+        ] {
+            assert_eq!(
+                dictionary_response(succeeded(result.clone())).err(),
+                Some("SERVICE_UNAVAILABLE"),
+                "{result}"
+            );
+        }
+    }
+
+    /// Feature 006 contract Δ1 and Δ3: the shell answers `setSpelling` and `openLicenceLink` itself, also without a service session.
+    #[test]
+    fn set_spelling_and_open_licence_link_are_answered_natively_and_never_forwarded() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        let cases = [
+            (
+                "setSpelling",
+                json!({ "enabled": false, "languages": ["uk", "en"] }),
+            ),
+            ("openLicenceLink", json!({ "language": "en" })),
+        ];
+        for session in [Some(SESSION_ID.to_string()), None] {
+            ipc.set_session(session);
+            for (operation, payload) in &cases {
+                assert!(
+                    NATIVE_FIRST.contains(operation) && NATIVE_ANSWERS.contains(operation),
+                    "{operation}"
+                );
+                assert_eq!(
+                    send(&ipc, &request(operation, payload.clone())),
+                    Outcome::Answer(
+                        json!({ "requestId": REQUEST_ID, "state": "succeeded", "result": { "operation": operation, "entries": [] } })
+                    ),
+                    "{operation}"
+                );
+            }
+        }
+        assert_eq!(*native.prepares.lock().expect("prepares"), 4);
+        assert!(
+            native.prepared.lock().expect("prepared").is_empty(),
+            "no prepare step"
+        );
+        assert!(frames.lock().expect("frames").is_empty());
+        assert_eq!(pending(&ipc), 0);
+    }
+
+    /// Feature 006 contract Δ3 `importDictionary`: the native step runs first, and the service gets the native payload.
+    #[test]
+    fn import_dictionary_runs_its_native_step_and_forwards_the_native_payload() {
+        assert!(NATIVE_FIRST.contains(&"importDictionary"));
+        assert!(!NATIVE_ANSWERS.contains(&"importDictionary"));
+        let native_payload = json!({ "language": "uk", "folder": "D:\\dictionaries\\uk" });
+        let forwarded = native_payload.clone();
+        let (ipc, frames, native) = connected(Box::new(move || {
+            Ok(Some(Prepared {
+                payload: forwarded.clone(),
+                path: None,
+            }))
+        }));
+        let envelope = request("importDictionary", json!({ "language": "uk" }));
+        assert_eq!(send(&ipc, &envelope), Outcome::Forwarded);
+        assert_eq!(
+            *native.prepared.lock().expect("prepared"),
+            vec![("importDictionary".to_string(), json!({ "language": "uk" }))]
+        );
+        let frames = frames.lock().expect("frames");
+        let frame: Value = serde_json::from_str(&frames[0]).expect("frame");
+        assert_eq!(
+            frame,
+            json!({ "kind": "public", "request": request("importDictionary", native_payload) })
+        );
+    }
+
+    /// Feature 006 data-model §8 and contract Δ3: the checks that typify drops, and the strict payloads, refuse before any dialog.
+    #[test]
+    fn the_feature_006_rust_checks_refuse_before_any_dialog() {
+        let (ipc, frames, native) = connected(Box::new(|| Ok(None)));
+        for envelope in [
+            request(
+                "setSpelling",
+                json!({ "enabled": true, "languages": ["en", "uk", "de", "fr"] }),
+            ),
+            request(
+                "setSpelling",
+                json!({ "enabled": true, "languages": ["uk", "uk"] }),
+            ),
+            request("setSpelling", json!({ "enabled": "yes", "languages": [] })),
+            request(
+                "setSpelling",
+                json!({ "enabled": true, "languages": ["EN"] }),
+            ),
+            request(
+                "openLicenceLink",
+                json!({ "language": "en", "url": "https://example.test/" }),
+            ),
+            request(
+                "importDictionary",
+                json!({ "language": "uk", "folder": "C:\\uk" }),
+            ),
+            request("importDictionary", json!({})),
+        ] {
+            assert_eq!(
+                send(&ipc, &envelope),
+                rejected("INVALID_REQUEST"),
+                "{envelope}"
+            );
+        }
+        assert_eq!(*native.prepares.lock().expect("prepares"), 0, "no dialog");
+        assert!(frames.lock().expect("frames").is_empty());
+    }
+
+    /// Feature 006 contract Δ7: the renderer CSP admits WebAssembly compilation and the app origin.
+    /// Every other directive keeps its earlier value.
+    #[test]
+    fn the_csp_admits_wasm_compilation_and_the_app_origin_and_keeps_every_other_directive() {
+        let config: Value = serde_json::from_str(
+            &std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json"))
+                .expect("tauri.conf.json"),
+        )
+        .expect("JSON");
+        assert_eq!(
+            config["app"]["security"]["csp"],
+            json!({
+                "default-src": "'self'",
+                "script-src": "'self' 'wasm-unsafe-eval'",
+                "style-src": "'self'",
+                "style-src-elem": "'self' 'unsafe-inline'",
+                "style-src-attr": "'unsafe-inline'",
+                "connect-src": "ipc: http://ipc.localhost 'self'",
+                "object-src": "'none'",
+                "base-uri": "'none'",
+                "form-action": "'none'",
+            })
+        );
     }
 
     /// Feature 002 plan.md P7 and contract Δ3 "readHistory": no allowlist entry, command, handler, or grant remains.

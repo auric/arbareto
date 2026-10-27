@@ -91,6 +91,14 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   readIgnoreFile: (b) => b.readIgnoreFile(gen(), { target: "exclude" }),
   previewIgnore: (b) => b.previewIgnore(gen(), { target: "gitignore", text: "Ki5sb2cKIWtlZXAubG9nCg==", snapshotId: id() }),
   openSubmodule: (b) => b.openSubmodule({ repositoryId: id(), path: "lib/core" }),
+  // Feature 006 contract Δ1.
+  listDictionaries: (b) => b.listDictionaries(),
+  readDictionary: (b) => b.readDictionary({ language: "uk", file: "index.dic", offset: 1_048_576 }),
+  downloadDictionary: (b) => b.downloadDictionary({ language: "uk" }),
+  importDictionary: (b) => b.importDictionary({ language: "uk" }),
+  removeDictionary: (b) => b.removeDictionary({ language: "uk" }),
+  setSpelling: (b) => b.setSpelling({ enabled: false, languages: ["en", "uk"] }),
+  openLicenceLink: (b) => b.openLicenceLink({ language: "en" }),
 };
 
 // tasks.md T389. `tsc` checks this function. It never runs. A target variable with a key outside the contract must not compile.
@@ -235,6 +243,23 @@ describe("frontend bridge", () => {
     expect(call.request).toEqual({ version: 1, sessionId: h.session(), requestId: call.request.requestId, operation: "readEntries", ...target, payload });
     expect(validateRequest(call.request, "renderer").ok).toBe(true);
     expect(response).toMatchObject({ requestId: call.request.requestId, state: "succeeded", result: page });
+  });
+
+  test("a raw readDictionary body gives the file size and a view of the chunk bytes in the received buffer (006 contract Δ1)", async () => {
+    // The size 3 as a 4-byte little-endian integer, then the chunk "SET".
+    const body = new Uint8Array([3, 0, 0, 0, 0x53, 0x45, 0x54]).buffer;
+    const h = harness({ answer: () => body });
+    const response = await h.bridge.readDictionary({ language: "uk", file: "index.aff", offset: 0 });
+    expect(h.calls.at(-1)!.command).toBe("read_dictionary");
+    expect(response).toMatchObject({ requestId: h.calls.at(-1)!.request.requestId, state: "succeeded" });
+    const chunk = response.result as { size: number; bytes: Uint8Array };
+    expect(chunk.size).toBe(3);
+    expect(chunk.bytes).toBeInstanceOf(Uint8Array);
+    expect(chunk.bytes.buffer).toBe(body);
+    expect([...chunk.bytes]).toEqual([0x53, 0x45, 0x54]);
+    // Only `readDictionary` has a raw body. Another operation never turns one into a success.
+    const other = (await h.bridge.listDictionaries()) as { state?: unknown };
+    expect(other.state).toBeUndefined();
   });
 
   test("a service-session event refreshes the session without a reload", async () => {

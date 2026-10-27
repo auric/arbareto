@@ -18,12 +18,16 @@ const REFUSED = [
 ];
 // "AGFzbQ" is the base64 form of the WebAssembly magic bytes "\0asm". `loadWasm` is the Oniguruma loader export.
 const WASM_MARKERS = ["AGFzbQ", "loadWasm"];
+// 006 plan.md D9 and contract Δ10: the reviewed `hunspell-wasm` 0.3.0 `wasm/hunspell.wasm`. An asset with the WebAssembly magic passes only with exactly these bytes.
+export const HUNSPELL_WASM_SHA256 = "72152324049c9215da17abceb12555b3ef9094c0524327e660f8145aaa9c68e0";
+// WebAssembly Core Specification, binary format "Modules": `magic ::= 0x00 0x61 0x73 0x6D` at offset 0.
+const WASM_MAGIC = [0x00, 0x61, 0x73, 0x6d];
 
 /**
- * The problems of one build. `moduleIds` lists every module in the output. `texts` holds each emitted chunk and asset as text.
+ * The problems of one build. `moduleIds` lists every module in the output. `texts` holds each emitted chunk and asset as text, and a binary asset also as `bytes`.
  * `complete` is true for the page build: it must hold every shipped grammar and theme.
  */
-export function bundleProblems(moduleIds: string[], texts: { file: string; text: string }[], complete: boolean): string[] {
+export function bundleProblems(moduleIds: string[], texts: { file: string; text: string; bytes?: Uint8Array }[], complete: boolean): string[] {
   const problems: string[] = [];
   const grammars = new Set<string>();
   const themes = new Set<string>();
@@ -43,8 +47,9 @@ export function bundleProblems(moduleIds: string[], texts: { file: string; text:
     for (const name of Object.keys(LANGUAGES)) if (!grammars.has(name)) problems.push(`grammar ${name} is not in the build`);
     for (const name of Object.keys(THEMES)) if (!themes.has(name)) problems.push(`theme ${name} is not in the build`);
   }
-  for (const { file, text } of texts) {
-    if (file.endsWith(".wasm")) problems.push(`WebAssembly file: ${file}`);
+  for (const { file, text, bytes } of texts) {
+    const wasm = bytes !== undefined && WASM_MAGIC.every((b, i) => bytes[i] === b);
+    if (wasm && new Bun.CryptoHasher("sha256").update(bytes).digest("hex") !== HUNSPELL_WASM_SHA256) problems.push(`WebAssembly file: ${file}`);
     for (const marker of WASM_MARKERS) if (text.includes(marker)) problems.push(`${file} holds ${marker}`);
   }
   return problems;

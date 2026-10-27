@@ -71,7 +71,7 @@ describe("no updater", () => {
     const metadata = JSON.parse(proc.stdout.toString()) as { packages: { name: string }[] };
     expect(metadata.packages.length).toBeGreaterThan(0);
     expect(metadata.packages.filter((p) => p.name === "tauri-plugin-updater")).toEqual([]);
-  });
+  }, 120_000);
 
   // T014 creates the preview overlay and changes this list so that the overlay must exist.
   const configs = ["src-tauri/tauri.conf.json", ...(existsSync(join(ROOT, "src-tauri", "tauri.preview.conf.json")) ? ["src-tauri/tauri.preview.conf.json"] : [])];

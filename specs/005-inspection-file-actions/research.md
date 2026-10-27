@@ -511,6 +511,23 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - The CPU profile shows re-renders of the whole Workbench after the delete.
 - Next step: run Q32 alone and in the full T061 file, with a Long Animation Frame observer.
 
+**T099 method change for Q11 and Q29, 2026-10-26.** The test method changes. The fixtures and the budgets stay.
+- Q11: WebView2 also pauses the CORS preflight (method `OPTIONS`) of a held `read_workspace` call. The preflight has its own `networkId`, and the POST starts only after the preflight continues. The investigator log showed `Fetch.requestPaused` with `method` `OPTIONS` for each failed hold. `holdIpc` now continues each paused `OPTIONS` request at once and counts only the other paused requests as held.
+- Q29: a cold `powershellJson` CIM probe takes 0.7 s to 1.4 s. The blame Git process of the spec fixture runs about 1.4 s (`GetProcessTimes`), so the cold probe can miss it. The fixture stays as the spec sets it.
+- Q29 method: one PowerShell poller (`tests/windows/process-poller.ts`) starts before each blame. It runs `Get-CimInstance Win32_Process -Filter "Name='git.exe'"` in a loop with a 50 ms pause and prints one JSON line per sample: the system time after the query, and the PID, parent PID, creation time, and command line of each record.
+- A blame process is a `git.exe` record with ` blame ` in its command line, below the app in the process tree, and created after the blame start. A PID and its creation time name one process.
+- After Cancel, a sample after the Cancel time must hold none of the blame processes. The `GetProcessTimes` exit time of each held process still gives the SC-006 Cancel time, because a sample bounds the exit only to the poll interval.
+- The case stops the poller in a `finally` through its Bun process handle. The poller loop also ends by itself after 5 minutes.
+
+**T102 lazy Changes tree, 2026-10-26.** Cause and measurements of the Q32 open of 100,000 untracked rows.
+- Cause: the open of the Untracked section is one ArrowRight. `changesRows` called `treeRows`, which decoded each of the 100,000 paths again with `atob` and built the full folder tree. The folders start collapsed, so the open shows only one folder row. The CPU profile of the open gave `atob` 82 ms, `treeRows` 73 ms, and garbage collection 81 ms.
+- Fix: the cached sort of each read keeps the decoded path of each entry and one root folder per list. A folder builds its children on first use. The walk builds only the shown levels. The rows stay equal to the rows of the eager tree.
+- Bun model of the fixture (100,000 entries in `u/<100 folders>/`, warm): the open took 5 ms to 9 ms after the change and 57 ms to 90 ms before it. The sort of a new read stayed at 80 ms to 105 ms.
+- Packaged, before the change (`main` e227becc): the full Q32 case reached the open in 1 of 3 runs. The open showed its rows 152.5 ms after the key, with an Event Timing duration of 160 ms.
+- Packaged, after the change: the full Q32 case failed in 9 of 9 runs before the open, at the Delete Enter, with 104 ms to 128 ms. The base package failed there in 2 of 3 runs, with 120 ms and 128 ms, and passed with 96 ms. This failure is not T102. T091 holds the Delete render cost.
+- Packaged, after the change, the open step alone (a copy of the Q32 case without the Delete part, 3 runs): rows after 45.9 ms, 43.6 ms, and 43.8 ms; Event Timing durations 64 ms, 56 ms, and 64 ms. The bound is 100 ms.
+- Not measured: the long tasks of the open. The Event Timing duration includes the render and the paint.
+
 ## Plan review 2026-10-21
 
 The independent plan review of 2026-10-21 found no Critical issue and three High issues in the Delete design. First, the `PreDeleteItem` check compares the held handle with itself and must compare the identity of `psiItem` instead. Second, the WSL `delete` and `replace` modes act by full path and must hold each folder through `chdir` with a device and inode check. Third, the held folder handles block the deepest-first folder removal. The review also found that a folder on the path can become a junction after it is emptied, so the FR-031 limit must name that case too. In the ignore preview, the `--no-index` self-check cannot agree with the shadow for a skip-worktree `.gitignore`. The fix is a typed limit or a self-check against the index-aware listings. The 2 MiB request bound needs base64 text, and the single-file patch read must keep only sections whose paths match exactly. The rest of the method is exact for the report cases, and it runs no repository program before trust approval. The blame and History diff commands are correct apart from two small fixes: `--inter-hunk-context=0` for the line map, and `config --type=path` for the ignore list.

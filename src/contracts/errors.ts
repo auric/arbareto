@@ -44,6 +44,8 @@ export const ERROR_CODES_BY_CATEGORY = {
   workbench: ["WORKBENCH_UNAVAILABLE", "UNTRACKED_IN_WAY", "STASH_KEPT"],
   // Feature 005 contract Δ9. The contract gives these codes no 001 category.
   inspection: ["BLAME_UNAVAILABLE", "SUBMODULE_UNAVAILABLE"],
+  // Feature 006 contract Δ9. The contract gives this code no 001 category.
+  dictionary: ["DICTIONARY_UNAVAILABLE"],
 } as const;
 
 export type ErrorCategory = keyof typeof ERROR_CODES_BY_CATEGORY;
@@ -165,6 +167,26 @@ export const SUBMODULE_UNAVAILABLE_REASONS = ["not-submodule", "submodule-not-in
 export type SubmoduleUnavailableReason = (typeof SUBMODULE_UNAVAILABLE_REASONS)[number];
 export const STALE_REVIEW_REASONS = ["files-changed", "ignore-changed"] as const;
 export const UNKNOWN_TARGET_REASONS = ["absent"] as const;
+
+// Feature 006 contract Δ9: the reasons of `DICTIONARY_UNAVAILABLE`.
+export const DICTIONARY_UNAVAILABLE_REASONS = [
+  "busy",
+  "not-https",
+  "redirect",
+  "http-not-found",
+  "http-rate-limit",
+  "http-status",
+  "transport",
+  "mismatch",
+  "save",
+  "import-mismatch",
+  "import-unreadable",
+  "absent",
+  "changed",
+  "remove",
+  "link",
+] as const;
+export type DictionaryUnavailableReason = (typeof DICTIONARY_UNAVAILABLE_REASONS)[number];
 
 export function isErrorCode(value: unknown): value is ErrorCode {
   return typeof value === "string" && (ERROR_CODES as readonly string[]).includes(value);

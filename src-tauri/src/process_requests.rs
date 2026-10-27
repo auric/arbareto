@@ -2396,20 +2396,28 @@ impl ProcessRequests {
                 })
             }
             // Feature 004 contract Δ6: the fixed configuration arrays run in the application-owned launch folder.
-            // The contract names no WSL form of this context, so a WSL Git gets `INVALID_REQUEST`.
-            Kind::GlobalConfig => match git(state)? {
-                Ok((program, identity)) => Ok(Target {
+            // Feature 006 contract Δ11: a WSL Git runs them at `/`, as a WSL clone does.
+            // Inside a repository, Git gives a new lock file the mode of its `core.sharedRepository` (research R9).
+            Kind::GlobalConfig => {
+                let (program, git_identity, wsl) = match git(state)? {
+                    Ok((program, identity)) => (program, Some(identity), None),
+                    Err(installation) => (
+                        wsl::wsl_program(),
+                        None,
+                        Some((installation, "/".to_string())),
+                    ),
+                };
+                Ok(Target {
                     program,
                     current_dir: self.config.launch_directory.clone(),
                     bootstrap_id: None,
-                    git_identity: Some(identity),
+                    git_identity,
                     git_directory: None,
-                    wsl: None,
+                    wsl,
                     clone: None,
                     worktree: None,
-                }),
-                Err(_) => Err(INVALID),
-            },
+                })
+            }
             // Feature 004 contract Δ6: the registered repository of the review, with the bound path in Git's form.
             // The review and the run are two operations, so no operation owns the context.
             Kind::WorktreeAdd => {
@@ -4396,15 +4404,40 @@ fn runs_bound_command(arguments: &[String]) -> bool {
     matches!(items.as_slice(), ["clone", ..] | ["worktree", "add", ..])
 }
 
-/// Feature 004 contract Δ3 and Δ6 `worktreeAdd`: `worktree add [-b <new>] -- <path> <commit>` with the bound path.
+/// Feature 004 contract Δ3 and Δ6 `worktreeAdd`: `worktree add [[--track] -b <new>] -- <path> <commit>` with the bound path.
+/// The `--track` form starts from a remote-tracking ref only.
 fn worktree_add_fits(arguments: &[String], path: &str) -> bool {
     let items: Vec<&str> = arguments.iter().map(String::as_str).collect();
-    matches!(
-        items.as_slice(),
+    match items.as_slice() {
         ["--no-lazy-fetch", "worktree", "add", "--", bound, _]
-            | ["--no-lazy-fetch", "worktree", "add", "-b", _, "--", bound, _]
-            if *bound == path
-    )
+        | [
+            "--no-lazy-fetch",
+            "worktree",
+            "add",
+            "-b",
+            _,
+            "--",
+            bound,
+            _,
+        ] => *bound == path,
+        [
+            "--no-lazy-fetch",
+            "worktree",
+            "add",
+            "--track",
+            "-b",
+            _,
+            "--",
+            bound,
+            start,
+        ] => {
+            *bound == path
+                && start
+                    .strip_prefix("refs/remotes/")
+                    .is_some_and(|rest| !rest.is_empty())
+        }
+        _ => false,
+    }
 }
 
 /// Feature 004 contract Δ3 `revealPath`: an error, the deadline included, gives `UNKNOWN_TARGET`.
@@ -12661,6 +12694,294 @@ pub(crate) mod tests {
             set("gitInstallationId", json!(uuid())),
         )];
         expect_refusals(&harness, base, cases, "UNKNOWN_TARGET");
+    }
+
+    /// Feature 006 contract Δ6 and Δ11: a WSL Git runs the three `globalConfig` arrays through the wrapper with `-C /`.
+    /// It has no Git identity. The listing runs in mode `read`. The writes run in mode `integrate`, after the anchor.
+    /// `WSLENV` stays empty. Every other array still gets `INVALID_REQUEST`. A Windows Git keeps the launch folder.
+    #[test]
+    fn a_wsl_global_config_run_binds_no_identity_and_runs_at_the_distro_root_in_the_mode_of_its_array()
+     {
+        let mut environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        environment.push(("WSLENV".into(), "GIT_CONFIG_GLOBAL/p".into()));
+        let harness = Harness::new(
+            Fixture::new(),
+            CHILD_PREFIX.iter().map(|s| s.to_string()).collect(),
+            environment,
+            Duration::from_millis(WALK_DEADLINE_MS),
+        );
+        let wsl = wsl_harness_with(true, harness);
+        let (_, _, git) = bound_wsl(&wsl);
+        let installation = match wsl.harness.requests.state().gits.get(&git) {
+            Some(Git::Wsl(installation)) => installation.clone(),
+            _ => panic!("WSL Git"),
+        };
+        let saves = [uuid(), uuid()];
+        for save in &saves {
+            let common = wsl::WslIdentity {
+                guid: WSL_GUID.to_string(),
+                file_system_id: "fedc9aa3bd65bc57".to_string(),
+                inode: "4243".to_string(),
+            };
+            wsl.harness.requests.tag(
+                save,
+                Mutation::SaveGitSettings,
+                crate::bootstrap::PhysicalIdentity::Wsl(common),
+            );
+        }
+        let strings =
+            |items: &[&str]| -> Vec<String> { items.iter().map(|a| a.to_string()).collect() };
+        let list = strings(&[
+            "--no-lazy-fetch",
+            "--no-optional-locks",
+            "--literal-pathspecs",
+            "config",
+            "list",
+            "--show-scope",
+            "--show-origin",
+            "-z",
+        ]);
+        let set_key = strings(&[
+            "--no-lazy-fetch",
+            "config",
+            "set",
+            "--global",
+            "--",
+            "pull.rebase",
+            "true",
+        ]);
+        let unset_key = strings(&[
+            "--no-lazy-fetch",
+            "config",
+            "unset",
+            "--global",
+            "--",
+            "pull.rebase",
+        ]);
+        let base = wsl.harness.requests.config.base_environment.clone();
+        let read = uuid();
+        for (operation, arguments, policy, mode, limits) in [
+            (
+                &read,
+                &list,
+                "read",
+                wsl::Mode::Read,
+                json!({ "deadlineMs": 30_000 }),
+            ),
+            (
+                &saves[0],
+                &set_key,
+                "integrate",
+                wsl::Mode::Integrate,
+                network_limits(30_000, 60_000),
+            ),
+            (
+                &saves[1],
+                &unset_key,
+                "integrate",
+                wsl::Mode::Integrate,
+                network_limits(30_000, 60_000),
+            ),
+        ] {
+            let before = wsl.host.commands().len();
+            let call = uuid();
+            wsl.harness.send(global_config_run(
+                &call,
+                operation,
+                &git,
+                json!(arguments),
+                policy,
+                limits,
+            ));
+            assert_eq!(
+                wsl.harness.reply(&call),
+                refused(&call, "PROCESS_OWNERSHIP_FAILED"),
+                "the script host starts nothing: {arguments:?}"
+            );
+            let launched = wsl.host.commands()[before..].to_vec();
+            let unit = wsl::unit_name(operation, 1).expect("unit");
+            let git_command = wsl::git_command(
+                &installation,
+                mode,
+                &unit,
+                None,
+                "/",
+                arguments,
+                &base,
+                wsl::Stdin::Closed,
+            )
+            .expect("command");
+            let mut expected = Vec::new();
+            if policy == "integrate" {
+                let anchor = wsl::anchor_command(&installation, operation, &base).expect("anchor");
+                expected.push(anchor.arguments);
+            }
+            expected.push(git_command.arguments);
+            let arguments_of: Vec<Vec<String>> = launched
+                .iter()
+                .map(|command| command.arguments.clone())
+                .collect();
+            assert_eq!(arguments_of, expected, "{arguments:?}");
+            let process = launched.last().expect("Git process");
+            let mut rooted = strings(&["--no-lazy-fetch", "-C", "/"]);
+            rooted.extend(arguments[1..].iter().cloned());
+            assert!(
+                process
+                    .arguments
+                    .windows(rooted.len())
+                    .any(|items| items == rooted.as_slice()),
+                "{:?}",
+                process.arguments
+            );
+            assert_eq!(process.program, wsl::wsl_program());
+            let wslenv: Vec<&OsString> = process
+                .environment
+                .iter()
+                .filter(|(name, _)| name.eq_ignore_ascii_case("WSLENV"))
+                .map(|(_, value)| value)
+                .collect();
+            assert_eq!(wslenv, [&OsString::new()], "{arguments:?}");
+        }
+        let before = wsl.host.commands().len();
+        let refused_base = |call: &str| {
+            global_config_run(
+                call,
+                &saves[0],
+                &git,
+                json!(set_key),
+                "integrate",
+                network_limits(1000, 1000),
+            )
+        };
+        let cases: Vec<(&str, Edit)> = vec![
+            (
+                "a local write",
+                set(
+                    "arguments",
+                    json!([
+                        "--no-lazy-fetch",
+                        "config",
+                        "set",
+                        "--local",
+                        "--",
+                        "pull.rebase",
+                        "true"
+                    ]),
+                ),
+            ),
+            (
+                "another command",
+                set("arguments", json!(["--no-lazy-fetch", "status"])),
+            ),
+            ("the listing under integrate", set("arguments", json!(list))),
+            (
+                "a write under read",
+                both(
+                    set("environmentPolicy", json!("read")),
+                    set("limits", json!({ "deadlineMs": 30_000 })),
+                ),
+            ),
+            ("a write before started", set("operationId", json!(uuid()))),
+        ];
+        expect_refusals(&wsl.harness, refused_base, cases, "INVALID_REQUEST");
+        assert_eq!(
+            wsl.host.commands().len(),
+            before,
+            "no refused array starts a process"
+        );
+        // The targets: the WSL Git at the distro root without an identity, and a Windows Git in the launch folder.
+        let windows = wsl.harness.register_git(&test_exe());
+        let requests = &wsl.harness.requests;
+        let mut state = requests.state();
+        let target = requests
+            .target(
+                &mut state,
+                [None, Some(&git), None],
+                Kind::GlobalConfig,
+                &uuid(),
+            )
+            .expect("WSL target");
+        assert_eq!(
+            (
+                target.program,
+                target.git_identity.is_none(),
+                target
+                    .wsl
+                    .map(|(installation, directory)| (installation.guid, directory)),
+            ),
+            (
+                wsl::wsl_program(),
+                true,
+                Some((WSL_GUID.to_string(), "/".to_string()))
+            )
+        );
+        let target = requests
+            .target(
+                &mut state,
+                [None, Some(&windows), None],
+                Kind::GlobalConfig,
+                &uuid(),
+            )
+            .expect("Windows target");
+        assert_eq!(
+            (
+                target.program,
+                target.current_dir,
+                target.git_identity.is_some(),
+                target.wsl.is_none(),
+            ),
+            (
+                test_exe(),
+                requests.config.launch_directory.clone(),
+                true,
+                true
+            )
+        );
+    }
+
+    /// Feature 004 contract Δ3 `worktreeAdd` `track`: the exact `--track -b` form with a remote-tracking start.
+    #[test]
+    fn worktree_add_fits_admits_the_track_form_only_exactly() {
+        let path = r"D:\src\wt";
+        let owned = |items: &[&str]| {
+            items
+                .iter()
+                .map(|item| item.to_string())
+                .collect::<Vec<_>>()
+        };
+        let track = [
+            "--no-lazy-fetch",
+            "worktree",
+            "add",
+            "--track",
+            "-b",
+            "topic",
+            "--",
+            path,
+            "refs/remotes/origin/topic",
+        ];
+        assert!(worktree_add_fits(&owned(&track), path));
+        assert!(!worktree_add_fits(&owned(&track), r"D:\src\other"));
+        for start in [
+            "refs/heads/topic",
+            "origin/topic",
+            "refs/remotes/",
+            "0123456789abcdef0123456789abcdef01234567",
+        ] {
+            let mut items = track;
+            items[8] = start;
+            assert!(!worktree_add_fits(&owned(&items), path), "{start}");
+        }
+        let no_end = owned(&[&track[..6], &track[7..]].concat());
+        assert!(!worktree_add_fits(&no_end, path));
+        let extra = owned(&[&track[..], &["x"]].concat());
+        assert!(!worktree_add_fits(&extra, path));
+        let option = owned(&[&track[..3], &["--force"], &track[3..]].concat());
+        assert!(!worktree_add_fits(&option, path));
+        let no_name = owned(&[&track[..5], &track[6..]].concat());
+        assert!(!worktree_add_fits(&no_name, path));
+        let swapped = owned(&[&track[..3], &["-b", "--track"], &track[5..]].concat());
+        assert!(!worktree_add_fits(&swapped, path));
     }
 
     fn worktree_add_run(

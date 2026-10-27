@@ -63,6 +63,8 @@ import { createRequests, isRegistration, wslDistro, type Clock, type RequestBrid
 import { metrics as densityMetrics } from "../layout/profiles";
 import { darkPaletteAttribute, DEFAULT_PREFERENCES, readPreferences, storePanes, writePreferences, type DarkPalette, type Panes, type Preferences, type Theme } from "../state/preferences";
 import { createDrafts } from "../state/drafts";
+import { createSpellEngine, type Spelling } from "../spelling/engine";
+import { createSpellingStore } from "../spelling/store";
 import { createDraftStore } from "../state/draft-store";
 import { OperationStatus, SYNC_NAMES, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
@@ -87,7 +89,6 @@ import { PushPanel } from "../sync/PushPanel";
 import { CloneDialog } from "../clone/CloneDialog";
 import { ConnectNoticeRow } from "../settings/ConnectTerminal";
 import type { KeyProposal } from "../settings/SettingsDialog";
-import { SettingsView } from "../settings/SettingsView";
 import { actionReason, quietReason, RECONCILING_REASON, RUNNING_REASON, syncReasons, SyncToolbar } from "../sync/SyncToolbar";
 import { useSync } from "../sync/useSync";
 import { suppressPageMenu } from "../components/action-menu";
@@ -133,6 +134,13 @@ export type WorkbenchBridge = RequestBridge &
     | "reviewSync"
     | "sync"
     | "readSyncSettings"
+    | "readDictionary"
+    | "listDictionaries"
+    | "downloadDictionary"
+    | "importDictionary"
+    | "removeDictionary"
+    | "setSpelling"
+    | "openLicenceLink"
     | "setDefaultPullAction"
     | "clone"
     | "connectInTerminal"
@@ -250,6 +258,8 @@ export type WorkbenchProps = {
   textScale?: number;
   /** The draft memory (plan.md "Stored drafts"). The default stores a copy in IndexedDB. */
   drafts?: ReturnType<typeof createDrafts>;
+  /** Feature 006 plan.md D15: the spelling store and engine of the window session. The default starts module workers. */
+  spelling?: Spelling;
   /** The timers of the change poll. The default uses the browser timers. */
   clock?: Clock;
 };
@@ -652,6 +662,8 @@ const FILE_TAB_STOP = '[data-file-tree] [role="treeitem"][tabindex="0"]';
 
 // The About dialog and the notices load on first open (plan.md "Startup chunk budget").
 const AboutMount = lazy(() => import("../about/AboutMount"));
+// The Settings view and its pages load on first open (plan.md "Startup chunk budget").
+const SettingsView = lazy(() => import("../settings/SettingsView").then((m) => ({ default: m.SettingsView })));
 
 // plan.md "Required visible states", About failed. `NOTICES_MISSING` comes from `AboutMount`. Any other failure, such as a chunk that did not load, is `LOAD_FAILED`.
 
@@ -679,7 +691,7 @@ class AboutBoundary extends Component<{ onClose(): void; children: ReactNode }, 
   }
 }
 
-export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, restoreProgress, session = 0, onSelectGit, onEnvironment, textScale = 1, drafts: givenDrafts, clock }: WorkbenchProps) {
+export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, environment: given = null, restored, restoreProgress, session = 0, onSelectGit, onEnvironment, textScale = 1, drafts: givenDrafts, spelling: givenSpelling, clock }: WorkbenchProps) {
   // plan.md "Required visible states", Recovery statement: the statement stays until the next `refresh: true` read or another repository.
   const [recovery, setRecovery] = useState<{ repositoryId: string; statement: RecoveryStatement } | null>(null);
   // Contract §11 "Distro start": a registration, restore, or marker dismissal in phase `wsl-starting`, until its response. No event marks the probe end.
@@ -877,6 +889,13 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const sections = useRef<HTMLDivElement>(null);
   const lastFocus = useRef(new Map<Section, HTMLElement>());
   const [drafts] = useState(() => givenDrafts ?? createDrafts(createDraftStore()));
+  const [[spelling, ownsSpelling]] = useState<[Spelling, boolean]>(() => {
+    if (givenSpelling !== undefined) return [givenSpelling, false];
+    const store = createSpellingStore();
+    return [{ store, engine: createSpellEngine(store, { bridge }) }, true];
+  });
+  // main.tsx mounts a new Workbench after an environment failure, so an engine that this one made ends its workers here.
+  useEffect(() => (ownsSpelling ? () => spelling.engine.dispose() : undefined), [spelling, ownsSpelling]);
   // The latest mutation of this repository for the status region (T138). Another repository clears it.
   const [operation, setOperation] = useState<StatusOperation | null>(null);
   reportOperation.current = setOperation;
@@ -1065,9 +1084,12 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   useEffect(() => {
     if (repositoryId === null) return;
     let current = true;
-    void bridge.readSyncSettings().then((response) => void (current && setSyncSettings(settingsOf(response))));
+    const read = bridge.readSyncSettings();
+    // Feature 006 data-model §8: the same result carries the spelling selection.
+    spelling.store.settings(read);
+    void read.then((response) => void (current && setSyncSettings(settingsOf(response))));
     return () => void (current = false);
-  }, [bridge, repositoryId]);
+  }, [bridge, repositoryId, spelling]);
   async function setDefaultPullAction(action: DefaultPullAction) {
     const response = await bridge.setDefaultPullAction({ action });
     if (response.state === "succeeded") setSyncSettings(settingsOf(response));
@@ -1536,6 +1558,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     onNotice: setNotice,
     onMerge: (entry, opener) => openIntegrate({ action: "merge", ref: entry.ref, name: entry.name }, opener),
     onRebase: (entry, opener) => openIntegrate({ action: "rebase", ref: entry.ref, name: entry.name }, opener),
+    onAddWorktree: (selection, opener) => worktrees.startAdd(opener, selection),
     onOpenWorktree: (path) => void (repositoryId === null ? undefined : ignore.guard(() => void bridge.openWorktree({ repositoryId, path }).then(openedWorktree))),
     push: { reason: quietSync ?? reasons.pushReason, quiet: quietSync !== null, run: () => runSync.current("push") },
     onShowBranchHistory: () => void historyView.setScope("current"),
@@ -1721,6 +1744,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             pushReason={commitPushReason}
             operationState={workspace?.operationState}
             amend={{ value: commitState.amend, onChange: (amend) => store.setCommitView(viewKey, { amend }) }}
+            spelling={spelling}
           />
         </div>
       </div>
@@ -2188,18 +2212,21 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
             />
           ) : null}
           {mainPanel === null && view === "settings" ? (
-            <SettingsView
-              bridge={bridge}
-              target={state.repository !== null && workspace !== null ? { repositoryId: state.repository.repositoryId, repositoryGeneration: workspace.generation } : null}
-              wsl={workspace?.location.kind === "wsl"}
-              repository={worktreeKey === null ? null : { worktreeKey, proposals: keyProposals(trust?.report) }}
-              operationRunning={running}
-              onOperation={setOperation}
-              onEnded={(response) => store.ended("runWorkbench", response)}
-              onSettings={(response) => setSyncSettings(settingsOf(response))}
-              page={store.settingsPage(viewKey)}
-              onClose={() => store.closeSettings(viewKey)}
-            />
+            <Suspense fallback={null}>
+              <SettingsView
+                bridge={bridge}
+                target={state.repository !== null && workspace !== null ? { repositoryId: state.repository.repositoryId, repositoryGeneration: workspace.generation } : null}
+                wslDistro={workspace?.location.kind === "wsl" ? workspace.location.distro : null}
+                spelling={spelling.store}
+                repository={worktreeKey === null ? null : { worktreeKey, proposals: keyProposals(trust?.report) }}
+                operationRunning={running}
+                onOperation={setOperation}
+                onEnded={(response) => store.ended("runWorkbench", response)}
+                onSettings={(response) => setSyncSettings(settingsOf(response))}
+                page={store.settingsPage(viewKey)}
+                onClose={() => store.closeSettings(viewKey)}
+              />
+            </Suspense>
           ) : null}
           <div hidden={mainPanel !== null || view === "settings"} className="contents">
             {refusal === null ? null : <RepositoryRefused code={responseCode(refusal)} result={refusal.result as RegistrationResult | undefined} onOpenRepository={() => void openRepository()} />}

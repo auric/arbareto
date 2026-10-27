@@ -55,6 +55,10 @@ export const T = {
   merge: (current: string | null) => (current === null ? "Merge into current branch…" : `Merge into current branch (${current})…`),
   rebase: (current: string | null, branch: string) => (current === null ? `Rebase current branch onto ${branch}…` : `Rebase current branch (${current}) onto ${branch}…`),
   createHere: "Create branch here…",
+  // Plan D15 "Worktree texts": the branch menu item and its reasons (spec FR-014, FR-052).
+  addWorktree: "Add worktree for this branch…",
+  addCurrent: "This worktree holds the branch. Git allows each branch in one worktree only.",
+  addNoLocalName: "No refspec of exactly one remote maps this branch, so Git cannot set up tracking.",
   rename: "Rename…",
   delete: "Delete…",
   push: "Push",

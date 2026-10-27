@@ -16,6 +16,9 @@ import { createBranchesReader } from "./branches";
 import { createCommitChanges } from "./commit-changes";
 import { createCloner, type RouteTarget } from "./clone";
 import { createCommitter } from "./commit";
+import { createDictionaries, type DictionaryFetch, type DictionaryTimer } from "./dictionaries";
+import catalogFile from "../contracts/dictionaries.json";
+import { Catalog } from "../contracts/dictionaries";
 import { createCommitReviewer } from "./commit-review";
 import { createComparisonReader } from "./comparison";
 import { getEnvironment } from "./environment";
@@ -91,6 +94,14 @@ export interface SessionOptions {
   historyViewCommits?: number;
   // Feature 002 contract Δ3 "Matching probe": the probe commits that each run must list. Only tests set other sets.
   historyProbeRuns?: readonly ProbeRun[];
+  // Feature 006 plan.md D5: `<launch directory>/dictionaries`. Without it, the dictionary operations get SERVICE_UNAVAILABLE.
+  dictionaryFolder?: string;
+  // Test seam only. Production parses src/contracts/dictionaries.json with the `Catalog` schema, and a failure stops the start.
+  catalog?: Catalog;
+  // Test seam only. Production uses the Bun `fetch`.
+  fetch?: DictionaryFetch;
+  // Test seam only. The timer of the dictionary deadlines.
+  dictionaryTimer?: DictionaryTimer;
 }
 
 // The outcome forms of the reads that `read-scheduler.ts` runs. `cause` goes only into the session log entry (contract §8).
@@ -113,7 +124,7 @@ function revealTarget(w: Workspace, bytes: Uint8Array): string | null {
   return NATIVE.path.join(w.worktreeRoot, ...(text.endsWith("/") ? text.slice(0, -1) : text).split("/"));
 }
 
-export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns }: SessionOptions) {
+export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PROCESS_DEADLINE_MS, environment = process.env, readDeadlineMs, watchHints = true, readRawIndex, hunkCheckpoint, approvalClock, submoduleCheckpoint, historyViewCommits = HISTORY_VIEW_COMMITS, historyProbeRuns, dictionaryFolder, catalog, fetch, dictionaryTimer }: SessionOptions) {
   let sessionId: string | null = null;
   let handshake: Handshake | null = null;
   const seenRequests = new Set<string>();
@@ -168,6 +179,11 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     return true;
   };
   const registry = createOperationRegistry(respond, (progress) => writer.write({ kind: "public", progress }), log, runner);
+  // Feature 006 plan.md D2: the dictionary operations take no read slot and wait for no Git operation.
+  const dictionaries =
+    dictionaryFolder === undefined
+      ? null
+      : createDictionaries({ folder: dictionaryFolder, catalog: catalog ?? Catalog.parse(catalogFile), registry, reject: (requestId, code) => reject(requestId, code), fetch, timer: dictionaryTimer, readDeadlineMs });
   const scheduler = createReadScheduler({ closeJob: (operationId) => runner.closeJob(operationId), cancel: (operationId) => void registry.cancel(operationId), readDeadlineMs });
   const trust = createTrust({
     runner,
@@ -1138,6 +1154,11 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     readIgnoreFile: readIgnore,
     previewIgnore,
     openSubmodule,
+    listDictionaries: dictionaries?.listDictionaries,
+    readDictionary: dictionaries?.readDictionary,
+    downloadDictionary: dictionaries?.downloadDictionary,
+    importDictionary: dictionaries?.importDictionary,
+    removeDictionary: dictionaries?.removeDictionary,
   };
 
   function receiveHandshake(frame: Fields) {

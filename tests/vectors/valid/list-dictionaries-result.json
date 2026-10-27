@@ -1,0 +1,5 @@
+{
+  "schema": "list-dictionaries-result",
+  "expected": "valid",
+  "text": "{\"languages\":[{\"language\":\"de-CH\",\"state\":\"not-downloaded\",\"notice\":\"catalog-changed\"},{\"language\":\"eu\",\"state\":\"importing\"},{\"language\":\"fr\",\"state\":\"changed\"},{\"language\":\"oc\",\"state\":\"downloading\"},{\"language\":\"uk\",\"state\":\"ready\"}],\"removed\":[{\"language\":\"xx\",\"name\":\"Old language\"}],\"more\":0}"
+}

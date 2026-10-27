@@ -259,6 +259,109 @@ caseTest(TASK, "FR-052 and plan.md D4: refs/heads/@ and a new @ give reserved-na
   expect(stateOf(f)).toEqual(before);
 }, TIMEOUT_MS);
 
+// A bare remote that holds `names` at the base commit, fetched under `remote` with Git's default refspec `+refs/heads/*:refs/remotes/<remote>/*` (git-remote(1) `add`).
+// The relative URL keeps the configuration bytes of two builds equal.
+function withRemote(x: WbFixture, remote: string, names: string[]): void {
+  if (!existsSync(join(x.root, "remote.git"))) wb(repoOf(x, x.root), ["init", "-q", "--bare", "remote.git"]);
+  git(x, ["push", "-q", "../remote.git", ...names.map((n) => `${x.oids.base!}:refs/heads/${n}`)]);
+  git(x, ["remote", "add", remote, "../remote.git"]);
+  git(x, ["fetch", "-q", remote]);
+}
+
+caseTest("T127", "FR-052 and FR-053: Add worktree for a remote-tracking branch creates the local branch with that upstream, also for a remote name with a slash, and equals Git's own worktree add --track on a copy", SHELL, async () => {
+  for (const remote of ["origin", "team/a"]) {
+    const f = build();
+    const o = build();
+    // Without the local `branch.autoSetupMerge=false`, Git sets the upstream for a `-b` from a remote-tracking start too (git-config(1)).
+    for (const x of [f, o]) {
+      withRemote(x, remote, ["feature/x"]);
+      git(x, ["config", "--local", "branch.autoSetupMerge", "false"]);
+    }
+    const ref = `refs/remotes/${remote}/feature/x`;
+    const dest = folder(f, "wt-track");
+    const track = { ref, name: "feature/x" };
+    await withSync(`t127-track-${remote.replace("/", "-")}`, async (service) => {
+      const r = await open(service, f.repo);
+      const rv = await reviewed(service, r, addPayload({ track }, service.runner.addWorktreeAdd(dest, r.repositoryId)));
+      expect(rv.plan).toEqual({ branch: { track, oid: f.oids.base! }, path: dest, destination: "absent" });
+      const from = service.runner.calls.length;
+      const response = await service.response<WorktreeRun>(sendRun(service, r, rv.workbenchToken));
+      expect(outcome(response)).toEqual(SUCCEEDED);
+      expect(git(f, ["for-each-ref", "--format=%(upstream)", "refs/heads/feature/x"])).toBe(`${ref}\n`);
+      const run = service.runner.calls.slice(from).filter((c) => c.environmentPolicy === "integrate");
+      expect(run.map((c) => [c.contextKind, ...c.arguments])).toEqual([["worktreeAdd", L, "worktree", "add", "--track", "-b", "feature/x", "--", dest, ref]]);
+      expect(response.result!.refs).toEqual([{ ref: "refs/heads/feature/x" }]);
+    });
+    git(o, ["worktree", "add", "-q", "--track", "-b", "feature/x", "--", folder(o, "wt-track"), ref]);
+    expect(stateOf(f)).toEqual(stateOf(o));
+    expect(readFileSync(f.configs.local!, "utf8")).toBe(readFileSync(o.configs.local!, "utf8"));
+  }
+}, TIMEOUT_MS);
+
+// The local entries of `config --local --list -z`: each entry is `<key>\n<value>` and ends with NUL (git-config(1) `-z`).
+const localConfig = (f: WbFixture): string[] => git(f, ["config", "--local", "--list", "-z"]).split("\0").filter((e) => e !== "");
+
+caseTest("T127", "FR-053: with the local branch.autoSetupRebase=always, a track add writes only the remote, merge, and rebase keys of the new branch", SHELL, async () => {
+  const f = build();
+  withRemote(f, "origin", ["feature/x"]);
+  // git-config(1) `branch.autoSetupRebase`: `always` makes Git write `branch.<name>.rebase` for every tracking branch.
+  git(f, ["config", "--local", "branch.autoSetupRebase", "always"]);
+  const before = localConfig(f);
+  const track = { ref: "refs/remotes/origin/feature/x", name: "feature/x" };
+  const dest = folder(f, "wt-track");
+  await withSync("t127-track-rebase", async (service) => {
+    const r = await open(service, f.repo);
+    const rv = await reviewed(service, r, addPayload({ track }, service.runner.addWorktreeAdd(dest, r.repositoryId)));
+    expect(outcome(await service.response(sendRun(service, r, rv.workbenchToken)))).toEqual(SUCCEEDED);
+  });
+  expect(localConfig(f)).toEqual([...before, "branch.feature/x.remote\norigin", "branch.feature/x.merge\nrefs/heads/feature/x", "branch.feature/x.rebase\ntrue"]);
+}, TIMEOUT_MS);
+
+caseTest("T127", "plan.md D10: a remote ref that moves after the review gives STALE_REVIEW, and no worktree add starts", SHELL, async () => {
+  const f = build();
+  withRemote(f, "origin", ["feature/x"]);
+  const ref = "refs/remotes/origin/feature/x";
+  const moved = git(f, ["commit-tree", "-p", f.oids.base!, "-m", "moved", `${f.oids.base}^{tree}`]).trim();
+  const dest = folder(f, "wt-track");
+  await withSync("t127-track-stale", async (service) => {
+    const r = await open(service, f.repo);
+    const rv = await reviewed(service, r, addPayload({ track: { ref, name: "feature/x" } }, service.runner.addWorktreeAdd(dest, r.repositoryId)));
+    git(f, ["update-ref", ref, moved]);
+    const from = service.runner.calls.length;
+    expect(outcome(await service.response(sendRun(service, r, rv.workbenchToken)))).toEqual({ state: "failed", code: "STALE_REVIEW" });
+    expect(steps(service, from)).toEqual([]);
+  });
+  expect(existsSync(dest)).toBe(false);
+  expect(git(f, ["for-each-ref", "--format=%(refname)", "refs/heads/feature/x"])).toBe("");
+}, TIMEOUT_MS);
+
+caseTest("T127", "FR-052 and plan.md D3 Track rule: a track name @, a remote-tracking branch without exactly one mapping remote, and a name that exists as the current or a held branch refuse; no worktree add starts", SHELL, async () => {
+  const f = build();
+  withRemote(f, "team/a", ["feature/x", "main", "dirty-b"]);
+  // The remote `mirror` maps the one ref `refs/remotes/team/a/feature/x` too, so two remotes map it.
+  // Git `remote add` refuses a remote `team` beside the remote `team/a`.
+  git(f, ["remote", "add", "mirror", "../remote.git"]);
+  git(f, ["config", "--replace-all", "remote.mirror.fetch", "+refs/heads/feature/x:refs/remotes/team/a/feature/x"]);
+  git(f, ["update-ref", "refs/remotes/stray/y", f.oids.base!]);
+  const before = stateOf(f);
+  await withSync("t127-track-refused", async (service) => {
+    const r = await open(service, f.repo);
+    const add = (branch: object) => review(service, r, addPayload(branch, service.runner.addWorktreeAdd(folder(f, "wt-new"), r.repositoryId)));
+    const from = service.runner.calls.length;
+    expect(refused(await add({ track: { ref: "refs/remotes/team/a/main", name: "@" } }))).toEqual(unavailable("reserved-name"));
+    expect(service.runner.calls.length).toBe(from);
+    expect(refused(await add({ track: { ref: "refs/remotes/stray/y", name: "y" } }))).toEqual(unavailable("no-tracking-refspec"));
+    expect(refused(await add({ track: { ref: "refs/remotes/team/a/feature/x", name: "feature/x" } }))).toEqual(unavailable("several-tracking-remotes", { remotes: ["team/a", "mirror"] }));
+    expect(refused(await add({ track: { ref: "refs/remotes/team/a/main", name: "main" } }))).toEqual(unavailable("name-exists", { ref: "refs/heads/main" }));
+    expect(refused(await add({ track: { ref: "refs/remotes/team/a/dirty-b", name: "dirty-b" } }))).toEqual(unavailable("name-exists", { ref: "refs/heads/dirty-b" }));
+    // The local branch of that name keeps the existing-branch refusals (FR-052).
+    expect(refused(await add({ existing: "refs/heads/main" }))).toEqual(unavailable("current-branch"));
+    expect(refused(await add({ existing: "refs/heads/dirty-b" }))).toEqual(unavailable("other-worktree", { worktree: recordPath(f, "wt-dirty") }));
+    expect(steps(service)).toEqual([]);
+  });
+  expect(stateOf(f)).toEqual(before);
+}, TIMEOUT_MS);
+
 caseTest(TASK, "FR-054: Remove is unavailable for the main, the current, a locked, and a prunable worktree, and a path that no fresh record names gives UNKNOWN_TARGET; no step starts", SHELL, async () => {
   const f = build();
   const before = stateOf(f);

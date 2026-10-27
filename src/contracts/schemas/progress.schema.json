@@ -57,7 +57,8 @@
         "blame",
         "delete-files",
         "ignore-save",
-        "preview"
+        "preview",
+        "dictionary"
       ]
     },
     "counters": {

@@ -211,9 +211,8 @@ const exitReason = (code: number | null) => (code !== null && code >= 1 && code 
 
 registerWorkbenchAction<"config-save", { changes: BoundChange[] }>("config-save", {
   // Contract Δ3: each key from the FR-060 list or a tool key, each key once, and a value that Git reads for the key type.
-  // Contract Δ6: the `globalConfig` context has no WSL form.
-  precheck(p, w) {
-    if (p.scope === "global" && w.wsl !== undefined) return { refused: "INVALID_REQUEST" };
+  // Feature 006 contract Δ11: a WSL Global save runs in the WSL form of the `globalConfig` context, at `/` (spec FR-018).
+  precheck(p) {
     const keys = p.changes.map((c) => canonicalKey(c.key));
     if (new Set(keys).size !== keys.length) return { refused: "INVALID_REQUEST" };
     for (const [i, key] of keys.entries()) {

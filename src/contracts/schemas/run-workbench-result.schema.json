@@ -957,7 +957,14 @@
             "readBlame",
             "readIgnoreFile",
             "previewIgnore",
-            "openSubmodule"
+            "openSubmodule",
+            "listDictionaries",
+            "readDictionary",
+            "downloadDictionary",
+            "importDictionary",
+            "removeDictionary",
+            "setSpelling",
+            "openLicenceLink"
           ]
         },
         "state": {
@@ -1013,7 +1020,8 @@
             "blame",
             "delete-files",
             "ignore-save",
-            "preview"
+            "preview",
+            "dictionary"
           ]
         },
         "code": {
@@ -1077,7 +1085,8 @@
             "UNTRACKED_IN_WAY",
             "STASH_KEPT",
             "BLAME_UNAVAILABLE",
-            "SUBMODULE_UNAVAILABLE"
+            "SUBMODULE_UNAVAILABLE",
+            "DICTIONARY_UNAVAILABLE"
           ]
         },
         "cause": {

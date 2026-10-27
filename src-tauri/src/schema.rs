@@ -29,6 +29,10 @@ const TRUST_DIALOG_NAMES: usize = 20;
 const BRANCH_NAME_BYTES: usize = 255;
 /// Feature 004 data-model §1: a local branch lies under this prefix.
 const LOCAL_BRANCH_PREFIX: &str = "refs/heads/";
+/// Feature 006 contract Δ5: `src/contracts/limits.ts` `SPELLING_LANGUAGES`.
+pub(crate) const SPELLING_LANGUAGES: usize = 3;
+/// Feature 004 data-model §1: a remote-tracking branch lies under this prefix.
+const REMOTE_BRANCH_PREFIX: &str = "refs/remotes/";
 
 macro_rules! generated {
     ($($module:ident),*) => {
@@ -109,15 +113,26 @@ pub fn native_first(
             let key = payload["target"] == "remoteKey";
             key == payload.get("worktreeKey").is_some() && key == payload.get("remote").is_some()
         }
-        // Feature 004 contract Δ1 and Δ3: typify drops the `action` const, the byte bound of a new name, and the
-        // `refs/heads/` prefix of an existing branch.
+        // Feature 004 contract Δ1 and Δ3: typify drops the `action` const, the byte bound of a new or track name, the
+        // `refs/heads/` prefix of an existing branch, and the `refs/remotes/` prefix of a track ref.
         Some("reviewWorkbench") => {
             let branch = &payload["branch"];
-            let named = match (branch["new"].as_str(), branch["existing"].as_str()) {
-                (Some(name), None) => (1..=BRANCH_NAME_BYTES).contains(&name.len()),
-                (None, Some(name)) => name
-                    .strip_prefix(LOCAL_BRANCH_PREFIX)
-                    .is_some_and(|short| !short.is_empty()),
+            let track = &branch["track"];
+            let under = |name: &str, prefix: &str| {
+                name.strip_prefix(prefix)
+                    .is_some_and(|short| !short.is_empty())
+            };
+            let bytes = |name: &str| (1..=BRANCH_NAME_BYTES).contains(&name.len());
+            let named = match (
+                branch["new"].as_str(),
+                branch["existing"].as_str(),
+                track["ref"].as_str().zip(track["name"].as_str()),
+            ) {
+                (Some(name), None, None) => bytes(name),
+                (None, Some(name), None) => under(name, LOCAL_BRANCH_PREFIX),
+                (None, None, Some((remote, name))) => {
+                    under(remote, REMOTE_BRANCH_PREFIX) && bytes(name)
+                }
                 _ => false,
             };
             payload["action"] == "worktree-add" && named && paths(payload, &["path"]).is_ok()
@@ -126,6 +141,14 @@ pub fn native_first(
         Some("openSubmodule") => payload["path"]
             .as_str()
             .is_some_and(|path| path.split('/').all(crate::file_facts::is_component)),
+        // Feature 006 data-model §8: typify drops the item bound and the repeat rule of `languages`.
+        Some("setSpelling") => payload["languages"].as_array().is_some_and(|ids| {
+            ids.len() <= SPELLING_LANGUAGES
+                && ids
+                    .iter()
+                    .enumerate()
+                    .all(|(index, id)| !ids[..index].contains(id))
+        }),
         _ => true,
     };
     if fits {
@@ -298,6 +321,7 @@ pub fn progress(value: &Value) -> bool {
             // Feature 005 contract Δ2.
             Some(P::Blame) => Some(&["blamed", "total"]),
             Some(P::Config) => Some(&["keyIndex", "keyCount"]),
+            Some(P::Dictionary) => Some(&["received", "total"]),
             Some(
                 P::SwitchStash
                 | P::SwitchCheckout
@@ -1193,7 +1217,7 @@ mod tests {
     /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, sync review, sync, clone, branch, worktree, Git settings, and workbench results in `Response.result` and reads no field of them.
     /// The shell writes the settings result of the shell-only settings operations and never reads it.
     /// The same holds for the `chooseWorktreeFolder` result.
-    const NOT_READ: [&str; 39] = [
+    const NOT_READ: [&str; 43] = [
         "service-envelope",
         "open-recent-repository-result",
         "recent-repositories-result",
@@ -1235,6 +1259,11 @@ mod tests {
         "preview-ignore-result",
         "open-submodule-result",
         "reveal-path-result",
+        // Feature 006 contract Δ10. The shell writes the `openLicenceLink` result and never reads it.
+        "list-dictionaries-result",
+        "dictionary-run-result",
+        "remove-dictionary-result",
+        "open-licence-link-result",
     ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
@@ -1315,6 +1344,13 @@ mod tests {
                     .map_err(|code| text_of(&code)),
                 _ => return None,
             },
+            // Feature 006 contract Δ1: the shell reads the chunk of a `succeeded` response. A refusal reaches the renderer unread.
+            "read-dictionary-result" => match strict(text) {
+                Ok(value) if value.get("reason").is_some() => return None,
+                value => {
+                    value.and_then(|value| valid(crate::ipc::dictionary_chunk(&value).is_some()))
+                }
+            },
             other if NOT_READ.contains(&other) => return None,
             other => panic!("unknown vector schema {other}"),
         }))
@@ -1359,16 +1395,19 @@ mod tests {
         // The `unlisted` hooks item of plan D14 adds 2 `confirm` vectors.
         // WP23 adds 2 `confirm` vectors for the `repository` action (contract Δ6).
         // T094 adds 3 `native-first-envelope` vectors for `chooseWorktreeFolder` (contract Δ3).
+        // Feature 006 T010 adds 11 `native-first-envelope` vectors and 2 `progress` vectors (contract Δ10).
         // T392 adds 2 `stop` vectors.
         // Feature 005 T002 adds 15 shell-read vectors. The batch 0 review adds the 5 `fileDelete`, 2 `shadow`, and 3 `ignorePreview` vectors.
         // T013 adds the 4 `fileReplace` vectors (valid present and absent, an over-bound size, and a relative path).
         // The WP3 review adds the `fileDelete` digest above 1 MiB.
         // T057 removes the 2 `fileAppend` vectors from this check and adds the 2 `started` vectors of the 004 ignore actions.
         // The batch 3 review adds the `progress` vector of the removed phase `ignore`.
+        // Feature 004 T127 adds 2 `native-first-envelope` vectors for the `track` branch form (contract Δ3).
+        // Feature 006 T061 adds the 5 `read-dictionary-result` chunk vectors, 2 of them new (contract Δ1).
         // Feature 007 T011 adds the 2 `handshake` vectors of a `signing` key and a `release` channel.
         assert_eq!(
             checked,
-            if cfg!(windows) { 215 } else { 210 },
+            if cfg!(windows) { 235 } else { 230 },
             "shell-read vectors"
         );
     }

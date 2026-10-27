@@ -7,12 +7,13 @@ import { join } from "node:path";
 import { printOrigin } from "../origin";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM } from "../../src/contracts/limits";
 import { createCollector, PROCESS_LIMITS, type GitCall, type ProcessContext } from "../../src/git-service/git-runner";
-import { createBunRunner, createTrustStore, HOST_SCRIPT, type BunRunner } from "./bun-runner";
+import { createBunRunner, createTrustStore, gitForm, HOST_SCRIPT, type BunRunner } from "./bun-runner";
 import { fixtureDir, fixtureGit, fixturePath, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 
 printOrigin("../../src/contracts/limits.ts", import.meta.dir);
 printOrigin("../../src/git-service/git-runner.ts", import.meta.dir);
+printOrigin("./bun-runner.ts", import.meta.dir);
 
 useFixtureRoot();
 
@@ -25,6 +26,20 @@ const BLOB_BYTES = 300_000;
 const id = () => crypto.randomUUID();
 const slash = (path: string) => path.replaceAll("\\", "/");
 const text = (collector: { take(): Uint8Array }) => new TextDecoder().decode(collector.take());
+
+// 006 T055: the double folds and refuses as `linux_path` of `src-tauri/src/wsl.rs`. No process starts.
+test("gitForm folds . and .. and refuses a segment with a character in U+F000 to U+F0FF, as wsl::linux_path", () => {
+  const wsl = { distro: "Ubuntu-26.04" };
+  expect(gitForm("\\\\wsl.localhost\\ubuntu-26.04\\home\\.\\u\\x\\..\\repo\\", wsl)).toBe("/home/u/repo");
+  expect(gitForm("\\\\wsl$\\Ubuntu-26.04\\..\\..\\etc", wsl)).toBe("/etc");
+  expect(gitForm("\\\\wsl.localhost\\Ubuntu-26.04", wsl)).toBe("/");
+  expect(gitForm("\\\\wsl.localhost\\Ubuntu-26.04\\home\\a\uf03ab\\..\\c", wsl)).toBeNull();
+  expect(gitForm("\\\\wsl.localhost\\Ubuntu-26.04\\home\\\uf0ff", wsl)).toBeNull();
+  expect(gitForm("\\\\wsl.localhost\\Ubuntu-26.04\\home\\\uefff\uf100", wsl)).toBe("/home/\uefff\uf100");
+  expect(gitForm("\\\\wsl.localhost\\Other\\home", wsl)).toBeNull();
+  expect(gitForm("C:\\work\\..\\repo", undefined)).toBe("C:\\work\\..\\repo");
+  expect(gitForm("\\\\wsl.localhost\\Ubuntu-26.04\\home", undefined)).toBeNull();
+});
 
 describeGit("bun runner", (git) => {
   let repo: string;

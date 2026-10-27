@@ -18,7 +18,7 @@ import { shortRef } from "../refs/ReferencesSidebar";
 import type { Workbench } from "../state/workbench";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
 import { needsTrust, reviewWithTrust, trustGate, WORKBENCH_TRUST, type AskTrust } from "../trust/ask";
-import { AddWorktreePanel, type AddRequest } from "./AddWorktreePanel";
+import { AddWorktreePanel, type AddRequest, type AddSelection } from "./AddWorktreePanel";
 import { RUN_TEXTS, W, worktreeRefusal } from "./texts";
 
 // Feature 004 spec FR-049 to FR-057, plan.md D10 and D15, data-model §8, contract Δ3 `readWorktrees`, `reviewWorkbench`, and `runWorkbench`.
@@ -94,7 +94,7 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
   const { bridge, target, repositoryId, refsDigest, workbench, worktreeRoot, start, blockedReason, running, onOperation, onNotice, onOpen, onDock, askTrust } = options;
   const [list, setList] = useState<List | null>(null);
   const [remove, setRemove] = useState<RemoveOverlay | null>(null);
-  const [add, setAdd] = useState<{ repositoryId: string; opener: Element | null } | null>(null);
+  const [add, setAdd] = useState<{ repositoryId: string; opener: Element | null; initial?: AddSelection } | null>(null);
   const seq = useRef(0);
   const busy = useRef(false);
 
@@ -228,12 +228,13 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
     });
   }
 
-  function startAdd(opener: Element | null) {
+  /** `initial` is the branch menu selection (spec FR-052). */
+  function startAdd(opener: Element | null, initial?: AddSelection) {
     if (repositoryId === null) return;
     if (blockedReason !== null && !running) return onNotice(blockedReason);
     onDock();
     workbench.readBranches();
-    setAdd({ repositoryId, opener });
+    setAdd({ repositoryId, opener, initial });
   }
 
   /** Reviews and runs one add. It gives the visible refusal text, or null after a run. */
@@ -244,7 +245,7 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
       if (response === null) return;
       const token = tokenOf(response);
       const plan = planOf(response);
-      const display = "new" in request.branch ? request.branch.new : shortRef(request.branch.existing);
+      const display = "new" in request.branch ? request.branch.new : "track" in request.branch ? request.branch.track.name : shortRef(request.branch.existing);
       if (token === null || plan === null || typeof plan.path !== "string") return void (error = worktreeRefusal(response, "worktree-add", request.path, display));
       const done = await run(token, "worktree-add", null);
       if (done?.state !== "succeeded") return;
@@ -257,7 +258,8 @@ export function useWorktreeActions(options: WorktreeActionsOptions) {
 
   const addPanel =
     add === null || add.repositoryId !== repositoryId ? null : (
-      <AddWorktreePanel workbench={workbench} worktreeRoot={worktreeRoot} start={start} blockedReason={blockedReason} running={running} opener={add.opener} onSubmit={submitAdd} onBrowse={() => bridge.chooseWorktreeFolder({ repositoryId: add.repositoryId })} onClose={() => setAdd(null)} />
+      // A new selection mounts a new panel, so its fields start from that selection.
+      <AddWorktreePanel key={JSON.stringify(add.initial ?? null)} initial={add.initial} workbench={workbench} worktreeRoot={worktreeRoot} start={start} blockedReason={blockedReason} running={running} opener={add.opener} onSubmit={submitAdd} onBrowse={() => bridge.chooseWorktreeFolder({ repositoryId: add.repositoryId })} onClose={() => setAdd(null)} />
     );
 
   const overlays =

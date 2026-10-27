@@ -67,7 +67,8 @@ export function freePort(): number {
 
 export interface Cdp {
   url: string;
-  send(method: string, params?: object): Promise<Record<string, unknown>>;
+  // `sessionId` names a flat session of an attached target (CDP `Target.setAutoAttach` with `flatten`).
+  send(method: string, params?: object, sessionId?: string): Promise<Record<string, unknown>>;
   evaluate<T>(expression: string): Promise<T>;
   // The last value, whether `done` holds or the bound passes.
   poll<T>(expression: string, done: (value: T) => boolean, ms: number): Promise<T>;
@@ -100,7 +101,12 @@ export interface IpcHold {
 export async function holdIpc(c: Cdp, ipc: IpcLog, command: string, ms: number): Promise<IpcHold> {
   // `networkId` is the `Network` request ID of the held call.
   const held: { requestId: string; networkId: unknown }[] = [];
-  const off = c.on("Fetch.requestPaused", (p) => void held.push({ requestId: p.requestId as string, networkId: p.networkId }));
+  let preflightError: unknown;
+  // WebView2 also pauses the CORS preflight (method OPTIONS) and sends the POST only after the preflight continues.
+  const off = c.on("Fetch.requestPaused", (p) => {
+    if ((p.request as { method: string }).method === "OPTIONS") void c.send("Fetch.continueRequest", { requestId: p.requestId }).catch((error) => void (preflightError ??= error));
+    else held.push({ requestId: p.requestId as string, networkId: p.networkId });
+  });
   async function release(): Promise<void> {
     try {
       for (const h of held) await c.send("Fetch.continueRequest", { requestId: h.requestId });
@@ -116,7 +122,7 @@ export async function holdIpc(c: Cdp, ipc: IpcLog, command: string, ms: number):
     if (performance.now() < end) continue;
     const state = `held ${held.length}, in flight and not held ${JSON.stringify(free())}`;
     await release();
-    throw new Error(`the ${command} calls were not held within ${ms} ms: ${state}`);
+    throw new Error(`the ${command} calls were not held within ${ms} ms: ${state}`, { cause: preflightError });
   }
   return { release };
 }
@@ -190,14 +196,14 @@ export async function connectPage(port: number, ms: number): Promise<Cdp> {
     return () => void set.delete(listener);
   }
 
-  async function send(method: string, params: object = {}): Promise<Record<string, unknown>> {
+  async function send(method: string, params: object = {}, sessionId?: string): Promise<Record<string, unknown>> {
     const n = ++id;
     let timer: Timer | undefined;
     try {
       const reply = await Promise.race([
         new Promise<Record<string, unknown>>((resolve) => {
           waiting.set(n, resolve);
-          ws.send(JSON.stringify({ id: n, method, params }));
+          ws.send(JSON.stringify({ id: n, method, params, ...(sessionId === undefined ? {} : { sessionId }) }));
         }),
         new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`CDP ${method} gave no reply within ${CALL_MS} ms`)), CALL_MS))),
       ]);

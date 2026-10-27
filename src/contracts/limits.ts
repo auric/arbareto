@@ -178,3 +178,26 @@ export const PREVIEW_PATHS = 100_000;
 export const PREVIEW_IGNORE_FILES = 10_000;
 // Paths of one preview result group (spec FR-038).
 export const PREVIEW_GROUP_PATHS = 1_000;
+
+// Feature 006 contract Δ5 "Finite bounds". The 001 to 004 bounds above stay in force.
+// Contract Δ5 "Catalog entries": the folders of the pinned commit.
+export const DICTIONARY_CATALOG_ENTRIES = 92;
+// The files of one language together. The FR-017 gate.
+export const DICTIONARY_LANGUAGE_BYTES = 12 * MIB;
+// The bounded read of `entry.json`.
+export const DICTIONARY_MANIFEST_BYTES = 64 * KIB;
+// One `readDictionary` chunk, 1,398,104 bytes as base64.
+export const DICTIONARY_CHUNK_BYTES = 1 * MIB;
+// One download or import run.
+export const DICTIONARY_DOWNLOAD_DEADLINE_MS = REGISTERED_DEADLINE_CAP_MS;
+// One worker load, from the first `readDictionary` call.
+export const DICTIONARY_LOAD_DEADLINE_MS = READ_DEADLINE_MS;
+export const DICTIONARY_PROGRESS_EVENTS_PER_SECOND = 4;
+// Selected languages, English included. Also the concurrent `readDictionary` calls.
+export const SPELLING_LANGUAGES = 3;
+export const SPELLING_SUGGESTIONS = 5;
+export const PERSONAL_WORDS = 10_000;
+export const PERSONAL_WORD_CODE_POINTS = 100;
+// Test only: the packaged gate of plan.md D3.
+export const DICTIONARY_LOAD_GATE_MS = 10 * SECOND_MS;
+export const DICTIONARY_LANGUAGE_MEMORY_BYTES = 256 * MIB;

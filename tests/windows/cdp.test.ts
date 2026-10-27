@@ -170,3 +170,51 @@ describe("holdIpc", () => {
     }
   }, 30_000);
 });
+
+// WebView2 pauses the CORS preflight (method OPTIONS) of a held call too, and sends the POST only after the preflight continues.
+describe("holdIpc and the CORS preflight", () => {
+  test("holdIpc continues a paused OPTIONS request at once and does not count it as held; the POST that follows is held", async () => {
+    const event = (method: string, params: object) => JSON.stringify({ method, params });
+    const sent = (n: string, method: string) => event("Network.requestWillBeSent", { requestId: n, request: { method, url: "http://ipc.localhost/read_workspace" } });
+    const paused = (n: string, method: string) => event("Fetch.requestPaused", { requestId: `f${n}`, networkId: n, request: { method, url: "http://ipc.localhost/read_workspace" } });
+    const calls: [string, unknown][] = [];
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch(req, srv) {
+        if (new URL(req.url).pathname === "/ws") return srv.upgrade(req) ? undefined : new Response("no upgrade", { status: 400 });
+        return Response.json([{ type: "page", url: "http://tauri.localhost/", webSocketDebuggerUrl: `ws://127.0.0.1:${srv.port}/ws` }]);
+      },
+      websocket: {
+        message(ws, data) {
+          const { id, method, params } = JSON.parse(String(data)) as { id: number; method: string; params: { requestId?: string } };
+          calls.push([method, params.requestId]);
+          const events: Record<string, string[]> = {
+            "Fetch.enable": [sent("5", "OPTIONS"), paused("5", "OPTIONS")],
+            "Fetch.continueRequest": params.requestId === "f5" ? [event("Network.loadingFinished", { requestId: "5" }), sent("6", "POST"), paused("6", "POST")] : [event("Network.loadingFinished", { requestId: "6" })],
+          };
+          ws.send(JSON.stringify({ id, result: {} }));
+          for (const m of events[method] ?? []) ws.send(m);
+        },
+      },
+    });
+    const c = await connectPage(server.port!, 5_000);
+    try {
+      const ipc = await watchIpc(c);
+      const hold = await holdIpc(c, ipc, "read_workspace", 5_000);
+      expect(ipc.pending("read_workspace")).toEqual(["6"]);
+      await hold.release();
+      expect(calls).toEqual([
+        ["Network.enable", undefined],
+        ["Fetch.enable", undefined],
+        ["Fetch.continueRequest", "f5"],
+        ["Fetch.continueRequest", "f6"],
+        ["Fetch.disable", undefined],
+      ]);
+      expect(ipc.finished("read_workspace").map((call) => call.requestId)).toEqual(["6"]);
+    } finally {
+      c.close();
+      server.stop(true);
+    }
+  }, 30_000);
+});

@@ -457,6 +457,10 @@
   border-color: var(--divider);
   background-color: transparent;
 }
+/* A native checkbox ignores the text color, so an unavailable one needs its own cue. */
+input[type="checkbox"][aria-disabled="true"] {
+  opacity: 0.5;
+}
 
 @media (forced-colors: active) {
   :focus-visible {
@@ -517,10 +521,25 @@
   }
   /* Forced colors drop the ring shadow, so a dialog and a tooltip need an edge against the content below. */
   /* Feature 005 plan.md D16: the branch card too. */
+  /* 006 plan.md D16: menus too. The 004 rule removes the outline of a focused menu popup, so the focused popup needs its own selector. */
   [data-slot="dialog-content"],
   [data-slot="tooltip-content"],
-  [data-slot="hover-card-content"] {
+  [data-slot="hover-card-content"],
+  [data-slot="dropdown-menu-content"],
+  [data-slot="dropdown-menu-content"]:focus-visible,
+  [data-slot="dropdown-menu-sub-content"],
+  [data-slot="dropdown-menu-sub-content"]:focus-visible {
     outline: 1px solid CanvasText;
+  }
+  /* 006 plan.md D16: the focused menu item. */
+  [role="menu"] :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):focus-visible {
+    forced-color-adjust: none;
+    background: Highlight;
+    color: HighlightText;
+  }
+  /* The shadcn item class gives the descendants of a focused item a token color, and `forced-color-adjust: none` keeps it. */
+  [role="menu"] :is([role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]):focus-visible * {
+    color: HighlightText;
   }
   .selected-hunk-bar {
     forced-color-adjust: none;
@@ -558,6 +577,16 @@
   :is(:disabled, [aria-disabled="true"], [data-disabled]) {
     color: GrayText;
     border-color: GrayText;
+  }
+  /* 006 plan.md D16: a native checkbox ignores `color`. Without its native appearance, the box takes the 13 px Chromium size and a GrayText border. */
+  input[type="checkbox"][aria-disabled="true"]:not(:checked) {
+    appearance: none;
+    box-sizing: border-box;
+    width: 13px;
+    height: 13px;
+    border: 1px solid GrayText;
+    border-radius: 2px;
+    opacity: 1;
   }
   /* The selected-row button rule outranks the rule above, so a disabled button in a selected row needs its own pair. */
   .list-row[aria-selected="true"] button:is(:disabled, [aria-disabled="true"], [data-disabled]) {

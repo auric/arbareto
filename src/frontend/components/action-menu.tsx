@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
-import { Fragment, useCallback, useId, type ComponentProps, type ReactElement } from "react";
+import { Fragment, useCallback, useEffect, useId, useRef, type ComponentProps, type ReactElement } from "react";
 import { isEditable } from "../keyboard/shortcuts";
 import { RunningTooltip } from "./running-tooltip";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuGroup, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuShortcut, DropdownMenuTrigger } from "./ui/dropdown-menu";
@@ -21,6 +21,8 @@ export type ActionItem = {
   running?: boolean;
   /** A destructive item uses the Removed text (D16). */
   danger?: boolean;
+  /** A state line, such as "Finding suggestions…". A key menu never focuses it (006 plan.md D15 "Menu opening"). */
+  placeholder?: boolean;
   onSelect(): void;
 };
 
@@ -48,7 +50,20 @@ export type ActionMenuProps = {
 /** The menu of D15. The accessible name of an item is its label only: the key goes to `aria-keyshortcuts`, and the key column is hidden from assistive technology. */
 export function ActionMenu({ label, groups, open, onOpenChange, trigger, anchor, byKey = false, finalFocus, width }: ActionMenuProps) {
   // Base UI 1.8.0 records no open method without a trigger, so it focuses the popup. The focused item becomes the highlighted item.
-  const focusFirst = useCallback((popup: HTMLDivElement | null) => void (byKey && popup?.querySelector<HTMLElement>('[role="menuitem"]')?.focus()), [byKey]);
+  const popup = useRef<HTMLDivElement | null>(null);
+  const focusFirst = useCallback(
+    (element: HTMLDivElement | null) => {
+      popup.current = element;
+      if (byKey) element?.querySelector<HTMLElement>('[role="menuitem"]:not([data-placeholder])')?.focus();
+    },
+    [byKey],
+  );
+  // A changed list can remove the focused item, and the focus then falls to the popup.
+  const list = groups.flatMap((group) => ("items" in group ? group.items : group).map((item) => item.label)).join("\n");
+  useEffect(() => {
+    const element = popup.current;
+    if (byKey && element !== null && document.activeElement === element) element.querySelector<HTMLElement>('[role="menuitem"]:not([data-placeholder]):not([aria-disabled="true"])')?.focus();
+  }, [byKey, list]);
   return (
     <DropdownMenu open={open} onOpenChange={(next) => onOpenChange(next)}>
       {trigger === undefined ? null : <DropdownMenuTrigger render={trigger} />}
@@ -93,6 +108,7 @@ function Item({ item, below }: { item: ActionItem; below: boolean }) {
       aria-keyshortcuts={item.keys?.aria}
       aria-describedby={reason === null ? undefined : reasonId}
       data-danger={item.danger ? "true" : undefined}
+      data-placeholder={item.placeholder ? "" : undefined}
       className={item.danger ? "danger-text" : undefined}
       onClick={reason === null ? item.onSelect : undefined}
     >

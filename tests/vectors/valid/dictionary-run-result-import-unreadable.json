@@ -1,0 +1,6 @@
+{
+  "schema": "dictionary-run-result",
+  "expected": "valid",
+  "platform": "windows",
+  "text": "{\"reason\":\"import-unreadable\",\"folder\":\"D:\\\\dictionaries\\\\uk\"}"
+}

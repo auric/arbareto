@@ -29,6 +29,8 @@ mod jobs;
 #[cfg(windows)]
 mod lifecycle;
 #[cfg(windows)]
+mod links;
+#[cfg(windows)]
 mod platform;
 #[cfg(windows)]
 mod process_requests;
@@ -151,6 +153,13 @@ pub fn run() {
             ipc::read_ignore_file,
             ipc::preview_ignore,
             ipc::open_submodule,
+            ipc::list_dictionaries,
+            ipc::read_dictionary,
+            ipc::download_dictionary,
+            ipc::import_dictionary,
+            ipc::remove_dictionary,
+            ipc::set_spelling,
+            ipc::open_licence_link,
         ])
         .setup(move |app| start(app, root.as_deref()))
         .on_window_event(|window, event| {

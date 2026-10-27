@@ -2789,6 +2789,10 @@ impl ProcessRequests {
     fn file_facts(&self, request: &frame::FileFacts, call_id: &str) -> Result<(), Code> {
         let read_at = Instant::now();
         let parsed = file_facts::parse(request)?;
+        // Feature 008 contract Δ6: this walk gives no `detail` fact and no streamed digest, so it refuses both.
+        if request.detail == Some(true) || request.stream == Some(true) {
+            return Err(INVALID);
+        }
         let mut state = self.state();
         check_active(&state, parsed.operation_id)?;
         let id = request.repository_id.as_str();

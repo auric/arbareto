@@ -1,0 +1,8 @@
+{
+  "schema": "run-workbench-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"action\":\"revert-lines\",\"files\":[{\"entryId\":\"0f0f0f0f-0000-4000-8000-00000000000a\",\"outcome\":\"reverted\"},{\"entryId\":\"0f0f0f0f-0000-4000-8000-00000000000b\",\"outcome\":\"reverted\"}],\"foldersCreated\":[],\"index\":\"none\"}",
+  "repair": {
+    "files.1": null
+  }
+}

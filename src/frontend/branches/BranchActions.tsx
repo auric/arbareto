@@ -311,6 +311,8 @@ export function useBranchActions(options: BranchActionsOptions) {
       deletePermanently: null,
       openSubmodule: null,
       closeEditor: null,
+      revertLines: null,
+      revertFiles: null,
     };
   }
 

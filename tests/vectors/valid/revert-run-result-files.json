@@ -1,0 +1,5 @@
+{
+  "schema": "run-workbench-result",
+  "expected": "valid",
+  "text": "{\"action\":\"revert-files\",\"files\":[{\"entryId\":\"0f0f0f0f-0000-4000-8000-00000000000a\",\"outcome\":\"reverted\"},{\"entryId\":\"0f0f0f0f-0000-4000-8000-00000000000b\",\"outcome\":\"not-changed\",\"code\":\"refused\",\"reason\":\"read-only\"},{\"entryId\":\"0f0f0f0f-0000-4000-8000-00000000000f\",\"outcome\":\"not-changed\",\"code\":\"error\",\"reason\":\"disk-full\"},{\"entryId\":\"0f0f0f0f-0000-4000-8000-000000000010\",\"outcome\":\"not-started\"}],\"foldersCreated\":[\"c3JjL25ldw==\"],\"index\":\"published\"}"
+}

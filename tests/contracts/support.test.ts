@@ -19,7 +19,7 @@ const bytes = (text: string): Uint8Array => encoder.encode(text);
 const latin1 = (text: string): Uint8Array => Uint8Array.from(text, (c) => c.charCodeAt(0));
 const HEAD_OID = "1".repeat(40);
 const INDEX_OID = "2".repeat(40);
-const NO_ATTRIBUTES = { filter: "unspecified", diff: "unspecified", text: "unspecified", eol: "unspecified", crlf: "unspecified", "working-tree-encoding": "unspecified" };
+const NO_ATTRIBUTES = { filter: "unspecified", diff: "unspecified", text: "unspecified", eol: "unspecified", crlf: "unspecified", "working-tree-encoding": "unspecified", ident: "unspecified" };
 
 const BINARY: NumstatResult = { ok: true, binary: true };
 const TEXT: NumstatResult = { ok: true, binary: false };
@@ -194,24 +194,33 @@ describe("index-only .gitattributes refuses untracked hunks", () => {
   });
 });
 
+// Feature 008 research.md R6 (T010): `ident` is the seventh attribute, after the six of T103.
 describe("check-attr -z output", () => {
-  const triples = (path: string, values: string[]) => ["filter", "diff", "text", "eol", "crlf", "working-tree-encoding"].map((name, i) => `${path}\0${name}\0${values[i]}\0`).join("");
-  const six = (value: string) => [value, value, value, value, value, value];
+  const NAMES = ["filter", "diff", "text", "eol", "crlf", "working-tree-encoding", "ident"];
+  const triples = (path: string, values: string[], names = NAMES) => names.map((name, i) => `${path}\0${name}\0${values[i]}\0`).join("");
+  const seven = (value: string) => NAMES.map(() => value);
 
-  test("each path gets its six values in request order", () => {
-    const out = bytes(triples("a b.txt", ["lfs", "unset", "set", "crlf", "unspecified", "UTF-16LE"]) + triples("c", six("unspecified")));
+  test("each path gets its seven values in request order, ident last", () => {
+    const out = bytes(triples("a b.txt", ["lfs", "unset", "set", "crlf", "unspecified", "UTF-16LE", "set"]) + triples("c", seven("unspecified")));
     const parsed = parseAttributes(out, [bytes("a b.txt"), bytes("c")]);
-    expect(parsed?.[0]).toEqual({ filter: "lfs", diff: "unset", text: "set", eol: "crlf", crlf: "unspecified", "working-tree-encoding": "UTF-16LE" });
+    expect(parsed?.[0]).toEqual({ filter: "lfs", diff: "unset", text: "set", eol: "crlf", crlf: "unspecified", "working-tree-encoding": "UTF-16LE", ident: "set" });
     expect(parsed?.[1]).toEqual(NO_ATTRIBUTES);
   });
 
+  test("ident keeps its set, unset, and unspecified values", () => {
+    for (const value of ["set", "unset", "unspecified"]) expect(parseAttributes(bytes(triples("a", [...seven("unspecified").slice(0, 6), value])), [bytes("a")])?.[0]?.ident).toBe(value);
+  });
+
   test("a missing, extra, reordered, or foreign triple gives null", () => {
-    const good = triples("a", six("unspecified"));
+    const good = triples("a", seven("unspecified"));
     const paths = [bytes("a")];
     expect(parseAttributes(bytes(good.slice(0, -1)), paths)).toBeNull();
     expect(parseAttributes(bytes(good + "a\0filter\0set\0"), paths)).toBeNull();
     expect(parseAttributes(bytes(good.replace("filter", "diff")), paths)).toBeNull();
-    expect(parseAttributes(bytes(triples("b", six("unspecified"))), paths)).toBeNull();
+    expect(parseAttributes(bytes(triples("b", seven("unspecified"))), paths)).toBeNull();
+    // The six T103 triples without ident, and ident before filter.
+    expect(parseAttributes(bytes(triples("a", seven("unspecified"), NAMES.slice(0, 6))), paths)).toBeNull();
+    expect(parseAttributes(bytes(triples("a", seven("unspecified"), ["ident", ...NAMES.slice(0, 6)])), paths)).toBeNull();
   });
 });
 

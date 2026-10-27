@@ -246,6 +246,7 @@
                 "REGISTER_VERSION_BYTES",
                 "RETAINED_COMPARISONS",
                 "RETAINED_COMPARISON_BYTES",
+                "REVERT_FILE_BYTES",
                 "SESSION_LOG_ENTRIES",
                 "SHALLOW_METADATA_BYTES",
                 "SPELLING_LANGUAGES",

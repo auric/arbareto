@@ -32,7 +32,7 @@ export const SYNC_TRUST: Record<(typeof SYNC_ACTIONS)[number], TrustAction> = {
   skip: "pull",
 };
 
-/** Contract Δ7 "Mutation trust": `config-save` uses no class, so it never asks. Feature 005 contract Δ7: `delete` and `ignore-save` too. */
+/** Contract Δ7 "Mutation trust": `config-save` uses no class, so it never asks. Feature 005 contract Δ7: `delete` and `ignore-save` too. Feature 008 contract Δ7: the three revert actions too. */
 export const WORKBENCH_TRUST: Record<(typeof WORKBENCH_ACTIONS)[number], TrustAction | null> = {
   switch: "switch",
   "create-branch": "branch",
@@ -48,6 +48,9 @@ export const WORKBENCH_TRUST: Record<(typeof WORKBENCH_ACTIONS)[number], TrustAc
   "config-save": null,
   delete: null,
   "ignore-save": null,
+  "revert-lines": null,
+  "revert-files": null,
+  "revert-unstaged": null,
 };
 
 /**

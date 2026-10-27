@@ -185,20 +185,24 @@ export const PHASES = [
   "preview",
   // Feature 006 contract Δ2.
   "dictionary",
+  // Feature 008 contract Δ2.
+  "revert-index",
+  "revert-files",
 ] as const;
 export const Phase = z.enum(PHASES);
 export type Phase = z.infer<typeof Phase>;
-// Feature 003 to 006 contract Δ2: these phases carry only these counters. A workbench phase without counters carries none.
+// Feature 003 to 008 contract Δ2: these phases carry only these counters. A workbench phase without counters carries none.
 const SYNC_COUNTERS = ["percent", "remoteIndex", "remoteCount"];
 const PHASE_COUNTERS: Readonly<Record<string, readonly string[]>> = {
   ...Object.fromEntries(["sync-fetch", "sync-merge", "sync-rebase", "sync-push", "sync-continue", "clone", "pageant"].map((phase) => [phase, SYNC_COUNTERS])),
-  ...Object.fromEntries(["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "ignore-save", "preview"].map((phase) => [phase, []])),
+  ...Object.fromEntries(["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "ignore-save", "preview", "revert-index"].map((phase) => [phase, []])),
   config: ["keyIndex", "keyCount"],
   "stage-files": ["fileIndex", "fileCount"],
   // Feature 005 contract Δ2: a porcelain blame carries no counter.
   blame: ["blamed", "total"],
   "delete-files": ["fileIndex", "fileCount"],
   dictionary: ["received", "total"],
+  "revert-files": ["fileIndex", "fileCount"],
 };
 
 // Contract §11 "Distro checks": a name that `wsl.exe --list --quiet` prints holds no control character.

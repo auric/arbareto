@@ -116,7 +116,8 @@ describe("contract Δ9 codes", () => {
   test("each new code has exactly its contract reasons", () => {
     expect([...(E.BLAME_UNAVAILABLE_REASONS ?? [])]).toEqual(["no-history", "binary", "submodule", "size", "lines", "ignore-revs-file-missing", "no-previous", "path"]);
     expect([...(E.SUBMODULE_UNAVAILABLE_REASONS ?? [])]).toEqual(["not-submodule", "submodule-not-initialized", "path"]);
-    expect([...(E.STALE_REVIEW_REASONS ?? [])]).toEqual(["files-changed", "ignore-changed"]);
+    // Feature 008 contract Δ9 adds `revert-changed`.
+    expect([...(E.STALE_REVIEW_REASONS ?? [])]).toEqual(["files-changed", "ignore-changed", "revert-changed"]);
     expect([...(E.UNKNOWN_TARGET_REASONS ?? [])]).toEqual(["absent"]);
   });
 

@@ -15,7 +15,7 @@ import { SubmoduleHostLine, SubmodulePlanRow, SubmoduleRowResult } from "../../s
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
-import { answer, button, buttons, click, menuItem, press, settle, text, type Call } from "./sync-fake";
+import { answer, button, buttons, click, hoverTooltip, menuItem, press, settle, text, type Call } from "./sync-fake";
 
 printOrigin("../../src/frontend/submodules/SubmodulesGroup.tsx", import.meta.dir);
 printOrigin("../../src/frontend/status/OperationStatus.tsx", import.meta.dir);
@@ -287,7 +287,8 @@ describe("rows and progress (FR-077)", () => {
     const view = await started();
     await sendProgress(view.double, progress("fetch", "libs/a", 1, 62));
     const status = group().querySelector<HTMLElement>('[data-slot="header-status"]')!;
-    expect(status.title).toBe("Updating 1 of 3");
+    expect(status.hasAttribute("title")).toBe(false);
+    expect(await hoverTooltip(status)).toEqual(["Updating 1 of 3"]);
     expect(status.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
   });
 
@@ -334,7 +335,8 @@ describe("results (FR-081, FR-082)", () => {
   test("the header totals keep one line, end with an ellipsis, and give the full text in the tooltip (T116, plan D15 Header)", async () => {
     await finished();
     const status = group().querySelector<HTMLElement>('[data-slot="header-status"]')!;
-    expect(status.title).toBe("2 updated, 1 failed");
+    expect(status.hasAttribute("title")).toBe(false);
+    expect(await hoverTooltip(status)).toEqual(["2 updated, 1 failed"]);
     expect(status.className.split(/\s+/)).toEqual(expect.arrayContaining(["min-w-0", "truncate"]));
   });
 

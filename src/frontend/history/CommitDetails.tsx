@@ -6,6 +6,7 @@ import { useEffect, useId, useState, useSyncExternalStore, type ReactNode } from
 import type { HistoryRow } from "../../contracts/envelope";
 import { unknownReadText, useCopy } from "../app/RepositoryStates";
 import { IconButton } from "../components/icon-button";
+import { TextTooltip } from "../components/text-tooltip";
 import { Button } from "../components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { FILE_LANE, type Profile } from "../layout/profiles";
@@ -42,9 +43,11 @@ function Person({ person, seconds, dateFormat }: { person: HistoryRow["author"];
 /** Feature 005 plan.md D15 "History view" (Main board): the 268 px region shows the short ID. The name and the tooltip give the full ID. */
 function CommitLink({ oid, onSelect }: { oid: string; onSelect(oid: string): void }) {
   return (
-    <Button variant="outline" size="sm" className="font-mono" aria-label={oid} title={oid} onClick={() => onSelect(oid)}>
-      {shortId(oid)}
-    </Button>
+    <TextTooltip text={oid}>
+      <Button variant="outline" size="sm" className="font-mono" aria-label={oid} onClick={() => onSelect(oid)}>
+        {shortId(oid)}
+      </Button>
+    </TextTooltip>
   );
 }
 

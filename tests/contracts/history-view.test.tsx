@@ -9,6 +9,7 @@ import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { createFake, oid, stubLayout, TARGET, type FakeOptions } from "./history-fake";
+import { hoverTooltip } from "./sync-fake";
 
 printOrigin("../../src/frontend/history/HistoryList.tsx", import.meta.dir);
 printOrigin("../../src/frontend/history/HistoryView.tsx", import.meta.dir);
@@ -246,6 +247,15 @@ describe("row labels", () => {
     expect(chips(second!)).toEqual(["old"]);
     expect(head!.getAttribute("aria-label")!.startsWith("HEAD, branch main, Branches: main, topic, remote-tracking: origin/main, tags: v1, Commit 0, ")).toBe(true);
     expect(second!.getAttribute("aria-label")!.startsWith("Branches: old, Commit 1, ")).toBe(true);
+  });
+
+  test("the label region has no native title; a hover shows every label in the house tooltip, and the row name holds the same labels (001 plan.md \"Icons\")", async () => {
+    const { host } = await mount({ text: labels });
+    const option = commits(host)[0]!;
+    const region = option.querySelector<HTMLElement>('[data-slot="row-labels"]')!;
+    expect(region.hasAttribute("title")).toBe(false);
+    expect(await hoverTooltip(region)).toEqual(["HEAD, branch main", "Branches: main, topic", "remote-tracking: origin/main", "tags: v1"]);
+    expect(option.getAttribute("aria-label")).toStartWith("HEAD, branch main, Branches: main, topic, remote-tracking: origin/main, tags: v1, ");
   });
 
   test("each label has its kind icon, and its name ends with an ellipsis beyond 160 DIPs", async () => {

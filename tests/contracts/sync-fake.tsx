@@ -300,3 +300,23 @@ export function sizeSwitcherList(height: number): () => void {
   };
 }
 export const tooltipText = () => document.querySelector('[data-slot="tooltip-content"]')?.textContent ?? null;
+/** Hovers `element` with a mouse past the Base UI Tooltip `OPEN_DELAY` of 600 ms (tooltip/utils/constants.mjs), reads the tooltip lines, and leaves. Null: no tooltip opened. */
+export async function hoverTooltip(element: Element): Promise<string[] | null> {
+  await act(async () => {
+    element.dispatchEvent(new PointerEvent("pointerenter", { pointerType: "mouse" }));
+    element.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+    element.dispatchEvent(new MouseEvent("mouseenter"));
+    element.dispatchEvent(new MouseEvent("mousemove", { bubbles: true }));
+  });
+  await act(async () => void (await new Promise((done) => setTimeout(done, 700))));
+  const tip = document.querySelector('[data-slot="tooltip-content"]:not([data-ending-style])');
+  const spans = tip === null ? [] : [...tip.querySelectorAll(":scope > span")];
+  const lines = tip === null ? null : spans.length > 0 ? spans.map((s) => text(s)) : [text(tip)];
+  await act(async () => {
+    element.dispatchEvent(new PointerEvent("pointerleave", { pointerType: "mouse" }));
+    element.dispatchEvent(new MouseEvent("mouseout", { bubbles: true }));
+    element.dispatchEvent(new MouseEvent("mouseleave"));
+  });
+  await settle();
+  return lines;
+}

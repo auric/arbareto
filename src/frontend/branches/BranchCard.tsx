@@ -4,6 +4,7 @@
 import { ArrowDataTransferVerticalIcon, CloudIcon, FolderGitIcon, Unlink01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import type { ReactElement, ReactNode } from "react";
+import { TextTooltip } from "../components/text-tooltip";
 import { HoverCard, HoverCardContent, HoverCardTrigger } from "../components/ui/hover-card";
 import type { TrackLabel } from "../state/tracking";
 
@@ -25,9 +26,11 @@ export const isCut = (elements: readonly (Element | null | undefined)[]) => elem
 /** The gone mark: its shape is the cue, and the row name states it. */
 export function GoneMark({ upstream }: { upstream: string }) {
   return (
-    <span data-slot="gone-mark" aria-hidden="true" title={goneTooltip(upstream)} className="flex shrink-0">
-      <HugeiconsIcon icon={Unlink01Icon} strokeWidth={2} className="size-4" />
-    </span>
+    <TextTooltip text={goneTooltip(upstream)}>
+      <span data-slot="gone-mark" aria-hidden="true" className="flex shrink-0">
+        <HugeiconsIcon icon={Unlink01Icon} strokeWidth={2} className="size-4" />
+      </span>
+    </TextTooltip>
   );
 }
 

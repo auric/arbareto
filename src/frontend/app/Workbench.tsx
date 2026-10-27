@@ -16,6 +16,7 @@ import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, STALE_TEXT, typ
 import { CommitTray } from "../commit/CommitTray";
 import { WorkingSummary } from "../commit/WorkingSummary";
 import { IconButton } from "../components/icon-button";
+import { TextTooltip } from "../components/text-tooltip";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import {
@@ -353,6 +354,20 @@ function WslBadge({ distro, textScale }: { distro: string; textScale: number }) 
         {distro}
       </span>
     </span>
+  );
+}
+
+/** Feature 003 FR-019 to FR-022: the counts of the current branch. The hidden text repeats the tooltip, so a screen reader hears the last-fetch statement. */
+function TrackingCount({ label, upstream }: { label: TrackLabel; upstream: string | null }) {
+  if (label === null) return <span data-slot="tracking-count" className="num shrink-0" />;
+  const full = `${label.label}${upstream ? `, ${shortRef(upstream)}` : ""}. ${COUNTS_TOOLTIP}`;
+  return (
+    <TextTooltip text={full}>
+      <span data-slot="tracking-count" className="num shrink-0">
+        <span aria-hidden="true">{label.text}</span>
+        <span className="sr-only">{full}</span>
+      </span>
+    </TextTooltip>
   );
 }
 
@@ -1589,14 +1604,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
         {currentHead.state === "detached" ? NO_BRANCH : trackingFailure}
       </span>
     ) : (
-      <span data-slot="tracking-count" className="num shrink-0" title={currentLabel === null ? undefined : `${currentLabel.label}${currentEntry?.upstream ? `, ${shortRef(currentEntry.upstream)}` : ""}. ${COUNTS_TOOLTIP}`}>
-        {currentLabel === null ? null : (
-          <>
-            <span aria-hidden="true">{currentLabel.text}</span>
-            <span className="sr-only">{currentLabel.label}</span>
-          </>
-        )}
-      </span>
+      <TrackingCount label={currentLabel} upstream={currentEntry?.upstream ?? null} />
     );
   const staging: Staging = {
     bridge,

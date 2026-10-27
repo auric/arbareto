@@ -6,7 +6,7 @@ import { act, type ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { stubLayout } from "./history-fake";
-import { answer, button, click, createWorld, mountWorkbench, oid, press, refList, settle, succeeded, text, unmountAll, type World } from "./sync-fake";
+import { answer, button, click, createWorld, hoverTooltip, mountWorkbench, oid, press, refList, settle, succeeded, text, unmountAll, type World } from "./sync-fake";
 import { fixtureId } from "./bridge-contract";
 
 // tasks.md T058 (feature 003). Spec FR-019 to FR-022. Plan D8. Data-model §1.
@@ -80,7 +80,11 @@ describe("references sidebar (FR-019, FR-022)", () => {
     const row = [...host.querySelectorAll<HTMLElement>('[role="treeitem"]')].find((e) => e.getAttribute("aria-label")?.startsWith("main,"))!;
     expect(text(row)).toContain("↑2 ↓3");
     expect(row.getAttribute("aria-label")).toContain("2 ahead, 3 behind");
-    expect(row.querySelector("[title]")?.getAttribute("title")).toContain(COUNTS_TOOLTIP);
+    expect(row.querySelector("[title]")).toBeNull();
+    const counts = [...row.querySelectorAll<HTMLElement>("span")].find((s) => text(s) === "↑2 ↓3")!;
+    expect(await hoverTooltip(counts)).toEqual([`2 ahead, 3 behind. ${COUNTS_TOOLTIP}`]);
+    const described = (row.getAttribute("aria-describedby") ?? "").split(" ").map((id) => document.getElementById(id)?.textContent);
+    expect(described).toContain(COUNTS_TOOLTIP);
   });
 });
 
@@ -89,7 +93,9 @@ describe("toolbar counts (FR-019 to FR-022)", () => {
     await mountWorkbench(workbench, createWorld());
     expect(text(count()!)).toContain("↑2 ↓3");
     expect(text(count()!)).toContain("2 ahead, 3 behind");
-    expect(count()!.getAttribute("title")).toContain(COUNTS_TOOLTIP);
+    expect(count()!.hasAttribute("title")).toBe(false);
+    expect(text(count()!)).toContain(COUNTS_TOOLTIP);
+    expect(await hoverTooltip(count()!)).toEqual([`2 ahead, 3 behind, origin/main. ${COUNTS_TOOLTIP}`]);
   });
 
   test("a stale count shows no number", async () => {

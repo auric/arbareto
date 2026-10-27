@@ -1365,9 +1365,10 @@ mod tests {
         // The WP3 review adds the `fileDelete` digest above 1 MiB.
         // T057 removes the 2 `fileAppend` vectors from this check and adds the 2 `started` vectors of the 004 ignore actions.
         // The batch 3 review adds the `progress` vector of the removed phase `ignore`.
+        // Feature 007 T011 adds the 2 `handshake` vectors of a `signing` key and a `release` channel.
         assert_eq!(
             checked,
-            if cfg!(windows) { 213 } else { 208 },
+            if cfg!(windows) { 215 } else { 210 },
             "shell-read vectors"
         );
     }

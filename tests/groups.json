@@ -40,6 +40,7 @@
     "tests/wsl/workbench-wsl.test.ts": "runs Git fact cases inside the distro; builds 100,000 untracked files"
   },
   "parallel": [
+    "tests/contracts/about-dialog.test.tsx",
     "tests/contracts/admission.test.ts",
     "tests/contracts/blame-parser.test.ts",
     "tests/contracts/boot-view.test.tsx",

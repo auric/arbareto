@@ -28,7 +28,7 @@ export function AboutOverview({ scope, build, repositoryUrl }: OverviewProps) {
       <p>
         Build: {build.version} <span className="font-mono break-all">{build.commit}</span>
       </p>
-      {build.signing === "unsigned" && <p>Unsigned local test package</p>}
+      {build.channel === "local" && <p>Unsigned local test package</p>}
       {scope === "other" && <p>Unqualified platform</p>}
       <p>{SCOPE_LINE}</p>
       <p>{COPYRIGHT}</p>

@@ -49,7 +49,7 @@ const HANDSHAKE_FIELDS = {
   platformScope: "other",
   osBuild: 26200,
   webView2Version: "140.0.0.0",
-  buildIdentity: { version: "0.1.0", commit: "0".repeat(40), signing: "unsigned" },
+  buildIdentity: { version: "0.1.0", commit: "0".repeat(40), channel: "local" },
   markers: [] as unknown[],
   unloadedMarkers: 0,
   damagedMarkers: [] as unknown[],

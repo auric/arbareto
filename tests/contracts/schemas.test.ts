@@ -57,7 +57,7 @@ const HANDSHAKE = {
   platformScope: "other",
   osBuild: 26200,
   webView2Version: "154.0.4258.53",
-  buildIdentity: { version: "0.1.0", commit: "0".repeat(40), signing: "unsigned" },
+  buildIdentity: { version: "0.1.0", commit: "0".repeat(40), channel: "local" },
   markers: [],
   unloadedMarkers: 0,
   damagedMarkers: [],
@@ -185,6 +185,18 @@ describe("result, progress, and response schemas", () => {
 });
 
 describe("channel schemas", () => {
+  // Feature 007 contracts/release.md §4: `channel` replaces `signing`. The wire accepts a dirty commit. build.rs refuses a dirty preview build.
+  test("the handshake buildIdentity holds version, commit, and channel local or preview, and no signing key", () => {
+    const build = (buildIdentity: Record<string, unknown>) => Handshake.safeParse({ ...HANDSHAKE, buildIdentity }).success;
+    const commit = "0".repeat(40);
+    for (const channel of ["local", "preview"]) expect(build({ version: "0.1.0", commit, channel })).toBe(true);
+    expect(build({ version: "0.1.0", commit: `${commit}-dirty`, channel: "local" })).toBe(true);
+    for (const channel of ["release", "Preview", ""]) expect(build({ version: "0.1.0", commit, channel })).toBe(false);
+    expect(build({ version: "0.1.0", commit, signing: "unsigned" })).toBe(false);
+    expect(build({ version: "0.1.0", commit, channel: "local", signing: "unsigned" })).toBe(false);
+    expect(build({ version: "0.1.0", commit })).toBe(false);
+  });
+
   test("the handshake and the trust record bind gitSelectedPath, a channel path, and no digest", () => {
     expect(Handshake.safeParse(HANDSHAKE).success).toBe(true);
     expect(TrustRecord.safeParse(RECORD).success).toBe(true);

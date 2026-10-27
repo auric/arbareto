@@ -24,7 +24,7 @@ const HANDSHAKE = {
     platformScope: "other",
     osBuild: 26200,
     webView2Version: "154.0.4258.37",
-    buildIdentity: { version: "0.1.0", commit: "0".repeat(40), signing: "unsigned" },
+    buildIdentity: { version: "0.1.0", commit: "0".repeat(40), channel: "local" },
     markers: [],
     unloadedMarkers: 0,
     damagedMarkers: [],

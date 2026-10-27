@@ -18,7 +18,7 @@ const { Button } = await import("../../src/frontend/components/ui/button");
 const CANCELED = { requestId: null, state: "canceled" as const };
 
 const environment = (fields: Partial<Environment> = {}): Environment => ({
-  buildIdentity: { version: "0.1.0", commit: "c".repeat(40) + "-dirty", signing: "unsigned" },
+  buildIdentity: { version: "0.1.0", commit: "c".repeat(40) + "-dirty", channel: "local" },
   platformScope: "other",
   detectedVersion: "2.43.0.windows.1",
   minimumVersion: "2.55.0.windows.3",
@@ -173,6 +173,27 @@ describe("boot view", () => {
 });
 
 // A `chooseGit` result other than `succeeded` or `canceled` shows its code and text (contract §3, §9), as a refused repository does.
+// Feature 007 contracts/release.md §6: the boot view takes the About marker rule and has no release button.
+describe("build channel marker", () => {
+  const host = (html: string) => Object.assign(document.createElement("div"), { innerHTML: html });
+  const plain = (html: string) => [...host(html).querySelectorAll("p")].map((p) => p.textContent?.trim());
+  const releaseButtons = (html: string) => [...host(html).querySelectorAll("button")].filter((b) => ["Hunspell source", "Source at this commit"].includes(b.textContent?.trim() ?? ""));
+
+  test("channel local shows the unsigned local test package line, no Preview line, and no release button", () => {
+    const html = render(environment());
+    expect(plain(html)).toContain("Unsigned local test package");
+    expect(plain(html)).not.toContain("Preview");
+    expect(releaseButtons(html)).toHaveLength(0);
+  });
+
+  test.todo("channel preview shows the Preview line, no local package line, and no release button", () => {
+    const html = render(environment({ buildIdentity: { version: "0.1.0", commit: "c".repeat(40), channel: "preview" } }));
+    expect(plain(html)).toContain("Preview");
+    expect(plain(html)).not.toContain("Unsigned local test package");
+    expect(releaseButtons(html)).toHaveLength(0);
+  });
+});
+
 describe("Select Git result", () => {
   async function mountBlocked(response: unknown) {
     const host = document.body.appendChild(document.createElement("div"));

@@ -694,7 +694,7 @@ describe("trust", () => {
 // Contract §3 `getEnvironment` and §6 "Dismissal".
 describe("recovery markers", () => {
   const environment = (fields: Partial<Environment> = {}): Environment => ({
-    buildIdentity: { version: "0.1.0", commit: "c".repeat(40), signing: "unsigned" },
+    buildIdentity: { version: "0.1.0", commit: "c".repeat(40), channel: "local" },
     platformScope: "qualification-target",
     detectedVersion: "2.55.0.windows.3",
     minimumVersion: "2.55.0.windows.3",
@@ -1265,7 +1265,7 @@ describe("single view", () => {
   });
 
   test("the status bar ends with Git <version> outside every live region", async () => {
-    const environment = { buildIdentity: { version: "0.1.0", commit: "c".repeat(40), signing: "unsigned" }, platformScope: "qualification-target", detectedVersion: "2.55.0.windows.3", minimumVersion: "2.55.0.windows.3", qualification: "unverified", markers: [], damagedMarkers: [] } as unknown as Environment;
+    const environment = { buildIdentity: { version: "0.1.0", commit: "c".repeat(40), channel: "local" }, platformScope: "qualification-target", detectedVersion: "2.55.0.windows.3", minimumVersion: "2.55.0.windows.3", qualification: "unverified", markers: [], damagedMarkers: [] } as unknown as Environment;
     await opened({}, environment);
     const version = document.querySelector('footer [data-slot="git-version"]')!;
     expect(version.textContent).toBe("Git 2.55.0.windows.3");
@@ -1448,7 +1448,7 @@ describe("menus", () => {
   });
 
   test("the Unqualified platform label follows the Git version in the status bar, outside every live region", async () => {
-    const environment = { buildIdentity: { version: "0.1.0", commit: "c".repeat(40), signing: "unsigned" }, platformScope: "other", detectedVersion: "2.55.0.windows.3", minimumVersion: "2.55.0.windows.3", qualification: "unverified", markers: [], damagedMarkers: [] } as unknown as Environment;
+    const environment = { buildIdentity: { version: "0.1.0", commit: "c".repeat(40), channel: "local" }, platformScope: "other", detectedVersion: "2.55.0.windows.3", minimumVersion: "2.55.0.windows.3", qualification: "unverified", markers: [], damagedMarkers: [] } as unknown as Environment;
     await mount(succeeded(REGISTRATION), environment);
     const segment = document.querySelector('footer [data-slot="git-version"]')!;
     expect(segment.textContent).toBe("Git 2.55.0.windows.3Unqualified platform");

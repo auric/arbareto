@@ -619,7 +619,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
       platformScope: "other",
       osBuild: 26200,
       webView2Version: "140.0.0.0",
-      buildIdentity: { version: "0.1.0", commit: "0".repeat(40), signing: "unsigned" },
+      buildIdentity: { version: "0.1.0", commit: "0".repeat(40), channel: "local" },
       markers: options.markers ?? [],
       unloadedMarkers: options.unloadedMarkers ?? 0,
       damagedMarkers: [],

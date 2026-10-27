@@ -38,7 +38,7 @@ function handshake(extra: Partial<Handshake> = {}): Handshake {
     platformScope: "qualification-target",
     osBuild: 26200,
     webView2Version: "154.0.4258.37",
-    buildIdentity: { version: "0.1.0", commit: `${"a".repeat(40)}-dirty`, signing: "unsigned" },
+    buildIdentity: { version: "0.1.0", commit: `${"a".repeat(40)}-dirty`, channel: "local" },
     markers: [],
     unloadedMarkers: 0,
     damagedMarkers: [],
@@ -71,7 +71,7 @@ describe("getEnvironment (T054)", () => {
   test("an admitted Git gives the facts, the admission, and a separate unverified qualification", () => {
     const env = getEnvironment(handshake(), admitted);
     expect(env).toEqual({
-      buildIdentity: { version: "0.1.0", commit: `${"a".repeat(40)}-dirty`, signing: "unsigned" },
+      buildIdentity: { version: "0.1.0", commit: `${"a".repeat(40)}-dirty`, channel: "local" },
       platformScope: "qualification-target",
       selectedPath: GIT_PATH,
       executablePath: GIT_PATH,

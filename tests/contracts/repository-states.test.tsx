@@ -169,14 +169,30 @@ describe("repository states", () => {
   describe("start page", () => {
     const SCOPE = "This test build covers opening repositories, recent repositories, status, diffs, hunk and file staging, local commits, submodule updates, one history page, and a read-only reference list.";
     const PATH = "D:\\work\\sample-app";
-    function startPage(entries: unknown[]) {
+    // Feature 007: the preview line restates `.github/release-notes/preview.md` (spec FR-003).
+    const PREVIEW_SCOPE = "This preview is not a qualified release. The qualification of Windows 11 x64 continues.";
+    function startPage(entries: unknown[], channel?: "local" | "preview") {
       const calls: string[] = [];
       const reply = (name: string, result: unknown) => async () => (calls.push(name), { requestId: crypto.randomUUID(), state: "succeeded", result });
       const bridge = contractChecked({ listRecentRepositories: reply("listRecentRepositories", { entries }), openRecentRepository: reply("openRecentRepository", {}), removeRecentRepository: reply("removeRecentRepository", { entries }) });
       const folders: number[] = [];
-      return { calls, folders, node: <states.StartPage bridge={bridge as never} busy={false} onOpenFolder={() => void folders.push(1)} onOpened={noop} /> };
+      return { calls, folders, node: <states.StartPage bridge={bridge as never} busy={false} channel={channel} onOpenFolder={() => void folders.push(1)} onOpened={noop} /> };
     }
     const settle = () => act(async () => await new Promise((resolve) => setImmediate(resolve)));
+
+    test("channel preview shows the preview line instead of the test build line", async () => {
+      const host = await show(startPage([], "preview").node);
+      await settle();
+      expect(text(host)).toContain(PREVIEW_SCOPE);
+      expect(text(host)).not.toContain(SCOPE);
+    });
+
+    test("channel local shows the test build line", async () => {
+      const host = await show(startPage([], "local").node);
+      await settle();
+      expect(text(host)).toContain(SCOPE);
+      expect(text(host)).not.toContain(PREVIEW_SCOPE);
+    });
 
     test("it reads the recent list once and shows each entry with its name and path only, and no branch text", async () => {
       const page = startPage([{ entryId: crypto.randomUUID(), path: PATH, location: { kind: "native" }, openedAt: "2026-10-10T08:00:00Z", current: false }]);

@@ -33,12 +33,12 @@ afterEach(() => {
   for (const unmount of unmounts.splice(0)) unmount();
 });
 
-async function renderAbout(channel: Environment["buildIdentity"]["channel"], reply: BridgeResponse = SUCCEEDED) {
+async function renderAbout(channel: Environment["buildIdentity"]["channel"], reply: BridgeResponse | (() => Promise<BridgeResponse>) = SUCCEEDED) {
   const calls: { target: Target }[] = [];
   const bridge: ReleaseBridge = {
     openReleaseLink: async (payload) => {
       calls.push(payload);
-      return reply;
+      return typeof reply === "function" ? reply() : reply;
     },
   };
   const host = document.body.appendChild(document.createElement("div"));
@@ -63,8 +63,10 @@ async function press(element: HTMLElement, key: "Enter" | " ") {
     element.focus();
     const down = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
     element.dispatchEvent(down);
-    if (!down.defaultPrevented) element.click();
-    element.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true, cancelable: true }));
+    if (key === "Enter" && !down.defaultPrevented) element.click();
+    const up = new KeyboardEvent("keyup", { key, bubbles: true, cancelable: true });
+    element.dispatchEvent(up);
+    if (key === " " && !down.defaultPrevented && !up.defaultPrevented) element.click();
   });
 }
 
@@ -81,6 +83,18 @@ describe("About preview marker and release links", () => {
     expect([...panel.querySelectorAll("p")].some((p) => p.textContent?.trim() === "Preview")).toBe(true);
     expect(panel.textContent).not.toContain(LOCAL_TEXT);
     for (const name of BUTTONS) expect(button(name)).toHaveLength(1);
+  });
+
+  test("the scope line follows the channel: the test build line for local, the preview line for preview", async () => {
+    const LOCAL_SCOPE = "This test build covers opening repositories";
+    const PREVIEW_SCOPE = "This preview is not a qualified release. The qualification of Windows 11 x64 continues.";
+    const local = await renderAbout("local");
+    expect(local.panel.textContent).toContain(LOCAL_SCOPE);
+    expect(local.panel.textContent).not.toContain(PREVIEW_SCOPE);
+    for (const unmount of unmounts.splice(0)) unmount();
+    const preview = await renderAbout("preview");
+    expect(preview.panel.textContent).toContain(PREVIEW_SCOPE);
+    expect(preview.panel.textContent).not.toContain(LOCAL_SCOPE);
   });
 
   test("Tab reaches each release button: a native button, enabled, in the tab order", async () => {
@@ -104,6 +118,18 @@ describe("About preview marker and release links", () => {
       expect(calls).toEqual(BUTTONS.map((name) => ({ target: TARGETS[name] })));
     });
   }
+
+  test("while one release request runs, both release buttons are disabled and a second press sends no request", async () => {
+    let finish: (response: BridgeResponse) => void = () => {};
+    const { calls, button } = await renderAbout("preview", () => new Promise((resolve) => (finish = resolve)));
+    await press(button("Hunspell source")[0]!, "Enter");
+    for (const name of BUTTONS) expect(button(name)[0]!.disabled).toBe(true);
+    await press(button("Source at this commit")[0]!, "Enter");
+    await press(button("Hunspell source")[0]!, " ");
+    expect(calls).toEqual([{ target: "hunspell-source" }]);
+    await act(async () => finish(SUCCEEDED));
+    for (const name of BUTTONS) expect(button(name)[0]!.disabled).toBe(false);
+  });
 
   test("a RELEASE_LINK_OPEN_FAILED result shows the failure text with its code", async () => {
     const { panel, button } = await renderAbout("preview", OPEN_FAILED);

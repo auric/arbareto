@@ -76,7 +76,7 @@ import { isTrustReport, READS_TRUST_TEXT, ReadsTrustNotice, SaveFailedNotice, sh
 import type { TrustAction } from "../../contracts/channel";
 import { blockingText, hasRecoveryRow, NoticeBand } from "./NoticeBand";
 import { MENU_CONTENT, MenuKey, RepositoryMenu } from "./RepositoryMenu";
-import { codeText, COPY_FAILED_TEXT, failureText, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, SCOPE_LINE, StartPage, unknownReadText, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
+import { codeText, COPY_FAILED_TEXT, failureText, CopyFailed, ErrorState, LimitedOutput, Loading, RepositoryRefused, scopeLine, StartPage, unknownReadText, WSL_START_CANCELED_TEXT, WslStarting, wslStartingText } from "./RepositoryStates";
 import { folderName, RepositorySwitcher } from "./RepositorySwitcher";
 import { hasMarkers, RecoveryMarkers } from "../boot/BootView";
 import { COUNTS_TOOLTIP, isTrackingList, NO_BRANCH, trackingLabels, type TrackingEntry, type TrackLabel } from "../state/tracking";
@@ -2121,7 +2121,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 <MenubarTrigger ref={helpTrigger}>Help</MenubarTrigger>
                 <MenubarContent finalFocus={finalFocus} className={MENU_CONTENT}>
                   <MenubarGroup>
-                    <MenubarLabel className="whitespace-normal">{SCOPE_LINE}</MenubarLabel>
+                    <MenubarLabel className="whitespace-normal">{scopeLine(environment?.buildIdentity.channel)}</MenubarLabel>
                   </MenubarGroup>
                   <MenubarSeparator />
                   <MenubarItem disabled={environment === null} onClick={() => setAboutOpen(true)}>
@@ -2237,7 +2237,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 <Loading hasContent={false} refreshing={false} />
               ) : (
                 <div className="min-h-0 flex-1 overflow-y-auto">
-                  <StartPage bridge={bridge} busy={false} onOpenFolder={() => void openRepository()} onOpened={registered} onClone={() => setMainPanel("clone")} />
+                  <StartPage bridge={bridge} busy={false} channel={environment?.buildIdentity.channel} onOpenFolder={() => void openRepository()} onOpened={registered} onClone={() => setMainPanel("clone")} />
                 </div>
               )
             ) : (

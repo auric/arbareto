@@ -27,6 +27,9 @@ export type SourceOptions = {
   work?: string;
 };
 
+// A process that a signal or the timeout ends has no exit code.
+const code = (proc: Pick<ReturnType<typeof Bun.spawnSync>, "exitCode" | "signalCode">) => proc.exitCode ?? proc.signalCode;
+
 export function archiveName(version: string): string {
   return `arbareto-${version}-hunspell-source.tar.gz`;
 }
@@ -67,22 +70,22 @@ export function hunspellSource(options: SourceOptions): { path: string } | { ref
     for (const { repo, prefix, commit } of repos) {
       const dir = join(work, prefix);
       const init = run([git, "init", "--quiet", dir], work);
-      if (init.exitCode !== 0) return { refusal: `RELEASE_SOURCE fetch ${repo} ${init.exitCode}` };
+      if (init.exitCode !== 0) return { refusal: `RELEASE_SOURCE fetch ${repo} ${code(init)}` };
       const fetch = run([git, "fetch", "--quiet", "--no-tags", "--depth", "1", `${upstream}/${repo}`, commit], dir);
-      if (fetch.exitCode !== 0) return { refusal: `RELEASE_SOURCE fetch ${repo} ${fetch.exitCode}` };
+      if (fetch.exitCode !== 0) return { refusal: `RELEASE_SOURCE fetch ${repo} ${code(fetch)}` };
       const parsed = run([git, "rev-parse", "--verify", "FETCH_HEAD^{commit}"], dir);
       const actual = parsed.exitCode === 0 ? parsed.stdout.toString().trimEnd() : "none";
       if (actual !== commit) return { refusal: `RELEASE_SOURCE commit ${repo} ${commit} ${actual}` };
       const tar = join(work, `${prefix}.tar`);
       const archive = run([git, "archive", "--format=tar", `--prefix=${prefix}/`, `--output=${tar}`, commit], dir);
-      if (archive.exitCode !== 0) return { refusal: `RELEASE_SOURCE archive ${repo} ${archive.exitCode}` };
+      if (archive.exitCode !== 0) return { refusal: `RELEASE_SOURCE archive ${repo} ${code(archive)}` };
       const extract = run([TAR, "-xf", tar, "-C", staging], work);
-      if (extract.exitCode !== 0) return { refusal: `RELEASE_SOURCE tar ${extract.exitCode}` };
+      if (extract.exitCode !== 0) return { refusal: `RELEASE_SOURCE tar ${code(extract)}` };
     }
     writeFileSync(join(staging, "SOURCE.txt"), sourceText(options.version, pins));
     const path = join(options.out, archiveName(options.version));
     const pack = run([TAR, "-czf", path, "-C", staging, "hunspell", "hunspell-wasm", "SOURCE.txt"], work);
-    if (pack.exitCode !== 0) return { refusal: `RELEASE_SOURCE tar ${pack.exitCode}` };
+    if (pack.exitCode !== 0) return { refusal: `RELEASE_SOURCE tar ${code(pack)}` };
     return { path };
   } finally {
     rmSync(work, { recursive: true, force: true });

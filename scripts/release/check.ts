@@ -56,7 +56,11 @@ export async function check(argv: string[], env: Record<string, string | undefin
   const { mode, tag, signing } = values;
   if (signing === undefined || (mode === "release") !== (tag !== undefined) || (mode !== "release" && mode !== "dry-run")) throw new Refusal(USAGE);
   if (signing !== "off" && signing !== "signpath") throw new Refusal(`RELEASE_CHECK signing-value ${signing}`);
-  if (signing === "signpath") for (const name of SIGNPATH_NAMES) if (!env[name]) throw new Refusal(`RELEASE_CHECK signing-missing ${name}`);
+  if (signing === "signpath") {
+    for (const name of SIGNPATH_NAMES) if (!env[name]) throw new Refusal(`RELEASE_CHECK signing-missing ${name}`);
+    // The workflow sets SIGNPATH_TOKEN_SET to `${{ secrets.SIGNPATH_API_TOKEN != '' }}`, which is the text `true` or `false`.
+    if (env.SIGNPATH_TOKEN_SET !== "true") throw new Refusal("RELEASE_CHECK signing-missing SIGNPATH_API_TOKEN");
+  }
 
   const version = cargoVersion();
   const pkg = await readJson("package.json");
@@ -75,6 +79,13 @@ export async function check(argv: string[], env: Record<string, string | undefin
     const ancestor = run(["git", "merge-base", "--is-ancestor", `refs/tags/${tag}^{commit}`, "refs/remotes/origin/main"]);
     if (ancestor.code === 1) throw new Refusal("RELEASE_CHECK not-on-main");
     if (ancestor.code !== 0) throw new Refusal(`RELEASE_CHECK git-failed ${ancestor.code}`);
+    // Spec FR-014: the build identity is HEAD, so HEAD must be the tag commit.
+    const [head, tagged] = ["HEAD^{commit}", `refs/tags/${tag}^{commit}`].map((rev) => {
+      const parsed = run(["git", "rev-parse", "--verify", rev]);
+      if (parsed.code !== 0) throw new Refusal(`RELEASE_CHECK git-failed ${parsed.code}`);
+      return parsed.stdout.trimEnd();
+    });
+    if (head !== tagged) throw new Refusal("RELEASE_CHECK not-tag-commit");
   }
 
   const status = run(["git", "--no-optional-locks", "status", "--porcelain", "--untracked-files=all"]);

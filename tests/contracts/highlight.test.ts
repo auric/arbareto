@@ -138,7 +138,7 @@ describe("bundle check (research.md R9)", () => {
   test("an unlisted grammar or theme, a refused module, and WASM markers are problems", () => {
     const problems = bundleProblems(
       [...all, `${nm}/@shikijs/langs/dist/yaml.mjs`, `${nm}\\@shikijs\\themes\\dist\\nord.mjs`, `${nm}/@shikijs/engine-oniguruma/dist/index.mjs`, `${nm}/@pierre/theme/themes/pierre-dark.json`, `${nm}/shiki/dist/langs-bundle-full-xQVO1Cek.mjs`],
-      [{ file: "assets/wasm-1.js", text: 'const w="AGFzbQEAAAAB"; loadWasm(w)' }, { file: "assets/onig.wasm", text: "" }],
+      [{ file: "assets/wasm-1.js", text: 'const w="AGFzbQEAAAAB"; loadWasm(w)' }, { file: "assets/onig.wasm", text: "\0asm\x01\0\0\0", bytes: new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]) }],
       true,
     );
     expect(problems).toEqual([
@@ -151,6 +151,18 @@ describe("bundle check (research.md R9)", () => {
       "assets/wasm-1.js holds loadWasm",
       "WebAssembly file: assets/onig.wasm",
     ]);
+  });
+
+  test("an asset with the WebAssembly magic passes only with the reviewed hunspell.wasm bytes, under any name (006 plan.md D9)", () => {
+    const reviewed = new Uint8Array(readFileSync(join(ROOT, "node_modules", "hunspell-wasm", "wasm", "hunspell.wasm")));
+    const changed = reviewed.slice();
+    changed[changed.length - 1] ^= 1;
+    const asset = (file: string, bytes: Uint8Array) => ({ file, text: new TextDecoder().decode(bytes), bytes });
+    const names = ["assets/hunspell-B7u9vk2r.wasm", "assets/x.bin", "X.WASM"];
+    expect(bundleProblems([], names.map((name) => asset(name, reviewed)), false)).toEqual([]);
+    expect(bundleProblems([], names.map((name) => asset(name, changed)), false)).toEqual(names.map((name) => `WebAssembly file: ${name}`));
+    // Bytes without the magic at offset 0 are no WebAssembly module, whatever the name.
+    expect(bundleProblems([], [asset("assets/a.wasm", new Uint8Array([0x01, 0x00, 0x61, 0x73, 0x6d]))], false)).toEqual([]);
   });
 
   test("the page build must hold every shipped grammar and theme; the worker build need not", () => {

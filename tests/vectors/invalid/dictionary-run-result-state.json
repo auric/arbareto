@@ -1,0 +1,5 @@
+{
+  "schema": "dictionary-run-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"language\":\"uk\",\"state\":\"downloading\"}"
+}

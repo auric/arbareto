@@ -63,6 +63,13 @@ const COMMANDS: &[&str] = &[
     "read_ignore_file",
     "preview_ignore",
     "open_submodule",
+    "list_dictionaries",
+    "read_dictionary",
+    "download_dictionary",
+    "import_dictionary",
+    "remove_dictionary",
+    "set_spelling",
+    "open_licence_link",
 ];
 
 /// The exported JSON Schema files of the values that the shell reads (contract §1 "Schemas").

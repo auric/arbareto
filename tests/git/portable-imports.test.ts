@@ -55,15 +55,16 @@ const BANNED: [string, RegExp][] = [
 ];
 // The renderer runs in WebView2, which has no `process`. Any other runtime import can load `native-path.ts`.
 const SPECIFIER = /(?:\bfrom|\bimport|\brequire)\s*\(?\s*["']([^"'\n]+)["']/g;
-// The renderer packages of research.md R9 (T003, T123). A package cannot load a `src/` module.
+// The renderer packages of 001 research.md R9 (T003, T123) and 006 research.md R2. A package cannot load a `src/` module.
 const FRONTEND_PACKAGES =
-  /^(?:@tauri-apps\/|(?:react|react-dom|@base-ui\/react|@pierre\/diffs|shiki|@shikijs\/transformers|@tanstack\/react-virtual|cn|class-variance-authority|@hugeicons\/react|@hugeicons\/core-free-icons)(?:\/|$))/;
+  /^(?:@tauri-apps\/|(?:react|react-dom|@base-ui\/react|@pierre\/diffs|shiki|@shikijs\/transformers|@tanstack\/react-virtual|cn|class-variance-authority|@hugeicons\/react|@hugeicons\/core-free-icons|hunspell-wasm|dictionary-en)(?:\/|$))/;
 const transpile = (file: string, source: string) =>
   new Bun.Transpiler({ loader: file.endsWith(".tsx") ? "tsx" : "ts" }).transformSync(source);
 // A contracts module without `process`, whose runtime imports are only leaf contracts, cannot load `native-path.ts` or fail in WebView2.
-// `seen` stops an import cycle. Each module of the cycle still passes its own check.
+// A JSON file cannot import code or read `process`. `seen` stops an import cycle. Each module of the cycle still passes its own check.
 const isLeafContract = (target: string, seen = new Set<string>()): boolean => {
   if (!/^contracts\/[^/]+$/.test(target)) return false;
+  if (target.endsWith(".json")) return existsSync(join(SRC, target));
   const name = target.replace(/\.ts$/, "");
   if (seen.has(name)) return true;
   seen.add(name);
@@ -123,6 +124,8 @@ test.each([
   ["frontend/main.tsx", 'import { x } from "@/../git-service/main";\nx;'],
   ["frontend/history/AncestryCell.tsx", 'import { ChannelPath } from "../../contracts/operations";\nChannelPath;'],
   ["frontend/history/AncestryCell.tsx", 'import { NATIVE } from "../../contracts/native-path";\nNATIVE;'],
+  ["frontend/spelling/store.ts", 'import x from "../../contracts/absent.json";\nx;'],
+  ["frontend/spelling/store.ts", 'import x from "../../contracts/schemas/progress.schema.json";\nx;'],
   ["frontend/lib/path.ts", "export const drive = /^[A-Za-z]:/;"],
   ["git-service/x.ts", "export const drive = /^[a-zA-Z]:[\\\\/]/;"],
   ["git-service/x.ts", "export const drive = /^[A-Z]:/i;"],
@@ -157,7 +160,10 @@ test("the scan permits type-only imports, the renderer packages, frontend module
     'import { Button } from "@/components/ui/button";',
     'import { GRAPH_LANES } from "../../contracts/limits";',
     'import { suggestCloneName } from "../../contracts/clone-name";',
-    "export const used = [invoke, useState, createRoot, request, Button, GRAPH_LANES, suggestCloneName];",
+    'import { createHunspellFromStrings } from "hunspell-wasm";',
+    'import aff from "dictionary-en/index.aff?raw";',
+    'const catalog = import("../../contracts/dictionaries.json");',
+    "export const used = [invoke, useState, createRoot, request, Button, GRAPH_LANES, suggestCloneName, createHunspellFromStrings, aff, catalog];",
     "export type Shown = Environment;",
   ].join("\n");
   expect(scanHits("frontend/boot/BootView.tsx", source)).toEqual([]);

@@ -24,6 +24,7 @@ use crate::ipc::{
 };
 use crate::jobs::{Job, Supervisor};
 use crate::lifecycle::{self, Action, Event, Host};
+use crate::links::{self, Launcher};
 use crate::process_requests::{
     CHUNK_BYTES, Config, ConfirmedGit, Owned, ProcessRequests, ReplySink, WALK_DEADLINE_MS,
     decode_strict, is_identifier, native_path, path, wait,
@@ -34,7 +35,7 @@ use crate::schema::mutation_request::MutationRequest;
 use crate::schema::trust_reply::ConfirmRunReplyResult;
 use crate::schema::{self, reply, trust_request::TrustRequest};
 use crate::settings::{
-    self, Confirm, Damaged, Marker, Markers, SavedGit, Settings, Started, StartedReply,
+    self, Confirm, Damaged, Marker, Markers, SavedGit, Settings, Spelling, Started, StartedReply,
     SwitchChoice, SyncSettings, Trust,
 };
 use crate::spawn::{Input, SpawnRequest, spawn};
@@ -678,6 +679,9 @@ impl NativeFirst for Service {
             let chosen = dialogs::choose_worktree_folder(&*self.dialogs, root.as_deref())?;
             return Ok(chosen.map(|path| json!({ "path": path })));
         }
+        if operation == "openLicenceLink" {
+            return licence_link(&links::Shell, payload);
+        }
         let stores = self.stores.get().ok_or(UNAVAILABLE)?;
         answer(
             stores,
@@ -799,6 +803,21 @@ fn answer(
         let _ = settings::save(&stores.settings_path, &settings);
         return Ok(Some(settings_result(&settings)));
     }
+    // Feature 006 contract Δ3 `setSpelling`: data-model §8 with IDs of `en` and the embedded catalog only.
+    if operation == "setSpelling" {
+        let spelling = Spelling::parse(payload)
+            .filter(|spelling| {
+                spelling
+                    .languages
+                    .iter()
+                    .all(|id| settings::is_spelling_language(id))
+            })
+            .ok_or(INVALID)?;
+        let mut settings = lock(&stores.settings);
+        settings.spelling = spelling;
+        let _ = settings::save(&stores.settings_path, &settings);
+        return Ok(Some(settings_result(&settings)));
+    }
     if !matches!(
         operation,
         "listRecentRepositories" | "removeRecentRepository"
@@ -830,10 +849,30 @@ fn answer(
     )))
 }
 
-/// The `readSyncSettings` result (feature 003 contract Δ3) with `switchChoice` (feature 004 contract Δ14).
+/// Feature 006 contract Δ3 `openLicenceLink`: the URL of `licences[0]` of the embedded catalog entry, or of the `bundled` record.
+fn licence_link(launcher: &dyn Launcher, payload: &Value) -> Result<Option<Value>, Ended> {
+    let id = payload["language"].as_str().ok_or(INVALID)?;
+    let catalog = settings::catalog();
+    let dictionary = if id == settings::BUNDLED {
+        Some(&catalog.bundled)
+    } else {
+        catalog.entry(id)
+    };
+    let url = &dictionary.ok_or(INVALID)?.licence_url;
+    if links::open(launcher, url) {
+        return Ok(Some(json!({})));
+    }
+    Err(Ended::Failed(
+        "DICTIONARY_UNAVAILABLE",
+        json!({ "reason": "link", "url": url }),
+    ))
+}
+
+/// The `readSyncSettings` result (feature 003 contract Δ3) with `switchChoice` (feature 004 contract Δ14) and `spelling` (feature 006 contract Δ12).
 fn settings_result(settings: &Settings) -> Value {
     let mut result = putty::settings_result(&settings.sync);
     result["switchChoice"] = json!(settings.switch_choice.text());
+    result["spelling"] = settings.spelling.to_json();
     result
 }
 
@@ -968,6 +1007,18 @@ fn prepare(
             let root =
                 settings::recent_root(&lock(&stores.settings), entry_id).ok_or("UNKNOWN_TARGET")?;
             dialogs::open_recent(root, contexts, now)
+        }
+        // Feature 006 contract Δ3 `importDictionary`: the service gets the catalog ID and the picked folder.
+        "importDictionary" => {
+            let language = payload["language"].as_str().ok_or(INVALID)?;
+            let entry = settings::catalog().entry(language).ok_or(INVALID)?;
+            let Some(folder) = dialogs::choose_dictionary_folder(native, &entry.name)? else {
+                return Ok(None);
+            };
+            return Ok(Some(Prepared {
+                payload: json!({ "language": language, "folder": folder }),
+                path: None,
+            }));
         }
         // Feature 003 contract Δ3 `clone`: the service payload holds no path.
         "clone" => {
@@ -1340,6 +1391,7 @@ mod tests {
     use crate::bootstrap::tests::Hold;
     use crate::dialogs::tests::{Fake, Press};
     use crate::jobs::tests::{Fixture, eventually};
+    use crate::links::tests::Recorder;
     use crate::process_requests::tests::uuid;
 
     const CALL: &str = "0f0f0f0f-0000-4000-8000-0000000000cc";
@@ -2484,6 +2536,7 @@ mod tests {
             Ok(Some(json!({
                 "sshClient": "git", "defaultPullAction": "pull", "switchChoice": "keep", "plinkPath": null, "programs": [],
                 "remoteKeyFiles": [], "defaultCloneFolder": null, "lastCloneParent": null,
+                "spelling": { "enabled": true, "languages": ["en"] },
             })))
         );
         assert_eq!(
@@ -2839,6 +2892,145 @@ mod tests {
             ),
             Err(Ended::Rejected("INVALID_REQUEST"))
         );
+    }
+
+    // ---- Feature 006 native steps (contract Δ3, Δ12, data-model §8) ----
+
+    /// Feature 006 contract Δ3 and Δ12: `setSpelling` stores the selection and answers the `readSyncSettings` result,
+    /// which carries `spelling`. More than 3 languages, a repeat, or an ID outside `en` and the catalog gets `INVALID_REQUEST`.
+    #[test]
+    fn set_spelling_stores_the_selection_and_answers_the_settings_result() {
+        let shell = Shell::new();
+        let send = |operation: &str, payload: Value| {
+            answer(&shell.stores, &Fake::default(), &[], operation, &payload)
+        };
+        for spelling in [
+            json!({ "enabled": false, "languages": ["uk", "en"] }),
+            json!({ "enabled": true, "languages": [] }),
+        ] {
+            let set = send("setSpelling", spelling.clone());
+            assert_eq!(set, send("readSyncSettings", json!({})));
+            let set = set.expect("answer").expect("settings");
+            assert_eq!(
+                (set["spelling"].clone(), set["switchChoice"].clone()),
+                (spelling.clone(), json!("keep"))
+            );
+            assert_eq!(
+                settings::load(&shell.stores.settings_path)
+                    .spelling
+                    .to_json(),
+                spelling
+            );
+        }
+        for payload in [
+            json!({ "enabled": true, "languages": ["xx-Gone"] }),
+            json!({ "enabled": true, "languages": ["EN"] }),
+            json!({ "enabled": true, "languages": ["en", "uk", "de", "fr"] }),
+            json!({ "enabled": true, "languages": ["uk", "uk"] }),
+            json!({ "enabled": true }),
+        ] {
+            assert_eq!(
+                send("setSpelling", payload.clone()),
+                Err(Ended::Rejected("INVALID_REQUEST")),
+                "{payload}"
+            );
+        }
+        assert_eq!(
+            settings::load(&shell.stores.settings_path)
+                .spelling
+                .to_json(),
+            json!({ "enabled": true, "languages": [] }),
+            "a refusal writes nothing"
+        );
+    }
+
+    /// Feature 006 contract Δ3 `importDictionary`: the shell checks the ID against the embedded catalog before the picker.
+    /// The service gets the ID and the picked folder. Cancel cancels, and a picker failure gets `PICKER_FAILED`.
+    #[test]
+    fn import_dictionary_checks_the_id_before_the_picker_and_forwards_the_picked_folder() {
+        let shell = Shell::new();
+        let folder = shell.folder("uk");
+        let picked = Fake {
+            folder: Some(folder.clone()),
+            ..Fake::default()
+        };
+        let import = |native: &Fake, language: &str| {
+            shell.prepare(native, "importDictionary", json!({ "language": language }))
+        };
+        assert_eq!(
+            import(&picked, "uk"),
+            Ok(Some(Prepared {
+                payload: json!({ "language": "uk", "folder": folder }),
+                path: None,
+            }))
+        );
+        assert_eq!(
+            *picked.titles.borrow(),
+            ["Choose the folder with the Ukrainian dictionary files"]
+        );
+        for language in ["xx-Gone", "en"] {
+            let native = Fake {
+                folder: Some(folder.clone()),
+                ..Fake::default()
+            };
+            assert_eq!(
+                import(&native, language),
+                Err(Ended::Rejected("INVALID_REQUEST")),
+                "{language}"
+            );
+            assert!(native.calls().is_empty(), "no picker for {language}");
+        }
+        assert_eq!(import(&Fake::default(), "uk"), Ok(None), "Cancel");
+        let failed = Fake {
+            pick_failure: Some(dialogs::PICKER_FAILED),
+            ..Fake::default()
+        };
+        assert_eq!(import(&failed, "uk"), Err(Ended::Rejected("PICKER_FAILED")));
+    }
+
+    /// Feature 006 contract Δ3 `openLicenceLink`: the URL of `licences[0]` of the catalog entry, or of the `bundled` record.
+    /// A return value of 32 or less fails with reason `link` and the URL. An unknown ID opens nothing.
+    #[test]
+    fn open_licence_link_opens_the_catalog_url_and_a_failed_call_names_it() {
+        let prefix = "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/";
+        for (language, file) in [
+            ("en", "en/license"),
+            ("uk", "uk/license"),
+            ("oc", "oc/license"),
+            ("eu", "eu/readme.md"),
+        ] {
+            let launcher = Recorder::returning(42);
+            assert_eq!(
+                licence_link(&launcher, &json!({ "language": language })),
+                Ok(Some(json!({}))),
+                "{language}"
+            );
+            assert_eq!(
+                launcher.steps(),
+                [
+                    "CoInitializeEx".to_string(),
+                    format!("ShellExecuteW {prefix}{file}"),
+                    "CoUninitialize".to_string()
+                ]
+            );
+        }
+        let launcher = Recorder::returning(32);
+        assert_eq!(
+            licence_link(&launcher, &json!({ "language": "uk" })),
+            Err(Ended::Failed(
+                "DICTIONARY_UNAVAILABLE",
+                json!({ "reason": "link", "url": format!("{prefix}uk/license") })
+            ))
+        );
+        for language in ["xx-Gone", "EN"] {
+            let launcher = Recorder::returning(42);
+            assert_eq!(
+                licence_link(&launcher, &json!({ "language": language })),
+                Err(Ended::Rejected("INVALID_REQUEST")),
+                "{language}"
+            );
+            assert!(launcher.steps().is_empty(), "{language}");
+        }
     }
 
     #[test]

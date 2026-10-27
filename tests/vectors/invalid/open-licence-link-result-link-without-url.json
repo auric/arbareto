@@ -1,0 +1,5 @@
+{
+  "schema": "open-licence-link-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"reason\":\"link\"}"
+}

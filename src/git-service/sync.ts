@@ -384,8 +384,8 @@ export function createSyncer(o: SyncerOptions) {
         return refuse({ stop: "canceled" });
       }
       enterReconciling(registry, operationId, ends.at(-1)?.exit?.deadline !== undefined, lastDescendants);
-      const fetch = (observed: ReturnType<typeof changes>) => ({ remotes: remotes.map((r) => ({ ...r })), observed });
-      const unread = { action: b.payload.action, fetch: fetch([]) };
+      const fetchResult = (observed: ReturnType<typeof changes>) => ({ remotes: remotes.map((r) => ({ ...r })), observed });
+      const unread = { action: b.payload.action, fetch: fetchResult([]) };
       if (!(await processEnded(ends))) return unknown({ code: "GIT_FAILED" }, unread);
       const [after, head, state] = await Promise.all([listRefs(q), settled(q.signal, captureHead(q.runner, q)), settled(q.signal, q.reader.operationState(q, false))]);
       // 001 contract §5 "Deadline outcomes": a read at its deadline closes the Job of the other reads, so a deadline decides first.
@@ -403,7 +403,7 @@ export function createSyncer(o: SyncerOptions) {
       const remedy = failedRemote === undefined || stopped ? undefined : fetchRemedy(entries, failedRemote.name);
       // Contract Δ9: `PUTTY_UNAVAILABLE` names the program and its path, also after a fetched remote.
       const puttyFacts = putty === null ? {} : { reason: putty.reason, program: putty.program, path: putty.path };
-      const result = { action: b.payload.action, fetch: fetch(observed), ...(remedy === undefined ? {} : { remedy }), ...puttyFacts };
+      const result = { action: b.payload.action, fetch: fetchResult(observed), ...(remedy === undefined ? {} : { remedy }), ...puttyFacts };
       if (failed) {
         if (failedRemote !== undefined) keepTarget("remote", failedRemote.name);
         if (changed) return finish({ type: "failed-with-effects" }, result);

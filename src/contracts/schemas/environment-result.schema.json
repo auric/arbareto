@@ -120,7 +120,8 @@
         "UNTRACKED_IN_WAY",
         "STASH_KEPT",
         "BLAME_UNAVAILABLE",
-        "SUBMODULE_UNAVAILABLE"
+        "SUBMODULE_UNAVAILABLE",
+        "DICTIONARY_UNAVAILABLE"
       ]
     },
     "reason": {

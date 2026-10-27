@@ -98,8 +98,18 @@ export function trackingList(world: World) {
   return { entries: world.branches.map((b) => ({ name: b.name, invalidUtf8: false, objectId: b.objectId, upstream: b.upstream, upstreamObjectId: b.upstreamObjectId, track: b.track, current: b.current })) };
 }
 
-/** Data-model §10 `readSyncSettings`. */
-export const settings = (defaultPullAction: World["defaultPullAction"]) => ({ sshClient: "git", defaultPullAction, switchChoice: "keep", plinkPath: null, programs: [], remoteKeyFiles: [], defaultCloneFolder: null, lastCloneParent: null });
+/** Data-model §10 `readSyncSettings`. Feature 006 contract Δ12 adds `spelling`. */
+export const settings = (defaultPullAction: World["defaultPullAction"]) => ({
+  sshClient: "git",
+  defaultPullAction,
+  switchChoice: "keep",
+  plinkPath: null,
+  programs: [],
+  remoteKeyFiles: [],
+  defaultCloneFolder: null,
+  lastCloneParent: null,
+  spelling: { enabled: true, languages: ["en"] },
+});
 
 // Feature 002 contract Δ3: a linear history of `world.oids` with the checkout at row 0.
 function history(world: World, operation: string, args: unknown[]): unknown {

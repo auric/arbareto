@@ -22,6 +22,18 @@ function PoolDouble({ children }: { children: ReactNode }) {
 }
 mock.module("../../src/frontend/changes/PatchPool", () => ({ default: PoolDouble }));
 mock.module("../../src/frontend/changes/PatchView", () => ({ default: ({ patch }: { patch: string }) => <pre data-slot="patch-double">{patch}</pre> }));
+// 006 tasks.md T048: the double counts the spell engines that Workbench makes and disposes. Each engine keeps its real behavior.
+const engines = { made: 0, disposed: 0 };
+const realEngine = await import("../../src/frontend/spelling/engine");
+const createEngine = realEngine.createSpellEngine;
+mock.module("../../src/frontend/spelling/engine", () => ({
+  ...realEngine,
+  createSpellEngine: (...args: Parameters<typeof createEngine>) => {
+    engines.made++;
+    const engine = createEngine(...args);
+    return { ...engine, dispose: () => (engines.disposed++, engine.dispose()) };
+  },
+}));
 // `Workbench.tsx` loads Base UI. Base UI must first evaluate with a DOM (tests/dom.ts).
 registerDom();
 const { createRoot } = await import("react-dom/client");
@@ -178,6 +190,15 @@ const COMMIT_VIEW = 'section[aria-label="Commit view"]';
 const commitGrid = () => document.querySelector<HTMLElement>(`${COMMIT_VIEW} [data-section="workingChanges"]`)!.parentElement!;
 
 describe("start", () => {
+  // 006 batch 1 review, item 4: a remount after an environment failure makes a new engine, and the old workers must end.
+  test("Workbench disposes the spell engine that it made when it unmounts", async () => {
+    const { made, disposed } = engines;
+    await mount({ requestId: null, state: "canceled" });
+    expect(engines).toEqual({ made: made + 1, disposed });
+    await unmounts.pop()!();
+    expect(engines).toEqual({ made: made + 1, disposed: disposed + 1 });
+  });
+
   test("a canceled restoreWorkspace, which means no stored repository, shows the start page, No repository open, and no refusal", async () => {
     const double = await mount({ requestId: null, state: "canceled" });
     expect(document.querySelector('section[aria-label="Start page"]')).not.toBeNull();

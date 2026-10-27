@@ -1,0 +1,5 @@
+{
+  "schema": "open-licence-link-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"link\",\"url\":\"https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/uk/license\"}"
+}

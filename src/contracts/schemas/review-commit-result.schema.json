@@ -301,6 +301,15 @@
                     "DAMAGED_MARKERS_PER_HANDSHAKE",
                     "DAMAGED_MARKER_FILE_NAME_UNITS",
                     "DIAGNOSTIC_RETAINED_BYTES_PER_STREAM",
+                    "DICTIONARY_CATALOG_ENTRIES",
+                    "DICTIONARY_CHUNK_BYTES",
+                    "DICTIONARY_DOWNLOAD_DEADLINE_MS",
+                    "DICTIONARY_LANGUAGE_BYTES",
+                    "DICTIONARY_LANGUAGE_MEMORY_BYTES",
+                    "DICTIONARY_LOAD_DEADLINE_MS",
+                    "DICTIONARY_LOAD_GATE_MS",
+                    "DICTIONARY_MANIFEST_BYTES",
+                    "DICTIONARY_PROGRESS_EVENTS_PER_SECOND",
                     "DISCARD_CHECK_PATHS",
                     "FILE_FACT_COMPONENT_UNITS",
                     "FILE_FACT_ENTRIES",
@@ -340,6 +349,8 @@
                     "NATIVE_CHUNK_BYTES",
                     "PAGEANT_READY_MS",
                     "PENDING_READS_GLOBAL",
+                    "PERSONAL_WORDS",
+                    "PERSONAL_WORD_CODE_POINTS",
                     "PIPE_FRAME_BYTES",
                     "PREVIEW_GROUP_PATHS",
                     "PREVIEW_IGNORE_FILES",
@@ -363,6 +374,8 @@
                     "RETAINED_COMPARISON_BYTES",
                     "SESSION_LOG_ENTRIES",
                     "SHALLOW_METADATA_BYTES",
+                    "SPELLING_LANGUAGES",
+                    "SPELLING_SUGGESTIONS",
                     "STALL_NOTICE_MS",
                     "STATUS_LISTING_BYTES",
                     "STATUS_LISTING_RECORDS",
@@ -478,7 +491,8 @@
                     "UNTRACKED_IN_WAY",
                     "STASH_KEPT",
                     "BLAME_UNAVAILABLE",
-                    "SUBMODULE_UNAVAILABLE"
+                    "SUBMODULE_UNAVAILABLE",
+                    "DICTIONARY_UNAVAILABLE"
                   ]
                 }
               },

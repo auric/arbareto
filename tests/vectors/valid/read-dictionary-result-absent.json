@@ -1,0 +1,5 @@
+{
+  "schema": "read-dictionary-result",
+  "expected": "valid",
+  "text": "{\"reason\":\"absent\"}"
+}

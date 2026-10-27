@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import tailwindcss from "@tailwindcss/vite";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
+import { Catalog } from "./src/contracts/dictionaries.ts";
 import { bundleProblems } from "./src/frontend/highlight/guard.ts";
 
 const root = fileURLToPath(new URL("./src/frontend", import.meta.url));
@@ -18,6 +20,8 @@ const alias = [
   { find: /^shiki\/engine\/oniguruma$/, replacement: highlight("oniguruma.ts") },
   { find: /^shiki\/wasm$/, replacement: highlight("wasm.ts") },
   { find: /^@pierre\/theming\/themes$/, replacement: highlight("themes.ts") },
+  // 006 plan.md D9: `dictionary-en` 4.0.0 exports only `index.js`, so the `?raw` imports of its files take the package folder.
+  { find: /^dictionary-en\//, replacement: fileURLToPath(new URL("./node_modules/dictionary-en/", import.meta.url)) },
 ];
 
 /** Fails the build when a chunk holds a grammar or theme outside the shipped set, or Oniguruma WASM. */
@@ -26,12 +30,13 @@ function highlightGuard(complete: boolean): Plugin {
     name: "arbareto-highlight-guard",
     generateBundle(_options, bundle) {
       const ids: string[] = [];
-      const texts: { file: string; text: string }[] = [];
+      const texts: { file: string; text: string; bytes?: Uint8Array }[] = [];
       for (const item of Object.values(bundle)) {
         if (item.type === "chunk") {
           ids.push(...item.moduleIds);
           texts.push({ file: item.fileName, text: item.code });
-        } else texts.push({ file: item.fileName, text: typeof item.source === "string" ? item.source : new TextDecoder().decode(item.source) });
+        } else if (typeof item.source === "string") texts.push({ file: item.fileName, text: item.source });
+        else texts.push({ file: item.fileName, text: new TextDecoder().decode(item.source), bytes: item.source });
       }
       const problems = bundleProblems(ids, texts, complete);
       if (problems.length > 0) this.error(`highlight set:\n${problems.join("\n")}`);
@@ -39,9 +44,14 @@ function highlightGuard(complete: boolean): Plugin {
   };
 }
 
+/** 006 plan.md D3: a catalog outside the `Catalog` rules stops the renderer build. */
+export function catalogCheck(file = fileURLToPath(new URL("./src/contracts/dictionaries.json", import.meta.url))): Plugin {
+  return { name: "arbareto-catalog", buildStart: () => void Catalog.parse(JSON.parse(readFileSync(file, "utf8"))) };
+}
+
 export default defineConfig({
   root,
-  plugins: [react(), tailwindcss(), highlightGuard(true)],
+  plugins: [catalogCheck(), react(), tailwindcss(), highlightGuard(true)],
   resolve: { alias },
   worker: { format: "es", plugins: () => [highlightGuard(false)] },
   build: {

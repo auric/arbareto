@@ -576,6 +576,8 @@ describe("contract Δ3 results", () => {
     remoteKeyFiles: [{ worktreeKey: DIGEST, remote: "origin", path: PLINK }],
     defaultCloneFolder: null,
     lastCloneParent: DEST,
+    // Feature 006 contract Δ12: the result also carries data-model §8 `spelling`.
+    spelling: { enabled: true, languages: ["en"] },
   };
 
   test("the settings operations give the data-model §10 settings or a PuTTY refusal", () => {

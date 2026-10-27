@@ -1,0 +1,5 @@
+{
+  "schema": "read-dictionary-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"language\":\"uk\",\"file\":\"index.aff\",\"size\":4,\"offset\":0,\"bytes\":\"U0VU\"}"
+}

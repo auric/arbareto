@@ -3,7 +3,7 @@
 
 import { ShieldAlertIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useId, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode, type Ref } from "react";
+import { useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode, type Ref } from "react";
 import type { ReviewCommitResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { TerminalState } from "../../contracts/errors";
 import { COMMIT_MESSAGE_BYTES } from "../../contracts/limits";
@@ -21,6 +21,10 @@ import { shortId, trackOperation, type StatusOperation } from "../status/Operati
 import { isObject } from "../lib/utils";
 import { GuideLines, guideStyle, SummaryCounter } from "./MessageGuide";
 import { isTrustReport, trustBeforeReview, trustFailureCode, type TrustReport } from "../trust/TrustChip";
+import type { Spelling } from "../spelling/engine";
+import { SpellChip, spellStatus } from "../spelling/SpellChip";
+import { useSpellMenu } from "../spelling/SpellMenu";
+import { SpellMirror } from "../spelling/SpellMirror";
 
 // plan.md "Task flow and command placement" (Compose a commit, Commit, Commit outcome) and "Keyboard and focus" (Message, Unavailable control).
 // Feature 004 spec FR-047 (message guide), FR-098 to FR-100 (Amend last commit), plan.md D8 "Amend last commit", and D15 (running rule, texts).
@@ -64,6 +68,8 @@ export type CommitTrayProps = {
   operationState?: WorkspaceSnapshot["operationState"];
   /** Feature 004 FR-098: the Amend last commit state of the window session. Without it, the tray shows no check box. */
   amend?: { value: Amend | null; onChange(next: Amend | null): void };
+  /** Feature 006 plan.md D8: the spell check of the message editor. Without it, the editor shows no marks and no chip. */
+  spelling?: Spelling;
 };
 
 // Feature 004 plan.md D15 "Commit view texts".
@@ -117,6 +123,8 @@ const messageOf = (props: CommitTrayProps) => props.amend?.value?.text ?? (props
 const runningBlock = (blocked: Blocked | undefined) => blocked === "running" || blocked === "busy";
 /** A text of the amend column. It adds no content width, so the button row sets the column width and the text wraps to it. */
 const COLUMN_TEXT = { contain: "inline-size" } as const;
+const noSubscribe = () => () => {};
+const noValue = () => null;
 
 /** The reason of a block. It comes before the trust reason. */
 const blockReason = (blocked: Blocked | undefined): string | null => (runningBlock(blocked) ? RUNNING_REASON : blocked ? BLOCKED_TEXT[blocked] : null);
@@ -157,6 +165,16 @@ export function CommitTray(props: CommitTrayProps) {
   // FR-100: the open rewrite confirmation, with the facts of the review that asks for it.
   const [rewrite, setRewrite] = useState<{ text: string; resolve(confirmed: boolean): void } | null>(null);
   const cancelRewrite = useRef<HTMLButtonElement>(null);
+
+  // Feature 006 plan.md D8 and D15: the engine sees every text change, and the editor shows from the first mount.
+  const spelling = props.spelling;
+  const spellBox = useRef<HTMLDivElement | null>(null);
+  const spellView = useSyncExternalStore(spelling?.engine.subscribe ?? noSubscribe, spelling?.engine.view ?? noValue);
+  const spellState = useSyncExternalStore(spelling?.store.subscribe ?? noSubscribe, spelling?.store.state ?? noValue);
+  const spellShown = spellState === null || spellView === null ? null : spellStatus(spellState, spellView);
+  useLayoutEffect(() => spelling?.engine.show(), [spelling]);
+  useLayoutEffect(() => spelling?.engine.setText(text), [spelling, text]);
+  const spellMenu = useSpellMenu(spelling, field, spellBox, (text) => setNotice(text));
 
   const composingRef = useRef(composing);
   composingRef.current = composing;
@@ -269,6 +287,7 @@ export function CommitTray(props: CommitTrayProps) {
   }
 
   function onKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (spellMenu.onKeyDown(event)) return;
     if (event.key !== "Enter" || !event.ctrlKey || event.shiftKey || event.altKey || event.metaKey) return;
     event.preventDefault();
     // During IME composition every key goes to the IME (plan.md Message row).
@@ -293,34 +312,65 @@ export function CommitTray(props: CommitTrayProps) {
     <div className="grid h-full min-h-0 gap-x-2 gap-y-1" style={{ gridTemplateColumns: "minmax(0, 1fr) fit-content(50%)", gridTemplateRows: "auto minmax(0, 1fr) auto" }}>
       <div className="col-span-2 flex items-center gap-2">
         <span className="font-semibold">Commit message</span>
+        {/* Plan.md D8 "Chip": a 12 px gap after the label. */}
+        {spellShown === null ? null : (
+          <span className="ml-1 flex">
+            <SpellChip status={spellShown} linesId={`${reasonId}-spell`} />
+          </span>
+        )}
+        {spellShown?.count == null ? null : (
+          <span id={`${reasonId}-count`} className="sr-only">
+            {spellShown.count}
+          </span>
+        )}
         <span className="ml-auto">
           <SummaryCounter id={`${reasonId}-counter`} text={text} />
         </span>
       </div>
-      <textarea
-        ref={(element) => {
-          field.current = element;
-          const r = props.fieldRef;
-          if (typeof r === "function") r(element);
-          else if (r) r.current = element;
-        }}
-        aria-label="Commit message"
-        aria-describedby={[`${reasonId}-counter`, `${reasonId}-guide`, failure === null ? null : `${reasonId}-save`].filter(Boolean).join(" ")}
-        value={text}
-        spellCheck={false}
-        disabled={worktreeKey === null}
-        data-guide-column="72"
-        className="min-h-0 resize-none rounded-md border border-control-border bg-surface px-2 py-1 font-mono outline-none focus-visible:ring-2 focus-visible:ring-ring/30"
-        style={guideStyle(8)}
-        onChange={(event) => {
-          const value = event.target.value;
-          if (amending !== null) props.amend?.onChange({ ...amending, text: value });
-          else if (worktreeKey !== null) void drafts.change(worktreeKey, value);
-        }}
-        onKeyDown={onKeyDown}
-        onCompositionStart={() => setComposing(true)}
-        onCompositionEnd={() => setComposing(false)}
-      />
+      <div ref={spellBox} className="grid min-h-0">
+        <SpellMirror view={spellView} field={field}>
+          <textarea
+            ref={(element) => {
+              field.current = element;
+              const r = props.fieldRef;
+              if (typeof r === "function") r(element);
+              else if (r) r.current = element;
+            }}
+            aria-label="Commit message"
+            aria-describedby={[
+              `${reasonId}-counter`,
+              `${reasonId}-guide`,
+              failure === null ? null : `${reasonId}-save`,
+              spellShown?.count == null ? null : `${reasonId}-count`,
+              spellShown === null ? null : `${reasonId}-spell`,
+            ]
+              .filter(Boolean)
+              .join(" ")}
+            value={text}
+            spellCheck={false}
+            disabled={worktreeKey === null}
+            data-guide-column="72"
+            className="relative block size-full min-h-0 resize-none border-0 bg-transparent px-2 py-1 font-mono outline-none"
+            style={guideStyle(8)}
+            onChange={(event) => {
+              const value = event.target.value;
+              if (amending !== null) props.amend?.onChange({ ...amending, text: value });
+              else if (worktreeKey !== null) void drafts.change(worktreeKey, value);
+            }}
+            onKeyDown={onKeyDown}
+            onContextMenu={spellMenu.onContextMenu}
+            onCompositionStart={() => {
+              spelling?.engine.setComposing(true);
+              setComposing(true);
+            }}
+            onCompositionEnd={() => {
+              spelling?.engine.setComposing(false);
+              setComposing(false);
+            }}
+          />
+        </SpellMirror>
+      </div>
+      {spellMenu.menu}
       {/* The amend column spans the editor row and the lines below it, so the lines never run under it. */}
       <div className="flex flex-col items-start gap-1" style={{ gridColumn: "2", gridRow: "2 / span 2" }}>
         {props.amend === undefined ? null : (

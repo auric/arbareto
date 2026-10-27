@@ -68,6 +68,14 @@ export const OPERATION_NAMES = [
   "readIgnoreFile",
   "previewIgnore",
   "openSubmodule",
+  // Feature 006 contract Δ1.
+  "listDictionaries",
+  "readDictionary",
+  "downloadDictionary",
+  "importDictionary",
+  "removeDictionary",
+  "setSpelling",
+  "openLicenceLink",
 ] as const;
 
 export type OperationName = (typeof OPERATION_NAMES)[number];
@@ -103,6 +111,9 @@ export const SHELL_ONLY: readonly OperationName[] = [
   // Feature 004 contract Δ1.
   "setSwitchChoice",
   "chooseWorktreeFolder",
+  // Feature 006 contract Δ1.
+  "setSpelling",
+  "openLicenceLink",
 ];
 
 // Contract §2: UUID-shaped ASCII identifiers.
@@ -172,10 +183,12 @@ export const PHASES = [
   "delete-files",
   "ignore-save",
   "preview",
+  // Feature 006 contract Δ2.
+  "dictionary",
 ] as const;
 export const Phase = z.enum(PHASES);
 export type Phase = z.infer<typeof Phase>;
-// Feature 003 and feature 004 contract Δ2: these phases carry only these counters. A workbench phase without counters carries none.
+// Feature 003 to 006 contract Δ2: these phases carry only these counters. A workbench phase without counters carries none.
 const SYNC_COUNTERS = ["percent", "remoteIndex", "remoteCount"];
 const PHASE_COUNTERS: Readonly<Record<string, readonly string[]>> = {
   ...Object.fromEntries(["sync-fetch", "sync-merge", "sync-rebase", "sync-push", "sync-continue", "clone", "pageant"].map((phase) => [phase, SYNC_COUNTERS])),
@@ -185,6 +198,7 @@ const PHASE_COUNTERS: Readonly<Record<string, readonly string[]>> = {
   // Feature 005 contract Δ2: a porcelain blame carries no counter.
   blame: ["blamed", "total"],
   "delete-files": ["fileIndex", "fileCount"],
+  dictionary: ["received", "total"],
 };
 
 // Contract §11 "Distro checks": a name that `wsl.exe --list --quiet` prints holds no control character.

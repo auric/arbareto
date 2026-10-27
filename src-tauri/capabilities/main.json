@@ -61,6 +61,13 @@
     "allow-read-ignore-file",
     "allow-preview-ignore",
     "allow-open-submodule",
+    "allow-list-dictionaries",
+    "allow-read-dictionary",
+    "allow-download-dictionary",
+    "allow-import-dictionary",
+    "allow-remove-dictionary",
+    "allow-set-spelling",
+    "allow-open-licence-link",
     "core:event:allow-listen"
   ]
 }

@@ -4,9 +4,11 @@
 import { z } from "zod";
 import { BRANCH_NAME_BYTES } from "./branch-name";
 import { DamagedMarker, decodedBytes, FILE_FACT_ERRORS, LinuxPath, SYNC_ACTIONS, SyncAction, TRUST_ACTIONS, TrustDetails, UtcTime } from "./channel";
+import { DictionaryFileName, LANGUAGE_NOTICES, LANGUAGE_STATES, LanguageId } from "./dictionaries";
 import {
   BLAME_UNAVAILABLE_REASONS,
   DESTINATION_NOT_EMPTY_REASONS,
+  DICTIONARY_UNAVAILABLE_REASONS,
   ERROR_CODES,
   HISTORY_CHANGED_REASONS,
   HISTORY_OUTPUT_LIMIT_REASONS,
@@ -35,6 +37,9 @@ import {
   CANONICAL_DIFF_LINES,
   CLONE_URL_BYTES,
   COMMIT_MESSAGE_BYTES,
+  DICTIONARY_CATALOG_ENTRIES,
+  DICTIONARY_CHUNK_BYTES,
+  DICTIONARY_LANGUAGE_BYTES,
   GRAPH_LANES,
   HISTORY_PAGE_BYTES,
   HISTORY_PARENTS_PER_COMMIT,
@@ -48,6 +53,7 @@ import {
   PUBLIC_REQUEST_BYTES,
   REF_LISTING_RECORDS,
   REGISTERED_WORKSPACES,
+  SPELLING_LANGUAGES,
   STATUS_LISTING_RECORDS,
   SYNC_FETCH_LISTED_REFS,
   SYNC_LEASE_COMMITS,
@@ -390,6 +396,25 @@ const PreviewIgnore = op("previewIgnore", snapshot, z.strictObject({ target: Ign
 const SubmodulePath = Text.min(1).refine((path) => path.split("/").every((part) => part !== "" && part !== "." && part !== ".."));
 const OpenSubmodule = op("openSubmodule", {}, z.strictObject({ repositoryId: Identifier, path: SubmodulePath }));
 
+// ---- Feature 006 operations (contract Δ1 to Δ3, data-model §5 to §8) ----
+
+// Contract Δ3: the service checks `language` against the catalog, and the shell against its embedded catalog.
+const language = () => z.strictObject({ language: LanguageId });
+// Data-model §8: 0 to 3 unique IDs in the user's order.
+export const SpellingSetting = z
+  .strictObject({ enabled: z.boolean(), languages: z.array(LanguageId).max(SPELLING_LANGUAGES).refine((ids) => new Set(ids).size === ids.length) })
+  .meta({ title: "SpellingSetting" });
+const ListDictionaries = op("listDictionaries", {}, empty());
+// Contract Δ3: the service checks that `offset` lies below the file size.
+const ReadDictionary = op("readDictionary", {}, z.strictObject({ language: LanguageId, file: DictionaryFileName, offset: Count.multipleOf(DICTIONARY_CHUNK_BYTES) }));
+const DownloadDictionary = op("downloadDictionary", {}, language());
+// Contract Δ3: the renderer never sends a path. The shell forwards the picked folder.
+const ImportDictionary = op("importDictionary", {}, language());
+const RemoveDictionary = op("removeDictionary", {}, language());
+const SetSpelling = op("setSpelling", {}, SpellingSetting);
+// Contract Δ3: the renderer never sends a URL.
+const OpenLicenceLink = op("openLicenceLink", {}, language());
+
 export const RendererEnvelope = z.discriminatedUnion("operation", [
   GetEnvironment,
   ChooseGit,
@@ -448,6 +473,13 @@ export const RendererEnvelope = z.discriminatedUnion("operation", [
   ReadIgnoreFile,
   PreviewIgnore,
   OpenSubmodule,
+  ListDictionaries,
+  ReadDictionary,
+  DownloadDictionary,
+  ImportDictionary,
+  RemoveDictionary,
+  SetSpelling,
+  OpenLicenceLink,
 ]);
 export type RendererRequest = z.infer<typeof RendererEnvelope>;
 export type RequestOf<K extends OperationName> = Extract<RendererRequest, { operation: K }>;
@@ -476,6 +508,10 @@ export const NativeFirstEnvelope = z.discriminatedUnion("operation", [
   ChooseWorktreeFolder,
   // Feature 005 contract Δ1.
   OpenSubmodule,
+  // Feature 006 contract Δ1.
+  ImportDictionary,
+  SetSpelling,
+  OpenLicenceLink,
 ]);
 
 // Contract §6 "Dismissal": without `bootstrapId`, the stored worktree path does not exist.
@@ -527,6 +563,12 @@ export const ServiceEnvelope = z.discriminatedUnion("operation", [
   PreviewIgnore,
   // Feature 005 contract Δ3: the shell binds the joined path to a `repositoryDiscovery` context and forwards its `bootstrapId`.
   op("openSubmodule", {}, z.strictObject({ repositoryId: Identifier, bootstrapId: Identifier, path: SubmodulePath })),
+  ListDictionaries,
+  ReadDictionary,
+  DownloadDictionary,
+  // Feature 006 contract Δ3 `importDictionary`: `folder` is the channel path that the shell picker returned.
+  op("importDictionary", {}, z.strictObject({ language: LanguageId, folder: ChannelPath })),
+  RemoveDictionary,
 ]);
 export type ServiceRequest = z.infer<typeof ServiceEnvelope>;
 
@@ -1378,6 +1420,8 @@ export const SyncSettings = z
     remoteKeyFiles: z.array(z.strictObject({ worktreeKey: Fingerprint, remote: RemoteName, path: ChannelPath }).meta({ title: "KeyFile" })).max(KEY_FILE_ENTRIES),
     defaultCloneFolder: ChannelPath.nullable(),
     lastCloneParent: ChannelPath.nullable(),
+    // Feature 006 contract Δ12: data-model §8 `spelling`.
+    spelling: SpellingSetting,
   })
   .refine((s) => Array.isArray(s.programs) && new Set(s.programs.map((p) => p?.program)).size === s.programs.length && s.programs.length === (s.plinkPath === null ? 0 : PUTTY_PROGRAMS.length))
   .meta({ title: "SyncSettings" });
@@ -1388,6 +1432,67 @@ export const SyncSettingsResult = z.union([SyncSettings, PuttyRefused]).meta({ t
 
 // Contract Δ3 `chooseWorktreeFolder`: the picked parent folder.
 export const ChooseWorktreeFolderResult = z.strictObject({ path: ChannelPath }).meta({ title: "ChooseWorktreeFolderResult" });
+
+// ---- Feature 006 results (contract Δ3 and Δ9, data-model §4 and §7) ----
+
+type DictionaryReason = (typeof DICTIONARY_UNAVAILABLE_REASONS)[number];
+const FOLDER_REASONS: readonly string[] = ["save", "import-unreadable", "remove"];
+// Contract Δ9: `http-status` carries `status`, `save`, `import-unreadable`, and `remove` carry `folder`, and `link` carries `url`.
+const dictionaryRefusal = (reasons: readonly [DictionaryReason, ...DictionaryReason[]], title: string) =>
+  z
+    .strictObject({ reason: z.enum(reasons), status: z.int().min(100).max(599).optional(), folder: ChannelPath.optional(), url: Text.min(1).optional() })
+    .refine((r) => (r.reason === "http-status") === (r.status !== undefined) && FOLDER_REASONS.includes(r.reason) === (r.folder !== undefined) && (r.reason === "link") === (r.url !== undefined))
+    .meta({ title });
+export const DictionaryRefusal = dictionaryRefusal(DICTIONARY_UNAVAILABLE_REASONS, "DictionaryRefusal");
+// Data-model §4. `removed` holds the first DICTIONARY_CATALOG_ENTRIES `catalog-removed` notices of this service process, and `more` counts the rest.
+// Contract Δ3: a throw in a check step gives the refusal `changed`.
+export const ListDictionariesResult = z
+  .union([
+    z
+      .strictObject({
+        languages: z
+          .array(z.strictObject({ language: LanguageId, state: z.enum(LANGUAGE_STATES), notice: z.enum(LANGUAGE_NOTICES).optional() }).meta({ title: "DictionaryLanguage" }))
+          .max(DICTIONARY_CATALOG_ENTRIES)
+          .refine((rows) => new Set(rows.map((row) => row?.language)).size === rows.length),
+        // Data-model §2 `name`: 1 to 64 code points.
+        removed: z.array(z.strictObject({ language: LanguageId, name: Text.refine((name) => [...name].length >= 1 && [...name].length <= 64) }).meta({ title: "RemovedLanguage" })).max(DICTIONARY_CATALOG_ENTRIES),
+        more: Count,
+      })
+      .meta({ title: "DictionaryStates" }),
+    dictionaryRefusal(["changed"], "ListDictionariesRefusal"),
+  ])
+  .meta({ title: "ListDictionariesResult" });
+// Data-model §7: the base64 of the bytes from `offset`, up to DICTIONARY_CHUNK_BYTES.
+const base64Bytes = (text: string) => (text.length / 4) * 3 - (text.endsWith("==") ? 2 : text.endsWith("=") ? 1 : 0);
+export const ReadDictionaryResult = z
+  .union([
+    z
+      .strictObject({
+        language: LanguageId,
+        file: DictionaryFileName,
+        size: z.int().min(1).max(DICTIONARY_LANGUAGE_BYTES),
+        offset: Count.multipleOf(DICTIONARY_CHUNK_BYTES),
+        bytes: z.base64().max(4 * Math.ceil(DICTIONARY_CHUNK_BYTES / 3)),
+      })
+      .refine((c) => typeof c.bytes === "string" && c.offset < c.size && base64Bytes(c.bytes) === Math.min(DICTIONARY_CHUNK_BYTES, c.size - c.offset))
+      .meta({ title: "DictionaryChunk" }),
+    dictionaryRefusal(["absent", "changed"], "ReadDictionaryRefusal"),
+  ])
+  .meta({ title: "ReadDictionaryResult" });
+// Data-model §5 and §6: `downloadDictionary` and `importDictionary` share this result.
+export const DictionaryRunResult = z
+  .union([
+    z.strictObject({ language: LanguageId, state: z.literal("ready") }).meta({ title: "DictionaryReady" }),
+    dictionaryRefusal(
+      ["busy", "not-https", "redirect", "http-not-found", "http-rate-limit", "http-status", "transport", "mismatch", "save", "import-mismatch", "import-unreadable"],
+      "DictionaryRunRefusal",
+    ),
+  ])
+  .meta({ title: "DictionaryRunResult" });
+export const RemoveDictionaryResult = z
+  .union([z.strictObject({ language: LanguageId, removed: z.boolean() }).meta({ title: "DictionaryRemoved" }), dictionaryRefusal(["busy", "remove"], "RemoveDictionaryRefusal")])
+  .meta({ title: "RemoveDictionaryResult" });
+export const OpenLicenceLinkResult = z.union([empty().meta({ title: "LicenceLinkOpened" }), dictionaryRefusal(["link"], "LicenceLinkRefusal")]).meta({ title: "OpenLicenceLinkResult" });
 // T034 adds the actions of batch 2: switch, the branch actions, merge, rebase, and ignore. Later tasks add the plans of their actions.
 
 // Contract Δ5: 100 paths in a result, plus a count.

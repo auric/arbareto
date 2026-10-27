@@ -118,6 +118,12 @@ describe("preview package", () => {
     expect(flags).toEqual({ title: "Arbareto", publisher: "Ihor Lifanov", version: versions[0], description: "Arbareto Git service", copyright: "Copyright (c) 2026 Ihor Lifanov" });
   }, 120_000);
 
+  test("tauri.conf.json sets the publisher and copyright of the service file properties", async () => {
+    const bundle = ((await Bun.file(join(ROOT, "src-tauri", "tauri.conf.json")).json()) as { bundle: Record<string, unknown> }).bundle;
+    // tauri-build 2.7.4 lib.rs:837 and tauri-bundler 2.10.0 nsis/mod.rs:268 use the second identifier segment when publisher is absent.
+    expect({ publisher: bundle.publisher, copyright: bundle.copyright }).toEqual({ publisher: "Ihor Lifanov", copyright: "Copyright (c) 2026 Ihor Lifanov" });
+  });
+
   test(".cargo/config.toml passes /Brepro to the MSVC linker", async () => {
     const config = Bun.TOML.parse(await Bun.file(join(ROOT, ".cargo", "config.toml")).text()) as { target?: Record<string, { rustflags?: unknown }> };
     expect(config.target?.[TARGET]?.rustflags).toEqual(["-C", "link-arg=/Brepro"]);

@@ -256,8 +256,9 @@ async function scrollToLine(c: Cdp, field: Element, line: number, word: string):
   if (typeof got === "string") throw new Error(`the field line height is ${got}, not a px length`);
   const { top, max, dpr } = got;
   await until<number | null>(c, `the mirror scrollTop ${top}`, `document.querySelector('[data-slot="spell-mirror"]')?.scrollTop ?? null`, (v) => v !== null && Math.abs(v - top) * dpr <= 1);
+  // The UIA node of a field without scroll overflow has no Scroll pattern. Then no scroll can make the UIA rects stale.
   // The poll ends at MAX_WAIT_MS.
-  await waitFor(`the UIA scroll position ${top} of ${max}`, MAX_WAIT_MS, () => Math.abs((verticalScrollPercent(field) * max) / 100 - top) * dpr <= 0.5);
+  if (max > 0) await waitFor(`the UIA scroll position ${top} of ${max}`, MAX_WAIT_MS, () => Math.abs((verticalScrollPercent(field) * max) / 100 - top) * dpr <= 0.5);
   const inside = await c.evaluate<boolean>(
     `(() => { const f = ${FIELD}; const r = f.getBoundingClientRect(); const x = r.left + f.clientLeft; const y = r.top + f.clientTop; const s = [...document.querySelectorAll('[data-slot="spell-mark"]')].find((e) => e.textContent === ${js(word)}); if (s === undefined) return false; const b = s.getBoundingClientRect(); return b.left >= x && b.right <= x + f.clientWidth && b.top >= y && b.bottom <= y + f.clientHeight; })()`,
   );

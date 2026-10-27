@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { useRef, type KeyboardEvent, type RefObject } from "react";
+import { useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import type { Environment } from "../../contracts/envelope";
-import { SCOPE_LINE } from "../app/RepositoryStates";
+import { failureText, SCOPE_LINE } from "../app/RepositoryStates";
+import type { createBridge } from "../bridge";
 import type { Notices } from "../build/notices";
+import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";
 import { dialogSize, type Size } from "../layout/profiles";
@@ -18,17 +20,32 @@ const PERMISSION =
 const NO_WARRANTY =
   "Arbareto is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.";
 
-type OverviewProps = { scope: Environment["platformScope"]; build: Environment["buildIdentity"]; /** notices.json `repositoryUrl`. */ repositoryUrl: string };
+export type AboutBridge = Pick<ReturnType<typeof createBridge>, "openReleaseLink">;
+type ReleaseTarget = Parameters<AboutBridge["openReleaseLink"]>[0]["target"];
+
+type OverviewProps = { scope: Environment["platformScope"]; build: Environment["buildIdentity"]; /** notices.json `repositoryUrl`. */ repositoryUrl: string; bridge: AboutBridge };
 
 /** The Overview panel. `build.commit` carries the `-dirty` suffix when it applies (contract `buildIdentity`). */
-export function AboutOverview({ scope, build, repositoryUrl }: OverviewProps) {
+export function AboutOverview({ scope, build, repositoryUrl, bridge }: OverviewProps) {
+  const [failure, setFailure] = useState<ReactNode>(null);
+  // Feature 007 contracts/release.md §5: the renderer sends only the target. The shell builds the URL.
+  async function open(label: string, target: ReleaseTarget) {
+    const response = await bridge.openReleaseLink({ target });
+    setFailure(response.state === "succeeded" ? null : <>{failureText(label, response)}.</>);
+  }
+  const release = (label: string, target: ReleaseTarget) => (
+    <Button variant="outline" size="sm" onClick={() => void open(label, target)}>
+      {label}
+    </Button>
+  );
+  const preview = build.channel === "preview";
   return (
     <div className="flex flex-col gap-2 select-text">
       <p className="font-heading font-semibold">Arbareto</p>
       <p>
         Build: {build.version} <span className="font-mono break-all">{build.commit}</span>
       </p>
-      {build.channel === "local" && <p>Unsigned local test package</p>}
+      {preview ? <p>Preview</p> : <p>Unsigned local test package</p>}
       {scope === "other" && <p>Unqualified platform</p>}
       <p>{SCOPE_LINE}</p>
       <p>{COPYRIGHT}</p>
@@ -39,12 +56,15 @@ export function AboutOverview({ scope, build, repositoryUrl }: OverviewProps) {
       <p>
         Corresponding Source: <span className="font-mono break-all">{repositoryUrl}</span> at commit{" "}
         <span className="font-mono break-all">{build.commit}</span>
+        {preview ? <> {release("Source at this commit", "tag-source")}</> : null}
       </p>
-      {/* 006 plan.md D18 "About source line": the renderer has no link opener, so the line is text. */}
+      {/* 006 plan.md D18 "About source line". Feature 007 plan.md D7 adds the release button for `preview` only. */}
       <p>
         Hunspell source (LGPL-2.1): <span className="font-mono break-all">{`${repositoryUrl}/releases`}</span>
         {` (release ${build.version})`}
+        {preview ? <> {release("Hunspell source", "hunspell-source")}</> : null}
       </p>
+      {failure === null ? null : <p role="alert">{failure}</p>}
     </div>
   );
 }
@@ -72,7 +92,7 @@ function selectPanel(event: KeyboardEvent<HTMLElement>) {
   document.getSelection()?.selectAllChildren(panel);
 }
 
-export function AboutDialog({ open, scope, build, notices, client, finalFocus, onClose }: AboutDialogProps) {
+export function AboutDialog({ open, scope, build, bridge, notices, client, finalFocus, onClose }: AboutDialogProps) {
   const heading = useRef<HTMLHeadingElement>(null);
   const size = dialogSize("about", client);
   return (
@@ -95,7 +115,7 @@ export function AboutDialog({ open, scope, build, notices, client, finalFocus, o
             <TabsTrigger value="notices">Third-party notices</TabsTrigger>
           </TabsList>
           <TabsContent value="overview" tabIndex={0} className={PANEL}>
-            <AboutOverview scope={scope} build={build} repositoryUrl={notices.repositoryUrl} />
+            <AboutOverview scope={scope} build={build} repositoryUrl={notices.repositoryUrl} bridge={bridge} />
           </TabsContent>
           <TabsContent value="license" tabIndex={0} className={PANEL}>
             <pre className="font-mono break-words whitespace-pre-wrap select-text">{`${notices.project.license}\n\n${notices.project.notice}`}</pre>

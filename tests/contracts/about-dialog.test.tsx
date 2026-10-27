@@ -16,7 +16,7 @@ const { AboutDialog } = await import("../../src/frontend/about/AboutDialog");
 
 // Feature 007 contracts/release.md §5 and §6, plan.md D7.
 type Target = "hunspell-source" | "tag-source";
-// T013 adds the `openReleaseLink` bridge method and T016 the `bridge` prop. The spread keeps this file compiling before both.
+// The `bridge` prop of `AboutDialog`.
 type ReleaseBridge = { openReleaseLink(payload: { target: Target }): Promise<BridgeResponse> };
 
 const COMMIT = "c950776a2b4e0c2f6f7e6b1d9a1f3c5e7d9b0a12";
@@ -25,8 +25,8 @@ const LOCAL_TEXT = "Unsigned local test package";
 const BUTTONS = ["Hunspell source", "Source at this commit"] as const;
 const TARGETS: Record<(typeof BUTTONS)[number], Target> = { "Hunspell source": "hunspell-source", "Source at this commit": "tag-source" };
 const SUCCEEDED = { requestId: null, state: "succeeded" } as unknown as BridgeResponse;
-// T013 adds the code to the contract §9 list.
-const OPEN_FAILED = { requestId: null, state: "failed", code: "RELEASE_LINK_OPEN_FAILED" } as unknown as BridgeResponse;
+// Contract §5: the shell result value of `ShellExecuteW`.
+const OPEN_FAILED = { requestId: null, state: "failed", code: "RELEASE_LINK_OPEN_FAILED", result: { shellExecuteResult: 2 } } as unknown as BridgeResponse;
 
 const unmounts: (() => void)[] = [];
 afterEach(() => {
@@ -45,7 +45,7 @@ async function renderAbout(channel: Environment["buildIdentity"]["channel"], rep
   const root = createRoot(host);
   const build = { version: "0.1.0", commit: COMMIT, channel };
   await act(async () =>
-    root.render(<AboutDialog open scope="qualification-target" build={build} notices={NOTICES} client={{ width: 1280, height: 800 }} finalFocus={() => null} onClose={() => {}} {...({ bridge } as object)} />),
+    root.render(<AboutDialog open scope="qualification-target" build={build} notices={NOTICES} client={{ width: 1280, height: 800 }} finalFocus={() => null} onClose={() => {}} bridge={bridge} />),
   );
   unmounts.push(() => {
     act(() => root.unmount());
@@ -76,14 +76,14 @@ describe("About preview marker and release links", () => {
     for (const name of BUTTONS) expect(button(name)).toHaveLength(0);
   });
 
-  test.todo("channel preview shows the Preview line, no local package line, and both release buttons", async () => {
+  test("channel preview shows the Preview line, no local package line, and both release buttons", async () => {
     const { panel, button } = await renderAbout("preview");
     expect([...panel.querySelectorAll("p")].some((p) => p.textContent?.trim() === "Preview")).toBe(true);
     expect(panel.textContent).not.toContain(LOCAL_TEXT);
     for (const name of BUTTONS) expect(button(name)).toHaveLength(1);
   });
 
-  test.todo("Tab reaches each release button: a native button, enabled, in the tab order", async () => {
+  test("Tab reaches each release button: a native button, enabled, in the tab order", async () => {
     const { button } = await renderAbout("preview");
     for (const name of BUTTONS) {
       const [element] = button(name);
@@ -98,18 +98,20 @@ describe("About preview marker and release links", () => {
   });
 
   for (const key of ["Enter", " "] as const) {
-    test.todo(`${key === " " ? "Space" : key} on each release button calls openReleaseLink with only its target`, async () => {
+    test(`${key === " " ? "Space" : key} on each release button calls openReleaseLink with only its target`, async () => {
       const { calls, button } = await renderAbout("preview");
       for (const name of BUTTONS) await press(button(name)[0]!, key);
       expect(calls).toEqual(BUTTONS.map((name) => ({ target: TARGETS[name] })));
     });
   }
 
-  test.todo("a RELEASE_LINK_OPEN_FAILED result shows the failure text with its code", async () => {
+  test("a RELEASE_LINK_OPEN_FAILED result shows the failure text with its code", async () => {
     const { panel, button } = await renderAbout("preview", OPEN_FAILED);
     const codes = () => [...panel.querySelectorAll("code")].map((c) => c.textContent);
     expect(codes()).not.toContain("RELEASE_LINK_OPEN_FAILED");
     await press(button("Hunspell source")[0]!, "Enter");
     expect(codes()).toContain("RELEASE_LINK_OPEN_FAILED");
+    // Plan.md D7 "Release link failure text".
+    expect(panel.querySelector('[role="alert"]')?.textContent).toBe("Hunspell source did not complete: RELEASE_LINK_OPEN_FAILED.");
   });
 });

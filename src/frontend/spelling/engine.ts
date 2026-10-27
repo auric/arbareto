@@ -3,7 +3,7 @@
 
 import { COMMIT_MESSAGE_BYTES, DICTIONARY_CHUNK_BYTES, DICTIONARY_LOAD_DEADLINE_MS } from "../../contracts/limits";
 import { changedLines, createRounds, mergeMarks, mergeSuggestions, scriptsOf, shiftRanges, type LineChange, type WordRange } from "../../contracts/spell-words";
-import type { BridgeResponse, OnProgress } from "../bridge";
+import type { BridgeResponse, DictionaryChunk, OnProgress } from "../bridge";
 import type { WorkerMessage, WorkerReply } from "./spell-worker";
 import type { SpellingStore } from "./store";
 
@@ -254,10 +254,11 @@ export function createSpellEngine(store: SpellingStore, deps: EngineDeps) {
         });
         slot.read = null;
         if (slot.ended) return;
-        const chunk = response.result as { size?: unknown; bytes?: unknown } | undefined;
-        if (response.state !== "succeeded" || typeof chunk?.bytes !== "string" || typeof chunk.size !== "number") return fail(slot);
+        const chunk = response.result as Partial<DictionaryChunk> | undefined;
+        if (response.state !== "succeeded" || !(chunk?.bytes instanceof Uint8Array) || typeof chunk.size !== "number") return fail(slot);
         size = chunk.size;
-        worker.postMessage({ type: "chunk", file: file === "index.aff" ? "aff" : "dic", size, offset, data: chunk.bytes });
+        // Plan.md D9: the transfer detaches the buffer here, so the page keeps no copy of the chunk.
+        worker.postMessage({ type: "chunk", file: file === "index.aff" ? "aff" : "dic", size, offset, data: chunk.bytes }, [chunk.bytes.buffer]);
       }
     }
     worker.postMessage({ type: "build", script: slot.script! });

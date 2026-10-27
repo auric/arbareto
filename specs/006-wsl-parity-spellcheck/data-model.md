@@ -100,7 +100,8 @@ Each section names its source. Field names are contract names. "001 data-model Â
 
 - Source: plan D7, spec FR-013.
 - Request: `{language, file, offset}`. `file` is a `files` name of the entry. `offset` is a multiple of `DICTIONARY_CHUNK_BYTES` (1,048,576) below the size, or 0.
-- Result: `{language, file, size, offset, bytes}`. `bytes` is the base64 of the bytes from `offset`, at most `DICTIONARY_CHUNK_BYTES`.
+- Service result: `{language, file, size, offset, bytes}`. `bytes` is the base64 of the bytes from `offset`, at most `DICTIONARY_CHUNK_BYTES`.
+- Renderer body (contract Î”1): the shell turns a `succeeded` result into raw bytes: `size` as a 4-byte little-endian unsigned integer, then the decoded chunk. The bridge gives it as `{size, bytes}`, with `bytes` a `Uint8Array` view of the received `ArrayBuffer`.
 - Reasons: `absent` (no folder), `changed` (the Â§3 file check fails). An unknown `language` or `file`, or a bad `offset`, gives `INVALID_REQUEST`. A `cancel {operationId}` gives `canceled`.
 - Each call checks the requested file whole, so every chunk comes from bytes that equal the catalog.
 
@@ -178,12 +179,12 @@ Each section names its source. Field names are contract names. "001 data-model Â
 | Message | Worker | Fields | Reply |
 |---|---|---|---|
 | `init` | both | `language`, `script` | for `en`: `loaded` or `load-failed {reason}` after the `?raw` import |
-| `chunk` | both | `file` (`aff` or `dic`), `size` (the file bytes), `offset` (the chunk start), `data` (base64) | none |
-| `build` | both | `script` | `loaded` or `load-failed {reason}`, `reason` one of `chunk`, `short`, `base64`, `utf-8`, `engine` (plan D9) |
+| `chunk` | both | `file` (`aff` or `dic`), `size` (the file bytes), `offset` (the chunk start), `data` (the chunk bytes, a `Uint8Array` whose buffer is in the transfer list) | none |
+| `build` | both | `script` | `loaded` or `load-failed {reason}`, `reason` one of `chunk`, `short`, `utf-8`, `engine` (plan D9) |
 | `check` | check | `round`, `lines` (each `{start, text}`) | `checked {round, ranges}`, `ranges` a transferred `Uint32Array` of start and end pairs in offsets of T, only of words that hold a letter of the worker's `script` |
 | `suggest` | suggestion | `id`, `word` | `suggested {id, list}`, at most 5 strings |
 
-- Chunk bytes (T058): the worker decodes each `data` into one byte array of `size` per file at `offset`. The chunks of a file come in order: `offset` equals the count of bytes written. The worker keeps no decoded text and gives the bytes, without a leading UTF-8 BOM, to Hunspell.
+- Chunk bytes (T058, T061): the worker copies each `data` into one byte array of `size` per file at `offset`. The chunks of a file come in order: `offset` equals the count of bytes written. The transfer detaches each chunk buffer on the page, so only the worker holds it. The worker keeps no decoded text and gives the bytes, without a leading UTF-8 BOM, to Hunspell.
 - A check worker gets the next `check` only after it replied to the last one. The engine keeps only the newest round for it.
 - A suggestion worker gets the next `suggest` only after it replied to the last one. A newer request replaces a queued one, and the engine drops a reply whose `id` is not the newest.
 - Load deadline: `DICTIONARY_LOAD_DEADLINE_MS` (30,000 ms) from the first `readDictionary` call, or from `init` for `en`, until `loaded`. At the deadline, the engine calls `worker.terminate()`.

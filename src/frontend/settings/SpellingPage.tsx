@@ -11,7 +11,7 @@ import { DICTIONARY_CHUNK_BYTES, PERSONAL_WORDS, SPELLING_LANGUAGES } from "../.
 import { sizeText } from "../../contracts/spell-words";
 import { compareNames } from "../../contracts/tree-order";
 import { codeText, failureText, unknownReadText } from "../app/RepositoryStates";
-import type { BridgeResponse, createBridge, ProgressEvent } from "../bridge";
+import type { BridgeResponse, createBridge, DictionaryChunk, ProgressEvent } from "../bridge";
 import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { englishLicence } from "../spelling/english";
@@ -160,8 +160,6 @@ function runMessage(kind: "download" | "importFolder", name: string, response: B
   }
   return { text: otherText(item, response), failed: false, retry: false };
 }
-
-const decode = (base64: string) => Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
 
 /** Plan.md D16 "Keys": one Tab stop per list with roving focus. Up, Down, Home, and End move between rows, Left and Right between the controls of a row. */
 function useGrid(rows: number, scrollTo?: (row: number) => void, external?: RefObject<HTMLDivElement | null>) {
@@ -387,11 +385,11 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
     const parts: Uint8Array[] = [];
     for (let offset = 0, size = 1; offset < size; offset += DICTIONARY_CHUNK_BYTES) {
       const response = await bridge.readDictionary({ language: entry.id, file, offset });
-      const chunk = response.result as { size?: unknown; bytes?: unknown } | undefined;
+      const chunk = response.result as Partial<DictionaryChunk> | undefined;
       if (response.state !== "succeeded") return { failure: <>{codeText(LICENCE_TEXTS.failed, response.code ?? response.state)}.</> };
-      if (typeof chunk?.bytes !== "string" || typeof chunk.size !== "number") return { failure: unknownReadText("The licence text") };
+      if (!(chunk?.bytes instanceof Uint8Array) || typeof chunk.size !== "number") return { failure: unknownReadText("The licence text") };
       size = chunk.size;
-      parts.push(decode(chunk.bytes));
+      parts.push(chunk.bytes);
     }
     const bytes = new Uint8Array(parts.reduce((n, p) => n + p.length, 0));
     parts.reduce((at, p) => (bytes.set(p, at), at + p.length), 0);

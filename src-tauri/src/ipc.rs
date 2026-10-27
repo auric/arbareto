@@ -5,15 +5,18 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, Weak};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use serde_json::{Value, json};
 use tauri::async_runtime::{Receiver, Sender, channel};
-use tauri::ipc::{InvokeBody, Request};
+use tauri::ipc::{InvokeBody, InvokeResponseBody, Request, Response};
 use tauri::{State, Webview};
 
 use crate::close::{self, Decision};
 use crate::framing::{PUBLIC_REQUEST_BYTES, public_request_body};
 use crate::process_requests::{decode_strict, is_identifier};
 use crate::schema;
+use crate::settings;
 use crate::text_scale::{self, Current};
 
 /// The label of the only window that may call the public operations (contract §1).
@@ -542,6 +545,52 @@ async fn call(
         .map_err(|_| "SERVICE_UNAVAILABLE"),
         _ => Ok(response),
     }
+}
+
+/// Feature 006 contract Δ5: `src/contracts/limits.ts` `DICTIONARY_CHUNK_BYTES`.
+const DICTIONARY_CHUNK_BYTES: u64 = 1_048_576;
+/// Feature 006 data-model §2: `src/contracts/dictionaries.ts` `DICTIONARY_FILE_NAMES`.
+const DICTIONARY_FILE_NAMES: [&str; 5] =
+    ["index.aff", "index.dic", "license", "licence", "readme.md"];
+
+/// Feature 006 contract Δ1: a `succeeded` `readDictionary` response reaches the renderer as the raw chunk body.
+/// Every other response stays JSON. A result outside the `DictionaryChunk` rules gives `SERVICE_UNAVAILABLE`.
+fn dictionary_response(response: Value) -> Result<InvokeResponseBody, &'static str> {
+    if response["state"] != "succeeded" {
+        return Ok(InvokeResponseBody::Json(response.to_string()));
+    }
+    dictionary_chunk(&response["result"])
+        .map(InvokeResponseBody::Raw)
+        .ok_or("SERVICE_UNAVAILABLE")
+}
+
+/// The `DictionaryChunk` rules of `ReadDictionaryResult` in `src/contracts/envelope.ts`.
+/// The body is the file size as a 4-byte little-endian integer, then the decoded chunk.
+pub(crate) fn dictionary_chunk(result: &Value) -> Option<Vec<u8>> {
+    let size = result["size"]
+        .as_u64()
+        .filter(|size| (1..=settings::DICTIONARY_LANGUAGE_BYTES).contains(size))?;
+    let offset = result["offset"]
+        .as_u64()
+        .filter(|offset| offset % DICTIONARY_CHUNK_BYTES == 0 && *offset < size)?;
+    // The base64 length of DICTIONARY_CHUNK_BYTES bounds the decode.
+    let text = result["bytes"].as_str().filter(|text| {
+        u64::try_from(text.len()).is_ok_and(|n| n <= DICTIONARY_CHUNK_BYTES.div_ceil(3) * 4)
+    })?;
+    let fits = settings::has_keys(result, &["language", "file", "size", "offset", "bytes"])
+        && result["language"]
+            .as_str()
+            .is_some_and(settings::is_language_id)
+        && result["file"]
+            .as_str()
+            .is_some_and(|file| DICTIONARY_FILE_NAMES.contains(&file));
+    if !fits {
+        return None;
+    }
+    let mut body = u32::try_from(size).ok()?.to_le_bytes().to_vec();
+    STANDARD.decode_vec(text, &mut body).ok()?;
+    let chunk = u64::try_from(body.len() - 4).ok()?;
+    (chunk == DICTIONARY_CHUNK_BYTES.min(size - offset)).then_some(body)
 }
 
 // One command per contract §3 operation. Each name equals its entry in `COMMANDS` of `src-tauri/build.rs`.
@@ -1101,8 +1150,9 @@ pub async fn read_dictionary(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
     request: Request<'_>,
-) -> Result<Value, &'static str> {
-    call(webview, &ipc, "readDictionary", request.body().clone()).await
+) -> Result<Response, &'static str> {
+    let response = call(webview, &ipc, "readDictionary", request.body().clone()).await?;
+    dictionary_response(response).map(Response::new)
 }
 
 #[tauri::command]
@@ -1911,6 +1961,84 @@ mod tests {
                 "{operation}"
             );
             assert_eq!(*native.prepares.lock().expect("prepares"), 0, "{operation}");
+        }
+    }
+
+    /// Feature 006 contract Δ1: a `readDictionary` success reaches the renderer as the file size and the chunk bytes.
+    /// Every other response stays the same JSON. A result outside the `DictionaryChunk` rules gives `SERVICE_UNAVAILABLE`.
+    #[test]
+    fn a_read_dictionary_success_reaches_the_renderer_as_the_raw_size_and_chunk() {
+        let succeeded = |result: Value| json!({ "requestId": REQUEST_ID, "operationId": OPERATION_ID, "state": "succeeded", "result": result });
+        let chunk = |file: &str, size: u64, offset: u64, bytes: &str| json!({ "language": "uk", "file": file, "size": size, "offset": offset, "bytes": bytes });
+        let raw = |result: Value| match dictionary_response(succeeded(result)) {
+            Ok(InvokeResponseBody::Raw(body)) => body,
+            other => panic!("raw body expected: {other:?}"),
+        };
+        assert_eq!(
+            raw(chunk("index.aff", 3, 0, "U0VU")),
+            [3, 0, 0, 0, b'S', b'E', b'T']
+        );
+        let full = vec![b'a'; 1_048_576];
+        let size = DICTIONARY_CHUNK_BYTES + 3;
+        let first = raw(chunk(
+            "index.dic",
+            size,
+            0,
+            &crate::process_requests::encode_base64(&full),
+        ));
+        assert_eq!(first[..4], 1_048_579_u32.to_le_bytes());
+        assert_eq!(first[4..], full[..]);
+        assert_eq!(
+            raw(chunk("index.dic", size, DICTIONARY_CHUNK_BYTES, "U0VU")),
+            [3, 0, 16, 0, b'S', b'E', b'T']
+        );
+        for response in [
+            json!({ "requestId": REQUEST_ID, "operationId": OPERATION_ID, "state": "failed", "code": "DICTIONARY_UNAVAILABLE", "result": { "reason": "changed" } }),
+            json!({ "requestId": REQUEST_ID, "operationId": OPERATION_ID, "state": "canceled", "code": "CANCELED" }),
+            json!({ "requestId": REQUEST_ID, "state": "rejected", "code": "BUSY" }),
+            json!({ "requestId": REQUEST_ID, "state": "unknown", "code": "STATE_UNKNOWN" }),
+        ] {
+            match dictionary_response(response.clone()) {
+                Ok(InvokeResponseBody::Json(text)) => {
+                    assert_eq!(
+                        serde_json::from_str::<Value>(&text).expect("JSON"),
+                        response
+                    );
+                }
+                other => panic!("JSON expected for {response}: {other:?}"),
+            }
+        }
+        let good = chunk("index.aff", 3, 0, "U0VU");
+        let with = |key: &str, value: Value| {
+            let mut result = good.clone();
+            result[key] = value;
+            result
+        };
+        let mut without_file = good.clone();
+        without_file.as_object_mut().expect("object").remove("file");
+        // One base64 group above the 1,398,104 characters of DICTIONARY_CHUNK_BYTES.
+        let above = "A".repeat(4 * 349_527);
+        for result in [
+            json!("U0VU"),
+            with("sha256", json!("")),
+            without_file,
+            with("language", json!("UK")),
+            with("file", json!("entry.json")),
+            with("size", json!(0)),
+            with("size", json!(3.5)),
+            with("size", json!(12_582_913)),
+            with("offset", json!(1)),
+            with("offset", json!(DICTIONARY_CHUNK_BYTES)),
+            with("bytes", json!("U0V!")),
+            with("bytes", json!("U0VUVA==")),
+            with("bytes", json!(above)),
+            with("size", json!(4)),
+        ] {
+            assert_eq!(
+                dictionary_response(succeeded(result.clone())).err(),
+                Some("SERVICE_UNAVAILABLE"),
+                "{result}"
+            );
         }
     }
 

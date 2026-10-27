@@ -5,6 +5,8 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 ## Δ1 Transport (001 §1)
 
 - New service operations: `listDictionaries`, `readDictionary`, `downloadDictionary`, `removeDictionary`. Each has one Tauri command and one zod schema.
+- Renderer response of `readDictionary` (T061): a `succeeded` response reaches the renderer as a raw Tauri `ipc::Response` (`application/octet-stream`), not as JSON. The body is the result `size` as a 4-byte little-endian unsigned integer, then the decoded chunk. The page gets an `ArrayBuffer`. Before the answer, the shell checks the service result with the `DictionaryChunk` rules of `ReadDictionaryResult`: the exact keys, the language ID, the file name, the size and offset bounds, canonical base64 of at most 1,398,104 characters, and a decoded length of `min(DICTIONARY_CHUNK_BYTES, size - offset)`. A result outside the rules gives the invoke error `SERVICE_UNAVAILABLE`, so the bridge gives `rejected` `SERVICE_UNAVAILABLE`. Every other `readDictionary` response and every other operation stays the 001 §2 JSON response.
+- The bridge gives the raw body as the result `{size, bytes}`, with `bytes` a `Uint8Array` view of the received buffer after the 4 size bytes. Only `readDictionary` takes a raw body.
 - New native-first operation: `importDictionary`. The shell shows the folder picker and forwards the picked folder (Δ3).
 - New shell-only operations: `setSpelling` and `openLicenceLink`. The shell answers them natively and never forwards them.
 - The 003 `readSyncSettings` result gains `spelling` (Δ12).
@@ -33,7 +35,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 
 - Payload: `{language, file, offset}`. `language` is a catalog ID. `file` is a `files` name of that entry. `offset` is 0 or a multiple of `DICTIONARY_CHUNK_BYTES` below the file size. Another value gives `INVALID_REQUEST`.
 - Steps: the reconcile; then the data-model §3 file check: the manifest, and the requested file whole with its size and SHA-256 (plan D7). The other files of the language are not read.
-- Result: `{language, file, size, offset, bytes}`. `bytes` holds the base64 of at most `DICTIONARY_CHUNK_BYTES` bytes from `offset`.
+- Service result: `{language, file, size, offset, bytes}`. `bytes` holds the base64 of at most `DICTIONARY_CHUNK_BYTES` bytes from `offset`. The renderer gets the raw body of Δ1.
 - Bounds: at most `SPELLING_LANGUAGES` (3) calls at the same time. A fourth gets `BUSY`.
 - Deadline: `READ_DEADLINE_MS`. It never takes the run lock.
 - Errors: `DICTIONARY_UNAVAILABLE` with `absent` or `changed`; `BUSY`; `DEADLINE`; `CANCELED` after a `cancel {operationId}`, which the renderer sends when the language leaves the selection or its load deadline passes.
@@ -103,7 +105,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 | Catalog entries (`DICTIONARY_CATALOG_ENTRIES`) | 92 (the folders of the pinned commit) |
 | Removed notices in one `listDictionaries` result (`DICTIONARY_CATALOG_ENTRIES`) | 92, plus the `more` count of the rest |
 | Manifest read (`DICTIONARY_MANIFEST_BYTES`) | 64 KiB (65,536 bytes) |
-| Read chunk (`DICTIONARY_CHUNK_BYTES`) | 1 MiB (1,048,576 bytes), 1,398,104 bytes as base64 |
+| Read chunk (`DICTIONARY_CHUNK_BYTES`) | 1 MiB (1,048,576 bytes), 1,398,104 bytes as base64 in the service frame, 1,048,580 bytes in the raw renderer body (Δ1) |
 | Concurrent `readDictionary` calls | 3 (`SPELLING_LANGUAGES`) |
 | Download and import deadline (`DICTIONARY_DOWNLOAD_DEADLINE_MS`) | 120 s (`REGISTERED_DEADLINE_CAP_MS`) |
 | Run-time load deadline (`DICTIONARY_LOAD_DEADLINE_MS`) | 30 s (`READ_DEADLINE_MS`), per worker load |
@@ -158,7 +160,7 @@ This file lists only the changes to the feature 001 contract (`specs/001-desktop
 - Vector tests for `spell-words.ts` (data-model §11), the case rule (§12), the line shift, the Script rule, and the round merge (§13), the suggestion merge (§15), and the size text (plan D17).
 - A source test (`tests/contracts/network-sites.test.ts`): `src/frontend` holds no `fetch(` call, and `src/git-service` holds exactly one, in `dictionaries.ts`.
 - A Rust test admits the WSL `globalConfig` arrays and checks the WSL command: `-C /`, mode `integrate` for the writes, mode `read` for the listing, and an empty `WSLENV`.
-- The Rust check of `src-tauri/src/schema.rs` reads each new vector of `native-first-envelope` and of the shell-only operations.
+- The Rust check of `src-tauri/src/schema.rs` reads each new vector of `native-first-envelope` and of the shell-only operations, and each chunk vector of `read-dictionary-result` with the Δ1 check (T061).
 
 ## Δ11 WSL repositories (001 §11)
 

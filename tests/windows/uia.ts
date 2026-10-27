@@ -110,6 +110,8 @@ const SLOT = {
   CreatePropertyCondition: 23,
   CreateAndCondition: 25,
   // IUIAutomation2
+  get_AutoSetFocus: 58,
+  put_AutoSetFocus: 59,
   put_ConnectionTimeout: 61,
   put_TransactionTimeout: 63,
   // IUIAutomationTreeWalker
@@ -225,12 +227,20 @@ function uia(): Pointer {
   try {
     hr("put_ConnectionTimeout", slotCall(created, SLOT.put_ConnectionTimeout, [u32], [CONNECTION_TIMEOUT_MS]));
     hr("put_TransactionTimeout", slotCall(created, SLOT.put_TransactionTimeout, [u32], [TRANSACTION_TIMEOUT_MS]));
+    // Microsoft Learn `IUIAutomation2::put_AutoSetFocus`: with TRUE, Invoke, SetValue, and other actions first set focus on the element. A window that cannot take the foreground then blocks each action for about 2 s.
+    hr("put_AutoSetFocus", slotCall(created, SLOT.put_AutoSetFocus, [i32], [0]));
   } catch (error) {
     release(created);
     throw error;
   }
   automation = created;
   return automation;
+}
+
+export function autoSetFocus(): boolean {
+  const value = new Int32Array(1);
+  hr("get_AutoSetFocus", slotCall(uia(), SLOT.get_AutoSetFocus, [P], [ptr(value)]));
+  return value[0] !== 0;
 }
 
 // Releases the CUIAutomation8 object. A later call creates a new one.

@@ -15,7 +15,7 @@ Run the local checks first. The GitHub runs need the orchestrator, and the user'
 ## Q2. Local rehearsal of the build job (reference host)
 
 - Use a clean checkout of the branch. `git --no-optional-locks status --porcelain --untracked-files=all` prints nothing.
-- `bun scripts/release/check.ts --mode dry-run`
+- `bun scripts/release/check.ts --mode dry-run --signing off`
 - `bun run build`, then `bun run package:preview:exes`, then `bun run package:preview:bundle`.
 - `bun scripts/release/notices-text.ts --out <scratch>`; `bun scripts/release/hunspell-source.ts --out <scratch>` (Local: network); copy the installer into `<scratch>`; `bun scripts/release/sums.ts write <scratch>`; `bun scripts/release/sums.ts verify <scratch>`.
 - `bun scripts/release/notes.ts --version 0.1.0 --signing off --out <scratch>`.

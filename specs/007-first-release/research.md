@@ -383,3 +383,40 @@ Findings and fixes on branch `f007-review-fixes`. T010 and T017 need a rerun on 
 - Reviews: "Review of batches 0 and 1" above is the one independent review of batch 0 (T010) and of batch 1 (T017). Its eight fixes are in 93e6e894. This rerun verifies them.
 - `OBSERVATION T010: 8185cef5 every step exit 0; test:all 268 of 268 files, 8796 tests, 0 fail; WSL Ubuntu-26.04 cargo check --locked exit 0`
 - `OBSERVATION T017: DisplayName=Arbareto DisplayVersion=0.1.0 Publisher=Ihor Lifanov; CompanyName=Ihor Lifanov in both executables; About Build: 0.1.0 8185cef5920334836f8cad77a6d649f0ce7cf1c6, Preview; uninstall exit 0, removal not checked`
+
+### T017 Uninstall in Windows Sandbox (2026-10-28, reference host, installer 7bfd68a9…d5045749, build commit 8185cef5)
+
+- The installer is the file of the 8185cef5 rerun. Its SHA-256 on the host and in the Sandbox is `7bfd68a99fd82c88b09020dfe7ae627b93416a82dcad65feeef46773d5045749`. The commits after 8185cef5 change only `specs/`.
+- Install `/S`, exit 0. Key `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Arbareto`: `DisplayName=Arbareto`, `DisplayVersion=0.1.0`, `Publisher=Ihor Lifanov`. No HKLM entry.
+- Installed folder `%LOCALAPPDATA%\Arbareto`, three files:
+  - `arbareto.exe` 17217024 bytes, `e14d09a716876b589acbbe540ba0b3fcd147b5d7937482dcee7ad1e853f8d807` (equals the built file).
+  - `arbareto-git.exe` 116802048 bytes, `5438d50d61474ea6db702b1a5b77655502ae189f01c705d85138d9ee83a4bf95` (equals the built file).
+  - `uninstall.exe` 79264 bytes, `5b03c9ae81700718248168ff47415188f787a08d2c5cd3c5781750678061a24e`. This differs from the f87219d1 uninstaller `ac10d423…6ea94fbb`.
+- The Start menu shortcut `Arbareto.lnk` exists after the install.
+- `uninstall.exe /S`, exit 0. No temporary NSIS uninstaller process (`Un_*`, `Au_*`) was left.
+- After the uninstall: the HKCU key is absent, the installed folder is absent, and the Start menu shortcut is absent.
+- With this record, every T017 pass condition has evidence at 8185cef5.
+- `OBSERVATION T017: 8185cef5 uninstall.exe 5b03c9ae81700718248168ff47415188f787a08d2c5cd3c5781750678061a24e; uninstall exit 0; HKCU key, install folder, and Start menu shortcut absent after the uninstall`
+
+### T021 Hunspell source archive with the default upstream (2026-10-28, reference host, branch commit d55d42aa)
+
+- Tools: Bun 1.4.4, `git version 2.56.0.windows.2`, `C:\Windows\System32\tar.exe` (bsdtar 3.8.9, T004).
+- `bun scripts/release/hunspell-source.ts --out <scratch>` with the default upstream `https://github.com`. Exit 0.
+- Archive `arbareto-0.1.0-hunspell-source.tar.gz`, 2224921 bytes, SHA-256 `c990870ad75c1bf30b684ea0f2d541f49f62352674d83d5fdac67cfbdb311d9a`.
+- `tar.exe -tzf` lists 792 entries: 733 below `hunspell/`, 58 below `hunspell-wasm/`, and `SOURCE.txt`.
+- `SOURCE.txt` names commit `edb619100791110d3e34f09ec35392ad327c1135` for `hunspell/` and `8f755ef64e8b047b77b676f9698b3dfa5cb1887d` for `hunspell-wasm/`. These equal `pins.ts`.
+- `OBSERVATION T021: default upstream exit 0; arbareto-0.1.0-hunspell-source.tar.gz 2224921 bytes c990870ad75c1bf30b684ea0f2d541f49f62352674d83d5fdac67cfbdb311d9a`
+
+### T026 Local rehearsal of the build job, first run (2026-10-28, reference host, clone of `f007-b2` at d55d42aa)
+
+- Tools: Bun 1.4.4, `rustc 1.99.0 (b940084d7 2026-09-28)`, `cargo 1.99.0 (5f94df478 2026-08-27)`, `tauri-cli 2.12.0`, makensis `v3.11`, `git version 2.56.0.windows.2`, bsdtar 3.8.9.
+- A fresh `git clone --no-local` in local scratch. `git status --porcelain --untracked-files=all` printed nothing before the run, after the run, and after the control mutations.
+- Exit 0: `check.ts --mode dry-run --signing off` before and after the build, `bun install --frozen-lockfile`, `bun run build`, `bun run package:preview:exes`, `bun run package:preview:bundle`, `hunspell-source.ts`, `sums.ts write`, `sums.ts verify`, and `notes.ts --version 0.1.0 --signing off`.
+- Exit 1: `notices-text.ts --out <scratch>` printed `RELEASE_NOTICES input <clone>\src\frontend\generated\notices.json`. The file exists. Its schema in `notices-text.ts` is strict and has no `note` key, but the Hunspell package entry of `notices.json` has a `note`. So the run made three release files, not four.
+- Files: `Arbareto_0.1.0_x64-setup.exe` 46488481 bytes `f194bec81c626d71ccd4419aaaf31a257e461797e65dd9817f0448fcc76e2e40`; `arbareto-0.1.0-hunspell-source.tar.gz` 2224912 bytes `8be9447567df47c01acc948a938a7b9a9f7aba9f01d0544de6202754b04148b2`; `SHA256SUMS.txt`.
+- The source archive differs from the T021 archive (2224921 bytes, `c990870a…b311d9a`). The pins are the same. `git archive`, `tar.exe -xf`, and `tar.exe -czf` run again, so the archive bytes are not reproducible. No rule asks for reproducible archive bytes.
+- Fix: the schema accepts an optional `note`, and the text prints it as `  Note: <text>` below the package. A new case runs the CLI with a fixture that has a note. Control mutation: without `note` in the schema, that case fails (1 of 14). Undone and rerun green.
+- The fixed script with `--input` set to the clone's `notices.json`: exit 0, `arbareto-0.1.0-third-party-notices.txt` 650568 bytes `00971cc0a0227009c3134f93603a2542f4101b15cfcc798624412ff035d115ac`, one `Note:` line.
+- Quickstart Q3 control mutations, each undone: `package.json` version `0.1.1` gives `RELEASE_CHECK version-mismatch 0.1.0 0.1.1`, exit 1; one untracked file gives `RELEASE_CHECK dirty`, exit 1, and `package:preview:exes` exits 1 with the `build.rs` panic `a preview build needs a clean tree: d55d42aa…-dirty`; one changed installer byte gives `sums.ts verify` exit 1 with `RELEASE_SUMS mismatch`, and the restored byte gives exit 0; `actions/checkout@v4` in `release.yml` fails `tests/contracts/release-workflow.test.ts` (1 of 12), and the restored file passes.
+- T026 is not met. It needs a rerun on a clean clone of the commit that holds the fix.
+- `OBSERVATION T026: d55d42aa notices-text.ts exit 1 (strict schema without note); other steps exit 0; three files; sums verify exit 0; porcelain empty; Q3 mutations fail as stated`

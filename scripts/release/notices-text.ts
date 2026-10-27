@@ -18,7 +18,7 @@ const NoticesSchema = z.strictObject({
   groups: z.array(
     z.strictObject({
       license: z.string(),
-      packages: z.array(z.strictObject({ name: z.string(), version: z.string().optional(), files: z.array(z.strictObject({ name: z.string(), text: z.number().int().nonnegative() })) })),
+      packages: z.array(z.strictObject({ name: z.string(), version: z.string().optional(), files: z.array(z.strictObject({ name: z.string(), text: z.number().int().nonnegative() })), note: z.string().optional() })),
     }),
   ),
 });
@@ -39,6 +39,7 @@ export function renderNotices(notices: Notices): string {
     for (const p of group.packages) {
       out.push(p.version === undefined ? p.name : `${p.name} ${p.version}`);
       for (const f of p.files) out.push(`  ${f.name}: text ${f.text + 1}`);
+      if (p.note !== undefined) out.push(`  Note: ${p.note}`);
     }
     out.push("");
   }

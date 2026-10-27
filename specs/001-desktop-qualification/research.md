@@ -1414,7 +1414,7 @@ For future adoption, require signed-version metadata and reject downgrades. `req
 
 Use the updater's exit callback to stop owned Jobs before installer handoff. Windows update installation can exit without ordinary Rust cleanup.
 
-Public release remains blocked on Authenticode, timestamp/chain validation, update authenticity, tampering, wrong-key, version-substitution, and downgrade tests. A certificate alone does not guarantee SmartScreen reputation.
+The v1.0 release remains blocked on Authenticode, timestamp/chain validation, update authenticity, tampering, wrong-key, version-substitution, and downgrade tests. A certificate alone does not guarantee SmartScreen reputation.
 
 Sources: [sidecar signing](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri-bundler/src/bundle.rs#L345-L380), [signing implementation](https://github.com/tauri-apps/tauri/blob/447fa9f3f993fe77724189e355078b38ce20baea/crates/tauri-bundler/src/bundle/windows/sign.rs#L162-L184), [verified download versus install](https://github.com/tauri-apps/plugins-workspace/blob/a2364a5f216324439feedeb25b2db74e7b1eba90/plugins/updater/src/updater.rs#L827-L870), [signed-version verification](https://github.com/tauri-apps/plugins-workspace/blob/a2364a5f216324439feedeb25b2db74e7b1eba90/plugins/updater/src/updater.rs#L1633-L1707), [signed-version default](https://github.com/tauri-apps/plugins-workspace/blob/a2364a5f216324439feedeb25b2db74e7b1eba90/plugins/updater/src/config.rs#L117-L135), [Windows exit](https://github.com/tauri-apps/plugins-workspace/blob/a2364a5f216324439feedeb25b2db74e7b1eba90/plugins/updater/src/updater.rs#L938-L979), [SmartScreen limits](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation).
 
@@ -1715,7 +1715,7 @@ The initial constitutional scope conflict and former mutation design blockers ar
 | WSL repositories | Probed on the host; unverified | Install Git 2.55.0 or later in a WSL2 distro. Then run the T207 to T209 and T213 suites, and T219 in the installed build (R13). |
 | Submodule update | Probed with Git 2.55.0.windows.3; unverified | Run the T221 to T225 and T232 suites, then T237 and T238 in the installed build (R14). The SSH prompt failure needs a test SSH server. Every WSL row needs distro Git 2.55.0 or later. |
 | Electrobun packaged comparison | Not in scope | Source comparison only; no comparative performance result exists. |
-| Package signing and authenticated updates | Public release blocked | Deferred implementation and required verification remain incomplete. |
+| Package signing and authenticated updates | v1.0 release blocked | Deferred implementation and required verification remain incomplete. |
 
 Future records must identify scenario, build/package digest, environment, fixtures, steps, actual result, failure cause, attempted remedy, and retest. Keep those records here. Do not add a separate qualification report.
 

@@ -22,7 +22,7 @@ Arbareto is a desktop Git client inspired by Git Extensions. It covers the full 
 - Windows 11 x64 is the first platform that the project qualifies.
 - Linux comes next. macOS comes later, because no Mac test hardware is available yet.
 - WSL repositories work from the Windows app.
-- No installer release exists yet. Build the app from source.
+- The first installer release is the preview 0.1.0 on the [Releases](https://github.com/auric/arbareto/releases) page. A preview is not a qualified release. See [Download](#download).
 
 ## Features
 
@@ -32,6 +32,7 @@ These features work on the `main` branch today.
 - Changed files of a commit in the history view, blame, file delete, and an ignore editor.
 - Commit message search, with steps through the matches in the full graph.
 - Working changes and a diff view. Stage and unstage files, folders, hunks, or selected lines.
+- Spell check of the commit message, with downloadable dictionary languages.
 - Commit, amend the last commit, and commit and push in one step.
 - Fetch, pull, and push with the upstream branch. You choose the default pull mode. Ahead and behind counts show on each branch.
 - Recovery from a rejected push, with force push with lease after a confirmation.
@@ -46,8 +47,39 @@ These features work on the `main` branch today.
 
 ### Planned
 
-- Spell check of the commit message.
 - Linux build and qualification, then macOS.
+
+## Download
+
+Download the installer from the [Releases](https://github.com/auric/arbareto/releases) page. The installer installs Arbareto for the current user and needs no administrator rights. Prerequisites (details in [Requirements](#requirements)):
+
+- Windows 11 x64. Windows 10 x64 runs, but Arbareto shows it as an unqualified platform.
+- Git for Windows `2.55.0.windows.3` or later.
+- The Microsoft Edge WebView2 Runtime.
+- For WSL repositories: WSL 2 and Git `2.55.0` or later in the distro.
+
+The preview builds have no code signature:
+
+- Windows SmartScreen can show "Windows protected your PC". To continue, select "More info", then "Run anyway".
+- Unsigned builds do not run when Smart App Control is on.
+
+Check each download before you install it. In PowerShell, compare the value with the line for the file in `SHA256SUMS.txt`:
+
+```powershell
+(Get-FileHash .\<file> -Algorithm SHA256).Hash
+```
+
+With `sha256sum`, in the folder of the downloads:
+
+```sh
+sha256sum --check SHA256SUMS.txt
+```
+
+To check that the release workflow of this repository built the file, use the GitHub CLI:
+
+```sh
+gh attestation verify <file> -R auric/arbareto
+```
 
 ## Requirements
 
@@ -89,6 +121,7 @@ Run these commands from the repository root. Run `bun run build` before `cargo c
 - `cargo test --locked --manifest-path src-tauri/Cargo.toml`
 - Run the app for development: `bun run dev`
 - `bun run package` builds an unsigned current-user NSIS installer in `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`. It does not install it. Then it prints the `rustc`, `cargo`, `cargo tauri`, `bun`, and NSIS versions for the build record.
+- `bun run package:preview:exes`, then `bun run package:preview:bundle`, build the preview installer in the same folder. The first step needs a clean tree and refuses a `-dirty` build. Both steps print the same versions as `bun run package`.
 - `pwsh -File scripts/windows/measure-ram.ps1 [-RootPid <pid>]` prints the private working set, private bytes, and working set of each process in the running app's tree, with totals per group (Tauri, Bun, WebView2); the main number is the private working set (Task Manager "Memory").
 
 Cloud sessions: paste [.claude/cloud-setup.sh](.claude/cloud-setup.sh) into the cloud environment's setup script field. The cloud runs Bun and TypeScript work and the Linux portability check.

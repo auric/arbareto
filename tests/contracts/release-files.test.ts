@@ -44,7 +44,7 @@ const NOTICES: Notices = {
       license: "MIT",
       packages: [
         { name: "pkg-two", version: "2.0.0", files: [{ name: "LICENSE", text: 1 }, { name: "NOTICE", text: 2 }] },
-        { name: "pkg-three", files: [{ name: "LICENSE", text: 1 }] },
+        { name: "pkg-three", files: [{ name: "LICENSE", text: 1 }], note: "NOTE-DELTA" },
       ],
     },
   ],
@@ -53,7 +53,7 @@ const NOTICES: Notices = {
 describe("notices-text.ts", () => {
   test("every package with its version and every licence text appears exactly once, in JSON order", () => {
     const text = renderNotices(NOTICES);
-    const needles = ["PROJECT-LICENCE-TEXT", "PROJECT-NOTICE-TEXT", "pkg-one 1.0.0", "pkg-two 2.0.0", "pkg-three", "TEXT-ALPHA", "TEXT-BRAVO", "TEXT-CHARLIE"];
+    const needles = ["PROJECT-LICENCE-TEXT", "PROJECT-NOTICE-TEXT", "pkg-one 1.0.0", "pkg-two 2.0.0", "pkg-three", "NOTE-DELTA", "TEXT-ALPHA", "TEXT-BRAVO", "TEXT-CHARLIE"];
     for (const needle of needles) expect(count(text, needle)).toBe(1);
     const positions = needles.map((n) => text.indexOf(n));
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
@@ -63,6 +63,14 @@ describe("notices-text.ts", () => {
     const out = fixtureDir("notices-out");
     const result = script("notices-text.ts", ["--input", join(out, "absent.json"), "--out", out]);
     expect([result.code, result.tokens]).toEqual([1, "RELEASE_NOTICES input"]);
+  });
+
+  test("the CLI accepts an input with a package note and writes the rendered text", () => {
+    const out = fixtureDir("notices-cli");
+    writeFileSync(join(out, "notices.json"), JSON.stringify(NOTICES));
+    const result = script("notices-text.ts", ["--input", join(out, "notices.json"), "--out", out]);
+    expect(result.code).toBe(0);
+    expect(readFileSync(result.stdout.trim(), "utf8")).toBe(renderNotices(NOTICES));
   });
 });
 

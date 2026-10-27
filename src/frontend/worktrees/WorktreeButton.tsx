@@ -5,6 +5,7 @@ import { ArrowDown01Icon, FolderGitIcon, FolderRemoveIcon, GitBranchIcon, PlusSi
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef, useState } from "react";
 import { SwitcherPopover } from "../components/switcher-popover";
+import { TextTooltip } from "../components/text-tooltip";
 import { branchText, entryLabel, folderOf, marks, type WorktreeActions, type WorktreeEntry } from "./WorktreeActions";
 import { W } from "./texts";
 
@@ -47,7 +48,8 @@ export function WorktreeButton({ actions, worktreeRoot, rowHeight, itemHeight, h
           style={{ order: 3 }}
         />
       }
-      tooltip={W.tooltip}
+      // The button text cuts the folder name, so the tooltip and the accessible name give it in full.
+      tooltip={name === "" ? W.tooltip : [W.tooltip, name]}
       filterLabel={W.filter}
       listLabel={W.list}
       rowHeight={rowHeight}
@@ -69,7 +71,7 @@ export function WorktreeButton({ actions, worktreeRoot, rowHeight, itemHeight, h
       noMatchText={W.noMatch}
     >
       <HugeiconsIcon icon={FolderGitIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />
-      <span data-slot="worktree-text" aria-hidden="true" title={name} className="min-w-0 truncate whitespace-nowrap">
+      <span data-slot="worktree-text" aria-hidden="true" className="min-w-0 truncate whitespace-nowrap">
         {name}
       </span>
       {entries === null ? null : (
@@ -89,24 +91,26 @@ export function WorktreeRow({ entry: e }: { entry: WorktreeEntry }) {
     <>
       <CurrentMark entry={e} />
       {/* Plan D15 "Rows": the first line takes its width before the marks. The marks shrink first, but not below their minimum. The path takes the full row width. */}
-      <span className="grid min-w-0 flex-1 grid-cols-[minmax(0,max-content)_minmax(min-content,1fr)] items-center gap-x-2 overflow-hidden">
-        <span data-slot="worktree-lines" title={entryLabel(e)} className="contents">
-          <span className="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
-            <span className={e.current ? "min-w-0 truncate font-semibold" : "min-w-0 truncate"}>{folderOf(e.path)}</span>
-            {branch === null ? null : (
-              <span className="flex min-w-0 items-center gap-1 text-muted-text">
-                {e.branch === null ? null : <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />}
-                <span className="num min-w-0 truncate">{branch}</span>
-              </span>
-            )}
+      <TextTooltip text={entryLabel(e)}>
+        <span className="grid min-w-0 flex-1 grid-cols-[minmax(0,max-content)_minmax(min-content,1fr)] items-center gap-x-2 overflow-hidden">
+          <span data-slot="worktree-lines" className="contents">
+            <span className="col-start-1 row-start-1 flex min-w-0 items-center gap-2">
+              <span className={e.current ? "min-w-0 truncate font-semibold" : "min-w-0 truncate"}>{folderOf(e.path)}</span>
+              {branch === null ? null : (
+                <span className="flex min-w-0 items-center gap-1 text-muted-text">
+                  {e.branch === null ? null : <HugeiconsIcon icon={GitBranchIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size) shrink-0" />}
+                  <span className="num min-w-0 truncate">{branch}</span>
+                </span>
+              )}
+            </span>
+            {/* A zero width with a full minimum: the path fills the row but adds no width to the columns. */}
+            <span className="col-span-2 row-start-2 w-0 min-w-full truncate text-muted-text">{e.path}</span>
           </span>
-          {/* A zero width with a full minimum: the path fills the row but adds no width to the columns. */}
-          <span className="col-span-2 row-start-2 w-0 min-w-full truncate text-muted-text">{e.path}</span>
+          <span className="col-start-2 row-start-1 flex justify-end">
+            <Marks entry={e} />
+          </span>
         </span>
-        <span className="col-start-2 row-start-1 flex justify-end">
-          <Marks entry={e} />
-        </span>
-      </span>
+      </TextTooltip>
     </>
   );
 }

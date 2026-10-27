@@ -9,7 +9,7 @@ import { printOrigin } from "../origin";
 import { fixtureId } from "./bridge-contract";
 import { b64, contextMenu, entry, expectChromiumFocus, item, menuItem, openCommitView, pressKey, statusBar, typeInto } from "./commit-fake";
 import { stubLayout } from "./history-fake";
-import { answer, button, click, createWorld, REGISTRATION, settle, succeeded, text, unmountAll, type Call } from "./sync-fake";
+import { answer, button, click, createWorld, hoverTooltip, REGISTRATION, settle, succeeded, text, unmountAll, type Call } from "./sync-fake";
 
 // tasks.md T049 (feature 005, WP7). Story US5. Spec FR-034 to FR-046, FR-067, FR-068. Plan D8, D9, D10, D15 ("Ignore editor", "Ignore editor keys", "Ignore editor texts").
 
@@ -78,7 +78,8 @@ describe("entry points and layout (FR-034, FR-035, IgnoreEditor board)", () => {
     expect(text(e.querySelector("h2")!)).toBe("Edit .gitignore");
     const path = e.querySelector<HTMLElement>('[data-slot="ignore-path"]')!;
     expect(text(path)).toBe(FILE);
-    expect(path.getAttribute("title")).toBe(FILE);
+    expect(path.hasAttribute("title")).toBe(false);
+    expect(await hoverTooltip(path)).toEqual([FILE]);
     expect(field().value).toBe("node_modules/\n/logs/\n");
     expect(selected()).toBe("/logs/");
     expect(field().getAttribute("spellcheck")).toBe("false");

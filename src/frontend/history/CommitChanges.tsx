@@ -10,6 +10,7 @@ import { compareStringKeys, treeStringKey } from "../../contracts/tree-order";
 import { LimitedOutput, unknownReadText, useCopy } from "../app/RepositoryStates";
 import { WarningIcon } from "../app/NoticeBand";
 import { IconButton } from "../components/icon-button";
+import { TextTooltip } from "../components/text-tooltip";
 import { matches } from "../components/switcher-popover";
 import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
@@ -580,9 +581,9 @@ function CommitDiff({ entry, file, onBlame }: { entry: Entry | null; file: FileR
     <section aria-label="Diff of the selected file" data-slot="history-diff" data-section="historyDiff" tabIndex={-1} className="flex min-h-0 min-w-0 flex-1 flex-col" onKeyDown={onKeyDown}>
       {path === null ? null : (
         <div data-slot="diff-header" className="flex shrink-0 items-center gap-2 border-b border-divider px-2" style={{ minHeight: "var(--h-pane-heading)" }}>
-          <span className="min-w-0 truncate font-mono font-semibold" title={path}>
-            {path}
-          </span>
+          <TextTooltip text={path}>
+            <span className="min-w-0 truncate font-mono font-semibold">{path}</span>
+          </TextTooltip>
           {total > 0 ? <span className="num shrink-0 text-muted-text">{`${total} ${total === 1 ? "hunk" : "hunks"}`}</span> : null}
           <span className="ml-auto flex shrink-0 items-center gap-1">
             <IconButton icon={Copy01Icon} label="Copy path" onClick={() => copy(path)} />

@@ -154,6 +154,22 @@ export const WORKBENCH_UNAVAILABLE_REASONS = [
   "ignore-not-utf8",
   "ignore-nul",
   "ignore-lone-cr",
+  // Feature 008 contract Δ9. `limit` exists (004).
+  "untracked",
+  "in-the-way",
+  "attributes",
+  "ident",
+  "unstaged-changes",
+  "not-regular",
+  "hard-link",
+  "read-only",
+  "encrypted",
+  "owner",
+  "security",
+  "file-attributes",
+  "xattr",
+  "checkout-temp",
+  "nothing-to-revert",
 ] as const;
 export type WorkbenchUnavailableReason = (typeof WORKBENCH_UNAVAILABLE_REASONS)[number];
 export const UNTRACKED_IN_WAY_REASONS = ["untracked-in-way"] as const;
@@ -165,7 +181,8 @@ export const BLAME_UNAVAILABLE_REASONS = ["no-history", "binary", "submodule", "
 export type BlameUnavailableReason = (typeof BLAME_UNAVAILABLE_REASONS)[number];
 export const SUBMODULE_UNAVAILABLE_REASONS = ["not-submodule", "submodule-not-initialized", "path"] as const;
 export type SubmoduleUnavailableReason = (typeof SUBMODULE_UNAVAILABLE_REASONS)[number];
-export const STALE_REVIEW_REASONS = ["files-changed", "ignore-changed"] as const;
+// Feature 008 contract Δ9 adds `revert-changed`.
+export const STALE_REVIEW_REASONS = ["files-changed", "ignore-changed", "revert-changed"] as const;
 export const UNKNOWN_TARGET_REASONS = ["absent"] as const;
 
 // Feature 006 contract Δ9: the reasons of `DICTIONARY_UNAVAILABLE`.

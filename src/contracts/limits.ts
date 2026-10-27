@@ -201,3 +201,7 @@ export const PERSONAL_WORD_CODE_POINTS = 100;
 // Test only: the packaged gate of plan.md D3.
 export const DICTIONARY_LOAD_GATE_MS = 10 * SECOND_MS;
 export const DICTIONARY_LANGUAGE_MEMORY_BYTES = 256 * MIB;
+
+// Feature 008 contract Δ5 "Finite bounds". The 001 to 006 bounds above stay in force.
+// The bytes of one `fileReplace` `working` frame of a line revert. Revert file and Revert all unstaged changes have no byte bound.
+export const REVERT_FILE_BYTES = 8 * MIB;

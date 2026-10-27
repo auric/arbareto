@@ -130,7 +130,9 @@
         "delete-files",
         "ignore-save",
         "preview",
-        "dictionary"
+        "dictionary",
+        "revert-index",
+        "revert-files"
       ]
     },
     "code": {

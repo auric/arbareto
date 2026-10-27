@@ -70,6 +70,14 @@ pub(crate) struct Request<'a> {
 /// typify drops the byte bounds of `bytes` and `size` and has no native path rule.
 pub(crate) fn parse(request: &FileReplace) -> Result<Request<'_>, Code> {
     use crate::schema::process_request::FileReplaceTarget;
+    // Feature 008 contract Δ6: this replace serves only the ignore targets, which take none of the `working` fields.
+    if matches!(request.target, FileReplaceTarget::Working)
+        || request.facts.is_some()
+        || request.source.is_some()
+        || !request.folders.is_empty()
+    {
+        return Err(INVALID);
+    }
     let expected = match &request.expected {
         FileReplaceExpected::String(_) => None,
         FileReplaceExpected::FileReplaceExpected { sha256, size } => {
@@ -83,7 +91,7 @@ pub(crate) fn parse(request: &FileReplace) -> Result<Request<'_>, Code> {
     // The editor text crosses as base64; 0 to 1 MiB of bytes (contract Δ5, Δ6).
     let bytes = base64::Engine::decode(
         &base64::engine::general_purpose::STANDARD,
-        request.bytes.as_str(),
+        request.bytes.as_ref().ok_or(INVALID)?.as_str(),
     )
     .ok()
     .filter(|bytes| bytes.len() as u64 <= IGNORE_TARGET_BYTES)

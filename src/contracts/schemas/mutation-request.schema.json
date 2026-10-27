@@ -70,7 +70,10 @@
             "config-save",
             "delete-files",
             "ignore-save-gitignore",
-            "ignore-save-exclude"
+            "ignore-save-exclude",
+            "revert-lines",
+            "revert-files",
+            "revert-unstaged"
           ]
         },
         "worktreeRoot": {

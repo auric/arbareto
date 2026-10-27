@@ -354,7 +354,7 @@ export function untrackedNumstatArgs(path: string): string[] {
 
 // T103: the attributes of the support decision. Paths go only on stdin.
 export function attributeArgs(): string[] {
-  return read("check-attr", "-z", "--stdin", "filter", "diff", "text", "eol", "crlf", "working-tree-encoding");
+  return read("check-attr", "-z", "--stdin", "filter", "diff", "text", "eol", "crlf", "working-tree-encoding", "ident");
 }
 
 // Contract §4: `mixed` on the index or working side refuses hunks. `i/none` does not mean a missing object.

@@ -50,8 +50,26 @@ const b64 = (text: string) => Buffer.from(text).toString("base64");
 
 const NEW_RENDERER = ["readBranches", "readWorktrees", "readGitSettings", "reviewWorkbench", "runWorkbench", "applyFiles", "openWorktree", "revealPath"];
 const NEW_SHELL = ["setSwitchChoice", "chooseWorktreeFolder"];
-// Feature 005 T057 removes the action `ignore` and its markers `ignore-gitignore` and `ignore-exclude`.
-const WORKBENCH_ACTIONS = ["switch", "create-branch", "rename-branch", "delete-branch", "merge", "rebase", "choose-side", "mergetool", "worktree-add", "worktree-remove", "worktree-prune", "config-save", "delete", "ignore-save"];
+// Feature 005 T057 removes the action `ignore` and its markers `ignore-gitignore` and `ignore-exclude`. Feature 008 T006 adds the revert actions.
+const WORKBENCH_ACTIONS = [
+  "switch",
+  "create-branch",
+  "rename-branch",
+  "delete-branch",
+  "merge",
+  "rebase",
+  "choose-side",
+  "mergetool",
+  "worktree-add",
+  "worktree-remove",
+  "worktree-prune",
+  "config-save",
+  "delete",
+  "ignore-save",
+  "revert-lines",
+  "revert-files",
+  "revert-unstaged",
+];
 // Contract Δ6: the close prompt names each of these.
 const STARTED_ACTIONS = [
   "switch",
@@ -71,6 +89,10 @@ const STARTED_ACTIONS = [
   "delete-files",
   "ignore-save-gitignore",
   "ignore-save-exclude",
+  // Feature 008 contract Δ2.
+  "revert-lines",
+  "revert-files",
+  "revert-unstaged",
 ];
 const WORKBENCH_PHASES = ["switch-stash", "switch-checkout", "switch-reapply", "switch-drop", "branch", "merge", "rebase", "resolve", "mergetool", "worktree", "config", "stage-files"];
 
@@ -177,6 +199,22 @@ describe("contract Δ9 codes", () => {
       "ignore-not-utf8",
       "ignore-nul",
       "ignore-lone-cr",
+      // Feature 008 contract Δ9.
+      "untracked",
+      "in-the-way",
+      "attributes",
+      "ident",
+      "unstaged-changes",
+      "not-regular",
+      "hard-link",
+      "read-only",
+      "encrypted",
+      "owner",
+      "security",
+      "file-attributes",
+      "xattr",
+      "checkout-temp",
+      "nothing-to-revert",
     ]);
     expect([...(E.UNTRACKED_IN_WAY_REASONS ?? [])]).toEqual(["untracked-in-way"]);
     expect([...(E.STASH_KEPT_REASONS ?? [])]).toEqual(["conflicts", "failed-apply", "failed-checkout", "not-found", "stash-changed"]);
@@ -305,6 +343,10 @@ describe("contract Δ3 payloads", () => {
     // Feature 005 contract Δ3.
     { action: "delete", snapshotId: id(), entryIds: [id(), id()], folder: b64("logs"), mode: "recycle" },
     { action: "ignore-save", target: "gitignore", text: b64("/build/\n"), expected: { size: 7, sha256: DIGEST } },
+    // Feature 008 contract Δ3.
+    { action: "revert-lines", snapshotId: id(), comparisonId: id(), hunkId: id(), lines: [1, 2] },
+    { action: "revert-files", snapshotId: id(), entryIds: [id(), id()] },
+    { action: "revert-unstaged", snapshotId: id() },
     { action: "switch", target: { ref: "refs/heads/feature/x" }, choice: "keep" },
     { action: "switch", target: { ref: "refs/heads/main" }, choice: "stash" },
     { action: "switch", target: { track: { ref: "refs/remotes/origin/topic", name: "topic" } }, choice: "discard" },

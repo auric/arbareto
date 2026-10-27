@@ -14,8 +14,8 @@ export type SupportReason = (typeof SUPPORT_REASONS)[number];
 
 export type SupportDecision = { supported: true } | { supported: false; code: "UNSUPPORTED_COMPARISON"; reason: SupportReason } | { supported: false; code: "MALFORMED_GIT_OUTPUT" };
 
-// The attributes of `attributeArgs`, in request order.
-export const SUPPORT_ATTRIBUTES = ["filter", "diff", "text", "eol", "crlf", "working-tree-encoding"] as const;
+// The attributes of `attributeArgs`, in request order. Feature 008 research.md R6 adds `ident` last.
+export const SUPPORT_ATTRIBUTES = ["filter", "diff", "text", "eol", "crlf", "working-tree-encoding", "ident"] as const;
 export type SupportAttributes = Record<(typeof SUPPORT_ATTRIBUTES)[number], string>;
 
 // builtin/ls-files.c `write_eolinfo`. An empty value means no regular file on that side, or an unreadable one.

@@ -1,0 +1,5 @@
+{
+  "schema": "run-workbench-result",
+  "expected": "valid",
+  "text": "{\"action\":\"revert-lines\",\"files\":[{\"entryId\":\"0f0f0f0f-0000-4000-8000-00000000000a\",\"outcome\":\"changed-outside\"}],\"foldersCreated\":[],\"index\":\"none\"}"
+}

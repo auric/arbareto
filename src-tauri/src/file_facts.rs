@@ -79,6 +79,8 @@ pub(crate) fn parse(request: &FileFacts) -> Result<Request<'_>, Code> {
         || (request.index.is_some() && request.digest)
         // Feature 005 contract Δ6: `content` takes `digest: true` and exactly one entry.
         || (request.content == Some(true) && !(request.digest && request.files.len() == 1))
+        // Feature 008 contract Δ6: `stream` takes `digest: true` and no `content`.
+        || (request.stream == Some(true) && !(request.digest && request.content != Some(true)))
     {
         return Err(INVALID);
     }
@@ -669,6 +671,15 @@ fn file_fact(
         Err(status) => return error(component, status),
     };
     let file = |digest, bound| Fact::File {
+        attributes: None,
+        creation_time: None,
+        dacl: None,
+        gid: None,
+        links: None,
+        mode: None,
+        owner: None,
+        uid: None,
+        xattr: None,
         bound,
         bytes: None,
         digest,

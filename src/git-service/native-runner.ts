@@ -8,6 +8,7 @@ import {
   ConfirmRunReply,
   DestinationFactsReply as DestinationFactsReplySchema,
   ExitReply,
+  FILE_FACT_ERRORS,
   FileDeleteReply as FileDeleteReplySchema,
   FileFactsReply,
   FileReplaceReply as FileReplaceReplySchema,
@@ -487,7 +488,10 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
         const reply = FileReplaceReplySchema.safeParse(r);
         if (!reply.success) return undefined;
         const { type: _type, callId: _callId, ...result } = reply.data;
-        return result;
+        // Feature 008 contract Δ16: an ignore target keeps its 005 replies. The `working` forms are no reply to it.
+        if ("folders" in result || (result.result === "refused" && result.reason !== "not-regular")) return undefined;
+        if (result.result === "error" && !(FILE_FACT_ERRORS as readonly string[]).includes(result.code)) return undefined;
+        return result as FileReplaceReply;
       };
       return ask<FileReplaceReply | WalkStop>("process", { type: "fileReplace", ...request }, parse, { signal, value: CANCELED, wait: GIT_PROCESS_DEADLINE_MS });
     },

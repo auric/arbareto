@@ -700,7 +700,7 @@ describe("limitation remedies and file-action decisions (contract §4)", () => {
 
 // T110 (WP1 step 6): the retained data that hunk publication binds.
 describe("retained comparison binding (T110)", () => {
-  const ATTRIBUTES = ["filter", "diff", "text", "eol", "crlf", "working-tree-encoding"];
+  const ATTRIBUTES = ["filter", "diff", "text", "eol", "crlf", "working-tree-encoding", "ident"];
 
   caseTest("T110", "a retained comparison keeps the attributes and the working version, a working change between the two reads gives REPOSITORY_CHANGED, and onDrop reports each dropped comparison", SHELL, () =>
     withService({ name: "t110-retained" }, async (service) => {

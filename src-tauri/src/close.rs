@@ -118,6 +118,10 @@ pub enum Mutation {
     DeleteFiles,
     SaveGitignore,
     SaveExclude,
+    // Feature 008 contract Δ6.
+    RevertLines,
+    RevertFiles,
+    RevertUnstaged,
 }
 
 impl Mutation {
@@ -170,6 +174,9 @@ impl Mutation {
                 A::DeleteFiles => Mutation::DeleteFiles,
                 A::IgnoreSaveGitignore => Mutation::SaveGitignore,
                 A::IgnoreSaveExclude => Mutation::SaveExclude,
+                A::RevertLines => Mutation::RevertLines,
+                A::RevertFiles => Mutation::RevertFiles,
+                A::RevertUnstaged => Mutation::RevertUnstaged,
                 _ => return None,
             },
             _ => return None,
@@ -207,7 +214,10 @@ impl Mutation {
             | M::SaveGitSettings
             | M::DeleteFiles
             | M::SaveGitignore
-            | M::SaveExclude => StartedKind::Workbench,
+            | M::SaveExclude
+            | M::RevertLines
+            | M::RevertFiles
+            | M::RevertUnstaged => StartedKind::Workbench,
             M::StageFiles | M::UnstageFiles => StartedKind::ApplyFiles,
             M::Clone => return None,
         })
@@ -249,6 +259,9 @@ impl Mutation {
             Mutation::DeleteFiles => "Delete files",
             Mutation::SaveGitignore => "Save .gitignore",
             Mutation::SaveExclude => "Save info/exclude",
+            Mutation::RevertLines => "Revert lines",
+            Mutation::RevertFiles => "Revert files",
+            Mutation::RevertUnstaged => "Revert unstaged changes",
         }
     }
 }
@@ -639,6 +652,10 @@ mod tests {
             (A::DeleteFiles, "Delete files"),
             (A::IgnoreSaveGitignore, "Save .gitignore"),
             (A::IgnoreSaveExclude, "Save info/exclude"),
+            // Feature 008 contract Δ6.
+            (A::RevertLines, "Revert lines"),
+            (A::RevertFiles, "Revert files"),
+            (A::RevertUnstaged, "Revert unstaged changes"),
         ];
         let cases = workbench
             .map(|(action, name)| (StartedKind::Workbench, None, Some(action), name))

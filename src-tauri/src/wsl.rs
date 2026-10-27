@@ -1171,6 +1171,15 @@ fn fact(records: &mut Records, components: usize, digest: bool, total: &mut usiz
                 _ => return None,
             };
             Fact::File {
+                attributes: None,
+                creation_time: None,
+                dacl: None,
+                gid: None,
+                links: None,
+                mode: None,
+                owner: None,
+                uid: None,
+                xattr: None,
                 bound,
                 bytes: None,
                 digest: digested,

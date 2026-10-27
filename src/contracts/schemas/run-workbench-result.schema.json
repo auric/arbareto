@@ -810,15 +810,117 @@
         "action": {
           "type": "string",
           "enum": [
+            "revert-lines",
+            "revert-files",
+            "revert-unstaged"
+          ]
+        },
+        "files": {
+          "minItems": 1,
+          "maxItems": 10000,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "entryId": {
+                "type": "string",
+                "maxLength": 64,
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              "outcome": {
+                "type": "string",
+                "enum": [
+                  "reverted",
+                  "unstaged-only",
+                  "not-changed",
+                  "changed-outside",
+                  "not-started"
+                ]
+              },
+              "code": {
+                "type": "string",
+                "enum": [
+                  "stale",
+                  "refused",
+                  "error"
+                ]
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "not-regular",
+                  "hard-link",
+                  "read-only",
+                  "encrypted",
+                  "owner",
+                  "security",
+                  "file-attributes",
+                  "xattr",
+                  "access-denied",
+                  "sharing-violation",
+                  "io-error",
+                  "other-error",
+                  "disk-full",
+                  "read-only-volume"
+                ]
+              }
+            },
+            "required": [
+              "entryId",
+              "outcome"
+            ],
+            "additionalProperties": false,
+            "title": "RevertFileOutcome"
+          }
+        },
+        "foldersCreated": {
+          "maxItems": 640000,
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "format": "base64",
+            "contentEncoding": "base64",
+            "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+          }
+        },
+        "index": {
+          "type": "string",
+          "enum": [
+            "published",
+            "none",
+            "refused"
+          ]
+        }
+      },
+      "required": [
+        "action",
+        "files",
+        "foldersCreated",
+        "index"
+      ],
+      "additionalProperties": false,
+      "title": "RevertRun"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "action": {
+          "type": "string",
+          "enum": [
             "delete",
-            "ignore-save"
+            "ignore-save",
+            "revert-lines",
+            "revert-files",
+            "revert-unstaged"
           ]
         },
         "reason": {
           "type": "string",
           "enum": [
             "files-changed",
-            "ignore-changed"
+            "ignore-changed",
+            "revert-changed"
           ]
         }
       },
@@ -848,7 +950,10 @@
             "mergetool",
             "config-save",
             "delete",
-            "ignore-save"
+            "ignore-save",
+            "revert-lines",
+            "revert-files",
+            "revert-unstaged"
           ]
         }
       },
@@ -1021,7 +1126,9 @@
             "delete-files",
             "ignore-save",
             "preview",
-            "dictionary"
+            "dictionary",
+            "revert-index",
+            "revert-files"
           ]
         },
         "code": {

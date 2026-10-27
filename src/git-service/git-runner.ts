@@ -175,7 +175,8 @@ export type DeleteEntryReply =
 export type DeleteFolderReply = { result: "removed" | "kept" | "absent" | "not-regular" } | { result: "error"; code: FileFactError };
 // `stopped`: a Windows stop or deadline before the delete phase, so nothing changed. `interrupted`: a WSL stop, deadline, or broken output, so the outcome is unknown.
 export type FileDeleteReply = { entries: DeleteEntryReply[]; folders: DeleteFolderReply[] } | { result: "stopped" | "interrupted" };
-export type FileReplaceRequest = FrameOf<"fileReplace">;
+// The 005 ignore form. Feature 008 contract Δ6 adds the target `working`, which this type leaves out.
+export type FileReplaceRequest = Omit<FrameOf<"fileReplace">, "target" | "bytes" | "facts" | "source" | "folders"> & { target: "gitignore" | "exclude"; bytes: string };
 export type FileReplaceReply = { result: "replaced" | "stale" | "stopped" | "interrupted" } | { result: "refused"; reason: "not-regular" } | { result: "error"; code: FileFactError };
 export type ShadowRequest = FrameOf<"shadow">;
 export type ShadowReply = { shadowId: string } | { result: "error"; code: FileFactError };

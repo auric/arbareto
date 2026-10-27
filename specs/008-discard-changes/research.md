@@ -24,10 +24,11 @@
 
 ## R4 Working-file bytes
 
-- Decision for files: the bytes are Git's working-tree form of the source blob: `git cat-file --filters --path=<path> <oid>` (Git `builtin/cat-file.c` `filter_object` calls `convert_to_working_tree`, source fact). The source blob is the HEAD blob (Revert file) or the index blob (Revert all unstaged changes). The review hashes the bytes and binds the SHA-256. The run reads the bytes again and writes them only when the SHA-256 matches. So the service holds one file at a time (SC-007 memory bound).
+- Decision for files (user design change, 2026-10-27): Git writes the working-tree form of the index entry to its own temporary file with `git --no-lazy-fetch checkout-index --temp --stdin -z`, in batches of at most 64 paths (plan D5a). The source is the published HEAD entry (Revert file) or the index entry (Revert all unstaged changes). The service reads the size and a streamed SHA-256 of each temporary file. The shell copies the file beside the target with a streamed SHA-256 that must equal those values, and swaps the copy over the target with the expected check. So no file content enters the service, and no size bound applies.
 - Decision for lines: the review reads the working bytes (at most `COMPARED_RAW_VERSION_BYTES`, 1 MiB) and applies the reversed sub-hunk to them in memory (R5). On WSL, the bytes cross out through `fileFacts` with `content: true`, as for the 005 ignore editor.
-- Probe G1 checks that the `cat-file --filters` bytes equal the bytes of Git's own restore for every conversion fixture. Probe G2 checks a batch form.
-- Alternatives considered: the shell reads the blob through a Git process and streams it to the temporary file (no bytes in the frame, no size bound below 512 MiB). Rejected for v0.1.0: it needs a new Git-to-file pipe in the shell. R11 bounds the file size instead.
+- Source facts (Git v2.56.0): with `--temp`, `open_output_fd` (`entry.c`) creates `.merge_file_XXXXXX` with `mkstemp` in the current folder. `checkout_entry_ca` returns through `write_entry` before it adds `--prefix` (`state->base_dir`), so `--prefix` does not apply to a temporary file. `checkout-index` has `NEED_WORK_TREE` (`git.c`), so Git first enters the worktree root, and the temporary file lands there. `write_tempfile_record` prints `<temp> TAB <path>` and ends the record with NUL under `-z` (`builtin/checkout-index.c`). With `--temp`, `checkout-index` takes no index lock and writes no index (`builtin/checkout-index.c`, the `index_opt && !state.base_dir_len && !to_tempfile` branch). Probes G9 and G10 check these facts and the conversions on the installed Git.
+- Decision (copy beside the target): the shell does not rename Git's temporary file over the target. The temporary file lies in the worktree root. A rename into another folder would keep the root ACL on Windows and the 0600 mode of `mkstemp` on WSL. The copy beside the target keeps the 005 replace path: the delete disposition, the facts copy, and a rename inside the target folder.
+- Alternatives considered: `git cat-file --filters --path` into the service and one frame per file (the plan of 2026-10-27 before the design change). Rejected by the user: it needed an 8 MiB file bound, and Git Extensions has no such bound. A rename of Git's temporary file over the target: rejected for the ACL and mode reasons above.
 
 ## R5 Line-ending round trip
 
@@ -41,11 +42,11 @@
 
 - Fact: `SUPPORT_ATTRIBUTES` (`support.ts:18`) reads `filter`, `diff`, `text`, `eol`, `crlf`, and `working-tree-encoding`, not `ident`. Hunk staging needs no `ident` value, because `apply --cached` acts on the check-in form, where Git collapses `$Id: …$` to `$Id$` (Git `convert.c` `ident_to_git`).
 - Fact: a line revert writes working bytes. A restored line that holds `$Id$` would stay collapsed, while Git's checkout expands it (`ident_to_worktree`). The R5 proof cannot see it, because the check-in form collapses both forms.
-- Decision: `SUPPORT_ATTRIBUTES` gains `ident` as its seventh entry. `parseAttributes` and its vectors change with it. A line or hunk revert of a path whose `ident` value is `set` refuses with `ident`. Revert file stays available, because `cat-file --filters` expands `ident` as checkout does. Staging keeps its behavior.
+- Decision: `SUPPORT_ATTRIBUTES` gains `ident` as its seventh entry. `parseAttributes` and its vectors change with it. A line or hunk revert of a path whose `ident` value is `set` refuses with `ident`. Revert file stays available, because `checkout-index --temp` expands `ident` as checkout does (probe G9). Staging keeps its behavior.
 
 ## R7 Attribute direction
 
-- Fact: `cat-file --filters` reads attributes in the check-in direction: the working `.gitattributes` first, then the index (Git `attr.c:856`). Branch checkout reads the index first (`attr.c:852`, set in `unpack-trees.c`). `git restore <path>` goes through `checkout_paths`, which sets no direction (source fact, probe G1).
+- Fact: `checkout-index` sets no attribute direction, so it reads attributes in the check-in direction: the working `.gitattributes` first, then the index (Git `attr.c:856`). Branch checkout reads the index first (`attr.c:852`, set in `unpack-trees.c`). `git restore <path>` goes through `checkout_paths`, which sets no direction (source fact, probe G9).
 - Decision: the review reads `git check-attr -z --stdin` and `git check-attr --cached -z --stdin` for `text`, `eol`, `crlf`, `ident`, `filter`, `working-tree-encoding`, and `diff` of every path. A difference in any of the first six refuses with `attributes` (spec FR-038). Probe G4 checks the two reads.
 
 ## R8 Windows file facts of the atomic replace
@@ -60,7 +61,7 @@ The 005 replace (`src-tauri/src/file_replace.rs:118-270`) walks with relative op
 | Compressed, sparse, integrity stream | Compare the temporary file with the old file after the create. A difference refuses with `file-attributes`. | W1 |
 | Encrypted (EFS) | Refuse with `encrypted`. A temporary file in a folder without encryption would hold plain text. | W11 |
 | Owner | Refuse with `owner` when the temporary file gets another owner than the old file. A process cannot set another owner without `SeRestorePrivilege`. | W2 |
-| DACL | Copy the DACL with its protection flag to the temporary file before the rename (`SetSecurityInfo` with `DACL_SECURITY_INFORMATION` and `PROTECTED_DACL_SECURITY_INFORMATION` or `UNPROTECTED_DACL_SECURITY_INFORMATION`). Compare the owner, group, and DACL of the result with the old file. A difference refuses. | W2 |
+| DACL | Conditional on W2 (user decision, 2026-10-27). When W2 shows that the swap loses the file's own DACL, copy the DACL with its protection flag to the temporary file before the rename, through `SetKernelObjectSecurity` on the handle (feature `Win32_Security`, enabled). When that call cannot set the protection flag, use `SetSecurityInfo` (feature `Win32_Security_Authorization`, through its dependency review). Compare the owner, group, and DACL of the result with the old file. A difference refuses with `security`. When W2 shows that the swap keeps the DACL, no copy runs. | W2 |
 | SACL and mandatory label | Known limit. Reading them needs `SeSecurityPrivilege`. | W2 records it |
 | Creation time | Copy the old creation time to the temporary file before the rename (`FileBasicInformation`). Do not rely on file tunneling. | W3 |
 | Last write time | The time of the write, as Git's own checkout gives. | W3 |
@@ -68,6 +69,7 @@ The 005 replace (`src-tauri/src/file_replace.rs:118-270`) walks with relative op
 | Temporary file after a crash | Create the temporary file with the delete disposition on close. Clear it just before the rename. A crash before the clear leaves no file. The window between the clear and the rename stays a known limit. | W6 |
 | Another program holds the file | The open or the rename fails with its NT status. The reply gives `sharing-violation` or `access-denied`. No retry (spec FR-037). | W8, W9 |
 | Missing folders | Create each missing folder below its held parent with `FILE_CREATE` and `FILE_DIRECTORY_FILE`, without following a link (spec FR-020). | W10 |
+| Git temporary file (whole files) | `fileReplace` with `source` copies it beside the target and deletes it through its handle. An unused one goes through `tempRemove` with its size and SHA-256. A crash between `checkout-index` and that step leaves `.merge_file_<random>` in the worktree root (known limit). | G10, W6 |
 
 - Rule for every row: a probe that shows another behavior changes this table and contracts/operations.md before WP3 starts, and the change runs `/speckit-analyze`.
 
@@ -91,16 +93,18 @@ The 005 `wslFiles` mode `replace` (`src/contracts/wsl-process.json` `replace_one
 
 - Fact: `checkout_paths` runs `post-checkout` with the flag 0 (`builtin/checkout.c:717`, Git v2.56.0). `cmd_restore` reaches it through `checkout_main` (`:2234`, `:2099`). githooks(5) names only checkout and switch.
 - Fact: `update-index` runs only `post-index-change`. The hunk eligibility refuses a repository with that hook (`eligibility.ts:217`). Probe G6 checks the source list of hooks of `update-index`.
+- Fact: `builtin/checkout-index.c` calls no hook function, and with `--temp` it writes no index, so `post-index-change` does not run either (source fact, probe G10).
 - Decision (user, 2026-10-27): a revert runs no hook. It runs no Git command that runs a hook, so it skips no hook (spec Clarifications). Constitution I forbids a bypass of the hooks of an operation that Git runs. A revert is not such an operation.
 
 ## R11 Bounds
 
-- Decision: `REVERT_FILE_BYTES` = 8 MiB (8,388,608) per file, for the working-tree form. The base64 text of 8 MiB is 11,184,812 bytes, which fits `PIPE_FRAME_BYTES` (16 MiB) with the envelope. The WSL `replace` input holds the bytes in hex (16 MiB), on stdin.
-- Decision: `REVERT_TOTAL_BYTES` = 1 GiB for the sum of the working-tree forms of one action. The run holds one file at a time.
+- Decision: `REVERT_FILE_BYTES` = 8 MiB (8,388,608): the frame bound of a line revert. The base64 text of 8 MiB is 11,184,812 bytes, which fits `PIPE_FRAME_BYTES` (16 MiB) with the envelope. The WSL `replace` input holds the bytes in hex (16 MiB), on stdin. The 001 comparison bound (1 MiB) is the smaller bound today. A chunked transfer can lift the frame bound later.
+- Decision (user, 2026-10-27): Revert file and Revert all unstaged changes have no size bound per file and no size bound per action. Git writes the bytes to disk, and the shell streams them. A full disk fails with its code.
 - Decision: one action covers at most `MULTI_FILE_ACTION_FILES` (10,000) files (004 FR-040).
 - Decision: line revert keeps the 001 comparison bounds: 1 MiB per version (`COMPARED_RAW_VERSION_BYTES`, `COMPARED_NORMALIZED_VERSION_BYTES`) and 20,000 diff lines (`CANONICAL_DIFF_LINES`).
 - Decision: the workbench review lifetime `APPROVAL_LIFETIME_MS` (60 s) applies (spec FR-011).
-- Rationale: one frame per file keeps the 005 request shape. A file above 8 MiB is rare in source trees. The limit text names Git as the way out.
+- Rationale: the frame bound applies only where bytes cross the service.
+- Decision (deadlines of whole files): `checkout-index --temp`, `fileReplace` with `source`, and `fileFacts` with `stream` get `GIT_PROCESS_DEADLINE_MS` plus 1 s for each started 64 MiB of the sizes involved. This rule replaces `REGISTERED_DEADLINE_CAP_MS` (120 s) for these three requests, so a large file gets a finite deadline without a size limit. The rule assumes at least 64 MiB/s of local disk throughput. Probe W9 and the T048 budget run record the measured throughput. Cancel stops every step.
 
 ## R12 Performance budgets and the measurement method
 
@@ -120,14 +124,16 @@ Each probe prints `OBSERVATION <task ID>: <fact> <result>` with the Git, Windows
 
 Git facts (`tests/git/revert-facts.test.ts`, real disposable repositories, the selected Git for Windows):
 
-- G1: for each fixture, `git cat-file --filters --path=<p> <oid>` stdout equals the bytes that `git restore --source=HEAD --worktree -- <p>` and `git restore --worktree -- <p>` write on a copy. Fixtures: no conversion; `core.autocrlf=true`; `core.autocrlf=input`; `text eol=crlf`; `text=auto` with an LF blob and with a CRLF blob; `ident`; `working-tree-encoding=UTF-16LE-BOM`; a binary file; an empty file.
-- G2: `git cat-file --batch -Z --filters` with `<oid> SP <path>` NUL input gives the same bytes as G1 per path. If Git 2.55 refuses the form, the run uses one process per file, and the probe records the time per file.
+- G1: withdrawn on 2026-10-27. Revert file no longer uses `cat-file --filters` (G9 replaces it).
+- G2: withdrawn on 2026-10-27 (G10 replaces it).
 - G3: `git hash-object --path=<p> --stdin` without `-w` prints the blob ID of the check-in form, and `git count-objects -v` and the loose object list stay the same. With `core.fsmonitor` set to a command, the command does not run (a marker file stays absent), so the read needs no read gate.
 - G4: `git check-attr -z --stdin` and `git check-attr --cached -z --stdin` give the same seven values without a `.gitattributes` change, and differ exactly for the attributes that a staged or unstaged `.gitattributes` change gives the path.
 - G5: `git ls-files --eol -z` gives `w/lf`, `w/crlf`, `w/mixed`, `w/none`, and `w/-text` for the matching working files, and the R5 rule with the `hash-object` proof accepts and refuses the cases of data-model §6.
 - G6: `builtin/update-index.c` in the Git source names only `post-index-change` as a hook. This is a source fact, so the fact gate (T005) records it from the source at the tag of the selected Git version, not this test file.
 - G7: `git restore --source=HEAD --staged --worktree -- <p>` on a staged new file removes the working file. This is the documented SC-002 difference.
-- G8: after an Arbareto-style write of the G1 bytes, `git --no-optional-locks status --porcelain=v2 -z` shows the entry as unchanged, and the index file bytes stay the same.
+- G9: for each fixture, the bytes of `git --no-lazy-fetch checkout-index --temp --stdin -z` for the path equal the bytes that `git restore --worktree -- <p>` writes on a copy, and after a HEAD entry in the index, the bytes of `git restore --source=HEAD --staged --worktree -- <p>`. Fixtures: no conversion; `core.autocrlf=true`; `core.autocrlf=input`; `text eol=crlf`; `text=auto` with an LF blob and with a CRLF blob; `ident`; `working-tree-encoding=UTF-16LE-BOM`; a clean and smudge filter of a test program in the fixture; a Git LFS-tracked file through a test `filter.lfs` program that needs no network (a capability skip `git-lfs` when `git-lfs` is absent); a binary file; an empty file; a file with mode 100755. Each case that differs becomes a `checkout-temp` refusal (spec FR-038). The filter and LFS cases are facts only: the review still refuses `filter` and `LFS` (spec FR-004).
+- G10: in the same fixtures, the temporary file lands in the worktree root also with `-C <subfolder>` and with `--prefix=<folder>/`; its name is one component; stdout holds exactly `<temp> TAB <path> NUL` per path; `checkout.workers=4` gives the same files; no other file below the worktree root changes (a digest of every file before and after, without the temporary file); the index file bytes and their time stay; no `index.lock` appears; a `post-checkout` hook and a `post-index-change` hook leave no marker file. On WSL (T004), the same case list runs in the distro.
+- G8: after an Arbareto-style write of the G9 bytes, `git --no-optional-locks status --porcelain=v2 -z` shows the entry as unchanged, and the index file bytes stay the same.
 
 Windows facts (`tests/windows/revert-facts.test.ts` through `bun:ffi` on NTFS, and the cargo tests of `file_replace.rs`; `Local: Windows`):
 

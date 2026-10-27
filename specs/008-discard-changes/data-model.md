@@ -32,12 +32,12 @@ The renderer sends no path, no byte, and no count. The service derives everythin
 | `newIndex` | `{mode, oid}`, `remove`, or `keep` (no index change for this path). |
 | `working` | The bound working-file facts: `absent`, or `{size, sha256, attributes, links, owner, dacl, creationTime}` on Windows, or `{size, sha256, mode, uid, gid, links, xattr: false}` on WSL. |
 | `folders` | For an absent target: the missing folder names below the deepest existing folder. |
-| `source` | Revert file and Revert all unstaged changes: `{oid, path}` of the blob whose working-tree form the run writes. Lines: `bytes`. |
-| `newSize`, `newSha256` | The size and the SHA-256 of the bytes that the run writes, or `keep` (a staged new file keeps its working file). |
+| `source` | Revert file and Revert all unstaged changes: the index entry (`{mode, oid}`) that `checkout-index --temp` writes after the index part, and its blob size from `cat-file --batch-check` (for the batches and the deadlines). Lines: `bytes`. |
+| `newSize`, `newSha256` | Lines: the size and the SHA-256 that the review computes. Whole files: none at the review; the run takes them from Git's temporary file (§8a). `keep`: a staged new file keeps its working file. |
 
 Rules:
-- Revert file: `newIndex` = `headEntry` when it differs from `indexEntry`, `remove` when `headEntry` is `absent`, else `keep`. `source` = `headEntry.oid`, or none for a staged new file (spec FR-021).
-- Revert all unstaged changes: `newIndex` = `keep`. `source` = `indexEntry.oid`.
+- Revert file: `newIndex` = `headEntry` when it differs from `indexEntry`, `remove` when `headEntry` is `absent`, else `keep`. `source` = `headEntry`, or none for a staged new file (spec FR-021).
+- Revert all unstaged changes: `newIndex` = `keep`. `source` = `indexEntry`.
 - An unstaged deletion and a staged deletion bind `working: absent`.
 
 ## 4. Line plan
@@ -97,7 +97,7 @@ Cases for the G5 probe and the unit vectors of `tests/git/revert-bytes.test.ts`:
 | `in-the-way` | files | an untracked record at a bound-absent path |
 | `attributes` | all | `check-attr` against `check-attr --cached` |
 | `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, `xattr` | all | `fileFacts` with `detail` (plan D8, D9) |
-| `too-large` | files, unstaged | `REVERT_FILE_BYTES`, `REVERT_TOTAL_BYTES` |
+| `checkout-temp` | files, unstaged | the probe G9 case list (research R14) |
 | `limit` | files, unstaged | `MULTI_FILE_ACTION_FILES` |
 | `nothing-to-revert` | unstaged | no covered entry |
 | `LOCKED` (001 code, with the lock path and remedy) | all | the `index.lock` fact at the review and at the run start |
@@ -118,6 +118,12 @@ Per-file outcome from the fresh read (plan D10):
 | — | — | `not-started` (no request reached the path) |
 
 A fresh read that fails gives the unknown outcome of the whole run (001 FR-023).
+
+## 8a. Git temporary file (whole files, plan D5a)
+
+- Per batch path: `{name, path, size, sha256}`. `name` comes from the exact parse of `<temp> TAB <path> NUL` and is one path component in the worktree root. `size` and `sha256` come from a streamed `fileFacts` digest.
+- A record whose `path` is not a batch path, or a name with a separator, gives `MALFORMED_GIT_OUTPUT`.
+- The record ends in one of two ways: a `fileReplace` with `source` consumes it, or `tempRemove` removes it by `name` with `size` and `sha256`. A stop between the two leaves it (spec FR-036 known limit).
 
 ## 9. Result (service to renderer)
 

@@ -13,16 +13,16 @@ The Commit view gets three destructive actions: Revert lines or a hunk (R in the
 Six facts drive the design (research R2 to R10):
 - Git's apply and checkout remove a working file before they write the new one, so a failure leaves no file, and hard links and the read-only attribute are lost (R2). So Arbareto writes the working file itself.
 - The publication path of `applyHunk` and `applyFiles` already builds and checks a private index candidate and publishes it under the owned lock (R3). The revert reuses it through one split of `publish()`.
-- `git cat-file --filters --path` gives Git's working-tree form of a blob, so Revert file needs no copy of Git's conversion logic (R4, probe G1).
+- `git checkout-index --temp` writes Git's working-tree form of an index entry to Git's own temporary file. So Revert file needs no copy of Git's conversion logic and no size limit (R4, probes G9 and G10).
 - Git's check-in conversion maps working lines to index lines one to one. `git hash-object --path --stdin` without `-w` proves the result of a line revert without a write (R5, probe G3).
-- The 005 replace keeps no attribute, no creation time, and no DACL, and it can leave `.arbareto-<hex>.tmp` after a crash (R8, R9). Batch 0 probes decide each fact before the shell work starts.
+- The 005 replace keeps no attribute, no creation time, and no DACL, and it can leave `.arbareto-<hex>.tmp` after a crash (R8, R9). Batch 0 probes decide each fact before the shell work starts. The shell copies Git's temporary file beside the target, so the final rename stays inside the target folder.
 - `git restore <path>` runs `post-checkout`, and Arbareto runs no such command, so a revert skips no hook (R10, user decision of 2026-10-27).
 
 ## Technical Context
 
 **Language/Version**: The 001 to 006 versions stay: TypeScript `7.0.2`, Bun `1.4.4` (exact), Rust/Cargo `1.98.0`.
 
-**Primary Dependencies**: No new package and no new Rust crate. The shell uses the installed `windows` crate features of `file_replace.rs` and `file_facts.rs`. The DACL copy needs `Win32_Security_Authorization` (`GetSecurityInfo`, `SetSecurityInfo`). WP3 checks whether `Cargo.toml` already enables it. A missing feature is a dependency change with its own review (constitution VIII).
+**Primary Dependencies**: No new package and no new Rust crate. The shell uses the installed `windows` crate features of `file_replace.rs` and `file_facts.rs`. The DACL copy runs only when probe W2 shows that the swap loses the file's own DACL (T013). The enabled feature `Win32_Security` holds `GetKernelObjectSecurity` and `SetKernelObjectSecurity` on a handle. When they do not suffice, `Win32_Security_Authorization` (`GetSecurityInfo`, `SetSecurityInfo`) goes through its own dependency review first (constitution VIII).
 
 **Storage**: None. The feature changes repository data only: the index through the owned lock, and working files through the atomic replace.
 
@@ -32,32 +32,32 @@ Six facts drive the design (research R2 to R10):
 
 **Project Type**: Local-first desktop application: Tauri 2 shell, compiled Bun Git service, React renderer.
 
-**Performance Goals**: Spec SC-007, fixed before the measurement: busy state within 100 ms after R; the confirmation or the refusal within 500 ms for a file up to 1 MiB, and within 3 s for 1,000 files; the refreshed diff within 500 ms after the confirmation for a line, hunk, or single file; 100 files within 3 s; 1,000 files within 10 s on Windows and 30 s on WSL; Cancel within 1 s; at most 64 MiB process-tree memory increase at 10,000 files. The 001 SC-005 input targets hold throughout (spec FR-048). Method: research R12.
+**Performance Goals**: Spec SC-007, fixed before the measurement: busy state within 100 ms after R; the confirmation or the refusal within 500 ms for a file up to 1 MiB, and within 3 s for 1,000 files; the refreshed diff within 500 ms after the confirmation for a line, hunk, or single file; 100 files within 3 s; 1,000 files within 10 s on Windows and 30 s on WSL; Cancel within 1 s; at most 64 MiB process-tree memory increase at 10,000 files; one 1 GiB file within 30 s with at most 64 MiB service memory increase. The 001 SC-005 input targets hold throughout (spec FR-048). Method: research R12.
 
-**Constraints**: No Git command writes a working file for a revert (spec FR-031). No repository program runs (spec FR-004). The renderer sends IDs, line numbers, and the action only, never a path or bytes. The service log keeps its allowlist fields (`log.ts`), so no file content enters a log (spec FR-049). Every outcome comes from a fresh read.
+**Constraints**: No Git command writes a target file. Git writes only its own temporary file through `checkout-index --temp` (spec FR-031). No repository program runs (spec FR-004). The renderer sends IDs, line numbers, and the action only, never a path or bytes. The service log keeps its allowlist fields (`log.ts`), so no file content enters a log (spec FR-049). Every outcome comes from a fresh read.
 
-**Scale/Scope**: At most 10,000 files per action (`MULTI_FILE_ACTION_FILES`). At most 8 MiB per file and 1 GiB per action (research R11). Line revert within the 001 comparison bounds: 1 MiB per version and 20,000 diff lines.
+**Scale/Scope**: At most 10,000 files per action (`MULTI_FILE_ACTION_FILES`). Revert file and Revert all unstaged changes have no size limit. Line revert stays within the 001 comparison bounds (1 MiB per version and 20,000 diff lines) and within one frame of at most 8 MiB (`REVERT_FILE_BYTES`, research R11).
 
 ## Constitution Check
 
 *GATE: Must pass before Phase 0 research. Re-check after Phase 1 design.*
 
-Checked against `.specify/memory/constitution.md` on `main` `80f32119`, footer "**Version**: 4.0.0 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-10-22", before research and again after Phase 1. Version 4.0.1 on the branch `007-first-release` changes only the Delivery Gates definition of "production release" (research R1), so the result is the same for both.
+Checked against principles I to IX of `.specify/memory/constitution.md` version 4.0.0 on `main` `80f32119`, footer "**Version**: 4.0.0 | **Ratified**: 2026-09-28 | **Last Amended**: 2026-10-22", before research and again after Phase 1. Version 4.0.1 on the branch `007-first-release` changes only the Delivery Gates definition of "production release" (research R1), so the result is the same for both.
 
 | Principle | How the design meets it | Status |
 |---|---|---|
-| I. Preserve user data | Every action asks in a modal that states its scope, its effects, and "You cannot undo this." Cancel has the first focus, and no button is the default (D11, D12). The review binds every fact, and the run checks them again and before each write (D2). The index part publishes only a checked candidate under the owned lock (D7). Each working file is replaced in one atomic step with an exact expected check, so it never goes missing (D8, D9). A fresh read decides the outcome, and Cancel never reports an undo (D10). A revert runs no hook and so bypasses none (note N-1). | Pass, note N-1 |
-| II. TypeScript/Bun | The review, the line logic, the proof, the plan, and the outcome rules are TypeScript (D3 to D6, D10). Rust changes only the atomic replace and the file facts, which need Windows handle-relative NT calls (`NtSetInformationFile`, `FileBasicInformation`, `SetSecurityInfo`) that shared code cannot reach (D8). | Pass |
+| I. Preserve user data | Every action asks in a modal that states its scope, its effects, and "You cannot undo this." Cancel has the first focus, and no button is the default (D11, D12). The review binds every fact, and the run checks them again and before each write (D2). The index part publishes only a checked candidate under the owned lock (D7). Each working file is replaced in one atomic step with an exact expected check, so it never goes missing (D8, D9). A fresh read decides the outcome, and Cancel never reports an undo (D10). Principle I of version 4.0.0 states "Operations MUST NOT bypass Git hooks". A revert runs no Git command that runs a hook, so it skips none (note N-1). | Pass, note N-1 |
+| II. TypeScript/Bun | The review, the line logic, the proof, the plan, and the outcome rules are TypeScript (D3 to D6, D10). Rust changes only the atomic replace and the file facts, which need Windows handle-relative NT calls (`NtSetInformationFile`, `FileBasicInformation`, and the security calls of research R8) that shared code cannot reach (D8). | Pass |
 | III. Validated boundaries | Three typed workbench actions with zod schemas and explicit Rust checks (contract Δ1 to Δ3). The renderer names a snapshot, entry IDs, a comparison, a hunk, and line numbers. The shell checks every path below the worktree root by identity and refuses the Git directory (contract Δ6). Every read and write has a bound and Cancel (contract Δ5). | Pass |
 | IV. Real Git verification | Every story test runs in a real disposable repository and compares the index and the working bytes with Git's own command on a copy (D13). Stale, race, interruption, and refusal fixtures assert that nothing changes (SC-003 to SC-005). | Pass |
 | V. Untrusted repositories | No repository program runs. Filter drivers and Git LFS refuse (D2). Paths show as plain text (spec FR-010). No file content or diff text enters a log (spec FR-049). | Pass |
 | VI. Platform evidence | Packaged Windows tests for the keys, the modal focus, the menus, the budgets, a file in use, and Windows Defender (WP7). WSL tests on Ubuntu-26.04 (WP6). Each probe that needs a missing capability records it as unverified (note N-2). | Pass, note N-2 |
 | VII. Accessible and measured | Every new control has a label, a tooltip with its key, an accessible name, visible focus, and a stated reason when unavailable. The revert items stay in separate destructive groups (D12). The budgets are fixed above and in research R12, before measurement. | Pass |
-| VIII. Locked dependencies | No new package and no new crate. A missing `windows` feature for the DACL copy goes through its own review in WP3 (Technical Context). | Pass |
+| VIII. Locked dependencies | No new package and no new crate. A `windows` feature for the DACL copy comes only when probe W2 needs it, through its own review in T013 (Technical Context). | Pass |
 | IX. One planning process | All artifacts stay in `specs/008-discard-changes`. The contract lists only deltas to 001 to 006. The earlier specs change only in the doc pass (D14). | Pass |
 
 Notes from the second check:
-- **N-1 (I, "Operations MUST NOT bypass Git hooks")**: Git's own `git restore <path>` runs `post-checkout` with the flag 0 (research R10). A revert runs no checkout or restore. It writes the working file itself and changes the index through `update-index`, whose only hook is `post-index-change`, and that hook refuses the staged part. So a revert runs no Git command with a hook, and no hook is skipped. The user confirmed this reading on 2026-10-27.
+- **N-1 (constitution 4.0.0, principle I, "Operations MUST NOT bypass Git hooks")**: Git's own `git restore <path>` runs `post-checkout` with the flag 0 (research R10). A revert runs no checkout, restore, or switch. It changes the index through `update-index`, whose only hook is `post-index-change`, and that hook refuses the staged part. Git writes only its own temporary file through `checkout-index --temp`, which runs no hook and writes no index (research R10, probe G10). So a revert runs no Git command with a hook, and no hook is skipped. The user confirmed this reading on 2026-10-27. The reading lives in the spec Clarifications and in this note. The constitution gets no patch.
 - **N-2 (VI, "Untested behavior MUST remain explicitly unverified")**: research R14 lists the probes with capability skips: the owner of a file that an elevated process created (W2), EFS (W11), POSIX ACLs in the distro (L6). The SACL and the mandatory label stay a known limit (R8).
 - **N-3 (Delivery Gates)**: safety tests (SC-001 to SC-006), trust boundaries (spec FR-004), accessibility checks (SC-009), performance budgets (SC-007), and platform qualification (WP6, WP7) are defined here. Each batch ends with one independent review with explicit safety scrutiny of the destructive paths.
 
@@ -85,9 +85,9 @@ specs/008-discard-changes/
 ```text
 src/
 ├── contracts/              # operations.ts (phases, marker actions), envelope.ts (payloads, plans, results), errors.ts (reasons),
-│                           # limits.ts (REVERT_FILE_BYTES, REVERT_TOTAL_BYTES), wsl-process.json (wslFiles replace), schemas/
+│                           # limits.ts (REVERT_FILE_BYTES), wsl-process.json (wslFiles replace), schemas/
 ├── git-service/            # hunk-publish.ts (publishIndex split), multi-publish.ts (unstage prepare export), support.ts (ident),
-│                           # commands.ts (cat-file --filters, hash-object --path, check-attr --cached), git-runner.ts (fileReplace working, fileFacts detail),
+│                           # commands.ts (checkout-index --temp, hash-object --path, check-attr --cached), git-runner.ts (fileReplace working, fileFacts detail),
 │                           # workbench-review.ts (classless, stale reason), session.ts
 │                           # new: revert.ts (the three handlers), revert-bytes.ts (line logic, ending rule, blob ID; no I/O)
 └── frontend/               # changes/{HunkControls,ChangesPane,ComparisonView}.tsx, keyboard/shortcuts.ts, app/Workbench.tsx, history/CommitChanges.tsx, bridge.ts
@@ -111,15 +111,15 @@ tests/
 
 | Step | Files and symbols | Behavior change | Tests that prove it | Main risk |
 |---|---|---|---|---|
-| P0.1 Git facts | new `tests/git/revert-facts.test.ts` (WP1) | None. | G1 to G8 of research R14. | `cat-file --filters` differs from Git's restore for a conversion (G1). Then D5 changes before WP4. |
+| P0.1 Git facts | new `tests/git/revert-facts.test.ts` (WP1) | None. | G3 to G10 of research R14. | `checkout-index --temp` differs from Git's restore for a conversion (G9). Then that case refuses with `checkout-temp`. |
 | P0.2 Windows facts | new `tests/windows/revert-facts.test.ts`, probe cargo tests in `file_replace.rs` (WP1) | None. | W1 to W11. | Clearing the delete disposition fails on the host (W6). Then the 005 temporary name stays with a recorded window. |
 | P0.3 WSL facts | new `tests/wsl/revert-facts.test.ts` (WP1) | None. | L1 to L7. | `linkat` through `/proc/self/fd` fails from Perl (L2). Then the 005 temporary name stays. |
 | P1 Contracts | `src/contracts/*`, `tests/vectors/` (WP2) | Adds the actions, phases, reasons, bounds, keys, and the `ident` attribute read. | Schema tests, vectors, the shortcut map test. | typify drops ranges. Keep explicit Rust checks. |
-| P2 Shell replace | `file_replace.rs`, `file_facts.rs`, `process_requests.rs`, `wsl.rs`, `wsl-process.json` (WP3) | `fileReplace` gains the `working` target with the R8 and R9 facts. `fileFacts` gains `detail`. | Cargo tests per fact and refusal. WSL replace tests. | The DACL copy needs a `windows` feature (Technical Context). |
+| P2 Shell replace | `file_replace.rs`, `file_facts.rs`, `process_requests.rs`, `wsl.rs`, `wsl-process.json` (WP3) | `fileReplace` gains the `working` target with the R8 and R9 facts. `fileFacts` gains `detail`. | Cargo tests per fact and refusal. WSL replace tests. | The DACL copy needs a `windows` feature (W2, Technical Context). |
 | P3 Index split | `hunk-publish.ts`, `multi-publish.ts` (WP4) | None for staging. `publishIndex` becomes callable from a workbench run. | The whole existing staging suite stays green, plus `publish-index.test.ts`. | A changed order of lock and claim events. The suite catches it. |
 | P4 Service actions | new `revert.ts`, `revert-bytes.ts`, `support.ts`, `commands.ts`, `workbench-review.ts` (WP4) | US1 to US4 in the service. | SC-001 to SC-005 in `tests/git`. | The partial outcome after a published index (D10). |
 | P5 Frontend | `changes/*`, `keyboard/shortcuts.ts`, `app/Workbench.tsx` (WP5) | The menus, the keys, the modal, progress, and results. | Component tests per FR. | The modal focus in WebView2 (WP7 checks it in the package). |
-| P6 WSL | `tests/wsl/revert-wsl.test.ts` (WP6) | None (tests). | US5, SC-008. | The hex input of 16 MiB through `wsl.exe` stdin. |
+| P6 WSL | `tests/wsl/revert-wsl.test.ts` (WP6) | None (tests). | US5, SC-008. | The hex input of a line revert (up to 16 MiB of hex) through `wsl.exe` stdin. |
 | P7 Qualification | `tests/windows/revert-packaged.test.ts`, `revert-perf.test.ts` (WP7) | None (tests). | SC-006, SC-007, SC-009, SC-011. | Windows Defender holds a file during the rename (W9). |
 
 Each step writes its tests first.
@@ -129,9 +129,9 @@ Each step writes its tests first.
 [contracts/operations.md](contracts/operations.md) holds the deltas. Summary:
 - `reviewWorkbench` gains the actions `revert-lines`, `revert-files`, and `revert-unstaged`. `runWorkbench` runs them. No new operation name.
 - Phases `revert-index` (no counters) and `revert-files` (`fileIndex`, `fileCount`). Marker actions `revert-lines`, `revert-files`, and `revert-unstaged`.
-- `fileReplace` gains the target `working`. `fileFacts` gains `detail`.
+- `fileReplace` gains the target `working`, with `bytes` (lines) or `source` (Git's temporary file, whole files). `fileFacts` gains `detail` and a streamed digest without the 1 MiB bound. The new private request `tempRemove` removes an unused Git temporary file.
 - New `WORKBENCH_UNAVAILABLE` reasons and the `STALE_REVIEW` reason `revert-changed`.
-- `REVERT_FILE_BYTES` (8 MiB) and `REVERT_TOTAL_BYTES` (1 GiB).
+- `REVERT_FILE_BYTES` (8 MiB): the frame bound of a line revert. Whole files have no size bound.
 
 ### D2 Review and run frame
 
@@ -161,14 +161,30 @@ Each step writes its tests first.
 ### D5 Revert file
 
 - Payload: `{action: "revert-files", snapshotId, entryIds}` with 1 to 10,000 IDs of the Changes or Staged list of one snapshot. A folder row sends no request: the renderer shows the folder reason (spec FR-023).
-- Review per entry: the status record gives the HEAD, index, and worktree modes and object IDs. The index part is the 004 Unstage files candidate (`update-index -z --index-info` with the HEAD entries, `commands.ts:411`) for every entry whose index entry differs from HEAD. A staged new file loses its entry, and its working file stays (spec FR-021). The working part writes `cat-file --filters --path=<path> <HEAD oid>` for each entry that HEAD holds. The review reads those bytes once, checks the size bound, and binds the SHA-256 and the size.
+- Review per entry: the status record gives the HEAD, index, and worktree modes and object IDs. The index part is the 004 Unstage files candidate (`update-index -z --index-info` with the HEAD entries, `commands.ts:411`) for every entry whose index entry differs from HEAD. A staged new file loses its entry, and its working file stays (spec FR-021). The working part writes each entry that HEAD holds through D5a, after the index part. The review binds the HEAD entry and the current target facts (size and a streamed SHA-256), not the new bytes.
 - A deletion binds `absent` and the list of missing folders. An untracked status record at the same path refuses with `in-the-way`.
 - Plan: `{kind: "files", count, paths (first 20 in tree order), newFiles, staged, unstaged}`.
+
+### D5a Whole-file write through `checkout-index --temp`
+
+Revert file and Revert all unstaged changes write each file in batches of at most 64 paths, in tree order (research R4):
+1. Read `ls-files --stage -z` for the batch paths and the raw index digest. Each entry must equal the plan (for Revert file, the published HEAD entry).
+2. Run `git --no-lazy-fetch checkout-index --temp --stdin -z` in the worktree root, with the batch paths on stdin, NUL-ended. Git writes each entry to `.merge_file_<random>` in the worktree root and prints `<temp> TAB <path> NUL` (source facts, probe G10). The service parses each record exactly: the temporary name must be one path component, and the path must be one of the batch paths. Any other output gives `MALFORMED_GIT_OUTPUT`, and the run removes every named temporary file (step 6).
+3. Read the entries and the raw index digest again. A difference from step 1 gives `STALE_REVIEW` `revert-changed` for the batch, and step 6 removes the temporary files.
+4. Read `fileFacts` with a streamed digest of each temporary file. This gives the size and the SHA-256 of the new bytes.
+5. Per file, send `fileReplace` `working` with `source: {name, size, sha256}` (D8, D9). The shell copies the temporary file beside the target with a streamed SHA-256, checks the size and the digest, swaps the copy over the target with the expected check, and removes the source through its held handle.
+6. Each temporary file that no `fileReplace` consumed goes through `tempRemove` with its size and SHA-256. A stop between step 2 and step 6 leaves it (spec FR-036 known limit).
+
+Rules:
+- `checkout-index --temp` takes no index lock and writes no index (`builtin/checkout-index.c`, `--temp` branch). It runs no hook (research R10). It loads the index, so the eligibility refusals and the read gate apply (D2). The review refuses `filter` and `LFS` before step 2, so Git runs no filter program (spec FR-004).
+- The case list of probe G9 decides `checkout-temp`: a conversion for which `checkout-index --temp` and Git's `restore` give other bytes refuses at review with that reason.
+- The final rename stays inside the target folder, so the volume rule holds for it. The Git temporary file lies in the worktree root, on the same volume as every target that the walk reaches, because the walk refuses every reparse point on the path. A WSL `st_dev` that differs between the root and the target folder refuses with `not-regular`.
+- A target bound as absent gets the folder ACL on Windows, because the copy is created in the target folder. On WSL it gets `0777 & ~umask` for an entry with mode 100755 and `0666 & ~umask` for 100644, as Git's checkout creates a file (`entry.c` `create_file`).
 
 ### D6 Revert all unstaged changes
 
 - Payload: `{action: "revert-unstaged", snapshotId}`. The service takes every entry of the snapshot with a worktree letter other than `.` and a tracked status record, including the rows that Filter files hides. Submodule entries (`S…` or mode 160000) are counted and left out.
-- Review per entry: the source blob is the index object ID. The bytes are `cat-file --filters --path=<path> <index oid>`. No index part.
+- Review per entry: the source is the index entry. The run writes it through D5a. No index part.
 - A refusal of any entry makes the whole action unavailable, and the reason names the first 20 files in tree order with their reasons (Clarifications, 2026-10-27).
 - Plan: `{kind: "unstaged", count, paths, submodules}`. The renderer adds the hidden count from its filter (data-model §5).
 
@@ -181,9 +197,11 @@ Each step writes its tests first.
 
 ### D8 Working-file write on Windows
 
-- `fileReplace {repositoryId, target: "working", path, expected, facts, bytes, folders}` (contract Δ6). The shell checks the path below the worktree root with `file_facts::below`, refuses a first component that names the Git directory or `.git`, and requires the started marker action of the run.
-- `check` (`file_replace.rs:118`) keeps its walk, its held parent, its held target, and its size and SHA-256 compare. It adds the R8 facts under the held target handle: the attributes, the link count (`hard-link`), the read-only and encrypted attributes, the owner and DACL. Any difference from `facts` gives `stale`.
-- `write` (`:180`) creates the temporary file with the delete disposition on close (W6). It sets the attribute set and the creation time through `FileBasicInformation` (W1, W3), copies the DACL (W2), and compares the resulting owner and DACL with the old file. Then it writes, flushes, clears the delete disposition, and renames with `FILE_RENAME_POSIX_SEMANTICS | FILE_RENAME_REPLACE_IF_EXISTS`. A target bound as absent renames without `REPLACE_IF_EXISTS`, so an existing name gives `stale` (as 005 N7).
+- `fileReplace {repositoryId, target: "working", path, expected, facts, bytes | source, folders}` (contract Δ6). `bytes` carries a line revert. `source` names Git's temporary file in the worktree root with its size and SHA-256. The shell checks the path below the worktree root with `file_facts::below`, refuses a first component that names the Git directory or `.git`, and requires the started marker action of the run.
+- `check` (`file_replace.rs:118`) keeps its walk, its held parent, its held target, and its size and SHA-256 compare. It adds the R8 facts under the held target handle: the attributes, the link count (`hard-link`), the read-only and encrypted attributes, the owner and DACL. Any difference from `facts` gives `stale`. The target digest streams through the held handle, so `check` has no 1 MiB read bound for this target.
+- `write` (`:180`) creates the temporary file with the delete disposition on close (W6). It sets the attribute set and the creation time through `FileBasicInformation` (W1, W3). When W2 showed that the swap loses the file's own DACL, it copies the DACL (T013). It compares the resulting owner and DACL with the old file. Then it writes `bytes`, or copies `source` with a streamed SHA-256 that must equal the request, flushes, clears the delete disposition, and renames with `FILE_RENAME_POSIX_SEMANTICS | FILE_RENAME_REPLACE_IF_EXISTS`. A target bound as absent renames without `REPLACE_IF_EXISTS`, so an existing name gives `stale` (as 005 N7).
+- `source`: the shell opens the named file relative to the held worktree root without following a link, and requires a regular file with one link and the requested size. After the rename, and after every failure that comes after the source open, it deletes the source through that handle. A failure before the open leaves the source to `tempRemove` (D5a step 6).
+- `tempRemove {repositoryId, name, expected: {size, sha256}}`: one file in the worktree root, deleted through its handle only when its facts equal `expected`. Reply `removed`, `stale`, `absent`, or `error {code}`.
 - `folders` lists the missing folder names below the deepest existing folder. The shell creates each with `FILE_CREATE` and `FILE_DIRECTORY_FILE` relative to the held parent and `OBJ_DONT_REPARSE` (W10).
 - Reply: `replaced`, `stale`, `refused {reason}` (`not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`), `error {code}` (`sharing-violation`, `access-denied`, `disk-full`, `read-only-volume`, or another code), `stopped`, plus `folders` created.
 - The R8 table decides each fact. A probe that differs changes this section before WP3 (research R8 rule).
@@ -191,7 +209,8 @@ Each step writes its tests first.
 ### D9 Working-file write on WSL
 
 - The same request reaches `wslFiles` mode `replace` with the root `worktree` and any path below it. The Perl `replace_one` (`wsl-process.json`) keeps its walk and its checks, and adds: the `st_uid` compare and the gid copy through `chown(-1, gid)` (`owner`), the `llistxattr` check (`xattr`), the `O_TMPFILE` create and the `linkat` name just before the rename (L1, L2), and `mkdir` of the missing folders (L7).
-- The bytes cross in hex on stdin, at most `REVERT_FILE_BYTES` (contract Δ11). The WSL read of the working bytes for a line revert uses `fileFacts` with `content: true` (at most 1 MiB).
+- A line revert: the bytes cross in hex on stdin, at most `REVERT_FILE_BYTES` (contract Δ11). The WSL read of the working bytes uses `fileFacts` with `content: true` (at most 1 MiB).
+- A whole file: no content crosses. Git writes its temporary file inside the distro. The Perl `replace_one` opens it relative to the root with `O_NOFOLLOW`, checks its `fstat` against `lstat`, copies it into the `O_TMPFILE` file beside the target with a streamed SHA-256, and unlinks the source after the identity check. `tempRemove` runs the same identity check.
 - A staged part refuses with `shared-repository` (`eligibility.ts:225`) when any scope sets `core.sharedRepository`. An unstaged revert writes no repository file, so that reason does not apply to it.
 - A stop, a deadline, or a broken output of `replace` gives `interrupted`. The reconcile waits for the process-end fact before the fresh read (`workbench-review.ts:360`).
 
@@ -211,6 +230,7 @@ Each step writes its tests first.
 | unknown (WSL without a process-end fact, or a failed reconcile read) | — | outcome unknown; the recovery marker stays (001 FR-023) | `GIT_FAILED` or `DEADLINE` |
 
 - Cancel: before the lock, nothing runs. After the publication starts, the index part ends, because the publication is one rename. Between files, the run stops before the next request. A started `fileReplace` ends without a stop, as in 005.
+- Git temporary files: D5a step 6 removes every unused one before the reconcile reads.
 - The index part never rolls back. When the working part stops after a published index, the result states the FR-017 text, and the file shows its working changes as unstaged.
 - A crash during a run leaves the 001 recovery marker of kind `workbench`. The next start reconciles and reports the outcome as unknown until a refresh (001 FR-023).
 
@@ -235,7 +255,7 @@ Each step writes its tests first.
 ### D13 Tests and fixtures
 
 - Oracles: Git's own commands on a copy of the fixture: `git apply -R` and `git apply --cached -R` of the same partial patch for lines; `git restore --staged --worktree --source=HEAD` for Revert file (minus the staged-new-file difference of G7); `git restore .` for Revert all unstaged changes. The tests compare index bytes through `ls-files --stage -z` and working bytes by SHA-256.
-- The test double (`tests/git/bun-runner.ts`) implements `fileReplace` `working` with the same expected checks on the host file system, and records each request. The shell behavior has its own cargo tests and the packaged tests.
+- The test double (`tests/git/bun-runner.ts`) implements `fileReplace` `working` with `bytes` and `source`, and `tempRemove`, with the same expected checks on the host file system, and records each request. The shell behavior has its own cargo tests and the packaged tests.
 - Seams: `revertCheckpoint({step: "before-index" | "after-index" | "before-write", path})` in the service run for the race fixtures, as `hunkCheckpoint` (`hunk-publish.ts:74`). Production passes none.
 - Fault fixtures: the double stops at each write step; the cargo tests kill a child that holds the temporary handle (W6); the WSL test kills the distro process (L3).
 - Each new `tests/git`, `tests/contracts`, and `tests/wsl` file gets its line in `tests/groups.json` in its task.
@@ -244,7 +264,7 @@ Each step writes its tests first.
 
 The doc pass (WP8, after the full run of WP7) appends one sentence "Amended by feature 008 (2026-10-27): …" to each line below, as feature 005 amended 004 FR-045:
 - `specs/001-desktop-qualification/spec.md:424` (FR-027): the revert actions are allowed behind their confirmations.
-- `specs/001-desktop-qualification/contracts/operations.md:1608` (§11): the bytes of one reverted file, at most 8 MiB, cross out of and into the distro.
+- `specs/001-desktop-qualification/contracts/operations.md:1608` (§11): the bytes of one file of a line revert, at most 8 MiB, cross out of and into the distro. A whole-file revert crosses no content.
 - `specs/004-workbench-ux/spec.md:303` (Scope Boundaries): the discard exclusion goes.
 - `specs/004-workbench-ux/spec.md:322` (the 001 FR-027 change): the revert actions join the allowed list.
 - `specs/004-workbench-ux/spec.md:526` (Assumptions): the discard assumption goes.
@@ -255,7 +275,7 @@ These lines stay unchanged: 001 FR-013 (`:404`), 001 FR-038 (`:447`), 004 FR-042
 
 ### Invariants
 
-- No Git command writes a working file for a revert.
+- No Git command writes a target file. Git writes only its own temporary file, through `checkout-index --temp`.
 - No working file is ever missing or partly written: the old bytes or the new bytes, at every moment.
 - No write happens without an exact expected check of the target under the held handle.
 - The index changes only through a checked candidate under the owned lock.
@@ -265,7 +285,8 @@ These lines stay unchanged: 001 FR-013 (`:404`), 001 FR-038 (`:447`), 004 FR-042
 ## Open items and reviewer defaults
 
 - The R8 and R9 tables are decisions with probes. A probe result that differs changes them before WP3 (research R14 rule).
-- The 8 MiB file bound is a reviewer default (research R11). A streamed write could lift it later.
+- Revert file has no size bound (Clarifications, 2026-10-27). The 8 MiB frame bound of a line revert stays for v0.1.0. A chunked transfer can lift it later.
+- The DACL copy is conditional on probe W2 (T005 records it, T013 decides, T014 builds it).
 - The placement of "More actions" and the menu order follow the mockup (WP5).
 - `docs/project-brief.md:101` changes its label example (D14). The brief is not a spec.
 
@@ -285,7 +306,7 @@ Each batch ends with its verification task, one independent review (`reviewer`, 
 
 ### Work packages, in run order
 
-- **WP1 Facts** (implementer; W probes `Local: Windows` and `Local: Rust`; L probes `Local: WSL`, alone): research R14 G1 to G8, W1 to W11, L1 to L7, and the fact gate into R15.
+- **WP1 Facts** (implementer; W probes `Local: Windows` and `Local: Rust`; L probes `Local: WSL`, alone): research R14 G3 to G10, W1 to W11, L1 to L7, and the fact gate into R15.
 - **WP2 Contracts** (implementer): contract Δ1 to Δ10, the schemas, the vectors, `KEYS`, and `SUPPORT_ATTRIBUTES` with `ident`.
 - **WP3 Shell** (implementer-xhigh, `Local: Rust`, `Local: WSL`): D8 and D9.
 - **WP4 Service** (implementer-xhigh): D2 to D7 and D10, with the test double. Batch 1 holds its foundation; batches 2 and 3 hold one story per task pair.

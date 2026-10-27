@@ -64,15 +64,18 @@ Each section names its source. Field names are contract names. "001 data-model �
 | Row | Source |
 |---|---|
 | Bundled | the `bundled` record, always |
-| Not downloaded | `not-downloaded`, and no failure of this window session |
+| Not downloaded | `not-downloaded`, and no download failure of this window session |
 | Downloading <n>% | `downloading`, with the progress of the run |
 | Importing… | `importing` |
 | Ready | `ready`, and no load failure of this window session |
 | Changed | `changed` |
-| Failed | the last run of this window session for this ID failed, or its worker load failed or passed its deadline |
+| Failed | the last download run of this window session for this ID failed, or the worker load of this `ready` ID failed or passed its deadline |
 
 - A Failed row keeps its failure text until the next run of that row or a restart. A load failure of a `ready` row shows Failed with the FR-016 load text and offers only Remove.
-- Row actions: Not downloaded: Download, Import…. Downloading: Cancel. Importing: none. Ready: Show licence, Remove. Changed: Download, Import…, Remove. Failed after a run: Retry, Import…, and Remove when files exist. Failed with reason `not-https`: Import… only. Bundled: Show licence.
+- A load failure of a Changed row keeps Changed and shows the `changed` text. A load failure of a row with the `catalog-changed` notice shows the `catalog-changed` text (plan D17; user decision, 2026-10-27).
+- A failed import keeps the row state and its actions, and the message row shows the import text (DictionaryFailures board; user decision, 2026-10-27).
+- English always shows Bundled. A load failure of English shows the FR-016 load text in the message row under it (DictionaryFailures board; user decision, 2026-10-27).
+- Row actions: Not downloaded: Download, Import…. Downloading: Cancel. Importing: none. Ready: Show licence, Remove. Changed: Download, Import…, Remove. Failed after a download run: Retry, Import…, and Remove when files exist. Failed with reason `not-https`: Import… only. Bundled: Show licence.
 - Selection checkbox: available for Bundled and Ready, and for every selected row (to clear it). Otherwise unavailable: a row that is not ready states the not-ready reason; a Ready row states the limit reason when 3 languages are selected.
 
 ## 5. Download run

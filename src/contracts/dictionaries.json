@@ -761,6 +761,36 @@
       ]
     },
     {
+      "id": "he",
+      "name": "Hebrew",
+      "license": "AGPL-3.0",
+      "script": "Hebrew",
+      "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
+      "files": [
+        {
+          "name": "index.aff",
+          "url": "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/he/index.aff",
+          "size": 78883,
+          "sha256": "e115a0a5014d17a8e904f9d4a67d7992039b396c5fa031eb036a13bf63dfb037"
+        },
+        {
+          "name": "index.dic",
+          "url": "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/he/index.dic",
+          "size": 5688111,
+          "sha256": "9bd95042a927e13ab422231e355caa8a7018456e7c49b889f2e6c62ddb5a0552"
+        },
+        {
+          "name": "license",
+          "url": "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/he/license",
+          "size": 461,
+          "sha256": "bb0a75c473e49224e0428b95c17ad90f1774a7f6cb97be921f9d6a93a3af80d7"
+        }
+      ],
+      "licences": [
+        "license"
+      ]
+    },
+    {
       "id": "hu",
       "name": "Hungarian",
       "license": "(GPL-2.0 OR LGPL-2.1 OR MPL-1.1)",
@@ -2531,6 +2561,36 @@
           "url": "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/hyw/license",
           "size": 353,
           "sha256": "4471b1cc5e45985780f3c044dcfc3725b7845f3108309aa2a7be2df5c0510d32"
+        }
+      ],
+      "licences": [
+        "license"
+      ]
+    },
+    {
+      "id": "fy",
+      "name": "Western Frisian",
+      "license": "GPL-3.0",
+      "script": "Latin",
+      "commit": "8cfea406b505e4d7df52d5a19bce525df98c54ab",
+      "files": [
+        {
+          "name": "index.aff",
+          "url": "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/fy/index.aff",
+          "size": 7020461,
+          "sha256": "10264e8cf0a21a448da15840422382c44c6f7592070a1cb8c103cf4f19ed03fd"
+        },
+        {
+          "name": "index.dic",
+          "url": "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/fy/index.dic",
+          "size": 3612120,
+          "sha256": "529dd768a52b833fd3be90074dfeaaace18a785bd881e3d92ec1691312b901b1"
+        },
+        {
+          "name": "license",
+          "url": "https://raw.githubusercontent.com/wooorm/dictionaries/8cfea406b505e4d7df52d5a19bce525df98c54ab/dictionaries/fy/license",
+          "size": 35149,
+          "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
         }
       ],
       "licences": [

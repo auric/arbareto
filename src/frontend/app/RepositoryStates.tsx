@@ -4,7 +4,7 @@
 import { CancelCircleIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createContext, useContext, type ReactNode } from "react";
-import type { Comparison, Completeness, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
+import type { Comparison, Completeness, Environment, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
 import type { BridgeResponse } from "../bridge";
 import { Button } from "../components/ui/button";
@@ -135,12 +135,16 @@ export function RepositoryRefused({ code, result, onOpenRepository }: { code: Er
 
 export const SCOPE_LINE =
   "This test build covers opening repositories, recent repositories, status, diffs, hunk and file staging, local commits, submodule updates, one history page, and a read-only reference list.";
+// Feature 007 plan.md D7: it restates `.github/release-notes/preview.md` (spec FR-003).
+export const PREVIEW_SCOPE_LINE = "This preview is not a qualified release. The qualification of Windows 11 x64 continues.";
+/** Without an environment, the local line shows. */
+export const scopeLine = (channel?: Environment["buildIdentity"]["channel"]) => (channel === "preview" ? PREVIEW_SCOPE_LINE : SCOPE_LINE);
 
 /**
  * plan.md "Required visible states", No repository: the recent list with its filter, Open folder, and the static line. No branch per entry.
  * Feature 003 FR-046: `onClone` opens the clone panel.
  */
-export function StartPage({ onClone, ...props }: Omit<RecentListProps, "onClose" | "popup"> & { onClone?(): void }) {
+export function StartPage({ onClone, channel, ...props }: Omit<RecentListProps, "onClose" | "popup"> & { onClone?(): void; channel?: Environment["buildIdentity"]["channel"] }) {
   return (
     <section aria-label="Start page" className="flex min-h-0 max-w-[480px] flex-col gap-4 p-4">
       <RecentList {...props} />
@@ -149,7 +153,7 @@ export function StartPage({ onClone, ...props }: Omit<RecentListProps, "onClose"
           Clone…
         </Button>
       )}
-      <p className="text-muted-text">{SCOPE_LINE}</p>
+      <p className="text-muted-text">{scopeLine(channel)}</p>
     </section>
   );
 }

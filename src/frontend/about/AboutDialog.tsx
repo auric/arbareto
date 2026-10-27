@@ -3,7 +3,7 @@
 
 import { useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 import type { Environment } from "../../contracts/envelope";
-import { failureText, SCOPE_LINE } from "../app/RepositoryStates";
+import { failureText, scopeLine } from "../app/RepositoryStates";
 import type { createBridge } from "../bridge";
 import type { Notices } from "../build/notices";
 import { Button } from "../components/ui/button";
@@ -28,13 +28,24 @@ type OverviewProps = { scope: Environment["platformScope"]; build: Environment["
 /** The Overview panel. `build.commit` carries the `-dirty` suffix when it applies (contract `buildIdentity`). */
 export function AboutOverview({ scope, build, repositoryUrl, bridge }: OverviewProps) {
   const [failure, setFailure] = useState<ReactNode>(null);
+  const [busy, setBusy] = useState(false);
+  // A ref, because a second press can come before React renders the disabled state.
+  const running = useRef(false);
   // Feature 007 contracts/release.md §5: the renderer sends only the target. The shell builds the URL.
   async function open(label: string, target: ReleaseTarget) {
-    const response = await bridge.openReleaseLink({ target });
-    setFailure(response.state === "succeeded" ? null : <>{failureText(label, response)}.</>);
+    if (running.current) return;
+    running.current = true;
+    setBusy(true);
+    try {
+      const response = await bridge.openReleaseLink({ target });
+      setFailure(response.state === "succeeded" ? null : <>{failureText(label, response)}.</>);
+    } finally {
+      running.current = false;
+      setBusy(false);
+    }
   }
   const release = (label: string, target: ReleaseTarget) => (
-    <Button variant="outline" size="sm" onClick={() => void open(label, target)}>
+    <Button variant="outline" size="sm" disabled={busy} onClick={() => void open(label, target)}>
       {label}
     </Button>
   );
@@ -47,7 +58,7 @@ export function AboutOverview({ scope, build, repositoryUrl, bridge }: OverviewP
       </p>
       {preview ? <p>Preview</p> : <p>Unsigned local test package</p>}
       {scope === "other" && <p>Unqualified platform</p>}
-      <p>{SCOPE_LINE}</p>
+      <p>{scopeLine(build.channel)}</p>
       <p>{COPYRIGHT}</p>
       <p>Arbareto by Ihor Lifanov</p>
       <p>{PERMISSION}</p>

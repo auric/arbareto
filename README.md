@@ -85,13 +85,26 @@ Run these commands from the repository root. Run `bun run build` before `cargo c
 - `bun scripts/dictionary-catalog.ts [--offline]` writes `src/contracts/dictionaries.json` from the pinned wooorm/dictionaries commit. Set `ARBARETO_DICTIONARY_CACHE` to a folder outside the repository. The script reads `api.github.com` and `raw.githubusercontent.com` into that cache. `--offline` reads only the cache.
 - `bun test tests/gate` runs the early dictionary gate report and the `hunspell.wasm` build fact. Set `ARBARETO_DICTIONARY_CACHE` to the cache of the catalog script. Without it, the gate report skips. `bun run test:all` does not run these files.
 - `cargo check --locked --manifest-path src-tauri/Cargo.toml`
-- `cargo check --locked --manifest-path src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu` (Linux portability check)
+- `cargo check --locked --manifest-path src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu` (Linux portability check on a Linux host; on Windows, use "Linux check (WSL)")
 - `cargo test --locked --manifest-path src-tauri/Cargo.toml`
 - Run the app for development: `bun run dev`
 - `bun run package` builds an unsigned current-user NSIS installer in `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis/`. It does not install it. Then it prints the `rustc`, `cargo`, `cargo tauri`, `bun`, and NSIS versions for the build record.
 - `pwsh -File scripts/windows/measure-ram.ps1 [-RootPid <pid>]` prints the private working set, private bytes, and working set of each process in the running app's tree, with totals per group (Tauri, Bun, WebView2); the main number is the private working set (Task Manager "Memory").
 
 Cloud sessions: paste [.claude/cloud-setup.sh](.claude/cloud-setup.sh) into the cloud environment's setup script field. The cloud runs Bun and TypeScript work and the Linux portability check.
+
+### Linux check (WSL)
+
+Run these commands on Windows. They check the shell for Linux in WSL `Ubuntu-26.04`. The first `cargo` call installs the toolchain of `rust-toolchain.toml`. Keep the clone inside the distro. Do not build from `/mnt`.
+
+```sh
+wsl -d Ubuntu-26.04 -u root -- sh -c "apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev pkg-config"
+wsl -d Ubuntu-26.04 -- sh -c "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain none --profile minimal"
+wsl -d Ubuntu-26.04 -- bash -c 'cd ~ && git clone https://github.com/auric/arbareto.git arbareto-linux-check'
+wsl -d Ubuntu-26.04 -- bash -c '. ~/.cargo/env && cd ~/arbareto-linux-check && cargo check --locked --manifest-path src-tauri/Cargo.toml'
+```
+
+To check a branch, add `--branch <name>` to `git clone`.
 
 ## Acknowledgements
 

@@ -8,7 +8,7 @@ import { printOrigin } from "../origin";
 import { describeGit, fixtureGitPath } from "../git/git-binary";
 import { fixtureDir, fixtureEnv, fixtureGit, useFixtureRoot } from "../git/fixture-root";
 import { renderNotices } from "../../scripts/release/notices-text";
-import { releaseNotes } from "../../scripts/release/notes";
+import { readBlocks, releaseNotes } from "../../scripts/release/notes";
 import { archiveName, hunspellSource, TAR } from "../../scripts/release/hunspell-source";
 import type { Notices } from "../../src/frontend/build/notices";
 
@@ -138,6 +138,14 @@ describe("notes.ts", () => {
     const text = notes("signpath");
     expect(text.indexOf(block("signed.md"))).toBeGreaterThan(text.indexOf(block("prerequisites.md")));
     expect(text.indexOf(block("unsigned.md"))).toBe(-1);
+  });
+
+  test("a missing block file gives RELEASE_NOTES block with the file name", async () => {
+    const dir = fixtureDir("notes-blocks");
+    for (const name of ["preview.md", "prerequisites.md"]) writeFileSync(join(dir, name), block(name));
+    expect(await readBlocks(dir, "off")).toEqual({ refusal: "RELEASE_NOTES block unsigned.md" });
+    writeFileSync(join(dir, "unsigned.md"), "U\n");
+    expect(await readBlocks(dir, "off")).toEqual({ blocks: { "preview.md": block("preview.md"), "prerequisites.md": block("prerequisites.md"), "unsigned.md": "U\n" } });
   });
 
   test("a missing section gives RELEASE_NOTES missing", () => {

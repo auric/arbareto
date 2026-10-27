@@ -16,7 +16,7 @@ A tag `v0.1.0` on `main` starts one GitHub Actions workflow on `windows-2025`. T
 
 **Storage**: None. Release files live as GitHub workflow artifacts and release assets.
 
-**Testing**: `bun test` contract tests for the release scripts, the workflow file, the notices text, and the About changes. `cargo test --locked` for the build channel in `build.rs`. A packaged install in Windows Sandbox (`scripts/windows/clean-install.wsb`). A dry-run workflow run on GitHub, then the real tag run.
+**Testing**: `bun test` contract tests for the release scripts, the workflow file, the notices text, and the About changes. `cargo test --locked` for the build channel in `build.rs`. A packaged install in Windows Sandbox (`scripts/windows/clean-install.wsb`). The Linux `cargo check` runs in WSL `Ubuntu-26.04` on a clone inside the distro (user, 2026-10-27; README "Development", "Linux check (WSL)"). On Windows, `--target x86_64-unknown-linux-gnu` fails in the `libdbus-sys` build script (research R7). A dry-run workflow run on GitHub, then the real tag run.
 
 **Target Platform**: Windows 11 x64 (Windows 10 x64 runs unqualified). Build host: GitHub-hosted `windows-2025`, and the reference host for local checks.
 
@@ -131,6 +131,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 - Version: `cargo metadata --no-deps --format-version 1 --manifest-path src-tauri/Cargo.toml`, package `arbareto`, field `version`. `package.json` `version` must equal it. `src-tauri/tauri.conf.json` and the preview overlay must have no `version` key, because Tauri then takes the `Cargo.toml` value (research R4).
 - Release mode: the tag must match `^v(\d+\.\d+\.\d+)$`, and the captured value must equal the version. Else exit 1 with `RELEASE_CHECK tag-version <tag> <version>`.
 - Release mode: `git merge-base --is-ancestor <tag commit> origin/main`. Exit 0 passes. Exit 1 fails with `RELEASE_CHECK not-on-main`. Any other exit fails with `RELEASE_CHECK git-failed <code>` (git-merge-base(1) defines 0 and 1). `actions/checkout` runs with `fetch-depth: 0`.
+- Release mode: `git rev-parse --verify HEAD^{commit}` must equal `git rev-parse --verify refs/tags/<tag>^{commit}`. Else exit 1 with `RELEASE_CHECK not-tag-commit` (spec FR-014). A non-zero `rev-parse` exit fails with `RELEASE_CHECK git-failed <code>`.
 - Both modes: `git --no-optional-locks status --porcelain --untracked-files=all` must print nothing, before and after the build (spec FR-014).
 - Release mode: `gh api repos/{owner}/{repo}/releases --paginate` JSON; a published release with the same `tag_name` fails with `RELEASE_CHECK exists`. A draft with that tag is reused (spec FR-015, FR-017). This check runs in the publish job, because the build job has no `contents: write` token and drafts need it to be visible.
 - All downloads and outputs go below `$env:RUNNER_TEMP`, never into the checkout.
@@ -171,8 +172,9 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
   - `hunspell-source`: `<repository>/releases/download/v<version>/arbareto-<version>-hunspell-source.tar.gz`.
   - `tag-source`: `<repository>/tree/<commit>`.
 - It opens the URL with the 006 `links.rs` opener (`ShellExecuteW` after `CoInitializeEx`). This needs feature 006 on `main`.
+- Scope line (About Overview, the Help menu, and the start page): `local` keeps the 001 line "This test build covers …". `preview` shows "This preview is not a qualified release. The qualification of Windows 11 x64 continues." The text restates `.github/release-notes/preview.md` (spec FR-003).
 - About Overview, `preview` channel: the line "Preview", a "Hunspell source" button next to the D18 note, and a "Source at this commit" button in the Corresponding Source line. `local` channel: no buttons; the text stays as today.
-- Release link failure text, 004 D15 pattern: "<button> did not complete: <code>." The button label is "Hunspell source" or "Source at this commit". The code is the response code, such as `RELEASE_LINK_OPEN_FAILED`. The text shows below the buttons and clears after a successful open.
+- Release link failure text, 004 D15 pattern: "<button> did not complete: <code>." The button label is "Hunspell source" or "Source at this commit". The code is the response code, such as `RELEASE_LINK_OPEN_FAILED`. The text shows below the buttons and clears after a successful open. While one request runs, both buttons are disabled.
 - A contract test in Rust checks both URLs for a fixed version and commit.
 
 ### D8 Release installer name and service file properties
@@ -198,7 +200,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 ### D11 Signing switch
 
 - Repository variable `ARBARETO_SIGNING`: `off` (default when unset) or `signpath`. Any other value fails the build job.
-- With `signpath`, the build job also needs the variables `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_POLICY_SLUG`, and the repository secret `SIGNPATH_API_TOKEN`. A missing value fails the job.
+- With `signpath`, the build job also needs the variables `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_POLICY_SLUG`, and the repository secret `SIGNPATH_API_TOKEN`. A missing value fails the job. An `if:` cannot read secrets (GitHub docs "Using secrets in GitHub Actions"). So the build job env sets `SIGNPATH_TOKEN_SET: ${{ secrets.SIGNPATH_API_TOKEN != '' }}`, and `check.ts --signing signpath` refuses with `RELEASE_CHECK signing-missing SIGNPATH_API_TOKEN` when the value is not `true`.
 - Stage 1 sign: `actions/upload-artifact` of a ZIP with `arbareto.exe` and `arbareto-git.exe`, then the SignPath action with `wait-for-completion: true`, a 3,600 s bound, and `output-artifact-directory` below `RUNNER_TEMP`. The signed files replace the unsigned ones in the target folder. Then `cargo tauri bundle`.
 - Bundler patch (research R7 T001): without `--no-binary-patching`, `cargo tauri bundle` replaces the marker `__TAURI_BUNDLE_TYPE_VAR_UNK` with `__TAURI_BUNDLE_TYPE_VAR_NSS` in `arbareto.exe` before NSIS packs it (tauri-bundler 2.10.0 `src/bundle.rs:40-98`). This invalidates a stage 1 signature (tauri-cli 2.12.0 `bundle --help`). Only the updater reads the marker, and the preview has no updater (spec FR-005). So `package:preview:bundle` always passes `--no-binary-patching` (D8), with signing on and off.
 - Release comparison: each installed file equals its build input byte for byte. `arbareto.exe` equals the target file after stage 1 (or after the stage 1 sign), and `arbareto-git.exe` equals `src-tauri/binaries/arbareto-git-x86_64-pc-windows-msvc.exe`. The local `bun run package` keeps the patch, so its installed `arbareto.exe` differs from the built file in the 3 marker bytes only.

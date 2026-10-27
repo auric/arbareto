@@ -31,7 +31,7 @@ Run the local checks first. The GitHub runs need the orchestrator, and the user'
 ## Q4. Sandbox install
 
 - Copy the installer into the `scripts/windows/clean-install.wsb` share. Install as the Sandbox user. Set `ARBARETO_PROFILE_ROOT` to a scratch folder for app runs on the host.
-- Expected: no administrator prompt; Arbareto starts; About shows `0.1.0`, `Preview`, and the commit; "Installed apps" shows "Arbareto"; uninstall removes it.
+- Expected: no administrator prompt; Arbareto starts; About shows `0.1.0`, `Preview`, and the commit; "Installed apps" shows "Arbareto"; the uninstall key `Publisher` and the `arbareto.exe` and `arbareto-git.exe` CompanyName are `Ihor Lifanov`, and their LegalCopyright is `Copyright (c) 2026 Ihor Lifanov`; the start page shows "This preview is not a qualified release. The qualification of Windows 11 x64 continues."; uninstall removes it.
 
 ## Q5. Dry run on GitHub (orchestrator, after the user's OK)
 

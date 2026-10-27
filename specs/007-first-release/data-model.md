@@ -58,6 +58,7 @@ State transitions: absent → draft (created by the publish job) → published. 
 | `ARBARETO_SIGNING` | repository variable | `off` (default when unset), `signpath`. Other values fail. |
 | `SIGNPATH_ORGANIZATION_ID`, `SIGNPATH_PROJECT_SLUG`, `SIGNPATH_POLICY_SLUG` | repository variables | Required when `signpath`. |
 | `SIGNPATH_API_TOKEN` | repository secret | Required when `signpath`. Never printed. |
+| `SIGNPATH_TOKEN_SET` | build job env | `${{ secrets.SIGNPATH_API_TOKEN != '' }}`, the text `true` or `false`. `check.ts --signing signpath` refuses any value other than `true`. |
 
 ## 7. Release link target (`open_release_link`)
 

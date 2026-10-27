@@ -305,3 +305,54 @@ Each commit ID comes from the release tag of the action repository: `git ls-remo
 | `signpath/github-action-submit-signing-request` | `v3.0` | `f6d04783b4569d051e0c80105fe66e82819d0092` | 2026-09-10 |
 
 - `signpath/github-action-submit-signing-request` has GitHub releases only for `v1` and `v2`. The tag `v3.0` has no release entry. Its `action.yml` has the same inputs as `v2.3` and a new default `connector-url`.
+
+### T010 and T017 verification run (2026-10-27, reference host, build commit f87219d1)
+
+- Tools: Bun 1.4.4, `rustc 1.99.0 (b940084d7 2026-09-28)`, `cargo 1.99.0 (5f94df478 2026-08-27)`, `tauri-cli 2.12.0`, makensis `v3.11`. The tree was clean before and after the run.
+- Exit 0: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo check --locked --manifest-path src-tauri/Cargo.toml`, and `cargo test --locked --manifest-path src-tauri/Cargo.toml`.
+- `bun run test:contracts`: exit 0, 5,989 pass, 37 skip, 0 fail, 127 files.
+- `bun run test:all`: exit 0, 267 of 267 files reported. Parallel step 7,927 pass, 45 skip, 0 fail (227 files). Serial step 791 pass, 10 skip, 0 fail (40 files).
+- `cargo check --locked --manifest-path src-tauri/Cargo.toml --target x86_64-unknown-linux-gnu` on Windows: exit 101. The `libdbus-sys` 0.2.7 build script panics because `pkg-config` finds no `dbus-1` for the Linux target. The user moved the Linux check to WSL (2026-10-27).
+- Control mutations, each undone byte for byte and rerun green:
+  - `check.ts`: `merge-base` exit 1 passes. `tests/git/release-check.test.ts` exit 1.
+  - `pins.ts`: one digit of the Bun hash changed. `tests/contracts/release-pins.test.ts` exit 1.
+  - `build_channel.rs`: a dirty `preview` identity passes. `cargo test ... build_channel` exit 101.
+  - `AboutDialog.tsx`: the release buttons show for `local`. `tests/contracts/about-dialog.test.tsx` exit 1.
+  - One untracked file, then `bun run package:preview:exes`: exit 1, `a preview build needs a clean tree: f87219d1c71d34670d847a462d89851df2566b36-dirty`.
+- On the clean tree, `bun run package:preview:exes` and `bun run package:preview:bundle` exit 0. Installer `Arbareto_0.1.0_x64-setup.exe`, 46493635 bytes, SHA-256 `31ae0b9b2989646a8c4727f458bedf7fc08c2811f7abc4d32bf6753542b32811`. Built `arbareto.exe` `9c7c2d3578e094d49cf7bef65493deaa80f3dbfa3593b59040a1b2849085363e`, `arbareto-git.exe` `5438d50d61474ea6db702b1a5b77655502ae189f01c705d85138d9ee83a4bf95`.
+- Windows Sandbox install, `/S`, exit 0. Key `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\Arbareto`: `DisplayName=Arbareto`, `DisplayVersion=0.1.0`, `Publisher=github`. No HKLM entry. Installed folder `%LOCALAPPDATA%\Arbareto`:
+  - `arbareto.exe` `9c7c2d35…5363e` (equals the built file, `--no-binary-patching`), ProductName `Arbareto`, CompanyName `github`, version `0.1.0`.
+  - `arbareto-git.exe` `5438d50d…83a4bf95` (equals the built file), ProductName `Arbareto`, CompanyName `Ihor Lifanov`, version `0.1.0.0`, FileDescription `Arbareto Git service`.
+  - `uninstall.exe` `ac10d423d81e938547a63d2cd1a71e0a5886f31933ef8b6d245968416ea94fbb`.
+- Uninstall exit 0. After it, the key, `arbareto.exe`, and the folder are absent.
+- In this run the window opened, but the Help menu was not found. So About was not read.
+- `OBSERVATION T017: DisplayName=Arbareto DisplayVersion=0.1.0 Publisher=github; installed arbareto.exe and arbareto-git.exe equal the built files; uninstall removes the app`
+
+### T017 About in Windows Sandbox (2026-10-27, reference host, installer 31ae0b9b…42b32811)
+
+- The Sandbox WebView2 runtime is registered (`pv=155.0.4283.45`), but its runtime folder is absent. So the app cannot show its page there.
+- The Sandbox script maps the host WebView2 runtime folder read-only (`155.0.4283.62`) and uses it. A registry value `AdditionalBrowserArguments` under HKLM sets `--remote-debugging-port` for `arbareto.exe`, and the script reads the page through that port.
+- The boot view read `Preview` and `Build 0.1.0 f87219d1c71d34670d847a462d89851df2566b36`, without `-dirty`.
+- After Select Git, About read `Build: 0.1.0 f87219d1c71d34670d847a462d89851df2566b36` and `Preview`, and no `Unsigned local test package` line.
+- The start page still read the local line "This test build covers …". Review finding 8 below changes it.
+- The uninstall key and `arbareto.exe` named the publisher `github`, and `arbareto.exe` had an empty LegalCopyright. Tauri takes the publisher from the second segment of the bundle identifier when `bundle.publisher` is absent. Fix eb4215bf sets `bundle.publisher` to `Ihor Lifanov` and `bundle.copyright` to `Copyright (c) 2026 Ihor Lifanov`, with a pins test. The Sandbox install of the fixed build is not run yet.
+- `OBSERVATION T017: About Build: 0.1.0 f87219d1c71d34670d847a462d89851df2566b36, Preview; Publisher=github before eb4215bf`
+
+### T010 Linux check in WSL (2026-10-27, reference host, WSL Ubuntu-26.04 26.04.1 LTS, build commit f87219d1)
+
+- Steps of README "Development", "Linux check (WSL)": the apt packages, rustup with `--default-toolchain none`, a clone of `007-first-release` in `~` inside the distro, then `cargo check --locked --manifest-path src-tauri/Cargo.toml`. The first `cargo` call installed 1.99.0 from `rust-toolchain.toml`.
+- Exit 0, about 1.5 minutes.
+- `OBSERVATION T010: WSL Ubuntu-26.04 cargo check --locked exit 0`
+
+### Review of batches 0 and 1 (2026-10-27, independent reviewer, commit f87219d1)
+
+Findings and fixes on branch `f007-review-fixes`. T010 and T017 need a rerun on the fixed commit.
+
+1. Required: `check.ts --mode release` did not compare `HEAD` with the tag commit (spec FR-014). Fix: `git rev-parse --verify` of `HEAD^{commit}` and `refs/tags/<tag>^{commit}`; a difference gives `RELEASE_CHECK not-tag-commit` (contracts §2). Real-Git case: tag on `main`, `HEAD` one commit ahead.
+2. The workflow test did not check the `RUSTFLAGS` rule of contracts §1. Fix: a test reads the `env` maps at workflow, job, and step level and refuses `RUSTFLAGS` and `CARGO_ENCODED_RUSTFLAGS`.
+3. About sent a second request while one ran. Fix: one busy state; both release buttons are disabled while a request runs.
+4. The About test pressed Space with a click after keydown. Fix: the test clicks after keyup when neither key event is cancelled.
+5. Missing cases: a `version` key in `tauri.preview.conf.json` (`config-version`) and `--mode release` without `--tag` (`usage`). Fix: both cases.
+6. `hunspell-source.ts` printed `null` for a process with no exit code, and `notes.ts` read a block file without a check. Fix: the code is the exit code or the signal name; an absent block gives `RELEASE_NOTES block <file>` (contracts §2).
+7. With `ARBARETO_SIGNING=signpath`, an absent `SIGNPATH_API_TOKEN` was not refused before the build. Fix: the build job env sets `SIGNPATH_TOKEN_SET: ${{ secrets.SIGNPATH_API_TOKEN != '' }}`; `check.ts --signing signpath` refuses with `signing-missing SIGNPATH_API_TOKEN` when it is not `true` (plan.md D11).
+8. The preview start page showed the local scope line. Plan D7 had no preview text. Fix: plan.md D7 adds "This preview is not a qualified release. The qualification of Windows 11 x64 continues." for About, the Help menu, and the start page.

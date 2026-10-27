@@ -10,9 +10,10 @@ import { join } from "node:path";
 const WORKFLOW = join(import.meta.dir, "..", "..", ".github", "workflows", "release.yml");
 console.log(`ORIGIN ${WORKFLOW}`);
 
-type Step = { name?: string; id?: string; uses?: string; run?: string; if?: string; with?: Record<string, unknown>; "continue-on-error"?: unknown };
-type Job = { "runs-on"?: unknown; needs?: unknown; if?: unknown; environment?: unknown; permissions?: unknown; "continue-on-error"?: unknown; steps?: Step[] };
-type Workflow = { on?: Record<string, unknown>; permissions?: unknown; jobs?: Record<string, Job> };
+type Env = Record<string, unknown>;
+type Step = { name?: string; id?: string; uses?: string; run?: string; if?: string; env?: Env; with?: Record<string, unknown>; "continue-on-error"?: unknown };
+type Job = { "runs-on"?: unknown; env?: Env; needs?: unknown; if?: unknown; environment?: unknown; permissions?: unknown; "continue-on-error"?: unknown; steps?: Step[] };
+type Workflow = { on?: Record<string, unknown>; env?: Env; permissions?: unknown; jobs?: Record<string, Job> };
 
 const workflow = Bun.YAML.parse(await Bun.file(WORKFLOW).text()) as Workflow;
 const jobs = workflow.jobs ?? {};
@@ -57,6 +58,19 @@ describe("release workflow", () => {
   test("no actions/cache and no continue-on-error: true", () => {
     expect(allSteps.filter((s) => s.uses?.startsWith("actions/cache"))).toEqual([]);
     expect([...allSteps, ...Object.values(jobs)].filter((s) => s["continue-on-error"] !== undefined && s["continue-on-error"] !== false)).toEqual([]);
+  });
+
+  // Plan.md D1: either key replaces the `/Brepro` rustflags of `.cargo/config.toml`. Windows environment names ignore case.
+  test("no env map at workflow, job, or step level has a RUSTFLAGS or CARGO_ENCODED_RUSTFLAGS key", () => {
+    const maps = [workflow.env, ...Object.values(jobs).map((j) => j.env), ...allSteps.map((s) => s.env)].filter((e) => e !== undefined);
+    expect(maps.length).toBeGreaterThan(1);
+    const keys = maps.flatMap((e) => Object.keys(e!).map((k) => k.toUpperCase()));
+    expect(keys.filter((k) => k === "RUSTFLAGS" || k === "CARGO_ENCODED_RUSTFLAGS")).toEqual([]);
+  });
+
+  // GitHub docs "Using secrets in GitHub Actions": `if:` cannot read secrets, so the job env carries the comparison result.
+  test("the build job env sets SIGNPATH_TOKEN_SET from the SignPath token secret", () => {
+    expect(jobs.build?.env?.SIGNPATH_TOKEN_SET).toBe("${{ secrets.SIGNPATH_API_TOKEN != '' }}");
   });
 
   test("each SignPath step runs only when ARBARETO_SIGNING is signpath", () => {

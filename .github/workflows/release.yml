@@ -41,6 +41,7 @@ jobs:
       SIGNPATH_ORGANIZATION_ID: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
       SIGNPATH_PROJECT_SLUG: ${{ vars.SIGNPATH_PROJECT_SLUG }}
       SIGNPATH_POLICY_SLUG: ${{ vars.SIGNPATH_POLICY_SLUG }}
+      SIGNPATH_TOKEN_SET: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
       TARGET_DIR: src-tauri/target/x86_64-pc-windows-msvc/release
       SIDECAR: src-tauri/binaries/arbareto-git-x86_64-pc-windows-msvc.exe
     steps:

@@ -33,6 +33,17 @@ export function releaseNotes(changelog: string, version: string, blocks: Record<
   return [section, ...blockNames(signing).map((name) => blocks[name] ?? "")].join("\n");
 }
 
+/** The block texts of `dir`, or the refusal line for the first absent file. */
+export async function readBlocks(dir: string, signing: Signing): Promise<{ blocks: Record<string, string> } | { refusal: string }> {
+  const blocks: Record<string, string> = {};
+  for (const name of blockNames(signing)) {
+    const file = Bun.file(join(dir, name));
+    if (!(await file.exists())) return { refusal: `RELEASE_NOTES block ${name}` };
+    blocks[name] = await file.text();
+  }
+  return { blocks };
+}
+
 async function main(argv: string[]): Promise<number> {
   let values: { version?: string; signing?: string; out?: string };
   try {
@@ -45,9 +56,12 @@ async function main(argv: string[]): Promise<number> {
     console.error("RELEASE_NOTES usage notes.ts --version <v> --signing off|signpath --out <dir>");
     return 1;
   }
-  const blocks: Record<string, string> = {};
-  for (const name of blockNames(signing)) blocks[name] = await Bun.file(join(BLOCKS_DIR, name)).text();
-  const notes = releaseNotes(await Bun.file(join(ROOT, "CHANGELOG.md")).text(), version, blocks, signing);
+  const read = await readBlocks(BLOCKS_DIR, signing);
+  if ("refusal" in read) {
+    console.error(read.refusal);
+    return 1;
+  }
+  const notes = releaseNotes(await Bun.file(join(ROOT, "CHANGELOG.md")).text(), version, read.blocks, signing);
   if (notes === null) {
     console.error(`RELEASE_NOTES missing ${version}`);
     return 1;

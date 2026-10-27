@@ -64,7 +64,7 @@ import {
   type Session,
   type WorkerLog,
 } from "./spelling-app";
-import { boundingRect, close, ControlType, expand, find, foregroundPid, foregroundSkip, inputDesktopSkip, invoke, MAX_WAIT_MS, textRects, type Rect } from "./uia";
+import { boundingRect, close, ControlType, expand, find, foregroundPid, foregroundSkip, inputDesktopSkip, invoke, MAX_WAIT_MS, textRects, verticalScrollPercent, type Element, type Rect } from "./uia";
 
 for (const helper of ["./spelling-app.ts", "./contrast.ts", "./inject.ts", "../support/language-fixture.ts", "../../src/frontend/highlight/guard.ts", "../../src/contracts/spell-words.ts"]) printOrigin(helper, import.meta.dir);
 
@@ -247,10 +247,17 @@ async function markRects(pid: number, c: Cdp): Promise<{ word: string; rect: Rec
   });
 }
 // Research.md R13 "T045 run 2": Chromium clips UIA TextPattern rects to the visible text box. So the field scrolls to whole lines, and each word must lie in its client box.
-async function scrollToLine(c: Cdp, line: number, word: string): Promise<void> {
-  const top = await c.evaluate<number | string>(`(() => { const f = ${FIELD}; const h = getComputedStyle(f).lineHeight; if (!/^\\d+(\\.\\d+)?px$/.test(h)) return h; f.scrollTop = ${line} * parseFloat(h); return f.scrollTop; })()`);
-  if (typeof top === "string") throw new Error(`the field line height is ${top}, not a px length`);
-  await until<boolean>(c, `the mirror scrollTop ${top}`, `document.querySelector('[data-slot="spell-mirror"]')?.scrollTop === ${top}`, (v) => v);
+// The textarea and the mirror div round scrollTop to device pixels separately. At the scroll end they can differ by 1 device pixel.
+// WebView2 updates the UIA tree some ms after the scroll. The UIA rects and the UIA scroll percent change together.
+async function scrollToLine(c: Cdp, field: Element, line: number, word: string): Promise<void> {
+  const got = await c.evaluate<{ top: number; max: number; dpr: number } | string>(
+    `(() => { const f = ${FIELD}; const h = getComputedStyle(f).lineHeight; if (!/^\\d+(\\.\\d+)?px$/.test(h)) return h; f.scrollTop = 1e9; const max = f.scrollTop; f.scrollTop = ${line} * parseFloat(h); return { top: f.scrollTop, max, dpr: devicePixelRatio }; })()`,
+  );
+  if (typeof got === "string") throw new Error(`the field line height is ${got}, not a px length`);
+  const { top, max, dpr } = got;
+  await until<number | null>(c, `the mirror scrollTop ${top}`, `document.querySelector('[data-slot="spell-mirror"]')?.scrollTop ?? null`, (v) => v !== null && Math.abs(v - top) * dpr <= 1);
+  // The poll ends at MAX_WAIT_MS.
+  await waitFor(`the UIA scroll position ${top} of ${max}`, MAX_WAIT_MS, () => Math.abs((verticalScrollPercent(field) * max) / 100 - top) * dpr <= 0.5);
   const inside = await c.evaluate<boolean>(
     `(() => { const f = ${FIELD}; const r = f.getBoundingClientRect(); const x = r.left + f.clientLeft; const y = r.top + f.clientTop; const s = [...document.querySelectorAll('[data-slot="spell-mark"]')].find((e) => e.textContent === ${js(word)}); if (s === undefined) return false; const b = s.getBoundingClientRect(); return b.left >= x && b.right <= x + f.clientWidth && b.top >= y && b.bottom <= y + f.clientHeight; })()`,
   );
@@ -464,7 +471,7 @@ ${persianLine}`;
         const field = await find(s.app.pid, MESSAGE, MAX_WAIT_MS, ControlType.Edit);
         try {
           for (const word of marks) {
-            await scrollToLine(s.c, text.slice(0, text.indexOf(word)).split("\n").length - 1, word);
+            await scrollToLine(s.c, field, text.slice(0, text.indexOf(word)).split("\n").length - 1, word);
             const rect = (await markRects(s.app.pid, s.c)).find((m) => m.word === word)!.rect;
             // Research.md R12 N4: the first GetBoundingRectangles call of a session gives no rect, and later calls give the rects.
             // The poll ends at MAX_WAIT_MS. Both rects are physical pixels: the thread is per-monitor aware, and the mirror offsets are scaled by devicePixelRatio.

@@ -81,8 +81,10 @@ const IID_IUIAutomationSelectionItemPattern = "a8efa66a-0fda-421a-9194-38021f357
 const IID_IUIAutomationValuePattern = "a94cd8b1-0844-4cd6-9d2d-640537ab39e9";
 const IID_IUIAutomationExpandCollapsePattern = "619be086-1f4e-4ee4-bafa-210128738730";
 const IID_IUIAutomationTogglePattern = "94cf8058-9b8d-4ab9-8bfd-4cd0a33c8c70";
+const IID_IUIAutomationScrollPattern = "88f4d42a-e881-459d-a77c-73bbbb7e02dc";
 const UIA_InvokePatternId = 10000;
 const UIA_ValuePatternId = 10002;
+const UIA_ScrollPatternId = 10004;
 const UIA_ExpandCollapsePatternId = 10005;
 const UIA_SelectionItemPatternId = 10010;
 const UIA_TextPatternId = 10014;
@@ -140,6 +142,8 @@ const SLOT = {
   get_CurrentValue: 4,
   // IUIAutomationTogglePattern
   Toggle: 3,
+  // IUIAutomationScrollPattern
+  get_CurrentVerticalScrollPercent: 6,
   // IUIAutomationTextPattern
   get_DocumentRange: 7,
   // IUIAutomationTextRange
@@ -494,6 +498,15 @@ export function showContextMenu(element: Element): number {
 
 export function toggle(element: Element): void {
   withPattern(element, UIA_TogglePatternId, IID_IUIAutomationTogglePattern, "Toggle", (self) => hr("Toggle", slotCall(self, SLOT.Toggle, [], [])));
+}
+
+// UIA_ScrollPatternNoScroll (-1) means the element does not scroll vertically.
+export function verticalScrollPercent(element: Element): number {
+  return withPattern(element, UIA_ScrollPatternId, IID_IUIAutomationScrollPattern, "Scroll", (self) => {
+    const value = new Float64Array(1);
+    hr("get_CurrentVerticalScrollPercent", slotCall(self, SLOT.get_CurrentVerticalScrollPercent, [P], [ptr(value)]));
+    return value[0]!;
+  });
 }
 
 // IUIAutomationTextRange::GetBoundingRectangles of the first match of `text` in the Text pattern document, case-sensitive. One rect per line of the match.

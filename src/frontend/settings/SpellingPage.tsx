@@ -15,6 +15,7 @@ import type { BridgeResponse, createBridge, DictionaryChunk, ProgressEvent } fro
 import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
 import { englishLicence } from "../spelling/english";
+import { chipText } from "../spelling/SpellChip";
 import type { RowMessage, SpellingSetting, SpellingStore } from "../spelling/store";
 import { SPELLING_TEXTS } from "../spelling/texts";
 import { TEXTS } from "./git/texts";
@@ -93,7 +94,7 @@ export const SPELLING_PAGE = {
   moveDown: (l: string) => `Move ${l} down`,
   moveDownTip: "Move down (Alt+Down)",
   last: (l: string) => `${l} is already last.`,
-  preview: (names: readonly string[]) => `Chip: ${SPELLING_TEXTS.chip(names)}`,
+  preview: (chip: string) => `Chip: ${chip}`,
   noneSelected: "No language is selected. Spell check marks no word.",
   words: "Personal word list",
   wordCount: (n: number) => `${count(n)} of ${count(PERSONAL_WORDS)} words`,
@@ -479,7 +480,16 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
     }
     const status: ReactNode =
       message?.text ??
-      (loadFailed ? SPELLING_TEXTS.cannotLoad(entry.name) : service?.notice === "catalog-changed" ? SPELLING_PAGE.catalogChanged(entry.name) : service?.state === "changed" && running === null ? SPELLING_PAGE.changedFiles(entry.name) : null);
+      // Plan.md D17: `readDictionary` refuses a Changed or a catalog-changed language, so its row names that cause.
+      (loadFailed && service?.state === "ready"
+        ? SPELLING_TEXTS.cannotLoad(entry.name)
+        : service?.notice === "catalog-changed"
+          ? SPELLING_PAGE.catalogChanged(entry.name)
+          : service?.state === "changed" && running === null
+            ? SPELLING_PAGE.changedFiles(entry.name)
+            : loadFailed
+              ? SPELLING_TEXTS.cannotLoad(entry.name)
+              : null);
     // Data-model §4 "Selection checkbox".
     const full = selection.languages.length >= SPELLING_LANGUAGES;
     const reason = selected ? null : !ready ? SPELLING_PAGE.notReady(entry.name) : full ? SPELLING_PAGE.limit : null;
@@ -693,7 +703,7 @@ export function SpellingPage({ bridge, store, change }: SpellingPageProps) {
                   })}
                 </ol>
               </div>
-              <p className="px-3 pb-2 text-muted-text">{SPELLING_PAGE.preview(selection.languages.map(nameOf))}</p>
+              <p className="px-3 pb-2 text-muted-text">{SPELLING_PAGE.preview(chipText(selection, state.languages, nameOf))}</p>
             </>
           )}
         </>

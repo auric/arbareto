@@ -227,6 +227,38 @@ describe("rows (data-model §4, FR-009, FR-015)", () => {
     expect(text(messageOf("uk")!)).toBe("Arbareto cannot load the Ukrainian dictionary. Spell check uses the other languages.");
   });
 
+  // 006 T067: `readDictionary` refuses a Changed language as `changed`, so the row names the cause and the fix (plan.md D17).
+  test("a failed load of a selected Changed language keeps Changed and shows the changed-files text", async () => {
+    const r = await render({ languages: ["en", "uk"], states: { uk: { state: "changed" } } });
+    await act(async () => r.store.setLanguage("uk", "failed"));
+    await settle();
+    expect(cellTexts("uk")[4]).toBe("Changed");
+    expect(rowButtons("uk")).toEqual(["Download Ukrainian", "Import… Ukrainian", "Remove Ukrainian"]);
+    expect(text(messageOf("uk")!)).toBe("The Ukrainian dictionary files changed. Download the dictionary again.");
+  });
+
+  // 006 T067: the reconcile removed the files, so the row names the cause and the fix (plan.md D17).
+  test("a failed load of a selected language with the catalog-changed notice shows the catalog-changed text", async () => {
+    const r = await render({ languages: ["en", "sv"], states: { sv: { state: "not-downloaded", notice: "catalog-changed" } } });
+    await act(async () => r.store.setLanguage("sv", "failed"));
+    await settle();
+    expect(cellTexts("sv")[4]).toBe("Not downloaded");
+    expect(text(messageOf("sv")!)).toBe("This Arbareto release has new Swedish dictionary files. Download the dictionary again.");
+  });
+
+  // 006 T067: the preview names only the loaded languages, as the editor chip does (plan.md D17).
+  test("the chip preview names only the loaded languages, and No language loaded when none loaded", async () => {
+    const r = await render({ languages: ["en", "uk"], states: { uk: { state: "ready" } } });
+    const preview = () => [...panel("Selected languages").querySelectorAll("p")].map((p) => text(p)).find((t) => t.startsWith("Chip: "));
+    await act(async () => r.store.setLanguage("en", "loaded"));
+    await act(async () => r.store.setLanguage("uk", "failed"));
+    await settle();
+    expect(preview()).toBe("Chip: Spelling: English");
+    await act(async () => r.store.setLanguage("en", "failed"));
+    await settle();
+    expect(preview()).toBe("Chip: Spelling: No language loaded");
+  });
+
   // 006 T065: data-model §4 and the DictionaryFailures board (user decision, 2026-10-27).
   test("a failed load of English keeps Bundled and shows the load text below it", async () => {
     const r = await render({ languages: ["en", "uk"], states: { uk: { state: "ready" } } });
@@ -528,6 +560,8 @@ describe("selection (FR-009, data-model §8)", () => {
 
   test("Selected languages lists the order with Move up and Move down, their tooltips, the first and last reasons, and the chip preview", async () => {
     const r = await render({ languages: ["en", "uk", "ru"], states: { uk: { state: "ready" }, ru: { state: "ready" } } });
+    for (const id of ["en", "uk", "ru"]) await act(async () => r.store.setLanguage(id, "loaded"));
+    await settle();
     const selected = panel("Selected languages");
     expect(parts(selected.querySelector("div")!)).toEqual(["Selected languages", "3"]);
     expect([...selected.querySelectorAll("li")].map((li) => parts(li).slice(0, 2))).toEqual([["1", "English"], ["2", "Ukrainian"], ["3", "Russian"]]);

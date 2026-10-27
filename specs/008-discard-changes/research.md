@@ -57,17 +57,18 @@ The 005 replace (`src-tauri/src/file_replace.rs:118-270`) walks with relative op
 | --- | --- | --- |
 | Link count | Refuse a count other than 1 with `hard-link` (spec FR-034). The 005 check (`file_replace.rs:156`) gives `NotRegular` today; the reply gains its own reason. | W4 |
 | Read-only attribute | Refuse at review with `read-only`. The rename must fail safe when the attribute appears after the check. | W5 |
-| Hidden, system, archive, not-content-indexed | Copy the attribute set of the old file to the temporary file before the rename (`FileBasicInformation`). | W1 |
-| Compressed, sparse, integrity stream | Compare the temporary file with the old file after the create. A difference refuses with `file-attributes`. | W1 |
+| Hidden, system, not-content-indexed | Copy the attribute set of the old file to the temporary file before the rename (`FileBasicInformation`). R15: the copy keeps these three. | W1 |
+| Archive | No compared fact. R15: the rename sets it in both sequences, also after the copy, as a new file of Git's checkout has it. | W1 |
+| Compressed, sparse, integrity stream | Compare the temporary file with the old file after the create. A difference refuses with `file-attributes`. R15: the copy does not set compressed or sparse and reports no error, so such a target refuses. The integrity stream stays unverified (ReFS only). | W1 |
 | Encrypted (EFS) | Refuse with `encrypted`. A temporary file in a folder without encryption would hold plain text. | W11 |
 | Owner | Refuse with `owner` when the temporary file gets another owner than the old file. A process cannot set another owner without `SeRestorePrivilege`. | W2 |
-| DACL | Conditional on W2 (user decision, 2026-10-27). When W2 shows that the swap loses the file's own DACL, copy the DACL with its protection flag to the temporary file before the rename, through `SetKernelObjectSecurity` on the handle (feature `Win32_Security`, enabled). When that call cannot set the protection flag, use `SetSecurityInfo` (feature `Win32_Security_Authorization`, through its dependency review). Compare the owner, group, and DACL of the result with the old file. A difference refuses with `security`. When W2 shows that the swap keeps the DACL, no copy runs. | W2 |
+| DACL | Conditional on W2 (user decision, 2026-10-27). When W2 shows that the swap loses the file's own DACL, copy the DACL with its protection flag to the temporary file before the rename, through `SetKernelObjectSecurity` on the handle (feature `Win32_Security`, enabled). When that call cannot set the protection flag, use `SetSecurityInfo` (feature `Win32_Security_Authorization`, through its dependency review). Compare the owner, group, and DACL of the result with the old file. A difference refuses with `security`. When W2 shows that the swap keeps the DACL, no copy runs. R15: the swap loses an explicit ACE and a protected DACL. `SetKernelObjectSecurity` keeps the protection flag but drops `SE_DACL_AUTO_INHERITED`, unless the copied descriptor carries `SE_DACL_AUTO_INHERIT_REQ`; then the copy is exact in 6 of 6 cases. T013 decides the call. | W2 |
 | SACL and mandatory label | Known limit. Reading them needs `SeSecurityPrivilege`. | W2 records it |
-| Creation time | Copy the old creation time to the temporary file before the rename (`FileBasicInformation`). Do not rely on file tunneling. | W3 |
+| Creation time | Copy the old creation time to the temporary file before the rename (`FileBasicInformation`). Do not rely on file tunneling. R15: tunneling kept the old time in one sequence and not in the other; the copy keeps it in both. | W3 |
 | Last write time | The time of the write, as Git's own checkout gives. | W3 |
 | Alternate data streams | Known limit: the new file has none. Git's own checkout drops them too. | W7 |
 | Temporary file after a crash | Create the temporary file with the delete disposition on close. Clear it just before the rename. A crash before the clear leaves no file. The window between the clear and the rename stays a known limit. | W6 |
-| Another program holds the file | The open or the rename fails with its NT status. The reply gives `sharing-violation` or `access-denied`. No retry (spec FR-037). | W8, W9 |
+| Another program holds the file | The open or the rename fails with its NT status. The reply gives `sharing-violation` or `access-denied`. No retry (spec FR-037). R15: a holder without write or delete sharing gives STATUS_SHARING_VIOLATION. With Windows Defender on, 0 to 2 of 1,000 renames of fresh files gave STATUS_ACCESS_DENIED. | W8, W9 |
 | Missing folders | Create each missing folder below its held parent with `FILE_CREATE` and `FILE_DIRECTORY_FILE`, without following a link (spec FR-020). | W10 |
 | Git temporary file (whole files) | `fileReplace` with `source` copies it beside the target and deletes it through its handle. An unused one goes through `tempRemove` with its size and SHA-256. A crash between `checkout-index` and that step leaves `.merge_file_<random>` in the worktree root (known limit). | G10, W6 |
 
@@ -79,12 +80,12 @@ The 005 `wslFiles` mode `replace` (`src/contracts/wsl-process.json` `replace_one
 
 | Fact | Decision | Proof |
 | --- | --- | --- |
-| Mode bits | Keep: `chmod` of the old `st_mode & 07777` on the temporary file (exists). | L4 |
+| Mode bits | Keep: `fchmod` of the old `st_mode & 07777` on the temporary file after the write and the fsync, just before `linkat`. R15: an `fchmod` before the write loses the set-group-ID bit, and the 005 `replace_one` runs `chmod` before the write. | L4 |
 | Owner (uid) | Refuse with `owner` when `st_uid` differs from the effective uid of the process. | L5 |
 | Group (gid) | `fchown(-1, old gid)` on the temporary file. `EPERM` refuses with `owner`. | L5 |
 | Link count | Refuse a count other than 1 with `hard-link` (exists as `refused`). | L4 |
-| Extended attributes and POSIX ACLs | Refuse with `xattr` when `llistxattr` lists a name. The new file would lose them. | L6 |
-| Temporary file after a crash | Create the file with `O_TMPFILE` in the parent folder, so it has no name. Give it a name with `linkat(…, AT_SYMLINK_FOLLOW)` through `/proc/self/fd/<n>` just before the rename. A crash before the name leaves no file. The window between `linkat` and `rename` stays a known limit. Without `O_TMPFILE` support, keep the 005 temporary name and record the wider window. | L1, L2, L3 |
+| Extended attributes and POSIX ACLs | Refuse with `xattr` when `llistxattr` lists a name. The new file would lose them. R15: `llistxattr` lists `user.test`; the ACL case is unverified. | L6 |
+| Temporary file after a crash | Create the file with `O_TMPFILE` in the parent folder, so it has no name. Give it a name with `linkat(…, AT_SYMLINK_FOLLOW)` through `/proc/self/fd/<n>` just before the rename. A crash before the name leaves no file. The window between `linkat` and `rename` stays a known limit. Without `O_TMPFILE` support, keep the 005 temporary name and record the wider window. R15: L1 to L3 hold on `Ubuntu-26.04`. | L1, L2, L3 |
 | Missing folders | `mkdir` with mode 0777, which the umask reduces, as Git's checkout does. | L7 |
 
 - Rule: a probe that shows another behavior changes this table and contracts/operations.md before WP3 starts.
@@ -161,4 +162,221 @@ WSL facts (`tests/wsl/revert-facts.test.ts` in the owned folder of `Ubuntu-26.04
 
 ## R15 Results
 
-The batch 0 gate task (tasks.md) adds the probe results here, with the date, the host build, and the versions.
+### Batch 0 fact gate (T005), 2026-10-27
+
+- Host: Windows 11 Pro 26H2, build 10.0.26300.9711, NTFS, Windows Defender real-time protection on, an unelevated token. Git for Windows 2.56.0.windows.2 with git-lfs 3.8.0. Bun 1.4.4. Cargo and rustc 1.99.0. WSL 3.0.3.0 with kernel 6.18.54.1-1.
+- Distro: `Ubuntu-26.04` (Ubuntu 26.04.1 LTS, kernel 6.18.54.1-microsoft-standard-WSL2, ext4) with Git 2.55.0, Perl 5.40.1, and the umask 0022.
+- Code under test: branch `f008-b0` from `4fb49b48`, with the probe files of T001 to T004.
+- Runs, each alone behind the test gate: `bun test ./tests/git/revert-facts.test.ts` 18 pass. `bun test ./tests/windows/revert-facts.test.ts` 12 pass. `cargo test --locked --manifest-path src-tauri/Cargo.toml -- --ignored --test-threads=1 --nocapture file_replace::tests::revert_facts` 7 pass. `bun test ./tests/wsl/revert-facts.test.ts` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04` 20 pass and 1 skip.
+- Unverified: the W2 owner of a file that an elevated process created (`elevated-helper`). The L6 name `system.posix_acl_access` (`acl-tools`). The G9 and G10 LFS fixture in the distro (`git-lfs`). The R8 integrity-stream attribute, because it needs ReFS and the host has no ReFS volume.
+- Line format: the G9, G10, and G8 checks of one fixture print one OBSERVATION line. It holds the count of checks that hold, each record, and each check that differs. Each check also prints a `DETAIL` line in the run log.
+
+Facts and their consequences:
+- G3 holds for SHA-1 and SHA-256. `hash-object --path --stdin` prints the blob ID of the check-in form, writes no object, and runs no `core.fsmonitor` command. `update-index` and `status` run that command. So plan D2 stays: the eligibility refuses an fsmonitor command before each read that loads the index.
+- G4 holds. Both reads give the same seven values without a change. They differ exactly for the attributes that a staged or an unstaged `.gitattributes` change gives the path. R7 stays.
+- G5 holds. Each data-model §6 row gives its proof result. An empty working file gives `w/none`, and a deleted file gives an empty `w/` value (Git `convert.c` `get_wt_convert_stats_ascii`). The `ident` record shows that the proof passes for a restored `$Id$` line, while Git's restore writes the expanded form. So the R6 refusal `ident` for lines stays.
+- G6 is a source fact of Git for Windows tag `v2.56.0.windows.2`. `builtin/update-index.c` calls no hook function. Its index write (`write_locked_index`, `builtin/update-index.c:1315`) reaches `do_write_locked_index`, which runs only `post-index-change` (`read-cache.c:3168`). `builtin/checkout-index.c` calls no hook function. It takes the index lock and writes the index only with `--index` and without `--prefix` and `--temp` (`builtin/checkout-index.c:286`, `:347`). R10 stays.
+- G7 holds. Git's restore removes the working file of a staged new file. The SC-002 difference stays.
+- G8 holds on Windows and in the distro. After the plan D8 write of Git's temporary bytes, status shows no worktree change. The status read keeps the index bytes and their time.
+- G9 holds for all 13 fixtures on Windows and for the 12 fixtures without LFS in the distro. So the `checkout-temp` case list is empty, and no fixture refuses with `checkout-temp`. The `filter` and `LFS` refusals stay (spec FR-004).
+- G10 holds on Windows and in the distro. Git writes `.merge_file_XXXXXX` in the worktree root, also with `-C sub` and with `--prefix=pre/`. With `-C sub`, the printed path is relative to the subfolder, so plan D5a runs `checkout-index` in the worktree root. `checkout-index --temp` exits 0 while an `index.lock` exists, so it takes no index lock. No hook ran. The control runs show that the fixture hooks run for Git's restore and for `update-index`. In the distro, Git's temporary file has the mode 0600, and Git's restore gives 0755 for mode 100755. So the R4 copy beside the target stays.
+- W1 differs from the R8 assumption. The `FileBasicInformation` copy keeps hidden, system, and not-content-indexed. The rename sets the archive attribute in both sequences, as a new file of Git's checkout has it. The copy does not set compressed or sparse, and the call reports no error. Consequence (R8 table): the archive attribute is no compared fact, and a compressed or sparse target refuses with `file-attributes`.
+- W2 is the T013 input. The swap keeps the DACL only when it equals the DACL that the folder gives a new file. It loses an explicit ACE and a protected DACL, in a plain fixture folder and in an auto-inherited folder. The owner and the group stay in each unelevated case.
+- W2 copy methods, in 6 cases (2 folders and 3 file kinds): `SetKernelObjectSecurity` with `DACL_SECURITY_INFORMATION` keeps the ACEs and the protection flag. It drops `SE_DACL_AUTO_INHERITED`, also with `PROTECTED_DACL_SECURITY_INFORMATION` or `UNPROTECTED_DACL_SECURITY_INFORMATION`, so 4 of 6 cases differ.
+- W2 exact copy: `SetKernelObjectSecurity` of the old descriptor with `SE_DACL_AUTO_INHERIT_REQ` set through `SetSecurityDescriptorControl` gives an exact copy in 6 of 6 cases. T002 compares the SDDL, and T003 compares the descriptor bytes. Both calls are in the enabled feature `Win32_Security`.
+- W2 `SetSecurityInfo` gives an exact copy in 5 of 6 cases. In the plain folder, whose default ACEs are not marked inherited, it adds the parent ACEs again. The call only when the DACL differs gives 6 of 6. It needs `Win32_Security_Authorization`, which `src-tauri/Cargo.toml` does not enable (T003 finding for WP3). The SACL read needs `SeSecurityPrivilege` (error 1314).
+- W3: file tunneling kept the old creation time in the cargo sequence (relative create, held target) and not in the FFI sequence. So the R8 rule "do not rely on file tunneling" stays. The copy keeps the creation time in both sequences. The last write time is the write time in both sequences.
+- W4 holds. A file with 2 links shows the link count 2. An unchecked replace gives the first name the new bytes and leaves the second name with the old bytes. So the `hard-link` refusal stays.
+- W5 holds. The rename over a read-only target fails with STATUS_ACCESS_DENIED (0xc0000022). The target keeps its bytes, and no temporary file stays.
+- W6 holds through FFI and through the cargo test. A `TerminateProcess` before the clear leaves no file. A kill after the clear leaves the file. The rename after the clear succeeds.
+- W7 holds. The new file has neither stream. The known limit stays.
+- W8: a holder with write access and read sharing fails the check open with ERROR_SHARING_VIOLATION (32) and the rename with STATUS_SHARING_VIOLATION (0xc0000043). A holder without delete sharing lets the check open succeed and fails the rename with STATUS_SHARING_VIOLATION. A mapped data section with delete sharing lets the replace succeed. The R8 reply codes stay.
+- W9: four runs of 1,000 replaces with Windows Defender on gave 2, 1, 2, and 0 failures. Each failure was a rename with STATUS_ACCESS_DENIED (0xc0000022), and the target kept its old bytes. Nothing retried. One replace took 4.3 to 4.6 ms. The streamed copy of 256 MiB ran at 519 to 571 MiB/s, above the 64 MiB/s of R11. Consequence: `access-denied` is a real reply on the reference host. Spec FR-037 stays, so such a file ends `failed {access-denied}` with its old bytes.
+- W10 holds. The folder chain comes below the held parent, and a second create collides (STATUS_OBJECT_NAME_COLLISION). A junction at a folder name refuses the open and a create through it with STATUS_REPARSE_POINT_ENCOUNTERED (0xc000050b). Nothing appears in the junction target.
+- W11 holds. The user had an EFS key, so `EncryptFileW` created none.
+- L1 holds. `Fcntl` gives `O_TMPFILE` 020200000, and the `O_TMPFILE` open in the owned ext4 folder succeeds.
+- L2 holds. `linkat` through `/proc/self/fd` with `AT_SYMLINK_FOLLOW` names the file as uid 1000. `syscall.ph` gives `SYS_linkat` 265 on x86_64.
+- L3 holds. A `kill -9` after the `O_TMPFILE` create leaves no name. A kill after `linkat` leaves `.arbareto-probe.tmp`. A kill after `rename` leaves only the target with the new bytes.
+- L4 differs from the R9 sequence. An `fchmod` before the write loses the set-group-ID bit of a 02755 file. An `fchmod` after the fsync keeps it. 0644, 0755, and 0600 stay in both orders. The 005 `replace_one` runs `chmod` before the write. Consequence (R9 table, plan D9, contract Δ11): the mode copy runs after the write and the fsync, just before `linkat`.
+- L5 holds. The new file gets the effective uid and gid. `fchown(-1, 4)` succeeds for a group of the user, and gid 0 gives EPERM (1). A setgid folder gives its gid.
+- L6 holds for `user.test` (`SYS_setxattr` 188, `SYS_llistxattr` 195). The ACL case is unverified.
+- L7 holds. `mkdir` with 0777 gives 0755 under the umask 0022, as Git's restore creates the folders.
+
+OBSERVATION lines of the final runs, copied unchanged:
+
+T001 (`tests/git/revert-facts.test.ts`, Windows):
+
+```text
+OBSERVATION T001: version expected="2.56.0.windows.2" observed="2.56.0.windows.2" match=true git=2.56.0.windows.2
+OBSERVATION T001: G3.sha1.blob-id-of-check-in-form expected={"exit":0,"id":"b77b4eb1d946f923f61785536da9ca5af6909f06"} observed={"exit":0,"id":"b77b4eb1d946f923f61785536da9ca5af6909f06"} match=true git=2.56.0.windows.2
+OBSERVATION T001: G3.sha1.no-object-written expected={"loose":["78/981922613b2afb6025042ff6bd878ac1994e85"],"count":"count:\u00201\nsize:\u00200\nin-pack:\u00200\npacks:\u00200\nsize-pack:\u00200\nprune-packable:\u00200\ngarbage:\u00200\nsize-garbage:\u00200\n"} observed={"loose":["78/981922613b2afb6025042ff6bd878ac1994e85"],"count":"count:\u00201\nsize:\u00200\nin-pack:\u00200\npacks:\u00200\nsize-pack:\u00200\nprune-packable:\u00200\ngarbage:\u00200\nsize-garbage:\u00200\n"} match=true git=2.56.0.windows.2
+OBSERVATION T001: G3.sha1.fsmonitor-not-run expected=false observed=false match=true git=2.56.0.windows.2
+OBSERVATION T001: G3.sha1.control-status-runs-fsmonitor expected=true observed=true match=true git=2.56.0.windows.2
+OBSERVATION T001: G3.sha256.blob-id-of-check-in-form expected={"exit":0,"id":"c09df00b34c4829386abb2efa8f5b224ae71f8a18bd6436a4ae201f43427fb55"} observed={"exit":0,"id":"c09df00b34c4829386abb2efa8f5b224ae71f8a18bd6436a4ae201f43427fb55"} match=true git=2.56.0.windows.2
+OBSERVATION T001: G3.sha256.no-object-written expected={"loose":["f8/625e43f9e04f24291f77cdbe4c71b3c2a3b0003f60419b3ed06a058d766c8b"],"count":"count:\u00201\nsize:\u00200\nin-pack:\u00200\npacks:\u00200\nsize-pack:\u00200\nprune-packable:\u00200\ngarbage:\u00200\nsize-garbage:\u00200\n"} observed={"loose":["f8/625e43f9e04f24291f77cdbe4c71b3c2a3b0003f60419b3ed06a058d766c8b"],"count":"count:\u00201\nsize:\u00200\nin-pack:\u00200\npacks:\u00200\nsize-pack:\u00200\nprune-packable:\u00200\ngarbage:\u00200\nsize-garbage:\u00200\n"} match=true git=2.56.0.windows.2
+OBSERVATION T001: G3.sha256.fsmonitor-not-run expected=false observed=false match=true git=2.56.0.windows.2
+OBSERVATION T001: G3.sha256.control-status-runs-fsmonitor expected=true observed=true match=true git=2.56.0.windows.2
+OBSERVATION T001: G4.same-without-change expected={"differ":[],"text":"set","eol":"lf"} observed={"differ":[],"text":"set","eol":"lf"} match=true git=2.56.0.windows.2
+OBSERVATION T001: G4.unstaged-change expected={"differ":["eol","ident"],"working":{"eol":"crlf","ident":"set"},"cached":{"eol":"lf","ident":"unspecified"}} observed={"differ":["eol","ident"],"working":{"eol":"crlf","ident":"set"},"cached":{"eol":"lf","ident":"unspecified"}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G4.staged-change expected={"differ":["text","eol","filter"],"working":{"text":"set","eol":"lf","filter":"unspecified"},"cached":{"text":"unset","eol":"unspecified","filter":"x"}} observed={"differ":["text","eol","filter"],"working":{"text":"set","eol":"lf","filter":"unspecified"},"cached":{"text":"unset","eol":"unspecified","filter":"x"}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G5.working-forms expected={"lf.txt":"lf","crlf.txt":"crlf","mixed.txt":"mixed","none.txt":"none","bin.dat":"-text","empty.txt":"none","deleted.txt":""} observed={"lf.txt":"lf","crlf.txt":"crlf","mixed.txt":"mixed","none.txt":"none","bin.dat":"-text","empty.txt":"none","deleted.txt":""} match=true git=2.56.0.windows.2
+OBSERVATION T001: G5.lf-none expected={"eol":"lf","proof":"pass"} observed={"eol":"lf","proof":"pass"} match=true git=2.56.0.windows.2
+OBSERVATION T001: G5.crlf-none-index-crlf expected={"eol":"crlf","proof":"pass"} observed={"eol":"crlf","proof":"pass"} match=true git=2.56.0.windows.2
+OBSERVATION T001: G5.crlf-autocrlf-true expected={"eol":"crlf","proof":"pass"} observed={"eol":"crlf","proof":"pass"} match=true git=2.56.0.windows.2
+OBSERVATION T001: G5.crlf-text-eol-crlf expected={"eol":"crlf","proof":"pass"} observed={"eol":"crlf","proof":"pass"} match=true git=2.56.0.windows.2
+OBSERVATION T001: G5.lf-autocrlf-true expected={"eol":"lf","proof":"pass"} observed={"eol":"lf","proof":"pass"} match=true git=2.56.0.windows.2
+OBSERVATION T001: G5.crlf-none-index-lf expected={"eol":"crlf","proof":"fail"} observed={"eol":"crlf","proof":"fail"} match=true git=2.56.0.windows.2
+OBSERVATION T001: G5.mixed expected={"eol":"mixed"} observed={"eol":"mixed"} match=true git=2.56.0.windows.2
+OBSERVATION T001: G5.mixed.record expected="record" observed={"proof":"pass","sameAsRestore":true} match=true git=2.56.0.windows.2
+OBSERVATION T001: G5.ident expected={"eol":"lf"} observed={"eol":"lf"} match=true git=2.56.0.windows.2
+OBSERVATION T001: G5.ident.record expected="record" observed={"proof":"pass","sameAsRestore":false} match=true git=2.56.0.windows.2
+OBSERVATION T001: G7.staged-new-file expected={"exit":0,"working":false,"index":false} observed={"exit":0,"working":false,"index":false} match=true git=2.56.0.windows.2
+OBSERVATION T001: G9-G10-G8.none expected={"holds":19} observed={"holds":19,"records":{"G10.none.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G9-G10-G8.autocrlf-true expected={"holds":19} observed={"holds":19,"records":{"G10.autocrlf-true.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G9-G10-G8.autocrlf-input expected={"holds":19} observed={"holds":19,"records":{"G10.autocrlf-input.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G9-G10-G8.text-eol-crlf expected={"holds":19} observed={"holds":19,"records":{"G10.text-eol-crlf.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G9-G10-G8.text-auto-lf-blob expected={"holds":19} observed={"holds":19,"records":{"G10.text-auto-lf-blob.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G9-G10-G8.text-auto-crlf-blob expected={"holds":19} observed={"holds":19,"records":{"G10.text-auto-crlf-blob.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G9-G10-G8.ident expected={"holds":19} observed={"holds":19,"records":{"G10.ident.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G9-G10-G8.working-tree-encoding expected={"holds":19} observed={"holds":19,"records":{"G10.working-tree-encoding.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G9-G10-G8.clean-smudge-filter expected={"holds":19} observed={"holds":19,"records":{"G10.clean-smudge-filter.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G9-G10-G8.lfs expected={"holds":19} observed={"holds":19,"records":{"G10.lfs.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G9-G10-G8.binary expected={"holds":19} observed={"holds":19,"records":{"G10.binary.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G9-G10-G8.empty expected={"holds":19} observed={"holds":19,"records":{"G10.empty.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.56.0.windows.2
+OBSERVATION T001: G9-G10-G8.mode-100755 expected={"holds":20} observed={"holds":20,"records":{"G10.mode-100755.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"],"G9.mode-100755.modes":{"temp":"666","restored":"666"}}} match=true git=2.56.0.windows.2
+```
+
+T002 (`tests/windows/revert-facts.test.ts`):
+
+```text
+OBSERVATION T002: host.file-system expected="NTFS" observed="NTFS" match=true os=10.0.26300.9711
+OBSERVATION T002: host.token-elevated expected="record" observed=false match=true os=10.0.26300.9711
+OBSERVATION T002: W1.hidden.005 expected={"set":true,"step":"renamed","attributes":"0x2"} observed={"set":true,"step":"renamed","attributes":"0x20"} match=false os=10.0.26300.9711
+OBSERVATION T002: W1.hidden.copy expected={"set":true,"step":"renamed","attributes":"0x2"} observed={"set":true,"step":"renamed","attributes":"0x22"} match=false os=10.0.26300.9711
+OBSERVATION T002: W1.system.005 expected={"set":true,"step":"renamed","attributes":"0x4"} observed={"set":true,"step":"renamed","attributes":"0x20"} match=false os=10.0.26300.9711
+OBSERVATION T002: W1.system.copy expected={"set":true,"step":"renamed","attributes":"0x4"} observed={"set":true,"step":"renamed","attributes":"0x24"} match=false os=10.0.26300.9711
+OBSERVATION T002: W1.archive-clear.005 expected={"set":true,"step":"renamed","attributes":"0x0"} observed={"set":true,"step":"renamed","attributes":"0x20"} match=false os=10.0.26300.9711
+OBSERVATION T002: W1.archive-clear.copy expected={"set":true,"step":"renamed","attributes":"0x0"} observed={"set":true,"step":"renamed","attributes":"0x20"} match=false os=10.0.26300.9711
+OBSERVATION T002: W1.not-content-indexed.005 expected={"set":true,"step":"renamed","attributes":"0x2000"} observed={"set":true,"step":"renamed","attributes":"0x20"} match=false os=10.0.26300.9711
+OBSERVATION T002: W1.not-content-indexed.copy expected={"set":true,"step":"renamed","attributes":"0x2000"} observed={"set":true,"step":"renamed","attributes":"0x2020"} match=false os=10.0.26300.9711
+OBSERVATION T002: W1.compressed.005 expected={"set":true,"step":"renamed","attributes":"0x820"} observed={"set":true,"step":"renamed","attributes":"0x20"} match=false os=10.0.26300.9711
+OBSERVATION T002: W1.compressed.copy expected={"set":true,"step":"renamed","attributes":"0x820"} observed={"set":true,"step":"renamed","attributes":"0x20"} match=false os=10.0.26300.9711
+OBSERVATION T002: W1.sparse.005 expected={"set":true,"step":"renamed","attributes":"0x220"} observed={"set":true,"step":"renamed","attributes":"0x20"} match=false os=10.0.26300.9711
+OBSERVATION T002: W1.sparse.copy expected={"set":true,"step":"renamed","attributes":"0x220"} observed={"set":true,"step":"renamed","attributes":"0x20"} match=false os=10.0.26300.9711
+OBSERVATION T002: unverified W2.elevated-created-owner (missing capability elevated-helper)
+OBSERVATION T002: W2.plain.inherited-only expected="record" observed={"oldDacl":"D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;<user>)","none":"same","kernel":"same","kernel-flag":"same","kernel-auto-inherit":"same","set-security-info":"owner=true\u0020group=true\u0020D:AI(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;<user>)(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;<user>)","set-security-info-if-differs":"same"} match=true os=10.0.26300.9711
+OBSERVATION T002: W2.plain.explicit-ace expected="record" observed={"oldDacl":"D:AI(A;;FR;;;BU)(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;<user>)","none":"owner=true\u0020group=true\u0020D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;<user>)","kernel":"owner=true\u0020group=true\u0020D:(A;;FR;;;BU)(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;<user>)","kernel-flag":"owner=true\u0020group=true\u0020D:(A;;FR;;;BU)(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;<user>)","kernel-auto-inherit":"same","set-security-info":"same","set-security-info-if-differs":"same"} match=true os=10.0.26300.9711
+OBSERVATION T002: W2.plain.protected expected="record" observed={"oldDacl":"D:PAI(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;<user>)","none":"owner=true\u0020group=true\u0020D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;<user>)","kernel":"owner=true\u0020group=true\u0020D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;<user>)","kernel-flag":"owner=true\u0020group=true\u0020D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;<user>)","kernel-auto-inherit":"same","set-security-info":"same","set-security-info-if-differs":"same"} match=true os=10.0.26300.9711
+OBSERVATION T002: W2.auto-inherited.inherited-only expected="record" observed={"oldDacl":"D:AI(A;ID;0x1200a9;;;BU)(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;<user>)","none":"same","kernel":"owner=true\u0020group=true\u0020D:(A;ID;0x1200a9;;;BU)(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;<user>)","kernel-flag":"owner=true\u0020group=true\u0020D:(A;ID;0x1200a9;;;BU)(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;<user>)","kernel-auto-inherit":"same","set-security-info":"same","set-security-info-if-differs":"same"} match=true os=10.0.26300.9711
+OBSERVATION T002: W2.auto-inherited.explicit-ace expected="record" observed={"oldDacl":"D:AI(A;;FR;;;BU)(A;ID;0x1200a9;;;BU)(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;<user>)","none":"owner=true\u0020group=true\u0020D:AI(A;ID;0x1200a9;;;BU)(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;<user>)","kernel":"owner=true\u0020group=true\u0020D:(A;;FR;;;BU)(A;ID;0x1200a9;;;BU)(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;<user>)","kernel-flag":"owner=true\u0020group=true\u0020D:(A;;FR;;;BU)(A;ID;0x1200a9;;;BU)(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;<user>)","kernel-auto-inherit":"same","set-security-info":"same","set-security-info-if-differs":"same"} match=true os=10.0.26300.9711
+OBSERVATION T002: W2.auto-inherited.protected expected="record" observed={"oldDacl":"D:PAI(A;;0x1200a9;;;BU)(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;<user>)","none":"owner=true\u0020group=true\u0020D:AI(A;ID;0x1200a9;;;BU)(A;ID;FA;;;SY)(A;ID;FA;;;BA)(A;ID;FA;;;<user>)","kernel":"owner=true\u0020group=true\u0020D:P(A;;0x1200a9;;;BU)(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;<user>)","kernel-flag":"owner=true\u0020group=true\u0020D:P(A;;0x1200a9;;;BU)(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;<user>)","kernel-auto-inherit":"same","set-security-info":"same","set-security-info-if-differs":"same"} match=true os=10.0.26300.9711
+OBSERVATION T002: W2.new-file-owner expected="record" observed={"elevated":false,"owner":"<user>"} match=true os=10.0.26300.9711
+OBSERVATION T002: W2.sacl-open expected=1314 observed=1314 match=true os=10.0.26300.9711
+OBSERVATION T002: W3.tunnel-registry expected="record" observed={"MaximumTunnelEntries":{"error":2},"MaximumTunnelEntryAgeInSeconds":{"error":2}} match=true os=10.0.26300.9711
+OBSERVATION T002: W3.creation.005 expected="record" observed={"set":true,"step":"renamed","keepsOldCreation":false} match=true os=10.0.26300.9711
+OBSERVATION T002: W3.last-write-is-write-time.005 expected={"oldIs2020":true,"recent":true,"equalsOld":false} observed={"oldIs2020":true,"recent":true,"equalsOld":false} match=true os=10.0.26300.9711
+OBSERVATION T002: W3.creation.copy expected={"set":true,"step":"renamed","keepsOldCreation":true} observed={"set":true,"step":"renamed","keepsOldCreation":true} match=true os=10.0.26300.9711
+OBSERVATION T002: W3.last-write-is-write-time.copy expected={"oldIs2020":true,"recent":true,"equalsOld":false} observed={"oldIs2020":true,"recent":true,"equalsOld":false} match=true os=10.0.26300.9711
+OBSERVATION T002: W4.link-count expected={"linked":true,"links":2,"bytes":{"a":"old\n","b":"old\n"}} observed={"linked":true,"links":2,"bytes":{"a":"old\n","b":"old\n"}} match=true os=10.0.26300.9711
+OBSERVATION T002: W4.unchecked-replace expected={"step":"renamed","a":"new\n","b":"old\n","linksAfter":1} observed={"step":"renamed","a":"new\n","b":"old\n","linksAfter":1} match=true os=10.0.26300.9711
+OBSERVATION T002: W5.read-only-target expected={"step":"rename","status":"0xc0000022","bytes":"old\n"} observed={"step":"rename","status":"0xc0000022","bytes":"old\n"} match=true os=10.0.26300.9711
+OBSERVATION T002: W5.no-temporary-file expected=[] observed=[] match=true os=10.0.26300.9711
+OBSERVATION T002: W6.control-close-deletes expected=false observed=false match=true os=10.0.26300.9711
+OBSERVATION T002: W6.terminate-before-clear expected={"ready":"held","exists":false} observed={"ready":"held","exists":false} match=true os=10.0.26300.9711
+OBSERVATION T002: W6.terminate-after-clear expected={"ready":"held\u0020cleared","exists":true} observed={"ready":"held\u0020cleared","exists":true} match=true os=10.0.26300.9711
+OBSERVATION T002: W6.rename-after-clear expected={"step":"renamed","bytes":"new\n","temps":[]} observed={"step":"renamed","bytes":"new\n","temps":[]} match=true os=10.0.26300.9711
+OBSERVATION T002: W7.streams expected={"before":{"Zone.Identifier":"present","user.stream":"present"},"step":"renamed","after":{"Zone.Identifier":"error-2","user.stream":"error-2"}} observed={"before":{"Zone.Identifier":"present","user.stream":"present"},"step":"renamed","after":{"Zone.Identifier":"error-2","user.stream":"error-2"}} match=true os=10.0.26300.9711
+OBSERVATION T002: W8.write-read expected="record" observed={"ready":"held","checkError":32,"step":"rename","status":"0xc0000043","bytes":"old\n"} match=true os=10.0.26300.9711
+OBSERVATION T002: W8.no-delete-share expected="record" observed={"ready":"held","checkError":0,"step":"rename","status":"0xc0000043","bytes":"old\n"} match=true os=10.0.26300.9711
+OBSERVATION T002: W8.section expected="record" observed={"ready":"held\u0020mapped","checkError":0,"step":"renamed","status":"0x0","bytes":"new\n"} match=true os=10.0.26300.9711
+OBSERVATION T002: W9.defender-real-time expected="on" observed="on" match=true os=10.0.26300.9711
+OBSERVATION T002: W9.replaces expected={"failures":[],"wrongBytes":[]} observed={"failures":[],"wrongBytes":[]} match=true os=10.0.26300.9711
+OBSERVATION T002: W9.replace-time expected="record" observed={"count":1000,"totalMs":4311,"perReplaceMs":4.31} match=true os=10.0.26300.9711
+OBSERVATION T002: W9.streamed-copy-at-least-64-MiBps expected={"flushed":true,"atLeast":true} observed={"flushed":true,"atLeast":true} match=true os=10.0.26300.9711
+OBSERVATION T002: W9.streamed-copy-time expected="record" observed={"MiB":256,"ms":494,"MiBps":518.7} match=true os=10.0.26300.9711
+OBSERVATION T002: W10.folder-chain expected={"a":"0x0","b":"0x0","exists":true} observed={"a":"0x0","b":"0x0","exists":true} match=true os=10.0.26300.9711
+OBSERVATION T002: W10.existing-folder-create expected="0xc0000035" observed="0xc0000035" match=true os=10.0.26300.9711
+OBSERVATION T002: W10.junction-at-folder-name expected={"junction":0,"open":"0xc000050b","create":"0xc000050b","outside":[]} observed={"junction":0,"open":"0xc000050b","create":"0xc000050b","outside":[]} match=true os=10.0.26300.9711
+OBSERVATION T002: W11.encrypted-attribute expected=true observed=true match=true os=10.0.26300.9711
+```
+
+T002 `W9.replaces` lines of the three earlier runs of the same W9 code on the same day:
+
+```text
+OBSERVATION T002: W9.replaces expected={"failures":[],"wrongBytes":[]} observed={"failures":["392:rename:0xc0000022","705:rename:0xc0000022"],"wrongBytes":["f392.txt","f705.txt"]} match=false os=10.0.26300.9711
+OBSERVATION T002: W9.replaces expected={"failures":[],"wrongBytes":[]} observed={"failures":["957:rename:0xc0000022"],"wrongBytes":["f957.txt"]} match=false os=10.0.26300.9711
+OBSERVATION T002: W9.replaces expected={"failures":[],"wrongBytes":[]} observed={"failures":["513:rename:0xc0000022","812:rename:0xc0000022"],"wrongBytes":["f513.txt","f812.txt"]} match=false os=10.0.26300.9711
+```
+
+T003 (`src-tauri/src/file_replace.rs` `revert_facts`):
+
+```text
+OBSERVATION T003: W10.folder-chain expected={"a":"0x00000000","b":"0x00000000","exists":true} observed={"a":"0x00000000","b":"0x00000000","exists":true} match=true os=10.0.26300
+OBSERVATION T003: W10.junction-at-folder-name expected={"refused":true,"reparse":true} observed={"refused":true,"reparse":true} match=true os=10.0.26300
+OBSERVATION T003: W1.hidden-005.txt expected={"attributes":"0x2","result":{"step":"renamed"},"set":true} observed={"attributes":"0x20","result":{"step":"renamed"},"set":true} match=false os=10.0.26300
+OBSERVATION T003: W1.hidden-copy.txt expected={"attributes":"0x2","result":{"step":"renamed"},"set":true} observed={"attributes":"0x22","result":{"step":"renamed"},"set":true} match=false os=10.0.26300
+OBSERVATION T003: W1.system-005.txt expected={"attributes":"0x4","result":{"step":"renamed"},"set":true} observed={"attributes":"0x20","result":{"step":"renamed"},"set":true} match=false os=10.0.26300
+OBSERVATION T003: W1.system-copy.txt expected={"attributes":"0x4","result":{"step":"renamed"},"set":true} observed={"attributes":"0x24","result":{"step":"renamed"},"set":true} match=false os=10.0.26300
+OBSERVATION T003: W1.archive-clear-005.txt expected={"attributes":"0x0","result":{"step":"renamed"},"set":true} observed={"attributes":"0x20","result":{"step":"renamed"},"set":true} match=false os=10.0.26300
+OBSERVATION T003: W1.archive-clear-copy.txt expected={"attributes":"0x0","result":{"step":"renamed"},"set":true} observed={"attributes":"0x20","result":{"step":"renamed"},"set":true} match=false os=10.0.26300
+OBSERVATION T003: W1.not-content-indexed-005.txt expected={"attributes":"0x2000","result":{"step":"renamed"},"set":true} observed={"attributes":"0x20","result":{"step":"renamed"},"set":true} match=false os=10.0.26300
+OBSERVATION T003: W1.not-content-indexed-copy.txt expected={"attributes":"0x2000","result":{"step":"renamed"},"set":true} observed={"attributes":"0x2020","result":{"step":"renamed"},"set":true} match=false os=10.0.26300
+OBSERVATION T003: W1.compressed-005.txt expected={"attributes":"0x820","result":{"step":"renamed"},"set":true} observed={"attributes":"0x20","result":{"step":"renamed"},"set":true} match=false os=10.0.26300
+OBSERVATION T003: W1.compressed-copy.txt expected={"attributes":"0x820","result":{"step":"renamed"},"set":true} observed={"attributes":"0x20","result":{"step":"renamed"},"set":true} match=false os=10.0.26300
+OBSERVATION T003: W1.sparse-005.txt expected={"attributes":"0x220","result":{"step":"renamed"},"set":true} observed={"attributes":"0x20","result":{"step":"renamed"},"set":true} match=false os=10.0.26300
+OBSERVATION T003: W1.sparse-copy.txt expected={"attributes":"0x220","result":{"step":"renamed"},"set":true} observed={"attributes":"0x20","result":{"step":"renamed"},"set":true} match=false os=10.0.26300
+OBSERVATION T003: W2.set-security-info-feature expected={"Win32_Security_Authorization":"enabled"} observed={"Win32_Security_Authorization":"not\u0020enabled\u0020in\u0020src-tauri/Cargo.toml"} match=false os=10.0.26300
+OBSERVATION T003: W2.plain.inherited-only expected="record" observed={"kernel":"same","kernel-auto-inherit":"same","kernel-flag":"same","none":"same"} match=true os=10.0.26300
+OBSERVATION T003: W2.plain.explicit-ace expected="record" observed={"kernel":"differs","kernel-auto-inherit":"same","kernel-flag":"differs","none":"differs"} match=true os=10.0.26300
+OBSERVATION T003: W2.plain.protected expected="record" observed={"kernel":"differs","kernel-auto-inherit":"same","kernel-flag":"differs","none":"differs"} match=true os=10.0.26300
+OBSERVATION T003: W2.auto-inherited.inherited-only expected="record" observed={"kernel":"differs","kernel-auto-inherit":"same","kernel-flag":"differs","none":"same"} match=true os=10.0.26300
+OBSERVATION T003: W2.auto-inherited.explicit-ace expected="record" observed={"kernel":"differs","kernel-auto-inherit":"same","kernel-flag":"differs","none":"differs"} match=true os=10.0.26300
+OBSERVATION T003: W2.auto-inherited.protected expected="record" observed={"kernel":"differs","kernel-auto-inherit":"same","kernel-flag":"differs","none":"differs"} match=true os=10.0.26300
+OBSERVATION T003: W3.creation.005 expected="record" observed={"keepsOldCreation":true,"result":{"step":"renamed"},"set":true} match=true os=10.0.26300
+OBSERVATION T003: W3.creation.copy expected={"keepsOldCreation":true,"result":{"step":"renamed"},"set":true} observed={"keepsOldCreation":true,"result":{"step":"renamed"},"set":true} match=true os=10.0.26300
+OBSERVATION T003: W5.read-only-target expected={"bytes":"old\n","result":{"status":"0xc0000022","step":"rename"},"temps":[]} observed={"bytes":"old\n","result":{"status":"0xc0000022","step":"rename"},"temps":[]} match=true os=10.0.26300
+OBSERVATION T003: W6.terminate-before-clear expected={"exists":false,"ready":"READY\u0020held"} observed={"exists":false,"ready":"READY\u0020held"} match=true os=10.0.26300
+OBSERVATION T003: W6.terminate-after-clear expected={"exists":true,"ready":"READY\u0020held\u0020cleared"} observed={"exists":true,"ready":"READY\u0020held\u0020cleared"} match=true os=10.0.26300
+OBSERVATION T003: W6.rename-after-clear expected={"bytes":"new\n","result":{"step":"renamed"}} observed={"bytes":"new\n","result":{"step":"renamed"}} match=true os=10.0.26300
+```
+
+T004 (`tests/wsl/revert-facts.test.ts`, `Ubuntu-26.04`):
+
+```text
+OBSERVATION T004: versions expected="record" observed={"distro":"Ubuntu-26.04","pretty":"Ubuntu\u002026.04.1\u0020LTS","kernel":"6.18.54.1-microsoft-standard-WSL2","perl":"5.040001","git":"2.55.0"} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L1.o-tmpfile expected={"tmpfile":"20200000","source":"Fcntl","open":1,"errno":0,"names":[]} observed={"tmpfile":"20200000","source":"Fcntl","open":1,"errno":0,"names":[]} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L2.linkat expected={"errno":0,"content":"linked\n","links":1} observed={"errno":0,"content":"linked\n","links":1} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L2.syscall expected="record" observed={"nr":265,"source":"syscall.ph","arch":"x86_64","uid":1000,"fileUid":1000} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L3.kill-after-tmpfile expected={"names":["target"],"target":"old\n"} observed={"names":["target"],"target":"old\n"} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L3.kill-after-linkat expected={"names":[".arbareto-probe.tmp","target"],"target":"old\n"} observed={"names":[".arbareto-probe.tmp","target"],"target":"old\n"} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L3.kill-after-rename expected={"names":["target"],"target":"new\n"} observed={"names":["target"],"target":"new\n"} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L4.mode-first-m2755 expected={"after":"2755","content":"new\n"} observed={"after":"755","content":"new\n"} match=false git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L4.mode-first-m600 expected={"after":"600","content":"new\n"} observed={"after":"600","content":"new\n"} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L4.mode-first-m644 expected={"after":"644","content":"new\n"} observed={"after":"644","content":"new\n"} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L4.mode-first-m755 expected={"after":"755","content":"new\n"} observed={"after":"755","content":"new\n"} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L4.mode-last-m2755 expected={"after":"2755","content":"new\n"} observed={"after":"2755","content":"new\n"} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L4.mode-last-m600 expected={"after":"600","content":"new\n"} observed={"after":"600","content":"new\n"} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L4.mode-last-m644 expected={"after":"644","content":"new\n"} observed={"after":"644","content":"new\n"} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L4.mode-last-m755 expected={"after":"755","content":"new\n"} observed={"after":"755","content":"new\n"} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L4.second-link-count expected=2 observed=2 match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L5.effective-ids expected={"uid":1000,"gid":1000} observed={"uid":1000,"gid":1000} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L5.fchown-own-group expected={"changed":1,"errno":0,"gidAfter":4} observed={"changed":1,"errno":0,"gidAfter":4} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L5.setgid-folder-gid expected=4 observed=4 match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L5.fchown-foreign-group expected={"changed":0,"errno":1} observed={"changed":0,"errno":1} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L6.syscalls expected="record" observed={"setxattr":{"errno":0,"nr":188,"result":0},"llistxattr":{"errno":0,"nr":195}} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L6.llistxattr expected=["user.test"] observed=["user.test"] match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L7.mkdir-mode expected={"restore":0,"git":["755","755"],"perl":["755","755"]} observed={"restore":0,"git":["755","755"],"perl":["755","755"]} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: L7.umask expected="record" observed="0022" match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: G9-G10-G8.none expected={"holds":19} observed={"holds":19,"records":{"G10.none.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: G9-G10-G8.autocrlf-true expected={"holds":19} observed={"holds":19,"records":{"G10.autocrlf-true.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: G9-G10-G8.autocrlf-input expected={"holds":19} observed={"holds":19,"records":{"G10.autocrlf-input.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: G9-G10-G8.text-eol-crlf expected={"holds":19} observed={"holds":19,"records":{"G10.text-eol-crlf.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: G9-G10-G8.text-auto-lf-blob expected={"holds":19} observed={"holds":19,"records":{"G10.text-auto-lf-blob.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: G9-G10-G8.text-auto-crlf-blob expected={"holds":19} observed={"holds":19,"records":{"G10.text-auto-crlf-blob.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: G9-G10-G8.ident expected={"holds":19} observed={"holds":19,"records":{"G10.ident.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: G9-G10-G8.working-tree-encoding expected={"holds":19} observed={"holds":19,"records":{"G10.working-tree-encoding.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: G9-G10-G8.clean-smudge-filter expected={"holds":19} observed={"holds":19,"records":{"G10.clean-smudge-filter.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: G9-G10-G8.binary expected={"holds":19} observed={"holds":19,"records":{"G10.binary.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: G9-G10-G8.empty expected={"holds":19} observed={"holds":19,"records":{"G10.empty.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"]}} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T004: G9-G10-G8.mode-100755 expected={"holds":20} observed={"holds":20,"records":{"G10.mode-100755.name-form":[".merge_file_XXXXXX",".merge_file_XXXXXX"],"G9.mode-100755.modes":{"temp":"600","restored":"755"}}} match=true git=2.55.0@Ubuntu-26.04
+```

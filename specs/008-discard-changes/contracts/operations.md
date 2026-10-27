@@ -76,7 +76,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 ## Δ9 Error codes (001 §9)
 
-- New `WORKBENCH_UNAVAILABLE` reasons: `untracked`, `in-the-way`, `attributes`, `ident`, `unstaged-changes`, `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, `xattr`, `checkout-temp`, `nothing-to-revert`. `limit` exists (004).
+- New `WORKBENCH_UNAVAILABLE` reasons: `untracked`, `in-the-way`, `attributes`, `ident`, `unstaged-changes`, `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, `xattr`, `checkout-temp`, `nothing-to-revert`. `limit` exists (004). The `checkout-temp` case list is empty (research R15), so no case gives `checkout-temp`.
 - New `STALE_REVIEW` reason: `revert-changed`.
 - The per-file outcomes of data-model §8 are result fields, not codes.
 
@@ -91,7 +91,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - Out of the distro: the working bytes of one file of `revert-lines`, at most 1 MiB, through `fileFacts` `content`.
   - Into the distro: the new bytes of one file of `revert-lines` on the stdin of `hash-object --stdin` and in the `wslFiles` `replace` input, at most `REVERT_FILE_BYTES`.
   - `revert-files` and `revert-unstaged` cross no file content: `checkout-index --temp` writes inside the distro, and the `replace` mode copies inside the distro.
-- `wslFiles` mode `replace` gains the root `worktree` with any path below it, and plan D9 steps: the owner check, the gid copy, the `xattr` check, the `O_TMPFILE` create with a `linkat` name before the rename (probes L1 and L2), `mkdir` of `folders`, and the `source` copy from Git's temporary file with an `fstat` identity check. A target bound as absent gets `0777 & ~umask` for mode 100755 and `0666 & ~umask` for 100644. New `wslFiles` mode `tempRemove` with the same identity check.
+- `wslFiles` mode `replace` gains the root `worktree` with any path below it, and plan D9 steps: the owner check, the gid copy, the `xattr` check, the `O_TMPFILE` create with a `linkat` name before the rename (probes L1 and L2), the mode copy after the write and the fsync (probe L4), `mkdir` of `folders`, and the `source` copy from Git's temporary file with an `fstat` identity check. A target bound as absent gets `0777 & ~umask` for mode 100755 and `0666 & ~umask` for 100644. New `wslFiles` mode `tempRemove` with the same identity check.
 - A staged part refuses with `shared-repository` when any scope sets `core.sharedRepository` (001 §4 "WSL index publication").
 
 ## Δ15 Changes to 004 deltas

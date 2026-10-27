@@ -30,6 +30,7 @@ use crate::process_requests::{
     decode_strict, is_identifier, native_path, path, wait,
 };
 use crate::putty;
+use crate::release_link;
 use crate::schema::mutation_reply::RefusedCode as MutationCode;
 use crate::schema::mutation_request::MutationRequest;
 use crate::schema::trust_reply::ConfirmRunReplyResult;
@@ -682,6 +683,9 @@ impl NativeFirst for Service {
         if operation == "openLicenceLink" {
             return licence_link(&links::Shell, payload);
         }
+        if operation == "openReleaseLink" {
+            return release_link(&links::Shell, env!("ARBARETO_RELEASE_CHANNEL"), payload);
+        }
         let stores = self.stores.get().ok_or(UNAVAILABLE)?;
         answer(
             stores,
@@ -866,6 +870,30 @@ fn licence_link(launcher: &dyn Launcher, payload: &Value) -> Result<Option<Value
         "DICTIONARY_UNAVAILABLE",
         json!({ "reason": "link", "url": url }),
     ))
+}
+
+/// Feature 007 contracts/release.md §5 `openReleaseLink`. `channel` is the build channel.
+fn release_link(
+    launcher: &dyn Launcher,
+    channel: &str,
+    payload: &Value,
+) -> Result<Option<Value>, Ended> {
+    let target = payload["target"].as_str().ok_or(INVALID)?;
+    let url = release_link::url(
+        channel,
+        env!("CARGO_PKG_REPOSITORY"),
+        env!("CARGO_PKG_VERSION"),
+        env!("ARBARETO_BUILD_IDENTITY"),
+        target,
+    )?;
+    match links::run(launcher, &url) {
+        Some(value) if value > 32 => Ok(Some(json!({}))),
+        Some(value) => Err(Ended::Failed(
+            release_link::OPEN_FAILED,
+            json!({ "shellExecuteResult": value }),
+        )),
+        None => Err(Ended::Failed(release_link::OPEN_FAILED, json!({}))),
+    }
 }
 
 /// The `readSyncSettings` result (feature 003 contract Δ3) with `switchChoice` (feature 004 contract Δ14) and `spelling` (feature 006 contract Δ12).
@@ -3030,6 +3058,82 @@ mod tests {
                 "{language}"
             );
             assert!(launcher.steps().is_empty(), "{language}");
+        }
+    }
+
+    /// Feature 007 contracts/release.md §5 `openReleaseLink`: a preview build opens the URL of the target.
+    /// A `ShellExecuteW` value of 32 or less fails with that value. A local build and an unknown target open nothing.
+    #[test]
+    fn open_release_link_opens_the_target_url_of_a_preview_build_only() {
+        let repository = env!("CARGO_PKG_REPOSITORY");
+        let version = env!("CARGO_PKG_VERSION");
+        for (target, url) in [
+            (
+                "hunspell-source",
+                format!(
+                    "{repository}/releases/download/v{version}/arbareto-{version}-hunspell-source.tar.gz"
+                ),
+            ),
+            (
+                "tag-source",
+                format!("{repository}/tree/{}", env!("ARBARETO_BUILD_IDENTITY")),
+            ),
+        ] {
+            let launcher = Recorder::returning(42);
+            assert_eq!(
+                release_link(&launcher, "preview", &json!({ "target": target })),
+                Ok(Some(json!({}))),
+                "{target}"
+            );
+            assert_eq!(
+                launcher.steps(),
+                [
+                    "CoInitializeEx".to_string(),
+                    format!("ShellExecuteW {url}"),
+                    "CoUninitialize".to_string()
+                ]
+            );
+        }
+        for returned in [32, 2, 0] {
+            let launcher = Recorder::returning(returned);
+            assert_eq!(
+                release_link(&launcher, "preview", &json!({ "target": "tag-source" })),
+                Err(Ended::Failed(
+                    "RELEASE_LINK_OPEN_FAILED",
+                    json!({ "shellExecuteResult": returned })
+                )),
+                "{returned}"
+            );
+        }
+        let launcher = Recorder {
+            initialized: false,
+            ..Recorder::returning(42)
+        };
+        assert_eq!(
+            release_link(&launcher, "preview", &json!({ "target": "tag-source" })),
+            Err(Ended::Failed("RELEASE_LINK_OPEN_FAILED", json!({})))
+        );
+        for (channel, payload, code) in [
+            (
+                "local",
+                json!({ "target": "hunspell-source" }),
+                "RELEASE_LINK_UNAVAILABLE",
+            ),
+            (
+                "local",
+                json!({ "target": "tag-source" }),
+                "RELEASE_LINK_UNAVAILABLE",
+            ),
+            ("preview", json!({ "target": "other" }), "INVALID_REQUEST"),
+            ("preview", json!({}), "INVALID_REQUEST"),
+        ] {
+            let launcher = Recorder::returning(42);
+            assert_eq!(
+                release_link(&launcher, channel, &payload),
+                Err(Ended::Rejected(code)),
+                "{channel} {payload}"
+            );
+            assert!(launcher.steps().is_empty(), "{channel} {payload}");
         }
     }
 

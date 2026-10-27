@@ -23,7 +23,7 @@ use crate::text_scale::{self, Current};
 pub const MAIN_WINDOW: &str = "main";
 
 /// Contract §3: the closed allowlist of public operations, as `src/contracts/operations.ts` lists them.
-pub const OPERATIONS: [&str; 64] = [
+pub const OPERATIONS: [&str; 65] = [
     "getEnvironment",
     "chooseGit",
     "chooseRepository",
@@ -92,11 +92,13 @@ pub const OPERATIONS: [&str; 64] = [
     "removeDictionary",
     "setSpelling",
     "openLicenceLink",
+    // Feature 007 contracts/release.md §5.
+    "openReleaseLink",
 ];
 
 /// Contract §3: the shell runs these first. The shell answers `requestClose` itself and never forwards it.
 /// Feature 004 contract Δ1: only the `worktree-add` form of `reviewWorkbench` is native-first, so `submit` decides it by its action.
-const NATIVE_FIRST: [&str; 22] = [
+const NATIVE_FIRST: [&str; 23] = [
     "requestClose",
     "chooseGit",
     "chooseRepository",
@@ -123,10 +125,12 @@ const NATIVE_FIRST: [&str; 22] = [
     "importDictionary",
     "setSpelling",
     "openLicenceLink",
+    // Feature 007 contracts/release.md §5.
+    "openReleaseLink",
 ];
 
 /// Contract §3 "Recent repositories" and feature 003, 004, and 006 contract Δ1: the shell answers these itself and never forwards them.
-const NATIVE_ANSWERS: [&str; 12] = [
+const NATIVE_ANSWERS: [&str; 13] = [
     "listRecentRepositories",
     "removeRecentRepository",
     "readSyncSettings",
@@ -139,6 +143,8 @@ const NATIVE_ANSWERS: [&str; 12] = [
     "chooseWorktreeFolder",
     "setSpelling",
     "openLicenceLink",
+    // Feature 007 contracts/release.md §5.
+    "openReleaseLink",
 ];
 
 /// Feature 004 contract Δ1: the `reviewWorkbench` action whose path the shell binds first.
@@ -1201,6 +1207,15 @@ pub async fn open_licence_link(
 }
 
 #[tauri::command]
+pub async fn open_release_link(
+    webview: Webview,
+    ipc: State<'_, Arc<Ipc>>,
+    request: Request<'_>,
+) -> Result<Value, &'static str> {
+    call(webview, &ipc, "openReleaseLink", request.body().clone()).await
+}
+
+#[tauri::command]
 pub async fn launch_puttygen(
     webview: Webview,
     ipc: State<'_, Arc<Ipc>>,
@@ -2052,6 +2067,8 @@ mod tests {
                 json!({ "enabled": false, "languages": ["uk", "en"] }),
             ),
             ("openLicenceLink", json!({ "language": "en" })),
+            // Feature 007 contracts/release.md §5.
+            ("openReleaseLink", json!({ "target": "tag-source" })),
         ];
         for session in [Some(SESSION_ID.to_string()), None] {
             ipc.set_session(session);
@@ -2069,7 +2086,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(*native.prepares.lock().expect("prepares"), 4);
+        assert_eq!(*native.prepares.lock().expect("prepares"), 6);
         assert!(
             native.prepared.lock().expect("prepared").is_empty(),
             "no prepare step"
@@ -2127,6 +2144,12 @@ mod tests {
                 "openLicenceLink",
                 json!({ "language": "en", "url": "https://example.test/" }),
             ),
+            request(
+                "openReleaseLink",
+                json!({ "target": "tag-source", "url": "https://example.test/" }),
+            ),
+            request("openReleaseLink", json!({ "target": "release" })),
+            request("openReleaseLink", json!({})),
             request(
                 "importDictionary",
                 json!({ "language": "uk", "folder": "C:\\uk" }),

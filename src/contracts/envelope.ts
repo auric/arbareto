@@ -414,6 +414,8 @@ const RemoveDictionary = op("removeDictionary", {}, language());
 const SetSpelling = op("setSpelling", {}, SpellingSetting);
 // Contract Δ3: the renderer never sends a URL.
 const OpenLicenceLink = op("openLicenceLink", {}, language());
+// Feature 007 contracts/release.md §5: the renderer sends only the target. The shell builds the URL.
+const OpenReleaseLink = op("openReleaseLink", {}, z.strictObject({ target: z.enum(["hunspell-source", "tag-source"]) }));
 
 export const RendererEnvelope = z.discriminatedUnion("operation", [
   GetEnvironment,
@@ -480,6 +482,7 @@ export const RendererEnvelope = z.discriminatedUnion("operation", [
   RemoveDictionary,
   SetSpelling,
   OpenLicenceLink,
+  OpenReleaseLink,
 ]);
 export type RendererRequest = z.infer<typeof RendererEnvelope>;
 export type RequestOf<K extends OperationName> = Extract<RendererRequest, { operation: K }>;
@@ -512,6 +515,7 @@ export const NativeFirstEnvelope = z.discriminatedUnion("operation", [
   ImportDictionary,
   SetSpelling,
   OpenLicenceLink,
+  OpenReleaseLink,
 ]);
 
 // Contract §6 "Dismissal": without `bootstrapId`, the stored worktree path does not exist.
@@ -1493,6 +1497,10 @@ export const RemoveDictionaryResult = z
   .union([z.strictObject({ language: LanguageId, removed: z.boolean() }).meta({ title: "DictionaryRemoved" }), dictionaryRefusal(["busy", "remove"], "RemoveDictionaryRefusal")])
   .meta({ title: "RemoveDictionaryResult" });
 export const OpenLicenceLinkResult = z.union([empty().meta({ title: "LicenceLinkOpened" }), dictionaryRefusal(["link"], "LicenceLinkRefusal")]).meta({ title: "OpenLicenceLinkResult" });
+// Feature 007 contracts/release.md §5: a failed open carries the `ShellExecuteW` value. A failed `CoInitializeEx` gives no value.
+export const OpenReleaseLinkResult = z
+  .union([empty().meta({ title: "ReleaseLinkOpened" }), z.strictObject({ shellExecuteResult: z.int().max(32) }).meta({ title: "ReleaseLinkOpenFailed" })])
+  .meta({ title: "OpenReleaseLinkResult" });
 // T034 adds the actions of batch 2: switch, the branch actions, merge, rebase, and ignore. Later tasks add the plans of their actions.
 
 // Contract Δ5: 100 paths in a result, plus a count.

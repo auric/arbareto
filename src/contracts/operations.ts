@@ -76,6 +76,8 @@ export const OPERATION_NAMES = [
   "removeDictionary",
   "setSpelling",
   "openLicenceLink",
+  // Feature 007 contracts/release.md §5.
+  "openReleaseLink",
 ] as const;
 
 export type OperationName = (typeof OPERATION_NAMES)[number];
@@ -114,6 +116,8 @@ export const SHELL_ONLY: readonly OperationName[] = [
   // Feature 006 contract Δ1.
   "setSpelling",
   "openLicenceLink",
+  // Feature 007 contracts/release.md §5.
+  "openReleaseLink",
 ];
 
 // Contract §2: UUID-shaped ASCII identifiers.

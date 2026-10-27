@@ -46,6 +46,8 @@ export const ERROR_CODES_BY_CATEGORY = {
   inspection: ["BLAME_UNAVAILABLE", "SUBMODULE_UNAVAILABLE"],
   // Feature 006 contract Δ9. The contract gives this code no 001 category.
   dictionary: ["DICTIONARY_UNAVAILABLE"],
+  // Feature 007 contracts/release.md §5. The contract gives these codes no 001 category.
+  release: ["RELEASE_LINK_UNAVAILABLE", "RELEASE_LINK_OPEN_FAILED"],
 } as const;
 
 export type ErrorCategory = keyof typeof ERROR_CODES_BY_CATEGORY;

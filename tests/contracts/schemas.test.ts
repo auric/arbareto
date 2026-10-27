@@ -82,6 +82,7 @@ describe("envelope schemas", () => {
     // Feature 004 contract Δ1: `openWorktree` and the `worktree-add` review are native-first, and the shell answers `setSwitchChoice`.
     // Feature 005 contract Δ1: `openSubmodule` is native-first.
     // Feature 006 contract Δ1: `importDictionary` is native-first, and the shell answers `setSpelling` and `openLicenceLink`.
+    // Feature 007 contracts/release.md §5: the shell answers `openReleaseLink`.
     expect(names(NativeFirstEnvelope).toSorted()).toEqual([
       "chooseGit",
       "chooseRepository",
@@ -95,6 +96,7 @@ describe("envelope schemas", () => {
       "listRecentRepositories",
       "openLicenceLink",
       "openRecentRepository",
+      "openReleaseLink",
       "openSubmodule",
       "openWorktree",
       "readSyncSettings",

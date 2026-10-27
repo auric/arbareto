@@ -12,7 +12,7 @@
   "scripts": {
     "build:notices": "bun src/frontend/build/notices.ts",
     "build:frontend": "bunx --bun vite build",
-    "build:service": "bun -e \"if (Bun.version !== '1.4.4') { console.error('Bun 1.4.4 required, found ' + Bun.version); process.exit(1) }\" && bun build src/git-service/main.ts --compile --target=bun-windows-x64 --no-compile-autoload-dotenv --no-compile-autoload-bunfig --no-compile-autoload-tsconfig --no-compile-autoload-package-json --outfile src-tauri/binaries/arbareto-git-x86_64-pc-windows-msvc.exe",
+    "build:service": "bun -e \"if (Bun.version !== '1.4.4') { console.error('Bun 1.4.4 required, found ' + Bun.version); process.exit(1) }\" && bun build src/git-service/main.ts --compile --target=bun-windows-x64 --no-compile-autoload-dotenv --no-compile-autoload-bunfig --no-compile-autoload-tsconfig --no-compile-autoload-package-json --windows-title=Arbareto --windows-publisher=\"Ihor Lifanov\" --windows-version=0.1.0 --windows-description=\"Arbareto Git service\" --windows-copyright=\"Copyright (c) 2026 Ihor Lifanov\" --outfile src-tauri/binaries/arbareto-git-x86_64-pc-windows-msvc.exe",
     "build": "bun run build:notices && bun run build:frontend && bun run build:service",
     "typecheck": "bunx --bun tsc --noEmit",
     "export:schemas": "bun src/contracts/export-schemas.ts",
@@ -22,7 +22,9 @@
     "test:all": "bun tests/run.ts full",
     "test:fast": "bun tests/run.ts fast",
     "dev": "bun run build:frontend && bun run build:service && cargo tauri dev --no-dev-server",
-    "package": "cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis -- --locked && rustc --version && cargo --version && cargo tauri --version && bun --version && \"$LOCALAPPDATA/tauri/NSIS/makensis.exe\" -VERSION"
+    "package": "cargo tauri build --target x86_64-pc-windows-msvc --bundles nsis -- --locked && rustc --version && cargo --version && cargo tauri --version && bun --version && \"$LOCALAPPDATA/tauri/NSIS/makensis.exe\" -VERSION",
+    "package:preview:exes": "ARBARETO_RELEASE_CHANNEL=preview cargo tauri build --no-bundle --target x86_64-pc-windows-msvc --config src-tauri/tauri.preview.conf.json -- --locked && rustc --version && cargo --version && cargo tauri --version && bun --version && \"$LOCALAPPDATA/tauri/NSIS/makensis.exe\" -VERSION",
+    "package:preview:bundle": "ARBARETO_RELEASE_CHANNEL=preview cargo tauri bundle --bundles nsis --no-binary-patching --target x86_64-pc-windows-msvc --config src-tauri/tauri.preview.conf.json && rustc --version && cargo --version && cargo tauri --version && bun --version && \"$LOCALAPPDATA/tauri/NSIS/makensis.exe\" -VERSION"
   },
   "dependencies": {
     "@base-ui/react": "^1.9.0",

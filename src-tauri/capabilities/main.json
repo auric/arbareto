@@ -68,6 +68,7 @@
     "allow-remove-dictionary",
     "allow-set-spelling",
     "allow-open-licence-link",
+    "allow-open-release-link",
     "core:event:allow-listen"
   ]
 }

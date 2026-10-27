@@ -233,6 +233,17 @@ describe("golden vectors", () => {
     for (const kind of ["valid", "invalid"]) expect(texts(kind, "sync-settings-result").some((t) => "spelling" in t)).toBe(true);
   });
 
+  // Feature 007 contracts/release.md §5: `openReleaseLink`, its result, and its two codes.
+  test("openReleaseLink, its result, and its codes have their vectors", () => {
+    const texts = (kind: string, schema: string) => vectors.filter((v) => v.kind === kind && v.vector.schema === schema).map(({ vector }) => JSON.parse(vector.text) as Record<string, unknown>);
+    const operations = (kind: string, schema: string) => texts(kind, schema).map((t) => t.operation);
+    expect(operations("valid", "renderer-envelope")).toContain("openReleaseLink");
+    expect(operations("invalid", "service-envelope")).toContain("openReleaseLink");
+    for (const kind of ["valid", "invalid"]) expect(operations(kind, "native-first-envelope")).toContain("openReleaseLink");
+    expect(texts("valid", "response").map((t) => t.code)).toEqual(expect.arrayContaining(["RELEASE_LINK_UNAVAILABLE", "RELEASE_LINK_OPEN_FAILED"]));
+    for (const kind of ["valid", "invalid"]) expect(texts(kind, "open-release-link-result").length).toBeGreaterThan(0);
+  });
+
   const faulted = vectors.filter(({ kind, vector }) => kind === "invalid" && FAULT_SCHEMAS.includes(vector.schema));
   test("each invalid vector of a fault schema carries its repair", () => {
     expect(faulted.filter(({ vector }) => vector.repair === undefined).map(({ name }) => name)).toEqual([]);

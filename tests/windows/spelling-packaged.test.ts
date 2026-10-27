@@ -602,7 +602,11 @@ ${persianLine}`;
         expect(await unnamed(s.c, page)).toEqual([]);
         // The switch by keyboard: Enter on a focused button runs its activation behavior (HTML "button" element).
         const sw = `document.querySelector('[data-slot=spelling-page] [role=switch]')`;
+        // UIA actions do not move the focus (uia.ts AutoSetFocus), so the page has no keyboard focus yet. Keyboard navigation gives `:focus-visible` (Selectors 4 §9.4).
         await s.c.evaluate(`(${sw}).focus(); true`);
+        await press(s.c, "Tab");
+        await press(s.c, "Tab", MOD.Shift);
+        expect(await s.c.evaluate<boolean>(`document.activeElement === (${sw})`)).toBe(true);
         expect(focusVisible(await s.c.evaluate(FOCUS_STYLE))).toBe(true);
         const before = await s.c.evaluate<string | null>(`(${sw}).getAttribute('aria-checked')`);
         await press(s.c, "Enter");

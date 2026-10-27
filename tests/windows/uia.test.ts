@@ -11,7 +11,7 @@ import { withProbe } from "./probe-window";
 import { fixtureDir, fixtureGit, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { appEnv, COMMIT_VIEW, findInstalledApp, HISTORY_VIEW, PROBE_TIMEOUT_MS, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
-import { close, collapse, ControlType, expand, find, findLiveRegions, focus, foregroundSkip, inputDesktopSkip, invoke, isEnabled, isSelected, MAX_CALL_MS, MAX_WAIT_MS, readText, readValue, select, setValue, UiaError, waitFocus, type Element } from "./uia";
+import { autoSetFocus, close, collapse, ControlType, expand, find, findLiveRegions, focus, foregroundSkip, inputDesktopSkip, invoke, isEnabled, isSelected, MAX_CALL_MS, MAX_WAIT_MS, readText, readValue, select, setValue, UiaError, waitFocus, type Element } from "./uia";
 
 const UIA = printOrigin("./uia.ts", import.meta.dir);
 const TEST_TIMEOUT_MS = 60_000;
@@ -28,6 +28,8 @@ const UIA_E_ELEMENTNOTAVAILABLE = 0x8004_0201;
 const T241_WAITS = 26;
 const T241_TEST_TIMEOUT_MS = T241_WAITS * (MAX_WAIT_MS + MAX_CALL_MS) + 2 * PROBE_TIMEOUT_MS + 2 * WAIT_MS;
 const OPEN_FOLDER = "Open folder… (Ctrl+O)";
+// With AutoSetFocus on, the focus step of an action waits about 2,000 ms for a window that cannot take the foreground (uia.ts).
+const INVOKE_MS = 200;
 
 const code = async (body: () => unknown) => {
   try {
@@ -77,6 +79,7 @@ $w = [Windows.Markup.XamlReader]::Parse(@'
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" Title="UIA probe" ShowActivated="False" ShowInTaskbar="False" WindowStartupLocation="Manual" Left="-20000" Top="-20000" Width="300" Height="300">
   <StackPanel>
     <TextBox AutomationProperties.Name="Probe field" Text="probe text"/>
+    <Button AutomationProperties.Name="Probe button" Content="press"/>
     <GroupBox AutomationProperties.Name="Probe group">
       <StackPanel>
         <TextBlock Text="alpha"/>
@@ -127,6 +130,25 @@ describe.skipIf(process.platform !== "win32")("T240 UI Automation driver", () =>
         expect(await code(() => findLiveRegions(pid, 50))).toBe("TIMEOUT");
         // The fixture never takes focus.
         expect(await code(() => waitFocus(pid, "Probe field", 50))).toBe("TIMEOUT");
+      }),
+    TEST_TIMEOUT_MS,
+  );
+
+  test("the driver turns AutoSetFocus off", () => {
+    expect(autoSetFocus()).toBe(false);
+  });
+
+  test(
+    "Invoke on a button of a window without the foreground returns within INVOKE_MS",
+    () =>
+      withProbe(FIXTURE, async ({ pid }) => {
+        await using(await find(pid, "Probe button", MAX_WAIT_MS), (button) => {
+          const started = performance.now();
+          invoke(button);
+          const elapsed = performance.now() - started;
+          console.log(`INVOKE_MS ${elapsed.toFixed(1)}`);
+          expect(elapsed).toBeLessThan(INVOKE_MS);
+        });
       }),
     TEST_TIMEOUT_MS,
   );

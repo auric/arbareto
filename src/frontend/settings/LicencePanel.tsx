@@ -18,7 +18,6 @@ export const LICENCE_TEXTS = {
   readmeRegion: (language: string) => `Readme text of ${language}`,
   readme: "This dictionary has no licence file. Its readme names the licence.",
   failed: "Arbareto could not read the licence text: ",
-  // Proposed 2026-10-25, pending user confirmation (plan.md D17).
   loading: "Arbareto reads the licence text…",
 };
 

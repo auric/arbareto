@@ -76,7 +76,6 @@ export const SPELLING_PAGE = {
   importMismatch: (l: string) => `These files are not the ${l} files of the catalog. Arbareto did not import them.`,
   catalogChanged: (l: string) => `This Arbareto release has new ${l} dictionary files. Download the dictionary again.`,
   catalogRemoved: (l: string) => `This Arbareto release has no ${l} dictionary. Arbareto removed it.`,
-  // Proposed 2026-10-25, pending user confirmation (plan.md D17).
   catalogRemovedMore: (n: number) => (n === 1 ? "This Arbareto release has no 1 other dictionary. Arbareto removed it." : `This Arbareto release has no ${count(n)} other dictionaries. Arbareto removed them.`),
   importDeadline: (l: string) => `The ${l} import did not end within 120 seconds. Arbareto did not import the files. Select Import… again.`,
   pickerFailed: "Arbareto could not open the folder picker. Select Import… again.",

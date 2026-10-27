@@ -517,6 +517,31 @@ Independent batch 2 review, reviewer agent, read-only, on 4d4ba72a (the merges o
 - WSL file times, each file alone with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`: `workbench-wsl-facts.test.ts` 330 s (27 pass), `workbench-wsl-branches.test.ts` 740 s (12 pass), `workbench-wsl-staging.test.ts` 599 s (12 pass), `workbench-wsl-settings.test.ts` 799 s (13 pass, 1 fail). The sum is 2,468 s. No file passes 30 minutes.
 - The one fail is the Q22 stale case: `written` still holds `user.email`, because the item 1 fix is not yet merged from main into 006.
 
+### Batch 1 and batch 2 verification (T030, T039), 2026-10-25, Windows 11 10.0.26300, build 06daf1a0
+
+- The run used its own worktree at 06daf1a0, alone on the host. The logs are in local scratch. All 299 `ORIGIN` lines of `test:all` are under that checkout.
+- T031 (WP4 report, read again on f34e3c35): `src-tauri/src/wsl.rs` and `src/contracts/wsl-process.json` hold no `wslFiles` mode `append`, and `tests/wsl/` holds no `fileAppend` block. So no 005 follow-up is necessary.
+- WSL files, each alone with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`: facts 27 pass (337 s), branches 12 pass (745 s), staging 12 pass (603 s), settings 14 pass (821 s), 0 fail.
+- `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo check --locked`, and `bun run build:service` exit 0. `cargo test --locked`: 606 passed, 0 failed, 9 ignored. `bun run test:all` exit 0: 8,543 pass, 55 skip, 0 fail in 262 files.
+- `bun run test:windows` exit 1: 145 pass, 13 skip, 3 fail. The installed app was the main build `0.1.0 4bd1d043…`, and the checkout held no 006 packaged test yet. The 3 fails are the 005 cases Q6 (SC-002), Q21 (SC-005), and Q32 (SC-009 and 004 SC-007).
+- T030 control mutations, each red, then undone with the original SHA-256 and green: (1) status 301 accepted: the T019 status rule case failed (27 of 28), then 28 of 28 passed. (2) `proxy: false` dropped: the T019 request option case failed (27 of 28), then 28 of 28 passed. (3) a round merges at the first reply: the data-model §13 partial-round case failed (44 of 45), then 45 of 45 passed. (4) the WSL `globalConfig` target with a repository folder: the cargo case `a_wsl_global_config_run_binds_no_identity_and_runs_at_the_distro_root_in_the_mode_of_its_array` failed, then passed.
+- T039 control mutations, each red, then undone and green: (1) the plan.md D14 control: the double runs the Global write with the `cwd` of the registered repository, not the distro root. The Q22 mode case failed with mode 660 against 644 (13 of 14), then 14 of 14 passed. (2) Global locked again on WSL in `GitSettingsPage.tsx`: the T036 editable case failed (49 of 50), then 50 of 50 passed.
+- Observations of T032 and T034 (Ubuntu-26.04, Git 2.55.0). T034 printed no `unverified` row.
+
+```text
+OBSERVATION T032: unverified XDG global file through the double
+OBSERVATION T032: unverified save without HOME
+OBSERVATION T032: F10_HOME_set_under_the_wrapper_in_mode_integrate expected=true observed=true match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T032: F9_global_file_mode_of_a_save_from_/_with_core.sharedRepository=0660 expected="644" observed="644" match=true git=2.55.0@Ubuntu-26.04
+```
+
+- Board comparison (frontend agent, `bun run dev` at 06daf1a0, scratch `ARBARETO_PROFILE_ROOT`, 1280x800 at scale 1, forced colors by CDP emulation). The 45 screenshots are in local scratch. The agent compared the Main, SpellingEdges, SpellingPage, DictionaryFailures, LicenceView, ForcedColors, and Light boards live.
+- Board result, app bugs: six items. T057 fixes all six: the key menu focus after the suggestions, the forced-colors menu edge, the forced-colors focused item fill, the unavailable checkbox opacity, the not-ready reason at the limit, and the folder font.
+- Board result, boards older than the plan: the app-setting note sits under the heading row (O-9). The SpellingPage and SpellingEdges "[text TBD]" notes have their D17 texts. The 64 KiB cell shows no marks and no count (D8). One licence shows at a time (D16). Download uses no proxy.
+- Board result, accepted differences: the 004 house styles (filled ghost buttons, inverse tooltips, the Divider border of unavailable Move buttons, the link underline on hover, the Git scope bar). Sample data (86 against 87 languages, Ukrainian 8.73 MB against 8.69 MB, 3 Hunspell suggestions for "recieve" against 5). The chip sits after "Commit message" with the same 12 px gap. The forced-colors progress bar goes, and the "Downloading <n>%" text stays (D16).
+- Board result, plan gaps for the user: the text of a Changed language that also fails to load, a preview that names a failed language, the shared name of the two Occitan licence regions, and the compact Spelling page layout.
+- Not compared: the WslGlobal board. The board agent could not open a WSL repository in the dev app. The later investigation found the cause: the native WSL Git approval dialog stayed unanswered, and CDP cannot see it. A WSL repository opens in the dev app and in the package. The WslGlobal comparison still waits for a rerun that answers the dialog through UI Automation. The agent checked the FR-020 header in code only. The download failures, the catalog notices, the `more` notice, and `busy` were compared by text against D17 in code. About has no board.
+
 ### WP8 preparation (T040, T041, T042, T044), 2026-10-25, Windows 11 10.0.26300, Bun 1.4.4
 
 - T040: `scripts/windows/measure-ram.ps1` takes `-Json` and `-IntervalMs <n>`. With `-Json`, each sample is one line `{timeMs, rootPid, processes, webView2PrivateBytes, totalPrivateBytes}`. `timeMs` is Unix milliseconds (UTC), the clock of `Date.now`. `webView2PrivateBytes` is the sum of `PrivateMemorySize64` of the `msedgewebview2.exe` processes of the tree, and `totalPrivateBytes` is that sum for every process of the tree. Each sample reads the process table again with the same tree rule. With `-IntervalMs`, the next sample starts n ms after the start of the last one, until the caller ends the process. A negative value exits 1.
@@ -640,6 +665,18 @@ Independent batch 2 review, reviewer agent, read-only, on 4d4ba72a (the merges o
 | hyw | pass | 225.5, 216.5, 216.7 | 384.2, 377.2, 380.3 | 158.6, 160.6, 163.6 | 281, 290, 281 | 10, 10, 10 |
 | fy | pass | 213.3, 216.6, 216.6 | 447.2, 447.9, 431.4 | 233.9, 231.3, 214.8 | 934, 868, 927 | 10, 10, 10 |
 
+### Batch 3 review, 2026-10-26
+
+Independent batch 3 review, reviewer agent, read-only. Verdict: passes after fixes. Resolution: 05ec5696 fixes every item, and de9f673e merges it into 006 ("Batch 3 review fixes" below).
+- The packaged gate skipped a language with a partial cache. Fix: each catalog entry is its own case, and a missing file skips with `not-cached <id>/<name>`.
+- SC-004 compared the median with the budget. Fix: the maximum of the counted runs decides, and the line also gives the median.
+- The sampler had no bound for a run without WebView2 bytes. Fix: a sample with no WebView2 private bytes or another root PID fails the run.
+- Some skips gave a wrong reason. Fix: each skip gives its real reason.
+- A run without a load left no record. Fix: the run records its values, skips the menu step, and fails step 3.
+- The gate lines did not report the sample gap. Fix: each run records `maxGapMs`.
+- No test checked the gate list against the catalog. Fix: a contract test refuses a gate failure ID in the catalog.
+- The `afterAll` check of the packaged files. 05ec5696 fixes it.
+
 ### Batch 3 review fixes, 2026-10-26
 
 - The SC-004 timing cases compare the maximum of the counted runs with the budget. The OBSERVATION line also gives the median.
@@ -659,8 +696,15 @@ Independent batch 2 review, reviewer agent, read-only, on 4d4ba72a (the merges o
 - Q26 (measured): in forced colors, the focused item got `HighlightText` on `Highlight`, but its label span kept `var(--accent-foreground)` from the shadcn item class. The text contrast was 1.10:1.
 - Q26 (measured, build de9f673e-dirty): the Chromium accessibility tree gave the Selected languages row no name. WAI-ARIA 1.2 gives `listitem` "Name From: author", so the row text is not its name. Each row now has the name of plan.md D17.
 
+### T045 run 1, 2026-10-26, Windows 11 10.0.26300, build 73a9eb7b, WebView2 Edg/155.0.4283.62
+
+- The logs are in local scratch. The WSL files gave 27, 12, 12, and 14 pass. `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `bun run build:service`, and `bun run package` exit 0. `cargo test --locked`: 607 passed. `bun test tests/gate`: 173 pass. `bun run test:all` exit 0: 8,597 pass, 55 skip, 0 fail in 262 files.
+- `bun run test:windows` exit 1: 146 pass, 21 skip, 11 fail. Six fails are 005 cases: Q11 Show in Explorer, SC-007 Open submodule, Q6, Q21, Q29, and Q32. Five fails are 006 cases: N2 and N3, N4, N8, Q26, and the SC-004 typed case (median 162.9 ms, budget 100 ms). T059 and T060 fix the 006 cases ("T041 first packaged run" above). 005 T099 on main fixes the Q11 and Q29 test harness.
+- Harness defects of the run driver: `test:windows` ran without `ARBARETO_DICTIONARY_CACHE`, so the gate, the N4 Persian line, and the Ukrainian load skipped. The driver gave `-t packaged gate de:` without quotes, so control (1) ran every gate case and hit the 1,800 s step timeout, red and green. Control (2) failed red and green, because the unmutated typed case failed. So neither control proved anything. Run 2 quotes each argument with a space, passes the cache, and gives each control 60 minutes.
+
 ### T045 run 2, 2026-10-26, Windows 11 10.0.26300, build e7e85626, WebView2 Edg/155.0.4283.62
 
+- Commands: the WSL files gave 27, 12, 12, and 14 pass. Install, build, typecheck, schemas, `build:service`, and `package` exit 0. `cargo test --locked`: 607 passed. `bun test tests/gate`: 173 pass. `bun run test:all` exit 0: 8,608 pass, 55 skip, 0 fail in 262 files. `bun run test:windows` exit 1: 244 pass, 19 skip, 6 fail: the 005 cases SC-007, Q6, Q21, and Q32, the N4 Persian line, and the fy gate case. Controls, each restored byte for byte: (1) the 1 MiB bound failed the de gate case, then the case passed; (2) the 1 ms bound failed the SC-004 typed case, then the case passed.
 - Method: the packaged gate of plan.md D3, unchanged from the T043 rerun. The values come from the `OBSERVATION T042: gate` lines and the `GATE_FAILURE T042` line by a script.
 - Result: 83 of the 84 catalog languages passed. The highest passing increase was 242.9 MiB (tr). The largest gap between two samples was 1,068 ms (eu).
 - fy failed step 4: its increase per run was 268.6, 211.4, and 270.8 MiB, and the limit is 256 MiB (spec FR-017, SC-004). Its loads were 1,002 to 1,006 ms, and each run gave the count 10. `scripts/dictionary-gate.json` holds the fy entry with its byte values. Alone, fy gave 287, 277, and 292 MiB.
@@ -670,11 +714,19 @@ Independent batch 2 review, reviewer agent, read-only, on 4d4ba72a (the merges o
 - The largest part of the increase is the WebAssembly memory of the two spell workers.
 - N4 (measured): Chromium clips UI Automation TextPattern rects to the visible text box. The Persian word on line 3 sat at the clipped bottom edge of the 34 CSS px field, so UI Automation gave the height 13 against 18 in the mirror. The test now scrolls the field to the line of each word before it measures.
 
+### T045 run 3, 2026-10-26 to 2026-10-27, Windows 11 10.0.26300, build b66ef521, WebView2 Edg/155.0.4283.62
+
+- The logs are in local scratch. The WSL files gave 27, 12, 12, and 14 pass. Install, build, typecheck, schemas, `build:service`, and `package` exit 0. `cargo test --locked`: 608 passed. `bun test tests/gate`: 171 pass.
+- `bun run test:all` exit 1: 8,635 pass, 55 skip, 1 fail. The fail is an unnamed hook error: `EBUSY` at the removal of the served repository `http/cred.git` of a credentials fixture. The HTTP test remote stopped only its wrapper, and a Git request process still held the folder. Fix: main 74b15f62 (the remote waits for each Git request process before it stops), merged into 006 as b55439bd.
+- `bun run test:windows` exit 1: 244 pass, 19 skip, 5 fail: the 005 cases SC-007, Q6, and Q21, the N4 Persian line, and the gl gate case (266.9, 176.6, and 172.5 MiB). Fixes: the N4 check waits until UI Automation reports the new scroll position (cbc3c46b), and T061 moves the chunks as bytes (below).
+- Controls, each restored byte for byte: (1) the 1 MiB bound failed the de gate case, then the case passed; (2) the 1 ms bound failed the SC-004 typed case, then the case passed.
+
 ### T061 byte transfer of the dictionary chunks, 2026-10-27, Windows 11 10.0.26300
 
 - Cause (investigator, T045 run 3 on build b66ef521, local scratch): the gl gate increase ranged from 162 to 279 MiB over the gl runs of the diagnosis, a spread of about 116 MiB (the T045 run 3 gate gave 266.9, 176.6, and 172.5 MiB). The cause is V8 GC timing of page garbage: the base64 chunk strings of the T058 form. The page heap grew from 15 MiB to 50 to 53 MiB per check load. The next major GC freed it 4 s or 8 to 9.5 s after the load, so the peak sample caught it in some runs only. A forced GC before the menu gave 154 to 171 MiB (spread 18 MiB).
 - Decision (coordinator, 2026-10-27): the chunk bytes reach the page as binary, and the page transfers each buffer to the worker (plan.md D7 "Renderer body", D9, contract Δ1). The two workers of plan.md D9 stay. The investigator estimate was a peak increase of about 155 to 170 MiB and a spread of about 20 to 35 MiB.
 - Transport fact: Tauri 2.12.5 sends an `InvokeResponseBody::Raw` command result over the IPC custom protocol as `application/octet-stream`, and its `ipc-protocol.js` gives the page `response.arrayBuffer()` (`src/ipc/protocol.rs:112-119`, `scripts/ipc-protocol.js:46-53`). The postMessage fallback gives a number array; the shell already refuses that fallback for requests (001 §1).
+- Control (local scratch): a post without the transfer list failed the detach case "the page posts each chunk with its buffer in the transfer list" (12 of 13 pass, 1 fail).
 - Method: the packaged gate of plan.md D3, unchanged from T045 run 3 (same `tests/windows/spelling-perf.test.ts`). Build `0.1.0 b66ef521bc4e9b5d48ad59c414338325c625ae7e-dirty` with the T061 change, WebView2 `Edg/155.0.4283.62`, the 004 reference PC. gl, uk, tr, and pl ran twice with `-t "packaged gate (gl|uk|tr|pl):"`, so 6 runs per language. he and fy are out of the catalog, and the app refuses an ID outside its embedded catalog. So they ran once on a scratch package of the same tree whose catalog came from `bun scripts/dictionary-catalog.ts --offline` without the he and fy gate entries. Both tracked files were restored byte for byte afterwards. Every run gave the exact fixture count.
 - Increase per run in MiB, T061 against T045 run 3 (he and fy against their failing runs on 604bd271 and e7e85626):
 
@@ -691,3 +743,23 @@ Independent batch 2 review, reviewer agent, read-only, on 4d4ba72a (the merges o
 - Loads took 2,104 to 2,145 ms, as in T045 run 3 (2,113 to 2,138 ms). The largest gap between two samples was 476 ms.
 - Open point (not proven): the memory that the common runs hold above the low runs. A candidate is the external `ArrayBuffer` memory in the two workers: the transferred chunk buffers and the joined file arrays become garbage after the Hunspell create, and external memory alone may not start a worker GC. A probe needs a per-target heap read of the page and of each worker before the peak sample.
 - Catalog: he and fy passed step 4 in all 3 T061 runs (he 228.3, 227.6, 221.2 MiB; fy 185.8, 229.2, 248.0 MiB). So their entries left `scripts/dictionary-gate.json`. `bun scripts/dictionary-catalog.ts --offline` wrote 85 entries. The he and fy entries are the only change in `src/contracts/dictionaries.json`, with the same commit and hashes as before f77d79bb. The earlier gate records above stay. The T045 gate run decides again: a run above 256 MiB moves a language back into `scripts/dictionary-gate.json` (plan.md D3).
+
+### T045 run 4, 2026-10-27, Windows 11 10.0.26300, build b55439bd, WebView2 Edg/155.0.4283.62
+
+- The run used its own worktree at b55439bd, alone on the host. The logs are in local scratch. The boot view and the About view gave `0.1.0 b55439bd9e25752cb8932fd717b9d8572c4b74f2`. All 299 `ORIGIN` lines of `test:all` are under that checkout.
+- The WSL files, each alone with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`: facts 27 pass (360 s), branches 12 pass (808 s), staging 12 pass (644 s), settings 14 pass (883 s), 0 fail.
+- Install, build, typecheck, schemas, `build:service`, and `package` exit 0. `cargo test --locked`: 609 passed, 0 failed, 9 ignored. `bun test tests/gate` with the cache: 175 pass, 0 fail. `bun run test:all` exit 0 (both steps): 8,640 pass, 55 skip, 0 fail, 8,695 tests in 262 files.
+- `bun run test:windows` with the cache, exit 1: 247 pass, 19 skip, 4 fail. The fails are N4 and the three 005 cases SC-002 (Q6 memory), SC-005 (Q21 first ignore preview), and SC-007 (Open submodule). The 005 cases wait for the user's budget decisions.
+- N4 cause: in WebView2, a field whose text fits has no UI Automation Scroll pattern, and the cbc3c46b check waited for a scroll there. f34e3c35 waits for the scroll only when the field can scroll. With f34e3c35 and the cache, the N4 file passed 3 of 3 runs against this package, with the Persian line measured each time.
+- Gate: 85 of 85 catalog languages pass. he 159.4, 157.5, and 155.1 MiB; fy 187.6, 186.9, and 190.0 MiB. The highest increase is 190.0 MiB (fy). The largest spread is 37.5 MiB (gd). The largest gap between two samples is 457 ms (en-CA). No language enters `scripts/dictionary-gate.json`, and the catalog keeps its 85 entries.
+- SC-004 and FR-028 (page clock): first open to English marks median 163.8 ms, max 173.0 ms (budget 1,000 ms). A typed character in 65,535 bytes with 9,362 marks: median 23.5 ms, max 27.9 ms (budget 100 ms), with no long task. The whole-text paste limit case took 1,636.1 to 1,917.6 ms (no budget). FR-028: a 64 KiB round max 16 ms, a suggestion list max 96 ms, and a Ukrainian load max 16 ms.
+- N1 and F14: the package workers fetched `hunspell-B7u9vk2r.wasm` with status 200 and the reviewed SHA-256 under the T017 CSP.
+- Skips that stay unverified: N5 (`japanese-ime`), N6 (`windows-sandbox`), N4 at 150% and 225% (`text-scale-150`, `text-scale-225`), the live-input cases (`ARBARETO_LIVE_INPUT=1`), the US2 keyboard run (`owned-distro-global`), and FR-028 during a download (`network-download`).
+- Controls, each restored byte for byte: (1) the 1 MiB bound failed the de gate case (0 of 1), then the case passed (1 of 1). (2) The 1 ms bound failed the SC-004 typed case (0 of 1), then the case passed (1 of 1).
+- Memory and pools (free GB, paged pool MB, nonpaged pool MB): before `test:all` 11.9, 6,443, 1,756; after it 10.42, 7,674, 2,049; before `test:windows` 10.57, 7,681, 2,051; after it 10.72, 7,740, 2,062.
+
+### Converge, 2026-10-27, f34e3c35
+
+- `/speckit-converge` read spec.md, plan.md, tasks.md, and the constitution against the code at f34e3c35. It found no constitution violation and no unrequested code.
+- It appended Phase 10 with six tasks: T062 (FR-028 during a download, manual or Sandbox check), T063 (N4 at 150% and 225%, and N5 with an IME), T064 (a bound for the sample gap of plan.md D3), T065 (the import failure states against data-model §4, user decision), T066 (distinct names for the two Occitan licence regions), and T067 (the D17 texts of a Changed language that fails to load, and the chip preview).
+- T046 stays open until T045 passes, and converge then runs again.

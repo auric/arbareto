@@ -48,8 +48,8 @@ function listed(states: States = {}, removed: { language: string; name: string }
   const languages = catalog.entries.map((e) => ({ language: e.id, ...(states[e.id] ?? { state: "not-downloaded" }) }));
   return ok(ListDictionariesResult.parse({ languages, removed, more }));
 }
-const base64 = (text: string) => Buffer.from(text, "utf8").toString("base64");
-const chunk = (id: string, file: string, body: string) => ok(ReadDictionaryResult.parse({ language: id, file, size: Buffer.byteLength(body), offset: 0, bytes: base64(body) }));
+// The bridge result of 006 contract Δ1: the file size and the chunk bytes.
+const chunk = (body: string) => ok({ size: Buffer.byteLength(body), bytes: new Uint8Array(Buffer.from(body, "utf8")) });
 
 function wordListDouble(initial: WordListState = { kind: "loaded", words: [] }, outcome?: "failed") {
   const state = { current: initial };
@@ -395,7 +395,7 @@ describe("licence link and licence text (FR-015, plan.md D12)", () => {
     // 006 T055: plan.md D17 loading text, proposed 2026-10-25.
     expect(text(page().querySelector('[data-slot="licence-panel"] [role="status"]')!)).toBe("Arbareto reads the licence text…");
     const body = "GNU GENERAL PUBLIC LICENSE\n<b>sample</b> **bold**\n";
-    await answer(r.double.pending("readDictionary"), chunk("uk", "license", body));
+    await answer(r.double.pending("readDictionary"), chunk(body));
     const licence = page().querySelector<HTMLElement>('[data-slot="licence-panel"]')!;
     const region = licence.querySelector<HTMLElement>('[role="document"]')!;
     expect(region.getAttribute("aria-label")).toBe("Licence text of Ukrainian");
@@ -418,9 +418,9 @@ describe("licence link and licence text (FR-015, plan.md D12)", () => {
   test("oc shows both licence documents, each with its file name and byte count", async () => {
     const r = await render({ states: { oc: { state: "ready" } } });
     await click(button("Show licence of Occitan"));
-    await answer(r.double.pending("readDictionary"), chunk("oc", "license", "first"));
+    await answer(r.double.pending("readDictionary"), chunk("first"));
     expect(r.double.pending("readDictionary")!.args[0]).toEqual({ language: "oc", file: "licence", offset: 0 });
-    await answer(r.double.pending("readDictionary"), chunk("oc", "licence", "x"));
+    await answer(r.double.pending("readDictionary"), chunk("x"));
     const regions = [...page().querySelectorAll('[data-slot="licence-panel"] [role="document"]')];
     expect(regions.map((r) => r.textContent)).toEqual(["first", "x"]);
     const metas = [...page().querySelectorAll('[data-slot="licence-panel"] [role="document"]')].map((d) => parts(d.previousElementSibling!));
@@ -430,7 +430,7 @@ describe("licence link and licence text (FR-015, plan.md D12)", () => {
   test("the et readme shows as the readme text with the readme note", async () => {
     const r = await render({ states: { et: { state: "ready" } } });
     await click(button("Show licence of Estonian"));
-    await answer(r.double.pending("readDictionary"), chunk("et", "readme.md", "# dictionary-et\n"));
+    await answer(r.double.pending("readDictionary"), chunk("# dictionary-et\n"));
     const licence = page().querySelector('[data-slot="licence-panel"]')!;
     expect(licence.querySelector('[role="document"]')!.getAttribute("aria-label")).toBe("Readme text of Estonian");
     expect(text(licence)).toContain("This dictionary has no licence file. Its readme names the licence.");

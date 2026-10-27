@@ -245,6 +245,23 @@ describe("frontend bridge", () => {
     expect(response).toMatchObject({ requestId: call.request.requestId, state: "succeeded", result: page });
   });
 
+  test("a raw readDictionary body gives the file size and a view of the chunk bytes in the received buffer (006 contract Δ1)", async () => {
+    // The size 3 as a 4-byte little-endian integer, then the chunk "SET".
+    const body = new Uint8Array([3, 0, 0, 0, 0x53, 0x45, 0x54]).buffer;
+    const h = harness({ answer: () => body });
+    const response = await h.bridge.readDictionary({ language: "uk", file: "index.aff", offset: 0 });
+    expect(h.calls.at(-1)!.command).toBe("read_dictionary");
+    expect(response).toMatchObject({ requestId: h.calls.at(-1)!.request.requestId, state: "succeeded" });
+    const chunk = response.result as { size: number; bytes: Uint8Array };
+    expect(chunk.size).toBe(3);
+    expect(chunk.bytes).toBeInstanceOf(Uint8Array);
+    expect(chunk.bytes.buffer).toBe(body);
+    expect([...chunk.bytes]).toEqual([0x53, 0x45, 0x54]);
+    // Only `readDictionary` has a raw body. Another operation never turns one into a success.
+    const other = (await h.bridge.listDictionaries()) as { state?: unknown };
+    expect(other.state).toBeUndefined();
+  });
+
   test("a service-session event refreshes the session without a reload", async () => {
     const h = harness();
     await settle();

@@ -1217,7 +1217,7 @@ mod tests {
     /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, sync review, sync, clone, branch, worktree, Git settings, and workbench results in `Response.result` and reads no field of them.
     /// The shell writes the settings result of the shell-only settings operations and never reads it.
     /// The same holds for the `chooseWorktreeFolder` result.
-    const NOT_READ: [&str; 44] = [
+    const NOT_READ: [&str; 43] = [
         "service-envelope",
         "open-recent-repository-result",
         "recent-repositories-result",
@@ -1261,7 +1261,6 @@ mod tests {
         "reveal-path-result",
         // Feature 006 contract Δ10. The shell writes the `openLicenceLink` result and never reads it.
         "list-dictionaries-result",
-        "read-dictionary-result",
         "dictionary-run-result",
         "remove-dictionary-result",
         "open-licence-link-result",
@@ -1345,6 +1344,13 @@ mod tests {
                     .map_err(|code| text_of(&code)),
                 _ => return None,
             },
+            // Feature 006 contract Δ1: the shell reads the chunk of a `succeeded` response. A refusal reaches the renderer unread.
+            "read-dictionary-result" => match strict(text) {
+                Ok(value) if value.get("reason").is_some() => return None,
+                value => {
+                    value.and_then(|value| valid(crate::ipc::dictionary_chunk(&value).is_some()))
+                }
+            },
             other if NOT_READ.contains(&other) => return None,
             other => panic!("unknown vector schema {other}"),
         }))
@@ -1397,9 +1403,10 @@ mod tests {
         // T057 removes the 2 `fileAppend` vectors from this check and adds the 2 `started` vectors of the 004 ignore actions.
         // The batch 3 review adds the `progress` vector of the removed phase `ignore`.
         // Feature 004 T127 adds 2 `native-first-envelope` vectors for the `track` branch form (contract Δ3).
+        // Feature 006 T061 adds the 5 `read-dictionary-result` chunk vectors, 2 of them new (contract Δ1).
         assert_eq!(
             checked,
-            if cfg!(windows) { 228 } else { 223 },
+            if cfg!(windows) { 233 } else { 228 },
             "shell-read vectors"
         );
     }

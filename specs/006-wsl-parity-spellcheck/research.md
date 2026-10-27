@@ -669,3 +669,25 @@ Independent batch 2 review, reviewer agent, read-only, on 4d4ba72a (the merges o
 - The cause of the rise is not proven. The gate text is one line, so the mirror change cannot explain it. The harness change is ruled out.
 - The largest part of the increase is the WebAssembly memory of the two spell workers.
 - N4 (measured): Chromium clips UI Automation TextPattern rects to the visible text box. The Persian word on line 3 sat at the clipped bottom edge of the 34 CSS px field, so UI Automation gave the height 13 against 18 in the mirror. The test now scrolls the field to the line of each word before it measures.
+
+### T061 byte transfer of the dictionary chunks, 2026-10-27, Windows 11 10.0.26300
+
+- Cause (investigator, T045 run 3 on build b66ef521, local scratch): the gl gate increase ranged from 162 to 279 MiB over the gl runs of the diagnosis, a spread of about 116 MiB (the T045 run 3 gate gave 266.9, 176.6, and 172.5 MiB). The cause is V8 GC timing of page garbage: the base64 chunk strings of the T058 form. The page heap grew from 15 MiB to 50 to 53 MiB per check load. The next major GC freed it 4 s or 8 to 9.5 s after the load, so the peak sample caught it in some runs only. A forced GC before the menu gave 154 to 171 MiB (spread 18 MiB).
+- Decision (coordinator, 2026-10-27): the chunk bytes reach the page as binary, and the page transfers each buffer to the worker (plan.md D7 "Renderer body", D9, contract Δ1). The two workers of plan.md D9 stay. The investigator estimate was a peak increase of about 155 to 170 MiB and a spread of about 20 to 35 MiB.
+- Transport fact: Tauri 2.12.5 sends an `InvokeResponseBody::Raw` command result over the IPC custom protocol as `application/octet-stream`, and its `ipc-protocol.js` gives the page `response.arrayBuffer()` (`src/ipc/protocol.rs:112-119`, `scripts/ipc-protocol.js:46-53`). The postMessage fallback gives a number array; the shell already refuses that fallback for requests (001 §1).
+- Method: the packaged gate of plan.md D3, unchanged from T045 run 3 (same `tests/windows/spelling-perf.test.ts`). Build `0.1.0 b66ef521bc4e9b5d48ad59c414338325c625ae7e-dirty` with the T061 change, WebView2 `Edg/155.0.4283.62`, the 004 reference PC. gl, uk, tr, and pl ran twice with `-t "packaged gate (gl|uk|tr|pl):"`, so 6 runs per language. he and fy are out of the catalog, and the app refuses an ID outside its embedded catalog. So they ran once on a scratch package of the same tree whose catalog came from `bun scripts/dictionary-catalog.ts --offline` without the he and fy gate entries. Both tracked files were restored byte for byte afterwards. Every run gave the exact fixture count.
+- Increase per run in MiB, T061 against T045 run 3 (he and fy against their failing runs on 604bd271 and e7e85626):
+
+| ID | T061 runs | T061 max, spread | Before | Before max, spread |
+|---|---|---|---|---|
+| gl | 223.5, 210.9, 152.6, 209.1, 210.7, 216.4 | 223.5, 70.9 | 266.9, 176.6, 172.5 | 266.9, 94.4 |
+| pl | 205.0, 201.4, 144.8, 198.4, 201.2, 203.7 | 205.0, 60.2 | 251.6, 169.9, 170.4 | 251.6, 81.7 |
+| tr | 189.8, 191.3, 198.1, 184.2, 197.0, 195.8 | 198.1, 13.9 | 166.7, 168.5, 178.7 | 178.7, 12.0 |
+| uk | 199.3, 192.5, 193.7, 209.8, 199.3, 202.0 | 209.8, 17.3 | 171.2, 248.4, 160.7 | 248.4, 87.7 |
+| he | 228.3, 227.6, 221.2 | 228.3, 7.1 | 234.0, 230.5, 259.2 | 259.2, 28.7 |
+| fy | 185.8, 229.2, 248.0 | 248.0, 62.2 | 268.6, 211.4, 270.8 | 270.8, 59.4 |
+
+- Result: the largest increase fell by 39 to 47 MiB for gl, pl, and uk, and every run of he and fy stayed within 256 MiB. The lowest runs fell too (gl 152.6, pl 144.8). The investigator estimate was not met. The median run rose by 25 to 34 MiB: gl 210.8 against 176.6, pl 201.3 against 170.4, tr 193.6 against 168.5, and uk 199.3 against 171.2. gl, pl, and fy still spread 60 to 71 MiB.
+- Loads took 2,104 to 2,145 ms, as in T045 run 3 (2,113 to 2,138 ms). The largest gap between two samples was 476 ms.
+- Open point (not proven): the memory that the common runs hold above the low runs. A candidate is the external `ArrayBuffer` memory in the two workers: the transferred chunk buffers and the joined file arrays become garbage after the Hunspell create, and external memory alone may not start a worker GC. A probe needs a per-target heap read of the page and of each worker before the peak sample.
+- Catalog: he and fy passed step 4 in all 3 T061 runs (he 228.3, 227.6, 221.2 MiB; fy 185.8, 229.2, 248.0 MiB). So their entries left `scripts/dictionary-gate.json`. `bun scripts/dictionary-catalog.ts --offline` wrote 85 entries. The he and fy entries are the only change in `src/contracts/dictionaries.json`, with the same commit and hashes as before f77d79bb. The earlier gate records above stay. The T045 gate run decides again: a run above 256 MiB moves a language back into `scripts/dictionary-gate.json` (plan.md D3).

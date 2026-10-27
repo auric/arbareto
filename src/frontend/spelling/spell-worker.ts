@@ -11,7 +11,7 @@ import { englishFiles } from "./english";
 // `script`: the catalog Script value of the language. A check worker checks only the words that hold a letter of it (data-model §13, §14).
 export type WorkerMessage =
   | { type: "init"; language: string; script: string }
-  | { type: "chunk"; file: "aff" | "dic"; size: number; offset: number; data: string }
+  | { type: "chunk"; file: "aff" | "dic"; size: number; offset: number; data: Uint8Array<ArrayBuffer> }
   | { type: "build"; script: string }
   | { type: "check"; round: number; lines: { start: number; text: string }[] }
   | { type: "suggest"; id: number; word: string };
@@ -22,7 +22,7 @@ export type WorkerReply =
   | { type: "suggested"; id: number; list: string[] };
 
 /** Plan.md D9 "A downloaded language". */
-export type LoadFailure = "chunk" | "short" | "base64" | "utf-8" | "engine";
+export type LoadFailure = "chunk" | "short" | "utf-8" | "engine";
 export type SpellCore = { testSpelling(word: string): boolean; getSpellingSuggestions(word: string): string[] };
 export type WorkerDeps = { english(): Promise<{ aff: string; dic: string }>; create(aff: string | Uint8Array, dic: string | Uint8Array): Promise<SpellCore> };
 
@@ -39,21 +39,15 @@ function receive(file: Incoming | undefined, message: Extract<WorkerMessage, { t
     if (message.offset !== 0 || !Number.isSafeInteger(message.size) || message.size < 0) throw new Refused("chunk");
     file = { bytes: new Uint8Array(message.size), written: 0, decoder: new TextDecoder("utf-8", { fatal: true }) };
   }
-  if (message.size !== file.bytes.length || message.offset !== file.written) throw new Refused("chunk");
-  let result: { read: number; written: number };
+  const data = message.data;
+  if (message.size !== file.bytes.length || message.offset !== file.written || !(data instanceof Uint8Array) || data.length > file.bytes.length - file.written) throw new Refused("chunk");
   try {
-    result = file.bytes.subarray(file.written).setFromBase64(message.data, { lastChunkHandling: "strict" });
-  } catch {
-    throw new Refused("base64");
-  }
-  // `setFromBase64` stops at the end of the target, so a chunk past `size` leaves input unread.
-  if (result.read !== message.data.length) throw new Refused("chunk");
-  try {
-    file.decoder.decode(file.bytes.subarray(file.written, file.written + result.written), { stream: true });
+    file.decoder.decode(data, { stream: true });
   } catch {
     throw new Refused("utf-8");
   }
-  file.written += result.written;
+  file.bytes.set(data, file.written);
+  file.written += data.length;
   return file;
 }
 

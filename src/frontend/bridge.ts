@@ -10,6 +10,11 @@ import type { OperationName } from "../contracts/operations";
 export type BridgeResponse = Response;
 export type { ProgressEvent };
 export type OnProgress = (event: ProgressEvent) => void;
+/** Feature 006 contract Δ1: the `readDictionary` result. `bytes` views the received buffer, so a transfer moves it without a copy. */
+export type DictionaryChunk = { size: number; bytes: Uint8Array<ArrayBuffer> };
+
+// Feature 006 contract Δ1: a `readDictionary` success is the raw body: the file size as a 4-byte little-endian integer, then the chunk bytes.
+const chunkOf = (body: ArrayBuffer): DictionaryChunk | undefined => (body.byteLength < 4 ? undefined : { size: new DataView(body).getUint32(0, true), bytes: new Uint8Array(body, 4) });
 
 // The envelope fields that a caller supplies: the repository target and the payload (contract §2).
 type Target<K extends OperationName> = Omit<RequestOf<K>, "version" | "sessionId" | "requestId" | "operation" | "payload">;
@@ -32,7 +37,8 @@ export function createBridge(onSessionChange?: () => void, onTextScale?: (value:
       // Contract §1 "Renderer request body": the raw UTF-8 JSON bytes, never a JSON invoke body.
       // Contract §9: a shell that cannot take the request gives `SERVICE_UNAVAILABLE`, which is always `rejected`.
       invoke(command(operation), encoder.encode(JSON.stringify(request))).then(
-        (response) => settle(requestId, response as BridgeResponse),
+        (response) =>
+          settle(requestId, operation === "readDictionary" && response instanceof ArrayBuffer ? { requestId, state: "succeeded", result: chunkOf(response) } : (response as BridgeResponse)),
         () => settle(requestId, { requestId, state: "rejected", code: "SERVICE_UNAVAILABLE" }),
       );
     });

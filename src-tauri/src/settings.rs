@@ -84,7 +84,7 @@ pub const BUNDLED: &str = "en";
 /// Feature 006 data-model §2: `src/contracts/dictionaries.ts` `LANGUAGE_ID_BYTES`.
 const LANGUAGE_ID_BYTES: usize = 32;
 /// Feature 006 contract Δ5: `src/contracts/limits.ts` `DICTIONARY_LANGUAGE_BYTES`.
-const DICTIONARY_LANGUAGE_BYTES: u64 = 12_582_912;
+pub(crate) const DICTIONARY_LANGUAGE_BYTES: u64 = 12_582_912;
 /// Feature 006 contract Δ5: `src/contracts/limits.ts` `DICTIONARY_CATALOG_ENTRIES`.
 const DICTIONARY_CATALOG_ENTRIES: usize = 92;
 /// Feature 006 data-model §2 `script`: `src/contracts/dictionaries.ts` `DICTIONARY_SCRIPTS`. `bundled` holds `Latin`.
@@ -307,14 +307,14 @@ fn dictionary(entry: &Value, prefix: &str, commit: &str, bundled: bool) -> Optio
 }
 
 /// True for an object with exactly these keys.
-fn has_keys(value: &Value, names: &[&str]) -> bool {
+pub(crate) fn has_keys(value: &Value, names: &[&str]) -> bool {
     value.as_object().is_some_and(|fields| {
         fields.len() == names.len() && names.iter().all(|name| fields.contains_key(*name))
     })
 }
 
 /// Data-model §2 `id`: `^[a-z]{2,3}(-[A-Za-z0-9]{2,8})*$`, at most 32 bytes.
-fn is_language_id(id: &str) -> bool {
+pub(crate) fn is_language_id(id: &str) -> bool {
     let mut parts = id.split('-');
     let first = parts.next().unwrap_or_default();
     id.len() <= LANGUAGE_ID_BYTES

@@ -75,10 +75,12 @@ class WorkerDouble {
     this.held = held;
     this.handle = createSpellWorker((reply) => setTimeout(() => this.terminated || this.onmessage?.({ data: reply })), { english, create }) as never;
   }
-  postMessage(message: Message) {
+  // The structured clone of HTML `postMessage`: it detaches each transferred buffer on the sending side.
+  postMessage(message: Message, transfer: Transferable[] = []) {
     this.posted.push(message);
-    if (this.held) this.queue.push(message);
-    else this.handle(message);
+    const copy = structuredClone(message, { transfer });
+    if (this.held) this.queue.push(copy);
+    else this.handle(copy);
   }
   release() {
     this.held = false;
@@ -147,6 +149,8 @@ afterEach(async () => {
 async function mount(setup: Setup = {}, extra: Record<string, unknown> = {}) {
   const files: Record<string, Record<string, string>> = { uk: UKRAINIAN, ...setup.files };
   const reads: { language: string; file: string; offset: number }[] = [];
+  // The chunk bytes that the bridge double gave the engine.
+  const chunks: Uint8Array[] = [];
   const cancels: string[] = [];
   const bridge = contractChecked({
     readDictionary(payload: { language: string; file: string; offset: number }, onProgress?: (event: never) => void): Promise<BridgeResponse> {
@@ -157,8 +161,11 @@ async function mount(setup: Setup = {}, extra: Record<string, unknown> = {}) {
         hung.push(operationId);
         return new Promise(() => {});
       }
-      const bytes = Buffer.from(files[payload.language]![payload.file]!, "utf8");
-      return Promise.resolve(ok({ language: payload.language, file: payload.file, size: bytes.length, offset: payload.offset, bytes: bytes.subarray(payload.offset, payload.offset + 1_048_576).toString("base64") }));
+      const file = Buffer.from(files[payload.language]![payload.file]!, "utf8");
+      // The bridge result of 006 contract Δ1: the file size and the chunk bytes in their own buffer.
+      const bytes = new Uint8Array(file.subarray(payload.offset, payload.offset + 1_048_576));
+      chunks.push(bytes);
+      return Promise.resolve(ok({ size: file.length, bytes }));
     },
     cancel(payload: { operationId: string }): Promise<BridgeResponse> {
       cancels.push(payload.operationId);
@@ -178,7 +185,7 @@ async function mount(setup: Setup = {}, extra: Record<string, unknown> = {}) {
     // A downloaded language gives bytes (plan.md D9); `hunspell.js` `FS.writeFile` takes them as they are.
     const worker = new WorkerDouble(false, async (aff, dic) => (realCreate ? ((await realCreate(aff as string, dic as string)) as never) : synthetic(asText(aff), asText(dic))), english);
     const post = worker.postMessage.bind(worker);
-    worker.postMessage = (message: Message) => {
+    worker.postMessage = (message: Message, transfer?: Transferable[]) => {
       if (slot.language === "") {
         slot.language = message.type === "init" ? String(message.language) : "uk";
         const suggestion = workers.some((w) => w.language === slot.language && w.worker !== worker);
@@ -188,7 +195,7 @@ async function mount(setup: Setup = {}, extra: Record<string, unknown> = {}) {
           setTimeout(() => worker.onerror?.(new Event("error")));
         }
       }
-      post(message);
+      post(message, transfer);
     };
     slot.worker = worker;
     workers.push(slot);
@@ -227,7 +234,7 @@ async function mount(setup: Setup = {}, extra: Record<string, unknown> = {}) {
   const described = () => (field.getAttribute("aria-describedby") ?? "").split(" ").map((id) => document.getElementById(id)?.textContent ?? "");
   const chip = () => host.querySelector('[data-slot="spell-chip"]')?.textContent ?? null;
   const worker = (language: string, index = 0) => workers.filter((w) => w.language === language)[index]?.worker;
-  return { host, field, setter, type, marks, described, chip, worker, workers, reads, cancels, hung, store, engine, drafts, commits, notices, words, created: () => created, unmount };
+  return { host, field, setter, type, marks, described, chip, worker, workers, reads, chunks, cancels, hung, store, engine, drafts, commits, notices, words, created: () => created, unmount };
 }
 type Tray = Awaited<ReturnType<typeof mount>>;
 
@@ -850,9 +857,10 @@ describe("real engine (F15)", () => {
   }, 30_000);
 });
 
-describe("dictionary bytes (T058, plan.md D9)", () => {
+describe("dictionary bytes (T058, T061, plan.md D9)", () => {
   type Given = { aff: unknown; dic: unknown };
-  const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString("base64");
+  // A chunk arrives as a byte array in its own buffer (006 contract Δ1).
+  const own = (bytes: Uint8Array) => new Uint8Array(bytes);
   const utf8 = (text: string) => new Uint8Array(Buffer.from(text, "utf8"));
   const AFF = utf8("SET UTF-8\n");
   // "привіт" holds 2-byte UTF-8 sequences, so a 7-byte chunk splits the second letter.
@@ -865,7 +873,7 @@ describe("dictionary bytes (T058, plan.md D9)", () => {
       create: async (aff, dic) => (given.push({ aff, dic }), synthetic("", "0\n")),
     });
     const send = (file: "aff" | "dic", bytes: Uint8Array, step: number, size = bytes.length) => {
-      for (let offset = 0; offset === 0 || offset < bytes.length; offset += step) handle({ type: "chunk", file, size, offset, data: b64(bytes.subarray(offset, offset + step)) });
+      for (let offset = 0; offset === 0 || offset < bytes.length; offset += step) handle({ type: "chunk", file, size, offset, data: own(bytes.subarray(offset, offset + step)) });
     };
     const build = async () => {
       handle({ type: "build", script: "Cyrillic" });
@@ -874,15 +882,6 @@ describe("dictionary bytes (T058, plan.md D9)", () => {
     };
     return { handle, send, build, given };
   }
-  let atobCalls = 0;
-  const savedAtob = globalThis.atob;
-  beforeAll(() => {
-    globalThis.atob = (data: string) => (atobCalls++, savedAtob(data));
-  });
-  afterAll(() => {
-    globalThis.atob = savedAtob;
-    expect(atobCalls).toBe(0);
-  });
 
   test("the chunk messages carry the file size and the chunk offset", async () => {
     const big = dicOf(Array.from({ length: 120_000 }, (_, i) => `слово${i}`));
@@ -897,6 +896,23 @@ describe("dictionary bytes (T058, plan.md D9)", () => {
       { file: "aff", size: Buffer.byteLength(UKRAINIAN["index.aff"], "utf8"), offset: 0 },
       { file: "dic", size, offset: 0 },
       { file: "dic", size, offset: 1_048_576 },
+    ]);
+  });
+
+  test("the page posts each chunk with its buffer in the transfer list, so the page keeps no copy (T061)", async () => {
+    const big = dicOf(Array.from({ length: 120_000 }, (_, i) => `слово${i}`));
+    const t = await mount({ languages: ["uk"], files: { uk: { "index.aff": UKRAINIAN["index.aff"], "index.dic": big } } });
+    await t.type("привіт");
+    await until(() => t.store.state().languages.get("uk") !== "loading", 5_000);
+    expect(t.store.state().languages.get("uk")).toBe("loaded");
+    const posted = t.worker("uk")!.posted.filter((m) => m.type === "chunk").map((m) => m.data);
+    expect(posted.length).toBe(3);
+    expect(posted.every((data, i) => data === t.chunks[i])).toBe(true);
+    // A transferred buffer is detached on the page.
+    expect(t.chunks.map((bytes) => [bytes.byteLength, bytes.buffer.byteLength])).toEqual([
+      [0, 0],
+      [0, 0],
+      [0, 0],
     ]);
   });
 
@@ -917,11 +933,11 @@ describe("dictionary bytes (T058, plan.md D9)", () => {
     expect(w.given).toEqual([{ aff: AFF, dic: DIC }]);
   });
 
-  test("invalid base64 refuses the load with reason base64", async () => {
+  test("a chunk without a byte array refuses the load with reason chunk", async () => {
     const w = worker();
-    w.handle({ type: "chunk", file: "aff", size: 3, offset: 0, data: "A!B=" });
+    w.handle({ type: "chunk", file: "aff", size: 3, offset: 0, data: "U0VU" as never });
     w.send("dic", DIC, 1_048_576);
-    expect(await w.build()).toEqual([{ type: "load-failed", reason: "base64" }]);
+    expect(await w.build()).toEqual([{ type: "load-failed", reason: "chunk" }]);
     expect(w.given).toEqual([]);
   });
 
@@ -963,12 +979,12 @@ describe("dictionary bytes (T058, plan.md D9)", () => {
   test("a chunk at a wrong offset or with another size refuses the load with reason chunk", async () => {
     const gap = worker();
     gap.send("aff", AFF, 1_048_576);
-    gap.handle({ type: "chunk", file: "dic", size: DIC.length, offset: 2, data: b64(DIC.subarray(2)) });
+    gap.handle({ type: "chunk", file: "dic", size: DIC.length, offset: 2, data: own(DIC.subarray(2)) });
     expect(await gap.build()).toEqual([{ type: "load-failed", reason: "chunk" }]);
     const resized = worker();
     resized.send("aff", AFF, 1_048_576);
-    resized.handle({ type: "chunk", file: "dic", size: DIC.length, offset: 0, data: b64(DIC.subarray(0, 4)) });
-    resized.handle({ type: "chunk", file: "dic", size: DIC.length + 1, offset: 4, data: b64(DIC.subarray(4)) });
+    resized.handle({ type: "chunk", file: "dic", size: DIC.length, offset: 0, data: own(DIC.subarray(0, 4)) });
+    resized.handle({ type: "chunk", file: "dic", size: DIC.length + 1, offset: 4, data: own(DIC.subarray(4)) });
     expect(await resized.build()).toEqual([{ type: "load-failed", reason: "chunk" }]);
   });
 
@@ -983,8 +999,8 @@ describe("dictionary bytes (T058, plan.md D9)", () => {
       },
     });
     for (let round = 0; round < 2; round++) {
-      handle({ type: "chunk", file: "aff", size: AFF.length, offset: 0, data: b64(AFF) });
-      handle({ type: "chunk", file: "dic", size: DIC.length, offset: 0, data: b64(DIC) });
+      handle({ type: "chunk", file: "aff", size: AFF.length, offset: 0, data: own(AFF) });
+      handle({ type: "chunk", file: "dic", size: DIC.length, offset: 0, data: own(DIC) });
       handle({ type: "build", script: "Cyrillic" });
       for (let i = 0; i < 50 && replies.length === round; i++) await new Promise((resolve) => setTimeout(resolve, 0));
     }

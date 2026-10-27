@@ -22,6 +22,8 @@ const alias = [
   { find: /^@pierre\/theming\/themes$/, replacement: highlight("themes.ts") },
   // 006 plan.md D9: `dictionary-en` 4.0.0 exports only `index.js`, so the `?raw` imports of its files take the package folder.
   { find: /^dictionary-en\//, replacement: fileURLToPath(new URL("./node_modules/dictionary-en/", import.meta.url)) },
+  // `hunspell-wasm` 0.3.0 has no browser entry. Its Node-only paths import these modules, so a call throws instead of reading an empty external.
+  { find: /^(fs\/promises|module)$/, replacement: fileURLToPath(new URL("./src/frontend/spelling/node-stub.ts", import.meta.url)) },
 ];
 
 /** Fails the build when a chunk holds a grammar or theme outside the shipped set, or Oniguruma WASM. */

@@ -493,7 +493,7 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - Time: the process deadlines, also the 30 s deadline of each preview process, and the 60 s review token are contract bounds with typed codes (`DEADLINE`, `APPROVAL_EXPIRED`). The 400 ms preview pause sets only the send time (contract Δ3 `previewIgnore`). The blame progress rate limit sets only the event count.
 - Tests: refusal tests assert the code and the reason. The T060 checks assert app texts of plan D15, not Git text. The T061 timings measure the SC budgets and decide no product outcome.
 - Open coverage, not a heuristic: the T059 rows that skip with `shell-double-wsl-file-actions`, the T060 and T061 rows until T063 runs the package, N2 and the FR-028 warning (`volume-without-recycle-bin`), and the 001 capture check of T061.
-- Plan question: SC-007 names "a normal open" without a definition. T060 takes Repository ▸ Open folder… with the folder picker, driven by UI Automation without human time, as the normal open.
+- Plan question: SC-007 names "a normal open" without a definition. T060 takes Repository ▸ Open folder… with the folder picker, driven by UI Automation without human time, as the normal open. Superseded on 2026-10-27: see "Budget decisions of 2026-10-27".
 
 **Batch 4 follow-ups T078 to T080, 2026-10-24.** In `C:\Projects\arbareto-l6` on 005-batch4 after 3642738c. No task is ticked: the T063 run decides.
 - T078: `tests/git/bun-runner.ts` now serves a WSL `fileDelete`, `fileReplace`, `shadow`, and `ignorePreview` run by the shell route, with a `file:line` reference to `src-tauri/src` at each rule. The five T059 rows that skipped with `shell-double-wsl-file-actions` now run. `tests/wsl/inspection-wsl.test.ts` alone on Ubuntu-26.04: 39 pass, 1 skip (F15), 0 fail, 40 tests, 438 s. All 21 `ORIGIN` lines are under the worktree. All 50 `OBSERVATION` lines hold on Git 2.55.0.
@@ -527,6 +527,46 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - Packaged, after the change: the full Q32 case failed in 9 of 9 runs before the open, at the Delete Enter, with 104 ms to 128 ms. The base package failed there in 2 of 3 runs, with 120 ms and 128 ms, and passed with 96 ms. This failure is not T102. T091 holds the Delete render cost.
 - Packaged, after the change, the open step alone (a copy of the Q32 case without the Delete part, 3 runs): rows after 45.9 ms, 43.6 ms, and 43.8 ms; Event Timing durations 64 ms, 56 ms, and 64 ms. The bound is 100 ms.
 - Not measured: the long tasks of the open. The Event Timing duration includes the render and the paint.
+
+**Budget decisions of 2026-10-27.** The user set four budgets from the recorded packaged runs. T103 encodes them. The logs are in local scratch.
+
+*SC-002 memory budget for v0.1.0.*
+- Recorded Q6 peak growth of the process-tree private bytes, in the packaged runs after T090 (c38e0c34): 412.7, 479.6, 527.0, 420.8, 551.2, 559.8, 348.8, 487.4, and 478.6 MiB (2026-10-25 to 2026-10-27).
+- The last two runs used the installed 006 build (app SHA-256 prefix 4a94f1dc). Its app code equals main except the tests.
+- The runs before T090 gave 512.8 to 805.3 MiB. T090 changed the measured renderer code, so they do not count.
+- No recorded run holds a settled value. T103 adds the settled sample after the limit text and logs it beside the peak.
+- Rule: the highest recorded peak growth, 559.8 MiB, plus a 64 MiB margin (the original budget), rounded up to whole MiB. Bound: 624 MiB.
+- The user range "+413 to 527 MiB" did not hold the 551.2 and 559.8 MiB runs of 2026-10-26. The bound uses all runs after T090.
+- Follow-up after the release: T104 pages the changed-files list as the History list pages, and restores 64 MiB.
+
+*SC-005 directory-only patterns.*
+- The 005 performance report of 2026-10-25 measured one standalone `check-ignore` of 100,000 paths: 0.45 to 0.58 s without `big/`, 3.8 to 4.0 s with it, and 7.05 s with two such patterns.
+- Cause: for a pattern with PATTERN_FLAG_MUSTBEDIR, Git resolves the type of each input path (dir.c `last_matching_pattern_from_list`), and `check-ignore` passes `DT_UNKNOWN`.
+- Rule: the largest measured increase per pattern, 4.0 s - 0.45 s = 3.55 s. The two-pattern run gives (7.05 s - 0.45 s) / 2 = 3.30 s, which is less.
+- The T087 single-process run of 4,051 ms has no paired run without the pattern, so it does not enter the rule.
+- Bound: 5 s plus 3.55 s for each directory-only pattern of the ignore files. The test counts the patterns with the dir.c parse rules.
+- Packaged Q21 with one pattern gave first previews of 6,787 to 7,790 ms and later previews of 2,232 to 3,447 ms (2026-10-27). The bound is 8,550 ms.
+- A second Q21 case replaces `big/` with `/big`, which ignores the same folder without the flag. It must meet 5 s.
+
+*SC-007 normal open.* This record replaces the T062 plan question choice of 2026-10-24 (Open folder… with the folder picker).
+- A normal open is Recent repositories (Ctrl+R), then Enter on the entry of the repository. Its time runs from the Enter keydown, the same start as Open submodule.
+- The time ends when the repository switcher shows the repository.
+- Open submodule and Open parent repository may take 150 ms more. The parent safety checks of FR-049 run before the registration, and they stay there.
+- Each Open submodule adds a recent entry (FR-051, `service.rs` `registered_root`), so the Recent repositories list holds both repositories.
+- The earlier T060 runs measured the normal open from the `choose_repository` reply: medians of 218 to 384 ms against 445 to 566 ms for the key opens.
+
+*SC-009 Delete probes.*
+- The Q32 Delete case sends at least 20 probe inputs during the Delete, so one slow frame does not decide the p95. The Enter that starts the Delete counts in the p95 and in the 500 ms maximum.
+- The shortest recorded `run_workbench` call of the Delete took 1,260 ms (report of 2026-10-25). 20 probes then need at most 63 ms each, so the case sends one each 50 ms.
+- With 21 inputs, the nearest-rank p95 is the 20th input in order, so one slow Enter alone does not decide it.
+
+*T103 packaged runs, 2026-10-27.* Installed 006 build (app SHA-256 prefix 4a94f1dc), tests from this checkout, two runs per case.
+- SC-002: pass, pass. Peak growth 377.3 and 514.5 MiB; settled growth 225.5 and 293.5 MiB; bound 624 MiB.
+- SC-005 with `big/` (bound 8,550 ms): fail, pass. Run 1 had one first preview of 11,376 ms; the other first previews took 6,727 to 7,832 ms. Run 2 took 6,755 to 7,600 ms. Later previews took 2,219 to 2,590 ms.
+- SC-005 with `/big` (bound 5,000 ms): fail, fail. First previews: medians 5,294 and 4,957 ms, maxima 9,836 and 5,486 ms. Later previews: 1,245 to 2,220 ms. The first preview without a directory-only pattern does not meet 5 s.
+- SC-007: pass, pass. Medians in ms: Open submodule 788 and 431 against the normal open 790 and 369; parent button 861 and 484 against 948 and 382.
+- SC-009 Delete: pass, pass. 25 and 32 probes; p95 40 and 64 ms; max 56 and 88 ms (the Enter).
+- Controls, one run each: SC-002 bound 1 MiB, SC-005 per-pattern cost 0 ms, and SC-009 probe minimum 1,000 failed. SC-007 allowance 0 ms passed, because Open submodule was faster than the normal open in that run. SC-007 allowance -1,000 ms failed. Each file was restored with the same SHA-256.
 
 ## Plan review 2026-10-21
 

@@ -45,6 +45,15 @@ The user reported two ignore editor problems and asked to edit a file with mixed
 - Q: What does the editor do with a CR that no LF follows? → A: It refuses to open the file, as before, with its own reason (FR-037).
 - Q: What does the preview area show before the first edit? → A: "Change the text to see its effect on ignored files." (FR-041).
 
+### Session 2026-10-27
+
+The user set four performance budgets from the recorded packaged runs (research.md "Budget decisions of 2026-10-27").
+
+- Q: What memory may the 100,001-file commit use in v0.1.0? → A: The bound comes from the measurement: 624 MiB above the start, the highest recorded peak plus 64 MiB. A later task pages the list and restores 64 MiB (SC-002, T104).
+- Q: Does the 5 s preview bound hold with directory-only patterns? → A: 5 s holds without them. Each such pattern adds Git's measured cost of 3.55 s per 100,000 paths (SC-005). This replaces the 5 s answer of 2026-10-21 for such files.
+- Q: What is a normal open in SC-007? → A: Recent repositories (Ctrl+R), then Enter. Its time starts at the Enter keydown, as for Open submodule. Open submodule may take 150 ms more for the parent safety checks (SC-007).
+- Q: How many inputs does the SC-009 p95 of the permanent Delete count? → A: At least 20 probe inputs and the Enter that starts the Delete (SC-009).
+
 ## User Scenarios & Testing *(mandatory)*
 
 Feature 001 shows the commit details of a selected history row, with the static line "Changed files are not shown in this version." Feature 004 adds the Commit view with file trees, Show in Explorer for a file, a one-line ignore action, and the Submodules group. This feature makes history inspectable and makes the Commit view a place to act on files. Git Extensions is the reference for the functions, and Arbareto must be faster and safer.
@@ -405,14 +414,14 @@ This feature changes these requirements for builds that include it. The earlier 
 ### Measurable Outcomes
 
 - **SC-001**: On the 1,000-file commit fixture, the changed-file list equals Git's own two-tree comparison exactly. The list shows within 300 ms after the selection, and the first diff within 150 ms more. A move to the next file shows its diff within 150 ms (warm packaged build, median of 10 runs).
-- **SC-002**: On the 100,001-file commit fixture, the list shows exactly the first files up to the bound and the limit text. The process tree uses at most 64 MiB more memory than before the selection.
+- **SC-002**: On the 100,001-file commit fixture, the list shows exactly the first files up to the bound and the limit text. For v0.1.0, the peak process-tree memory is at most 624 MiB above the memory before the selection. The bound is the highest recorded peak growth, 559.8 MiB, plus a 64 MiB margin (research.md "SC-002 memory budget for v0.1.0"). T104 pages the list and restores the 64 MiB budget.
 - **SC-003**: In every Delete fixture, the listed paths are absent, all other working-file bytes and the index digest are unchanged, and each recycled item is in the Recycle Bin. In the stale fixture and in the fixtures that swap a folder on the path for a link or a junction, nothing outside the reviewed paths changes. No fixture claims to cover a change during a path-based step (known limit of FR-031). Each Recycle Bin test purges the items that it moved and changes no other Recycle Bin item.
 - **SC-004**: Every shown tree equals the reference sort of FR-015, in all fixtures, including names that are not valid UTF-8.
-- **SC-005**: In every ignore fixture, the preview equals the change of the ignored set that Git lists after a real save of the same text on a copy. No fixture shows an approximate preview. On Windows, a preview of 100,000 paths shows within 5 s (warm packaged build, median of 10 runs).
+- **SC-005**: In every ignore fixture, the preview equals the change of the ignored set that Git lists after a real save of the same text on a copy. No fixture shows an approximate preview. On Windows, a preview of 100,000 paths shows within 5 s plus 3.55 s for each directory-only pattern (a pattern with a last `/`) of the ignore files (warm packaged build, median of 10 runs). Without such a pattern, the bound is 5 s. The 3.55 s is Git's own measured cost per pattern (research.md "SC-005 directory-only patterns").
 - **SC-006**: Every blame attribution equals Git's own blame with the same options, for every line of every fixture. On a 10,000-line file with 5,000 commits and no ignore list, the first progress shows within 500 ms. Cancel ends Git within 1 second, with and without an ignore list.
-- **SC-007**: Open submodule and Open parent repository each take at most the time of a normal open of that repository. No repository program of the parent runs before its approval in any fixture.
+- **SC-007**: Open submodule and Open parent repository each take at most 150 ms more than a normal open of that repository. A normal open is Recent repositories (Ctrl+R), then Enter on the entry of that repository. Each time runs from the Enter keydown to the shown repository. The 150 ms is for the parent safety checks of FR-049, which run before the registration. No repository program of the parent runs before its approval in any fixture.
 - **SC-008**: The branch card shows for every cut name and for no name that fits. The gone mark shows exactly for the branches of the FR-064 rule.
-- **SC-009**: During every read and action of this feature, the window keeps the feature 001 SC-005 targets: 95% of inputs show a response within 100 ms, and every input within 500 ms.
+- **SC-009**: During every read and action of this feature, the window keeps the feature 001 SC-005 targets: 95% of inputs show a response within 100 ms, and every input within 500 ms. During the permanent Delete of 1,000 files, at least 20 probe inputs go to the window. The Enter that starts the Delete counts in the p95 and in the 500 ms maximum.
 - **SC-010**: Keyboard-only users complete each P1 story and the ignore editor story. Each new control has an accessible name, visible focus, and a contrast of at least 4.5:1.
 - **SC-011**: A review of the requirement-to-test map finds no outcome that Git message text, timing, or a name pattern decides.
 

@@ -82,6 +82,7 @@ export function startHttpRemote(options: HttpRemoteOptions): HttpRemote {
   let throttle: { bytes: number; intervalMs: number } | null = null;
   const procs: Subprocess[] = [];
   const running = new Set<Subprocess>();
+  let stopping = false;
   const expected = `Basic ${Buffer.from(`${options.user}:${options.password}`).toString("base64")}`;
 
   const body = (bytes: Uint8Array<ArrayBuffer>): BodyInit => {
@@ -107,6 +108,8 @@ export function startHttpRemote(options: HttpRemoteOptions): HttpRemote {
       if (req.headers.get("authorization") !== expected) return new Response("sign-in required\n", { status: 401, headers: { "WWW-Authenticate": 'Basic realm="arbareto"' } });
       const url = new URL(req.url);
       const input = new Uint8Array(await req.arrayBuffer());
+      // After `stop` no CGI process starts. The check and the spawn run in one tick.
+      if (stopping) return new Response("server stopped\n",{ status: 503 });
       // git-http-backend(1) "ENVIRONMENT"; REMOTE_USER enables receive-pack.
       const env: Record<string, string> = {
         ...options.env,
@@ -164,12 +167,22 @@ export function startHttpRemote(options: HttpRemoteOptions): HttpRemote {
     throttle(bytes, intervalMs = 20) {
       throttle = bytes === null ? null : { bytes, intervalMs };
     },
+    // Waits for each CGI process, because a kill of the `git` root leaves its children in the repository.
+    // Each process gets its whole input and its output is read to the end, so it ends. `git` waits for its children.
     async stop() {
+      stopping = true;
       gate?.open();
       gate = null;
       await server.stop(true);
-      for (const proc of running) proc.kill();
-      await within(Promise.all([...running].map((p) => p.exited)), STOP_WAIT_MS, "the CGI processes");
+      const left = [...running];
+      try {
+        await within(Promise.all(left.map((p) => p.exited)), STOP_WAIT_MS, "the CGI processes");
+      } catch (error) {
+        // shortcut: ends the `git` roots only; their children can survive. Assign a Job at creation if this path fires.
+        const alive = left.filter((p) => p.exitCode === null && p.signalCode === null);
+        for (const proc of alive) proc.kill();
+        throw new Error(`${(error as Error).message}; PIDs ${alive.map((p) => p.pid).join(" ")}`);
+      }
     },
   };
 }

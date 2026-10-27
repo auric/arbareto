@@ -3,6 +3,9 @@
 
 #[cfg(windows)]
 mod bootstrap;
+// `build.rs` compiles the same file through `#[path]`.
+#[cfg(test)]
+mod build_channel;
 #[cfg(windows)]
 mod close;
 #[cfg(windows)]

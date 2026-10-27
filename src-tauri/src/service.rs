@@ -727,7 +727,7 @@ fn handshake_frame(facts: &Facts, stores: &Stores, contexts: &Contexts, restarte
         "buildIdentity": {
             "version": env!("CARGO_PKG_VERSION"),
             "commit": env!("ARBARETO_BUILD_IDENTITY"),
-            "signing": "unsigned",
+            "channel": env!("ARBARETO_RELEASE_CHANNEL"),
         },
         "markers": scan.markers.iter().map(Marker::handshake).collect::<Vec<_>>(),
         "unloadedMarkers": scan.unloaded,

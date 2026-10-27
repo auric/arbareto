@@ -20,7 +20,7 @@ const { AboutDialog, AboutOverview } = await import("../../src/frontend/about/Ab
 const LABEL = "Unqualified platform";
 const SCOPES: Environment["platformScope"][] = ["other", "qualification-target"];
 const plain = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-const BUILD: Environment["buildIdentity"] = { version: "0.1.0", commit: "c950776a2b4e0c2f6f7e6b1d9a1f3c5e7d9b0a12", signing: "unsigned" };
+const BUILD: Environment["buildIdentity"] = { version: "0.1.0", commit: "c950776a2b4e0c2f6f7e6b1d9a1f3c5e7d9b0a12", channel: "local" };
 
 describe("Unqualified platform label", () => {
   for (const scope of SCOPES) {

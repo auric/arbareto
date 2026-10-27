@@ -3,7 +3,7 @@
 
 import { z } from "zod";
 import { BRANCH_NAME_BYTES } from "./branch-name";
-import { DamagedMarker, decodedBytes, FILE_FACT_ERRORS, LinuxPath, SYNC_ACTIONS, SyncAction, TRUST_ACTIONS, TrustDetails, UtcTime } from "./channel";
+import { BuildIdentity, DamagedMarker, decodedBytes, FILE_FACT_ERRORS, LinuxPath, SYNC_ACTIONS, SyncAction, TRUST_ACTIONS, TrustDetails, UtcTime } from "./channel";
 import {
   BLAME_UNAVAILABLE_REASONS,
   DESTINATION_NOT_EMPTY_REASONS,
@@ -579,7 +579,7 @@ export type GitReason = z.infer<typeof GitReason>;
 
 // Contract §3 `getEnvironment`. No environment variable enters this result.
 export const EnvironmentResult = z.strictObject({
-  buildIdentity: z.strictObject({ version: z.string(), commit: z.string(), signing: z.literal("unsigned") }),
+  buildIdentity: BuildIdentity,
   platformScope: z.enum(["qualification-target", "other"]),
   selectedPath: z.string().optional(),
   executablePath: z.string().optional(),

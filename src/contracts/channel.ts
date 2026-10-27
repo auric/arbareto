@@ -159,18 +159,20 @@ export const SavedGit = z.strictObject({
   digest: Fingerprint,
 });
 
+// Feature 007 data-model §1 and §2. `commit` is a SHA-1 or SHA-256 commit ID.
+export const BuildIdentity = z.strictObject({
+  version: VersionText,
+  commit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})(?:-dirty)?$/),
+  channel: z.enum(["local", "preview"]),
+});
+
 export const Handshake = z.strictObject({
   version: z.literal(1),
   restarted: z.boolean(),
   platformScope: z.enum(["qualification-target", "other"]),
   osBuild: Count,
   webView2Version: z.string().max(WEBVIEW2_VERSION_BYTES).regex(/^[\x00-\x7f]*$/),
-  // `commit` is a SHA-1 or SHA-256 commit ID.
-  buildIdentity: z.strictObject({
-    version: VersionText,
-    commit: z.string().regex(/^(?:[0-9a-f]{40}|[0-9a-f]{64})(?:-dirty)?$/),
-    signing: z.literal("unsigned"),
-  }),
+  buildIdentity: BuildIdentity,
   markers: z.array(Marker).max(RECOVERY_MARKERS_PER_HANDSHAKE),
   unloadedMarkers: Count,
   damagedMarkers: z.array(DamagedMarker).max(DAMAGED_MARKERS_PER_HANDSHAKE),

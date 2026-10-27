@@ -4,6 +4,9 @@
 use std::path::Path;
 use std::process::Command;
 
+#[path = "src/build_channel.rs"]
+mod build_channel;
+
 // Tauri invokes a command by its Rust function name, so the names are snake_case.
 const COMMANDS: &[&str] = &[
     "get_environment",
@@ -82,10 +85,18 @@ const SCHEMAS: [&str; 11] = [
 ];
 
 fn main() {
-    println!(
-        "cargo:rustc-env=ARBARETO_BUILD_IDENTITY={}",
-        build_identity()
-    );
+    let identity = build_identity();
+    println!("cargo:rerun-if-env-changed=ARBARETO_RELEASE_CHANNEL");
+    let channel = match std::env::var("ARBARETO_RELEASE_CHANNEL") {
+        Ok(value) => build_channel::resolve(Some(&value), &identity),
+        Err(std::env::VarError::NotPresent) => build_channel::resolve(None, &identity),
+        Err(std::env::VarError::NotUnicode(_)) => {
+            Err("ARBARETO_RELEASE_CHANNEL is not Unicode".to_string())
+        }
+    }
+    .unwrap_or_else(|error| panic!("{error}"));
+    println!("cargo:rustc-env=ARBARETO_BUILD_IDENTITY={identity}");
+    println!("cargo:rustc-env=ARBARETO_RELEASE_CHANNEL={channel}");
     // Cargo treats a missing `rerun-if-changed` path as stale, so the script runs in every build (T063).
     let out_dir = std::env::var("OUT_DIR").expect("Cargo sets OUT_DIR for build scripts");
     generate_schema_types(Path::new(&out_dir));

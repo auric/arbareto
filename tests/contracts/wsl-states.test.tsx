@@ -275,7 +275,7 @@ describe("Starting WSL distro in the workbench", () => {
   // Contract §11 "Distro start": a marker dismissal in a stopped distro reports phase `wsl-starting`. Contract §11 defines Cancel only for a registration or restore.
   test("a marker dismissal in phase wsl-starting shows the state without Cancel, and its response removes it", async () => {
     const marker = { markerId: crypto.randomUUID(), kind: "commit", startedAt: "2026-10-01T10:00:00Z", worktreeRoot: `\\\\wsl.localhost\\${DISTRO}\\home\\me\\repo` };
-    const environment = { buildIdentity: { version: "0.1.0", commit: "c".repeat(40), signing: "unsigned" }, platformScope: "qualification-target", detectedVersion: "2.55.0.windows.3", minimumVersion: "2.55.0.windows.3", qualification: "unverified", markers: [marker], damagedMarkers: [] };
+    const environment = { buildIdentity: { version: "0.1.0", commit: "c".repeat(40), channel: "local" }, platformScope: "qualification-target", detectedVersion: "2.55.0.windows.3", minimumVersion: "2.55.0.windows.3", qualification: "unverified", markers: [marker], damagedMarkers: [] };
     const { host, pending } = await mount({ environment });
     await settle();
     await act(async () => button(host, "Dismiss")!.click());

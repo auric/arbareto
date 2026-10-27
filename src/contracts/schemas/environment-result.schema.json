@@ -6,20 +6,26 @@
       "type": "object",
       "properties": {
         "version": {
-          "type": "string"
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[\\x20-\\x7e]*$"
         },
         "commit": {
-          "type": "string"
-        },
-        "signing": {
           "type": "string",
-          "const": "unsigned"
+          "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})(?:-dirty)?$"
+        },
+        "channel": {
+          "type": "string",
+          "enum": [
+            "local",
+            "preview"
+          ]
         }
       },
       "required": [
         "version",
         "commit",
-        "signing"
+        "channel"
       ],
       "additionalProperties": false
     },

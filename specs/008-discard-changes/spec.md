@@ -50,7 +50,7 @@ The user answered the plan on 2026-10-27 and asked for one design change.
 
 - Q: Where does the hook reading go? → A: Only into this spec (the hook answer above) and the plan's constitution check. The constitution gets no patch.
 - Q: What happens to the DACL of a file? → A: When the batch 0 probe shows that the swap loses the file's own DACL, the write copies it to the new file (FR-035). A missing `windows` crate feature goes through the dependency review first.
-- Q: Does Revert file keep the 8 MiB limit? → A: No. Git Extensions has no size limit, because Git writes the file. Git's `checkout-index --temp` writes the working-tree form of the index entry to its own temporary file in the worktree root. The shell checks that file, copies it beside the target, and swaps it over the target with the same atomic rename and expected checks (FR-019, FR-025, FR-028, FR-031). A case that the batch 0 probe shows as different from Git's own checkout refuses with `checkout-temp` (FR-038). Lines and hunks keep the in-memory path. Their bytes cross in one frame of at most 8 MiB in v0.1.0. A chunked transfer can lift that bound later.
+- Q: Does Revert file keep the 8 MiB limit? → A: No. Git Extensions has no size limit, because Git writes the file. Git's `checkout-index --temp` writes the working-tree form of the index entry to its own temporary file in the worktree root. The shell checks that file, copies it beside the target, and swaps it over the target with the same atomic rename and expected checks (FR-019, FR-025, FR-028, FR-031). The batch 0 probe G9 shows Git's own restore bytes in every fixture on Windows and in WSL (plan research R15). Lines and hunks keep the in-memory path. Their bytes cross in one frame of at most 8 MiB in v0.1.0. A chunked transfer can lift that bound later.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -170,7 +170,7 @@ A developer uses the same actions in a WSL repository. The write runs inside the
 - The branch is unborn. HEAD has no file, so Revert file follows the new-file rule for every file (Clarifications, 2026-10-27). Revert all unstaged changes and the unstaged line revert work as usual.
 - The working file is read-only, has more than one hard link, or is a link or a junction. The review refuses with its reason (FR-034).
 - A folder on the path becomes a link or a junction after the review. The write changes nothing outside the reviewed path and reports the file as changed.
-- Windows Defender or another program holds the file during the rename. The write fails with the OS status, and the file keeps its old bytes. Arbareto does not retry by itself.
+- Windows Defender or another program holds the file during the rename. The write fails with the OS status, and the file keeps its old bytes. Arbareto does not retry by itself. The batch 0 probe W9 saw 0 to 2 access-denied renames in 1,000 with Windows Defender on. Such a file gets the outcome failed with `access-denied`, nothing changed, and the FR-041 access-denied text. This outcome is valid, not a defect.
 - The disk is full during the write of the temporary file. The target keeps its old bytes, and no temporary file stays.
 - Revert file of a very large file needs free space for three copies for a short time: the target, Git's temporary file, and the copy beside the target. A full disk fails with its FR-041 text, and the target keeps its bytes.
 - The application ends during a write. The target holds its old bytes or its new bytes, never a part, and never no file.
@@ -299,7 +299,6 @@ This feature changes these requirements for builds that include it. The earlier 
   - `file-attributes`: "Arbareto cannot keep the file attributes of <file>. It did not change the file."
   - `security`: "Arbareto cannot keep the permissions of <file>. It did not change the file."
   - `xattr` (WSL): "<file> has extended attributes. Arbareto does not change it."
-  - `checkout-temp`: "Git's temporary copy of <file> can differ from its checkout. Arbareto does not revert this file." The batch 0 probe G9 names the cases (plan research R14).
   - The plan research R8 and R9 decide `file-attributes`, `security`, and `xattr` after the batch 0 probes.
   - `stale`: "<file> changed after the review. Arbareto changed nothing. Check the changes, then try again." For lines, the text ends with "then select the lines again".
   - The index eligibility reasons of an action with a staged part: `sparse-index`, `split-index`, `index-change-hook`, `executable-monitor`, `unqualified-monitor`, and on WSL `shared-repository`.

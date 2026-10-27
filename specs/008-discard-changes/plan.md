@@ -20,9 +20,9 @@ Six facts drive the design (research R2 to R10):
 
 ## Technical Context
 
-**Language/Version**: The 001 to 006 versions stay: TypeScript `7.0.2`, Bun `1.4.4` (exact), Rust/Cargo `1.98.0`.
+**Language/Version**: The 001 to 006 versions stay: TypeScript `7.0.2`, Bun `1.4.4` (exact), Rust/Cargo `1.99.0`. Main and this branch have no `rust-toolchain.toml`, so the host toolchain (Cargo 1.99.0) applies. The 007 branch pins 1.99.0 in `rust-toolchain.toml`.
 
-**Primary Dependencies**: No new package and no new Rust crate. The shell uses the installed `windows` crate features of `file_replace.rs` and `file_facts.rs`. The DACL copy runs only when probe W2 shows that the swap loses the file's own DACL (T013). The enabled feature `Win32_Security` holds `GetKernelObjectSecurity` and `SetKernelObjectSecurity` on a handle. When they do not suffice, `Win32_Security_Authorization` (`GetSecurityInfo`, `SetSecurityInfo`) goes through its own dependency review first (constitution VIII).
+**Primary Dependencies**: No new package and no new Rust crate. The shell uses the installed `windows` crate features of `file_replace.rs` and `file_facts.rs`. Probe W2 showed that the swap loses the file's own DACL (research R15). The DACL copy uses `GetKernelObjectSecurity`, `SetSecurityDescriptorControl` with `SE_DACL_AUTO_INHERIT_REQ`, and `SetKernelObjectSecurity` on a handle, all in the enabled feature `Win32_Security` (T013). No new `windows` feature is needed.
 
 **Storage**: None. The feature changes repository data only: the index through the owned lock, and working files through the atomic replace.
 
@@ -111,7 +111,7 @@ tests/
 
 | Step | Files and symbols | Behavior change | Tests that prove it | Main risk |
 |---|---|---|---|---|
-| P0.1 Git facts | new `tests/git/revert-facts.test.ts` (WP1) | None. | G3 to G10 of research R14. | `checkout-index --temp` differs from Git's restore for a conversion (G9). Then that case refuses with `checkout-temp`. |
+| P0.1 Git facts | new `tests/git/revert-facts.test.ts` (WP1) | None. | G3 to G10 of research R14. | `checkout-index --temp` differs from Git's restore for a conversion (G9). R15: no fixture differs, so no refusal covers it. |
 | P0.2 Windows facts | new `tests/windows/revert-facts.test.ts`, probe cargo tests in `file_replace.rs` (WP1) | None. | W1 to W11. | Clearing the delete disposition fails on the host (W6). Then the 005 temporary name stays with a recorded window. |
 | P0.3 WSL facts | new `tests/wsl/revert-facts.test.ts` (WP1) | None. | L1 to L7. | `linkat` through `/proc/self/fd` fails from Perl (L2). Then the 005 temporary name stays. |
 | P1 Contracts | `src/contracts/*`, `tests/vectors/` (WP2) | Adds the actions, phases, reasons, bounds, keys, and the `ident` attribute read. | Schema tests, vectors, the shortcut map test. | typify drops ranges. Keep explicit Rust checks. |
@@ -177,7 +177,7 @@ Revert file and Revert all unstaged changes write each file in batches of at mos
 
 Rules:
 - `checkout-index --temp` takes no index lock and writes no index (`builtin/checkout-index.c`, `--temp` branch). It runs no hook (research R10). It loads the index, so the eligibility refusals and the read gate apply (D2). The review refuses `filter` and `LFS` before step 2, so Git runs no filter program (spec FR-004).
-- The case list of probe G9 decides `checkout-temp`: a conversion for which `checkout-index --temp` and Git's `restore` give other bytes refuses at review with that reason. The list is empty (research R15): each G9 fixture gives the bytes of Git's restore on Windows and in the distro. So no case refuses with `checkout-temp`.
+- Probe G9 gave the bytes of Git's restore for each fixture on Windows and in the distro (research R15). So the review has no refusal for the output of `checkout-index --temp` (user decision, 2026-10-27).
 - The final rename stays inside the target folder, so the volume rule holds for it. The Git temporary file lies in the worktree root, on the same volume as every target that the walk reaches, because the walk refuses every reparse point on the path. A WSL `st_dev` that differs between the root and the target folder refuses with `not-regular`.
 - A target bound as absent gets the folder ACL on Windows, because the copy is created in the target folder. On WSL it gets `0777 & ~umask` for an entry with mode 100755 and `0666 & ~umask` for 100644, as Git's checkout creates a file (`entry.c` `create_file`).
 
@@ -199,7 +199,7 @@ Rules:
 
 - `fileReplace {repositoryId, target: "working", path, expected, facts, bytes | source, folders}` (contract Δ6). `bytes` carries a line revert. `source` names Git's temporary file in the worktree root with its size and SHA-256. The shell checks the path below the worktree root with `file_facts::below`, refuses a first component that names the Git directory or `.git`, and requires the started marker action of the run.
 - `check` (`file_replace.rs:118`) keeps its walk, its held parent, its held target, and its size and SHA-256 compare. It adds the R8 facts under the held target handle: the attributes, the link count (`hard-link`), the read-only and encrypted attributes, the owner and DACL. Any difference from `facts` gives `stale`. The target digest streams through the held handle, so `check` has no 1 MiB read bound for this target.
-- `write` (`:180`) creates the temporary file with the delete disposition on close (W6). It sets the attribute set and the creation time through `FileBasicInformation` (W1, W3). The rename sets the archive attribute, so the archive attribute is no compared fact (research R15). W2 showed that the swap loses the file's own DACL (research R15), so it copies the DACL as T013 decides. It compares the resulting owner and DACL with the old file. Then it writes `bytes`, or copies `source` with a streamed SHA-256 that must equal the request, flushes, clears the delete disposition, and renames with `FILE_RENAME_POSIX_SEMANTICS | FILE_RENAME_REPLACE_IF_EXISTS`. A target bound as absent renames without `REPLACE_IF_EXISTS`, so an existing name gives `stale` (as 005 N7).
+- `write` (`:180`) creates the temporary file with the delete disposition on close (W6). It sets the attribute set and the creation time through `FileBasicInformation` (W1, W3). The rename sets the archive attribute, so the archive attribute is no compared fact (research R15). W2 showed that the swap loses the file's own DACL (research R15), so it copies the old descriptor with `SE_DACL_AUTO_INHERIT_REQ` set through `SetKernelObjectSecurity` (T013). It compares the resulting owner and DACL with the old file. Then it writes `bytes`, or copies `source` with a streamed SHA-256 that must equal the request, flushes, clears the delete disposition, and renames with `FILE_RENAME_POSIX_SEMANTICS | FILE_RENAME_REPLACE_IF_EXISTS`. A target bound as absent renames without `REPLACE_IF_EXISTS`, so an existing name gives `stale` (as 005 N7).
 - `source`: the shell opens the named file relative to the held worktree root without following a link, and requires a regular file with one link and the requested size. After the rename, and after every failure that comes after the source open, it deletes the source through that handle. A failure before the open leaves the source to `tempRemove` (D5a step 6).
 - `tempRemove {repositoryId, name, expected: {size, sha256}}`: one file in the worktree root, deleted through its handle only when its facts equal `expected`. Reply `removed`, `stale`, `absent`, or `error {code}`.
 - `folders` lists the missing folder names below the deepest existing folder. The shell creates each with `FILE_CREATE` and `FILE_DIRECTORY_FILE` relative to the held parent and `OBJ_DONT_REPARSE` (W10).

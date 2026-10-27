@@ -213,7 +213,6 @@ describe("contract Δ9 codes", () => {
       "security",
       "file-attributes",
       "xattr",
-      "checkout-temp",
       "nothing-to-revert",
     ]);
     expect([...(E.UNTRACKED_IN_WAY_REASONS ?? [])]).toEqual(["untracked-in-way"]);

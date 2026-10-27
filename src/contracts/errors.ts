@@ -168,7 +168,6 @@ export const WORKBENCH_UNAVAILABLE_REASONS = [
   "security",
   "file-attributes",
   "xattr",
-  "checkout-temp",
   "nothing-to-revert",
 ] as const;
 export type WorkbenchUnavailableReason = (typeof WORKBENCH_UNAVAILABLE_REASONS)[number];

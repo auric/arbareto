@@ -1850,7 +1850,6 @@
             "security",
             "file-attributes",
             "xattr",
-            "checkout-temp",
             "nothing-to-revert",
             "untracked-in-way",
             "not-empty",

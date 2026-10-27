@@ -147,7 +147,7 @@ describe("contract Δ3 plans (data-model §5) and Δ9 reasons", () => {
     expect(reviewed("revert-lines", { count: 2, paths: paths(2), submodules: 1 })).toBe(false);
   });
 
-  const REASONS = ["untracked", "in-the-way", "attributes", "ident", "unstaged-changes", "not-regular", "hard-link", "read-only", "encrypted", "owner", "security", "file-attributes", "xattr", "checkout-temp", "nothing-to-revert", "limit"];
+  const REASONS = ["untracked", "in-the-way", "attributes", "ident", "unstaged-changes", "not-regular", "hard-link", "read-only", "encrypted", "owner", "security", "file-attributes", "xattr", "nothing-to-revert", "limit"];
   test("WORKBENCH_UNAVAILABLE gains the Δ9 reasons, and a review refusal names each", () => {
     expect(E.WORKBENCH_UNAVAILABLE_REASONS).toEqual(expect.arrayContaining(REASONS));
     for (const reason of REASONS) expect({ reason, ok: ok(R, { reason }) }).toEqual({ reason, ok: true });

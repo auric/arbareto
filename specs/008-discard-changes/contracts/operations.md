@@ -76,7 +76,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 ## Δ9 Error codes (001 §9)
 
-- New `WORKBENCH_UNAVAILABLE` reasons: `untracked`, `in-the-way`, `attributes`, `ident`, `unstaged-changes`, `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, `xattr`, `checkout-temp`, `nothing-to-revert`. `limit` exists (004). The `checkout-temp` case list is empty (research R15), so no case gives `checkout-temp`.
+- New `WORKBENCH_UNAVAILABLE` reasons: `untracked`, `in-the-way`, `attributes`, `ident`, `unstaged-changes`, `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, `xattr`, `nothing-to-revert`. `limit` exists (004). Probe G9 gave Git's restore bytes in every fixture (research R15), so no reason covers `checkout-index --temp` output.
 - New `STALE_REVIEW` reason: `revert-changed`.
 - The per-file outcomes of data-model §8 are result fields, not codes.
 

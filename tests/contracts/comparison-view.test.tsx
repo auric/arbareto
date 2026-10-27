@@ -159,6 +159,31 @@ describe("selected lines (feature 004 plan.md D16)", () => {
   });
 });
 
+describe("diff scrolling (feature 005 plan.md D3, T105)", () => {
+  // Pierre 1.5.1 style.css sets `[data-code]{overflow: scroll clip}` and `container-type: inline-size`, so the horizontal scroll bar sits at the end of the rows, below the pane. The headless Edge and packaged checks measure the layout.
+  test("Pierre's code grid is no scroll container and takes its content width, so the pane scrolls in both directions", async () => {
+    const { PATCH_CSS } = await import("../../src/frontend/changes/patch-css");
+    const host = await show(
+      <div>
+        <style>{PATCH_CSS}</style>
+        <pre data-diff="" data-overflow="scroll">
+          <code data-code="">
+            <div data-annotation-content="" />
+          </code>
+        </pre>
+      </div>,
+    );
+    host.style.setProperty("--diffs-column-number-width", "40px");
+    const code = getComputedStyle(host.querySelector("[data-code]")!);
+    expect(code.overflow).toBe("clip");
+    expect(code.width).toBe("max-content");
+    expect(code.minWidth).toBe("100%");
+    expect(code.getPropertyValue("container-type")).toBe("normal");
+    expect(getComputedStyle(host.querySelector("[data-diff]")!).getPropertyValue("container-type")).toBe("inline-size");
+    expect(getComputedStyle(host.querySelector("[data-annotation-content]")!).width).toBe("calc(100cqi - 40px)");
+  });
+});
+
 describe("diff theme (T396)", () => {
   // Pierre 1.5.1 defaults `themeType` to "system", and its `:host` rule sets `color-scheme: light dark`. So the diff follows the OS scheme unless the view passes the app theme.
   test("the diff theme type follows View > Theme, not the OS scheme, also under forced colors", async () => {

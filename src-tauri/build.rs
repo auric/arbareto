@@ -73,6 +73,7 @@ const COMMANDS: &[&str] = &[
     "remove_dictionary",
     "set_spelling",
     "open_licence_link",
+    "open_release_link",
 ];
 
 /// The exported JSON Schema files of the values that the shell reads (contract §1 "Schemas").

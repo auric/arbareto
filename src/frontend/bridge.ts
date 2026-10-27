@@ -167,6 +167,8 @@ export function createBridge(onSessionChange?: () => void, onTextScale?: (value:
     removeDictionary: (payload: Payload<"removeDictionary">, onProgress?: OnProgress) => call("removeDictionary", {}, payload, onProgress),
     setSpelling: (payload: Payload<"setSpelling">, onProgress?: OnProgress) => call("setSpelling", {}, payload, onProgress),
     openLicenceLink: (payload: Payload<"openLicenceLink">, onProgress?: OnProgress) => call("openLicenceLink", {}, payload, onProgress),
+    // Feature 007 contracts/release.md §5.
+    openReleaseLink: (payload: Payload<"openReleaseLink">, onProgress?: OnProgress) => call("openReleaseLink", {}, payload, onProgress),
   };
 }
 

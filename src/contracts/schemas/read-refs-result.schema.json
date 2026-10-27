@@ -400,7 +400,9 @@
                     "STASH_KEPT",
                     "BLAME_UNAVAILABLE",
                     "SUBMODULE_UNAVAILABLE",
-                    "DICTIONARY_UNAVAILABLE"
+                    "DICTIONARY_UNAVAILABLE",
+                    "RELEASE_LINK_UNAVAILABLE",
+                    "RELEASE_LINK_OPEN_FAILED"
                   ]
                 }
               },
@@ -679,7 +681,9 @@
                     "STASH_KEPT",
                     "BLAME_UNAVAILABLE",
                     "SUBMODULE_UNAVAILABLE",
-                    "DICTIONARY_UNAVAILABLE"
+                    "DICTIONARY_UNAVAILABLE",
+                    "RELEASE_LINK_UNAVAILABLE",
+                    "RELEASE_LINK_OPEN_FAILED"
                   ]
                 }
               },

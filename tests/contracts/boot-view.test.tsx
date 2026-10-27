@@ -186,7 +186,7 @@ describe("build channel marker", () => {
     expect(releaseButtons(html)).toHaveLength(0);
   });
 
-  test.todo("channel preview shows the Preview line, no local package line, and no release button", () => {
+  test("channel preview shows the Preview line, no local package line, and no release button", () => {
     const html = render(environment({ buildIdentity: { version: "0.1.0", commit: "c".repeat(40), channel: "preview" } }));
     expect(plain(html)).toContain("Preview");
     expect(plain(html)).not.toContain("Unsigned local test package");

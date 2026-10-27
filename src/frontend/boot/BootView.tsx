@@ -138,7 +138,7 @@ export function BootView(props: BootProps) {
           {refused === null ? null : <GitRefused response={refused} />}
         </section>
       )}
-      {env.buildIdentity.channel === "local" && <p className="text-warning">Unsigned local test package</p>}
+      {env.buildIdentity.channel === "local" ? <p className="text-warning">Unsigned local test package</p> : <p>Preview</p>}
       {env.platformScope === "other" && <p className="text-warning">Unqualified platform</p>}
       <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 [&_dd]:break-all [&_dt]:text-muted-text">
         <Fact label="Build">

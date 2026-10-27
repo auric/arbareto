@@ -136,6 +136,8 @@ const PAYLOADS: Record<string, { renderer?: () => Json; service?: () => Json }> 
   removeDictionary: { renderer: () => ({ language: "uk" }), service: () => ({ language: "uk" }) },
   setSpelling: { renderer: () => ({ enabled: true, languages: ["en", "uk"] }) },
   openLicenceLink: { renderer: () => ({ language: "en" }) },
+  // Feature 007 contracts/release.md §5.
+  openReleaseLink: { renderer: () => ({ target: "tag-source" }) },
 };
 
 const NAMES = Object.keys(PAYLOADS);
@@ -236,9 +238,9 @@ const sidesOf = (name: string) =>
 
 describe("operation list", () => {
   // Feature 002 plan.md P7 retires the contract §3 `readHistory`.
-  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, the 10 feature 004 contract Δ1 operations, the 6 feature 005 contract Δ1 operations, and the 7 feature 006 contract Δ1 operations", () => {
+  test("holds exactly the 25 remaining contract §3 operations, the 5 feature 002 contract Δ3 operations, the 11 feature 003 contract Δ1 operations, the 10 feature 004 contract Δ1 operations, the 6 feature 005 contract Δ1 operations, the 7 feature 006 contract Δ1 operations, and the feature 007 openReleaseLink", () => {
     expect([...OPERATIONS].sort()).toEqual([...NAMES].sort());
-    expect(OPERATIONS.length).toBe(64);
+    expect(OPERATIONS.length).toBe(65);
   });
 
   for (const name of NAMES) {

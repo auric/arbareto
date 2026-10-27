@@ -141,6 +141,7 @@ export type WorkbenchBridge = RequestBridge &
     | "removeDictionary"
     | "setSpelling"
     | "openLicenceLink"
+    | "openReleaseLink"
     | "setDefaultPullAction"
     | "clone"
     | "connectInTerminal"
@@ -2297,6 +2298,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
               build={environment.buildIdentity}
               client={client}
               finalFocus={helpTrigger}
+              bridge={bridge}
               onClose={() => setAboutOpen(false)}
             />
             </Suspense>

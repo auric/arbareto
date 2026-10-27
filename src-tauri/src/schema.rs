@@ -1217,7 +1217,7 @@ mod tests {
     /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, sync review, sync, clone, branch, worktree, Git settings, and workbench results in `Response.result` and reads no field of them.
     /// The shell writes the settings result of the shell-only settings operations and never reads it.
     /// The same holds for the `chooseWorktreeFolder` result.
-    const NOT_READ: [&str; 43] = [
+    const NOT_READ: [&str; 44] = [
         "service-envelope",
         "open-recent-repository-result",
         "recent-repositories-result",
@@ -1264,6 +1264,8 @@ mod tests {
         "dictionary-run-result",
         "remove-dictionary-result",
         "open-licence-link-result",
+        // Feature 007 contracts/release.md §5. The shell writes the `openReleaseLink` result and never reads it.
+        "open-release-link-result",
     ];
 
     /// The result of the shell code path for one vector. `None`: the shell reads no value of that schema.
@@ -1405,9 +1407,10 @@ mod tests {
         // Feature 004 T127 adds 2 `native-first-envelope` vectors for the `track` branch form (contract Δ3).
         // Feature 006 T061 adds the 5 `read-dictionary-result` chunk vectors, 2 of them new (contract Δ1).
         // Feature 007 T011 adds the 2 `handshake` vectors of a `signing` key and a `release` channel.
+        // Feature 007 T013 adds 3 `native-first-envelope` vectors for `openReleaseLink` (contracts/release.md §5).
         assert_eq!(
             checked,
-            if cfg!(windows) { 235 } else { 230 },
+            if cfg!(windows) { 238 } else { 233 },
             "shell-read vectors"
         );
     }

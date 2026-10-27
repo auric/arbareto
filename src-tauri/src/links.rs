@@ -52,18 +52,23 @@ impl Launcher for Shell {
 /// Opens `url` on a new thread with COM initialized, as Microsoft Learn `ShellExecuteW` asks.
 /// True when `ShellExecuteW` returned a value above 32.
 pub fn open(launcher: &dyn Launcher, url: &str) -> bool {
+    run(launcher, url).is_some_and(|value| value > 32)
+}
+
+/// The `ShellExecuteW` return value of `open`. `None` when `CoInitializeEx` fails or the thread panics.
+pub fn run(launcher: &dyn Launcher, url: &str) -> Option<isize> {
     std::thread::scope(|scope| {
         scope
             .spawn(|| {
                 if !launcher.initialize() {
-                    return false;
+                    return None;
                 }
-                let opened = launcher.execute(url) > 32;
+                let value = launcher.execute(url);
                 launcher.uninitialize();
-                opened
+                Some(value)
             })
             .join()
-            .unwrap_or(false)
+            .unwrap_or(None)
     })
 }
 

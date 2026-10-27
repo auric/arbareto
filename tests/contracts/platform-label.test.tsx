@@ -21,6 +21,8 @@ const LABEL = "Unqualified platform";
 const SCOPES: Environment["platformScope"][] = ["other", "qualification-target"];
 const plain = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
 const BUILD: Environment["buildIdentity"] = { version: "0.1.0", commit: "c950776a2b4e0c2f6f7e6b1d9a1f3c5e7d9b0a12", channel: "local" };
+// A `local` build shows no release button, so these cases never call the bridge.
+const BRIDGE = { openReleaseLink: () => Promise.reject(new Error("unused")) };
 
 describe("Unqualified platform label", () => {
   for (const scope of SCOPES) {
@@ -31,14 +33,14 @@ describe("Unqualified platform label", () => {
     });
 
     test(`the About overview with scope ${scope} ${scope === "other" ? "shows" : "does not show"} the label`, () => {
-      expect(plain(renderToStaticMarkup(<AboutOverview scope={scope} build={BUILD} repositoryUrl="https://github.com/auric/arbareto" />)).includes(LABEL)).toBe(scope === "other");
+      expect(plain(renderToStaticMarkup(<AboutOverview scope={scope} build={BUILD} repositoryUrl="https://github.com/auric/arbareto" bridge={BRIDGE} />)).includes(LABEL)).toBe(scope === "other");
     });
   }
 });
 
 // 006 tasks.md T049, plan.md D18 "About source line" (user decision of 2026-10-24).
 test("the About overview names the Hunspell source of the release of this version", () => {
-  const text = plain(renderToStaticMarkup(<AboutOverview scope="qualification-target" build={BUILD} repositoryUrl="https://github.com/auric/arbareto" />));
+  const text = plain(renderToStaticMarkup(<AboutOverview scope="qualification-target" build={BUILD} repositoryUrl="https://github.com/auric/arbareto" bridge={BRIDGE} />));
   expect(text).toContain("Hunspell source (LGPL-2.1): https://github.com/auric/arbareto/releases (release 0.1.0)");
 });
 
@@ -53,7 +55,7 @@ describe("About text selection", () => {
 
   test("the Build line of the Overview is inside a select-text root", () => {
     const host = document.createElement("div");
-    host.innerHTML = renderToStaticMarkup(<AboutOverview scope="qualification-target" build={BUILD} repositoryUrl={NOTICES.repositoryUrl} />);
+    host.innerHTML = renderToStaticMarkup(<AboutOverview scope="qualification-target" build={BUILD} repositoryUrl={NOTICES.repositoryUrl} bridge={BRIDGE} />);
     const build = [...host.querySelectorAll("p")].find((p) => p.textContent?.startsWith("Build:"))!;
     expect(build.closest(".select-text")).not.toBeNull();
     expect(host.firstElementChild!.classList.contains("select-text")).toBe(true);
@@ -68,7 +70,7 @@ describe("About text selection", () => {
   test(`Ctrl+A (${layout} layout) in the focused Overview panel selects only that panel and cancels the default action`, async () => {
     const host = document.body.appendChild(document.createElement("div"));
     const root = createRoot(host);
-    await act(async () => root.render(<AboutDialog open scope="qualification-target" build={BUILD} notices={NOTICES} client={{ width: 1280, height: 800 }} finalFocus={() => null} onClose={() => {}} />));
+    await act(async () => root.render(<AboutDialog open scope="qualification-target" build={BUILD} notices={NOTICES} client={{ width: 1280, height: 800 }} finalFocus={() => null} onClose={() => {}} bridge={BRIDGE} />));
     unmounts.push(() => {
       act(() => root.unmount());
       host.remove();
@@ -98,7 +100,7 @@ test("the Third-party notices tab shows the hunspell-wasm note beside its licenc
   };
   const host = document.body.appendChild(document.createElement("div"));
   const root = createRoot(host);
-  await act(async () => root.render(<AboutDialog open scope="qualification-target" build={BUILD} notices={notices as never} client={{ width: 1280, height: 800 }} finalFocus={() => null} onClose={() => {}} />));
+  await act(async () => root.render(<AboutDialog open scope="qualification-target" build={BUILD} notices={notices as never} client={{ width: 1280, height: 800 }} finalFocus={() => null} onClose={() => {}} bridge={BRIDGE} />));
   try {
     const tab = [...document.querySelectorAll<HTMLElement>('[role="tab"]')].find((t) => t.textContent === "Third-party notices")!;
     await act(async () => tab.click());

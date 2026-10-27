@@ -172,6 +172,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
   - `tag-source`: `<repository>/tree/<commit>`.
 - It opens the URL with the 006 `links.rs` opener (`ShellExecuteW` after `CoInitializeEx`). This needs feature 006 on `main`.
 - About Overview, `preview` channel: the line "Preview", a "Hunspell source" button next to the D18 note, and a "Source at this commit" button in the Corresponding Source line. `local` channel: no buttons; the text stays as today.
+- Release link failure text, 004 D15 pattern: "<button> did not complete: <code>." The button label is "Hunspell source" or "Source at this commit". The code is the response code, such as `RELEASE_LINK_OPEN_FAILED`. The text shows below the buttons and clears after a successful open.
 - A contract test in Rust checks both URLs for a fixed version and commit.
 
 ### D8 Release installer name and service file properties

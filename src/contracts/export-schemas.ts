@@ -28,6 +28,7 @@ import {
   NativeFirstEnvelope,
   OpenHistoryResult,
   OpenLicenceLinkResult,
+  OpenReleaseLinkResult,
   OpenRecentRepositoryResult,
   OpenSubmoduleResult,
   OperationResult,
@@ -122,6 +123,8 @@ export const EXPORTED = {
   "dictionary-run-result": DictionaryRunResult,
   "remove-dictionary-result": RemoveDictionaryResult,
   "open-licence-link-result": OpenLicenceLinkResult,
+  // Feature 007 contracts/release.md §5.
+  "open-release-link-result": OpenReleaseLinkResult,
   handshake: Handshake,
   "handshake-reply": HandshakeReply,
   "trust-record": TrustRecord,

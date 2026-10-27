@@ -99,6 +99,8 @@ const SAMPLE_CALLS: Record<string, (b: Bridge) => Promise<unknown>> = {
   removeDictionary: (b) => b.removeDictionary({ language: "uk" }),
   setSpelling: (b) => b.setSpelling({ enabled: false, languages: ["en", "uk"] }),
   openLicenceLink: (b) => b.openLicenceLink({ language: "en" }),
+  // Feature 007 contracts/release.md §5.
+  openReleaseLink: (b) => b.openReleaseLink({ target: "hunspell-source" }),
 };
 
 // tasks.md T389. `tsc` checks this function. It never runs. A target variable with a key outside the contract must not compile.

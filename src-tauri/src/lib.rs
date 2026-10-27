@@ -38,6 +38,8 @@ mod process_requests;
 mod profile;
 #[cfg(windows)]
 mod putty;
+#[cfg_attr(not(windows), allow(dead_code))]
+mod release_link;
 #[cfg(windows)]
 mod reveal;
 #[cfg(windows)]
@@ -160,6 +162,7 @@ pub fn run() {
             ipc::remove_dictionary,
             ipc::set_spelling,
             ipc::open_licence_link,
+            ipc::open_release_link,
         ])
         .setup(move |app| start(app, root.as_deref()))
         .on_window_event(|window, event| {

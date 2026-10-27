@@ -16,7 +16,7 @@
 ## Spec Kit
 
 - Use GitHub Spec Kit v1.0.12 as the only feature-planning process.
-- Constitution: `.specify/memory/constitution.md`. Version 2.0.0 is ratified.
+- Constitution: `.specify/memory/constitution.md`. Version 4.0.1 is ratified.
 - Active feature: `.specify/feature.json`. It selects `specs/001-desktop-qualification`.
 - Read `spec.md`, `plan.md`, and `tasks.md` from the selected feature directory.
 - Keep one active feature. Manage Git branches explicitly; branch changes alone do not select a feature.
@@ -47,6 +47,7 @@
 - Validate service inputs. Spawn processes with argument arrays and literal paths.
 - Bound output and support cancellation. Re-read Git state after interrupted operations.
 - Treat repository content as untrusted. Never put credentials in logs.
+- Never write a local absolute path (for example `C:\Users\<name>`, a scratch or temp fixture path, or `/home/<name>`) into a tracked file. Cite a file name or "local scratch" instead.
 - Resolve linked-worktree identities through Git. Do not assume `.git` is a directory.
 - Reject stale staging selections. Verify index contents and unchanged working-file bytes in real temporary repositories.
 - Test failure, cancellation, external changes, keyboard access, and destructive-operation safeguards.

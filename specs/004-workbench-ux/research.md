@@ -713,3 +713,30 @@ Open: the merge tool start stall (plan O-19, R21 N3). 874152e adds its diagnosti
 **T115 to T117 review, 2026-10-21.** Independent review of T115 to T117 (`2456b85..bfe83c1`), reviewer agent, 2026-10-21. Skills: `ponytail-review`, `web-design-guidelines`, `arbareto-ux`, and a manual correctness, accessibility, forced-colors, and heuristics review. Fix two Medium findings first. A worktree row with a long name clips its marks completely with no "…" (`WorktreeButton.tsx:92-106`). In forced colors, a disabled Submodules Retry in a selected row looks enabled, because `.list-row[aria-selected="true"] button` overrides the GrayText rule (`index.css:490`). Low: a virtual references tree still shows empty texts after the tree; the new cases mostly check class names; a 001 test title is stale; T115 (3) and (5) need screenshots. No heuristics and no over-engineering. Fixes: T118 (d301a11).
 
 **T119, 2026-10-21.** Independent T119 review, reviewer agent, 2026-10-21. Scope: `5b9de69..f617405` (8e6db84 part 1, f617405 part 2) on f004-t119. Skills: `ponytail-review`, `web-design-guidelines` (worktree row text and refusal text), and a manual correctness, security, and no-heuristics review against data-model §1 and §8, contract `readWorktrees`, "Held branch", and Δ9, and plan D6 and D15. Verdict: ship; no Critical, High, or Medium finding. The parser decides `headUnresolved` from the record lines only, and every earlier record form parses as before. The `branchKey` compare is exact for every ref. `WORKBENCH_UNAVAILABLE` `head-unresolved` fits Δ9, and `STATE_UNKNOWN` stays the 001 recovery code. Low: the Windows real-Git cases fail instead of skipping on a host whose system config sets `core.longpaths=true`; the `WorktreeEntry` rule checks one direction only; data-model §1 says the renderer reads `headUnresolved` for branch rows, and no code does. Suspicions: Rename has no `head-unresolved` check; the parser accepts a non-null `HEAD` with no `branch` or `detached`. Lean: the `heldElsewhere` `key` parameter is unneeded, and the unresolved lookup exists twice. Fixes: T119 part 3 (3f44416). Rename now refuses, because `builtin/branch.c` `replace_each_worktree_head_symref` skips a worktree without a resolved HEAD. The second suspicion stays as is, because the zero value never decides the state (data-model §8).
+
+## R30 Conflict guidance (user decisions of 2026-10-30 and 2026-10-31)
+
+**Sources**: the approved mockup boards "Merge in progress" and "Merge: Commit view" (local scratch, sample data, approved 2026-10-31); the investigator report of 2026-10-30 (local scratch); repository code at main f3ebb833, read through CodeGraph.
+
+**User decisions**
+
+- 2026-10-30: while files are unmerged, the band offers "Resolve conflicts" in place of Continue. The History dock names the conflicted count and offers the same action. The Commit view lists conflicted files in their own section at the top of Changes (spec FR-102 to FR-104, FR-106).
+- 2026-10-30: during a merge or a rebase, the repeated operation reason leaves the visible view. The band is the one visible statement (spec FR-105).
+- 2026-10-31: the design ships in v0.1.0. The mockup texts are approved, also the ones that the boards marked as proposed.
+
+**Code today (main f3ebb833)**
+
+- `continueBlocked` gives "Continue is unavailable while <n> files are unmerged. Mark them resolved first." (`src/frontend/sync/ConflictActions.tsx:30`). The row shows Abort, a disabled Continue, and Skip for a rebase (`ConflictActions.tsx:107-126`, investigator report).
+- `WorkingSummary` states "<n> working changes, <n> staged" and one button (`src/frontend/commit/WorkingSummary.tsx:13-21`). It names no conflict.
+- `groupEntries` puts a `conflicted` entry into the tracked list (`src/frontend/changes/file-tree.ts:79`). `letter` gives "U" (`src/frontend/changes/ChangesPane.tsx:933`), and `LETTER_COLOR` has no color for "U". So conflicted rows mix with Changes, although 003 FR-030 and FR-052 and 004 FR-089 name a "Conflicted list".
+- `BLOCKED_TEXT.operation` is "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band." (`src/frontend/changes/HunkControls.tsx:34`). `ChangesPane.tsx` shows it as visible reason lines under Stage all changes, Unstage all, and Stage all untracked, and `CommitTray.tsx` shows it under Commit (investigator report). The lines push the file rows down.
+
+**Git facts**
+
+- git-status(1) porcelain v2: an unmerged entry is a `u` record with an `<XY>` of `DD`, `AU`, `UD`, `UA`, `DU`, `AA`, or `UU` (`src/git-service/status-parser.ts:160`). The conflict state comes only from these records (`status-parser.ts:304`). No file text decides it.
+- Git refuses to continue a merge or a rebase while the index holds unmerged entries. The 003 Continue rule already binds a fresh index read (003 FR-043).
+
+**Git Extensions (GPL-3.0, ideas only; investigator report of 2026-10-30)**
+
+- Git Extensions shows a warning button for unresolved merge conflicts in the main window. It opens its resolve dialog with the conflicted files.
+- Arbareto takes the idea of one prominent entry point. It keeps the resolve view docked in the Commit view and opens no dialog.

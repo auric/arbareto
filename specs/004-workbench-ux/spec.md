@@ -48,6 +48,15 @@ Plan-driven corrections (plan O-1 to O-4, O-9, O-12, O-15, O-16, and an orchestr
 
 - Q: Why can I not create a worktree from a branch in the branch context menu? → A: Feature 004 planned no such item. The branch menu gets "Add worktree for this branch…" for local and remote-tracking branches (FR-014, FR-052). A remote-tracking branch gives a new local branch that tracks it, as Git's own `worktree add --track` does. A worktree at a detached commit stays out of this change.
 
+### Session 2026-10-31
+
+The user approved the mockup boards "Merge in progress" and "Merge: Commit view" (local scratch, sample data). The design ships in v0.1.0 (research.md R30).
+
+- Q: What does the notice band offer while files are unmerged? → A: The main action "Resolve conflicts" with the tooltip "Open the Commit view and select the first conflicted file." It replaces Continue. Continue returns when no file is unmerged. Abort stays (FR-102).
+- Q: Does History show the conflicts? → A: Yes. The Working directory row and its dock show "<n> conflicted". The dock adds the button "Resolve conflicts" beside "Open Commit view (Enter)" (FR-103).
+- Q: Where do conflicted files show in the Commit view? → A: In a "Conflicted <n>" section at the top of Changes. It is always expanded. Its "U" letters use the Warning color. A selected row shows the resolve view (FR-104).
+- Q: Why does the text "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band." repeat under every list? → A: It goes from view during a merge or a rebase. Each unavailable control gives it as its tooltip and its accessible description. The band is the one visible statement (FR-105).
+
 ## User Scenarios & Testing *(mandatory)*
 
 Feature 001 shows a read-only references sidebar and a docked commit panel. Feature 002 shows the full history of all branches. Feature 003 adds Fetch, Pull, Push, Clone, and the conflict actions Abort, Continue, Skip, and Mark resolved. This feature adds the daily branch and commit work around them: switch branches, run branch actions, merge, rebase, commit with fine staging, resolve conflicted files, and manage worktrees. It also edits Git settings, makes trust prompts calmer, and makes the submodule update a single click. Git Extensions is the reference for the functions. The design follows the mockup boards of 2026-10-16.
@@ -222,6 +231,11 @@ A merge or a rebase stops with conflicts. The developer selects a conflicted fil
 4. **Given** no `merge.tool` value. **When** I open the resolve view. **Then** Open in merge tool is unavailable with the reason "Set a merge tool in Git settings".
 5. **Given** a merge tool from the repository settings and an untrusted repository. **When** I select Open in merge tool. **Then** the FR-070 trust dialog opens before Git starts.
 6. **Given** a conflict where one side deleted the file. **When** I open the resolve view. **Then** Open in merge tool and the choice of the deleted side are unavailable with the reason.
+7. **Given** a merge that stops with 2 conflicted files, and the History view. **When** I look at the notice band. **Then** it states "A merge is in progress, with 2 conflicted files." and offers "Resolve conflicts" and "Abort merge…", and no Continue.
+8. **Given** that band. **When** I select Resolve conflicts. **Then** the Commit view opens, the first row of the Conflicted section is selected and has focus, and the diff area shows its resolve view.
+9. **Given** the Working directory row selected in History during that merge. **When** the dock shows. **Then** it states "3 working changes, 2 staged, 2 conflicted" and offers "Resolve conflicts" and "Open Commit view (Enter)".
+10. **Given** the Commit view during that merge. **When** I look at the lists. **Then** "Conflicted 2" sits at the top of Changes. No line "A merge or a rebase is in progress. …" shows under Stage all changes, Unstage all, Stage all untracked, or the Commit button. Each of these controls gives that text as its tooltip and accessible description.
+11. **Given** I marked both files resolved. **When** the next status read completes. **Then** the Conflicted section goes, and the band offers Continue again.
 
 ---
 
@@ -330,6 +344,10 @@ This feature changes these requirements for builds that include it. The earlier 
 - **002 FR-049**: The branch context menu holds the items of FR-014. The item "Show only this branch's history" stays on the current branch.
 - **003 Scope Boundaries and FR-045**: The branch operations, the Git configuration editor, the resolve panel, and merge tools that 003 excludes come into this feature (FR-089 to FR-097).
 - **003 FR-020**: The references sidebar shows "No upstream" only in the accessible name of the row, not as visible text (FR-008). The branch list keeps the visible text.
+- **003 FR-030** (`specs/003-remote-sync/spec.md:291`): "The notice MUST offer Abort and Continue for a merge or a rebase in progress". While the index has unmerged entries, the notice offers Resolve conflicts in place of Continue (FR-102). The Conflicted list is the Conflicted section at the top of Changes (FR-104). Amended 2026-10-31.
+- **003 FR-043** (`specs/003-remote-sync/spec.md:293`): "Otherwise it MUST be unavailable and state the number of unmerged files." Continue does not show while files are unmerged. The band sentence states the number, and Resolve conflicts takes its place (FR-102). Amended 2026-10-31.
+- **003 FR-052** (`specs/003-remote-sync/spec.md:296`): "Each entry of the Conflicted list MUST offer Mark resolved." Each row of the Conflicted section offers it (FR-104). Amended 2026-10-31.
+- **003 plan.md "Conflict row"** (`specs/003-remote-sync/plan.md:388-390`): the visible reason "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band." moves into the tooltip and the accessible description of each unavailable control (FR-105). The Continue reason "Continue is unavailable while <n> files are unmerged. Mark them resolved first." goes, because Continue does not show then.
 
 ### Functional Requirements
 
@@ -375,7 +393,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 #### Conflict resolve
 
-- **FR-089**: A selected entry of the 003 Conflicted list MUST show the resolve view in the diff area. The view MUST name the path, both sides, and the conflict kind. The kind MUST come from the unmerged status code of Git's porcelain v2 status read, such as "Both modified" for `UU` and "Deleted by them" for `UD`. The view MUST offer Choose ours, Choose theirs, Open in merge tool, and the 003 Mark resolved. It MUST NOT read conflict markers or other file text to offer, refuse, or check an action.
+- **FR-089**: A selected entry of the Conflicted section (FR-104, the 003 Conflicted list) MUST show the resolve view in the diff area. The view MUST name the path, both sides, and the conflict kind. The kind MUST come from the unmerged status code of Git's porcelain v2 status read, such as "Both modified" for `UU` and "Deleted by them" for `UD`. The view MUST offer Choose ours, Choose theirs, Open in merge tool, and the 003 Mark resolved. It MUST NOT read conflict markers or other file text to offer, refuse, or check an action.
 - **FR-090**: Each side MUST show its branch or commit from the operation state. During a merge, ours is the current branch and theirs is the merged commit. During a rebase, ours is the branch that receives the commits and theirs is the commit that the rebase applies, as the Git checkout documentation states. The item labels MUST hold these names, such as "Choose theirs (feature/login)".
 - **FR-091**: Choose ours and Choose theirs MUST replace the working file with the version of that side, as Git's own `git checkout --ours -- <path>` and `git checkout --theirs -- <path>` do. The path MUST stay unmerged until Mark resolved. A modal confirmation MUST state "Replace <path> with the <name> version. Your edits to this file are lost.", and Cancel MUST have the first focus.
 - **FR-092**: Choose ours or Choose theirs MUST be unavailable, with the reason, when the index has no stage for that side, or when that stage is not a regular file. The action MUST bind to the index stages and the working file identity and bytes at selection, as 003 FR-053 binds Mark resolved. A change before the start MUST refuse the action and ask for a refresh.
@@ -385,10 +403,18 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-096**: After the tool exits or after Cancel, a fresh index read MUST decide the result. The exit status of Git's mergetool MUST NOT decide it, because the Git documentation defines none. A path without unmerged stages MUST leave the Conflicted list, with the statement that Git staged it. A path that stays unmerged MUST stay in the list, with Mark resolved available. Files that Git's mergetool leaves, such as `<path>.orig`, MUST show from the fresh status read. The application MUST NOT delete them.
 - **FR-097**: The merge tool MUST follow the trust rules of FR-069 to FR-075. The feature 001 contract §7 "Repository-controlled resolution" MUST classify the `mergetool.<tool>.cmd` and `mergetool.<tool>.path` entries and a bare tool program. So an entry from local or worktree scope is repository-controlled, and so is an entry from a file or a program inside the repository roots. A repository-controlled merge tool MUST get approval before Git starts. A merge tool from global or system scope with its program outside the roots MUST run without the trust prompt, as the feature 001 Clarifications state for Git LFS. The hooks and filters that Git's checkout and Git's mergetool can run MUST also follow FR-069.
 
+#### Conflict guidance (2026-10-31, v0.1.0)
+
+- **FR-102**: While a merge or a rebase is in progress and the latest complete status read holds unmerged entries, the notice band conflict row MUST offer "Resolve conflicts" as its main action, in place of Continue. Its tooltip MUST be "Open the Commit view and select the first conflicted file.". Continue MUST show again when a complete status read holds no unmerged entry (003 FR-043). Abort and Skip MUST keep their 003 rules. While the unmerged count is not known yet, Continue MUST stay with its loading reason. The count MUST come only from porcelain v2 `u` records.
+- **FR-103**: During a merge or a rebase with unmerged entries, the History Working directory row MUST show "<n> conflicted" in the Warning color. Its dock MUST state "<a> working changes, <s> staged, <c> conflicted" and offer "Resolve conflicts" with the FR-102 tooltip before "Open Commit view (Enter)".
+- **FR-104**: The Commit view MUST show a "Conflicted <n>" section at the top of Changes while the status read holds unmerged entries. The section MUST be always expanded. Its rows MUST show the full path in tree order, the letter "U" in the Warning color, and the Mark resolved row button (003 FR-052). Each row MUST be selectable and focusable, and the section MUST be one Tab stop with roving focus. A selected row MUST show the resolve view (FR-089). Conflicted rows MUST NOT show in the Changes tree. Filter files MUST NOT hide a Conflicted row.
+- **FR-105**: While a merge or a rebase is in progress, the reason "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band." MUST NOT show as visible text in the Commit view. Each control that this reason makes unavailable MUST keep focus, give the reason as its tooltip and its accessible description, and state no other visible line for it. The notice band MUST be the one visible statement. Other reasons MUST keep their visible text.
+- **FR-106**: Resolve conflicts, in the band and in the dock, MUST switch to the Commit view, select the first row of the Conflicted section, show its resolve view, and move the focus to that row. In the Commit view, it MUST do the same without a view switch.
+
 #### Commit workspace
 
 - **FR-029**: The commit workspace MUST show the Changes list, the Staged list, the diff of the selected file, and the message editor at once. Each region MUST have its own scrollbar and a pointer and keyboard splitter.
-- **FR-030**: The Changes list MUST show the tracked changes first, then the Untracked section with its count. The Untracked section MUST start collapsed. Every count MUST come from the status read.
+- **FR-030**: The Changes list MUST show the tracked changes first, then the Untracked section with its count. The Untracked section MUST start collapsed. Every count MUST come from the status read. Amended 2026-10-31: during a merge or a rebase with unmerged entries, the Conflicted section of FR-104 comes first.
 - **FR-031**: Each list MUST offer a tree layout and a flat layout. In the tree layout, each folder MUST show the count of the files that the status read lists under it.
 - **FR-032**: Each file row MUST show a stage or unstage button on pointer hover and on keyboard focus. The button MUST have an accessible name, such as "Stage file login.ts". Space MUST keep the feature 001 FR-038 behavior.
 - **FR-033**: The commit workspace MUST be a full view that replaces the history view, without the references sidebar. The toolbar MUST offer History and Commit switches. Feature 001 defines no mode shortcut, so the view switch has no key. Every feature 001 key keeps its action.
@@ -513,6 +539,7 @@ FR-083 and FR-084 move to a later feature (Clarifications, 2026-10-19). Feature 
 - **SC-014**: Keyboard-only users complete each P1 story. Each control has an accessible name, visible focus, and a contrast of at least 4.5:1.
 - **SC-015**: In every conflict fixture, Choose ours, Choose theirs, and Open in merge tool give the same working files and index as Git's own `git checkout --ours`, `git checkout --theirs`, and `git mergetool` with the same fixture tool on a copy. No repository-controlled merge tool runs before approval. No action reads conflict markers.
 - **SC-016**: In every amend fixture, the tree, the parents, the message, and the references equal Git's own `git commit --amend` on a copy. The rewrite confirmation shows exactly when `merge-base --is-ancestor HEAD <upstream>` exits 0.
+- **SC-017**: In every merge and rebase conflict fixture, the band offers Resolve conflicts exactly while a complete status read holds `u` records, and Continue otherwise. The Conflicted section lists exactly the `u` record paths. From the band and from the dock, the keyboard reaches the first conflicted row in one activation, and the focus lands on it. During the operation, the Commit view shows no visible line of the FR-105 reason, and each unavailable control gives it as its accessible description.
 
 ## Assumptions
 

@@ -107,6 +107,37 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - Errors: `BUSY` (a parent mutation runs); `TRUST_REQUIRED`, `TRUST_CHANGED` (the parent gate); `SUBMODULE_UNAVAILABLE` with `not-submodule`, `submodule-not-initialized`, or `path`; the 001 registration codes.
 - Result: the 001 `chooseRepository` result. The shell stores the recent entry of the submodule (Δ6).
 
+### `readSubmoduleChange` (2026-10-31)
+
+- Payload: `{source}`. `source` is `{kind: "workspace", snapshotId, entryId}` or `{kind: "commit", viewId, oid, parent, record}` (data-model §15). One read slot. A new request for the same window cancels the running one.
+- Target: a workspace source needs a current snapshot and an entry with a gitlink mode (160000) in `mH`, `mI`, or `mW`. A commit source needs the retained listing of that view, `oid`, and `parent` (Δ3 `readCommitChanges`) and a record with mode 160000 on either side. Otherwise `UNKNOWN_TARGET` or `INVALID_REQUEST`.
+- Read gate: the parent 001 §7 `reads` gate, before the first Git process.
+- IDs (plan D19): unstaged `hI` and the submodule HEAD; staged `hH` and `hI`; commit the two raw record IDs. An all-zero ID gives null.
+- Location: plan D11 checks 3 to 5 at the record path. A failed check 4 or 5 gives the state `not-initialized`. A failed check 3 for a commit source also gives `not-initialized`.
+- Kind: the first `.gitmodules` source of 001 §12 "Review reads", with `--null --list`. No `submodule.<name>.path` equal to the path gives `nested`.
+- Commands inside the submodule, each as `--no-lazy-fetch --no-optional-locks -C <worktree> --git-dir=.git <args>`:
+  - `rev-parse --verify -q HEAD` (unstaged only). Exit 0 with one object ID gives `new`. Another result gives `GIT_FAILED`.
+  - `cat-file -e <old>^{commit}` and `cat-file -e <new>^{commit}`. Exit 0 means present. A non-zero exit gives the state `missing` (git-cat-file(1) `-e`).
+  - `rev-list --left-right --count <old>...<new>`. Output: two decimal counts, a tab, a LF. Another form gives `MALFORMED_GIT_OUTPUT`.
+  - `log -z --no-show-signature --no-color --encoding=UTF-8 --format=%H%x00%s --max-count=50 <new> ^<old>` for added commits, and `<old> ^<new>` for removed commits, only when that count is nonzero. Records: object ID, NUL, subject bytes, NUL. A record count above the count or above 50 gives `MALFORMED_GIT_OUTPUT`.
+- Programs: none of these commands loads an index or runs a filter, a hook, a textconv driver, or a signature program (research.md R18). So the read needs no submodule program check. T106 proves it with canaries.
+- Bounds: 50 commits per side (`SUBMODULE_CHANGE_COMMITS`), 256 KiB of `log` output per side (`SUBMODULE_CHANGE_OUTPUT_BYTES`), `READ_DEADLINE_MS`. The output bound gives `limited: true` with the whole records before it.
+- Errors: `TRUST_REQUIRED`, `TRUST_CHANGED` (parent gate); `UNKNOWN_TARGET`; `INVALID_REQUEST`; `MALFORMED_GIT_OUTPUT`; `GIT_FAILED`; `DEADLINE`; `CANCELED`. A missing object is a result state, not an error. No command fetches.
+- Result: data-model §15.
+
+### `readSubmoduleWork` (2026-10-31)
+
+- Payload: `{snapshotId}`. The renderer sends it after each complete `readWorkspace` result, in History and in the Commit view. One read slot. A newer snapshot cancels the running read.
+- Targets: the gitlinks (mode 160000, stage 0) of `ls-files -z --stage` of that snapshot, in index order, at most 256 (`SUBMODULE_WORK_TARGETS`). Later gitlinks give `unchecked` reason `limit`. At most 4 targets run at the same time (`SUBMODULE_WORK_PARALLEL`).
+- Per target, inside the submodule, in the form of `readSubmoduleChange`:
+  1. Plan D11 checks 4 and 5. A failure gives no entry, because the target is not initialized.
+  2. `config list --show-scope --show-origin -z`. The 001 §7 resolution rule applies, and every local and worktree entry counts as repository-controlled (001 §12 "Submodule programs"). A repository-controlled command-valued `core.fsmonitor`, `filter.<driver>.clean`, or `filter.<driver>.process` gives `unchecked` reason `programs`, and no status runs.
+  3. `status --porcelain=v2 -z --untracked-files=normal --ignore-submodules=dirty`. The 001 status parser reads the records. A `1`, `2`, or `u` record sets `modified`. A `?` record sets `untracked`. The service ends the process when both are set. A non-zero exit gives `unchecked` reason `failed` with `GIT_FAILED`.
+- Programs: step 3 loads the submodule index. Protected programs from system, global, and command scope can run, as in the parent read (001 §7). No repository-controlled program of the submodule runs, because step 2 refuses it.
+- Bounds: the 001 §5 status record and byte bounds per target, `READ_DEADLINE_MS` for the whole read. A deadline ends every running target. The targets without a result give `unchecked` reason `failed` with `DEADLINE`.
+- Errors of the whole read: `TRUST_REQUIRED`, `TRUST_CHANGED` (parent gate); `UNKNOWN_TARGET` (an old snapshot); `CANCELED`.
+- Result: data-model §16.
+
 ### `reviewWorkbench` (004 Δ3)
 
 - New payload forms:
@@ -176,6 +207,10 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 | Preview pause (renderer) | 400 ms after the last edit |
 | Shadow folders | 1 per preview operation |
 | Submodule chain | 8 levels (`SUBMODULE_REVIEW_NESTING_LEVELS`) |
+| Submodule change commits (`SUBMODULE_CHANGE_COMMITS`) | 50 per side |
+| Submodule change `log` output (`SUBMODULE_CHANGE_OUTPUT_BYTES`) | 256 KiB per side |
+| Submodule work targets (`SUBMODULE_WORK_TARGETS`) | 256 per read, the 001 §5 submodule review bound |
+| Submodule work parallel runs (`SUBMODULE_WORK_PARALLEL`) | 4 |
 | Workbench review token lifetime | 60 s (004) |
 
 ## Δ6 Private native process requests (001 §6)
@@ -229,6 +264,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 | `SUBMODULE_UNAVAILABLE` | `not-submodule`, `submodule-not-initialized`, `path` | The open cannot start. The parent stays open. |
 | `WORKBENCH_UNAVAILABLE` (004) | adds `conflicted`, `submodule`, `nested-repository`, `no-recycle-bin`, `long-path`, `nothing-to-delete`, `ignore-link`, `ignore-folder`, `ignore-not-utf8`, `ignore-nul`, `ignore-lone-cr`; keeps the 004 reasons `ignore-not-regular`, `ignore-size`, `limit`, `path`, and `unreadable`; removes `ignore-exists`, `ignore-not-text` | The action cannot run. No file changes. |
 | `STALE_REVIEW` (001) | adds `files-changed`, `ignore-changed` | A bound fact changed after the review. Nothing changes. |
+| Submodule work reasons (`readSubmoduleWork` entries) | `programs`, `limit`, `failed` | Arbareto did not check this submodule for local edits. Not an error code. |
 | `UNKNOWN_TARGET` (001) | adds `absent` | The reveal target does not exist on disk. |
 
 - `ignore-revs-file-missing` carries `path`, the value as configured.
@@ -258,6 +294,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 - The Submodules group row menu adds "Open submodule". Enter and a double-click open the row.
 - A row with action `clone` or `reuse` has no `.git` entry (001 §12 "Actions"), so Open submodule is unavailable for it in the renderer. The service checks of `openSubmodule` decide every other case.
+- `readSubmoduleChange` and `readSubmoduleWork` run fixed commands inside a submodule, as `reviewSubmodules` does. This amends the 001 §7 sentence "Superproject reads never start Git inside a submodule.". The parent status keeps `--ignore-submodules=dirty`.
 - Every other §12 rule stays.
 
 ## Δ13 Changes to 002 deltas
@@ -294,4 +331,6 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - The renderer finds the parent recent entry by `current: true`. A recent entry that other opens push out of the 20 entries gives "Open the parent repository with Open repository.".
 - The `diff -U0` options of "Blame before this commit" follow the user's diff configuration, such as `diff.algorithm`. The mapped line is the line of Git's own zero-context diff under that configuration. `--inter-hunk-context=0` keeps `diff.interHunkContext` out.
 - `blame.ignoreRevsFile` values that the shell `below` rule refuses, such as a value outside the worktree or with a `..` component, pass to Git unchecked. A missing file there gives `GIT_FAILED` with the output tail. `config --type=path` removes the prefix rules but not this gap, because `fileFacts` checks only paths below the worktree root.
+- `readSubmoduleWork` checks the submodule settings in step 2 and runs status in step 3. A settings change between the two steps is not seen. The next snapshot checks again.
+- A submodule with a repository-controlled status program gets no local-edit check. No approval path exists for it in the parent window. Open submodule gives it its own trust (spec FR-050). A later feature can reuse that approval.
 - `FileDispositionInfoEx` and `FileRenameInfoEx` need a file system with POSIX delete and rename support. Another file system gives `error`, and the file stays (plan O-4).

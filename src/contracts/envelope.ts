@@ -1656,6 +1656,7 @@ const confirmationPaths = { count: Count.min(1).max(MULTI_FILE_ACTION_FILES), pa
 const RevertLinesPlan = z
   .strictObject({ scope: z.enum(["unstaged", "staged"]), fileBytes: z.base64().min(1), lines: z.int().min(1).max(CANONICAL_DIFF_LINES).nullable() })
   .meta({ title: "RevertLinesPlan" });
+export type RevertLinesPlan = z.infer<typeof RevertLinesPlan>;
 // `newFiles`: staged new files that keep their working file, so each one also counts in `staged`.
 const RevertFilesPlan = z
   .strictObject({ ...confirmationPaths, newFiles: Count, staged: Count, unstaged: Count })
@@ -1900,7 +1901,7 @@ const STALE_ACTIONS: Readonly<Record<string, string>> = {
   "ignore-save": "ignore-changed",
   ...Object.fromEntries(REVERT_ACTIONS.map((action) => [action, "revert-changed"])),
 };
-// Feature 008 data-model §8 and §9. Only `not-changed` carries the reply `code`. `refused` names the reply reason, and `error` the reply code, as `reason`.
+// Feature 008 data-model §8 and §9. Only `not-changed` and `unstaged-only` carry the reply `code` (spec FR-017). `refused` names the reply reason, and `error` the reply code, as `reason`.
 const REVERT_REASONS: Readonly<Record<string, readonly string[]>> = { refused: REPLACE_REFUSALS, error: REPLACE_ERRORS };
 const RevertFileOutcome = z
   .strictObject({
@@ -1909,7 +1910,7 @@ const RevertFileOutcome = z
     code: z.enum(["stale", "refused", "error"]).optional(),
     reason: z.enum([...REPLACE_REFUSALS, ...REPLACE_ERRORS]).optional(),
   })
-  .refine((o) => (o.code === undefined || o.outcome === "not-changed") && (o.reason === undefined ? o.code === undefined || !Object.hasOwn(REVERT_REASONS, o.code) : o.code !== undefined && Object.hasOwn(REVERT_REASONS, o.code) && REVERT_REASONS[o.code]!.includes(o.reason)))
+  .refine((o) => (o.code === undefined || o.outcome === "not-changed" || o.outcome === "unstaged-only") && (o.reason === undefined ? o.code === undefined || !Object.hasOwn(REVERT_REASONS, o.code) : o.code !== undefined && Object.hasOwn(REVERT_REASONS, o.code) && REVERT_REASONS[o.code]!.includes(o.reason)))
   .meta({ title: "RevertFileOutcome" });
 export type RevertFileOutcome = z.infer<typeof RevertFileOutcome>;
 // Contract Δ6: each `fileReplace` creates at most FILE_FACT_ENTRIES folders.

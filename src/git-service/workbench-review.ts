@@ -133,8 +133,11 @@ const REPOSITORY_GATE = { trustGate: "repository" } as const;
 // Feature 005 contract Δ9 `STALE_REVIEW` reasons of each action.
 // Feature 008 contract Δ9: `revert-changed`.
 const STALE_REASONS: Readonly<Record<string, string>> = { delete: "files-changed", "ignore-save": "ignore-changed", ...Object.fromEntries(REVERT_ACTIONS.map((a) => [a, "revert-changed"])) };
-// The observation refusal of each feature 005 and 008 action that names a changed bound fact (contract Δ3 review refusals). Another refusal passes through.
-const FACT_REFUSALS: Readonly<Record<string, ErrorCode>> = { delete: "STALE_SELECTION", "ignore-save": "STALE_REVIEW", ...Object.fromEntries(REVERT_ACTIONS.map((a) => [a, "STALE_SELECTION" as const])) };
+// The observation refusals of each feature 005 and 008 action that name a changed bound fact (contract Δ3 review refusals). Another refusal passes through.
+// Feature 008 data-model §2: the reviewed revert passed every file, support, and profile refusal, so such a refusal at the run is a changed bound fact.
+// It also keeps the run result in RunWorkbenchResult, which has no form for a review refusal value.
+const REVERT_FACTS: readonly ErrorCode[] = ["STALE_SELECTION", "WORKBENCH_UNAVAILABLE", "UNSUPPORTED_COMPARISON", "UNSUPPORTED_HUNK_PROFILE"];
+const FACT_REFUSALS: Readonly<Record<string, readonly ErrorCode[]>> = { delete: ["STALE_SELECTION"], "ignore-save": ["STALE_REVIEW"], ...Object.fromEntries(REVERT_ACTIONS.map((a) => [a, REVERT_FACTS])) };
 
 // ---- Shared reads ----
 
@@ -311,7 +314,7 @@ export function createWorkbench(o: WorkbenchOptions) {
     if ("refused" in again) {
       if (again.refused === "TRUST_REQUIRED" || again.refused === "TRUST_CHANGED") return { code: again.refused, result: again.result };
       if (again.refused === "CONFLICTED") return { code: "CONFLICTED", result: again.result };
-      if (Object.hasOwn(FACT_REFUSALS, action)) return again.refused === FACT_REFUSALS[action] ? factsChanged : { code: again.refused, ...(again.result === undefined ? {} : { result: again.result }) };
+      if (Object.hasOwn(FACT_REFUSALS, action)) return FACT_REFUSALS[action]!.includes(again.refused) ? factsChanged : { code: again.refused, ...(again.result === undefined ? {} : { result: again.result }) };
       return factsChanged;
     }
     if ((e.trust.required || required(action, again.common.listing)) && again.common.listing.fingerprint !== e.trust.fingerprint) return { code: "TRUST_CHANGED", result: REPOSITORY_GATE };
@@ -426,9 +429,6 @@ export function createWorkbench(o: WorkbenchOptions) {
       const ctx: WorkbenchContext = { runner: o.runner, trust: o.trust, ...sources, operationId: t.operationId, signal: t.signal, workspace: t.workspace, installation: t.installation };
       const observed = await observeAll(ctx, payload, () => sharedListing({ trust: o.trust, listingTuple: o.listingTuple }, t));
       if (isStop(observed)) return { result: observed.stop };
-      // Contract §9: SERVICE_UNAVAILABLE is only a `rejected` result. Data-model §7 has no `running` row to `rejected`, so only `precheck` can give it.
-      // A `failed` end with this code throws in the registry, and no response follows. This throw ends the read `failed` with GIT_FAILED (`scheduleRead`).
-      if (("code" in observed ? observed.code : "refused" in observed ? observed.refused : null) === "SERVICE_UNAVAILABLE") throw new TypeError(`${payload.action} observed SERVICE_UNAVAILABLE after the read started`);
       if ("code" in observed) return { result: "failed", code: observed.code };
       if ("refused" in observed) return { result: "failed", code: observed.refused, ...(observed.result === undefined ? {} : { value: observed.result }) };
       const at = now();

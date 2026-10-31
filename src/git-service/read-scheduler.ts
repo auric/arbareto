@@ -12,7 +12,8 @@ export interface RereadTarget {
 }
 
 // `reread` holds the re-read result after a failed outcome. It is null when no re-read result exists.
-export type ReadEnd<O, S> = { kind: "outcome"; outcome: O; reread: S | null } | { kind: "canceled" } | { kind: "deadline" };
+// `failed`: the fallback after an end that threw. The job ends the read `failed` with GIT_FAILED, which data-model §7 accepts from `running`.
+export type ReadEnd<O, S> = { kind: "outcome"; outcome: O; reread: S | null } | { kind: "canceled" } | { kind: "deadline" } | { kind: "failed" };
 
 export interface ReadJob<O, S> {
   operationId: string;
@@ -44,12 +45,18 @@ export interface ReadSchedulerOptions {
 
 type Job = ReadJob<unknown, unknown>;
 
-// `end` reports the terminal result. A throw there has no other report path, so it must not stop the slot release.
-function report(job: Job, end: ReadEnd<unknown, unknown>): void {
+// `end` reports the terminal result. A throw there must not stop the slot release, and contract §2 needs one terminal response.
+// So a throw gets the `failed` fallback end. A second throw leaves no report path, as a failed pipe write after the terminal state does. Then only `closeJob` is left.
+// `respond` itself sends OUTPUT_LIMIT for a response above the frame bound (contract §2).
+function report(job: Job, end: ReadEnd<unknown, unknown>, closeJob: (operationId: string) => void): void {
   try {
     job.end(end);
   } catch {
-    // `respond` sends OUTPUT_LIMIT for a response above the frame bound (contract §2). Another throw is a failed pipe write, which no response can reach.
+    try {
+      job.end({ kind: "failed" });
+    } catch {
+      closeJob(job.operationId);
+    }
   }
 }
 
@@ -101,7 +108,7 @@ export function createReadScheduler({ closeJob, cancel, readDeadlineMs = READ_DE
       clearTimeout(deadline);
       releases.delete(job);
       job.signal.removeEventListener("abort", stopWork);
-      report(job, end);
+      report(job, end, closeJob);
       running.delete(job);
       perWorkspace.set(job.repositoryId, perWorkspace.get(job.repositoryId)! - 1);
       if (perWorkspace.get(job.repositoryId) === 0) perWorkspace.delete(job.repositoryId);
@@ -171,7 +178,7 @@ export function createReadScheduler({ closeJob, cancel, readDeadlineMs = READ_DE
       }
       // A canceled read that still waits leaves the queue at once and ends `canceled` without a re-read. The microtask lets `cancel` answer first.
       const leave = () => {
-        if (pending.delete(job as Job)) queueMicrotask(() => report(job as Job, { kind: "canceled" }));
+        if (pending.delete(job as Job)) queueMicrotask(() => report(job as Job, { kind: "canceled" }, closeJob));
       };
       pending.set(job as Job, leave);
       job.signal.addEventListener("abort", leave, { once: true });

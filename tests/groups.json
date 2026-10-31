@@ -105,6 +105,7 @@
     "tests/contracts/platform-label.test.tsx",
     "tests/contracts/preferences.test.ts",
     "tests/contracts/private-paths.test.ts",
+    "tests/contracts/read-scheduler.test.ts",
     "tests/contracts/remedy-command.test.ts",
     "tests/contracts/references-sidebar.test.tsx",
     "tests/contracts/renderer-freshness.test.ts",

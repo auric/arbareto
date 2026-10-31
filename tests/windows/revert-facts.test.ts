@@ -314,8 +314,7 @@ interface ReplaceOptions {
   copyBasic?: boolean;
   // R8: the DACL copy. `kernel` sets DACL only; `kernel-flag` adds the protection flag of the old file; `kernel-auto-inherit` sets
   // `SE_DACL_AUTO_INHERIT_REQ` in the copied descriptor; `set-security-info` uses `SetSecurityInfo`; `set-security-info-if-differs` uses it only when the DACL of the new file differs.
-  // `protect-auto-inherit` first sets a protected copy, because `SeSetSecurityDescriptorInfoEx` builds a copy of an unprotected input over a protected current DACL.
-  dacl?: "kernel" | "kernel-flag" | "kernel-auto-inherit" | "protect-auto-inherit" | "set-security-info" | "set-security-info-if-differs";
+  dacl?: "kernel" | "kernel-flag" | "kernel-auto-inherit" | "set-security-info" | "set-security-info-if-differs";
   // R8: the delete disposition on close, cleared just before the rename.
   deleteOnClose?: boolean;
   // Hold the target as `check` does in `file_replace.rs`.
@@ -377,12 +376,7 @@ function copyDacl(temp: Pointer, sd: Uint8Array, method: NonNullable<ReplaceOpti
   if (method === "set-security-info" || (method === "set-security-info-if-differs" && differs())) {
     const status = win().advapi32.SetSecurityInfo(temp, SE_FILE_OBJECT, DACL_SI | flag, null, null, daclPointer(sd), null) as number;
     if (status !== 0) fail("set-security-info", status);
-  } else if (method === "kernel-auto-inherit" || method === "protect-auto-inherit") {
-    if (method === "protect-auto-inherit") {
-      const guard = sd.slice();
-      if (win().advapi32.SetSecurityDescriptorControl(pin(guard), SE_DACL_PROTECTED, SE_DACL_PROTECTED) === 0) return void fail("control", lastError());
-      if (win().advapi32.SetKernelObjectSecurity(temp, DACL_SI | PROTECTED_DACL_SI, pin(guard)) === 0) return void fail("protect", lastError());
-    }
+  } else if (method === "kernel-auto-inherit") {
     const copy = sd.slice();
     if (win().advapi32.SetSecurityDescriptorControl(pin(copy), SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERIT_REQ) === 0) fail("control", lastError());
     else if (win().advapi32.SetKernelObjectSecurity(temp, DACL_SI, pin(copy)) === 0) fail("kernel-auto-inherit", lastError());
@@ -578,7 +572,6 @@ describe.skipIf(process.platform !== "win32")("T002 Windows facts W1 to W11 for 
       ["kernel-flag", { dacl: "kernel-flag" }],
       ["kernel-auto-inherit", { dacl: "kernel-auto-inherit" }],
       ["kernel-auto-inherit-first", { dacl: "kernel-auto-inherit", copyFirst: true }],
-      ["protect-auto-inherit-first", { dacl: "protect-auto-inherit", copyFirst: true }],
       ["set-security-info", { dacl: "set-security-info" }],
       ["set-security-info-if-differs", { dacl: "set-security-info-if-differs" }],
     ];

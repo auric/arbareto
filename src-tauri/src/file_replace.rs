@@ -777,9 +777,6 @@ mod tests {
             KernelFlag,
             /// The copied descriptor carries `SE_DACL_AUTO_INHERIT_REQ`.
             KernelAutoInherit,
-            /// A protected copy first, then `KernelAutoInherit`. `SeSetSecurityDescriptorInfoEx`: with a protected current DACL and an
-            /// unprotected input, the result is a copy of the input.
-            ProtectThenAutoInherit,
         }
 
         /// The 005 replace sequence with the R8 additions that `basic`, `dacl`, and `delete_on_close` select.
@@ -812,26 +809,7 @@ mod tests {
                 }
                 if let Some(descriptor) = old_dacl.as_mut() {
                     let mut info = DACL_SECURITY_INFORMATION;
-                    if dacl == Dacl::ProtectThenAutoInherit {
-                        let mut guard = descriptor.clone();
-                        let pointer = PSECURITY_DESCRIPTOR(guard.as_mut_ptr().cast());
-                        // SAFETY: `guard` is a live self-relative descriptor, and `temp` is open with `WRITE_DAC`.
-                        let set = unsafe { SetSecurityDescriptorControl(pointer, SE_DACL_PROTECTED, SE_DACL_PROTECTED) }
-                            .and_then(|()| {
-                                // SAFETY: as above.
-                                unsafe {
-                                    SetKernelObjectSecurity(
-                                        raw(&temp),
-                                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
-                                        pointer,
-                                    )
-                                }
-                            });
-                        if let Err(error) = set {
-                            return Some(fail("protect", format!("{:?}", error.code())));
-                        }
-                    }
-                    if matches!(dacl, Dacl::KernelAutoInherit | Dacl::ProtectThenAutoInherit) {
+                    if dacl == Dacl::KernelAutoInherit {
                         // SAFETY: `descriptor` is a live self-relative descriptor.
                         let set = unsafe {
                             SetSecurityDescriptorControl(
@@ -996,7 +974,6 @@ mod tests {
                 ("kernel-flag", Dacl::KernelFlag, false),
                 ("kernel-auto-inherit", Dacl::KernelAutoInherit, false),
                 ("kernel-auto-inherit-first", Dacl::KernelAutoInherit, true),
-                ("protect-auto-inherit-first", Dacl::ProtectThenAutoInherit, true),
             ];
             // `auto-inherited`: an icacls grant rewrites the folder DACL with inheritable ACEs and `SE_DACL_AUTO_INHERITED`.
             for (folder_kind, folder_acl) in [

@@ -370,6 +370,12 @@ description: "Task list for the History Inspection and Commit View File Actions 
 
 - [ ] T112 [US5] Cut the status read and first preview cost on the 100,000-entry fixture in `src/git-service/snapshot.ts`, `src/git-service/status-parser.ts`, `src/git-service/ignore-preview.ts`, and `src/git-service/session.ts` (P9, WP8). `Local: package`. Cause: (1) `fingerprintOf` gave the hasher 4 updates and 3 allocations per field, about 0.84 s; (2) the status parser `latin1` built a string per byte, about 0.5 s; (3) the first preview ran `ls-files -z --stage -v` again, and that listing waited about 2.2 s behind a concurrent full read. Fix: (1) the digest collects the same bytes in one 64 KiB buffer; (2) `latin1` uses `Buffer.toString("latin1")`; (3) the base takes the snapshot `indexEntries` when the raw index and shared index SHA-256 equal the snapshot `indexFingerprint` (001 contract §11 "Change polling"). A WSL workspace and every other case run the listing. Tests: the digest equals the old form on varied entries; all 256 bytes in X; no index listing for an unchanged index, one after `update-index`. Control mutation: always run the listing; the no-listing case must fail. Then run the packaged SC-005 `big/` and `/big` cases twice. Record the numbers in research.md "Read and preview speed of 2026-10-27". Spec: SC-005, FR-041.
 
+### Fixture cache ref check (2026-10-31)
+
+**Agent**: implementer. Test code only.
+
+- [ ] T113 [US1] Rebuild a cached 005 fixture when its refs changed in `tests/git/history-diff-fixtures.ts`. Cause: the SC-002 case "the 100,001-file commit gives exactly …" in `tests/git/commit-changes.test.ts` got `rejected` with `UNKNOWN_TARGET`. A Windows temp clean-up removed the refs, the reflogs, `hooks`, and `info/exclude` of the cached `f005-wide-100001` repository, but kept its objects. `cached()` reused an entry when the builder digest matched and the `repo` folder existed, and never read the refs. Fix: at build time, the manifest records the exact `for-each-ref --format=%(objectname) %(refname)` output. A build with no refs or a failed read stops with an error. On reuse, `cached()` reads the refs again and rebuilds on a different output or a nonzero Git exit. The builder digest changes, so the first run rebuilds both `f005-*` entries. Tests: `tests/git/commit-changes.test.ts` alone goes green after the rebuild, then every other test file that calls `wideLarge` or `blameLarge` runs once. Control mutation: skip the ref comparison and remove the refs of a private cache copy; the SC-002 case must fail with `UNKNOWN_TARGET`. Spec: SC-002.
+
 ### Batch 4 verification
 
 - [ ] T063 Run the batch 4 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, then `bun run build:service` and `bun run test:windows`. `Local: Rust`. `Local: WSL`. `Local: package`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every record into research.md R17. Control mutation: in `tests/windows/inspection-perf.test.ts`, lower the 500 ms bound to 1 ms. The test must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 4 is recorded in research.md. Spec: SC-001 to SC-011. Depends on T059 to T062, T078 to T086, T093 to T097, T101, and T103.
@@ -393,6 +399,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - Packaged harness fixes (T101): after T099. Then T063 runs again.
 - Budget decisions (T103): after T101. Then T063 runs again. T104: after the v0.1.0 release.
 - Read and preview speed (T112): after T103. Then T063 runs again.
+- Fixture cache ref check (T113): no dependency. Then T063 runs again.
 - Renderer performance fixes (T090, T091, T102): after T083. They need a new package before the packaged Q6 and Q32 reruns. Then T063 runs again.
 
 ### Changes to earlier requirements and their tasks
@@ -443,7 +450,7 @@ Then:          T027
 | FR-067 | T008, T043, T044, T048 to T051, T056, T060, T072, T073, T079, T080 |
 | FR-068 | T043, T044, T049, T090 |
 | SC-001 | T021, T061, T084, T101 |
-| SC-002 | T021, T061, T083, T090, T103, T104 |
+| SC-002 | T021, T061, T083, T090, T103, T104, T113 |
 | SC-003 | T012, T032, T059, T060, T078, T085 |
 | SC-004 | T001, T007, T027 |
 | SC-005 | T034, T059, T061, T078, T081, T084, T085, T087, T101, T103, T112 |

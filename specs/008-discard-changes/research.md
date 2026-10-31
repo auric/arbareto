@@ -435,3 +435,14 @@ OBSERVATION T004: G9-G10-G8.mode-100755 expected={"holds":22} observed={"holds":
 - Control mutation: without the `revert-files` phase in `src/contracts/operations.ts`, `bun run test:contracts` gives 3 fail (the phase counters, the schema files, and the vector `valid/revert-progress-files.json`). After the restore, it gives 6,024 pass, 37 skip, 0 fail.
 - W2 after the removal: the cargo probe `w2_dacl_copy` and the W2 test of `tests/windows/revert-facts.test.ts` give the W2 `OBSERVATION` lines above without the removed key. The decided method stays `kernel-auto-inherit`.
 - The batch 0 review ran before this verification. Commit `4d729e84` holds its fixes.
+
+### Batch 1 verification (T024), 2026-10-31
+
+- Code under test: branch `f008-b1-shell` at `41404a35`. Every `ORIGIN` line names the checkout under test. Each run ran alone behind the test gate.
+- The batch 1 review ran before this verification. Commits `d0d09b83`, `fbab3f21`, and `41404a35` hold its fixes.
+- `bun run typecheck` exit 0. `bun run test:contracts` 6,041 pass, 37 skip, 0 fail in 125 files.
+- `bun run test:git` reached its 150-minute limit after 110 of 126 files, with no failed test. A second run of the other 16 files (`submodule-update` to `wsl-files`) gave 480 pass, 2 skip, 0 fail.
+- `cargo test --locked --manifest-path src-tauri/Cargo.toml` gave 643 pass, 1 fail, 16 ignored. The failed test is `a_working_replace_writes_the_bytes_and_keeps_the_r8_facts`: its compare `last_write_time() > old_write` depends on the system clock tick. It also fails alone. T054 removes the clock dependency.
+- WSL, alone, `ARBARETO_WSL_DISTRO=Ubuntu-26.04`: `tests/wsl/revert-wsl-files.test.ts` and `tests/wsl/revert-facts.test.ts` gave 35 pass, 1 skip (`git-lfs`), 0 fail. The 005 replace cases of `tests/wsl/inspection-wsl.test.ts` (`-t replace`) gave 8 pass, 0 fail.
+- Control mutation: the `working` target checks its digest in `held`, not in `check`. Without the SHA-256 compare in `check`, only the 005 test `a_target_that_differs_from_expected_is_stale` turns red. Without the SHA-256 compare in `held`, the T012 test `a_target_whose_facts_or_digest_differ_from_the_frame_is_stale` turns red at its `sha256` case. After the restore, `git diff --exit-code` gives 0, and the stale tests give 5 pass.
+- T024 stays open until T054 and a green cargo run.

@@ -665,6 +665,7 @@ This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL fo
 - Speed fix of 2026-10-31 (plan.md D19 "Order"): 4 serial steps. `kindOf` runs beside check 5. `rev-list` and the two `log` run together. The two `cat-file -e` run only after a failed `rev-list`, so `missing` still comes only from their exit code. Each check and its order stay.
 - Orchestrator decisions of 2026-10-31, from these measurements: the marks budget is 55 ms per clean submodule on Windows (5.5 s for 100, 14.08 s for 256). The first preview budget was 350 ms. The rerun below replaces it.
 - Packaged rerun on 3a7b5395, 2026-10-31 (local scratch `pkg-preview-1031b`), warm, median of 10. History preview 345.4 ms, Changes preview 376.1 ms. The runs fall into two groups: about 215 ms to 250 ms and about 330 ms to 384 ms, with one first run of 669 ms. The gap matches the stall of about 120 ms in one Git process (above). Orchestrator decision 2026-10-31: the preview budget is 400 ms, the worst packaged median of 376.1 ms plus a margin. It replaces 350 ms. T116 splits the stall after the v0.1.0 release.
+- T111 packaged rerun on 35a130d1 against the package of 3a7b5395, 2026-10-31 (local scratch `pkg-preview-1031c`), warm, median of 10. Changes preview 287.3 ms, History preview 214.6 ms, budget 400 ms. Both cases pass. The control with a budget of 1 ms failed both cases on the time bound.
 
 **Git Extensions (GPL-3.0, ideas only; investigator report of 2026-10-30)**
 

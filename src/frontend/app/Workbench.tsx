@@ -12,6 +12,7 @@ import { ComparisonView as Comparison, resultOf, showsDiff, type LineState } fro
 import { deleteBlock, fileActions } from "../changes/file-actions";
 import { conflictedRows, countsText } from "../changes/file-tree";
 import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
+import { changeOf, EXTRA_ID, extraEntries, indexGitlink, SubmodulePreview, useSubmoduleChange, useSubmoduleWork, workOf, type ChangeRead, type SubmoduleReader, type WorkRead } from "../changes/SubmodulePreview";
 import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
 import { CommitTray } from "../commit/CommitTray";
 import { WorkingSummary } from "../commit/WorkingSummary";
@@ -165,6 +166,8 @@ export type WorkbenchBridge = RequestBridge &
     | "readIgnoreFile"
     | "previewIgnore"
     | "openSubmodule"
+    | "readSubmoduleChange"
+    | "readSubmoduleWork"
   >;
 /** The hunk and file staging facts that the workbench gives the changes pane and the comparison view (T145, T202). */
 export type Staging = {
@@ -231,7 +234,10 @@ export type WorkbenchPaneProps = {
   branches?: ReturnType<typeof useBranchActions>;
   /** Feature 005 plan.md P8: the ignore editor, Blame, and Open submodule of the Commit view row menu. */
   commitActions?: CommitActions;
+  /** Feature 005 plan.md D19: the preview reads, the work state of the shown snapshot, the change of the selected row, and the selected row with only local edits. */
+  submodules?: SubmodulePane;
 };
+export type SubmodulePane = { reader: SubmoduleReader; work: WorkRead | null; change: ChangeRead | null; extra: string | null; selectExtra(pathBytes: string | null): void };
 export type CommitActions = {
   ignore: IgnoreStore;
   onBlame(entry: ChangeEntry): void;
@@ -394,8 +400,16 @@ function noDecisionText(state: RequestState): string {
   return code === undefined ? NO_DECISION_PENDING : `${NO_DECISION}: ${code}`;
 }
 
+/** Plan D19 "Rows": the selected row with only local edits while the Changes list shows it and no status entry is selected, else null. */
+function shownExtra(submodules: SubmodulePane | undefined, state: RequestState) {
+  if (submodules === undefined || submodules.extra === null || state.selection !== null) return null;
+  return extraEntries(workOf(submodules.work), state.entries).find((e) => e.pathBytes === submodules.extra) ?? null;
+}
+// Feature 005 spec FR-069: a gitlink row of the Changes or Staged list. A Conflicted row keeps the resolve view.
+const isSubmoduleRow = (entry: ChangeEntry | null): entry is ChangeEntry => entry !== null && entry.category !== "conflicted" && entry.submodule?.startsWith("S") === true;
+
 /** The T133 changes pane on the T132 request state, with the T202 file controls in its stage bar. */
-export function ChangesPaneMount({ state, requests, profile, density, textScale, menuOpen, modalOpen, onStatus, staging, workbench, onTrustReads, filesFilterRef, commitActions }: WorkbenchPaneProps) {
+export function ChangesPaneMount({ state, requests, profile, density, textScale, menuOpen, modalOpen, onStatus, staging, workbench, onTrustReads, filesFilterRef, commitActions, submodules }: WorkbenchPaneProps) {
   const workspace = state.workspace;
   const key = state.repository?.worktreeKey ?? "";
   const view = useSyncExternalStore(
@@ -411,7 +425,17 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
       <ErrorState code={failureCode} result={state.readFailure!.result} onRefresh={requests.refresh} />
     );
   if (workspace === null) return failure ?? <Loading hasContent={false} refreshing={false} />;
-  const selection = state.selection === null ? null : { entryId: state.selection.entryId, comparisonId: state.capability?.comparisonId ?? null };
+  const extra = shownExtra(submodules, state);
+  const selection = extra !== null ? { entryId: `${EXTRA_ID}${extra.pathBytes}`, comparisonId: null } : state.selection === null ? null : { entryId: state.selection.entryId, comparisonId: state.capability?.comparisonId ?? null };
+  // Plan D19 "Rows": a row with only local edits has no status entry, so its selection stays in the Workbench and sends no comparison read.
+  const onSelect = (entryId: string) => {
+    if (!entryId.startsWith(EXTRA_ID)) {
+      submodules?.selectExtra(null);
+      return requests.selectEntry(entryId);
+    }
+    requests.clearSelection();
+    submodules?.selectExtra(entryId.slice(EXTRA_ID.length));
+  };
   const shown = shownComparison(state, staging);
   const fileProps = (s: Staging, comparison: ComparisonResult, category: ChangeEntry["category"]) => ({
     bridge: s.bridge,
@@ -472,8 +496,11 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
       <ChangesList
         entries={state.entries}
         selection={selection}
-        onSelect={requests.selectEntry}
-        onClearSelection={requests.clearSelection}
+        onSelect={onSelect}
+        onClearSelection={() => {
+          submodules?.selectExtra(null);
+          requests.clearSelection();
+        }}
         filterRef={filesFilterRef}
         onFileAction={onFileAction}
         onReason={staging?.onPaneReason}
@@ -491,6 +518,7 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
         untrackedOpen={view?.untrackedOpen}
         onUntrackedOpen={view === null ? undefined : (untrackedOpen) => workbench.setCommitView(key, { untrackedOpen })}
         files={files}
+        submodules={submodules === undefined ? undefined : { work: workOf(submodules.work), change: changeOf(submodules.change) }}
         stageBar={
           staging === undefined ? undefined : controls === null ? null : (
             <FileControls
@@ -512,7 +540,7 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
 const PatchPool = lazy(() => import("../changes/PatchPool"));
 
 /** The T134 comparison view of the selected entry, with the T145 hunk controls in its heading. */
-export function ComparisonViewMount({ state, requests, staging, workbench, onStatus, askTrust }: WorkbenchPaneProps) {
+export function ComparisonViewMount({ state, requests, staging, workbench, onStatus, askTrust, submodules }: WorkbenchPaneProps) {
   const { entry, target, comparison } = shownComparison(state, staging);
   const response = entry !== null && state.comparison?.entryId === entry.entryId ? state.comparison : null;
   const file = entry === null ? null : `${entry.category}:${entry.pathBytes}`;
@@ -587,9 +615,18 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
       notice={failed === null ? undefined : <FileFailure response={failed} />}
     />
   );
+  // Feature 005 plan.md D19: the preview replaces the diff of a submodule row and the limitation text.
+  const snapshotId = state.workspace?.snapshotId;
+  const extra = shownExtra(submodules, state);
+  const work = submodules === undefined ? undefined : { read: submodules.work, snapshotId };
+  // Spec FR-074: only a gitlink of the index has a Working tree row. A staged gitlink deletion has none.
   // Feature 004 plan.md D15 "P2 regions": the resolve view replaces the diff of a selected Conflicted entry.
   const view =
-    entry?.category === "conflicted" && staging !== undefined && state.workspace !== null ? (
+    extra !== null ? (
+      <SubmodulePreview path={extra.path} pathBytes={extra.pathBytes} change={null} work={work} reader={submodules!.reader} />
+    ) : submodules !== undefined && isSubmoduleRow(entry) ? (
+      <SubmodulePreview path={entry.path} pathBytes={entry.pathBytes} change={submodules.change ?? "pending"} work={indexGitlink(entry) ? work : undefined} reader={submodules.reader} />
+    ) : entry?.category === "conflicted" && staging !== undefined && state.workspace !== null ? (
       <ResolveView
         entry={entry}
         snapshotId={state.workspace.snapshotId}
@@ -617,8 +654,14 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
 }
 
 /** The feature 002 history list with the Working directory and Index rows (plan.md D6). */
-export function HistoryViewMount({ state, history, density, profile, textScale, onSelectRow, filterRef, tracking, branches }: WorkbenchPaneProps) {
-  const entries = state.workspace?.completeness.state === "complete" ? state.entries : null;
+export function HistoryViewMount({ state, history, density, profile, textScale, onSelectRow, filterRef, tracking, branches, submodules }: WorkbenchPaneProps) {
+  // Plan D19 "Rows": the Working directory count adds the rows with only local edits.
+  const complete = state.workspace?.completeness.state === "complete" ? state.entries : null;
+  const work = workOf(submodules?.work ?? null);
+  const entries = useMemo(() => {
+    const extras = complete === null ? [] : extraEntries(work, complete);
+    return complete === null || extras.length === 0 ? complete : [...complete, ...extras];
+  }, [complete, work]);
   const onScope = useLatest((scope: Parameters<HistoryListProps["onScope"]>[0]) => void history.setScope(scope));
   const onLabelMenu = useLatest((label: Parameters<NonNullable<HistoryListProps["onLabelMenu"]>>[0], anchor: HTMLElement, byKey?: boolean) => branches?.onRef(label.kind as "branch" | "remote", label.name, "menu", anchor, byKey));
   const onCreateBranch = useLatest((oid: string, anchor: HTMLElement) => branches?.create(oid, anchor));
@@ -828,6 +871,37 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const commitState = useSyncExternalStore(store.subscribe, () => store.commitView(viewKey), () => store.commitView(viewKey));
   const parents = useSyncExternalStore(store.subscribe, () => store.getState().parents, () => store.getState().parents);
   const ignoreState = useSyncExternalStore(ignore.subscribe, ignore.getState, ignore.getState);
+  // Feature 005 plan.md D19 and contract Δ3 `readSubmoduleWork`: a committed snapshot object is a complete `readWorkspace` result.
+  const readWork = useLatest((t: { repositoryId: string; repositoryGeneration: number; snapshotId: string }) => bridge.readSubmoduleWork({ repositoryId: t.repositoryId, repositoryGeneration: t.repositoryGeneration }, { snapshotId: t.snapshotId }));
+  const submoduleWork: WorkRead | null = useSubmoduleWork(readWork, state.repository?.repositoryId ?? null, state.workspace);
+  const [extraRow, setExtraRow] = useState<string | null>(null);
+  // A status entry selection, such as Resolve conflicts or Back from Blame, ends the selection of a row with only local edits.
+  useEffect(() => {
+    if (state.selection !== null) setExtraRow(null);
+  }, [state.selection]);
+  const openSubmoduleLatest = useLatest((path: string) => openSubmodule(path));
+  const submoduleReasonLatest = useLatest((pathBytes: string) => openSubmoduleReason(submoduleUpdate.rows, pathBytes, parents.length));
+  const submoduleReader = useMemo<SubmoduleReader>(
+    () => ({
+      read: (source, onProgress) => {
+        const { repository, workspace: shown } = requests.state();
+        if (repository === null) return Promise.resolve({ requestId: crypto.randomUUID(), state: "rejected", code: "UNKNOWN_TARGET" } as BridgeResponse);
+        return bridge.readSubmoduleChange({ repositoryId: repository.repositoryId, repositoryGeneration: shown?.generation ?? repository.generation }, { source }, onProgress);
+      },
+      cancel: (operationId) => void bridge.cancel({ operationId }),
+      open: openSubmoduleLatest,
+      reason: submoduleReasonLatest,
+    }),
+    [bridge, requests],
+  );
+  const selectedSubmodule = useMemo(() => {
+    const id = state.selection?.entryId;
+    const found = id === undefined ? null : (state.entries.find((e) => e.entryId === id) ?? null);
+    return isSubmoduleRow(found) ? found : null;
+  }, [state.selection?.entryId, state.entries]);
+  // The service runs one `readSubmoduleChange` per window, so only the shown view sends its source.
+  const submoduleSource = selectedSubmodule === null || state.workspace === null || view !== "commit" ? null : { kind: "workspace" as const, snapshotId: state.workspace.snapshotId, entryId: selectedSubmodule.entryId };
+  const submoduleChange = useSubmoduleChange(submoduleReader, submoduleSource, selectedSubmodule === null ? null : `${selectedSubmodule.category}:${selectedSubmodule.pathBytes}`);
   const filterRef = useRef<HTMLInputElement>(null);
   const filesFilterRef = useRef<HTMLInputElement>(null);
   // Feature 005 plan.md D15 keyboard map: Ctrl+F focuses Filter files while the focus is in Changed files or in the History diff.
@@ -1668,6 +1742,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       onOpenSubmodule: openSubmodule,
       submoduleReason: (pathBytes) => openSubmoduleReason(submoduleUpdate.rows, pathBytes, parents.length),
     },
+    submodules: { reader: submoduleReader, work: submoduleWork, change: submoduleChange, extra: extraRow, selectExtra: setExtraRow },
   };
   // Feature 004 plan.md D16 "Geometry": the Commit view holds the commit workspace without the references sidebar.
   const commitProfile = commitViewProfile(profile, client.width);
@@ -1857,6 +1932,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                 panes={historyPanes}
                 onPanes={(next) => setHistoryPanes((p) => ({ ...p, ...next }))}
                 onTrust={() => approveTrust("read")}
+                submodules={view === "history" ? submoduleReader : undefined}
                 onBlame={(request) => {
                   blameReturn.current = null;
                   inspection.openBlame(request);

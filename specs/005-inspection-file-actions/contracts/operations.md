@@ -117,9 +117,10 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - Kind: the first `.gitmodules` source of 001 §12 "Review reads", with `--null --list`. No `submodule.<name>.path` equal to the path gives `nested`.
 - Commands inside the submodule, each as `--no-lazy-fetch --no-optional-locks -C <worktree> --git-dir=.git <args>`:
   - `rev-parse --verify -q HEAD` (unstaged only). Exit 0 with one object ID gives `new`. Another result gives `GIT_FAILED`.
-  - `cat-file -e <old>^{commit}` and `cat-file -e <new>^{commit}`. Exit 0 means present. A non-zero exit gives the state `missing` (git-cat-file(1) `-e`).
+  - Order (2026-10-31 speed fix): check 5 `rev-parse --show-toplevel` ends before any other command inside the submodule starts. The parent `Kind` reads run beside check 5.
   - `rev-list --left-right --count <old>...<new>`. Output: two decimal counts, a tab, a LF. Another form gives `MALFORMED_GIT_OUTPUT`.
-  - `log -z --no-show-signature --no-color --encoding=UTF-8 --format=%H%x00%s --max-count=50 <new> ^<old>` for added commits, and `<old> ^<new>` for removed commits, only when that count is nonzero. Records: object ID, NUL, subject bytes, NUL. A record count above the count or above 50 gives `MALFORMED_GIT_OUTPUT`.
+  - `log -z --no-show-signature --no-color --encoding=UTF-8 --format=%H%x00%s --max-count=50 <new> ^<old>` for added commits, and `<old> ^<new>` for removed commits. Both start beside `rev-list`. The read checks them only after `rev-list` exits 0. Records: object ID, NUL, subject bytes, NUL. A record count above the count or above 50 gives `MALFORMED_GIT_OUTPUT`. A side with a count of 0 must print nothing.
+  - `cat-file -e <old>^{commit}` and `cat-file -e <new>^{commit}`, only after a non-zero `rev-list` exit. Exit 0 means present. A non-zero exit gives the state `missing` (git-cat-file(1) `-e`). Two exits of 0 give `GIT_FAILED`.
 - Programs: none of these commands loads an index or runs a filter, a hook, a textconv driver, or a signature program (research.md R18). So the read needs no submodule program check. T106 proves it with canaries.
 - Bounds: 50 commits per side (`SUBMODULE_CHANGE_COMMITS`), 256 KiB of `log` output per side (`SUBMODULE_CHANGE_OUTPUT_BYTES`), `READ_DEADLINE_MS`. The output bound gives `limited: true` with the whole records before it.
 - Index cut (2026-10-31 review): a workspace source whose snapshot index listing reached a §5 status bound gives `OUTPUT_LIMIT` before any Git process. That snapshot names no index entry.

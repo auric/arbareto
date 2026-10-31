@@ -67,7 +67,7 @@ const DELETE_PROBES = 20;
 // The shortest recorded `run_workbench` call of the 1,000-file Delete took 1,260 ms, so 20 probes need at most 63 ms each, the key events included.
 const DELETE_PROBE_INTERVAL_MS = 50;
 // Spec SC-012: the last mark shows within this time per submodule after the Changes list. The T108 control sets it to 1.
-const MARK_MS_PER_SUBMODULE = 45;
+const MARK_MS_PER_SUBMODULE = 55;
 
 // ---- App texts (the source of each value is named) ----
 

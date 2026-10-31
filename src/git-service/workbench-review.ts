@@ -39,8 +39,9 @@ export type PayloadOf<A extends WorkbenchAction> = Extract<WorkbenchPayload, { a
 type RunRequest = Extract<ServiceRequest, { operation: "runWorkbench" }>;
 
 // Feature 008 plan.md D13: the in-process observer of a revert run. `path` holds the base64 path bytes. Production passes none.
+// `before-index`: right before `publishIndex` (plan.md D7), with the first path of the index part. `checkout-index`: after plan.md D5a step 2, with the first path of the batch.
 export interface RevertCheckpoint {
-  step: "before-write";
+  step: "before-index" | "checkout-index" | "before-write";
   path: string;
   operationId: string;
 }
@@ -99,8 +100,8 @@ export interface WorkbenchRun {
 }
 
 export interface WorkbenchHandler<A extends WorkbenchAction, B> {
-  // Contract Δ3 refusals from the payload alone. They come before any Git process.
-  precheck?(payload: PayloadOf<A>, w: Workspace): Refused | null;
+  // Contract Δ3 refusals from the payload and the retained comparisons alone. They come before any Git process.
+  precheck?(payload: PayloadOf<A>, w: Workspace, sources: Pick<WorkbenchContext, "comparisons">): Refused | null;
   observe(ctx: WorkbenchContext, payload: PayloadOf<A>, common: Common): Promise<Observation<B>>;
   // Contract Δ6: the `action` of the `started` frame.
   started(payload: PayloadOf<A>): NonNullable<MutationStarted["action"]>;
@@ -417,14 +418,17 @@ export function createWorkbench(o: WorkbenchOptions) {
       for (const [key, e] of tokens) if (e.repositoryId === repositoryId) tokens.delete(key);
     },
 
-    // Contract Δ3 refusals from the payload alone. The caller answers them before it schedules any Git process.
-    precheck: (payload: WorkbenchPayload, w: Workspace): Refused | null => handlers.get(payload.action)?.precheck?.(payload, w) ?? null,
+    // Contract Δ3 refusals from the payload and the retained comparisons alone. The caller answers them before it schedules any Git process.
+    precheck: (payload: WorkbenchPayload, w: Workspace): Refused | null => handlers.get(payload.action)?.precheck?.(payload, w, sources) ?? null,
 
     // Contract Δ3 `reviewWorkbench`. A refusal issues no token.
     async review(t: ReadHistoryTarget, payload: WorkbenchPayload): Promise<ReviewOutcome> {
       const ctx: WorkbenchContext = { runner: o.runner, trust: o.trust, ...sources, operationId: t.operationId, signal: t.signal, workspace: t.workspace, installation: t.installation };
       const observed = await observeAll(ctx, payload, () => sharedListing({ trust: o.trust, listingTuple: o.listingTuple }, t));
       if (isStop(observed)) return { result: observed.stop };
+      // Contract §9: SERVICE_UNAVAILABLE is only a `rejected` result. Data-model §7 has no `running` row to `rejected`, so only `precheck` can give it.
+      // A `failed` end with this code throws in the registry, and no response follows. This throw ends the read `failed` with GIT_FAILED (`scheduleRead`).
+      if (("code" in observed ? observed.code : "refused" in observed ? observed.refused : null) === "SERVICE_UNAVAILABLE") throw new TypeError(`${payload.action} observed SERVICE_UNAVAILABLE after the read started`);
       if ("code" in observed) return { result: "failed", code: observed.code };
       if ("refused" in observed) return { result: "failed", code: observed.refused, ...(observed.result === undefined ? {} : { value: observed.result }) };
       const at = now();

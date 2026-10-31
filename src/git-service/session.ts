@@ -1125,7 +1125,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       // Contract Δ3: a name such as `@` refuses before any Git process, so the refusal takes no read slot and no re-read.
       const refused = workbench.precheck(request.payload, workspace);
       if (refused !== null) {
-        if (refused.refused === "INVALID_REQUEST") return reject(request.requestId, "INVALID_REQUEST");
+        // Contract §9: SERVICE_UNAVAILABLE is always a `rejected` result.
+        if (refused.refused === "INVALID_REQUEST" || refused.refused === "SERVICE_UNAVAILABLE") return reject(request.requestId, refused.refused);
         const { operationId } = registry.start("reviewWorkbench", request.requestId);
         registry.apply(operationId, { type: "valid-read" });
         return void registry.apply(operationId, { type: "read-complete", result: "failed", code: refused.refused }, refused.result);

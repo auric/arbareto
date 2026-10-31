@@ -3,7 +3,7 @@
 
 // Feature 008 plan.md D2, D5a, D6, and D10: the review and run frame of `revert-lines`, `revert-files`, and `revert-unstaged`.
 // No Git command writes a target file. Git writes only its own temporary file through `checkout-index --temp`, and the shell replaces each target.
-// A fresh read decides every outcome. Plan.md D3: the unstaged `revert-lines`. Plan.md D4 (staged lines) and the index part of D5 come in T039 and T030.
+// A fresh read decides every outcome. Plan.md D3: the unstaged `revert-lines`. Plan.md D5 and D7: `revert-files` with its index part. Plan.md D4 (staged lines) comes in T039.
 
 import type { ChangeEntry } from "../contracts/envelope";
 import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors";
@@ -16,16 +16,17 @@ import { parsePatch, type PatchHunk } from "./diff-parser";
 import { hunkEligibility, IndexFormatError } from "./eligibility";
 import { createCollector, RunnerRefusal, sizeDeadlineMs, stepUnits, type FileFact, type TempRemoveReply, type WalkStop, type WorkingReplaceReply, type WorkingReplaceRequest } from "./git-runner";
 import { applyToContent } from "./hunk-candidate";
-import { canonicalIndex, indexOf, isStop, lingeringText, missingObject, PROFILE_TEXTS, settled, stepOf, type Fact, type Failure, type Stop } from "./hunk-publish";
+import { canonicalIndex, indexOf, indexSession, isStop, lingeringText, missingObject, PROFILE_TEXTS, publishIndex, settled, stepOf, type Ending, type Fact, type Failure, type Refusal, type Stop } from "./hunk-publish";
 import { LOCKED_REMEDY } from "./index-lock";
 import { subHunk } from "./line-patch";
+import { prepareFiles, type Admitted, type FileItem } from "./multi-publish";
 import { contextOf, latin1, readBounded, strictUtf8 } from "./read-steps";
 import type { Workspace } from "./registration";
 import { blobId, reverseLines } from "./revert-bytes";
 import { policyOf } from "./status";
 import { parseAttributes, parseEolListing, SUPPORT_REASONS, type SupportAttributes } from "./support";
 import { registerWorkbenchAction, unavailable, type Common, type Observation, type PayloadOf, type Refused, type StepEnd, type WorkbenchContext, type WorkbenchRun } from "./workbench-review";
-import { wslIndexDigest } from "./wsl-files";
+import { processEnd, wslIndexDigest } from "./wsl-files";
 
 type Action = "revert-lines" | "revert-files" | "revert-unstaged";
 type Entry = { mode: string; oid: string };
@@ -52,7 +53,7 @@ interface RevertBound {
   snapshotId: string;
   policyFingerprint: string;
   indexLock: "absent";
-  // The raw index digest of an action with an index part. No action of the frame has one yet.
+  // The raw index digest of an action with an index part (plan.md D5), else null.
   index: string | null;
   files: FilePlan[];
   attributes: { working: SupportAttributes; index: SupportAttributes }[];
@@ -235,8 +236,8 @@ async function lockRefusal(ctx: WorkbenchContext): Promise<Refused | Failure | S
 
 // ---- Review ----
 
-// The 001 support reasons of a whole file from its status record (data-model §7). `source` is the mode that the write restores.
-function supportReason(c: Candidate, sourceMode: string): string | null {
+// The 001 support reasons of a whole file from its status record (data-model §7). `sourceMode` is the mode that the write restores, or null without a write.
+function supportReason(c: Candidate, sourceMode: string | null): string | null {
   const e = c.entry;
   if (c.names === null) return "path";
   if (e.flags!.intentToAdd || e.flags!.assumeUnchanged || e.flags!.skipWorktree) return "index-flag";
@@ -247,7 +248,7 @@ function supportReason(c: Candidate, sourceMode: string): string | null {
   if (e.score !== undefined || e.xy?.includes("R") === true || e.xy?.includes("C") === true) return "rename";
   // A mode change stays after a content write, because the write keeps the mode bits of the old file (spec FR-043).
   const workingMode = modes[2];
-  if (workingMode !== undefined && workingMode !== ABSENT_MODE && workingMode !== sourceMode) return "mode";
+  if (sourceMode !== null && workingMode !== undefined && workingMode !== ABSENT_MODE && workingMode !== sourceMode) return "mode";
   return null;
 }
 
@@ -272,17 +273,21 @@ const workingOf = (f: FileFactOf): Working | null => {
   return null;
 };
 
+const entryAt = (e: ChangeEntry, at: 0 | 1): Entry | "absent" => (e.modes![at] === ABSENT_MODE ? "absent" : { mode: e.modes![at]!, oid: e.oids![at]! });
+
 // Data-model §2 and §3, plan.md D5 and D6: the whole-file plans of `entries`, with the D2 refusal order per file.
-async function wholeFiles(ctx: WorkbenchContext, common: Common, entries: readonly ChangeEntry[], source: "index" | "head"): Promise<{ files: FilePlan[]; attributes: RevertBound["attributes"] } | Refused | Failure | Stop> {
+// `untracked` holds the paths of the untracked records of the shown read (data-model §7 `in-the-way`).
+async function wholeFiles(ctx: WorkbenchContext, common: Common, entries: readonly ChangeEntry[], source: "index" | "head", untracked: ReadonlySet<string>): Promise<{ files: FilePlan[]; attributes: RevertBound["attributes"] } | Refused | Failure | Stop> {
   // Contract §4 "Comparison limits": a snapshot with a fingerprint keeps the index flags of every tracked entry.
   if (entries.some((e) => e.flags === undefined || e.modes === undefined || e.oids === undefined)) return { code: "MALFORMED_GIT_OUTPUT" };
-  const candidates = byTree(entries.map((entry) => ({ entry, path: bytesOf(entry.pathBytes), names: namesOf(bytesOf(entry.pathBytes)) })));
+  // Data-model §3 `source`: the entry that `checkout-index --temp` writes. A staged new file has none, so its working file stays (spec FR-021).
+  const candidates = byTree(entries.map((entry) => ({ entry, path: bytesOf(entry.pathBytes), names: namesOf(bytesOf(entry.pathBytes)), src: entryAt(entry, source === "head" ? 0 : 1) })));
   const readable = candidates.filter((c) => c.names !== null);
   const paths = readable.map((c) => c.path);
   const facts = await factsOf(ctx, readable.map((c) => ({ root: "worktreeRoot", path: c.names! })), { digest: true, detail: true, stream: true });
   if (!("value" in facts)) return facts;
-  // The parent folders of each absent target, for `folders` and for a name in the way.
-  const absent = readable.map((c, i) => (facts.value[i]!.kind === "absent" ? c : null));
+  // The parent folders of each absent target that gets a write, for `folders` and for a name in the way.
+  const absent = readable.map((c, i) => (facts.value[i]!.kind === "absent" && c.src !== "absent" ? c : null));
   const prefixes = absent.flatMap((c) => (c === null ? [] : c.names!.slice(0, -1).map((_, depth) => c.names!.slice(0, depth + 1))));
   const prefixFacts = prefixes.length === 0 ? { value: [] as FileFact[] } : await factsOf(ctx, prefixes.map((path) => ({ root: "worktreeRoot", path })), { digest: false });
   if (!("value" in prefixFacts)) return prefixFacts;
@@ -300,24 +305,24 @@ async function wholeFiles(ctx: WorkbenchContext, common: Common, entries: readon
   let readAt = 0;
   for (const c of candidates) {
     const e = c.entry;
-    const headEntry: Entry | "absent" = e.modes![0] === ABSENT_MODE ? "absent" : { mode: e.modes![0]!, oid: e.oids![0]! };
-    const snapshotIndex: Entry | "absent" = e.modes![1] === ABSENT_MODE ? "absent" : { mode: e.modes![1]!, oid: e.oids![1]! };
-    const src = source === "head" ? headEntry : snapshotIndex;
-    const support = supportReason(c, src === "absent" ? ABSENT_MODE : src.mode);
+    const headEntry = entryAt(e, 0);
+    const snapshotIndex = entryAt(e, 1);
+    const src = c.src;
+    const support = supportReason(c, src === "absent" ? null : src.mode);
     if (c.names === null) {
       reasons.push({ pathBytes: e.pathBytes, reason: support! });
       continue;
     }
     const i = readAt++;
     const fact = facts.value[i]!;
-    const parents = fact.kind === "absent" ? prefixFacts.value.slice(prefixAt, (prefixAt += c.names.length - 1)) : [];
+    const parents = fact.kind === "absent" && src !== "absent" ? prefixFacts.value.slice(prefixAt, (prefixAt += c.names.length - 1)) : [];
     const cached = indexAttributes.value[i]!;
     const work = workingAttributes.value[i]!;
     const filter = filterReason(work);
     // Contract Δ3: the fresh index entry of the path must equal the shown read, or the shown read is stale.
     const fresh = indexed.value.get(latin1(c.path)) ?? "absent";
     if (!sameEntry(fresh, snapshotIndex)) return STALE;
-    let reason = support ?? filter;
+    let reason = support ?? filter ?? (untracked.has(e.pathBytes) ? "in-the-way" : null);
     if (reason === null) {
       reason = factReason(fact);
       // An absent target needs each missing folder. A link on the way, or another file at a folder name, blocks it (plan.md D8 `folders`).
@@ -340,7 +345,8 @@ async function wholeFiles(ctx: WorkbenchContext, common: Common, entries: readon
       pathBytes: e.pathBytes,
       headEntry,
       indexEntry: snapshotIndex,
-      newIndex: "keep",
+      // Data-model §3 rules: Revert file sets the HEAD entry, or removes an entry that HEAD lacks.
+      newIndex: source === "index" || sameEntry(headEntry, snapshotIndex) ? "keep" : headEntry === "absent" ? "remove" : headEntry,
       working: bound,
       folders: missing < 0 ? [] : c.names.slice(missing, -1),
       source: src === "absent" ? null : { ...src, size: 0 },
@@ -359,9 +365,11 @@ async function wholeFiles(ctx: WorkbenchContext, common: Common, entries: readon
     if (f.source === null) continue;
     const size = sizes.value.get(f.source.oid);
     if (size === "missing") {
-      // Spec FR-005: a missing object refuses before any change, with the 001 remedy when a promisor remote can lend it.
+      // Spec FR-005: a missing object refuses before any change, with the 001 remedy when a promisor remote can lend it. Without one, it stays GIT_FAILED (001 contract §7).
       const missing = await missingObject(ctx, common.listing, undefined, "object-missing");
-      return isStop(missing) ? missing : { refused: missing.code, ...(missing.remedy === undefined ? {} : { result: { remedy: missing.remedy } }) };
+      if (isStop(missing)) return missing;
+      // Contract gap: contract Δ3 names no refusal value for OBJECT_MISSING. `{path, remedy}` names the file, as LOCKED names its lock.
+      return missing.code === "OBJECT_MISSING" && missing.remedy !== undefined ? { refused: missing.code, result: { path: nativePath(ctx.workspace, namesOf(bytesOf(f.pathBytes))!), remedy: { text: missing.remedy.text } } } : { code: missing.code };
     }
     f.source.size = size!;
   }
@@ -389,7 +397,14 @@ async function observeRevert(ctx: WorkbenchContext, p: Payload, common: Common):
   // Plan.md D2 and D7: the hunk eligibility. Only a staged part writes the index, so `index-change-hook` and `shared-repository` apply only to it.
   const index = await settled(ctx.signal, canonicalIndex(ctx, s.indexFingerprint));
   if (!("value" in index)) return index;
-  const indexPart = false;
+  const byId = new Map(s.entries.map((e) => [e.entryId, e]));
+  // Plan.md D5: an entry whose index entry differs from HEAD (status letter X) gets the Unstage files candidate. A staged-lines review never gets here.
+  const indexPart = p.action === "revert-files" && p.entryIds.some((id) => {
+    const e = byId.get(id);
+    return e !== undefined && e.category !== "untracked" && e.xy?.[0] !== ".";
+  });
+  // `prepareFiles` binds the index of the shown read, so another index refuses here first.
+  if (indexPart && index.value.digest !== s.indexFingerprint.rawIndexDigest) return STALE;
   let eligibility;
   try {
     eligibility = hunkEligibility(index.value.raw, w.objectFormat, indexPart ? common.listing : { entries: common.listing.entries, hooks: { ...common.listing.hooks, configured: [], folder: [] } }, w.wsl !== undefined && indexPart);
@@ -415,29 +430,36 @@ async function observeRevert(ctx: WorkbenchContext, p: Payload, common: Common):
     entries = covered.filter((e) => !isSubmodule(e));
     if (entries.length === 0) return unavailable("nothing-to-revert");
   } else {
-    const byId = new Map(s.entries.map((e) => [e.entryId, e]));
     const picked = p.entryIds.map((id) => byId.get(id));
     // Contract Δ3: an entry of another snapshot or a duplicate ID gives INVALID_REQUEST.
     if (picked.some((e) => e === undefined) || new Set(p.entryIds).size !== p.entryIds.length) return { refused: "INVALID_REQUEST" };
     entries = [];
+    // A partly staged file has a Changes row and a Staged row. Both name the one file, so the first picked row stands for it.
+    const files = new Set<string>();
     for (const e of picked as ChangeEntry[]) {
       if (e.category === "untracked") reasons.push({ pathBytes: e.pathBytes, reason: "untracked" });
-      // Plan.md D5 index part: an entry whose index differs from HEAD needs `publishIndex` (T030).
-      else if (e.category === "staged" || e.xy?.[0] !== ".") return { code: "SERVICE_UNAVAILABLE" };
-      else entries.push(e);
+      else if (!files.has(e.pathBytes)) {
+        files.add(e.pathBytes);
+        entries.push(e);
+      }
     }
   }
   if (entries.length + reasons.length > MULTI_FILE_ACTION_FILES) return unavailable("limit");
-  const planned = await wholeFiles(ctx, common, entries, p.action === "revert-files" ? "head" : "index");
+  const untracked = new Set(s.entries.filter((e) => e.category === "untracked").map((e) => e.pathBytes));
+  const planned = await wholeFiles(ctx, common, entries, p.action === "revert-files" ? "head" : "index", untracked);
   if (!("files" in planned)) {
     if (reasons.length === 0 || !("refused" in planned) || planned.result?.files === undefined) return reasons.length === 0 ? planned : fileRefusal(reasons, []);
     return fileRefusal(reasons, planned.result.files as { path: string; reason: string }[]);
   }
   if (reasons.length > 0) return fileRefusal(reasons, []);
-  const bound: RevertBound = { action: p.action, snapshotId: p.snapshotId, policyFingerprint, indexLock: "absent", index: null, files: planned.files, attributes: planned.attributes, line: null };
+  const bound: RevertBound = { action: p.action, snapshotId: p.snapshotId, policyFingerprint, indexLock: "absent", index: indexPart ? index.value.digest : null, files: planned.files, attributes: planned.attributes, line: null };
   const paths = planned.files.slice(0, CONFIRMATION_PATHS).map((f) => f.pathBytes);
   const count = planned.files.length;
-  const plan = p.action === "revert-unstaged" ? { count, paths, submodules } : { count, paths, newFiles: 0, staged: 0, unstaged: count };
+  // Data-model §5: `newFiles` keep their working file, `staged` have an index change, and `unstaged` have a worktree letter.
+  const plan =
+    p.action === "revert-unstaged"
+      ? { count, paths, submodules }
+      : { count, paths, newFiles: planned.files.filter((f) => f.newIndex === "remove").length, staged: planned.files.filter((f) => f.newIndex !== "keep").length, unstaged: entries.filter((e) => e.xy?.[1] !== ".").length };
   return { bound, plan };
 }
 
@@ -475,10 +497,11 @@ async function checkInId(ctx: WorkbenchContext, path: Uint8Array, bytes: Uint8Ar
   return out.limited || m === null ? { code: "MALFORMED_GIT_OUTPUT" } : { value: m[1]! };
 }
 
-// Plan.md D3: the line plan of one hunk of a retained comparison. The refusals follow the plan.md D2 order.
-async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, policyFingerprint: string): Promise<Observation<RevertBound>> {
-  const w = ctx.workspace;
-  const c = ctx.comparisons.get(p.comparisonId);
+type Comparison = NonNullable<ReturnType<WorkbenchContext["comparisons"]["get"]>>;
+type LineTarget = { c: Comparison; e: ChangeEntry; path: Uint8Array; names: string[]; hunk: Comparison["hunks"][number]; sub: PatchHunk };
+
+// Plan.md D3: the memory-only steps of a line review. They read the retained comparison and start no Git process.
+function lineTarget(c: Comparison | undefined, p: PayloadOf<"revert-lines">, w: Workspace): LineTarget | Refused | Failure {
   // Contract Δ3: an unknown comparison or hunk gives UNKNOWN_TARGET, and a comparison of another snapshot INVALID_REQUEST.
   // The frame found `snapshotId` in the current generation, so the snapshot check also binds the generation.
   if (c === undefined || c.repositoryId !== w.repositoryId) return { refused: "UNKNOWN_TARGET" };
@@ -499,11 +522,18 @@ async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, p
   // Plan.md D3 `unstage` rule. A selection of all change lines is the whole hunk, so the header refusals also apply to a whole hunk.
   const sub = subHunk(parsed.patch.header, hunk, "unstage", p.lines ?? changeOrdinals(hunk));
   if (!sub.ok) return sub.code === "INVALID_REQUEST" ? { refused: sub.code } : unsupported(sub.reason);
-  // Plan.md D4: the staged scope comes in T039.
-  if (c.scope !== "index-to-worktree") return { code: "SERVICE_UNAVAILABLE" };
-  // An unstaged change always has an index entry.
-  if (e.modes[1] === ABSENT_MODE) return { code: "MALFORMED_GIT_OUTPUT" };
-  const indexEntry: Entry = { mode: e.modes[1]!, oid: e.oids[1]! };
+  return { c, e, path, names, hunk, sub: sub.hunk };
+}
+
+// Plan.md D3: the line plan of one hunk of a retained comparison. The refusals follow the plan.md D2 order.
+async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, policyFingerprint: string): Promise<Observation<RevertBound>> {
+  const w = ctx.workspace;
+  const target = lineTarget(ctx.comparisons.get(p.comparisonId), p, w);
+  if (!("sub" in target)) return target;
+  const { c, e, path, names, hunk, sub } = target;
+  // An unstaged change always has an index entry. `precheck` rejected every other scope.
+  if (e.modes![1] === ABSENT_MODE) return { code: "MALFORMED_GIT_OUTPUT" };
+  const indexEntry: Entry = { mode: e.modes![1]!, oid: e.oids![1]! };
   const indexed = await indexEntriesOf(ctx, [path]);
   if (!("value" in indexed)) return "code" in indexed && indexed.code === "WORKBENCH_UNAVAILABLE" ? unavailable("path") : indexed;
   // The edge case "Another Git process changes the index": the index entry binds the shown comparison.
@@ -538,14 +568,14 @@ async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, p
 
   const eol = await workingEol(ctx, path);
   if (!("value" in eol)) return eol;
-  const bytes = reverseLines(read, sub.hunk, eol.value);
+  const bytes = reverseLines(read, sub, eol.value);
   if (bytes === "stale") return STALE;
   // Data-model §4 `expectedBlobId`: the working side of the comparison is the index blob with every hunk, and the partial patch goes from it reversed.
   const base = await indexBlob(ctx, indexEntry.oid);
   if (!("value" in base)) return base;
   let side: Uint8Array | null = base.value;
   for (const h of [...c.hunks].reverse()) side = side === null ? null : applyToContent(side, h, false);
-  const expected = side === null ? null : applyToContent(side, sub.hunk, true);
+  const expected = side === null ? null : applyToContent(side, sub, true);
   if (expected === null) return { code: "MALFORMED_GIT_OUTPUT" };
   const proof = await checkInId(ctx, path, bytes);
   if (!("value" in proof)) return proof;
@@ -553,8 +583,7 @@ async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, p
   // Spec FR-015: Git's check-in form of the new bytes must be the expected content.
   if (proof.value !== expectedBlobId) return unsupported("line-endings");
 
-  const headEntry: Entry | "absent" = e.modes[0] === ABSENT_MODE ? "absent" : { mode: e.modes[0]!, oid: e.oids[0]! };
-  const file: FilePlan = { entryId: e.entryId, pathBytes: e.pathBytes, headEntry, indexEntry, newIndex: "keep", working, folders: [], source: null };
+  const file: FilePlan = { entryId: e.entryId, pathBytes: e.pathBytes, headEntry: entryAt(e, 0), indexEntry, newIndex: "keep", working, folders: [], source: null };
   const line = { comparisonId: c.comparisonId, hunkId: hunk.hunkId, lines: p.lines ?? null, eol: eol.value, expectedBlobId, bytes: b64(bytes), sha256: sha256(bytes) };
   return {
     bound: { action: "revert-lines", snapshotId: p.snapshotId, policyFingerprint, indexLock: "absent", index: null, files: [file], attributes: [{ working: work, index: cached }], line },
@@ -610,6 +639,54 @@ function tempRecords(raw: Uint8Array, batch: readonly Uint8Array[]): { temps: Ma
   return { temps, names, exact };
 }
 
+// Plan.md D7: the index part of `revert-files`. The Unstage files `prepare` builds one candidate for every file with an index change, and one publication covers the set.
+// `owned` is false when an owned lock or candidate stays, or when a WSL `remove` left its ownership unknown (contract §8).
+async function publishFiles(r: WorkbenchRun, bound: RevertBound): Promise<{ ending: Ending; publishing: boolean; owned: boolean }> {
+  const { ctx, q } = r;
+  const w = ctx.workspace;
+  const found = ctx.reader.selection(w.repositoryId, w.generation, bound.snapshotId);
+  if (!found.ok) return { ending: { code: found.code }, publishing: false, owned: true };
+  const s = found.snapshot;
+  const byId = new Map(s.entries.map((e) => [e.entryId, e]));
+  const items = bound.files.flatMap((f, i): FileItem[] => {
+    if (f.newIndex === "keep") return [];
+    const path = bytesOf(f.pathBytes);
+    // git-update-index(1) `--index-info`: mode 0 removes the entry. Only a staged new file gets `remove`, so it has an index entry.
+    const head = f.newIndex === "remove" ? { mode: 0, objectId: "0".repeat(f.indexEntry === "absent" ? 0 : f.indexEntry.oid.length) } : { mode: Number.parseInt(f.newIndex.mode, 8), objectId: f.newIndex.oid };
+    // `unstage` reads no working facts and no working file (multi-publish.ts `prepareFiles`).
+    const facts = f.working === "absent" ? { type: "absent" as const } : { type: "file" as const, size: f.working.size, diskPath: path };
+    return [{ entry: byId.get(f.entryId)!, path, action: { direction: "unstage", changedPaths: [{ path, ...head }] }, facts, attributes: bound.attributes[i]!.working, working: null }];
+  });
+  const admitted: Admitted = {
+    approval: { binding: { head: s.head, index: s.indexFingerprint!, operationState: s.operationState, policyFingerprint: s.policyFingerprint!, entry: { pathBytes: "", category: "unstaged" } } },
+    direction: "unstage",
+    items,
+    snapshot: s,
+  };
+  // Plan.md D7 "The claim": the workbench token is the single-use claim, so the publication claim always consumes.
+  const session = indexSession(ctx, new Uint8Array(), { consume: () => true, refusal: () => "UNKNOWN_TARGET" }, { repositoryId: w.repositoryId, before: s.indexFingerprint!.rawIndexDigest, candidate: null });
+  await ctx.revertCheckpoint?.({ step: "before-index", path: items[0]!.entry.pathBytes, operationId: ctx.operationId });
+  r.progress("revert-index");
+  let ending: Ending;
+  try {
+    // A revert run gives its own progress, so the staging phases of `prepareFiles` stay silent.
+    ending = await publishIndex({ runner: ctx.runner }, session, { prepare: (x) => prepareFiles({ registry: { progress: () => {} } }, admitted, x, ctx.installation) });
+  } catch {
+    await session.releaseOwned(false);
+    return { ending: { code: "GIT_FAILED" }, publishing: true, owned: false };
+  }
+  if (session.run.lock === null && session.run.candidatePath === null) return { ending, publishing: session.run.publishing, owned: true };
+  // Contract §8 and G18: owned files go only after a fresh process-end fact. Windows takes an exit reply without a live descendant, and WSL the anchor fact.
+  session.rec.reset();
+  let ended: boolean;
+  if (w.wsl === undefined) {
+    await indexEntriesOf({ ...q, runner: session.rec }, [items[0]!.path]);
+    ended = session.rec.last === 0;
+  } else ended = (await processEnd(q)) === "fact";
+  const unknown = await session.releaseOwned(ended);
+  return { ending, publishing: session.run.publishing, owned: !unknown && session.foreign.length === 0 };
+}
+
 async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Promise<void> {
   const { ctx, q } = r;
   const w = ctx.workspace;
@@ -629,8 +706,31 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
   const deadlines = new Set<number>();
   let done = 0;
   const result = { action: bound.action };
-  const count = plans.length;
-  r.progress("revert-files", { fileIndex: 0, fileCount: count });
+  const line = bound.line;
+  // Plan.md D5a: the files with a source get a working write. A staged new file keeps its working file (spec FR-021).
+  const writable = line === null ? plans.flatMap((f, i) => (f.source === null ? [] : [i])) : [0];
+  const count = writable.length;
+
+  // Plan.md D7 and D10: the index part runs first. A refusal before publication ends the run before any working write.
+  let index: "none" | "published" | "refused" = "none";
+  let refusal: Refusal | null = null;
+  // Contract §9 "publish without a typed result", or an owned file that stays: the fresh read cannot decide the outcome.
+  let indexUnknown = false;
+  if (line === null && plans.some((f) => f.newIndex !== "keep") && !ctx.signal.aborted) {
+    const part = await publishFiles(r, bound);
+    const ending = part.ending;
+    if (part.publishing || !part.owned) indexUnknown = true;
+    else if ("published" in ending) index = "published";
+    else if (isStop(ending)) failure = ending.stop === "deadline" ? "DEADLINE" : null;
+    else {
+      index = "refused";
+      refusal = ending;
+      // Contract Δ9: a bound fact that changed after the review is STALE_REVIEW.
+      failure = ending.code === "STALE_SELECTION" ? "STALE_REVIEW" : ending.code;
+    }
+    stopped = index !== "published";
+  }
+  if (!stopped && count > 0) r.progress("revert-files", { fileIndex: 0, fileCount: count });
 
   // Plan.md D5a step 6: each Git temporary file that no write consumed. The cleanup reads with the signal that never aborts.
   // Contract Δ6 `tempRemove`: `interrupted` and a lost reply leave an unknown effect, so the run waits for the process-end fact and never ends `succeeded`.
@@ -702,7 +802,6 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
   };
 
   // Plan.md D3 run: one write of the reviewed bytes, with the bound size and SHA-256 as `expected`. No index part.
-  const line = bound.line;
   const target = plans[0]?.working;
   if (line !== null && target !== undefined && target !== "absent" && !ctx.signal.aborted) {
     const request: WorkingReplaceRequest = { operationId: ctx.operationId, repositoryId: w.repositoryId, target: "working", path: nativePath(w, names[0]!), expected: { size: target.size, sha256: target.sha256 }, facts: target, bytes: line.bytes };
@@ -710,14 +809,15 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
   }
 
   for (let start = 0; line === null && start < count && failure === null && !stopped && !ctx.signal.aborted; start += FILE_FACT_ENTRIES) {
-    const batch = plans.slice(start, start + FILE_FACT_ENTRIES).map((_, k) => start + k);
+    const batch = writable.slice(start, start + FILE_FACT_ENTRIES);
     const first = await indexState(batch);
     if (!("value" in first)) {
       failure = "code" in first ? first.code : first.stop === "deadline" ? "DEADLINE" : null;
       stopped = true;
       break;
     }
-    if (!batch.every((i, k) => plans[i]!.source !== null && sameEntry(first.value.entries[k]!, plans[i]!.source!))) {
+    // Plan.md D5a step 1: each entry equals its source, after a published index part the HEAD entry.
+    if (!batch.every((i, k) => sameEntry(first.value.entries[k]!, plans[i]!.source!))) {
       stale(batch);
       break;
     }
@@ -737,9 +837,10 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
       break;
     }
     const named = batch.map((i) => temps.get(latin1(paths[i]!))!);
+    await ctx.revertCheckpoint?.({ step: "checkout-index", path: plans[batch[0]!]!.pathBytes, operationId: ctx.operationId });
     const again = await indexState(batch);
-    // Plan.md D5a step 4: the size and SHA-256 of each Git temporary file.
-    const tempFacts = await factsOf(ctx, named.map((name) => ({ root: "worktreeRoot", path: [name] })), { digest: true, stream: true });
+    // Plan.md D5a step 4: the size and SHA-256 of each Git temporary file. A Cancel never stops this read, because step 6 needs the facts.
+    const tempFacts = await factsOf(q, named.map((name) => ({ root: "worktreeRoot", path: [name] })), { digest: true, stream: true });
     const facts = "value" in tempFacts ? tempFacts.value : null;
     const files: (Temp | null)[] = named.map((name, k) => {
       const f = facts?.[k];
@@ -786,7 +887,8 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
 
   const settled_ = await r.reconcile(ends);
   // Plan.md D10 "unknown": a lost reply leaves the outcome unknown, and the recovery marker stays (001 FR-023).
-  if (settled_ === null || lost) return r.unknown({ code: "GIT_FAILED" }, result);
+  // Contract gap: RevertRun has no `foreign` field, so an owned index file that stays also leaves the outcome unknown.
+  if (settled_ === null || lost || indexUnknown) return r.unknown({ code: "GIT_FAILED" }, result);
   // Plan.md D10: the fresh index entries, the fresh digests, and the status read.
   const freshIndex = await indexEntriesOf(q, paths);
   const freshFacts = await factsOf(q, names.map((path) => ({ root: "worktreeRoot", path })), { digest: true, stream: true });
@@ -803,9 +905,11 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
     const digest = f.kind === "absent" ? "absent" : f.kind === "file" ? f.digest! : null;
     const planned = plan.newIndex === "keep" ? plan.indexEntry : plan.newIndex === "remove" ? "absent" : plan.newIndex;
     const old = plan.working === "absent" ? "absent" : plan.working.sha256;
+    // A file without a write keeps its working bytes (data-model §8 `keep`).
+    const intended = line === null && plan.source === null ? old : newSha[i];
     const reply = replies[i]!;
     const at = (outcome: FileOutcome["outcome"], extra: Partial<FileOutcome> = {}): FileOutcome => ({ entryId: plan.entryId, outcome, ...extra });
-    if (sameEntry(index, planned) && newSha[i] !== null && digest === newSha[i]) return at("reverted");
+    if (sameEntry(index, planned) && intended !== null && digest === intended) return at("reverted");
     if (sameEntry(index, planned) && !sameEntry(planned, plan.indexEntry) && digest === old) return at("unstaged-only");
     if (sameEntry(index, plan.indexEntry) && digest === old) {
       if (reply === null) return at("not-started");
@@ -816,7 +920,7 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
     }
     return at("changed-outside");
   });
-  const value = { action: bound.action, files: outcomes, foldersCreated: [...created].map((path) => Buffer.from(path).toString("base64")), index: "none" };
+  const value = { action: bound.action, files: outcomes, foldersCreated: [...created].map((path) => Buffer.from(path).toString("base64")), index };
   // Plan.md D10: created folders and an unknown `tempRemove` are effects too, so such a run never ends `succeeded` or `no-effects`.
   const effects = outcomes.filter((o) => o.outcome === "reverted" || o.outcome === "unstaged-only" || o.outcome === "changed-outside").length + created.size + (tempUnknown ? 1 : 0);
   if (tempUnknown) return r.finish({ type: "failed-with-effects" }, value);
@@ -827,11 +931,21 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
   // No file changed: the code of the first file in tree order.
   const firstCode = outcomes[0]!.code;
   const code: ErrorCode = failure ?? (firstCode === "stale" ? "STALE_REVIEW" : firstCode === "refused" ? "WORKBENCH_UNAVAILABLE" : deadlines.has(0) ? "DEADLINE" : "GIT_FAILED");
-  r.finish({ type: "no-effects", observed: "failed", code }, value);
+  // Contract Δ3: an index part that refused gives the value of its refusal, as the run start does: the LOCKED guidance, or the stale reason.
+  const refused = refusal?.code === "LOCKED" && refusal.path !== undefined && refusal.remedy !== undefined ? { path: refusal.path, remedy: { text: refusal.remedy.text } } : refusal?.code === "STALE_SELECTION" ? { action: bound.action, reason: "revert-changed" } : value;
+  const reason = code === "OUTPUT_LIMIT" && refusal?.reason !== undefined ? { reason: refusal.reason } : {};
+  r.finish({ type: "no-effects", observed: "failed", code, ...reason }, refused);
 }
 
 for (const action of ["revert-lines", "revert-files", "revert-unstaged"] as const) {
   registerWorkbenchAction<Action, RevertBound>(action, {
+    // Plan.md D4: the staged lines come in T039. Contract §9 makes SERVICE_UNAVAILABLE a `rejected` result, so it comes before the read starts.
+    // Only a target that passes every memory-only refusal gets it, so a refused staged hunk keeps its reason (spec Edge Cases `new-file`).
+    precheck: (p, w, { comparisons }) => {
+      if (p.action !== "revert-lines") return null;
+      const c = comparisons.get(p.comparisonId);
+      return c !== undefined && c.scope !== "index-to-worktree" && c.scope !== "empty-to-untracked" && "sub" in lineTarget(c, p, w) ? { refused: "SERVICE_UNAVAILABLE" } : null;
+    },
     observe: (ctx, p, common) => observeRevert(ctx, p, common),
     started: () => action,
     // The run reads the index itself in its D5a steps and its reconcile (plan.md D2).

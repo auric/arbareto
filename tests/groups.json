@@ -241,6 +241,7 @@
     "tests/git/reveal-path.test.ts",
     "tests/git/revert-bytes.test.ts",
     "tests/git/revert-facts.test.ts",
+    "tests/git/revert-files.test.ts",
     "tests/git/revert-frame.test.ts",
     "tests/git/revert-lines.test.ts",
     "tests/git/service-harness.test.ts",

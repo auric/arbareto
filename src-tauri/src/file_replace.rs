@@ -1468,8 +1468,8 @@ mod tests {
                 .open(&path)
                 .expect("open");
             assert!(
-                set_basic(&OwnedHandle::from(file), OLD_CREATION, 0).is_ok(),
-                "creation time"
+                set_basic(&OwnedHandle::from(file), OLD_CREATION, OLD_CREATION, 0).is_ok(),
+                "creation and last write time"
             );
             let kept = FILE_ATTRIBUTE_HIDDEN.0
                 | FILE_ATTRIBUTE_SYSTEM.0
@@ -1477,9 +1477,12 @@ mod tests {
             assert!(set_attributes(&path, kept), "attributes");
             let old_sddl = sddl_at(&path);
             let old_descriptor = descriptor_at(&path);
-            let old_write = std::fs::metadata(&path)
-                .expect("metadata")
-                .last_write_time();
+            assert_eq!(
+                std::fs::metadata(&path)
+                    .expect("metadata")
+                    .last_write_time() as i64,
+                OLD_CREATION
+            );
             let facts = bound(&repo.root, &["a.txt"]);
             assert_eq!(
                 replace(&repo, &["a.txt"], Some(&facts), &bytes(b"new\n")),
@@ -1497,8 +1500,8 @@ mod tests {
             assert!(
                 std::fs::metadata(&path)
                     .expect("metadata")
-                    .last_write_time()
-                    > old_write,
+                    .last_write_time() as i64
+                    > OLD_CREATION,
                 "the last write time is the time of the write"
             );
             assert_eq!(sddl_at(&path), old_sddl);
@@ -2540,9 +2543,16 @@ mod tests {
                 && written as usize == bytes.len()
         }
 
-        pub(super) fn set_basic(handle: &OwnedHandle, creation: i64, attributes: u32) -> NTSTATUS {
+        /// A zero time or zero attributes keep the current value (FILE_BASIC_INFORMATION).
+        pub(super) fn set_basic(
+            handle: &OwnedHandle,
+            creation: i64,
+            write: i64,
+            attributes: u32,
+        ) -> NTSTATUS {
             let info = FILE_BASIC_INFORMATION {
                 CreationTime: creation,
+                LastWriteTime: write,
                 FileAttributes: attributes,
                 ..Default::default()
             };
@@ -2683,7 +2693,7 @@ mod tests {
             let fail = |step: &str, status: String| json!({ "step": step, "status": status });
             let mut copy = || -> Option<Value> {
                 if basic {
-                    let status = set_basic(&temp, old.CreationTime, old.FileAttributes);
+                    let status = set_basic(&temp, old.CreationTime, 0, old.FileAttributes);
                     if status.is_err() {
                         return Some(fail("basic", status_text(status)));
                     }
@@ -2956,7 +2966,7 @@ mod tests {
                         FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE,
                     )
                     .expect("open");
-                    set_basic(&handle, OLD_CREATION, 0).is_ok()
+                    set_basic(&handle, OLD_CREATION, 0, 0).is_ok()
                 };
                 let result = replace(&dir, &name, basic, Dacl::None, false, copy_first);
                 let after = query::<FILE_BASIC_INFORMATION>(&hold(&parent, &name), FileBasicInformation, &RUN)

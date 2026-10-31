@@ -77,7 +77,7 @@ async function send(props: Omit<FileControlsProps, "reasonId">, decision: Decisi
 /** The one file action of the stage bar buttons and the Space key. A refusing decision sends nothing. */
 export async function runFileAction(props: Omit<FileControlsProps, "reasonId">): Promise<FileActionResult> {
   const decision = decide(props);
-  if (decision.reason !== null) return { state: "refused", text: `${decision.label} is unavailable: ${decision.reason}`, quiet: decision.quiet };
+  if (decision.reason !== null) return { state: "refused", text: `${decision.label} is unavailable: ${decision.reason}`, ...(decision.quiet ? { quiet: true } : {}) };
   return (await send(props, decision)).state === "succeeded" ? { state: "succeeded" } : { state: "failed" };
 }
 

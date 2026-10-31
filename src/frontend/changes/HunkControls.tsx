@@ -1,12 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { ArrowDown01Icon, ArrowUp01Icon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowUp01Icon, MoreHorizontalIcon, Undo03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { Fragment, useId, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import type { ChangeEntry, Comparison, WorkspaceSnapshot } from "../../contracts/envelope";
 import { WarningIcon } from "../app/NoticeBand";
 import type { BridgeResponse, createBridge } from "../bridge";
+import { ActionMenu, type ActionItem } from "../components/action-menu";
 import { RUNNING_REASON, RunningTooltip } from "../components/running-tooltip";
 import { Button } from "../components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../components/ui/tooltip";
@@ -14,8 +15,9 @@ import { trackOperation, type StatusOperation } from "../status/OperationStatus"
 import type { TrustReport } from "../trust/TrustChip";
 import { BUSY_REASON } from "./ChangesPane";
 import type { LineState } from "./ComparisonView";
-import { changeRows, pickLines } from "./hunk-mapping";
+import { changeRows, pickLines, rowOf, type LineRange, type Patch } from "./hunk-mapping";
 import { LIMITATION_TEXT } from "./limitation-text";
+import { actionName, LINE_REVERT_TEXT, MORE_ACTIONS, NO_HUNK, REVERT_HUNK_LABEL, REVERT_UNAVAILABLE, revertLinesLabel, revertReason } from "./revert-text";
 
 // plan.md "Task flow and command placement" (Select a hunk, Stage or unstage), "Hunk toolbar layout", "Long text" (reason line), and "Keyboard and focus" (Comparison, Unavailable control).
 
@@ -48,7 +50,6 @@ export const TRUST_TEXT = "Staging needs trust. Select Not trusted in the status
 export const STALE_TEXT = "The comparison or the staged scope changed. Arbareto reads it again.";
 const COMPARISON_INCOMPLETE = "The comparison is incomplete.";
 const MAPPING_FAILED = "Hunk actions are unavailable: DISPLAY_MAPPING_FAILED";
-const NO_HUNK = "No hunk is selected.";
 // Feature 004 plan.md D8 and D15 "Commit view texts": the reasons of contract Δ4 `LINE_ACTION_REASONS`.
 export const LINE_TEXT: Record<"context-only" | "several-hunks" | "deleted-file" | "new-file" | "eof-newline", string> = {
   "context-only": "The selection holds only context lines. Select added or removed lines.",
@@ -112,7 +113,14 @@ export type HunkControlsProps = {
   stepRef?: RefObject<((direction: Direction) => void) | null>;
   /** Feature 004 plan.md D15 "Line selection": the line selection of the shown diff. */
   lines?: LineState;
+  /** Feature 008 plan.md D12: starts the review of a revert. Absent, the diff offers no revert (spec FR-006). */
+  onRevert?(request: RevertRequest): void;
+  /** Feature 008 spec FR-046: the reason of an R that changes nothing. */
+  onRevertRefused?(text: string): void;
 };
+
+/** Feature 008 contract Δ3 `revert-lines`: one hunk, with the line ordinals of a line selection or null. `opener` gets focus after the modal. */
+export type RevertRequest = { comparison: Comparison; hunkId: string; lines: number[] | null; opener: HTMLElement | null };
 
 /** `quiet` keeps the text as the description of its control only (plan D15 running rule). */
 export type ReasonPart = { id: string; text: string | null; quiet?: boolean };
@@ -187,6 +195,40 @@ function hunkReason(props: HunkControlsProps): string | null {
   );
 }
 
+/** Feature 008 spec FR-002, FR-013, FR-038: the reason that blocks every revert of this comparison. A revert needs no trust (FR-004). */
+function revertBlock(props: HunkControlsProps): string | null {
+  const { comparison } = props;
+  return (
+    (props.blocked === "running" ? RUNNING_REASON : props.blocked ? BLOCKED_TEXT[props.blocked] : null) ??
+    (props.category === "untracked" ? revertReason("untracked", "")! : null) ??
+    (comparison.support !== "supported" ? (comparison.support === null ? COMPARISON_INCOMPLETE : LIMITATION_TEXT[comparison.support]) : null) ??
+    (comparison.completeness.state !== "complete" ? COMPARISON_INCOMPLETE : null) ??
+    (props.displayFailed ? MAPPING_FAILED : null) ??
+    (props.target ? null : BLOCKED_TEXT.stale)
+  );
+}
+
+/** The revert reasons of the hunk and of the line selection (spec FR-013). A revert reverses the comparison, so the line rule is the Unstage rule. */
+function revertState(props: HunkControlsProps) {
+  const rows = props.lines?.patch ?? null;
+  const range = props.lines?.range ?? null;
+  const header = rows?.header ?? [];
+  // The `git diff` extended header lines (git-diff(1) "Generating patch text with -p").
+  const fileReason = header.some((l) => l.startsWith("deleted file mode ")) ? LINE_REVERT_TEXT["deleted-file"] : header.some((l) => l.startsWith("new file mode ")) ? LINE_REVERT_TEXT["new-file"] : null;
+  const hunkReason = revertBlock(props) ?? fileReason;
+  if (range === null || rows === null) return { hunkReason, lines: null };
+  const pick = pickLines(rows, range, "unstage");
+  const reason = hunkReason ?? (pick === null ? MAPPING_FAILED : pick.ok ? null : LINE_REVERT_TEXT[pick.reason as keyof typeof LINE_REVERT_TEXT]);
+  const label = revertLinesLabel(changeRows(rows, range)?.length ?? 0);
+  return { hunkReason, lines: { label, reason, pick: pick?.ok === true ? pick : null, hunks: selectedHunks(rows, range) } };
+}
+/** The hunk indexes that the line selection touches. */
+function selectedHunks(rows: Patch, range: LineRange): ReadonlySet<number> {
+  const a = rowOf(rows.rows, range.start, range.side);
+  const b = rowOf(rows.rows, range.end, range.endSide ?? range.side);
+  return a < 0 || b < 0 ? new Set() : new Set(rows.rows.slice(Math.min(a, b), Math.max(a, b) + 1).map((r) => r.hunk));
+}
+
 /** One `applyHunk` of `hunk`, with the line ordinals of a line selection (contract Δ4). */
 async function sendHunk(props: HunkControlsProps, hunk: Comparison["hunks"][number], lines?: number[]): Promise<BridgeResponse> {
   const { comparison } = props;
@@ -202,10 +244,22 @@ async function sendHunk(props: HunkControlsProps, hunk: Comparison["hunks"][numb
 export function HunkButton(props: HunkControlsProps & { index: number }) {
   const reasonId = useId();
   const running = useRef(false);
+  const more = useRef<HTMLButtonElement>(null);
+  const [menu, setMenu] = useState(false);
   const hunk = props.comparison.hunks[props.index];
   const reason = hunkReason(props);
   const label = props.category === "staged" ? "Unstage hunk" : "Stage hunk";
   if (hunk === undefined) return null;
+  // Feature 008 spec FR-012 and plan D12 "Diff" (board Menu-hunk): one destructive group without a label.
+  const revert = revertState(props);
+  const send = (lines: number[] | null) => props.onRevert?.({ comparison: props.comparison, hunkId: hunk.hunkId, lines, opener: more.current });
+  const keys = { aria: "R", text: "R" };
+  const items: ActionItem[] = [{ label: REVERT_HUNK_LABEL, icon: Undo03Icon, keys, danger: true, reason: revert.hunkReason, running: props.blocked === "running", onSelect: () => send(null) }];
+  const lines = revert.lines;
+  if (lines !== null && lines.hunks.has(props.index)) {
+    const pick = lines.pick;
+    items.push({ label: lines.label, icon: Undo03Icon, keys, danger: true, reason: lines.reason, running: props.blocked === "running", onSelect: () => pick !== null && send(pick.lines) });
+  }
   return (
     <>
       <RunningTooltip reason={props.blocked === "running" ? reason : null}>
@@ -232,6 +286,20 @@ export function HunkButton(props: HunkControlsProps & { index: number }) {
         <span id={reasonId} hidden>
           {reason}
         </span>
+      )}
+      {props.onRevert === undefined ? null : (
+        <Tooltip>
+          <ActionMenu
+            label={MORE_ACTIONS}
+            groups={[items]}
+            open={menu}
+            onOpenChange={setMenu}
+            trigger={<TooltipTrigger render={<Button ref={more} variant="ghost" size="icon-sm" aria-label={MORE_ACTIONS} style={{ width: "var(--h-row-button)", height: "var(--h-row-button)" }} />}>
+              <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
+            </TooltipTrigger>}
+          />
+          <TooltipContent>{MORE_ACTIONS}</TooltipContent>
+        </Tooltip>
       )}
     </>
   );
@@ -291,9 +359,26 @@ export function HunkControls(props: HunkControlsProps) {
     if ((direction === "unstage") !== unstage || lineReason !== null || picked === null || lineHunk === undefined) return;
     void act({ hunk: lineHunk, ordinals: picked.lines });
   };
-  // React forbids a ref write during render. S and U call the action of the committed render.
+  // Feature 008 spec FR-012 and FR-046: R reverts the line selection, else the selected hunk.
+  const revert = revertState(props);
+  const runRevert = () => {
+    if (props.onRevert === undefined) return;
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const refuse = (label: string, reason: string) => props.onRevertRefused?.(`${REVERT_UNAVAILABLE(actionName(label))} ${reason}`);
+    const lines = revert.lines;
+    if (lines !== null) {
+      const target = lines.pick === null ? undefined : comparison.hunks[lines.pick.hunk];
+      if (lines.reason !== null || lines.pick === null || target === undefined) return refuse(lines.label, lines.reason ?? MAPPING_FAILED);
+      return props.onRevert({ comparison, hunkId: target.hunkId, lines: lines.pick.lines, opener });
+    }
+    if (hunk === undefined) return props.onRevertRefused?.(NO_HUNK);
+    if (revert.hunkReason !== null) return refuse(REVERT_HUNK_LABEL, revert.hunkReason);
+    props.onRevert({ comparison, hunkId: hunk.hunkId, lines: null, opener });
+  };
+  // React forbids a ref write during render. S, U, and R call the action of the committed render.
   useLayoutEffect(() => {
     if (props.lines) props.lines.action.current = runLines;
+    if (props.lines) props.lines.revert.current = runRevert;
   });
   const lineCount = range === null || rows === null ? 0 : (changeRows(rows, range)?.length ?? 0);
 

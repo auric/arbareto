@@ -114,8 +114,8 @@ export type ComparisonViewProps = {
   helpLine?: string;
   /** The T145 hunk controls of a `Comparison` result. `displayFailed` is true when the display mapping disagrees (contract §4). */
   controls?(comparison: Comparison, displayFailed: boolean, lines: LineState): ReactNode;
-  /** Spec FR-037: the button of the hunk with this index. */
-  hunkAction?(comparison: Comparison, displayFailed: boolean, index: number): ReactNode;
+  /** Spec FR-037: the button of the hunk with this index. Feature 008 plan.md D12: its More actions menu reads the line selection. */
+  hunkAction?(comparison: Comparison, displayFailed: boolean, index: number, lines: LineState): ReactNode;
   /** The last own successful hunk action of this file: the acted hunk ordinal and the patch that it replaced. */
   anchor?: { ordinal: number; patch: string } | null;
   /** Content below the heading, such as a failed file action output (T202). */
@@ -131,12 +131,14 @@ function decode(base64: string): string | null {
   }
 }
 
-/** Feature 004 plan.md D15 "Line selection": the line selection of the shown diff, its rows, and the S and U action that the hunk controls register. */
+/** Feature 004 plan.md D15 "Line selection": the line selection of the shown diff, its rows, and the S, U, and R actions that the hunk controls register. */
 export type LineState = {
   range: LineRange | null;
   patch: Patch | null;
   clear(): void;
   action: RefObject<((direction: "stage" | "unstage") => void) | null>;
+  /** Feature 008 plan.md D12: R in the diff. */
+  revert: RefObject<(() => void) | null>;
 };
 
 // plan.md "Selection, scroll, and stored context".
@@ -243,7 +245,8 @@ export function ComparisonView({ entry, response, selectedHunk, onRefresh, helpL
   const range = lines.patch === patch ? lines.range : null;
   const onLines = (next: LineRange | null) => setLines({ patch, range: next });
   const action = useRef<((direction: "stage" | "unstage") => void) | null>(null);
-  const lineState: LineState = { range, patch: rows, clear: () => onLines(null), action };
+  const revert = useRef<(() => void) | null>(null);
+  const lineState: LineState = { range, patch: rows, clear: () => onLines(null), action, revert };
   function onKeyDown(event: KeyboardEvent<HTMLDivElement>) {
     if (rows === null || isEditable(event.target as HTMLElement)) return;
     const key = scopedAction(event.nativeEvent, "diff");
@@ -251,6 +254,12 @@ export function ComparisonView({ entry, response, selectedHunk, onRefresh, helpL
       if (range === null) return;
       event.preventDefault();
       return action.current?.(key === "stageLines" ? "stage" : "unstage");
+    }
+    // Feature 008 spec FR-046: a held R opens at most one modal.
+    if (key === "revertLines") {
+      event.preventDefault();
+      if (!event.repeat) revert.current?.();
+      return;
     }
     if (!event.shiftKey || event.ctrlKey || event.altKey || event.metaKey || (event.key !== "ArrowDown" && event.key !== "ArrowUp")) return;
     event.preventDefault();
@@ -283,7 +292,7 @@ export function ComparisonView({ entry, response, selectedHunk, onRefresh, helpL
           lines={range}
           onLines={onLines}
           onKeyDown={onKeyDown}
-          hunkAction={hunkAction === undefined || !("comparisonId" in result) ? undefined : (index) => hunkAction(result as Comparison, false, index)}
+          hunkAction={hunkAction === undefined || !("comparisonId" in result) ? undefined : (index) => hunkAction(result as Comparison, false, index, lineState)}
         />
       )}
     </div>

@@ -29,7 +29,7 @@ import { openService, withFsCalls, type Envelope, type FsCall, type Registration
 import { distroGitHost, globalConfig, sh } from "./fixtures";
 import { inDistro, listScopes, OWN_SCOPE_OPERATIONS, pgrep, uncPath, useWslFolder, WSL_ENV, WSL_EXE, WSL_FILES_TEXT, wslExec, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 
-for (const module of ["commit-changes", "blame", "ignore", "file-delete", "workbench-review", "submodule-open", "session"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
+for (const module of ["commit-changes", "blame", "ignore", "file-delete", "workbench-review", "submodule-open", "submodule-change", "session"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
 printOrigin("../../src/git-service/diff-parser.ts", import.meta.dir);
 printOrigin("../../src/git-service/commands.ts", import.meta.dir);
 printOrigin("../../src/git-service/line-map.ts", import.meta.dir);
@@ -1296,6 +1296,69 @@ describe("T059 service rows through the shell test double and the distro Git (qu
       }
       // The parent stays registered after each refusal.
       expect(outcome(await s.readWorkspace(parent.repositoryId))).toEqual(SUCCEEDED);
+    });
+  });
+
+  // T106 to T108: contract Δ3 `readSubmoduleChange` and `readSubmoduleWork` through the distro wrapper (spec FR-076, SC-012).
+  W("FR-071, FR-074, FR-076: readSubmoduleChange equals the distro Git's rev-list and log inside the submodule; readSubmoduleWork equals the distro parent status with none on a copy", async (w) => {
+    const h = hostOf(w);
+    const sub = buildSubmodules(gitPath(), "t106-wsl");
+    const sup = `${copyIn(w, sub.root, "t106-wsl")}/super`;
+    prepare(h, [sup, `${sup}/solo`, `${sup}/mid`, `${sup}/mid/leaf`]);
+    const old = t(h, `${sup}/solo`, ["rev-parse", "HEAD"]).trim();
+    sh(w, 'printf "a\\n" > "$1/solo/wsl-a.txt" && printf "u\\n" > "$1/mid/wsl-u.txt"', [sup]);
+    g(h, `${sup}/solo`, ["add", "--", "wsl-a.txt"]);
+    g(h, `${sup}/solo`, ["commit", "-q", "--no-verify", "-m", "wsl one"]);
+    const next = t(h, `${sup}/solo`, ["rev-parse", "HEAD"]).trim();
+    const [removed, added] = t(h, `${sup}/solo`, ["rev-list", "--left-right", "--count", `${old}...${next}`]).trim().split("\t").map(Number);
+    const subject = t(h, `${sup}/solo`, ["log", "-z", "--format=%H%x00%s", "--max-count=50", next, `^${old}`]).split(NUL);
+    sh(w, 'cp -a "$1" "$1-oracle"', [sup]);
+    const oracle: Record<string, { modified: boolean; untracked: boolean }> = {};
+    for (const record of t(h, `${sup}-oracle`, ["status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--", "solo", "mid"]).split(NUL)) {
+      const m = /^1 \S\S S[C.]([M.])([U.]) \S+ \S+ \S+ \S+ \S+ (.*)$/.exec(record);
+      if (m) oracle[m[3]!] = { modified: m[1] === "M", untracked: m[2] === "U" };
+    }
+    await withWsl(w, "t106-wsl", async (s) => {
+      const r = await s.register(uncPath(w, sup));
+      const read = await readOk(s, r.repositoryId);
+      const entry = read.entries.find((e) => e.path === "solo" && e.category === "unstaged")!;
+      const env = { repositoryId: r.repositoryId, repositoryGeneration: read.generation };
+      const change = await request<{ old: string; new: string; state: { state: string; added: number; removed: number; addedCommits: { oid: string; subject: string }[] } }>(s, "readSubmoduleChange", { source: { kind: "workspace", snapshotId: read.snapshotId, entryId: entry.entryId } }, env);
+      expect(outcome(change)).toEqual(SUCCEEDED);
+      expect({ old: change.result!.old, new: change.result!.new, added: change.result!.state.added, removed: change.result!.state.removed, list: change.result!.state.addedCommits }).toEqual({ old, new: next, added, removed, list: [{ oid: subject[0]!, subject: subject[1]! }] });
+      const work = await request<{ entries: { path: string; state: string; modified?: boolean; untracked?: boolean }[] }>(s, "readSubmoduleWork", { snapshotId: read.snapshotId }, env);
+      expect(outcome(work)).toEqual(SUCCEEDED);
+      const shown = Object.fromEntries(work.result!.entries.filter((e) => e.state === "checked" && (e.modified || e.untracked)).map((e) => [e.path, { modified: e.modified!, untracked: e.untracked! }]));
+      expect(shown).toEqual(Object.fromEntries(Object.entries(oracle).filter(([, v]) => v.modified || v.untracked)));
+    });
+  });
+
+  W("SC-012: readSubmoduleWork time of 100 initialized clean submodules in the distro, median of 10 warm runs", async (w) => {
+    const h = hostOf(w);
+    const sub = buildSubmodules(gitPath(), "t108-wsl");
+    const sup = `${copyIn(w, sub.root, "t108-wsl")}/super`;
+    prepare(h, [sup, `${sup}/solo`]);
+    const head = t(h, `${sup}/solo`, ["rev-parse", "HEAD"]).trim();
+    sh(w, 'i=0; while [ $i -lt 100 ]; do n=$(printf "%03d" $i); mkdir -p "$1/m" && cp -a "$1/solo" "$1/m/$n" && rm -f "$1/m/$n/.git" && cp -a "$1/.git/modules/solo" "$1/m/$n/.git" && git -C "$1/m/$n" config --unset core.worktree; i=$((i+1)); done', [sup]);
+    const info = Array.from({ length: 100 }, (_, i) => `160000 ${head}\tm/${String(i).padStart(3, "0")}`).join("\n");
+    g(h, sup, ["update-index", "--index-info"], { input: Buffer.from(`${info}\n`) });
+    await withWsl(w, "t108-wsl", async (s) => {
+      const r = await s.register(uncPath(w, sup));
+      const times: number[] = [];
+      for (let run = 0; run < 11; run++) {
+        const read = await readOk(s, r.repositoryId);
+        const started = performance.now();
+        const work = await request<{ entries: { state: string; reason?: string; code?: string }[] }>(s, "readSubmoduleWork", { snapshotId: read.snapshotId }, { repositoryId: r.repositoryId, repositoryGeneration: read.generation });
+        if (run > 0) times.push(performance.now() - started);
+        expect(outcome(work)).toEqual(SUCCEEDED);
+        const tally = new Map<string, number>();
+        for (const e of work.result!.entries) tally.set(`${e.state}${e.reason ? ` ${e.reason}` : ""}${e.code ? ` ${e.code}` : ""}`, (tally.get(`${e.state}${e.reason ? ` ${e.reason}` : ""}${e.code ? ` ${e.code}` : ""}`) ?? 0) + 1);
+        console.log(`SC012 WSL run ${run}: ${(performance.now() - started).toFixed(0)} ms, ${[...tally].map(([k, n]) => `${k}=${n}`).join(", ")}`);
+        // Contract Δ3: a target without a result at the 30 s read deadline gives `failed` with DEADLINE. The time is the T108 record.
+        expect(work.result!.entries.filter((e) => e.state !== "checked" && e.code !== "DEADLINE")).toEqual([]);
+      }
+      times.sort((a, b) => a - b);
+      console.log(`SC012 WSL 100 submodules: median ${((times[4]! + times[5]!) / 2).toFixed(0)} ms, min ${times[0]!.toFixed(0)} ms, max ${times.at(-1)!.toFixed(0)} ms (${w.distro})`);
     });
   });
 });

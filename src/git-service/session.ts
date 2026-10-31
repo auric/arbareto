@@ -4,7 +4,7 @@
 import { Handshake } from "../contracts/channel";
 import { validateRequest, type ChangeEntry, type Response, type ServiceRequest } from "../contracts/envelope";
 import { codeFitsState, type ErrorCode } from "../contracts/errors";
-import { GIT_PROCESS_DEADLINE_MS, HISTORY_VIEW_COMMITS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, RECORDED_REQUEST_IDS } from "../contracts/limits";
+import { GIT_PROCESS_DEADLINE_MS, HISTORY_VIEW_COMMITS, PENDING_READS_GLOBAL, PUBLIC_FRAME_BODY_BYTES, READ_DEADLINE_MS, RECORDED_REQUEST_IDS } from "../contracts/limits";
 import { isIdentifier } from "../contracts/operations";
 import { decodeStrictJson, hasFractionOrExponent, isObject } from "../contracts/strict-json";
 import { isWindows, NATIVE } from "../contracts/native-path";
@@ -50,6 +50,7 @@ import type { Fact } from "./hunk-publish";
 import { readIgnoreFile } from "./ignore";
 import { createIgnorePreview } from "./ignore-preview";
 import { checkSubmodule, submoduleOutcome, type SubmoduleRefusal } from "./submodule-open";
+import { createSubmoduleReads, sideId, workspaceIds } from "./submodule-change";
 import "./file-delete";
 import "./switch";
 import "./branch-ops";
@@ -237,6 +238,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const workbench = createWorkbench({ runner, trust, reader, registry, exclusion, respond, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
   // Feature 005 data-model §7: one preview base per workspace and target, dropped at the workspace release.
   const previews = createIgnorePreview({ runner, trust });
+  const submoduleReads = createSubmoduleReads({ runner, trust, environment, readDeadlineMs: readDeadlineMs ?? READ_DEADLINE_MS });
   const recovery = createRecovery({ runner, registry, trust, reader, publications: publisher.retained, commits: committer.retained, updates: updater.retained });
   // Plan.md "Freshness and reconciliation": the worktree, the worktree administration directory, and the common directory.
   const watchers = new Map<string, () => void>();
@@ -464,7 +466,9 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
         | "readCommitFile"
         | "readBlame"
         | "readIgnoreFile"
-        | "previewIgnore";
+        | "previewIgnore"
+        | "readSubmoduleChange"
+        | "readSubmoduleWork";
       repositoryId: string;
     },
     run: (target: { operationId: string; signal: AbortSignal }) => Promise<ReadResult>,
@@ -482,7 +486,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       ...(selection === undefined ? {} : { selection }),
       // Feature 005 contract Δ3 `readBlame`: each step has its own deadline, and the blame step takes HISTORY_PROCESS_DEADLINE_MS.
       // Contract Δ3 `previewIgnore`: 30 s per process, and no deadline for the whole preview.
-      ...(request.operation === "reviewSubmodules" || request.operation === "readBlame" || request.operation === "previewIgnore" ? { deadline: false as const } : {}),
+      ...(request.operation === "reviewSubmodules" || request.operation === "readBlame" || request.operation === "previewIgnore" || request.operation === "readSubmoduleWork" ? { deadline: false as const } : {}),
       run: (work) => run({ operationId, signal: work }).catch(() => failed),
       failed: (outcome) => outcome.result === "failed" || outcome.result === "deadline",
       reread: (target) => reread(target).catch(() => null),
@@ -987,6 +991,43 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     scheduleRead(request, (t) => previews.preview({ ...t, workspace, installation }, request.payload), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "previewIgnore");
   };
 
+  // Feature 005 contract Δ3 `readSubmoduleChange`: the source decides at acceptance. A new request cancels the running one.
+  const readSubmoduleChange: Handler<"readSubmoduleChange"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const { source } = request.payload;
+    let target: Parameters<typeof submoduleReads.readSubmoduleChange>[1];
+    if (source.kind === "workspace") {
+      const found = reader.entry(request.repositoryId, request.repositoryGeneration, source.snapshotId, source.entryId);
+      if (!found.ok) {
+        const { operationId } = registry.start("readSubmoduleChange", request.requestId);
+        return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
+      }
+      const ids = workspaceIds(found.entry);
+      if (ids === null) return reject(request.requestId, "INVALID_REQUEST");
+      target = { path: new Uint8Array(Buffer.from(found.entry.pathBytes, "base64")), ...ids, index: found.snapshot.indexEntries, ...(found.snapshot.indexCut ? { indexCut: true as const } : {}) };
+    } else {
+      const entry = commitChanges.submoduleRecord(request.repositoryId, source.viewId, source.oid, source.parent, source.record);
+      if ("refused" in entry) return reject(request.requestId, entry.refused);
+      target = { path: entry.path, old: sideId(entry.modes[0], entry.oids[0]), new: sideId(entry.modes[1], entry.oids[1]) };
+    }
+    scheduleRead(request, (t) => submoduleReads.readSubmoduleChange({ ...t, workspace, installation }, target), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "readSubmoduleChange");
+  };
+
+  // Feature 005 contract Δ3 `readSubmoduleWork`: the snapshot decides at acceptance. The read keeps its own 001 read deadline, so the finished targets stay.
+  const readSubmoduleWork: Handler<"readSubmoduleWork"> = (request) => {
+    const workspace = workspaceOf(request.repositoryId);
+    const installation = installationOf(workspace);
+    if (installation === null) return reject(request.requestId, gitCode());
+    const found = reader.selection(request.repositoryId, request.repositoryGeneration, request.payload.snapshotId);
+    if (!found.ok) {
+      const { operationId } = registry.start("readSubmoduleWork", request.requestId);
+      return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
+    }
+    scheduleRead(request, (t) => submoduleReads.readSubmoduleWork({ ...t, workspace, installation }, found.snapshot), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "readSubmoduleWork");
+  };
+
   // Feature 005 contract Δ3 `openSubmodule`, plan.md D11: the checks in the parent, then the 001 registration of the bound folder.
   // The top level of the discovery must be the bound folder (the `destination` of the registration).
   const openSubmodule: Handler<"openSubmodule"> = (request) => {
@@ -1154,6 +1195,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     readIgnoreFile: readIgnore,
     previewIgnore,
     openSubmodule,
+    readSubmoduleChange,
+    readSubmoduleWork,
     listDictionaries: dictionaries?.listDictionaries,
     readDictionary: dictionaries?.readDictionary,
     downloadDictionary: dictionaries?.downloadDictionary,

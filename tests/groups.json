@@ -28,6 +28,7 @@
     "tests/git/read-lifecycle.test.ts": "asserts DEADLINE_MS and RECONCILIATION_TARGET_MS bounds",
     "tests/git/staging-facts.test.ts": "builds 10,000 paths",
     "tests/git/status-parser-time.test.ts": "asserts a parse below 2000 ms",
+    "tests/git/submodule-change.test.ts": "measures the SC-012 read time of 100 and 256 submodules",
     "tests/git/submodule-lifecycle.test.ts": "asserts an outcome within RECONCILIATION_TARGET_MS and a loopback failure within 10,000 ms",
     "tests/git/sync-fetch.test.ts": "asserts reconciliation within 5 s and the stall event time",
     "tests/git/sync-pull.test.ts": "asserts reconciliation within 5 s",

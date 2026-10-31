@@ -80,6 +80,11 @@ export const SUBMODULE_REVIEW_SUBMODULES = 256;
 export const SUBMODULE_REVIEW_NESTING_LEVELS = 8;
 export const SUBMODULE_GITMODULES_BYTES = 1 * MIB;
 export const SUBMODULE_PROGRESS_EVENTS_PER_SECOND = 4;
+// Feature 005 contract Δ5: `readSubmoduleChange` and `readSubmoduleWork`.
+export const SUBMODULE_CHANGE_COMMITS = 50;
+export const SUBMODULE_CHANGE_OUTPUT_BYTES = 256 * KIB;
+export const SUBMODULE_WORK_TARGETS = SUBMODULE_REVIEW_SUBMODULES;
+export const SUBMODULE_WORK_PARALLEL = 4;
 export const WSL_DISTRO_START_MS = 60 * SECOND_MS;
 export const WSL_POLL_GAP_MS = 1 * SECOND_MS;
 export const WSL_ANCHOR_LINE_INTERVAL_MS = 1 * SECOND_MS;

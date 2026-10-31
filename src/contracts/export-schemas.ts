@@ -41,6 +41,8 @@ import {
   ReadComparisonResult,
   ReadDictionaryResult,
   ReadIgnoreFileResult,
+  ReadSubmoduleChangeResult,
+  ReadSubmoduleWorkResult,
   ReadEntriesResult,
   ReadHistoryRowsResult,
   ReadRefsResult,
@@ -115,6 +117,8 @@ export const EXPORTED = {
   "read-ignore-file-result": ReadIgnoreFileResult,
   "preview-ignore-result": PreviewIgnoreResult,
   "open-submodule-result": OpenSubmoduleResult,
+  "read-submodule-change-result": ReadSubmoduleChangeResult,
+  "read-submodule-work-result": ReadSubmoduleWorkResult,
   "reveal-path-result": RevealPathResult,
   // Feature 006 contract Δ3 and Δ10.
   "list-dictionaries-result": ListDictionariesResult,

@@ -370,6 +370,8 @@ export interface Observation {
   head: Head;
   indexFingerprint: IndexFingerprint | null;
   indexEntries: readonly IndexEntry[];
+  // Contract §5: a status bound cut the index listing, so `indexEntries` is empty and names no entry.
+  indexCut?: true;
   workingVersions: readonly WorkingVersion[];
   policyFingerprint: string | null;
   operationState: OperationState;

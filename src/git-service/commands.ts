@@ -543,6 +543,44 @@ export function submoduleObjectCheckArgs(location: SubmoduleLocation): string[] 
   return submoduleRead(location, "cat-file", "--batch-check");
 }
 
+// Feature 005 contract Δ3 `readSubmoduleChange` and `readSubmoduleWork`, plan.md D19. None of these reads loads the submodule index except `submoduleStatusArgs`.
+// Plan.md D11 check 5 for a read: Git prints the worktree root of the repository that `--git-dir=.git` names.
+export function submoduleToplevelArgs(location: SubmoduleLocation): string[] {
+  return submoduleRead(location, "rev-parse", "--show-toplevel");
+}
+
+// git-cat-file(1) `-e`: exit 0 when the object exists and peels to a commit.
+export function submoduleCommitExistsArgs(location: SubmoduleLocation, oid: string, objectFormat: ObjectFormat): string[] {
+  return submoduleRead(location, "cat-file", "-e", `${treeItem(oid, objectFormat)}^{commit}`);
+}
+
+// git-rev-list(1) `--left-right --count`: the commits only in `old`, a TAB, the commits only in `new`.
+export function submoduleCountArgs(location: SubmoduleLocation, old: string, next: string, objectFormat: ObjectFormat): string[] {
+  return submoduleRead(location, "rev-list", "--left-right", "--count", `${treeItem(old, objectFormat)}...${treeItem(next, objectFormat)}`);
+}
+
+// The commits of `include` that `exclude` does not reach. `--no-show-signature` overrides `log.showSignature`, so no signature program runs.
+export function submoduleLogArgs(location: SubmoduleLocation, include: string, exclude: string, objectFormat: ObjectFormat, maxCount: number): string[] {
+  if (!(Number.isSafeInteger(maxCount) && maxCount > 0)) throw new TypeError("count refused");
+  return submoduleRead(
+    location,
+    "log",
+    "-z",
+    "--no-show-signature",
+    "--no-color",
+    "--encoding=UTF-8",
+    "--format=%H%x00%s",
+    `--max-count=${maxCount}`,
+    treeItem(include, objectFormat),
+    `^${treeItem(exclude, objectFormat)}`,
+  );
+}
+
+// Contract Δ3 `readSubmoduleWork` step 3: the submodule's own status. The caller checks its settings first.
+export function submoduleStatusArgs(location: SubmoduleLocation): string[] {
+  return submoduleRead(location, "status", "--porcelain=v2", "-z", "--untracked-files=normal", "--ignore-submodules=dirty");
+}
+
 // Git `is_tip_reachable` (builtin/submodule--helper.c:2493-2514): exit 0 without output means that a ref or HEAD reaches the target.
 export function submoduleReachArgs(location: SubmoduleLocation, target: string, objectFormat: ObjectFormat): string[] {
   return submoduleRead(location, "rev-list", "-n", "1", treeItem(target, objectFormat), "--not", "--all");

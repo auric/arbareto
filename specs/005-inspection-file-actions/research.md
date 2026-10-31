@@ -614,6 +614,11 @@ This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL fo
 
 - The marks cost one `config list` and one `status` per initialized submodule and refresh. The 001 T192 record gives a `config list` median wall of 48 ms to 62 ms on Windows. The status of a clean submodule depends on its size. The read runs after `readWorkspace` and does not delay the list (plan D19).
 - Bound: at most 256 submodules per read (`SUBMODULE_WORK_TARGETS`, equal to the 001 §5 submodule review bound) and 4 at the same time. Each status ends once it shows one tracked record and one untracked record. T108 measures the cost on a fixture with 100 initialized submodules. SC-012 holds the proposed budget (user decision pending).
+- T108 record of 2026-10-31, in-process service with the shell test double, warm, median of 10 (`tests/git/submodule-change.test.ts`, `tests/wsl/inspection-wsl.test.ts`). Each target runs three Git processes: `rev-parse --show-toplevel`, `config list`, and `status`.
+  - Windows, Git 2.56.0.windows.2: 100 clean submodules 4,540 ms (min 4,388, max 4,570). 256 clean submodules 11,317 ms (min 11,192, max 11,588). Each process takes 60 ms to 63 ms on average.
+  - Windows after the review fixes of 2026-10-31 (the location check and `config list` run side by side, and only the status program keys go to the trust check): 100 clean submodules 3,905 ms (min 3,683, max 4,032), 256 clean submodules 9,651 ms (min 9,605, max 11,542). An earlier run of the same code gave 3,575 ms and 9,702 ms. Each process takes 65 ms to 73 ms on average.
+  - WSL Ubuntu-26.04, Git 2.55: 100 clean submodules reach the 30 s read deadline (median 30,174 ms). 84 to 88 of 102 targets give a state, and the rest give `failed` with DEADLINE.
+  - The proposed 2 s budget of SC-012 does not hold on either route. The packaged measurement of T108 is still open.
 
 **Git Extensions (GPL-3.0, ideas only; investigator report of 2026-10-30)**
 

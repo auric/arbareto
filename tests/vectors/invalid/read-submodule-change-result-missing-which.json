@@ -1,0 +1,8 @@
+{
+  "schema": "read-submodule-change-result",
+  "expected": "INVALID_REQUEST",
+  "text": "{\"pathBytes\":\"bGliL2NvcmU=\",\"path\":\"lib/core\",\"kind\":\"submodule\",\"old\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\",\"new\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"limited\":false,\"state\":{\"state\":\"missing\",\"which\":\"neither\"}}",
+  "repair": {
+    "state.which": "old"
+  }
+}

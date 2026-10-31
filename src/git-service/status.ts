@@ -980,6 +980,7 @@ export function createWorkspaceReader({ runner, trust, workingVersion = {}, read
       head,
       indexFingerprint: fingerprint,
       indexEntries: indexReason === null ? indexEntries : [],
+      ...(indexReason === null ? {} : { indexCut: true as const }),
       workingVersions: versions,
       policyFingerprint: policy,
       operationState,

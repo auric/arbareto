@@ -63,6 +63,8 @@ const COMMANDS: &[&str] = &[
     "read_ignore_file",
     "preview_ignore",
     "open_submodule",
+    "read_submodule_change",
+    "read_submodule_work",
     "list_dictionaries",
     "read_dictionary",
     "download_dictionary",

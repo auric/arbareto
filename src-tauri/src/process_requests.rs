@@ -13798,6 +13798,66 @@ pub(crate) mod tests {
         );
     }
 
+    /// Feature 005 contract Δ3 and Δ10: a registered `read` run admits the `readSubmoduleChange` and `readSubmoduleWork` arrays.
+    /// Each runs inside the submodule as `-C <worktree> --git-dir=.git`. The near miss runs `worktree add` after that form.
+    #[test]
+    fn a_registered_read_run_admits_the_005_submodule_change_and_work_arrays() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let (old, new) = ("b".repeat(40), "a".repeat(40));
+        let at = ["--no-optional-locks", "-C", "lib/core", "--git-dir=.git"];
+        let range = format!("{old}...{new}");
+        let (commit, include, exclude) = (format!("{new}^{{commit}}"), new.clone(), format!("^{old}"));
+        let tails: Vec<Vec<&str>> = vec![
+            vec!["rev-parse", "--show-toplevel"],
+            vec!["rev-parse", "--verify", "-q", "HEAD"],
+            vec!["cat-file", "-e", &commit],
+            vec!["rev-list", "--left-right", "--count", &range],
+            vec![
+                "log",
+                "-z",
+                "--no-show-signature",
+                "--no-color",
+                "--encoding=UTF-8",
+                "--format=%H%x00%s",
+                "--max-count=50",
+                &include,
+                &exclude,
+            ],
+            vec!["config", "list", "--show-scope", "--show-origin", "-z"],
+            vec![
+                "status",
+                "--porcelain=v2",
+                "-z",
+                "--untracked-files=normal",
+                "--ignore-submodules=dirty",
+            ],
+        ];
+        let limits = json!({ "deadlineMs": 30_000 });
+        let outcome = |body: Value| {
+            let call = body["callId"].as_str().expect("call").to_string();
+            harness.send(body);
+            harness
+                .wait_reply(WAIT, |v| {
+                    v["callId"] == call.as_str() && (v["type"] == "exit" || v["type"] == "refused")
+                })
+                .expect("a run reply")
+                .1
+        };
+        for tail in &tails {
+            let array: Vec<&str> = at.iter().copied().chain(tail.iter().copied()).collect();
+            let call = uuid();
+            let admitted = outcome(run_body(&call, &uuid(), &workspace, &array, "read", limits.clone()));
+            assert_eq!(admitted["type"], "exit", "{array:?}: {admitted}");
+        }
+        let call = uuid();
+        let bound: Vec<&str> = at.iter().copied().chain(["worktree", "add", "--", "x", "main"]).collect();
+        assert_eq!(
+            outcome(run_body(&call, &uuid(), &workspace, &bound, "read", limits)),
+            refused(&call, "INVALID_REQUEST")
+        );
+    }
+
     // ---- Feature 005 contract Δ6 `fileDelete`, `fileReplace`, `shadow` ----
 
     fn file_fact_of(bytes: &[u8], path: &Path) -> Value {

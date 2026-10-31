@@ -1217,7 +1217,7 @@ mod tests {
     /// The shell forwards the registration, trust, workspace, entries, history, reference, operation, sync review, sync, clone, branch, worktree, Git settings, and workbench results in `Response.result` and reads no field of them.
     /// The shell writes the settings result of the shell-only settings operations and never reads it.
     /// The same holds for the `chooseWorktreeFolder` result.
-    const NOT_READ: [&str; 43] = [
+    const NOT_READ: [&str; 45] = [
         "service-envelope",
         "open-recent-repository-result",
         "recent-repositories-result",
@@ -1259,6 +1259,8 @@ mod tests {
         "preview-ignore-result",
         "open-submodule-result",
         "reveal-path-result",
+        "read-submodule-change-result",
+        "read-submodule-work-result",
         // Feature 006 contract Δ10. The shell writes the `openLicenceLink` result and never reads it.
         "list-dictionaries-result",
         "dictionary-run-result",

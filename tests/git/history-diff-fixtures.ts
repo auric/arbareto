@@ -239,7 +239,15 @@ const currentDigest = () => builderDigest(readFileSync(import.meta.path));
 
 interface Manifest {
   builderDigest: string;
+  // The exact `for-each-ref --format=%(objectname) %(refname)` output at build time.
+  refs: string;
   built: Omit<Built, "repo" | "root" | "git">;
+}
+
+// Null when Git fails, so a damaged entry never counts as reusable.
+function refList(git: string, repo: string): string | null {
+  const proc = gitExit(git, PERF_CACHE_ROOT, repo, ["--no-optional-locks", "for-each-ref", "--format=%(objectname) %(refname)"]);
+  return proc.exitCode === 0 ? proc.stdout.toString("utf8") : null;
 }
 
 // Builds once per builder digest under the cache root. The lock and the temporary folder follow `ensureLargeFixture`.
@@ -254,12 +262,14 @@ function cached(git: string, name: string, build: (repo: string) => Omit<Built, 
     writeFileSync(join(lock, "owner.json"), JSON.stringify({ pid: process.pid, start: new Date().toISOString() }));
     if (existsSync(manifestPath)) {
       const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as Manifest;
-      if (manifest.builderDigest === currentDigest() && existsSync(join(folder, "repo"))) return { ...manifest.built, git, root: PERF_CACHE_ROOT, repo: join(folder, "repo") };
+      if (manifest.builderDigest === currentDigest() && existsSync(join(folder, "repo")) && refList(git, join(folder, "repo")) === manifest.refs) return { ...manifest.built, git, root: PERF_CACHE_ROOT, repo: join(folder, "repo") };
     }
     if (existsSync(temp)) removeTree(temp);
     mkdirSync(temp);
     const built = build(join(temp, "repo"));
-    writeFileSync(join(temp, "manifest.json"), `${JSON.stringify({ builderDigest: currentDigest(), built } satisfies Manifest, null, 2)}\n`);
+    const refs = refList(git, join(temp, "repo"));
+    if (refs === null || refs === "") throw new Error(`for-each-ref failed or listed no refs in ${join(temp, "repo")}`);
+    writeFileSync(join(temp, "manifest.json"), `${JSON.stringify({ builderDigest: currentDigest(), refs, built } satisfies Manifest, null, 2)}\n`);
     if (existsSync(folder)) removeTree(folder);
     renameSync(temp, folder);
     return { ...built, git, root: PERF_CACHE_ROOT, repo: join(folder, "repo") };

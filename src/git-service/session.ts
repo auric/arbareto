@@ -984,7 +984,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
       const { operationId } = registry.start("previewIgnore", request.requestId);
       return void registry.apply(operationId, { type: "invalid-approval", code: found.code });
     }
-    scheduleRead(request, (t) => previews.preview({ ...t, workspace, installation }, request.payload), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "previewIgnore");
+    scheduleRead(request, (t) => previews.preview({ ...t, workspace, installation, snapshot: found.snapshot }, request.payload), inspectionReread(workspace), { result: "failed", code: "GIT_FAILED" }, "previewIgnore");
   };
 
   // Feature 005 contract Δ3 `openSubmodule`, plan.md D11: the checks in the parent, then the 001 registration of the bound folder.

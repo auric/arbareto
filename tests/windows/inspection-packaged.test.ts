@@ -12,7 +12,7 @@ import { afterAll, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative } from "node:path";
 import { printOrigin } from "../origin";
-import { buildFiles, buildSubmodules, faGit } from "../git/file-actions-fixtures";
+import { buildFiles, buildSubmodules, faGit, write } from "../git/file-actions-fixtures";
 import { fixtureDir, FIXTURE_ROOT, useFixtureRoot } from "../git/fixture-root";
 import { GIT } from "../git/git-binary";
 import { workingFileDigests } from "../git/git-oracle";
@@ -414,6 +414,53 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
       }
     },
     caseTimeout(30),
+  );
+
+  test.skipIf(reason !== null)(
+    "T105, plan.md D3 \"Diff scrolling\": a commit diff with a long line scrolls in both directions in one element of the pane height, so the horizontal scroll bar shows at once",
+    async () => {
+      const f = buildFiles(GIT!, "t105-long-line");
+      const lines = Array.from({ length: 300 }, (_, i) => (i === 4 ? "long_line_".repeat(60) : `line ${i + 1}`));
+      write(f.repo, "long.txt", `${lines.join("\n")}\n`);
+      git(f.repo, ["--literal-pathspecs", "add", "--", "long.txt"]);
+      git(f.repo, ["commit", "-q", "--no-verify", "-m", "long line"]);
+      const oid = git(f.repo, ["rev-parse", "HEAD"]).trim();
+      const s = await session("long-line", f.repo);
+      try {
+        const list = `document.querySelector('[data-history-list]')`;
+        const activeRow = `document.getElementById(${list}.getAttribute('aria-activedescendant'))?.dataset.rowId ?? null`;
+        await focusOn(s.c, list, "the History list");
+        await press(s.c, "Home");
+        for (let i = 0; i < 5 && (await s.c.evaluate<string | null>(activeRow)) !== oid; i++) await press(s.c, "ArrowDown");
+        expect(await s.c.evaluate<string | null>(activeRow)).toBe(oid);
+        const heading = `document.querySelector('[data-section=changedFiles] h3')?.textContent ?? null`;
+        await until<string | null>(s.c, "the Changed files heading", heading, (v) => v === "Changed files (1)", ACTION_WAIT_MS);
+        for (let i = 0; i < 6 && (await s.c.evaluate<Active>(ACTIVE)).section !== "changedFiles"; i++) await press(s.c, "F6");
+        // Pierre renders the rows in the shadow root of its host. Each overflow-auto element in the diff section is a candidate scroll container.
+        const probe = `(() => {
+          const section = document.querySelector('[data-section=historyDiff]');
+          const body = section?.querySelector('[data-slot=diff-body]');
+          const code = [...(body?.querySelectorAll('*') ?? [])].map((e) => e.shadowRoot?.querySelector('[data-code]')).find((e) => e) ?? null;
+          if (!section || !body || !code) return null;
+          const box = (e) => { const r = e.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, cw: e.clientWidth, sw: e.scrollWidth, ch: e.clientHeight, sh: e.scrollHeight }; };
+          const scrollers = [...section.querySelectorAll('*')].filter((e) => /auto|scroll/.test(getComputedStyle(e).overflowX + getComputedStyle(e).overflowY)).map(box);
+          return { pane: box(section), code: { ...box(code), overflowX: getComputedStyle(code).overflowX }, scrollers };
+        })()`;
+        type Box = { top: number; bottom: number; cw: number; sw: number; ch: number; sh: number };
+        const m = await until<{ pane: Box; code: Box & { overflowX: string }; scrollers: Box[] } | null>(s.c, "the rendered long line", probe, (v) => v !== null && v.code.sw > 0, ACTION_WAIT_MS);
+        console.log(`DIFF_SCROLL T105: ${js(m)}`);
+        // Pierre's code grid scrolls nothing, and exactly one element scrolls in both directions inside the pane bounds.
+        expect(m!.code.overflowX).toBe("clip");
+        expect(m!.code.sw).toBe(m!.code.cw);
+        const both = m!.scrollers.filter((b) => b.sw > b.cw && b.sh > b.ch);
+        expect(both.length).toBe(1);
+        expect(both[0]!.bottom).toBeLessThanOrEqual(m!.pane.bottom);
+        expect(both[0]!.top).toBeGreaterThanOrEqual(m!.pane.top);
+      } finally {
+        await end(s);
+      }
+    },
+    caseTimeout(20),
   );
 
   test.skipIf(reason !== null)(

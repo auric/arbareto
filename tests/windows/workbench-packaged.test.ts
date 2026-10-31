@@ -590,7 +590,7 @@ describe.skipIf(process.platform !== "win32")("T082 packaged workbench", () => {
     git(f, ["switch", "-q", "main"]);
     commit("main");
     if (variant === "merge") wb(repoOf(f), ["merge", "--no-edit", "topic"], { allowExit: [1] });
-    else wb(repoOf(f), ["rebase", "main"], { allowExit: [1] });
+    else wb(repoOf(f), ["rebase", "main", "topic"], { allowExit: [1] });
     expect(git(f, ["status", "--porcelain=v2", "-z"]).split("\0").filter((r) => r.startsWith("u ")).map((r) => r.split(" ").at(-1))).toEqual(paths);
     return { f, paths };
   }
@@ -635,8 +635,8 @@ describe.skipIf(process.platform !== "win32")("T082 packaged workbench", () => {
     for (const params of events) await c.send("Input.dispatchKeyEvent", params);
     console.log(`KEY T135: ${name} mods=${modifiers}`);
   }
-  const ACTIVE = `(() => { const a = document.activeElement; return { label: a?.getAttribute('aria-label') ?? null, text: a?.textContent?.trim() ?? null, section: a?.closest('[data-section]')?.dataset.section ?? null, dock: a?.closest('section[aria-label="Dock"]') !== null, band: a?.closest('[data-slot="conflict-row"]') !== null, tree: a?.closest('[data-file-tree]')?.dataset.fileTree ?? null }; })()`;
-  type Active = { label: string | null; text: string | null; section: string | null; dock: boolean; band: boolean; tree: string | null };
+  const ACTIVE = `(() => { const a = document.activeElement; return { label: a?.getAttribute('aria-label') ?? null, text: a?.textContent?.trim() ?? null, section: a?.closest('[data-section]')?.dataset.section ?? null, dock: a?.closest('section[aria-label="Dock"]') !== null, band: a?.closest('[data-slot="conflict-row"]') !== null, tree: a?.closest('[data-file-tree]')?.dataset.fileTree ?? null, list: a?.matches('[data-history-list]') === true }; })()`;
+  type Active = { label: string | null; text: string | null; section: string | null; dock: boolean; band: boolean; tree: string | null; list: boolean };
   const active = (c: Cdp) => c.evaluate<Active>(ACTIVE);
   // Presses `key` until `done` holds for the focused element. One pass over 40 presses bounds the walk.
   async function keyTo(c: Cdp, key: string, what: string, done: (a: Active) => boolean, modifiers = 0): Promise<void> {
@@ -708,6 +708,7 @@ describe.skipIf(process.platform !== "win32")("T082 packaged workbench", () => {
           await until<boolean>(c, "the conflict row", `${buttonNamed(RESOLVE_BUTTON, "document.querySelector('[data-slot=\"conflict-row\"]')")} !== undefined`, (v) => v);
           // Dock: the Working directory row is the first row of the History list.
           await keyTo(c, "F6", "the History list", (a) => a.section === "historyList");
+          await keyTo(c, "Tab", "the History list rows", (a) => a.list);
           await press(c, "Home");
           await keyTo(c, "Tab", "the dock Resolve conflicts", (a) => a.dock && a.text === RESOLVE_BUTTON);
           await press(c, "Enter");

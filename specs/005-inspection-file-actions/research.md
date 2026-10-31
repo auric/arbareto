@@ -583,6 +583,12 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - SC-005 with `/big` (bound 5,000 ms): first previews, medians 2,941 and 3,288 ms, maxima 3,072 and 3,482 ms. Later previews: medians 1,266 and 1,418 ms.
 - The T103 runs before T112 gave first-preview medians of 5,294 and 4,957 ms with `/big`.
 
+*T108 packaged run, 2026-10-31.* Build of 3a7b5395 installed, tests from this checkout (local scratch `pkg-preview-1031b`). Warm, median of 10.
+- Windows: 100 clean submodules 3,439.5 ms (bound 5,500 ms), 256 clean submodules 8,815.2 ms (bound 14,080 ms). Both pass.
+- Control: with a bound of 1 ms per submodule, both cases failed.
+- WSL Ubuntu-26.04, current route: 20 submodules 3,431 ms, 100 submodules 14,649 ms. `DEADLINE` states: 0 in 10 runs at each size.
+- R18 "Cost" records the same times.
+
 ## Plan review 2026-10-21
 
 The independent plan review of 2026-10-21 found no Critical issue and three High issues in the Delete design. First, the `PreDeleteItem` check compares the held handle with itself and must compare the identity of `psiItem` instead. Second, the WSL `delete` and `replace` modes act by full path and must hold each folder through `chdir` with a device and inode check. Third, the held folder handles block the deepest-first folder removal. The review also found that a folder on the path can become a junction after it is emptied, so the FR-031 limit must name that case too. In the ignore preview, the `--no-index` self-check cannot agree with the shadow for a skip-worktree `.gitignore`. The fix is a typed limit or a self-check against the index-aware listings. The 2 MiB request bound needs base64 text, and the single-file patch read must keep only sections whose paths match exactly. The rest of the method is exact for the report cases, and it runs no repository program before trust approval. The blame and History diff commands are correct apart from two small fixes: `--inter-hunk-context=0` for the line map, and `config --type=path` for the ignore list.
@@ -628,12 +634,13 @@ This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL fo
 **Cost**
 
 - The marks cost one `config list` and one `status` per initialized submodule and refresh. The 001 T192 record gives a `config list` median wall of 48 ms to 62 ms on Windows. The status of a clean submodule depends on its size. The read runs after `readWorkspace` and does not delay the list (plan D19).
-- Bound: at most 256 submodules per read (`SUBMODULE_WORK_TARGETS`, equal to the 001 §5 submodule review bound) and 8 at the same time (orchestrator decision 2026-10-31, below). Each status ends once it shows one tracked record and one untracked record. T108 measures the cost on fixtures with 100 and 256 initialized submodules. SC-012 holds the budget of 45 ms per submodule on Windows.
+- Bound: at most 256 submodules per read (`SUBMODULE_WORK_TARGETS`, equal to the 001 §5 submodule review bound) and 8 at the same time (orchestrator decision 2026-10-31, below). Each status ends once it shows one tracked record and one untracked record. T108 measures the cost on fixtures with 100 and 256 initialized submodules. SC-012 holds the budget of 55 ms per submodule on Windows ("Packaged cost" below).
 - T108 record of 2026-10-31, in-process service with the shell test double, warm, median of 10 (`tests/git/submodule-change.test.ts`, `tests/wsl/inspection-wsl.test.ts`). Each target runs three Git processes: `rev-parse --show-toplevel`, `config list`, and `status`.
   - Windows, Git 2.56.0.windows.2: 100 clean submodules 4,540 ms (min 4,388, max 4,570). 256 clean submodules 11,317 ms (min 11,192, max 11,588). Each process takes 60 ms to 63 ms on average.
   - Windows after the review fixes of 2026-10-31 (the location check and `config list` run side by side, and only the status program keys go to the trust check): 100 clean submodules 3,905 ms (min 3,683, max 4,032), 256 clean submodules 9,651 ms (min 9,605, max 11,542). An earlier run of the same code gave 3,575 ms and 9,702 ms. Each process takes 65 ms to 73 ms on average.
   - WSL Ubuntu-26.04, Git 2.55: 100 clean submodules reach the 30 s read deadline (median 30,174 ms). 84 to 88 of 102 targets give a state, and the rest give `failed` with DEADLINE.
-  - A budget of 2 s for 100 submodules does not hold on either route. The packaged measurement of T108 is still open.
+  - A budget of 2 s for 100 submodules does not hold on either route.
+  - T108 packaged record of 2026-10-31 on 3a7b5395 (local scratch `pkg-preview-1031b`), warm, median of 10. Windows: 100 clean submodules 3,439.5 ms (bound 5,500), 256 clean submodules 8,815.2 ms (bound 14,080). The control with a bound of 1 ms per submodule failed both cases. WSL Ubuntu-26.04, current route: 20 submodules 3,431 ms (min 3,305, max 3,642), 100 submodules 14,649 ms (min 14,350, max 14,917). No run gave a `DEADLINE` state (0 in 10 runs at each size).
 - Speed study of 2026-10-31 (investigator, local scratch `sc012-speed`). Harness without the service and IPC, Windows, warm, median, 3 Git processes per target:
 
   | Submodules | 1 at a time | 4 at a time | 8 at a time | 16 at a time |
@@ -647,7 +654,18 @@ This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL fo
   - Status does not stop early: Git collects the whole status before it prints the first record (Git builtin/commit.c:1655 collect, :1663 print). The stop after one tracked and one untracked record saves only output, not Git work.
   - No cheap authoritative "changed?" signal exists for a submodule. A stat or mtime check would be a heuristic, so the read runs the full status for each target.
   - Git Extensions (GPL-3.0, ideas only, commit d77a4f07): the parent status runs without `--ignore-submodules`, so submodule fsmonitor and filter programs run. Then one `git diff` runs per changed submodule, one at a time, in the background, at most every 15 s. It parses the English "-dirty" text. Arbareto takes none of these steps.
-- Orchestrator decisions of 2026-10-31, from this study: 8 at the same time (`SUBMODULE_WORK_PARALLEL`). SC-012 on Windows: at most 45 ms per clean submodule (39.6 ms measured at 8 at a time, plus a margin), so 4.5 s for 100 and 11.5 s for 256. WSL keeps the current route in v0.1.0 with no budget, and a target past the 30 s deadline gives `failed` with `DEADLINE`. After the release, T114 gives pages of 16 (first marks in about 0.7 s, estimated), and T115 adds the WSL script `submoduleWork`.
+- Orchestrator decisions of 2026-10-31, from this study: 8 at the same time (`SUBMODULE_WORK_PARALLEL`). SC-012 on Windows: at most 45 ms per clean submodule (39.6 ms measured at 8 at a time, plus a margin), so 4.5 s for 100 and 11.5 s for 256. The "Packaged cost" decision below replaces this value. WSL keeps the current route in v0.1.0 with no budget, and a target past the 30 s deadline gives `failed` with `DEADLINE`. After the release, T114 gives pages of 16 (first marks in about 0.7 s, estimated), and T115 adds the WSL script `submoduleWork`.
+
+**Packaged cost (investigator reports of 2026-10-31, local scratch `inv-perf-1031` and `inv-pkg-1031`)**
+
+- Marks, Windows, per clean submodule at 8 at the same time: a raw spawn harness of the three Git processes takes 31 ms to 33 ms (measured). The in-process service adds at most 2 ms (measured). The packaged build takes about 48 ms, and its worst median was 48.9 ms (measured).
+- So about 15 ms per submodule comes from outside the service: the shell process path or the frame channel. That is about 5 ms per Git process. The cause is not split yet. T116 splits it.
+- Preview before the speed fix: 7 serial steps. These are the read gate, the file facts, `kindOf`, check 5 `--show-toplevel`, the two `cat-file -e`, `rev-list`, and the two `log`. The in-process service took a median of 291.5 ms for 20 runs (measured).
+- Some runs stall in one process for about 120 ms (measured: 413.8 ms and 420.2 ms against a median of 291.5 ms). The cause is unknown. T116 splits it.
+- Speed fix of 2026-10-31 (plan.md D19 "Order"): 4 serial steps. `kindOf` runs beside check 5. `rev-list` and the two `log` run together. The two `cat-file -e` run only after a failed `rev-list`, so `missing` still comes only from their exit code. Each check and its order stay.
+- Orchestrator decisions of 2026-10-31, from these measurements: the marks budget is 55 ms per clean submodule on Windows (5.5 s for 100, 14.08 s for 256). The first preview budget was 350 ms. The rerun below replaces it.
+- Packaged rerun on 3a7b5395, 2026-10-31 (local scratch `pkg-preview-1031b`), warm, median of 10. History preview 345.4 ms, Changes preview 376.1 ms. The runs fall into two groups: about 215 ms to 250 ms and about 330 ms to 384 ms, with one first run of 669 ms. The gap matches the stall of about 120 ms in one Git process (above). Orchestrator decision 2026-10-31: the preview budget is 400 ms, the worst packaged median of 376.1 ms plus a margin. It replaces 350 ms. T116 splits the stall after the v0.1.0 release.
+- T111 packaged rerun on 35a130d1 against the package of 3a7b5395, 2026-10-31 (local scratch `pkg-preview-1031c`), warm, median of 10. Changes preview 287.3 ms, History preview 214.6 ms, budget 400 ms. Both cases pass. The control with a budget of 1 ms failed both cases on the time bound.
 
 **Git Extensions (GPL-3.0, ideas only; investigator report of 2026-10-30)**
 

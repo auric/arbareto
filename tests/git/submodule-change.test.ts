@@ -103,6 +103,20 @@ function oracle(sub: string, old: string, next: string) {
   return { state: "commits", added, removed, addedCommits: added === 0 ? [] : list(next, old), removedCommits: removed === 0 ? [] : list(old, next) };
 }
 
+// The submodule Git runs of one readSubmoduleChange request, in start order.
+async function submoduleRuns(service: Service, response: ServiceResponse<Change>) {
+  const operationId = await service.operationId(response.requestId!);
+  return service.runner.calls.filter((c) => c.operationId === operationId && c.arguments.includes("--git-dir=.git")).map((c) => ({ args: c.arguments, start: c.at, end: c.at + c.durationMs! }));
+}
+type Run = Awaited<ReturnType<typeof submoduleRuns>>[number];
+const runOf = (runs: Run[], ...words: string[]) => runs.filter((r) => words.every((w) => r.args.includes(w)));
+// Plan.md D11 check 5 ends before any other submodule Git run starts.
+function locatedFirst(runs: Run[]) {
+  const [toplevel] = runOf(runs, "--show-toplevel");
+  expect(toplevel).toBeDefined();
+  expect(runs.filter((r) => r !== toplevel && r.start < toplevel!.end).map((r) => r.args)).toEqual([]);
+}
+
 describe("readSubmoduleChange (contract Δ3, plan.md D19)", () => {
   caseTest("T106", "(1)(2) new, removed, both, and 51 new commits equal Git's rev-list and log inside the submodule; unstaged takes hI and the submodule HEAD", SHELL, () =>
     withService({ name: "t106-commits" }, async (service) => {
@@ -178,6 +192,62 @@ describe("readSubmoduleChange (contract Δ3, plan.md D19)", () => {
       const c = changed((await workspaceChange(service, w.sup, "lib", "staged")).response);
       expect({ old: c.old, new: c.new, state: c.state }).toEqual({ old: w.c[0]!, new: absent, state: { state: "missing", which: "new" } });
       expect(existsSync(upload.log)).toBe(false);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T106", "(3) an absent old, new, or both commits give missing from the cat-file exit, and cat-file runs only after a failed rev-list", SHELL, () =>
+    withService({ name: "t106-missing-sides" }, async (service) => {
+      const w = world("missing-sides");
+      const [absentA, absentB] = ["1".repeat(40), "2".repeat(40)];
+      const recorded = (oid: string) => {
+        git(w.sup, ["update-index", "--cacheinfo", `160000,${oid},lib`]);
+        git(w.sup, ["commit", "-q", "--no-verify", "-m", `lib ${oid}`]);
+      };
+      for (const [headOid, indexOid, which] of [
+        [w.c[0]!, absentA, "new"],
+        [absentA, w.c[1]!, "old"],
+        [absentA, absentB, "both"],
+      ] as const) {
+        if (gitText(w.sup, ["rev-parse", "HEAD:lib"]).trim() !== headOid) recorded(headOid);
+        git(w.sup, ["update-index", "--cacheinfo", `160000,${indexOid},lib`]);
+        const { response } = await workspaceChange(service, w.sup, "lib", "staged");
+        const c = changed(response);
+        expect({ old: c.old, new: c.new, state: c.state }).toEqual({ old: headOid, new: indexOid, state: { state: "missing", which } });
+        const runs = await submoduleRuns(service, response);
+        locatedFirst(runs);
+        const [count] = runOf(runs, "rev-list", "--left-right");
+        const exists = runOf(runs, "cat-file", "-e");
+        expect({ which, count: count !== undefined, exists: exists.length }).toEqual({ which, count: true, exists: 2 });
+        expect(exists.filter((r) => r.start < count!.end).map((r) => r.args)).toEqual([]);
+      }
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T106", "(3) a failed rev-list with both commits present gives GIT_FAILED, not missing", SHELL, () =>
+    withService({ name: "t106-count-fails" }, async (service) => {
+      const w = world("count-fails");
+      git(inLib(w), ["checkout", "-q", "--detach", w.c[2]!]);
+      service.runner.inject.exit = (call) => (call.arguments.includes("rev-list") && call.arguments.includes("--left-right") ? 128 : undefined);
+      const { response } = await workspaceChange(service, w.sup, "lib", "unstaged");
+      service.runner.inject.exit = undefined;
+      expect({ state: response.state, code: response.code }).toEqual({ state: "failed", code: "GIT_FAILED" });
+      expect(runOf(await submoduleRuns(service, response), "cat-file", "-e").length).toBe(2);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T106", "(1) a side with no commits lists none; no submodule run starts before --show-toplevel ends, and no cat-file runs after a good rev-list", SHELL, () =>
+    withService({ name: "t106-timeline" }, async (service) => {
+      const w = world("timeline");
+      git(inLib(w), ["checkout", "-q", "--detach", w.c[2]!]);
+      const { response } = await workspaceChange(service, w.sup, "lib", "unstaged");
+      const c = changed(response);
+      expect(c.state).toMatchObject({ added: 2, removed: 0, removedCommits: [] });
+      const runs = await submoduleRuns(service, response);
+      locatedFirst(runs);
+      expect(runOf(runs, "cat-file").map((r) => r.args)).toEqual([]);
     }),
     TIMEOUT_MS,
   );

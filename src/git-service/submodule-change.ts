@@ -188,11 +188,16 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
     return parsed.nameOf.has(latin1(path)) ? "submodule" : "nested";
   }
 
-  // `log -z --format=%H%x00%s`: object ID, NUL, subject bytes, NUL per commit. `limited`: the output bound cut the list after its whole records.
-  async function commitsOf(t: InspectionTarget, location: SubmoduleLocation, include: string, exclude: string, count: number) {
-    if (count === 0) return { commits: [] as { oid: string; subject: string }[], limited: false };
+  // The `log` of one side. It starts beside `rev-list`, so `commitsOf` checks it only after the counts.
+  async function logOf(t: InspectionTarget, location: SubmoduleLocation, include: string, exclude: string) {
     const out = createCollector({ maxBytes: SUBMODULE_CHANGE_OUTPUT_BYTES });
     const exit = await step(t, submoduleLogArgs(location, include, exclude, t.workspace.objectFormat, SUBMODULE_CHANGE_COMMITS), out);
+    return { exit, out };
+  }
+
+  // `log -z --format=%H%x00%s`: object ID, NUL, subject bytes, NUL per commit. `limited`: the output bound cut the list after its whole records.
+  // A side with a count of 0 must print nothing.
+  function commitsOf(t: InspectionTarget, { exit, out }: Awaited<ReturnType<typeof logOf>>, count: number) {
     if (!out.limited && exit.exitCode !== 0) throw fail("GIT_FAILED");
     const bytes = out.take();
     const commits: { oid: string; subject: string }[] = [];
@@ -242,39 +247,46 @@ export function createSubmoduleReads({ runner, trust, environment, readDeadlineM
       // Git keeps at most three stages of `.gitmodules`, so more records are no valid listing.
       const index = records === null ? request.index! : records[0];
       if (index === null) return { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
-      const kind = await kindOf(t, request.path, exists(fileFacts[0]!, 1), index);
-      if (!needLocation) return { result: "succeeded", value: value(kind, { state: "single" }) };
+      const kindRead = kindOf(t, request.path, exists(fileFacts[0]!, 1), index);
+      if (!needLocation) return { result: "succeeded", value: value(await kindRead, { state: "single" }) };
 
       const at = records === null ? request.index!.filter((e) => Buffer.from(e.path).equals(request.path)) : records[1];
       const one = at !== null && at.length === 1 ? at[0]! : null;
       const checkThree = one !== null && one.stage === 0 && one.mode === GITLINK && Buffer.from(one.path).equals(request.path);
       const location = { worktree };
-      if (!(checkThree && initialized(fileFacts[1]!, fileFacts[2]!) && (await located(t, location)))) return { result: "succeeded", value: value(kind, { state: "not-initialized" }) };
-
-      if (next === "head") {
+      // Plan.md D11: check 5 starts only after checks 3 and 4 pass, and every other submodule Git run only after check 5. The parent `kindOf` runs beside them.
+      // False: a check failed. A string: the submodule HEAD. Null: a `head` read failed.
+      const locate = async (): Promise<boolean | string | null> => {
+        if (!(checkThree && initialized(fileFacts[1]!, fileFacts[2]!) && (await located(t, location)))) return false;
+        if (next !== "head") return true;
         const out = small();
         const exit = await step(t, submoduleHeadOidArgs(location), out);
         const head = exit.exitCode === 0 && !out.limited ? oneLine(out.take()) : null;
-        if (head === null || !isObjectId(head, fmt)) return { result: "failed", code: "GIT_FAILED" };
-        next = head;
-      }
+        return head !== null && isObjectId(head, fmt) ? head : null;
+      };
+      const [kind, here] = await both(kindRead, locate());
+      if (here === false) return { result: "succeeded", value: value(kind, { state: "not-initialized" }) };
+      if (here === null) return { result: "failed", code: "GIT_FAILED" };
+      if (typeof here === "string") next = here;
       if (old === null || next === null) return { result: "succeeded", value: value(kind, { state: "single" }) };
       const [o, n] = [old, next];
 
-      // git-cat-file(1) `-e`: a non-zero exit means that the commit is not present. No command fetches.
-      const present = async (oid: string) => (await step(t, submoduleCommitExistsArgs(location, oid, fmt), small())).exitCode === 0;
-      const [hasOld, hasNew] = await both(present(o), present(n));
-      if (!hasOld || !hasNew) return { result: "succeeded", value: value(kind, { state: "missing", which: !hasOld && !hasNew ? "both" : hasOld ? "new" : "old" }) };
-
       const countOut = small();
-      const counted = await step(t, submoduleCountArgs(location, o, n, fmt), countOut);
-      if (counted.exitCode !== 0) return { result: "failed", code: "GIT_FAILED" };
+      const [counted, [addedLog, removedLog]] = await both(step(t, submoduleCountArgs(location, o, n, fmt), countOut), both(logOf(t, location, n, o), logOf(t, location, o, n)));
+      if (counted.exitCode !== 0) {
+        // git-cat-file(1) `-e`: a non-zero exit means that the commit is not present. Only this exit gives `missing`. No command fetches.
+        const present = async (oid: string) => (await step(t, submoduleCommitExistsArgs(location, oid, fmt), small())).exitCode === 0;
+        const [hasOld, hasNew] = await both(present(o), present(n));
+        if (!hasOld || !hasNew) return { result: "succeeded", value: value(kind, { state: "missing", which: !hasOld && !hasNew ? "both" : hasOld ? "new" : "old" }) };
+        return { result: "failed", code: "GIT_FAILED" };
+      }
       const counts = countOut.limited ? null : /^([0-9]+)\t([0-9]+)\n$/.exec(latin1(countOut.take()));
       if (counts === null || !Number.isSafeInteger(Number(counts[1])) || !Number.isSafeInteger(Number(counts[2]))) return { result: "failed", code: "MALFORMED_GIT_OUTPUT" };
       // git-rev-list(1): for `<old>...<new>`, left counts the commits only in `<old>`, right the commits only in `<new>`.
       const removed = Number(counts[1]);
       const added = Number(counts[2]);
-      const [addedList, removedList] = await both(commitsOf(t, location, n, o, added), commitsOf(t, location, o, n, removed));
+      const addedList = commitsOf(t, addedLog, added);
+      const removedList = commitsOf(t, removedLog, removed);
       return {
         result: "succeeded",
         value: value(kind, { state: "commits", added, removed, addedCommits: addedList.commits, removedCommits: removedList.commits }, addedList.limited || removedList.limited),

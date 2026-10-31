@@ -35,12 +35,14 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 ### `runWorkbench` (004 Δ3)
 
 - Every revert action: the marker of its action; the frame's full observation again (a difference gives `STALE_REVIEW` with reason `revert-changed`); then the parts below; then the reconcile reads (`ls-files --stage -z` of the paths, `fileFacts` with `digest: true`, `readWorkspace`).
+- An `index.lock` at the run start gives `LOCKED` with the result `{path, remedy: {text}}`, as the review gives it (001 FR-016). Nothing runs.
 - Index part (`revert-lines` staged, `revert-files` with an index change): phase `revert-index`; the owned lock and the checked candidate of 001 §4 through `publishIndex` (plan D7). A lock or candidate refusal ends the run before any working write.
 - Working part: phase `revert-files`, in tree order. A file without a working change (`keep`) sends none. A line revert sends one `fileReplace` `working` with `bytes`. Whole files follow plan D5a in batches of at most 64 paths: `ls-files --stage -z` and the raw index digest; `git --no-lazy-fetch checkout-index --temp --stdin -z` with the batch paths on stdin, in the worktree root; the entries and the digest again (a difference gives `STALE_REVIEW` `revert-changed`); `fileFacts` with `stream: true` for each temporary file; one `fileReplace` `working` with `source` per path; `tempRemove` for each unused temporary file.
 - `checkout-index` deadline: `GIT_PROCESS_DEADLINE_MS` plus 1 s for each started 64 MiB of the batch blob sizes (research R11). This size rule replaces `REGISTERED_DEADLINE_CAP_MS` for `checkout-index --temp`, for `fileReplace` with `source`, and for `fileFacts` with `stream`, so a large file gets a finite deadline and no size limit. Cancel stops each of them.
+- Run frame `limits` (001 §6): a `registeredOperation` `run` takes a `deadlineMs` above `REGISTERED_DEADLINE_CAP_MS` only with the exact array `--no-lazy-fetch checkout-index --temp --stdin -z`. The frame bound of that deadline is the safe integer range. Every other `run` keeps the cap.
 - Cancel stops the run before the next request. A started `fileReplace` runs to its end.
 - Response state and per-file outcomes: plan D10 and data-model §8.
-- Deadline per `fileReplace`: the 001 walk deadline (30 s).
+- Deadline per `fileReplace`: the 001 walk deadline (30 s), plus the size rule above for `source` (Δ6).
 
 ## Δ5 Finite bounds (001 §5)
 
@@ -61,7 +63,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - Deadline: the 001 walk deadline plus 1 s for each started 64 MiB of the target and the source sizes (the size rule of Δ3).
   - Reply: `replaced {folders}`, `stale`, `stopped` (a Windows stop or deadline before the write), `interrupted` (a WSL stop, deadline, or broken output), `refused {reason}` with `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, or `xattr`, or `error {code}` with `sharing-violation`, `access-denied`, `disk-full`, `read-only-volume`, or another code.
 - New request `tempRemove {repositoryId, name, expected: {size, sha256}}` under a revert marker: one file in the worktree root, deleted through its handle only when its facts equal `expected`. Reply `removed`, `stale`, `absent`, or `error {code}`. WSL: `wslFiles` mode `tempRemove` (Δ11).
-- `fileFacts` gains `stream: boolean`: a digest without the 1 MiB bound, read in chunks, with the deadline rule of `fileReplace`. Only a revert marker may ask for it.
+- `fileFacts` gains `stream: boolean`: a digest without the 1 MiB bound, read in chunks. A `detail` request may ask for `stream`, also without a marker, such as the review of `revert-files` and `revert-unstaged`. A request under a revert marker may also ask for it. `stream` keeps the size-rule deadline of Δ3.
 - `fileFacts` gains `detail: boolean`. With `detail`, a `file` fact adds `links`, and on Windows `attributes` (the `FileBasicInformation` attribute bits), `owner`, `group`, and `dacl` (SDDL), and `creationTime`; on WSL `mode`, `uid`, `gid`, and `xattr` (a boolean).
 - Close prompt names: "Revert lines", "Revert files", "Revert unstaged changes".
 

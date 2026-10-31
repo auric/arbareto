@@ -45,6 +45,7 @@ import {
   type Fact,
   type Failure,
   type HunkPublisherOptions,
+  type PrepareOptions,
   type PublicationSession,
   type PublicationStores,
   type PublishContext,
@@ -77,7 +78,7 @@ type Snapshot = ChangeSnapshot & { entries: ChangeEntry[]; cut: StatusCut };
 type Accepted = Extract<FileActionDecision, { direction: "stage" | "unstage" }>;
 type Whole = { size: number; sha256: string };
 
-interface FileItem {
+export interface FileItem {
   entry: ChangeEntry;
   path: Uint8Array;
   action: Accepted;
@@ -87,7 +88,7 @@ interface FileItem {
   working: Whole | null;
 }
 
-interface Admitted {
+export interface Admitted {
   // A file set binds no single entry. Reconciliation reads no working version, so the empty path names no file.
   approval: { binding: { head: Snapshot["head"]; index: NonNullable<Snapshot["indexFingerprint"]>; operationState: Snapshot["operationState"]; policyFingerprint: string; entry: { pathBytes: ""; category: "unstaged" } } };
   direction: "stage" | "unstage";
@@ -163,6 +164,187 @@ const entryKey = (e: ChangeEntry): string =>
       : [e.category === "conflicted" ? "unmerged" : e.score === undefined ? "ordinary" : "rename", e.xy, e.submodule, e.modes, e.oids, ...(e.score === undefined ? [] : [e.score, e.sourcePathBytes]), e.pathBytes],
   );
 
+// One `check-attr` for every path (contract Δ5 `MULTI_FILE_ATTRIBUTE_BYTES`).
+async function attributesOf(ctx: PublishContext, paths: readonly Uint8Array[]): Promise<Fact<Readonly<Record<string, string>>[]>> {
+  const out = createCollector({ maxBytes: MULTI_FILE_ATTRIBUTE_BYTES });
+  const step = await stepOf(ctx, attributeArgs(), out, Buffer.concat(paths.flatMap((p) => [p, NUL])));
+  if (!("exit" in step)) return step;
+  if (out.limited) return { code: "OUTPUT_LIMIT", reason: "MULTI_FILE_ATTRIBUTE_BYTES" };
+  const parsed = step.exit.exitCode === 0 ? parseAttributes(out.take(), paths) : null;
+  if (parsed === null) return { code: step.exit.exitCode === 0 ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED" };
+  return { value: parsed };
+}
+
+// Contract Δ4 step 7: the status records of exactly the paths of the set. A rename keeps its source path in the same process.
+async function sameEntries(ctx: PublishContext, installation: ReadInstallation, a: Admitted): Promise<boolean | Refusal | Stop> {
+  const w = ctx.workspace;
+  const groups = a.items.map((item) => [item.path, ...(item.entry.sourcePathBytes === undefined ? [] : [pathOf({ pathBytes: item.entry.sourcePathBytes })])]);
+  const wanted = new Set(groups.flat().map(latin1));
+  const args = (batch: string[]) => [...statusArgs(), "--", ...batch];
+  // Contract §6: each process stays inside the command-line bound.
+  const units = (list: string[]) => stepUnits({ operationId: ctx.operationId, workspace: w, installation }, "read", args(list));
+  const batches: string[][] = [];
+  for (const group of groups) {
+    const texts = group.map((p) => utf8.decode(p));
+    const last = batches.at(-1);
+    if (last !== undefined && units([...last, ...texts]) <= WINDOWS_COMMAND_LINE_UNITS) last.push(...texts);
+    else if (units(texts) <= WINDOWS_COMMAND_LINE_UNITS) batches.push(texts);
+    else return { code: "WORKBENCH_UNAVAILABLE", reason: "path", entryId: a.items[groups.indexOf(group)]!.entry.entryId };
+  }
+  const fresh = new Set<string>();
+  for (const batch of batches) {
+    const parser = createStatusParser(w.objectFormat);
+    let size = 0;
+    const out: Collector = {
+      push(chunk) {
+        size += chunk.length;
+        parser.push(chunk);
+      },
+      get bytes() {
+        return size;
+      },
+      records: 0,
+      get limited() {
+        return parser.limited;
+      },
+    };
+    const step = await stepOf(ctx, args(batch), out, undefined, stepDeadline(batch.length));
+    if (!("exit" in step)) return refusalOrStop(step);
+    const parsed = parser.end();
+    if (parsed.state === "limited") return { code: "OUTPUT_LIMIT", reason: parsed.reason };
+    if (step.exit.exitCode !== 0) return refusalOf({ code: "GIT_FAILED" });
+    if (parsed.state === "failed") return { code: "MALFORMED_GIT_OUTPUT" };
+    // A literal pathspec also matches paths below a folder of that name, so only the exact paths count.
+    for (const r of parsed.records) if (wanted.has(latin1(r.path.bytes)) || (r.kind === "rename" && wanted.has(latin1(r.originalPath.bytes)))) fresh.add(recordKey(r));
+  }
+  const shown = new Set(
+    a.snapshot.entries.filter((e) => wanted.has(latin1(pathOf(e))) || (e.sourcePathBytes !== undefined && wanted.has(latin1(pathOf({ pathBytes: e.sourcePathBytes }))))).map(entryKey),
+  );
+  return fresh.size === shown.size && [...fresh].every((k) => shown.has(k));
+}
+
+// Contract Δ4 steps 3 to 7 under the lock: the Stage files and Unstage files `prepare`. A revert run gives its own progress (plan.md D7).
+export async function prepareFiles(o: PrepareOptions, a: Admitted, { ctx, rec, run }: PublicationSession, installation: ReadInstallation): Promise<Refusal | Stop | null> {
+  const { registry } = o;
+  const { workspace: w, signal, operationId } = ctx;
+  const binding = a.approval.binding;
+  const stage = a.direction === "stage";
+  const paths = a.items.map((item) => item.path);
+  let bound = false;
+
+  // Contract §4 steps 3 and 7 with the §9 checkpoint order. Step 3 binds each working file, and step 7 compares it.
+  const checkpoint = async (step7: boolean): Promise<Refusal | Stop | null> => {
+    const policy = await observePolicy(ctx, null);
+    if ("listing" in policy) run.listing = policy.listing;
+    const state = await observeState(ctx, EMPTY, false, canonicalIndex(ctx, binding.index));
+    const refused = checkpointRefusal({ ...binding, working: null, attributes: {} }, policy, state, w.objectFormat, w.wsl !== undefined);
+    if (refused !== null) return refused;
+    const attributes = await attributesOf(ctx, paths);
+    if (!("value" in attributes)) return refusalOrStop(attributes);
+    if (!attributes.value.every((value, i) => Bun.deepEquals(value, a.items[i]!.attributes, true))) return STALE;
+    if (step7) {
+      const same = await sameEntries(ctx, installation, a);
+      if (same !== true) return same === false ? STALE : same;
+    }
+    if (!stage) return null;
+    const stop = new AbortController();
+    const pooled = pooledContext(ctx, stop);
+    const digested = await firstOf(a.items.length, stop, async (i): Promise<Refusal | Stop | null> => {
+      const item = a.items[i]!;
+      const read = wholeOf(await settled(pooled.signal, wholeWorking(pooled, item.path)));
+      if ("changed" in read) return STALE;
+      if (!("value" in read)) return refusalOrStop(read);
+      const v = read.value;
+      if (!bound) {
+        // The step 3 file must have the type and size of the decision facts.
+        const absent = item.facts.type === "absent";
+        if (absent ? v !== "absent" : v === "absent" || v === "other" || item.facts.type !== "file" || v.size !== item.facts.size) return STALE;
+        item.working = absent ? null : (v as Whole);
+      } else if (item.working === null ? v !== "absent" : v === "absent" || v === "other" || v.size !== item.working.size || v.sha256 !== item.working.sha256) return STALE;
+      return null;
+    });
+    if (digested !== null) return digested;
+    bound = true;
+    return null;
+  };
+
+  registry.progress(operationId, "preflight");
+  const first = await checkpoint(false);
+  if (first !== null) return first;
+  registry.progress(operationId, "candidate-verification");
+  const owned = ownedCandidate({ runner: rec, operationId, signal, workspace: w, rawIndexDigest: binding.index.rawIndexDigest });
+  const tail = createTailCollector("plain");
+  let staged: (string | null)[] = [];
+  let refusedItem: number | undefined;
+  const prepared = await owned.settle(async () => {
+    const canonical = (await owned.copy()) ?? owned.parse((await owned.readCandidate()).bytes);
+    // Contract Δ4 step 5: every path on one stdin, or the HEAD entry of every changed path.
+    const input = stage ? Buffer.concat(paths.flatMap((p) => [p, NUL])) : indexInfoInput(a.items.flatMap((item) => item.action.changedPaths as UnstagePath[]));
+    await owned.step("update-index", stage ? updateIndexAddArgs() : updateIndexInfoArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), input, true, tail, stepDeadline(a.items.length));
+    await o.hunkCheckpoint?.({ step: 5, operationId });
+    if (signal.aborted) return owned.fail({ reason: "canceled" });
+    const read = await owned.readCandidate();
+    const expected = a.items.map((item) => ({ action: item.action, mode: item.entry.category === "untracked" ? null : item.entry.modes![2]!, deletion: stage && item.working === null, objectFormat: w.objectFormat }));
+    const checked = changedSet(expected, owned.parse(read.bytes), canonical);
+    if ("detail" in checked) {
+      refusedItem = checked.index;
+      return owned.fail({ reason: "verification", detail: checked.detail });
+    }
+    staged = checked.staged;
+    const oids = [...new Set(staged.filter((oid): oid is string => oid !== null))];
+    if (oids.length > 0) {
+      const out = createCollector({ maxBytes: oids.length * CHECK_LINE_BYTES });
+      await owned.step("check", objectCheckArgs(), out, objectCheckInput(oids), false);
+      // `step` throws for every exit other than 0.
+      if (objectCheckOutcome({ exit: { exitCode: 0, activeDescendants: 0 } }, out, oids) !== "present") return owned.fail({ reason: "verification", detail: "selected-entry" });
+    }
+    return read;
+  });
+  run.executionLast = rec.execution ?? 0;
+  if (!prepared.ok) {
+    run.candidatePath = prepared.path === null ? null : besideIndex(w, prepared.path);
+    const refused = candidateRefusal(prepared.failure);
+    const named = (r: Refusal | Stop): Refusal | Stop => (isStop(r) || refusedItem === undefined ? r : { ...r, entryId: a.items[refusedItem]!.entry.entryId });
+    if (!("check" in refused)) return named(refused);
+    // Contract §7 "Missing objects": no single index object names the set, so a failed step without a promisor remote gives the step failure.
+    const checked = await missingObject(ctx, run.listing, undefined, refused.check);
+    const f = prepared.failure;
+    if (f.reason === "git-failed" && f.step === "update-index" && !isStop(checked) && checked.code === "GIT_FAILED") return { ...checked, outputTail: tail.outputTail() };
+    return checked;
+  }
+  run.candidate = prepared.candidate;
+  run.candidatePath = besideIndex(w, prepared.candidate.path);
+  if (stage) {
+    const headUnborn = binding.head.state === "unborn";
+    // Each proof reads only its own verified bytes and its staged object, so the proofs run in parallel (plan.md O-17).
+    const proved = a.items.flatMap((item, i) => {
+      const oid = staged[i];
+      return typeof oid === "string" && item.working !== null ? [{ item, oid, working: item.working }] : [];
+    });
+    const stop = new AbortController();
+    const pooled = pooledContext(ctx, stop);
+    let done = 0;
+    const proof = await firstOf(proved.length, stop, async (k): Promise<Refusal | Stop | null> => {
+      const { item, oid, working } = proved[k]!;
+      const own = expiring(pooled);
+      const held = await blobProof(own, item.path, oid, working, wholeFileRemedy({ entry: item.entry, workspace: w, installation, headUnborn }, item.path));
+      if (held === null) {
+        registry.progress(operationId, "stage-files", { fileIndex: ++done, fileCount: proved.length });
+        return null;
+      }
+      if (isStop(held)) return own.expired ? { stop: "deadline" } : held;
+      return { ...held, entryId: item.entry.entryId };
+    });
+    run.executionLast = rec.execution ?? 0;
+    if (proof !== null) return proof;
+  }
+  // Contract Δ4 step 7.
+  const second = await checkpoint(true);
+  if (second !== null) return second;
+  await o.hunkCheckpoint?.({ step: 11, operationId });
+  return signal.aborted ? CANCELED : null;
+}
+
 export function createMultiPublisher(o: MultiPublisherOptions) {
   const { registry } = o;
   // Contract Δ2: the repeat key of `applyFiles` is its approval key. It maps to the operation that consumed it.
@@ -201,17 +383,6 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
     if (s.operationState === "conflicted") return { code: "CONFLICTED" };
     if (s.operationState !== "normal" && s.operationState !== "unknown") return { code: "OPERATION_IN_PROGRESS" };
     return { snapshot: s, entries };
-  }
-
-  // One `check-attr` for every path (contract Δ5 `MULTI_FILE_ATTRIBUTE_BYTES`).
-  async function attributesOf(ctx: PublishContext, paths: readonly Uint8Array[]): Promise<Fact<Readonly<Record<string, string>>[]>> {
-    const out = createCollector({ maxBytes: MULTI_FILE_ATTRIBUTE_BYTES });
-    const step = await stepOf(ctx, attributeArgs(), out, Buffer.concat(paths.flatMap((p) => [p, NUL])));
-    if (!("exit" in step)) return step;
-    if (out.limited) return { code: "OUTPUT_LIMIT", reason: "MULTI_FILE_ATTRIBUTE_BYTES" };
-    const parsed = step.exit.exitCode === 0 ? parseAttributes(out.take(), paths) : null;
-    if (parsed === null) return { code: step.exit.exitCode === 0 ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED" };
-    return { value: parsed };
   }
 
   // Data-model §5 path rule and contract §4 "File staging": the working facts of each entry, as `readComparison` reads them.
@@ -309,175 +480,6 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
     return items;
   }
 
-  // Contract Δ4 step 7: the status records of exactly the paths of the set. A rename keeps its source path in the same process.
-  async function sameEntries(ctx: PublishContext, installation: ReadInstallation, a: Admitted): Promise<boolean | Refusal | Stop> {
-    const w = ctx.workspace;
-    const groups = a.items.map((item) => [item.path, ...(item.entry.sourcePathBytes === undefined ? [] : [pathOf({ pathBytes: item.entry.sourcePathBytes })])]);
-    const wanted = new Set(groups.flat().map(latin1));
-    const args = (batch: string[]) => [...statusArgs(), "--", ...batch];
-    // Contract §6: each process stays inside the command-line bound.
-    const units = (list: string[]) => stepUnits({ operationId: ctx.operationId, workspace: w, installation }, "read", args(list));
-    const batches: string[][] = [];
-    for (const group of groups) {
-      const texts = group.map((p) => utf8.decode(p));
-      const last = batches.at(-1);
-      if (last !== undefined && units([...last, ...texts]) <= WINDOWS_COMMAND_LINE_UNITS) last.push(...texts);
-      else if (units(texts) <= WINDOWS_COMMAND_LINE_UNITS) batches.push(texts);
-      else return { code: "WORKBENCH_UNAVAILABLE", reason: "path", entryId: a.items[groups.indexOf(group)]!.entry.entryId };
-    }
-    const fresh = new Set<string>();
-    for (const batch of batches) {
-      const parser = createStatusParser(w.objectFormat);
-      let size = 0;
-      const out: Collector = {
-        push(chunk) {
-          size += chunk.length;
-          parser.push(chunk);
-        },
-        get bytes() {
-          return size;
-        },
-        records: 0,
-        get limited() {
-          return parser.limited;
-        },
-      };
-      const step = await stepOf(ctx, args(batch), out, undefined, stepDeadline(batch.length));
-      if (!("exit" in step)) return refusalOrStop(step);
-      const parsed = parser.end();
-      if (parsed.state === "limited") return { code: "OUTPUT_LIMIT", reason: parsed.reason };
-      if (step.exit.exitCode !== 0) return refusalOf({ code: "GIT_FAILED" });
-      if (parsed.state === "failed") return { code: "MALFORMED_GIT_OUTPUT" };
-      // A literal pathspec also matches paths below a folder of that name, so only the exact paths count.
-      for (const r of parsed.records) if (wanted.has(latin1(r.path.bytes)) || (r.kind === "rename" && wanted.has(latin1(r.originalPath.bytes)))) fresh.add(recordKey(r));
-    }
-    const shown = new Set(
-      a.snapshot.entries.filter((e) => wanted.has(latin1(pathOf(e))) || (e.sourcePathBytes !== undefined && wanted.has(latin1(pathOf({ pathBytes: e.sourcePathBytes }))))).map(entryKey),
-    );
-    return fresh.size === shown.size && [...fresh].every((k) => shown.has(k));
-  }
-
-  // Contract Δ4 steps 3 to 7 under the lock.
-  async function prepare(a: Admitted, { ctx, rec, run }: PublicationSession, installation: ReadInstallation): Promise<Refusal | Stop | null> {
-    const { workspace: w, signal, operationId } = ctx;
-    const binding = a.approval.binding;
-    const stage = a.direction === "stage";
-    const paths = a.items.map((item) => item.path);
-    let bound = false;
-
-    // Contract §4 steps 3 and 7 with the §9 checkpoint order. Step 3 binds each working file, and step 7 compares it.
-    const checkpoint = async (step7: boolean): Promise<Refusal | Stop | null> => {
-      const policy = await observePolicy(ctx, null);
-      if ("listing" in policy) run.listing = policy.listing;
-      const state = await observeState(ctx, EMPTY, false, canonicalIndex(ctx, binding.index));
-      const refused = checkpointRefusal({ ...binding, working: null, attributes: {} }, policy, state, w.objectFormat, w.wsl !== undefined);
-      if (refused !== null) return refused;
-      const attributes = await attributesOf(ctx, paths);
-      if (!("value" in attributes)) return refusalOrStop(attributes);
-      if (!attributes.value.every((value, i) => Bun.deepEquals(value, a.items[i]!.attributes, true))) return STALE;
-      if (step7) {
-        const same = await sameEntries(ctx, installation, a);
-        if (same !== true) return same === false ? STALE : same;
-      }
-      if (!stage) return null;
-      const stop = new AbortController();
-      const pooled = pooledContext(ctx, stop);
-      const digested = await firstOf(a.items.length, stop, async (i): Promise<Refusal | Stop | null> => {
-        const item = a.items[i]!;
-        const read = wholeOf(await settled(pooled.signal, wholeWorking(pooled, item.path)));
-        if ("changed" in read) return STALE;
-        if (!("value" in read)) return refusalOrStop(read);
-        const v = read.value;
-        if (!bound) {
-          // The step 3 file must have the type and size of the decision facts.
-          const absent = item.facts.type === "absent";
-          if (absent ? v !== "absent" : v === "absent" || v === "other" || item.facts.type !== "file" || v.size !== item.facts.size) return STALE;
-          item.working = absent ? null : (v as Whole);
-        } else if (item.working === null ? v !== "absent" : v === "absent" || v === "other" || v.size !== item.working.size || v.sha256 !== item.working.sha256) return STALE;
-        return null;
-      });
-      if (digested !== null) return digested;
-      bound = true;
-      return null;
-    };
-
-    registry.progress(operationId, "preflight");
-    const first = await checkpoint(false);
-    if (first !== null) return first;
-    registry.progress(operationId, "candidate-verification");
-    const owned = ownedCandidate({ runner: rec, operationId, signal, workspace: w, rawIndexDigest: binding.index.rawIndexDigest });
-    const tail = createTailCollector("plain");
-    let staged: (string | null)[] = [];
-    let refusedItem: number | undefined;
-    const prepared = await owned.settle(async () => {
-      const canonical = (await owned.copy()) ?? owned.parse((await owned.readCandidate()).bytes);
-      // Contract Δ4 step 5: every path on one stdin, or the HEAD entry of every changed path.
-      const input = stage ? Buffer.concat(paths.flatMap((p) => [p, NUL])) : indexInfoInput(a.items.flatMap((item) => item.action.changedPaths as UnstagePath[]));
-      await owned.step("update-index", stage ? updateIndexAddArgs() : updateIndexInfoArgs(), createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM }), input, true, tail, stepDeadline(a.items.length));
-      await o.hunkCheckpoint?.({ step: 5, operationId });
-      if (signal.aborted) return owned.fail({ reason: "canceled" });
-      const read = await owned.readCandidate();
-      const expected = a.items.map((item) => ({ action: item.action, mode: item.entry.category === "untracked" ? null : item.entry.modes![2]!, deletion: stage && item.working === null, objectFormat: w.objectFormat }));
-      const checked = changedSet(expected, owned.parse(read.bytes), canonical);
-      if ("detail" in checked) {
-        refusedItem = checked.index;
-        return owned.fail({ reason: "verification", detail: checked.detail });
-      }
-      staged = checked.staged;
-      const oids = [...new Set(staged.filter((oid): oid is string => oid !== null))];
-      if (oids.length > 0) {
-        const out = createCollector({ maxBytes: oids.length * CHECK_LINE_BYTES });
-        await owned.step("check", objectCheckArgs(), out, objectCheckInput(oids), false);
-        // `step` throws for every exit other than 0.
-        if (objectCheckOutcome({ exit: { exitCode: 0, activeDescendants: 0 } }, out, oids) !== "present") return owned.fail({ reason: "verification", detail: "selected-entry" });
-      }
-      return read;
-    });
-    run.executionLast = rec.execution ?? 0;
-    if (!prepared.ok) {
-      run.candidatePath = prepared.path === null ? null : besideIndex(w, prepared.path);
-      const refused = candidateRefusal(prepared.failure);
-      const named = (r: Refusal | Stop): Refusal | Stop => (isStop(r) || refusedItem === undefined ? r : { ...r, entryId: a.items[refusedItem]!.entry.entryId });
-      if (!("check" in refused)) return named(refused);
-      // Contract §7 "Missing objects": no single index object names the set, so a failed step without a promisor remote gives the step failure.
-      const checked = await missingObject(ctx, run.listing, undefined, refused.check);
-      const f = prepared.failure;
-      if (f.reason === "git-failed" && f.step === "update-index" && !isStop(checked) && checked.code === "GIT_FAILED") return { ...checked, outputTail: tail.outputTail() };
-      return checked;
-    }
-    run.candidate = prepared.candidate;
-    run.candidatePath = besideIndex(w, prepared.candidate.path);
-    if (stage) {
-      const headUnborn = binding.head.state === "unborn";
-      // Each proof reads only its own verified bytes and its staged object, so the proofs run in parallel (plan.md O-17).
-      const proved = a.items.flatMap((item, i) => {
-        const oid = staged[i];
-        return typeof oid === "string" && item.working !== null ? [{ item, oid, working: item.working }] : [];
-      });
-      const stop = new AbortController();
-      const pooled = pooledContext(ctx, stop);
-      let done = 0;
-      const proof = await firstOf(proved.length, stop, async (k): Promise<Refusal | Stop | null> => {
-        const { item, oid, working } = proved[k]!;
-        const own = expiring(pooled);
-        const held = await blobProof(own, item.path, oid, working, wholeFileRemedy({ entry: item.entry, workspace: w, installation, headUnborn }, item.path));
-        if (held === null) {
-          registry.progress(operationId, "stage-files", { fileIndex: ++done, fileCount: proved.length });
-          return null;
-        }
-        if (isStop(held)) return own.expired ? { stop: "deadline" } : held;
-        return { ...held, entryId: item.entry.entryId };
-      });
-      run.executionLast = rec.execution ?? 0;
-      if (proof !== null) return proof;
-    }
-    // Contract Δ4 step 7.
-    const second = await checkpoint(true);
-    if (second !== null) return second;
-    await o.hunkCheckpoint?.({ step: 11, operationId });
-    return signal.aborted ? CANCELED : null;
-  }
-
   // Contract §4 "Blob proof": after publication, a new digest of each working file decides the working-file effect. `unstage` reads no working file.
   async function working(a: Admitted, ctx: PublishContext): Promise<Fact<boolean>> {
     if (a.direction === "unstage") return { value: false };
@@ -531,7 +533,7 @@ export function createMultiPublisher(o: MultiPublisherOptions) {
         },
         refusal: (): ErrorCode => "UNKNOWN_TARGET",
       };
-      await publish(o, request, w, installation, operationId, signal, claim, admitted, { prepare: (x, session) => prepare(x, session, installation), working: (x, q) => working(x, q) });
+      await publish(o, request, w, installation, operationId, signal, claim, admitted, { prepare: (x, session) => prepareFiles(o, x, session, installation), working: (x, q) => working(x, q) });
     })();
   }
 

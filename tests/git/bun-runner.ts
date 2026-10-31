@@ -5,7 +5,7 @@
 // It does not reproduce the shell console flags or Jobs. T024 and T027 cover them.
 // T206 adds the contract §11 WSL process requests. T212 takes their types from the zod frames of `src/contracts/channel.ts`.
 
-import { linkSync, lstatSync, mkdirSync, opendirSync, readdirSync, readFileSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, chownSync, closeSync, fsyncSync, linkSync, lstatSync, mkdirSync, openSync, opendirSync, readdirSync, readFileSync, readSync, renameSync, rmdirSync, rmSync, statSync, unlinkSync, writeFileSync, writeSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { Subprocess } from "bun";
@@ -38,6 +38,10 @@ import {
   type FileDeleteReply,
   type FileReplaceReply,
   type FileReplaceRequest,
+  type TempRemoveReply,
+  type TempRemoveRequest,
+  type WorkingReplaceReply,
+  type WorkingReplaceRequest,
   type ShadowReply,
   type FileFact,
   type FileFactsRequest,
@@ -92,6 +96,9 @@ import type { InboundPipe } from "./win32";
 
 // Feature 005 contract Δ6: the codes of a file that exists but cannot be opened or read.
 type FileFactError = (typeof FILE_FACT_ERRORS)[number];
+// Feature 008: the seams of a `working` replace. `checked`: after every check, before the write. `written`: the temporary file holds the new bytes.
+// `cleared`: the delete disposition is clear, before the rename. `renamed`: after the rename, before the source goes.
+export type ReplaceStep = "checked" | "written" | "cleared" | "renamed";
 
 // The host module of the double. The generic harness loads it only through this path (tests/git/portable-imports.test.ts).
 export const HOST_SCRIPT = join(import.meta.dir, process.platform === "win32" ? "win32.ts" : "linux.ts");
@@ -661,6 +668,11 @@ export function createBunRunner(options: BunRunnerOptions) {
     holdRegister: null as ((request: { repositoryId: string }) => Promise<void>) | null,
     // A Linux path replaces the approved `sha256sum` of each WSL `fileDelete`, `fileReplace`, and `shadow` process, such as a test seam that holds the walk.
     wslSha256sum: null as string | null,
+    // Feature 008: at a named step of a `working` replace, `stop` stops the request before the write, and `crash` ends it as a shell end does.
+    // A stop after `checked` is no stop, because a started write runs to its end (contract Δ3).
+    replaceStep: null as ((step: ReplaceStep, path: string) => "stop" | "crash" | undefined | Promise<"stop" | "crash" | undefined>) | null,
+    // Feature 008: a synthetic reply of a `working` replace in place of the write, after the request checks and the walk hold.
+    workingReply: null as ((request: WorkingReplaceRequest) => WorkingReplaceReply | undefined) | null,
   };
   // Each WSL identity reply with its UNC path, in order.
   const wslIdentityLog: { path: string; reply: WslIdentityReply }[] = [];
@@ -795,6 +807,208 @@ export function createBunRunner(options: BunRunnerOptions) {
     writeFileSync(temp, bytes, { flag: "wx" });
     renameSync(temp, at);
     return { result: "replaced" };
+  }
+
+  // ---- Feature 008 contract Δ6 `fileReplace` `working` and `tempRemove` (plan.md D8, D5a) ----
+
+  type Repository = { worktreeRoot: string; gitDirectory: string; commonDirectory: string; gitInstallationId: string };
+  type FileFactOf = Extract<FileFact, { kind: "file" }>;
+  const REVERT_ACTIONS: readonly string[] = ["revert-lines", "revert-files", "revert-unstaged"];
+  const revertMarked = (operationId: string) => [...markers.values()].some((m) => m.operationId === operationId && m.kind === "workbench" && REVERT_ACTIONS.includes(m.action ?? ""));
+  // Research.md R8: the write keeps hidden, system, and not-content-indexed. Archive and normal are no compared fact. Read-only and encrypted refuse by their own reason.
+  // FILE_ATTRIBUTE_READONLY, _HIDDEN, _SYSTEM, _ARCHIVE, _NORMAL, _NOT_CONTENT_INDEXED, and _ENCRYPTED (Microsoft Learn "File Attribute Constants").
+  const READ_ONLY = 0x1;
+  const ENCRYPTED = 0x4000;
+  const KEPT_ATTRIBUTES = READ_ONLY | 0x2 | 0x4 | 0x20 | 0x80 | 0x2000 | ENCRYPTED;
+  const STREAM_BYTES = 1024 * 1024;
+  const replaceError = (error: unknown): WorkingReplaceReply & { result: "error" } => {
+    const code = (error as NodeJS.ErrnoException).code;
+    return { result: "error", code: code === "ENOSPC" ? "disk-full" : code === "EROFS" ? "read-only-volume" : errorCode(error) };
+  };
+  const asciiLower = (name: string) => name.replace(/[A-Z]/g, (c) => c.toLowerCase());
+
+  // Data-model §3 `working`: the facts that `facts` binds. A Windows host gives the Windows form, and a Linux host the WSL form.
+  function workingFactsOf(f: FileFactOf): WorkingReplaceRequest["facts"] {
+    if (f.attributes !== undefined) return { size: f.size, sha256: f.digest!, attributes: f.attributes, links: f.links!, owner: f.owner!, group: f.group!, dacl: f.dacl!, creationTime: f.creationTime! };
+    // A fact with `xattr: true` refuses before this compare, so the compare can only fail for it.
+    return { size: f.size, sha256: f.digest!, mode: f.mode!, uid: f.uid!, gid: f.gid!, links: f.links!, xattr: f.xattr as false };
+  }
+
+  // The refusal of a target by its own facts, in the order of contract Δ6.
+  function factRefusal(f: FileFactOf): WorkingReplaceReply | null {
+    const refused = (reason: Extract<WorkingReplaceReply, { result: "refused" }>["reason"]): WorkingReplaceReply => ({ result: "refused", reason });
+    if (f.links !== 1) return refused("hard-link");
+    if (f.attributes !== undefined) {
+      if ((f.attributes & READ_ONLY) !== 0) return refused("read-only");
+      if ((f.attributes & ENCRYPTED) !== 0) return refused("encrypted");
+      if ((f.attributes & ~KEPT_ATTRIBUTES) !== 0) return refused("file-attributes");
+      return null;
+    }
+    if (f.xattr === true) return refused("xattr");
+    return f.uid !== process.getuid?.() ? refused("owner") : null;
+  }
+
+  // The size and SHA-256 of a file, read in chunks. `to` receives a copy of the bytes, opened with `wx`.
+  function streamed(from: string, to?: string): { size: number; sha256: string } {
+    const hash = new Bun.CryptoHasher("sha256");
+    const input = openSync(from, "r");
+    const output = to === undefined ? null : openSync(to, "wx");
+    try {
+      const chunk = new Uint8Array(STREAM_BYTES);
+      let size = 0;
+      for (let n = readSync(input, chunk); n > 0; n = readSync(input, chunk)) {
+        hash.update(chunk.subarray(0, n));
+        if (output !== null) writeSync(output, chunk, 0, n);
+        size += n;
+      }
+      if (output !== null) fsyncSync(output);
+      return { size, sha256: hash.digest("hex") };
+    } finally {
+      closeSync(input);
+      if (output !== null) closeSync(output);
+    }
+  }
+
+  // Contract Δ6 `path`: a first name `.git` in any ASCII case, or a folder of the Git directory or the common directory by identity.
+  function insideGit(repository: Repository, names: readonly string[]): boolean {
+    if (asciiLower(names[0]!) === ".git") return true;
+    const ids = [repository.gitDirectory, repository.commonDirectory].map((path) => readIdentity(path)).filter((id) => !("code" in id)).map((id) => JSON.stringify(id));
+    let at = repository.worktreeRoot;
+    for (const name of names.slice(0, -1)) {
+      at = join(at, name);
+      if (lstatSync(at, { throwIfNoEntry: false })?.isDirectory() !== true) return false;
+      if (ids.includes(JSON.stringify(readIdentity(at)))) return true;
+    }
+    return false;
+  }
+
+  // Plan.md D8 on the host file system: the walk, the expected and facts checks, the folders, a temporary file beside the target, and one rename.
+  // The double keeps no attribute, creation time, or DACL, and makes no owner or `security` check of the new file. The shell does (T012 to T014).
+  async function replaceWorking(repository: Repository, names: string[], request: WorkingReplaceRequest): Promise<WorkingReplaceReply> {
+    const root = repository.worktreeRoot;
+    const { gitInstallationId: _git, ...roots } = repository;
+    const step = async (name: ReplaceStep) => (await inject.replaceStep?.(name, request.path)) ?? undefined;
+    const ended = (name: ReplaceStep): never => {
+      throw new Error(`the shell ended at the replace step ${name}`);
+    };
+    const missing: string[] = [];
+    let parent = root;
+    for (const name of names.slice(0, -1)) {
+      if (missing.length > 0) {
+        missing.push(name);
+        continue;
+      }
+      const st = lstatSync(join(parent, name), { throwIfNoEntry: false });
+      if (st === undefined) missing.push(name);
+      else if (st.isSymbolicLink() || !st.isDirectory()) return { result: "refused", reason: "not-regular" };
+      else parent = join(parent, name);
+    }
+    // Contract Δ6 `folders`: exactly the missing folders below the deepest existing folder.
+    if (!Bun.deepEquals(missing, request.folders ?? [])) return { result: "stale" };
+    const target = join(root, ...names);
+    let old: FileFactOf | null = null;
+    if (missing.length === 0) {
+      const fact = readFileFacts(roots, true, [{ root: "worktreeRoot", path: names }], { detail: true, stream: true }).facts[0]!;
+      if (fact.kind === "error") return { result: "error", code: fact.code };
+      if (fact.kind === "file") old = fact;
+      else if (fact.kind !== "absent") return { result: "refused", reason: "not-regular" };
+    }
+    if (old === null) {
+      if (request.expected !== "absent" || request.facts !== "absent") return { result: "stale" };
+    } else {
+      if (request.expected === "absent") return { result: "stale" };
+      const refused = factRefusal(old);
+      if (refused !== null) return refused;
+      if (old.size !== request.expected.size || old.digest !== request.expected.sha256 || !Bun.deepEquals(workingFactsOf(old), request.facts, true)) return { result: "stale" };
+    }
+    // Contract Δ6 `source`: the source goes after the rename and after every failure that comes after its open.
+    let source: string | null = null;
+    const fail = (reply: WorkingReplaceReply): WorkingReplaceReply => {
+      if (source !== null) rmSync(source, { force: true });
+      return reply;
+    };
+    if (request.source !== undefined) {
+      const path = join(root, request.source.name);
+      const st = lstatSync(path, { throwIfNoEntry: false });
+      if (st === undefined) return { result: "stale" };
+      if (st.isSymbolicLink() || !st.isFile()) return { result: "refused", reason: "not-regular" };
+      source = path;
+      if (st.nlink !== 1) return fail({ result: "refused", reason: "hard-link" });
+      if (st.size !== request.source.size) return fail({ result: "stale" });
+    }
+    const checked = await step("checked");
+    if (checked === "crash") ended("checked");
+    if (checked === "stop") return fail({ result: "stopped" });
+    let folder = parent;
+    for (const name of missing) {
+      folder = join(folder, name);
+      try {
+        mkdirSync(folder);
+      } catch (error) {
+        return fail((error as NodeJS.ErrnoException).code === "EEXIST" ? { result: "stale" } : replaceError(error));
+      }
+    }
+    const temp = join(dirname(target), `.arbareto-${crypto.randomUUID().replaceAll("-", "")}.tmp`);
+    try {
+      if (request.bytes !== undefined) writeFileSync(temp, Buffer.from(request.bytes, "base64"), { flag: "wx" });
+      else {
+        const copied = streamed(source!, temp);
+        if (copied.size !== request.source!.size || copied.sha256 !== request.source!.sha256) {
+          rmSync(temp, { force: true });
+          return fail({ result: "stale" });
+        }
+      }
+      // Plan.md D9 order on a Linux host: the gid copy, the write, then the mode bits of the old file.
+      if (old !== null && old.mode !== undefined) {
+        chownSync(temp, -1, old.gid!);
+        chmodSync(temp, old.mode & 0o7777);
+      }
+    } catch (error) {
+      rmSync(temp, { force: true });
+      return fail((error as NodeJS.ErrnoException).code === "EPERM" && old?.mode !== undefined ? { result: "refused", reason: "owner" } : replaceError(error));
+    }
+    // Research.md R8 W6: the delete disposition removes the temporary file at a shell end before the clear.
+    if ((await step("written")) === "crash") {
+      rmSync(temp, { force: true });
+      ended("written");
+    }
+    if ((await step("cleared")) === "crash") ended("cleared");
+    try {
+      if (old === null) {
+        // An absent target takes a link, so an existing name gives `stale` (005 N7).
+        linkSync(temp, target);
+        rmSync(temp);
+      } else {
+        // The shell holds the target without write sharing from the check to the rename. The double checks the digest once more instead.
+        const again = readFileFacts(roots, true, [{ root: "worktreeRoot", path: names }], { stream: true }).facts[0]!;
+        if (again.kind !== "file" || again.digest !== old.digest) {
+          rmSync(temp, { force: true });
+          return fail({ result: "stale" });
+        }
+        renameSync(temp, target);
+      }
+    } catch (error) {
+      rmSync(temp, { force: true });
+      return fail((error as NodeJS.ErrnoException).code === "EEXIST" ? { result: "stale" } : replaceError(error));
+    }
+    if ((await step("renamed")) === "crash") ended("renamed");
+    if (source !== null) rmSync(source, { force: true });
+    return missing.length > 0 ? { result: "replaced", folders: missing } : { result: "replaced" };
+  }
+
+  // Contract Δ6 `tempRemove`: one file in the worktree root, removed only while its facts equal `expected`.
+  function removeTemp(root: string, request: TempRemoveRequest): TempRemoveReply {
+    const path = join(root, request.name);
+    const st = lstatSync(path, { throwIfNoEntry: false });
+    if (st === undefined) return { result: "absent" };
+    if (st.isSymbolicLink() || !st.isFile() || st.nlink !== 1 || st.size !== request.expected.size) return { result: "stale" };
+    try {
+      if (streamed(path).sha256 !== request.expected.sha256) return { result: "stale" };
+      unlinkSync(path);
+      return { result: "removed" };
+    } catch (error) {
+      return replaceError(error) as TempRemoveReply;
+    }
   }
 
   // Contract §6 "Walks": the walk deadline and an abort end the hold without a value. A Windows read stays synchronous, as in the shell, so no stop interrupts it.
@@ -1624,6 +1838,8 @@ export function createBunRunner(options: BunRunnerOptions) {
       // gaps.md W3: a WSL repository gets the Perl probe of its installation. The double records no read bytes for it.
       const wsl = wslGits.get(gitInstallationId);
       if (request.content === true && !wsl) throw new RunnerRefusal("INVALID_REQUEST", "content outside WSL");
+      // Feature 008 contract Δ6: the WSL `detail` and `stream` facts come from the Perl probe of T016, which the double does not have yet.
+      if ((request.detail === true || request.stream === true) && wsl) throw new RunnerRefusal("INVALID_REQUEST", "WSL detail or stream");
       return walk(
         signal,
         () => {
@@ -1632,7 +1848,7 @@ export function createBunRunner(options: BunRunnerOptions) {
             fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead: facts.map(() => 0) });
             return facts;
           }
-          const { facts, bytesRead, statuses } = readFileFacts(roots, request.digest, request.files);
+          const { facts, bytesRead, statuses } = readFileFacts(roots, request.digest, request.files, { detail: request.detail === true, stream: request.stream === true });
           fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead, statuses });
           return facts;
         },
@@ -1929,6 +2145,35 @@ export function createBunRunner(options: BunRunnerOptions) {
       const reply = await walk(signal, () => replaceFile(root, names, request.expected, bytes), "fileReplace");
       // `file_replace_stopped`: a stop or a deadline before the write writes nothing.
       return "stop" in reply ? { result: "stopped" } : reply;
+    },
+
+    // Feature 008 contract Δ6 `fileReplace` `working`: a `started` marker of a revert action, a path below the worktree root outside the Git directory,
+    // then the checks and the write of plan.md D8 on the host file system. The WSL route of T016 is not in the double yet, so a WSL repository refuses.
+    async fileReplaceWorking(request, signal): Promise<WorkingReplaceReply | WalkStop> {
+      checkSyncRequest("fileReplace", request);
+      frames.push({ type: "fileReplace", ...structuredClone(request) });
+      if (inactive.has(request.operationId)) throw unknownTarget();
+      if (request.target !== "working") throw new RunnerRefusal("INVALID_REQUEST", "fileReplace target");
+      if (!revertMarked(request.operationId)) throw new RunnerRefusal("INVALID_REQUEST", "fileReplace action");
+      const repository = repositories.get(request.repositoryId);
+      if (repository === undefined) throw unknownTarget();
+      const names = below(repository.worktreeRoot, request.path) ?? invalidRequest("fileReplace path");
+      if (insideGit(repository, names)) throw new RunnerRefusal("INVALID_REQUEST", "fileReplace Git directory");
+      if (wslGits.has(repository.gitInstallationId) || ROOT_ORDER.some((name) => wslParts(repository[name]) !== null)) throw new RunnerRefusal("INVALID_REQUEST", "WSL working replace");
+      const reply = await walk(signal, () => inject.workingReply?.(request) ?? replaceWorking(repository, names, request), "fileReplace");
+      // A stop or a deadline before the write writes nothing.
+      return "stop" in reply ? { result: "stopped" } : reply;
+    },
+
+    async tempRemove(request, signal): Promise<TempRemoveReply | WalkStop> {
+      checkSyncRequest("tempRemove", request);
+      frames.push({ type: "tempRemove", ...structuredClone(request) });
+      if (inactive.has(request.operationId)) throw unknownTarget();
+      if (!revertMarked(request.operationId)) throw new RunnerRefusal("INVALID_REQUEST", "tempRemove action");
+      const repository = repositories.get(request.repositoryId);
+      if (repository === undefined) throw unknownTarget();
+      if (wslGits.has(repository.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL tempRemove");
+      return walk(signal, () => removeTemp(repository.worktreeRoot, request), "tempRemove");
     },
 
     // Feature 005 contract Δ6 `shadow`, as `src-tauri/src/process_requests.rs` `shadow` (:1558) and `src-tauri/src/shadow.rs` `create` make it: a new

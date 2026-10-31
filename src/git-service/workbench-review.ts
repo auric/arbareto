@@ -110,15 +110,17 @@ const IN_PROGRESS_ALLOWED: ReadonlySet<string> = new Set(["choose-side", "merget
 
 // Contract Δ7 "Mutation trust": `config-save` runs no repository program, so it needs no class. `mergetool` takes the class `mergetool`.
 // Every other action takes the class `workbench`.
-// Feature 005 contract Δ7: `delete` and `ignore-save` run no repository program either.
-const CLASSLESS: ReadonlySet<string> = new Set(["config-save", "delete", "ignore-save"]);
+// Feature 005 contract Δ7: `delete` and `ignore-save` run no repository program either. Feature 008 contract Δ7: neither do the revert actions.
+const REVERT_ACTIONS = ["revert-lines", "revert-files", "revert-unstaged"] as const;
+const CLASSLESS: ReadonlySet<string> = new Set(["config-save", "delete", "ignore-save", ...REVERT_ACTIONS]);
 const classOf = (action: string): "workbench" | "mergetool" | null => (CLASSLESS.has(action) ? null : action === "mergetool" ? "mergetool" : "workbench");
 // Plan.md O-20: the result of a trust refusal by the trust listing of this repository.
 const REPOSITORY_GATE = { trustGate: "repository" } as const;
 // Feature 005 contract Δ9 `STALE_REVIEW` reasons of each action.
-const STALE_REASONS: Readonly<Record<string, string>> = { delete: "files-changed", "ignore-save": "ignore-changed" };
-// The observation refusal of each feature 005 action that names a changed bound fact (contract Δ3 review refusals). Another refusal passes through.
-const FACT_REFUSALS: Readonly<Record<string, ErrorCode>> = { delete: "STALE_SELECTION", "ignore-save": "STALE_REVIEW" };
+// Feature 008 contract Δ9: `revert-changed`.
+const STALE_REASONS: Readonly<Record<string, string>> = { delete: "files-changed", "ignore-save": "ignore-changed", ...Object.fromEntries(REVERT_ACTIONS.map((a) => [a, "revert-changed"])) };
+// The observation refusal of each feature 005 and 008 action that names a changed bound fact (contract Δ3 review refusals). Another refusal passes through.
+const FACT_REFUSALS: Readonly<Record<string, ErrorCode>> = { delete: "STALE_SELECTION", "ignore-save": "STALE_REVIEW", ...Object.fromEntries(REVERT_ACTIONS.map((a) => [a, "STALE_SELECTION" as const])) };
 
 // ---- Shared reads ----
 

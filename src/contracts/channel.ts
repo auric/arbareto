@@ -220,9 +220,18 @@ export type ProcessContext = z.infer<typeof ProcessContext>;
 const ms = (cap: number) => z.int().min(1).max(cap);
 // Contract §6 "Channel frames" `limits`. The context and the policy pick the cap.
 export const BootstrapLimits = z.strictObject({ deadlineMs: ms(BOOTSTRAP_DEADLINE_CAP_MS) }).meta({ title: "BootstrapLimits" });
+// Feature 008 contract Δ3: the size rule replaces REGISTERED_DEADLINE_CAP_MS only for this array of a registered operation.
+// So the frame bound of `deadlineMs` is the safe integer range, and `registeredCap` keeps the cap for every other `run`.
+export const SIZE_RULE_ARGUMENTS: readonly string[] = ["--no-lazy-fetch", "checkout-index", "--temp", "--stdin", "-z"];
+export const isSizeRuleCall = (args: unknown): boolean => Array.isArray(args) && args.length === SIZE_RULE_ARGUMENTS.length && SIZE_RULE_ARGUMENTS.every((arg, i) => args[i] === arg);
 export const RegisteredLimits = z
-  .strictObject({ deadlineMs: ms(REGISTERED_DEADLINE_CAP_MS), stallMs: z.literal(STALL_NOTICE_MS).optional() })
+  .strictObject({ deadlineMs: ms(Number.MAX_SAFE_INTEGER), stallMs: z.literal(STALL_NOTICE_MS).optional() })
   .meta({ title: "DeadlineLimits" });
+// zod can run a refinement on a value whose fields failed.
+const registeredCap = (sizeRule: boolean) => (r: { arguments?: unknown; limits?: unknown }) => {
+  const deadline = typeof r.limits === "object" && r.limits !== null ? (r.limits as { deadlineMs?: unknown }).deadlineMs : undefined;
+  return typeof deadline !== "number" || deadline <= REGISTERED_DEADLINE_CAP_MS || (sizeRule && isSizeRuleCall(r.arguments));
+};
 export const NetworkLimits = z
   .strictObject({ inactivityMs: ms(SUBMODULE_UPDATE_INACTIVITY_MS), ceilingMs: ms(SUBMODULE_UPDATE_CEILING_MS), stallMs: z.literal(STALL_NOTICE_MS) })
   .meta({ title: "NetworkLimits" });
@@ -263,7 +272,7 @@ const Component = z
   .refine((name) => name.length <= FILE_FACT_COMPONENT_UNITS && name.isWellFormed() && NATIVE.isComponent(name));
 const FileFactEntry = z.strictObject({ root: z.enum(["worktreeRoot", "gitDirectory", "commonDirectory"]), path: z.array(Component).min(1) });
 // Feature 005 contract Δ6: `content` asks for the bytes of one ignore file. The shell refuses it outside WSL.
-// Feature 008 contract Δ6: `detail` adds the replace facts of a file. `stream` digests without the 1 MiB bound, only under a revert marker.
+// Feature 008 contract Δ6: `detail` adds the replace facts of a file. `stream` digests without the 1 MiB bound. A revert review asks for it without a marker.
 const fileFacts = {
   type: z.literal("fileFacts"),
   ...call,
@@ -479,16 +488,16 @@ const named = <T extends z.ZodType>(title: string, schema: T) => schema.meta({ i
 
 export const ProcessRequest = z.xor([
   z.union([
-    z.strictObject({ ...run, ...GIT_PROBE }).meta({ title: "RunGitProbe" }),
-    z.strictObject({ ...run, ...DISCOVERY }).meta({ title: "RunDiscovery" }),
-    // Feature 002 contract Δ6: only a registered run takes `script`.
-    z.strictObject({ ...run, ...REGISTERED, script: z.literal("matchingProbe").optional() }).meta({ title: "RunRegistered" }),
+    z.strictObject({ ...run, ...GIT_PROBE }).refine(registeredCap(false)).meta({ title: "RunGitProbe" }),
+    z.strictObject({ ...run, ...DISCOVERY }).refine(registeredCap(false)).meta({ title: "RunDiscovery" }),
+    // Feature 002 contract Δ6: only a registered run takes `script`. Feature 008 contract Δ3: only a registered run takes the size rule.
+    z.strictObject({ ...run, ...REGISTERED, script: z.literal("matchingProbe").optional() }).refine(registeredCap(true)).meta({ title: "RunRegistered" }),
     // Feature 003 contract Δ6: the shell admits only the fixed clone array with the bound destination as the last item.
-    z.strictObject({ ...run, ...CLONE }).meta({ title: "RunClone" }),
+    z.strictObject({ ...run, ...CLONE }).refine(registeredCap(false)).meta({ title: "RunClone" }),
     // Feature 004 contract Δ6: the shell admits only the fixed arrays of each context.
-    z.strictObject({ ...run, ...GLOBAL_CONFIG }).meta({ title: "RunGlobalConfig" }),
-    z.strictObject({ ...run, ...WORKTREE_ADD }).meta({ title: "RunWorktreeAdd" }),
-    z.strictObject({ ...run, ...IGNORE_PREVIEW }).meta({ title: "RunIgnorePreview" }),
+    z.strictObject({ ...run, ...GLOBAL_CONFIG }).refine(registeredCap(false)).meta({ title: "RunGlobalConfig" }),
+    z.strictObject({ ...run, ...WORKTREE_ADD }).refine(registeredCap(false)).meta({ title: "RunWorktreeAdd" }),
+    z.strictObject({ ...run, ...IGNORE_PREVIEW }).refine(registeredCap(false)).meta({ title: "RunIgnorePreview" }),
   ]).meta({ title: "RunGroup" }),
   named("Input", z.strictObject({ type: z.literal("input"), ...call, data: InlineInput })),
   named("Cancel", z.strictObject({ type: z.literal("cancel"), ...call })),

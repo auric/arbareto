@@ -51,6 +51,7 @@ import { readIgnoreFile } from "./ignore";
 import { createIgnorePreview } from "./ignore-preview";
 import { checkSubmodule, submoduleOutcome, type SubmoduleRefusal } from "./submodule-open";
 import "./file-delete";
+import "./revert";
 import "./switch";
 import "./branch-ops";
 import "./merge-rebase";

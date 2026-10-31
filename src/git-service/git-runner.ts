@@ -9,6 +9,7 @@ import {
   NetworkLimits,
   ProcessContext,
   ProcessRequest,
+  isSizeRuleCall,
   RegisteredLimits,
   RegisterGitCall,
   RegisterRepositoryCall,
@@ -20,6 +21,8 @@ import {
   WslDistrosCall,
   WslProbeCall,
   type FILE_FACT_ERRORS,
+  type REPLACE_ERRORS,
+  type REPLACE_REFUSALS,
   type FileFact,
   type FileIdentity,
   type IdentityReply,
@@ -40,6 +43,7 @@ import {
   COMMIT_PROCESS_DEADLINE_MS,
   GIT_PROCESS_DEADLINE_MS,
   IDENTITY_PATHS,
+  REGISTERED_DEADLINE_CAP_MS,
   STALL_NOTICE_MS,
   STREAMED_PROCESS_INPUT_BYTES,
   SUBMODULE_UPDATE_CEILING_MS,
@@ -178,6 +182,17 @@ export type FileDeleteReply = { entries: DeleteEntryReply[]; folders: DeleteFold
 // The 005 ignore form. Feature 008 contract Δ6 adds the target `working`, which this type leaves out.
 export type FileReplaceRequest = Omit<FrameOf<"fileReplace">, "target" | "bytes" | "facts" | "source" | "folders"> & { target: "gitignore" | "exclude"; bytes: string };
 export type FileReplaceReply = { result: "replaced" | "stale" | "stopped" | "interrupted" } | { result: "refused"; reason: "not-regular" } | { result: "error"; code: FileFactError };
+// Feature 008 contract Δ6: the `fileReplace` frame with the target `working`, and `tempRemove`. `replaced` names the created folders.
+export type WorkingReplaceRequest = Omit<FrameOf<"fileReplace">, "target" | "facts"> & { target: "working"; facts: NonNullable<FrameOf<"fileReplace">["facts"]> };
+export type ReplaceRefusal = (typeof REPLACE_REFUSALS)[number];
+export type ReplaceError = (typeof REPLACE_ERRORS)[number];
+export type WorkingReplaceReply = { result: "replaced"; folders?: string[] } | { result: "stale" | "stopped" | "interrupted" } | { result: "refused"; reason: ReplaceRefusal } | { result: "error"; code: ReplaceError };
+export type TempRemoveRequest = FrameOf<"tempRemove">;
+export type TempRemoveReply = { result: "removed" | "stale" | "absent" } | { result: "error"; code: ReplaceError };
+// Feature 008 contract Δ3 "checkout-index deadline": the walk or Git deadline plus 1 s for each started 64 MiB of the sizes involved.
+const SIZE_RULE_BYTES = 64 * 1024 * 1024;
+const SIZE_RULE_MS = 1000;
+export const sizeDeadlineMs = (bytes: number): number => GIT_PROCESS_DEADLINE_MS + Math.ceil(bytes / SIZE_RULE_BYTES) * SIZE_RULE_MS;
 export type ShadowRequest = FrameOf<"shadow">;
 export type ShadowReply = { shadowId: string } | { result: "error"; code: FileFactError };
 
@@ -216,6 +231,9 @@ export interface GitRunner {
   // Feature 005 contract Δ6. Every request gets one reply, also after `cancel`, so a call waits for it within the walk deadline. No reply by then gives `canceled`.
   fileDelete(request: FileDeleteRequest, signal: AbortSignal): Promise<FileDeleteReply | WalkStop>;
   fileReplace(request: FileReplaceRequest, signal: AbortSignal): Promise<FileReplaceReply | WalkStop>;
+  // Feature 008 contract Δ6, as `fileDelete`: one reply per request, also after `cancel`.
+  fileReplaceWorking(request: WorkingReplaceRequest, signal: AbortSignal): Promise<WorkingReplaceReply | WalkStop>;
+  tempRemove(request: TempRemoveRequest, signal: AbortSignal): Promise<TempRemoveReply | WalkStop>;
   shadow(request: ShadowRequest): Promise<ShadowReply>;
 }
 
@@ -438,6 +456,9 @@ export function checkCall(call: GitCall): void {
   // Contract §6 "Channel frames" `limits`. The WSL distro start cap waits for §11.
   const limits = NETWORK_POLICIES.has(policy) ? NetworkLimits : policy === "mergetool" ? CeilingLimits : bootstrap ? BootstrapLimits : RegisteredLimits;
   if (!fits(limits, call.limits)) refuse("limits");
+  // Feature 008 contract Δ3: only the `checkout-index --temp` array of a registered operation takes the size-rule deadline above the cap.
+  const deadline = (call.limits as { deadlineMs?: number }).deadlineMs;
+  if (limits === RegisteredLimits && deadline !== undefined && deadline > REGISTERED_DEADLINE_CAP_MS && !(kind === "registeredOperation" && isSizeRuleCall(args))) refuse("limits");
 }
 
 // Feature 002 contract Δ6: the checks of src-tauri/src/wsl.rs `matching_probe_command` and the `run` route of the shell.
@@ -543,7 +564,7 @@ export function checkTrust(request: TrustRequest): void {
 }
 
 // Feature 003 and feature 004 contract Δ6. The `type` literal selects the frame schema. A request that holds `type` or `callId` breaks the field set.
-export function checkSyncRequest(type: "pageant" | "destinationFacts" | "terminal" | "reveal" | "fileDelete" | "fileReplace" | "shadow", request: object): void {
+export function checkSyncRequest(type: "pageant" | "destinationFacts" | "terminal" | "reveal" | "fileDelete" | "fileReplace" | "tempRemove" | "shadow", request: object): void {
   const valid = typeof request === "object" && request !== null && !("type" in request) && !("callId" in request);
   if (!valid || !fits(ProcessRequest, { type, callId: crypto.randomUUID(), ...request })) refuse(type);
 }

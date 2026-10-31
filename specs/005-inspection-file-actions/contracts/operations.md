@@ -130,7 +130,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 ### `readSubmoduleWork` (2026-10-31)
 
 - Payload: `{snapshotId}`. The renderer sends it after each complete `readWorkspace` result, in History and in the Commit view. One read slot. A newer snapshot cancels the running read.
-- Targets: the gitlinks (mode 160000, stage 0) of `ls-files -z --stage` of that snapshot, in index order, at most 256 (`SUBMODULE_WORK_TARGETS`). The result field `limited` counts the later gitlinks in index order. The read gives them no entry. A snapshot whose index listing reached a §5 status bound gives `OUTPUT_LIMIT`, because it names no gitlink. At most 4 targets run at the same time (`SUBMODULE_WORK_PARALLEL`).
+- Targets: the gitlinks (mode 160000, stage 0) of `ls-files -z --stage` of that snapshot, in index order, at most 256 (`SUBMODULE_WORK_TARGETS`). The result field `limited` counts the later gitlinks in index order. The read gives them no entry. A snapshot whose index listing reached a §5 status bound gives `OUTPUT_LIMIT`, because it names no gitlink. At most 8 targets run at the same time (`SUBMODULE_WORK_PARALLEL`, orchestrator decision 2026-10-31 from the research.md R18 "Cost" measurement).
 - Per target, inside the submodule, in the form of `readSubmoduleChange`:
   1. Plan D11 checks 4 and 5. A failure gives the state `not-initialized`, and no later step runs. So each of the first 256 gitlinks has one entry, and only a gitlink past the bound has none.
   2. `config list --show-scope --show-origin -z`. The 001 §7 resolution rule applies, and every local and worktree entry counts as repository-controlled (001 §12 "Submodule programs"). A repository-controlled command-valued `core.fsmonitor`, `filter.<driver>.clean`, or `filter.<driver>.process` gives `unchecked` reason `programs`, and no status runs.
@@ -213,7 +213,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 | Submodule change commits (`SUBMODULE_CHANGE_COMMITS`) | 50 per side |
 | Submodule change `log` output (`SUBMODULE_CHANGE_OUTPUT_BYTES`) | 256 KiB per side |
 | Submodule work targets (`SUBMODULE_WORK_TARGETS`) | 256 per read, the 001 §5 submodule review bound |
-| Submodule work parallel runs (`SUBMODULE_WORK_PARALLEL`) | 4 |
+| Submodule work parallel runs (`SUBMODULE_WORK_PARALLEL`) | 8 |
 | Workbench review token lifetime | 60 s (004) |
 
 ## Δ6 Private native process requests (001 §6)

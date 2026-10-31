@@ -442,7 +442,7 @@ describe("readSubmoduleWork (contract Δ3, plan.md D19)", () => {
     TIMEOUT_MS,
   );
 
-  caseTest("T107", "(4) 257 initialized submodules give 256 states and one limit, with at most 4 status processes at the same time", SHELL, () =>
+  caseTest("T107", "(4) 257 initialized submodules give 256 states and one limit, with more than 4 and at most 8 status processes at the same time", SHELL, () =>
     withService({ name: "t107-limit" }, async (service) => {
       const w = world("limit");
       const index: string[] = [];
@@ -462,7 +462,7 @@ describe("readSubmoduleWork (contract Δ3, plan.md D19)", () => {
       let peak = 0;
       for (const run of runs) peak = Math.max(peak, runs.filter((o) => o.at <= run.at && o.at + (o.durationMs ?? 0) > run.at).length);
       expect(peak).toBeLessThanOrEqual(SUBMODULE_WORK_PARALLEL);
-      expect(peak).toBeGreaterThan(1);
+      expect(peak).toBeGreaterThan(4);
     }),
     TIMEOUT_MS,
   );

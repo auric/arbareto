@@ -125,6 +125,7 @@
     "tests/contracts/static-frame.test.ts",
     "tests/contracts/status-area.test.tsx",
     "tests/contracts/strict-json.test.ts",
+    "tests/contracts/submodule-preview.test.tsx",
     "tests/contracts/submodule-remote.test.ts",
     "tests/contracts/submodule-ui.test.tsx",
     "tests/contracts/submodules.test.ts",

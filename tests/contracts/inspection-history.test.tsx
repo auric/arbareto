@@ -71,8 +71,6 @@ afterAll(() => restoreLayout());
 const b64 = (s: string) => Buffer.from(s, "utf8").toString("base64");
 const P1 = "1".repeat(40);
 const P2 = "2".repeat(40);
-const SUB_OLD = "a".repeat(40);
-const SUB_NEW = "b".repeat(40);
 type Call = { operation: string; target: unknown; payload: Record<string, unknown>; operationId: string; resolve(response: BridgeResponse): void; onProgress?: OnProgress };
 
 function inspectionDouble() {
@@ -494,9 +492,6 @@ describe("texts of plan.md D3 (spec FR-009 to FR-012)", () => {
     const cases: [FileSpec, Record<string, unknown>, string][] = [
       [{ status: "renamed", path: "src/new.ts", old: "src/old.ts", score: 92 }, { facts: { rename: { oldPath: b64("src/old.ts"), score: 92 } } }, "Renamed from src/old.ts (92% similar)."],
       [{ path: "build.sh" }, { facts: { mode: { old: "100644", new: "100755" } } }, "Mode 100644 → 100755."],
-      [{ path: "core", kind: "submodule" }, { facts: { submodule: { old: SUB_OLD, new: SUB_NEW } }, patch: null }, `Submodule commit ${SUB_OLD.slice(0, 12)} → ${SUB_NEW.slice(0, 12)}.`],
-      [{ status: "added", path: "core", kind: "submodule" }, { facts: { submodule: { old: null, new: SUB_NEW } }, patch: null }, `Submodule commit added: ${SUB_NEW.slice(0, 12)}.`],
-      [{ status: "deleted", path: "core", kind: "submodule" }, { facts: { submodule: { old: SUB_OLD, new: null } }, patch: null }, `Submodule commit removed: ${SUB_OLD.slice(0, 12)}.`],
       [{ path: "logo.png" }, { binary: true, patch: null }, "Binary file. Arbareto does not show its changes."],
       [{ status: "type-changed", path: "t" }, { facts: { typeChange: { old: "file", new: "link" } }, patch: null }, "Type changed from file to symbolic link."],
     ];

@@ -588,3 +588,50 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 The independent plan review of 2026-10-21 found no Critical issue and three High issues in the Delete design. First, the `PreDeleteItem` check compares the held handle with itself and must compare the identity of `psiItem` instead. Second, the WSL `delete` and `replace` modes act by full path and must hold each folder through `chdir` with a device and inode check. Third, the held folder handles block the deepest-first folder removal. The review also found that a folder on the path can become a junction after it is emptied, so the FR-031 limit must name that case too. In the ignore preview, the `--no-index` self-check cannot agree with the shadow for a skip-worktree `.gitignore`. The fix is a typed limit or a self-check against the index-aware listings. The 2 MiB request bound needs base64 text, and the single-file patch read must keep only sections whose paths match exactly. The rest of the method is exact for the report cases, and it runs no repository program before trust approval. The blame and History diff commands are correct apart from two small fixes: `--inter-hunk-context=0` for the line map, and `config --type=path` for the ignore list.
 
 This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL folder walk with `chdir` and `stat(".")` (D7, D10, Δ11); the folder removal through the held `DELETE` handles with the `a/b/c` cargo test (D7); the junction case in FR-031 and in the contract gaps; the self-check against the index-aware listings RI and RT, which keeps the skip-worktree blob step (D9, F11, F19); the base64 editor text and the 2 MiB bound (D1, O-6, Δ5); the exact section filter of `readCommitFile` (D3, Q4); the `long-path` refusal of plain Delete (D6, N10); N3b and N11; `-c core.longpaths=true` for the shadow, without the `long-path` preview limit (D9, F15); `config get --all --type=path` and `--inter-hunk-context=0` (D12); the exact shadow folder; the R path order; `sharing-violation`; the `name-case` open by the volume case rule (D9); the `fileReplace` rename window in the contract gaps; Save during an unfinished operation and with conflicts (spec FR-046, D10, Δ3); the decided open items O-1 to O-8. It added O-9 for the `blame.ignoreRevsFile` reset rule and corrected F10: a nested repository expands to the one record `x/`. The 004 contract already holds `ignore-not-regular` and `ignore-size` (004 contracts/operations.md:271), so Δ9 keeps them and drops only `not-regular`.
+
+## R18 Submodule change preview and local-edit marks (user decisions of 2026-10-30 and 2026-10-31)
+
+**Sources**: the approved mockup boards "Commit view: submodule selected" and "History: submodule change" (local scratch, sample data, approved 2026-10-31); the investigator report of 2026-10-30 (local scratch); the Git documentation; repository code at main f3ebb833, read through CodeGraph.
+
+**User decisions**
+
+- 2026-10-30: a selected submodule row shows what the change holds, not the limitation text. This applies in the Commit view and in History (spec FR-069 to FR-074).
+- 2026-10-31: a submodule with local edits and an unchanged commit also shows in Changes, with the mark "modified content" (spec FR-075). This changes 001 FR-007.
+- 2026-10-31: both designs ship in v0.1.0. The mockup texts are approved, also the ones that the boards marked as proposed.
+
+**Code today (main f3ebb833)**
+
+- The diff area shows `LIMITATION_TEXT.submodule` "This entry is a submodule or a nested repository." (`src/frontend/changes/limitation-text.ts:17`).
+- History shows "Submodule commit <old> → <new>." for a gitlink row (`src/frontend/history/CommitChanges.tsx`, investigator report).
+- `statusArgs` passes `--ignore-submodules=dirty` (`src/git-service/commands.ts:75-78`). The parser accepts `<sub>` as `N...` or `S[C.][M.][U.]` (`src/git-service/status-parser.ts:161`). With `dirty`, `<m>` and `<u>` are always `.`.
+
+**Git facts (doc)**
+
+- git-status(1) "Changed Tracked Entries": `<sub>` is `S<c><m><u>` for a submodule. `<c>` is `C` when the commit changed, `<m>` is `M` when it has tracked changes, and `<u>` is `U` when it has untracked changes.
+- git-status(1) `--ignore-submodules=<when>`: `none` reports a submodule as modified for untracked content, modified content, or a moved HEAD. `dirty` ignores all changes to the work tree of submodules and reports only commit changes.
+- git-cat-file(1) `-e`: exit zero when the object exists and is valid. Otherwise the exit is non-zero. `<oid>^{commit}` (gitrevisions(7)) also requires a commit.
+- git-rev-list(1) `--count` with `--left-right`: Git prints the left and the right count, separated by a tab. For `<old>...<new>`, left counts the commits only in `<old>` (removed) and right the commits only in `<new>` (new).
+- git-log(1) `-z`: NUL separates the commits. `--format=%H%x00%s` gives the full ID, NUL, and the subject. `--max-count=50` bounds the list. `--no-show-signature` overrides `log.showSignature`, so no signature program runs.
+
+**Safety facts (001 research R5, probe of 2026-09-29)**
+
+- Without `--ignore-submodules=dirty`, `status --porcelain=v2` started `git status --porcelain=2` inside each submodule. That child ran the submodule's own `core.fsmonitor` and clean filter. The parent trust listing cannot see submodule configuration (001 `contracts/operations.md` §7, "Status and diff reads pass `--ignore-submodules=dirty`").
+- So the parent status keeps `--ignore-submodules=dirty`. The local-edit marks come from a separate read per submodule, behind a check of that submodule's own configuration (contract `readSubmoduleWork`). This is the "documented equivalent" of `none`: the same `<m>` and `<u>` meaning, from the submodule's own status, with a gate the parent cannot give.
+- `rev-parse --verify -q HEAD`, `cat-file -e`, `rev-list --count`, and `log` without a pathspec load no index and run no filter (source reasoning, R13 pattern). T106 verifies each with a `core.fsmonitor` and a clean filter canary in the submodule.
+
+**Rejected**
+
+- Parse `diff --submodule=log` output. Its lines are English text ("Submodule <path> <a>..<b>:", "(new commits)"), not a machine format.
+- Pass `--ignore-submodules=none` to the parent status. Git then runs submodule programs that no gate covers (above).
+- Pass `-c core.fsmonitor=false` to the parent status. Command-scope entries reach the submodule children, but a clean filter driver name comes from submodule attributes. No fixed `-c` list covers every driver.
+
+**Cost**
+
+- The marks cost one `config list` and one `status` per initialized submodule and refresh. The 001 T192 record gives a `config list` median wall of 48 ms to 62 ms on Windows. The status of a clean submodule depends on its size. The read runs after `readWorkspace` and does not delay the list (plan D19).
+- Bound: at most 256 submodules per read (`SUBMODULE_WORK_TARGETS`, equal to the 001 §5 submodule review bound) and 4 at the same time. Each status ends once it shows one tracked record and one untracked record. T108 measures the cost on a fixture with 100 initialized submodules. SC-012 holds the proposed budget (user decision pending).
+
+**Git Extensions (GPL-3.0, ideas only; investigator report of 2026-10-30)**
+
+- Git Extensions shows a selected submodule in the commit dialog and in the revision diff as a summary: the commit range, the commit counts, the commit subjects, and a dirty state of the submodule work tree.
+- Its file list marks a submodule with local edits, also when the commit is unchanged.
+- Arbareto takes the summary and the mark. It reads the facts from machine-readable output only.

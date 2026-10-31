@@ -376,6 +376,17 @@ description: "Task list for the History Inspection and Commit View File Actions 
 
 - [ ] T113 [US1] Rebuild a cached 005 fixture when its refs changed in `tests/git/history-diff-fixtures.ts`. Cause: the SC-002 case "the 100,001-file commit gives exactly …" in `tests/git/commit-changes.test.ts` got `rejected` with `UNKNOWN_TARGET`. A Windows temp clean-up removed the refs, the reflogs, `hooks`, and `info/exclude` of the cached `f005-wide-100001` repository, but kept its objects. `cached()` reused an entry when the builder digest matched and the `repo` folder existed, and never read the refs. Fix: at build time, the manifest records the exact `for-each-ref --format=%(objectname) %(refname)` output. A build with no refs or a failed read stops with an error. On reuse, `cached()` reads the refs again and rebuilds on a different output or a nonzero Git exit. The builder digest changes, so the first run rebuilds both `f005-*` entries. Tests: `tests/git/commit-changes.test.ts` alone goes green after the rebuild, then every other test file that calls `wideLarge` or `blameLarge` runs once. Control mutation: skip the ref comparison and remove the refs of a private cache copy; the SC-002 case must fail with `UNKNOWN_TARGET`. Spec: SC-002.
 
+### Submodule change preview (user decisions of 2026-10-30 and 2026-10-31, WP9)
+
+**Agent**: implementer for T106 to T108, frontend-implementer (loads arbareto-ux, vercel-react-best-practices, web-design-guidelines) for T109 and T110, implementer writes and scout runs T111. Tests first, with the red output kept. v0.1.0 blocker. Source: plan.md D19, research.md R18, the approved boards "Commit view: submodule selected" and "History: submodule change" (local scratch).
+
+- [ ] T106 [US10] Add `readSubmoduleChange` to the contracts and the service (plan.md D19, contract Δ3, data-model §15). v0.1.0 blocker. Tests first: failing cases in a new `tests/git/submodule-change.test.ts` with real temporary repositories. (1) New commits, removed commits, both, and 51 new commits: counts and lists equal Git's own `rev-list --left-right --count` and `log` inside the submodule; the 51 case lists 50 and keeps the exact count. (2) An unstaged row takes `hI` and the submodule HEAD; a staged row takes `hH` and `hI`; a History row takes the raw record IDs. (3) A new commit absent from the submodule gives `missing`, and no fetch runs (a promisor remote counts no request). (4) An uninitialized submodule gives `not-initialized`. A gitlink without a `.gitmodules` entry gives `nested` with the commit facts. An added gitlink gives `single`. (5) Canaries: a command-valued `core.fsmonitor`, a clean filter, and `log.showSignature=true` with an owned `gpg.program` in the submodule configuration; no canary runs. (6) Subject bytes that are not UTF-8 give the lossless display text. (7) `log` output above 256 KiB gives `limited`. Then the Zod schemas, `src/contracts/schemas/`, golden vectors, the command builders in `src/git-service/commands.ts`, and the new `src/git-service/submodule-change.ts`. Add the file to `tests/groups.json`. Control: count the left side as new commits; case (1) must fail. Spec: FR-069 to FR-073, FR-076, SC-012.
+- [ ] T107 [US10] Add `readSubmoduleWork` to the contracts and the service (plan.md D19, contract Δ3, data-model §16). v0.1.0 blocker. Tests first: failing cases in `tests/git/submodule-change.test.ts`. (1) A submodule with an edited tracked file, one with an untracked file, one with both, and a clean one: each state equals the `<m>` and `<u>` fields of Git's own `status --porcelain=v2 --ignore-submodules=none` in the parent on a copy. (2) A submodule with an unchanged commit and local edits is in `extraRows`; one with a changed commit is not. (3) A command-valued `core.fsmonitor` and a clean filter in the submodule local configuration give `programs`, and their canaries do not run. The same keys from global scope with a program outside the roots run as protected programs. (4) 257 initialized submodules give 256 states and one `limit`. At most 4 status processes run at the same time (runner double count). (5) The process ends after the first tracked and the first untracked record (a submodule with 10,000 untracked files reads fewer than 64 KiB). (6) The parent `statusArgs` still holds `--ignore-submodules=dirty`. Control: drop step 2; case (3) must fail. Spec: FR-074, FR-075, FR-076, SC-012.
+- [ ] T108 [US10] Measure the local-edit marks in `tests/windows/inspection-perf.test.ts` (plan.md D19, O-11). `Local: package`. v0.1.0 blocker. A fixture with 100 initialized clean submodules and one with 256: the time from the shown Changes list to the shown marks, warm package, median of 10, and the same on the WSL distro Ubuntu-26.04 in `tests/wsl/inspection-wsl.test.ts`. Record the times in research.md R17 and R18 "Cost". Report the result to the user for the SC-012 bound. Control: set the bound to 1 ms; the case must fail. Spec: SC-012. Depends on T107.
+- [ ] T109 [US10] Show the submodule preview in the Commit view (frontend-implementer). v0.1.0 blocker. Tests first: failing cases in a new `tests/contracts/submodule-preview.test.tsx`. (1) A selected unstaged or staged submodule row shows the D19 layout and texts: the heading, "Submodule" or "Nested repository", Open submodule, "Commit", "Change", "Working tree", and the commit lists with "and <n> more". (2) `missing`, `not-initialized`, `nested`, `single`, the reasons `programs` and `limit`, the pending text, and a failure each show their D19 text. The limitation text "This entry is a submodule or a nested repository." never shows for a submodule row. (3) Changes lists the `extraRows` with the letter "M", the marks "modified content" and "untracked content", the tooltip "The submodule has local edits. Its commit is unchanged.", and the D19 accessible name. The counts add the rows. Stage all changes, Stage folder, and Stage selected leave them out, and the stage button gives the D19 reason. (4) A new selection cancels the running preview read. A new snapshot sends a new `readSubmoduleWork`. (5) Keyboard: Open submodule is the one Tab stop of the preview, F6 reaches it, and it runs the FR-047 open. Add the new test file to `tests/groups.json`. Edit `src/frontend/changes/ChangesPane.tsx`, `src/frontend/changes/limitation-text.ts`, new `src/frontend/changes/SubmodulePreview.tsx`, `src/frontend/bridge.ts`, and `src/frontend/state/workbench.ts`. Compare a screenshot with the Main board. Control: show the limitation text again; case (2) must fail. Spec: FR-069 to FR-075, FR-067. Depends on T106 and T107.
+- [ ] T110 [US10] Show the submodule preview in History (frontend-implementer). v0.1.0 blocker. Tests first: failing cases in `tests/contracts/submodule-preview.test.tsx`. A submodule row of Changed files shows the preview without the "Working tree" row. The text "Submodule commit <old> → <new>." goes. A merge commit with another parent sends the new `parent`. Edit `src/frontend/history/CommitChanges.tsx`. Compare a screenshot with the History-submodule board. Control: show the "Working tree" row in History; the case must fail. Spec: FR-069 to FR-073, FR-010. Depends on T109.
+- [ ] T111 [US10] Add the packaged and WSL cases of the preview (P9). `Local: package`. `Local: WSL`. v0.1.0 blocker. In `tests/windows/inspection-packaged.test.ts`: select a submodule row in Changes and in History by keyboard only, and check the shown texts, the accessible names through UIA, visible focus, and a contrast of at least 4.5:1 in Dark, Light, and forced colors. The preview shows within 300 ms (SC-012). In `tests/wsl/inspection-wsl.test.ts`: the preview and the marks run through the distro's Git, with no `\\wsl.localhost` read. Spec: FR-067, FR-076, SC-010, SC-012. Depends on T110.
+
 ### Batch 4 verification
 
 - [ ] T063 Run the batch 4 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, then `bun run build:service` and `bun run test:windows`. `Local: Rust`. `Local: WSL`. `Local: package`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every record into research.md R17. Control mutation: in `tests/windows/inspection-perf.test.ts`, lower the 500 ms bound to 1 ms. The test must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 4 is recorded in research.md. Spec: SC-001 to SC-011. Depends on T059 to T062, T078 to T086, T093 to T097, T101, and T103.
@@ -400,6 +411,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - Budget decisions (T103): after T101. Then T063 runs again. T104: after the v0.1.0 release.
 - Read and preview speed (T112): after T103. Then T063 runs again.
 - Fixture cache ref check (T113): no dependency. Then T063 runs again.
+- Submodule change preview (T106–T111, WP9): v0.1.0 blocker. T106 beside T107, then T108, T109, T110, and T111 in order. Then T063 runs again.
 - Renderer performance fixes (T090, T091, T102): after T083. They need a new package before the packaged Q6 and Q32 reruns. Then T063 runs again.
 
 ### Changes to earlier requirements and their tasks
@@ -415,6 +427,9 @@ description: "Task list for the History Inspection and Commit View File Actions 
 | 004 FR-006 and 001 contract §11: one ignore file crosses out of WSL | T015, T040, T059 |
 | 004 plan.md:483: Show in Explorer for a folder | T036, T038, T048, T052 |
 | 003 FR-020 and the 004 sidebar text: ", not present" goes | T008, T011 |
+| 001 FR-007: a submodule with only local edits shows in Changes | T107, T109 |
+| 001 FR-011 and plan "Limitation text": the preview replaces the submodule limitation text | T109, T110 |
+| 001 contract §7: two reads start Git inside a submodule | T106, T107 |
 
 ### Parallel opportunities
 
@@ -439,7 +454,7 @@ Then:          T027
 | Requirement | Tasks |
 | --- | --- |
 | FR-001 to FR-004 (common) | T002, T004, T013, T018, T021, T022, T030, T034, T035, T036, T061, T062 |
-| FR-005 to FR-014 (US1) | T016 to T019, T021, T023, T025, T043, T045, T051, T061, T068, T070, T077, T083, T105 |
+| FR-005 to FR-014 (US1) | T016 to T019, T021, T023, T025, T043, T045, T051, T061, T068, T070, T077, T083, T105, T110 (FR-010) |
 | FR-015 to FR-017 (US3) | T001, T003, T007, T010, T032, T034, T043, T048, T090 |
 | FR-018 to FR-019 (US4) | T012, T013, T015, T036, T038, T048, T052, T060, T092, T099 |
 | FR-020 to FR-033 (US2) | T012 to T014, T028 to T030, T032, T039, T048, T053, T059, T060, T073, T076, T078, T082 |
@@ -449,6 +464,7 @@ Then:          T027
 | FR-064 to FR-066 (US8, US9) | T006, T008, T009, T011, T018, T069, T075, T080 |
 | FR-067 | T008, T043, T044, T048 to T051, T056, T060, T072, T073, T079, T080 |
 | FR-068 | T043, T044, T049, T090 |
+| FR-069 to FR-076 (US10) | T106, T107, T108, T109, T110, T111 |
 | SC-001 | T021, T061, T084, T101 |
 | SC-002 | T021, T061, T083, T090, T103, T104, T113 |
 | SC-003 | T012, T032, T059, T060, T078, T085 |
@@ -460,6 +476,7 @@ Then:          T027
 | SC-009 | T061, T084, T091, T092, T102, T103 |
 | SC-010 | T051, T058, T060 |
 | SC-011 | T005, T027, T047, T058, T062 |
+| SC-012 | T106, T107, T108, T111 |
 
 ## Implementation Strategy
 

@@ -362,3 +362,46 @@ describe("commit flow", () => {
     expect(t.ended).toHaveLength(1);
   });
 });
+
+// Feature 004 tasks.md T133. Spec FR-105, FR-085. Plan D15 "Conflict guidance", quiet rule.
+describe("quiet rule during a merge or a rebase", () => {
+  const visible = (host: Element) => {
+    const copy = host.cloneNode(true) as Element;
+    for (const e of copy.querySelectorAll("[hidden], .sr-only")) e.remove();
+    return copy.textContent ?? "";
+  };
+  const focusTip = async (element: HTMLElement) => {
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", code: "Tab", bubbles: true }));
+      element.focus();
+    });
+    await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 30))));
+    return document.querySelector('[data-slot="tooltip-content"]')?.textContent ?? null;
+  };
+
+  for (const operationState of ["merging", "rebasing"] as const) {
+    test(`${operationState}: Commit keeps focus, describes the operation reason by hidden text, shows it as its tooltip, and the tray shows no reason line`, async () => {
+      const t = await mount({ blocked: "operation", operationState });
+      await t.type("Message");
+      expect(t.commit.getAttribute("aria-disabled")).toBe("true");
+      expect(t.commit.hasAttribute("disabled")).toBe(false);
+      const line = document.getElementById(t.commit.getAttribute("aria-describedby")!)!;
+      expect(line.textContent).toBe(BLOCKED_TEXT.operation);
+      expect(line.closest("[hidden]")).not.toBeNull();
+      expect(visible(t.host)).not.toContain(BLOCKED_TEXT.operation);
+      expect(await focusTip(t.commit)).toBe(BLOCKED_TEXT.operation);
+      expect(document.activeElement === t.commit).toBe(true);
+      await act(async () => t.commit.click());
+      expect(t.calls).toEqual([]);
+    });
+  }
+
+  test("other reasons, such as the trust text and the incomplete status read, keep their visible lines", async () => {
+    const trust = await mount({ trustReason: "Commit needs trust." });
+    await trust.type("Message");
+    expect(visible(trust.host)).toContain("Commit needs trust.");
+    const incomplete = await mount({ status: "incomplete" });
+    await incomplete.type("Message");
+    expect(visible(incomplete.host)).toContain(BLOCKED_TEXT.incomplete);
+  });
+});

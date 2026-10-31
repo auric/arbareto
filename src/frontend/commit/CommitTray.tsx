@@ -75,7 +75,6 @@ export type CommitTrayProps = {
 // Feature 004 plan.md D15 "Commit view texts".
 export const AMEND_LABEL = "Amend last commit";
 const AMEND_UNBORN = "The branch has no commits yet.";
-const AMEND_OPERATION = "A merge or a rebase is in progress.";
 export const amendStatement = (oid: string) => `Commit replaces commit ${shortId(oid)}.`;
 // Contract Δ3 `reviewCommit` with `amend` (src/contracts/envelope.ts `ReviewCommitResult`). The renderer bundle holds no zod, so this check reads the fields that the tray uses.
 type CommitReview = Extract<ReviewCommitResult, { disclosure: unknown }>;
@@ -105,10 +104,10 @@ export const rewriteText = (a: AmendReview) =>
   a.rewritesUpstream === true
     ? `Amend rewrites commit ${shortId(a.headOid)}, which ${upstreamName(a.upstream)} already has. The next push needs Force push with lease.`
     : `Arbareto cannot check whether ${upstreamName(a.upstream)} holds this commit. Amend rewrites it if it was pushed.`;
-/** FR-098: the box is unavailable for an unborn branch and while a merge or a rebase is in progress. */
+/** FR-098: the box is unavailable for an unborn branch and while a merge or a rebase is in progress. The second reason is quiet (FR-105). */
 export function amendReason(head: Head | null, operationState: WorkspaceSnapshot["operationState"] | undefined): string | null {
   if (head?.state === "unborn") return AMEND_UNBORN;
-  return operationState === "merging" || operationState === "rebasing" ? AMEND_OPERATION : null;
+  return operationState === "merging" || operationState === "rebasing" ? BLOCKED_TEXT.operation : null;
 }
 
 
@@ -121,6 +120,8 @@ export function summaryLine(head: Head, staged: number): string {
 const messageOf = (props: CommitTrayProps) => props.amend?.value?.text ?? (props.worktreeKey === null ? null : props.drafts.draft(props.worktreeKey)?.text) ?? "";
 /** Feature 004 plan.md D15: a mutation runs. Its reason goes only into the tooltip and the accessible description. */
 const runningBlock = (blocked: Blocked | undefined) => blocked === "running" || blocked === "busy";
+/** Feature 004 spec FR-105: a merge or a rebase in progress follows the same rule. */
+const quietBlock = (blocked: Blocked | undefined) => runningBlock(blocked) || blocked === "operation";
 /** A text of the amend column. It adds no content width, so the button row sets the column width and the text wraps to it. */
 const COLUMN_TEXT = { contain: "inline-size" } as const;
 const noSubscribe = () => () => {};
@@ -300,7 +301,7 @@ export function CommitTray(props: CommitTrayProps) {
   // The Commit reason also blocks Commit and push. Its line then serves both buttons.
   const pushSharesReason = shownReason !== null;
   // Plan.md D15: a reason because an operation runs shows only in the tooltip and the accessible description.
-  const hideReason = runningBlock(props.blocked);
+  const hideReason = quietBlock(props.blocked);
   // Plan.md D15 "Trust texts": the Commit trust reason shows beside Commit, after the shield icon.
   const trustShown = shownReason !== null && blockReason(props.blocked) === null && props.trustReason != null;
   const commitButton = (
@@ -374,7 +375,7 @@ export function CommitTray(props: CommitTrayProps) {
       {/* The amend column spans the editor row and the lines below it, so the lines never run under it. */}
       <div className="flex flex-col items-start gap-1" style={{ gridColumn: "2", gridRow: "2 / span 2" }}>
         {props.amend === undefined ? null : (
-          <AmendBox checked={amending !== null} reason={amendBlock} onChange={(checked) => void toggleAmend(checked)} />
+          <AmendBox checked={amending !== null} reason={amendBlock} quiet={head?.state !== "unborn" && (props.operationState === "merging" || props.operationState === "rebasing")} onChange={(checked) => void toggleAmend(checked)} />
         )}
         {amending === null ? null : <p data-slot="amend-statement" className="self-stretch" style={COLUMN_TEXT}>{amendStatement(amending.headOid)}</p>}
         {trustShown ? (
@@ -440,25 +441,27 @@ export function CommitTray(props: CommitTrayProps) {
 }
 
 /** FR-098: the check box beside the message editor. An unavailable box states its reason. */
-function AmendBox({ checked, reason, onChange }: { checked: boolean; reason: string | null; onChange(checked: boolean): void }) {
+function AmendBox({ checked, reason, quiet, onChange }: { checked: boolean; reason: string | null; quiet: boolean; onChange(checked: boolean): void }) {
   const reasonId = useId();
   return (
     <div className="flex flex-col gap-1 self-stretch">
       <label className="flex items-center gap-2">
-        <input
-          type="checkbox"
-          checked={checked}
-          aria-disabled={reason !== null && !checked}
-          aria-describedby={reason === null ? undefined : reasonId}
-          onChange={(event) => {
-            if (reason !== null && event.target.checked) return;
-            onChange(event.target.checked);
-          }}
-        />
+        <RunningTooltip reason={quiet ? reason : null}>
+          <input
+            type="checkbox"
+            checked={checked}
+            aria-disabled={reason !== null && !checked}
+            aria-describedby={reason === null ? undefined : reasonId}
+            onChange={(event) => {
+              if (reason !== null && event.target.checked) return;
+              onChange(event.target.checked);
+            }}
+          />
+        </RunningTooltip>
         {AMEND_LABEL}
       </label>
       {reason === null ? null : (
-        <p id={reasonId} className="text-muted-text" style={COLUMN_TEXT}>
+        <p id={reasonId} hidden={quiet} className="text-muted-text" style={COLUMN_TEXT}>
           {reason}
         </p>
       )}

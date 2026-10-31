@@ -158,3 +158,25 @@ Each section names its source. Field names are contract names. "001 data-model �
 - Commit view: the delete review (§4) while its confirmation shows; `ignoreEditor`: `{target, loaded (§6), text, selection, preview (§7) or null, previewState: "idle" | "updating" | "unavailable", stale: boolean}`.
 - Window: the parent chain (§9).
 - A new snapshot keeps the selected file when its path still exists, and drops it otherwise. The Commit view marks and their Shift anchor follow the 004 data-model §14 rule: they stay by list, category, and path bytes. A new snapshot rebuilds the ignore preview base at the next preview.
+
+## 15. Submodule change (`readSubmoduleChange` result, 2026-10-31)
+
+- Source: `{kind: "workspace", snapshotId, entryId}` for a Changes or Staged row, or `{kind: "commit", viewId, oid, parent, record}` for a History row. `record` is the index of the raw record in the retained §1 listing.
+- `path`: literal path bytes and the display path. `kind`: `submodule` or `nested` (plan D19 "Kind").
+- `old` and `new`: full object IDs or null. Null marks an added or a deleted gitlink.
+- `state`:
+  - `commits`: `added` and `removed` counts (exact, from `rev-list --left-right --count`), and `addedCommits` and `removedCommits`, each at most 50 `{oid, subject}` in Git's log order. `subject` is the lossless display text of the subject bytes (001 data-model "Display text").
+  - `missing`: `which` is `old`, `new`, or `both`. No counts.
+  - `not-initialized`: no counts and no IDs beyond `old` and `new`.
+  - `single`: an added or a deleted gitlink. No counts.
+- `limited`: true when the `log` output reached its bound. The counts stay exact.
+- Lifetime: none retained. A new selection cancels the read.
+
+## 16. Submodule work state (`readSubmoduleWork` result, 2026-10-31)
+
+- Binding: `snapshotId` of the `readWorkspace` result that it extends. A newer snapshot drops it.
+- `entries`: one per initialized gitlink of the index, in index order, at most 256. Each holds the literal path bytes, the display path, and one state:
+  - `checked`: `modified` (a `1`, `2`, or `u` record in the submodule status) and `untracked` (a `?` record).
+  - `unchecked`: `reason` is `programs`, `limit`, or `failed` with the error code.
+- `extraRows`: the entries with `checked`, `modified` or `untracked` true, and no record in the parent status. The renderer lists them in Changes (spec FR-075).
+- Counts: the Changes count, the folder counts, and the History Working directory count add the `extraRows` count once the result arrives.

@@ -60,7 +60,7 @@ function childrenOf(folder: Folder): Map<string, Folder | ChangeEntry> {
   return (folder.children = children);
 }
 
-type Lists = { tracked: Folder; untracked: Folder; staged: Folder };
+type Lists = { conflicted: Folder; tracked: Folder; untracked: Folder; staged: Folder };
 // Feature 005 plan.md D4 "Cost": one key per entry and one sort per status read, so the cache holds each read's entries array.
 // Each read decodes each path once. The lists keep the decoded paths and the built folder levels (spec SC-009).
 const ordered = new WeakMap<readonly ChangeEntry[], Lists>();
@@ -74,9 +74,9 @@ function inTreeOrder(entries: readonly ChangeEntry[]): Lists {
     const nested = raw.at(-1) === 0x2f;
     return { entry, bytes, key: treeKey(nested ? raw.subarray(0, -1) : raw, nested || entry.submodule?.startsWith("S") === true) };
   });
-  lists = { tracked: folderOf("", 0), untracked: folderOf("", 0), staged: folderOf("", 0) };
+  lists = { conflicted: folderOf("", 0), tracked: folderOf("", 0), untracked: folderOf("", 0), staged: folderOf("", 0) };
   for (const { entry, bytes } of keyed.sort((a, b) => compareKeys(a.key, b.key))) {
-    const list = entry.category === "staged" ? lists.staged : entry.category === "untracked" ? lists.untracked : lists.tracked;
+    const list = entry.category === "staged" ? lists.staged : entry.category === "untracked" ? lists.untracked : entry.category === "conflicted" ? lists.conflicted : lists.tracked;
     list.entries.push(entry);
     list.bytes.push(bytes);
   }
@@ -135,7 +135,7 @@ function listRows(list: Folder, layout: Layout, scope: string, depth: number, to
 }
 
 /**
- * The rows of the Changes list: the tracked changes first, then the Untracked section row with its count.
+ * The rows of the Changes list: the tracked changes first, then the Untracked section row with its count. Conflicted entries go to `conflictedRows`.
  * The untracked rows build only while the section is open (plan.md D15 "Virtual tree"). `keep` filters only these shown rows (spec FR-101).
  */
 export function changesRows(entries: readonly ChangeEntry[], layout: Layout, toggled: ReadonlySet<string>, untrackedOpen: boolean, keep?: Keep): TreeRow[] {
@@ -146,6 +146,13 @@ export function changesRows(entries: readonly ChangeEntry[], layout: Layout, tog
   if (untracked.entries.length === 0) return out;
   out.push({ kind: "section", key: "untracked", depth: 0, count: untracked.entries.length, expanded: untrackedOpen, pos: top + 1, size: top + 1 });
   if (untrackedOpen) listRows(untracked, layout, "u", 1, toggled, true, out, 0, keep);
+  return out;
+}
+
+/** Feature 004 spec FR-104: the rows of the Conflicted section, flat with full paths in tree order. Filter files never hides them. */
+export function conflictedRows(entries: readonly ChangeEntry[]): TreeRow[] {
+  const out: TreeRow[] = [];
+  listRows(inTreeOrder(entries).conflicted, "flat", "c", 0, new Set(), false, out);
   return out;
 }
 

@@ -40,6 +40,8 @@ export const BLOCKED_TEXT: Record<NonNullable<Blocked>, string> = {
   running: "A Git operation is running. Wait for its result, or select Cancel.",
   unknown: "State unknown. Select Refresh (F5) first.",
 };
+/** Plan D15 running rule and feature 004 spec FR-105: these blocks show their reason only in the tooltip and the accessible description. */
+export const quietBlock = (blocked: Blocked | undefined) => blocked === "running" || blocked === "operation";
 /** The block of an operation state that is not `normal`. Only `merging` and `rebasing` have the conflict row. */
 export const operationBlock = (operationState: WorkspaceSnapshot["operationState"]): Blocked =>
   operationState === "normal" ? null : operationState === "merging" || operationState === "rebasing" ? "operation" : "conflicted";
@@ -208,7 +210,7 @@ export function HunkButton(props: HunkControlsProps & { index: number }) {
   if (hunk === undefined) return null;
   return (
     <>
-      <RunningTooltip reason={props.blocked === "running" ? reason : null}>
+      <RunningTooltip reason={quietBlock(props.blocked) ? reason : null}>
         <Button
           variant="outline"
           size="sm"
@@ -285,7 +287,7 @@ export function HunkControls(props: HunkControlsProps) {
   const pick = range === null || rows === null ? undefined : pickLines(rows, range, unstage ? "unstage" : "stage");
   const picked = pick?.ok === true ? pick : null;
   const lineReason = pick === undefined ? null : (blockReason ?? (pick === null ? MAPPING_FAILED : pick.ok ? null : LINE_TEXT[pick.reason as keyof typeof LINE_TEXT]));
-  const quiet = props.blocked === "running";
+  const quiet = quietBlock(props.blocked);
   const lineHunk = picked === null ? undefined : comparison.hunks[picked.hunk];
   const runLines = (direction: "stage" | "unstage") => {
     if ((direction === "unstage") !== unstage || lineReason !== null || picked === null || lineHunk === undefined) return;

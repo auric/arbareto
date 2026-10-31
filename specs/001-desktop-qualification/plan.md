@@ -574,7 +574,7 @@ Limitation text: the reason line, the comparison pane, and the accessible descri
 - `mode`: "This change alters the file mode."
 - `type`: "This change alters the file type, or the path is not a regular file."
 - `symlink`: "This entry is a symbolic link."
-- `submodule`: "This entry is a submodule or a nested repository."
+- `submodule`: "This entry is a submodule or a nested repository." Amended by 005 (2026-10-31): the comparison pane shows the 005 submodule change preview (005 plan D19) in place of this sentence. The reason line and the accessible description of the unavailable hunk and file actions keep it.
 - `LFS`: "Git LFS manages this file."
 - `filter`: "A Git filter applies to this file."
 - `state`: "This file has conflicts."

@@ -127,7 +127,7 @@ describe("Amend last commit box (FR-098)", () => {
     expect(unborn.box.checked).toBe(false);
     for (const operationState of ["merging", "rebasing"]) {
       const t = await mount({ operationState });
-      expect(describedBy(t.box)).toBe("A merge or a rebase is in progress.");
+      expect(describedBy(t.box)).toBe("A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.");
       await t.click(t.box);
       expect(t.calls).toEqual([]);
     }

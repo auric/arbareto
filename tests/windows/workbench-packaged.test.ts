@@ -18,7 +18,8 @@ import { GIT } from "../git/git-binary";
 import { processCreationTime, terminateRecorded } from "../git/win32";
 import { buildWorkbench, repoOf, wb, type WbFixture, type WbFixtureName } from "../git/workbench-fixtures";
 import { CaptureError, DISPLAY_OFF, displayState, encodePng, keepDisplayOn, openDuplication, releaseDisplay } from "./capture";
-import { formatMeasurement, measure, THRESHOLD, type Image } from "./contrast";
+import { connectPage, freePort, keyEvents, type Cdp } from "./cdp";
+import { decodePng, formatMeasurement, measure, THRESHOLD, type Image } from "./contrast";
 import { encodeInputs, INPUT_BYTES, keystroke } from "./inject";
 import { appEnv, COMMIT_VIEW, explorerReveal, explorerWindows, findInstalledApp, localRow, PROBE_TIMEOUT_MS, processRecords, startInstalledApp, WAIT_MS, waitExit, type OwnedProcess } from "./installed-app";
 import { running, TOOL_NAME, TOOL_READY_MS, toolCommand, waitEnded, waitReady, writeGuiCopy, type Member } from "./merge-tool-fixture";
@@ -48,7 +49,7 @@ import {
   type Rect,
 } from "./uia";
 
-for (const helper of ["./uia.ts", "./installed-app.ts", "./inject.ts", "./capture.ts", "./contrast.ts", "./merge-tool-fixture.ts", "./native-facts.test.ts", "../git/win32.ts", "../git/workbench-fixtures.ts", "../../src/frontend/keyboard/shortcuts.ts"]) printOrigin(helper, import.meta.dir);
+for (const helper of ["./uia.ts", "./installed-app.ts", "./inject.ts", "./capture.ts", "./contrast.ts", "./cdp.ts", "./merge-tool-fixture.ts", "./native-facts.test.ts", "../git/win32.ts", "../git/workbench-fixtures.ts", "../../src/frontend/keyboard/shortcuts.ts"]) printOrigin(helper, import.meta.dir);
 
 const TASK = "T082";
 console.log(`OS ${TASK}: os=${release()}`);
@@ -569,6 +570,188 @@ describe.skipIf(process.platform !== "win32")("T082 packaged workbench", () => {
       }
     },
     caseTimeout(12) + 2 * PROBE_TIMEOUT_MS,
+  );
+
+  // ---- T135: conflict guidance (spec FR-102 to FR-106, SC-017) ----
+  // The keys go through CDP `Input.dispatchKeyEvent`, as tests/windows/inspection-packaged.test.ts does. They send no OS input.
+  // Dark and Light are the System theme under the CDP `prefers-color-scheme` emulation. Forced colors is the CDP `forced-colors` emulation.
+
+  // One real stop: both sides add `a.txt` and `b.txt` with other bytes, so each path is a porcelain v2 `u AA` record.
+  function conflictFixture(variant: "merge" | "rebase", folder: string): { f: WbFixture; paths: string[] } {
+    const f = fixture("amend-no-upstream", folder);
+    const paths = variant === "merge" ? ["a.txt", "b.txt"] : ["a.txt"];
+    const commit = (side: string) => {
+      for (const p of paths) writeFileSync(join(f.repo, p), `${side}\n`);
+      git(f, ["add", "--", ...paths]);
+      git(f, ["commit", "-q", "-m", side]);
+    };
+    git(f, ["switch", "-q", "-c", "topic"]);
+    commit("topic");
+    git(f, ["switch", "-q", "main"]);
+    commit("main");
+    if (variant === "merge") wb(repoOf(f), ["merge", "--no-edit", "topic"], { allowExit: [1] });
+    else wb(repoOf(f), ["rebase", "main"], { allowExit: [1] });
+    expect(git(f, ["status", "--porcelain=v2", "-z"]).split("\0").filter((r) => r.startsWith("u ")).map((r) => r.split(" ").at(-1))).toEqual(paths);
+    return { f, paths };
+  }
+
+  async function cdpStart(fixture: WbFixture, label: string): Promise<{ app: OwnedProcess; c: Cdp }> {
+    const env = appEnv(fixtureDir(`${label}-app`), false);
+    const port = freePort();
+    env.env.WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = `--remote-debugging-port=${port}`;
+    const app = startInstalledApp(installed!, env);
+    owned.add(app);
+    await found(app.pid, "Select Git", ControlType.Button, invoke);
+    await found(app.pid, "Use this Git", undefined, invoke);
+    await found(app.pid, OPEN_FOLDER, undefined, invoke);
+    await found(app.pid, "Folder:", ControlType.Edit, (field) => setValue(field, fixture.repo));
+    await found(app.pid, "Select Folder", ControlType.Button, invoke);
+    const top = git(fixture, ["rev-parse", "--show-toplevel"]);
+    await found(app.pid, `${basename(top)}, ${top}`, ControlType.Button);
+    const c = await connectPage(port, MAX_WAIT_MS);
+    sockets.add(c);
+    return { app, c };
+  }
+  const sockets = new Set<Cdp>();
+  afterAll(() => {
+    for (const c of sockets) c.close();
+  });
+
+  const js = (value: unknown) => JSON.stringify(value);
+  async function until<T>(c: Cdp, what: string, expression: string, done: (value: T) => boolean): Promise<T> {
+    const value = await c.poll<T>(expression, done, MAX_WAIT_MS);
+    if (!done(value)) throw new Error(`${what} did not happen within ${MAX_WAIT_MS} ms: ${js(value)}`);
+    return value;
+  }
+  // cdp.ts has no Space key. These are the CDP parameters of one typed Space press.
+  async function press(c: Cdp, name: string, modifiers = 0): Promise<void> {
+    const events =
+      name === "Space"
+        ? [
+            { type: "keyDown", key: " ", code: "Space", windowsVirtualKeyCode: 0x20, modifiers: 0, text: " ", unmodifiedText: " " },
+            { type: "keyUp", key: " ", code: "Space", windowsVirtualKeyCode: 0x20, modifiers: 0 },
+          ]
+        : keyEvents(name, modifiers, { typed: true });
+    for (const params of events) await c.send("Input.dispatchKeyEvent", params);
+    console.log(`KEY T135: ${name} mods=${modifiers}`);
+  }
+  const ACTIVE = `(() => { const a = document.activeElement; return { label: a?.getAttribute('aria-label') ?? null, text: a?.textContent?.trim() ?? null, section: a?.closest('[data-section]')?.dataset.section ?? null, dock: a?.closest('section[aria-label="Dock"]') !== null, band: a?.closest('[data-slot="conflict-row"]') !== null, tree: a?.closest('[data-file-tree]')?.dataset.fileTree ?? null }; })()`;
+  type Active = { label: string | null; text: string | null; section: string | null; dock: boolean; band: boolean; tree: string | null };
+  const active = (c: Cdp) => c.evaluate<Active>(ACTIVE);
+  // Presses `key` until `done` holds for the focused element. One pass over 40 presses bounds the walk.
+  async function keyTo(c: Cdp, key: string, what: string, done: (a: Active) => boolean, modifiers = 0): Promise<void> {
+    for (let i = 0; i < 40; i++) {
+      if (done(await active(c))) return;
+      await press(c, key, modifiers);
+    }
+    throw new Error(`${what}: 40 presses of ${key} did not reach it, the focus is on ${js(await active(c))}`);
+  }
+  const RESOLVE_BUTTON = "Resolve conflicts";
+  const OPERATION_REASON = "A merge or a rebase is in progress. Finish it with Mark resolved and the actions in the Notices band.";
+  // The Chromium accessibility description is the UIA FullDescription of the control.
+  async function description(c: Cdp, expression: string): Promise<string | null> {
+    await c.send("Accessibility.enable");
+    const handle = (await c.send("Runtime.evaluate", { expression, returnByValue: false })) as { result: { objectId?: string } };
+    if (handle.result.objectId === undefined) throw new Error(`no element for ${expression}`);
+    const { nodes } = (await c.send("Accessibility.getPartialAXTree", { objectId: handle.result.objectId, fetchRelatives: false })) as { nodes: { description?: { value?: string } }[] };
+    return nodes[0]?.description?.value ?? null;
+  }
+  const buttonNamed = (name: string, scope = "document") => `[...${scope}.querySelectorAll('button')].find((b) => (b.getAttribute('aria-label') ?? b.textContent.trim()) === ${js(name)})`;
+  type Scheme = "dark" | "light" | "forced";
+  const FOCUS_STYLE = `(() => { const s = getComputedStyle(document.activeElement); return { outline: s.outlineStyle, width: s.outlineWidth, shadow: s.boxShadow }; })()`;
+  async function contrastOf(c: Cdp, scheme: Scheme, targets: [string, string][]): Promise<void> {
+    const features = scheme === "forced" ? [{ name: "forced-colors", value: "active" }] : [{ name: "prefers-color-scheme", value: scheme }, { name: "forced-colors", value: "none" }];
+    await c.send("Emulation.setEmulatedMedia", { features });
+    await c.evaluate(`new Promise((done) => requestAnimationFrame(() => requestAnimationFrame(() => done(true))))`);
+    const focus = await c.evaluate<{ outline: string; width: string; shadow: string }>(FOCUS_STYLE);
+    expect({ scheme, focusVisible: (focus.outline !== "none" && Number.parseFloat(focus.width) > 0) || focus.shadow !== "none" }).toEqual({ scheme, focusVisible: true });
+    const shot = (await c.send("Page.captureScreenshot", { format: "png" })) as { data: string };
+    const png = Buffer.from(shot.data, "base64");
+    const file = join(fixtureDir("evidence"), `t135-${scheme}-${crypto.randomUUID()}.png`);
+    writeFileSync(file, png);
+    console.log(`CAPTURE_PNG T135: ${file}`);
+    const image = decodePng(new Uint8Array(png));
+    for (const [pair, expression] of targets) {
+      const r = await c.evaluate<{ x: number; y: number; width: number; height: number; dpr: number } | null>(`(() => { const e = ${expression}; if (!e) return null; const b = e.getBoundingClientRect(); return { x: b.x, y: b.y, width: b.width, height: b.height, dpr: devicePixelRatio }; })()`);
+      if (r === null) throw new Error(`no element for ${pair}`);
+      const x = Math.max(0, Math.round(r.x * r.dpr));
+      const y = Math.max(0, Math.round(r.y * r.dpr));
+      const box = { x, y, width: Math.min(image.width - x, Math.floor(r.width * r.dpr)), height: Math.min(image.height - y, Math.floor(r.height * r.dpr)) };
+      const m = measure(image, { pair: `${scheme} ${pair}`, kind: "text", box });
+      console.log(`CONTRAST T135: ${formatMeasurement(m)}`);
+      expect({ scheme, pair, pass: m.ratio >= THRESHOLD.text }).toEqual({ scheme, pair, pass: true });
+    }
+  }
+
+  test.skipIf(reason !== null)(
+    "T135, SC-017: by keyboard, Resolve conflicts in the dock and in the band focuses the first Conflicted row with its resolve view; no visible operation reason; Mark resolved of each file shows Continue again",
+    async () => {
+      for (const variant of ["merge", "rebase"] as const) {
+        const { f, paths } = conflictFixture(variant, `t135-${variant}-repo`);
+        const firstName = `${paths[0]}, conflicted, both added`;
+        const { app, c } = await cdpStart(f, `t135-${variant}`);
+        // The first Conflicted row has the page focus and the UIA focus, and its resolve view shows.
+        const expectFirstRow = async (from: string) => {
+          const a = await until<Active>(c, `${from}: the first Conflicted row focus`, ACTIVE, (v) => v.label === firstName);
+          expect({ from, tree: a.tree, section: a.section }).toEqual({ from, tree: "conflicted", section: "conflicted" });
+          await focusedOrSkip(app.pid, firstName, `T135 ${variant} ${from} UIA focus`);
+          await found(app.pid, `Resolve ${paths[0]}`);
+          console.log(`FOCUS T135: ${variant} ${from} ${firstName}`);
+        };
+        const toHistory = async () => {
+          await keyTo(c, "F6", "the header", (a) => a.section === "header");
+          await keyTo(c, "Tab", "the History view button", (a) => a.text === "History" && a.section === "header");
+          await press(c, "Enter");
+          await until<boolean>(c, "the History view", `!document.querySelector('[data-view="history"]')?.hidden`, (v) => v);
+        };
+        try {
+          await until<boolean>(c, "the conflict row", `${buttonNamed(RESOLVE_BUTTON, "document.querySelector('[data-slot=\"conflict-row\"]')")} !== undefined`, (v) => v);
+          // Dock: the Working directory row is the first row of the History list.
+          await keyTo(c, "F6", "the History list", (a) => a.section === "historyList");
+          await press(c, "Home");
+          await keyTo(c, "Tab", "the dock Resolve conflicts", (a) => a.dock && a.text === RESOLVE_BUTTON);
+          await press(c, "Enter");
+          await expectFirstRow("dock");
+          // Band: the notice heading, then the first band control.
+          await toHistory();
+          await keyTo(c, "F6", "the notice band", (a) => a.section === "noticeHeading");
+          await keyTo(c, "Tab", "the band Resolve conflicts", (a) => a.band && a.text === RESOLVE_BUTTON);
+          await press(c, "Enter");
+          await expectFirstRow("band");
+          // Spec FR-105: no visible reason line, and each unavailable control describes the reason.
+          expect(await c.evaluate<boolean>(`document.querySelector('[data-view="commit"]').innerText.includes(${js(OPERATION_REASON)})`)).toBe(false);
+          for (const name of ["Stage all changes", "Commit (Ctrl+Enter)"]) {
+            const got = await description(c, buttonNamed(name, "document.querySelector('[data-view=\"commit\"]')"));
+            console.log(`DESCRIPTION T135: ${js({ variant, name, description: got })}`);
+            // FilesButton describes "<action> is unavailable: <reason>" (plan D15 "Commit view texts").
+            expect({ name, described: got?.includes(OPERATION_REASON) }).toEqual({ name, described: true });
+          }
+          const amend = await description(c, `document.querySelector('[data-view="commit"] input[type="checkbox"]')`);
+          expect({ name: AMEND, description: amend }).toEqual({ name: AMEND, description: OPERATION_REASON });
+          for (const scheme of ["dark", "light", "forced"] as const) {
+            await contrastOf(c, scheme, [
+              ["Resolve conflicts", buttonNamed(RESOLVE_BUTTON, "document.querySelector('[data-slot=\"conflict-row\"]')")],
+              ["focused Conflicted row", "document.activeElement"],
+            ]);
+          }
+          await c.send("Emulation.setEmulatedMedia", { features: [] });
+          // Space on the focused row is Mark resolved. Focus then moves to the next Conflicted row.
+          for (const path of paths) {
+            await until<Active>(c, `the focus on ${path}`, ACTIVE, (v) => v.label === `${path}, conflicted, both added`);
+            await press(c, "Space");
+            await waitGit(`Mark resolved of ${path}`, () => git(f, ["ls-files", "-u", "-z", "--", path]) === "");
+          }
+          const band = await until<string[]>(c, "Continue in the band", `[...document.querySelectorAll('[data-slot="conflict-row"] button')].map((b) => b.textContent.trim())`, (v) => v.includes("Continue"));
+          expect(band.includes(RESOLVE_BUTTON)).toBe(false);
+          expect(git(f, ["ls-files", "-u", "-z"])).toBe("");
+        } finally {
+          c.close();
+          sockets.delete(c);
+          await stop(app);
+        }
+      }
+    },
+    2 * (caseTimeout(60) + 2 * GIT_WAIT_MS),
   );
 
   // ---- Live input ----

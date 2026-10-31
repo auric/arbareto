@@ -54,12 +54,13 @@ async function open(operationState: World["operationState"], entries: ChangeEntr
 }
 
 describe("conflict row (FR-030)", () => {
-  test("a merge in progress shows at once with its kind, Abort and Continue, no Skip, and no 001 outside text", async () => {
+  test("a merge in progress shows at once with its kind, Resolve conflicts and Abort while a file is unmerged, no Skip, and no 001 outside text", async () => {
     await open("merging", [conflicted("a.txt")]);
     expect(row()).not.toBeNull();
     expect(text(band())).toContain("A merge is in progress, with 1 conflicted file.");
     expect(text(band())).not.toContain(OUTSIDE);
-    expect(actions()).toEqual(["Abort merge…", "Continue"]);
+    // Feature 004 FR-102 amends FR-030: Resolve conflicts takes the place of Continue while files are unmerged.
+    expect(actions()).toEqual(["Resolve conflicts", "Abort merge…"]);
     expect(button("Abort merge…", row()!).querySelector("svg")).not.toBeNull();
   });
 
@@ -72,17 +73,16 @@ describe("conflict row (FR-030)", () => {
     expect(tooltipText()).toBe(SKIP_TOOLTIP);
   });
 
-  test("Continue is unavailable while the unmerged count is above 0 and states the count (FR-043)", async () => {
-    for (const [entries, reason] of [
-      [[conflicted("a.txt")], "Continue is unavailable while 1 file is unmerged. Mark it resolved first."],
-      [[conflicted("a.txt"), conflicted("b.txt")], "Continue is unavailable while 2 files are unmerged. Mark them resolved first."],
+  // Feature 004 FR-102 amends FR-043: Continue does not show while the unmerged count is above 0. The band sentence states the count.
+  test("while the unmerged count is above 0, Continue does not show, the sentence states the count, and Resolve conflicts sends no review", async () => {
+    for (const [entries, sentence] of [
+      [[conflicted("a.txt")], "A rebase is in progress, with 1 conflicted file."],
+      [[conflicted("a.txt"), conflicted("b.txt")], "A rebase is in progress, with 2 conflicted files."],
     ] as const) {
       const { double } = await open("rebasing", [...entries]);
-      const cont = button("Continue", row()!);
-      expect(cont.getAttribute("aria-disabled")).toBe("true");
-      expect(text(row()!)).toContain(reason);
-      expect(document.getElementById(cont.getAttribute("aria-describedby")!)?.textContent).toBe(reason);
-      await click(cont);
+      expect(buttons("Continue", row()!)).toHaveLength(0);
+      expect(text(row()!)).toContain(sentence);
+      await click(button("Resolve conflicts", row()!));
       expect(double.count("reviewSync")).toBe(0);
       await unmountAll();
     }
@@ -146,7 +146,7 @@ describe("Continue (FR-043, FR-045)", () => {
     await settle();
     expect(row()).not.toBeNull();
     expect(text(band())).toContain("A rebase is in progress, with 1 conflicted file.");
-    expect(actions()).toEqual(["Abort rebase…", "Continue", "Skip…"]);
+    expect(actions()).toEqual(["Resolve conflicts", "Abort rebase…", "Skip…"]);
   });
 
   test("rebase-exec shows its reason and the terminal command, and offers Abort only", async () => {
@@ -286,7 +286,7 @@ describe("Continue while the status read loads", () => {
     const host = document.body.appendChild(document.createElement("div"));
     const root = createRoot(host);
     let reviews = 0;
-    await act(async () => root.render(<ConflictRow operationState="rebasing" conflicted={0} reason={null} loading onAction={async () => (reviews++, null)} />));
+    await act(async () => root.render(<ConflictRow operationState="rebasing" conflicted={0} reason={null} loading onAction={async () => (reviews++, null)} onResolve={() => {}} />));
     const cont = button("Continue", host);
     expect(cont.getAttribute("aria-disabled")).toBe("true");
     expect(document.getElementById(cont.getAttribute("aria-describedby")!)?.textContent).toBe(BLOCKED_TEXT.loading);
@@ -303,7 +303,7 @@ describe("conflict row while an operation runs (plan D12)", () => {
   const visuallyHidden = (control: Element) => document.getElementById(control.getAttribute("aria-describedby")!)!.classList.contains("sr-only");
 
   test("while a fetch runs, the actions stay disabled and focusable, and the running reason is only in the tooltip and a hidden description", async () => {
-    const { double } = await open("rebasing", [conflicted("a.txt")]);
+    const { double } = await open("rebasing");
     await click(button("Fetch"));
     await answer(double.pending("reviewSync"), succeeded({ action: "fetch", plan: { remotes: ["origin"] }, syncReviewToken: TOKEN }));
     const sync = double.pending("sync")!;
@@ -323,13 +323,31 @@ describe("conflict row while an operation runs (plan D12)", () => {
     expect(tooltipText()).toContain(SKIP_TOOLTIP);
   });
 
+  // Feature 004 FR-102: Resolve conflicts opens a view, so a running operation does not block it.
+  test("while a fetch runs with an unmerged file, Resolve conflicts stays available, and Abort and Skip keep the quiet running reason", async () => {
+    const { double } = await open("rebasing", [conflicted("a.txt")]);
+    await click(button("Fetch"));
+    await answer(double.pending("reviewSync"), succeeded({ action: "fetch", plan: { remotes: ["origin"] }, syncReviewToken: TOKEN }));
+    const sync = double.pending("sync")!;
+    await act(async () => (sync.args[2] as (e: unknown) => void)({ requestId: "r", operationId: fixtureId(0x212), state: "running", phase: "sync-fetch", counters: {} }));
+    await settle();
+    expect(actions()).toEqual(["Resolve conflicts", "Abort rebase…", "Skip…"]);
+    expect(button("Resolve conflicts", row()!).getAttribute("aria-disabled")).not.toBe("true");
+    for (const label of ["Abort rebase…", "Skip…"]) {
+      const control = button(label, row()!);
+      expect(control.getAttribute("aria-disabled")).toBe("true");
+      expect(describedText(control)).toBe(RUNNING);
+      expect(visuallyHidden(control)).toBe(true);
+    }
+  });
+
   test("a reason other than a running operation stays visible", async () => {
     const { ConflictRow } = await import("../../src/frontend/sync/ConflictActions");
     const { BLOCKED_TEXT } = await import("../../src/frontend/changes/HunkControls");
     const { createRoot } = await import("react-dom/client");
     const host = document.body.appendChild(document.createElement("div"));
     const root = createRoot(host);
-    await act(async () => root.render(<ConflictRow operationState="rebasing" conflicted={0} reason={BLOCKED_TEXT.unknown} onAction={async () => null} />));
+    await act(async () => root.render(<ConflictRow operationState="rebasing" conflicted={0} reason={BLOCKED_TEXT.unknown} onAction={async () => null} onResolve={() => {}} />));
     for (const label of ["Abort rebase…", "Continue", "Skip…"]) {
       const control = button(label, host);
       expect(describedText(control)).toBe(BLOCKED_TEXT.unknown);

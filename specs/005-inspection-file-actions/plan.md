@@ -8,7 +8,7 @@
 
 ## Summary
 
-History shows the changed files and the diff of the selected commit. The Commit view gets folders-first trees, Show in Explorer for a folder, Delete and Delete permanently, a docked ignore editor with an exact preview, Open submodule, and Blame. The sidebar gets a full-name card and an upstream-gone mark. Each read runs Git's own machine-readable command with literal arguments. Each file action follows the 004 pattern: a read-only review binds the facts and issues a one-use token, and one `runWorkbench` runs the reviewed action. Fresh reads decide every outcome. No Git message text decides anything.
+History shows the changed files and the diff of the selected commit. The Commit view gets folders-first trees, Show in Explorer for a folder, Delete and Delete permanently, a docked ignore editor with an exact preview, Open submodule, and Blame. The sidebar gets a full-name card and an upstream-gone mark. Each read runs Git's own machine-readable command with literal arguments. Each file action follows the 004 pattern: a read-only review binds the facts and issues a one-use token, and one `runWorkbench` runs the reviewed action. Fresh reads decide every outcome. No Git message text decides anything. Addendum 2026-10-31 (D19): a selected submodule row shows its commit change, and Changes marks submodules with local edits.
 
 Seven facts drive the design (research R2 to R14):
 - `git diff-tree <merge>` prints nothing, so every History read uses the two-tree form `diff-tree <parent> <commit>`, and a root commit compares with the empty tree (design R1, probed).
@@ -494,6 +494,34 @@ User acceptance (2026-10-24): the user accepted the D15 texts and two UX calls. 
 - Mutation tests copy the 001 control rule: one control mutation turns each oracle red.
 - A green run from a worktree prints where it imported the code under test (global rule).
 
+### D19 Submodule change preview and local-edit marks (2026-10-31, v0.1.0)
+
+Spec FR-069 to FR-076, SC-012, research.md R18. Mockup boards "Commit view: submodule selected" and "History: submodule change" (local scratch, approved 2026-10-31).
+
+- Two new reads (contract Δ3): `readSubmoduleChange` gives the preview of one selected row. `readSubmoduleWork` gives the local-edit state of every initialized submodule of one snapshot. Both run fixed commands inside the submodule in the 001 §12 "Review reads" form `-C <worktree> --git-dir=.git`. The parent status keeps `--ignore-submodules=dirty` (R18 "Safety facts").
+- Old and new IDs (spec FR-070): an unstaged row takes `hI` of its porcelain v2 record and the submodule HEAD from `rev-parse --verify -q HEAD`. A staged row takes `hH` and `hI`. A History row takes the two object IDs of its `readCommitChanges` raw record with mode 160000. The renderer sends no ID.
+- Location: the D11 checks 3 to 5 find the submodule worktree at the row path in the current worktree. A History row uses the same path. Two commit IDs name the same commits in any repository that holds them, so a renamed or a replaced submodule gives only `missing` (spec FR-072).
+- Kind (spec FR-073): the first `.gitmodules` source of 001 §12 "Review reads" maps the path to a name. No `submodule.<name>.path` equal to the path gives `nested`. None of these sources loads the index.
+- Commit facts, in this order: `cat-file -e <old>^{commit}` and `cat-file -e <new>^{commit}`. A non-zero exit gives `missing`. Then `rev-list --left-right --count <old>...<new>`. Then, for each nonzero side, `log -z --no-show-signature --no-color --encoding=UTF-8 --format=%H%x00%s --max-count=50 <a>..<b>`. These commands load no index and run no filter, hook, or signature program (R18), so the preview needs no submodule program check.
+- Local edits (spec FR-074, FR-075): `readSubmoduleWork` runs after each complete `readWorkspace`, in History and in the Commit view, because the Working directory count includes its rows. Per submodule: the D11 checks 4 and 5, then `config list --show-scope --show-origin -z` inside it. The 001 §7 resolution rule applies with the 001 §12 rule that every local and worktree entry of a submodule is repository-controlled. A repository-controlled command-valued `core.fsmonitor`, `filter.<driver>.clean`, or `filter.<driver>.process` gives `unchecked` reason `programs`. Otherwise `status --porcelain=v2 -z --untracked-files=normal --ignore-submodules=dirty` runs inside it. A `1`, `2`, or `u` record sets `modified`. A `?` record sets `untracked`. The service ends the process when both are set.
+- Bounds (contract Δ5): 256 targets per read in index order, 4 at the same time, 50 commits per side, 256 KiB of `log` output, the 001 30 s read deadline. A target above 256 gives reason `limit`.
+- Rows (spec FR-075): a gitlink without a status record and with `modified` or `untracked` joins Changes as a tracked row with the letter "M". Its counts join the Changes count, the folder counts, and the History Working directory count when the read completes. Before that, the rows show no mark. Stage all changes, Stage folder, and Stage selected leave the row out. Its row menu offers Open submodule, Copy path, and Show in Explorer.
+- Cancel: a new selection cancels the running `readSubmoduleChange`. A new snapshot cancels the running `readSubmoduleWork`.
+- WSL (spec FR-076): every command runs through the distro wrapper in mode `read`. Each Git process is one `wsl.exe` run, so T108 also measures the WSL cost.
+- Layout (Main board): the diff area holds the preview region with the accessible name "Submodule <path>". A 32 px heading row holds the path in the code font, the "Submodule" tag, and the 24 px button "Open submodule" at the end. Below it, a definition list with 96 px terms: "Commit", "Change", and in the Commit view only "Working tree". Below the list, the heading "New commits" or "Removed commits" and a plain list, one 20 px row per commit: the short ID in the code font, then the subject with an end ellipsis and the full subject in the tooltip. The region scrolls by itself.
+- Keyboard: the preview has one Tab stop, Open submodule. F6 reaches the preview after the file lists, as it reaches the diff. The commit lists are plain text, not a focus stop.
+- Texts (D15 style; `<n>` with thousands separators, "1 new commit" and "1 removed commit" for one):
+  - Heading: "<path>". Tag: "Submodule", or "Nested repository" for `nested`. Button: "Open submodule".
+  - Commit row: "<old> → <new>". The arrow is hidden from assistive technology, which reads "<old> to <new>". An added or a deleted gitlink shows its one ID.
+  - Change row: "<n> new commits", "<n> removed commits", or both joined by ", ".
+  - Lists: "New commits", "Removed commits", each item "<short ID> <subject>", and "and <n> more".
+  - Missing: "Fetch the submodule first.". Not initialized: "Initialize this submodule first. Select Update submodules.". Nested: "The .gitmodules file does not name this repository.".
+  - Working tree row: "modified content", "untracked content", both joined by ", ", or "No local edits.". Reason `programs`: "Arbareto does not read the working tree of this submodule. Its settings name a program that a status read can run.". Reason `limit`: "Arbareto checks at most 256 submodules for local edits.". Pending: "Arbareto reads the Git facts.". Failure: "Working tree is unavailable: <code>".
+  - Row marks: "modified content" and "untracked content" after the name, in Muted text. A row with only local edits adds the tooltip "The submodule has local edits. Its commit is unchanged.". The selected row with a changed commit also shows the Change text once its preview arrives.
+  - Row accessible name: "<path>, submodule, modified", then ", new commits" when the selected row's preview shows new commits, ", modified content", and ", untracked content" as they apply.
+  - Stage reason of a row with only local edits: "The submodule commit is unchanged. Commit the local edits inside the submodule first.".
+  - Preview failures: "<item> is unavailable: <code>" with the item "Submodule change".
+
 ### Invariants
 
 | Invariant | Evidence |
@@ -523,6 +551,10 @@ User acceptance (2026-10-24): the user accepted the D15 texts and two UX calls. 
 | `FOF_WANTNUKEWARNING` partially overrides `FOF_NOCONFIRMATION`. | Microsoft Learn `IFileOperation::SetOperationFlags` (behavior unverified, N2) |
 | Each `openWorktree` registration stores a recent entry. | `service.rs:760-768`, `:1050-1068` |
 | Git names no upstream for a branch whose remote is gone. | remote.c:1796-1801, :1908 (clarify F2) |
+| Parent `status` without `--ignore-submodules=dirty` runs the submodule's own `core.fsmonitor` and clean filter. | 001 research R5, probe of 2026-09-29 |
+| `<sub>` `S<c><m><u>` means commit changed, tracked changes, untracked changes. | git-status(1) "Changed Tracked Entries" |
+| `rev-list --left-right --count A...B` prints the left and the right count, separated by a tab. | git-rev-list(1) `--count` |
+| `cat-file -e` exits zero only for an existing valid object. | git-cat-file(1) `-e` |
 
 ## Open items and reviewer defaults
 
@@ -535,6 +567,8 @@ User acceptance (2026-10-24): the user accepted the D15 texts and two UX calls. 
 - **O-7 `FOFX_EARLYFAILURE`.** Accepted (2026-10-21). Design R4 listed it. The plan drops it, so one failed recycle does not cancel the other items. Identity mismatches still cancel the rest through `PreDeleteItem`.
 - **O-8 Tree order module path.** Accepted (2026-10-21). Design R2 proposed `src/frontend/tree-order.ts`. The service sorts the preview lists too, so the module sits in `src/contracts/`.
 - **O-9 Empty `blame.ignoreRevsFile` value.** Decided (user, 2026-10-21): blame follows Git exactly. F7 ran on Windows Git 2.56.0.windows.2 and WSL Git 2.55.0. Git uses every non-empty value from every configuration scope. An empty configuration value resets nothing, because `string_list_insert` keeps the values sorted (builtin/blame.c:771) and `build_ignorelist` reads every file (:941-947). The doc says otherwise (config/blame.adoc:24-28). `--ignore-revs-file=` on the command line clears the list (:997). A missing file exits 128 (oidset.c:81-83). Spec FR-059 and D12 step 4 follow Git. The toggle off still passes `--ignore-revs-file=`, so it turns all lists off for one blame.
+- **O-10 Open submodule tooltip.** Open (2026-10-31). The approved board gives the preview button the tooltip "Open submodule in a new window.". Spec FR-047 (user decision of 2026-10-21) opens the submodule in the same window. The plan keeps FR-047 and the tooltip "Open submodule" until the user decides.
+- **O-11 Local-edit mark budget.** Open (2026-10-31). SC-012 proposes 2 s for 100 clean submodules. T108 records the measured time. The user sets the bound.
 
 ## Phases
 
@@ -548,7 +582,7 @@ User acceptance (2026-10-24): the user accepted the D15 texts and two UX calls. 
 | 3 | P8 | WP7 alone (after WP5 and WP6). Then the WP3 removal step T057. | The Commit view UI, then the removal of the 004 one-line ignore path. |
 | 4 | P9 | WP8 (WSL alone, then packaged). | Qualification. |
 
-User stories by priority: P1 is US1 and US2 (WP4, WP5, WP6, WP7). P2 is US3 to US7 (WP2, WP5 to WP7). P3 is US8 and US9 (WP2).
+User stories by priority: P1 is US1 and US2 (WP4, WP5, WP6, WP7), and US10 (WP9, 2026-10-31). P2 is US3 to US7 (WP2, WP5 to WP7). P3 is US8 and US9 (WP2).
 
 ### Work packages, in run order
 
@@ -563,6 +597,7 @@ User stories by priority: P1 is US1 and US2 (WP4, WP5, WP6, WP7). P2 is US3 to U
 | WP6 | frontend-implementer | `src/frontend/history/CommitDetails.tsx`, new `src/frontend/history/CommitChanges.tsx`, new `src/frontend/blame/{BlameView.tsx,blame-time.ts}`, `src/frontend/state/history-view.ts`, `src/frontend/views/HistoryView.tsx` (the History view frame, not `src/frontend/history/HistoryView.tsx`), `src/frontend/app/Workbench.tsx`, `src/frontend/index.css`, `tests/contracts/{inspection-history,inspection-blame}.test.tsx` | P7: US1, US7 UI. After WP2 and WP4. Parallel with WP5. |
 | WP7 | frontend-implementer | `src/frontend/changes/{ChangesPane.tsx,file-actions.ts}`, new `src/frontend/changes/DeleteConfirm.tsx`, new `src/frontend/ignore/IgnoreEditor.tsx`, `src/frontend/submodules/SubmodulesGroup.tsx`, new `src/frontend/app/ParentButton.tsx`, `src/frontend/app/{Workbench,RepositoryMenu}.tsx`, `src/frontend/state/workbench.ts`, `src/frontend/bridge.ts`, `src/frontend/keyboard/shortcuts.ts`, `tests/contracts/{inspection-delete,inspection-ignore,inspection-submodule}.test.tsx`, `tests/contracts/shortcuts-005.test.ts` | P8: US2, US4, US5, US6 UI, and the Commit view Blame entry. After WP5 and WP6. |
 | WP8 | implementer writes, scout runs (WSL alone) | `tests/wsl/inspection-wsl.test.ts`, `tests/windows/{inspection-packaged,inspection-perf}.test.ts` | P9. Last. |
+| WP9 | implementer (T106 to T108), frontend-implementer (T109, T110), implementer writes and scout runs (T111) | new `src/git-service/submodule-change.ts`, `src/git-service/{commands,session}.ts`, `src/contracts/{operations,envelope,errors,limits}.ts`, `src/contracts/schemas/`, `src/frontend/changes/{ChangesPane.tsx,limitation-text.ts}`, new `src/frontend/changes/SubmodulePreview.tsx`, `src/frontend/history/CommitChanges.tsx`, `tests/git/submodule-change.test.ts`, `tests/contracts/submodule-preview.test.tsx`, `tests/windows/inspection-packaged.test.ts` | D19, 2026-10-31 addendum. v0.1.0 blocker. After the batch 4 verification. |
 
 Parallel tracks use disjoint files in separate worktrees. These files are not disjoint:
 - `src/git-service/session.ts`: WP4, then WP5.

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { ArrowDown01Icon, ArrowRight01Icon, Copy01Icon, CubeIcon, Delete02Icon, Delete04Icon, File01Icon, Folder01Icon, FolderSearchIcon, ListIcon, ListTreeIcon, MinusSignIcon, PlusSignIcon, Search01Icon, Tick02Icon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowRight01Icon, Copy01Icon, CubeIcon, Delete02Icon, Delete04Icon, File01Icon, Folder01Icon, FolderSearchIcon, ListIcon, ListTreeIcon, MinusSignIcon, PlusSignIcon, Search01Icon, Tick02Icon, Undo03Icon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref } from "react";
-import type { ChangeEntry } from "../../contracts/envelope";
+import type { ChangeEntry, RevertFilesPlan } from "../../contracts/envelope";
 import { ignoreLine } from "../../contracts/ignore-line";
 import { useCopy } from "../app/RepositoryStates";
 import { ActionMenu, type ActionGroup, type ActionItem } from "../components/action-menu";
@@ -19,6 +19,8 @@ import { Splitter } from "../layout/Splitter";
 import { GIT_SEPARATORS, splitPath } from "../lib/path";
 import { DeleteConfirm, DeleteRefusal } from "./DeleteConfirm";
 import { CUT_REASON, deleteEntries, deleteReason, IGNORE_LABEL, IGNORE_LINE_REASON, LIMIT_TEXT, NO_HISTORY, type DeletePlan, type DeleteReview, type FileActions } from "./file-actions";
+import { RevertConfirm } from "./RevertConfirm";
+import { actionName, blockedBy, entryRevertReason, FOLDER_REASON, inTreeOrder, revertFilesLabel, revertReason } from "./revert-text";
 import type { IgnoreTarget } from "../state/workbench";
 import { changesRows, derivedRequest, folderEntries, formatCount, overLimit, stagedRows, type FilesRequest, type Layout, type TreeRow } from "./file-tree";
 
@@ -65,6 +67,14 @@ export type FilesProps = {
   onOpenSubmodule?(path: string): void;
   /** Feature 005 plan.md D11 "Availability" of the submodule row with these path bytes. */
   submoduleReason?(pathBytes: string): string | null;
+  /** Feature 008 plan.md D5 and D12: Revert file. `deleteBlock` also blocks it (spec FR-002). */
+  revert?: RevertFiles;
+};
+
+/** Feature 008 contract Δ3 `revert-files`. `review` gives null after a refusal, which the status shows. `run` gives true for `succeeded`. */
+export type RevertFiles = {
+  review(entryIds: string[], label: string): Promise<{ token: string; plan: RevertFilesPlan } | null>;
+  run(token: string, label: string, entryIds: string[]): Promise<boolean>;
 };
 
 export type ChangesPaneProps = {
@@ -150,6 +160,10 @@ export function ChangesPane(props: ChangesPaneProps) {
   const [menu, setMenu] = useState<{ key: string; list: ListName; anchor: HTMLElement; byKey: boolean } | null>(null);
   const closed = useRef<{ list: ListName; key: string; before: readonly TreeRow[] } | null>(null);
   const [confirm, setConfirm] = useState<{ review: DeleteReview; anchor: HTMLElement } | null>(null);
+  const [revertConfirm, setRevertConfirm] = useState<{ token: string; plan: RevertFilesPlan; label: string; entryIds: string[]; key: string | null; anchor: HTMLElement } | null>(null);
+  const reverting = useRef(false);
+  // Spec FR-042: the row key of a confirmed revert. Its removal moves the selection as Stage file does.
+  const revertMove = useRef<string | null>(null);
   const copy = useCopy();
   // Spec FR-101: Filter files filters only the shown rows. The derived actions and every count keep the status read.
   const [query, setQuery] = useState("");
@@ -302,9 +316,11 @@ export function ChangesPane(props: ChangesPaneProps) {
     const kept = fileRows(rows[list]).find((r) => r.key === lost.pathBytes);
     focused.current = kept?.entry ?? null;
     if (kept !== undefined) return;
+    const select = revertMove.current === lost.pathBytes;
+    revertMove.current = null;
     const active = document.activeElement;
     if (active !== null && active !== document.body) return;
-    moveFrom(list, fileRows(before.rows[list]), lost.pathBytes, false);
+    moveFrom(list, fileRows(before.rows[list]), lost.pathBytes, select);
   }, [entries, rows]);
 
   const onFocus = (event: ReactFocusEvent) => {
@@ -390,6 +406,43 @@ export function ChangesPane(props: ChangesPaneProps) {
     else status(review.text);
   }
 
+  // Feature 008 spec FR-018 and FR-023: Revert file acts on the marked rows of the list, else on the row.
+  const revertSet = (row: Extract<TreeRow, { kind: "file" }>, list: ListName): ChangeEntry[] => {
+    const marks = shownMarks?.list === list && shownMarks.ids.size > 1 && shownMarks.ids.has(row.entry.entryId) ? shownMarks.ids : null;
+    return marks === null ? [row.entry] : entries.filter((e) => marks.has(e.entryId));
+  };
+  function revertWhy(row: TreeRow, set: readonly ChangeEntry[]): string | null {
+    if (row.kind === "folder") return FOLDER_REASON;
+    if (row.kind === "section") return revertReason("untracked", "")!;
+    const first = inTreeOrder(set.filter((e) => entryRevertReason(e) !== null))[0];
+    if (first !== undefined) return set.length > 1 ? blockedBy(first.path, entryRevertReason(first)!) : revertReason(entryRevertReason(first)!, first.path)!;
+    return files === undefined ? null : files.running ? files.reason : (files.deleteBlock ?? null);
+  }
+  async function startRevert(row: TreeRow, list: ListName, anchor: HTMLElement) {
+    const revert = files?.revert;
+    if (files === undefined || revert === undefined || reverting.current) return;
+    const set = row.kind === "file" ? revertSet(row, list) : [];
+    const why = revertWhy(row, set);
+    if (why !== null) return void (files.running || status(why));
+    const label = actionName(revertFilesLabel(set.length));
+    const entryIds = set.map((e) => e.entryId);
+    reverting.current = true;
+    try {
+      const review = await revert.review(entryIds, label);
+      if (mounted.current && review !== null) setRevertConfirm({ ...review, label, entryIds, key: row.kind === "file" ? row.entry.pathBytes : null, anchor });
+    } finally {
+      reverting.current = false;
+    }
+  }
+  async function confirmRevert(chosen: NonNullable<typeof revertConfirm>) {
+    setRevertConfirm(null);
+    revertMove.current = chosen.key;
+    const ok = (await files?.revert?.run(chosen.token, chosen.label, chosen.entryIds)) === true;
+    if (!mounted.current) return;
+    if (ok) setMarked(null);
+    else revertMove.current = null;
+  }
+
   // Spec FR-053: an untracked row, an index addition (porcelain v2 X = `A`), and an unborn HEAD have no path at HEAD.
   const blameReason = (entry: ChangeEntry) => (entry.category === "untracked" || entry.xy?.[0] === "A" || files?.unborn === true ? NO_HISTORY : null);
   function menuGroups(row: TreeRow, list: ListName, anchor: HTMLElement): ActionGroup[] {
@@ -427,6 +480,12 @@ export function ChangesPane(props: ChangesPaneProps) {
       const slash = raw.at(-1) === 0x2f;
       const line = ignoreLine(slash ? raw.subarray(0, -1) : raw, row.kind === "folder" || slash);
       groups.push((["gitignore", "exclude"] as const).map((target) => ({ label: IGNORE_LABEL[target], icon: ViewOffSlashIcon, reason: line.ok ? null : IGNORE_LINE_REASON[line.reason], onSelect: () => void (line.ok && onIgnore(target, line.line)) })));
+    }
+    // Feature 008 plan.md D12: Revert file has its own group without a label, directly above Delete from disk, and last in the Staged list.
+    if (files?.revert !== undefined) {
+      const set = row.kind === "file" ? revertSet(row, list) : [];
+      const why = revertWhy(row, set);
+      groups.push([{ label: revertFilesLabel(Math.max(1, set.length)), icon: Undo03Icon, danger: true, keys: KEYS.revertFiles, reason: why, running: why !== null && files.running && why === files.reason, onSelect: () => void startRevert(row, list, anchor) }]);
     }
     if (list === "changes" && files !== undefined) {
       const why = deleteWhy(deleteSet(row).entries);
@@ -488,6 +547,7 @@ export function ChangesPane(props: ChangesPaneProps) {
       });
     },
     onDelete: (row: TreeRow, mode: DeletePlan["mode"], anchor: HTMLElement) => void startDelete(row, mode, anchor),
+    onRevert: (row: TreeRow, anchor: HTMLElement) => void startRevert(row, list, anchor),
     onMenu: (row: TreeRow, anchor: HTMLElement, byKey = false) => {
       if (row.kind === "file") focused.current = row.entry;
       setMenu({ key: row.key, list, anchor, byKey });
@@ -655,6 +715,9 @@ export function ChangesPane(props: ChangesPaneProps) {
       ) : (
         <DeleteRefusal text={confirm.review.text} finalFocus={() => (confirm.anchor.isConnected ? confirm.anchor : null)} onClose={() => setConfirm(null)} />
       )}
+      {revertConfirm === null ? null : (
+        <RevertConfirm plan={revertConfirm.plan} finalFocus={() => (revertConfirm.anchor.isConnected ? revertConfirm.anchor : null)} onCancel={() => setRevertConfirm(null)} onConfirm={() => void confirmRevert(revertConfirm)} />
+      )}
     </div>
   );
 }
@@ -728,11 +791,12 @@ type TreeListProps = {
   onToggle(row: TreeRow, open?: boolean): void;
   onMenu(row: TreeRow, anchor: HTMLElement, byKey?: boolean): void;
   onDelete(row: TreeRow, mode: DeletePlan["mode"], anchor: HTMLElement): void;
+  onRevert(row: TreeRow, anchor: HTMLElement): void;
   onRowAction(row: TreeRow): void;
 };
 
 /** One list: a WAI-ARIA tree with one Tab stop, roving focus, and multi-select. TanStack Virtual renders only the rows near the view (spec FR-086). */
-function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedId, marks, files, cut, untrackedCount, section, folderReason, register, onSelect, onMark, onSpace, onToggle, onMenu, onDelete, onRowAction }: TreeListProps) {
+function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedId, marks, files, cut, untrackedCount, section, folderReason, register, onSelect, onMark, onSpace, onToggle, onMenu, onDelete, onRevert, onRowAction }: TreeListProps) {
   const scroller = useRef<HTMLDivElement>(null);
   const elements = useRef(new Map<string, HTMLElement>());
   const toFocus = useRef<string | null>(null);
@@ -792,6 +856,12 @@ function TreeList({ list, label, describedBy, rows, layout, rowHeight, selectedI
     if (del === "deleteFiles" || del === "deletePermanently") {
       event.preventDefault();
       return onDelete(row, del === "deletePermanently" ? "permanent" : "recycle", item!);
+    }
+    // Feature 008 spec FR-046: R acts on the row itself, and a held R opens at most one review.
+    if (item !== null && event.target === item && scopedAction(event.nativeEvent, list === "changes" ? "changesList" : "stagedList") === "revertFiles") {
+      event.preventDefault();
+      if (!event.repeat) onRevert(row, item);
+      return;
     }
     // Space and Enter act only on the row itself, never on a button inside it.
     if (event.key === " " || event.key === "Enter") {

@@ -5,15 +5,16 @@ import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bu
 import type { ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
-import { describedBy, expectChromiumFocus, pressKey } from "./commit-fake";
+import { describedBy, entry, expectChromiumFocus, item, pressKey } from "./commit-fake";
 import { stubLayout } from "./history-fake";
-import { alertDialog, confirmFor, diffBody, PatchDouble, plan, revertKey, selectFirstHunk, selectLines, shownDiff } from "./revert-fake";
-import { button, click, text, unmountAll } from "./sync-fake";
+import { alertDialog, confirmFor, diffBody, filesPlan, filesReviewed, markRow, openFiles, PatchDouble, plan, revertKey, rowKey, selectFirstHunk, selectLines, shownDiff } from "./revert-fake";
+import { answer, button, click, text, unmountAll } from "./sync-fake";
 
-// tasks.md T027 (feature 008, WP5). Story US1. Spec FR-008, FR-009, FR-042, FR-047. Plan D11, D12 "Modal" (boards Confirm-lines, Confirm-hunk).
+// tasks.md T027 and T031 (feature 008, WP5). Stories US1, US2. Spec FR-008 to FR-010, FR-042, FR-047. Plan D11, D12 "Modal" (boards Confirm-lines, Confirm-hunk, Confirm-files).
 
 printOrigin("../../src/frontend/changes/RevertConfirm.tsx", import.meta.dir);
 printOrigin("../../src/frontend/changes/revert-text.ts", import.meta.dir);
+printOrigin("../../src/frontend/changes/ChangesPane.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
 
 mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ children }: { children?: ReactNode }) => <>{children}</> }));
@@ -106,5 +107,74 @@ describe("revert confirmation (FR-008, FR-047)", () => {
     await pressKey(second, "Escape");
     expect(alertDialog()).toBeNull();
     expect(document.activeElement).toBe(more);
+  });
+});
+
+/** R on `paths[0]` after the rows are marked, then the review answer with `p`. */
+async function filesModal(paths: string[], p: ReturnType<typeof filesPlan>, category: "unstaged" | "staged" = "unstaged") {
+  const { double } = await openFiles(workbench, paths.map((path) => entry(category, path)));
+  const list = category === "staged" ? "Staged" : "Changes";
+  if (paths.length > 1) {
+    await click(item(list, paths[0]!));
+    await markRow(item(list, paths.at(-1)!), "range");
+  }
+  await rowKey(item(list, paths[0]!));
+  await answer(double.pending("reviewWorkbench"), filesReviewed(p));
+  return { double, dialog: alertDialog()! };
+}
+const title = (dialog: HTMLElement) => text(document.getElementById(dialog.getAttribute("aria-labelledby")!)!);
+const listed = (dialog: HTMLElement) => [...dialog.querySelectorAll("li")].map((li) => li.textContent);
+const BODY = "Arbareto sets each file to its version in the last commit, in the index and in the working file. Their staged and unstaged changes are lost.";
+
+describe("files confirmation (FR-009, FR-010, board Confirm-files)", () => {
+  test("the files texts: title, text, You cannot undo this., Cancel first with the focus, and Revert files", async () => {
+    const { double, dialog } = await filesModal(["a.ts", "b.ts"], filesPlan(["a.ts", "b.ts"]));
+    expect(title(dialog)).toBe("Revert 2 files?");
+    expect(describedBy(dialog)).toBe(BODY);
+    expect(text(dialog)).toContain("You cannot undo this.");
+    expect([...dialog.querySelectorAll("button")].map((b) => text(b))).toEqual(["Cancel", "Revert files"]);
+    expect(button("Revert files", dialog).getAttribute("data-danger")).toBe("true");
+    expect(text(document.activeElement!)).toBe("Cancel");
+    await pressKey(dialog, "r");
+    expect(double.count("runWorkbench")).toBe(0);
+  });
+
+  test("one file uses the singular texts", async () => {
+    const { dialog } = await filesModal(["a.ts"], filesPlan(["a.ts"]));
+    expect(title(dialog)).toBe("Revert 1 file?");
+    expect(describedBy(dialog)).toBe("Arbareto sets the file to its version in the last commit, in the index and in the working file. Its staged and unstaged changes are lost.");
+    expect([...dialog.querySelectorAll("button")].map((b) => text(b))).toEqual(["Cancel", "Revert file"]);
+  });
+
+  test("the first 20 paths in the plan order, then and <m> more files. or and 1 more file.", async () => {
+    const paths = Array.from({ length: 23 }, (_, i) => `f${String(i).padStart(2, "0")}.ts`);
+    // The service gives the tree order; the renderer keeps it.
+    const order = [...paths].reverse();
+    const { dialog } = await filesModal(paths, filesPlan(order));
+    expect(title(dialog)).toBe("Revert 23 files?");
+    expect(listed(dialog)).toEqual(order.slice(0, 20));
+    expect(text(dialog)).toContain("and 3 more files.");
+    await unmountAll();
+
+    const one = await filesModal(paths.slice(0, 21), filesPlan(paths.slice(0, 21)));
+    expect(listed(one.dialog)).toHaveLength(20);
+    expect(text(one.dialog)).toContain("and 1 more file.");
+    expect(text(one.dialog)).not.toContain("more files.");
+  });
+
+  test("the new-files line, singular and plural", async () => {
+    const { dialog } = await filesModal(["a.ts", "b.ts"], filesPlan(["a.ts", "b.ts"], { newFiles: 1, staged: 1, unstaged: 0 }), "staged");
+    expect(text(dialog)).toContain("The last commit does not have 1 of these files. Arbareto unstages it and keeps the file. Git then shows it as untracked.");
+    await unmountAll();
+
+    const two = await filesModal(["a.ts", "b.ts", "c.ts"], filesPlan(["a.ts", "b.ts", "c.ts"], { newFiles: 2, staged: 3, unstaged: 0 }), "staged");
+    expect(text(two.dialog)).toContain("The last commit does not have 2 of these files. Arbareto unstages them and keeps the files. Git then shows them as untracked.");
+  });
+
+  test("paths show as plain text", async () => {
+    const path = '<img src="x" onerror="1">.ts';
+    const { dialog } = await filesModal([path], filesPlan([path]));
+    expect(listed(dialog)).toEqual([path]);
+    expect(dialog.querySelector("img")).toBeNull();
   });
 });

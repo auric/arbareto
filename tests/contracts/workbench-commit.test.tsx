@@ -470,7 +470,7 @@ describe("Untracked menu and ignore items (FR-045, FR-046, plan D9)", () => {
     await openCommitView(createWorld({ entries: board().all }));
     await click(item("Changes", "Untracked"));
     await contextMenu(item("Changes", "logs"));
-    expect(menuItems().map(itemLabel)).toEqual(["Stage folder", "Copy path", "Show in Explorer", "Add to .gitignore…", "Add to info/exclude…", "Delete…", "Delete permanently…"]);
+    expect(menuItems().map(itemLabel)).toEqual(["Stage folder", "Copy path", "Show in Explorer", "Add to .gitignore…", "Add to info/exclude…", "Revert file…", "Delete…", "Delete permanently…"]);
     for (const i of menuItems()) expect(i.getAttribute("aria-label")).toBeNull();
     expect(menuItem("Stage folder").getAttribute("aria-keyshortcuts")).toBe("Space");
     expect(menuItem("Stage folder").querySelector('[data-slot="dropdown-menu-shortcut"][aria-hidden="true"]')?.textContent).toBe("Space");

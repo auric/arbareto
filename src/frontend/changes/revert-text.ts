@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
+import type { ChangeEntry, RevertFileOutcome, RevertFilesPlan } from "../../contracts/envelope";
+import { compareKeys, treeKey } from "../../contracts/tree-order";
 import type { BridgeResponse } from "../bridge";
 import { TEXTS } from "../integrate/texts";
 import { pathText } from "./file-actions";
@@ -10,6 +12,7 @@ import { LIMITATION_TEXT } from "./limitation-text";
 // Feature 008 plan.md D11 (texts approved with the T022 mockup on 2026-10-31), spec FR-009, FR-011, FR-017, FR-038 to FR-041.
 
 const lineCount = (n: number) => (n === 1 ? "1 line" : `${formatCount(n)} lines`);
+const fileCount = (n: number) => (n === 1 ? "1 file" : `${formatCount(n)} files`);
 
 export const NO_UNDO = "You cannot undo this.";
 export const NO_HUNK = "No hunk is selected.";
@@ -24,6 +27,10 @@ export const REVERT_UNAVAILABLE = (action: string) => `${action} is unavailable.
 export const REVERT_HUNK_LABEL = "Revert hunk…";
 export const revertLinesLabel = (n: number) => `Revert ${lineCount(n)}…`;
 export const actionName = (label: string) => label.replace(/…$/, "");
+export const revertFilesLabel = (n: number) => (n === 1 ? "Revert file…" : `Revert ${formatCount(n)} files…`);
+export const FOLDER_REASON = "Arbareto does not revert a folder. Select its files.";
+/** Feature 005 FR-026 form. */
+export const MORE_FILES = (m: number) => (m === 1 ? "and 1 more file." : `and ${formatCount(m)} more files.`);
 
 export type RevertLinesPlan = { scope: "unstaged" | "staged"; fileBytes: string; lines: number | null };
 
@@ -38,6 +45,24 @@ export function revertConfirmTexts(plan: RevertLinesPlan): { title: string; body
   if (plan.lines === null) return { title: `Revert this ${staged}hunk in ${file}?`, body: BODY[plan.scope], button: "Revert hunk" };
   const n = plan.lines;
   return { title: `Revert ${n === 1 ? `1 ${staged}line` : `${formatCount(n)} ${staged}lines`} in ${file}?`, body: BODY[plan.scope], button: n === 1 ? "Revert line" : "Revert lines" };
+}
+
+/** Spec FR-009 and FR-010: the texts of a files plan. `newFiles` is the added line, or null. */
+export function revertFilesTexts(plan: RevertFilesPlan): { title: string; body: string; button: string; newFiles: string | null; more: number } {
+  const one = plan.count === 1;
+  const k = plan.newFiles;
+  return {
+    title: `Revert ${fileCount(plan.count)}?`,
+    body: one
+      ? "Arbareto sets the file to its version in the last commit, in the index and in the working file. Its staged and unstaged changes are lost."
+      : "Arbareto sets each file to its version in the last commit, in the index and in the working file. Their staged and unstaged changes are lost.",
+    button: one ? "Revert file" : "Revert files",
+    newFiles:
+      k === 0 ? null
+      : k === 1 ? "The last commit does not have 1 of these files. Arbareto unstages it and keeps the file. Git then shows it as untracked."
+      : `The last commit does not have ${formatCount(k)} of these files. Arbareto unstages them and keeps the files. Git then shows them as untracked.`,
+    more: plan.count - plan.paths.length,
+  };
 }
 
 /** Spec FR-038 line reasons, with the revert texts. */
@@ -71,6 +96,27 @@ export function revertReason(reason: string, file: string, lines = false): strin
   return texts[reason] ?? LINE_REVERT_TEXT[reason as keyof typeof LINE_REVERT_TEXT] ?? LIMITATION_TEXT[reason as keyof typeof LIMITATION_TEXT];
 }
 
+// The FR-038 texts that name their file. BLOCKED_BY adds no path prefix to them (plan D11).
+const NAMES_FILE: ReadonlySet<string> = new Set(["attributes", "not-regular", "hard-link", "read-only", "owner", "in-the-way", "encrypted", "file-attributes", "security", "xattr", "stale"]);
+/** Plan D11 `BLOCKED_BY`: "<path>: <reason>" for one file of several. */
+export function blockedBy(path: string, reason: string): string {
+  const text = revertReason(reason, path) ?? reason;
+  return NAMES_FILE.has(reason) ? text : `${path}: ${text}`;
+}
+/** The FR-038 reason of an entry from the status read alone: porcelain v2 `?` (untracked) and `<sub>` that starts with `S` (submodule). */
+export const entryRevertReason = (e: ChangeEntry): string | null => (e.category === "untracked" ? "untracked" : e.submodule?.startsWith("S") === true ? "submodule" : null);
+/** Feature 005 FR-015 tree order. A submodule and a nested repository (a path that ends with `/`) sort as folders. */
+export function inTreeOrder<T extends { pathBytes: string; submodule?: string | null }>(entries: readonly T[]): T[] {
+  return entries
+    .map((entry) => {
+      const raw = Uint8Array.from(atob(entry.pathBytes), (c) => c.charCodeAt(0));
+      const nested = raw.at(-1) === 0x2f;
+      return { entry, key: treeKey(nested ? raw.subarray(0, -1) : raw, nested || entry.submodule?.startsWith("S") === true) };
+    })
+    .sort((a, b) => compareKeys(a.key, b.key))
+    .map((k) => k.entry);
+}
+
 type Refusal = { reason?: unknown; remedy?: { text?: unknown }; unmerged?: unknown; files?: { path: string; reason: string }[] };
 const coded = (response: BridgeResponse, reason: unknown) => `${response.code ?? response.state}${typeof reason === "string" ? ` ${reason}` : ""}`;
 
@@ -87,7 +133,7 @@ export function reviewRefusal(response: BridgeResponse, file: string, lines: boo
   return text ?? coded(response, reason);
 }
 
-type FileOutcome = { entryId: string; outcome: string; code?: string; reason?: string };
+type FileOutcome = RevertFileOutcome;
 type RevertRun = { action: string; files: FileOutcome[]; index: string };
 const isRun = (result: unknown): result is RevertRun => typeof result === "object" && result !== null && Array.isArray((result as { files?: unknown }).files);
 
@@ -114,4 +160,42 @@ export function revertLinesOutcome(response: BridgeResponse, plan: RevertLinesPl
   if (o.outcome === "reverted" && response.state === "succeeded") return plan.lines === null ? `Arbareto reverted a hunk in ${file}.` : `Arbareto reverted ${lineCount(plan.lines)} in ${file}.`;
   if (o.outcome === "reverted") return undefined;
   return outcomeLine(file, o, plan.lines !== null);
+}
+
+/** Spec FR-022 and plan D11 `REVERT_UNAVAILABLE`: the status-area lines of a refused files review. */
+export function revertFilesRefusal(response: BridgeResponse): string[] {
+  const r = (response.result ?? {}) as Refusal & { more?: unknown };
+  if (r.files === undefined) return [reviewRefusal(response, "", false)];
+  const lines = r.files.map((f) => blockedBy(pathText(f.path), f.reason));
+  return typeof r.more === "number" && r.more > 0 ? [...lines, MORE_FILES(r.more)] : lines;
+}
+
+// Plan D11 `REVERT_COUNTS`, in the FR-039 order.
+const COUNT_PART: [RevertFileOutcome["outcome"], string][] = [
+  ["reverted", "reverted"],
+  ["unstaged-only", "unstaged only"],
+  ["not-changed", "not changed"],
+  ["changed-outside", "changed outside Arbareto"],
+  ["not-started", "not started"],
+];
+/** Spec FR-040: the status line and the status-area lines of a files run. Undefined keeps the 001 coded line. */
+export function revertFilesOutcome(response: BridgeResponse, entries: ReadonlyMap<string, ChangeEntry>, entryIds: readonly string[]): { text: string; lines: string[] } | undefined {
+  const reason = (response.result as { reason?: unknown } | undefined)?.reason;
+  if (response.code === "APPROVAL_EXPIRED") return { text: REVERT_EXPIRED, lines: [] };
+  // The STALE_REVIEW value names no file, so only a one-file run can name it.
+  const only = entryIds.length === 1 ? entries.get(entryIds[0]!) : undefined;
+  if (response.code === "STALE_REVIEW" && reason === "revert-changed") return only === undefined ? undefined : { text: revertReason("stale", only.path)!, lines: [] };
+  const result = response.result;
+  if (!isRun(result)) return undefined;
+  const all = result.files;
+  if (response.state === "succeeded" && all.every((o) => o.outcome === "reverted")) return { text: `Arbareto reverted ${fileCount(all.length)}.`, lines: [] };
+  const text = COUNT_PART.flatMap(([outcome, word]) => {
+    const n = all.filter((o) => o.outcome === outcome).length;
+    return n === 0 ? [] : [`${fileCount(n)} ${word}.`];
+  }).join(" ");
+  const missed = all.filter((o) => o.outcome !== "reverted").map((o) => ({ o, entry: entries.get(o.entryId) }));
+  const known = inTreeOrder(missed.flatMap((m) => (m.entry === undefined ? [] : [{ ...m, pathBytes: m.entry.pathBytes, submodule: m.entry.submodule }])));
+  const ordered = [...known, ...missed.filter((m) => m.entry === undefined)];
+  const lines = ordered.slice(0, 20).map(({ o, entry }) => outcomeLine(entry?.path ?? o.entryId, o, false));
+  return { text, lines: ordered.length > 20 ? [...lines, MORE_FILES(ordered.length - 20)] : lines };
 }

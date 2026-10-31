@@ -6,7 +6,7 @@
 import { act, type ReactNode } from "react";
 import type { ChangeEntry } from "../../src/contracts/envelope";
 import { fixtureId } from "./bridge-contract";
-import { entry, openCommitView, pressKey } from "./commit-fake";
+import { b64, entry, openCommitView, pressKey } from "./commit-fake";
 import { answer, button, click, createWorld, settle, succeeded } from "./sync-fake";
 
 type WorkbenchModule = typeof import("../../src/frontend/app/Workbench");
@@ -80,4 +80,32 @@ export const reviewed = (p: ReturnType<typeof plan>) => succeeded({ action: "rev
 export async function confirmFor(double: Awaited<ReturnType<typeof shownDiff>>["double"], p: ReturnType<typeof plan>) {
   await answer(double.pending("reviewWorkbench"), reviewed(p));
   return alertDialog()!;
+}
+
+// Feature 008 T031: the Changes and Staged list helpers of the Revert file tests.
+
+/** Contract `RevertFilesPlan`: `paths` holds the first 20 paths in the given order. */
+export const filesPlan = (paths: string[], fields: Partial<{ count: number; newFiles: number; staged: number; unstaged: number }> = {}) => {
+  const count = fields.count ?? paths.length;
+  return { count, paths: paths.slice(0, 20).map(b64), newFiles: 0, staged: 0, unstaged: count, ...fields };
+};
+export const filesReviewed = (p: ReturnType<typeof filesPlan>) => succeeded({ action: "revert-files", plan: p, workbenchToken: TOKEN });
+
+/** Opens the Commit view with `entries`. */
+export async function openFiles(module: WorkbenchModule, entries: ChangeEntry[]) {
+  const world = createWorld({ entries });
+  const double = await openCommitView(module, world);
+  return { world, double };
+}
+
+/** Ctrl+click toggles the mark of a row, and Shift+click marks the range from the anchor. */
+export async function markRow(row: HTMLElement, mode: "toggle" | "range" = "toggle") {
+  await act(async () => void row.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, ctrlKey: mode === "toggle", shiftKey: mode === "range" })));
+  await settle();
+}
+
+/** R on a list row. */
+export async function rowKey(row: HTMLElement, init: KeyboardEventInit = {}) {
+  await act(async () => row.focus());
+  return pressKey(row, "r", init);
 }

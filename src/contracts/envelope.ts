@@ -1661,6 +1661,7 @@ const RevertFilesPlan = z
   .strictObject({ ...confirmationPaths, newFiles: Count, staged: Count, unstaged: Count })
   .refine((p) => firstPaths(p) && p.staged <= p.count && p.unstaged <= p.count && p.newFiles <= p.staged)
   .meta({ title: "RevertFilesPlan" });
+export type RevertFilesPlan = z.infer<typeof RevertFilesPlan>;
 // `submodules`: the covered entries that stay unchanged. The renderer computes the hidden count.
 const RevertUnstagedPlan = z
   .strictObject({ ...confirmationPaths, submodules: Count })
@@ -1910,6 +1911,7 @@ const RevertFileOutcome = z
   })
   .refine((o) => (o.code === undefined || o.outcome === "not-changed") && (o.reason === undefined ? o.code === undefined || !Object.hasOwn(REVERT_REASONS, o.code) : o.code !== undefined && Object.hasOwn(REVERT_REASONS, o.code) && REVERT_REASONS[o.code]!.includes(o.reason)))
   .meta({ title: "RevertFileOutcome" });
+export type RevertFileOutcome = z.infer<typeof RevertFileOutcome>;
 // Contract Δ6: each `fileReplace` creates at most FILE_FACT_ENTRIES folders.
 const RevertRun = z
   .strictObject({

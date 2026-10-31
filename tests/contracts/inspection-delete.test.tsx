@@ -62,7 +62,7 @@ describe("row menu (CommitActions board, plan D15)", () => {
   test("an untracked file row shows the three groups in order, with the labelled Delete from disk group", async () => {
     await setup([entry("untracked", "notes.txt")]);
     await contextMenu(item("Changes", "notes.txt"));
-    expect(menuLabels()).toEqual(["Stage file", "Blame", "Copy path", "Show in Explorer", "Add to .gitignore…", "Add to info/exclude…", "Delete…", "Delete permanently…"]);
+    expect(menuLabels()).toEqual(["Stage file", "Blame", "Copy path", "Show in Explorer", "Add to .gitignore…", "Add to info/exclude…", "Revert file…", "Delete…", "Delete permanently…"]);
     expect(groupLabels()).toEqual(["Delete from disk"]);
     expect(menuItem("Delete…").getAttribute("aria-keyshortcuts")).toBe("Delete");
     expect(menuItem("Delete permanently…").getAttribute("aria-keyshortcuts")).toBe("Shift+Delete");
@@ -79,18 +79,18 @@ describe("row menu (CommitActions board, plan D15)", () => {
   test("a tracked file row has no ignore group; a staged row has no Delete group (FR-020)", async () => {
     await setup([entry("unstaged", "a.ts"), entry("staged", "b.ts")]);
     await contextMenu(item("Changes", "a.ts"));
-    expect(menuLabels()).toEqual(["Stage file", "Blame", "Copy path", "Show in Explorer", "Delete…", "Delete permanently…"]);
+    expect(menuLabels()).toEqual(["Stage file", "Blame", "Copy path", "Show in Explorer", "Revert file…", "Delete…", "Delete permanently…"]);
     expect(describedBy(menuItem("Blame"))).toBe("");
     await pressKey(document.activeElement ?? document.body, "Escape");
     await contextMenu(item("Staged", "b.ts"));
-    expect(menuLabels()).toEqual(["Unstage file", "Blame", "Copy path", "Show in Explorer"]);
+    expect(menuLabels()).toEqual(["Unstage file", "Blame", "Copy path", "Show in Explorer", "Revert file…"]);
     expect(groupLabels()).toEqual([]);
   });
 
   test("a submodule row offers Open submodule and no Blame, and Delete states the submodule reason", async () => {
     await setup([entry("unstaged", "lib", { submodule: "SC..", xy: ".M" })]);
     await contextMenu(item("Changes", "lib"));
-    expect(menuLabels()).toEqual(["Stage file", "Open submodule", "Copy path", "Show in Explorer", "Delete…", "Delete permanently…"]);
+    expect(menuLabels()).toEqual(["Stage file", "Open submodule", "Copy path", "Show in Explorer", "Revert file…", "Delete…", "Delete permanently…"]);
     expect(describedBy(menuItem("Delete…"))).toBe("Arbareto does not delete a submodule.");
     expect(describedBy(menuItem("Delete permanently…"))).toBe("Arbareto does not delete a submodule.");
   });
@@ -98,7 +98,7 @@ describe("row menu (CommitActions board, plan D15)", () => {
   test("a folder row offers Show in Explorer without a reason (spec FR-018)", async () => {
     await setup([entry("untracked", "logs/1.log"), entry("untracked", "logs/2.log")]);
     await contextMenu(item("Changes", "logs"));
-    expect(menuLabels()).toEqual(["Stage folder", "Copy path", "Show in Explorer", "Add to .gitignore…", "Add to info/exclude…", "Delete…", "Delete permanently…"]);
+    expect(menuLabels()).toEqual(["Stage folder", "Copy path", "Show in Explorer", "Add to .gitignore…", "Add to info/exclude…", "Revert file…", "Delete…", "Delete permanently…"]);
     expect(describedBy(menuItem("Show in Explorer"))).toBe("");
   });
 

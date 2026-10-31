@@ -372,6 +372,25 @@ test("parsed paths stay unchanged after the caller overwrites a pushed Buffer ch
   expect(result.records.map((r) => Buffer.from(r.path.bytes).toString("latin1"))).toEqual(["split.txt", "whole.txt"]);
 });
 
+// T105: the fixed fields convert byte by byte to char codes. The record sits at a nonzero chunk offset.
+test("each of the 256 byte values in X converts to its char code, and only git-status(1) letters parse", () => {
+  const oid = "a".repeat(40);
+  const head = Buffer.from(`# branch.oid ${oid}\0# branch.head main\0`);
+  const accepted: string[] = [];
+  for (let b = 0; b < 256; b++) {
+    const record = Buffer.concat([Buffer.from("1 "), Buffer.from([b]), Buffer.from(`. N... 100644 100644 100644 ${oid} ${oid} p\0`)]);
+    const parser = createStatusParser("sha1");
+    parser.push(Buffer.concat([head, record]));
+    const result = parser.end();
+    if (result.state !== "complete") continue;
+    const r = result.records[0]!;
+    expect("xy" in r && r.xy).toBe(`${String.fromCharCode(b)}.`);
+    accepted.push(String.fromCharCode(b));
+  }
+  // git-status(1) porcelain v2: an ordinary record takes `.MTADRC` in X.
+  expect(accepted.sort()).toEqual([..."ACDMRT."].sort());
+});
+
 describeGit("status parser (T285)", (git) => {
   const outputs = new Map<string, Output>();
   const run = (repo: string, args: string[], allowExit = [0]) => ownedGit(git, FIXTURE_ROOT, repo, args, { allowExit });

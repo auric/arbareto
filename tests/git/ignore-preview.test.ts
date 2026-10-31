@@ -595,3 +595,27 @@ describe("an equal full read keeps the snapshot (001 data-model §4 \"Status sna
     TIMEOUT_MS,
   );
 });
+
+// 001 contract §11 "Change polling": SHA-256 equality of the index proves the same bytes, so the base takes the snapshot index entries.
+describe("the base takes the snapshot index entries while the index bytes stay equal (plan.md D9 \"Base\")", () => {
+  const isStage = (c: { arguments: readonly string[] }) => subcommand(c.arguments) === "ls-files" && c.arguments.includes("--stage") && c.arguments.includes("-v");
+  caseTest("T105", "an unchanged index runs no index listing, and an index changed after the read runs it; both previews equal Git's listing", SHELL, () =>
+    withService({ name: "t105-reuse" }, async (service) => {
+      const f = report();
+      const { r, read } = await open(service, f);
+      const text = `${REPORT_ROOT_TEXT}emptyign/\n*.txt\n`;
+      const from = service.runner.calls.length;
+      const got = await previewed(service, r, read, "gitignore", text);
+      expect(service.runner.calls.slice(from).filter(isStage).length).toBe(0);
+      expect({ newlyIgnored: got.newlyIgnored, noLongerIgnored: got.noLongerIgnored, trackedMatched: got.trackedMatched }).toEqual(oracle(f.repo, `t105-oracle-${++builds}`, ".gitignore", Buffer.from(text)));
+      const tracked = records(git(f.repo, ["ls-files", "-z"])).find((p) => !p.includes(".gitignore"))!;
+      git(f.repo, ["update-index", "--assume-unchanged", "--", tracked]);
+      const exclude = "*.txt\n!untr/b.txt\n";
+      const second = service.runner.calls.length;
+      const changed = await previewed(service, r, read, "exclude", exclude);
+      expect(service.runner.calls.slice(second).filter(isStage).length).toBe(1);
+      expect({ newlyIgnored: changed.newlyIgnored, noLongerIgnored: changed.noLongerIgnored, trackedMatched: changed.trackedMatched }).toEqual(oracle(f.repo, `t105-oracle-${++builds}`, ".git/info/exclude", Buffer.from(exclude)));
+    }),
+    TIMEOUT_MS,
+  );
+});

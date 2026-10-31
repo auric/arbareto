@@ -568,6 +568,21 @@ WP6 (T043 to T046), review of 205a70b (diff fef5c75..205a70b), fixes in f72b3b7,
 - SC-009 Delete: pass, pass. 25 and 32 probes; p95 40 and 64 ms; max 56 and 88 ms (the Enter).
 - Controls, one run each: SC-002 bound 1 MiB, SC-005 per-pattern cost 0 ms, and SC-009 probe minimum 1,000 failed. SC-007 allowance 0 ms passed, because Open submodule was faster than the normal open in that run. SC-007 allowance -1,000 ms failed. Each file was restored with the same SHA-256.
 
+**Read and preview speed of 2026-10-27 (T105).** The first SC-005 preview missed 5 s with `/big`. A CPU profile and the Git call timeline of the 100,000-entry fixture gave three causes. The logs are in local scratch.
+- `fingerprintOf` gave the hasher 4 updates and 3 allocations for each field, 7 fields per index entry. A full read spent about 0.84 s there.
+- The status parser `latin1` built its string one char per byte. A full read spent about 0.5 s there.
+- The first preview ran `ls-files -z --stage -v` (6.4 MB) again. The status read had kept the same listing in the snapshot `indexEntries`. With a full read 380 ms before the preview, that listing waited about 2.2 s.
+- Fix 1: the digest collects the same bytes in one 64 KiB buffer and gives the hasher few large updates. A test compares the digest with the old form on 6 entry sets, also above the buffer size.
+- Fix 2: `latin1` uses `Buffer.toString("latin1")`. A test parses each of the 256 byte values in X.
+- Fix 3: the base takes the snapshot `indexEntries` only when the raw index and shared index SHA-256 equal the snapshot `indexFingerprint` (001 contract §11 "Change polling"). Else, and for a WSL workspace, the listing runs. Control: with the listing always on, the no-listing test failed.
+- Bun shell double, 4 rounds each, `main` e0d5799c against T105. Full read: 3,013 to 3,834 ms before, 1,561 to 1,730 ms after.
+- First preview with a full read 380 ms before: 4,209 to 4,492 ms before, 2,631 to 2,850 ms after. Alone: 2,641 to 2,811 ms before, 1,630 to 1,966 ms after.
+- Later previews did not change: 821 to 1,061 ms before, 853 to 1,111 ms after.
+- Packaged, T105 build installed (service SHA-256 prefix ed70d55a), two runs, both cases passed in both runs.
+- SC-005 with `big/` (bound 8,550 ms): first previews, medians 5,225 and 5,606 ms, maxima 5,614 and 6,065 ms. Later previews: medians 2,326 and 2,485 ms.
+- SC-005 with `/big` (bound 5,000 ms): first previews, medians 2,941 and 3,288 ms, maxima 3,072 and 3,482 ms. Later previews: medians 1,266 and 1,418 ms.
+- The T103 runs before T105 gave first-preview medians of 5,294 and 4,957 ms with `/big`.
+
 ## Plan review 2026-10-21
 
 The independent plan review of 2026-10-21 found no Critical issue and three High issues in the Delete design. First, the `PreDeleteItem` check compares the held handle with itself and must compare the identity of `psiItem` instead. Second, the WSL `delete` and `replace` modes act by full path and must hold each folder through `chdir` with a device and inode check. Third, the held folder handles block the deepest-first folder removal. The review also found that a folder on the path can become a junction after it is emptied, so the FR-031 limit must name that case too. In the ignore preview, the `--no-index` self-check cannot agree with the shadow for a skip-worktree `.gitignore`. The fix is a typed limit or a self-check against the index-aware listings. The 2 MiB request bound needs base64 text, and the single-file patch read must keep only sections whose paths match exactly. The rest of the method is exact for the report cases, and it runs no repository program before trust approval. The blame and History diff commands are correct apart from two small fixes: `--inter-hunk-context=0` for the line map, and `config --type=path` for the ignore list.

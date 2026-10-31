@@ -228,11 +228,7 @@ export function createStatusParser(objectFormat: ObjectFormat): StatusParser {
     partBytes = 0;
     return out;
   };
-  const latin1 = (b: Uint8Array) => {
-    let s = "";
-    for (const c of b) s += String.fromCharCode(c);
-    return s;
-  };
+  const latin1 = (b: Uint8Array) => Buffer.from(b.buffer, b.byteOffset, b.byteLength).toString("latin1");
   const isOid = (value: string) => isObjectId(value, objectFormat);
   const limited = (reason: StatusBound) => {
     final = { state: "limited", code: "OUTPUT_LIMIT", reason, branch: { ...branch }, records };

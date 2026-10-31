@@ -358,6 +358,12 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - [ ] T103 Encode the user budget decisions of 2026-10-27 for SC-002, SC-005, SC-007, and SC-009 in spec.md, plan.md, quickstart.md Q6, Q21, Q26, and Q32, research.md "Budget decisions of 2026-10-27", `tests/windows/inspection-perf.test.ts`, and `tests/windows/inspection-packaged.test.ts` (P9, WP8). `Local: package`. SC-002: the peak growth bound is 624 MiB, the highest recorded 559.8 MiB plus 64 MiB; the case also logs the settled growth. SC-005: the bound is 5 s plus 3.55 s for each directory-only pattern that the case counts in the fixture ignore files; a second case with `/big` in place of `big/` must meet 5 s. SC-007: a normal open is Ctrl+R and Enter on the recent entry, timed from the Enter keydown; Open submodule and the parent button may take 150 ms more. SC-009: the Delete case sends at least 20 probes, one each 50 ms, and the Enter counts. Then run each changed case twice on the installed app. Control mutations: SC-002 bound 1 MiB, SC-005 per-pattern cost 0 ms, SC-007 allowance -1,000 ms (0 ms can pass when Open submodule is faster), SC-009 probe minimum 1,000; each case must fail. Spec: SC-002, SC-005, SC-007, SC-009.
 - [ ] T104 [US1] Page the changed-files list of `readCommitChanges` as the History list pages (plan.md D3, feature 002 History pages), so the 100,001-file commit stays within 64 MiB. Then restore the 64 MiB SC-002 bound in spec.md, plan.md, quickstart.md Q6, and `tests/windows/inspection-perf.test.ts`, and run Q6 twice on a new package. After the v0.1.0 release. Spec: SC-002, FR-012.
 
+### Read and preview speed (2026-10-27)
+
+**Agent**: implementer. Tests first, with the red output kept.
+
+- [ ] T105 [US5] Cut the status read and first preview cost on the 100,000-entry fixture in `src/git-service/snapshot.ts`, `src/git-service/status-parser.ts`, `src/git-service/ignore-preview.ts`, and `src/git-service/session.ts` (P9, WP8). `Local: package`. Cause: (1) `fingerprintOf` gave the hasher 4 updates and 3 allocations per field, about 0.84 s; (2) the status parser `latin1` built a string per byte, about 0.5 s; (3) the first preview ran `ls-files -z --stage -v` again, and that listing waited about 2.2 s behind a concurrent full read. Fix: (1) the digest collects the same bytes in one 64 KiB buffer; (2) `latin1` uses `Buffer.toString("latin1")`; (3) the base takes the snapshot `indexEntries` when the raw index and shared index SHA-256 equal the snapshot `indexFingerprint` (001 contract §11 "Change polling"). A WSL workspace and every other case run the listing. Tests: the digest equals the old form on varied entries; all 256 bytes in X; no index listing for an unchanged index, one after `update-index`. Control mutation: always run the listing; the no-listing case must fail. Then run the packaged SC-005 `big/` and `/big` cases twice. Record the numbers in research.md "Read and preview speed of 2026-10-27". Spec: SC-005, FR-041.
+
 ### Batch 4 verification
 
 - [ ] T063 Run the batch 4 verification: `bun install --frozen-lockfile`, `bun run build`, `bun run typecheck`, `bun run export:schemas --check`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, `bun run test:all` with `ARBARETO_WSL_DISTRO=Ubuntu-26.04`, then `bun run build:service` and `bun run test:windows`. `Local: Rust`. `Local: WSL`. `Local: package`. Pass condition: every command exits 0 with `ORIGIN` lines under this checkout. Copy every record into research.md R17. Control mutation: in `tests/windows/inspection-perf.test.ts`, lower the 500 ms bound to 1 ms. The test must fail. Undo the edit and rerun green. The task passes only after one independent review of batch 4 is recorded in research.md. Spec: SC-001 to SC-011. Depends on T059 to T062, T078 to T086, T093 to T097, T101, and T103.
@@ -380,6 +386,7 @@ description: "Task list for the History Inspection and Commit View File Actions 
 - Blame focus fix (T100): after T044. Then T063 runs again.
 - Packaged harness fixes (T101): after T099. Then T063 runs again.
 - Budget decisions (T103): after T101. Then T063 runs again. T104: after the v0.1.0 release.
+- Read and preview speed (T105): after T103. Then T063 runs again.
 - Renderer performance fixes (T090, T091, T102): after T083. They need a new package before the packaged Q6 and Q32 reruns. Then T063 runs again.
 
 ### Changes to earlier requirements and their tasks
@@ -423,7 +430,7 @@ Then:          T027
 | FR-015 to FR-017 (US3) | T001, T003, T007, T010, T032, T034, T043, T048, T090 |
 | FR-018 to FR-019 (US4) | T012, T013, T015, T036, T038, T048, T052, T060, T092, T099 |
 | FR-020 to FR-033 (US2) | T012 to T014, T028 to T030, T032, T039, T048, T053, T059, T060, T073, T076, T078, T082 |
-| FR-034 to FR-046 (US5) | T013 to T015, T028 to T031, T033, T034, T037, T040, T041, T049, T054, T057, T059, T067, T074, T078, T079, T081, T086, T087, T093 to T098 |
+| FR-034 to FR-046 (US5) | T013 to T015, T028 to T031, T033, T034, T037, T040, T041, T049, T054, T057, T059, T067, T074, T078, T079, T081, T086, T087, T093 to T098, T105 |
 | FR-047 to FR-052 (US6) | T013, T015, T030, T035, T042, T050, T055, T059, T060, T066 |
 | FR-053 to FR-063 (US7) | T016 to T018, T020, T022, T024, T026, T065, T044, T046, T048, T052, T061, T071, T072, T100 |
 | FR-064 to FR-066 (US8, US9) | T006, T008, T009, T011, T018, T069, T075, T080 |
@@ -433,7 +440,7 @@ Then:          T027
 | SC-002 | T021, T061, T083, T090, T103, T104 |
 | SC-003 | T012, T032, T059, T060, T078, T085 |
 | SC-004 | T001, T007, T027 |
-| SC-005 | T034, T059, T061, T078, T081, T084, T085, T087, T101, T103 |
+| SC-005 | T034, T059, T061, T078, T081, T084, T085, T087, T101, T103, T105 |
 | SC-006 | T022, T061, T084, T099, T101 |
 | SC-007 | T035, T060, T092, T103 |
 | SC-008 | T006, T008, T027 |

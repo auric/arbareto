@@ -11,6 +11,7 @@ import {
   indexFingerprint,
   policyFingerprint,
   readWorkingVersion,
+  retainedIndexFingerprint,
   type Checked,
   type Head,
   type IndexEntry,
@@ -222,6 +223,65 @@ describe("indexFingerprint (data-model §4, research.md R2)", () => {
     },
     TIMEOUT_MS,
   );
+});
+
+// T105: the digest bytes stay those of the one-update-per-part form. Snapshots compare digests across reads.
+describe("indexFingerprint digest bytes (data-model §4)", () => {
+  type Part = Parameters<typeof retainedIndexFingerprint>[0];
+  const oldDigest = ({ rawIndexDigest, sharedIndex }: Part, objectFormat: "sha1" | "sha256", entries: readonly IndexEntry[]): string => {
+    const hasher = new Bun.CryptoHasher("sha256");
+    const length = (n: number) => {
+      const bytes = new Uint8Array(8);
+      new DataView(bytes.buffer).setBigUint64(0, BigInt(n));
+      hasher.update(bytes);
+    };
+    const field = (tag: string, value: string | Uint8Array | number | boolean | null) => {
+      const tagBytes = Buffer.from(tag, "utf8");
+      length(tagBytes.length);
+      hasher.update(tagBytes);
+      if (value === null) {
+        length(0);
+        length(0);
+        return;
+      }
+      const bytes = value instanceof Uint8Array ? value : Buffer.from(String(value), "utf8");
+      length(1);
+      length(bytes.length);
+      hasher.update(bytes);
+    };
+    field("objectFormat", objectFormat);
+    field("rawIndex", rawIndexDigest);
+    field("link", sharedIndex?.hash ?? null);
+    field("sharedIndex", sharedIndex?.digest ?? null);
+    field("entries", entries.length);
+    for (const e of entries) {
+      for (const [tag, value] of [["path", e.path], ["stage", e.stage], ["mode", e.mode], ["oid", e.oid]] as const) field(tag, value);
+      for (const [tag, value] of [["intentToAdd", e.intentToAdd], ["assumeUnchanged", e.assumeUnchanged], ["skipWorktree", e.skipWorktree]] as const) field(tag, value);
+    }
+    return hasher.digest("hex");
+  };
+  const entry = (i: number, path: Uint8Array, oid: string): IndexEntry => ({
+    path,
+    stage: (i % 4) as IndexEntry["stage"],
+    mode: ["100644", "100755", "120000", "160000", "040000"][i % 5]!,
+    oid,
+    intentToAdd: i % 2 === 0,
+    assumeUnchanged: i % 3 === 0,
+    skipWorktree: i % 5 === 0,
+  });
+  const allBytes = new Uint8Array(255).map((_, i) => i + 1);
+  const cases: [string, Part, "sha1" | "sha256", IndexEntry[]][] = [
+    ["empty index", { rawIndexDigest: null, sharedIndex: null }, "sha1", []],
+    ["split index without a shared file", { rawIndexDigest: "a".repeat(64), sharedIndex: { hash: "0".repeat(40), digest: null } }, "sha1", [entry(0, Buffer.from("é/中.txt"), "b".repeat(40))]],
+    ["split index, sha256", { rawIndexDigest: "c".repeat(64), sharedIndex: { hash: "d".repeat(64), digest: "e".repeat(64) } }, "sha256", [entry(1, allBytes, "f".repeat(64))]],
+    ["non-ASCII and lone-surrogate text", { rawIndexDigest: "\ud800é漢\u{1f600}", sharedIndex: null }, "sha1", [entry(2, Buffer.from([0xff, 0x00, 0x80]), "1".repeat(40))]],
+    ["text and a path above the 64 KiB buffer", { rawIndexDigest: "x".repeat(70_000), sharedIndex: null }, "sha1", [entry(3, new Uint8Array(200_000).fill(0x61), "2".repeat(40))]],
+    ["5,000 entries across buffer flushes", { rawIndexDigest: "9".repeat(64), sharedIndex: null }, "sha1", Array.from({ length: 5000 }, (_, i) => entry(i, Buffer.from(`dir${i % 97}/file-${i}-${"z".repeat(i % 300)}`), i.toString(16).padStart(40, "0")))],
+  ];
+  for (const [label, part, format, entries] of cases)
+    caseTest("T105", `${label}: the digest equals the one-update-per-part digest`, [], () => {
+      expect({ label, digest: okValue(retainedIndexFingerprint(part, format, entries)).digest }).toEqual({ label, digest: oldDigest(part, format, entries) });
+    });
 });
 
 describe("splitIndexLink index walk (Git gitformat-index.adoc)", () => {

@@ -538,6 +538,11 @@
                         "minLength": 1,
                         "pattern": "^[^\\u0000]*$"
                       },
+                      "group": {
+                        "type": "string",
+                        "minLength": 1,
+                        "pattern": "^[^\\u0000]*$"
+                      },
                       "dacl": {
                         "type": "string",
                         "minLength": 1,

@@ -29,6 +29,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - `revert-lines` reads: the retained comparison; the working bytes (Windows: the service read of at most 1 MiB; WSL: `fileFacts` with `content: true`); then `hash-object --path=<path> --stdin` with the new bytes on stdin. `hash-object` runs without `-w` and writes no object.
 - `revert-files` and `revert-unstaged` reads: no content read. `cat-file --batch-check` gives the blob size of each source entry (for the batches and the deadlines of plan D5a).
 - Refusals before a token: `LOCKED` with the path and the 001 remedy when `index.lock` exists (plan D2); `WORKBENCH_UNAVAILABLE` with a reason of data-model §7; `UNSUPPORTED_COMPARISON` with the 001 support reason; `UNSUPPORTED_HUNK_PROFILE` with the eligibility reason; `INVALID_REQUEST` for an entry of another snapshot, a duplicate ID, or a comparison of another snapshot; `UNKNOWN_TARGET` for an unknown comparison or hunk.
+- Refusal value (data-model §7): `{reason}`; `{reason, remedy: {text}}` for an eligibility reason; `{path, remedy: {text}}` for `LOCKED`; `{reason, files: [{path, reason}], more}` for file reasons. `files` holds 1 to 20 refused files in tree order with base64 path bytes. `reason` equals the reason of the first file, and the response code is the code of that file. `more` counts the other refused files. The service gives no `several-hunks`, because only the renderer finds it.
 - Plans: data-model §5.
 
 ### `runWorkbench` (004 Δ3)
@@ -43,7 +44,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 ## Δ5 Finite bounds (001 §5)
 
-- `REVERT_FILE_BYTES` = 8,388,608 (8 MiB): the bytes of one `fileReplace` `working` frame of a line revert.
+- `REVERT_FILE_BYTES` = 2,117,152 = 2 × `COMPARED_RAW_VERSION_BYTES` + `CANONICAL_DIFF_LINES`: the bytes of one `fileReplace` `working` frame of a line revert. The new bytes are at most the working bytes (1 MiB), plus the restored lines of the other side (1 MiB), plus one CR for each restored diff line (research R11). So the 001 comparison bounds are the visible limit, and this bound is never the reason of a refusal. The `bytes` field uses the shared `Base64` pattern, and the shell computes the byte count from the base64 text length.
 - `revert-files` and `revert-unstaged` have no byte bound per file or per action (spec FR-025).
 - `revert-lines` keeps `COMPARED_RAW_VERSION_BYTES`, `COMPARED_NORMALIZED_VERSION_BYTES`, and `CANONICAL_DIFF_LINES`.
 - `revert-files` and `revert-unstaged` keep `MULTI_FILE_ACTION_FILES` (10,000).
@@ -61,7 +62,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - Reply: `replaced {folders}`, `stale`, `stopped` (a Windows stop or deadline before the write), `interrupted` (a WSL stop, deadline, or broken output), `refused {reason}` with `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, or `xattr`, or `error {code}` with `sharing-violation`, `access-denied`, `disk-full`, `read-only-volume`, or another code.
 - New request `tempRemove {repositoryId, name, expected: {size, sha256}}` under a revert marker: one file in the worktree root, deleted through its handle only when its facts equal `expected`. Reply `removed`, `stale`, `absent`, or `error {code}`. WSL: `wslFiles` mode `tempRemove` (Δ11).
 - `fileFacts` gains `stream: boolean`: a digest without the 1 MiB bound, read in chunks, with the deadline rule of `fileReplace`. Only a revert marker may ask for it.
-- `fileFacts` gains `detail: boolean`. With `detail`, a `file` fact adds `links`, and on Windows `attributes` (the `FileBasicInformation` attribute bits), `owner` and `dacl` (SDDL), and `creationTime`; on WSL `mode`, `uid`, `gid`, and `xattr` (a boolean).
+- `fileFacts` gains `detail: boolean`. With `detail`, a `file` fact adds `links`, and on Windows `attributes` (the `FileBasicInformation` attribute bits), `owner`, `group`, and `dacl` (SDDL), and `creationTime`; on WSL `mode`, `uid`, `gid`, and `xattr` (a boolean).
 - Close prompt names: "Revert lines", "Revert files", "Revert unstaged changes".
 
 ## Δ7 Startup, trust, and environment (001 §7)
@@ -89,9 +90,9 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 - §11 "No working-file content crosses" changes for the revert. These crossings are allowed:
   - Out of the distro: the working bytes of one file of `revert-lines`, at most 1 MiB, through `fileFacts` `content`.
-  - Into the distro: the new bytes of one file of `revert-lines` on the stdin of `hash-object --stdin` and in the `wslFiles` `replace` input, at most `REVERT_FILE_BYTES`.
+  - Into the distro: the new bytes of one file of `revert-lines` on the stdin of `hash-object --stdin` and in the `wslFiles` `replace` input, at most `REVERT_FILE_BYTES` (2,117,152 bytes, 4,234,304 bytes of hex).
   - `revert-files` and `revert-unstaged` cross no file content: `checkout-index --temp` writes inside the distro, and the `replace` mode copies inside the distro.
-- `wslFiles` mode `replace` gains the root `worktree` with any path below it, and plan D9 steps: the owner check, the gid copy, the `xattr` check, the `O_TMPFILE` create with a `linkat` name before the rename (probes L1 and L2), the mode copy after the write and the fsync (probe L4), `mkdir` of `folders`, and the `source` copy from Git's temporary file with an `fstat` identity check. A target bound as absent gets `0777 & ~umask` for mode 100755 and `0666 & ~umask` for 100644. New `wslFiles` mode `tempRemove` with the same identity check.
+- `wslFiles` mode `replace` gains the root `worktree` with any path below it, and plan D9 steps: the owner check, the gid copy, the `xattr` check, the `O_TMPFILE` create with a `linkat` name before the rename (probes L1 and L2), the order gid copy, write, fsync, mode copy, `fstat` compare of the mode bits, then `linkat` (probe L4, plan D9), `mkdir` of `folders`, and the `source` copy from Git's temporary file with an `fstat` identity check. A target bound as absent gets `0777 & ~umask` for mode 100755 and `0666 & ~umask` for 100644. New `wslFiles` mode `tempRemove` with the same identity check.
 - A staged part refuses with `shared-repository` when any scope sets `core.sharedRepository` (001 §4 "WSL index publication").
 
 ## Δ15 Changes to 004 deltas
@@ -110,4 +111,5 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - WSL: the `replace` mode acts on the last name after its check. A write by another program inside that window gets replaced, because Linux offers no mandatory lock (spec FR-043).
 - A crash in the window between the clear of the delete disposition (Windows) or the `linkat` name (WSL) and the rename leaves `.arbareto-<hex>.tmp` beside the target (probes W6, L3). The next status read shows it as an untracked file. Arbareto never deletes it by its name.
 - The SACL and the mandatory label of a Windows file are not checked (research R8). Alternate data streams are dropped (probe W7).
+- No review fact predicts a Windows `security` difference or a WSL `EPERM` of the gid copy. The write refuses them with `refused {security}` or `refused {owner}`. After a published index part, the run then ends `failed-with-effects` (plan D8, D10). No W2 fixture gives `security` (research R15).
 - A crash or a stop between `checkout-index --temp` and the `fileReplace` or `tempRemove` of a file leaves Git's temporary file `.merge_file_<random>` in the worktree root. The next status read shows it as untracked. Arbareto never deletes it by its name pattern.

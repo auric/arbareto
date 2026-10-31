@@ -8,7 +8,7 @@
 
 import { afterAll, describe, expect, test } from "bun:test";
 import { dlopen, FFIType, ptr, read, toArrayBuffer, type Pointer } from "bun:ffi";
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { release } from "node:os";
 import { join } from "node:path";
 import { obs, observationLine, type Observation } from "../git/fact-runner";
@@ -314,11 +314,14 @@ interface ReplaceOptions {
   copyBasic?: boolean;
   // R8: the DACL copy. `kernel` sets DACL only; `kernel-flag` adds the protection flag of the old file; `kernel-auto-inherit` sets
   // `SE_DACL_AUTO_INHERIT_REQ` in the copied descriptor; `set-security-info` uses `SetSecurityInfo`; `set-security-info-if-differs` uses it only when the DACL of the new file differs.
-  dacl?: "kernel" | "kernel-flag" | "kernel-auto-inherit" | "set-security-info" | "set-security-info-if-differs";
+  // `protect-auto-inherit` first sets a protected copy, because `SeSetSecurityDescriptorInfoEx` builds a copy of an unprotected input over a protected current DACL.
+  dacl?: "kernel" | "kernel-flag" | "kernel-auto-inherit" | "protect-auto-inherit" | "set-security-info" | "set-security-info-if-differs";
   // R8: the delete disposition on close, cleared just before the rename.
   deleteOnClose?: boolean;
   // Hold the target as `check` does in `file_replace.rs`.
   holdTarget?: boolean;
+  // Run the attribute and DACL copy before the write, in the plan.md D8 order.
+  copyFirst?: boolean;
 }
 interface ReplaceResult {
   step: string;
@@ -343,21 +346,13 @@ function replaceFile(dir: string, name: string, bytes: Uint8Array, options: Repl
     if (!valid(temp)) return { step: "temp-create", status: lastError() };
     let result: ReplaceResult = { step: "renamed", status: 0 };
     const fail = (step: string, status: number) => (result = { step, status });
-    if (!writeAll(temp, bytes)) fail("write", lastError());
-    else if (old !== null && options.copyBasic && !setBasic(temp, old.basic.creation, old.basic.attributes)) fail("basic", lastError());
-    else if (old?.sd && options.dacl) {
-      const protectedDacl = (controlOf(old.sd) & SE_DACL_PROTECTED) !== 0;
-      const flag = protectedDacl ? PROTECTED_DACL_SI : UNPROTECTED_DACL_SI;
-      const differs = () => sddlOf(securityOf(temp, DACL_SI), DACL_SI) !== sddlOf(old!.sd!, DACL_SI);
-      if (options.dacl === "set-security-info" || (options.dacl === "set-security-info-if-differs" && differs())) {
-        const status = win().advapi32.SetSecurityInfo(temp, SE_FILE_OBJECT, DACL_SI | flag, null, null, daclPointer(old.sd), null) as number;
-        if (status !== 0) fail("set-security-info", status);
-      } else if (options.dacl === "kernel-auto-inherit") {
-        const sd = old.sd.slice();
-        if (win().advapi32.SetSecurityDescriptorControl(pin(sd), SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERIT_REQ) === 0) fail("control", lastError());
-        else if (win().advapi32.SetKernelObjectSecurity(temp, DACL_SI, pin(sd)) === 0) fail(options.dacl, lastError());
-      } else if (options.dacl !== "set-security-info-if-differs" && win().advapi32.SetKernelObjectSecurity(temp, DACL_SI | (options.dacl === "kernel-flag" ? flag : 0), pin(old.sd)) === 0) fail(options.dacl, lastError());
-    }
+    const copy = () => {
+      if (old !== null && options.copyBasic && !setBasic(temp, old.basic.creation, old.basic.attributes)) fail("basic", lastError());
+      else if (old?.sd && options.dacl) copyDacl(temp, old.sd, options.dacl, fail);
+    };
+    if (options.copyFirst) copy();
+    if (result.status === 0 && !writeAll(temp, bytes)) fail("write", lastError());
+    if (result.status === 0 && !options.copyFirst) copy();
     if (result.status === 0 && options.deleteOnClose) {
       const cleared = setDisposition(temp, DISPOSITION_ON_CLOSE);
       if (!cleared.ok) fail("clear", cleared.error);
@@ -373,6 +368,25 @@ function replaceFile(dir: string, name: string, bytes: Uint8Array, options: Repl
     if (valid(held)) close(held);
     close(parent);
   }
+}
+
+// R8: the DACL copy of `ReplaceOptions.dacl` from the old descriptor `sd` to the handle `temp`.
+function copyDacl(temp: Pointer, sd: Uint8Array, method: NonNullable<ReplaceOptions["dacl"]>, fail: (step: string, status: number) => void): void {
+  const flag = (controlOf(sd) & SE_DACL_PROTECTED) !== 0 ? PROTECTED_DACL_SI : UNPROTECTED_DACL_SI;
+  const differs = () => sddlOf(securityOf(temp, DACL_SI), DACL_SI) !== sddlOf(sd, DACL_SI);
+  if (method === "set-security-info" || (method === "set-security-info-if-differs" && differs())) {
+    const status = win().advapi32.SetSecurityInfo(temp, SE_FILE_OBJECT, DACL_SI | flag, null, null, daclPointer(sd), null) as number;
+    if (status !== 0) fail("set-security-info", status);
+  } else if (method === "kernel-auto-inherit" || method === "protect-auto-inherit") {
+    if (method === "protect-auto-inherit") {
+      const guard = sd.slice();
+      if (win().advapi32.SetSecurityDescriptorControl(pin(guard), SE_DACL_PROTECTED, SE_DACL_PROTECTED) === 0) return void fail("control", lastError());
+      if (win().advapi32.SetKernelObjectSecurity(temp, DACL_SI | PROTECTED_DACL_SI, pin(guard)) === 0) return void fail("protect", lastError());
+    }
+    const copy = sd.slice();
+    if (win().advapi32.SetSecurityDescriptorControl(pin(copy), SE_DACL_AUTO_INHERIT_REQ, SE_DACL_AUTO_INHERIT_REQ) === 0) fail("control", lastError());
+    else if (win().advapi32.SetKernelObjectSecurity(temp, DACL_SI, pin(copy)) === 0) fail("kernel-auto-inherit", lastError());
+  } else if (method !== "set-security-info-if-differs" && win().advapi32.SetKernelObjectSecurity(temp, DACL_SI | (method === "kernel-flag" ? flag : 0), pin(sd)) === 0) fail(method, lastError());
 }
 
 // ---- Child processes for W6 and W8 ----
@@ -512,7 +526,7 @@ describe.skipIf(process.platform !== "win32")("T002 Windows facts W1 to W11 for 
     ];
     const mask = ATTR.hidden | ATTR.system | ATTR.archive | ATTR.notContentIndexed | ATTR.compressed | ATTR.sparse;
     for (const [id, bit, how] of cases) {
-      for (const sequence of ["005", "copy"] as const) {
+      for (const sequence of ["005", "copy", "copy-first"] as const) {
         const name = `${id}-${sequence}.txt`;
         const path = join(dir, name);
         writeFileSync(path, OLD);
@@ -526,7 +540,7 @@ describe.skipIf(process.platform !== "win32")("T002 Windows facts W1 to W11 for 
           close(h);
         }
         const before = attributesOf(path) & mask;
-        const r = replaceFile(dir, name, NEW, { copyBasic: sequence === "copy" });
+        const r = replaceFile(dir, name, NEW, { copyBasic: sequence !== "005", copyFirst: sequence === "copy-first" });
         const after = attributesOf(path) & mask;
         observations.push(obs(`W1.${id}.${sequence}`, { set: true, step: "renamed", attributes: hex(before) }, { set: setOk, step: r.step === "renamed" ? r.step : `${r.step}:${hex(r.status)}`, attributes: hex(after) }));
       }
@@ -551,25 +565,70 @@ describe.skipIf(process.platform !== "win32")("T002 Windows facts W1 to W11 for 
       // icacls(1): an explicit read ACE for BUILTIN\Users, and a protected DACL with the inherited ACEs copied as explicit ACEs.
       ["explicit-ace", ["/grant", "*S-1-5-32-545:(R)"]],
       ["protected", ["/inheritance:d"]],
+      // NTFS keeps the descriptor of a file renamed in from a folder with another inheritable ACE.
+      ["renamed-in", null],
+      // The kernel call sets another inheritable ACE on the folder after the file exists, so the ACE reaches no existing file.
+      ["folder-ace-after", null],
     ];
-    const methods = ["none", "kernel", "kernel-flag", "kernel-auto-inherit", "set-security-info", "set-security-info-if-differs"] as const;
+    // `AU` (S-1-5-11) is in no other fixture ACE.
+    const OTHER = ["/grant", "*S-1-5-11:(OI)(CI)(RX)"];
+    const methods: [string, ReplaceOptions][] = [
+      ["none", {}],
+      ["kernel", { dacl: "kernel" }],
+      ["kernel-flag", { dacl: "kernel-flag" }],
+      ["kernel-auto-inherit", { dacl: "kernel-auto-inherit" }],
+      ["kernel-auto-inherit-first", { dacl: "kernel-auto-inherit", copyFirst: true }],
+      ["protect-auto-inherit-first", { dacl: "protect-auto-inherit", copyFirst: true }],
+      ["set-security-info", { dacl: "set-security-info" }],
+      ["set-security-info-if-differs", { dacl: "set-security-info-if-differs" }],
+    ];
     for (const [folder, folderAcl] of folders) {
-      const dir = fixtureDir(`revert-w2-${folder}`);
-      if (folderAcl !== null) icacls(dir, folderAcl);
+      const made = (kind: string, other: boolean) => {
+        const dir = fixtureDir(`revert-w2-${folder}-${kind}`);
+        if (folderAcl !== null) icacls(dir, folderAcl);
+        if (other) icacls(dir, OTHER);
+        return dir;
+      };
+      const source = made("source", true);
+      const changed = made("changed", true);
       for (const [kind, fileAcl] of kinds) {
-        // Per method: `same` when the owner, group, and DACL SDDL equal the old file, else the new DACL SDDL or the failed step.
-        const results: Record<string, string> = {};
-        let old = "";
-        for (const method of methods) {
-          const name = `${kind}-${method}.txt`;
-          const path = join(dir, name);
-          writeFileSync(path, OLD);
+        const dir = made(kind, false);
+        for (const [method] of methods) {
+          const path = join(dir, `${method}.txt`);
+          if (kind === "renamed-in") {
+            const from = join(source, `${method}.txt`);
+            writeFileSync(from, OLD);
+            renameSync(from, path);
+          } else writeFileSync(path, OLD);
           if (fileAcl !== null) icacls(path, fileAcl);
+        }
+        const created = methods.map(([method]) => JSON.stringify(sddlAt(join(dir, `${method}.txt`))));
+        if (kind === "folder-ace-after") {
+          const from = mustOpen(changed, READ_CONTROL, SHARE_ALL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS);
+          const sd = securityOf(from, DACL_SI);
+          close(from);
+          const to = mustOpen(dir, READ_CONTROL | WRITE_DAC, SHARE_ALL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS);
+          const set = win().advapi32.SetKernelObjectSecurity(to, DACL_SI, pin(sd)) !== 0;
+          close(to);
+          if (!set) throw new Error(`SetKernelObjectSecurity on the folder ${lastError()}`);
+        }
+        // Per method: `same` when the owner, group, and DACL SDDL equal the old file, else the new DACL SDDL or the failed step.
+        const results: Record<string, string | boolean> = {};
+        let old = "";
+        for (const [i, [method, options]] of methods.entries()) {
+          const name = `${method}.txt`;
+          const path = join(dir, name);
           const before = sddlAt(path);
           old = before.dacl;
-          const r = replaceFile(dir, name, NEW, method === "none" ? {} : { dacl: method });
+          if (JSON.stringify(before) !== created[i]) results[`${method}-old-changed`] = true;
+          const r = replaceFile(dir, name, NEW, options);
           const after = sddlAt(path);
           results[method] = r.step !== "renamed" ? `${r.step}:${hex(r.status)}` : JSON.stringify(after) === JSON.stringify(before) ? "same" : `owner=${after.owner === before.owner} group=${after.group === before.group} D:${after.dacl}`;
+        }
+        if (kind === "folder-ace-after") {
+          const h = mustOpen(dir, READ_CONTROL, SHARE_ALL, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS);
+          results.folderDacl = redact(sddlOf(securityOf(h, DACL_SI), DACL_SI));
+          close(h);
         }
         observations.push(obs(`W2.${folder}.${kind}`, "record", { oldDacl: `D:${old}`, ...results }, true));
       }
@@ -599,7 +658,7 @@ describe.skipIf(process.platform !== "win32")("T002 Windows facts W1 to W11 for 
     // 2020-01-01T00:00:00Z and 2020-01-02T00:00:00Z as FILETIME.
     const OLD_CREATION = 132_223_104_000_000_000n;
     const OLD_WRITE = 132_223_968_000_000_000n;
-    for (const sequence of ["005", "copy"] as const) {
+    for (const sequence of ["005", "copy", "copy-first"] as const) {
       const name = `c-${sequence}.txt`;
       const path = join(dir, name);
       writeFileSync(path, OLD);
@@ -609,7 +668,7 @@ describe.skipIf(process.platform !== "win32")("T002 Windows facts W1 to W11 for 
       close(h);
       // The file system time is coarser than `Date.now()`, so the window has 1 s on each side. The old times lie in 2020.
       const start = BigInt(Date.now() - 1000) * 10_000n + 116_444_736_000_000_000n;
-      const r = replaceFile(dir, name, NEW, { copyBasic: sequence === "copy" });
+      const r = replaceFile(dir, name, NEW, { copyBasic: sequence !== "005", copyFirst: sequence === "copy-first" });
       const end = BigInt(Date.now() + 1000) * 10_000n + 116_444_736_000_000_000n;
       const after = (() => {
         const n = mustOpen(path, FILE_READ_ATTRIBUTES, SHARE_ALL, OPEN_EXISTING, 0);
@@ -619,7 +678,7 @@ describe.skipIf(process.platform !== "win32")("T002 Windows facts W1 to W11 for 
       })();
       const observed = { set: setOk, step: r.step, keepsOldCreation: after.creation === OLD_CREATION };
       // Without the copy, tunneling decides the creation time, so the probe records it.
-      observations.push(sequence === "copy" ? obs("W3.creation.copy", { set: true, step: "renamed", keepsOldCreation: true }, observed) : obs("W3.creation.005", "record", observed, true));
+      observations.push(sequence === "005" ? obs("W3.creation.005", "record", observed, true) : obs(`W3.creation.${sequence}`, { set: true, step: "renamed", keepsOldCreation: true }, observed));
       observations.push(obs(`W3.last-write-is-write-time.${sequence}`, { oldIs2020: true, recent: true, equalsOld: false }, { oldIs2020: oldLastWrite === OLD_WRITE, recent: after.lastWrite >= start && after.lastWrite <= end, equalsOld: after.lastWrite === oldLastWrite }));
     }
     print(observations);

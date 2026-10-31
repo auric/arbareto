@@ -41,7 +41,7 @@ const REMOTE_BRANCH_PREFIX: &str = "refs/remotes/";
         reason = "only the vector tests read revert frames before their handlers exist"
     )
 )]
-pub(crate) const REVERT_FILE_BYTES: usize = 8_388_608;
+pub(crate) const REVERT_FILE_BYTES: usize = 2_117_152;
 /// Contract §5 `FILE_FACT_ENTRIES`: the most folder names of one `fileReplace` `working` frame.
 #[cfg_attr(
     not(test),
@@ -356,9 +356,10 @@ pub(crate) fn working_replace(request: &process_request::FileReplace) -> Result<
         } => Some((*size, sha256.as_str())),
         F::WslWorkingFacts { .. } => return Err(INVALID),
     };
+    // The generated type checks the padded base64 pattern, so the text length gives the byte count.
     let bytes_fit = request.bytes.as_ref().is_none_or(|bytes| {
-        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, bytes.as_str())
-            .is_ok_and(|bytes| bytes.len() <= REVERT_FILE_BYTES)
+        let padding = bytes.bytes().rev().take_while(|&b| b == b'=').count();
+        (bytes.len() / 4 * 3).saturating_sub(padding) <= REVERT_FILE_BYTES
     });
     let source_fits = request
         .source
@@ -1569,6 +1570,7 @@ mod tests {
                 creation_time: None,
                 dacl: None,
                 gid: None,
+                group: None,
                 links: None,
                 mode: None,
                 owner: None,
@@ -2263,7 +2265,7 @@ mod tests {
         }
     }
 
-    /// Feature 008 contract Δ5, Δ6, and Δ10: the frame rules that no golden vector holds, because 8 MiB is too large for a vector file.
+    /// Feature 008 contract Δ5, Δ6, and Δ10: the frame rules that no golden vector holds, because 2 MiB is too large for a vector file.
     #[test]
     fn the_feature_008_frame_rules_outside_json_schema_are_checked_in_rust() {
         use base64::Engine;
@@ -2296,6 +2298,9 @@ mod tests {
             working(json!({ "bytes": b64(REVERT_FILE_BYTES + 1) })),
             Err(INVALID)
         );
+        for text in ["eAo", "eA=o", "e===", "eAo*"] {
+            assert_eq!(working(json!({ "bytes": text })), Err(INVALID), "{text}");
+        }
         let folders = |count: usize| (0..count).map(|i| format!("d{i}")).collect::<Vec<_>>();
         let source = json!({ "name": ".merge_file_a1B2c3", "size": 40, "sha256": digest });
         assert_eq!(
@@ -2314,7 +2319,7 @@ mod tests {
             working(json!({ "source": { "name": ".merge_file_x", "size": -1, "sha256": digest } })),
             Err(INVALID)
         );
-        let windows = json!({ "size": 12, "sha256": digest, "attributes": 32, "links": 1, "owner": "S-1-5-18", "dacl": "D:(A;;FA;;;SY)", "creationTime": "1" });
+        let windows = json!({ "size": 12, "sha256": digest, "attributes": 32, "links": 1, "owner": "S-1-5-18", "group": "S-1-5-18", "dacl": "D:(A;;FA;;;SY)", "creationTime": "1" });
         let present = json!({ "size": 12, "sha256": digest });
         assert_eq!(
             working(json!({ "expected": present, "facts": windows, "bytes": "" })),

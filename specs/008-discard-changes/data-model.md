@@ -30,7 +30,7 @@ The renderer sends no path, no byte, and no count. The service derives everythin
 | `headEntry` | `{mode, oid}` or `absent` (status `mH`, `hH`; absent for an unborn HEAD). |
 | `indexEntry` | `{mode, oid}` or `absent` (status `mI`, `hI`). |
 | `newIndex` | `{mode, oid}`, `remove`, or `keep` (no index change for this path). |
-| `working` | The bound working-file facts: `absent`, or `{size, sha256, attributes, links, owner, dacl, creationTime}` on Windows, or `{size, sha256, mode, uid, gid, links, xattr: false}` on WSL. |
+| `working` | The bound working-file facts: `absent`, or `{size, sha256, attributes, links, owner, group, dacl, creationTime}` on Windows, or `{size, sha256, mode, uid, gid, links, xattr: false}` on WSL. |
 | `folders` | For an absent target: the missing folder names below the deepest existing folder. |
 | `source` | Revert file and Revert all unstaged changes: the index entry (`{mode, oid}`) that `checkout-index --temp` writes after the index part, and its blob size from `cat-file --batch-check` (for the batches and the deadlines). Lines: `bytes`. |
 | `newSize`, `newSha256` | Lines: the size and the SHA-256 that the review computes. Whole files: none at the review; the run takes them from Git's temporary file (§8a). `keep`: a staged new file keeps its working file. |
@@ -79,7 +79,7 @@ Cases for the G5 probe and the unit vectors of `tests/git/revert-bytes.test.ts`:
 | CRLF | none, index CRLF | comparison bytes (CRLF) | passes |
 | CRLF | `core.autocrlf=true`, index LF | LF line + CR before LF | passes |
 | CRLF | `text eol=crlf` | as above | passes |
-| LF | `core.autocrlf=true`, index LF | LF | passes |
+| LF | `core.autocrlf=true`, index LF | LF; Git's `apply -R` gives CRLF for every line, so the plan D13 line oracle applies | passes |
 | CRLF | none, index LF (every line differs) | CRLF | fails: `line-endings` |
 | mixed | any | the 001 support refuses first (`line-endings`) | — |
 | any | `ident` set | the review refuses first (`ident`) | — |
@@ -102,6 +102,8 @@ Cases for the G5 probe and the unit vectors of `tests/git/revert-bytes.test.ts`:
 | `LOCKED` (001 code, with the lock path and remedy) | all | the `index.lock` fact at the review and at the run start |
 | eligibility (`sparse-index`, `split-index`, `executable-monitor`, `unqualified-monitor`; staged part also `index-change-hook`, WSL `shared-repository`) | all | `hunkEligibility` |
 
+The refusal value (contract Δ3): `{reason}` for a repository-level reason, with `remedy` for an eligibility reason, or `{path, remedy}` for `LOCKED`. A file reason gives `{reason, files: [{path, reason}], more}`: the first 20 refused files in tree order, each with its reason, and the count of the other refused files. The top-level `reason` is the reason of the first file, and the response code is its code (`WORKBENCH_UNAVAILABLE` or `UNSUPPORTED_COMPARISON`).
+
 ## 8. Run phases and per-file outcome
 
 Phases: `revert-index` (no counters), then `revert-files` (`fileIndex`, `fileCount`), then `reconciling`.
@@ -115,6 +117,8 @@ Per-file outcome from the fresh read (plan D10):
 | old | old | `not-changed` (with the reply code: `stale`, `refused`, `error`, or none) |
 | any | neither old nor new | `changed-outside` |
 | — | — | `not-started` (no request reached the path) |
+
+A `not-changed` file with a reply code is the "failed with its code" outcome of spec FR-039: `refused` carries the reply reason, and `error` the reply code, as `reason`. A `not-changed` file without a code got `stopped` or `interrupted`. Plan D10 gives the response state.
 
 A fresh read that fails gives the unknown outcome of the whole run (001 FR-023).
 

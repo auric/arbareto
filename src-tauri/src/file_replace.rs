@@ -530,7 +530,8 @@ mod tests {
             FILE_ATTRIBUTE_NOT_CONTENT_INDEXED, FILE_ATTRIBUTE_READONLY,
             FILE_ATTRIBUTE_SPARSE_FILE, FILE_ATTRIBUTE_SYSTEM, FILE_DISPOSITION_FLAG_DO_NOT_DELETE,
             FILE_DISPOSITION_FLAG_ON_CLOSE, FILE_DISPOSITION_INFO_EX,
-            FILE_DISPOSITION_INFO_EX_FLAGS, FILE_FLAGS_AND_ATTRIBUTES, FILE_LIST_DIRECTORY,
+            FILE_DISPOSITION_INFO_EX_FLAGS, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAGS_AND_ATTRIBUTES,
+            FILE_LIST_DIRECTORY,
             FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ,
             FILE_SHARE_WRITE, FILE_TRAVERSE, FILE_WRITE_ATTRIBUTES, FILE_WRITE_DATA,
             FileDispositionInfoEx, FlushFileBuffers, GetFileAttributesW, READ_CONTROL,
@@ -776,10 +777,21 @@ mod tests {
             KernelFlag,
             /// The copied descriptor carries `SE_DACL_AUTO_INHERIT_REQ`.
             KernelAutoInherit,
+            /// A protected copy first, then `KernelAutoInherit`. `SeSetSecurityDescriptorInfoEx`: with a protected current DACL and an
+            /// unprotected input, the result is a copy of the input.
+            ProtectThenAutoInherit,
         }
 
         /// The 005 replace sequence with the R8 additions that `basic`, `dacl`, and `delete_on_close` select.
-        fn replace(dir: &Path, name: &str, basic: bool, dacl: Dacl, delete_on_close: bool) -> Value {
+        /// `copy_first` runs the attribute and DACL copy before the write, in the plan.md D8 order.
+        fn replace(
+            dir: &Path,
+            name: &str,
+            basic: bool,
+            dacl: Dacl,
+            delete_on_close: bool,
+            copy_first: bool,
+        ) -> Value {
             let parent = parent(dir);
             let held = hold(&parent, name);
             let old = query::<FILE_BASIC_INFORMATION>(&held, FileBasicInformation, &RUN)
@@ -791,19 +803,35 @@ mod tests {
                 Err(status) => return json!({ "step": "temp-create", "status": status_text(status) }),
             };
             let fail = |step: &str, status: String| json!({ "step": step, "status": status });
-            let result = (|| {
-                if !write(&temp, NEW) {
-                    return fail("write", String::new());
-                }
+            let mut copy = || -> Option<Value> {
                 if basic {
                     let status = set_basic(&temp, old.CreationTime, old.FileAttributes);
                     if status.is_err() {
-                        return fail("basic", status_text(status));
+                        return Some(fail("basic", status_text(status)));
                     }
                 }
                 if let Some(descriptor) = old_dacl.as_mut() {
                     let mut info = DACL_SECURITY_INFORMATION;
-                    if dacl == Dacl::KernelAutoInherit {
+                    if dacl == Dacl::ProtectThenAutoInherit {
+                        let mut guard = descriptor.clone();
+                        let pointer = PSECURITY_DESCRIPTOR(guard.as_mut_ptr().cast());
+                        // SAFETY: `guard` is a live self-relative descriptor, and `temp` is open with `WRITE_DAC`.
+                        let set = unsafe { SetSecurityDescriptorControl(pointer, SE_DACL_PROTECTED, SE_DACL_PROTECTED) }
+                            .and_then(|()| {
+                                // SAFETY: as above.
+                                unsafe {
+                                    SetKernelObjectSecurity(
+                                        raw(&temp),
+                                        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+                                        pointer,
+                                    )
+                                }
+                            });
+                        if let Err(error) = set {
+                            return Some(fail("protect", format!("{:?}", error.code())));
+                        }
+                    }
+                    if matches!(dacl, Dacl::KernelAutoInherit | Dacl::ProtectThenAutoInherit) {
                         // SAFETY: `descriptor` is a live self-relative descriptor.
                         let set = unsafe {
                             SetSecurityDescriptorControl(
@@ -813,7 +841,7 @@ mod tests {
                             )
                         };
                         if let Err(error) = set {
-                            return fail("control", format!("{:?}", error.code()));
+                            return Some(fail("control", format!("{:?}", error.code())));
                         }
                     }
                     if dacl == Dacl::KernelFlag {
@@ -832,8 +860,20 @@ mod tests {
                         )
                     };
                     if let Err(error) = set {
-                        return fail("dacl", format!("{:?}", error.code()));
+                        return Some(fail("dacl", format!("{:?}", error.code())));
                     }
+                }
+                None
+            };
+            let result = (|| {
+                if copy_first && let Some(failed) = copy() {
+                    return failed;
+                }
+                if !write(&temp, NEW) {
+                    return fail("write", String::new());
+                }
+                if !copy_first && let Some(failed) = copy() {
+                    return failed;
                 }
                 if delete_on_close && let Err(error) = clear_disposition(&temp) {
                     return fail("clear", format!("{:?}", error.code()));
@@ -866,8 +906,10 @@ mod tests {
                 ("compressed", 0),
                 ("sparse", FILE_ATTRIBUTE_SPARSE_FILE.0),
             ] {
-                for basic in [false, true] {
-                    let name = format!("{id}-{}.txt", if basic { "copy" } else { "005" });
+                for (sequence, basic, copy_first) in
+                    [("005", false, false), ("copy", true, false), ("copy-first", true, true)]
+                {
+                    let name = format!("{id}-{sequence}.txt");
                     let path = dir.join(&name);
                     std::fs::write(&path, OLD).expect("old");
                     let set = match id {
@@ -903,7 +945,7 @@ mod tests {
                         _ => set_attributes(&path, bits),
                     };
                     let before = attributes(&path) & mask;
-                    let result = replace(&dir, &name, basic, Dacl::None, false);
+                    let result = replace(&dir, &name, basic, Dacl::None, false, copy_first);
                     let after = attributes(&path) & mask;
                     observe(
                         &format!("W1.{name}"),
@@ -935,38 +977,91 @@ mod tests {
                     .expect("icacls");
                 assert!(status.success(), "icacls {arguments:?}");
             };
+            // A folder handle with `READ_CONTROL` and `WRITE_DAC`. `FILE_FLAG_BACKUP_SEMANTICS` opens a folder.
+            let folder = |path: &Path| {
+                use std::os::windows::fs::OpenOptionsExt;
+                let file = std::fs::OpenOptions::new()
+                    .access_mode(READ_CONTROL.0 | WRITE_DAC.0)
+                    .custom_flags(FILE_FLAG_BACKUP_SEMANTICS.0)
+                    .open(path)
+                    .expect("open the folder for WRITE_DAC");
+                OwnedHandle::from(file)
+            };
+            // `AU` (S-1-5-11) is in no other fixture ACE, so a copy that keeps or drops its inherited ACE shows in the bytes.
+            const OTHER: &[&str] = &["/grant", "*S-1-5-11:(OI)(CI)(RX)"];
             let fixture = Fixture::new();
+            let methods = [
+                ("none", Dacl::None, false),
+                ("kernel", Dacl::Kernel, false),
+                ("kernel-flag", Dacl::KernelFlag, false),
+                ("kernel-auto-inherit", Dacl::KernelAutoInherit, false),
+                ("kernel-auto-inherit-first", Dacl::KernelAutoInherit, true),
+                ("protect-auto-inherit-first", Dacl::ProtectThenAutoInherit, true),
+            ];
             // `auto-inherited`: an icacls grant rewrites the folder DACL with inheritable ACEs and `SE_DACL_AUTO_INHERITED`.
-            for (folder, folder_acl) in [
+            for (folder_kind, folder_acl) in [
                 ("plain", None),
                 ("auto-inherited", Some(&["/grant", "*S-1-5-32-545:(OI)(CI)(RX)"][..])),
             ] {
-                let dir = fixture.path(&format!("w2-{folder}"));
-                std::fs::create_dir(&dir).expect("w2");
-                if let Some(arguments) = folder_acl {
-                    icacls(&dir, arguments);
-                }
+                let made = |name: &str, other: bool| {
+                    let dir = fixture.path(&format!("w2-{folder_kind}-{name}"));
+                    std::fs::create_dir(&dir).expect("w2");
+                    if let Some(arguments) = folder_acl {
+                        icacls(&dir, arguments);
+                    }
+                    if other {
+                        icacls(&dir, OTHER);
+                    }
+                    dir
+                };
+                // `renamed-in`: each file comes from a folder with the extra inheritable ACE, and NTFS keeps its descriptor on the rename.
+                // `folder-ace-after`: the kernel call sets the extra ACE on the folder after the files exist, so no ACE reaches them.
+                let source = made("source", true);
+                let changed = made("changed", true);
                 for (kind, file_acl) in [
                     ("inherited-only", None),
                     ("explicit-ace", Some(&["/grant", "*S-1-5-32-545:(R)"][..])),
                     ("protected", Some(&["/inheritance:d"][..])),
+                    ("renamed-in", None),
+                    ("folder-ace-after", None),
                 ] {
-                    // Per method: `same` when the owner, group, and DACL descriptor bytes equal the old file.
-                    let mut results = serde_json::Map::new();
-                    for (method, dacl) in [
-                        ("none", Dacl::None),
-                        ("kernel", Dacl::Kernel),
-                        ("kernel-flag", Dacl::KernelFlag),
-                        ("kernel-auto-inherit", Dacl::KernelAutoInherit),
-                    ] {
-                        let name = format!("{kind}-{method}.txt");
-                        let path = dir.join(&name);
-                        std::fs::write(&path, OLD).expect("old");
+                    let dir = made(kind, false);
+                    for (method, _, _) in methods {
+                        let path = dir.join(format!("{method}.txt"));
+                        if kind == "renamed-in" {
+                            let from = source.join(format!("{method}.txt"));
+                            std::fs::write(&from, OLD).expect("old");
+                            std::fs::rename(&from, &path).expect("rename in");
+                        } else {
+                            std::fs::write(&path, OLD).expect("old");
+                        }
                         if let Some(arguments) = file_acl {
                             icacls(&path, arguments);
                         }
+                    }
+                    let created: Vec<Vec<u8>> = methods.iter().map(|(method, _, _)| descriptor_at(&dir.join(format!("{method}.txt")))).collect();
+                    if kind == "folder-ace-after" {
+                        let mut descriptor = security(&folder(&changed), DACL_SECURITY_INFORMATION);
+                        // SAFETY: the handle has `WRITE_DAC`, and `descriptor` is a live self-relative descriptor.
+                        unsafe {
+                            SetKernelObjectSecurity(
+                                raw(&folder(&dir)),
+                                DACL_SECURITY_INFORMATION,
+                                PSECURITY_DESCRIPTOR(descriptor.as_mut_ptr().cast()),
+                            )
+                        }
+                        .expect("set the folder DACL");
+                    }
+                    // Per method: `same` when the owner, group, and DACL descriptor bytes equal the old file.
+                    let mut results = serde_json::Map::new();
+                    for ((method, dacl, copy_first), created) in methods.into_iter().zip(&created) {
+                        let name = format!("{method}.txt");
+                        let path = dir.join(&name);
                         let before = descriptor_at(&path);
-                        let result = replace(&dir, &name, false, dacl, false);
+                        if &before != created {
+                            results.insert(format!("{method}-old-changed"), json!(true));
+                        }
+                        let result = replace(&dir, &name, false, dacl, false, copy_first);
                         let after = descriptor_at(&path);
                         let value = if result["step"] != "renamed" {
                             result
@@ -975,7 +1070,7 @@ mod tests {
                         };
                         results.insert(method.to_string(), value);
                     }
-                    record(&format!("W2.{folder}.{kind}"), Value::Object(results));
+                    record(&format!("W2.{folder_kind}.{kind}"), Value::Object(results));
                 }
             }
         }
@@ -987,8 +1082,10 @@ mod tests {
             let fixture = Fixture::new();
             let dir = fixture.path("w3");
             std::fs::create_dir(&dir).expect("w3");
-            for basic in [false, true] {
-                let name = format!("c-{}.txt", if basic { "copy" } else { "005" });
+            for (sequence, basic, copy_first) in
+                [("005", false, false), ("copy", true, false), ("copy-first", true, true)]
+            {
+                let name = format!("c-{sequence}.txt");
                 std::fs::write(dir.join(&name), OLD).expect("old");
                 let parent = parent(&dir);
                 let set = {
@@ -1003,13 +1100,13 @@ mod tests {
                     .expect("open");
                     set_basic(&handle, OLD_CREATION, 0).is_ok()
                 };
-                let result = replace(&dir, &name, basic, Dacl::None, false);
+                let result = replace(&dir, &name, basic, Dacl::None, false, copy_first);
                 let after = query::<FILE_BASIC_INFORMATION>(&hold(&parent, &name), FileBasicInformation, &RUN)
                     .expect("FileBasicInformation");
                 let observed = json!({ "set": set, "result": result, "keepsOldCreation": after.CreationTime == OLD_CREATION });
                 if basic {
                     observe(
-                        "W3.creation.copy",
+                        &format!("W3.creation.{sequence}"),
                         json!({ "set": true, "result": { "step": "renamed" }, "keepsOldCreation": true }),
                         observed,
                     );
@@ -1029,7 +1126,7 @@ mod tests {
             let path = dir.join("ro.txt");
             std::fs::write(&path, OLD).expect("old");
             assert!(set_attributes(&path, FILE_ATTRIBUTE_READONLY.0), "read-only");
-            let result = replace(&dir, "ro.txt", false, Dacl::None, false);
+            let result = replace(&dir, "ro.txt", false, Dacl::None, false, false);
             let bytes = std::fs::read(&path).expect("read");
             set_attributes(&path, FILE_ATTRIBUTE_NORMAL.0);
             let temps: Vec<String> = std::fs::read_dir(&dir)
@@ -1122,7 +1219,7 @@ mod tests {
                 );
             }
             std::fs::write(dir.join("target.txt"), OLD).expect("old");
-            let result = replace(&dir, "target.txt", false, Dacl::None, true);
+            let result = replace(&dir, "target.txt", false, Dacl::None, true, false);
             observe(
                 "W6.rename-after-clear",
                 json!({ "result": { "step": "renamed" }, "bytes": "new\n" }),

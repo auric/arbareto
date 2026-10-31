@@ -391,10 +391,13 @@ function tempCase(x: RevertHost, c: TempCase): Observation[] {
   o.push(obs(`G10.${id}.control-update-index-runs-post-index-change`, true, markers(x, dir).includes("post-index-change.marker")));
   clearMarkers(x, dir);
   const h = checkoutTemp(x, dir, [c.path]);
+  // Both exits, so a failure on both sides cannot give two equal null digests.
+  o.push(obs(`G10.${id}.head-exit`, 0, h.exit));
   const headTemp = h.records?.[0];
   const headBytes = headTemp ? x.git.read(`${dir}/${headTemp.name}`) : null;
   removeTemps(x, dir, h.records);
   const restoredHead = run(x, copyHead, [...STEP, "restore", "--source=HEAD", "--staged", "--worktree", "--", c.path]);
+  o.push(obs(`G9.${id}.head-restore-exit`, 0, restoredHead.exitCode));
   const headOracle = restoredHead.exitCode === 0 ? x.git.read(`${copyHead}/${c.path}`) : null;
   o.push(obs(`G9.${id}.head-form`, digestOf(headOracle), digestOf(headBytes)));
   if (headBytes !== null) {
@@ -585,6 +588,18 @@ function g5(x: RevertHost): Observation[] {
     const proof = out(x, repo, [...READ, "hash-object", "--path=f.txt", "--stdin"], bytes).trim();
     const observed = { eol, proof: proof === indexOid ? "pass" : "fail" };
     o.push(obs(`G5.${c.id}`, c.expected.proof === null ? { eol: c.expected.eol } : c.expected, c.expected.proof === null ? { eol } : observed));
+    // plan.md D13 line oracle: the check-in form of the R5 bytes equals the blob of `apply --cached -R` after `add` on a copy.
+    // The record compares the R5 bytes with Git's `apply -R` on a copy, which converts the whole file again.
+    const staged = copyOf(x, repo);
+    must(x, staged, ["add", "--", "f.txt"]);
+    const cached = run(x, staged, [...STEP, "apply", "--cached", "-R", "--unidiff-zero"], diff);
+    const cachedBlob = cached.exitCode === 0 ? /^\d{6} ([0-9a-f]+) 0\t/.exec(out(x, staged, [...READ, "ls-files", "-s", "-z", "--", "f.txt"]))?.[1] ?? null : null;
+    const oracle = { cachedExit: cached.exitCode, checkIn: cachedBlob !== null && proof === cachedBlob };
+    o.push(obs(`G5.${c.id}.oracle`, c.expected.proof === null ? "record" : { cachedExit: 0, checkIn: c.expected.proof === "pass" }, oracle, c.expected.proof === null ? true : undefined));
+    const applied = copyOf(x, repo);
+    const reverse = run(x, applied, [...STEP, "apply", "-R", "--unidiff-zero"], diff);
+    const appliedBytes = reverse.exitCode === 0 ? x.git.read(`${applied}/f.txt`) : null;
+    o.push(obs(`G5.${c.id}.apply-reverse`, "record", { exit: reverse.exitCode, sameBytes: appliedBytes !== null && Buffer.compare(bytes, appliedBytes) === 0, eol: eolOf(x, applied, ["f.txt"])?.["f.txt"] ?? null }, true));
     if (c.expected.proof === null) {
       // research.md R6: for `ident`, compare the proof with the bytes that Git's own checkout writes.
       const copy = copyOf(x, repo);

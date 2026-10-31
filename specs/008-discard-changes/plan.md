@@ -36,7 +36,7 @@ Six facts drive the design (research R2 to R10):
 
 **Constraints**: No Git command writes a target file. Git writes only its own temporary file through `checkout-index --temp` (spec FR-031). No repository program runs (spec FR-004). The renderer sends IDs, line numbers, and the action only, never a path or bytes. The service log keeps its allowlist fields (`log.ts`), so no file content enters a log (spec FR-049). Every outcome comes from a fresh read.
 
-**Scale/Scope**: At most 10,000 files per action (`MULTI_FILE_ACTION_FILES`). Revert file and Revert all unstaged changes have no size limit. Line revert stays within the 001 comparison bounds (1 MiB per version and 20,000 diff lines) and within one frame of at most 8 MiB (`REVERT_FILE_BYTES`, research R11).
+**Scale/Scope**: At most 10,000 files per action (`MULTI_FILE_ACTION_FILES`). Revert file and Revert all unstaged changes have no size limit. Line revert stays within the 001 comparison bounds (1 MiB per version and 20,000 diff lines) and reads at most 1 MiB of working bytes. These bounds keep its frame within `REVERT_FILE_BYTES` (2,117,152 bytes, research R11).
 
 ## Constitution Check
 
@@ -53,7 +53,7 @@ Checked against principles I to IX of `.specify/memory/constitution.md` version 
 | V. Untrusted repositories | No repository program runs. Filter drivers and Git LFS refuse (D2). Paths show as plain text (spec FR-010). No file content or diff text enters a log (spec FR-049). | Pass |
 | VI. Platform evidence | Packaged Windows tests for the keys, the modal focus, the menus, the budgets, a file in use, and Windows Defender (WP7). WSL tests on Ubuntu-26.04 (WP6). Each probe that needs a missing capability records it as unverified (note N-2). | Pass, note N-2 |
 | VII. Accessible and measured | Every new control has a label, a tooltip with its key, an accessible name, visible focus, and a stated reason when unavailable. The revert items stay in separate destructive groups (D12). The budgets are fixed above and in research R12, before measurement. | Pass |
-| VIII. Locked dependencies | No new package and no new crate. A `windows` feature for the DACL copy comes only when probe W2 needs it, through its own review in T013 (Technical Context). | Pass |
+| VIII. Locked dependencies | No new package, no new crate, and no new `windows` feature. The DACL copy uses the enabled feature `Win32_Security` (research R15, Technical Context). | Pass |
 | IX. One planning process | All artifacts stay in `specs/008-discard-changes`. The contract lists only deltas to 001 to 006. The earlier specs change only in the doc pass (D14). | Pass |
 
 Notes from the second check:
@@ -119,7 +119,7 @@ tests/
 | P3 Index split | `hunk-publish.ts`, `multi-publish.ts` (WP4) | None for staging. `publishIndex` becomes callable from a workbench run. | The whole existing staging suite stays green, plus `publish-index.test.ts`. | A changed order of lock and claim events. The suite catches it. |
 | P4 Service actions | new `revert.ts`, `revert-bytes.ts`, `support.ts`, `commands.ts`, `workbench-review.ts` (WP4) | US1 to US4 in the service. | SC-001 to SC-005 in `tests/git`. | The partial outcome after a published index (D10). |
 | P5 Frontend | `changes/*`, `keyboard/shortcuts.ts`, `app/Workbench.tsx` (WP5) | The menus, the keys, the modal, progress, and results. | Component tests per FR. | The modal focus in WebView2 (WP7 checks it in the package). |
-| P6 WSL | `tests/wsl/revert-wsl.test.ts` (WP6) | None (tests). | US5, SC-008. | The hex input of a line revert (up to 16 MiB of hex) through `wsl.exe` stdin. |
+| P6 WSL | `tests/wsl/revert-wsl.test.ts` (WP6) | None (tests). | US5, SC-008. | The hex input of a line revert (up to 4,234,304 bytes of hex) through `wsl.exe` stdin. |
 | P7 Qualification | `tests/windows/revert-packaged.test.ts`, `revert-perf.test.ts` (WP7) | None (tests). | SC-006, SC-007, SC-009, SC-011. | Windows Defender holds a file during the rename (W9). |
 
 Each step writes its tests first.
@@ -131,7 +131,8 @@ Each step writes its tests first.
 - Phases `revert-index` (no counters) and `revert-files` (`fileIndex`, `fileCount`). Marker actions `revert-lines`, `revert-files`, and `revert-unstaged`.
 - `fileReplace` gains the target `working`, with `bytes` (lines) or `source` (Git's temporary file, whole files). `fileFacts` gains `detail` and a streamed digest without the 1 MiB bound. The new private request `tempRemove` removes an unused Git temporary file.
 - New `WORKBENCH_UNAVAILABLE` reasons and the `STALE_REVIEW` reason `revert-changed`.
-- `REVERT_FILE_BYTES` (8 MiB): the frame bound of a line revert. Whole files have no size bound.
+- `REVERT_FILE_BYTES` (2,117,152 bytes): the frame bound of a line revert, which the 001 comparison bounds always keep (research R11). Whole files have no size bound.
+- A review refusal names the first 20 refused files in tree order with their reasons, and the count of the rest (contract Δ3, spec FR-022, FR-029).
 
 ### D2 Review and run frame
 
@@ -145,7 +146,7 @@ Each step writes its tests first.
 ### D3 Revert lines, unstaged
 
 - Payload: `{action: "revert-lines", snapshotId, comparisonId, hunkId, lines?}`. The comparison is a retained `index-to-worktree` comparison (`o.comparisons`, as `admit` in `hunk-publish.ts:945`). `lines` uses the 004 line selection form.
-- Review: the sub-hunk through `subHunk` with the `unstage` rule: an unselected `+` line becomes context, and an unselected `-` line drops. So the partial patch stands against the working side, the new side of the comparison, and the review applies it reversed (data-model §4). The comparison scope stays `index-to-worktree`. The revert calls `subHunk` directly, not through the `admit` direction check of `hunk-publish.ts:954`. Then the working bytes: the Windows service reads them through its own bounded read (the `wholeWorking` read of `multi-publish.ts`); WSL reads them through `fileFacts` with `content: true`. Their size and SHA-256 must equal the comparison binding. Then `ls-files --eol -z` for the path, `check-attr` and `check-attr --cached` (research R7), and `ident` (research R6).
+- Review: the sub-hunk through `subHunk` with the `unstage` rule: an unselected `+` line becomes context, and an unselected `-` line drops. So the partial patch stands against the working side, the new side of the comparison, and the review applies it reversed (data-model §4). The comparison scope stays `index-to-worktree`. The revert calls `subHunk` directly, not through the `admit` direction check of `hunk-publish.ts:954`. Then the working bytes, at most 1 MiB (research R4, R11): the Windows service reads them through `workingOf` with the bound `COMPARED_RAW_VERSION_BYTES` (`hunk-publish.ts`), not through `wholeWorking`, whose bound is `WHOLE_FILE_STAGE_INPUT_BYTES`; WSL reads them through `fileFacts` with `content: true`. A larger working file refuses with `size`. Their size and SHA-256 must equal the comparison binding. Then `ls-files --eol -z` for the path, `check-attr` and `check-attr --cached` (research R7), and `ident` (research R6).
 - Bytes: `revert-bytes.ts` `reverseLines(working, hunk, ending)` removes the selected `+` lines, inserts the selected `-` lines with the R5 ending rule, and keeps every other raw line (data-model §6).
 - Proof: `hash-object --path=<path> --stdin` of the new bytes must print `blobId(expected)`, where `expected` is the check-in form of the working side with the hunk reversed. `revert-bytes.ts` computes both in memory. A difference refuses with `line-endings`.
 - Bound: the new SHA-256 and size. Plan: `{kind: "lines", scope: "unstaged", file, lines: n | null}`.
@@ -155,7 +156,7 @@ Each step writes its tests first.
 
 - The comparison is a retained `head-to-index` comparison. The review refuses with `unstaged-changes` when the status record of the path has a worktree letter other than `.` (Clarifications, 2026-10-27).
 - Index part: the existing Unstage lines candidate (`applyToContent` in `hunk-candidate.ts:104` through the `prepare` of `hunk-publish.ts:978`), bound to the same comparison and line selection.
-- Working part: because the file has no unstaged change, its check-in form equals the index blob. The review applies the same reversed sub-hunk to the raw working bytes with the R5 rule. The proof compares `hash-object --path` of the new bytes with the blob ID of the new index content.
+- Working part: because the file has no unstaged change, its check-in form equals the index blob. The review reads the raw working bytes with the D3 read and its 1 MiB bound, so a larger working file refuses with `size`. It applies the same reversed sub-hunk to them with the R5 rule. The proof compares `hash-object --path` of the new bytes with the blob ID of the new index content.
 - Run order: the index part first, then the working write (spec FR-017, D10).
 
 ### D5 Revert file
@@ -198,8 +199,9 @@ Rules:
 ### D8 Working-file write on Windows
 
 - `fileReplace {repositoryId, target: "working", path, expected, facts, bytes | source, folders}` (contract Δ6). `bytes` carries a line revert. `source` names Git's temporary file in the worktree root with its size and SHA-256. The shell checks the path below the worktree root with `file_facts::below`, refuses a first component that names the Git directory or `.git`, and requires the started marker action of the run.
-- `check` (`file_replace.rs:118`) keeps its walk, its held parent, its held target, and its size and SHA-256 compare. It adds the R8 facts under the held target handle: the attributes, the link count (`hard-link`), the read-only and encrypted attributes, the owner and DACL. Any difference from `facts` gives `stale`. The target digest streams through the held handle, so `check` has no 1 MiB read bound for this target.
-- `write` (`:180`) creates the temporary file with the delete disposition on close (W6). It sets the attribute set and the creation time through `FileBasicInformation` (W1, W3). The rename sets the archive attribute, so the archive attribute is no compared fact (research R15). W2 showed that the swap loses the file's own DACL (research R15), so it copies the old descriptor with `SE_DACL_AUTO_INHERIT_REQ` set through `SetKernelObjectSecurity` (T013). It compares the resulting owner and DACL with the old file. Then it writes `bytes`, or copies `source` with a streamed SHA-256 that must equal the request, flushes, clears the delete disposition, and renames with `FILE_RENAME_POSIX_SEMANTICS | FILE_RENAME_REPLACE_IF_EXISTS`. A target bound as absent renames without `REPLACE_IF_EXISTS`, so an existing name gives `stale` (as 005 N7).
+- `check` (`file_replace.rs:118`) keeps its walk, its held parent, its held target, and its size and SHA-256 compare. It adds the R8 facts under the held target handle: the attributes, the link count (`hard-link`), the read-only and encrypted attributes, the owner, group, and DACL. Any difference from `facts` gives `stale`. The target digest streams through the held handle, so `check` has no 1 MiB read bound for this target.
+- `write` (`:180`) creates the temporary file with the delete disposition on close (W6). It sets the attribute set and the creation time through `FileBasicInformation` (W1, W3). The rename sets the archive attribute, so the archive attribute is no compared fact (research R15). W2 showed that the swap loses the file's own DACL (research R15), so it copies the old descriptor with `SE_DACL_AUTO_INHERIT_REQ` set through `SetKernelObjectSecurity` (T013). It compares the resulting owner, group, and DACL with the old file, and a difference refuses with `security`. The copy before the write keeps the same facts as the copy after it (W1, W2, W3 `copy-first`, research R15). Then it writes `bytes`, or copies `source` with a streamed SHA-256 that must equal the request, flushes, clears the delete disposition, and renames with `FILE_RENAME_POSIX_SEMANTICS | FILE_RENAME_REPLACE_IF_EXISTS`. A target bound as absent renames without `REPLACE_IF_EXISTS`, so an existing name gives `stale` (as 005 N7).
+- `security` after an index part (review of 2026-10-30). The DACL copy keeps the descriptor in all 10 W2 cases, also when the old file has other inherited ACEs than its folder gives a new file (`renamed-in`, `folder-ace-after`, research R15). So no probed file reaches the `security` refusal, and the review needs no trial file. The write keeps its compare as the guard. If a file still gives `security` after a published index part, the D10 row "published, some files not reverted" applies: `failed-with-effects`, and the file gets `not-changed` with the code `refused` and the reason `security` (data-model §8).
 - `source`: the shell opens the named file relative to the held worktree root without following a link, and requires a regular file with one link and the requested size. After the rename, and after every failure that comes after the source open, it deletes the source through that handle. A failure before the open leaves the source to `tempRemove` (D5a step 6).
 - `tempRemove {repositoryId, name, expected: {size, sha256}}`: one file in the worktree root, deleted through its handle only when its facts equal `expected`. Reply `removed`, `stale`, `absent`, or `error {code}`.
 - `folders` lists the missing folder names below the deepest existing folder. The shell creates each with `FILE_CREATE` and `FILE_DIRECTORY_FILE` relative to the held parent and `OBJ_DONT_REPARSE` (W10).
@@ -208,7 +210,7 @@ Rules:
 
 ### D9 Working-file write on WSL
 
-- The same request reaches `wslFiles` mode `replace` with the root `worktree` and any path below it. The Perl `replace_one` (`wsl-process.json`) keeps its walk and its checks, and adds: the `st_uid` compare and the gid copy through `chown(-1, gid)` (`owner`), the `llistxattr` check (`xattr`), the `O_TMPFILE` create and the `linkat` name just before the rename (L1, L2), and `mkdir` of the missing folders (L7). The `fchmod` of the old mode bits runs after the write and the fsync, just before `linkat`, because a write clears the set-group-ID bit (L4, research R15).
+- The same request reaches `wslFiles` mode `replace` with the root `worktree` and any path below it. The Perl `replace_one` (`wsl-process.json`) keeps its walk and its checks, and adds: the `st_uid` compare (`owner`), the `llistxattr` check (`xattr`), the `O_TMPFILE` create and the `linkat` name just before the rename (L1, L2), and `mkdir` of the missing folders (L7). The temporary file steps run in this order: the gid copy `fchown(-1, old gid)` (`EPERM` refuses with `owner`), the write, `fsync`, `fchmod` of the old `st_mode & 07777`, an `fstat` compare of those mode bits, then `linkat`. A write and an unprivileged `chown` each clear the set-user-ID and set-group-ID bits (chown(2), probe L4, research R15), so the mode copy comes after both. `fchmod` can drop the set-group-ID bit without an error (chmod(2)), so the `fstat` compare proves the bits, and a difference refuses with `owner` (spec FR-043).
 - A line revert: the bytes cross in hex on stdin, at most `REVERT_FILE_BYTES` (contract Δ11). The WSL read of the working bytes uses `fileFacts` with `content: true` (at most 1 MiB).
 - A whole file: no content crosses. Git writes its temporary file inside the distro. The Perl `replace_one` opens it relative to the root with `O_NOFOLLOW`, checks its `fstat` against `lstat`, copies it into the `O_TMPFILE` file beside the target with a streamed SHA-256, and unlinks the source after the identity check. `tempRemove` runs the same identity check.
 - A staged part refuses with `shared-repository` (`eligibility.ts:225`) when any scope sets `core.sharedRepository`. An unstaged revert writes no repository file, so that reason does not apply to it.
@@ -217,14 +219,17 @@ Rules:
 ### D10 Outcome and failure handling
 
 - Reconcile reads after every run, also after Cancel and failure: the index entries of every path (`ls-files --stage -z` with the bound object format), `fileFacts` with `digest: true` for every path, and `readWorkspace`.
-- Per-file outcome (data-model §8): `reverted` (the index entry and the digest equal the plan), `unstaged-only` (the index entry equals the plan, the digest equals the old file), `not-changed` (both equal the old state), `changed-outside` (the digest equals neither), `failed {code}` (a reply error with the old state), `not-started` (no request reached the file).
-- Response state:
+- Per-file outcome (data-model §8): `reverted` (the index entry and the digest equal the plan), `unstaged-only` (the index entry equals the plan, the digest equals the old file), `not-changed` (both equal the old state), `changed-outside` (the digest equals neither), `not-started` (no request reached the file). A `not-changed` file carries the reply code `stale`, `refused` with its reason, or `error` with its code. This is the "failed with its code" outcome of spec FR-039. A `not-changed` file without a code got `stopped` or `interrupted`.
+- Response state. Each row needs the fresh read. A Cancel never turns an effect into `canceled`, and it never reports an undo (spec FR-039, constitution I). The Cancel rows follow 005 plan D6 "Response state".
 
 | Index part | Working writes | Response | Code |
 | --- | --- | --- | --- |
-| none, or published | every file `reverted` | `succeeded` (intended effects confirmed) | none |
+| none, or published | every file `reverted` | `succeeded` (intended effects confirmed), also after a late Cancel | none |
 | refused before publication | none started | `failed` (no effects) | the refusal code, such as `STALE_REVIEW` or the lock code |
 | published | some files not reverted | `failed-with-effects` | the first file in tree order names its code |
+| published | Cancel before the last file | `failed-with-effects` | none; the result names each file outcome |
+| none | some files `reverted` or `changed-outside`, then a failure | `failed-with-effects` | the first file in tree order that did not revert names its code |
+| none | some files `reverted` or `changed-outside`, then Cancel | `failed-with-effects` | none; the result names each file outcome |
 | none | no file changed, Cancel | `canceled` | none |
 | none | no file changed | `failed` | the code of the first file in tree order |
 | unknown (WSL without a process-end fact, or a failed reconcile read) | — | outcome unknown; the recovery marker stays (001 FR-023) | `GIT_FAILED` or `DEADLINE` |
@@ -254,7 +259,8 @@ Rules:
 
 ### D13 Tests and fixtures
 
-- Oracles: Git's own commands on a copy of the fixture: `git apply -R` and `git apply --cached -R` of the same partial patch for lines; `git restore --staged --worktree --source=HEAD` for Revert file (minus the staged-new-file difference of G7); `git restore .` for Revert all unstaged changes. The tests compare index bytes through `ls-files --stage -z` and working bytes by SHA-256.
+- Oracles: Git's own commands on a copy of the fixture: for lines, see the line oracle below; `git restore --staged --worktree --source=HEAD` for Revert file (minus the staged-new-file difference of G7); `git restore .` for Revert all unstaged changes. The tests compare index bytes through `ls-files --stage -z` and working bytes by SHA-256.
+- Line oracle. Git's `apply -R` converts the whole working file again, so it gives CRLF for every line of an LF file under `core.autocrlf=true`. The R5 rule keeps such a file LF (probe G5 `apply-reverse` record, research R15). So a line revert passes when both checks hold. First, `hash-object --path` of the new bytes equals the blob of `git apply --cached -R` of the same partial patch on a copy after `git add` of the path. Second, every unselected line keeps its raw working bytes. For a staged revert, the index also equals `git apply --cached -R` of the patch on a copy. A fixture without a conversion also equals `git apply -R` byte for byte.
 - The test double (`tests/git/bun-runner.ts`) implements `fileReplace` `working` with `bytes` and `source`, and `tempRemove`, with the same expected checks on the host file system, and records each request. The shell behavior has its own cargo tests and the packaged tests.
 - Seams: `revertCheckpoint({step: "before-index" | "after-index" | "before-write", path})` in the service run for the race fixtures, as `hunkCheckpoint` (`hunk-publish.ts:74`). Production passes none.
 - Fault fixtures: the double stops at each write step; the cargo tests kill a child that holds the temporary handle (W6); the WSL test kills the distro process (L3).
@@ -264,7 +270,7 @@ Rules:
 
 The doc pass (WP8, after the full run of WP7) appends one sentence "Amended by feature 008 (2026-10-27): …" to each line below, as feature 005 amended 004 FR-045:
 - `specs/001-desktop-qualification/spec.md:424` (FR-027): the revert actions are allowed behind their confirmations.
-- `specs/001-desktop-qualification/contracts/operations.md:1608` (§11): the bytes of one file of a line revert, at most 8 MiB, cross out of and into the distro. A whole-file revert crosses no content.
+- `specs/001-desktop-qualification/contracts/operations.md:1608` (§11): the bytes of one file of a line revert, at most 1 MiB out and at most `REVERT_FILE_BYTES` (2,117,152 bytes) in, cross the distro boundary. A whole-file revert crosses no content.
 - `specs/004-workbench-ux/spec.md:303` (Scope Boundaries): the discard exclusion goes.
 - `specs/004-workbench-ux/spec.md:322` (the 001 FR-027 change): the revert actions join the allowed list.
 - `specs/004-workbench-ux/spec.md:526` (Assumptions): the discard assumption goes.
@@ -285,8 +291,8 @@ These lines stay unchanged: 001 FR-013 (`:404`), 001 FR-038 (`:447`), 004 FR-042
 ## Open items and reviewer defaults
 
 - The R8 and R9 tables are decisions with probes. A probe result that differs changes them before WP3 (research R14 rule).
-- Revert file has no size bound (Clarifications, 2026-10-27). The 8 MiB frame bound of a line revert stays for v0.1.0. A chunked transfer can lift it later.
-- The DACL copy is conditional on probe W2 (T005 records it, T013 decides, T014 builds it).
+- Revert file has no size bound (Clarifications, 2026-10-27). A line revert keeps the 001 comparison bounds, which keep its frame within `REVERT_FILE_BYTES` (research R11).
+- The DACL copy method is decided (research R15, user decision of 2026-10-27). T013 tests it, and T014 builds it.
 - The placement of "More actions" and the menu order follow the mockup (WP5).
 - `docs/project-brief.md:101` changes its label example (D14). The brief is not a spec.
 

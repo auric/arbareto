@@ -42,8 +42,10 @@ const check = (payload: unknown) => {
 const ACTIONS = ["revert-lines", "revert-files", "revert-unstaged"];
 
 describe("contract Δ5 bounds", () => {
-  test("REVERT_FILE_BYTES is 8 MiB, and the whole-file actions keep MULTI_FILE_ACTION_FILES", () => {
-    expect(L.REVERT_FILE_BYTES).toBe(8_388_608);
+  // Research.md R11: the working bytes, the restored lines of the other side, and one CR per restored diff line.
+  test("REVERT_FILE_BYTES is the reachable line-revert size, and the whole-file actions keep MULTI_FILE_ACTION_FILES", () => {
+    expect(L.REVERT_FILE_BYTES).toBe(2_117_152);
+    expect(L.REVERT_FILE_BYTES).toBe(2 * limits.COMPARED_RAW_VERSION_BYTES + limits.CANONICAL_DIFF_LINES);
     expect(limits.MULTI_FILE_ACTION_FILES).toBe(10_000);
     expect(limits.FILE_FACT_ENTRIES).toBe(64);
   });
@@ -153,6 +155,41 @@ describe("contract Δ3 plans (data-model §5) and Δ9 reasons", () => {
     for (const reason of REASONS) expect({ reason, ok: ok(R, { reason }) }).toEqual({ reason, ok: true });
   });
 
+  // Spec FR-022, FR-029, and plan.md D6: the first 20 refused files in tree order with their reasons, and the count of the rest.
+  test("a review refusal names the first refused files with their reasons and the count of the rest", () => {
+    const file = (reason: string, name = "a.txt") => ({ path: b64(name), reason });
+    const twenty = Array.from({ length: 20 }, (_, i) => file(i === 0 ? "symlink" : "hard-link", `f${i}`));
+    expect(ok(R, { reason: "symlink", files: twenty, more: 5 })).toBe(true);
+    expect(ok(R, { reason: "hard-link", files: [file("hard-link")], more: 0 })).toBe(true);
+    for (const reason of ["untracked", "attributes", "owner", "xattr", "rename", "submodule", "path", "filter", "LFS", "mode", "ident", "binary", "line-endings", "eof-newline"]) {
+      expect({ reason, ok: ok(R, { reason, files: [file(reason)], more: 0 }) }).toEqual({ reason, ok: true });
+    }
+    expect(ok(R, { reason: "symlink", files: [...twenty, file("hard-link", "f20")], more: 4 })).toBe(false);
+    expect(ok(R, { reason: "symlink", files: twenty })).toBe(false);
+    expect(ok(R, { reason: "owner", files: [file("hard-link")], more: 0 })).toBe(false);
+    expect(ok(R, { reason: "hard-link", files: [], more: 0 })).toBe(false);
+    expect(ok(R, { reason: "hard-link", files: [{ path: "", reason: "hard-link" }], more: 0 })).toBe(false);
+    for (const reason of ["nothing-to-revert", "limit", "several-hunks", "sparse-index"]) expect({ reason, ok: ok(R, { reason, files: [file(reason)], more: 0 }) }).toEqual({ reason, ok: false });
+    expect(ok(R, { reason: "untracked-in-way", paths: ["a.txt"], files: [file("untracked")], more: 0 })).toBe(false);
+  });
+
+  // Data-model §7: the support and line reasons of UNSUPPORTED_COMPARISON, and the eligibility reasons of UNSUPPORTED_HUNK_PROFILE with their remedy.
+  test("a review refusal carries the support, line, and eligibility reasons, and the remedy of an eligibility or LOCKED refusal", () => {
+    for (const reason of ["binary", "encoding", "size", "rename", "mode", "type", "symlink", "LFS", "filter", "state", "line-endings", "index-flag", "context-only", "deleted-file", "new-file", "eof-newline"]) {
+      expect({ reason, ok: ok(R, { reason }) }).toEqual({ reason, ok: true });
+    }
+    expect(ok(R, { reason: "several-hunks" })).toBe(false);
+    expect(ok(R, { reason: "supported" })).toBe(false);
+    const remedy = { text: "Stage this change in a terminal." };
+    for (const reason of ["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor", "shared-repository"]) {
+      expect({ reason, ok: ok(R, { reason, remedy }) }).toEqual({ reason, ok: true });
+    }
+    expect(ok(R, { path: `${abs(".git")}${SEP}index.lock`, remedy })).toBe(true);
+    expect(ok(R, { reason: "binary", remedy })).toBe(false);
+    expect(ok(R, { remedy })).toBe(false);
+    expect(ok(R, { reason: "sparse-index", remedy: { text: "" } })).toBe(false);
+  });
+
   test("STALE_REVIEW gains revert-changed", () => {
     expect(E.STALE_REVIEW_REASONS).toEqual(expect.arrayContaining(["revert-changed"]));
     expect(ok(R, { reason: "revert-changed" })).toBe(true);
@@ -200,7 +237,7 @@ describe("contract Δ3 run result (data-model §8, §9)", () => {
 
 describe("contract Δ6 private requests", () => {
   const call = { callId: id(), operationId: id(), repositoryId: id() };
-  const windowsFacts = { size: 12, sha256: DIGEST, attributes: 0x20, links: 1, owner: "S-1-5-21-1-2-3-1001", dacl: "D:(A;;FA;;;SY)", creationTime: "133000000000000000" };
+  const windowsFacts = { size: 12, sha256: DIGEST, attributes: 0x20, links: 1, owner: "S-1-5-21-1-2-3-1001", group: "S-1-5-21-1-2-3-513", dacl: "D:(A;;FA;;;SY)", creationTime: "133000000000000000" };
   const wslFacts = { size: 12, sha256: DIGEST, mode: 0o100644, uid: 1000, gid: 1000, links: 1, xattr: false };
   const working = (fields: Record<string, unknown> = {}) => ({ type: "fileReplace", ...call, target: "working", path: abs("a.txt"), expected: { size: 12, sha256: DIGEST }, facts: windowsFacts, bytes: b64("new\n"), ...fields });
   const source = { name: ".merge_file_a1B2c3", size: 40, sha256: DIGEST2 };
@@ -210,8 +247,10 @@ describe("contract Δ6 private requests", () => {
     expect(ok(R, working())).toBe(true);
     expect(ok(R, working({ bytes: "" }))).toBe(true);
     expect(ok(R, working({ facts: wslFacts }))).toBe(true);
-    expect(ok(R, working({ bytes: b64(new Uint8Array(8 * MIB)) }))).toBe(true);
-    expect(ok(R, working({ bytes: b64(new Uint8Array(8 * MIB + 1)) }))).toBe(false);
+    const bound = L.REVERT_FILE_BYTES ?? 0;
+    expect(ok(R, working({ bytes: b64(new Uint8Array(bound)) }))).toBe(true);
+    expect(ok(R, working({ bytes: b64(new Uint8Array(bound + 1)) }))).toBe(false);
+    for (const bytes of ["eAo", "eA=o", "e===", "eAo*"]) expect({ bytes, ok: ok(R, working({ bytes })) }).toEqual({ bytes, ok: false });
     // A whole file has no size bound, so the expected size has none.
     expect(ok(R, working({ expected: { size: 4 * 1024 * MIB, sha256: DIGEST }, facts: { ...windowsFacts, size: 4 * 1024 * MIB }, bytes: undefined, source }))).toBe(true);
   });
@@ -249,6 +288,8 @@ describe("contract Δ6 private requests", () => {
     expect(ok(R, working({ facts: { ...wslFacts, xattr: true } }))).toBe(false);
     const { owner: _owner, ...noOwner } = windowsFacts;
     expect(ok(R, working({ facts: noOwner }))).toBe(false);
+    const { group: _group, ...noGroup } = windowsFacts;
+    expect(ok(R, working({ facts: noGroup }))).toBe(false);
     expect(ok(R, working({ facts: { ...windowsFacts, creationTime: "1.5" } }))).toBe(false);
   });
 
@@ -310,7 +351,7 @@ describe("contract Δ6 replies", () => {
 
   test("a detail file fact adds links and the Windows or the WSL facts, never a part of them", () => {
     const file = { kind: "file", size: 12, lastWrite: "1", digest: DIGEST };
-    const windows = { links: 1, attributes: 0x20, owner: "S-1-5-32-544", dacl: "D:(A;;FA;;;SY)", creationTime: "-5" };
+    const windows = { links: 1, attributes: 0x20, owner: "S-1-5-32-544", group: "S-1-5-32-545", dacl: "D:(A;;FA;;;SY)", creationTime: "-5" };
     const wsl = { links: 2, mode: 0o100755, uid: 0, gid: 0, xattr: true };
     expect(ok(channel.FileFact, { ...file, ...windows })).toBe(true);
     expect(ok(channel.FileFact, { ...file, ...wsl })).toBe(true);
@@ -321,6 +362,8 @@ describe("contract Δ6 replies", () => {
     expect(ok(channel.FileFact, { ...file, ...windowsOnly })).toBe(false);
     const { dacl: _dacl, ...noDacl } = windows;
     expect(ok(channel.FileFact, { ...file, ...noDacl })).toBe(false);
+    const { group: _group, ...noGroup } = windows;
+    expect(ok(channel.FileFact, { ...file, ...noGroup })).toBe(false);
     const { xattr: _xattr, ...noXattr } = wsl;
     expect(ok(channel.FileFact, { ...file, ...noXattr })).toBe(false);
     expect(ok(channel.FileFact, { ...file, ...windows, attributes: 2 ** 32 })).toBe(false);
@@ -349,7 +392,9 @@ describe("contract Δ10 vectors", () => {
       expect(texts(kind, "process-reply").map((t) => t.type)).toEqual(expect.arrayContaining(["fileReplace", "fileFacts"]));
     }
     const plans = texts("valid", "review-workbench-result").map((t) => t.action ?? t.reason);
-    expect(plans).toEqual(expect.arrayContaining([...ACTIONS, "ident"]));
+    expect(plans).toEqual(expect.arrayContaining([...ACTIONS, "ident", "context-only"]));
+    expect(texts("valid", "review-workbench-result").some((t) => Array.isArray(t.files))).toBe(true);
+    expect(texts("invalid", "review-workbench-result").some((t) => Array.isArray(t.files))).toBe(true);
     const runs = texts("valid", "run-workbench-result").map((t) => t.reason ?? t.action);
     expect(runs).toEqual(expect.arrayContaining(["revert-files", "revert-changed"]));
     expect(texts("valid", "mutation-request").map((t) => t.action)).toEqual(expect.arrayContaining(ACTIONS));

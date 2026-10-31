@@ -10,7 +10,10 @@ import { gitRun } from "../git/remote-fixtures";
 import { factLines, REVERT_FACTS, revertGitVersion, type FileState, type RevertHost } from "../git/revert-facts";
 import { distroGitHost, sh } from "./fixtures";
 import { inDistro, useWslFolder, WSL_ENV, WSL_EXE, wslExec, wslHost, wslTest, type WslCapability, type WslHost } from "./wsl-host";
+import { printOrigin } from "../origin";
 
+printOrigin("../git/revert-facts.ts", import.meta.dir);
+printOrigin("./revert-facts.test.ts", import.meta.dir);
 useWslFolder();
 
 const TASK = "T004";
@@ -156,6 +159,29 @@ for my $order ('first', 'last') {
     $res{$name} = { before => sprintf('%o', $old), after => sprintf('%o', $n[2] & 07777), content => slurp($name) };
   }
 }
+# chown(2): an unprivileged chown clears S_ISUID and S_ISGID. chown-first runs the gid copy before the write, chown-last after the mode copy.
+for my $order ('chown-first', 'chown-last') {
+  for my $m (02755, 04755) {
+    my $name = sprintf('%s-m%o', $order, $m);
+    put($name, "old\n");
+    chmod($m, $name) or die "chmod $!";
+    my @st = lstat($name);
+    my ($old, $gid) = ($st[2] & 07777, $st[5]);
+    my ($fh, $err) = tmpfile('.');
+    die "tmpfile $err" unless defined $fh;
+    if ($order eq 'chown-first') { chown(-1, $gid, $fh) or die "fchown $!"; }
+    syswrite($fh, "new\n") == 4 or die "write $!";
+    $fh->sync or die "sync $!";
+    chmod($old, $fh) or die "fchmod $!";
+    if ($order eq 'chown-last') { chown(-1, $gid, $fh) or die "fchown $!"; }
+    my $fstat = (stat($fh))[2] & 07777;
+    my $tmp = ".arbareto-$$-$name.tmp";
+    name_it($fh, $tmp) == 0 or die "linkat";
+    rename($tmp, $name) or die "rename $!";
+    my @n = lstat($name);
+    $res{$name} = { before => sprintf('%o', $old), fstat => sprintf('%o', $fstat), after => sprintf('%o', $n[2] & 07777), content => slurp($name) };
+  }
+}
 put('h1', "old\n");
 link('h1', 'h2') or die "link $!";
 my @h = lstat('h1');
@@ -286,7 +312,14 @@ wslTest("L3 kill -9 after the O_TMPFILE create, after linkat, and after rename",
 
 wslTest("L4 mode bits after fchmod and rename; a second link", NEEDS, (w) => {
   const r = perl(w, folder(w, "l4"), L4);
-  const observations = Object.entries(r.modes as Record<string, { before: string; after: string; content: string }>).map(([name, m]) => obs(`L4.mode-${name}`, { after: m.before, content: "new\n" }, { after: m.after, content: m.content }));
+  const modes = Object.entries(r.modes as Record<string, { before: string; fstat?: string; after: string; content: string }>);
+  const observations = modes.filter(([name]) => !name.startsWith("chown-")).map(([name, m]) => obs(`L4.mode-${name}`, { after: m.before, content: "new\n" }, { after: m.after, content: m.content }));
+  // chown(2) "NOTES": the chown after the mode copy clears the set-user-ID and set-group-ID bits. The fstat compare before linkat sees it.
+  const cleared = (mode: string) => (Number.parseInt(mode, 8) & ~0o6000).toString(8);
+  for (const [name, m] of modes.filter(([n]) => n.startsWith("chown-"))) {
+    const kept = name.startsWith("chown-first");
+    observations.push(obs(`L4.${name}`, { fstat: kept ? m.before : cleared(m.before), after: kept ? m.before : cleared(m.before), content: "new\n" }, { fstat: m.fstat, after: m.after, content: m.content }));
+  }
   observations.push(obs("L4.second-link-count", 2, r.links));
   print(w, observations);
 }, FACT_MS);

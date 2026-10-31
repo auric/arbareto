@@ -1175,6 +1175,7 @@ fn fact(records: &mut Records, components: usize, digest: bool, total: &mut usiz
                 creation_time: None,
                 dacl: None,
                 gid: None,
+                group: None,
                 links: None,
                 mode: None,
                 owner: None,

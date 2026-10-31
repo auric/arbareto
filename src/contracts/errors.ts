@@ -100,6 +100,9 @@ export const SYNC_OUTPUT_LIMIT_REASONS = ["SYNC_REMOTES"] as const;
 // Contract Δ9: `PUTTY_UNAVAILABLE` names the program. O-7: Pageant and PuTTYgen sit in the plink folder.
 export const PUTTY_PROGRAMS = ["plink", "pageant", "puttygen"] as const;
 
+// Feature 008 contract Δ9: the `WORKBENCH_UNAVAILABLE` reasons of one file of a revert review.
+export const REVERT_FILE_REASONS = ["untracked", "in-the-way", "attributes", "ident", "unstaged-changes", "not-regular", "hard-link", "read-only", "encrypted", "owner", "security", "file-attributes", "xattr"] as const;
+
 // Feature 004 contract Δ9: the reasons of the new codes.
 export const WORKBENCH_UNAVAILABLE_REASONS = [
   "detached",
@@ -155,19 +158,7 @@ export const WORKBENCH_UNAVAILABLE_REASONS = [
   "ignore-nul",
   "ignore-lone-cr",
   // Feature 008 contract Δ9. `limit` exists (004).
-  "untracked",
-  "in-the-way",
-  "attributes",
-  "ident",
-  "unstaged-changes",
-  "not-regular",
-  "hard-link",
-  "read-only",
-  "encrypted",
-  "owner",
-  "security",
-  "file-attributes",
-  "xattr",
+  ...REVERT_FILE_REASONS,
   "nothing-to-revert",
 ] as const;
 export type WorkbenchUnavailableReason = (typeof WORKBENCH_UNAVAILABLE_REASONS)[number];

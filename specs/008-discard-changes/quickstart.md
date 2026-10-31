@@ -29,7 +29,7 @@ Use only the README "Development" commands:
 | Story | What to run | Expected result |
 | --- | --- | --- |
 | Batch 0 facts | `bun test tests/git/revert-facts.test.ts`, `bun test tests/windows/revert-facts.test.ts`, the WSL file alone | One `OBSERVATION` line per probe G3 to G10, W1 to W11, and L1 to L7. Research R15 records them. |
-| US1 unstaged lines | `tests/git/revert-lines.test.ts` | The working bytes equal `git apply -R` of the same partial patch on a copy. The index digest stays. The CRLF and proof cases of data-model §6 pass or refuse as listed. |
+| US1 unstaged lines | `tests/git/revert-lines.test.ts` | The working bytes pass the plan.md D13 line oracle, and equal `git apply -R` of the same partial patch on a copy without a line-ending conversion. The index digest stays. The CRLF and proof cases of data-model §6 pass or refuse as listed. |
 | US2 files | `tests/git/revert-files.test.ts` | The index and the working files equal `git restore --staged --worktree --source=HEAD` on a copy, except that a staged new file keeps its working file. A 40 MiB file reverts, and no request carries its bytes. No `.merge_file_*` file stays after the run. |
 | US3 all unstaged | `tests/git/revert-unstaged.test.ts` | The working files equal `git restore .` on a copy. The index, the untracked files, and the submodules stay. One refused entry makes the action unavailable. |
 | US4 staged lines | `tests/git/revert-staged.test.ts` | The index equals `git apply --cached -R` on a copy, and the working file loses the same lines. A file with unstaged changes refuses. |

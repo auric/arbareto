@@ -298,15 +298,12 @@ const DeleteExpected = z.union([
 // Feature 005 contract Δ5 and Δ6 `fileReplace`: 0 to 1 MiB of bytes.
 const IgnoreBytes = Base64.refine((data) => decodedBytes(data) <= IGNORE_TARGET_BYTES);
 // Feature 008 contract Δ5 and Δ6: the bytes of a line revert. The ignore targets keep their 1 MiB rule.
-// Bun 1.4.4 refuses 6 MiB of zero bytes through the `Base64` pattern, and passes 4 MiB. This form takes the same texts without a repeated group.
-const ReplaceBytes = z
-  .string()
-  .regex(/^[A-Za-z0-9+/]*={0,2}$/)
-  .refine((data) => data.length % 4 === 0 && decodedBytes(data) <= REVERT_FILE_BYTES);
+// Bun 1.4.4 matches the `Base64` pattern up to about 6,193,148 decoded bytes, far above REVERT_FILE_BYTES (research.md R11).
+const ReplaceBytes = Base64.refine((data) => decodedBytes(data) <= REVERT_FILE_BYTES);
 const Uint32 = z.int().min(0).max(0xffff_ffff);
-// Data-model §3 `working` and contract Δ6 `facts`: the bound facts of the target. SDDL holds `owner` and `dacl`.
+// Data-model §3 `working` and contract Δ6 `facts`: the bound facts of the target. SDDL holds `owner`, `group`, and `dacl`.
 const WindowsWorkingFacts = z
-  .strictObject({ size: Count, sha256: Fingerprint, attributes: Uint32, links: z.int().min(1), owner: Text.min(1), dacl: Text.min(1), creationTime: Stamp })
+  .strictObject({ size: Count, sha256: Fingerprint, attributes: Uint32, links: z.int().min(1), owner: Text.min(1), group: Text.min(1), dacl: Text.min(1), creationTime: Stamp })
   .meta({ title: "WindowsWorkingFacts" });
 // typify drops the `xattr` const, so the shell checks it.
 const WslWorkingFacts = z
@@ -635,7 +632,7 @@ export const ResolveGitReply = z.union([
 
 // Contract §6 "File facts": the codes of a component that exists but cannot be opened or read.
 export const FILE_FACT_ERRORS = ["access-denied", "sharing-violation", "io-error", "other-error"] as const;
-const WINDOWS_DETAIL = ["attributes", "owner", "dacl", "creationTime"] as const;
+const WINDOWS_DETAIL = ["attributes", "owner", "group", "dacl", "creationTime"] as const;
 const WSL_DETAIL = ["mode", "uid", "gid", "xattr"] as const;
 // Feature 008 contract Δ6: `links` comes with all Windows or all WSL detail fields, and never with a part of them.
 const detailRule = (fact: Record<string, unknown>) => {
@@ -661,10 +658,11 @@ export const FileFact = z.union([
       // Feature 005 contract Δ6: the reply to a WSL `content` request adds the base64 bytes of a file up to 1 MiB, beside its digest.
       bytes: IgnoreBytes.optional(),
       // Feature 008 contract Δ6: a `detail` request adds `links`, and the Windows or the WSL facts.
-      // `attributes` holds the `FileBasicInformation` attribute bits. `owner` and `dacl` are SDDL. `creationTime` is a stamp as `lastWrite`.
+      // `attributes` holds the `FileBasicInformation` attribute bits. `owner`, `group`, and `dacl` are SDDL. `creationTime` is a stamp as `lastWrite`.
       links: z.int().min(1).optional(),
       attributes: Uint32.optional(),
       owner: Text.min(1).optional(),
+      group: Text.min(1).optional(),
       dacl: Text.min(1).optional(),
       creationTime: Stamp.optional(),
       mode: Uint32.optional(),

@@ -1,5 +1,5 @@
 {
   "schema": "process-reply",
   "expected": "valid",
-  "text": "{\"type\":\"fileFacts\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"facts\":[{\"kind\":\"file\",\"size\":12,\"lastWrite\":\"133700000000000000\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"links\":1,\"attributes\":32,\"owner\":\"S-1-5-21-1-2-3-1001\",\"dacl\":\"D:(A;;FA;;;SY)\",\"creationTime\":\"133700000000000000\"},{\"kind\":\"file\",\"size\":12,\"lastWrite\":\"133700000000000000\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"links\":1,\"mode\":33188,\"uid\":1000,\"gid\":1000,\"xattr\":false}]}"
+  "text": "{\"type\":\"fileFacts\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"facts\":[{\"kind\":\"file\",\"size\":12,\"lastWrite\":\"133700000000000000\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"links\":1,\"attributes\":32,\"owner\":\"S-1-5-21-1-2-3-1001\",\"group\":\"S-1-5-21-1-2-3-513\",\"dacl\":\"D:(A;;FA;;;SY)\",\"creationTime\":\"133700000000000000\"},{\"kind\":\"file\",\"size\":12,\"lastWrite\":\"133700000000000000\",\"digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"links\":1,\"mode\":33188,\"uid\":1000,\"gid\":1000,\"xattr\":false}]}"
 }

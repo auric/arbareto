@@ -15,6 +15,7 @@ import {
   PUSH_REJECTED_REASONS,
   PUTTY_PROGRAMS,
   PUTTY_UNAVAILABLE_REASONS,
+  REVERT_FILE_REASONS,
   SEARCH_UNSUPPORTED_REASONS,
   STALE_REVIEW_REASONS,
   STASH_KEPT_REASONS,
@@ -28,6 +29,7 @@ import {
   WORKBENCH_UNAVAILABLE_REASONS,
   WSL_UNAVAILABLE_REASONS,
   type ErrorCode,
+  type WorkbenchUnavailableReason,
 } from "./errors";
 import { FILE_ACTION_REASONS, LINE_ACTION_REASONS, type FileActionReason, type LineActionReason } from "./file-action";
 import * as limits from "./limits";
@@ -838,11 +840,12 @@ export const ChangeEntry = z
   .meta({ title: "ChangeEntry" });
 
 // Contract §4 "Hunk eligibility and publication", in the order of its list. Null: the read holds no raw index bytes to decide from.
+const INELIGIBLE_REASONS = ["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor", "shared-repository"] as const;
 export const HunkEligibility = z
   .union([
     z.strictObject({ eligible: z.literal(true) }).meta({ title: "Eligible" }),
     z
-      .strictObject({ eligible: z.literal(false), reason: z.enum(["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor", "shared-repository"]) })
+      .strictObject({ eligible: z.literal(false), reason: z.enum(INELIGIBLE_REASONS) })
       .meta({ title: "Ineligible" }),
   ])
   .nullable();
@@ -1663,6 +1666,17 @@ const RevertUnstagedPlan = z
   .strictObject({ ...confirmationPaths, submodules: Count })
   .refine(firstPaths)
   .meta({ title: "RevertUnstagedPlan" });
+// Feature 008 data-model §7: a revert review refuses with UNSUPPORTED_COMPARISON and a support or line reason, or with UNSUPPORTED_HUNK_PROFILE
+// and an eligibility reason and its remedy. The service never gives `several-hunks` (`line-patch.ts`).
+const UNAVAILABLE: readonly string[] = WORKBENCH_UNAVAILABLE_REASONS;
+const SUPPORT_REFUSALS = SupportValue.options.filter((r): r is Exclude<z.infer<typeof SupportValue>, "supported"> => r !== "supported");
+const LINE_REFUSALS = LINE_ACTION_REASONS.filter((r): r is Exclude<LineActionReason, "several-hunks"> => r !== "several-hunks");
+const REVERT_REFUSALS = [...SUPPORT_REFUSALS.filter((r): r is Exclude<(typeof SUPPORT_REFUSALS)[number], WorkbenchUnavailableReason> => !UNAVAILABLE.includes(r)), ...LINE_REFUSALS, ...INELIGIBLE_REASONS];
+const INELIGIBLE: readonly string[] = INELIGIBLE_REASONS;
+// Spec FR-022 and FR-029: the first refused files in tree order with their reasons. `more` counts the rest.
+const RevertRefusedFile = z
+  .strictObject({ path: z.base64().min(1), reason: z.enum([...SUPPORT_REFUSALS, ...LINE_REFUSALS, ...REVERT_FILE_REASONS]) })
+  .meta({ title: "RevertRefusedFile" });
 const reviewed = <A extends string, P extends z.ZodType>(action: A, plan: P, title: string) => z.strictObject({ action: z.literal(action), plan, workbenchToken: Identifier }).meta({ title });
 // Contract Δ3 "Result": `{action, plan, workbenchToken}`, or a refusal value: the Δ9 reason with its facts, the in-the-way paths, or the CONFLICTED count.
 // A `merge` or `rebase` refusal after the counts carries the plan (contract Δ3).
@@ -1690,7 +1704,7 @@ export const ReviewWorkbenchResult = z
     z
       .strictObject({
         // Feature 005 contract Δ3: an `ignore-save` review gives STALE_REVIEW with reason `ignore-changed`.
-        reason: z.enum([...WORKBENCH_UNAVAILABLE_REASONS, ...UNTRACKED_IN_WAY_REASONS, ...DESTINATION_NOT_EMPTY_REASONS, ...STALE_REVIEW_REASONS]).optional(),
+        reason: z.enum([...WORKBENCH_UNAVAILABLE_REASONS, ...UNTRACKED_IN_WAY_REASONS, ...DESTINATION_NOT_EMPTY_REASONS, ...STALE_REVIEW_REASONS, ...REVERT_REFUSALS]).optional(),
         worktree: Text.min(1).optional(),
         ref: FullRef.optional(),
         remotes: z.array(RemoteName).min(2).max(SYNC_REMOTES).optional(),
@@ -1704,6 +1718,9 @@ export const ReviewWorkbenchResult = z
         // Plan.md O-20: the gate of a TRUST_REQUIRED or TRUST_CHANGED refusal. `target` is the listing of the worktree that `worktree-remove` names.
         trustGate: z.enum(["repository", "target"]).optional(),
         names: SideNames.optional(),
+        // Feature 008: the remedy of an eligibility reason, or of a LOCKED refusal with the lock `path` (001 FR-016).
+        remedy: z.strictObject({ text: Text.min(1) }).meta({ title: "WorkbenchRemedy" }).optional(),
+        files: z.array(RevertRefusedFile).min(1).max(DELETE_CONFIRMATION_PATHS).optional(),
       })
       .refine(
         (r) =>
@@ -1711,7 +1728,10 @@ export const ReviewWorkbenchResult = z
           (r.ref === undefined || r.reason === "name-exists") &&
           (r.remotes === undefined || r.reason === "several-tracking-remotes") &&
           (r.paths !== undefined) === (r.reason === "untracked-in-way") &&
-          (r.paths !== undefined) === (r.more !== undefined) &&
+          (r.paths === undefined || r.files === undefined) &&
+          (r.paths !== undefined || r.files !== undefined) === (r.more !== undefined) &&
+          (r.files === undefined || r.files[0]?.reason === r.reason) &&
+          (r.remedy === undefined || (r.reason === undefined ? r.path !== undefined : INELIGIBLE.includes(r.reason))) &&
           (r.unmerged === undefined || r.reason === undefined) &&
           (r.path === undefined || r.reason === undefined) &&
           (r.trustGate === undefined || Object.keys(r).length === 1) &&

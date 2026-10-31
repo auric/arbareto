@@ -14,7 +14,9 @@ import { describeGit, fixtureGitPath } from "./git-binary";
 import { fileSha256 } from "./git-oracle";
 import { nativeHost } from "./remote-fixtures";
 import { factLines, REVERT_FACTS, revertGitVersion, type FileState, type RevertHost } from "./revert-facts";
+import { printOrigin } from "../origin";
 
+printOrigin("./revert-facts.ts", import.meta.dir);
 useFixtureRoot();
 
 const TASK = "T001";

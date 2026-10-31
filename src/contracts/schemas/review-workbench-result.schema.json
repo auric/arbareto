@@ -1857,7 +1857,29 @@
             "other",
             "files-changed",
             "ignore-changed",
-            "revert-changed"
+            "revert-changed",
+            "binary",
+            "encoding",
+            "size",
+            "rename",
+            "mode",
+            "type",
+            "symlink",
+            "LFS",
+            "filter",
+            "state",
+            "line-endings",
+            "index-flag",
+            "context-only",
+            "deleted-file",
+            "new-file",
+            "eof-newline",
+            "sparse-index",
+            "split-index",
+            "index-change-hook",
+            "executable-monitor",
+            "unqualified-monitor",
+            "shared-repository"
           ]
         },
         "worktree": {
@@ -2382,6 +2404,80 @@
           ],
           "additionalProperties": false,
           "title": "SideNames"
+        },
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false,
+          "title": "WorkbenchRemedy"
+        },
+        "files": {
+          "minItems": 1,
+          "maxItems": 20,
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "path": {
+                "type": "string",
+                "minLength": 1,
+                "format": "base64",
+                "contentEncoding": "base64",
+                "pattern": "^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$"
+              },
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "binary",
+                  "encoding",
+                  "size",
+                  "rename",
+                  "mode",
+                  "type",
+                  "symlink",
+                  "submodule",
+                  "LFS",
+                  "filter",
+                  "state",
+                  "line-endings",
+                  "index-flag",
+                  "path",
+                  "context-only",
+                  "deleted-file",
+                  "new-file",
+                  "eof-newline",
+                  "untracked",
+                  "in-the-way",
+                  "attributes",
+                  "ident",
+                  "unstaged-changes",
+                  "not-regular",
+                  "hard-link",
+                  "read-only",
+                  "encrypted",
+                  "owner",
+                  "security",
+                  "file-attributes",
+                  "xattr"
+                ]
+              }
+            },
+            "required": [
+              "path",
+              "reason"
+            ],
+            "additionalProperties": false,
+            "title": "RevertRefusedFile"
+          }
         }
       },
       "additionalProperties": false,

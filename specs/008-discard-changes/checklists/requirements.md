@@ -40,7 +40,7 @@
 - The batch 0 probes ran on 2026-10-27 (research R15). They decided the R8 and R9 facts (FR-035, FR-036), G9 (FR-019, FR-028), and G10. These points stay unverified: the owner of a file that an elevated process created (W2), the ACL case of L6, the LFS fixture of G9 and G10 in the distro, and the integrity-stream attribute (ReFS).
 - The `speckit-checklist` step ran after the plan, in the CLAUDE.md order. It wrote `checklists/safety.md`.
 - Re-check after the clarify answers, the plan, and the checklist pass of 2026-10-27:
-  - Testable: FR-011 states the 60 s review lifetime and its text. FR-015 states one exact ending rule, and the proof decides. FR-025 states no size limit for whole files and the 8 MiB frame for lines (design change of 2026-10-27). FR-040 bounds the listed files. FR-038 lists the new file-fact reasons and the index lock refusal.
+  - Testable: FR-011 states the 60 s review lifetime and its text. FR-015 states one exact ending rule, and the proof decides. FR-025 states no size limit for whole files and the 001 comparison bounds for lines (design change of 2026-10-27, review of 2026-10-30). FR-040 bounds the listed files. FR-038 lists the new file-fact reasons and the index lock refusal.
   - Consistent: FR-004 and the Clarifications state why no hook runs, and plan note N-1 checks it against constitution I. FR-018 limits marks to one list. FR-043 adds the group rule of plan D9. The refusal sets of FR-038, data-model §7, and contract Δ9 match.
   - Edge cases: the expired review, R in the History diff, the index lock for every revert, and the `.gitattributes` file itself are present.
   - The items keep their state. The three unmet items stay unmet for the reasons above.

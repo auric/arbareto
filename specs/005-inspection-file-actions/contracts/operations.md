@@ -122,20 +122,23 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - `log -z --no-show-signature --no-color --encoding=UTF-8 --format=%H%x00%s --max-count=50 <new> ^<old>` for added commits, and `<old> ^<new>` for removed commits, only when that count is nonzero. Records: object ID, NUL, subject bytes, NUL. A record count above the count or above 50 gives `MALFORMED_GIT_OUTPUT`.
 - Programs: none of these commands loads an index or runs a filter, a hook, a textconv driver, or a signature program (research.md R18). So the read needs no submodule program check. T106 proves it with canaries.
 - Bounds: 50 commits per side (`SUBMODULE_CHANGE_COMMITS`), 256 KiB of `log` output per side (`SUBMODULE_CHANGE_OUTPUT_BYTES`), `READ_DEADLINE_MS`. The output bound gives `limited: true` with the whole records before it.
-- Errors: `TRUST_REQUIRED`, `TRUST_CHANGED` (parent gate); `UNKNOWN_TARGET`; `INVALID_REQUEST`; `MALFORMED_GIT_OUTPUT`; `GIT_FAILED`; `DEADLINE`; `CANCELED`. A missing object is a result state, not an error. No command fetches.
+- Index cut (2026-10-31 review): a workspace source whose snapshot index listing reached a §5 status bound gives `OUTPUT_LIMIT` before any Git process. That snapshot names no index entry.
+- Path (2026-10-31 review): a state other than `single` needs the path as an argv item and as `fileFacts` components. A path that is no valid UTF-8 or breaks the 001 §6 component rule gives `SUBMODULE_UNAVAILABLE` reason `path`, as `openSubmodule` does. A `single` change needs no path item.
+- Errors: `TRUST_REQUIRED`, `TRUST_CHANGED` (parent gate); `UNKNOWN_TARGET`; `INVALID_REQUEST`; `OUTPUT_LIMIT` (index cut); `SUBMODULE_UNAVAILABLE` (`path`); `MALFORMED_GIT_OUTPUT`; `GIT_FAILED`; `DEADLINE`; `CANCELED`. A missing object is a result state, not an error. No command fetches.
 - Result: data-model §15.
 
 ### `readSubmoduleWork` (2026-10-31)
 
 - Payload: `{snapshotId}`. The renderer sends it after each complete `readWorkspace` result, in History and in the Commit view. One read slot. A newer snapshot cancels the running read.
-- Targets: the gitlinks (mode 160000, stage 0) of `ls-files -z --stage` of that snapshot, in index order, at most 256 (`SUBMODULE_WORK_TARGETS`). Later gitlinks give `unchecked` reason `limit`. At most 4 targets run at the same time (`SUBMODULE_WORK_PARALLEL`).
+- Targets: the gitlinks (mode 160000, stage 0) of `ls-files -z --stage` of that snapshot, in index order, at most 256 (`SUBMODULE_WORK_TARGETS`). The result field `limited` counts the later gitlinks in index order. The read gives them no entry. A snapshot whose index listing reached a §5 status bound gives `OUTPUT_LIMIT`, because it names no gitlink. At most 4 targets run at the same time (`SUBMODULE_WORK_PARALLEL`).
 - Per target, inside the submodule, in the form of `readSubmoduleChange`:
-  1. Plan D11 checks 4 and 5. A failure gives no entry, because the target is not initialized.
+  1. Plan D11 checks 4 and 5. A failure gives the state `not-initialized`, and no later step runs. So each of the first 256 gitlinks has one entry, and only a gitlink past the bound has none.
   2. `config list --show-scope --show-origin -z`. The 001 §7 resolution rule applies, and every local and worktree entry counts as repository-controlled (001 §12 "Submodule programs"). A repository-controlled command-valued `core.fsmonitor`, `filter.<driver>.clean`, or `filter.<driver>.process` gives `unchecked` reason `programs`, and no status runs.
   3. `status --porcelain=v2 -z --untracked-files=normal --ignore-submodules=dirty`. The 001 status parser reads the records. A `1`, `2`, or `u` record sets `modified`. A `?` record sets `untracked`. The service ends the process when both are set. A non-zero exit gives `unchecked` reason `failed` with `GIT_FAILED`.
 - Programs: step 3 loads the submodule index. Protected programs from system, global, and command scope can run, as in the parent read (001 §7). No repository-controlled program of the submodule runs, because step 2 refuses it.
 - Bounds: the 001 §5 status record and byte bounds per target, `READ_DEADLINE_MS` for the whole read. A deadline ends every running target. The targets without a result give `unchecked` reason `failed` with `DEADLINE`.
-- Errors of the whole read: `TRUST_REQUIRED`, `TRUST_CHANGED` (parent gate); `UNKNOWN_TARGET` (an old snapshot); `CANCELED`.
+- A path that is no valid UTF-8 or breaks the 001 §6 component rule gives `unchecked` reason `failed` with `SUBMODULE_UNAVAILABLE`. A read deadline during the parent gate or the file facts gives every target `failed` with `DEADLINE`.
+- Errors of the whole read: `TRUST_REQUIRED`, `TRUST_CHANGED` (parent gate); `UNKNOWN_TARGET` (an old snapshot); `OUTPUT_LIMIT` (index cut); `CANCELED`.
 - Result: data-model §16.
 
 ### `reviewWorkbench` (004 Δ3)
@@ -261,10 +264,10 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 |---|---|---|
 | `BLAME_UNAVAILABLE` | `no-history`, `binary`, `submodule`, `size`, `lines`, `ignore-revs-file-missing`, `no-previous`, `path` | Blame cannot run for this file. No blame process starts. |
 | `UNSUPPORTED_COMPARISON` (001) | `readCommitFile` uses the 001 reason `path` | The path is no valid UTF-8, so no argv item can carry it. |
-| `SUBMODULE_UNAVAILABLE` | `not-submodule`, `submodule-not-initialized`, `path` | The open cannot start. The parent stays open. |
+| `SUBMODULE_UNAVAILABLE` | `not-submodule`, `submodule-not-initialized`, `path` | The open cannot start. The parent stays open. `readSubmoduleChange` uses only `path`: the preview cannot pass the path to Git. |
 | `WORKBENCH_UNAVAILABLE` (004) | adds `conflicted`, `submodule`, `nested-repository`, `no-recycle-bin`, `long-path`, `nothing-to-delete`, `ignore-link`, `ignore-folder`, `ignore-not-utf8`, `ignore-nul`, `ignore-lone-cr`; keeps the 004 reasons `ignore-not-regular`, `ignore-size`, `limit`, `path`, and `unreadable`; removes `ignore-exists`, `ignore-not-text` | The action cannot run. No file changes. |
 | `STALE_REVIEW` (001) | adds `files-changed`, `ignore-changed` | A bound fact changed after the review. Nothing changes. |
-| Submodule work reasons (`readSubmoduleWork` entries) | `programs`, `limit`, `failed` | Arbareto did not check this submodule for local edits. Not an error code. |
+| Submodule work reasons (`readSubmoduleWork` entries) | `programs`, `failed` | Arbareto did not check this submodule for local edits. Not an error code. |
 | `UNKNOWN_TARGET` (001) | adds `absent` | The reveal target does not exist on disk. |
 
 - `ignore-revs-file-missing` carries `path`, the value as configured.

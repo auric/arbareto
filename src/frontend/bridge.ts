@@ -159,6 +159,10 @@ export function createBridge(onSessionChange?: () => void, onTextScale?: (value:
     previewIgnore: <T extends Target<"previewIgnore">>(target: Exact<"previewIgnore", T>, payload: Payload<"previewIgnore">, onProgress?: OnProgress) =>
       call("previewIgnore", target, payload, onProgress),
     openSubmodule: (payload: Payload<"openSubmodule">, onProgress?: OnProgress) => call("openSubmodule", {}, payload, onProgress),
+    readSubmoduleChange: <T extends Target<"readSubmoduleChange">>(target: Exact<"readSubmoduleChange", T>, payload: Payload<"readSubmoduleChange">, onProgress?: OnProgress) =>
+      call("readSubmoduleChange", target, payload, onProgress),
+    readSubmoduleWork: <T extends Target<"readSubmoduleWork">>(target: Exact<"readSubmoduleWork", T>, payload: Payload<"readSubmoduleWork">, onProgress?: OnProgress) =>
+      call("readSubmoduleWork", target, payload, onProgress),
     // Feature 006 contract Δ1.
     listDictionaries: (onProgress?: OnProgress) => call("listDictionaries", {}, {}, onProgress),
     readDictionary: (payload: Payload<"readDictionary">, onProgress?: OnProgress) => call("readDictionary", {}, payload, onProgress),

@@ -4180,6 +4180,186 @@
         },
         "operation": {
           "type": "string",
+          "const": "readSubmoduleChange"
+        },
+        "repositoryId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "repositoryGeneration": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "source": {
+              "oneOf": [
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "workspace"
+                    },
+                    "snapshotId": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                    },
+                    "entryId": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "snapshotId",
+                    "entryId"
+                  ],
+                  "additionalProperties": false,
+                  "title": "SubmoduleWorkspaceSource"
+                },
+                {
+                  "type": "object",
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "const": "commit"
+                    },
+                    "viewId": {
+                      "type": "string",
+                      "maxLength": 64,
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+                    },
+                    "oid": {
+                      "type": "string",
+                      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+                    },
+                    "parent": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 63
+                    },
+                    "record": {
+                      "type": "integer",
+                      "minimum": 0,
+                      "maximum": 99999
+                    }
+                  },
+                  "required": [
+                    "kind",
+                    "viewId",
+                    "oid",
+                    "parent",
+                    "record"
+                  ],
+                  "additionalProperties": false,
+                  "title": "SubmoduleCommitSource"
+                }
+              ]
+            }
+          },
+          "required": [
+            "source"
+          ],
+          "additionalProperties": false,
+          "title": "ReadSubmoduleChangePayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "repositoryId",
+        "repositoryGeneration",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "ReadSubmoduleChangeRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
+          "const": "readSubmoduleWork"
+        },
+        "repositoryId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "repositoryGeneration": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "payload": {
+          "type": "object",
+          "properties": {
+            "snapshotId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          },
+          "required": [
+            "snapshotId"
+          ],
+          "additionalProperties": false,
+          "title": "ReadSubmoduleWorkPayload"
+        }
+      },
+      "required": [
+        "version",
+        "sessionId",
+        "requestId",
+        "operation",
+        "repositoryId",
+        "repositoryGeneration",
+        "payload"
+      ],
+      "additionalProperties": false,
+      "title": "ReadSubmoduleWorkRequest"
+    },
+    {
+      "type": "object",
+      "properties": {
+        "version": {
+          "type": "number",
+          "const": 1
+        },
+        "sessionId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "requestId": {
+          "type": "string",
+          "maxLength": 64,
+          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+        },
+        "operation": {
+          "type": "string",
           "const": "listDictionaries"
         },
         "payload": {

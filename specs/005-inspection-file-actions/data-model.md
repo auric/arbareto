@@ -170,13 +170,16 @@ Each section names its source. Field names are contract names. "001 data-model Â
   - `not-initialized`: no counts and no IDs beyond `old` and `new`.
   - `single`: an added or a deleted gitlink. No counts.
 - `limited`: true when the `log` output reached its bound. The counts stay exact.
+- Refusal: `SUBMODULE_UNAVAILABLE` with `{reason: "path"}` replaces the result (contract Î”3).
 - Lifetime: none retained. A new selection cancels the read.
 
 ## 16. Submodule work state (`readSubmoduleWork` result, 2026-10-31)
 
 - Binding: `snapshotId` of the `readWorkspace` result that it extends. A newer snapshot drops it.
-- `entries`: one per initialized gitlink of the index, in index order, at most 256. Each holds the literal path bytes, the display path, and one state:
+- `entries`: one per gitlink of the index, in index order, at most 256. Each holds the literal path bytes, the display path, and one state:
+  - `not-initialized`: plan D11 check 4 or 5 failed. No submodule process ran after it.
   - `checked`: `modified` (a `1`, `2`, or `u` record in the submodule status) and `untracked` (a `?` record).
-  - `unchecked`: `reason` is `programs`, `limit`, or `failed` with the error code.
+  - `unchecked`: `reason` is `programs`, or `failed` with the error code.
+- `limited`: the count of gitlinks after the first 256 in index order. They have no entry.
 - `extraRows`: the entries with `checked`, `modified` or `untracked` true, and no record in the parent status. The renderer lists them in Changes (spec FR-075).
 - Counts: the Changes count, the folder counts, and the History Working directory count add the `extraRows` count once the result arrives.

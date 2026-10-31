@@ -186,11 +186,14 @@ class Malformed extends Error {}
 
 type Phase = "start" | "header" | "fixed" | "path" | "original";
 
-export function createStatusParser(objectFormat: ObjectFormat): StatusParser {
+// `branchHeaders`: the arguments pass `--branch`, so a complete output holds both headers.
+// `onRecord`: each complete record goes to it, in output order, and the parser keeps no record.
+export function createStatusParser(objectFormat: ObjectFormat, branchHeaders = true, onRecord?: (record: StatusRecord) => void): StatusParser {
   const oidLength = objectIdLength(objectFormat);
   const branch: BranchHeaders = { oid: null, head: null, upstream: null, ahead: null, behind: null };
   const records: StatusRecord[] = [];
   let bytes = 0;
+  let count = 0;
   let sawOid = false;
   let sawHead = false;
   let final: StatusParseResult | null = null;
@@ -236,7 +239,7 @@ export function createStatusParser(objectFormat: ObjectFormat): StatusParser {
 
   function header(item: Uint8Array): void {
     // git-status(1): headers come before the entries, and parsers ignore unknown headers.
-    if (records.length > 0 || item.length < 2 || item[1] !== SPACE) throw new Malformed();
+    if (count > 0 || item.length < 2 || item[1] !== SPACE) throw new Malformed();
     const text = displayPath(item.subarray(2));
     const space = text.indexOf(" ");
     const key = space < 0 ? text : text.slice(0, space);
@@ -281,7 +284,9 @@ export function createStatusParser(objectFormat: ObjectFormat): StatusParser {
   }
 
   function add(record: StatusRecord): void {
-    records.push(record);
+    count++;
+    if (onRecord === undefined) records.push(record);
+    else onRecord(record);
   }
 
   function finishPath(path: Uint8Array): void {
@@ -311,7 +316,7 @@ export function createStatusParser(objectFormat: ObjectFormat): StatusParser {
       switch (phase) {
         case "start": {
           // The record bound applies when one more record starts.
-          if (records.length >= STATUS_LISTING_RECORDS) return limited("STATUS_LISTING_RECORDS");
+          if (count >= STATUS_LISTING_RECORDS) return limited("STATUS_LISTING_RECORDS");
           const first = data[at]!;
           if (first === 0x23) phase = "header";
           else if (KINDS.has(first)) {
@@ -404,7 +409,7 @@ export function createStatusParser(objectFormat: ObjectFormat): StatusParser {
       if (final !== null) return final;
       // An unfinished record means truncated output.
       // `statusArgs` passes `--branch`, so Git always prints both headers.
-      if (phase !== "start" || !sawOid || !sawHead) return (final = { state: "failed", code: "MALFORMED_GIT_OUTPUT" });
+      if (phase !== "start" || (branchHeaders && (!sawOid || !sawHead))) return (final = { state: "failed", code: "MALFORMED_GIT_OUTPUT" });
       return (final = { state: "complete", branch: { ...branch }, records });
     },
   };

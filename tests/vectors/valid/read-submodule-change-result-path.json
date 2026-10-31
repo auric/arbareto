@@ -1,0 +1,5 @@
+{
+  "schema": "read-submodule-change-result",
+  "expected": "valid",
+  "text": "{\"reason\": \"path\"}"
+}

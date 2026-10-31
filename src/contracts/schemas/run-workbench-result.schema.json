@@ -958,6 +958,8 @@
             "readIgnoreFile",
             "previewIgnore",
             "openSubmodule",
+            "readSubmoduleChange",
+            "readSubmoduleWork",
             "listDictionaries",
             "readDictionary",
             "downloadDictionary",

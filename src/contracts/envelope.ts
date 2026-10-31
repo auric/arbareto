@@ -50,6 +50,8 @@ import {
   MERGE_MESSAGE_BYTES,
   MULTI_FILE_ACTION_FILES,
   PREVIEW_GROUP_PATHS,
+  SUBMODULE_CHANGE_COMMITS,
+  SUBMODULE_WORK_TARGETS,
   PUBLIC_REQUEST_BYTES,
   REF_LISTING_RECORDS,
   REGISTERED_WORKSPACES,
@@ -395,6 +397,15 @@ const PreviewIgnore = op("previewIgnore", snapshot, z.strictObject({ target: Ign
 // Contract Δ3 `openSubmodule`: worktree-relative text with `/` separators. The shell also checks each component by the 001 §6 rule.
 const SubmodulePath = Text.min(1).refine((path) => path.split("/").every((part) => part !== "" && part !== "." && part !== ".."));
 const OpenSubmodule = op("openSubmodule", {}, z.strictObject({ repositoryId: Identifier, path: SubmodulePath }));
+// Contract Δ3 `readSubmoduleChange`, data-model §15: `record` is the `fileId` of the retained listing of the view.
+const SubmoduleChangeSource = z.discriminatedUnion("kind", [
+  z.strictObject({ kind: z.literal("workspace"), snapshotId: Identifier, entryId: Identifier }).meta({ title: "SubmoduleWorkspaceSource" }),
+  z
+    .strictObject({ kind: z.literal("commit"), viewId: Identifier, oid: ObjectId, parent: z.int().min(0).max(HISTORY_PARENTS_PER_COMMIT - 1), record: z.int().min(0).max(STATUS_LISTING_RECORDS - 1) })
+    .meta({ title: "SubmoduleCommitSource" }),
+]);
+const ReadSubmoduleChange = op("readSubmoduleChange", snapshot, z.strictObject({ source: SubmoduleChangeSource }));
+const ReadSubmoduleWork = op("readSubmoduleWork", snapshot, z.strictObject({ snapshotId: Identifier }));
 
 // ---- Feature 006 operations (contract Δ1 to Δ3, data-model §5 to §8) ----
 
@@ -473,6 +484,8 @@ export const RendererEnvelope = z.discriminatedUnion("operation", [
   ReadIgnoreFile,
   PreviewIgnore,
   OpenSubmodule,
+  ReadSubmoduleChange,
+  ReadSubmoduleWork,
   ListDictionaries,
   ReadDictionary,
   DownloadDictionary,
@@ -563,6 +576,8 @@ export const ServiceEnvelope = z.discriminatedUnion("operation", [
   PreviewIgnore,
   // Feature 005 contract Δ3: the shell binds the joined path to a `repositoryDiscovery` context and forwards its `bootstrapId`.
   op("openSubmodule", {}, z.strictObject({ repositoryId: Identifier, bootstrapId: Identifier, path: SubmodulePath })),
+  ReadSubmoduleChange,
+  ReadSubmoduleWork,
   ListDictionaries,
   ReadDictionary,
   DownloadDictionary,
@@ -2111,6 +2126,59 @@ export type Blame = z.infer<typeof Blame>;
 export const OpenSubmoduleResult = z
   .union([RegistrationResult, z.strictObject({ reason: z.enum(SUBMODULE_UNAVAILABLE_REASONS) }).meta({ title: "SubmoduleRefused" })])
   .meta({ title: "OpenSubmoduleResult" });
+
+// Data-model §15 `readSubmoduleChange`. A list holds at most 50 commits in Git's log order. Without `limited`, it holds the first min(count, 50) commits.
+const SubmoduleCommit = z.strictObject({ oid: ObjectId, subject: z.string() }).meta({ title: "SubmoduleCommit" });
+const SubmoduleCommits = z.array(SubmoduleCommit).max(SUBMODULE_CHANGE_COMMITS);
+const SubmoduleChangeState = z.discriminatedUnion("state", [
+  z.strictObject({ state: z.literal("commits"), added: Count, removed: Count, addedCommits: SubmoduleCommits, removedCommits: SubmoduleCommits }).meta({ title: "SubmoduleCommitsState" }),
+  z.strictObject({ state: z.literal("missing"), which: z.enum(["old", "new", "both"]) }).meta({ title: "SubmoduleMissingState" }),
+  z.strictObject({ state: z.literal("not-initialized") }).meta({ title: "SubmoduleNotInitializedState" }),
+  z.strictObject({ state: z.literal("single") }).meta({ title: "SubmoduleSingleState" }),
+]);
+const listed = (count: number, list: readonly unknown[], limited: boolean) => Array.isArray(list) && (limited ? list.length <= Math.min(count, SUBMODULE_CHANGE_COMMITS) : list.length === Math.min(count, SUBMODULE_CHANGE_COMMITS));
+const SubmoduleChange = z
+  .strictObject({
+    pathBytes: PathBytes,
+    path: z.string(),
+    kind: z.enum(["submodule", "nested"]),
+    old: ObjectId.nullable(),
+    new: ObjectId.nullable(),
+    state: SubmoduleChangeState,
+    limited: z.boolean(),
+  })
+  .refine((c) => {
+    const st = c.state;
+    if (st?.state === "single") return (c.old === null) !== (c.new === null) && !c.limited;
+    if (st?.state === "not-initialized") return !c.limited;
+    if (st?.state === "missing") return c.old !== null && c.new !== null && !c.limited;
+    return c.old !== null && c.new !== null && listed(st.added, st.addedCommits, c.limited) && listed(st.removed, st.removedCommits, c.limited);
+  })
+  .meta({ title: "SubmoduleChange" });
+// Contract Δ3: SUBMODULE_UNAVAILABLE with reason `path` for a path that no argv item or `fileFacts` component can carry.
+export const ReadSubmoduleChangeResult = z.union([SubmoduleChange, z.strictObject({ reason: z.enum(["path"]) }).meta({ title: "SubmoduleChangeRefused" })]).meta({ title: "ReadSubmoduleChangeResult" });
+export type SubmoduleChange = z.infer<typeof SubmoduleChange>;
+
+// Data-model §16 `readSubmoduleWork`, contract Δ9 "Submodule work reasons". `failed` carries the error code.
+// Each of the first SUBMODULE_WORK_TARGETS gitlinks in index order has one entry. `limited` counts the later gitlinks, which have none.
+const SubmodulePathFields = { pathBytes: PathBytes, path: z.string() };
+const SubmoduleWorkEntry = z
+  .union([
+    z.strictObject({ ...SubmodulePathFields, state: z.literal("checked"), modified: z.boolean(), untracked: z.boolean() }).meta({ title: "SubmoduleWorkChecked" }),
+    z.strictObject({ ...SubmodulePathFields, state: z.literal("not-initialized") }).meta({ title: "SubmoduleWorkNotInitialized" }),
+    z.strictObject({ ...SubmodulePathFields, state: z.literal("unchecked"), reason: z.literal("programs") }).meta({ title: "SubmoduleWorkSkipped" }),
+    z.strictObject({ ...SubmodulePathFields, state: z.literal("unchecked"), reason: z.literal("failed"), code: ErrorCodeSchema }).meta({ title: "SubmoduleWorkFailed" }),
+  ])
+  .meta({ title: "SubmoduleWorkEntry" });
+export const ReadSubmoduleWorkResult = z
+  .strictObject({
+    snapshotId: Identifier,
+    entries: z.array(SubmoduleWorkEntry).max(SUBMODULE_WORK_TARGETS),
+    extraRows: z.array(z.strictObject(SubmodulePathFields).meta({ title: "SubmoduleExtraRow" })).max(SUBMODULE_WORK_TARGETS),
+    limited: Count,
+  })
+  .meta({ title: "ReadSubmoduleWorkResult" });
+export type SubmoduleWork = z.infer<typeof ReadSubmoduleWorkResult>;
 
 // Contract Δ3 `revealPath`: the `reveal` reply `absent` gives UNKNOWN_TARGET with this reason. A shown path gives no value.
 export const RevealPathResult = z.strictObject({ reason: z.enum(UNKNOWN_TARGET_REASONS) }).meta({ title: "RevealPathResult" });

@@ -12,7 +12,9 @@ import { ComparisonView as Comparison, resultOf, showsDiff, type LineState } fro
 import { deleteBlock, fileActions } from "../changes/file-actions";
 import { countsText } from "../changes/file-tree";
 import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
-import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
+import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type RevertRequest, type StagingTarget } from "../changes/HunkControls";
+import { RevertConfirm } from "../changes/RevertConfirm";
+import { actionName, REVERT_CHECKING, REVERT_HUNK_LABEL, REVERT_PROGRESS, REVERT_UNAVAILABLE, revertLinesLabel, revertLinesOutcome, reviewRefusal, type RevertLinesPlan } from "../changes/revert-text";
 import { CommitTray } from "../commit/CommitTray";
 import { WorkingSummary } from "../commit/WorkingSummary";
 import { IconButton } from "../components/icon-button";
@@ -66,7 +68,7 @@ import { createDrafts } from "../state/drafts";
 import { createSpellEngine, type Spelling } from "../spelling/engine";
 import { createSpellingStore } from "../spelling/store";
 import { createDraftStore } from "../state/draft-store";
-import { OperationStatus, SYNC_NAMES, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
+import { OperationStatus, SYNC_NAMES, trackOperation, type StatusOperation, type StatusRegionHandle } from "../status/OperationStatus";
 import { SubmoduleNotice } from "../submodules/SubmoduleNotice";
 import { INITIALIZE_FIRST, openSubmoduleReason, SubmodulesGroup, useSubmoduleUpdate } from "../submodules/SubmodulesGroup";
 import { DiscardConfirm, IgnoreEditor } from "../ignore/IgnoreEditor";
@@ -504,6 +506,40 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
   // A refusal of a hunk's own button shows in the reason line of the hunk controls until the comparison changes.
   const [hunkNotice, setHunkNotice] = useState<{ comparisonId: string; text: string } | null>(null);
   const hunkNoticeId = useId();
+  // Feature 008 plan.md D12: the reviewed plan of a revert, its token, and the control that opened the review.
+  const [revert, setRevert] = useState<{ token: string; plan: RevertLinesPlan; label: string; opener: HTMLElement | null } | null>(null);
+  const reviewRevert = async ({ comparison, hunkId, lines, opener }: RevertRequest) => {
+    if (staging === undefined || entry === null || target === null) return;
+    const label = actionName(lines === null ? REVERT_HUNK_LABEL : revertLinesLabel(lines.length));
+    const texts: [string, string, string] = [label, "Reverting", label];
+    const ended = (response: BridgeResponse): Partial<StatusOperation> => {
+      if (response.state === "succeeded" || response.state === "canceled") return response.state === "succeeded" ? { outcome: "" } : {};
+      return { texts: [label, "Reverting", REVERT_UNAVAILABLE(label)], outcome: REVERT_UNAVAILABLE(label), lines: [reviewRefusal(response, entry.path, lines !== null)], opens: true };
+    };
+    const payload = { action: "revert-lines" as const, snapshotId: comparison.snapshotId, comparisonId: comparison.comparisonId, hunkId, ...(lines === null ? {} : { lines }) };
+    onStatus(null);
+    const response = await trackOperation(
+      "runWorkbench",
+      undefined,
+      (onProgress) => staging.bridge.reviewWorkbench(target, payload, onProgress),
+      (op) => staging.onOperation({ ...op, texts, ...(op.response === null ? { running: REVERT_CHECKING(1) } : ended(op.response)) }),
+    );
+    const result = response.result as { action?: unknown; workbenchToken?: unknown; plan?: RevertLinesPlan } | undefined;
+    if (response.state === "succeeded" && result?.action === "revert-lines" && typeof result.workbenchToken === "string" && result.plan !== undefined) setRevert({ token: result.workbenchToken, plan: result.plan, label, opener });
+  };
+  const runRevert = async () => {
+    if (revert === null || staging === undefined || target === null) return;
+    const { token, plan, label } = revert;
+    setRevert(null);
+    const report = (op: StatusOperation) => {
+      const counters = op.progress?.phase === "revert-files" ? op.progress.counters : {};
+      const running = counters.fileIndex === undefined || counters.fileCount === undefined ? {} : { running: REVERT_PROGRESS(counters.fileIndex, counters.fileCount) };
+      const outcome = op.response === null ? undefined : revertLinesOutcome(op.response, plan);
+      staging.onOperation({ ...op, texts: [label, "Reverting", label], ...running, ...(outcome === undefined ? {} : { outcome }) });
+    };
+    const response = await trackOperation("runWorkbench", undefined, (onProgress) => staging.bridge.runWorkbench({ repositoryId: target.repositoryId }, { workbenchToken: token, start: true }, onProgress), report);
+    workbench.ended("runWorkbench", response);
+  };
   const controls =
     staging === undefined || entry === null
       ? undefined
@@ -530,13 +566,15 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
             }}
             stepRef={staging.stepRef}
             lines={lines}
+            onRevert={(request) => void reviewRevert(request)}
+            onRevertRefused={onStatus}
           />
         );
   // Spec FR-037: the Stage hunk or Unstage hunk button on each hunk.
   const hunkAction =
     staging === undefined || entry === null
       ? undefined
-      : (comparison: ComparisonResult, displayFailed: boolean, index: number) => (
+      : (comparison: ComparisonResult, displayFailed: boolean, index: number, lines: LineState) => (
           <HunkButton
             bridge={staging.bridge}
             target={target}
@@ -556,6 +594,8 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
               staging.onEnded("applyHunk", response);
             }}
             index={index}
+            lines={lines}
+            onRevert={(request) => void reviewRevert(request)}
           />
         );
   const failed = staging?.fileFailure?.file === file ? staging.fileFailure.response : null;
@@ -596,6 +636,9 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1">{view}</div>
+      {revert === null ? null : (
+        <RevertConfirm plan={revert.plan} onConfirm={() => void runRevert()} onCancel={() => setRevert(null)} finalFocus={() => (revert.opener?.isConnected ? revert.opener : null)} />
+      )}
     </div>
   );
 }

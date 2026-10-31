@@ -146,7 +146,9 @@ describe("Mark resolved in the workbench (FR-053)", () => {
     world.answers.applyFile = undefined;
     const d = await mountWorkbench(workbench, world);
     const row = () => document.querySelector('[data-slot="conflict-row"]')!;
-    expect(button("Continue", row()).getAttribute("aria-disabled")).toBe("true");
+    // Feature 004 FR-102: while the file is unmerged, Resolve conflicts takes the place of Continue.
+    expect(buttons("Continue", row())).toHaveLength(0);
+    expect(buttons("Resolve conflicts", row())).toHaveLength(1);
     // Feature 004 T042 (plan.md P5 risk): the Commit view replaces the docked commit panel.
     await click(button("Commit", document.querySelector('header nav[aria-label="Views"]')!));
     const option = () => document.querySelector<HTMLElement>(`[role="treeitem"][data-entry-id="${file.entryId}"]`);

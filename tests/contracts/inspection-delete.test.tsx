@@ -127,7 +127,8 @@ describe("row menu (CommitActions board, plan D15)", () => {
       const list = entries();
       await setup(list);
       const path = list[0]!.path.endsWith("/") ? list[0]!.path.slice(0, -1) : list[0]!.path;
-      await contextMenu(item("Changes", path));
+      // Feature 004 FR-104: a conflicted row is in the Conflicted section.
+      await contextMenu(item(list[0]!.category === "conflicted" ? "Conflicted" : "Changes", path));
       expect(describedBy(menuItem("Delete…"))).toBe(reason);
       expect(describedBy(menuItem("Delete permanently…"))).toBe(reason);
     });

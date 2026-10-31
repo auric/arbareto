@@ -20,7 +20,7 @@ import { GIT_SEPARATORS, splitPath } from "../lib/path";
 import { DeleteConfirm, DeleteRefusal } from "./DeleteConfirm";
 import { CUT_REASON, deleteEntries, deleteReason, IGNORE_LABEL, IGNORE_LINE_REASON, LIMIT_TEXT, NO_HISTORY, type DeletePlan, type DeleteReview, type FileActions } from "./file-actions";
 import { RevertConfirm } from "./RevertConfirm";
-import { actionName, blockedBy, entryRevertReason, FOLDER_REASON, inTreeOrder, revertFilesLabel, revertReason } from "./revert-text";
+import { actionName, FOLDER_REASON, revertFilesLabel, revertReason, revertSetReason } from "./revert-text";
 import type { IgnoreTarget } from "../state/workbench";
 import { changesRows, derivedRequest, folderEntries, formatCount, overLimit, stagedRows, type FilesRequest, type Layout, type TreeRow } from "./file-tree";
 
@@ -69,6 +69,8 @@ export type FilesProps = {
   submoduleReason?(pathBytes: string): string | null;
   /** Feature 008 plan.md D5 and D12: Revert file. `deleteBlock` also blocks it (spec FR-002). */
   revert?: RevertFiles;
+  /** The snapshot of the shown read. A new one closes an open Revert confirmation (feature 008 data-model §10). */
+  snapshotId?: string;
 };
 
 /** Feature 008 contract Δ3 `revert-files`. `review` gives null after a refusal, which the status shows. `run` gives true for `succeeded`. */
@@ -160,7 +162,8 @@ export function ChangesPane(props: ChangesPaneProps) {
   const [menu, setMenu] = useState<{ key: string; list: ListName; anchor: HTMLElement; byKey: boolean } | null>(null);
   const closed = useRef<{ list: ListName; key: string; before: readonly TreeRow[] } | null>(null);
   const [confirm, setConfirm] = useState<{ review: DeleteReview; anchor: HTMLElement } | null>(null);
-  const [revertConfirm, setRevertConfirm] = useState<{ token: string; plan: RevertFilesPlan; label: string; entryIds: string[]; key: string | null; anchor: HTMLElement } | null>(null);
+  const [revertConfirm, setRevertConfirm] = useState<{ token: string; plan: RevertFilesPlan; label: string; entryIds: string[]; key: string | null; anchor: HTMLElement; snapshotId: string | undefined } | null>(null);
+  if (revertConfirm !== null && revertConfirm.snapshotId !== files?.snapshotId) setRevertConfirm(null);
   const reverting = useRef(false);
   // Spec FR-042: the row key of a confirmed revert. Its removal moves the selection as Stage file does.
   const revertMove = useRef<string | null>(null);
@@ -414,8 +417,8 @@ export function ChangesPane(props: ChangesPaneProps) {
   function revertWhy(row: TreeRow, set: readonly ChangeEntry[]): string | null {
     if (row.kind === "folder") return FOLDER_REASON;
     if (row.kind === "section") return revertReason("untracked", "")!;
-    const first = inTreeOrder(set.filter((e) => entryRevertReason(e) !== null))[0];
-    if (first !== undefined) return set.length > 1 ? blockedBy(first.path, entryRevertReason(first)!) : revertReason(entryRevertReason(first)!, first.path)!;
+    const own = revertSetReason(set);
+    if (own !== null) return own;
     return files === undefined ? null : files.running ? files.reason : (files.deleteBlock ?? null);
   }
   async function startRevert(row: TreeRow, list: ListName, anchor: HTMLElement) {
@@ -426,10 +429,11 @@ export function ChangesPane(props: ChangesPaneProps) {
     if (why !== null) return void (files.running || status(why));
     const label = actionName(revertFilesLabel(set.length));
     const entryIds = set.map((e) => e.entryId);
+    const snapshotId = files.snapshotId;
     reverting.current = true;
     try {
       const review = await revert.review(entryIds, label);
-      if (mounted.current && review !== null) setRevertConfirm({ ...review, label, entryIds, key: row.kind === "file" ? row.entry.pathBytes : null, anchor });
+      if (mounted.current && review !== null) setRevertConfirm({ ...review, label, entryIds, key: row.kind === "file" ? row.entry.pathBytes : null, anchor, snapshotId });
     } finally {
       reverting.current = false;
     }

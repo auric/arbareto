@@ -464,6 +464,7 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
           // Feature 005 plan.md D6: the 004 common refusals, then the 001 blocks of the shown read.
           deleteBlock: deleteBlock(workspace.operationState, conflicts) ?? (staging.blocked !== null && staging.blocked !== "operation" && staging.blocked !== "conflicted" ? BLOCKED_TEXT[staging.blocked] : null),
           wsl: workspace.location.kind === "wsl",
+          snapshotId: workspace.snapshotId,
           unborn: workspace.head.state === "unborn",
           // Feature 008 contract Δ3 `revert-files`: the review binds the shown read.
           revert: {
@@ -547,15 +548,24 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
   const [hunkNotice, setHunkNotice] = useState<{ comparisonId: string; text: string } | null>(null);
   const hunkNoticeId = useId();
   // Feature 008 plan.md D12: the reviewed plan of a revert, its token, and the control that opened the review.
-  const [revert, setRevert] = useState<{ token: string; plan: RevertLinesPlan; label: string; opener: HTMLElement | null } | null>(null);
+  const [revert, setRevert] = useState<{ token: string; plan: RevertLinesPlan; label: string; opener: HTMLElement | null; comparisonId: string; patch: string } | null>(null);
+  // Data-model §10: a new comparison or patch closes the open confirmation.
+  if (revert !== null && (revert.comparisonId !== comparison?.comparisonId || revert.patch !== comparison.patch)) setRevert(null);
+  const reviewing = useRef(false);
   const reviewRevert = async ({ comparison, hunkId, lines, opener }: RevertRequest) => {
-    if (staging === undefined || entry === null || target === null) return;
+    if (staging === undefined || entry === null || target === null || reviewing.current) return;
     const label = actionName(lines === null ? REVERT_HUNK_LABEL : revertLinesLabel(lines.length));
     const payload = { action: "revert-lines" as const, snapshotId: comparison.snapshotId, comparisonId: comparison.comparisonId, hunkId, ...(lines === null ? {} : { lines }) };
     onStatus(null);
-    const response = await trackRevertReview(staging, label, 1, (onProgress) => staging.bridge.reviewWorkbench(target, payload, onProgress), (r) => [reviewRefusal(r, entry.path, lines !== null)]);
+    reviewing.current = true;
+    let response: BridgeResponse;
+    try {
+      response = await trackRevertReview(staging, label, 1, (onProgress) => staging.bridge.reviewWorkbench(target, payload, onProgress), (r) => [reviewRefusal(r, entry.path, lines !== null)]);
+    } finally {
+      reviewing.current = false;
+    }
     const result = response.result as { action?: unknown; workbenchToken?: unknown; plan?: RevertLinesPlan } | undefined;
-    if (response.state === "succeeded" && result?.action === "revert-lines" && typeof result.workbenchToken === "string" && result.plan !== undefined) setRevert({ token: result.workbenchToken, plan: result.plan, label, opener });
+    if (response.state === "succeeded" && result?.action === "revert-lines" && typeof result.workbenchToken === "string" && result.plan !== undefined) setRevert({ token: result.workbenchToken, plan: result.plan, label, opener, comparisonId: comparison.comparisonId, patch: comparison.patch });
   };
   const runRevert = async () => {
     if (revert === null || staging === undefined || target === null) return;

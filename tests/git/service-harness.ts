@@ -31,6 +31,7 @@ import type { HunkCheckpoint } from "../../src/git-service/hunk-publish";
 import * as registrationModule from "../../src/git-service/registration";
 import { createSession, type SessionOptions } from "../../src/git-service/session";
 import { FrameBoundError, type Frame } from "../../src/git-service/transport";
+import type { RevertCheckpoint } from "../../src/git-service/workbench-review";
 import { printOrigin } from "../origin";
 import { createBunRunner, createTrustStore, type BunRunner, type CallMatch, type TrustStore } from "./bun-runner";
 import { FIXTURE_GLOBAL_CONFIG, FIXTURE_HOME, FIXTURE_ROOT, fixtureDir, fixtureEnv, serviceEnv } from "./fixture-root";
@@ -303,6 +304,8 @@ export interface ServiceSeams {
   approvalClock?: () => number;
   // The in-process checkpoint observer of `src/git-service/submodule-update.ts` (T230). The service awaits it before each named contract §12 step.
   submoduleCheckpoint?: (checkpoint: SubmoduleCheckpoint) => Promise<void> | void;
+  // The in-process checkpoint observer of `src/git-service/revert.ts` (feature 008 plan.md D13). The service awaits it before each working-file write.
+  revertCheckpoint?: (checkpoint: RevertCheckpoint) => Promise<void> | void;
   // Feature 002 contract Δ5 `HISTORY_VIEW_COMMITS`, lowered for a test (T022).
   historyViewCommits?: number;
   // The expected matches of each matching probe run, changed for a probe mismatch (T033).
@@ -621,6 +624,7 @@ export async function openService(options: OpenOptions): Promise<Service> {
     ...(options.hunkCheckpoint === undefined ? {} : { hunkCheckpoint: options.hunkCheckpoint }),
     ...(options.approvalClock === undefined ? {} : { approvalClock: options.approvalClock }),
     ...(options.submoduleCheckpoint === undefined ? {} : { submoduleCheckpoint: options.submoduleCheckpoint }),
+    ...(options.revertCheckpoint === undefined ? {} : { revertCheckpoint: options.revertCheckpoint }),
     ...(options.historyViewCommits === undefined ? {} : { historyViewCommits: options.historyViewCommits }),
     ...(options.historyProbeRuns === undefined ? {} : { historyProbeRuns: options.historyProbeRuns }),
     ...(options.dictionaryFolder === undefined ? {} : { dictionaryFolder: options.dictionaryFolder }),

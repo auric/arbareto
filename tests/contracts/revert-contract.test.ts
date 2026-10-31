@@ -262,14 +262,14 @@ describe("contract Δ6 private requests", () => {
   });
 
   test("a source name is one path component", () => {
-    for (const name of ["a/b", "a\\b", "..", ".", "", "a\0b"]) expect({ name, ok: ok(R, working({ bytes: undefined, source: { ...source, name } })) }).toEqual({ name, ok: false });
+    for (const name of ["a/b", "a\\b", "..", ".", "", "a\0b", ".git", ".GIT", ".Git"]) expect({ name, ok: ok(R, working({ bytes: undefined, source: { ...source, name } })) }).toEqual({ name, ok: false });
     expect(ok(R, working({ bytes: undefined, source: { ...source, size: -1 } }))).toBe(false);
     expect(ok(R, working({ bytes: undefined, source: { ...source, sha256: "A".repeat(64) } }))).toBe(false);
   });
 
   test("folders holds 1 to 64 folder names, only with expected absent", () => {
-    const absent = (folders: unknown) => working({ expected: "absent", facts: "absent", folders });
-    expect(ok(R, working({ expected: "absent", facts: "absent" }))).toBe(true);
+    const absent = (folders: unknown) => working({ expected: "absent", facts: "absent", gitMode: "100644", folders });
+    expect(ok(R, working({ expected: "absent", facts: "absent", gitMode: "100644" }))).toBe(true);
     expect(ok(R, absent(["new", "deep"]))).toBe(true);
     expect(ok(R, absent(Array.from({ length: 64 }, (_, i) => `d${i}`)))).toBe(true);
     expect(ok(R, absent(Array.from({ length: 65 }, (_, i) => `d${i}`)))).toBe(false);
@@ -278,9 +278,19 @@ describe("contract Δ6 private requests", () => {
     expect(ok(R, working({ folders: ["new"] }))).toBe(false);
   });
 
+  test("gitMode is the Git mode 100644 or 100755 of an absent target, and only of an absent working target", () => {
+    const absent = (fields: Record<string, unknown> = {}) => working({ expected: "absent", facts: "absent", ...fields });
+    for (const gitMode of ["100644", "100755"]) expect({ gitMode, ok: ok(R, absent({ gitMode })) }).toEqual({ gitMode, ok: true });
+    expect(ok(R, absent())).toBe(false);
+    for (const gitMode of ["100664", "120000", "160000", 33188, ""]) expect({ gitMode, ok: ok(R, absent({ gitMode })) }).toEqual({ gitMode, ok: false });
+    expect(ok(R, absent({ mode: "100644" }))).toBe(false);
+    expect(ok(R, working({ gitMode: "100644" }))).toBe(false);
+    expect(ok(R, { type: "fileReplace", ...call, target: "gitignore", path: abs(".gitignore"), expected: "absent", bytes: b64("x"), gitMode: "100644" })).toBe(false);
+  });
+
   test("facts are the bound working facts: absent with expected absent, else the size and digest of expected", () => {
     expect(ok(R, working({ facts: "absent" }))).toBe(false);
-    expect(ok(R, working({ expected: "absent" }))).toBe(false);
+    expect(ok(R, working({ expected: "absent", gitMode: "100644" }))).toBe(false);
     expect(ok(R, working({ facts: undefined }))).toBe(false);
     expect(ok(R, working({ facts: { ...windowsFacts, size: 13 } }))).toBe(false);
     expect(ok(R, working({ facts: { ...wslFacts, sha256: DIGEST2 } }))).toBe(false);
@@ -307,7 +317,7 @@ describe("contract Δ6 private requests", () => {
   test("tempRemove takes one name in the worktree root and its expected size and digest", () => {
     const remove = (fields: Record<string, unknown> = {}) => ({ type: "tempRemove", ...call, name: ".merge_file_a1B2c3", expected: { size: 40, sha256: DIGEST }, ...fields });
     expect(ok(R, remove())).toBe(true);
-    for (const name of ["a/b", "..", ""]) expect(ok(R, remove({ name }))).toBe(false);
+    for (const name of ["a/b", "..", "", ".git", ".GIT"]) expect({ name, ok: ok(R, remove({ name })) }).toEqual({ name, ok: false });
     expect(ok(R, remove({ expected: "absent" }))).toBe(false);
     expect(ok(R, remove({ path: abs("x") }))).toBe(false);
   });
@@ -331,7 +341,6 @@ describe("contract Δ6 replies", () => {
     expect(reply({ type: "fileReplace", result: "replaced" })).toBe(true);
     expect(reply({ type: "fileReplace", result: "replaced", folders: ["new", "deep"] })).toBe(true);
     expect(reply({ type: "fileReplace", result: "replaced", folders: [] })).toBe(false);
-    expect(reply({ type: "fileReplace", result: "stale", folders: ["new"] })).toBe(false);
     for (const reason of ["not-regular", "hard-link", "read-only", "encrypted", "owner", "security", "file-attributes", "xattr"]) {
       expect({ reason, ok: reply({ type: "fileReplace", result: "refused", reason }) }).toEqual({ reason, ok: true });
     }
@@ -342,8 +351,23 @@ describe("contract Δ6 replies", () => {
     expect(reply({ type: "fileReplace", result: "error", code: "hard-link" })).toBe(false);
   });
 
-  test("tempRemove gives removed, stale, absent, or error with a code", () => {
-    for (const result of ["removed", "stale", "absent"]) expect(reply({ type: "tempRemove", result })).toBe(true);
+  test("a failure reply names the folders that the write created, and replaced can keep its source", () => {
+    const folders = ["new", "deep"];
+    expect(reply({ type: "fileReplace", result: "stale", folders })).toBe(true);
+    expect(reply({ type: "fileReplace", result: "refused", reason: "owner", folders })).toBe(true);
+    expect(reply({ type: "fileReplace", result: "error", code: "disk-full", folders })).toBe(true);
+    for (const result of ["stopped", "interrupted"]) expect({ result, ok: reply({ type: "fileReplace", result, folders }) }).toEqual({ result, ok: false });
+    expect(reply({ type: "fileReplace", result: "stale", folders: [] })).toBe(false);
+    expect(reply({ type: "fileReplace", result: "error", code: "disk-full", folders: ["a/b"] })).toBe(false);
+    expect(reply({ type: "fileReplace", result: "replaced", source: "kept" })).toBe(true);
+    expect(reply({ type: "fileReplace", result: "replaced", folders, source: "kept" })).toBe(true);
+    expect(reply({ type: "fileReplace", result: "replaced", source: "removed" })).toBe(false);
+    expect(reply({ type: "fileReplace", result: "stale", source: "kept" })).toBe(false);
+  });
+
+  test("tempRemove tells removed, not removed (stale, absent, stopped, error), and unknown (interrupted) apart", () => {
+    for (const result of ["removed", "stale", "absent", "stopped", "interrupted"]) expect({ result, ok: reply({ type: "tempRemove", result }) }).toEqual({ result, ok: true });
+    expect(reply({ type: "tempRemove", result: "unknown" })).toBe(false);
     expect(reply({ type: "tempRemove", result: "error", code: "access-denied" })).toBe(true);
     expect(reply({ type: "tempRemove", result: "error" })).toBe(false);
     expect(reply({ type: "tempRemove", result: "replaced" })).toBe(false);

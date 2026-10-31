@@ -318,22 +318,26 @@ const WindowsWorkingFacts = z
 const WslWorkingFacts = z
   .strictObject({ size: Count, sha256: Fingerprint, mode: Uint32, uid: Uint32, gid: Uint32, links: z.int().min(1), xattr: z.literal(false) })
   .meta({ title: "WslWorkingFacts" });
+// Contract Δ6 (batch 1 review): a Git temporary file is never named `.git` in any ASCII case.
+const TempName = Component.refine((name) => name.replace(/[A-Z]/g, (c) => c.toLowerCase()) !== ".git");
 // Git's temporary file of `checkout-index --temp` (data-model §8a).
-const ReplaceSource = z.strictObject({ name: Component, size: Count, sha256: Fingerprint }).meta({ title: "FileReplaceSource" });
+const ReplaceSource = z.strictObject({ name: TempName, size: Count, sha256: Fingerprint }).meta({ title: "FileReplaceSource" });
 const IGNORE_TARGETS: readonly unknown[] = ["gitignore", "exclude"];
-type ReplaceFrame = { target?: unknown; expected?: unknown; facts?: unknown; bytes?: unknown; source?: unknown; folders?: unknown };
+type ReplaceFrame = { target?: unknown; expected?: unknown; facts?: unknown; bytes?: unknown; source?: unknown; folders?: unknown; gitMode?: unknown };
 const digestOf = (value: unknown) => (typeof value === "object" && value !== null ? (value as { size?: unknown; sha256?: unknown }) : null);
 // zod can run a refinement on a value whose fields failed.
 const replaceRule = (r: ReplaceFrame) => {
   if (IGNORE_TARGETS.includes(r.target)) {
     const expected = digestOf(r.expected);
-    return typeof r.bytes === "string" && decodedBytes(r.bytes) <= IGNORE_TARGET_BYTES && (expected === null || Number(expected.size) <= IGNORE_TARGET_BYTES) && r.facts === undefined && r.source === undefined && r.folders === undefined;
+    return typeof r.bytes === "string" && decodedBytes(r.bytes) <= IGNORE_TARGET_BYTES && (expected === null || Number(expected.size) <= IGNORE_TARGET_BYTES) && r.facts === undefined && r.source === undefined && r.folders === undefined && r.gitMode === undefined;
   }
   const expected = digestOf(r.expected);
   const facts = digestOf(r.facts);
   return (
     (r.bytes === undefined) !== (r.source === undefined) &&
     (r.folders === undefined || r.expected === "absent") &&
+    // Contract Δ6 `gitMode`: exactly an absent target carries the Git mode of its index entry.
+    (r.expected === "absent") === (r.gitMode !== undefined) &&
     (expected === null ? r.facts === "absent" : facts !== null && facts.size === expected.size && facts.sha256 === expected.sha256)
   );
 };
@@ -580,6 +584,7 @@ export const ProcessRequest = z.xor([
         bytes: ReplaceBytes.optional(),
         source: ReplaceSource.optional(),
         folders: z.array(Component).min(1).max(FILE_FACT_ENTRIES).optional(),
+        gitMode: z.enum(["100644", "100755"]).optional(),
       })
       .refine(replaceRule),
   ),
@@ -591,7 +596,7 @@ export const ProcessRequest = z.xor([
       ...call,
       operationId: Identifier,
       repositoryId: Identifier,
-      name: Component,
+      name: TempName,
       expected: z.strictObject({ size: Count, sha256: Fingerprint }).meta({ title: "TempRemoveExpected" }),
     }),
   ),
@@ -816,14 +821,20 @@ export const FileDeleteReply = z.union([
   z.strictObject({ type: z.literal("fileDelete"), ...call, result: z.enum(["stopped", "interrupted"]) }).meta({ title: "FileDeleteEnded" }),
 ]);
 // Feature 008 contract Δ6: `replaced` names the created folders of a `working` target, and the refusals and codes grow.
+// `folders` of a failure names the folders that the write created before it. `source: kept` names a Git temporary file that stays.
+const Created = z.array(Component).min(1).max(FILE_FACT_ENTRIES);
 export const FileReplaceReply = z.union([
   z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.enum(["replaced", "stale", "stopped", "interrupted"]) }).meta({ title: "FileReplaceResult" }),
-  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("replaced"), folders: z.array(Component).min(1).max(FILE_FACT_ENTRIES) }).meta({ title: "FileReplaceReplacedFolders" }),
-  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("refused"), reason: z.enum(REPLACE_REFUSALS) }).meta({ title: "FileReplaceRefused" }),
-  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("error"), code: z.enum(REPLACE_ERRORS) }).meta({ title: "FileReplaceError" }),
+  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("replaced"), folders: Created }).meta({ title: "FileReplaceReplacedFolders" }),
+  // typify drops a const, so `source` is an enum of one value.
+  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("replaced"), folders: Created.optional(), source: z.enum(["kept"]) }).meta({ title: "FileReplaceReplacedSourceKept" }),
+  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("stale"), folders: Created }).meta({ title: "FileReplaceStaleFolders" }),
+  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("refused"), reason: z.enum(REPLACE_REFUSALS), folders: Created.optional() }).meta({ title: "FileReplaceRefused" }),
+  z.strictObject({ type: z.literal("fileReplace"), ...call, result: z.literal("error"), code: z.enum(REPLACE_ERRORS), folders: Created.optional() }).meta({ title: "FileReplaceError" }),
 ]);
+// `stopped`: a Windows stop or deadline before the delete, so nothing was removed. `interrupted`: a WSL stop, deadline, or broken output.
 export const TempRemoveReply = z.union([
-  z.strictObject({ type: z.literal("tempRemove"), ...call, result: z.enum(["removed", "stale", "absent"]) }).meta({ title: "TempRemoveResult" }),
+  z.strictObject({ type: z.literal("tempRemove"), ...call, result: z.enum(["removed", "stale", "absent", "stopped", "interrupted"]) }).meta({ title: "TempRemoveResult" }),
   z.strictObject({ type: z.literal("tempRemove"), ...call, result: z.literal("error"), code: z.enum(REPLACE_ERRORS) }).meta({ title: "TempRemoveError" }),
 ]);
 export const ShadowReply = z.union([

@@ -101,7 +101,7 @@ const CLONE_ARGUMENTS: [&str; 5] = [
 ];
 
 /// Feature 008 contract Δ6 and plan.md D5a step 2: the one array whose deadline follows the size rule above `REGISTERED_DEADLINE_MS`.
-const CHECKOUT_TEMP: [&str; 5] = [
+pub(crate) const CHECKOUT_TEMP: [&str; 5] = [
     "--no-lazy-fetch",
     "checkout-index",
     "--temp",
@@ -1691,9 +1691,9 @@ impl ProcessRequests {
                         &stop.flag,
                     );
                     Box::new(move || {
-                        let result =
-                            checked.map_or_else(|result| result, |checked| checked.write(&content));
-                        Some(reply::file_replace(&call, result))
+                        let written = checked
+                            .map_or_else(|result| result.into(), |checked| checked.write(&content));
+                        Some(reply::file_replace_written(&call, &written))
                     })
                 },
                 || {},
@@ -1720,6 +1720,7 @@ impl ProcessRequests {
             path: names,
             present,
             folders: parsed.folders,
+            executable: parsed.executable,
             content,
         };
         let unit = wsl::unit_name(operation_id, Self::next_unit(&mut state, operation_id))?;
@@ -1754,9 +1755,9 @@ impl ProcessRequests {
                     deadline,
                     stop.event.0,
                 );
-                reply_with(reply::file_replace(
+                reply_with(reply::file_replace_written(
                     &call,
-                    wsl::working_reply(ended.output, &folders),
+                    &wsl::working_reply(ended.output, &folders),
                 ))
             },
             || {},
@@ -1839,9 +1840,13 @@ impl ProcessRequests {
         self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
         let (operation, deadline) = (operation_id.to_string(), self.walk_bound() + extra);
+        // The `tempRemove` process can unlink inside the walk, so a stop or a deadline leaves the outcome unknown.
         self.spawn_walk(
             &mut state,
-            Reply::Answered(reply::temp_remove_stopped, reply::temp_remove_stopped),
+            Reply::Answered(
+                reply::temp_remove_interrupted,
+                reply::temp_remove_interrupted,
+            ),
             call_id,
             operation_id,
             read_at,
@@ -14624,11 +14629,16 @@ pub(crate) mod tests {
         state: Option<(Value, Value)>,
         content: Value,
     ) -> Value {
+        let absent = state.is_none();
         let (expected, facts) = state.unwrap_or((json!("absent"), json!("absent")));
         let mut body = json!({
             "type": "fileReplace", "callId": call, "operationId": operation, "repositoryId": repository,
             "target": "working", "path": path.to_str().expect("path"), "expected": expected, "facts": facts,
         });
+        // Contract Δ6 `gitMode`: exactly an absent target carries the Git mode of its index entry.
+        if absent {
+            body["gitMode"] = json!("100644");
+        }
         body.as_object_mut()
             .expect("body")
             .extend(content.as_object().expect("content").clone());
@@ -14845,6 +14855,161 @@ pub(crate) mod tests {
         assert_eq!(harness.reply(&call), replaced(&call));
         assert_eq!(std::fs::read(&file).expect("read"), b"from git\n");
         assert!(!temp.exists(), "the source goes");
+    }
+
+    /// Contract Δ6 (batch 1 review): a `.git` source name, an absent target without `gitMode`, and `gitMode` with a present target
+    /// give `INVALID_REQUEST`. A failed write names its created folders, and a `replaced` reply names a source that stays.
+    #[test]
+    fn a_working_replace_refuses_the_git_mode_rules_and_names_its_effects_in_the_reply() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::RevertFiles, &workspace);
+        let sha = |bytes: &[u8]| crate::settings::hex(&crate::settings::sha256(bytes));
+        let file = workspace.worktree.join("a.txt");
+        std::fs::write(&file, b"old\n").expect("file");
+        let send = |body: Value| {
+            let call = body["callId"].as_str().expect("call").to_string();
+            harness.send(body);
+            (call.clone(), harness.reply(&call))
+        };
+        for name in [".git", ".GIT"] {
+            let call = uuid();
+            let (_, reply) = send(working_body(
+                &call,
+                &operation,
+                &workspace.repository,
+                &file,
+                Some(working_facts(&workspace.worktree, &["a.txt"])),
+                json!({ "source": { "name": name, "size": 0, "sha256": sha(b"") } }),
+            ));
+            assert_eq!(reply, refused(&call, "INVALID_REQUEST"), "{name}");
+        }
+        assert!(
+            workspace.worktree.join(".git").is_dir(),
+            "the Git directory stays"
+        );
+        let call = uuid();
+        let mut body = working_body(
+            &call,
+            &operation,
+            &workspace.repository,
+            &workspace.worktree.join("n.txt"),
+            None,
+            json!({ "bytes": encode(b"x") }),
+        );
+        body.as_object_mut().expect("body").remove("gitMode");
+        assert_eq!(
+            send(body).1,
+            refused(&call, "INVALID_REQUEST"),
+            "an absent target without gitMode"
+        );
+        let call = uuid();
+        let mut body = working_body(
+            &call,
+            &operation,
+            &workspace.repository,
+            &file,
+            Some(working_facts(&workspace.worktree, &["a.txt"])),
+            json!({ "bytes": encode(b"x") }),
+        );
+        body["gitMode"] = json!("100644");
+        assert_eq!(
+            send(body).1,
+            refused(&call, "INVALID_REQUEST"),
+            "gitMode with a present target"
+        );
+        assert_eq!(std::fs::read(&file).expect("read"), b"old\n");
+        // A source with another digest fails after the folders exist. The folders come back, and the unproven source stays.
+        std::fs::write(workspace.worktree.join(".merge_file_pr1"), b"bytes\n").expect("temp");
+        let call = uuid();
+        let (_, reply) = send(working_body(
+            &call,
+            &operation,
+            &workspace.repository,
+            &workspace.worktree.join("x").join("y").join("n.txt"),
+            None,
+            json!({ "source": { "name": ".merge_file_pr1", "size": 6, "sha256": sha(b"other\n") }, "folders": ["x", "y"] }),
+        ));
+        assert_eq!(
+            reply,
+            json!({ "type": "fileReplace", "callId": call, "result": "stale", "folders": ["x", "y"] })
+        );
+        assert!(workspace.worktree.join(".merge_file_pr1").exists());
+        // A matched read-only source copies, but its delete fails, so it stays.
+        let kept = workspace.worktree.join(".merge_file_pr2");
+        std::fs::write(&kept, b"from git\n").expect("temp");
+        let mut permissions = std::fs::metadata(&kept).expect("metadata").permissions();
+        permissions.set_readonly(true);
+        std::fs::set_permissions(&kept, permissions.clone()).expect("read-only");
+        let call = uuid();
+        let (_, reply) = send(working_body(
+            &call,
+            &operation,
+            &workspace.repository,
+            &file,
+            Some(working_facts(&workspace.worktree, &["a.txt"])),
+            json!({ "source": { "name": ".merge_file_pr2", "size": 9, "sha256": sha(b"from git\n") } }),
+        ));
+        assert_eq!(
+            reply,
+            json!({ "type": "fileReplace", "callId": call, "result": "replaced", "source": "kept" })
+        );
+        assert_eq!(std::fs::read(&file).expect("read"), b"from git\n");
+        assert!(kept.exists());
+        #[allow(
+            clippy::permissions_set_readonly_false,
+            reason = "the fixture cleanup removes the file"
+        )]
+        permissions.set_readonly(false);
+        std::fs::set_permissions(&kept, permissions).expect("writable");
+    }
+
+    /// Contract Δ6 `tempRemove` (batch 1 review): a deadline before the delete replies `stopped`, and the file stays.
+    /// A `.git` name gives `INVALID_REQUEST`.
+    #[test]
+    fn a_deadline_before_the_temp_remove_delete_replies_stopped_and_a_dot_git_name_refuses() {
+        let harness = Harness::new(
+            Fixture::new(),
+            CHILD_PREFIX.iter().map(|s| s.to_string()).collect(),
+            std::env::vars_os().collect(),
+            Duration::from_secs(2),
+        );
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::RevertFiles, &workspace);
+        let sha = crate::settings::hex(&crate::settings::sha256(b"bytes\n"));
+        let body = |call: &str, name: &str| json!({ "type": "tempRemove", "callId": call, "operationId": operation, "repositoryId": workspace.repository, "name": name, "expected": { "size": 6, "sha256": sha } });
+        for name in [".git", ".Git"] {
+            let call = uuid();
+            harness.send(body(&call, name));
+            assert_eq!(
+                harness.reply(&call),
+                refused(&call, "INVALID_REQUEST"),
+                "{name}"
+            );
+        }
+        assert!(workspace.worktree.join(".git").is_dir());
+        let temp = workspace.worktree.join(".merge_file_t012st");
+        std::fs::write(&temp, b"bytes\n").expect("temp");
+        let Some(oplock) = Oplock::request(&temp) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let call = uuid();
+        harness.send(body(&call, ".merge_file_t012st"));
+        assert!(
+            oplock.broken(WAIT),
+            "the digest open waits on the oplock break"
+        );
+        let reply = harness.wait_reply(WAIT, |v| v["callId"] == call.as_str());
+        drop(oplock);
+        assert_eq!(
+            reply.map(|(_, reply)| reply),
+            Some(json!({ "type": "tempRemove", "callId": call, "result": "stopped" }))
+        );
+        assert!(eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0));
+        assert!(temp.exists(), "nothing removed");
     }
 
     /// Contract Δ6 (plan.md D8): the Windows `working` replace checks inside the walk and writes in the finish.

@@ -2944,6 +2944,13 @@
             "minLength": 1,
             "maxLength": 255
           }
+        },
+        "gitMode": {
+          "type": "string",
+          "enum": [
+            "100644",
+            "100755"
+          ]
         }
       },
       "required": [

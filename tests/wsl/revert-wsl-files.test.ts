@@ -43,10 +43,10 @@ interface FilesRun {
 }
 
 // `wsl.rs` `files_perl`: the Perl text through the wrapper in mode `probe`, the three Linux roots, the Git and SHA-256 programs, and the stdin tokens.
-function startFiles(w: WslHost, mode: "replace" | "tempRemove", root: string, tokens: readonly string[], sha = w.probe.paths.sha256sum!): FilesRun {
+function startFiles(w: WslHost, mode: "replace" | "tempRemove", root: string, tokens: readonly string[], sha = w.probe.paths.sha256sum!, gitDir = `${root}/.git`): FilesRun {
   const operation = operationId();
   const p = w.probe.paths;
-  const roots = [root, `${root}/.git`, `${root}/.git`];
+  const roots = [root, gitDir, gitDir];
   const argv = [WSL_EXE, "--distribution", w.distro, "--cd", "/", "--exec", "/bin/sh", "-c", WRAPPER, "sh", `arbareto-${operation}-1.scope`, "probe", "", p["systemd-run"]!, p.systemctl!, p.setsid!, w.probe.noexpand === "0" ? "1" : "", PERL, "-e", WSL_FILES_TEXT, "--", mode, ...roots, p.git!, sha];
   const proc = Bun.spawn(argv, { env: WSL_ENV, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
   proc.stdin.write(Buffer.from(tokens.map((token) => `${token}${NUL}`).join("")));
@@ -72,14 +72,26 @@ function tokensOf(out: { exitCode: number | null; stdout: Uint8Array }): string[
   return body.length === 0 ? [] : body.subarray(0, -1).toString("latin1").split(NUL);
 }
 
-// `wsl.rs` `working_reply`: `replaced` with the count of the created folders, `stale`, `refused <reason>`, or `error <code>`.
+// `wsl.rs` `working_reply`: the result, the reason or code, the count of the created folders, and for `replaced` the source state.
+// The text is `<result>[ <reason|code>][ folders=<n>][ kept]`, or `interrupted`.
 function workingReply(out: { exitCode: number | null; stdout: Uint8Array }): string {
   const tokens = tokensOf(out);
   if (tokens === null || tokens.length === 0) return "interrupted";
   const [kind, ...rest] = tokens;
-  if (kind === "replaced" && rest.length === 1 && /^(0|[1-9][0-9]*)$/.test(rest[0]!)) return rest[0] === "0" ? "replaced" : `replaced ${rest[0]}`;
-  if (kind === "stale" && rest.length === 0) return "stale";
-  if ((kind === "refused" || kind === "error") && rest.length === 1) return `${kind} ${rest[0]}`;
+  const count = (text: string | undefined) => (text !== undefined && /^(0|[1-9][0-9]*)$/.test(text) ? Number(text) : null);
+  const tail = (n: number | null) => (n === null ? null : n === 0 ? "" : ` folders=${n}`);
+  if (kind === "replaced" && rest.length === 2 && ["none", "removed", "kept"].includes(rest[1]!)) {
+    const t = tail(count(rest[0]));
+    return t === null ? "interrupted" : `replaced${t}${rest[1] === "kept" ? " kept" : ""}`;
+  }
+  if ((kind === "stale" || kind === "invalid") && rest.length === 1) {
+    const t = tail(count(rest[0]));
+    return t === null ? "interrupted" : `${kind}${t}`;
+  }
+  if ((kind === "refused" || kind === "error") && rest.length === 2) {
+    const t = tail(count(rest[1]));
+    return t === null ? "interrupted" : `${kind} ${rest[0]}${t}`;
+  }
   return "interrupted";
 }
 
@@ -91,7 +103,7 @@ function ignoreReply(out: { exitCode: number | null; stdout: Uint8Array }): stri
   return tokens.length === 2 && tokens[0] === "error" ? `error ${tokens[1]}` : "interrupted";
 }
 
-// `wsl.rs` `temp_remove_reply`.
+// `wsl.rs` `temp_remove_reply`: a broken output is the unknown outcome `interrupted`.
 function tempReply(out: { exitCode: number | null; stdout: Uint8Array }): string {
   const tokens = tokensOf(out);
   if (tokens === null) return "interrupted";
@@ -99,7 +111,7 @@ function tempReply(out: { exitCode: number | null; stdout: Uint8Array }): string
   return tokens.length === 2 && tokens[0] === "error" ? `error ${tokens[1]}` : "interrupted";
 }
 
-// Data-model §3 `working` on WSL: the size, the SHA-256, `st_mode & 07777`, the uid, the gid, and the link count.
+// Data-model §3 `working` on WSL: the size, the SHA-256, the whole `st_mode`, the uid, the gid, and the link count.
 interface State {
   size: number;
   sha: string;
@@ -110,10 +122,10 @@ interface State {
 }
 type Content = { bytes: Buffer } | { source: { name: string; size: number; sha: string } };
 
-// `wsl.rs` `working_command`.
-function workingTokens(path: string[], state: State | null, folders: string[], content: Content): string[] {
+// `wsl.rs` `working_command`. An absent target carries its contract Δ6 `gitMode`.
+function workingTokens(path: string[], state: State | null, folders: string[], content: Content, gitMode = "100644"): string[] {
   const head = ["0", "0", String(path.length), ...path, "working"];
-  const at = state === null ? ["absent"] : ["present", String(state.size), state.sha, String(state.mode), String(state.uid), String(state.gid), String(state.links)];
+  const at = state === null ? ["absent", gitMode] : ["present", String(state.size), state.sha, String(state.mode), String(state.uid), String(state.gid), String(state.links)];
   const body = "bytes" in content ? ["bytes", content.bytes.toString("hex")] : ["source", content.source.name, String(content.source.size), content.source.sha];
   return [...head, ...at, String(folders.length), ...folders, ...body];
 }
@@ -132,7 +144,7 @@ function worktree(w: WslHost, name: string): string {
 }
 
 function write(w: WslHost, path: string, bytes: string | Buffer, mode?: string): void {
-  sh(w, 'cat > "$1" && if [ -n "$2" ]; then chmod -- "$2" "$1"; fi', [owned(w, path), mode ?? ""], { input: Buffer.from(bytes) });
+  sh(w, 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1" && if [ -n "$2" ]; then chmod -- "$2" "$1"; fi', [owned(w, path), mode ?? ""], { input: Buffer.from(bytes) });
 }
 
 function read(w: WslHost, path: string): Buffer | null {
@@ -140,12 +152,12 @@ function read(w: WslHost, path: string): Buffer | null {
   return r.exitCode === 3 ? null : Buffer.from(r.bytes);
 }
 
-// GNU stat `%s %a %u %g %h`, then `sha256sum`.
+// GNU stat `%s %a %u %g %h %f` (`%f` is the raw `st_mode` in hex), then `sha256sum`.
 function stateOf(w: WslHost, path: string): State & { octal: string } {
-  const r = sh(w, 'stat -c "%s %a %u %g %h" -- "$1" && sha256sum -- "$1"', [owned(w, path)]);
-  const m = /^(\d+) ([0-7]+) (\d+) (\d+) (\d+)\n([0-9a-f]{64}) /.exec(r.stdout);
+  const r = sh(w, 'stat -c "%s %a %u %g %h %f" -- "$1" && sha256sum -- "$1"', [owned(w, path)]);
+  const m = /^(\d+) ([0-7]+) (\d+) (\d+) (\d+) ([0-9a-f]+)\n([0-9a-f]{64}) /.exec(r.stdout);
   if (m === null) throw new Error(`stat output refused: ${JSON.stringify(r.stdout)}`);
-  return { size: Number(m[1]), octal: m[2]!, mode: parseInt(m[2]!, 8), uid: Number(m[3]), gid: Number(m[4]), links: Number(m[5]), sha: m[6]! };
+  return { size: Number(m[1]), octal: m[2]!, mode: parseInt(m[6]!, 16), uid: Number(m[3]), gid: Number(m[4]), links: Number(m[5]), sha: m[7]! };
 }
 
 // The names in `dir` that start with `.arbareto-`.
@@ -167,12 +179,17 @@ async function noneLeft(w: WslHost, operation: string, seamPath?: string): Promi
   expect({ operation: pgrep(w, operation), seam: seamPath === undefined ? [] : pgrep(w, seamPath), scopes: listScopes(w) }).toEqual({ operation: [], seam: [], scopes: [] });
 }
 
-// A seam in place of `sha256sum`: the first call waits until the test creates `go`, then each call runs the real program. The wait has a 60-second bound.
-function seam(w: WslHost, dir: string): { path: string; held: string; go: string } {
-  const path = `${dir}/sha256sum-hold`;
-  const held = `${dir}/held`;
-  const go = `${dir}/go`;
-  write(w, path, `#!/bin/sh\n: > '${held}'\ni=0\nwhile [ ! -e '${go}' ]; do\n  i=$((i + 1))\n  [ "$i" -gt 600 ] && exit 1\n  sleep 0.1\ndone\nexec '${w.probe.paths.sha256sum}' "$@"\n`, "755");
+// A seam in place of `sha256sum`: call number `at` waits until the test creates `go`, then each call runs the real program.
+// The wait has a 60-second bound.
+let seams = 0;
+function seam(w: WslHost, dir: string, at = 1): { path: string; held: string; go: string } {
+  const own = `${dir}/seam-${++seams}`;
+  inDistro(w.distro, ["/usr/bin/mkdir", "-p", "--", own]);
+  const path = `${own}/sha256sum-hold`;
+  const held = `${own}/held`;
+  const go = `${own}/go`;
+  const calls = `${own}/calls`;
+  write(w, path, `#!/bin/sh\necho x >> '${calls}'\nif [ "$(wc -l < '${calls}')" -eq ${at} ]; then\n  : > '${held}'\n  i=0\n  while [ ! -e '${go}' ]; do\n    i=$((i + 1))\n    [ "$i" -gt 600 ] && exit 1\n    sleep 0.1\n  done\nfi\nexec '${w.probe.paths.sha256sum}' "$@"\n`, "755");
   return { path, held, go };
 }
 
@@ -289,7 +306,7 @@ describe("T015 wslFiles replace working and tempRemove through the wrapper (cont
     for (const [name, changed] of [
       ["size", { ...state, size: state.size + 1 }],
       ["sha256", { ...state, sha: sha256(Buffer.from("other\n")) }],
-      ["mode", { ...state, mode: 0o600 }],
+      ["mode", { ...state, mode: 0o100600 }],
       ["uid", { ...state, uid: state.uid + 1 }],
       ["gid", { ...state, gid: state.gid + 1 }],
       ["links", { ...state, links: 2 }],
@@ -307,8 +324,8 @@ describe("T015 wslFiles replace working and tempRemove through the wrapper (cont
     const dir = worktree(w, "folders");
     const mask = umask(w);
     let run = startFiles(w, "replace", dir, workingTokens(["a", "b", "n.txt"], null, ["a", "b"], { bytes: Buffer.from("new\n") }));
-    expect(workingReply(await finish(run))).toBe("replaced 2");
-    expect([stateOf(w, `${dir}/a/b/n.txt`).mode, read(w, `${dir}/a/b/n.txt`)?.toString()]).toEqual([0o666 & ~mask, "new\n"]);
+    expect(workingReply(await finish(run))).toBe("replaced folders=2");
+    expect([stateOf(w, `${dir}/a/b/n.txt`).mode & 0o7777, read(w, `${dir}/a/b/n.txt`)?.toString()]).toEqual([0o666 & ~mask, "new\n"]);
     const folder = sh(w, 'stat -c "%a %a" -- "$1" "$2"', [`${dir}/a`, `${dir}/a/b`]).stdout.trim().split("\n");
     expect(folder.map((line) => parseInt(line.split(" ")[0]!, 8))).toEqual([0o777 & ~mask, 0o777 & ~mask]);
     run = startFiles(w, "replace", dir, workingTokens(["a", "b", "n.txt"], null, [], { bytes: Buffer.from("x") }));
@@ -320,8 +337,96 @@ describe("T015 wslFiles replace working and tempRemove through the wrapper (cont
     await noneLeft(w, run.operation);
   });
 
-  // Contract gap: the `fileReplace` frame carries no Git mode for an absent target, so the shell cannot choose 0777 & ~umask for mode 100755.
-  test.todo("an absent target of mode 100755 gets 0777 & ~umask (contract gap: no mode field in the fileReplace frame)");
+  W("an absent target gets 0777 & ~umask for gitMode 100755 and 0666 & ~umask for 100644, as Git's checkout creates it", async (w) => {
+    const dir = worktree(w, "git-mode");
+    const mask = umask(w);
+    for (const [name, gitMode, mode] of [["x.sh", "100755", 0o777], ["r.txt", "100644", 0o666]] as const) {
+      const run = startFiles(w, "replace", dir, workingTokens([name], null, [], { bytes: Buffer.from("#!/bin/sh\n") }, gitMode));
+      expect([name, workingReply(await finish(run))]).toEqual([name, "replaced"]);
+      expect([name, stateOf(w, `${dir}/${name}`).mode & 0o7777]).toEqual([name, mode & ~mask]);
+    }
+    expect(temps(w, dir)).toEqual([]);
+  });
+
+  W("a failure after mkdir names the created folders, a source with another digest stays, and a hard-linked source keeps both names", async (w) => {
+    const dir = worktree(w, "failed-folders");
+    write(w, `${dir}/.merge_file_digest`, "other\n");
+    let run = startFiles(w, "replace", dir, workingTokens(["a", "b", "n.txt"], null, ["a", "b"], { source: { name: ".merge_file_digest", size: 6, sha: sha256(Buffer.from("other!")) } }));
+    expect(workingReply(await finish(run))).toBe("stale folders=2");
+    expect(sh(w, '[ -d "$1" ] && [ ! -e "$1/n.txt" ] && echo kept', [`${dir}/a/b`]).stdout.trim()).toBe("kept");
+    expect(read(w, `${dir}/.merge_file_digest`)?.toString()).toBe("other\n");
+    write(w, `${dir}/t.txt`, "old\n", "644");
+    write(w, `${dir}/.merge_file_l`, "new\n");
+    sh(w, 'ln -- "$1" "$2"', [`${dir}/.merge_file_l`, `${dir}/other-name`]);
+    run = startFiles(w, "replace", dir, workingTokens(["t.txt"], stateOf(w, `${dir}/t.txt`), [], { source: { name: ".merge_file_l", size: 4, sha: sha256(Buffer.from("new\n")) } }));
+    expect(workingReply(await finish(run))).toBe("refused hard-link");
+    expect([read(w, `${dir}/.merge_file_l`)?.toString(), read(w, `${dir}/other-name`)?.toString(), read(w, `${dir}/t.txt`)?.toString()]).toEqual(["new\n", "new\n", "old\n"]);
+    await noneLeft(w, run.operation);
+  });
+
+  W("a matched source that cannot be unlinked stays, and the replaced reply says kept", async (w) => {
+    const dir = worktree(w, "kept");
+    const from = gitTemp(w, dir, "sub/f.txt", "committed\n", "changed\n");
+    const before = stateOf(w, `${dir}/sub/f.txt`);
+    // The root folder takes no new or removed names, so the unlink of the source in the root fails with EACCES.
+    sh(w, 'chmod 0555 -- "$1"', [dir]);
+    let reply: string;
+    try {
+      const run = startFiles(w, "replace", dir, workingTokens(["sub", "f.txt"], before, [], { source: from }));
+      reply = workingReply(await finish(run));
+      await noneLeft(w, run.operation);
+    } finally {
+      sh(w, 'chmod 0755 -- "$1"', [dir]);
+    }
+    expect(reply).toBe("replaced kept");
+    expect([read(w, `${dir}/sub/f.txt`)?.toString(), read(w, `${dir}/${from.name}`)?.toString()]).toEqual(["committed\n", "committed\n"]);
+  });
+
+  W("a folder of the path that is the Git directory by identity gives invalid", async (w) => {
+    const dir = worktree(w, "identity");
+    write(w, `${dir}/store/config`, "[core]\n");
+    const config = stateOf(w, `${dir}/store/config`);
+    const run = startFiles(w, "replace", dir, workingTokens(["store", "config"], config, [], { bytes: Buffer.from("x") }), w.probe.paths.sha256sum!, `${dir}/store`);
+    expect(workingReply(await finish(run))).toBe("invalid");
+    expect(read(w, `${dir}/store/config`)?.toString()).toBe("[core]\n");
+    const root = startFiles(w, "replace", dir, workingTokens(["n.txt"], null, [], { bytes: Buffer.from("x") }), w.probe.paths.sha256sum!, dir);
+    expect(workingReply(await finish(root))).toBe("invalid");
+    expect(read(w, `${dir}/n.txt`)).toBeNull();
+  });
+
+  W("a target renamed over after the check gives stale, no rename runs, and the matched source goes", async (w) => {
+    const dir = worktree(w, "swap");
+    const from = gitTemp(w, dir, "f.txt", "committed\n", "changed\n");
+    // The first SHA-256 run digests the target, and the second one copies the source, after the check.
+    const hold = seam(w, `${w.folder}/t015`, 2);
+    const run = startFiles(w, "replace", dir, workingTokens(["f.txt"], stateOf(w, `${dir}/f.txt`), [], { source: from }), hold.path);
+    try {
+      await waitHeld(w, hold.held);
+      sh(w, 'printf "other\n" > "$1/swap.tmp" && mv -f -- "$1/swap.tmp" "$1/f.txt"', [dir]);
+    } finally {
+      write(w, hold.go, "");
+    }
+    expect(workingReply(await finish(run))).toBe("stale");
+    expect([read(w, `${dir}/f.txt`)?.toString(), read(w, `${dir}/${from.name}`)]).toEqual(["other\n", null]);
+    expect(temps(w, dir)).toEqual([]);
+    await noneLeft(w, run.operation, hold.path);
+  });
+
+  W("a kill -9 during tempRemove gives the unknown outcome interrupted", async (w) => {
+    const dir = worktree(w, "temp-kill");
+    const from = gitTemp(w, dir, "f.txt", "committed\n", "changed\n");
+    const hold = seam(w, `${w.folder}/t015`);
+    const run = startFiles(w, "tempRemove", dir, [from.name, String(from.size), from.sha], hold.path);
+    try {
+      await waitHeld(w, hold.held);
+      run.proc.kill();
+      expect(tempReply(await finish(run))).toBe("interrupted");
+      await noneLeft(w, run.operation, hold.path);
+    } finally {
+      write(w, hold.go, "");
+    }
+    expect(read(w, `${dir}/${from.name}`)?.toString()).toBe("committed\n");
+  });
 
   W("the source copy: Git's temporary file of checkout-index --temp copies over the target with its digest, and the source goes after the fstat identity check", async (w) => {
     const dir = worktree(w, "source");
@@ -331,11 +436,11 @@ describe("T015 wslFiles replace working and tempRemove through the wrapper (cont
     let run = startFiles(w, "replace", dir, workingTokens(["f.txt"], before, [], { source: from }));
     expect(workingReply(await finish(run))).toBe("replaced");
     expect({ bytes: read(w, `${dir}/f.txt`)?.toString(), octal: stateOf(w, `${dir}/f.txt`).octal, source: read(w, `${dir}/${from.name}`) }).toEqual({ bytes: "committed\n", octal: "640", source: null });
-    // Another digest is stale, and the opened source goes.
+    // Another digest is stale. Only a matched digest proves Git's temporary file, so this source stays for `tempRemove`.
     write(w, `${dir}/.merge_file_digest`, "other\n");
     run = startFiles(w, "replace", dir, workingTokens(["f.txt"], stateOf(w, `${dir}/f.txt`), [], { source: { name: ".merge_file_digest", size: 6, sha: sha256(Buffer.from("other!")) } }));
     expect(workingReply(await finish(run))).toBe("stale");
-    expect([read(w, `${dir}/.merge_file_digest`), read(w, `${dir}/f.txt`)?.toString()]).toEqual([null, "committed\n"]);
+    expect([read(w, `${dir}/.merge_file_digest`)?.toString(), read(w, `${dir}/f.txt`)?.toString()]).toEqual(["other\n", "committed\n"]);
     // A link at the source name fails its O_NOFOLLOW open, so it stays for `tempRemove`.
     sh(w, 'ln -s -- f.txt "$1"', [`${dir}/.merge_file_link`]);
     run = startFiles(w, "replace", dir, workingTokens(["f.txt"], stateOf(w, `${dir}/f.txt`), [], { source: { name: ".merge_file_link", size: 10, sha: sha256(Buffer.from("committed\n")) } }));

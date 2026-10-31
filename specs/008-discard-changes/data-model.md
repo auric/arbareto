@@ -30,8 +30,9 @@ The renderer sends no path, no byte, and no count. The service derives everythin
 | `headEntry` | `{mode, oid}` or `absent` (status `mH`, `hH`; absent for an unborn HEAD). |
 | `indexEntry` | `{mode, oid}` or `absent` (status `mI`, `hI`). |
 | `newIndex` | `{mode, oid}`, `remove`, or `keep` (no index change for this path). |
-| `working` | The bound working-file facts: `absent`, or `{size, sha256, attributes, links, owner, group, dacl, creationTime}` on Windows, or `{size, sha256, mode, uid, gid, links, xattr: false}` on WSL. |
+| `working` | The bound working-file facts: `absent`, or `{size, sha256, attributes, links, owner, group, dacl, creationTime}` on Windows, or `{size, sha256, mode, uid, gid, links, xattr: false}` on WSL. The WSL `mode` is the whole `st_mode`. |
 | `folders` | For an absent target: the missing folder names below the deepest existing folder. |
+| `gitMode` | For an absent target: the Git mode of `source` (`100644` or `100755`). The `fileReplace` frame carries it (contract Δ6 `gitMode`). |
 | `source` | Revert file and Revert all unstaged changes: the index entry (`{mode, oid}`) that `checkout-index --temp` writes after the index part, and its blob size from `cat-file --batch-check` (for the batches and the deadlines). Lines: `bytes`. |
 | `newSize`, `newSha256` | Lines: the size and the SHA-256 that the review computes. Whole files: none at the review; the run takes them from Git's temporary file (§8a). `keep`: a staged new file keeps its working file. |
 
@@ -130,7 +131,7 @@ A fresh read that fails gives the unknown outcome of the whole run (001 FR-023).
 
 ## 9. Result (service to renderer)
 
-`{action, files: [{entryId, outcome, code?, reason?}], foldersCreated: [pathBytes], index: "published" | "none" | "refused"}`. The response state follows plan D10.
+`{action, files: [{entryId, outcome, code?, reason?}], foldersCreated: [pathBytes], index: "published" | "none" | "refused"}`. `foldersCreated` also holds the folders that a failed write created (contract Δ6 `folders` of a failure reply). The response state follows plan D10.
 
 ## 10. View state (renderer, not stored)
 

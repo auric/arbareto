@@ -1998,6 +1998,84 @@
             },
             "result": {
               "type": "string",
+              "const": "replaced"
+            },
+            "folders": {
+              "minItems": 1,
+              "maxItems": 64,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              }
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "kept"
+              ]
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "result",
+            "source"
+          ],
+          "additionalProperties": false,
+          "title": "FileReplaceReplacedSourceKept"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "fileReplace"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "result": {
+              "type": "string",
+              "const": "stale"
+            },
+            "folders": {
+              "minItems": 1,
+              "maxItems": 64,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              }
+            }
+          },
+          "required": [
+            "type",
+            "callId",
+            "result",
+            "folders"
+          ],
+          "additionalProperties": false,
+          "title": "FileReplaceStaleFolders"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "const": "fileReplace"
+            },
+            "callId": {
+              "type": "string",
+              "maxLength": 64,
+              "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            },
+            "result": {
+              "type": "string",
               "const": "refused"
             },
             "reason": {
@@ -2012,6 +2090,16 @@
                 "file-attributes",
                 "xattr"
               ]
+            },
+            "folders": {
+              "minItems": 1,
+              "maxItems": 64,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              }
             }
           },
           "required": [
@@ -2049,6 +2137,16 @@
                 "disk-full",
                 "read-only-volume"
               ]
+            },
+            "folders": {
+              "minItems": 1,
+              "maxItems": 64,
+              "type": "array",
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 255
+              }
             }
           },
           "required": [
@@ -2148,7 +2246,9 @@
               "enum": [
                 "removed",
                 "stale",
-                "absent"
+                "absent",
+                "stopped",
+                "interrupted"
               ]
             }
           },

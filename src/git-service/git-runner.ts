@@ -186,9 +186,16 @@ export type FileReplaceReply = { result: "replaced" | "stale" | "stopped" | "int
 export type WorkingReplaceRequest = Omit<FrameOf<"fileReplace">, "target" | "facts"> & { target: "working"; facts: NonNullable<FrameOf<"fileReplace">["facts"]> };
 export type ReplaceRefusal = (typeof REPLACE_REFUSALS)[number];
 export type ReplaceError = (typeof REPLACE_ERRORS)[number];
-export type WorkingReplaceReply = { result: "replaced"; folders?: string[] } | { result: "stale" | "stopped" | "interrupted" } | { result: "refused"; reason: ReplaceRefusal } | { result: "error"; code: ReplaceError };
+// `folders` of a failure names the folders that the write created before it. `source: kept`: Git's temporary file stays at its name.
+export type WorkingReplaceReply =
+  | { result: "replaced"; folders?: string[]; source?: "kept" }
+  | { result: "stale"; folders?: string[] }
+  | { result: "stopped" | "interrupted" }
+  | { result: "refused"; reason: ReplaceRefusal; folders?: string[] }
+  | { result: "error"; code: ReplaceError; folders?: string[] };
 export type TempRemoveRequest = FrameOf<"tempRemove">;
-export type TempRemoveReply = { result: "removed" | "stale" | "absent" } | { result: "error"; code: ReplaceError };
+// Not removed: `stale`, `absent`, `stopped`, and `error`. Unknown: `interrupted` (a WSL stop, deadline, or broken output).
+export type TempRemoveReply = { result: "removed" | "stale" | "absent" | "stopped" | "interrupted" } | { result: "error"; code: ReplaceError };
 // Feature 008 contract Δ3 "checkout-index deadline": the walk or Git deadline plus 1 s for each started 64 MiB of the sizes involved.
 const SIZE_RULE_BYTES = 64 * 1024 * 1024;
 const SIZE_RULE_MS = 1000;

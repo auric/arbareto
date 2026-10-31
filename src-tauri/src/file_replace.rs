@@ -58,8 +58,6 @@ pub(crate) const IGNORE_TARGET_BYTES: u64 = 1_048_576;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum ReplaceResult {
     Replaced,
-    /// Feature 008 contract Δ6: a `working` replace that created these folders.
-    ReplacedFolders(Vec<String>),
     /// The target differs from `expected`, or a new file appeared before the rename.
     Stale,
     /// The target is a reparse point, a folder, or a file with more than one link.
@@ -401,6 +399,26 @@ pub(crate) struct Present {
     pub(crate) facts: Facts,
 }
 
+/// Feature 008 contract Δ6: the reply facts of one `working` replace beside its result.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Written {
+    pub(crate) result: ReplaceResult,
+    /// The folders that the write created, also before a later failure. They stay.
+    pub(crate) folders: Vec<String>,
+    /// `replaced` only: the delete of Git's temporary file failed, so it stays at its name.
+    pub(crate) source_kept: bool,
+}
+
+impl From<ReplaceResult> for Written {
+    fn from(result: ReplaceResult) -> Written {
+        Written {
+            result,
+            folders: Vec::new(),
+            source_kept: false,
+        }
+    }
+}
+
 /// The checked fields of a `fileReplace` `working` frame. It reads no file.
 #[derive(Debug)]
 pub(crate) struct Working<'a> {
@@ -412,6 +430,8 @@ pub(crate) struct Working<'a> {
     pub(crate) content: Content,
     /// The missing folders below the deepest existing folder, top first. Only with `absent`.
     pub(crate) folders: Vec<String>,
+    /// Contract Δ6 `mode` of an absent target: true for `100755`.
+    pub(crate) executable: bool,
 }
 
 /// `schema::working_replace` keeps the field rules that typify drops. The handler checks the path and the marker.
@@ -485,6 +505,10 @@ pub(crate) fn parse_working(request: &FileReplace) -> Result<Working<'_>, Code> 
             .iter()
             .map(|name| name.to_string())
             .collect(),
+        executable: matches!(
+            request.git_mode,
+            Some(crate::schema::process_request::FileReplaceGitMode::X100755)
+        ),
     })
 }
 
@@ -496,7 +520,7 @@ pub(crate) fn size_rule(bytes: u64) -> std::time::Duration {
 /// The facts of the existing target that the check read under its held handle.
 struct Held {
     /// Open without write sharing until the write, so no other writer changes the target before the rename.
-    _handle: OwnedHandle,
+    handle: OwnedHandle,
     basic: FILE_BASIC_INFORMATION,
     /// The owner, group, and DACL as one self-relative descriptor.
     descriptor: Vec<u8>,
@@ -528,6 +552,22 @@ fn file_id(handle: &OwnedHandle) -> Option<(u64, [u8; 16])> {
     }
     .ok()?;
     Some((info.VolumeSerialNumber, info.FileId.Identifier))
+}
+
+/// True when `name` in `parent` opens the file of `held`, by `FileIdInfo`. A failed open or query gives false.
+fn same_file(parent: &OwnedHandle, name: &str, held: &OwnedHandle) -> bool {
+    let now = create_relative(
+        raw(parent),
+        name,
+        FILE_READ_ATTRIBUTES | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT | FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
+    );
+    match (now.ok().as_ref().and_then(file_id), file_id(held)) {
+        (Some(now), Some(held)) => now == held,
+        _ => false,
+    }
 }
 
 /// A missing component of a bound path means that the state changed since the review.
@@ -654,7 +694,7 @@ fn held(
         return Err(ReplaceResult::Refused(Reason::Encrypted));
     }
     Ok(Held {
-        _handle: handle,
+        handle,
         basic,
         descriptor,
         sddl,
@@ -667,30 +707,42 @@ impl WorkingChecked {
     }
 
     /// Creates the folders, copies the facts to a temporary file, writes `content`, and renames it over the target. It does not stop.
-    pub(crate) fn write(self, content: &Content) -> ReplaceResult {
+    pub(crate) fn write(self, content: &Content) -> Written {
         let source = match content {
             Content::Bytes(_) => None,
             Content::Source(source) => match open_source(&self.root, source) {
                 Ok(handle) => Some(handle),
-                Err(result) => return result,
+                Err(result) => return result.into(),
             },
         };
+        let mut made: Vec<String> = Vec::new();
+        let mut verified = false;
         let result = match &source {
             Some(handle) => match check_source(handle, content) {
-                Ok(()) => self.finish(content, source.as_ref()),
+                Ok(()) => self.finish(content, source.as_ref(), &mut made, &mut verified),
                 Err(result) => result,
             },
-            None => self.finish(content, None),
+            None => self.finish(content, None, &mut made, &mut verified),
         };
-        // Contract Δ6: the source goes through its handle after the rename and after each failure after its open.
-        if let Some(handle) = &source {
-            let _ = set_disposition(handle);
+        // Contract Δ6 (batch 1 review): only a matched digest proves Git's temporary file, so only then the source goes.
+        let deleted = match &source {
+            Some(handle) if verified => set_disposition(handle).is_ok(),
+            _ => true,
+        };
+        Written {
+            source_kept: result == ReplaceResult::Replaced && !deleted,
+            result,
+            folders: made,
         }
-        result
     }
 
-    fn finish(&self, content: &Content, source: Option<&OwnedHandle>) -> ReplaceResult {
-        let mut made: Vec<String> = Vec::new();
+    fn finish(
+        &self,
+        content: &Content,
+        source: Option<&OwnedHandle>,
+        made: &mut Vec<String>,
+        verified: &mut bool,
+    ) -> ReplaceResult {
         let mut created: Option<OwnedHandle> = None;
         for name in &self.folders {
             let at = created.as_ref().unwrap_or(self.parent());
@@ -755,6 +807,7 @@ impl WorkingChecked {
                     if read != from.size || digest != from.sha256 {
                         return Err(ReplaceResult::Stale);
                     }
+                    *verified = true;
                     // SAFETY: `temp` is open.
                     unsafe { FlushFileBuffers(raw(&temp)) }
                         .map_err(|error| ReplaceResult::Error(win32_reply_code(&error)))?;
@@ -764,12 +817,17 @@ impl WorkingChecked {
                     return Err(ReplaceResult::Error(ErrorCode::OtherError));
                 }
             }
+            // Batch 1 review S1: the target name must still name the held file, else another file took the name after the check.
+            if let Some(held) = &self.target
+                && !same_file(parent, &self.name, &held.handle)
+            {
+                return Err(ReplaceResult::Stale);
+            }
             clear_disposition(&temp)
                 .map_err(|error| ReplaceResult::Error(win32_reply_code(&error)))?;
             cleared = true;
             match rename(parent, &temp, &self.name, self.target.is_some()) {
-                ReplaceResult::Replaced if made.is_empty() => Ok(ReplaceResult::Replaced),
-                ReplaceResult::Replaced => Ok(ReplaceResult::ReplacedFolders(made.clone())),
+                ReplaceResult::Replaced => Ok(ReplaceResult::Replaced),
                 other => Err(other),
             }
         })();
@@ -815,10 +873,6 @@ fn copy_facts(temp: &OwnedHandle, held: &Held) -> Result<(), ReplaceResult> {
         return Err(ReplaceResult::Refused(Reason::FileAttributes));
     }
     let code = |error: windows::core::Error| ReplaceResult::Error(win32_reply_code(&error));
-    let created = sddl(&security(temp).map_err(code)?).map_err(code)?;
-    if created[0] != held.sddl[0] {
-        return Err(ReplaceResult::Refused(Reason::Owner));
-    }
     // Probe W2 (user decision 2026-10-27): `SE_DACL_AUTO_INHERIT_REQ` keeps `SE_DACL_AUTO_INHERITED` on the copy.
     let mut descriptor = held.descriptor.clone();
     let pointer = PSECURITY_DESCRIPTOR(descriptor.as_mut_ptr().cast());
@@ -910,6 +964,10 @@ pub(crate) enum TempResult {
     Removed,
     Stale,
     Absent,
+    /// A Windows stop or deadline before the delete, so nothing was removed.
+    Stopped,
+    /// A WSL stop, deadline, or broken output, so the shell does not know the outcome.
+    Interrupted,
     Error(ErrorCode),
 }
 
@@ -1209,7 +1267,7 @@ mod tests {
         use windows::core::HSTRING;
 
         use super::super::{
-            Content, ErrorCode, Reason, ReplaceResult, Source, TempResult, WindowsFacts,
+            Content, ErrorCode, Reason, ReplaceResult, Source, TempResult, WindowsFacts, Written,
             check_temp, check_working, parse_working, remove_temp, security_refusal, size_rule,
         };
         use super::revert_facts::{
@@ -1288,6 +1346,19 @@ mod tests {
             }
         }
 
+        fn write_in(
+            root: &Path,
+            git: &[&Path],
+            path: &[&str],
+            present: Option<&(u64, String, WindowsFacts)>,
+            folders: usize,
+            content: &Content,
+        ) -> Written {
+            let present = present.map(|(size, sha, facts)| (*size, sha.as_str(), facts));
+            check_working(root, git, &names(path), present, folders, &RUN)
+                .map_or_else(Written::from, |checked| checked.write(content))
+        }
+
         fn replace_in(
             root: &Path,
             git: &[&Path],
@@ -1296,9 +1367,15 @@ mod tests {
             folders: usize,
             content: &Content,
         ) -> ReplaceResult {
-            let present = present.map(|(size, sha, facts)| (*size, sha.as_str(), facts));
-            check_working(root, git, &names(path), present, folders, &RUN)
-                .map_or_else(|result| result, |checked| checked.write(content))
+            write_in(root, git, path, present, folders, content).result
+        }
+
+        fn written(result: ReplaceResult, folders: &[&str], source_kept: bool) -> Written {
+            Written {
+                result,
+                folders: names(folders),
+                source_kept,
+            }
         }
 
         fn replace(
@@ -1630,7 +1707,7 @@ mod tests {
             let repo = repo();
             let git: &[&Path] = &[&repo.git];
             assert_eq!(
-                replace_in(
+                write_in(
                     &repo.root,
                     git,
                     &["a", "b", "n.txt"],
@@ -1638,7 +1715,7 @@ mod tests {
                     2,
                     &bytes(b"new\n")
                 ),
-                ReplaceResult::ReplacedFolders(vec!["a".to_string(), "b".to_string()])
+                written(ReplaceResult::Replaced, &["a", "b"], false)
             );
             assert_eq!(
                 std::fs::read(repo.root.join("a").join("b").join("n.txt")).expect("read"),
@@ -1776,7 +1853,7 @@ mod tests {
             );
             RENAMES.with(|c| c.set(0));
             assert_eq!(
-                checked.write(&bytes(b"new\n")),
+                checked.write(&bytes(b"new\n")).result,
                 ReplaceResult::Error(ErrorCode::AccessDenied)
             );
             assert_eq!(RENAMES.with(|c| c.get()), 1, "no second rename");
@@ -1861,10 +1938,10 @@ mod tests {
             assert!(temps(&repo.root.join("sub")).is_empty());
         }
 
-        /// Contract Δ6 `source`: another digest or size gives `stale`, a reparse point or a second link at the source refuses,
-        /// and the source goes after each failure after its open. A missing source gives `stale`.
+        /// Contract Δ6 `source` (batch 1 review): another digest or size gives `stale`, and a reparse point or a second link at the
+        /// source refuses. The source then stays for `tempRemove`, because only a matched digest proves that it is Git's temporary file.
         #[test]
-        fn a_changed_source_is_stale_a_linked_source_refuses_and_the_source_goes() {
+        fn a_changed_or_linked_source_refuses_and_stays() {
             let repo = repo();
             let target = repo.root.join("a.txt");
             std::fs::write(&target, b"old\n").expect("old");
@@ -1874,11 +1951,17 @@ mod tests {
             let mut wrong = source(&repo, ".merge_file_digest", b"new\n");
             wrong.sha256 = digest(b"other\n");
             assert_eq!(run(wrong), ReplaceResult::Stale, "another digest");
-            assert!(!repo.root.join(".merge_file_digest").exists());
+            assert!(
+                repo.root.join(".merge_file_digest").exists(),
+                "another digest stays"
+            );
             let mut size = source(&repo, ".merge_file_size", b"new\n");
             size.size += 1;
             assert_eq!(run(size), ReplaceResult::Stale, "another size");
-            assert!(!repo.root.join(".merge_file_size").exists());
+            assert!(
+                repo.root.join(".merge_file_size").exists(),
+                "another size stays"
+            );
             assert_eq!(
                 run(Source {
                     name: ".merge_file_gone".to_string(),
@@ -1896,14 +1979,13 @@ mod tests {
                     ReplaceResult::Refused(Reason::HardLink),
                     "a second link"
                 );
-                assert!(
-                    !repo.root.join(".merge_file_link").exists(),
-                    "the source name goes"
-                );
                 assert_eq!(
-                    std::fs::read(&other).expect("read"),
-                    b"new\n",
-                    "the other name keeps its bytes"
+                    [
+                        std::fs::read(repo.root.join(".merge_file_link")).ok(),
+                        std::fs::read(&other).ok()
+                    ],
+                    [Some(b"new\n".to_vec()), Some(b"new\n".to_vec())],
+                    "a hard-linked source keeps both names"
                 );
             } else {
                 println!(
@@ -1913,13 +1995,144 @@ mod tests {
             let tagged = source(&repo, ".merge_file_tag", b"new\n");
             if set_private_tag(&repo.root.join(".merge_file_tag")) {
                 assert_eq!(run(tagged), ReplaceResult::NotRegular, "a reparse point");
-                assert!(!repo.root.join(".merge_file_tag").exists());
+                assert!(
+                    repo.root.join(".merge_file_tag").exists(),
+                    "a reparse point stays"
+                );
             } else {
                 println!(
                     "SKIP working source reparse tag: missing capability reparse-tag (unverified)"
                 );
             }
+            // A gitfile under another name with a wrong digest proves nothing, so it stays.
+            std::fs::write(repo.root.join(".git-file"), b"gitdir: x\n").expect("gitfile");
+            let gitfile = Source {
+                name: ".git-file".to_string(),
+                size: 10,
+                sha256: digest(b"other bytes"),
+            };
+            assert_eq!(run(gitfile), ReplaceResult::Stale);
+            assert_eq!(
+                std::fs::read(repo.root.join(".git-file")).expect("read"),
+                b"gitdir: x\n"
+            );
             assert_eq!(std::fs::read(&target).expect("read"), b"old\n");
+            assert!(temps(&repo.root).is_empty());
+        }
+
+        /// Contract Δ6 `source`: after its digest matched, the source goes also after a later failure. A matched source that the
+        /// shell cannot delete stays, and the `replaced` reply says `source: kept`.
+        #[test]
+        fn a_matched_source_goes_after_a_later_failure_and_a_kept_source_shows_in_the_reply() {
+            use std::os::windows::fs::OpenOptionsExt;
+            let repo = repo();
+            let target = repo.root.join("a.txt");
+            std::fs::write(&target, b"old\n").expect("old");
+            let facts = bound(&repo.root, &["a.txt"]);
+            let from = source(&repo, ".merge_file_rename", b"new\n");
+            {
+                let _holder = std::fs::OpenOptions::new()
+                    .read(true)
+                    .share_mode((FILE_SHARE_READ | FILE_SHARE_WRITE).0)
+                    .open(&target)
+                    .expect("holder");
+                assert_eq!(
+                    replace(&repo, &["a.txt"], Some(&facts), &Content::Source(from)),
+                    ReplaceResult::Error(ErrorCode::SharingViolation)
+                );
+            }
+            assert!(
+                !repo.root.join(".merge_file_rename").exists(),
+                "a matched source goes after the failed rename"
+            );
+            let from = source(&repo, ".merge_file_kept", b"new\n");
+            assert!(
+                set_attributes(
+                    &repo.root.join(".merge_file_kept"),
+                    FILE_ATTRIBUTE_READONLY.0
+                ),
+                "read-only source"
+            );
+            assert_eq!(
+                write_in(
+                    &repo.root,
+                    &[&repo.git],
+                    &["a.txt"],
+                    Some(&facts),
+                    0,
+                    &Content::Source(from)
+                ),
+                written(ReplaceResult::Replaced, &[], true)
+            );
+            assert_eq!(std::fs::read(&target).expect("read"), b"new\n");
+            assert!(
+                repo.root.join(".merge_file_kept").exists(),
+                "the kept source stays"
+            );
+            set_attributes(&repo.root.join(".merge_file_kept"), FILE_ATTRIBUTE_NORMAL.0);
+        }
+
+        /// Contract Δ6 `folders`: the folders that a write created before a later failure come back in the reply, and they stay.
+        #[test]
+        fn the_folders_of_a_failed_write_come_back_in_the_reply() {
+            let repo = repo();
+            let mut from = source(&repo, ".merge_file_folders", b"new\n");
+            from.sha256 = digest(b"other\n");
+            assert_eq!(
+                write_in(
+                    &repo.root,
+                    &[&repo.git],
+                    &["a", "b", "n.txt"],
+                    None,
+                    2,
+                    &Content::Source(from)
+                ),
+                written(ReplaceResult::Stale, &["a", "b"], false)
+            );
+            assert!(repo.root.join("a").join("b").is_dir(), "the folders stay");
+            assert!(!repo.root.join("a").join("b").join("n.txt").exists());
+            assert!(
+                repo.root.join(".merge_file_folders").exists(),
+                "an unmatched source stays"
+            );
+            assert_eq!(
+                write_in(
+                    &repo.root,
+                    &[&repo.git],
+                    &["a", "c", "d", "n.txt"],
+                    None,
+                    3,
+                    &bytes(b"x")
+                ),
+                written(ReplaceResult::Stale, &[], false),
+                "an existing first folder creates nothing"
+            );
+        }
+
+        /// Batch 1 review S1: just before the rename, the target name must still name the held file. A file renamed over it
+        /// after the check gives `stale`, and no rename runs.
+        #[test]
+        fn a_target_swapped_after_the_check_gives_stale_and_no_rename() {
+            let repo = repo();
+            let target = repo.root.join("a.txt");
+            std::fs::write(&target, b"old\n").expect("old");
+            let facts = bound(&repo.root, &["a.txt"]);
+            let checked = check_working(
+                &repo.root,
+                &[&repo.git],
+                &names(&["a.txt"]),
+                Some((facts.0, &facts.1, &facts.2)),
+                0,
+                &RUN,
+            )
+            .unwrap_or_else(|result| panic!("check: {result:?}"));
+            std::fs::write(repo.root.join("other.txt"), b"other\n").expect("other");
+            std::fs::rename(repo.root.join("other.txt"), &target)
+                .expect("a rename over the held target");
+            RENAMES.with(|c| c.set(0));
+            assert_eq!(checked.write(&bytes(b"new\n")).result, ReplaceResult::Stale);
+            assert_eq!(RENAMES.with(|c| c.get()), 0, "no rename");
+            assert_eq!(std::fs::read(&target).expect("read"), b"other\n");
             assert!(temps(&repo.root).is_empty());
         }
 
@@ -2011,17 +2224,25 @@ mod tests {
                                 w.present.map(|p| p.size),
                                 w.folders.len(),
                                 matches!(w.content, Content::Source(_)),
+                                w.executable,
                             )
                         })
                     })
             };
-            assert_eq!(frame(json!({})), Ok((Some(4), 0, false)));
+            assert_eq!(frame(json!({})), Ok((Some(4), 0, false, false)));
             let source = json!({ "name": ".merge_file_x", "size": 9, "sha256": sha });
             assert_eq!(
                 frame(
-                    json!({ "bytes": null, "source": source, "expected": "absent", "facts": "absent", "folders": ["a", "b"] })
+                    json!({ "bytes": null, "source": source, "expected": "absent", "facts": "absent", "folders": ["a", "b"], "gitMode": "100644" })
                 ),
-                Ok((None, 2, true))
+                Ok((None, 2, true, false))
+            );
+            assert_eq!(
+                frame(
+                    json!({ "bytes": null, "source": source, "expected": "absent", "facts": "absent", "gitMode": "100755" })
+                ),
+                Ok((None, 0, true, true)),
+                "gitMode 100755"
             );
             let big = crate::process_requests::encode_base64(&vec![
                 b'x';
@@ -2044,6 +2265,22 @@ mod tests {
                 ),
                 ("a relative path", json!({ "path": "a.txt" })),
                 ("an ignore target", json!({ "target": "gitignore" })),
+                (
+                    "an absent target without gitMode",
+                    json!({ "bytes": null, "source": source, "expected": "absent", "facts": "absent" }),
+                ),
+                (
+                    "gitMode with a present target",
+                    json!({ "gitMode": "100644" }),
+                ),
+                (
+                    "another gitMode",
+                    json!({ "bytes": null, "source": source, "expected": "absent", "facts": "absent", "gitMode": "100664" }),
+                ),
+                (
+                    "a .git source name",
+                    json!({ "bytes": null, "source": { "name": ".GIT", "size": 9, "sha256": sha } }),
+                ),
             ] {
                 assert_eq!(frame(fields), Err(super::super::INVALID), "{name}");
             }

@@ -343,8 +343,10 @@ pub(crate) fn working_replace(request: &process_request::FileReplace) -> Result<
     let source_fits = request
         .source
         .as_ref()
-        .is_none_or(|source| source.size >= 0 && crate::file_facts::is_component(&source.name));
+        .is_none_or(|source| source.size >= 0 && temp_name(&source.name));
     if !matches!(request.target, FileReplaceTarget::Working)
+        // Contract Δ6 `gitMode`: exactly an absent target carries the Git mode of its index entry.
+        || request.git_mode.is_some() != expected.is_none()
         || request.bytes.is_some() == request.source.is_some()
         || !bytes_fit
         || !source_fits
@@ -364,10 +366,15 @@ pub(crate) fn working_replace(request: &process_request::FileReplace) -> Result<
 
 /// Feature 008 contract Δ6 `tempRemove`: one name component in the worktree root and a size that typify reads as `i64`.
 pub(crate) fn temp_remove(request: &process_request::TempRemove) -> Result<(), Code> {
-    if request.expected.size < 0 || !crate::file_facts::is_component(&request.name) {
+    if request.expected.size < 0 || !temp_name(&request.name) {
         return Err(INVALID);
     }
     Ok(())
+}
+
+/// Contract Δ6 (batch 1 review): a Git temporary file is one name component, never `.git` in any ASCII case.
+fn temp_name(name: &str) -> bool {
+    crate::file_facts::is_component(name) && !name.eq_ignore_ascii_case(".git")
 }
 
 /// Feature 004 contract Δ2: `stage-files` carries only `fileIndex` and `fileCount`, `config` only `keyIndex` and `keyCount`,
@@ -989,19 +996,13 @@ pub mod reply {
         };
         let refusal = |reason| G::Refused {
             call_id: field(call_id),
+            folders: Vec::new(),
             reason,
             result: "refused".to_string(),
             type_: type_.clone(),
         };
         encode(p::ProcessReply::FileReplaceGroup(match result {
             V::Replaced => plain(R::Replaced),
-            V::ReplacedFolders(folders) if folders.is_empty() => plain(R::Replaced),
-            V::ReplacedFolders(folders) => G::ReplacedFolders {
-                call_id: field(call_id),
-                folders: folders.iter().map(|name| field(name)).collect(),
-                result: "replaced".to_string(),
-                type_,
-            },
             V::Stale => plain(R::Stale),
             V::Stopped => plain(R::Stopped),
             V::Interrupted => plain(R::Interrupted),
@@ -1010,12 +1011,67 @@ pub mod reply {
             V::Error(code) => G::Error {
                 call_id: field(call_id),
                 code,
+                folders: Vec::new(),
                 result: "error".to_string(),
                 type_,
             },
             // Contract Δ6: a path inside the Git directory by identity is an invalid request.
             V::Invalid => return refused(call_id, p::RefusedCode::InvalidRequest),
         }))
+    }
+
+    /// Feature 008 contract Δ6 `fileReplace` `working`: the result with the created folders and the source that stays.
+    /// `stopped` and `interrupted` carry no folders: a stop comes before the write, and a WSL stop leaves them unknown.
+    pub fn file_replace_written(call_id: &str, written: &crate::file_replace::Written) -> Value {
+        use crate::file_replace::ReplaceResult as V;
+        use p::FileReplaceGroup as G;
+        let folders = written.folders.as_slice();
+        let type_ = || "fileReplace".to_string();
+        let reply = match &written.result {
+            V::Replaced if written.source_kept => G::ReplacedSourceKept {
+                call_id: field(call_id),
+                folders: names(folders),
+                result: "replaced".to_string(),
+                source: p::FileReplaceReplacedSourceKeptSource::Kept,
+                type_: type_(),
+            },
+            V::Replaced if !written.folders.is_empty() => G::ReplacedFolders {
+                call_id: field(call_id),
+                folders: names(folders),
+                result: "replaced".to_string(),
+                type_: type_(),
+            },
+            V::Stale if !written.folders.is_empty() => G::StaleFolders {
+                call_id: field(call_id),
+                folders: names(folders),
+                result: "stale".to_string(),
+                type_: type_(),
+            },
+            V::NotRegular | V::Refused(_) if !written.folders.is_empty() => G::Refused {
+                call_id: field(call_id),
+                folders: names(folders),
+                reason: match &written.result {
+                    V::Refused(reason) => *reason,
+                    _ => p::FileReplaceRefusedReason::NotRegular,
+                },
+                result: "refused".to_string(),
+                type_: type_(),
+            },
+            V::Error(code) if !written.folders.is_empty() => G::Error {
+                call_id: field(call_id),
+                code: *code,
+                folders: names(folders),
+                result: "error".to_string(),
+                type_: type_(),
+            },
+            result => return file_replace(call_id, result.clone()),
+        };
+        encode(p::ProcessReply::FileReplaceGroup(reply))
+    }
+
+    /// The folder names of a reply, each in its generated type.
+    fn names<T: FromStr<Err: Debug>>(folders: &[String]) -> Vec<T> {
+        folders.iter().map(|name| field(name)).collect()
     }
 
     /// Feature 008 contract Δ6 `tempRemove`: `removed`, `stale`, `absent`, or `error`.
@@ -1033,6 +1089,8 @@ pub mod reply {
             V::Removed => plain(R::Removed),
             V::Stale => plain(R::Stale),
             V::Absent => plain(R::Absent),
+            V::Stopped => plain(R::Stopped),
+            V::Interrupted => plain(R::Interrupted),
             V::Error(code) => G::Error {
                 call_id: field(call_id),
                 code: field(&code.to_string()),
@@ -1042,13 +1100,14 @@ pub mod reply {
         }))
     }
 
-    /// Contract Δ6 `tempRemove` has no stop or deadline reply. On Windows, a stop or a deadline comes before the delete.
-    /// On WSL, the outcome after a stop is unknown (contract gap), and the next status read shows a kept file.
+    /// Contract Δ6 `tempRemove`: a Windows stop or deadline comes before the delete, so nothing was removed.
     pub fn temp_remove_stopped(call_id: &str) -> Value {
-        temp_remove(
-            call_id,
-            crate::file_replace::TempResult::Error(p::FileReplaceErrorCode::OtherError),
-        )
+        temp_remove(call_id, crate::file_replace::TempResult::Stopped)
+    }
+
+    /// Contract Δ6 `tempRemove`: a WSL stop, deadline, or broken output leaves the outcome unknown.
+    pub fn temp_remove_interrupted(call_id: &str) -> Value {
+        temp_remove(call_id, crate::file_replace::TempResult::Interrupted)
     }
 
     /// Feature 005 contract Δ6: a stop or a deadline of a Windows `fileReplace` walk before the write.
@@ -1433,7 +1492,13 @@ mod tests {
                         )
                     ) =>
                 {
-                    valid(typed::<process_request::ProcessRequest>(&value).is_some())
+                    // Feature 008 contract Δ3 and Δ6: only the `checkout-index --temp` array takes a deadline above the cap.
+                    let deadline = value["limits"]["deadlineMs"].as_u64();
+                    let capped = deadline.is_none_or(|ms| {
+                        ms <= crate::process_requests::REGISTERED_DEADLINE_MS
+                            || value["arguments"] == json!(crate::process_requests::CHECKOUT_TEMP)
+                    });
+                    valid(typed::<process_request::ProcessRequest>(&value).is_some() && capped)
                 }
                 // Feature 008 contract Δ10: the field rules of `working_replace` and `temp_remove`.
                 Ok(value) if value["type"] == "fileReplace" && value["target"] == "working" => {
@@ -1533,9 +1598,10 @@ mod tests {
         // Feature 004 T127 adds 2 `native-first-envelope` vectors for the `track` branch form (contract Δ3).
         // Feature 006 T061 adds the 5 `read-dictionary-result` chunk vectors, 2 of them new (contract Δ1).
         // Feature 008 T006 adds 4 `mutation-request`, 4 `progress`, 9 `fileReplace`, 2 `tempRemove`, and 2 `fileFacts` vectors (contract Δ10).
+        // WP4 adds the 2 `run` vectors of the size rule. The batch 1 gaps add 4 `fileReplace` and 1 `tempRemove` request vectors.
         assert_eq!(
             checked,
-            if cfg!(windows) { 254 } else { 249 },
+            if cfg!(windows) { 261 } else { 256 },
             "shell-read vectors"
         );
     }
@@ -2303,6 +2369,10 @@ mod tests {
                 .as_object_mut()
                 .expect("object")
                 .extend(fields.as_object().expect("object").clone());
+            // Contract Δ6 `gitMode`: an absent target carries the Git mode of its index entry.
+            if value["expected"] == "absent" && value.get("gitMode").is_none() {
+                value["gitMode"] = json!("100644");
+            }
             value
         };
         let working = |fields: Value| {

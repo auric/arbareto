@@ -1,5 +1,5 @@
 {
   "schema": "process-request",
   "expected": "valid",
-  "text": "{\"type\":\"fileReplace\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"repositoryId\":\"0f0f0f0f-0000-4000-8000-000000000005\",\"target\":\"working\",\"path\":\"//host/repo/new/deep/a.txt\",\"expected\":\"absent\",\"facts\":\"absent\",\"source\":{\"name\":\".merge_file_a1B2c3\",\"size\":40,\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"folders\":[\"new\",\"deep\"]}"
+  "text": "{\"type\":\"fileReplace\",\"callId\":\"0f0f0f0f-0000-4000-8000-000000000001\",\"operationId\":\"0f0f0f0f-0000-4000-8000-000000000004\",\"repositoryId\":\"0f0f0f0f-0000-4000-8000-000000000005\",\"target\":\"working\",\"path\":\"//host/repo/new/deep/a.txt\",\"expected\":\"absent\",\"facts\":\"absent\",\"source\":{\"name\":\".merge_file_a1B2c3\",\"size\":40,\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"},\"folders\":[\"new\",\"deep\"],\"gitMode\":\"100644\"}"
 }

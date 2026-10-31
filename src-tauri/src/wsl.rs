@@ -1751,6 +1751,8 @@ pub struct WslWorking {
     pub present: Option<(u64, String, crate::file_replace::WslFacts)>,
     /// The missing folders below the deepest existing folder, top first.
     pub folders: Vec<String>,
+    /// Contract Δ6 `gitMode` of an absent target: true for `100755`.
+    pub executable: bool,
     pub content: crate::file_replace::Content,
 }
 
@@ -1772,7 +1774,15 @@ pub fn working_command(
     tokens.extend(working.path.iter().cloned());
     tokens.push("working".to_string());
     match &working.present {
-        None => tokens.push("absent".to_string()),
+        None => tokens.extend([
+            "absent".to_string(),
+            if working.executable {
+                "100755"
+            } else {
+                "100644"
+            }
+            .to_string(),
+        ]),
         Some((size, sha256, facts)) => tokens.extend([
             "present".to_string(),
             size.to_string(),
@@ -1797,13 +1807,11 @@ pub fn working_command(
     files_perl(installation, unit, "replace", roots, tokens, base)
 }
 
-/// One `working` reply: `replaced` with the count of the created folders, `stale`, `refused <reason>`, or `error <code>`.
+/// One `working` reply: the result, the reason or code, the count of the created folders, and for `replaced` the source state
+/// (`none`, `removed`, or `kept`). The created folders are the first ones of `folders`. `replaced` created all of them.
 /// The process can rename before it ends, so an exit status other than 0, no start byte, or another form gives `interrupted`.
-pub fn working_reply(
-    output: Option<Output>,
-    folders: &[String],
-) -> crate::file_replace::ReplaceResult {
-    use crate::file_replace::ReplaceResult as R;
+pub fn working_reply(output: Option<Output>, folders: &[String]) -> crate::file_replace::Written {
+    use crate::file_replace::{ReplaceResult as R, Written};
     use crate::schema::process_reply::FileReplaceRefusedReason as Reason;
     let parsed = output
         .filter(|out| out.exit_code == Some(0))
@@ -1811,12 +1819,9 @@ pub fn working_reply(
             let bytes = started(&out.stdout).filter(|b| b.len() <= DELETE_OUTPUT_BYTES)?;
             let mut records = Records { bytes, at: 0 };
             let result = match records.token()? {
-                // The reply counts the created folders. Each requested folder exists before the write, or the reply is `stale`.
-                "replaced" => {
-                    records.number::<usize>().filter(|&n| n == folders.len())?;
-                    R::ReplacedFolders(folders.to_vec())
-                }
+                "replaced" => R::Replaced,
                 "stale" => R::Stale,
+                "invalid" => R::Invalid,
                 "refused" => match records.token()? {
                     "not-regular" => R::NotRegular,
                     "hard-link" => R::Refused(Reason::HardLink),
@@ -1827,9 +1832,28 @@ pub fn working_reply(
                 "error" => R::Error(code_token(&mut records)?.parse().ok()?),
                 _ => return None,
             };
-            (records.at == bytes.len()).then_some(result)
+            let made: usize = records.number().filter(|&n| n <= folders.len())?;
+            // A walk refusal comes before any folder, and `replaced` created every folder.
+            if (result == R::Invalid && made != 0)
+                || (result == R::Replaced && made != folders.len())
+            {
+                return None;
+            }
+            let source_kept = match result {
+                R::Replaced => match records.token()? {
+                    "none" | "removed" => false,
+                    "kept" => true,
+                    _ => return None,
+                },
+                _ => false,
+            };
+            (records.at == bytes.len()).then(|| Written {
+                result,
+                folders: folders[..made].to_vec(),
+                source_kept,
+            })
         });
-    parsed.unwrap_or(R::Interrupted)
+    parsed.unwrap_or(R::Interrupted.into())
 }
 
 /// Feature 008 contract Δ11 `tempRemove`: the name, the size, and the SHA-256 of Git's temporary file on stdin.
@@ -1846,10 +1870,9 @@ pub fn temp_remove_command(
 }
 
 /// One `tempRemove` reply: `removed`, `stale`, `absent`, or `error <code>`.
-/// Contract gap: `tempRemove` has no unknown outcome, so a broken output gives `error other-error`.
+/// The process can unlink before it ends, so an exit status other than 0, no start byte, or another form gives `interrupted`.
 pub fn temp_remove_reply(output: Option<Output>) -> crate::file_replace::TempResult {
     use crate::file_replace::TempResult as T;
-    use crate::schema::process_reply::FileReplaceErrorCode as C;
     let parsed = output
         .filter(|out| out.exit_code == Some(0))
         .and_then(|out| {
@@ -1864,7 +1887,7 @@ pub fn temp_remove_reply(output: Option<Output>) -> crate::file_replace::TempRes
             };
             (records.at == bytes.len()).then_some(result)
         });
-    parsed.unwrap_or(T::Error(C::OtherError))
+    parsed.unwrap_or(T::Interrupted)
 }
 
 /// The shadow scratch operation of a WSL workspace (contract Δ11).
@@ -2849,11 +2872,12 @@ mod tests {
         assert_eq!(replace_reply(None), R::Interrupted, "no output");
     }
 
-    /// Feature 008 T016 (contract Δ11, plan.md D9): mode `replace` takes the `working` target with its facts, folders, and content,
-    /// and the reply counts the created folders. Each other form, a reason outside the list, or another count gives `interrupted`.
+    /// Feature 008 T016 (contract Δ11, plan.md D9): mode `replace` takes the `working` target with its facts, `gitMode`, folders,
+    /// and content. Each reply counts the created folders, and `replaced` names the state of the source. Each other form, a reason
+    /// outside the list, or another count gives `interrupted`.
     #[test]
     fn the_replace_mode_takes_the_working_target_and_counts_the_created_folders() {
-        use crate::file_replace::{Content, ReplaceResult as R, Source, WslFacts};
+        use crate::file_replace::{Content, ReplaceResult as R, Source, Written, WslFacts};
         use crate::schema::process_reply::{
             FileReplaceErrorCode as C, FileReplaceRefusedReason as Reason,
         };
@@ -2863,8 +2887,9 @@ mod tests {
             "/home/u/repo/.git".to_string(),
         ];
         let unit = unit_name(OPERATION, 4).expect("unit");
+        // The whole `st_mode` of a set-group-ID file: S_IFREG | 02755.
         let facts = WslFacts {
-            mode: 0o2755,
+            mode: 0o102755,
             uid: 1000,
             gid: 4,
             links: 1,
@@ -2873,6 +2898,7 @@ mod tests {
             path: strings(&["src", "a.txt"]),
             present: Some((4, "a".repeat(64), facts)),
             folders: Vec::new(),
+            executable: false,
             content: Content::Bytes(b"new\n".to_vec()),
         };
         let command = working_command(&installation(), &unit, &roots, &present, &base());
@@ -2880,7 +2906,7 @@ mod tests {
         assert_eq!(
             stdin_bytes(&command),
             format!(
-                "0\x000\x002\x00src\x00a.txt\x00working\x00present\x004\x00{}\x001517\x001000\x004\x001\x000\x00bytes\x006e65770a\x00",
+                "0\x000\x002\x00src\x00a.txt\x00working\x00present\x004\x00{}\x0034285\x001000\x004\x001\x000\x00bytes\x006e65770a\x00",
                 "a".repeat(64)
             )
             .into_bytes()
@@ -2889,6 +2915,7 @@ mod tests {
             path: strings(&["a", "b", "n.txt"]),
             present: None,
             folders: strings(&["a", "b"]),
+            executable: true,
             content: Content::Source(Source {
                 name: ".merge_file_x".to_string(),
                 size: 9,
@@ -2899,20 +2926,44 @@ mod tests {
         assert_eq!(
             stdin_bytes(&command),
             format!(
-                "0\x000\x003\x00a\x00b\x00n.txt\x00working\x00absent\x002\x00a\x00b\x00source\x00.merge_file_x\x009\x00{}\x00",
+                "0\x000\x003\x00a\x00b\x00n.txt\x00working\x00absent\x00100755\x002\x00a\x00b\x00source\x00.merge_file_x\x009\x00{}\x00",
                 "b".repeat(64)
             )
             .into_bytes()
         );
         let folders = strings(&["a", "b"]);
+        let written = |result: R, made: usize, source_kept: bool| Written {
+            result,
+            folders: folders[..made].to_vec(),
+            source_kept,
+        };
         for (stdout, expected) in [
-            ("Sreplaced\x002\0", R::ReplacedFolders(folders.clone())),
-            ("Sstale\0", R::Stale),
-            ("Srefused\0not-regular\0", R::NotRegular),
-            ("Srefused\0hard-link\0", R::Refused(Reason::HardLink)),
-            ("Srefused\0owner\0", R::Refused(Reason::Owner)),
-            ("Srefused\0xattr\0", R::Refused(Reason::Xattr)),
-            ("Serror\0io-error\0", R::Error(C::IoError)),
+            ("Sreplaced\x002\0removed\0", written(R::Replaced, 2, false)),
+            ("Sreplaced\x002\0none\0", written(R::Replaced, 2, false)),
+            ("Sreplaced\x002\0kept\0", written(R::Replaced, 2, true)),
+            ("Sstale\x001\0", written(R::Stale, 1, false)),
+            ("Sstale\x000\0", written(R::Stale, 0, false)),
+            (
+                "Srefused\0not-regular\x000\0",
+                written(R::NotRegular, 0, false),
+            ),
+            (
+                "Srefused\0hard-link\x000\0",
+                written(R::Refused(Reason::HardLink), 0, false),
+            ),
+            (
+                "Srefused\0owner\x002\0",
+                written(R::Refused(Reason::Owner), 2, false),
+            ),
+            (
+                "Srefused\0xattr\x000\0",
+                written(R::Refused(Reason::Xattr), 0, false),
+            ),
+            (
+                "Serror\0io-error\x001\0",
+                written(R::Error(C::IoError), 1, false),
+            ),
+            ("Sinvalid\x000\0", written(R::Invalid, 0, false)),
         ] {
             assert_eq!(
                 working_reply(output(0, stdout), &folders),
@@ -2920,28 +2971,27 @@ mod tests {
                 "{stdout:?}"
             );
         }
-        assert_eq!(
-            working_reply(output(0, "Sreplaced\x000\0"), &[]),
-            R::ReplacedFolders(Vec::new())
-        );
+        let interrupted = written(R::Interrupted, 0, false);
         for stdout in [
-            "Sreplaced\0",
-            "Sreplaced\x001\0",
-            "Srefused\0",
-            "Srefused\0security\0",
-            "Srefused\0read-only\0",
-            "Sstale\0x\0",
-            "Serror\0sharing-violation\0",
+            "Sreplaced\x002\0",
+            "Sreplaced\x001\0removed\0",
+            "Sreplaced\x002\0lost\0",
+            "Sstale\0",
+            "Sstale\x003\0",
+            "Srefused\0security\x000\0",
+            "Srefused\0read-only\x000\0",
+            "Serror\0sharing-violation\x000\0",
+            "Sinvalid\x001\0",
         ] {
             assert_eq!(
                 working_reply(output(0, stdout), &folders),
-                R::Interrupted,
+                interrupted,
                 "{stdout:?}"
             );
         }
         assert_eq!(
-            working_reply(output(3, "Sreplaced\x002\0"), &folders),
-            R::Interrupted
+            working_reply(output(3, "Sreplaced\x002\0none\0"), &folders),
+            interrupted
         );
     }
 
@@ -2975,12 +3025,16 @@ mod tests {
             ("Sstale\0", T::Stale),
             ("Sabsent\0", T::Absent),
             ("Serror\0access-denied\0", T::Error(C::AccessDenied)),
-            ("Sremoved\0stale\0", T::Error(C::OtherError)),
-            ("removed\0", T::Error(C::OtherError)),
+            ("Sremoved\0stale\0", T::Interrupted),
+            ("removed\0", T::Interrupted),
         ] {
             assert_eq!(temp_remove_reply(output(0, stdout)), expected, "{stdout:?}");
         }
-        assert_eq!(temp_remove_reply(None), T::Error(C::OtherError));
+        assert_eq!(
+            temp_remove_reply(None),
+            T::Interrupted,
+            "no output: the outcome is unknown"
+        );
     }
 
     /// Feature 005 contract Δ11: mode `scratch` gets its operation and the folder name, and `sweep` lists the names after `swept`.

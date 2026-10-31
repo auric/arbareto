@@ -293,7 +293,8 @@ This feature changes these requirements for builds that include it. The earlier 
   - `hard-link`: "<file> has more than one hard link. Arbareto does not change it."
   - `read-only`: "<file> is read-only. Arbareto does not change it."
   - `owner` (WSL): "Another user owns <file>. Arbareto does not change it."
-  - `in-the-way`: the FR-020 text.
+  - `in-the-way`: the FR-020 text. It also applies when a file that is not a folder stands at a folder name on the path of a deleted file.
+  - `unreadable`: "Arbareto cannot read one of these files, so Revert is unavailable." The review cannot read the facts of a target or of a folder on its path.
   - The 001 index lock refusal with its lock guidance (001 FR-016), when the index lock exists at the review or at the start of the run.
   - `encrypted`: "<file> is encrypted. Arbareto does not change it."
   - `file-attributes`: "Arbareto cannot keep the file attributes of <file>. It did not change the file."

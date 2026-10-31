@@ -673,6 +673,8 @@ export function createBunRunner(options: BunRunnerOptions) {
     replaceStep: null as ((step: ReplaceStep, path: string) => "stop" | "crash" | undefined | Promise<"stop" | "crash" | undefined>) | null,
     // Feature 008: a synthetic reply of a `working` replace in place of the write, after the request checks and the walk hold.
     workingReply: null as ((request: WorkingReplaceRequest) => WorkingReplaceReply | undefined) | null,
+    // Feature 008: the wait for a `working` replace reply after `cancel`, as the native runner has it. Null: the reply always arrives.
+    cancelWaitMs: null as number | null,
   };
   // Each WSL identity reply with its UNC path, in order.
   const wslIdentityLog: { path: string; reply: WslIdentityReply }[] = [];
@@ -931,6 +933,12 @@ export function createBunRunner(options: BunRunnerOptions) {
       const path = join(root, request.source.name);
       const st = lstatSync(path, { throwIfNoEntry: false });
       if (st === undefined) return { result: "stale" };
+      // file_replace.rs `open_source` opens a link as itself, so `check_source` refuses it and the delete disposition removes the name.
+      // A folder fails that open and stays. The WSL `replace_one` opens with O_NOFOLLOW, so there a link fails the open and stays too.
+      if (st.isSymbolicLink() && process.platform === "win32") {
+        rmSync(path, { force: true });
+        return { result: "refused", reason: "not-regular" };
+      }
       if (st.isSymbolicLink() || !st.isFile()) return { result: "refused", reason: "not-regular" };
       source = path;
       if (st.nlink !== 1) return fail({ result: "refused", reason: "hard-link" });
@@ -1840,6 +1848,8 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (request.content === true && !wsl) throw new RunnerRefusal("INVALID_REQUEST", "content outside WSL");
       // Feature 008 contract Δ6: the WSL `detail` and `stream` facts come from the Perl probe of T016, which the double does not have yet.
       if ((request.detail === true || request.stream === true) && wsl) throw new RunnerRefusal("INVALID_REQUEST", "WSL detail or stream");
+      // Contract Δ6: a `detail` request or a request under a revert marker may ask for `stream`.
+      if (request.stream === true && request.detail !== true && !revertMarked(operationId)) throw new RunnerRefusal("INVALID_REQUEST", "fileFacts stream");
       return walk(
         signal,
         () => {
@@ -2160,9 +2170,17 @@ export function createBunRunner(options: BunRunnerOptions) {
       const names = below(repository.worktreeRoot, request.path) ?? invalidRequest("fileReplace path");
       if (insideGit(repository, names)) throw new RunnerRefusal("INVALID_REQUEST", "fileReplace Git directory");
       if (wslGits.has(repository.gitInstallationId) || ROOT_ORDER.some((name) => wslParts(repository[name]) !== null)) throw new RunnerRefusal("INVALID_REQUEST", "WSL working replace");
-      const reply = await walk(signal, () => inject.workingReply?.(request) ?? replaceWorking(repository, names, request), "fileReplace");
       // A stop or a deadline before the write writes nothing.
-      return "stop" in reply ? { result: "stopped" } : reply;
+      const write = walk(signal, () => inject.workingReply?.(request) ?? replaceWorking(repository, names, request), "fileReplace").then((reply): WorkingReplaceReply => ("stop" in reply ? { result: "stopped" } : reply));
+      const wait = inject.cancelWaitMs;
+      if (wait === null) return write;
+      // Contract §6 "Walks": after `cancel`, `native-runner.ts` `ask` waits only `wait` ms for the reply and then resolves `canceled`. The write still runs to its end.
+      const late = new Promise<WalkStop>((resolve) => {
+        const fire = () => setTimeout(() => resolve({ stop: "canceled" }), wait);
+        if (signal.aborted) fire();
+        else signal.addEventListener("abort", fire, { once: true });
+      });
+      return Promise.race([write, late]);
     },
 
     async tempRemove(request, signal): Promise<TempRemoveReply | WalkStop> {

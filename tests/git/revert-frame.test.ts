@@ -445,6 +445,93 @@ describe("revert frame: per-file outcomes and response states (data-model §8, p
     }),
     TIMEOUT_MS,
   );
+
+  // Review of batch 1, finding 4: after a Cancel, a request whose reply did not come within the service wait can still write. Only the shell's own `stopped` means stopped.
+  caseTest(TASK, "Cancel during a slow source copy whose reply comes too late gives an unknown outcome, and the marker stays", SHELL, () =>
+    serviced("t020-late-reply", async (service) => {
+      const repo = build();
+      const { r, read } = await open(service, repo);
+      const reviewed = await reviewOk(service, r, read);
+      let release = () => {};
+      const gate = new Promise<void>((resolve) => (release = resolve));
+      let reached = () => {};
+      const atWrite = new Promise<void>((resolve) => (reached = resolve));
+      service.runner.inject.cancelWaitMs = 0;
+      service.runner.inject.replaceStep = async (step) => {
+        if (step !== "written") return undefined;
+        reached();
+        await gate;
+        return undefined;
+      };
+      try {
+        const requestId = sendRun(service, r, reviewed.workbenchToken);
+        await atWrite;
+        await service.cancel(await service.operationId(requestId));
+        const done = await service.response<RevertRun>(requestId);
+        expect({ state: done.state, code: done.code }).toEqual({ state: "unknown", code: "STATE_UNKNOWN" });
+        expect([...service.runner.markers.values()].filter((m) => m.kind === "workbench").map((m) => m.action)).toEqual(["revert-unstaged"]);
+        release();
+        // The write lands after the response, which is why the outcome had to stay unknown.
+        await until(() => readFileSync(join(repo, "sub", "c.txt"), "utf8") === "c\n", "the late write");
+      } finally {
+        release();
+        service.runner.inject.cancelWaitMs = null;
+        service.runner.inject.replaceStep = null;
+      }
+      await until(() => gitTemps(repo).length === 0, "the late source removal");
+    }),
+    TIMEOUT_MS,
+  );
+
+  // Review of batch 1, finding 6: the digest of the sent bytes decides `reverted`, also after a reply that does not say `replaced`.
+  caseTest(TASK, "an interrupted reply after a landed rename gives reverted; a shell deadline before the writes gives failed DEADLINE", SHELL, async () => {
+    await runWith(
+      "t020-interrupted",
+      (path) => {
+        if (!path.endsWith("a.txt")) return undefined;
+        // The synthetic shell copies Git's temporary file over the target, then loses its output.
+        const name = gitTemps(join(path, ".."))[0]!;
+        writeFileSync(path, readFileSync(join(path, "..", name)));
+        rmSync(join(path, "..", name));
+        return { result: "interrupted" };
+      },
+      (done) => {
+        expect({ ...outcome(done), outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ ...SUCCEEDED, outcomes: ["reverted", "reverted"] });
+      },
+    );
+    await runWith(
+      "t020-deadline",
+      () => ({ result: "stopped" }),
+      (done, repo, _read, before) => {
+        expect({ state: done.state, code: done.code, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ state: "failed", code: "DEADLINE", outcomes: ["not-changed", "not-started"] });
+        expect(state(repo)).toEqual(before);
+      },
+    );
+  }, TIMEOUT_MS);
+
+  // Review of batch 1, finding 2: only a complete record `<name> TAB <batch path> NUL` names a file that the run may remove.
+  caseTest(TASK, "a truncated or a stray checkout-index record never removes a named root file", SHELL, async () => {
+    for (const [name, output] of [
+      ["t020-truncated", "keep.txt\tsub/c.txt"],
+      ["t020-stray", "keep.txt\tother.txt\0"],
+    ] as const) {
+      await serviced(name, async (service) => {
+        const repo = build();
+        const { r, read } = await open(service, repo);
+        const reviewed = await reviewOk(service, r, read);
+        const before = state(repo);
+        service.runner.inject.stdout = (call) => (call.arguments.includes("checkout-index") ? Buffer.from(output, "latin1") : undefined);
+        try {
+          const done = await run(service, r, reviewed.workbenchToken);
+          expect(outcome(done)).toEqual({ state: "failed", code: "MALFORMED_GIT_OUTPUT" });
+        } finally {
+          service.runner.inject.stdout = undefined;
+        }
+        expect(state(repo)).toEqual(before);
+        expect(readFileSync(join(repo, "keep.txt"), "utf8")).toBe("keep\n");
+      });
+    }
+  }, TIMEOUT_MS);
 });
 
 describe("revert frame: Git arguments and logs (spec FR-031, FR-003, FR-049)", () => {

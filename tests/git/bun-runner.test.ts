@@ -2,7 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import { afterAll, beforeAll, expect, test } from "bun:test";
-import { chmodSync, existsSync, linkSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { printOrigin } from "../origin";
 import { FileFact as FileFactSchema, ProcessReply } from "../../src/contracts/channel";
@@ -616,6 +616,9 @@ describeGit("bun runner revert requests (T019)", (git) => {
   const signal = () => new AbortController().signal;
   const sha = (bytes: Uint8Array | string) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex");
   const temps = (dir: string) => readdirSync(dir).filter((name) => /^\.arbareto-.+\.tmp$/.test(name));
+  const until = async (check: () => boolean, what: string, timeoutMs = 10_000) => {
+    for (const end = performance.now() + timeoutMs; !check(); await Bun.sleep(10)) if (performance.now() > end) throw new Error(`${what}: not within ${timeoutMs} ms`);
+  };
 
   beforeAll(async () => {
     repo = fixtureDir("revert-repo");
@@ -823,6 +826,83 @@ describeGit("bun runner revert requests (T019)", (git) => {
     expect(await runner.run(call(["--no-lazy-fetch", "checkout-index", "--temp", "--stdin", "-z"]))).toMatchObject({ exitCode: expect.any(Number) });
     await expect(runner.run(call(["--no-lazy-fetch", "checkout-index", "--stdin", "-z"]))).rejects.toMatchObject({ code: "INVALID_REQUEST" });
     expect(readdirSync(repo).filter((name) => name.startsWith(".merge_file_"))).toEqual([]);
+  });
+
+  // Contract Δ6 (decision of 2026-10-31): a `detail` request or a request under a revert marker may ask for `stream`.
+  test("stream needs detail or a revert marker", async () => {
+    writeFileSync(join(repo, "s5.txt"), "s5\n");
+    const facts = (operationId: string, extra: { detail?: boolean }) =>
+      runner.fileFacts({ operationId, contextKind: "registeredOperation", gitInstallationId, repositoryId, digest: true, stream: true, files: [{ root: "worktreeRoot", path: ["s5.txt"] }], ...extra }, signal());
+    await expect(facts(id(), {})).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    expect(await facts(id(), { detail: true })).toMatchObject([{ kind: "file", digest: sha("s5\n") }]);
+    expect(await facts(await marked("revert-unstaged"), {})).toMatchObject([{ kind: "file", digest: sha("s5\n") }]);
+  });
+
+  // Plan.md D8 `source`, as src-tauri/src/file_replace.rs `open_source` and `check_source` do it: a link opens as itself, refuses, and goes through its handle.
+  // A folder fails the open, so it refuses and stays. The WSL `replace_one` opens with O_NOFOLLOW, so there a link fails the open and stays.
+  test("a source that is a link or a folder refuses with not-regular; a Windows link source goes, and a folder stays", async () => {
+    const operationId = await marked();
+    writeFileSync(join(repo, "a.txt"), "old\n");
+    const facts = await bound(operationId, ["a.txt"]);
+    mkdirSync(join(repo, ".merge_file_dir"), { recursive: true });
+    expect(await replace(operationId, ["a.txt"], { expected: present("old\n"), facts, source: { name: ".merge_file_dir", size: 0, sha256: sha("") } })).toEqual({ result: "refused", reason: "not-regular" });
+    expect(existsSync(join(repo, ".merge_file_dir"))).toBe(true);
+    rmSync(join(repo, ".merge_file_dir"), { recursive: true });
+    writeFileSync(join(fixtureDir("revert-outside"), "real.txt"), "new\n");
+    let linked = true;
+    try {
+      symlinkSync(join(fixtureDir("revert-outside"), "real.txt"), join(repo, ".merge_file_link"));
+    } catch {
+      linked = false;
+    }
+    if (linked) {
+      expect(await replace(operationId, ["a.txt"], { expected: present("old\n"), facts, source: { name: ".merge_file_link", ...present("new\n") } })).toEqual({ result: "refused", reason: "not-regular" });
+      expect({ link: lstatSync(join(repo, ".merge_file_link"), { throwIfNoEntry: false }) !== undefined, real: readFileSync(join(fixtureDir("revert-outside"), "real.txt"), "utf8") }).toEqual({ link: !WINDOWS, real: "new\n" });
+      rmSync(join(repo, ".merge_file_link"), { force: true });
+    } else console.log("SKIP T019 a link source: missing capability symlink (unverified)");
+    expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("old\n");
+  });
+
+  // Contract Δ6 `detail` on WSL (decision of 2026-10-31): `mode` is the full `st_mode`, so a regular file with mode 0640 gives 0o100640 (POSIX.1 S_IFREG 0o100000).
+  // The write compares the full value and copies `mode & 07777` to the new file.
+  test("the WSL detail mode is the full st_mode, and a replace keeps the permission bits", async () => {
+    if (WINDOWS) return void console.log("SKIP T019 the WSL detail mode: a Windows host gives the Windows facts (unverified here)");
+    const operationId = await marked();
+    writeFileSync(join(repo, "m.txt"), "old\n");
+    chmodSync(join(repo, "m.txt"), 0o640);
+    const facts = await bound(operationId, ["m.txt"]);
+    expect((facts as { mode: number }).mode).toBe(0o100640);
+    expect(await replace(operationId, ["m.txt"], { expected: present("old\n"), facts: { ...facts, mode: 0o640 } as WorkingReplaceRequest["facts"], bytes: base64("new\n") })).toEqual({ result: "stale" });
+    expect(await replace(operationId, ["m.txt"], { expected: present("old\n"), facts, bytes: base64("new\n") })).toEqual({ result: "replaced" });
+    expect(lstatSync(join(repo, "m.txt")).mode).toBe(0o100640);
+  });
+
+  // Contract §6 "Walks": after `cancel`, the service waits for the reply only up to its wait (`native-runner.ts`). A later write still lands.
+  test("with a reply wait after cancel, a held write resolves canceled first and lands later", async () => {
+    const operationId = await marked();
+    writeFileSync(join(repo, "w.txt"), "old\n");
+    const facts = await bound(operationId, ["w.txt"]);
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    runner.inject.cancelWaitMs = 0;
+    runner.inject.replaceStep = async (step) => {
+      if (step === "written") await gate;
+      return undefined;
+    };
+    const abort = new AbortController();
+    try {
+      const reply = runner.fileReplaceWorking({ operationId, repositoryId, target: "working", path: join(repo, "w.txt"), expected: present("old\n"), facts, bytes: base64("new\n") }, abort.signal);
+      await until(() => readdirSync(repo).some((name) => /^\.arbareto-.+\.tmp$/.test(name)), "the held write");
+      abort.abort();
+      expect(await reply).toEqual({ stop: "canceled" });
+      expect(readFileSync(join(repo, "w.txt"), "utf8")).toBe("old\n");
+      release();
+      await until(() => readFileSync(join(repo, "w.txt"), "utf8") === "new\n", "the late write");
+    } finally {
+      release();
+      runner.inject.cancelWaitMs = null;
+      runner.inject.replaceStep = null;
+    }
   });
 
   test("tempRemove removes a matching file in the worktree root, keeps one with other facts, gives absent, and needs a revert marker", async () => {

@@ -628,12 +628,26 @@ This pass changed: the `PreDeleteItem` compare of `psiItem` (D7, N9); the WSL fo
 **Cost**
 
 - The marks cost one `config list` and one `status` per initialized submodule and refresh. The 001 T192 record gives a `config list` median wall of 48 ms to 62 ms on Windows. The status of a clean submodule depends on its size. The read runs after `readWorkspace` and does not delay the list (plan D19).
-- Bound: at most 256 submodules per read (`SUBMODULE_WORK_TARGETS`, equal to the 001 §5 submodule review bound) and 4 at the same time. Each status ends once it shows one tracked record and one untracked record. T108 measures the cost on a fixture with 100 initialized submodules. SC-012 holds the proposed budget (user decision pending).
+- Bound: at most 256 submodules per read (`SUBMODULE_WORK_TARGETS`, equal to the 001 §5 submodule review bound) and 8 at the same time (orchestrator decision 2026-10-31, below). Each status ends once it shows one tracked record and one untracked record. T108 measures the cost on fixtures with 100 and 256 initialized submodules. SC-012 holds the budget of 45 ms per submodule on Windows.
 - T108 record of 2026-10-31, in-process service with the shell test double, warm, median of 10 (`tests/git/submodule-change.test.ts`, `tests/wsl/inspection-wsl.test.ts`). Each target runs three Git processes: `rev-parse --show-toplevel`, `config list`, and `status`.
   - Windows, Git 2.56.0.windows.2: 100 clean submodules 4,540 ms (min 4,388, max 4,570). 256 clean submodules 11,317 ms (min 11,192, max 11,588). Each process takes 60 ms to 63 ms on average.
   - Windows after the review fixes of 2026-10-31 (the location check and `config list` run side by side, and only the status program keys go to the trust check): 100 clean submodules 3,905 ms (min 3,683, max 4,032), 256 clean submodules 9,651 ms (min 9,605, max 11,542). An earlier run of the same code gave 3,575 ms and 9,702 ms. Each process takes 65 ms to 73 ms on average.
   - WSL Ubuntu-26.04, Git 2.55: 100 clean submodules reach the 30 s read deadline (median 30,174 ms). 84 to 88 of 102 targets give a state, and the rest give `failed` with DEADLINE.
-  - The proposed 2 s budget of SC-012 does not hold on either route. The packaged measurement of T108 is still open.
+  - A budget of 2 s for 100 submodules does not hold on either route. The packaged measurement of T108 is still open.
+- Speed study of 2026-10-31 (investigator, local scratch `sc012-speed`). Harness without the service and IPC, Windows, warm, median, 3 Git processes per target:
+
+  | Submodules | 1 at a time | 4 at a time | 8 at a time | 16 at a time |
+  | --- | --- | --- | --- | --- |
+  | 100 | 11,631 ms (measured) | 4,509 ms (measured) | 3,962 ms (measured) | 4,007 ms (measured) |
+  | 256 | not run | 12,057 ms (measured) | 8,836 to 10,552 ms (a test run started during it) | 7,543 to 10,624 ms (a test run started during it) |
+
+  - The cost is Git process starts, not Git work. The three processes are `rev-parse --show-toplevel`, `config list --show-scope --show-origin -z`, and `status --porcelain=v2 -z --untracked-files=normal --ignore-submodules=dirty`.
+  - Windows has a floor of about 13 ms per process from 8 at a time (measured). So 2 s for 100 submodules (300 processes) cannot hold. 8 at a time is 12% faster than 4 at 100 submodules. 16 adds nothing.
+  - WSL Ubuntu-26.04, 2 submodules (indicative): 168 ms per Git process through the wrapper, mostly the `wsl.exe` start. A fixed two-phase loop script takes 321 ms against 1,009 ms for the current route.
+  - Status does not stop early: Git collects the whole status before it prints the first record (Git builtin/commit.c:1655 collect, :1663 print). The stop after one tracked and one untracked record saves only output, not Git work.
+  - No cheap authoritative "changed?" signal exists for a submodule. A stat or mtime check would be a heuristic, so the read runs the full status for each target.
+  - Git Extensions (GPL-3.0, ideas only, commit d77a4f07): the parent status runs without `--ignore-submodules`, so submodule fsmonitor and filter programs run. Then one `git diff` runs per changed submodule, one at a time, in the background, at most every 15 s. It parses the English "-dirty" text. Arbareto takes none of these steps.
+- Orchestrator decisions of 2026-10-31, from this study: 8 at the same time (`SUBMODULE_WORK_PARALLEL`). SC-012 on Windows: at most 45 ms per clean submodule (39.6 ms measured at 8 at a time, plus a margin), so 4.5 s for 100 and 11.5 s for 256. WSL keeps the current route in v0.1.0 with no budget, and a target past the 30 s deadline gives `failed` with `DEADLINE`. After the release, T114 gives pages of 16 (first marks in about 0.7 s, estimated), and T115 adds the WSL script `submoduleWork`.
 
 **Git Extensions (GPL-3.0, ideas only; investigator report of 2026-10-30)**
 

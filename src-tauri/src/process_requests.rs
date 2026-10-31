@@ -100,6 +100,15 @@ const CLONE_ARGUMENTS: [&str; 5] = [
     "--",
 ];
 
+/// Feature 008 contract Δ6 and plan.md D5a step 2: the one array whose deadline follows the size rule above `REGISTERED_DEADLINE_MS`.
+const CHECKOUT_TEMP: [&str; 5] = [
+    "--no-lazy-fetch",
+    "checkout-index",
+    "--temp",
+    "--stdin",
+    "-z",
+];
+
 /// A `refused` code of a `process` frame (contract §6 "Process replies").
 pub(crate) type Code = schema::process_reply::RefusedCode;
 
@@ -275,6 +284,8 @@ struct Walk {
 struct WalkStop {
     flag: AtomicBool,
     event: Owned,
+    /// Feature 008 contract Δ3 and Δ6: the size-rule time after the walk deadline, in milliseconds.
+    extra_ms: AtomicU64,
 }
 
 // SAFETY: an Event is a kernel handle that any thread can set and wait on. `WalkStop` only reads it.
@@ -287,7 +298,18 @@ impl WalkStop {
         Some(WalkStop {
             flag: AtomicBool::new(false),
             event: Owned(event),
+            extra_ms: AtomicU64::new(0),
         })
+    }
+
+    /// Moves the walk deadline to the walk deadline plus `extra`. A smaller value keeps the current deadline.
+    fn extend(&self, extra: Duration) {
+        let ms = u64::try_from(extra.as_millis()).unwrap_or(u64::MAX);
+        self.extra_ms.fetch_max(ms, Ordering::SeqCst);
+    }
+
+    fn extra(&self) -> Duration {
+        Duration::from_millis(self.extra_ms.load(Ordering::SeqCst))
     }
 }
 
@@ -926,6 +948,8 @@ impl ProcessRequests {
             Some("fileDelete") => self.file_delete(&typed(request).ok_or(INVALID)?, call()?),
             Some("fileReplace") => self.file_replace(&typed(request).ok_or(INVALID)?, call()?),
             Some("shadow") => self.shadow(&typed(request).ok_or(INVALID)?, call()?),
+            // Feature 008 contract Δ6.
+            Some("tempRemove") => self.temp_remove(&typed(request).ok_or(INVALID)?, call()?),
             _ => Err(INVALID),
         }
     }
@@ -1453,7 +1477,11 @@ impl ProcessRequests {
     }
 
     /// Feature 005 contract Δ6 `fileReplace`: one atomic replace of `.gitignore` or `info/exclude` (plan.md D10).
+    /// Feature 008 contract Δ6: the target `working` writes one file below the worktree root (plan.md D8, D9).
     fn file_replace(&self, request: &frame::FileReplace, call_id: &str) -> Result<(), Code> {
+        if matches!(request.target, frame::FileReplaceTarget::Working) {
+            return self.file_replace_working(request, call_id);
+        }
         let read_at = Instant::now();
         let parsed = file_replace::parse(request)?;
         let operation_id = parsed.operation_id;
@@ -1564,6 +1592,272 @@ impl ProcessRequests {
                     stop.event.0,
                 );
                 reply_with(reply::file_replace(&call, wsl::replace_reply(ended.output)))
+            },
+            || {},
+        )
+    }
+
+    /// Feature 008 contract Δ6 `fileReplace` `working`: the path, the marker, and the route checks, then the replace in a walk.
+    fn file_replace_working(
+        &self,
+        request: &frame::FileReplace,
+        call_id: &str,
+    ) -> Result<(), Code> {
+        let read_at = Instant::now();
+        let parsed = file_replace::parse_working(request)?;
+        let operation_id = parsed.operation_id;
+        let mut state = self.state();
+        check_active(&state, operation_id)?;
+        if !reverting(&state, operation_id) {
+            return Err(INVALID);
+        }
+        let repository = state
+            .repositories
+            .get(parsed.repository_id)
+            .ok_or(UNKNOWN)?;
+        let git_roots = [
+            repository.worktree_root.clone(),
+            repository.git_directory.clone(),
+            repository.common_directory.clone(),
+        ];
+        let names = file_facts::below(&git_roots[0], &parsed.path).ok_or(INVALID)?;
+        if names[0].eq_ignore_ascii_case(".git")
+            || git_roots[1..]
+                .iter()
+                .any(|root| file_facts::below(root, &parsed.path).is_some())
+        {
+            return Err(INVALID);
+        }
+        // `folders` names the folders before the last name, and only an absent target has them.
+        let folders = parsed.folders.len();
+        if folders >= names.len()
+            || names[names.len() - 1 - folders..names.len() - 1] != parsed.folders[..]
+        {
+            return Err(INVALID);
+        }
+        let installation = match state
+            .gits
+            .get(&repository.git_installation_id)
+            .ok_or(UNKNOWN)?
+        {
+            Git::Windows { .. } if git_roots.iter().any(|r| file_facts::is_wsl_path(r)) => {
+                return Err(INVALID);
+            }
+            Git::Windows { .. } => None,
+            Git::Wsl(installation) => Some(installation.clone()),
+        };
+        // Contract Δ3 and Δ6: the walk deadline plus 1 s for each started 64 MiB of the target and the source sizes.
+        let source_size = match &parsed.content {
+            file_replace::Content::Source(source) => source.size,
+            file_replace::Content::Bytes(_) => 0,
+        };
+        let extra = file_replace::size_rule(
+            parsed
+                .present
+                .as_ref()
+                .map_or(0, |present| present.size)
+                .saturating_add(source_size),
+        );
+        let (present, content, call) = (parsed.present, parsed.content, call_id.to_string());
+        let Some(installation) = installation else {
+            let present = match present {
+                None => None,
+                Some(file_replace::Present {
+                    size,
+                    sha256,
+                    facts: file_replace::Facts::Windows(facts),
+                }) => Some((size, sha256, facts)),
+                Some(_) => return Err(INVALID),
+            };
+            // The check runs in the walk and the write in the finish, so a stop or a deadline before it writes nothing.
+            return self.spawn_walk(
+                &mut state,
+                Reply::Answered(reply::file_replace_stopped, reply::file_replace_stopped),
+                call_id,
+                operation_id,
+                read_at,
+                move |stop| {
+                    stop.extend(extra);
+                    let bound = present
+                        .as_ref()
+                        .map(|(size, sha, facts)| (*size, sha.as_str(), facts));
+                    let git = [git_roots[1].as_path(), git_roots[2].as_path()];
+                    let checked = file_replace::check_working(
+                        &git_roots[0],
+                        &git,
+                        &names,
+                        bound,
+                        folders,
+                        &stop.flag,
+                    );
+                    Box::new(move || {
+                        let result =
+                            checked.map_or_else(|result| result, |checked| checked.write(&content));
+                        Some(reply::file_replace(&call, result))
+                    })
+                },
+                || {},
+            );
+        };
+        // WSL: the `wslFiles` mode `replace` with the root `worktree` (contract Δ11).
+        let present = match present {
+            None => None,
+            Some(file_replace::Present {
+                size,
+                sha256,
+                facts: file_replace::Facts::Wsl(facts),
+            }) => Some((size, sha256, facts)),
+            Some(_) => return Err(INVALID),
+        };
+        let linux: [String; 3] = git_roots
+            .iter()
+            .map(|path| wsl::linux_path(path, &installation.distro))
+            .collect::<Option<Vec<_>>>()
+            .ok_or(INVALID)?
+            .try_into()
+            .map_err(|_| INVALID)?;
+        let working = wsl::WslWorking {
+            path: names,
+            present,
+            folders: parsed.folders,
+            content,
+        };
+        let unit = wsl::unit_name(operation_id, Self::next_unit(&mut state, operation_id))?;
+        let command = wsl::working_command(
+            &installation,
+            &unit,
+            &linux,
+            &working,
+            &self.config.base_environment,
+        );
+        command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
+        self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let (operation, deadline) = (operation_id.to_string(), self.walk_bound() + extra);
+        let folders = working.folders;
+        // The `replace` process can rename inside the walk, so a stop or a deadline leaves the outcome unknown.
+        self.spawn_walk(
+            &mut state,
+            Reply::Answered(
+                reply::file_replace_interrupted,
+                reply::file_replace_interrupted,
+            ),
+            call_id,
+            operation_id,
+            read_at,
+            move |stop| {
+                stop.extend(extra);
+                let host = me.wsl_host(&operation);
+                let ended = host.run_walk(
+                    &command,
+                    wsl::DELETE_OUTPUT_BYTES + 2,
+                    deadline,
+                    stop.event.0,
+                );
+                reply_with(reply::file_replace(
+                    &call,
+                    wsl::working_reply(ended.output, &folders),
+                ))
+            },
+            || {},
+        )
+    }
+
+    /// Feature 008 contract Δ6 `tempRemove`: one Git temporary file in the worktree root goes when its facts equal `expected`.
+    fn temp_remove(&self, request: &frame::TempRemove, call_id: &str) -> Result<(), Code> {
+        let read_at = Instant::now();
+        schema::temp_remove(request)?;
+        let operation_id = request.operation_id.as_str();
+        let mut state = self.state();
+        check_active(&state, operation_id)?;
+        if !reverting(&state, operation_id) {
+            return Err(INVALID);
+        }
+        let repository = state
+            .repositories
+            .get(request.repository_id.as_str())
+            .ok_or(UNKNOWN)?;
+        let git_roots = [
+            repository.worktree_root.clone(),
+            repository.git_directory.clone(),
+            repository.common_directory.clone(),
+        ];
+        let installation = match state
+            .gits
+            .get(&repository.git_installation_id)
+            .ok_or(UNKNOWN)?
+        {
+            Git::Windows { .. } if file_facts::is_wsl_path(&git_roots[0]) => return Err(INVALID),
+            Git::Windows { .. } => None,
+            Git::Wsl(installation) => Some(installation.clone()),
+        };
+        let size = u64::try_from(request.expected.size).map_err(|_| INVALID)?;
+        let (name, sha, call) = (
+            request.name.to_string(),
+            request.expected.sha256.to_string(),
+            call_id.to_string(),
+        );
+        let extra = file_replace::size_rule(size);
+        let Some(installation) = installation else {
+            let root = git_roots[0].clone();
+            // The check runs in the walk and the delete in the finish, so a stop or a deadline before it removes nothing.
+            return self.spawn_walk(
+                &mut state,
+                Reply::Answered(reply::temp_remove_stopped, reply::temp_remove_stopped),
+                call_id,
+                operation_id,
+                read_at,
+                move |stop| {
+                    stop.extend(extra);
+                    let checked = file_replace::check_temp(&root, &name, (size, &sha), &stop.flag);
+                    Box::new(move || {
+                        let result =
+                            checked.map_or_else(|result| result, file_replace::remove_temp);
+                        Some(reply::temp_remove(&call, result))
+                    })
+                },
+                || {},
+            );
+        };
+        let linux: [String; 3] = git_roots
+            .iter()
+            .map(|path| wsl::linux_path(path, &installation.distro))
+            .collect::<Option<Vec<_>>>()
+            .ok_or(INVALID)?
+            .try_into()
+            .map_err(|_| INVALID)?;
+        let unit = wsl::unit_name(operation_id, Self::next_unit(&mut state, operation_id))?;
+        let command = wsl::temp_remove_command(
+            &installation,
+            &unit,
+            &linux,
+            &name,
+            (size, &sha),
+            &self.config.base_environment,
+        );
+        command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
+        self.jobs.open(operation_id).map_err(|_| OWNERSHIP)?;
+        let me = self.me.upgrade().ok_or(OWNERSHIP)?;
+        let (operation, deadline) = (operation_id.to_string(), self.walk_bound() + extra);
+        self.spawn_walk(
+            &mut state,
+            Reply::Answered(reply::temp_remove_stopped, reply::temp_remove_stopped),
+            call_id,
+            operation_id,
+            read_at,
+            move |stop| {
+                stop.extend(extra);
+                let host = me.wsl_host(&operation);
+                let ended = host.run_walk(
+                    &command,
+                    wsl::DELETE_OUTPUT_BYTES + 2,
+                    deadline,
+                    stop.event.0,
+                );
+                reply_with(reply::temp_remove(
+                    &call,
+                    wsl::temp_remove_reply(ended.output),
+                ))
             },
             || {},
         )
@@ -1963,7 +2257,8 @@ impl ProcessRequests {
         if kind == Kind::Registered && !script && runs_bound_command(&arguments) {
             return Err(INVALID);
         }
-        let limits = run_limits(limits, kind, policy)?;
+        let size_rule = kind == Kind::Registered && !script && arguments == CHECKOUT_TEMP;
+        let limits = run_limits(limits, kind, policy, size_rule)?;
         let input = match (input, input_bytes) {
             (None, None) => RunInput::Closed,
             (Some(data), None) => RunInput::Bytes(chunk(data, INLINE_INPUT_BYTES)?),
@@ -2789,12 +3084,12 @@ impl ProcessRequests {
     fn file_facts(&self, request: &frame::FileFacts, call_id: &str) -> Result<(), Code> {
         let read_at = Instant::now();
         let parsed = file_facts::parse(request)?;
-        // Feature 008 contract Δ6: this walk gives no `detail` fact and no streamed digest, so it refuses both.
-        if request.detail == Some(true) || request.stream == Some(true) {
-            return Err(INVALID);
-        }
         let mut state = self.state();
         check_active(&state, parsed.operation_id)?;
+        // Feature 008 contract Δ6 (orchestrator decision 2026-10-31): a `detail` request or a revert marker may ask for a streamed digest.
+        if parsed.read.stream && !parsed.read.detail && !reverting(&state, parsed.operation_id) {
+            return Err(INVALID);
+        }
         let id = request.repository_id.as_str();
         let ids = [None, Some(request.git_installation_id.as_str()), Some(id)];
         let target = self.target(&mut state, ids, Kind::Registered, parsed.operation_id)?;
@@ -2805,6 +3100,10 @@ impl ProcessRequests {
             repository.common_directory.clone(),
         ];
         if let Some((installation, _)) = target.wsl {
+            // The WSL `fileFacts` text gives no `detail` fact and no streamed digest (no task covers them).
+            if parsed.read.detail || parsed.read.stream {
+                return Err(INVALID);
+            }
             let n = Self::next_unit(&mut state, parsed.operation_id);
             return self.wsl_file_facts(
                 &mut state,
@@ -2820,7 +3119,12 @@ impl ProcessRequests {
         if roots.iter().any(|root| file_facts::is_wsl_path(root)) || parsed.index.is_some() {
             return Err(INVALID);
         }
-        let (digest, files, call) = (parsed.digest, parsed.files, call_id.to_string());
+        let (digest, read, files, call) = (
+            parsed.digest,
+            parsed.read,
+            parsed.files,
+            call_id.to_string(),
+        );
         self.spawn_walk(
             &mut state,
             Reply::Walk(reply::file_facts_deadline),
@@ -2828,11 +3132,14 @@ impl ProcessRequests {
             parsed.operation_id,
             read_at,
             move |stop| {
-                let facts = file_facts::walk(
+                // Contract Δ3 and Δ6: a streamed digest gets 1 s for each started 64 MiB after the walk deadline.
+                let facts = file_facts::walk_read(
                     [&roots[0], &roots[1], &roots[2]],
                     digest,
+                    read,
                     &files,
                     &stop.flag,
+                    &|streamed| stop.extend(file_replace::size_rule(streamed)),
                 );
                 reply_with(reply::file_facts(&call, facts, None))
             },
@@ -2907,8 +3214,15 @@ impl ProcessRequests {
             std::thread::Builder::new().spawn(move || {
                 // Dropped last, so the count falls after the reply.
                 let _end = WatchdogEnd(Arc::clone(&me));
-                let event =
-                    received.recv_timeout(deadline.saturating_duration_since(Instant::now()));
+                // The walk can extend its deadline after the start, so a timeout reads the extension again.
+                let event = loop {
+                    let until = deadline + stop.extra();
+                    match received.recv_timeout(until.saturating_duration_since(Instant::now())) {
+                        Err(RecvTimeoutError::Timeout)
+                            if Instant::now() < deadline + stop.extra() => {}
+                        event => break event,
+                    }
+                };
                 // `cancel`, `closeJob`, and a service exit send `Stop` under the state lock while `walks` holds the walk.
                 // So after the removal, the queue holds each such `Stop`.
                 let stopped = {
@@ -4217,6 +4531,14 @@ fn check_active(state: &State, operation_id: &str) -> Result<(), Code> {
     Ok(())
 }
 
+/// Feature 008 contract Δ6: the operation holds a `started` marker of a revert action.
+fn reverting(state: &State, operation_id: &str) -> bool {
+    matches!(
+        state.started.get(operation_id),
+        Some(Mutation::RevertLines | Mutation::RevertFiles | Mutation::RevertUnstaged)
+    )
+}
+
 /// Feature 003 contract Δ6 `destinationFacts`: the destination state from OS facts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Destination {
@@ -4294,7 +4616,14 @@ struct RunLimits {
 /// The `network`, `remote`, and `integrate` policies carry the inactivity limit and the ceiling (feature 003 contract Δ6).
 /// The `mergetool` policy carries only the ceiling, so it has no inactivity limit and no stall notice (feature 004 contract Δ6).
 /// No other policy carries them. typify drops the integer ranges and the `stallMs` const, so this check keeps them.
-fn run_limits(limits: Limits, kind: Kind, policy: EnvironmentPolicy) -> Result<RunLimits, Code> {
+/// Feature 008 contract Δ3 and Δ6: `size_rule` marks the `CHECKOUT_TEMP` array of a registered operation. Its deadline has no shell cap,
+/// because the service computes it from blob sizes that the shell does not know.
+fn run_limits(
+    limits: Limits,
+    kind: Kind,
+    policy: EnvironmentPolicy,
+    size_rule: bool,
+) -> Result<RunLimits, Code> {
     let stall = |ms: f64| {
         (!matches!(kind, Kind::Bootstrap(_)) && ms == STALL_MS as f64)
             .then_some(Duration::from_millis(STALL_MS))
@@ -4328,6 +4657,7 @@ fn run_limits(limits: Limits, kind: Kind, policy: EnvironmentPolicy) -> Result<R
         Limits::Deadline(ms, stall_ms) if !network && policy != EnvironmentPolicy::Mergetool => {
             let cap = match kind {
                 Kind::Bootstrap(_) => BOOTSTRAP_DEADLINE_MS,
+                Kind::Registered if size_rule => u64::MAX,
                 Kind::Registered
                 | Kind::Clone
                 | Kind::GlobalConfig
@@ -12390,6 +12720,7 @@ pub(crate) mod tests {
             Limits::Ceiling(CEILING_MS),
             Kind::Registered,
             EnvironmentPolicy::Mergetool,
+            false,
         )
         .expect("mergetool limits");
         assert_eq!(limits.wait, Duration::from_millis(CEILING_MS));
@@ -12405,7 +12736,7 @@ pub(crate) mod tests {
             EnvironmentPolicy::Integrate,
         ] {
             assert!(
-                run_limits(Limits::Ceiling(1000), Kind::Registered, policy).is_err(),
+                run_limits(Limits::Ceiling(1000), Kind::Registered, policy, false).is_err(),
                 "{policy}"
             );
         }
@@ -12413,7 +12744,15 @@ pub(crate) mod tests {
             Limits::Network(1000, 1000, STALL_MS as f64),
             Limits::Deadline(1000, None),
         ] {
-            assert!(run_limits(limits, Kind::Registered, EnvironmentPolicy::Mergetool).is_err());
+            assert!(
+                run_limits(
+                    limits,
+                    Kind::Registered,
+                    EnvironmentPolicy::Mergetool,
+                    false
+                )
+                .is_err()
+            );
         }
         let harness = Harness::child();
         let workspace = harness.child_workspace("repo");
@@ -14241,6 +14580,493 @@ pub(crate) mod tests {
             std::fs::read(&gitignore).expect("read"),
             b"/old\n",
             "nothing was written"
+        );
+    }
+
+    // ---- Feature 008 T012: `fileReplace` `working`, `tempRemove`, and `fileFacts` `detail` and `stream` (contract Δ6) ----
+
+    /// The `expected` and `facts` of a Windows target, as a `fileFacts` read with `digest`, `detail`, and `stream` gives them.
+    fn working_facts(root: &Path, names: &[&str]) -> (Value, Value) {
+        let names: Vec<String> = names.iter().map(|name| name.to_string()).collect();
+        let read = file_facts::Read {
+            detail: true,
+            stream: true,
+        };
+        let facts = file_facts::walk_read(
+            [root, root, root],
+            true,
+            read,
+            &[(0, names)],
+            &AtomicBool::new(false),
+            &|_| {},
+        );
+        let fact = json!(facts[0]);
+        let expected = json!({ "size": fact["size"], "sha256": fact["digest"] });
+        let mut bound = expected.clone();
+        for key in [
+            "attributes",
+            "links",
+            "owner",
+            "group",
+            "dacl",
+            "creationTime",
+        ] {
+            bound[key] = fact[key].clone();
+        }
+        (expected, bound)
+    }
+
+    fn working_body(
+        call: &str,
+        operation: &str,
+        repository: &str,
+        path: &Path,
+        state: Option<(Value, Value)>,
+        content: Value,
+    ) -> Value {
+        let (expected, facts) = state.unwrap_or((json!("absent"), json!("absent")));
+        let mut body = json!({
+            "type": "fileReplace", "callId": call, "operationId": operation, "repositoryId": repository,
+            "target": "working", "path": path.to_str().expect("path"), "expected": expected, "facts": facts,
+        });
+        body.as_object_mut()
+            .expect("body")
+            .extend(content.as_object().expect("content").clone());
+        body
+    }
+
+    fn replaced(call: &str) -> Value {
+        json!({ "type": "fileReplace", "callId": call, "result": "replaced" })
+    }
+
+    /// Contract Δ6: a `working` path outside the worktree root, with a first component `.git` in any ASCII case, or inside the
+    /// Git directory gives `INVALID_REQUEST`, and nothing changes.
+    #[test]
+    fn a_working_replace_refuses_a_path_outside_the_worktree_a_dot_git_component_and_the_git_directory()
+     {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::RevertLines, &workspace);
+        let outside = harness.fixture.path("outside.txt");
+        std::fs::write(&outside, b"old\n").expect("outside");
+        std::fs::write(workspace.worktree.join(".git").join("config"), b"old\n").expect("config");
+        let git = workspace.worktree.join(".git");
+        for path in [
+            outside.clone(),
+            git.join("config"),
+            workspace.worktree.join(".GIT").join("config"),
+            workspace.worktree.join(".Git").join("new"),
+            workspace.worktree.clone(),
+        ] {
+            let call = uuid();
+            harness.send(working_body(
+                &call,
+                &operation,
+                &workspace.repository,
+                &path,
+                None,
+                json!({ "bytes": encode(b"new\n") }),
+            ));
+            assert_eq!(
+                harness.reply(&call),
+                refused(&call, "INVALID_REQUEST"),
+                "{}",
+                path.display()
+            );
+        }
+        assert_eq!(std::fs::read(&outside).expect("read"), b"old\n");
+        assert_eq!(std::fs::read(git.join("config")).expect("read"), b"old\n");
+        assert!(!git.join("new").exists());
+        // A Git directory inside the worktree under another name.
+        let worktree = harness.fixture.path("separate");
+        let store = worktree.join("store");
+        std::fs::create_dir_all(&store).expect("store");
+        std::fs::write(store.join("config"), b"old\n").expect("config");
+        let roots = [
+            worktree.to_str().expect("root"),
+            store.to_str().expect("store"),
+            store.to_str().expect("store"),
+        ];
+        let separate = register_roots(&harness, roots);
+        let operation = uuid();
+        harness.requests.tag(
+            &operation,
+            Mutation::RevertFiles,
+            PhysicalIdentity::Windows(read_identity(&store).expect("identity")),
+        );
+        let call = uuid();
+        harness.send(working_body(
+            &call,
+            &operation,
+            &separate.repository,
+            &store.join("config"),
+            Some(working_facts(&worktree, &["store", "config"])),
+            json!({ "bytes": encode(b"new\n") }),
+        ));
+        assert_eq!(
+            harness.reply(&call),
+            refused(&call, "INVALID_REQUEST"),
+            "a path in the Git directory"
+        );
+        assert_eq!(std::fs::read(store.join("config")).expect("read"), b"old\n");
+        // The same frame for a path below the worktree root replaces.
+        std::fs::write(worktree.join("a.txt"), b"old\n").expect("file");
+        let call = uuid();
+        harness.send(working_body(
+            &call,
+            &operation,
+            &separate.repository,
+            &worktree.join("a.txt"),
+            Some(working_facts(&worktree, &["a.txt"])),
+            json!({ "bytes": encode(b"new\n") }),
+        ));
+        assert_eq!(harness.reply(&call), replaced(&call));
+    }
+
+    /// Contract Δ6: only a `started` marker of a revert action may write a working file.
+    #[test]
+    fn a_working_replace_needs_a_started_revert_marker() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let file = workspace.worktree.join("a.txt");
+        std::fs::write(&file, b"old\n").expect("file");
+        let send = |operation: &str| {
+            let call = uuid();
+            let state = working_facts(&workspace.worktree, &["a.txt"]);
+            harness.send(working_body(
+                &call,
+                operation,
+                &workspace.repository,
+                &file,
+                Some(state),
+                json!({ "bytes": encode(b"new\n") }),
+            ));
+            (call.clone(), harness.reply(&call))
+        };
+        let (call, reply) = send(&uuid());
+        assert_eq!(reply, refused(&call, "INVALID_REQUEST"), "no marker");
+        for mutation in [
+            Mutation::Commit,
+            Mutation::SaveGitignore,
+            Mutation::DeleteFiles,
+        ] {
+            let operation = uuid();
+            harness.started_as(&operation, mutation, &workspace);
+            let (call, reply) = send(&operation);
+            assert_eq!(reply, refused(&call, "INVALID_REQUEST"), "{mutation:?}");
+        }
+        assert_eq!(std::fs::read(&file).expect("read"), b"old\n");
+        for mutation in [
+            Mutation::RevertLines,
+            Mutation::RevertFiles,
+            Mutation::RevertUnstaged,
+        ] {
+            std::fs::write(&file, b"old\n").expect("file");
+            let operation = uuid();
+            harness.started_as(&operation, mutation, &workspace);
+            let (call, reply) = send(&operation);
+            assert_eq!(reply, replaced(&call), "{mutation:?}");
+            assert_eq!(std::fs::read(&file).expect("read"), b"new\n");
+        }
+    }
+
+    /// Contract Δ5 and Δ6: the bytes of a line revert stay within `REVERT_FILE_BYTES`. The missing folders come back in the reply.
+    #[test]
+    fn a_working_replace_refuses_bytes_above_the_bound_and_names_its_created_folders() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::RevertFiles, &workspace);
+        let file = workspace.worktree.join("a").join("b").join("n.txt");
+        let call = uuid();
+        let big = encode(&vec![b'x'; crate::schema::REVERT_FILE_BYTES + 1]);
+        harness.send(working_body(
+            &call,
+            &operation,
+            &workspace.repository,
+            &file,
+            None,
+            json!({ "bytes": big, "folders": ["a", "b"] }),
+        ));
+        assert_eq!(harness.reply(&call), refused(&call, "INVALID_REQUEST"));
+        assert!(!workspace.worktree.join("a").exists());
+        let call = uuid();
+        harness.send(working_body(
+            &call,
+            &operation,
+            &workspace.repository,
+            &file,
+            None,
+            json!({ "bytes": encode(b"new\n"), "folders": ["a", "c"] }),
+        ));
+        assert_eq!(
+            harness.reply(&call),
+            refused(&call, "INVALID_REQUEST"),
+            "folders that are not the path folders"
+        );
+        let call = uuid();
+        harness.send(working_body(
+            &call,
+            &operation,
+            &workspace.repository,
+            &file,
+            None,
+            json!({ "bytes": encode(b"new\n"), "folders": ["a", "b"] }),
+        ));
+        assert_eq!(
+            harness.reply(&call),
+            json!({ "type": "fileReplace", "callId": call, "result": "replaced", "folders": ["a", "b"] })
+        );
+        assert_eq!(std::fs::read(&file).expect("read"), b"new\n");
+    }
+
+    /// Contract Δ6 `source` through the shell: Git's temporary file copies over the target, and the source goes.
+    #[test]
+    fn a_working_replace_from_a_source_copies_the_git_temporary_file() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::RevertUnstaged, &workspace);
+        let file = workspace.worktree.join("a.txt");
+        std::fs::write(&file, b"old\n").expect("file");
+        let temp = workspace.worktree.join(".merge_file_t012pr");
+        std::fs::write(&temp, b"from git\n").expect("temp");
+        let source = json!({ "source": { "name": ".merge_file_t012pr", "size": 9, "sha256": crate::settings::hex(&crate::settings::sha256(b"from git\n")) } });
+        let call = uuid();
+        harness.send(working_body(
+            &call,
+            &operation,
+            &workspace.repository,
+            &file,
+            Some(working_facts(&workspace.worktree, &["a.txt"])),
+            source,
+        ));
+        assert_eq!(harness.reply(&call), replaced(&call));
+        assert_eq!(std::fs::read(&file).expect("read"), b"from git\n");
+        assert!(!temp.exists(), "the source goes");
+    }
+
+    /// Contract Δ6 (plan.md D8): the Windows `working` replace checks inside the walk and writes in the finish.
+    /// A deadline during the check replies `stopped`, and nothing is written.
+    #[test]
+    fn a_deadline_before_the_working_write_replies_stopped_and_writes_nothing() {
+        let harness = Harness::new(
+            Fixture::new(),
+            CHILD_PREFIX.iter().map(|s| s.to_string()).collect(),
+            std::env::vars_os().collect(),
+            Duration::from_secs(2),
+        );
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::RevertLines, &workspace);
+        let file = workspace.worktree.join("a.txt");
+        std::fs::write(&file, b"old\n").expect("file");
+        let state = working_facts(&workspace.worktree, &["a.txt"]);
+        let Some(oplock) = Oplock::request(&file) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let call = uuid();
+        harness.send(working_body(
+            &call,
+            &operation,
+            &workspace.repository,
+            &file,
+            Some(state),
+            json!({ "bytes": encode(b"new\n") }),
+        ));
+        assert!(
+            oplock.broken(WAIT),
+            "the target open waits on the oplock break"
+        );
+        let reply = harness.wait_reply(WAIT, |v| v["callId"] == call.as_str());
+        drop(oplock);
+        assert_eq!(
+            reply.map(|(_, reply)| reply),
+            Some(json!({ "type": "fileReplace", "callId": call, "result": "stopped" }))
+        );
+        assert!(eventually(CLOSE_WAIT, || harness.requests.active_walks() == 0));
+        assert_eq!(harness.replies_for(&call).len(), 1, "one reply");
+        assert_eq!(std::fs::read(&file).expect("read"), b"old\n");
+    }
+
+    /// Contract Δ6 `tempRemove`: under a revert marker, one Git temporary file in the worktree root goes only with equal facts.
+    #[test]
+    fn a_temp_remove_needs_a_revert_marker_and_removes_only_matching_bytes() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let temp = workspace.worktree.join(".merge_file_t012rm");
+        std::fs::write(&temp, b"bytes\n").expect("temp");
+        let sha = crate::settings::hex(&crate::settings::sha256(b"bytes\n"));
+        let send = |operation: &str, name: &str, sha: &str| {
+            let call = uuid();
+            harness.send(json!({ "type": "tempRemove", "callId": call, "operationId": operation, "repositoryId": workspace.repository, "name": name, "expected": { "size": 6, "sha256": sha } }));
+            (call.clone(), harness.reply(&call))
+        };
+        let commit = uuid();
+        harness.started_as(&commit, Mutation::Commit, &workspace);
+        let (call, reply) = send(&commit, ".merge_file_t012rm", &sha);
+        assert_eq!(reply, refused(&call, "INVALID_REQUEST"), "another marker");
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::RevertFiles, &workspace);
+        let (call, reply) = send(&operation, "a\\b", &sha);
+        assert_eq!(reply, refused(&call, "INVALID_REQUEST"), "two components");
+        let result = |call: &str, result: &str| json!({ "type": "tempRemove", "callId": call, "result": result });
+        let (call, reply) = send(&operation, ".merge_file_t012rm", &"0".repeat(64));
+        assert_eq!(reply, result(&call, "stale"));
+        assert!(temp.exists());
+        let (call, reply) = send(&operation, ".merge_file_t012rm", &sha);
+        assert_eq!(reply, result(&call, "removed"));
+        assert!(!temp.exists());
+        let (call, reply) = send(&operation, ".merge_file_t012rm", &sha);
+        assert_eq!(reply, result(&call, "absent"));
+    }
+
+    /// Contract Δ6 `fileFacts`: `detail` adds the replace facts, and `stream` digests a 40 MiB file without the 1 MiB bound.
+    /// A review asks for `stream` with `detail`, and a run under its revert marker (orchestrator decision 2026-10-31).
+    #[test]
+    fn a_file_facts_detail_adds_the_replace_facts_and_a_stream_needs_detail_or_a_revert_marker() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let data: Vec<u8> = (0..40usize << 20).map(|i| (i % 253) as u8).collect();
+        std::fs::write(workspace.worktree.join("big.bin"), &data).expect("big");
+        let send = |operation: &str, read: Value| {
+            let call = uuid();
+            let mut body = file_facts_body(
+                &call,
+                &workspace,
+                json!([{ "root": "worktreeRoot", "path": ["big.bin"] }]),
+            );
+            body["operationId"] = json!(operation);
+            body.as_object_mut()
+                .expect("body")
+                .extend(read.as_object().expect("read").clone());
+            harness.send(body);
+            (call.clone(), harness.reply(&call))
+        };
+        let (call, reply) = send(&uuid(), json!({ "stream": true }));
+        assert_eq!(
+            reply,
+            refused(&call, "INVALID_REQUEST"),
+            "stream without detail and without a revert marker"
+        );
+        let digest = crate::settings::hex(&crate::settings::sha256(&data));
+        let (_, reply) = send(&uuid(), json!({ "stream": true, "detail": true }));
+        assert_eq!(
+            reply["facts"][0]["digest"], digest,
+            "stream with detail: {reply}"
+        );
+        let (_, reply) = send(&uuid(), json!({ "detail": true }));
+        let fact = &reply["facts"][0];
+        assert_eq!(fact["bound"], "file-bytes", "{reply}");
+        assert_eq!(fact["links"], 1, "{reply}");
+        for key in ["owner", "group", "dacl", "creationTime"] {
+            assert!(
+                fact[key].as_str().is_some_and(|text| !text.is_empty()),
+                "{key}: {reply}"
+            );
+        }
+        assert!(fact["attributes"].is_u64(), "{reply}");
+        assert!(
+            fact["owner"].as_str().is_some_and(|t| t.starts_with("O:"))
+                && fact["dacl"].as_str().is_some_and(|t| t.starts_with("D:")),
+            "{reply}"
+        );
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::RevertFiles, &workspace);
+        let (_, reply) = send(&operation, json!({ "stream": true }));
+        assert_eq!(
+            reply["facts"][0]["digest"], digest,
+            "stream under a revert marker: {reply}"
+        );
+        assert!(reply["facts"][0].get("bound").is_none());
+    }
+
+    /// Contract Δ3 and Δ6: a streamed digest gets the walk deadline plus 1 s for each started 64 MiB.
+    /// The oplock holds the data open past the 2 s walk deadline, and the reply still gives the facts.
+    #[test]
+    fn a_streamed_file_facts_walk_gets_the_size_rule_deadline() {
+        let harness = Harness::new(
+            Fixture::new(),
+            CHILD_PREFIX.iter().map(|s| s.to_string()).collect(),
+            std::env::vars_os().collect(),
+            Duration::from_secs(2),
+        );
+        let workspace = harness.child_workspace("repo");
+        let file = workspace.worktree.join("large.bin");
+        // 192 MiB and 1 byte start four 64 MiB parts, so the deadline is 6 s.
+        std::fs::File::create(&file)
+            .expect("large")
+            .set_len((192 << 20) + 1)
+            .expect("size");
+        let operation = uuid();
+        harness.started_as(&operation, Mutation::RevertUnstaged, &workspace);
+        let Some(oplock) = Oplock::request(&file) else {
+            println!("{SKIP_OPLOCK}");
+            return;
+        };
+        let call = uuid();
+        let mut body = file_facts_body(
+            &call,
+            &workspace,
+            json!([{ "root": "worktreeRoot", "path": ["large.bin"] }]),
+        );
+        body["operationId"] = json!(operation);
+        body["stream"] = json!(true);
+        let sent = Instant::now();
+        harness.send(body);
+        assert!(
+            oplock.broken(WAIT),
+            "the data open waits on the oplock break"
+        );
+        std::thread::sleep(Duration::from_secs(3));
+        drop(oplock);
+        let reply = harness.reply(&call);
+        assert!(
+            sent.elapsed() > Duration::from_secs(2),
+            "the reply comes after the walk deadline"
+        );
+        assert!(reply["facts"][0]["digest"].is_string(), "{reply}");
+    }
+
+    /// Contract Δ3 and Δ6 (orchestrator decision 2026-10-31): only the exact `checkout-index --temp` array of a registered operation
+    /// takes a deadline above `REGISTERED_DEADLINE_MS`. Each other array keeps the cap.
+    #[test]
+    fn only_the_exact_checkout_index_temp_array_takes_a_deadline_above_the_registered_cap() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        let operation = uuid();
+        let run = |mode: &[&str]| {
+            let call = uuid();
+            let limits = json!({ "deadlineMs": REGISTERED_DEADLINE_MS * 10 });
+            harness.send(run_body(
+                &call, &operation, &workspace, mode, "read", limits,
+            ));
+            call
+        };
+        for other in [
+            &["checkout-index", "--temp", "-z", "--stdin"][..],
+            &["checkout-index", "--temp", "--stdin", "-z", "--prefix=x/"],
+            &["checkout-index", "--temp", "--stdin"],
+            &["status"],
+        ] {
+            let call = run(other);
+            assert_eq!(
+                harness.reply(&call),
+                refused(&call, "INVALID_REQUEST"),
+                "{other:?}"
+            );
+        }
+        let call = run(&["checkout-index", "--temp", "--stdin", "-z"]);
+        let (_, exit) = harness.exit(&call, WAIT).expect("the run starts and ends");
+        assert_eq!(exit["type"], "exit", "{exit}");
+        assert!(
+            harness
+                .replies_for(&call)
+                .iter()
+                .all(|(_, reply)| reply["type"] != "refused"),
+            "the exact array is not refused"
         );
     }
 

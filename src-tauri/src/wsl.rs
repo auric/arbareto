@@ -1744,6 +1744,129 @@ pub fn replace_reply(output: Option<Output>) -> crate::file_replace::ReplaceResu
     parsed.unwrap_or(R::Interrupted)
 }
 
+/// Feature 008 contract Δ11: one WSL `working` replace below the worktree root (root index 0, plan.md D9).
+pub struct WslWorking {
+    pub path: Vec<String>,
+    /// `None` is `absent`.
+    pub present: Option<(u64, String, crate::file_replace::WslFacts)>,
+    /// The missing folders below the deepest existing folder, top first.
+    pub folders: Vec<String>,
+    pub content: crate::file_replace::Content,
+}
+
+/// The `wslFiles` text in mode `replace` for the `working` target. Stdin holds the path, `working`, the state, the folders, and the content:
+/// the bytes in hex, or the name, size, and SHA-256 of Git's temporary file in the worktree root.
+pub fn working_command(
+    installation: &Installation,
+    unit: &str,
+    roots: &[String; 3],
+    working: &WslWorking,
+    base: &[(OsString, OsString)],
+) -> Command {
+    use crate::file_replace::Content;
+    let mut tokens: Vec<String> = vec![
+        "0".to_string(),
+        "0".to_string(),
+        working.path.len().to_string(),
+    ];
+    tokens.extend(working.path.iter().cloned());
+    tokens.push("working".to_string());
+    match &working.present {
+        None => tokens.push("absent".to_string()),
+        Some((size, sha256, facts)) => tokens.extend([
+            "present".to_string(),
+            size.to_string(),
+            sha256.clone(),
+            facts.mode.to_string(),
+            facts.uid.to_string(),
+            facts.gid.to_string(),
+            facts.links.to_string(),
+        ]),
+    }
+    tokens.push(working.folders.len().to_string());
+    tokens.extend(working.folders.iter().cloned());
+    match &working.content {
+        Content::Bytes(bytes) => tokens.extend(["bytes".to_string(), crate::settings::hex(bytes)]),
+        Content::Source(source) => tokens.extend([
+            "source".to_string(),
+            source.name.clone(),
+            source.size.to_string(),
+            source.sha256.clone(),
+        ]),
+    }
+    files_perl(installation, unit, "replace", roots, tokens, base)
+}
+
+/// One `working` reply: `replaced` with the count of the created folders, `stale`, `refused <reason>`, or `error <code>`.
+/// The process can rename before it ends, so an exit status other than 0, no start byte, or another form gives `interrupted`.
+pub fn working_reply(
+    output: Option<Output>,
+    folders: &[String],
+) -> crate::file_replace::ReplaceResult {
+    use crate::file_replace::ReplaceResult as R;
+    use crate::schema::process_reply::FileReplaceRefusedReason as Reason;
+    let parsed = output
+        .filter(|out| out.exit_code == Some(0))
+        .and_then(|out| {
+            let bytes = started(&out.stdout).filter(|b| b.len() <= DELETE_OUTPUT_BYTES)?;
+            let mut records = Records { bytes, at: 0 };
+            let result = match records.token()? {
+                // The reply counts the created folders. Each requested folder exists before the write, or the reply is `stale`.
+                "replaced" => {
+                    records.number::<usize>().filter(|&n| n == folders.len())?;
+                    R::ReplacedFolders(folders.to_vec())
+                }
+                "stale" => R::Stale,
+                "refused" => match records.token()? {
+                    "not-regular" => R::NotRegular,
+                    "hard-link" => R::Refused(Reason::HardLink),
+                    "owner" => R::Refused(Reason::Owner),
+                    "xattr" => R::Refused(Reason::Xattr),
+                    _ => return None,
+                },
+                "error" => R::Error(code_token(&mut records)?.parse().ok()?),
+                _ => return None,
+            };
+            (records.at == bytes.len()).then_some(result)
+        });
+    parsed.unwrap_or(R::Interrupted)
+}
+
+/// Feature 008 contract Δ11 `tempRemove`: the name, the size, and the SHA-256 of Git's temporary file on stdin.
+pub fn temp_remove_command(
+    installation: &Installation,
+    unit: &str,
+    roots: &[String; 3],
+    name: &str,
+    (size, sha256): (u64, &str),
+    base: &[(OsString, OsString)],
+) -> Command {
+    let tokens = vec![name.to_string(), size.to_string(), sha256.to_string()];
+    files_perl(installation, unit, "tempRemove", roots, tokens, base)
+}
+
+/// One `tempRemove` reply: `removed`, `stale`, `absent`, or `error <code>`.
+/// Contract gap: `tempRemove` has no unknown outcome, so a broken output gives `error other-error`.
+pub fn temp_remove_reply(output: Option<Output>) -> crate::file_replace::TempResult {
+    use crate::file_replace::TempResult as T;
+    use crate::schema::process_reply::FileReplaceErrorCode as C;
+    let parsed = output
+        .filter(|out| out.exit_code == Some(0))
+        .and_then(|out| {
+            let bytes = started(&out.stdout).filter(|b| b.len() <= DELETE_OUTPUT_BYTES)?;
+            let mut records = Records { bytes, at: 0 };
+            let result = match records.token()? {
+                "removed" => T::Removed,
+                "stale" => T::Stale,
+                "absent" => T::Absent,
+                "error" => T::Error(code_token(&mut records)?.parse().ok()?),
+                _ => return None,
+            };
+            (records.at == bytes.len()).then_some(result)
+        });
+    parsed.unwrap_or(T::Error(C::OtherError))
+}
+
 /// The shadow scratch operation of a WSL workspace (contract Δ11).
 pub enum Scratch {
     /// Makes `/tmp/<name>` and its shadow repository folders `s` and `c` with `mkdir` mode 0700.
@@ -2663,7 +2786,7 @@ mod tests {
     #[test]
     fn the_replace_mode_takes_the_expected_state_and_the_bytes_on_stdin() {
         use crate::file_replace::ReplaceResult as R;
-        use crate::schema::process_reply::FileFactErrorCode as C;
+        use crate::schema::process_reply::FileReplaceErrorCode as C;
         let roots = [
             "/home/u/repo".to_string(),
             "/home/u/repo/.git".to_string(),
@@ -2724,6 +2847,140 @@ mod tests {
             "exit 3"
         );
         assert_eq!(replace_reply(None), R::Interrupted, "no output");
+    }
+
+    /// Feature 008 T016 (contract Δ11, plan.md D9): mode `replace` takes the `working` target with its facts, folders, and content,
+    /// and the reply counts the created folders. Each other form, a reason outside the list, or another count gives `interrupted`.
+    #[test]
+    fn the_replace_mode_takes_the_working_target_and_counts_the_created_folders() {
+        use crate::file_replace::{Content, ReplaceResult as R, Source, WslFacts};
+        use crate::schema::process_reply::{
+            FileReplaceErrorCode as C, FileReplaceRefusedReason as Reason,
+        };
+        let roots = [
+            "/home/u/repo".to_string(),
+            "/home/u/repo/.git".to_string(),
+            "/home/u/repo/.git".to_string(),
+        ];
+        let unit = unit_name(OPERATION, 4).expect("unit");
+        let facts = WslFacts {
+            mode: 0o2755,
+            uid: 1000,
+            gid: 4,
+            links: 1,
+        };
+        let present = WslWorking {
+            path: strings(&["src", "a.txt"]),
+            present: Some((4, "a".repeat(64), facts)),
+            folders: Vec::new(),
+            content: Content::Bytes(b"new\n".to_vec()),
+        };
+        let command = working_command(&installation(), &unit, &roots, &present, &base());
+        assert_eq!(perl_tail(&command)[1], "replace");
+        assert_eq!(
+            stdin_bytes(&command),
+            format!(
+                "0\x000\x002\x00src\x00a.txt\x00working\x00present\x004\x00{}\x001517\x001000\x004\x001\x000\x00bytes\x006e65770a\x00",
+                "a".repeat(64)
+            )
+            .into_bytes()
+        );
+        let absent = WslWorking {
+            path: strings(&["a", "b", "n.txt"]),
+            present: None,
+            folders: strings(&["a", "b"]),
+            content: Content::Source(Source {
+                name: ".merge_file_x".to_string(),
+                size: 9,
+                sha256: "b".repeat(64),
+            }),
+        };
+        let command = working_command(&installation(), &unit, &roots, &absent, &base());
+        assert_eq!(
+            stdin_bytes(&command),
+            format!(
+                "0\x000\x003\x00a\x00b\x00n.txt\x00working\x00absent\x002\x00a\x00b\x00source\x00.merge_file_x\x009\x00{}\x00",
+                "b".repeat(64)
+            )
+            .into_bytes()
+        );
+        let folders = strings(&["a", "b"]);
+        for (stdout, expected) in [
+            ("Sreplaced\x002\0", R::ReplacedFolders(folders.clone())),
+            ("Sstale\0", R::Stale),
+            ("Srefused\0not-regular\0", R::NotRegular),
+            ("Srefused\0hard-link\0", R::Refused(Reason::HardLink)),
+            ("Srefused\0owner\0", R::Refused(Reason::Owner)),
+            ("Srefused\0xattr\0", R::Refused(Reason::Xattr)),
+            ("Serror\0io-error\0", R::Error(C::IoError)),
+        ] {
+            assert_eq!(
+                working_reply(output(0, stdout), &folders),
+                expected,
+                "{stdout:?}"
+            );
+        }
+        assert_eq!(
+            working_reply(output(0, "Sreplaced\x000\0"), &[]),
+            R::ReplacedFolders(Vec::new())
+        );
+        for stdout in [
+            "Sreplaced\0",
+            "Sreplaced\x001\0",
+            "Srefused\0",
+            "Srefused\0security\0",
+            "Srefused\0read-only\0",
+            "Sstale\0x\0",
+            "Serror\0sharing-violation\0",
+        ] {
+            assert_eq!(
+                working_reply(output(0, stdout), &folders),
+                R::Interrupted,
+                "{stdout:?}"
+            );
+        }
+        assert_eq!(
+            working_reply(output(3, "Sreplaced\x002\0"), &folders),
+            R::Interrupted
+        );
+    }
+
+    /// Feature 008 contract Δ11: mode `tempRemove` takes the name, the size, and the SHA-256 on stdin.
+    #[test]
+    fn the_temp_remove_mode_takes_the_name_and_the_expected_facts() {
+        use crate::file_replace::TempResult as T;
+        use crate::schema::process_reply::FileReplaceErrorCode as C;
+        let roots = [
+            "/home/u/repo".to_string(),
+            "/home/u/repo/.git".to_string(),
+            "/home/u/repo/.git".to_string(),
+        ];
+        let unit = unit_name(OPERATION, 5).expect("unit");
+        let sha = "c".repeat(64);
+        let command = temp_remove_command(
+            &installation(),
+            &unit,
+            &roots,
+            ".merge_file_x",
+            (9, &sha),
+            &base(),
+        );
+        assert_eq!(perl_tail(&command)[1], "tempRemove");
+        assert_eq!(
+            stdin_bytes(&command),
+            format!(".merge_file_x\x009\x00{sha}\x00").into_bytes()
+        );
+        for (stdout, expected) in [
+            ("Sremoved\0", T::Removed),
+            ("Sstale\0", T::Stale),
+            ("Sabsent\0", T::Absent),
+            ("Serror\0access-denied\0", T::Error(C::AccessDenied)),
+            ("Sremoved\0stale\0", T::Error(C::OtherError)),
+            ("removed\0", T::Error(C::OtherError)),
+        ] {
+            assert_eq!(temp_remove_reply(output(0, stdout)), expected, "{stdout:?}");
+        }
+        assert_eq!(temp_remove_reply(None), T::Error(C::OtherError));
     }
 
     /// Feature 005 contract Δ11: mode `scratch` gets its operation and the folder name, and `sweep` lists the names after `swept`.

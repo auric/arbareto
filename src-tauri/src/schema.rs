@@ -34,22 +34,8 @@ pub(crate) const SPELLING_LANGUAGES: usize = 3;
 /// Feature 004 data-model §1: a remote-tracking branch lies under this prefix.
 const REMOTE_BRANCH_PREFIX: &str = "refs/remotes/";
 /// Feature 008 contract Δ5 `REVERT_FILE_BYTES`: the bytes of one `fileReplace` `working` frame of a line revert.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only the vector tests read revert frames before their handlers exist"
-    )
-)]
 pub(crate) const REVERT_FILE_BYTES: usize = 2_117_152;
 /// Contract §5 `FILE_FACT_ENTRIES`: the most folder names of one `fileReplace` `working` frame.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only the vector tests read revert frames before their handlers exist"
-    )
-)]
 const REPLACE_FOLDERS: usize = 64;
 
 macro_rules! generated {
@@ -323,13 +309,6 @@ pub fn handshake(value: &Value) -> Result<handshake::Handshake, Code> {
 /// Feature 008 contract Δ6 and Δ10 `fileReplace` `working`: the field rules that typify drops.
 /// Exactly one of `bytes` and `source`, the byte bound, the folder count and names, `folders` only with `expected: absent`,
 /// and `facts` that bind the size and digest of `expected`. The request handler checks the path rule and the marker action.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only the vector tests read revert frames before their handlers exist"
-    )
-)]
 pub(crate) fn working_replace(request: &process_request::FileReplace) -> Result<(), Code> {
     use process_request::{FileReplaceExpected as E, FileReplaceFacts as F, FileReplaceTarget};
     let expected = match &request.expected {
@@ -384,13 +363,6 @@ pub(crate) fn working_replace(request: &process_request::FileReplace) -> Result<
 }
 
 /// Feature 008 contract Δ6 `tempRemove`: one name component in the worktree root and a size that typify reads as `i64`.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "only the vector tests read revert frames before their handlers exist"
-    )
-)]
 pub(crate) fn temp_remove(request: &process_request::TempRemove) -> Result<(), Code> {
     if request.expected.size < 0 || !crate::file_facts::is_component(&request.name) {
         return Err(INVALID);
@@ -1004,6 +976,7 @@ pub mod reply {
     }
 
     /// Feature 005 contract Δ6 `fileReplace`: `replaced`, `stale`, `stopped`, `interrupted`, `refused not-regular`, or `error`.
+    /// Feature 008 contract Δ6: `replaced` with the created `folders`, and the other refusals.
     pub fn file_replace(call_id: &str, result: crate::file_replace::ReplaceResult) -> Value {
         use crate::file_replace::ReplaceResult as V;
         use p::FileReplaceGroup as G;
@@ -1014,17 +987,52 @@ pub mod reply {
             result,
             type_: type_.clone(),
         };
+        let refusal = |reason| G::Refused {
+            call_id: field(call_id),
+            reason,
+            result: "refused".to_string(),
+            type_: type_.clone(),
+        };
         encode(p::ProcessReply::FileReplaceGroup(match result {
             V::Replaced => plain(R::Replaced),
+            V::ReplacedFolders(folders) if folders.is_empty() => plain(R::Replaced),
+            V::ReplacedFolders(folders) => G::ReplacedFolders {
+                call_id: field(call_id),
+                folders: folders.iter().map(|name| field(name)).collect(),
+                result: "replaced".to_string(),
+                type_,
+            },
             V::Stale => plain(R::Stale),
             V::Stopped => plain(R::Stopped),
             V::Interrupted => plain(R::Interrupted),
-            V::NotRegular => G::Refused {
+            V::NotRegular => refusal(p::FileReplaceRefusedReason::NotRegular),
+            V::Refused(reason) => refusal(reason),
+            V::Error(code) => G::Error {
                 call_id: field(call_id),
-                reason: p::FileReplaceRefusedReason::NotRegular,
-                result: "refused".to_string(),
+                code,
+                result: "error".to_string(),
                 type_,
             },
+            // Contract Δ6: a path inside the Git directory by identity is an invalid request.
+            V::Invalid => return refused(call_id, p::RefusedCode::InvalidRequest),
+        }))
+    }
+
+    /// Feature 008 contract Δ6 `tempRemove`: `removed`, `stale`, `absent`, or `error`.
+    pub fn temp_remove(call_id: &str, result: crate::file_replace::TempResult) -> Value {
+        use crate::file_replace::TempResult as V;
+        use p::TempRemoveGroup as G;
+        use p::TempRemoveResultResult as R;
+        let type_ = "tempRemove".to_string();
+        let plain = |result: R| G::Result {
+            call_id: field(call_id),
+            result,
+            type_: type_.clone(),
+        };
+        encode(p::ProcessReply::TempRemoveGroup(match result {
+            V::Removed => plain(R::Removed),
+            V::Stale => plain(R::Stale),
+            V::Absent => plain(R::Absent),
             V::Error(code) => G::Error {
                 call_id: field(call_id),
                 code: field(&code.to_string()),
@@ -1032,6 +1040,15 @@ pub mod reply {
                 type_,
             },
         }))
+    }
+
+    /// Contract Δ6 `tempRemove` has no stop or deadline reply. On Windows, a stop or a deadline comes before the delete.
+    /// On WSL, the outcome after a stop is unknown (contract gap), and the next status read shows a kept file.
+    pub fn temp_remove_stopped(call_id: &str) -> Value {
+        temp_remove(
+            call_id,
+            crate::file_replace::TempResult::Error(p::FileReplaceErrorCode::OtherError),
+        )
     }
 
     /// Feature 005 contract Δ6: a stop or a deadline of a Windows `fileReplace` walk before the write.

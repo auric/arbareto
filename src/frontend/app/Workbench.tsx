@@ -10,7 +10,7 @@ import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
 import { ChangesPane as ChangesList, type FileAction, type FileActionResult } from "../changes/ChangesPane";
 import { ComparisonView as Comparison, resultOf, showsDiff, type LineState } from "../changes/ComparisonView";
 import { deleteBlock, fileActions } from "../changes/file-actions";
-import { countsText } from "../changes/file-tree";
+import { conflictedRows, countsText } from "../changes/file-tree";
 import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
 import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type StagingTarget } from "../changes/HunkControls";
 import { CommitTray } from "../commit/CommitTray";
@@ -178,8 +178,8 @@ export type Staging = {
   fileReasonId: string;
   /** The file-action reason and the Stage key reason for the reason line. */
   reasons: ReasonPart[];
-  onFileReason(text: string | null): void;
-  onPaneReason(text: string | null): void;
+  onFileReason(text: string | null, quiet?: boolean): void;
+  onPaneReason(text: string | null, quiet?: boolean): void;
   onOperation(op: StatusOperation): void;
   onEnded(operation: "applyHunk" | "applyFile", response: BridgeResponse): void;
   /** A file action that did not succeed, by the file `category:pathBytes`. */
@@ -450,6 +450,7 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
           }),
           reason: running ? RUNNING_REASON : staging.blocked !== null ? BLOCKED_TEXT[staging.blocked] : null,
           running,
+          quiet: staging.blocked === "operation",
           cut: workspace.cut === "untracked",
           // Feature 005 plan.md D6: the 004 common refusals, then the 001 blocks of the shown read.
           deleteBlock: deleteBlock(workspace.operationState, conflicts) ?? (staging.blocked !== null && staging.blocked !== "operation" && staging.blocked !== "conflicted" ? BLOCKED_TEXT[staging.blocked] : null),
@@ -920,8 +921,9 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   const trackingSeq = useRef(0);
   const [syncSettings, setSyncSettings] = useState<SyncSettingsState>({ action: null, reason: SETTINGS_LOADING });
   const [anchor, setAnchor] = useState<Staging["anchor"]>(null);
-  const [fileReason, setFileReason] = useState<string | null>(null);
-  const [paneReason, setPaneReason] = useState<string | null>(null);
+  // `quiet`: the text stays the hidden description of its control (spec FR-105).
+  const [fileReason, setFileReason] = useState<{ text: string | null; quiet: boolean }>({ text: null, quiet: false });
+  const [paneReason, setPaneReason] = useState<{ text: string | null; quiet: boolean }>({ text: null, quiet: false });
   const [toolbarSuccess, setToolbarSuccess] = useState<{ entryId: string } | null>(null);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [fileFailure, setFileFailure] = useState<Staging["fileFailure"]>(null);
@@ -1203,7 +1205,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     if (!live.current.statusStop) present.delete("statusRegion");
     const sectionOf = (node: Element | null) => node?.closest<HTMLElement>(SECTION_SELECTOR)?.dataset.section as Section | undefined;
     let current = from ?? sectionOf(document.activeElement) ?? "header";
-    const order: Section[] = ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "ignorePreview", "composer", "commitDetails", "changedFiles", "historyDiff", "scopeBar", "pageList", "pageContent", "statusRegion"];
+    const order: Section[] = ["header", "noticeHeading", "references", "historyList", "conflicted", "workingChanges", "staged", "comparison", "ignorePreview", "composer", "commitDetails", "changedFiles", "historyDiff", "scopeBar", "pageList", "pageContent", "statusRegion"];
     const hidden = order.filter((s) => !present.has(s));
     // Plan D15 "F6 order per view": a section that takes no focus is skipped. One pass over the order bounds the loop.
     for (let step = 0; step < order.length; step++) {
@@ -1525,6 +1527,8 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
   // The states that block mutations (plan.md "Required visible states": Busy, State unknown, Conflicted/unfinished operation, Limited output).
   const running = operation !== null && operation.response === null;
   const loading = workspace === null || state.entries.length < workspace.entryCount;
+  // Spec FR-103 and SC-017: the dock names the conflicted count only during a merge or a rebase, and only from a complete read.
+  const conflictCount = loading || (workspace.operationState !== "merging" && workspace.operationState !== "rebasing") ? 0 : conflicted;
   const stateBlocked: Blocked = state.blocked ? "unknown" : workspace !== null ? operationBlock(workspace.operationState) : null;
   const blocked: Blocked = running ? (operation.kind === "applyFile" ? "busy" : "running") : stateBlocked;
   const blockedReason = blocked === null ? null : BLOCKED_TEXT[blocked];
@@ -1614,11 +1618,11 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     eligibility: workspace?.hunkEligibility,
     fileReasonId,
     reasons: [
-      { id: fileReasonId, text: fileReason },
-      { id: paneReasonId, text: paneReason },
+      { id: fileReasonId, ...fileReason },
+      { id: paneReasonId, ...paneReason },
     ],
-    onFileReason: setFileReason,
-    onPaneReason: setPaneReason,
+    onFileReason: (text, quiet = false) => setFileReason({ text, quiet }),
+    onPaneReason: (text, quiet = false) => setPaneReason({ text, quiet }),
     onOperation: (op) => {
       // A new file action replaces the output of the last failed one.
       if (op.kind === "applyFile" && op.response === null && op.progress === null) setFileFailure(null);
@@ -1780,6 +1784,16 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
     commitEntryPending.current = false;
     focusCommitEntry();
   });
+  // Feature 004 spec FR-106: the first Conflicted row in tree order gets the selection, its resolve view, and the focus.
+  // From History, the focus effect above moves the focus after the view switch.
+  const resolveConflicts = () => {
+    const first = conflictedRows(requests.state().entries)[0];
+    if (first?.kind !== "file") return;
+    if (requests.state().selection?.entryId !== first.entry.entryId) requests.selectEntry(first.entry.entryId);
+    if (inCommitView) return sections.current?.querySelector<HTMLElement>(`[data-file-tree="conflicted"] [role="treeitem"][data-entry-id="${first.entry.entryId}"]`)?.focus();
+    focusReturn.current = { pathBytes: first.entry.pathBytes, category: first.entry.category };
+    store.setView(viewKey, "commit");
+  };
   const onHistoryKey = (event: ReactKeyboardEvent<HTMLElement>) => {
     if (event.key !== "Enter" || event.ctrlKey || event.shiftKey || event.altKey || event.metaKey || isEditable(event.target as HTMLElement)) return;
     const list = (event.target as HTMLElement).closest<HTMLElement>("[data-history-list]");
@@ -1816,7 +1830,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
       }
     >
       {inCommitView ? null : pushPanel}
-      {inCommitView || panel !== "commit" || pushPanel !== null || blameOpen ? null : <WorkingSummary working={working} staged={staged} onOpen={openCommitView} />}
+      {inCommitView || panel !== "commit" || pushPanel !== null || blameOpen ? null : <WorkingSummary working={working} staged={staged} conflicted={conflictCount} onOpen={openCommitView} onResolve={resolveConflicts} />}
       {/* Feature 005 plan.md D15 "Blame view": the dock shows the commit details of the selected blame line. */}
       {blameOpen ? (
         lineOid === null || pushPanel !== null ? null : (
@@ -2181,6 +2195,7 @@ export function Workbench({ bridge, ChangesPane, ComparisonView, HistoryView, en
                       reconciling={reconciling}
                       loading={loading}
                       onAction={sync.conflictAction}
+                      onResolve={resolveConflicts}
                       bindControl={bindBandControl}
                     />
                   ) : undefined

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import type { ChangeEntry, Comparison } from "../../contracts/envelope";
 import { CopyButton } from "../app/RepositoryStates";
 import type { BridgeResponse, createBridge } from "../bridge";
+import { RunningTooltip } from "../components/running-tooltip";
 import { Button } from "../components/ui/button";
 import { trackOperation, type StatusOperation } from "../status/OperationStatus";
 import type { TrustReport } from "../trust/TrustChip";
@@ -26,8 +27,8 @@ export type FileControlsProps = {
   eligibility?: Eligibility;
   /** The ID of the T145 reason line. A disabled button takes it as its accessible description. */
   reasonId: string;
-  /** Feeds the reason line. Null clears it. */
-  onReason?(text: string | null): void;
+  /** Feeds the reason line. Null clears it. `quiet` keeps the text as a hidden description (spec FR-105). */
+  onReason?(text: string | null, quiet?: boolean): void;
   /** Runs after each terminal response. The read after a mutation outcome reconciles the view (contract §3). */
   onRefresh?(response: BridgeResponse): void;
   /** Runs after each terminal response other than `succeeded`. The comparison pane shows a `GIT_FAILED` output (T202). */
@@ -40,7 +41,8 @@ export type FileControlsProps = {
 };
 
 type Direction = "stage" | "unstage" | "resolve";
-type Decision = { label: "Stage file" | "Unstage file" | "Mark resolved"; direction: Direction; reason: string | null };
+/** `quiet`: the reason is the merge or rebase block (spec FR-105). It shows only as the tooltip and the hidden description. */
+type Decision = { label: "Stage file" | "Unstage file" | "Mark resolved"; direction: Direction; reason: string | null; quiet: boolean };
 type Refused = Exclude<Comparison["fileAction"], Direction>;
 
 // plan.md "Limitation text", plus the feature 003 data-model §9 `missing` refusal of Mark resolved.
@@ -58,7 +60,7 @@ export function decide(props: Omit<FileControlsProps, "reasonId">): Decision {
   const refusal = accepted ? null : REFUSAL_TEXT[action];
   // A merge or a rebase in progress blocks staging, but Mark resolved exists for it. The service checks the bound operation state (plan.md D7).
   const blocked = direction === "resolve" && (props.blocked === "conflicted" || props.blocked === "operation") ? null : props.blocked;
-  return { label: LABEL[direction], direction, reason: refusal ?? stagingReason({ ...props, blocked }) ?? (props.target ? null : BLOCKED_TEXT.stale) };
+  return { label: LABEL[direction], direction, reason: refusal ?? stagingReason({ ...props, blocked }) ?? (props.target ? null : BLOCKED_TEXT.stale), quiet: refusal === null && blocked === "operation" };
 }
 
 async function send(props: Omit<FileControlsProps, "reasonId">, decision: Decision): Promise<BridgeResponse> {
@@ -75,7 +77,7 @@ async function send(props: Omit<FileControlsProps, "reasonId">, decision: Decisi
 /** The one file action of the stage bar buttons and the Space key. A refusing decision sends nothing. */
 export async function runFileAction(props: Omit<FileControlsProps, "reasonId">): Promise<FileActionResult> {
   const decision = decide(props);
-  if (decision.reason !== null) return { state: "refused", text: `${decision.label} is unavailable: ${decision.reason}` };
+  if (decision.reason !== null) return { state: "refused", text: `${decision.label} is unavailable: ${decision.reason}`, quiet: decision.quiet };
   return (await send(props, decision)).state === "succeeded" ? { state: "succeeded" } : { state: "failed" };
 }
 
@@ -111,7 +113,7 @@ export function FileControls(props: FileControlsProps) {
   const running = useRef(false);
   const [stale, setStale] = useState<string | null>(null);
   const { onReason } = props;
-  useEffect(() => onReason?.(decision.reason), [decision.reason]);
+  useEffect(() => onReason?.(decision.reason, decision.quiet), [decision.reason, decision.quiet]);
   useEffect(() => () => onReason?.(null), []);
 
   async function activate() {
@@ -128,18 +130,20 @@ export function FileControls(props: FileControlsProps) {
 
   return (
     <div className="flex min-w-0 flex-col gap-1 py-1">
-      <Button
-        variant="outline"
-        size="sm"
-        className="self-start"
-        aria-keyshortcuts="Space"
-        disabled={decision.reason !== null}
-        focusableWhenDisabled
-        aria-describedby={decision.reason === null ? undefined : props.reasonId}
-        onClick={() => void activate()}
-      >
-        {decision.label} (Space)
-      </Button>
+      <RunningTooltip reason={decision.quiet ? decision.reason : null}>
+        <Button
+          variant="outline"
+          size="sm"
+          className="self-start"
+          aria-keyshortcuts="Space"
+          disabled={decision.reason !== null}
+          focusableWhenDisabled
+          aria-describedby={decision.reason === null ? undefined : props.reasonId}
+          onClick={() => void activate()}
+        >
+          {decision.label} (Space)
+        </Button>
+      </RunningTooltip>
       {/* The live element stays mounted. Only its text changes. */}
       <p role="status">{stale === props.comparison.comparisonId ? STALE_TEXT : null}</p>
     </div>

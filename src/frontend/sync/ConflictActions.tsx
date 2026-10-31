@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { Alert02Icon, ArrowRight02Icon, NextIcon, UndoIcon } from "@hugeicons/core-free-icons";
+import { Alert02Icon, ArrowRight02Icon, GitMergeIcon, NextIcon, UndoIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { useId, useRef, useState, type ReactElement } from "react";
 import { blockingText, FINISH_OUTSIDE, WarningIcon } from "../app/NoticeBand";
@@ -16,6 +16,7 @@ import { shortId, SYNC_NAMES } from "../status/OperationStatus";
 import { quietReason } from "./SyncToolbar";
 
 // Feature 003 spec FR-030, FR-042 to FR-045, plan.md D7 and D12, contract Δ3 `reviewSync` abort, continue, and skip.
+// Feature 004 spec FR-102, plan.md D15 "Conflict guidance": Resolve conflicts replaces Continue while files are unmerged.
 // Destructive actions show an icon and text and never fold into a More menu (plan.md D12).
 
 export type ConflictAction = "abort" | "continue" | "skip";
@@ -26,8 +27,8 @@ type Refusal = { reason: string; remedy?: Remedy };
 
 export const SKIP_TOOLTIP = "Skip leaves the current commit out of the rebased branch.";
 export const NO_SKIP_TEXT = "Skip is unavailable: Git names no commit at this rebase stop.";
-/** FR-043: the unavailable reason of Continue while the index has unmerged entries. */
-export const continueBlocked = (n: number) => (n === 1 ? "Continue is unavailable while 1 file is unmerged. Mark it resolved first." : `Continue is unavailable while ${n} files are unmerged. Mark them resolved first.`);
+export const RESOLVE_CONFLICTS = "Resolve conflicts";
+export const RESOLVE_TOOLTIP = "Open the Commit view and select the first conflicted file.";
 
 export type ConflictRowProps = {
   operationState: Kind;
@@ -43,6 +44,8 @@ export type ConflictRowProps = {
   loading?: boolean;
   /** Runs the review of the action. Resolves with the refused review response, or null. */
   onAction(action: ConflictAction): Promise<BridgeResponse | null>;
+  /** Feature 004 FR-106: opens the Commit view on the first Conflicted row. */
+  onResolve(): void;
   bindControl?: (element: HTMLButtonElement) => () => void;
 };
 
@@ -56,7 +59,7 @@ function refusalOf(response: BridgeResponse | null): Refusal | null {
  * The conflict row of a merge or a rebase in progress. A refused review hides the refused actions for this stop.
  * The caller keys the row by the operation state and HEAD, so a new stop shows every action again.
  */
-export function ConflictRow({ operationState, conflicted, reason: given, running = false, reconciling = false, loading = false, onAction, bindControl }: ConflictRowProps) {
+export function ConflictRow({ operationState, conflicted, reason: given, running = false, reconciling = false, loading = false, onAction, onResolve, bindControl }: ConflictRowProps) {
   const quiet = quietReason(running, reconciling);
   const reason = quiet ?? given;
   const reasonId = useId();
@@ -72,7 +75,9 @@ export function ConflictRow({ operationState, conflicted, reason: given, running
     if (refusal !== null) setRefusals((r) => ({ ...r, [action]: refusal }));
   }
 
-  const continueReason = reason ?? (loading ? BLOCKED_TEXT.loading : conflicted > 0 ? continueBlocked(conflicted) : null);
+  // FR-102: the count is known only when every entry page arrived. Resolve conflicts opens a view, so no reason blocks it.
+  const resolving = !loading && conflicted > 0;
+  const continueReason = reason ?? (loading ? BLOCKED_TEXT.loading : null);
   const action = (name: ConflictAction, label: string, icon: IconSvgElement, own: string | null, describedBy: string, danger = false) => (
     <Button
       key={name}
@@ -109,8 +114,21 @@ export function ConflictRow({ operationState, conflicted, reason: given, running
       <span>{unknown ? `${blockingText("unknown", conflicted)} ${FINISH_OUTSIDE}` : blockingText(operationState, conflicted)}</span>
       {unknown ? null : (
         <div role="group" aria-label="Conflict actions" className="flex flex-wrap items-center gap-1">
+          {resolving ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button ref={bindControl} size="sm" onClick={onResolve}>
+                    <HugeiconsIcon icon={GitMergeIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
+                    {RESOLVE_CONFLICTS}
+                  </Button>
+                }
+              />
+              <TooltipContent>{RESOLVE_TOOLTIP}</TooltipContent>
+            </Tooltip>
+          ) : null}
           {hidden("abort") ? null : tip("abort", action("abort", operationState === "merging" ? "Abort merge…" : "Abort rebase…", UndoIcon, reason, reasonId, true), null)}
-          {hidden("continue") ? null : tip("continue", action("continue", "Continue", ArrowRight02Icon, continueReason, reason === null ? continueId : reasonId), null)}
+          {resolving || hidden("continue") ? null : tip("continue", action("continue", "Continue", ArrowRight02Icon, continueReason, reason === null ? continueId : reasonId), null)}
           {hidden("skip") ? null : skip}
         </div>
       )}
@@ -119,7 +137,7 @@ export function ConflictRow({ operationState, conflicted, reason: given, running
           {reason}
         </span>
       )}
-      {reason !== null || continueReason === null || hidden("continue") ? null : (
+      {reason !== null || continueReason === null || resolving || hidden("continue") ? null : (
         <span id={continueId} className="text-muted-text">
           {continueReason}
         </span>

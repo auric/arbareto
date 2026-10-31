@@ -10,6 +10,8 @@ export type Section =
   | "noticeHeading"
   | "references"
   | "historyList"
+  // Feature 004 plan.md D15 "Conflict guidance": the Conflicted section before Changes, while it shows.
+  | "conflicted"
   | "workingChanges"
   | "staged"
   | "comparison"
@@ -210,7 +212,7 @@ export type SectionState = {
 };
 
 const ORDERS: Record<Panel, readonly Section[]> = {
-  commit: ["header", "noticeHeading", "references", "historyList", "workingChanges", "staged", "comparison", "ignorePreview", "composer", "statusRegion"],
+  commit: ["header", "noticeHeading", "references", "historyList", "conflicted", "workingChanges", "staged", "comparison", "ignorePreview", "composer", "statusRegion"],
   details: ["header", "noticeHeading", "references", "historyList", "commitDetails", "changedFiles", "historyDiff", "statusRegion"],
   settings: ["header", "noticeHeading", "scopeBar", "pageList", "pageContent", "statusRegion"],
 };

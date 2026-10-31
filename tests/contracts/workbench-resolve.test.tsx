@@ -500,6 +500,28 @@ describe("Resolve view mount (FR-089, plan D15 P2 regions)", () => {
     expect((review.args[1] as Record<string, unknown>).entryId).toBe(file.entryId);
   });
 
+  // tasks.md T132 case (4). Spec FR-104, FR-089.
+  test("a selected row of the Conflicted section shows the resolve view with the resolve/texts.ts labels, and Mark resolved stays on the row", async () => {
+    const { KIND_TEXTS, TEXTS } = await import("../../src/frontend/resolve/texts");
+    const file = conflicted();
+    const world = createWorld({ operationState: "merging", entries: [file] });
+    world.answers.readComparison = (args) => {
+      const payload = args[1] as { snapshotId: string; entryId: string };
+      return { ...succeeded({ ...COMPARISON, comparisonId: crypto.randomUUID(), snapshotId: payload.snapshotId, entryId: payload.entryId }), entryId: payload.entryId };
+    };
+    await mountWorkbench(workbench, world);
+    await click(button("Commit", document.querySelector('header nav[aria-label="Views"]')!));
+    const row = document.querySelector<HTMLElement>(`[role="tree"][aria-label="Conflicted"] [role="treeitem"][data-entry-id="${file.entryId}"]`)!;
+    expect(row).not.toBeNull();
+    await click(row);
+    await settle();
+    expect(row.getAttribute("aria-selected")).toBe("true");
+    const region = document.querySelector(`[data-section="comparison"] section[aria-label="${TEXTS.region(PATH)}"]`)!;
+    expect(region).not.toBeNull();
+    for (const label of [TEXTS.kind, KIND_TEXTS.UU!, TEXTS.ours, TEXTS.theirs, TEXTS.openTool, TEXTS.markResolved]) expect(text(region)).toContain(label);
+    expect(buttons("Mark resolved app.ts", row)).toHaveLength(1);
+  });
+
   test("Open Editor and tools opens Settings on that page and focuses the view heading", async () => {
     const file = conflicted();
     const world = createWorld({ operationState: "merging", entries: [file] });

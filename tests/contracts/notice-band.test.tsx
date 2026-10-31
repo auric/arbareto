@@ -295,3 +295,82 @@ describe("recovery row lifetime in the workbench", () => {
     expect(shown()).toBe(false);
   });
 });
+
+// Feature 004 tasks.md T130. Spec FR-102, SC-017. Plan D15 "Conflict guidance", band conflict row.
+describe("Resolve conflicts in the conflict row (004 FR-102)", () => {
+  const RESOLVE = "Resolve conflicts";
+  const RESOLVE_TIP = "Open the Commit view and select the first conflicted file.";
+  const LOADING = "A status page is still loading.";
+  const label = (b: Element) => b.getAttribute("aria-label") ?? (b.textContent ?? "").replace(/\s+/g, " ").trim();
+  async function row(props: { operationState: "merging" | "rebasing"; conflicted: number; loading?: boolean }) {
+    const { ConflictRow } = await import("../../src/frontend/sync/ConflictActions");
+    const host = document.body.appendChild(document.createElement("div"));
+    const root = createRoot(host);
+    const calls = { resolve: 0, actions: [] as string[] };
+    await act(async () =>
+      root.render(
+        <ConflictRow
+          {...props}
+          reason={null}
+          onResolve={() => void calls.resolve++}
+          onAction={async (action) => (calls.actions.push(action), null)}
+        />,
+      ),
+    );
+    const actions = () => [...host.querySelectorAll("button")].map(label);
+    const find = (name: string) => [...host.querySelectorAll<HTMLElement>("button")].find((b) => label(b) === name)!;
+    const unmount = async () => {
+      await act(async () => root.unmount());
+      host.remove();
+    };
+    return { host, actions, find, calls, unmount };
+  }
+  const focusTooltip = async (element: HTMLElement) => {
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", code: "Tab", bubbles: true }));
+      element.focus();
+    });
+    await act(async () => void (await new Promise((resolve) => setTimeout(resolve, 30))));
+    return document.querySelector('[data-slot="tooltip-content"]')?.textContent ?? null;
+  };
+
+  for (const operationState of ["merging", "rebasing"] as const) {
+    for (const conflicted of [1, 2]) {
+      test(`${operationState} with ${conflicted} u records shows Resolve conflicts first, then Abort, Skip only for a rebase, and no Continue`, async () => {
+        const view = await row({ operationState, conflicted });
+        const abort = operationState === "merging" ? "Abort merge…" : "Abort rebase…";
+        expect(view.actions()).toEqual(operationState === "merging" ? [RESOLVE, abort] : [RESOLVE, abort, "Skip…"]);
+        const resolve = view.find(RESOLVE);
+        expect(resolve.getAttribute("aria-disabled")).not.toBe("true");
+        expect(await focusTooltip(resolve)).toBe(RESOLVE_TIP);
+        // The 003 Continue reason goes, because Continue does not show (spec 003 FR-043 amendment).
+        const text = (view.host.textContent ?? "").replace(/\s+/g, " ");
+        expect(text).not.toContain("Continue is unavailable while");
+        expect(text).not.toContain("Mark them resolved first.");
+        expect(text).not.toContain("Mark it resolved first.");
+        await act(async () => resolve.click());
+        expect(view.calls.resolve).toBe(1);
+        expect(view.calls.actions).toEqual([]);
+        await view.unmount();
+      });
+    }
+    test(`${operationState} without u records shows Continue with the 003 rules and no Resolve conflicts`, async () => {
+      const view = await row({ operationState, conflicted: 0 });
+      const abort = operationState === "merging" ? "Abort merge…" : "Abort rebase…";
+      expect(view.actions()).toEqual(operationState === "merging" ? [abort, "Continue"] : [abort, "Continue", "Skip…"]);
+      const cont = view.find("Continue");
+      expect(cont.getAttribute("aria-disabled")).not.toBe("true");
+      await act(async () => cont.click());
+      expect(view.calls.actions).toEqual(["continue"]);
+      await view.unmount();
+    });
+    test(`${operationState} with missing entry pages shows Continue with the loading reason and no Resolve conflicts`, async () => {
+      const view = await row({ operationState, conflicted: 2, loading: true });
+      expect(view.actions()).not.toContain(RESOLVE);
+      const cont = view.find("Continue");
+      expect(cont.getAttribute("aria-disabled")).toBe("true");
+      expect(document.getElementById(cont.getAttribute("aria-describedby")!)?.textContent).toBe(LOADING);
+      await view.unmount();
+    });
+  }
+});

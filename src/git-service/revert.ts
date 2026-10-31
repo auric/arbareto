@@ -258,6 +258,7 @@ function factReason(fact: FileFact): string | null {
 const workingOf = (f: FileFactOf): Working | null => {
   if (f.digest === undefined || f.links === undefined) return null;
   if (f.attributes !== undefined) return { size: f.size, sha256: f.digest, attributes: f.attributes, links: f.links, owner: f.owner!, group: f.group!, dacl: f.dacl!, creationTime: f.creationTime! };
+  // Contract Δ6 (decision of 2026-10-31): the WSL `mode` is the full `st_mode`. The shell compares the full value and copies `mode & 07777`.
   if (f.mode !== undefined && f.xattr === false) return { size: f.size, sha256: f.digest, mode: f.mode, uid: f.uid!, gid: f.gid!, links: f.links, xattr: false };
   return null;
 };
@@ -448,38 +449,36 @@ type Reply = WorkingReplaceReply | null;
 type Temp = { name: string; size: number; sha256: string };
 type FileOutcome = { entryId: string; outcome: "reverted" | "unstaged-only" | "not-changed" | "changed-outside" | "not-started"; code?: "stale" | "refused" | "error"; reason?: string };
 
-// Plan.md D5a step 2: the exact parse of `<temp> TAB <path> NUL` records. Null: output outside that grammar or a path outside the batch.
-function parseTemps(raw: Uint8Array, batch: readonly Uint8Array[]): Map<string, string> | null {
+// Plan.md D5a step 2: the complete records `<temp> TAB <path> NUL` whose name is one path component in the worktree root and whose path is a batch path.
+// `exact` is false for any other byte: a record outside that grammar, a path outside the batch, a path twice, or a record without its NUL.
+function tempRecords(raw: Uint8Array, batch: readonly Uint8Array[]): { temps: Map<string, string>; names: string[]; exact: boolean } {
   const wanted = new Set(batch.map(latin1));
   const temps = new Map<string, string>();
+  const names: string[] = [];
+  let exact = true;
   for (let at = 0; at < raw.length; ) {
     const end = raw.indexOf(0, at);
-    const tab = raw.indexOf(0x09, at);
-    if (end < 0 || tab < 0 || tab > end) return null;
-    let name: string;
-    try {
-      name = strictUtf8.decode(raw.subarray(at, tab));
-    } catch {
-      return null;
-    }
-    const path = latin1(raw.subarray(tab + 1, end));
+    if (end < 0) return { temps, names, exact: false };
+    const record = raw.subarray(at, end);
     at = end + 1;
-    // The name of `mkstemp` is one path component in the worktree root.
-    if (name.length === 0 || name.length > TEMP_NAME_UNITS || !NATIVE.isComponent(name) || !wanted.has(path) || temps.has(path)) return null;
+    const tab = record.indexOf(0x09);
+    let name = "";
+    try {
+      name = tab < 0 ? "" : strictUtf8.decode(record.subarray(0, tab));
+    } catch {
+      name = "";
+    }
+    const path = latin1(record.subarray(tab + 1));
+    // The name of `mkstemp` is one path component in the worktree root (Git `entry.c`).
+    if (tab < 0 || name.length === 0 || name.length > TEMP_NAME_UNITS || !NATIVE.isComponent(name) || !wanted.has(path)) {
+      exact = false;
+      continue;
+    }
+    names.push(name);
+    if (temps.has(path)) exact = false;
     temps.set(path, name);
   }
-  return temps;
-}
-
-// The names that a broken record still names as one component. Only these can go through `tempRemove`.
-function namedTemps(raw: Uint8Array): string[] {
-  const names: string[] = [];
-  for (const record of latin1(raw).split("\0")) {
-    const tab = record.indexOf("\t");
-    const name = tab < 0 ? "" : record.slice(0, tab);
-    if (name.length > 0 && name.length <= TEMP_NAME_UNITS && NATIVE.isComponent(name) && /^[\x20-\x7e]+$/.test(name)) names.push(name);
-  }
-  return names;
+  return { temps, names, exact };
 }
 
 async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Promise<void> {
@@ -494,6 +493,9 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
   const ends: StepEnd[] = [];
   let failure: ErrorCode | null = null;
   let stopped = false;
+  // A request without a shell reply, so its effect is not known.
+  let lost = false;
+  const deadlines = new Set<number>();
   let done = 0;
   const result = { action: bound.action };
   const count = plans.length;
@@ -545,9 +547,11 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
     const out = createCollector({ maxBytes: batch.reduce((n, i) => n + paths[i]!.length + TEMP_NAME_UNITS * 3 + 2, 0) });
     const step = await stepOf(ctx, checkoutTempArgs(), out, Buffer.concat(batch.flatMap((i) => [paths[i]!, NUL])), sizeDeadlineMs(sizes));
     const raw = out.take();
-    const temps = !("exit" in step) || step.exit.exitCode !== 0 || out.limited ? null : parseTemps(raw, batch.map((i) => paths[i]!));
+    const records = tempRecords(raw, batch.map((i) => paths[i]!));
+    const temps = !("exit" in step) || step.exit.exitCode !== 0 || out.limited || !records.exact ? null : records.temps;
     if (temps === null || temps.size !== batch.length) {
-      await removeNamed(namedTemps(raw));
+      // Data-model §8a: only the names of complete exact records can go. Every other name stays, and the failure code names the gap.
+      await removeNamed(records.names);
       if (!("exit" in step)) failure = isStop(step) ? (step.stop === "deadline" ? "DEADLINE" : null) : step.code;
       else failure = step.exit.exitCode !== 0 ? "GIT_FAILED" : "MALFORMED_GIT_OUTPUT";
       stopped = true;
@@ -591,6 +595,8 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
         source: temp,
         ...(folders.length > 0 ? { folders } : {}),
       };
+      // The digest of the sent bytes decides `reverted`, also when the reply is lost or broken after a landed rename.
+      newSha[i] = temp.sha256;
       let reply: WorkingReplaceReply | WalkStop;
       try {
         reply = await ctx.runner.fileReplaceWorking(request, ctx.signal);
@@ -600,10 +606,17 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
         unused.push(temp);
         continue;
       }
-      const answer: WorkingReplaceReply = "stop" in reply ? { result: "stopped" } : reply;
+      // Contract §6 "Walks": no shell reply within the wait after `cancel`. The request can still write and still use its source, so the outcome stays unknown.
+      if ("stop" in reply) {
+        lost = true;
+        stopped = true;
+        continue;
+      }
+      const answer = reply;
       replies[i] = answer;
+      // Only the shell's own `stopped` reply means a stop. Without a Cancel of this run, it was the shell deadline.
+      if (answer.result === "stopped" && !ctx.signal.aborted) deadlines.add(i);
       if (answer.result === "replaced") {
-        newSha[i] = temp.sha256;
         // Contract Δ6: `replaced` names the request folders that the shell created, from the first one on.
         const skipped = plan.folders.length - folders.length;
         for (let f = 0; f < (answer.folders?.length ?? 0); f++) created.add(names[i]!.slice(0, depth + skipped + f + 1).join("/"));
@@ -616,7 +629,8 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
   }
 
   const settled_ = await r.reconcile(ends);
-  if (settled_ === null) return r.unknown({ code: "GIT_FAILED" }, result);
+  // Plan.md D10 "unknown": a lost reply leaves the outcome unknown, and the recovery marker stays (001 FR-023).
+  if (settled_ === null || lost) return r.unknown({ code: "GIT_FAILED" }, result);
   // Plan.md D10: the fresh index entries, the fresh digests, and the status read.
   const freshIndex = await indexEntriesOf(q, paths);
   const freshFacts = await factsOf(q, names.map((path) => ({ root: "worktreeRoot", path })), { digest: true, stream: true });
@@ -654,7 +668,7 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
   if (settled_.canceled) return r.finish({ type: "no-effects", observed: "canceled" }, value);
   // No file changed: the code of the first file in tree order.
   const firstCode = outcomes[0]!.code;
-  const code: ErrorCode = failure ?? (firstCode === "stale" ? "STALE_REVIEW" : firstCode === "refused" ? "WORKBENCH_UNAVAILABLE" : "GIT_FAILED");
+  const code: ErrorCode = failure ?? (firstCode === "stale" ? "STALE_REVIEW" : firstCode === "refused" ? "WORKBENCH_UNAVAILABLE" : deadlines.has(0) ? "DEADLINE" : "GIT_FAILED");
   r.finish({ type: "no-effects", observed: "failed", code }, value);
 }
 

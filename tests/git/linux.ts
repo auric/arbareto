@@ -322,7 +322,8 @@ export function readFileFacts(roots: Record<FactRoot, string>, digest: boolean, 
         if ("kind" in mode) return mode;
         const size = Number(stat.size);
         let fact: FileFact = { kind: "file", size, lastWrite: stat.mtimeNs.toString(), ...mode, ownerExecute: (stat.mode & S_IXUSR) !== 0n };
-        // Feature 008 contract Δ6 `detail`: the WSL facts. listxattr(2) with size 0 gives the length of the name list; 0 means no name.
+        // Feature 008 contract Δ6 `detail`: the WSL facts. `mode` is the full `st_mode` with the file type bits.
+        // listxattr(2) with size 0 gives the length of the name list; 0 means no name.
         if (options.detail === true) {
           const names = Number(libc().listxattr(ptr(Buffer.from(`/proc/self/fd/${fd}\0`)), null, 0));
           if (names < 0) return { kind: "error", component, code: "other-error" };

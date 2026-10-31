@@ -95,7 +95,8 @@ Cases for the G5 probe and the unit vectors of `tests/git/revert-bytes.test.ts`:
 | `context-only`, `several-hunks`, `deleted-file`, `new-file`, `eof-newline` | lines | `subHunk`, the renderer mapping |
 | `unstaged-changes` | staged lines | the status worktree letter |
 | `untracked` | files, lines | the status record `?` |
-| `in-the-way` | files | an untracked record at a bound-absent path |
+| `in-the-way` | files | an untracked record at a bound-absent path, or a file that is not a folder at a folder name of that path |
+| `unreadable` (005) | files, unstaged | a `fileFacts` `error` fact of a target or of a folder on its path |
 | `attributes` | all | `check-attr` against `check-attr --cached` |
 | `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, `xattr` | all | `fileFacts` with `detail` (plan D8, D9) |
 | `limit` | files, unstaged | `MULTI_FILE_ACTION_FILES` |
@@ -123,10 +124,15 @@ A `not-changed` file with a reply code is the "failed with its code" outcome of 
 
 A fresh read that fails gives the unknown outcome of the whole run (001 FR-023).
 
+- `newSha256` of a whole file is the SHA-256 of Git's temporary file that the request sent. A fresh digest equal to it gives `reverted`, also after an `interrupted` reply.
+- Only the shell reply `stopped` means that a write did not start. A `fileReplace` without a shell reply within the service wait after a Cancel gives the unknown outcome of the whole run, and the recovery marker stays.
+- No file changed and the first file got `stopped` without a Cancel: the shell deadline stopped it, so the response code is `DEADLINE`.
+
 ## 8a. Git temporary file (whole files, plan D5a)
 
 - Per batch path: `{name, path, size, sha256}`. `name` comes from the exact parse of `<temp> TAB <path> NUL` and is one path component in the worktree root. `size` and `sha256` come from a streamed `fileFacts` digest.
 - A record whose `path` is not a batch path, or a name with a separator, gives `MALFORMED_GIT_OUTPUT`.
+- After a failed parse, only a complete record `<name> TAB <batch path> NUL` names a file that `tempRemove` may remove. Every other name stays, and the run ends with `MALFORMED_GIT_OUTPUT` or `GIT_FAILED` (known limit, spec FR-036).
 - The record ends in one of two ways: a `fileReplace` with `source` consumes it, or `tempRemove` removes it by `name` with `size` and `sha256`. A stop between the two leaves it (spec FR-036 known limit).
 
 ## 9. Result (service to renderer)

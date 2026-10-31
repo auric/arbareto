@@ -200,12 +200,15 @@ describe("contract Δ3 run result (data-model §8, §9)", () => {
   const R = envelope.RunWorkbenchResult;
   const run = (fields: Record<string, unknown> = {}) => ({ action: "revert-files", files: [{ entryId: id(), outcome: "reverted" }], foldersCreated: [], index: "published", ...fields });
 
-  test("each file states its outcome, and only not-changed carries a reply code", () => {
+  // Spec FR-017: an unstaged-only file names why its write did not change it, with the reply code of not-changed.
+  test("each file states its outcome, and only not-changed and unstaged-only carry a reply code", () => {
     const files = [
       ...["reverted", "unstaged-only", "changed-outside", "not-started", "not-changed"].map((outcome) => ({ entryId: id(), outcome })),
-      { entryId: id(), outcome: "not-changed", code: "stale" },
-      { entryId: id(), outcome: "not-changed", code: "refused", reason: "hard-link" },
-      { entryId: id(), outcome: "not-changed", code: "error", reason: "sharing-violation" },
+      ...["not-changed", "unstaged-only"].flatMap((outcome) => [
+        { entryId: id(), outcome, code: "stale" },
+        { entryId: id(), outcome, code: "refused", reason: "hard-link" },
+        { entryId: id(), outcome, code: "error", reason: "sharing-violation" },
+      ]),
     ];
     expect(ok(R, run({ files, foldersCreated: [b64("new"), b64("new/deep")] }))).toBe(true);
     for (const index of ["published", "none", "refused"]) expect(ok(R, run({ index }))).toBe(true);
@@ -217,6 +220,10 @@ describe("contract Δ3 run result (data-model §8, §9)", () => {
     expect(ok(R, run({ files: [{ entryId: id(), outcome: "not-changed", code: "stale", reason: "hard-link" }] }))).toBe(false);
     expect(ok(R, run({ files: [{ entryId: id(), outcome: "not-changed", code: "refused", reason: "sharing-violation" }] }))).toBe(false);
     expect(ok(R, run({ files: [{ entryId: id(), outcome: "not-changed", code: "error", reason: "hard-link" }] }))).toBe(false);
+    for (const outcome of ["reverted", "changed-outside", "not-started"]) expect(ok(R, run({ files: [{ entryId: id(), outcome, code: "stale" }] }))).toBe(false);
+    expect(ok(R, run({ files: [{ entryId: id(), outcome: "unstaged-only", reason: "hard-link" }] }))).toBe(false);
+    expect(ok(R, run({ files: [{ entryId: id(), outcome: "unstaged-only", code: "refused" }] }))).toBe(false);
+    expect(ok(R, run({ files: [{ entryId: id(), outcome: "unstaged-only", code: "refused", reason: "disk-full" }] }))).toBe(false);
     expect(ok(R, run({ foldersCreated: [""] }))).toBe(false);
   });
 

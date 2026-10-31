@@ -435,6 +435,7 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
   const endRead = (operationId: string, end: ReadEnd<ReadResult, ReadResult | null>) => {
     if (end.kind === "canceled") return void registry.apply(operationId, { type: "processes-stopped" });
     if (end.kind === "deadline") return void registry.apply(operationId, { type: "read-deadline" });
+    if (end.kind === "failed") return void registry.apply(operationId, { type: "read-complete", result: "failed", code: "GIT_FAILED" });
     const outcome = end.outcome.result === "failed" && end.reread !== null ? end.reread : end.outcome;
     if (outcome.result === "deadline") return void registry.apply(operationId, { type: "read-deadline" });
     if (outcome.result === "canceled") {

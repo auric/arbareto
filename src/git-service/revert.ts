@@ -276,8 +276,7 @@ const workingOf = (f: FileFactOf): Working | null => {
 const entryAt = (e: ChangeEntry, at: 0 | 1): Entry | "absent" => (e.modes![at] === ABSENT_MODE ? "absent" : { mode: e.modes![at]!, oid: e.oids![at]! });
 
 // Data-model §2 and §3, plan.md D5 and D6: the whole-file plans of `entries`, with the D2 refusal order per file.
-// `untracked` holds the paths of the untracked records of the shown read (data-model §7 `in-the-way`).
-async function wholeFiles(ctx: WorkbenchContext, common: Common, entries: readonly ChangeEntry[], source: "index" | "head", untracked: ReadonlySet<string>): Promise<{ files: FilePlan[]; attributes: RevertBound["attributes"] } | Refused | Failure | Stop> {
+async function wholeFiles(ctx: WorkbenchContext, common: Common, entries: readonly ChangeEntry[], source: "index" | "head"): Promise<{ files: FilePlan[]; attributes: RevertBound["attributes"] } | Refused | Failure | Stop> {
   // Contract §4 "Comparison limits": a snapshot with a fingerprint keeps the index flags of every tracked entry.
   if (entries.some((e) => e.flags === undefined || e.modes === undefined || e.oids === undefined)) return { code: "MALFORMED_GIT_OUTPUT" };
   // Data-model §3 `source`: the entry that `checkout-index --temp` writes. A staged new file has none, so its working file stays (spec FR-021).
@@ -322,7 +321,8 @@ async function wholeFiles(ctx: WorkbenchContext, common: Common, entries: readon
     // Contract Δ3: the fresh index entry of the path must equal the shown read, or the shown read is stale.
     const fresh = indexed.value.get(latin1(c.path)) ?? "absent";
     if (!sameEntry(fresh, snapshotIndex)) return STALE;
-    let reason = support ?? filter ?? (untracked.has(e.pathBytes) ? "in-the-way" : null);
+    // Spec FR-020: an entry that the index lacks and a name that the volume holds is in the way. Status lists no ignored file, so the OS fact decides.
+    let reason = support ?? filter ?? (snapshotIndex === "absent" && fact.kind !== "absent" && fact.kind !== "error" ? "in-the-way" : null);
     if (reason === null) {
       reason = factReason(fact);
       // An absent target needs each missing folder. A link on the way, or another file at a folder name, blocks it (plan.md D8 `folders`).
@@ -445,8 +445,7 @@ async function observeRevert(ctx: WorkbenchContext, p: Payload, common: Common):
     }
   }
   if (entries.length + reasons.length > MULTI_FILE_ACTION_FILES) return unavailable("limit");
-  const untracked = new Set(s.entries.filter((e) => e.category === "untracked").map((e) => e.pathBytes));
-  const planned = await wholeFiles(ctx, common, entries, p.action === "revert-files" ? "head" : "index", untracked);
+  const planned = await wholeFiles(ctx, common, entries, p.action === "revert-files" ? "head" : "index");
   if (!("files" in planned)) {
     if (reasons.length === 0 || !("refused" in planned) || planned.result?.files === undefined) return reasons.length === 0 ? planned : fileRefusal(reasons, []);
     return fileRefusal(reasons, planned.result.files as { path: string; reason: string }[]);
@@ -531,7 +530,9 @@ async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, p
   const target = lineTarget(ctx.comparisons.get(p.comparisonId), p, w);
   if (!("sub" in target)) return target;
   const { c, e, path, names, hunk, sub } = target;
-  // An unstaged change always has an index entry. `precheck` rejected every other scope.
+  // Plan.md D4: the staged lines come in T039. `precheck` rejects them first. Without it, the read-scheduler fallback ends this read `failed` with GIT_FAILED.
+  if (c.scope !== "index-to-worktree") return { code: "SERVICE_UNAVAILABLE" };
+  // An unstaged change always has an index entry.
   if (e.modes![1] === ABSENT_MODE) return { code: "MALFORMED_GIT_OUTPUT" };
   const indexEntry: Entry = { mode: e.modes![1]!, oid: e.oids![1]! };
   const indexed = await indexEntriesOf(ctx, [path]);
@@ -701,8 +702,8 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
   let stopped = false;
   // A request without a shell reply, so its effect is not known.
   let lost = false;
-  // A `tempRemove` without a known result (contract Δ6 `interrupted`).
-  let tempUnknown = false;
+  // A Git temporary file that can stay: a `tempRemove` other than `removed` or `absent`, a refused request, or a temporary file without facts (spec FR-036).
+  let tempKept = false;
   const deadlines = new Set<number>();
   let done = 0;
   const result = { action: bound.action };
@@ -733,27 +734,30 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
   if (!stopped && count > 0) r.progress("revert-files", { fileIndex: 0, fileCount: count });
 
   // Plan.md D5a step 6: each Git temporary file that no write consumed. The cleanup reads with the signal that never aborts.
-  // Contract Δ6 `tempRemove`: `interrupted` and a lost reply leave an unknown effect, so the run waits for the process-end fact and never ends `succeeded`.
+  // Plan.md D10: a file that stays is an effect, so the run never ends `succeeded` or `no-effects`.
+  // Contract Δ6 `tempRemove`: `interrupted` and a lost reply also leave an unknown effect, so the run waits for the process-end fact.
   const removeTemps = async (temps: Temp[]) => {
     for (const t of temps) {
-      let reply: TempRemoveReply | WalkStop;
+      let reply: TempRemoveReply | WalkStop | null = null;
       try {
         reply = await ctx.runner.tempRemove({ operationId: ctx.operationId, repositoryId: w.repositoryId, name: t.name, expected: { size: t.size, sha256: t.sha256 } }, q.signal);
       } catch (error) {
         if (!(error instanceof RunnerRefusal)) throw error;
-        continue;
       }
-      if ("stop" in reply || reply.result === "interrupted") {
-        tempUnknown = true;
-        ends.push({ exit: null, canceled: false, refused: null, outputTail: "" });
-      }
+      if (reply !== null && !("stop" in reply) && (reply.result === "removed" || reply.result === "absent")) continue;
+      tempKept = true;
+      if (reply !== null && ("stop" in reply || reply.result === "interrupted")) ends.push({ exit: null, canceled: false, refused: null, outputTail: "" });
     }
   };
-  // A broken `checkout-index` record names no facts, so each named file first gets its facts.
+  // A broken `checkout-index` record names no facts, so each named file first gets its facts. A name without facts can stay.
   const removeNamed = async (names: string[]) => {
     if (names.length === 0) return;
     const facts = await factsOf(q, names.map((name) => ({ root: "worktreeRoot", path: [name] })), { digest: true, stream: true });
-    if (!("value" in facts)) return;
+    if (!("value" in facts)) {
+      tempKept = true;
+      return;
+    }
+    if (facts.value.some((f) => f.kind !== "absent" && (f.kind !== "file" || f.digest === undefined))) tempKept = true;
     await removeTemps(facts.value.flatMap((f, i) => (f.kind === "file" && f.digest !== undefined ? [{ name: names[i]!, size: f.size, sha256: f.digest }] : [])));
   };
   // Plan.md D5a steps 1 and 3: the index entries of the batch and the raw index digest.
@@ -848,6 +852,8 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
     });
     if (!("value" in again) || again.value.digest !== first.value.digest || !again.value.entries.every((e, k) => sameEntry(e, first.value.entries[k]!)) || files.some((f) => f === null)) {
       await removeTemps(files.filter((f): f is Temp => f !== null));
+      // A temporary file without facts cannot go through `tempRemove`.
+      if (files.some((f, k) => f === null && facts?.[k]?.kind !== "absent")) tempKept = true;
       if (!("value" in again)) failure = "code" in again ? again.code : again.stop === "deadline" ? "DEADLINE" : null;
       else if (files.some((f) => f === null)) failure = "GIT_FAILED";
       else stale(batch);
@@ -908,22 +914,19 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
     // A file without a write keeps its working bytes (data-model §8 `keep`).
     const intended = line === null && plan.source === null ? old : newSha[i];
     const reply = replies[i]!;
+    // Data-model §8: the reply code of a write that left the old bytes. Spec FR-017 names it for an unstaged-only file too.
+    const why: Partial<FileOutcome> =
+      reply?.result === "stale" ? { code: "stale" } : reply?.result === "refused" ? { code: "refused", reason: reply.reason } : reply?.result === "error" ? { code: "error", reason: reply.code } : {};
     const at = (outcome: FileOutcome["outcome"], extra: Partial<FileOutcome> = {}): FileOutcome => ({ entryId: plan.entryId, outcome, ...extra });
     if (sameEntry(index, planned) && intended !== null && digest === intended) return at("reverted");
-    if (sameEntry(index, planned) && !sameEntry(planned, plan.indexEntry) && digest === old) return at("unstaged-only");
-    if (sameEntry(index, plan.indexEntry) && digest === old) {
-      if (reply === null) return at("not-started");
-      if (reply.result === "stale") return at("not-changed", { code: "stale" });
-      if (reply.result === "refused") return at("not-changed", { code: "refused", reason: reply.reason });
-      if (reply.result === "error") return at("not-changed", { code: "error", reason: reply.code });
-      return at("not-changed");
-    }
+    if (sameEntry(index, planned) && !sameEntry(planned, plan.indexEntry) && digest === old) return at("unstaged-only", why);
+    if (sameEntry(index, plan.indexEntry) && digest === old) return reply === null ? at("not-started") : at("not-changed", why);
     return at("changed-outside");
   });
   const value = { action: bound.action, files: outcomes, foldersCreated: [...created].map((path) => Buffer.from(path).toString("base64")), index };
-  // Plan.md D10: created folders and an unknown `tempRemove` are effects too, so such a run never ends `succeeded` or `no-effects`.
-  const effects = outcomes.filter((o) => o.outcome === "reverted" || o.outcome === "unstaged-only" || o.outcome === "changed-outside").length + created.size + (tempUnknown ? 1 : 0);
-  if (tempUnknown) return r.finish({ type: "failed-with-effects" }, value);
+  // Plan.md D10: created folders and a Git temporary file that can stay are effects too, so such a run never ends `succeeded` or `no-effects`.
+  const effects = outcomes.filter((o) => o.outcome === "reverted" || o.outcome === "unstaged-only" || o.outcome === "changed-outside").length + created.size + (tempKept ? 1 : 0);
+  if (tempKept) return r.finish({ type: "failed-with-effects" }, value);
   // Plan.md D10 "Response state": the fresh read decides. A Cancel never turns an effect into `canceled`, and it never reports an undo.
   if (outcomes.every((o) => o.outcome === "reverted")) return r.finish({ type: "intended-effects-confirmed" }, value);
   if (effects > 0) return r.finish({ type: "failed-with-effects" }, value);

@@ -9,7 +9,7 @@ import { describe, expect } from "bun:test";
 import { randomBytes } from "node:crypto";
 import { linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { RunWorkbenchResult } from "../../src/contracts/envelope";
+import { Response, RunWorkbenchResult } from "../../src/contracts/envelope";
 import { MULTI_FILE_ACTION_FILES, PIPE_FRAME_BYTES } from "../../src/contracts/limits";
 import { LOCKED_REMEDY } from "../../src/git-service/index-lock";
 import { OBJECT_MISSING_REMEDY } from "../../src/git-service/status";
@@ -288,6 +288,47 @@ describe("revert files: refusals (data-model §7, spec FR-022)", () => {
     TIMEOUT_MS,
   );
 
+  // Review of batch 2: status runs without `--ignored`, so an ignored file at a staged deletion has no untracked record. The OS fact decides (spec FR-020).
+  caseTest(TASK, "an ignored file at a staged-deletion path gives in-the-way and keeps its bytes", SHELL, () =>
+    withService({ name: "t029-ignored" }, async (service) => {
+      const repo = build("ignored", { ".gitignore": ".env\n", "keep.txt": "keep\n" }, (r) => {
+        write(r, ".env", "secret=1\n");
+        g(r, ["--literal-pathspecs", "add", "-f", "--", ".env"]);
+        g(r, ["commit", "-q", "--no-verify", "-m", "env"]);
+        g(r, ["--literal-pathspecs", "rm", "-q", "--cached", "--", ".env"]);
+        write(r, ".env", "secret=2\n");
+      });
+      const before = state(repo);
+      const { r, read } = await open(service, repo);
+      expect(read.entries.filter((e) => e.path === ".env").map((e) => e.category)).toEqual(["staged"]);
+      expect(refusal(await review(service, r, read, [idOf(read, ".env", "staged")]))).toEqual({
+        state: "failed",
+        code: "WORKBENCH_UNAVAILABLE",
+        result: { reason: "in-the-way", files: [{ path: b64(".env"), reason: "in-the-way" }], more: 0 },
+      });
+      expect(state(repo)).toEqual(before);
+      expect(readFileSync(join(repo, ".env"), "utf8")).toBe("secret=2\n");
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(TASK, "a file that appears at a staged-deletion path after the status read refuses the run and the review", SHELL, () =>
+    withService({ name: "t029-appears" }, async (service) => {
+      const repo = build("appears", { "g.txt": "g\n", "keep.txt": "keep\n" }, (r) => g(r, ["--literal-pathspecs", "rm", "-q", "--", "g.txt"]));
+      const { r, read } = await open(service, repo);
+      const ids = [idOf(read, "g.txt", "staged")];
+      // The review binds the absent target. The file appears before the run, so the bound changed (data-model §2).
+      const reviewed = await reviewOk(service, r, read, ids);
+      write(repo, "g.txt", "new\n");
+      const before = state(repo);
+      expect(refusal(await run(service, r, reviewed.workbenchToken))).toEqual({ state: "failed", code: "STALE_REVIEW", result: { action: "revert-files", reason: "revert-changed" } });
+      expect(refusal(await review(service, r, read, ids))).toEqual({ state: "failed", code: "WORKBENCH_UNAVAILABLE", result: { reason: "in-the-way", files: [{ path: b64("g.txt"), reason: "in-the-way" }], more: 0 } });
+      expect(state(repo)).toEqual(before);
+      expect(readFileSync(join(repo, "g.txt"), "utf8")).toBe("new\n");
+    }),
+    TIMEOUT_MS,
+  );
+
   caseTest(TASK, `the payload bound is ${MULTI_FILE_ACTION_FILES} files: one more gives INVALID_REQUEST before any read (spec FR-022 limit)`, SHELL, () =>
     withService({ name: "t029-limit" }, async (service) => {
       const repo = build("limit", TWO, changeTwo);
@@ -358,6 +399,69 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
     }),
     TIMEOUT_MS,
   );
+
+  // Review of batch 2: a Git temporary file that stays is an effect, so the run never ends succeeded (plan.md D10, spec FR-036).
+  for (const reply of [{ result: "error", code: "access-denied" }, { result: "stale" }, { result: "stopped" }] as const) {
+    caseTest(TASK, `a kept source whose tempRemove gives ${reply.result} ends failed-with-effects`, SHELL, () =>
+      withService({ name: `t029-kept-${reply.result}` }, async (service) => {
+        const repo = build(`kept-${reply.result}`, TWO, changeTwo);
+        const { r, read } = await open(service, repo);
+        const reviewed = await reviewOk(service, r, read, [idOf(read, "a.txt", "unstaged"), idOf(read, "sub/c.txt", "unstaged")]);
+        service.runner.inject.replaceStep = (step, path) => (step === "renamed" && path.endsWith("a.txt") ? "keep-source" : undefined);
+        service.runner.inject.tempRemoveReply = () => reply;
+        try {
+          const done = await run(service, r, reviewed.workbenchToken);
+          expect({ state: done.state, code: done.code, outcomes: done.result?.files.map((f) => f.outcome), removes: frames(service, "tempRemove").length }).toEqual({
+            state: "failed-with-effects",
+            code: "FAILED_WITH_EFFECTS",
+            outcomes: ["reverted", "reverted"],
+            removes: 1,
+          });
+        } finally {
+          service.runner.inject.replaceStep = null;
+          service.runner.inject.tempRemoveReply = null;
+        }
+        expect(gitTemps(repo).length).toBe(1);
+        for (const name of gitTemps(repo)) rmSync(join(repo, name));
+      }),
+      TIMEOUT_MS,
+    );
+  }
+
+  // Review of batch 2: a refused index part ends with the value of its refusal. Both values fit the response and the result schema.
+  caseTest(TASK, "a stale index part gives STALE_REVIEW with revert-changed, and both index-part refusal values fit the response schema", SHELL, async () => {
+    let repo = "";
+    let act: "stale" | "lock" = "stale";
+    await withService(
+      {
+        name: "t029-shapes",
+        revertCheckpoint: (c: RevertCheckpoint) => {
+          if (c.step !== "before-index") return;
+          if (act === "stale") add(repo, "other.txt");
+          else writeFileSync(`${gitPathOf(repo, "index")}.lock`, "");
+        },
+      },
+      async (service) => {
+        repo = build("shapes", { "a.txt": "a\n", "keep.txt": "keep\n" }, (r) => {
+          write(r, "a.txt", "a2\n");
+          add(r, "a.txt");
+          write(r, "other.txt", "o\n");
+        });
+        const { r, read } = await open(service, repo);
+        const ids = [idOf(read, "a.txt", "staged")];
+        const stale = await run(service, r, (await reviewOk(service, r, read, ids)).workbenchToken);
+        expect(refusal(stale)).toEqual({ state: "failed", code: "STALE_REVIEW", result: { action: "revert-files", reason: "revert-changed" } });
+        g(repo, ["--literal-pathspecs", "rm", "-q", "--cached", "--", "other.txt"]);
+        act = "lock";
+        const fresh = await readOk(service, r.repositoryId);
+        const locked = await run(service, r, (await reviewOk(service, r, fresh, [idOf(fresh, "a.txt", "staged")])).workbenchToken);
+        rmSync(`${gitPathOf(repo, "index")}.lock`);
+        expect(refusal(locked)).toEqual({ state: "failed", code: "LOCKED", result: { path: expect.stringMatching(/index\.lock$/), remedy: { text: LOCKED_REMEDY } } });
+        for (const response of [stale, locked]) expect({ response: Response.safeParse(response).success, result: RunWorkbenchResult.safeParse(response.result).success }).toEqual({ response: true, result: true });
+        expect(frames(service, "fileReplace").length).toBe(0);
+      },
+    );
+  }, TIMEOUT_MS);
 
   caseTest(TASK, "a stop after checkout-index removes every unused Git temporary file through tempRemove", SHELL, async () => {
     let target: Service | null = null;
@@ -442,11 +546,12 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
         const reviewed = await reviewOk(service, r, read, [idOf(read, "f.txt", "staged")]);
         const head = g(repo, ["ls-tree", "-z", "HEAD", "--", "f.txt"]).toString("latin1");
         const done = await run(service, r, reviewed.workbenchToken);
+        // Spec FR-017: the outcome names why the write did not change the file, with the reply code of not-changed.
         expect({ state: done.state, code: done.code, index: done.result?.index, files: done.result?.files }).toEqual({
           state: "failed-with-effects",
           code: "FAILED_WITH_EFFECTS",
           index: "published",
-          files: [{ entryId: idOf(read, "f.txt", "staged"), outcome: "unstaged-only" }],
+          files: [{ entryId: idOf(read, "f.txt", "staged"), outcome: "unstaged-only", code: "refused", reason: "hard-link" }],
         });
         expect(seen).toEqual(["before-index", "checkout-index", "before-write"]);
         // The index holds the HEAD entry, and the working file keeps its bytes. Status then shows the change as unstaged.

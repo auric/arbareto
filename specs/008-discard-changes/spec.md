@@ -96,7 +96,7 @@ A developer selects one or more files in the Changes list or the Staged list and
 6. **Given** a selection that holds an untracked file. **When** I press R. **Then** no modal opens, and the reason states "Arbareto does not revert an untracked file. Use Delete."
 7. **Given** a staged new file that HEAD does not have. **When** the modal opens. **Then** it states "The last commit does not have 1 of these files. Arbareto unstages it and keeps the file. Git then shows it as untracked." (Clarifications, 2026-10-27).
 8. **Given** a file that another program holds open without write sharing. **When** the run reaches it. **Then** the file stays unchanged. The result states "Another program has login.ts open. Arbareto did not change it. Close the file, then try again."
-9. **Given** a row with a refusal, such as a submodule. **When** I open its row menu. **Then** "Revert file…" is unavailable with the reason, such as "Arbareto does not revert a submodule."
+9. **Given** a row with a refusal, such as a submodule. **When** I open its row menu. **Then** "Revert file…" is unavailable with the reason, such as the 001 text "This entry is a submodule or a nested repository." (FR-038).
 
 ---
 
@@ -197,7 +197,7 @@ The no-heuristics rule applies to every requirement. Every decision comes from e
 
 - Feature 001 provides the comparisons and their support rules (FR-009 to FR-014), and the staging checkpoints. It also provides the read gate, the operation registry with Cancel, the outcome reconciliation (FR-023), and the WSL rules (FR-039 to FR-046).
 - Feature 004 provides the Commit view, the Changes and Staged lists, multi-select, Filter files, and the line selection. It also provides the house action menu and the review and run steps of workbench actions.
-- Feature 005 provides the destructive group of the row menu (FR-023) and the Delete flow for untracked files. It also provides the tree order of confirmation lists (FR-015) and the atomic file replace of the ignore editor (FR-042).
+- Feature 005 provides the row menu with its "Delete from disk" group (FR-023) and the Delete flow for untracked files. It also provides the tree order of confirmation lists (FR-015) and the atomic file replace of the ignore editor (FR-042).
 - The first public package, v0.1.0, waits for this feature (user decision, 2026-10-27).
 
 ### Changes to earlier requirements
@@ -211,7 +211,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **004 Changes to earlier requirements, 001 FR-027** (`specs/004-workbench-ux/spec.md:322`): "Reset, force push other than 003, and other history rewrites stay excluded. Amended by feature 005 …". The list of allowed actions also holds the revert actions of this feature.
 - **004 Assumptions** (`specs/004-workbench-ux/spec.md:526`): "Discard of single files, hunks, or lines stays out of scope, although Git Extensions offers Reset selected lines. This is a reviewer default." The assumption goes.
 - **004 Research inputs** (`specs/004-workbench-ux/spec.md:548`): "Reset selected lines asks for an explicit Yes." The Git Extensions fact stays. Arbareto differs on purpose: Cancel has the first focus, and no button is the default (FR-008).
-- **005 FR-023** (`specs/005-inspection-file-actions/spec.md:330`): "The row menu MUST show a separate labelled group with "Delete…" (Del) and "Delete permanently…" (Shift+Del)." The group also holds "Revert file…" (R) (FR-018).
+- **005 FR-023** (`specs/005-inspection-file-actions/spec.md:330`): "The row menu MUST show a separate labelled group with "Delete…" (Del) and "Delete permanently…" (Shift+Del)." A separate group directly above it holds "Revert file…" (R) (FR-018).
 - **005 FR-020** (`specs/005-inspection-file-actions/spec.md:327`): "Staged-list rows MUST NOT offer Delete." The rule stays. Staged-list rows get their own destructive group with "Revert file…" (FR-018).
 - These texts stay unchanged: 003 `spec.md:226` (reset and revert of branches stay excluded), 005 `spec.md:266` ("Reset file to a revision" stays excluded), and the project brief `docs/project-brief.md:49` (reset variants stay in the power-user release).
 - The project brief `docs/project-brief.md:101` names the label "Discard changes". The user named the actions "Revert" on 2026-10-27. The plan decides whether the brief changes.
@@ -242,7 +242,7 @@ This feature changes these requirements for builds that include it. The earlier 
   - All unstaged with submodule entries: the added line "Submodule changes stay. Arbareto does not change <k> submodules."
   - All unstaged with hidden rows: the added line "This covers <h> files that Filter files hides."
   - With <n>, <k>, or <h> equal to 1, the texts MUST use the singular: "1 line", "1 file", "1 submodule", "the file", "it", and the buttons "Revert line" and "Revert file".
-- **FR-010**: A file confirmation MUST list the first 20 paths in the 005 tree order (005 FR-015). It MUST state "and <m> more files." for the rest, and "and 1 more file." for one. Each path MUST show as untrusted plain text, under the 001 path display rules.
+- **FR-010**: A file confirmation and the confirmation of Revert all unstaged changes MUST list the first 20 paths in the 005 tree order (005 FR-015). It MUST state "and <m> more files." for the rest, and "and 1 more file." for one. Each path MUST show as untrusted plain text, under the 001 path display rules.
 - **FR-011**: The run MUST use its review once. It MUST check the bound facts again immediately before the index publication and immediately before each working-file write. A difference MUST stop that part before it starts. The result MUST name the changed fact. A review MUST expire after the workbench review lifetime of the contract (60 s). An expired review MUST change nothing and state "The review expired. Arbareto changed nothing. Select Revert again."
 
 #### Revert lines and hunk
@@ -256,12 +256,12 @@ This feature changes these requirements for builds that include it. The earlier 
 
 #### Revert file
 
-- **FR-018**: With the Changes list or the Staged list focused, R MUST open the review of the marked rows of that list, or else of the focused row. Marks never span both lists (004 FR-034). The destructive group of the Changes-list row menu (005 FR-023) MUST hold "Revert file…" or "Revert <n> files…" (R). The Staged-list row menu MUST hold a separate destructive group with the same item.
+- **FR-018**: With the Changes list or the Staged list focused, R MUST open the review of the marked rows of that list, or else of the focused row. Marks never span both lists (004 FR-034). The Changes-list row menu MUST hold a separate destructive group with "Revert file…" or "Revert <n> files…" (R), directly above the 005 "Delete from disk" group (005 FR-023). A revert deletes no file, so the item MUST NOT join that group (mockup approval, 2026-10-31). The Staged-list row menu MUST hold a separate destructive group with the same item.
 - **FR-019**: Revert file MUST set each file to HEAD. The index entry MUST get the HEAD mode and object ID. The working file MUST get the bytes that Git's own restore from HEAD writes for that path. Git's `checkout-index --temp` of the published index entry writes these bytes to its temporary file. A file whose index entry already equals HEAD MUST change only its working file.
 - **FR-020**: A deleted file MUST come back, after a staged deletion and after an unstaged deletion. The review MUST bind the path as absent. An untracked file at that path MUST refuse with "A file that Git does not track exists at <path>. Delete it first, or keep the deletion." The run MUST create each missing folder on the path, as Git's own restore does. It MUST create each folder below its held parent, without following a link. A folder that the run created MUST stay after a later stop, and the result MUST name it.
 - **FR-021**: A staged new file that HEAD does not have MUST lose its index entry. Its working file MUST stay, and Git then shows it as untracked (Clarifications, 2026-10-27). On an unborn branch, every file follows this rule.
 - **FR-022**: A multi-file revert MUST update the index in one step for all its files, or change nothing (004 FR-038). Then it MUST write each working file in its own atomic step. One refused file at review MUST refuse the whole action, and the reason MUST name the file. One action MUST cover at most the 004 multi-file limit (004 FR-040). Above it, the action MUST be unavailable with the limit stated.
-- **FR-023**: Revert file MUST be unavailable when the selection holds an untracked row, with "Arbareto does not revert an untracked file. Use Delete." It MUST also be unavailable for a row with a refusal of FR-038, with that reason. On a folder row, R MUST change nothing and show "Arbareto does not revert a folder. Select its files."
+- **FR-023**: Revert file MUST be unavailable when the selection holds an untracked row, with "Arbareto does not revert an untracked file. Use Delete." It MUST also be unavailable for a row with a refusal of FR-038, with that reason. With several marked rows, the reason MUST name the first blocking file in tree order (mockup approval, 2026-10-31). On a folder row, R MUST change nothing and show "Arbareto does not revert a folder. Select its files."
 - **FR-024**: Revert file MUST support binary files, files with a `working-tree-encoding` attribute, and files with the `ident` attribute. Git's own working-tree conversion gives their exact bytes.
 - **FR-025**: Revert file and Revert all unstaged changes MUST have no size limit per file and no size limit per action. A full disk MUST fail with its FR-041 text. Lines and hunks MUST stay within the 001 comparison bounds: 1 MiB per compared version, 1 MiB for the working file, and 20,000 diff lines. These bounds keep the new bytes within one frame of 2,117,152 bytes (plan research R11).
 
@@ -271,7 +271,7 @@ This feature changes these requirements for builds that include it. The earlier 
 - **FR-027**: The action MUST cover exactly the tracked entries of the shown status read whose working side differs from the index. It MUST include the rows that Filter files hides, as Stage all changes does (004 FR-101). It MUST NOT cover untracked, ignored, or staged-only entries. A submodule entry MUST stay unchanged, and the confirmation MUST count it.
 - **FR-028**: Each covered file MUST get the bytes that Git's own `git restore` from the index writes for that path. Git's `checkout-index --temp` of the index entry writes these bytes to its temporary file. The index MUST NOT change.
 - **FR-029**: When a covered entry has a refusal of FR-038, the action MUST be unavailable (Clarifications, 2026-10-27). Its reason MUST name the first 20 such files with their reasons. The action MUST cover at most the 004 multi-file limit.
-- **FR-030**: While the action runs, the status bar MUST show "Reverting <i> of <n>" and Cancel. Cancel MUST stop the action before the next file.
+- **FR-030**: While the action runs, the status bar MUST show "Reverting <i> of <n>…" and Cancel. Cancel MUST stop the action before the next file.
 
 #### Write safety
 
@@ -313,7 +313,7 @@ This feature changes these requirements for builds that include it. The earlier 
 
 - **FR-039**: After every run, a fresh read MUST decide the result. This applies after success, failure, and Cancel. The fresh read covers the SHA-256 of each written file, the index entry of each path, and a status read. Each file MUST get one outcome: reverted, unstaged only, not changed, changed outside Arbareto, failed with its code, or not started. Cancel MUST NOT be reported as an undo.
 - **FR-040**: The success texts MUST be "Arbareto reverted <n> lines in <file>.", "Arbareto reverted a hunk in <file>.", "Arbareto reverted <n> files.", and "Arbareto reverted the unstaged changes of <n> files." A multi-file result with another outcome MUST state the count of each outcome. It MUST list the first 20 files that did not revert, in tree order, each with its outcome, and state "and <m> more files." for the rest.
-- **FR-041**: A failed write MUST name the file and the OS status. A sharing violation MUST show "Another program has <file> open. Arbareto did not change it. Close the file, then try again." Access denied, a full disk, and a read-only volume MUST each show their own text. Every other status MUST show its code.
+- **FR-041**: A failed write MUST name the file and the OS status. A sharing violation MUST show "Another program has <file> open. Arbareto did not change it. Close the file, then try again." Access denied, a full disk, a read-only volume, and every other status MUST show the file with its code, in the 005 Delete result form (mockup approval, 2026-10-31).
 - **FR-042**: After success, the diff MUST refresh, and the selection MUST move as after Stage file (001 FR-038). A file that leaves its list MUST pass the focus to the next entry, then to the previous entry, then to the list heading. After Cancel of the modal, the focus MUST return to the control that opened it.
 
 #### WSL repositories

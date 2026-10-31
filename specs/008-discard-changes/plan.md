@@ -6,6 +6,8 @@
 
 **Related**: [research.md](research.md) | [data-model.md](data-model.md) | [contracts/operations.md](contracts/operations.md) | [quickstart.md](quickstart.md)
 
+**Mockup** (T022, user approval of 2026-10-31 with the orchestrator defaults): [Discard changes mockups](https://claude.ai/artifact/HS4ff6ejMXMogk9EJeQNQa). The board files stay in local scratch. Boards: Menu-hunk, Menu-changes-row, Menu-changes-row-unavailable, Menu-staged-row, Menu-changes-header, Confirm-lines, Confirm-hunk, Confirm-staged-lines, Confirm-files, Confirm-unstaged, Refusal-files, Progress-checking, Progress-reverting, Result-success, Result-mixed, Result-staged-partial, Forced-colors, Light-theme. D11 and D12 hold the approved texts and layout.
+
 ## Summary
 
 The Commit view gets three destructive actions: Revert lines or a hunk (R in the diff), Revert file (R in the Changes and Staged lists), and Revert all unstaged changes (a menu of the Changes header). Each action is a workbench action with a review and a single-use run (004 contract Δ3). The review binds every fact and fixes the exact result. A modal asks every time, with Cancel as the first focus and no default button. The run checks the facts again and publishes the index part through the existing candidate and lock path. Then it writes each working file through a widened atomic replace with an exact expected check. A fresh read decides every outcome.
@@ -241,21 +243,33 @@ Rules:
 
 ### D11 Texts
 
-`src/frontend/changes/revert-text.ts` holds every visible text of the spec, with these constants:
-- `REVERT_TITLE`, `REVERT_BODY`, `REVERT_BUTTON` per kind (lines, hunk, staged lines, staged hunk, files, unstaged), with the singular forms of spec FR-009. `NO_UNDO` = "You cannot undo this."
-- `NEW_FILES_LINE`, `SUBMODULES_LINE`, `HIDDEN_LINE`, `MORE_FILES` (005 FR-026 form).
+`src/frontend/changes/revert-text.ts` holds every visible text of the spec, with these constants. The user approved the texts with the T022 mockup on 2026-10-31.
+- `REVERT_TITLE`, `REVERT_BODY`, `REVERT_BUTTON` per kind (lines, hunk, staged lines, staged hunk, files, unstaged), with the singular forms of spec FR-009. `NO_UNDO` = "You cannot undo this." Boards Confirm-lines, Confirm-hunk, Confirm-staged-lines, Confirm-files, and Confirm-unstaged.
+- `NEW_FILES_LINE`, `SUBMODULES_LINE`, `HIDDEN_LINE`, `MORE_FILES` (005 FR-026 form). The files confirmation and the all-unstaged confirmation both list the first 20 paths in tree order, then `MORE_FILES` (spec FR-010).
 - `REVERT_REASON` per reason of spec FR-038, and `LINE_REVERT_TEXT` for the five line reasons. The comparison limitations keep `LIMITATION_TEXT` (`limitation-text.ts`), and the eligibility reasons keep `PROFILE_TEXTS`.
-- `REVERT_DONE` (spec FR-040), `REVERT_PARTIAL` (FR-017), `REVERT_EXPIRED` (FR-011), `REVERT_FAILURE` (FR-041), `REVERT_PROGRESS` ("Reverting <i> of <n>"), `REVERT_CHECKING` ("Checking <n> files…"), `NO_HUNK` (existing "No hunk is selected.").
-- Item labels: "Revert hunk…", "Revert <n> lines…", "Revert file…", "Revert <n> files…", "Revert all unstaged changes…", and the tooltip "More actions".
+- `BLOCKED_BY` (spec FR-023, board Menu-changes-row-unavailable): with several marked rows, an unavailable Revert item names the first blocking file in tree order as "<path>: <reason>". A reason text that names its file already fills in that file and gets no prefix. With one row, the reason shows alone.
+- `REVERT_UNAVAILABLE` = "<action> is unavailable.", such as "Revert 3 files is unavailable." (the 004 "<action> is unavailable" form, board Refusal-files). `<action>` is the item label without the ellipsis. It is the status line and the status-area heading of a review refusal. The status area lists each refused file with its reason (spec FR-022, FR-029).
+- `REVERT_CHECKING` = "Checking <n> files…" ("Checking 1 file…", spec FR-007). `REVERT_PROGRESS` = "Reverting <i> of <n>…" (spec FR-030). Both end with "…", as the other running lines do.
+- `REVERT_DONE` (spec FR-040, board Result-success).
+- `REVERT_COUNTS` (spec FR-040, board Result-mixed): the count line of a multi-file result with another outcome, such as "10 files reverted. 1 file not changed. 1 file changed outside Arbareto." Each outcome with a non-zero count adds one sentence in the FR-039 order: "<n> files reverted.", "<n> files unstaged only.", "<n> files not changed.", "<n> files changed outside Arbareto.", "<n> files not started." A count of 1 uses "1 file". The status line shows the count line. The status-area heading is the item label without the ellipsis, such as "Revert all unstaged changes".
+- `OUTCOME_LABEL` (spec FR-039, board Result-mixed): the status area lists the first 20 files that did not revert, each with its path and label: "Unstaged only.", "Not changed.", "Changed outside Arbareto.", "Not started." A `not-changed` file adds its reason after the label: the `stale` text, the refusal reason, or the `REVERT_FAILURE` text.
+- `REVERT_PARTIAL` (spec FR-017, board Result-staged-partial). For `sharing-violation`, `<reason>` = "another program has it open".
+- `REVERT_FAILURE` (spec FR-041). `sharing-violation`: "Another program has <file> open. Arbareto did not change it. Close the file, then try again." `access-denied`, `disk-full`, `read-only-volume`, and every other code reuse the 005 Delete form (005 plan D15 "Delete run texts", "Not deleted: <code>"): the file row shows "Not changed: <code>" in place of the label and the reason.
+- `REVERT_EXPIRED` (spec FR-011) and `NO_HUNK` (the existing "No hunk is selected.") keep their texts. They have no board.
+- Item labels: "Revert hunk…", "Revert <n> lines…", "Revert file…", "Revert <n> files…", "Revert all unstaged changes…". `MORE_ACTIONS` = "More actions", the tooltip and the accessible name of both "More actions" buttons.
 
 ### D12 UI, keys, and menus
 
 - Keys (`keyboard/shortcuts.ts` `KEYS`): `revertLines` = `R` in scope `diff`; `revertFiles` = `R` in the new scope `stagedList` and in `changesList`. `scopedAction` matches letters by `keyCode`, ignores a composing event, and an editable target never reaches it (`isEditable`). A repeat key event opens nothing (`event.repeat`, as Delete in `ChangesPane.tsx:791`). `CommitChanges.tsx:552` ignores `revertLines`, so R in the History diff does nothing.
-- Diff: each hunk gets a "More actions" icon button beside Stage hunk or Unstage hunk (`HunkControls.tsx`). It opens the house action menu (`components/action-menu.tsx`) with a destructive group: "Revert hunk…" (R), and with a line selection in that hunk "Revert <n> lines…" (R). An unavailable item states its reason.
-- Changes list row menu: the 005 destructive group gets "Revert file…" or "Revert <n> files…" (R) beside "Delete…" and "Delete permanently…". Staged list row menu: a new destructive group with the same item. Changes header: a "More actions" button with a destructive group "Revert all unstaged changes…".
-- Modal: `RevertConfirm.tsx` follows `DeleteConfirm.tsx` (`initialFocus` on Cancel, `finalFocus` to the opener) as an alert dialog. Its revert button has the destructive style, no default role, and no access key. Enter on Cancel cancels. The renderer shows the plan of the review only.
-- Busy and progress: the status bar shows `REVERT_CHECKING` during the review and `REVERT_PROGRESS` during `revert-files`, with Cancel. The result goes to the status region, which assistive technology announces.
-- The mockup through the arbareto-ux skill comes first (WP5 first task). Its boards decide the button sizes and the menu order within these rules.
+- Icons (Hugeicons, as `ChangesPane.tsx`): every Revert item has the revert icon, an arrow that points back (`Undo03Icon`). Both "More actions" buttons have the three-dot icon (`MoreHorizontalIcon`). Revert items use the danger style with Removed text (004 D-S5), as Delete does.
+- Diff (board Menu-hunk): each hunk header gets a "More actions" icon button after Stage hunk or Unstage hunk (`HunkControls.tsx`). It opens the house action menu (`components/action-menu.tsx`), at least 220 px wide, with one group without a label: "Revert hunk…" (R) first, then "Revert <n> lines…" (R) with a line selection in that hunk. Both items show R (spec FR-012). An unavailable item states its reason.
+- Changes list row menu (boards Menu-changes-row, Menu-changes-row-unavailable): the 005 row menu (300 px wide, 005 D15) gets a new group without a label, directly above the 005 group "Delete from disk". It holds "Revert file…" or "Revert <n> files…" (R). A revert deletes no file, so the item stays out of "Delete from disk". An unavailable item shows its reason in Muted text, wrapped below the label (005 D15).
+- Staged list row menu (board Menu-staged-row): a new group without a label after the 005 groups, with the same item (R).
+- Changes header (board Menu-changes-header): a "More actions" icon button sits last in the header, after the layout buttons. Its menu, at least 220 px wide, holds one group without a label with "Revert all unstaged changes…". The item has no key (spec FR-026).
+- Modal (boards Confirm-*, Forced-colors): `RevertConfirm.tsx` follows `DeleteConfirm.tsx` (`initialFocus` on Cancel, `finalFocus` to the opener) as an alert dialog with the 005 D15 layout: the alert icon and title, the body text, the path list box, the notices, and the footer with Cancel, then the revert button. Its revert button has the danger style, no default role, and no access key. Enter on Cancel cancels, and R does not confirm. The renderer shows the plan of the review only. In forced colors, the danger button keeps its text and border, focus uses Highlight, and the notices keep their icons.
+- Busy and progress (boards Progress-checking, Progress-reverting): the status bar shows `REVERT_CHECKING` during the review and `REVERT_PROGRESS` during `revert-files`, each with Cancel. The confirmation opens after the review.
+- Result (boards Refusal-files, Result-success, Result-mixed, Result-staged-partial): the status line shows the result with its icon. A refusal or a multi-file result with another outcome also opens the status area with the D11 heading, the count line or the refusal list, and "Hide details". The status region announces the result to assistive technology.
+- The light theme (board Light-theme) uses the same layout with the light tokens.
 
 ### D13 Tests and fixtures
 
@@ -274,7 +288,7 @@ The doc pass (WP8, after the full run of WP7) appends one sentence "Amended by f
 - `specs/004-workbench-ux/spec.md:303` (Scope Boundaries): the discard exclusion goes.
 - `specs/004-workbench-ux/spec.md:322` (the 001 FR-027 change): the revert actions join the allowed list.
 - `specs/004-workbench-ux/spec.md:526` (Assumptions): the discard assumption goes.
-- `specs/005-inspection-file-actions/spec.md:330` (FR-023): the destructive group also holds "Revert file…".
+- `specs/005-inspection-file-actions/spec.md:330` (FR-023): a separate group directly above the "Delete from disk" group holds "Revert file…".
 - `docs/project-brief.md:101`: the label "Discard changes" becomes "Revert file".
 - `README.md` "Features": one line for Revert lines, hunks, files, and all unstaged changes, after a confirmation.
 These lines stay unchanged: 001 FR-013 (`:404`), 001 FR-038 (`:447`), 004 FR-042 (`:403`), 004 `:548`, 003 `:226`, 005 `:266`, and the brief `:49`.
@@ -293,7 +307,9 @@ These lines stay unchanged: 001 FR-013 (`:404`), 001 FR-038 (`:447`), 004 FR-042
 - The R8 and R9 tables are decisions with probes. A probe result that differs changes them before WP3 (research R14 rule).
 - Revert file has no size bound (Clarifications, 2026-10-27). A line revert keeps the 001 comparison bounds, which keep its frame within `REVERT_FILE_BYTES` (research R11).
 - The DACL copy method is decided (research R15, user decision of 2026-10-27). T013 tests it, and T014 builds it.
-- The placement of "More actions" and the menu order follow the mockup (WP5).
+- The placement of "More actions" and the menu order follow the approved mockup (D12, user approval of 2026-10-31).
+- The labels "Unstaged only." and "Not started." and their count sentences in D11 follow the approved FR-039 naming rule. The mockup shows no board for them.
+- The FR-017 `<reason>` text is approved for `sharing-violation` only. The texts for the other codes are open.
 - `docs/project-brief.md:101` changes its label example (D14). The brief is not a spec.
 
 ## Phases

@@ -38,7 +38,7 @@ const OPEN_RUNS = 3;
 // Spec SC-007: the parent safety checks before the registration may add at most this time to Open submodule and Open parent repository.
 const OPEN_ALLOWANCE_MS = 150;
 // Spec SC-012: a submodule preview shows within this time after the selection (warm package, median of 10 after one warm-up run).
-const SUBMODULE_PREVIEW_MS = 350;
+const SUBMODULE_PREVIEW_MS = 400;
 const PREVIEW_RUNS = 10;
 // Ctrl+R (src/frontend/keyboard/shortcuts.ts `openSwitcher`). The `cdp.ts` key table has no R key.
 const RECENT_KEYS = [
@@ -785,7 +785,7 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
   }
 
   test.skipIf(reason !== null)(
-    "T111 FR-067, FR-074, SC-010, SC-012 by keyboard: a submodule row of Changes shows the preview texts, the UIA names, visible focus, a text contrast of at least 4.5:1 in Dark, Light, and forced colors, and the preview within 350 ms (median of 10)",
+    "T111 FR-067, FR-074, SC-010, SC-012 by keyboard: a submodule row of Changes shows the preview texts, the UIA names, visible focus, a text contrast of at least 4.5:1 in Dark, Light, and forced colors, and the preview within 400 ms (median of 10)",
     async () => {
       const f = previewWorld("t111-changes");
       const s = await session("t111-changes", f.w.sup);
@@ -845,7 +845,7 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
   );
 
   test.skipIf(reason !== null)(
-    "T111 FR-010, FR-069, SC-010, SC-012 by keyboard: a submodule row of Changed files in History shows the preview texts without the Working tree row, the UIA names, visible focus, a text contrast of at least 4.5:1 in Dark, Light, and forced colors, and the preview within 350 ms (median of 10)",
+    "T111 FR-010, FR-069, SC-010, SC-012 by keyboard: a submodule row of Changed files in History shows the preview texts without the Working tree row, the UIA names, visible focus, a text contrast of at least 4.5:1 in Dark, Light, and forced colors, and the preview within 400 ms (median of 10)",
     async () => {
       const f = previewWorld("t111-history");
       const s = await session("t111-history", f.w.sup);

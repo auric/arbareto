@@ -55,7 +55,7 @@ export async function shownDiff(module: WorkbenchModule, { category = "unstaged"
   const row = [...document.querySelectorAll<HTMLElement>(`[role="tree"][aria-label="${tree}"] [role="treeitem"]`)].find((i) => i.getAttribute("aria-label")?.startsWith(`${path}, `) || i.getAttribute("aria-label") === path)!;
   await click(row);
   await settle();
-  return { double, file };
+  return { double, file, world };
 }
 
 /** Selects lines through the Pierre callback. */

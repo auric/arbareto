@@ -21,6 +21,7 @@ mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ childre
 mock.module("../../src/frontend/changes/PatchView", () => ({ default: PatchDouble }));
 registerDom();
 const workbench = await import("../../src/frontend/app/Workbench");
+const { outcomeLine } = await import("../../src/frontend/changes/revert-text");
 
 let restoreLayout: () => void = () => {};
 beforeAll(() => void (restoreLayout = stubLayout(800)));
@@ -176,5 +177,19 @@ describe("files confirmation (FR-009, FR-010, board Confirm-files)", () => {
     const { dialog } = await filesModal([path], filesPlan([path]));
     expect(listed(dialog)).toEqual([path]);
     expect(dialog.querySelector("img")).toBeNull();
+  });
+});
+
+describe("unstaged-only outcome lines (FR-017, FR-039)", () => {
+  const id = "00000000-0000-4000-8000-000000000001";
+  test("without a code: <file>: Unstaged only.", () => {
+    expect(outcomeLine("login.ts", { entryId: id, outcome: "unstaged-only" }, false)).toBe("login.ts: Unstaged only.");
+  });
+  test("with a code: the index part stays, and the line names the reason", () => {
+    const line = (code: "stale" | "refused" | "error", reason?: string) => outcomeLine("login.ts", { entryId: id, outcome: "unstaged-only", code, ...(reason === undefined ? {} : { reason }) } as never, false);
+    expect(line("error", "sharing-violation")).toBe("Arbareto removed the changes from the index. It did not change login.ts, because another program has it open.");
+    expect(line("refused", "read-only")).toBe("Arbareto removed the changes from the index. It did not change login.ts, because login.ts is read-only. Arbareto does not change it.");
+    expect(line("stale")).toBe("Arbareto removed the changes from the index. It did not change login.ts, because login.ts changed after the review. Arbareto changed nothing. Check the changes, then try again.");
+    expect(line("error", "disk-full")).toBe("Arbareto removed the changes from the index. It did not change login.ts, because the write failed: disk-full.");
   });
 });

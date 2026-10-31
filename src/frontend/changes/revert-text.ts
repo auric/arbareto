@@ -2,6 +2,7 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import type { ChangeEntry, RevertFileOutcome, RevertFilesPlan } from "../../contracts/envelope";
+import { MULTI_FILE_ACTION_FILES } from "../../contracts/limits";
 import { compareKeys, treeKey } from "../../contracts/tree-order";
 import type { BridgeResponse } from "../bridge";
 import { TEXTS } from "../integrate/texts";
@@ -106,6 +107,15 @@ export function blockedBy(path: string, reason: string): string {
 /** The FR-038 reason of an entry from the status read alone: porcelain v2 `?` (untracked) and `<sub>` that starts with `S` (submodule). */
 export const entryRevertReason = (e: ChangeEntry): string | null => (e.category === "untracked" ? "untracked" : e.submodule?.startsWith("S") === true ? "submodule" : null);
 /** Feature 005 FR-015 tree order. A submodule and a nested repository (a path that ends with `/`) sort as folders. */
+// Spec FR-022 (orchestrator text of 2026-10-31, for plan.md D11).
+export const REVERT_LIMIT = "Arbareto reverts at most 10,000 files at a time. Select fewer files.";
+/** Spec FR-022 and FR-023: the reason of a Revert file set from the status read, or null. With several files, it names the first blocking file in tree order. */
+export function revertSetReason(set: readonly ChangeEntry[]): string | null {
+  if (set.length > MULTI_FILE_ACTION_FILES) return REVERT_LIMIT;
+  const first = inTreeOrder(set.filter((e) => entryRevertReason(e) !== null))[0];
+  if (first === undefined) return null;
+  return set.length > 1 ? blockedBy(first.path, entryRevertReason(first)!) : revertReason(entryRevertReason(first)!, first.path)!;
+}
 export function inTreeOrder<T extends { pathBytes: string; submodule?: string | null }>(entries: readonly T[]): T[] {
   return entries
     .map((entry) => {
@@ -142,6 +152,14 @@ const OUTCOME_LABEL: Record<string, string> = { "unstaged-only": "Unstaged only.
 
 /** Spec FR-039 and FR-041: the line of a file that did not revert. */
 export function outcomeLine(file: string, o: FileOutcome, lines: boolean): string {
+  // Spec FR-017: the index part stays. Plan D11 `REVERT_PARTIAL` gives "another program has it open" for a sharing violation.
+  if (o.outcome === "unstaged-only" && o.code !== undefined) {
+    const why =
+      o.code === "error" ? (o.reason === "sharing-violation" ? "another program has it open" : `the write failed: ${o.reason ?? "error"}`)
+      : o.code === "stale" ? revertReason("stale", file, lines)!
+      : ((o.reason === undefined ? undefined : revertReason(o.reason, file)) ?? o.code);
+    return `Arbareto removed the changes from the index. It did not change ${file}, because ${why.replace(/\.$/, "")}.`;
+  }
   if (o.code === "error" && o.reason === "sharing-violation") return `Another program has ${file} open. Arbareto did not change it. Close the file, then try again.`;
   if (o.code === "error") return `${file}: Not changed: ${o.reason ?? "error"}`;
   const reason = o.code === "stale" ? revertReason("stale", file, lines) : o.code === "refused" && o.reason !== undefined ? revertReason(o.reason, file) : undefined;

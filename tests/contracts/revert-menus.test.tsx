@@ -23,6 +23,7 @@ mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ childre
 mock.module("../../src/frontend/changes/PatchView", () => ({ default: PatchDouble }));
 registerDom();
 const workbench = await import("../../src/frontend/app/Workbench");
+const { revertSetReason } = await import("../../src/frontend/changes/revert-text");
 
 let restoreLayout: () => void = () => {};
 beforeAll(() => void (restoreLayout = stubLayout(800)));
@@ -202,5 +203,15 @@ describe("Revert file in the row menus (FR-018, FR-023, FR-045, boards Menu-chan
     expect(describedBy(revert)).toBe("Arbareto does not revert an untracked file. Use Delete.");
     await click(revert);
     expect(double.count("reviewWorkbench")).toBe(0);
+  });
+});
+
+describe("Revert file limit (FR-022)", () => {
+  test("above 10,000 files, Revert file is unavailable with the limit stated; 10,000 files have no reason", () => {
+    const many = Array.from({ length: 10_001 }, (_, i) => entry("unstaged", `f${i}.ts`));
+    expect(revertSetReason(many)).toBe("Arbareto reverts at most 10,000 files at a time. Select fewer files.");
+    expect(revertSetReason(many.slice(0, 10_000))).toBeNull();
+    // The limit comes before a file reason.
+    expect(revertSetReason([...many, entry("untracked", "a.txt")])).toBe("Arbareto reverts at most 10,000 files at a time. Select fewer files.");
   });
 });

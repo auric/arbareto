@@ -170,3 +170,46 @@ describe("R in the Changes and Staged lists (FR-018, FR-046)", () => {
     expect(document.activeElement).toBe(tree("Changes").parentElement!.querySelector('[data-list-heading="Changes"]'));
   });
 });
+
+describe("open revert dialogs follow the shown read (data-model §10) and one review at a time", () => {
+  test("two quick R presses in the diff send one review", async () => {
+    const { double } = await shownDiff(workbench);
+    await selectFirstHunk();
+    await revertKey();
+    await revertKey();
+    expect(reviews(double)).toHaveLength(1);
+  });
+
+  test("the lines dialog closes when the shown comparison changes", async () => {
+    const { double, world } = await shownDiff(workbench);
+    await selectFirstHunk();
+    await revertKey();
+    await answer(double.pending("reviewWorkbench"), succeeded({ action: "revert-lines", plan: { scope: "unstaged", fileBytes: Buffer.from("login.ts").toString("base64"), lines: null }, workbenchToken: fixtureId(0x8d0) }));
+    expect(alertDialog()).not.toBeNull();
+    const previous = world.answers.readComparison!;
+    world.answers.readComparison = (args) => {
+      const response = previous(args) as { result: Record<string, unknown> };
+      return { ...response, result: { ...response.result, comparisonId: fixtureId(0x8fe), patch: Buffer.from("diff --git a/login.ts b/login.ts\n--- a/login.ts\n+++ b/login.ts\n@@ -1 +1 @@\n-a\n+b\n").toString("base64"), hunks: [HUNKS[0]] } };
+    };
+    await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "F5", bubbles: true, cancelable: true })));
+    await settle();
+    await settle();
+    expect(double.count("readComparison")).toBeGreaterThan(1);
+    expect(alertDialog()).toBeNull();
+    expect(double.count("runWorkbench")).toBe(0);
+  });
+
+  test("the files dialog closes when the snapshot changes", async () => {
+    const { double } = await openFiles(workbench, [entry("unstaged", "a.ts")]);
+    await rowKey(item("Changes", "a.ts"));
+    await answer(double.pending("reviewWorkbench"), filesReviewed(filesPlan(["a.ts"])));
+    expect(alertDialog()).not.toBeNull();
+    const reads = double.count("readWorkspace");
+    await act(async () => void window.dispatchEvent(new KeyboardEvent("keydown", { key: "F5", bubbles: true, cancelable: true })));
+    await settle();
+    await settle();
+    expect(double.count("readWorkspace")).toBeGreaterThan(reads);
+    expect(alertDialog()).toBeNull();
+    expect(double.count("runWorkbench")).toBe(0);
+  });
+});

@@ -11,6 +11,7 @@ import { APPROVAL_LIFETIME_MS, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, SUBMODULE_U
 import type { OperationEvent } from "../contracts/outcome";
 import { buildRemedyCommand, type RemedyValue } from "../contracts/remedy-command";
 import type { StallRemedy } from "../contracts/submodules";
+import type { ComparisonReader } from "./comparison";
 import type { Exclusion } from "./exclusion";
 import { createCollector, PROCESS_LIMITS, RunnerRefusal, type GitExit } from "./git-runner";
 import { captureHead, sharedListing, type HistoryReaderOptions, type ReadHistoryTarget } from "./history";
@@ -37,8 +38,20 @@ export type WorkbenchAction = WorkbenchPayload["action"];
 export type PayloadOf<A extends WorkbenchAction> = Extract<WorkbenchPayload, { action: A }>;
 type RunRequest = Extract<ServiceRequest, { operation: "runWorkbench" }>;
 
+// Feature 008 plan.md D13: the in-process observer of a revert run. `path` holds the base64 path bytes. Production passes none.
+export interface RevertCheckpoint {
+  step: "before-write";
+  path: string;
+  operationId: string;
+}
+
 // The context of a handler. Its reader also maps an entry of a shown snapshot and reads the workspace. Its runner also sends the `wslFiles` walks.
-export type WorkbenchContext = PublishContext & { reader: Pick<WorkspaceReader, "operationState" | "entry" | "readWorkspace" | "selection"> };
+// Feature 008 plan.md D3: `comparisons` gives `revert-lines` the retained comparison.
+export type WorkbenchContext = PublishContext & {
+  reader: Pick<WorkspaceReader, "operationState" | "entry" | "readWorkspace" | "selection">;
+  comparisons: Pick<ComparisonReader, "get">;
+  revertCheckpoint?: (checkpoint: RevertCheckpoint) => Promise<void> | void;
+};
 
 // Contract Δ3 "Every review reads": the HEAD capture, the operation markers, and the trust listing.
 export interface Common {
@@ -232,16 +245,20 @@ export interface WorkbenchOptions extends Pick<HistoryReaderOptions, "listingTup
   runner: PublishContext["runner"];
   trust: Trust;
   reader: WorkbenchContext["reader"];
+  comparisons: WorkbenchContext["comparisons"];
   registry: OperationRegistry;
   exclusion: Exclusion;
   respond: (response: Response) => unknown;
   // Test seam only. Production uses the monotonic `performance.now()` for the 60 s lifetime.
   now?: () => number;
+  // Test seam only. Production never sets it.
+  revertCheckpoint?: WorkbenchContext["revertCheckpoint"];
 }
 
 export function createWorkbench(o: WorkbenchOptions) {
   const { registry } = o;
   const now = o.now ?? (() => performance.now());
+  const sources = { reader: o.reader, comparisons: o.comparisons, ...(o.revertCheckpoint === undefined ? {} : { revertCheckpoint: o.revertCheckpoint }) };
   const tokens = new Map<string, Issued>();
 
   // Contract §9 acceptance order: a consumed token answers the repeat before any other check. So does a token in use by another run.
@@ -304,7 +321,7 @@ export function createWorkbench(o: WorkbenchOptions) {
 
   async function execute(w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, token: string, e: Issued): Promise<void> {
     const handler = handlers.get(e.payload.action)!;
-    const context: WorkbenchContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId, signal, workspace: w, installation };
+    const context: WorkbenchContext = { runner: o.runner, trust: o.trust, ...sources, operationId, signal, workspace: w, installation };
     await runMarked(o, { operationId, kind: "workbench", action: handler.started(e.payload), workspace: w }, context, async ({ ctx, q, refuse, resolved }) => {
       let lastDescendants = 0;
       const remedy = (template: string, values: Record<string, RemedyValue>): string | null => {
@@ -405,7 +422,7 @@ export function createWorkbench(o: WorkbenchOptions) {
 
     // Contract Δ3 `reviewWorkbench`. A refusal issues no token.
     async review(t: ReadHistoryTarget, payload: WorkbenchPayload): Promise<ReviewOutcome> {
-      const ctx: WorkbenchContext = { runner: o.runner, trust: o.trust, reader: o.reader, operationId: t.operationId, signal: t.signal, workspace: t.workspace, installation: t.installation };
+      const ctx: WorkbenchContext = { runner: o.runner, trust: o.trust, ...sources, operationId: t.operationId, signal: t.signal, workspace: t.workspace, installation: t.installation };
       const observed = await observeAll(ctx, payload, () => sharedListing({ trust: o.trust, listingTuple: o.listingTuple }, t));
       if (isStop(observed)) return { result: observed.stop };
       if ("code" in observed) return { result: "failed", code: observed.code };

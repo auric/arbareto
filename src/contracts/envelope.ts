@@ -1678,6 +1678,8 @@ const RevertRefusedFile = z
   .strictObject({ path: z.base64().min(1), reason: z.enum([...SUPPORT_REFUSALS, ...LINE_REFUSALS, ...REVERT_FILE_REASONS]) })
   .meta({ title: "RevertRefusedFile" });
 const reviewed = <A extends string, P extends z.ZodType>(action: A, plan: P, title: string) => z.strictObject({ action: z.literal(action), plan, workbenchToken: Identifier }).meta({ title });
+// Feature 008: the remedy of an eligibility reason, or of a LOCKED refusal with the lock `path` (001 FR-016).
+const WorkbenchRemedy = z.strictObject({ text: Text.min(1) }).meta({ title: "WorkbenchRemedy" });
 // Contract Δ3 "Result": `{action, plan, workbenchToken}`, or a refusal value: the Δ9 reason with its facts, the in-the-way paths, or the CONFLICTED count.
 // A `merge` or `rebase` refusal after the counts carries the plan (contract Δ3).
 export const ReviewWorkbenchResult = z
@@ -1718,8 +1720,7 @@ export const ReviewWorkbenchResult = z
         // Plan.md O-20: the gate of a TRUST_REQUIRED or TRUST_CHANGED refusal. `target` is the listing of the worktree that `worktree-remove` names.
         trustGate: z.enum(["repository", "target"]).optional(),
         names: SideNames.optional(),
-        // Feature 008: the remedy of an eligibility reason, or of a LOCKED refusal with the lock `path` (001 FR-016).
-        remedy: z.strictObject({ text: Text.min(1) }).meta({ title: "WorkbenchRemedy" }).optional(),
+        remedy: WorkbenchRemedy.optional(),
         files: z.array(RevertRefusedFile).min(1).max(DELETE_CONFIRMATION_PATHS).optional(),
       })
       .refine(
@@ -1979,6 +1980,8 @@ export const RunWorkbenchResult = z
       .meta({ title: "WorkbenchStale" }),
     z.strictObject({ action: z.enum(RUN_ACTIONS) }).meta({ title: "WorkbenchUnread" }),
     z.strictObject({ unmerged: Count }).meta({ title: "WorkbenchConflicted" }),
+    // Feature 008 contract Δ3: an `index.lock` at the run start gives LOCKED with the lock path and the 001 remedy, as the review does.
+    z.strictObject({ path: Text.min(1), remedy: WorkbenchRemedy }).meta({ title: "WorkbenchLocked" }),
     // Plan.md O-20: a TRUST_REQUIRED or TRUST_CHANGED run refusal names its gate, as the review refusal does.
     z.strictObject({ trustGate: z.enum(["repository", "target"]) }).meta({ title: "WorkbenchTrustRefused" }),
     OperationResult.meta({ title: "WorkbenchRepeat" }),

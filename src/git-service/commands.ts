@@ -362,6 +362,26 @@ export function lineEndingArgs(): string[] {
   return read("ls-files", "--eol", "-z");
 }
 
+// Feature 008 research.md R7: the attributes of `attributeArgs` in the index direction. Paths go only on stdin.
+export function cachedAttributeArgs(): string[] {
+  return read("check-attr", "--cached", "-z", "--stdin", "filter", "diff", "text", "eol", "crlf", "working-tree-encoding", "ident");
+}
+
+// Feature 008 contract Δ3: the index entries and the line endings of literal paths after `--`.
+export function indexPathArgs(paths: readonly string[]): string[] {
+  return read("ls-files", "--stage", "-z", "--", ...pathItems(paths));
+}
+
+export function lineEndingPathArgs(paths: readonly string[]): string[] {
+  return read("ls-files", "--eol", "-z", "--", ...pathItems(paths));
+}
+
+// Feature 008 plan.md D5a step 2: Git writes the working-tree form of each stdin path to its own temporary file in the worktree root,
+// and prints `<temp> TAB <path> NUL`. `--temp` takes no index lock, writes no index, and runs no hook (research.md R4, R10).
+export function checkoutTempArgs(): string[] {
+  return [NO_LAZY_FETCH, "checkout-index", "--temp", "--stdin", "-z"];
+}
+
 // The empty tree OID of the object format, with empty stdin. Without `-w`, Git writes no object.
 export function emptyTreeArgs(): string[] {
   return read("hash-object", "-t", "tree", "--stdin");

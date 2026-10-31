@@ -10,9 +10,9 @@ import { join } from "node:path";
 import { TRUST_DIGEST_FILE_BYTES, TRUST_DIGEST_TOTAL_BYTES } from "../../src/contracts/limits";
 import type { FileFact, FileFactsRequest } from "../../src/git-service/git-runner";
 
-const { ptr: P, u32, u64, i32 } = FFIType;
+const { ptr: P, u32, u64, i32, i64 } = FFIType;
 const open = () =>
-  dlopen("libc.so.6", { mkfifo: { args: [P, u32], returns: i32 }, ioctl: { args: [i32, u64, P], returns: i32 } }).symbols;
+  dlopen("libc.so.6", { mkfifo: { args: [P, u32], returns: i32 }, ioctl: { args: [i32, u64, P], returns: i32 }, listxattr: { args: [P, P, u64], returns: i64 } }).symbols;
 let symbols: ReturnType<typeof open> | undefined;
 
 // `libc.so.6` and `/proc` exist only on Linux. The import of this file must not open or read them (tests/git/portable-imports.test.ts).
@@ -31,6 +31,7 @@ const PIPE_BYTES = 64 * 1024;
 const FIONREAD = 0x541b;
 const TERMINATE_POLL_MS = 10;
 const TERMINATE_WAIT_MS = 5000;
+const STREAM_CHUNK_BYTES = 1024 * 1024;
 
 export interface InboundPipe {
   name: string;
@@ -275,7 +276,7 @@ function readData(fd: number, limit: number): Uint8Array {
 // One fact per entry, in request order (src-tauri/src/file_facts.rs `walk`). `bytesRead` counts the file data bytes of each entry.
 // Each component opens relative to its parent descriptor with `O_PATH | O_NOFOLLOW`. That open never follows a link.
 // It calls no driver open, so a FIFO, a socket, or a device opens without a wait. `fstat` gives the type.
-export function readFileFacts(roots: Record<FactRoot, string>, digest: boolean, files: FileFactsRequest["files"]): FileFactsResult {
+export function readFileFacts(roots: Record<FactRoot, string>, digest: boolean, files: FileFactsRequest["files"], options: { detail?: boolean; stream?: boolean } = {}): FileFactsResult {
   linux();
   if (!GENERIC_FCNTL_ARCHES.includes(process.arch)) throw new Error(`tests/git/linux.ts has no O_PATH value for ${process.arch}`);
   // The digested bytes that the request can still take. null after the first file that passed the total.
@@ -320,8 +321,36 @@ export function readFileFacts(roots: Record<FactRoot, string>, digest: boolean, 
         const mode = executable(fd, component);
         if ("kind" in mode) return mode;
         const size = Number(stat.size);
-        const fact: FileFact = { kind: "file", size, lastWrite: stat.mtimeNs.toString(), ...mode, ownerExecute: (stat.mode & S_IXUSR) !== 0n };
+        let fact: FileFact = { kind: "file", size, lastWrite: stat.mtimeNs.toString(), ...mode, ownerExecute: (stat.mode & S_IXUSR) !== 0n };
+        // Feature 008 contract Δ6 `detail`: the WSL facts. listxattr(2) with size 0 gives the length of the name list; 0 means no name.
+        if (options.detail === true) {
+          const names = Number(libc().listxattr(ptr(Buffer.from(`/proc/self/fd/${fd}\0`)), null, 0));
+          if (names < 0) return { kind: "error", component, code: "other-error" };
+          fact = { ...fact, links: Number(stat.nlink), mode: Number(stat.mode), uid: Number(stat.uid), gid: Number(stat.gid), xattr: names > 0 };
+        }
         if (!digest) return fact;
+        // Feature 008 contract Δ6 `stream`: the whole file in chunks, without the per-file bound and the request total.
+        if (options.stream === true) {
+          const hash = createHash("sha256");
+          let data: number;
+          try {
+            data = openSync(`/proc/self/fd/${fd}`, constants.O_RDONLY | constants.O_NONBLOCK);
+          } catch (error) {
+            return errorFact(error, component);
+          }
+          try {
+            const chunk = new Uint8Array(STREAM_CHUNK_BYTES);
+            for (let n = readSync(data, chunk); n > 0; n = readSync(data, chunk)) {
+              read.bytes += n;
+              hash.update(chunk.subarray(0, n));
+            }
+          } catch (error) {
+            return errorFact(error, component);
+          } finally {
+            closeSync(data);
+          }
+          return { ...fact, digest: hash.digest("hex") };
+        }
         // Contract §6 "File facts": the per-file bound comes first. Only files within it count toward the request total.
         if (size > TRUST_DIGEST_FILE_BYTES) return { ...fact, bound: "file-bytes" };
         if (budget === null) return { ...fact, bound: "total-bytes" };

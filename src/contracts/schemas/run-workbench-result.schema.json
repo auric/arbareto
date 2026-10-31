@@ -981,6 +981,37 @@
     {
       "type": "object",
       "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000]*$"
+        },
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false,
+          "title": "WorkbenchRemedy"
+        }
+      },
+      "required": [
+        "path",
+        "remedy"
+      ],
+      "additionalProperties": false,
+      "title": "WorkbenchLocked"
+    },
+    {
+      "type": "object",
+      "properties": {
         "trustGate": {
           "type": "string",
           "enum": [

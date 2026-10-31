@@ -25,6 +25,7 @@ import {
   RevokeReply,
   ShadowReply as ShadowReplySchema,
   StartedReply as StartedReplySchema,
+  TempRemoveReply as TempRemoveReplySchema,
   TerminalReply as TerminalReplySchema,
   WslDistrosReply,
   WslFilesReply,
@@ -56,6 +57,9 @@ import {
   type FileDeleteReply,
   type FileReplaceReply,
   type ShadowReply,
+  sizeDeadlineMs,
+  type TempRemoveReply,
+  type WorkingReplaceReply,
   type FileFact,
   type FileFactsRequest,
   type GitCall,
@@ -109,6 +113,8 @@ function factFits(request: FileFactsRequest, fact: FileFact, components: number)
   if (fact.kind === "error") return fact.component <= components;
   if (fact.kind !== "file") return true;
   if ((fact.bytes !== undefined) !== (request.content === true && fact.digest !== undefined)) return false;
+  // Feature 008 contract Δ6: `detail` adds `links` to each file fact, and only `detail` does. A `stream` digest has no bound.
+  if ((fact.links !== undefined) !== (request.detail === true) || (request.stream === true && fact.bound !== undefined)) return false;
   return request.digest ? fact.digest !== undefined || fact.bound !== undefined : fact.digest === undefined && fact.bound === undefined;
 }
 
@@ -334,8 +340,19 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
 
     async fileFacts(request, signal) {
       checkFileFacts(request);
-      const { operationId, contextKind, gitInstallationId, repositoryId, digest, files, content } = request;
-      const body = { type: "fileFacts", operationId, contextKind, gitInstallationId, repositoryId, digest, files: files.map(({ root, path }) => ({ root, path: [...path] })), ...(content === undefined ? {} : { content }) };
+      const { operationId, contextKind, gitInstallationId, repositoryId, digest, files, content, detail, stream } = request;
+      const body = {
+        type: "fileFacts",
+        operationId,
+        contextKind,
+        gitInstallationId,
+        repositoryId,
+        digest,
+        files: files.map(({ root, path }) => ({ root, path: [...path] })),
+        ...(content === undefined ? {} : { content }),
+        ...(detail === undefined ? {} : { detail }),
+        ...(stream === undefined ? {} : { stream }),
+      };
       const parse = (r: Body): FileFact[] | WalkStop | undefined => {
         const reply = FileFactsReply.safeParse(r);
         if (!reply.success) return undefined;
@@ -494,6 +511,30 @@ export function createNativeRunner(writer: FrameWriter): GitRunner & WslRunner &
         return result as FileReplaceReply;
       };
       return ask<FileReplaceReply | WalkStop>("process", { type: "fileReplace", ...request }, parse, { signal, value: CANCELED, wait: GIT_PROCESS_DEADLINE_MS });
+    },
+
+    // Feature 008 contract Δ6 `fileReplace` `working`: the size rule of contract Δ3 sets the wait for the reply.
+    async fileReplaceWorking(request, signal) {
+      checkSyncRequest("fileReplace", request);
+      const parse = (r: Body): WorkingReplaceReply | undefined => {
+        const reply = FileReplaceReplySchema.safeParse(r);
+        if (!reply.success) return undefined;
+        const { type: _type, callId: _callId, ...result } = reply.data;
+        return result;
+      };
+      const sizes = (request.expected === "absent" ? 0 : request.expected.size) + (request.source?.size ?? 0);
+      return ask<WorkingReplaceReply | WalkStop>("process", { type: "fileReplace", ...structuredClone(request) }, parse, { signal, value: CANCELED, wait: sizeDeadlineMs(sizes) });
+    },
+
+    async tempRemove(request, signal) {
+      checkSyncRequest("tempRemove", request);
+      const parse = (r: Body): TempRemoveReply | undefined => {
+        const reply = TempRemoveReplySchema.safeParse(r);
+        if (!reply.success) return undefined;
+        const { type: _type, callId: _callId, ...result } = reply.data;
+        return result;
+      };
+      return ask<TempRemoveReply | WalkStop>("process", { type: "tempRemove", ...structuredClone(request) }, parse, { signal, value: CANCELED, wait: sizeDeadlineMs(request.expected.size) });
     },
 
     // Feature 005 contract Δ6 `shadow`: the shell creates the folder at once, so the call has no cancel.

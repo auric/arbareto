@@ -3,7 +3,7 @@
 
 // Win32 calls of the `bun-runner.ts` test double. Run as a script, the file is a fixture process that records itself and lingers.
 
-import { dlopen, FFIType, ptr, type Pointer } from "bun:ffi";
+import { dlopen, FFIType, ptr, toArrayBuffer, type Pointer } from "bun:ffi";
 import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
@@ -36,6 +36,7 @@ const open = () =>
     CreateProcessW: { args: [P, P, P, P, i32, u32, P, P, P, P], returns: i32 },
     ResumeThread: { args: [P], returns: u32 },
     CompareStringOrdinal: { args: [P, i32, P, i32, i32], returns: i32 },
+    LocalFree: { args: [P], returns: P },
   }).symbols;
 let symbols: ReturnType<typeof open> | undefined;
 
@@ -432,6 +433,19 @@ const openNt = () =>
   }).symbols;
 let ntSymbols: ReturnType<typeof openNt> | undefined;
 
+const openAdvapi = () =>
+  dlopen("advapi32.dll", {
+    GetKernelObjectSecurity: { args: [P, u32, P, u32, P], returns: i32 },
+    ConvertSecurityDescriptorToStringSecurityDescriptorW: { args: [P, u32, u32, P, P], returns: i32 },
+  }).symbols;
+let advapiSymbols: ReturnType<typeof openAdvapi> | undefined;
+
+// As `kernel32()`: the import of this file must not open `advapi32.dll`.
+function advapi32(): ReturnType<typeof openAdvapi> {
+  if (process.platform !== "win32") throw new Error("tests/git/win32.ts needs Windows");
+  return (advapiSymbols ??= openAdvapi());
+}
+
 // As `kernel32()`: the import of this file must not open `ntdll.dll`.
 function ntdll(): ReturnType<typeof openNt> {
   if (process.platform !== "win32") throw new Error("tests/git/win32.ts needs Windows");
@@ -480,6 +494,13 @@ const IO_REPARSE_TAG_SYMLINK = 0xa000_000c;
 const SYMLINK_FLAG_RELATIVE = 0x1;
 // Bit 29 is the name surrogate bit (`IsReparseTagNameSurrogate`).
 const NAME_SURROGATE = 0x2000_0000;
+// Microsoft Learn "SECURITY_INFORMATION", "ACCESS_MASK", and `ConvertSecurityDescriptorToStringSecurityDescriptorW`.
+const READ_CONTROL = 0x0002_0000;
+const OWNER_SI = 0x1;
+const GROUP_SI = 0x2;
+const DACL_SI = 0x4;
+const SDDL_REVISION_1 = 1;
+const STREAM_CHUNK_BYTES = 1024 * 1024;
 // x64 layouts: `UNICODE_STRING` is 16 bytes, `OBJECT_ATTRIBUTES` 48 bytes, and `IO_STATUS_BLOCK` 16 bytes with `Information` at 8.
 const UNICODE_STRING_BYTES = 16;
 const OBJECT_ATTRIBUTES_BYTES = 48;
@@ -492,7 +513,7 @@ let errorStatus: number | null = null;
 
 // Opens `name` relative to `parent`, as src-tauri/src/file_facts.rs `open` does. An empty name opens the same file again.
 // `OBJ_DONT_REPARSE` fails the open at each reparse point that the I/O manager would follow.
-function ntOpen(parent: Pointer, name: string, read: boolean, reparsePoint: boolean): Opened {
+function ntOpen(parent: Pointer, name: string, read: boolean, reparsePoint: boolean, extraAccess = 0): Opened {
   const units = Buffer.from(`${name}\0`, "utf16le");
   const objectName = new Uint8Array(UNICODE_STRING_BYTES);
   const nameView = new DataView(objectName.buffer);
@@ -507,7 +528,7 @@ function ntOpen(parent: Pointer, name: string, read: boolean, reparsePoint: bool
   // Win32 file names ignore letter case, and Git opens hooks through Win32.
   view.setUint32(24, OBJ_CASE_INSENSITIVE | OBJ_DONT_REPARSE, true);
   const handle = new BigUint64Array(1);
-  const access = FILE_READ_ATTRIBUTES | SYNCHRONIZE | (read ? FILE_READ_DATA : 0);
+  const access = FILE_READ_ATTRIBUTES | SYNCHRONIZE | (read ? FILE_READ_DATA : 0) | extraAccess;
   const options = FILE_SYNCHRONOUS_IO_NONALERT | (reparsePoint ? FILE_OPEN_REPARSE_POINT : 0);
   const io = new BigUint64Array(2);
   const status = ntdll().NtOpenFile(ptr(handle), access, ptr(attributes), ptr(io), FILE_SHARE_ALL, options);
@@ -515,6 +536,31 @@ function ntOpen(parent: Pointer, name: string, read: boolean, reparsePoint: bool
   // The call reaches `units` and `objectName` only through raw pointers. A store to module state keeps every buffer reachable until the call returns.
   keepAlive = [units, objectName, attributes, io];
   return failed(status) ? { status } : { handle: Number(handle[0]) as Pointer };
+}
+
+// Feature 008 contract Δ6 `detail`: the owner, group, and DACL as SDDL, each from its own conversion. The open asks only `READ_CONTROL`.
+// SDDL gives `O:<sid>` and `G:<sid>`, so the owner and the group lose their prefix. The DACL keeps `D:` and its flags.
+function securityFacts(handle: Pointer, opened: Pointer[]): { owner: string; group: string; dacl: string } | { status: number } {
+  const own = ntOpen(handle, "", false, false, READ_CONTROL);
+  if ("status" in own) return own;
+  opened.push(own.handle);
+  const needed = new Uint32Array(1);
+  advapi32().GetKernelObjectSecurity(own.handle, OWNER_SI | GROUP_SI | DACL_SI, null, 0, ptr(needed));
+  if (needed[0] === 0) return { status: STATUS_UNSUCCESSFUL };
+  const sd = new Uint8Array(needed[0]!);
+  if (advapi32().GetKernelObjectSecurity(own.handle, OWNER_SI | GROUP_SI | DACL_SI, ptr(sd), sd.length, ptr(needed)) === 0) return { status: STATUS_UNSUCCESSFUL };
+  const sddl = (info: number): string | null => {
+    const out = new BigUint64Array(1);
+    const length = new Uint32Array(1);
+    if (advapi32().ConvertSecurityDescriptorToStringSecurityDescriptorW(ptr(sd), SDDL_REVISION_1, info, ptr(out), ptr(length)) === 0) return null;
+    const p = Number(out[0]!) as Pointer;
+    const text = Buffer.from(toArrayBuffer(p, 0, length[0]! * 2)).toString("utf16le").replace(/\0+$/, "");
+    kernel32().LocalFree(p);
+    return text;
+  };
+  const [owner, group, dacl] = [sddl(OWNER_SI), sddl(GROUP_SI), sddl(DACL_SI)];
+  if (owner === null || group === null || dacl === null || !owner.startsWith("O:") || !group.startsWith("G:") || !dacl.startsWith("D:")) return { status: STATUS_UNSUCCESSFUL };
+  return { owner: owner.slice(2), group: group.slice(2), dacl };
 }
 
 function query(handle: Pointer, info: Uint8Array, infoClass: number): number {
@@ -585,7 +631,12 @@ function link(handle: Pointer, tag: number, component: number): FileFact {
 // Contract §6 "File facts", by the rules of src-tauri/src/file_facts.rs `walk`. One fact per entry, in request order.
 // `bytesRead` counts the file data bytes of each entry. Each component opens relative to its parent handle, so no link below a root is followed.
 // `statuses` holds the raw NTSTATUS of each `error` fact, and null for other facts. A root open maps its Win32 error through `ROOT_STATUS`.
-export function readFileFacts(roots: Record<FactRoot, string>, digest: boolean, files: FileFactsRequest["files"]): { facts: FileFact[]; bytesRead: number[]; statuses: (number | null)[] } {
+export function readFileFacts(
+  roots: Record<FactRoot, string>,
+  digest: boolean,
+  files: FileFactsRequest["files"],
+  options: { detail?: boolean; stream?: boolean } = {},
+): { facts: FileFact[]; bytesRead: number[]; statuses: (number | null)[] } {
   // The digested bytes that the request can still take. Null after the first file that passed the total.
   let budget: number | null = TRUST_DIGEST_TOTAL_BYTES;
   const facts: FileFact[] = [];
@@ -628,8 +679,10 @@ export function readFileFacts(roots: Record<FactRoot, string>, digest: boolean, 
 
   // The fact of a final component that the walk opened with attribute access only.
   // With `digest`, a file within the per-file bound is opened again for its data, and the read takes at most the bound plus one byte.
+  // Feature 008 contract Δ6: `detail` adds the replace facts, and `stream` digests the whole file in chunks without the bound and the total.
   function fileFact(handle: Pointer, component: number, digest: boolean, opened: Pointer[], read: { bytes: number }): FileFact {
-    // `FILE_STANDARD_INFORMATION`: `EndOfFile` at 8, `Directory` at 21. `FILE_BASIC_INFORMATION`: `LastWriteTime` at 16.
+    // `FILE_STANDARD_INFORMATION`: `EndOfFile` at 8, `NumberOfLinks` at 16, `Directory` at 21.
+    // `FILE_BASIC_INFORMATION`: `CreationTime` at 0, `LastWriteTime` at 16, `FileAttributes` at 32.
     const standard = new Uint8Array(24);
     let status = query(handle, standard, FILE_STANDARD_INFORMATION);
     if (failed(status)) return errorFact(component, status);
@@ -638,8 +691,28 @@ export function readFileFacts(roots: Record<FactRoot, string>, digest: boolean, 
     status = query(handle, basic, FILE_BASIC_INFORMATION);
     if (failed(status)) return errorFact(component, status);
     const size = Number(new DataView(standard.buffer).getBigInt64(8, true));
-    const fact: FileFact = { kind: "file", size, lastWrite: new DataView(basic.buffer).getBigInt64(16, true).toString() };
+    let fact: FileFact = { kind: "file", size, lastWrite: new DataView(basic.buffer).getBigInt64(16, true).toString() };
+    if (options.detail === true) {
+      const security = securityFacts(handle, opened);
+      if ("status" in security) return errorFact(component, security.status);
+      const view = new DataView(basic.buffer);
+      fact = { ...fact, links: new DataView(standard.buffer).getUint32(16, true), attributes: view.getUint32(32, true), ...security, creationTime: view.getBigInt64(0, true).toString() };
+    }
     if (!digest) return fact;
+    if (options.stream === true) {
+      const data = ntOpen(handle, "", true, false);
+      if ("status" in data) return errorFact(component, data.status);
+      opened.push(data.handle);
+      const hash = createHash("sha256");
+      for (;;) {
+        const chunk = readData(data.handle, STREAM_CHUNK_BYTES);
+        if (!(chunk instanceof Uint8Array)) return errorFact(component, chunk.status);
+        if (chunk.length === 0) break;
+        read.bytes += chunk.length;
+        hash.update(chunk);
+      }
+      return { ...fact, digest: hash.digest("hex") };
+    }
     // Contract §6 "File facts": the per-file bound comes first. Only files within it count toward the request total.
     if (size > TRUST_DIGEST_FILE_BYTES) return { ...fact, bound: "file-bytes" };
     if (budget === null) return { ...fact, bound: "total-bytes" };

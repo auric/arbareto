@@ -11,7 +11,7 @@ description: "Task list for the Discard (Revert) Changes feature"
 
 **Tests**: The spec (SC-001 to SC-011) and plan.md "Steps" require tests. A failing-test task comes before each implementation task, and the implementation task depends on it. The probes of research.md R14 come first (batch 0). No test passes by default.
 
-**Organization**: Phases 1 and 2 hold the probes and the foundation (batches 0 and 1). Phases 3 to 7 hold one user story each (batches 2 and 3). Phase 8 holds the cross-cutting safety suites (batch 3). Phase 9 holds the qualification and the doc pass (batch 4). Story phases carry `[USn]` labels.
+**Organization**: Phases 1 and 2 hold the probes and the foundation (batches 0 and 1). Phases 3 to 7 hold one user story each (batches 2 and 3). Phase 8 holds the cross-cutting safety suites (batch 3). Phase 9 holds the qualification and the doc pass (batch 4). The section "After v0.1.0" holds work that the v0.1.0 package does not need. Story phases carry `[USn]` labels.
 
 ## Format: `[ID] [P?] [Story] Description`
 
@@ -41,8 +41,9 @@ description: "Task list for the Discard (Revert) Changes feature"
 | 0. Probes and contracts | 1, 2 (first part) | T001–T011 | Foundational | WP1 (implementer; T004 alone on WSL), then WP2 (implementer). |
 | 1. Shell, foundation, mockup | 2 (second part) | T012–T024, T054 | Foundational | A: WP3 (implementer-xhigh, local Rust and WSL). B: WP4 foundation (implementer-xhigh). C: WP5 mockup (frontend-implementer, no code). |
 | 2. P1 stories | 3, 4 | T025–T033 | US1, US2 | WP4 (implementer-xhigh), then WP5 (frontend-implementer). |
-| 3. P2 stories, WSL, safety | 5, 6, 7, 8 | T034–T046, T055–T058 | US3, US4, US5, cross-cutting | WP4, then WP5, then WP6 (implementer, WSL alone), then WP4 safety suites. |
+| 3. P2 stories, WSL, safety | 5, 6, 7, 8 | T034–T046, T055–T062 | US3, US4, US5, cross-cutting | WP4, then WP5, then WP6 (implementer, WSL alone), then WP4 safety suites. T059 to T062 are the batch 2 convergence (implementer-xhigh, frontend-implementer, implementer). |
 | 4. Qualification and docs | 9 | T047–T053 | Cross-cutting | WP7 (implementer writes, scout runs; local package), then WP8 (implementer). |
+| After v0.1.0 | After v0.1.0 | T063 | Cross-cutting | frontend-implementer. |
 
 ---
 
@@ -189,8 +190,14 @@ description: "Task list for the Discard (Revert) Changes feature"
 - [ ] T043 [P] Write the refusal matrix in `tests/git/revert-refusal.test.ts`: every reason of data-model §7 for every action where it applies refuses before any change; the index digest and every working-file byte stay (SC-004). Spec FR-005: in a partial-clone fixture whose HEAD blob is missing, Revert file refuses before any change with the 001 missing-object remedy, and the runner records no fetch and no process without `--no-lazy-fetch`. Add the file to `tests/groups.json` `parallel`. Depends on T041.
 - [ ] T044 [P] Write the race and interruption suite in `tests/git/revert-races.test.ts`: changes of the file, the index entry, HEAD, the attributes, and the configuration between the review and the run change nothing and name the fact (SC-003); an external writer during the run gives `changed-outside`; the double stops at each write step, and each target holds its old or its new bytes, never a part, never missing (SC-005). Add the file to `tests/groups.json` `serial` with the reason "checkpoint seams and timing". Depends on T041.
 - [ ] T058 Verify the Linux-only cases of `tests/git/bun-runner.test.ts` on a Linux host (convergence of batch 1, constitution VI, partial): the WSL `detail` `mode` case, and the `gitMode` case of an absent target (`0666 & ~umask` for 100644, `0777 & ~umask` for 100755). These cases skip on Windows, so no Windows run verifies them. Run `bun test tests/git/bun-runner.test.ts` in a Linux cloud session (`.claude/cloud-setup.sh`) with `ORIGIN` lines, and record the result in research.md R15. A green Linux run ticks this task (Harness and tick rules). Until then, the cases stay unverified. Depends on T024.
+### Batch 2 convergence (2026-11-01)
+
+- [ ] T059 Add the reason `revert-changed` and the index-part refusal reason to the `RevertRun` result (convergence of batch 2, contract Δ3 and "Contract gaps", data-model §9, missing). Today a multi-file `STALE_REVIEW` result carries no reason. Test first: vectors in `tests/vectors/valid/revert-run-*.json` and `tests/vectors/invalid/revert-run-*.json`, cases in `tests/contracts/revert-contract.test.ts` and `tests/git/revert-files.test.ts`. Then change `RevertRun` in `src/contracts/envelope.ts`, run `bun run export:schemas`, and send the reason from `src/git-service/revert.ts`. Remove the stale "Contract gap" comment on the `OBJECT_MISSING` value in `revert.ts`, because contract Δ3 now names `{path, remedy}`. Then the renderer shows the plan.md D11 multi-file stale text: test in `tests/contracts/revert-keys.test.tsx`, text in `src/frontend/changes/revert-text.ts`. Agent: implementer-xhigh (contract and service), then frontend-implementer (text). Before v0.1.0. Depends on T033.
+- [ ] T060 Decide the line ending of each restored line in `restored` of `src/git-service/revert-bytes.ts` from the attribute and configuration facts, not from the `ls-files --eol` `w/crlf` value alone (convergence of batch 2, data-model §6, research.md R5, contradicts). Today `restored` writes CRLF for `w/crlf` when no conversion is active and the index holds LF, so the proof refuses a valid revert with `line-endings`. The rule must follow which ending Git's checkout writes for the path (Git `convert.c` `output_eol` with `text`, `eol`, `crlf`, `core.autocrlf`, and `core.eol`); cite the Git source at the tag of the selected Git version. Test first in `tests/git/revert-bytes.test.ts` and `tests/git/revert-lines.test.ts`: a working file with CRLF lines, no conversion, and an LF index blob reverts and passes the plan.md D13 line oracle. Agent: implementer-xhigh. Depends on T033.
+- [ ] T061 Import `type RevertLinesPlan` from `src/contracts/envelope.ts` in `src/frontend/changes/revert-text.ts`, and remove its local copy (convergence of batch 2, plan.md D1, partial). `bun run typecheck` proves it; no new test. Agent: frontend-implementer. Depends on T033.
+- [ ] T062 Write the missing tests (convergence of batch 2, plan.md D10 and D3, partial): in `tests/git/revert-files.test.ts`, a `RunnerRefusal` from `tempRemove` through the double seam ends the run with the plan.md D10 state and keeps the file; in `tests/git/revert-lines.test.ts`, a `revert-lines` review of a staged comparison that bypasses `precheck` reaches the `lineReview` scope refusal and changes nothing. Agent: implementer. Depends on T033.
 - [ ] T045 Fix every finding of T042 to T044 in the file that owns it (`src/git-service/revert.ts`, `revert-bytes.ts`, `src-tauri/src/file_replace.rs`, or `src/contracts/wsl-process.json`), test first. Depends on T042, T043, T044.
-- [ ] T046 Batch 3 verification: `bun run typecheck`, `bun run test:contracts`, `bun run test:git`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, and the WSL files alone. Control mutation: skip the run-time SHA-256 compare of the source bytes in `revert.ts`; a T044 case must turn red. Then the batch 3 review (reviewer, with safety scrutiny), then `/speckit-converge`. Depends on T045.
+- [ ] T046 Batch 3 verification: `bun run typecheck`, `bun run test:contracts`, `bun run test:git`, `cargo test --locked --manifest-path src-tauri/Cargo.toml`, and the WSL files alone. Control mutation: skip the run-time SHA-256 compare of the source bytes in `revert.ts`; a T044 case must turn red. Then the batch 3 review (reviewer, with safety scrutiny), then `/speckit-converge`. Depends on T045, T059, T060, T061, T062.
 
 ---
 
@@ -208,6 +215,16 @@ description: "Task list for the Discard (Revert) Changes feature"
 
 ---
 
+## After v0.1.0
+
+**Agent**: frontend-implementer.
+
+**Purpose**: Work that the v0.1.0 package does not need.
+
+- [ ] T063 Replace the `git diff` header line reads for the `deleted-file` and `new-file` reasons in `src/frontend/changes/HunkControls.tsx` with a typed comparison field (convergence of batch 2, plan.md D3, data-model §7 "the renderer mapping", partial). The service sets the field from the status record or the comparison facts; the renderer reads no patch text for a reason. Test first in `tests/contracts/revert-menus.test.tsx` and the comparison contract tests. Depends on T053.
+
+---
+
 ## Dependencies & Execution Order
 
 ### Phase dependencies
@@ -217,8 +234,9 @@ description: "Task list for the Discard (Revert) Changes feature"
 - Phases 3 and 4 (P1) run in batch 2: Phase 4 starts after T028, because both phases change `Workbench.tsx` and `revert.ts`.
 - Phases 5 and 6 (P2) run in batch 3 after T033, in that order, for the same files.
 - Phase 7 runs alone on the host. T055 to T057 can start after T024. T042 runs after T041, T056, and T057.
-- Phase 8 runs after T041. T045 waits for T042 to T044.
+- Phase 8 runs after T041. T045 waits for T042 to T044. T059 to T062 can start after T033. T059 and T060 change `revert.ts` or `revert-bytes.ts`, so they run before or between the Phase 5 and 6 service tasks, never in parallel with them. T046 waits for T045 and T059 to T062.
 - Phase 9 runs after T046.
+- "After v0.1.0" (T063) runs after T053.
 
 ### Story dependencies
 

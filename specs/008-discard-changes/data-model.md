@@ -7,7 +7,7 @@ Every record below lives in memory for one review or one run. Nothing is stored.
 | Action | Fields | Rules |
 | --- | --- | --- |
 | `revert-lines` | `snapshotId`, `comparisonId`, `hunkId`, `lines?` | `lines`: the 004 line selection (1-based ordinals of `+` and `-` lines of one hunk, ascending). Without `lines`, the whole hunk. The comparison scope is `index-to-worktree` (unstaged) or `head-to-index` (staged). |
-| `revert-files` | `snapshotId`, `entryIds` | 1 to 10,000 unique entry IDs of the Changes list or the Staged list of one snapshot. |
+| `revert-files` | `snapshotId`, `entryIds` | 1 to 10,000 unique entry IDs of the Changes list or the Staged list of one snapshot. A partly staged file has a Changes row and a Staged row. Two picked rows of one file merge into one file plan, and the first picked row's `entryId` gets the outcome. |
 | `revert-unstaged` | `snapshotId` | The service takes the entries from the snapshot. |
 
 The renderer sends no path, no byte, and no count. The service derives everything from the retained snapshot and comparison.
@@ -95,7 +95,7 @@ Cases for the G5 probe and the unit vectors of `tests/git/revert-bytes.test.ts`:
 | `context-only`, `several-hunks`, `deleted-file`, `new-file`, `eof-newline` | lines | `subHunk`, the renderer mapping |
 | `unstaged-changes` | staged lines | the status worktree letter |
 | `untracked` | files, lines | the status record `?` |
-| `in-the-way` | files | an untracked record at a bound-absent path, or a file that is not a folder at a folder name of that path |
+| `in-the-way` | files | the file fact: no index entry in the shown read and a present working file (any fact but `absent` or `error`), also for an ignored file; or a file that is not a folder at a folder name of that path. A file that appears between the review and the run ends `STALE_REVIEW` `revert-changed`. |
 | `unreadable` (005) | files, unstaged | a `fileFacts` `error` fact of a target or of a folder on its path |
 | `attributes` | all | `check-attr` against `check-attr --cached` |
 | `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, `xattr` | all | `fileFacts` with `detail` (plan D8, D9) |
@@ -120,7 +120,7 @@ Per-file outcome from the fresh read (plan D10):
 | any | neither old nor new | `changed-outside` |
 | — | — | `not-started` (no request reached the path) |
 
-A `not-changed` file with a reply code is the "failed with its code" outcome of spec FR-039: `refused` carries the reply reason, and `error` the reply code, as `reason`. A `not-changed` file without a code got `stopped` or `interrupted`. Plan D10 gives the response state.
+A `not-changed` file with a reply code is the "failed with its code" outcome of spec FR-039: `refused` carries the reply reason, and `error` the reply code, as `reason`. A `not-changed` file without a code got `stopped` or `interrupted`. An `unstaged-only` file carries `code` and `reason` under the same rules (spec FR-017). Plan D10 gives the response state.
 
 A fresh read that fails gives the unknown outcome of the whole run (001 FR-023).
 

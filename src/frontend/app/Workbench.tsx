@@ -4,7 +4,7 @@
 import { GitCommitIcon, RefreshIcon, Tick02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { Component, createContext, lazy, memo, Suspense, useContext, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentType, type CSSProperties, type FocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from "react";
-import type { ChangeEntry, Comparison as ComparisonResult, Environment, RecoveryStatement, RegistrationResult, WorkspaceSnapshot } from "../../contracts/envelope";
+import type { ChangeEntry, Comparison as ComparisonResult, Environment, RecoveryStatement, RegistrationResult, RevertFilesPlan, WorkspaceSnapshot } from "../../contracts/envelope";
 import type { ErrorCode } from "../../contracts/errors";
 import type { BridgeResponse, createBridge, OnProgress } from "../bridge";
 import { ChangesPane as ChangesList, type FileAction, type FileActionResult } from "../changes/ChangesPane";
@@ -14,7 +14,7 @@ import { countsText } from "../changes/file-tree";
 import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
 import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type RevertRequest, type StagingTarget } from "../changes/HunkControls";
 import { RevertConfirm } from "../changes/RevertConfirm";
-import { actionName, REVERT_CHECKING, REVERT_HUNK_LABEL, REVERT_PROGRESS, REVERT_UNAVAILABLE, revertLinesLabel, revertLinesOutcome, reviewRefusal, type RevertLinesPlan } from "../changes/revert-text";
+import { actionName, REVERT_CHECKING, REVERT_HUNK_LABEL, REVERT_PROGRESS, REVERT_UNAVAILABLE, revertFilesOutcome, revertFilesRefusal, revertLinesLabel, revertLinesOutcome, reviewRefusal, type RevertLinesPlan } from "../changes/revert-text";
 import { CommitTray } from "../commit/CommitTray";
 import { WorkingSummary } from "../commit/WorkingSummary";
 import { IconButton } from "../components/icon-button";
@@ -381,6 +381,28 @@ function noDecisionText(state: RequestState): string {
   return code === undefined ? NO_DECISION_PENDING : `${NO_DECISION}: ${code}`;
 }
 
+/** Feature 008 plan.md D12: a revert review with REVERT_CHECKING. A refusal opens the status area with its reason lines. */
+function trackRevertReview(staging: Staging, label: string, files: number, send: Parameters<typeof trackOperation>[2], refusal: (response: BridgeResponse) => string[]) {
+  const texts: [string, string, string] = [label, "Reverting", label];
+  const ended = (response: BridgeResponse): Partial<StatusOperation> => {
+    if (response.state === "succeeded" || response.state === "canceled") return response.state === "succeeded" ? { outcome: "" } : {};
+    return { texts: [label, "Reverting", REVERT_UNAVAILABLE(label)], outcome: REVERT_UNAVAILABLE(label), lines: refusal(response), opens: true };
+  };
+  return trackOperation("runWorkbench", undefined, send, (op) => staging.onOperation({ ...op, texts, ...(op.response === null ? { running: REVERT_CHECKING(files) } : ended(op.response)) }));
+}
+/** Feature 008 plan.md D12: a revert run with REVERT_PROGRESS. `outcome` gives the result line and the lines of the status area. */
+async function trackRevertRun(staging: Staging, ended: (operation: "runWorkbench", response: BridgeResponse) => void, repositoryId: string, token: string, label: string, outcome: (response: BridgeResponse) => { text: string; lines: string[] } | undefined) {
+  const report = (op: StatusOperation) => {
+    const counters = op.progress?.phase === "revert-files" ? op.progress.counters : {};
+    const running = counters.fileIndex === undefined || counters.fileCount === undefined ? {} : { running: REVERT_PROGRESS(counters.fileIndex, counters.fileCount) };
+    const result = op.response === null ? undefined : outcome(op.response);
+    staging.onOperation({ ...op, texts: [label, "Reverting", label], ...running, ...(result === undefined ? {} : { outcome: result.text, ...(result.lines.length === 0 ? {} : { lines: result.lines, opens: true }) }) });
+  };
+  const response = await trackOperation("runWorkbench", undefined, (onProgress) => staging.bridge.runWorkbench({ repositoryId }, { workbenchToken: token, start: true }, onProgress), report);
+  ended("runWorkbench", response);
+  return response;
+}
+
 /** The T133 changes pane on the T132 request state, with the T202 file controls in its stage bar. */
 export function ChangesPaneMount({ state, requests, profile, density, textScale, menuOpen, modalOpen, onStatus, staging, workbench, onTrustReads, filesFilterRef, commitActions }: WorkbenchPaneProps) {
   const workspace = state.workspace;
@@ -422,6 +444,7 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
   // Feature 004 plan.md D8 and D15: the multi-file, ignore, and reveal actions bind the shown read.
   const running = staging?.blocked === "busy" || staging?.blocked === "running";
   const conflicts = state.entries.filter((e) => e.category === "conflicted").length;
+  const repository = state.repository === null ? null : { repositoryId: state.repository.repositoryId, repositoryGeneration: workspace.generation };
   const files =
     staging === undefined || workbench === undefined || workbench === null
       ? undefined
@@ -442,6 +465,23 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
           deleteBlock: deleteBlock(workspace.operationState, conflicts) ?? (staging.blocked !== null && staging.blocked !== "operation" && staging.blocked !== "conflicted" ? BLOCKED_TEXT[staging.blocked] : null),
           wsl: workspace.location.kind === "wsl",
           unborn: workspace.head.state === "unborn",
+          // Feature 008 contract Δ3 `revert-files`: the review binds the shown read.
+          revert: {
+            review: async (entryIds: string[], label: string) => {
+              if (repository === null) return null;
+              onStatus(null);
+              const payload = { action: "revert-files" as const, snapshotId: workspace.snapshotId, entryIds };
+              const response = await trackRevertReview(staging, label, entryIds.length, (onProgress) => staging.bridge.reviewWorkbench(repository, payload, onProgress), revertFilesRefusal);
+              const result = response.result as { action?: unknown; workbenchToken?: unknown; plan?: RevertFilesPlan } | undefined;
+              return response.state === "succeeded" && result?.action === "revert-files" && typeof result.workbenchToken === "string" && result.plan !== undefined ? { token: result.workbenchToken, plan: result.plan } : null;
+            },
+            run: async (token: string, label: string, entryIds: string[]) => {
+              if (repository === null) return false;
+              const byId = new Map(state.entries.map((e) => [e.entryId, e]));
+              const response = await trackRevertRun(staging, workbench.ended, repository.repositoryId, token, label, (r) => revertFilesOutcome(r, byId, entryIds));
+              return response.state === "succeeded";
+            },
+          },
           ...(commitActions === undefined
             ? {}
             : {
@@ -511,19 +551,9 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
   const reviewRevert = async ({ comparison, hunkId, lines, opener }: RevertRequest) => {
     if (staging === undefined || entry === null || target === null) return;
     const label = actionName(lines === null ? REVERT_HUNK_LABEL : revertLinesLabel(lines.length));
-    const texts: [string, string, string] = [label, "Reverting", label];
-    const ended = (response: BridgeResponse): Partial<StatusOperation> => {
-      if (response.state === "succeeded" || response.state === "canceled") return response.state === "succeeded" ? { outcome: "" } : {};
-      return { texts: [label, "Reverting", REVERT_UNAVAILABLE(label)], outcome: REVERT_UNAVAILABLE(label), lines: [reviewRefusal(response, entry.path, lines !== null)], opens: true };
-    };
     const payload = { action: "revert-lines" as const, snapshotId: comparison.snapshotId, comparisonId: comparison.comparisonId, hunkId, ...(lines === null ? {} : { lines }) };
     onStatus(null);
-    const response = await trackOperation(
-      "runWorkbench",
-      undefined,
-      (onProgress) => staging.bridge.reviewWorkbench(target, payload, onProgress),
-      (op) => staging.onOperation({ ...op, texts, ...(op.response === null ? { running: REVERT_CHECKING(1) } : ended(op.response)) }),
-    );
+    const response = await trackRevertReview(staging, label, 1, (onProgress) => staging.bridge.reviewWorkbench(target, payload, onProgress), (r) => [reviewRefusal(r, entry.path, lines !== null)]);
     const result = response.result as { action?: unknown; workbenchToken?: unknown; plan?: RevertLinesPlan } | undefined;
     if (response.state === "succeeded" && result?.action === "revert-lines" && typeof result.workbenchToken === "string" && result.plan !== undefined) setRevert({ token: result.workbenchToken, plan: result.plan, label, opener });
   };
@@ -531,14 +561,10 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
     if (revert === null || staging === undefined || target === null) return;
     const { token, plan, label } = revert;
     setRevert(null);
-    const report = (op: StatusOperation) => {
-      const counters = op.progress?.phase === "revert-files" ? op.progress.counters : {};
-      const running = counters.fileIndex === undefined || counters.fileCount === undefined ? {} : { running: REVERT_PROGRESS(counters.fileIndex, counters.fileCount) };
-      const outcome = op.response === null ? undefined : revertLinesOutcome(op.response, plan);
-      staging.onOperation({ ...op, texts: [label, "Reverting", label], ...running, ...(outcome === undefined ? {} : { outcome }) });
-    };
-    const response = await trackOperation("runWorkbench", undefined, (onProgress) => staging.bridge.runWorkbench({ repositoryId: target.repositoryId }, { workbenchToken: token, start: true }, onProgress), report);
-    workbench.ended("runWorkbench", response);
+    await trackRevertRun(staging, workbench.ended, target.repositoryId, token, label, (r) => {
+      const text = revertLinesOutcome(r, plan);
+      return text === undefined ? undefined : { text, lines: [] };
+    });
   };
   const controls =
     staging === undefined || entry === null

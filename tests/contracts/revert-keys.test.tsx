@@ -7,17 +7,18 @@ import type { BridgeResponse } from "../../src/frontend/bridge";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
-import { pressKey, statusBar } from "./commit-fake";
+import { entry, item, pressKey, statusBar, tree } from "./commit-fake";
 import { createFake, oid, stubLayout, TARGET } from "./history-fake";
-import { alertDialog, COMPARISON, diffBody, HUNKS, PatchDouble, revertKey, selectFirstHunk, selectLines, shownDiff } from "./revert-fake";
-import { settle, succeeded, unmountAll } from "./sync-fake";
+import { alertDialog, COMPARISON, diffBody, filesPlan, filesReviewed, HUNKS, markRow, openFiles, PatchDouble, revertKey, rowKey, selectFirstHunk, selectLines, shownDiff } from "./revert-fake";
+import { answer, button, click, settle, succeeded, unmountAll } from "./sync-fake";
 
-// tasks.md T027 (feature 008, WP5). Story US1. Spec FR-006, FR-012, FR-046. Plan D12 "Keys".
+// tasks.md T027 and T031 (feature 008, WP5). Stories US1, US2. Spec FR-006, FR-012, FR-018, FR-042, FR-046. Plan D12 "Keys".
 
 printOrigin("../../src/frontend/changes/ComparisonView.tsx", import.meta.dir);
 printOrigin("../../src/frontend/changes/HunkControls.tsx", import.meta.dir);
 printOrigin("../../src/frontend/history/CommitChanges.tsx", import.meta.dir);
 printOrigin("../../src/frontend/keyboard/shortcuts.ts", import.meta.dir);
+printOrigin("../../src/frontend/changes/ChangesPane.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
 
 mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ children }: { children?: ReactNode }) => <>{children}</> }));
@@ -109,5 +110,63 @@ describe("R in the History commit diff (FR-006)", () => {
     expect(alertDialog()).toBeNull();
     await act(async () => root.unmount());
     host.remove();
+  });
+});
+
+type Double = Awaited<ReturnType<typeof openFiles>>["double"];
+const reviewOf = (double: Double) => double.pending("reviewWorkbench")?.args[1] as { action: string; snapshotId: string; entryIds: string[] } | undefined;
+
+describe("R in the Changes and Staged lists (FR-018, FR-046)", () => {
+  for (const [list, category] of [["Changes", "unstaged"], ["Staged", "staged"]] as const) {
+    test(`R in ${list} opens the review of the focused row, and of the marked rows`, async () => {
+      const files = [entry(category, "a.ts"), entry(category, "b.ts"), entry(category, "c.ts")];
+      const { double } = await openFiles(workbench, files);
+      const event = await rowKey(item(list, "b.ts"));
+      expect(event.defaultPrevented).toBe(true);
+      expect(double.count("reviewWorkbench")).toBe(1);
+      expect(reviewOf(double)).toEqual({ action: "revert-files", snapshotId: expect.any(String), entryIds: [files[1]!.entryId] });
+      expect(statusBar()).toContain("Checking 1 file…");
+      await answer(double.pending("reviewWorkbench"), succeeded({ reason: "unreadable" }, { state: "rejected", code: "WORKBENCH_UNAVAILABLE" }));
+
+      await markRow(item(list, "a.ts"));
+      await markRow(item(list, "c.ts"));
+      await rowKey(item(list, "c.ts"));
+      expect(double.count("reviewWorkbench")).toBe(2);
+      expect(new Set(reviewOf(double)!.entryIds)).toEqual(new Set([files[0]!.entryId, files[2]!.entryId]));
+      expect(statusBar()).toContain("Checking 2 files…");
+    });
+  }
+
+  test("a key repeat opens nothing, and a second R during the review sends no second review", async () => {
+    const { double } = await openFiles(workbench, [entry("unstaged", "a.ts")]);
+    await rowKey(item("Changes", "a.ts"), { repeat: true });
+    expect(double.count("reviewWorkbench")).toBe(0);
+    await rowKey(item("Changes", "a.ts"));
+    await rowKey(item("Changes", "a.ts"));
+    expect(double.count("reviewWorkbench")).toBe(1);
+    await answer(double.pending("reviewWorkbench"), filesReviewed(filesPlan(["a.ts"])));
+    expect(document.querySelectorAll('[role="alertdialog"]')).toHaveLength(1);
+  });
+
+  test("after a success, the focus goes to the next entry, then to the previous entry, then to the list heading (FR-042)", async () => {
+    const files = [entry("unstaged", "a.ts"), entry("unstaged", "b.ts"), entry("unstaged", "c.ts")];
+    const { world, double } = await openFiles(workbench, files);
+    const revert = async (path: string, rest: typeof files) => {
+      const gone = files.find((f) => f.path === path)!;
+      await rowKey(item("Changes", path));
+      await answer(double.pending("reviewWorkbench"), filesReviewed(filesPlan([path])));
+      await click(button("Revert file", alertDialog()!));
+      world.entries = rest;
+      await answer(double.pending("runWorkbench"), succeeded({ action: "revert-files", files: [{ entryId: gone.entryId, outcome: "reverted" }], foldersCreated: [], index: "none" }));
+      await settle();
+    };
+    await revert("b.ts", [files[0]!, files[2]!]);
+    expect(document.activeElement).toBe(item("Changes", "c.ts"));
+    expect(item("Changes", "c.ts").getAttribute("aria-selected")).toBe("true");
+    expect(statusBar()).toContain("Arbareto reverted 1 file.");
+    await revert("c.ts", [files[0]!]);
+    expect(document.activeElement).toBe(item("Changes", "a.ts"));
+    await revert("a.ts", []);
+    expect(document.activeElement).toBe(tree("Changes").parentElement!.querySelector('[data-list-heading="Changes"]'));
   });
 });

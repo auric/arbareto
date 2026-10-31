@@ -7,12 +7,14 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useRef } from "react";
 import { Button } from "../components/ui/button";
 import { DialogContent, DialogDescription, DialogTitle } from "../components/ui/dialog";
-import { NO_UNDO, revertConfirmTexts, type RevertLinesPlan } from "./revert-text";
+import type { RevertFilesPlan } from "../../contracts/envelope";
+import { pathText } from "./file-actions";
+import { MORE_FILES, NO_UNDO, revertConfirmTexts, revertFilesTexts, type RevertLinesPlan } from "./revert-text";
 
-// Feature 008 spec FR-008, FR-009, FR-047, plan.md D12 "Modal" (boards Confirm-lines, Confirm-hunk, Forced-colors). The layout follows DeleteConfirm.
+// Feature 008 spec FR-008, FR-009, FR-047, plan.md D12 "Modal" (boards Confirm-lines, Confirm-hunk, Confirm-files, Forced-colors). The layout follows DeleteConfirm.
 
 export type RevertConfirmProps = {
-  plan: RevertLinesPlan;
+  plan: RevertLinesPlan | RevertFilesPlan;
   onConfirm(): void;
   onCancel(): void;
   /** The control that opened the review. It gets focus after the dialog closes. */
@@ -22,7 +24,8 @@ export type RevertConfirmProps = {
 /** The alert dialog of a revert. Cancel has the first focus. The revert button is no default button and has no access key (FR-008). */
 export function RevertConfirm({ plan, onConfirm, onCancel, finalFocus }: RevertConfirmProps) {
   const cancel = useRef<HTMLButtonElement>(null);
-  const texts = revertConfirmTexts(plan);
+  const files = "count" in plan ? plan : null;
+  const texts = "count" in plan ? revertFilesTexts(plan) : { ...revertConfirmTexts(plan), newFiles: null, more: 0 };
   return (
     <AlertDialog.Root open onOpenChange={(next) => void (next || onCancel())}>
       <DialogContent showCloseButton={false} initialFocus={cancel} finalFocus={finalFocus ?? true} className="flex flex-col gap-0 p-0 sm:max-w-lg">
@@ -32,6 +35,22 @@ export function RevertConfirm({ plan, onConfirm, onCancel, finalFocus }: RevertC
         </div>
         <div className="flex flex-col gap-2 px-4 pb-3">
           <DialogDescription className="text-xs/relaxed text-foreground">{texts.body}</DialogDescription>
+          {files === null ? null : (
+            <ul className="max-h-[360px] overflow-y-auto rounded-sm border border-divider bg-canvas px-2 py-1.5 font-mono leading-[18px] select-text">
+              {files.paths.map((path) => (
+                <li key={path} className="break-all">
+                  {pathText(path)}
+                </li>
+              ))}
+            </ul>
+          )}
+          {texts.more > 0 ? <p>{MORE_FILES(texts.more)}</p> : null}
+          {texts.newFiles === null ? null : (
+            <p className="flex items-start gap-2 rounded-sm bg-warning-fill p-2">
+              <HugeiconsIcon icon={Alert02Icon} strokeWidth={2} aria-hidden="true" className="mt-px size-(--icon-size) shrink-0 text-warning" />
+              <span>{texts.newFiles}</span>
+            </p>
+          )}
           <p className="flex items-start gap-2 rounded-sm bg-removed-fill p-2">
             <HugeiconsIcon icon={AlertCircleIcon} strokeWidth={2} aria-hidden="true" className="mt-px size-(--icon-size) shrink-0 text-removed" />
             <span>{NO_UNDO}</span>

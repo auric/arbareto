@@ -6,14 +6,15 @@ import { Undo03Icon } from "@hugeicons/core-free-icons";
 import type { ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
-import { describedBy, menuItem, menuItems, menuLabels } from "./commit-fake";
+import { contextMenu, describedBy, entry, item, menuItem, menuItems, menuLabels, pressKey, statusBar } from "./commit-fake";
 import { stubLayout } from "./history-fake";
-import { COMPARISON, DELETED, hunk, hunkRow, HUNKS, PatchDouble, selectLines, shownDiff } from "./revert-fake";
-import { button, buttons, click, unmountAll } from "./sync-fake";
+import { COMPARISON, DELETED, hunk, hunkRow, HUNKS, markRow, openFiles, PatchDouble, rowKey, selectLines, shownDiff } from "./revert-fake";
+import { button, buttons, click, text, unmountAll } from "./sync-fake";
 
-// tasks.md T027 (feature 008, WP5). Story US1. Spec FR-012, FR-013, FR-038, FR-045. Plan D11 item labels, D12 "Diff" (board Menu-hunk).
+// tasks.md T027 and T031 (feature 008, WP5). Stories US1, US2. Spec FR-012, FR-013, FR-018, FR-023, FR-038, FR-045. Plan D11 item labels and BLOCKED_BY, D12 "Diff", "Changes list row menu", "Staged list row menu" (boards Menu-hunk, Menu-changes-row, Menu-changes-row-unavailable, Menu-staged-row).
 
 printOrigin("../../src/frontend/changes/HunkControls.tsx", import.meta.dir);
+printOrigin("../../src/frontend/changes/ChangesPane.tsx", import.meta.dir);
 printOrigin("../../src/frontend/changes/revert-text.ts", import.meta.dir);
 printOrigin("../../src/frontend/components/action-menu.tsx", import.meta.dir);
 printOrigin("../../src/frontend/app/Workbench.tsx", import.meta.dir);
@@ -110,5 +111,96 @@ describe("hunk More actions menu (FR-012, FR-045, board Menu-hunk)", () => {
     await openMore(0);
     expect(describedBy(menuItem("Revert hunk…"))).toBe("Arbareto does not revert lines or hunks of a deleted file. Use Revert file.");
     expect(menuItems()).toHaveLength(1);
+  });
+});
+
+// The groups of the open menu: the label of each group, or null, and the item labels.
+const menuGroups = () =>
+  [...document.querySelectorAll('[role="menu"] [role="group"]')].map((g) => ({
+    label: g.querySelector('[data-slot="dropdown-menu-label"]') === null ? null : text(g.querySelector('[data-slot="dropdown-menu-label"]')!),
+    items: [...g.querySelectorAll<HTMLElement>('[role="menuitem"]')].map((i) => text(i.querySelector('[data-slot="menu-label"]')!)),
+  }));
+const expectRevertItem = (label: string) => {
+  const revert = menuItem(label);
+  expect(revert.getAttribute("aria-keyshortcuts")).toBe("R");
+  expect(revert.querySelector('[data-slot="dropdown-menu-shortcut"]')?.textContent).toBe("R");
+  expect(revert.getAttribute("data-danger")).toBe("true");
+  expect(shownPaths(revert.querySelector('[data-slot="menu-icon"]'))).toEqual(iconPaths(Undo03Icon));
+  return revert;
+};
+const closeMenu = () => pressKey(document.activeElement ?? document.body, "Escape");
+
+describe("Revert file in the row menus (FR-018, FR-023, FR-045, boards Menu-changes-row, Menu-staged-row)", () => {
+  test("the Changes row menu holds Revert file… (R) in its own group directly above the Delete from disk group", async () => {
+    await openFiles(workbench, [entry("unstaged", "a.ts"), entry("unstaged", "b.ts"), entry("unstaged", "c.ts")]);
+    await contextMenu(item("Changes", "a.ts"));
+    expect(menuLabels()).toEqual(["Stage file", "Blame", "Copy path", "Show in Explorer", "Revert file…", "Delete…", "Delete permanently…"]);
+    const groups = menuGroups();
+    const at = groups.findIndex((g) => g.items.includes("Revert file…"));
+    expect(groups[at]).toEqual({ label: null, items: ["Revert file…"] });
+    expect(groups[at + 1]).toEqual({ label: "Delete from disk", items: ["Delete…", "Delete permanently…"] });
+    expect(expectRevertItem("Revert file…").getAttribute("aria-disabled")).not.toBe("true");
+    await closeMenu();
+
+    // Several marked rows: the item names their count.
+    await markRow(item("Changes", "a.ts"));
+    await markRow(item("Changes", "b.ts"));
+    await markRow(item("Changes", "c.ts"));
+    await contextMenu(item("Changes", "b.ts"));
+    expectRevertItem("Revert 3 files…");
+    expect(menuGroups().find((g) => g.items.includes("Revert 3 files…"))!.items).toEqual(["Revert 3 files…"]);
+  });
+
+  test("with several marked rows, an unavailable Revert names the first blocking file in tree order", async () => {
+    const { double } = await openFiles(workbench, [entry("unstaged", "zeta.ts"), entry("unstaged", "lib", { submodule: "SC..", xy: ".M" }), entry("untracked", "notes.txt")]);
+    await markRow(item("Changes", "notes.txt"));
+    await markRow(item("Changes", "zeta.ts"));
+    await markRow(item("Changes", "lib"));
+    await contextMenu(item("Changes", "zeta.ts"));
+    const revert = menuItem("Revert 3 files…");
+    expect(revert.getAttribute("aria-disabled")).toBe("true");
+    // A submodule sorts as a folder, so lib comes first (005 FR-015).
+    expect(describedBy(revert)).toBe("lib: This entry is a submodule or a nested repository.");
+    await click(revert);
+    expect(double.count("reviewWorkbench")).toBe(0);
+    await closeMenu();
+
+    // One row shows its reason alone.
+    await click(item("Changes", "lib"));
+    await contextMenu(item("Changes", "lib"));
+    expect(describedBy(menuItem("Revert file…"))).toBe("This entry is a submodule or a nested repository.");
+  });
+
+  test("the Staged row menu holds Revert file… (R) in a separate group after the 005 groups", async () => {
+    await openFiles(workbench, [entry("staged", "b.ts")]);
+    await contextMenu(item("Staged", "b.ts"));
+    expect(menuLabels()).toEqual(["Unstage file", "Blame", "Copy path", "Show in Explorer", "Revert file…"]);
+    const groups = menuGroups();
+    expect(groups.at(-1)).toEqual({ label: null, items: ["Revert file…"] });
+    expect(groups.length).toBeGreaterThan(1);
+    expect(expectRevertItem("Revert file…").getAttribute("aria-disabled")).not.toBe("true");
+  });
+
+  test("a folder row: Revert file… is unavailable with the folder reason, and R shows that reason and sends nothing", async () => {
+    const { double } = await openFiles(workbench, [entry("unstaged", "src/a.ts"), entry("unstaged", "src/b.ts")]);
+    await contextMenu(item("Changes", "src"));
+    const revert = menuItem("Revert file…");
+    expect(revert.getAttribute("aria-disabled")).toBe("true");
+    expect(describedBy(revert)).toBe("Arbareto does not revert a folder. Select its files.");
+    await click(revert);
+    await closeMenu();
+    await rowKey(item("Changes", "src"));
+    expect(statusBar()).toContain("Arbareto does not revert a folder. Select its files.");
+    expect(double.count("reviewWorkbench")).toBe(0);
+  });
+
+  test("an untracked row: Revert file… is unavailable with the untracked reason and sends nothing", async () => {
+    const { double } = await openFiles(workbench, [entry("untracked", "notes.txt")]);
+    await contextMenu(item("Changes", "notes.txt"));
+    const revert = menuItem("Revert file…");
+    expect(revert.getAttribute("aria-disabled")).toBe("true");
+    expect(describedBy(revert)).toBe("Arbareto does not revert an untracked file. Use Delete.");
+    await click(revert);
+    expect(double.count("reviewWorkbench")).toBe(0);
   });
 });

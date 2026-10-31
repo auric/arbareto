@@ -50,23 +50,48 @@ const INDEX_MODES = new Set(["100644", "100755", "120000", "160000", "040000"]);
 const OID_HEX: Record<ObjectFormat, RegExp> = { sha1: /^[0-9a-f]{40}$/, sha256: /^[0-9a-f]{64}$/ };
 
 // SHA-256 over tagged, length-prefixed fields. No field can shift into the next one.
+// Each length is 8 bytes big-endian. The fields collect in one buffer, so the hasher gets few large updates.
 class Digest {
   private readonly hasher = new Bun.CryptoHasher("sha256");
+  private readonly buf = Buffer.allocUnsafe(1 << 16);
+  private at = 0;
+  private room(n: number): boolean {
+    if (this.at + n > this.buf.length) {
+      this.hasher.update(this.buf.subarray(0, this.at));
+      this.at = 0;
+    }
+    return n <= this.buf.length;
+  }
   private length(n: number): this {
-    const bytes = new Uint8Array(8);
-    new DataView(bytes.buffer).setBigUint64(0, BigInt(n));
-    this.hasher.update(bytes);
+    this.room(8);
+    this.buf.writeUInt32BE(Math.floor(n / 0x1_0000_0000), this.at);
+    this.buf.writeUInt32BE(n >>> 0, this.at + 4);
+    this.at += 8;
+    return this;
+  }
+  private text(s: string): this {
+    const n = Buffer.byteLength(s, "utf8");
+    this.length(n);
+    if (!this.room(n)) return this.bytes(Buffer.from(s, "utf8"));
+    this.at += this.buf.write(s, this.at, "utf8");
+    return this;
+  }
+  private bytes(b: Uint8Array): this {
+    if (this.room(b.length)) {
+      this.buf.set(b, this.at);
+      this.at += b.length;
+    } else this.hasher.update(b);
     return this;
   }
   field(tag: string, value: string | Uint8Array | number | boolean | null): this {
-    const tagBytes = Buffer.from(tag, "utf8");
-    this.length(tagBytes.length).hasher.update(tagBytes);
+    this.text(tag);
     if (value === null) return this.length(0).length(0);
-    const bytes = value instanceof Uint8Array ? value : Buffer.from(String(value), "utf8");
-    this.length(1).length(bytes.length).hasher.update(bytes);
-    return this;
+    this.length(1);
+    return value instanceof Uint8Array ? this.length(value.length).bytes(value) : this.text(String(value));
   }
   hex(): string {
+    this.hasher.update(this.buf.subarray(0, this.at));
+    this.at = 0;
     return this.hasher.digest("hex");
   }
 }

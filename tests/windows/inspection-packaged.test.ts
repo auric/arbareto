@@ -3,6 +3,7 @@
 
 // T060: the feature 005 checks in the installed package (plan.md P9, WP8). Quickstart.md Q11, Q12, Q31, and "Manual checks in the packaged build".
 // Spec FR-018, FR-024, FR-028, FR-051, FR-067, SC-003, SC-007, SC-010. `Local: package`.
+// T111: the submodule preview of plan.md D19 in Changes and in History. Spec FR-067, FR-076, SC-010, SC-012.
 // The cases drive the page through the WebView2 CDP endpoint and UI Automation patterns. They send no OS input and never move the pointer.
 // CDP keys go through `Input.dispatchKeyEvent`, as tests/windows/keys-cdp.test.ts does (T124). They do not replace one live-input check of the native key path.
 // Dark and Light are the System theme under the CDP `prefers-color-scheme` emulation. Forced colors is the CDP `forced-colors` emulation, not a Windows contrast theme.
@@ -36,6 +37,9 @@ const ACTION_WAIT_MS = 30_000;
 const OPEN_RUNS = 3;
 // Spec SC-007: the parent safety checks before the registration may add at most this time to Open submodule and Open parent repository.
 const OPEN_ALLOWANCE_MS = 150;
+// Spec SC-012: a submodule preview shows within this time after the selection (warm package, median of 10 after one warm-up run).
+const SUBMODULE_PREVIEW_MS = 300;
+const PREVIEW_RUNS = 10;
 // Ctrl+R (src/frontend/keyboard/shortcuts.ts `openSwitcher`). The `cdp.ts` key table has no R key.
 const RECENT_KEYS = [
   { type: "rawKeyDown", key: "Control", code: "ControlLeft", windowsVirtualKeyCode: 0x11, modifiers: MOD.Ctrl },
@@ -642,5 +646,261 @@ describe.skipIf(process.platform !== "win32")("T060 packaged inspection and file
       }
     },
     caseTimeout(30 * OPEN_RUNS),
+  );
+
+  // ---- T111: the submodule preview (plan.md D19) ----
+
+  // `buildSubmodules`, then the commit `moved` takes `solo` and `mid` one commit on. One more commit in each gives two unstaged rows.
+  // `solo` also gets an untracked file, so its row has a mark.
+  function previewWorld(name: string) {
+    const w = buildSubmodules(GIT!, name);
+    const commitIn = (dir: string, message: string) => {
+      const file = `${message.replaceAll(" ", "-")}.txt`;
+      write(dir, file, `${message}\n`);
+      git(dir, ["add", "--", file]);
+      git(dir, ["commit", "-q", "--no-verify", "-m", message]);
+      return git(dir, ["rev-parse", "HEAD"]).trim();
+    };
+    const dirs = { solo: join(w.sup, "solo"), mid: join(w.sup, "mid") };
+    const base = { solo: git(w.sup, ["rev-parse", "HEAD:solo"]).trim(), mid: git(w.sup, ["rev-parse", "HEAD:mid"]).trim() };
+    const one = { solo: commitIn(dirs.solo, "t111 solo one"), mid: commitIn(dirs.mid, "t111 mid one") };
+    git(w.sup, ["add", "--", "solo", "mid"]);
+    git(w.sup, ["commit", "-q", "--no-verify", "-m", "t111 moved"]);
+    const moved = git(w.sup, ["rev-parse", "HEAD"]).trim();
+    const two = { solo: commitIn(dirs.solo, "t111 solo two"), mid: commitIn(dirs.mid, "t111 mid two") };
+    write(dirs.solo, "t111-untracked.txt", "u\n");
+    // Spec FR-073: the tag "Submodule" needs a `submodule.<name>.path` entry equal to the path in .gitmodules.
+    const named = git(w.sup, ["config", "-z", "--file", ".gitmodules", "--get-regexp", "^submodule\\..*\\.path$"]).split("\0").filter((r) => r !== "").map((r) => r.slice(r.indexOf("\n") + 1));
+    expect({ solo: named.includes("solo"), mid: named.includes("mid") }).toEqual({ solo: true, mid: true });
+    // git-status(1) porcelain v2 `1` record, submodule field `S<c><m><u>`: the oracle of each mark (plan.md D19 "Local edits").
+    const marks: Record<string, string[]> = {};
+    for (const record of git(w.sup, ["status", "--porcelain=v2", "-z", "--ignore-submodules=none", "--", "solo", "mid"]).split("\0")) {
+      const m = /^1 \S\S S[C.]([M.])([U.]) \S+ \S+ \S+ \S+ \S+ (.*)$/.exec(record);
+      if (m) marks[m[3]!] = [...(m[1] === "M" ? ["modified content"] : []), ...(m[2] === "U" ? ["untracked content"] : [])];
+    }
+    expect(Object.keys(marks).sort()).toEqual(["mid", "solo"]);
+    return { w, base, one, two, moved, marks };
+  }
+
+  // 001 plan.md "History graph design": a short ID is the first 12 hex digits.
+  const short = (oid: string) => oid.slice(0, 12);
+  const previewIn = (scope: string, path: string) => `document.querySelector(${js(`${scope} section[aria-label="Submodule ${path}"]`)})`;
+  const COMMIT_SCOPE = "[data-slot=changes-workspace]";
+  const HISTORY_SCOPE = "[data-section=historyDiff]";
+  // A preview shows when its Change row holds the text of the finished `readSubmoduleChange` read.
+  const previewShown = (scope: string, path: string, change: string) => `[...(${previewIn(scope, path)}?.querySelectorAll('dt') ?? [])].some((dt) => dt.textContent === 'Change' && dt.nextElementSibling?.textContent === ${js(change)})`;
+  // Plan D19 "Layout" and "Texts": the heading, the tag, the buttons, each definition term with its value, and the commit lists.
+  const previewTexts = (region: string) => `(() => {
+    const r = ${region};
+    if (!r) return null;
+    const value = (term) => [...r.querySelectorAll('dt')].find((dt) => dt.textContent === term)?.nextElementSibling ?? null;
+    const commit = value('Commit');
+    return {
+      heading: r.querySelector('h2')?.textContent ?? null,
+      tag: r.querySelector('.badge')?.textContent ?? null,
+      buttons: [...r.querySelectorAll('button')].map((b) => b.textContent.trim()),
+      terms: [...r.querySelectorAll('dt')].map((dt) => dt.textContent),
+      commit: commit && { ids: [...commit.querySelectorAll('code')].map((c) => c.textContent), arrow: commit.querySelector('[aria-hidden=true]')?.textContent ?? null, spoken: commit.querySelector('.sr-only')?.textContent ?? null },
+      change: value('Change')?.textContent ?? null,
+      work: value('Working tree')?.textContent ?? null,
+      lists: [...r.querySelectorAll('h3')].map((h) => ({ heading: h.textContent, items: [...h.parentElement.querySelectorAll('li')].map((li) => ({ id: li.querySelector('code')?.textContent ?? null, subject: li.querySelector('.truncate')?.textContent ?? null })) })),
+    };
+  })()`;
+  // Plan D19 "Working tree row": the marks joined by ", ", or "No local edits.".
+  const workText = (marks: string[]) => (marks.length === 0 ? "No local edits." : marks.join(", "));
+
+  // The time from the `timeStamp` of the next keydown to the first animation frame in which `check` holds, on the page clock.
+  async function keyToFrame(c: Cdp, check: string, act: () => Promise<void>): Promise<number> {
+    await c.evaluate(`(() => {
+      window.__t111 = null;
+      if (${check}) return (window.__t111 = { ok: false, why: 'the check held before the key', ms: null }), true;
+      const armed = performance.now();
+      let start = null;
+      const onKey = (e) => { if (start === null) start = e.timeStamp; };
+      addEventListener('keydown', onKey, { capture: true });
+      const step = () => {
+        const now = performance.now();
+        if (start !== null && (${check})) {
+          removeEventListener('keydown', onKey, { capture: true });
+          return void (window.__t111 = start >= armed ? { ok: true, why: null, ms: now - start } : { ok: false, why: 'the key came before arm', ms: null });
+        }
+        if (now - armed > ${ACTION_WAIT_MS}) {
+          removeEventListener('keydown', onKey, { capture: true });
+          return void (window.__t111 = { ok: false, why: 'the check did not hold within the limit', ms: null });
+        }
+        requestAnimationFrame(step);
+      };
+      requestAnimationFrame(step);
+      return true;
+    })()`);
+    await act();
+    const r = (await until<{ ok: boolean; why: string | null; ms: number | null } | null>(c, "the timed key", "window.__t111", (v) => v !== null, ACTION_WAIT_MS + 5_000))!;
+    if (!r.ok || r.ms === null) throw new Error(`a timed key is not valid: ${js(r)}`);
+    return r.ms;
+  }
+
+  // Alternates the selection between `mid` (ArrowUp) and `solo` (ArrowDown). Only the `solo` selections count, after one warm-up run.
+  // Each row has its own read key, so each selection waits for its own `readSubmoduleChange` (SubmodulePreview.tsx `useSubmoduleChange`).
+  async function previewTimes(c: Cdp, scope: string, change: string): Promise<number[]> {
+    const times: number[] = [];
+    for (let run = 0; run <= PREVIEW_RUNS; run++) {
+      await keyToFrame(c, previewShown(scope, "mid", change), () => press(c, "ArrowUp"));
+      const ms = await keyToFrame(c, previewShown(scope, "solo", change), () => press(c, "ArrowDown"));
+      if (run > 0) times.push(ms);
+    }
+    const median = times.toSorted((a, b) => a - b);
+    const m = (median[PREVIEW_RUNS / 2 - 1]! + median[PREVIEW_RUNS / 2]!) / 2;
+    console.log(`OBSERVATION ${TASK}: T111 SC-012 ${scope} preview after the selection: runs ${js(times.map((t) => Math.round(t * 10) / 10))} ms, median ${m.toFixed(1)} ms, budget ${SUBMODULE_PREVIEW_MS} ms`);
+    return [m, ...times];
+  }
+
+  // Plan D19 "Keyboard": Open submodule is the one Tab stop of the preview, and F6 reaches the preview after the file lists.
+  async function toOpenSubmodule(c: Cdp, region: string): Promise<void> {
+    const button = `[...((${region})?.querySelectorAll('button') ?? [])].find((b) => b.textContent.trim() === 'Open submodule')`;
+    for (let i = 0; i < 8 && !(await c.evaluate<boolean>(`document.activeElement === (${button})`)); i++) {
+      await press(c, (await c.evaluate<boolean>(`!!(${region})?.contains(document.activeElement)`)) ? "Tab" : "F6");
+    }
+    await until<boolean>(c, "the focus on Open submodule", `document.activeElement === (${button})`, (v) => v);
+  }
+
+  async function previewContrast(c: Cdp, region: string, extra: [string, string][]): Promise<void> {
+    const value = (term: string) => `[...(${region}).querySelectorAll('dt')].find((dt) => dt.textContent === ${js(term)})`;
+    for (const scheme of ["dark", "light", "forced"] as const) {
+      await emulate(c, scheme);
+      await contrast(c, scheme, [
+        ["preview heading", `(${region}).querySelector('h2')`],
+        ["Submodule tag", `(${region}).querySelector('.badge')`],
+        ["Open submodule button", `[...(${region}).querySelectorAll('button')].find((b) => b.textContent.trim() === 'Open submodule')`],
+        ["term Commit", value("Commit")],
+        ["Commit IDs", `${value("Commit")}.nextElementSibling.querySelector('code')`],
+        ["Change text", `${value("Change")}.nextElementSibling`],
+        ["New commits heading", `(${region}).querySelector('h3')`],
+        ["commit list ID", `(${region}).querySelector('li code')`],
+        ["commit list subject", `(${region}).querySelector('li .truncate')`],
+        ...extra,
+      ]);
+    }
+    await c.send("Emulation.setEmulatedMedia", { features: [] });
+    await settle(c);
+  }
+
+  test.skipIf(reason !== null)(
+    "T111 FR-067, FR-074, SC-010, SC-012 by keyboard: a submodule row of Changes shows the preview texts, the UIA names, visible focus, a text contrast of at least 4.5:1 in Dark, Light, and forced colors, and the preview within 300 ms (median of 10)",
+    async () => {
+      const f = previewWorld("t111-changes");
+      const s = await session("t111-changes", f.w.sup);
+      try {
+        await toCommitView(s.app.pid);
+        const row = (path: string) => changesRow(path);
+        await focusOn(s.c, `document.querySelector('[data-file-tree=changes] [role=treeitem]')`, "the first Changes row");
+        await press(s.c, "Home");
+        for (let i = 0; i < 8 && !(await s.c.evaluate<boolean>(`document.activeElement === (${changesRow("solo")})`)); i++) await press(s.c, "ArrowDown");
+        await until<string | null>(s.c, "the selected solo row", `(${changesRow("solo")})?.getAttribute('aria-selected') ?? null`, (v) => v === "true");
+        const region = previewIn(COMMIT_SCOPE, "solo");
+        await until<boolean>(s.c, "the solo preview", previewShown(COMMIT_SCOPE, "solo", "1 new commit"), (v) => v, ACTION_WAIT_MS);
+        await until<string | null>(s.c, "the Working tree row", `(${previewTexts(region)})?.work ?? null`, (v) => v === workText(f.marks.solo!), ACTION_WAIT_MS);
+        // An unstaged row: old is the index side `hI`, new is the submodule HEAD (plan.md D19 "Old and new IDs").
+        expect(await s.c.evaluate(previewTexts(region))).toEqual({
+          heading: "solo",
+          tag: "Submodule",
+          buttons: ["Open submodule"],
+          terms: ["Commit", "Change", "Working tree"],
+          commit: { ids: [short(f.one.solo), short(f.two.solo)], arrow: " → ", spoken: " to " },
+          change: "1 new commit",
+          work: workText(f.marks.solo!),
+          lists: [{ heading: "New commits", items: [{ id: short(f.two.solo), subject: "t111 solo two" }] }],
+        });
+        // Plan D19 "Row accessible name". `find` fails unless a UIA element has that exact Name.
+        const soloName = ["solo, submodule, modified", "new commits", ...f.marks.solo!].join(", ");
+        const midName = ["mid, submodule, modified", ...f.marks.mid!].join(", ");
+        expect(await s.c.evaluate<string | null>(`(${changesRow("solo")}).getAttribute('aria-label')`)).toBe(soloName);
+        for (const [name, type] of [[soloName, ControlType.TreeItem], [midName, ControlType.TreeItem], ["Submodule solo", undefined], ["Open submodule", ControlType.Button]] as const) {
+          await uia(s.app.pid, name, type, () => {});
+        }
+        expect(await unnamed(s.c, region)).toEqual([]);
+        expect(focusVisible(await s.c.evaluate(FOCUS_STYLE))).toBe(true);
+        const marks = `(${changesRow("solo")}).querySelector('[data-slot=submodule-marks]')`;
+        const rowChange = `[...(${changesRow("solo")}).querySelectorAll('span')].find((e) => e.textContent === '1 new commit')`;
+        await previewContrast(s.c, region, [
+          ["term Working tree", `[...(${region}).querySelectorAll('dt')].find((dt) => dt.textContent === 'Working tree')`],
+          ["row Change text", rowChange],
+          ...(f.marks.solo!.length === 0 ? [] : ([["row marks", marks]] as [string, string][])),
+        ]);
+        await toOpenSubmodule(s.c, region);
+        expect(focusVisible(await s.c.evaluate(FOCUS_STYLE))).toBe(true);
+        for (const scheme of ["dark", "light", "forced"] as const) {
+          await emulate(s.c, scheme);
+          expect({ scheme, visible: focusVisible(await s.c.evaluate(FOCUS_STYLE)) }).toEqual({ scheme, visible: true });
+        }
+        await s.c.send("Emulation.setEmulatedMedia", { features: [] });
+        // Spec SC-012: the timing runs from the row list.
+        await focusOn(s.c, changesRow("solo"), "the solo row");
+        const [m] = await previewTimes(s.c, COMMIT_SCOPE, "1 new commit");
+        expect(m!).toBeLessThanOrEqual(SUBMODULE_PREVIEW_MS);
+      } finally {
+        await end(s);
+      }
+    },
+    caseTimeout(40 + 4 * PREVIEW_RUNS),
+  );
+
+  test.skipIf(reason !== null)(
+    "T111 FR-010, FR-069, SC-010, SC-012 by keyboard: a submodule row of Changed files in History shows the preview texts without the Working tree row, the UIA names, visible focus, a text contrast of at least 4.5:1 in Dark, Light, and forced colors, and the preview within 300 ms (median of 10)",
+    async () => {
+      const f = previewWorld("t111-history");
+      const s = await session("t111-history", f.w.sup);
+      try {
+        const list = `document.querySelector('[data-history-list]')`;
+        const activeRow = `document.getElementById(${list}.getAttribute('aria-activedescendant'))?.dataset.rowId ?? null`;
+        await focusOn(s.c, list, "the History list");
+        await press(s.c, "Home");
+        for (let i = 0; i < 20 && (await s.c.evaluate<string | null>(activeRow)) !== f.moved; i++) await press(s.c, "ArrowDown");
+        expect(await s.c.evaluate<string | null>(activeRow)).toBe(f.moved);
+        const heading = `document.querySelector('[data-section=changedFiles] h3')?.textContent ?? null`;
+        await until<string | null>(s.c, "the Changed files heading", heading, (v) => v === "Changed files (2)", ACTION_WAIT_MS);
+        for (let i = 0; i < 6 && (await s.c.evaluate<Active>(ACTIVE)).section !== "changedFiles"; i++) await press(s.c, "F6");
+        expect((await s.c.evaluate<Active>(ACTIVE)).section).toBe("changedFiles");
+        const tree = `document.querySelector('[data-section=changedFiles] [role=tree]')`;
+        const item = (name: string) => `[...${tree}.querySelectorAll('[role=treeitem]')].find((e) => e.getAttribute('aria-label') === ${js(name)})`;
+        // Plan.md D3 "File row name": "<name>, submodule, <status>".
+        const soloName = "solo, submodule, modified";
+        const midName = "mid, submodule, modified";
+        await focusOn(s.c, `${tree}.querySelector('[role=treeitem][aria-selected=true]')`, "the selected changed file");
+        await press(s.c, "Home");
+        for (let i = 0; i < 4 && !(await s.c.evaluate<boolean>(`document.activeElement === (${item(soloName)})`)); i++) await press(s.c, "ArrowDown");
+        await until<string | null>(s.c, "the selected solo row", `(${item(soloName)})?.getAttribute('aria-selected') ?? null`, (v) => v === "true");
+        const region = previewIn(HISTORY_SCOPE, "solo");
+        await until<boolean>(s.c, "the solo preview", previewShown(HISTORY_SCOPE, "solo", "1 new commit"), (v) => v, ACTION_WAIT_MS);
+        // A History row: the two object IDs of its raw record with mode 160000 (plan.md D19 "Old and new IDs").
+        expect(await s.c.evaluate(previewTexts(region))).toEqual({
+          heading: "solo",
+          tag: "Submodule",
+          buttons: ["Open submodule"],
+          terms: ["Commit", "Change"],
+          commit: { ids: [short(f.base.solo), short(f.one.solo)], arrow: " → ", spoken: " to " },
+          change: "1 new commit",
+          work: null,
+          lists: [{ heading: "New commits", items: [{ id: short(f.one.solo), subject: "t111 solo one" }] }],
+        });
+        for (const [name, type] of [[soloName, ControlType.TreeItem], [midName, ControlType.TreeItem], ["Submodule solo", undefined], ["Open submodule", ControlType.Button]] as const) {
+          await uia(s.app.pid, name, type, () => {});
+        }
+        expect(await unnamed(s.c, region)).toEqual([]);
+        expect(focusVisible(await s.c.evaluate(FOCUS_STYLE))).toBe(true);
+        await previewContrast(s.c, region, []);
+        await toOpenSubmodule(s.c, region);
+        for (const scheme of ["dark", "light", "forced"] as const) {
+          await emulate(s.c, scheme);
+          expect({ scheme, visible: focusVisible(await s.c.evaluate(FOCUS_STYLE)) }).toEqual({ scheme, visible: true });
+        }
+        await s.c.send("Emulation.setEmulatedMedia", { features: [] });
+        await focusOn(s.c, item(soloName), "the solo row");
+        const [m] = await previewTimes(s.c, HISTORY_SCOPE, "1 new commit");
+        expect(m!).toBeLessThanOrEqual(SUBMODULE_PREVIEW_MS);
+      } finally {
+        await end(s);
+      }
+    },
+    caseTimeout(40 + 4 * PREVIEW_RUNS),
   );
 });

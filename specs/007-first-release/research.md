@@ -420,3 +420,60 @@ Findings and fixes on branch `f007-review-fixes`. T010 and T017 need a rerun on 
 - Quickstart Q3 control mutations, each undone: `package.json` version `0.1.1` gives `RELEASE_CHECK version-mismatch 0.1.0 0.1.1`, exit 1; one untracked file gives `RELEASE_CHECK dirty`, exit 1, and `package:preview:exes` exits 1 with the `build.rs` panic `a preview build needs a clean tree: d55d42aa…-dirty`; one changed installer byte gives `sums.ts verify` exit 1 with `RELEASE_SUMS mismatch`, and the restored byte gives exit 0; `actions/checkout@v4` in `release.yml` fails `tests/contracts/release-workflow.test.ts` (1 of 12), and the restored file passes.
 - T026 is not met. It needs a rerun on a clean clone of the commit that holds the fix.
 - `OBSERVATION T026: d55d42aa notices-text.ts exit 1 (strict schema without note); other steps exit 0; three files; sums verify exit 0; porcelain empty; Q3 mutations fail as stated`
+
+### T026 Local rehearsal of the build job, second run (2026-10-31, reference host, clone of `007-first-release` at a58a7da0)
+
+- Tools: Bun 1.4.4, `rustc 1.99.0`, `cargo 1.99.0`, `tauri-cli 2.12.0`, makensis `v3.11`.
+- A fresh `git clone --no-local` in local scratch. `git rev-parse HEAD` in the clone printed a58a7da0b57e5c354cb0bb1b59e3c40b9f94252c.
+- Exit 0, in order: `bun install --frozen-lockfile`, `check.ts` before the build, `bun run build`, `bun run package:preview:exes`, `bun run package:preview:bundle`, `notices-text.ts`, `hunspell-source.ts`, `sums.ts write`, `sums.ts verify`, and `notes.ts`.
+- The verified folder holds exactly four files:
+  - `Arbareto_0.1.0_x64-setup.exe` 46493363 bytes `a45032c89c0d44bb6ddd9c59c06966038901728b4099b7ea627029d68829aeb6`.
+  - `arbareto-0.1.0-hunspell-source.tar.gz` 2224921 bytes `d836bf3dbb2f12fc676ad124a87ba3224415aeb091bc66a0f7d1e4e3e8c21f0b`. The archive bytes are not reproducible (see the first run).
+  - `arbareto-0.1.0-third-party-notices.txt` 650568 bytes `00971cc0a0227009c3134f93603a2542f4101b15cfcc798624412ff035d115ac`.
+  - `SHA256SUMS.txt` 304 bytes `d9fe756b667573ae8098125a9900e247fd323893c0305ba3d5e5375ce14eb051`.
+- `notes.ts` wrote `arbareto-0.1.0-release-notes.md` (3578 bytes) to a separate `notes` folder. This differs from the literal Q2 text.
+- `git status --porcelain --untracked-files=all` in the clone printed nothing after the install, after the rehearsal, after the Q3 controls, and at the end.
+- Quickstart Q3 control mutations, each undone and rerun green: `package.json` version `0.1.1` gives `RELEASE_CHECK version-mismatch 0.1.0 0.1.1`, exit 1; one untracked file gives `RELEASE_CHECK dirty`, exit 1, and `package:preview:exes` exits 1; one changed installer byte gives `sums.ts verify` exit 1 with `RELEASE_SUMS mismatch`, and the original file gives exit 0.
+- Commit 195b03df changed the release scripts and the workflow after this run. So T026 runs once more on the final branch head before the `v0.1.0` tag, together with the T028 full run. T026 stays open.
+- `OBSERVATION T026: a58a7da0 every Q2 step exit 0; four files; sums verify exit 0; porcelain empty; Q3 mutations fail as stated; rerun needed after 195b03df`
+
+### T028 run at a58a7da0 (build commit a58a7da0)
+
+- `bun run test:all` had one failure: the SC-002 case of `tests/git/commit-changes.test.ts`, with `rejected` and `UNKNOWN_TARGET`.
+- Cause: a Windows temp clean-up deleted the refs of the cached test repository. The cache reused the damaged entry. 007 code did not cause the failure.
+- 005 T113 (848764d0, merged in 99bace2f) rebuilds a cached test repository when its refs changed. Main 99bace2f is merged into this branch at 61892fbc.
+
+### Review of batch 2 (independent reviewer, fix commit 195b03df, 2026-10-31)
+
+The review ran as an independent reviewer pass on batch 2. Its fixes are in 195b03df:
+
+1. A reused draft release with an asset that this run does not build refuses with `RELEASE_CHECK exists`.
+2. The notices generator, About, and the notices text use one schema in `src/contracts/notices.ts`.
+3. The Hunspell source archive writes `info/attributes`, so `export-ignore` and `export-subst` in the tree have no effect.
+4. The README states the 0.1.0 download in the future tense. T032 changes it after the publish.
+5. New tests: workflow expressions, token scope, publish order, the sums format, and the stale-asset refusal.
+
+Security scrutiny of the workflow permissions and the SignPath token, from `tests/contracts/release-workflow.test.ts` and `release.yml`:
+
+- Permissions: the workflow sets `permissions: {}`. The test "workflow permissions are empty" checks it.
+- `build` has exactly `contents: read` and `actions: read` and no environment. The test "build runs on windows-2025 with exactly contents: read and actions: read, and no environment" checks it.
+- `publish` needs `build`, uses the environment `release`, runs only for `v*` tag pushes, and has exactly `contents: write`, `id-token: write`, and `attestations: write`. A test checks each of these. Its checkout sets `persist-credentials: false`.
+- Every `uses:` names a full 40-hex commit ID. A test checks it.
+- No `run` block holds an expression. The test "no run block holds an expression" checks it.
+- The secret `SIGNPATH_API_TOKEN` appears only in the two SignPath `api-token` inputs and in `SIGNPATH_TOKEN_SET`. A test checks it. `SIGNPATH_TOKEN_SET` holds only the boolean `secrets.SIGNPATH_API_TOKEN != ''`, not the token.
+- Each SignPath step runs only when `ARBARETO_SIGNING` is `signpath`. A test checks it.
+- In `publish`, `sums.ts verify` runs before `actions/attest`, and `actions/attest` runs before the publish step. A test checks the order.
+
+### T028 partial verification (2026-10-31, reference host, build commit 61892fbc)
+
+- Scope: the steps that need no full run. The full `bun run test:all` run is still open. The orchestrator runs it once before the `v0.1.0` tag.
+- `tests/git/commit-changes.test.ts` alone: exit 0, 16 pass, 0 fail. All `ORIGIN` lines name the checkout under test.
+- Control mutations, each undone byte for byte (`git diff --exit-code` exit 0) and rerun green:
+  - `release.yml`: the `publish` checkout uses `actions/checkout@v4`. `tests/contracts/release-workflow.test.ts` exit 1, 1 of 17 fail ("every uses: names a full 40-hex commit ID"). Rerun: 17 of 17 pass.
+  - `release.yml`: `build` gets `contents: write`. The workflow test exit 1, 1 of 17 fail ("build runs on windows-2025 with exactly contents: read and actions: read, and no environment"). Rerun: 17 of 17 pass.
+  - `sums.ts`: the extra-file check is removed. `tests/contracts/release-files.test.ts` exit 1, 1 of 20 fail ("an extra file gives RELEASE_SUMS extra"). Rerun in the run below: pass.
+- `tests/contracts/release-files.test.ts`, `release-workflow.test.ts`, `release-pins.test.ts`, and `tests/git/release-check.test.ts` together: exit 0, 70 pass, 0 fail, 4 files. All `ORIGIN` lines name the checkout under test.
+- `bun run typecheck` exit 0. `bun run export:schemas --check` exit 0.
+- `git status --porcelain --untracked-files=all` printed nothing after the restores.
+- Not run here: `bun install --frozen-lockfile`, `bun run build`, `cargo test`, and `bun run test:all`.
+- `OBSERVATION T028: 61892fbc commit-changes 16 pass 0 fail; three control mutations fail as stated and pass after the restore; four release test files 70 pass 0 fail; typecheck and schema check exit 0; test:all open`

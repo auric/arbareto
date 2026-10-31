@@ -143,9 +143,73 @@ describe("revert frame: registration and common refusals (plan.md D2, contract �
       const done = await run(service, r, reviewed.workbenchToken);
       expect({ ...outcome(done), folders: done.result?.foldersCreated, outcomes: done.result?.files.map((f) => f.outcome) }).toEqual({ ...SUCCEEDED, folders: [b64("deep"), b64("deep/er")], outcomes: ["reverted", "reverted", "reverted"] });
       expect(workingFileDigests(repo)).toEqual(oracle);
+      // Contract Δ6 `gitMode`: exactly the absent target carries the mode of its index entry.
+      const frames = service.runner.frames.filter((f) => f.type === "fileReplace") as { expected: unknown; gitMode?: string }[];
+      expect(frames.map((f) => [f.expected === "absent", f.gitMode])).toEqual([
+        [true, "100644"],
+        [false, undefined],
+        [false, undefined],
+      ]);
     }),
     TIMEOUT_MS,
   );
+
+  // Contract Δ6 and plan.md D10: a failure reply names the folders that the write created, and those folders are an effect.
+  caseTest(TASK, "folders that a failed write created count as an effect: failed-with-effects, and foldersCreated names them", SHELL, () =>
+    serviced("t020-failed-folders", async (service) => {
+      const repo = build((r) => write(r, "deep/er/d.txt", "d\n"), (r) => rmSync(join(r, "deep"), { recursive: true }));
+      const { r, read } = await open(service, repo);
+      const reviewed = await reviewOk(service, r, read);
+      service.runner.inject.workingReply = (request) => {
+        if (request.expected !== "absent") return { result: "stale" };
+        // The synthetic shell created both folders, then found a new name at the target.
+        mkdirSync(join(repo, "deep", "er"), { recursive: true });
+        return { result: "stale", folders: ["deep", "er"] };
+      };
+      try {
+        const done = await run(service, r, reviewed.workbenchToken);
+        expect({ state: done.state, folders: done.result?.foldersCreated, outcomes: done.result?.files.map((f) => [f.outcome, f.code]) }).toEqual({
+          state: "failed-with-effects",
+          folders: [b64("deep"), b64("deep/er")],
+          outcomes: [
+            ["not-changed", "stale"],
+            ["not-changed", "stale"],
+            ["not-changed", "stale"],
+          ],
+        });
+      } finally {
+        service.runner.inject.workingReply = null;
+      }
+      expect(gitTemps(repo)).toEqual([]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  // Contract Δ6: `replaced` with `source: "kept"` leaves Git's temporary file, so the run removes it. A `tempRemove` reply `interrupted` is an unknown effect.
+  caseTest(TASK, "a kept source goes through tempRemove; an interrupted tempRemove never gives succeeded", SHELL, async () => {
+    for (const interrupted of [false, true]) {
+      await serviced(`t020-kept-${interrupted}`, async (service) => {
+        const repo = build();
+        const { r, read } = await open(service, repo);
+        const reviewed = await reviewOk(service, r, read);
+        service.runner.inject.replaceStep = (step, path) => (step === "renamed" && path.endsWith("a.txt") ? "keep-source" : undefined);
+        if (interrupted) service.runner.inject.tempRemoveReply = () => ({ result: "interrupted" });
+        try {
+          const done = await run(service, r, reviewed.workbenchToken);
+          const removes = service.runner.frames.filter((f) => f.type === "tempRemove").length;
+          if (interrupted) expect({ state: done.state, outcomes: done.result?.files.map((f) => f.outcome), removes }).toEqual({ state: "failed-with-effects", outcomes: ["reverted", "reverted"], removes: 1 });
+          else {
+            expect({ ...outcome(done), removes }).toEqual({ ...SUCCEEDED, removes: 1 });
+            expect(gitTemps(repo)).toEqual([]);
+          }
+        } finally {
+          service.runner.inject.replaceStep = null;
+          service.runner.inject.tempRemoveReply = null;
+        }
+        for (const name of gitTemps(repo)) rmSync(join(repo, name));
+      });
+    }
+  }, TIMEOUT_MS);
 
   caseTest(TASK, "OPERATION_IN_PROGRESS, unknown-operation, and CONFLICTED refuse the three actions before any token", SHELL, () =>
     serviced("t020-states", async (service) => {

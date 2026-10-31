@@ -724,7 +724,7 @@ describeGit("bun runner revert requests (T019)", (git) => {
     // The frame rule ties `expected` to the size and SHA-256 of `facts` (contract Δ6), so a review of other bytes binds both.
     expect(await replace(operationId, ["a.txt"], { expected: present("other\n"), facts: { ...facts, ...present("other\n") }, bytes: base64("new\n") })).toEqual({ result: "stale" });
     expect(await replace(operationId, ["a.txt"], { expected: present("old\n"), facts: changed as WorkingReplaceRequest["facts"], bytes: base64("new\n") })).toEqual({ result: "stale" });
-    expect(await replace(operationId, ["a.txt"], { expected: "absent", facts: "absent", bytes: base64("new\n") })).toEqual({ result: "stale" });
+    expect(await replace(operationId, ["a.txt"], { expected: "absent", facts: "absent", gitMode: "100644", bytes: base64("new\n") })).toEqual({ result: "stale" });
     expect(await replace(operationId, ["gone.txt"], { expected: present("old\n"), facts, bytes: base64("new\n") })).toEqual({ result: "stale" });
     expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("old\n");
     expect(temps(repo)).toEqual([]);
@@ -757,17 +757,55 @@ describeGit("bun runner revert requests (T019)", (git) => {
 
   test("an absent target with folders creates each missing folder and names them; a later name or folder gives stale", async () => {
     const operationId = await marked();
-    expect(await replace(operationId, ["new", "deep", "a.txt"], { folders: ["new", "deep"], bytes: base64("made\n") })).toEqual({ result: "replaced", folders: ["new", "deep"] });
+    expect(await replace(operationId, ["new", "deep", "a.txt"], { folders: ["new", "deep"], gitMode: "100644", bytes: base64("made\n") })).toEqual({ result: "replaced", folders: ["new", "deep"] });
     expect(readFileSync(join(repo, "new", "deep", "a.txt"), "utf8")).toBe("made\n");
     // The folders exist now, and so does the name.
-    expect(await replace(operationId, ["new", "deep", "b.txt"], { folders: ["new", "deep"], bytes: base64("x\n") })).toEqual({ result: "stale" });
-    expect(await replace(operationId, ["new", "deep", "a.txt"], { bytes: base64("again\n") })).toEqual({ result: "stale" });
+    expect(await replace(operationId, ["new", "deep", "b.txt"], { folders: ["new", "deep"], gitMode: "100644", bytes: base64("x\n") })).toEqual({ result: "stale" });
+    expect(await replace(operationId, ["new", "deep", "a.txt"], { gitMode: "100644", bytes: base64("again\n") })).toEqual({ result: "stale" });
     expect(readFileSync(join(repo, "new", "deep", "a.txt"), "utf8")).toBe("made\n");
     expect(existsSync(join(repo, "new", "deep", "b.txt"))).toBe(false);
     rmSync(join(repo, "new"), { recursive: true });
   });
 
-  test("source: Git's temporary file copies beside the target with a streamed digest and goes after the rename; a digest that differs gives stale and the source goes", async () => {
+  // Contract Δ6 `gitMode`: exactly an absent target carries the mode of its index entry. A Linux host creates the file with 0666 or 0777 minus the umask,
+  // as Git's checkout does (`entry.c` `create_file`). Windows checks the value and ignores it.
+  test("gitMode is required exactly for an absent target and sets the mode of the new file", async () => {
+    const operationId = await marked();
+    await expect(replace(operationId, ["g1.txt"], { bytes: base64("x\n") })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    writeFileSync(join(repo, "g0.txt"), "old\n");
+    const facts = await bound(operationId, ["g0.txt"]);
+    await expect(replace(operationId, ["g0.txt"], { expected: present("old\n"), facts, gitMode: "100644", bytes: base64("x\n") })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    expect(await replace(operationId, ["g1.txt"], { gitMode: "100644", bytes: base64("x\n") })).toEqual({ result: "replaced" });
+    expect(await replace(operationId, ["g2.txt"], { gitMode: "100755", bytes: base64("x\n") })).toEqual({ result: "replaced" });
+    if (!WINDOWS) {
+      const umask = process.umask();
+      expect([lstatSync(join(repo, "g1.txt")).mode & 0o7777, lstatSync(join(repo, "g2.txt")).mode & 0o7777]).toEqual([0o666 & ~umask, 0o777 & ~umask]);
+    }
+    for (const name of ["g0.txt", "g1.txt", "g2.txt"]) rmSync(join(repo, name));
+  });
+
+  // Contract Δ6: a `.git` name in any ASCII case is never Git's temporary file.
+  test("a source or a tempRemove name .git in any ASCII case gives INVALID_REQUEST", async () => {
+    const operationId = await marked();
+    writeFileSync(join(repo, "a.txt"), "old\n");
+    const facts = await bound(operationId, ["a.txt"]);
+    await expect(replace(operationId, ["a.txt"], { expected: present("old\n"), facts, source: { name: ".GiT", ...present("x") } })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    await expect(runner.tempRemove({ operationId, repositoryId, name: ".Git", expected: present("x") }, signal())).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+    expect(existsSync(join(repo, ".git"))).toBe(true);
+  });
+
+  // Contract Δ6 `folders` of a failure reply: the folders that the write created before the failure stay, and the reply names them.
+  test("a write that fails after its folders names them, and a source with another digest stays for tempRemove", async () => {
+    const operationId = await marked();
+    writeFileSync(join(repo, ".merge_file_f1"), "other\n");
+    expect(await replace(operationId, ["made", "here", "a.txt"], { folders: ["made", "here"], gitMode: "100644", source: { name: ".merge_file_f1", size: 6, sha256: sha("wanted") } })).toEqual({ result: "stale", folders: ["made", "here"] });
+    expect({ folder: existsSync(join(repo, "made", "here")), target: existsSync(join(repo, "made", "here", "a.txt")), source: readFileSync(join(repo, ".merge_file_f1"), "utf8") }).toEqual({ folder: true, target: false, source: "other\n" });
+    rmSync(join(repo, "made"), { recursive: true });
+    rmSync(join(repo, ".merge_file_f1"));
+    expect(temps(repo)).toEqual([]);
+  });
+
+  test("source: Git's temporary file copies beside the target with a streamed digest and goes after the rename; another digest, size, or a second link keeps it", async () => {
     const operationId = await marked();
     writeFileSync(join(repo, "a.txt"), "old\n");
     const facts = await bound(operationId, ["a.txt"]);
@@ -777,11 +815,33 @@ describeGit("bun runner revert requests (T019)", (git) => {
     expect({ target: readFileSync(join(repo, "a.txt"), "utf8"), source: existsSync(join(repo, ".merge_file_t19a")) }).toEqual({ target: restored, source: false });
     const again = await bound(operationId, ["a.txt"]);
     writeFileSync(join(repo, ".merge_file_t19b"), "other\n");
+    // Contract Δ6: only a matched streamed SHA-256 proves Git's temporary file, so every earlier failure keeps the source for `tempRemove`.
     expect(await replace(operationId, ["a.txt"], { expected: present(restored), facts: again, source: { name: ".merge_file_t19b", size: 6, sha256: sha("expected\n") } })).toEqual({ result: "stale" });
-    expect({ target: readFileSync(join(repo, "a.txt"), "utf8"), source: existsSync(join(repo, ".merge_file_t19b")) }).toEqual({ target: restored, source: false });
+    expect(await replace(operationId, ["a.txt"], { expected: present(restored), facts: again, source: { name: ".merge_file_t19b", size: 7, sha256: sha("other\n") } })).toEqual({ result: "stale" });
+    linkSync(join(repo, ".merge_file_t19b"), join(fixtureDir("revert-outside"), "second-link"));
+    expect(await replace(operationId, ["a.txt"], { expected: present(restored), facts: again, source: { name: ".merge_file_t19b", ...present("other\n") } })).toEqual({ result: "refused", reason: "hard-link" });
+    rmSync(join(fixtureDir("revert-outside"), "second-link"));
+    expect({ target: readFileSync(join(repo, "a.txt"), "utf8"), source: readFileSync(join(repo, ".merge_file_t19b"), "utf8") }).toEqual({ target: restored, source: "other\n" });
+    rmSync(join(repo, ".merge_file_t19b"));
     // A missing source fails before the open.
     expect(await replace(operationId, ["a.txt"], { expected: present(restored), facts: again, source: { name: ".merge_file_t19c", size: 1, sha256: sha("x") } })).toEqual({ result: "stale" });
     expect(temps(repo)).toEqual([]);
+  });
+
+  // Contract Δ6 `source: "kept"`: the rename landed, but the delete of Git's temporary file failed, so the reply says so.
+  test("a replace whose source delete fails replies replaced with source kept", async () => {
+    const operationId = await marked();
+    writeFileSync(join(repo, "k.txt"), "old\n");
+    const facts = await bound(operationId, ["k.txt"]);
+    writeFileSync(join(repo, ".merge_file_k"), "new\n");
+    runner.inject.replaceStep = (step) => (step === "renamed" ? "keep-source" : undefined);
+    try {
+      expect(await replace(operationId, ["k.txt"], { expected: present("old\n"), facts, source: { name: ".merge_file_k", ...present("new\n") } })).toEqual({ result: "replaced", source: "kept" });
+    } finally {
+      runner.inject.replaceStep = null;
+    }
+    expect({ target: readFileSync(join(repo, "k.txt"), "utf8"), source: existsSync(join(repo, ".merge_file_k")) }).toEqual({ target: "new\n", source: true });
+    rmSync(join(repo, ".merge_file_k"));
   });
 
   test("the write seam: a stop at the check changes nothing; an end after the write leaves no temporary file; an end after the clear leaves its name; an end after the rename keeps the new bytes", async () => {
@@ -838,9 +898,8 @@ describeGit("bun runner revert requests (T019)", (git) => {
     expect(await facts(await marked("revert-unstaged"), {})).toMatchObject([{ kind: "file", digest: sha("s5\n") }]);
   });
 
-  // Plan.md D8 `source`, as src-tauri/src/file_replace.rs `open_source` and `check_source` do it: a link opens as itself, refuses, and goes through its handle.
-  // A folder fails the open, so it refuses and stays. The WSL `replace_one` opens with O_NOFOLLOW, so there a link fails the open and stays.
-  test("a source that is a link or a folder refuses with not-regular; a Windows link source goes, and a folder stays", async () => {
+  // Contract Δ6 `source`: `not-regular` keeps the source, because no digest matched (src-tauri/src/file_replace.rs `check_source`, WSL `replace_one`).
+  test("a source that is a link or a folder refuses with not-regular and stays", async () => {
     const operationId = await marked();
     writeFileSync(join(repo, "a.txt"), "old\n");
     const facts = await bound(operationId, ["a.txt"]);
@@ -857,7 +916,7 @@ describeGit("bun runner revert requests (T019)", (git) => {
     }
     if (linked) {
       expect(await replace(operationId, ["a.txt"], { expected: present("old\n"), facts, source: { name: ".merge_file_link", ...present("new\n") } })).toEqual({ result: "refused", reason: "not-regular" });
-      expect({ link: lstatSync(join(repo, ".merge_file_link"), { throwIfNoEntry: false }) !== undefined, real: readFileSync(join(fixtureDir("revert-outside"), "real.txt"), "utf8") }).toEqual({ link: !WINDOWS, real: "new\n" });
+      expect({ link: lstatSync(join(repo, ".merge_file_link"), { throwIfNoEntry: false }) !== undefined, real: readFileSync(join(fixtureDir("revert-outside"), "real.txt"), "utf8") }).toEqual({ link: true, real: "new\n" });
       rmSync(join(repo, ".merge_file_link"), { force: true });
     } else console.log("SKIP T019 a link source: missing capability symlink (unverified)");
     expect(readFileSync(join(repo, "a.txt"), "utf8")).toBe("old\n");

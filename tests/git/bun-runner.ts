@@ -99,6 +99,7 @@ type FileFactError = (typeof FILE_FACT_ERRORS)[number];
 // Feature 008: the seams of a `working` replace. `checked`: after every check, before the write. `written`: the temporary file holds the new bytes.
 // `cleared`: the delete disposition is clear, before the rename. `renamed`: after the rename, before the source goes.
 export type ReplaceStep = "checked" | "written" | "cleared" | "renamed";
+type ReplaceSeam = "stop" | "crash" | "keep-source" | undefined;
 
 // The host module of the double. The generic harness loads it only through this path (tests/git/portable-imports.test.ts).
 export const HOST_SCRIPT = join(import.meta.dir, process.platform === "win32" ? "win32.ts" : "linux.ts");
@@ -670,7 +671,10 @@ export function createBunRunner(options: BunRunnerOptions) {
     wslSha256sum: null as string | null,
     // Feature 008: at a named step of a `working` replace, `stop` stops the request before the write, and `crash` ends it as a shell end does.
     // A stop after `checked` is no stop, because a started write runs to its end (contract Δ3).
-    replaceStep: null as ((step: ReplaceStep, path: string) => "stop" | "crash" | undefined | Promise<"stop" | "crash" | undefined>) | null,
+    // `keep-source` at `renamed` makes the delete of Git's temporary file fail, so the reply carries `source: "kept"`.
+    replaceStep: null as ((step: ReplaceStep, path: string) => ReplaceSeam | Promise<ReplaceSeam>) | null,
+    // Feature 008: a synthetic `tempRemove` reply in place of the removal, after the request checks.
+    tempRemoveReply: null as ((request: TempRemoveRequest) => TempRemoveReply | undefined) | null,
     // Feature 008: a synthetic reply of a `working` replace in place of the write, after the request checks and the walk hold.
     workingReply: null as ((request: WorkingReplaceRequest) => WorkingReplaceReply | undefined) | null,
     // Feature 008: the wait for a `working` replace reply after `cancel`, as the native runner has it. Null: the reply always arrives.
@@ -851,10 +855,10 @@ export function createBunRunner(options: BunRunnerOptions) {
   }
 
   // The size and SHA-256 of a file, read in chunks. `to` receives a copy of the bytes, opened with `wx`.
-  function streamed(from: string, to?: string): { size: number; sha256: string } {
+  function streamed(from: string, to?: string, mode = 0o666): { size: number; sha256: string } {
     const hash = new Bun.CryptoHasher("sha256");
     const input = openSync(from, "r");
-    const output = to === undefined ? null : openSync(to, "wx");
+    const output = to === undefined ? null : openSync(to, "wx", mode);
     try {
       const chunk = new Uint8Array(STREAM_BYTES);
       let size = 0;
@@ -923,26 +927,24 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (refused !== null) return refused;
       if (old.size !== request.expected.size || old.digest !== request.expected.sha256 || !Bun.deepEquals(workingFactsOf(old), request.facts, true)) return { result: "stale" };
     }
-    // Contract Δ6 `source`: the source goes after the rename and after every failure that comes after its open.
+    // Contract Δ6 `source`: only a matched streamed SHA-256 proves Git's temporary file. So the source goes only after that match: after the rename,
+    // or after a later failure. A size or digest mismatch, `not-regular`, `hard-link`, and every earlier failure keep it for `tempRemove`.
     let source: string | null = null;
+    let matched = false;
+    // Contract Δ6 `folders` of a failure reply: the folders that this write created before the failure. They stay.
+    const made: string[] = [];
     const fail = (reply: WorkingReplaceReply): WorkingReplaceReply => {
-      if (source !== null) rmSync(source, { force: true });
-      return reply;
+      if (source !== null && matched) rmSync(source, { force: true });
+      return made.length > 0 && (reply.result === "stale" || reply.result === "refused" || reply.result === "error") ? { ...reply, folders: [...made] } : reply;
     };
     if (request.source !== undefined) {
       const path = join(root, request.source.name);
       const st = lstatSync(path, { throwIfNoEntry: false });
       if (st === undefined) return { result: "stale" };
-      // file_replace.rs `open_source` opens a link as itself, so `check_source` refuses it and the delete disposition removes the name.
-      // A folder fails that open and stays. The WSL `replace_one` opens with O_NOFOLLOW, so there a link fails the open and stays too.
-      if (st.isSymbolicLink() && process.platform === "win32") {
-        rmSync(path, { force: true });
-        return { result: "refused", reason: "not-regular" };
-      }
       if (st.isSymbolicLink() || !st.isFile()) return { result: "refused", reason: "not-regular" };
+      if (st.nlink !== 1) return { result: "refused", reason: "hard-link" };
+      if (st.size !== request.source.size) return { result: "stale" };
       source = path;
-      if (st.nlink !== 1) return fail({ result: "refused", reason: "hard-link" });
-      if (st.size !== request.source.size) return fail({ result: "stale" });
     }
     const checked = await step("checked");
     if (checked === "crash") ended("checked");
@@ -952,19 +954,23 @@ export function createBunRunner(options: BunRunnerOptions) {
       folder = join(folder, name);
       try {
         mkdirSync(folder);
+        made.push(name);
       } catch (error) {
         return fail((error as NodeJS.ErrnoException).code === "EEXIST" ? { result: "stale" } : replaceError(error));
       }
     }
     const temp = join(dirname(target), `.arbareto-${crypto.randomUUID().replaceAll("-", "")}.tmp`);
+    // Contract Δ6 `gitMode`: a Linux host creates an absent target as Git's checkout does, with 0666 or 0777 minus the umask. Windows ignores it.
+    const createMode = request.gitMode === "100755" ? 0o777 : 0o666;
     try {
-      if (request.bytes !== undefined) writeFileSync(temp, Buffer.from(request.bytes, "base64"), { flag: "wx" });
+      if (request.bytes !== undefined) writeFileSync(temp, Buffer.from(request.bytes, "base64"), { flag: "wx", mode: createMode });
       else {
-        const copied = streamed(source!, temp);
+        const copied = streamed(source!, temp, createMode);
         if (copied.size !== request.source!.size || copied.sha256 !== request.source!.sha256) {
           rmSync(temp, { force: true });
           return fail({ result: "stale" });
         }
+        matched = true;
       }
       // Plan.md D9 order on a Linux host: the gid copy, the write, then the mode bits of the old file.
       if (old !== null && old.mode !== undefined) {
@@ -999,9 +1005,18 @@ export function createBunRunner(options: BunRunnerOptions) {
       rmSync(temp, { force: true });
       return fail((error as NodeJS.ErrnoException).code === "EEXIST" ? { result: "stale" } : replaceError(error));
     }
-    if ((await step("renamed")) === "crash") ended("renamed");
-    if (source !== null) rmSync(source, { force: true });
-    return missing.length > 0 ? { result: "replaced", folders: missing } : { result: "replaced" };
+    const renamed = await step("renamed");
+    if (renamed === "crash") ended("renamed");
+    let kept = renamed === "keep-source";
+    if (source !== null && !kept) {
+      try {
+        unlinkSync(source);
+      } catch {
+        kept = true;
+      }
+    }
+    // Contract Δ6 `source: "kept"`: the rename landed, but Git's temporary file stays at its name.
+    return { result: "replaced", ...(made.length > 0 ? { folders: [...made] } : {}), ...(source !== null && kept ? { source: "kept" as const } : {}) };
   }
 
   // Contract Δ6 `tempRemove`: one file in the worktree root, removed only while its facts equal `expected`.
@@ -2191,7 +2206,9 @@ export function createBunRunner(options: BunRunnerOptions) {
       const repository = repositories.get(request.repositoryId);
       if (repository === undefined) throw unknownTarget();
       if (wslGits.has(repository.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL tempRemove");
-      return walk(signal, () => removeTemp(repository.worktreeRoot, request), "tempRemove");
+      const reply = await walk(signal, () => inject.tempRemoveReply?.(request) ?? removeTemp(repository.worktreeRoot, request), "tempRemove");
+      // Contract Δ6: a Windows stop or deadline before the delete removes nothing.
+      return "stop" in reply ? { result: "stopped" } : reply;
     },
 
     // Feature 005 contract Δ6 `shadow`, as `src-tauri/src/process_requests.rs` `shadow` (:1558) and `src-tauri/src/shadow.rs` `create` make it: a new

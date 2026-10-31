@@ -13,7 +13,7 @@ import { NATIVE } from "../contracts/native-path";
 import { compareKeys, treeKey } from "../contracts/tree-order";
 import { attributeArgs, cachedAttributeArgs, checkoutTempArgs, indexPathArgs, objectCheckArgs, OID_HEX } from "./commands";
 import { hunkEligibility, IndexFormatError } from "./eligibility";
-import { createCollector, RunnerRefusal, sizeDeadlineMs, stepUnits, type FileFact, type WalkStop, type WorkingReplaceReply, type WorkingReplaceRequest } from "./git-runner";
+import { createCollector, RunnerRefusal, sizeDeadlineMs, stepUnits, type FileFact, type TempRemoveReply, type WalkStop, type WorkingReplaceReply, type WorkingReplaceRequest } from "./git-runner";
 import { canonicalIndex, indexOf, isStop, lingeringText, missingObject, PROFILE_TEXTS, settled, stepOf, type Fact, type Failure, type Stop } from "./hunk-publish";
 import { LOCKED_REMEDY } from "./index-lock";
 import { contextOf, latin1, strictUtf8 } from "./read-steps";
@@ -495,6 +495,8 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
   let stopped = false;
   // A request without a shell reply, so its effect is not known.
   let lost = false;
+  // A `tempRemove` without a known result (contract Δ6 `interrupted`).
+  let tempUnknown = false;
   const deadlines = new Set<number>();
   let done = 0;
   const result = { action: bound.action };
@@ -502,12 +504,19 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
   r.progress("revert-files", { fileIndex: 0, fileCount: count });
 
   // Plan.md D5a step 6: each Git temporary file that no write consumed. The cleanup reads with the signal that never aborts.
+  // Contract Δ6 `tempRemove`: `interrupted` and a lost reply leave an unknown effect, so the run waits for the process-end fact and never ends `succeeded`.
   const removeTemps = async (temps: Temp[]) => {
     for (const t of temps) {
+      let reply: TempRemoveReply | WalkStop;
       try {
-        await ctx.runner.tempRemove({ operationId: ctx.operationId, repositoryId: w.repositoryId, name: t.name, expected: { size: t.size, sha256: t.sha256 } }, q.signal);
+        reply = await ctx.runner.tempRemove({ operationId: ctx.operationId, repositoryId: w.repositoryId, name: t.name, expected: { size: t.size, sha256: t.sha256 } }, q.signal);
       } catch (error) {
         if (!(error instanceof RunnerRefusal)) throw error;
+        continue;
+      }
+      if ("stop" in reply || reply.result === "interrupted") {
+        tempUnknown = true;
+        ends.push({ exit: null, canceled: false, refused: null, outputTail: "" });
       }
     }
   };
@@ -594,6 +603,9 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
         facts: plan.working,
         source: temp,
         ...(folders.length > 0 ? { folders } : {}),
+        // Contract Δ6 `gitMode`: exactly an absent target carries the mode of the source index entry.
+        // The support reasons refuse `symlink` and `submodule`, so a regular index mode is left; the frame check refuses any other value.
+        ...(plan.working === "absent" ? { gitMode: plan.source!.mode as "100644" | "100755" } : {}),
       };
       // The digest of the sent bytes decides `reverted`, also when the reply is lost or broken after a landed rename.
       newSha[i] = temp.sha256;
@@ -616,11 +628,12 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
       replies[i] = answer;
       // Only the shell's own `stopped` reply means a stop. Without a Cancel of this run, it was the shell deadline.
       if (answer.result === "stopped" && !ctx.signal.aborted) deadlines.add(i);
-      if (answer.result === "replaced") {
-        // Contract Δ6: `replaced` names the request folders that the shell created, from the first one on.
-        const skipped = plan.folders.length - folders.length;
-        for (let f = 0; f < (answer.folders?.length ?? 0); f++) created.add(names[i]!.slice(0, depth + skipped + f + 1).join("/"));
-      } else unused.push(temp);
+      // Contract Δ6: `replaced`, `stale`, `refused`, and `error` name the request folders that the shell created, from the first one on.
+      const skipped = plan.folders.length - folders.length;
+      const made = "folders" in answer ? (answer.folders?.length ?? 0) : 0;
+      for (let f = 0; f < made; f++) created.add(names[i]!.slice(0, depth + skipped + f + 1).join("/"));
+      // `source: "kept"`: the rename landed, and Git's temporary file stays, so it goes through `tempRemove` too.
+      if (answer.result !== "replaced" || answer.source === "kept") unused.push(temp);
       if (answer.result === "interrupted") ends.push({ exit: null, canceled: ctx.signal.aborted, refused: null, outputTail: "" });
       if (answer.result === "stopped" || answer.result === "interrupted") stopped = true;
       r.progress("revert-files", { fileIndex: ++done, fileCount: count });
@@ -661,7 +674,9 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
     return at("changed-outside");
   });
   const value = { action: bound.action, files: outcomes, foldersCreated: [...created].map((path) => Buffer.from(path).toString("base64")), index: "none" };
-  const effects = outcomes.filter((o) => o.outcome === "reverted" || o.outcome === "unstaged-only" || o.outcome === "changed-outside").length;
+  // Plan.md D10: created folders and an unknown `tempRemove` are effects too, so such a run never ends `succeeded` or `no-effects`.
+  const effects = outcomes.filter((o) => o.outcome === "reverted" || o.outcome === "unstaged-only" || o.outcome === "changed-outside").length + created.size + (tempUnknown ? 1 : 0);
+  if (tempUnknown) return r.finish({ type: "failed-with-effects" }, value);
   // Plan.md D10 "Response state": the fresh read decides. A Cancel never turns an effect into `canceled`, and it never reports an undo.
   if (outcomes.every((o) => o.outcome === "reverted")) return r.finish({ type: "intended-effects-confirmed" }, value);
   if (effects > 0) return r.finish({ type: "failed-with-effects" }, value);

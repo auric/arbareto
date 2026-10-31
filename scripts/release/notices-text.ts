@@ -5,23 +5,10 @@
 
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { z } from "zod";
-import type { Notices } from "../../src/frontend/build/notices";
+import { NoticesSchema, type Notices } from "../../src/contracts/notices";
 
 const ROOT = join(import.meta.dir, "..", "..");
 const DEFAULT_INPUT = join(ROOT, "src", "frontend", "generated", "notices.json");
-
-const NoticesSchema = z.strictObject({
-  repositoryUrl: z.string(),
-  project: z.strictObject({ license: z.string(), notice: z.string() }),
-  texts: z.array(z.string()),
-  groups: z.array(
-    z.strictObject({
-      license: z.string(),
-      packages: z.array(z.strictObject({ name: z.string(), version: z.string().optional(), files: z.array(z.strictObject({ name: z.string(), text: z.number().int().nonnegative() })), note: z.string().optional() })),
-    }),
-  ),
-});
 
 /** Each package and each licence text once, in JSON order. A file names its text by number. */
 export function renderNotices(notices: Notices): string {
@@ -60,7 +47,7 @@ export async function readNotices(path: string): Promise<Notices | null> {
   }
   const parsed = NoticesSchema.safeParse(json);
   if (!parsed.success || parsed.data.groups.some((g) => g.packages.some((p) => p.files.some((f) => f.text >= parsed.data.texts.length)))) return null;
-  return parsed.data as Notices;
+  return parsed.data;
 }
 
 async function main(argv: string[]): Promise<number> {

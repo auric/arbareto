@@ -3,14 +3,15 @@
 
 import { describe, expect, test } from "bun:test";
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { printOrigin } from "../origin";
 import { describeGit, fixtureGitPath } from "../git/git-binary";
 import { fixtureDir, fixtureEnv, fixtureGit, useFixtureRoot } from "../git/fixture-root";
-import { renderNotices } from "../../scripts/release/notices-text";
+import { readNotices, renderNotices } from "../../scripts/release/notices-text";
 import { readBlocks, releaseNotes } from "../../scripts/release/notes";
 import { archiveName, hunspellSource, TAR } from "../../scripts/release/hunspell-source";
-import type { Notices } from "../../src/frontend/build/notices";
+import { inventory } from "../../src/frontend/build/notices";
+import { NoticesSchema, type Notices } from "../../src/contracts/notices";
 
 // T018: the release file scripts (contracts/release.md §2 and §3, plan.md D5, D6, D9). Before T019 to T022 the imports fail, so every case fails.
 
@@ -18,6 +19,7 @@ printOrigin("../../scripts/release/notices-text.ts", import.meta.dir);
 printOrigin("../../scripts/release/sums.ts", import.meta.dir);
 printOrigin("../../scripts/release/notes.ts", import.meta.dir);
 printOrigin("../../scripts/release/hunspell-source.ts", import.meta.dir);
+printOrigin("../../src/contracts/notices.ts", import.meta.dir);
 
 useFixtureRoot();
 
@@ -72,6 +74,22 @@ describe("notices-text.ts", () => {
     expect(result.code).toBe(0);
     expect(readFileSync(result.stdout.trim(), "utf8")).toBe(renderNotices(NOTICES));
   });
+
+  test("the shared schema accepts the generator output", () => {
+    const shipped = [
+      { name: "pkg-one", version: "1.0.0", license: "MIT", files: [{ name: "LICENSE", text: "TEXT-ALPHA" }], note: "NOTE-ECHO" },
+      { name: "NSIS", license: "zlib", files: [{ name: "COPYING", text: "TEXT-ALPHA" }] },
+    ];
+    const { notices } = inventory(shipped, "https://github.com/auric/arbareto", { license: "L", notice: "N" });
+    expect(NoticesSchema.safeParse(JSON.parse(JSON.stringify(notices))).success).toBe(true);
+  });
+
+  // `bun run build:notices` writes the file. A fresh checkout has none, so the case skips.
+  const GENERATED = join(import.meta.dir, "..", "..", "src", "frontend", "generated", "notices.json");
+  test.skipIf(!existsSync(GENERATED))("readNotices accepts the generated notices.json of the build", async () => {
+    console.log(`GENERATED ${GENERATED}`);
+    expect(await readNotices(GENERATED)).not.toBeNull();
+  });
 });
 
 describe("sums.ts", () => {
@@ -118,6 +136,18 @@ describe("sums.ts", () => {
     appendFileSync(join(dir, "d-extra.txt"), "delta");
     const result = script("sums.ts", ["verify", dir]);
     expect([result.code, result.tokens]).toEqual([1, "RELEASE_SUMS extra"]);
+  });
+
+  test.each([
+    ["two lines swapped", (lines: string[]) => [lines[1]!, lines[0]!, ...lines.slice(2)].join("")],
+    ["a repeated name", (lines: string[]) => [lines[0]!, ...lines].join("")],
+    ["no final LF", (lines: string[]) => lines.join("").slice(0, -1)],
+  ] as const)("%s gives RELEASE_SUMS format", (label, change) => {
+    const dir = release(`sums-format-${label.replaceAll(" ", "-")}`);
+    const path = join(dir, "SHA256SUMS.txt");
+    writeFileSync(path, change(readFileSync(path, "utf8").split(/(?<=\n)/)));
+    const result = script("sums.ts", ["verify", dir]);
+    expect([result.code, result.tokens]).toEqual([1, "RELEASE_SUMS format"]);
   });
 });
 
@@ -171,7 +201,9 @@ describeGit("hunspell-source.ts", (git) => {
       const work = fixtureDir(`work-${label}-${file}`);
       fixtureGit(git, work, ["init", "--quiet"]);
       writeFileSync(join(work, file), `${file}\n`);
-      fixtureGit(git, work, ["add", "--", file]);
+      // The archive must hold a file that a tree attribute marks export-ignore (git-archive "ATTRIBUTES").
+      writeFileSync(join(work, ".gitattributes"), `${file} export-ignore\n`);
+      fixtureGit(git, work, ["add", "--", file, ".gitattributes"]);
       fixtureGit(git, work, ["commit", "--quiet", "-m", file]);
       const bare = join(base, repo);
       mkdirSync(join(bare, ".."), { recursive: true });
@@ -195,6 +227,16 @@ describeGit("hunspell-source.ts", (git) => {
     expect(count(source, pins.hunspell)).toBe(1);
     expect(count(source, pins.hunspellWasm)).toBe(1);
     expect(source).toContain("LGPL-2.1");
+  });
+
+  test("a relative out folder gets the archive", () => {
+    const { base, pins } = upstream("relative");
+    const out = fixtureDir("source-relative-out");
+    const rel = relative(process.cwd(), out);
+    expect(isAbsolute(rel)).toBe(false);
+    const result = hunspellSource({ version: "0.1.0", out: rel, upstream: base, pins, git: fixtureGitPath(git), env: fixtureEnv(), work: fixtureDir("source-relative-work") });
+    expect(result).toEqual({ path: join(out, archiveName("0.1.0")) });
+    expect(existsSync(join(out, archiveName("0.1.0")))).toBe(true);
   });
 
   test("a pin that the upstream lacks gives RELEASE_SOURCE fetch", () => {

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import type { Notices } from "../build/notices";
+import type { Notices } from "../../contracts/notices";
 import { AboutDialog, type AboutDialogProps } from "./AboutDialog";
 
 // plan.md "Startup chunk budget": the workbench loads this module through one `lazy()` boundary, so the dialog and the notices stay out of the startup chunk.

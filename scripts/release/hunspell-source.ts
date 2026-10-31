@@ -5,7 +5,7 @@
 
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { PINS } from "./pins";
 
@@ -71,6 +71,12 @@ export function hunspellSource(options: SourceOptions): { path: string } | { ref
       const dir = join(work, prefix);
       const init = run([git, "init", "--quiet", dir], work);
       if (init.exitCode !== 0) return { refusal: `RELEASE_SOURCE fetch ${repo} ${code(init)}` };
+      // gitattributes: `$GIT_DIR/info/attributes` wins over a tree `.gitattributes`. The LGPL archive must hold every file unchanged.
+      const attributes = run([git, "rev-parse", "--git-path", "info/attributes"], dir);
+      if (attributes.exitCode !== 0) return { refusal: `RELEASE_SOURCE fetch ${repo} ${code(attributes)}` };
+      const attributesPath = resolve(dir, attributes.stdout.toString().trimEnd());
+      mkdirSync(dirname(attributesPath), { recursive: true });
+      writeFileSync(attributesPath, "* -export-ignore -export-subst\n");
       const fetch = run([git, "fetch", "--quiet", "--no-tags", "--depth", "1", `${upstream}/${repo}`, commit], dir);
       if (fetch.exitCode !== 0) return { refusal: `RELEASE_SOURCE fetch ${repo} ${code(fetch)}` };
       const parsed = run([git, "rev-parse", "--verify", "FETCH_HEAD^{commit}"], dir);
@@ -83,7 +89,8 @@ export function hunspellSource(options: SourceOptions): { path: string } | { ref
       if (extract.exitCode !== 0) return { refusal: `RELEASE_SOURCE tar ${code(extract)}` };
     }
     writeFileSync(join(staging, "SOURCE.txt"), sourceText(options.version, pins));
-    const path = join(options.out, archiveName(options.version));
+    // tar runs in `work`, which the finally block removes.
+    const path = join(resolve(options.out), archiveName(options.version));
     const pack = run([TAR, "-czf", path, "-C", staging, "hunspell", "hunspell-wasm", "SOURCE.txt"], work);
     if (pack.exitCode !== 0) return { refusal: `RELEASE_SOURCE tar ${code(pack)}` };
     return { path };

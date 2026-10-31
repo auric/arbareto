@@ -5,7 +5,7 @@ import { useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } 
 import type { Environment } from "../../contracts/envelope";
 import { failureText, scopeLine } from "../app/RepositoryStates";
 import type { createBridge } from "../bridge";
-import type { Notices } from "../build/notices";
+import type { Notices } from "../../contracts/notices";
 import { Button } from "../components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "../components/ui/dialog";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs";

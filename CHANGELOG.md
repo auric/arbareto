@@ -32,3 +32,4 @@ The first preview release for Windows 11 x64.
 - Keyboard shortcuts and keyboard focus for the main actions.
 - System, light, and dark themes, with three dark palettes. The interface supports Windows contrast themes.
 - About shows the version, the preview marker, the build commit, and the third-party notices.
+- In a preview build, About has a "Source at this commit" button for the source of the build commit, and a "Hunspell source" button for the Hunspell source archive of the release.

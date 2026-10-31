@@ -22,7 +22,7 @@ Arbareto is a desktop Git client inspired by Git Extensions. It covers the full 
 - Windows 11 x64 is the first platform that the project qualifies.
 - Linux comes next. macOS comes later, because no Mac test hardware is available yet.
 - WSL repositories work from the Windows app.
-- The first installer release is the preview 0.1.0 on the [Releases](https://github.com/auric/arbareto/releases) page. A preview is not a qualified release. See [Download](#download).
+- The first installer release will be the preview 0.1.0. A preview is not a qualified release. See [Download](#download).
 
 ## Features
 
@@ -51,7 +51,7 @@ These features work on the `main` branch today.
 
 ## Download
 
-Download the installer from the [Releases](https://github.com/auric/arbareto/releases) page. The installer installs Arbareto for the current user and needs no administrator rights. Prerequisites (details in [Requirements](#requirements)):
+From the preview 0.1.0, the installer will be on the [Releases](https://github.com/auric/arbareto/releases) page. The installer installs Arbareto for the current user and needs no administrator rights. Prerequisites (details in [Requirements](#requirements)):
 
 - Windows 11 x64. Windows 10 x64 runs, but Arbareto shows it as an unqualified platform.
 - Git for Windows `2.55.0.windows.3` or later.
@@ -66,13 +66,13 @@ The preview builds have no code signature:
 Check each download before you install it. In PowerShell, compare the value with the line for the file in `SHA256SUMS.txt`:
 
 ```powershell
-(Get-FileHash .\<file> -Algorithm SHA256).Hash
+(Get-FileHash .\<file> -Algorithm SHA256).Hash.ToLower()
 ```
 
 With `sha256sum`, in the folder of the downloads:
 
 ```sh
-sha256sum --check SHA256SUMS.txt
+sha256sum --ignore-missing --check SHA256SUMS.txt
 ```
 
 To check that the release workflow of this repository built the file, use the GitHub CLI:

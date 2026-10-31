@@ -263,6 +263,11 @@ jobs:
           if ($drafts.Count -eq 0) {
             gh release create $env:TAG --draft --prerelease --verify-tag --title "Arbareto Preview $env:TAG" --notes-file $notes @files
           } else {
+            # A reused draft may hold assets of an earlier run. Every asset name must be a file of this run.
+            $assets = @(gh api --paginate "repos/$env:GITHUB_REPOSITORY/releases" --jq '.[] | select(.tag_name == env.TAG) | .assets[].name')
+            if ($LASTEXITCODE -ne 0) { exit 1 }
+            $names = @($files | ForEach-Object { Split-Path -Leaf $_ })
+            if (@($assets | Where-Object { $names -cnotcontains $_ }).Count -gt 0) { [Console]::Error.WriteLine("RELEASE_CHECK exists $env:TAG"); exit 1 }
             gh release edit $env:TAG --notes-file $notes
             if ($LASTEXITCODE -ne 0) { exit 1 }
             gh release upload $env:TAG @files --clobber

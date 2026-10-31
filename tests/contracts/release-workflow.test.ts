@@ -1,7 +1,9 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { describe, expect, test } from "bun:test";
+import { afterAll, describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 // T024: every rule of contracts/release.md §1 on .github/workflows/release.yml. Before T025 the file is absent, so every case fails.
@@ -101,5 +103,81 @@ describe("release workflow", () => {
     expect(publish).toMatch(/bun scripts\/release\/sums\.ts verify /);
     expect(publish).toMatch(/^\s*gh release create .*--draft --prerelease --verify-tag /m);
     expect(JSON.stringify(jobs.publish)).toContain("${{ github.event.repository.private }}");
+  });
+
+  // GitHub docs "Security hardening for GitHub Actions": an expression inside a script is a script injection risk. Steps pass values through env.
+  test("no run block holds an expression", () => {
+    expect(allSteps.filter((s) => s.run?.includes("${{"))).toEqual([]);
+  });
+
+  test("the SignPath token secret appears only in the two SignPath api-token inputs and in SIGNPATH_TOKEN_SET", () => {
+    const found: string[] = [];
+    const walk = (value: unknown, path: string) => {
+      if (typeof value === "string") {
+        if (value.includes("secrets.SIGNPATH_API_TOKEN")) found.push(`${path} ${value}`);
+      } else if (value !== null && typeof value === "object") {
+        for (const [key, child] of Object.entries(value)) walk(child, `${path}/${key}`);
+      }
+    };
+    walk(workflow, "");
+    const input = "${{ secrets.SIGNPATH_API_TOKEN }}";
+    const signpath = steps("build").flatMap((s, i) => (s.uses?.toLowerCase().startsWith("signpath/") ? [`/jobs/build/steps/${i}/with/api-token ${input}`] : []));
+    expect(signpath.length).toBe(2);
+    expect(found.sort()).toEqual([...signpath, "/jobs/build/env/SIGNPATH_TOKEN_SET ${{ secrets.SIGNPATH_API_TOKEN != '' }}"].sort());
+  });
+
+  test("in publish, sums.ts verify runs before actions/attest, and actions/attest runs before the publish step", () => {
+    const publish = steps("publish");
+    const verify = publish.findIndex((s) => /bun scripts\/release\/sums\.ts verify /.test(s.run ?? ""));
+    const attest = publish.findIndex((s) => s.uses?.startsWith("actions/attest@"));
+    const release = publish.findIndex((s) => /^\s*gh release create /m.test(s.run ?? ""));
+    expect(verify).toBeGreaterThanOrEqual(0);
+    expect(verify).toBeLessThan(attest);
+    expect(attest).toBeLessThan(release);
+  });
+});
+
+// The publish script runs in pwsh with stub `gh` and `bun` functions. A runner without pwsh skips these cases.
+const PWSH = Bun.which("pwsh");
+describe.skipIf(PWSH === null)("publish script with a reused draft", () => {
+  const scratch = mkdtempSync(join(tmpdir(), "arbareto-release-workflow-"));
+  afterAll(() => rmSync(scratch, { recursive: true, force: true }));
+  const PLANNED = ["SHA256SUMS.txt", "arbareto-0.1.0-hunspell-source.tar.gz", "arbareto-0.1.0-third-party-notices.txt", "arbareto_0.1.0_x64-setup.exe"];
+  // GitHub runs a pwsh step with `$ErrorActionPreference = 'stop'` first.
+  const STUBS = [
+    "$ErrorActionPreference = 'stop'",
+    "function gh {",
+    "  Add-Content -LiteralPath $env:GH_LOG -Value ($args -join ' ')",
+    "  $global:LASTEXITCODE = 0",
+    "  if ($args[0] -eq 'api') { if (($args -join ' ') -match '\\.assets\\[\\]\\.name') { $env:DRAFT_ASSETS -split ',' } else { 'true' } }",
+    "}",
+    "function bun { $global:LASTEXITCODE = 0; Join-Path $env:RUNNER_TEMP 'notes.md' }",
+  ].join("\n");
+
+  function publish(label: string, assets: string[]): { code: number | null; stderr: string; gh: string } {
+    const temp = join(scratch, label);
+    mkdirSync(join(temp, "release-files"), { recursive: true });
+    for (const name of PLANNED) writeFileSync(join(temp, "release-files", name), name);
+    const script = steps("publish").find((s) => s.name === "Publish the release")?.run;
+    expect(script).toBeDefined();
+    writeFileSync(join(temp, "publish.ps1"), `${STUBS}\n${script}\nexit 0\n`);
+    const log = join(temp, "gh.log");
+    writeFileSync(log, "");
+    const env = { ...process.env, RUNNER_TEMP: temp, TAG: "v0.1.0", SIGNING: "off", GITHUB_REPOSITORY: "auric/arbareto", GH_LOG: log, DRAFT_ASSETS: assets.join(",") };
+    const proc = Bun.spawnSync([PWSH!, "-NoProfile", "-NonInteractive", "-File", join(temp, "publish.ps1")], { env, stdin: "ignore", stdout: "pipe", stderr: "pipe", timeout: 60_000 });
+    return { code: proc.exitCode, stderr: proc.stderr.toString(), gh: readFileSync(log, "utf8") };
+  }
+
+  test("a draft asset outside the planned files gives RELEASE_CHECK exists and no upload", () => {
+    const result = publish("stale", [...PLANNED, "arbareto_0.0.9_x64-setup.exe"]);
+    expect([result.code, result.stderr.trim()]).toEqual([1, "RELEASE_CHECK exists v0.1.0"]);
+    expect(result.gh).not.toContain("release upload");
+  });
+
+  test("a draft with only planned assets gets the upload and the publish", () => {
+    const result = publish("planned", PLANNED.slice(1));
+    expect(result.code).toBe(0);
+    expect(result.gh).toContain("release upload v0.1.0");
+    expect(result.gh).toContain("release edit v0.1.0 --draft=false");
   });
 });

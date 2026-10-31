@@ -8,13 +8,13 @@ This build has no code signature.
 Check each download before you install it. In PowerShell, compare this value with the line for the file in `SHA256SUMS.txt`:
 
 ```powershell
-(Get-FileHash .\<file> -Algorithm SHA256).Hash
+(Get-FileHash .\<file> -Algorithm SHA256).Hash.ToLower()
 ```
 
 With `sha256sum`, run this command in the folder of the downloads:
 
 ```sh
-sha256sum --check SHA256SUMS.txt
+sha256sum --ignore-missing --check SHA256SUMS.txt
 ```
 
 To check that the release workflow of this repository built the file, use the GitHub CLI:

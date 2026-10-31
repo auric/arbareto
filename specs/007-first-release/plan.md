@@ -133,7 +133,7 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 - Release mode: `git merge-base --is-ancestor <tag commit> origin/main`. Exit 0 passes. Exit 1 fails with `RELEASE_CHECK not-on-main`. Any other exit fails with `RELEASE_CHECK git-failed <code>` (git-merge-base(1) defines 0 and 1). `actions/checkout` runs with `fetch-depth: 0`.
 - Release mode: `git rev-parse --verify HEAD^{commit}` must equal `git rev-parse --verify refs/tags/<tag>^{commit}`. Else exit 1 with `RELEASE_CHECK not-tag-commit` (spec FR-014). A non-zero `rev-parse` exit fails with `RELEASE_CHECK git-failed <code>`.
 - Both modes: `git --no-optional-locks status --porcelain --untracked-files=all` must print nothing, before and after the build (spec FR-014).
-- Release mode: `gh api repos/{owner}/{repo}/releases --paginate` JSON; a published release with the same `tag_name` fails with `RELEASE_CHECK exists`. A draft with that tag is reused (spec FR-015, FR-017). This check runs in the publish job, because the build job has no `contents: write` token and drafts need it to be visible.
+- Release mode: `gh api repos/{owner}/{repo}/releases --paginate` JSON; a published release with the same `tag_name` fails with `RELEASE_CHECK exists`. A draft with that tag is reused (spec FR-015, FR-017). A draft asset name outside the release files of the run also fails with `RELEASE_CHECK exists`. This check runs in the publish job, because the build job has no `contents: write` token and drafts need it to be visible.
 - All downloads and outputs go below `$env:RUNNER_TEMP`, never into the checkout.
 
 ### D4 Build channel and clean identity
@@ -189,12 +189,12 @@ specs/001-desktop-qualification/       plan.md B-RELEASE and lines 613 and 1047,
 - `CHANGELOG.md`: one `## [<version>] - <date>` section per release, user-visible changes only (global changelog rule). The 0.1.0 section lists the feature set of README "Features" after 005, 006, and 008.
 - `.github/release-notes/` holds the fixed blocks: `preview.md` (preview and qualification state, spec FR-003), `prerequisites.md` (spec FR-027), `unsigned.md` (SmartScreen prompt, Smart App Control block, checksum and attestation commands, spec FR-026), and `signed.md` (code signing policy, unsigned uninstaller and plugin DLL, spec FR-044, FR-046).
 - `scripts/release/notes.ts --version <v> --signing off|signpath` writes the notes: the CHANGELOG section, then the blocks. A missing section fails with `RELEASE_NOTES missing <version>`.
-- The publish job: `gh release create v<v> --draft --prerelease --verify-tag --title "Arbareto Preview v<v>" --notes-file <notes>` when no draft exists, `gh release upload --clobber` for the files of a draft, then `gh release edit v<v> --draft=false --prerelease --latest=false`.
+- The publish job: `gh release create v<v> --draft --prerelease --verify-tag --title "Arbareto Preview v<v>" --notes-file <notes>` when no draft exists, `gh release upload --clobber` for the files of a draft after the asset name check (`RELEASE_CHECK exists` on a stale asset), then `gh release edit v<v> --draft=false --prerelease --latest=false`.
 
 ### D10 README
 
 - A "Download" section: the Releases link, the prerequisites, the checksum command for PowerShell and for `sha256sum`, the `gh attestation verify <file> -R auric/arbareto` command, the SmartScreen prompt, and the sentence "Unsigned builds do not run when Smart App Control is on." (user, 2026-10-24).
-- The Status bullet "No installer release exists yet" changes to name the preview.
+- The Status bullet "No installer release exists yet" changes to name the preview in the future tense. After the publish, the Status bullet and the "Download" section change to the present tense (tasks.md T032).
 - A "Code signing policy" section waits for the SignPath approval (signing switch-on tasks).
 
 ### D11 Signing switch

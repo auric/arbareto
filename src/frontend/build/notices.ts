@@ -4,6 +4,7 @@
 // T130: the third-party notice inventory (plan.md "Tool and runtime boundaries" and "About window", research.md R7 and R9).
 // This build script runs under Bun and never enters the renderer bundle. tests/git/portable-imports.test.ts permits no runtime import under src/frontend, so it uses Bun globals only.
 
+import type { Notices } from "../../contracts/notices";
 import { TM_GRAMMARS_VERSION, TM_THEMES_VERSION } from "../highlight/set";
 
 type LockEntry = [string, ...unknown[]];
@@ -22,15 +23,6 @@ export type Crate = { name: string; version: string; license: string | undefined
 
 export type LicenseFile = { name: string; text: string };
 export type Shipped = { name: string; version?: string; license: string | undefined; files: LicenseFile[]; note?: string };
-/** A licence file of the output. `text` is the index of its text in `Notices.texts`. */
-export type NoticeFile = { name: string; text: number };
-export type Notices = {
-  repositoryUrl: string;
-  project: { license: string; notice: string };
-  /** Each distinct licence text once. Files share a text only when the texts are byte-identical. */
-  texts: string[];
-  groups: { license: string; packages: { name: string; version?: string; files: NoticeFile[]; note?: string }[] }[];
-};
 
 // "<name>@<version>": a scoped name starts with "@", so the version separator is the last "@".
 function ident(entry: LockEntry): { name: string; version: string } {

@@ -9,7 +9,6 @@ import { describe, expect } from "bun:test";
 import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { RunWorkbenchResult } from "../../src/contracts/envelope";
-import { parsePatch } from "../../src/git-service/diff-parser";
 import type { RevertCheckpoint } from "../../src/git-service/workbench-review";
 import { printOrigin } from "../origin";
 import { faGit, write } from "./file-actions-fixtures";
@@ -409,35 +408,6 @@ describe("revert lines: the bound and the token (spec FR-011, plan.md D2, D13)",
       write(repo, "g.txt", "g\n");
       const later = await readOk(service, r.repositoryId);
       expect(outcome(await review(service, r, later, { comparisonId: c.comparisonId, hunkId: c.hunkIds[0]! }))).toEqual({ state: "failed", code: "INVALID_REQUEST" });
-    }),
-    TIMEOUT_MS,
-  );
-
-  // T062 (plan.md D3, D4): `precheck` rejects a staged comparison first, so only a direct `lineReview` call reaches its scope refusal.
-  caseTest("T062", "a revert-lines review of a staged comparison that bypasses precheck reaches the lineReview scope refusal, starts no Git process, and changes nothing", SHELL, () =>
-    withService({ name: "t062-scope" }, async (service) => {
-      const repo = build("scope", FILE, CHANGED);
-      g(repo, ["--literal-pathspecs", "add", "--", "f.txt"]);
-      const r = await service.register(repo);
-      const read = await readOk(service, r.repositoryId);
-      const { c } = await comparisonOf(service, r, read, "f.txt", "staged");
-      expect(outcome(await review(service, r, read, { comparisonId: c.comparisonId, hunkId: c.hunkIds[0]! }))).toEqual({ state: "rejected", code: "SERVICE_UNAVAILABLE" });
-      const before = state(repo);
-      // The retained comparison of the staged hunk, as `comparison.ts` keeps it.
-      const patch = patchOf(resultOf(c));
-      const parsed = parsePatch(patch, new Uint8Array(Buffer.from("f.txt")));
-      if (!parsed.ok) throw new Error("the staged patch does not parse");
-      const retained = { comparisonId: c.comparisonId, repositoryId: r.repositoryId, snapshotId: read.snapshotId, generation: read.generation, entry: c.entry, scope: "head-to-index", patch, hunks: parsed.patch.hunks.map((h, i) => ({ ...h, hunkId: c.hunkIds[i]! })), support: { supported: true } };
-      // Any runner member that the review touches would start a Git process or a walk.
-      const touched: string[] = [];
-      const runner = new Proxy({}, { get: (_target, key) => void touched.push(String(key)) });
-      // A dynamic import, so this case fails alone before T062 exports `lineReview`.
-      const revert = await import("../../src/git-service/revert");
-      const ctx = { runner, comparisons: { get: (id: string) => (id === c.comparisonId ? retained : undefined) }, workspace: { repositoryId: r.repositoryId }, operationId: crypto.randomUUID(), signal: new AbortController().signal } as unknown as Parameters<typeof revert.lineReview>[0];
-      const payload = { action: "revert-lines", snapshotId: read.snapshotId, comparisonId: c.comparisonId, hunkId: c.hunkIds[0]! } as const;
-      expect(await revert.lineReview(ctx, payload, "policy", { entries: [], inputLimited: false })).toEqual({ code: "SERVICE_UNAVAILABLE" });
-      expect(touched).toEqual([]);
-      expect(state(repo)).toEqual(before);
     }),
     TIMEOUT_MS,
   );

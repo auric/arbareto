@@ -3,7 +3,7 @@
 
 // Feature 008 T029: the `revert-files` review and run of `src/git-service/revert.ts` (plan.md D5, D5a, D7, D10; data-model §3, §5, §7, §8; spec FR-005, FR-021, FR-022, FR-025, FR-041).
 // Oracle (plan.md D13): Git's own `restore --staged --worktree --source=HEAD` on a copy of the fixture. Tests compare index bytes through `ls-files --stage -z` and working bytes by SHA-256.
-// The defect cases at the end: every review answers (a staged-lines review got no response), and the missing-object refusal fits the review result schema.
+// The defect cases at the end: every review answers (a staged-lines review once got no response), and the missing-object refusal fits the review result schema.
 
 import { describe, expect } from "bun:test";
 import { randomBytes } from "node:crypto";
@@ -649,7 +649,8 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
 });
 
 describe("revert reviews always answer, and their refusal values fit the result schema (defects of batch 2)", () => {
-  caseTest(TASK, "a staged-lines review answers rejected with SERVICE_UNAVAILABLE before any read (contract §9)", SHELL, () =>
+  // T039 (plan.md D4): the staged-lines review answers with its plan.
+  caseTest(TASK, "a staged-lines review answers with the staged plan", SHELL, () =>
     withService({ name: "t029-staged-lines" }, async (service) => {
       const repo = build("staged-lines", { "f.txt": "a\nb\nc\n" }, (r) => {
         write(r, "f.txt", "a\nB\nc\n");
@@ -657,10 +658,8 @@ describe("revert reviews always answer, and their refusal values fit the result 
       });
       const { r, read } = await open(service, repo);
       const c = await compare(service, r.repositoryId, "f.txt", "staged", read);
-      const started = performance.now();
-      const response = await service.request("reviewWorkbench", { snapshotId: read.snapshotId, action: "revert-lines", comparisonId: c.comparisonId, hunkId: c.hunkIds[0]! }, { repositoryId: r.repositoryId, repositoryGeneration: read.generation });
-      expect(outcome(response)).toEqual({ state: "rejected", code: "SERVICE_UNAVAILABLE" });
-      expect(performance.now() - started).toBeLessThan(5_000);
+      const response = await service.request<{ plan: unknown }>("reviewWorkbench", { snapshotId: read.snapshotId, action: "revert-lines", comparisonId: c.comparisonId, hunkId: c.hunkIds[0]! }, { repositoryId: r.repositoryId, repositoryGeneration: read.generation });
+      expect({ ...outcome(response), plan: response.result?.plan }).toEqual({ ...SUCCEEDED, plan: { scope: "staged", fileBytes: b64("f.txt"), lines: null } });
     }),
     TIMEOUT_MS,
   );

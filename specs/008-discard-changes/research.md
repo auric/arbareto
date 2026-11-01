@@ -181,6 +181,7 @@ Facts and their consequences:
 - G4 holds. Both reads give the same seven values without a change. They differ exactly for the attributes that a staged or an unstaged `.gitattributes` change gives the path. R7 stays.
 - G5 holds. Each data-model §6 row gives its proof result. An empty working file gives `w/none`, and a deleted file gives an empty `w/` value (Git `convert.c` `get_wt_convert_stats_ascii`). The `ident` record shows that the proof passes for a restored `$Id$` line, while Git's restore writes the expanded form. So the R6 refusal `ident` for lines stays.
 - G5 line oracle (review run): in each case, `hash-object --path` of the R5 bytes equals the blob of `apply --cached -R` after `add` on a copy exactly when the proof passes. Git's `apply -R` on a copy gives the R5 bytes in `lf-none`, `crlf-none-index-crlf`, `crlf-autocrlf-true`, and `crlf-text-eol-crlf`. In `lf-autocrlf-true` it gives CRLF for every line (`w/crlf`), while the R5 bytes stay LF. So plan D13 compares a line revert with the line oracle, and with `apply -R` only without a conversion.
+- G5 `crlf-none-index-lf` (superseded by the T060 rule, 2026-11-01): the `proof: "fail"` record and the `G5.crlf-none-index-lf` OBSERVATION lines below test the old rule, which took the `w/crlf` ending. The probe still applies that old rule. The T060 rule (R5) makes the empty `attr/` value with `core.autocrlf=false` CRLF_BINARY, so each restored line keeps its LF comparison bytes. New result (2026-11-01, Git 2.56.0.windows.2): the proof passes. The T060 case of `tests/git/revert-lines.test.ts` passes the plan D13 line oracle and equals Git's `apply -R` on a copy. The T060 cases of `tests/git/revert-bytes.test.ts` give the LF bytes. The run of the five revert files gave 85 pass and 0 fail.
 - G6 is a source fact of Git for Windows tag `v2.56.0.windows.2`. `builtin/update-index.c` calls no hook function. Its index write (`write_locked_index`, `builtin/update-index.c:1315`) reaches `do_write_locked_index`, which runs only `post-index-change` (`read-cache.c:3168`). `builtin/checkout-index.c` calls no hook function. It takes the index lock and writes the index only with `--index` and without `--prefix` and `--temp` (`builtin/checkout-index.c:286`, `:347`). R10 stays.
 - G7 holds. Git's restore removes the working file of a staged new file. The SC-002 difference stays.
 - G8 holds on Windows and in the distro. After the plan D8 write of Git's temporary bytes, status shows no worktree change. The status read keeps the index bytes and their time.
@@ -500,3 +501,8 @@ The rerun after the decision gives the same lines, except:
 ```text
 OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps":[]} observed={"typed":true,"written":true,"temps":[]} match=true git=2.55.0@Ubuntu-26.04
 ```
+
+### Revert all unstaged changes tests (T034), 2026-11-01
+
+- The T034 tests of `tests/git/revert-unstaged.test.ts` passed on the code before T035. T021 and T030 had already built the plan D6 path: the `revert-unstaged` review and the D5a writes from the index entries.
+- Control: a mutation that skips the write of the second file gives 4 failed T034 tests. So the tests can fail.

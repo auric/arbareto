@@ -93,9 +93,9 @@ export const filesPlan = (paths: string[], fields: Partial<{ count: number; newF
 export const filesReviewed = (p: ReturnType<typeof filesPlan>) => succeeded({ action: "revert-files", plan: p, workbenchToken: TOKEN });
 
 /** Opens the Commit view with `entries`. */
-export async function openFiles(module: WorkbenchModule, entries: ChangeEntry[]) {
+export async function openFiles(module: WorkbenchModule, entries: ChangeEntry[], props: Parameters<typeof openCommitView>[2] = {}) {
   const world = createWorld({ entries });
-  const double = await openCommitView(module, world);
+  const double = await openCommitView(module, world, props);
   return { world, double };
 }
 

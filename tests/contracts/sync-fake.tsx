@@ -5,6 +5,7 @@
 // The results follow contract Δ3 and data-model §1 to §10. The double invents no field.
 
 import { expect } from "bun:test";
+import type { Clock } from "../../src/frontend/state/requests";
 import { act } from "react";
 import type { WorkspaceSnapshot } from "../../src/contracts/envelope";
 import { contractChecked, fixtureId } from "./bridge-contract";
@@ -188,7 +189,7 @@ export async function unmountAll() {
 }
 
 /** Mounts the Workbench with a restored registration of `world`. The caller registers the DOM and imports the module first. */
-export async function mountWorkbench(module: WorkbenchModule, world: World, HistoryView: WorkbenchModule["HistoryViewMount"] = module.HistoryViewMount, props: { textScale?: number } = {}) {
+export async function mountWorkbench(module: WorkbenchModule, world: World, HistoryView: WorkbenchModule["HistoryViewMount"] = module.HistoryViewMount, props: { textScale?: number; clock?: Clock } = {}) {
   const { createRoot } = await import("react-dom/client");
   const double = createSyncBridge(world);
   const host = document.body.appendChild(document.createElement("div"));

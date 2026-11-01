@@ -10,7 +10,7 @@ import { contractChecked, fixtureId } from "./bridge-contract";
 import { entry, item, pressKey, statusBar, tree } from "./commit-fake";
 import { createFake, oid, stubLayout, TARGET } from "./history-fake";
 import { alertDialog, commitView, COMPARISON, confirmFor, diffBody, filesPlan, filesReviewed, hunk, HUNKS, markRow, PATCH, openFiles, PatchDouble, plan, revertAllUnstaged, revertKey, rowKey, selectFirstHunk, selectLines, shownDiff, unstagedPlan, unstagedReviewed } from "./revert-fake";
-import { answer, button, click, settle, snapshot, succeeded, text, unmountAll } from "./sync-fake";
+import { answer, button, click, NO_POLL, settle, snapshot, succeeded, text, unmountAll } from "./sync-fake";
 
 // tasks.md T027, T031, T036, and T059 (feature 008). Stories US1, US2, US3. Spec FR-006, FR-012, FR-018, FR-042, FR-046. Plan D12 "Keys".
 
@@ -519,5 +519,84 @@ describe("run refusals with a RevertRun reason (T059)", () => {
     await answer(second.runCall, { ...succeeded(filesRun(second.files, { index: "refused", reason: "shared-repository", remedy: { text: remedy } })), state: "failed", code: "UNSUPPORTED_HUNK_PROFILE" });
     expect(statusBar()).toContain(remedy);
     expect(statusBar()).not.toContain("2 files not started.");
+  });
+});
+
+// Feature 008 contract Δ8. Git's `checkout-index --temp` files of a running revert are no working change.
+describe("change polls during a revert run", () => {
+  test("the Windows interval poll sends no status read while a revert run is in flight; the reconcile read and later polls stay", async () => {
+    const ticks: (() => void)[] = [];
+    const files = [entry("unstaged", "a.ts")];
+    const { double, world } = await openFiles(workbench, files, { clock: { ...NO_POLL, setInterval: (run: () => void) => (ticks.push(run), 0) } });
+    const tick = async () => {
+      await act(async () => ticks.forEach((run) => run()));
+      await settle();
+    };
+    await act(async () => void window.dispatchEvent(new Event("focus")));
+    await settle();
+    let reads = double.count("readWorkspace");
+    await tick();
+    expect(double.count("readWorkspace")).toBe(reads + 1);
+    await rowKey(item("Changes", "a.ts"));
+    await answer(double.pending("reviewWorkbench"), filesReviewed(filesPlan(["a.ts"])));
+    await click(button("Revert file", alertDialog()!));
+    expect(double.pending("runWorkbench")).toBeDefined();
+    reads = double.count("readWorkspace");
+    await tick();
+    await tick();
+    expect(double.count("readWorkspace")).toBe(reads);
+    world.entries = [];
+    await answer(double.pending("runWorkbench")!, succeeded({ action: "revert-files", files: [{ entryId: files[0]!.entryId, outcome: "reverted" }], foldersCreated: [], index: "none" }));
+    await settle();
+    expect(double.count("readWorkspace")).toBe(reads + 1);
+    await tick();
+    expect(double.count("readWorkspace")).toBe(reads + 2);
+  });
+});
+
+// Data-model 001 §2 `recoveryState` `refreshing`: a refresh read runs. plan.md 001 "Loading" names its marker "Refreshing…".
+describe("block reasons of a status read that is not ready", () => {
+  test("recoveryState refreshing gives the Refreshing… reason, not the State unknown reason", async () => {
+    const { double, world } = await openFiles(workbench, [entry("unstaged", "a.ts")]);
+    world.answers.readWorkspace = () => succeeded({ ...snapshot(world), recoveryState: "refreshing" });
+    await refresh();
+    await rowKey(item("Changes", "a.ts"));
+    expect(double.count("reviewWorkbench")).toBe(0);
+    expect(statusBar()).toContain("Refreshing…");
+    expect(statusBar()).not.toContain("Select Refresh (F5) first");
+  });
+});
+
+// Feature 008 spec US4 scenario 4: a staged revert that published the index changed the patch itself.
+describe("anchor after a staged revert that ends with effects", () => {
+  async function stagedRun() {
+    const { double, world, file } = await shownDiff(workbench, { category: "staged", freshIds: true });
+    await selectLines({ start: 2, side: "additions", end: 3 });
+    await revertKey();
+    await click(button("Revert lines", await confirmFor(double, plan(2, "staged"))));
+    changePatch(world, AFTER, [hunk(0, 10, 2, 10, 3)]);
+    return { double, file, runCall: double.pending("runWorkbench")! };
+  }
+  const patchDouble = () => commitView().querySelector('[data-slot="patch-double"]')!;
+
+  test("failed-with-effects with the index published: the next patch shows the anchored hunk, no reset notice, and no line selection", async () => {
+    const { double, file, runCall } = await stagedRun();
+    const reads = double.count("readComparison");
+    await answer(runCall, { ...succeeded({ action: "revert-lines", files: [{ entryId: file.entryId, outcome: "changed-outside" }], foldersCreated: [], index: "published" }), state: "failed-with-effects" });
+    await refresh();
+    expect(double.count("readComparison")).toBeGreaterThan(reads);
+    expect(text(commitView())).toContain("+y");
+    expect(text(commitView())).not.toContain(RESET_NOTICE);
+    expect(patchDouble().getAttribute("data-anchor")).toBe("10");
+    expect(patchDouble().getAttribute("data-lines")).toBeNull();
+  });
+
+  test("a failed run with no effects sets no anchor: a changed patch shows the reset notice", async () => {
+    const { file, runCall } = await stagedRun();
+    await answer(runCall, { ...succeeded({ action: "revert-lines", files: [{ entryId: file.entryId, outcome: "not-started" }], foldersCreated: [], index: "none", reason: "revert-changed" }), state: "failed", code: "STALE_REVIEW" });
+    await refresh();
+    expect(text(commitView())).toContain("+y");
+    expect(text(commitView())).toContain(RESET_NOTICE);
+    expect(patchDouble().getAttribute("data-anchor")).toBeNull();
   });
 });

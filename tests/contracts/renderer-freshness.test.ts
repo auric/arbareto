@@ -282,16 +282,44 @@ describe("approvals", () => {
     o.requests.dispose();
   });
 
-  test("a pending read never keeps a mutation capability", async () => {
+  test("a pending read of another entry drops the capability; a pending read of the shown entry in the same snapshot gives it back", async () => {
     const o = await shown();
+    const capability = o.requests.state().capability;
     o.requests.selectEntry(o.first.entries[1]!.entryId);
     await flush();
     expect(o.requests.state().capability).toBeNull();
     o.requests.selectEntry(o.target.entryId);
     await flush();
-    expect(o.requests.state().capability).toBeNull();
+    expect(o.requests.state().capability).toEqual(capability);
     o.requests.dispose();
   });
+
+  // Feature 008 contract Δ8: a pending re-read of the shown comparison keeps the capability. The service still refuses a stale run.
+  for (const [name, fresh] of [
+    ["a new comparisonId", true],
+    ["the same comparisonId", false],
+  ] as const) {
+    test(`an equal full read keeps the capability while its comparison read is pending; a reply with ${name} gives the capability of that reply`, async () => {
+      const o = await shown();
+      const capability = o.requests.state().capability!;
+      const comparisons = o.of("readComparison").length;
+      // A focus return sends a full read with refresh: false, as the WSL poll does.
+      o.focus.set(false);
+      o.focus.set(true);
+      await flush();
+      expect(o.last("readWorkspace").payload).toEqual({ refresh: false, check: "full" });
+      workspaceResponse(o.last("readWorkspace"), { ...o.first });
+      await flush();
+      expect(o.of("readComparison")).toHaveLength(comparisons + 1);
+      expect(o.requests.state().capability).toBe(capability);
+      const value = fresh ? { ...o.value, comparisonId: crypto.randomUUID() } : o.value;
+      echo(o.last("readComparison"), { result: value });
+      await flush();
+      expect(o.requests.state().capability).toEqual({ comparisonId: value.comparisonId, snapshotId: o.first.snapshotId, repositoryGeneration: 1 });
+      if (!fresh) expect(o.requests.state().capability).toBe(capability);
+      o.requests.dispose();
+    });
+  }
 
   for (const [name, digests, kept] of [
     ["keeps the hunk selection when the new comparison has a hunk with the same digest", ["1".repeat(64), "2".repeat(64)], 1],

@@ -84,6 +84,8 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 - A refresh read and a workspace release end every unused revert token (004 Δ3 "Token invalidation").
 - The reconcile reads of Δ3 decide every outcome. A failed reconcile read leaves the outcome unknown, and the marker stays (001 FR-023).
+- 001 §8 "A pending read cannot preserve an old mutation capability" changes for the comparison read. A pending read with the `snapshotId` and the `entryId` of the shown comparison keeps the renderer capability. An entry ID names one entry of one snapshot, so the scope is also the same. A read of another snapshot or entry drops the capability. The reply gives the capability of its own comparison. The service still refuses a run with a stale target.
+- The renderer sends no change poll during a revert run: no WSL poll (001 §11 "Change polling") and no Windows interval poll. Git's `checkout-index --temp` files of the run are no working change. A poll that falls due starts after the reconcile read of the run. The reconcile read stays as it is.
 
 ## Δ9 Error codes (001 §9)
 

@@ -117,9 +117,10 @@ async function until<T>(c: Cdp, what: string, expression: string, done: (value: 
 // The page waits for the end of every running animation, then for one frame. A closed Base UI popup stays in the DOM until its exit animation ends.
 const settle = (c: Cdp) => c.evaluate(`Promise.all(document.getAnimations().map((a) => a.finished.catch(() => null))).then(() => new Promise((done) => requestAnimationFrame(() => done(true))))`);
 
-const ACTIVE = `(() => { const a = document.activeElement; return { label: a?.getAttribute('aria-label') ?? null, text: a?.textContent?.trim().slice(0, 80) ?? null, slot: a?.dataset?.slot ?? null, section: a?.closest('[data-section]')?.dataset.section ?? null, tree: a?.closest('[data-file-tree]')?.dataset.fileTree ?? null, dialog: a?.closest('[role=alertdialog]') !== null }; })()`;
-type Active = { label: string | null; text: string | null; slot: string | null; section: string | null; tree: string | null; dialog: boolean };
-const active = (c: Cdp) => c.evaluate<Active>(ACTIVE);
+const ACTIVE = `(() => { const a = document.activeElement; return { label: a?.getAttribute('aria-label') ?? null, text: a?.textContent?.trim().slice(0, 80) ?? null, slot: a?.dataset?.slot ?? null, section: a?.closest('[data-section]')?.dataset.section ?? null, tree: a?.closest('[data-file-tree]')?.dataset.fileTree ?? null, dialog: a?.closest('[role=alertdialog]') !== null, guard: a?.hasAttribute('data-base-ui-focus-guard') === true }; })()`;
+type Active = { label: string | null; text: string | null; slot: string | null; section: string | null; tree: string | null; dialog: boolean; guard: boolean };
+// Base UI 1.9.0 focus guard: a `span` with `data-base-ui-focus-guard` outside the dialog moves the focus into the dialog in a `requestAnimationFrame`. The read waits for that move, at most KEY_WAIT_MS.
+const active = (c: Cdp) => c.poll<Active>(ACTIVE, (a) => !a.guard, KEY_WAIT_MS);
 // Presses `key` until `done` holds for the focused element.
 async function keyTo(c: Cdp, key: string, what: string, done: (a: Active) => boolean, modifiers = 0): Promise<void> {
   for (let i = 0; i < WALK; i++) {
@@ -436,7 +437,7 @@ ConvertTo-Json -Compress -Depth 4 -InputObject $out`);
   async function rowByKeyboard(s: Session, path: string, ms = ACTION_WAIT_MS): Promise<void> {
     await uia(s.app.pid, COMMIT_VIEW, ControlType.Button, invoke);
     await until<boolean>(s.c, `the Changes row ${path}`, `[...document.querySelectorAll('[data-file-tree=changes] [role=treeitem]')].some((e) => e.getAttribute('aria-label') === ${js(path)})`, (v) => v, ms);
-    // The UIA Invoke leaves the focus on the Commit button (run 2 of 2026-11-01), so F6 moves it to the Changes Tab-stop row (Workbench.tsx `moveSection`).
+    // `COMMIT_VIEW` is the History/Commit segmented control. It only switches the view and keeps the focus. Only Enter, a double-click, the Commit icon, and Open Commit view move it to the Changes row (004 plan.md "Keyboard and focus", F6 entry rule), so F6 moves it to the Changes Tab-stop row (Workbench.tsx `moveSection`).
     console.log(`OBSERVATION ${TASK}: the focus after the Commit view Invoke: ${js(await active(s.c))}`);
     await keyTo(s.c, "F6", "the Changes list", (a) => a.tree === "changes");
     await press(s.c, "Home");

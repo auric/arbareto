@@ -4027,8 +4027,15 @@ impl ProcessRequests {
                     let ended =
                         host.run_walk(sizes, wsl::FACTS_OUTPUT_BYTES + 2, bound, stop.event.0);
                     let none = file_facts::Read::default();
-                    let (facts, _) =
-                        wsl::file_facts_reply(ended.output, &entries, false, none, None);
+                    // A size pass without a full reply leaves the size rule unknown, so no digest pass starts.
+                    // The read then ends with the items of a failed probe (gaps.md W3).
+                    let Some((facts, _)) =
+                        wsl::parse_file_facts(ended.output, &entries, false, none, None)
+                    else {
+                        let (facts, index) =
+                            wsl::file_facts_reply(None, &entries, digest, read, index);
+                        return reply_with(reply::file_facts(&call, facts, index));
+                    };
                     let total = facts.iter().fold(0u64, |sum, fact| match fact {
                         FactItem::File { size, .. } => {
                             sum.saturating_add(u64::try_from(*size).unwrap_or(0))
@@ -10033,6 +10040,73 @@ pub(crate) mod tests {
             scope(&commands[before + 1]),
             "each process has its own unit"
         );
+    }
+
+    /// Feature 008 batch 3 review S2: a size pass with an exit other than 0, or with output that gives no fact per entry, gives no size rule.
+    /// The reply carries the items of a failed probe at once (gaps.md W3), and no digest pass starts. Its scripted output would wait 5 s,
+    /// past the walk deadline of 2 s plus the size rule. A full size pass with an `error` fact gives the size rule of its files,
+    /// so the digest pass runs, and each entry gets its own fact.
+    #[test]
+    fn a_wsl_size_pass_failure_ends_the_read_and_an_error_fact_keeps_the_digest_pass() {
+        let harness = Harness::new(
+            Fixture::new(),
+            CHILD_PREFIX.iter().map(|s| s.to_string()).collect(),
+            std::env::vars_os().collect(),
+            Duration::from_secs(2),
+        );
+        let wsl = wsl_harness_with(true, harness);
+        let (git, repository) = wsl_repository(&wsl);
+        let failed = json!({ "kind": "error", "component": 0, "code": "other-error" });
+        let denied = json!({ "kind": "error", "component": 1, "code": "access-denied" });
+        let file = json!({ "kind": "file", "size": 6, "lastWrite": "1000000000", "executable": false, "ownerExecute": false, "digest": HEX_A, "mode": 33188, "uid": 1000, "gid": 1000, "links": 1, "xattr": false, "own": true });
+        let (now, late) = (Duration::ZERO, Duration::from_secs(5));
+        for (exit, size_pass, pause, expected, processes) in [
+            (
+                0,
+                b"Sfile\x006\x001\x000\x000\x00none\0error\x001\x00access-denied\0".to_vec(),
+                now,
+                json!([file, denied]),
+                2,
+            ),
+            (
+                0,
+                b"Sfile\x006\x001".to_vec(),
+                late,
+                json!([failed, failed]),
+                1,
+            ),
+            (
+                1,
+                b"Sfile\x006\x001\x000\x000\x00none\0absent\0".to_vec(),
+                late,
+                json!([failed, failed]),
+                1,
+            ),
+        ] {
+            let before = wsl.host.commands().len();
+            wsl.host.push(exit, &size_pass);
+            wsl.host.push(
+                0,
+                format!("Sfile\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x001\x00sha256\x00{HEX_A}\0error\x001\x00access-denied\0")
+                    .as_bytes(),
+            );
+            *wsl.host.pauses.lock().expect("pauses") = VecDeque::from([Duration::ZERO, pause]);
+            let call = uuid();
+            let mut body = wsl_facts_body(&call, &uuid(), &git, &repository);
+            body["digest"] = json!(true);
+            body["detail"] = json!(true);
+            body["stream"] = json!(true);
+            body["files"] = json!([
+                { "root": "worktreeRoot", "path": ["a.bin"] },
+                { "root": "worktreeRoot", "path": ["b.bin"] },
+            ]);
+            wsl.harness.send(body);
+            let reply = wsl.harness.reply(&call);
+            assert_eq!(reply["facts"], expected, "{reply}");
+            assert_eq!(wsl.host.commands().len(), before + processes, "{reply}");
+            wsl.host.outputs.lock().expect("outputs").clear();
+            wsl.host.pauses.lock().expect("pauses").clear();
+        }
     }
 
     /// Feature 008 contract Δ3 and Δ6: a WSL streamed digest gets the walk deadline plus 1 s for each started 64 MiB.

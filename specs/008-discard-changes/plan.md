@@ -159,6 +159,7 @@ Each step writes its tests first.
 - The comparison is a retained `head-to-index` comparison. The review refuses with `unstaged-changes` when the status record of the path has a worktree letter other than `.` (Clarifications, 2026-10-27).
 - Index part: the existing Unstage lines candidate (`applyToContent` in `hunk-candidate.ts:104` through the `prepare` of `hunk-publish.ts:978`), bound to the same comparison and line selection.
 - Working part: because the file has no unstaged change, its check-in form equals the index blob. The review reads the raw working bytes with the D3 read and its 1 MiB bound, so a larger working file refuses with `size`. It applies the same reversed sub-hunk to them with the R5 rule. The proof compares `hash-object --path` of the new bytes with the blob ID of the new index content.
+- After the working bytes read, the review reads the status record of the path again (`status --porcelain=v2 -z` with the snapshot flags, as `multi-publish.ts` `sameEntries`). A record other than the shown entry gives `STALE_SELECTION`. So a proof failure gives `line-endings` only for a line-ending difference.
 - Run order: the index part first, then the working write (spec FR-017, D10).
 
 ### D5 Revert file

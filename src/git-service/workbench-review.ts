@@ -126,6 +126,7 @@ const IN_PROGRESS_ALLOWED: ReadonlySet<string> = new Set(["choose-side", "merget
 // Every other action takes the class `workbench`.
 // Feature 005 contract Δ7: `delete` and `ignore-save` run no repository program either. Feature 008 contract Δ7: neither do the revert actions.
 const REVERT_ACTIONS = ["revert-lines", "revert-files", "revert-unstaged"] as const;
+const REVERTS: ReadonlySet<string> = new Set(REVERT_ACTIONS);
 const CLASSLESS: ReadonlySet<string> = new Set(["config-save", "delete", "ignore-save", ...REVERT_ACTIONS]);
 const classOf = (action: string): "workbench" | "mergetool" | null => (CLASSLESS.has(action) ? null : action === "mergetool" ? "mergetool" : "workbench");
 // Plan.md O-20: the result of a trust refusal by the trust listing of this repository.
@@ -319,7 +320,8 @@ export function createWorkbench(o: WorkbenchOptions) {
     }
     if ((e.trust.required || required(action, again.common.listing)) && again.common.listing.fingerprint !== e.trust.fingerprint) return { code: "TRUST_CHANGED", result: REPOSITORY_GATE };
     const same = generation === e.generation && Bun.deepEquals({ head: e.head, state: e.operationState }, { head: again.common.head, state: again.common.operationState }, true);
-    if (!same) return { code: "STALE_REVIEW" };
+    // Feature 008 contract Δ3 `runWorkbench`: any difference of the frame's observation gives `revert-changed`. The 005 contract names no reason for a HEAD change.
+    if (!same) return REVERTS.has(action) ? factsChanged : { code: "STALE_REVIEW" };
     return Bun.deepEquals(e.bound, again.bound, true) ? null : factsChanged;
   }
 

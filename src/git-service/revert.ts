@@ -7,13 +7,13 @@
 
 import type { ChangeEntry } from "../contracts/envelope";
 import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors";
-import { filterReason } from "../contracts/file-action";
+import { filterReason, GITLINK } from "../contracts/file-action";
 import { COMPARED_RAW_VERSION_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, FILE_FACT_COMPONENT_UNITS, FILE_FACT_ENTRIES, MULTI_FILE_ACTION_FILES, MULTI_FILE_ATTRIBUTE_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { compareKeys, treeKey } from "../contracts/tree-order";
 import { attributeArgs, blobArgs, blobHashProofArgs, cachedAttributeArgs, checkoutTempArgs, indexPathArgs, lineEndingPathArgs, objectCheckArgs, OID_HEX } from "./commands";
 import { parsePatch, type PatchHunk } from "./diff-parser";
-import { hunkEligibility, IndexFormatError } from "./eligibility";
+import { HUNK_REFUSAL_REASONS, hunkEligibility, IndexFormatError } from "./eligibility";
 import { createCollector, RunnerRefusal, sizeDeadlineMs, stepUnits, type FileFact, type TempRemoveReply, type WalkStop, type WorkingReplaceReply, type WorkingReplaceRequest } from "./git-runner";
 import { applyToContent } from "./hunk-candidate";
 import { canonicalIndex, indexOf, indexSession, isStop, lingeringText, missingObject, PROFILE_TEXTS, publishIndex, settled, stepOf, type Ending, type Fact, type Failure, type Refusal, type Stop } from "./hunk-publish";
@@ -22,9 +22,10 @@ import { subHunk } from "./line-patch";
 import { prepareFiles, type Admitted, type FileItem } from "./multi-publish";
 import { contextOf, latin1, readBounded, strictUtf8 } from "./read-steps";
 import type { Workspace } from "./registration";
-import { blobId, reverseLines } from "./revert-bytes";
+import { autocrlfOf, blobId, restoreEol, reverseLines } from "./revert-bytes";
 import { policyOf } from "./status";
-import { parseAttributes, parseEolListing, SUPPORT_REASONS, type SupportAttributes } from "./support";
+import { parseAttributes, parseEolListing, SUPPORT_REASONS, type EolInfo, type SupportAttributes } from "./support";
+import type { TrustListing } from "./trust";
 import { registerWorkbenchAction, unavailable, type Common, type Observation, type PayloadOf, type Refused, type StepEnd, type WorkbenchContext, type WorkbenchRun } from "./workbench-review";
 import { processEnd, wslIndexDigest } from "./wsl-files";
 
@@ -71,7 +72,6 @@ const SLASH = 0x2f;
 const REFUSED_FILES = 20;
 // Data-model §5: the first confirmation paths in tree order.
 const CONFIRMATION_PATHS = 20;
-const GITLINK = "160000";
 const SYMLINK = "120000";
 const ABSENT_MODE = "000000";
 // Research.md R8: the write keeps hidden, system, and not-content-indexed, and archive and normal are no compared fact.
@@ -368,7 +368,7 @@ async function wholeFiles(ctx: WorkbenchContext, common: Common, entries: readon
       // Spec FR-005: a missing object refuses before any change, with the 001 remedy when a promisor remote can lend it. Without one, it stays GIT_FAILED (001 contract §7).
       const missing = await missingObject(ctx, common.listing, undefined, "object-missing");
       if (isStop(missing)) return missing;
-      // Contract gap: contract Δ3 names no refusal value for OBJECT_MISSING. `{path, remedy}` names the file, as LOCKED names its lock.
+      // Contract Δ3: the value `{path, remedy}` names the file, as LOCKED names its lock.
       return missing.code === "OBJECT_MISSING" && missing.remedy !== undefined ? { refused: missing.code, result: { path: nativePath(ctx.workspace, namesOf(bytesOf(f.pathBytes))!), remedy: { text: missing.remedy.text } } } : { code: missing.code };
     }
     f.source.size = size!;
@@ -421,7 +421,7 @@ async function observeRevert(ctx: WorkbenchContext, p: Payload, common: Common):
   let submodules = 0;
   const reasons: FileReason[] = [];
   if (p.action === "revert-lines") {
-    return lineReview(ctx, p, policyFingerprint);
+    return lineReview(ctx, p, policyFingerprint, common.listing);
   } else if (p.action === "revert-unstaged") {
     // Plan.md D6: every tracked entry with a working change, also the rows that Filter files hides. A submodule entry stays and counts.
     const covered = s.entries.filter((e) => e.category === "unstaged");
@@ -467,14 +467,14 @@ async function observeRevert(ctx: WorkbenchContext, p: Payload, common: Common):
 // The 1-based ordinals of the `+` and `-` lines of a hunk body (004 data-model §6).
 const changeOrdinals = (h: PatchHunk) => latin1(h.bytes).split("\n").slice(1).flatMap((line, i) => (line[0] === "+" || line[0] === "-" ? [i + 1] : []));
 
-// git-ls-files(1) `--eol`: the `w/` value of the one index entry of `path`.
-async function workingEol(ctx: WorkbenchContext, path: Uint8Array): Promise<Fact<string>> {
+// git-ls-files(1) `--eol`: the `w/` and `attr/` values of the one index entry of `path`.
+async function eolOf(ctx: WorkbenchContext, path: Uint8Array): Promise<Fact<EolInfo>> {
   const out = createCollector({ maxBytes: DIAGNOSTIC_RETAINED_BYTES_PER_STREAM });
   const step = await stepOf(ctx, lineEndingPathArgs([strictUtf8.decode(path)]), out);
   if (!("exit" in step)) return step;
   if (step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
   const records = out.limited ? undefined : parseEolListing(out.take())?.get(latin1(path));
-  return records?.length === 1 ? { value: records[0]!.working } : { code: "MALFORMED_GIT_OUTPUT" };
+  return records?.length === 1 ? { value: records[0]! } : { code: "MALFORMED_GIT_OUTPUT" };
 }
 
 // The index blob of the comparison. The 001 support decision keeps it within the compared version bound.
@@ -525,7 +525,8 @@ function lineTarget(c: Comparison | undefined, p: PayloadOf<"revert-lines">, w: 
 }
 
 // Plan.md D3: the line plan of one hunk of a retained comparison. The refusals follow the plan.md D2 order.
-async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, policyFingerprint: string): Promise<Observation<RevertBound>> {
+// Exported for the T062 scope test: `precheck` refuses every other scope first, so only a direct call reaches the scope refusal.
+export async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, policyFingerprint: string, listing: Pick<TrustListing, "entries" | "inputLimited">): Promise<Observation<RevertBound>> {
   const w = ctx.workspace;
   const target = lineTarget(ctx.comparisons.get(p.comparisonId), p, w);
   if (!("sub" in target)) return target;
@@ -567,9 +568,12 @@ async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, p
   const working = workingOf(fact);
   if (working === null) return { code: "MALFORMED_GIT_OUTPUT" };
 
-  const eol = await workingEol(ctx, path);
+  const eol = await eolOf(ctx, path);
   if (!("value" in eol)) return eol;
-  const bytes = reverseLines(read, sub, eol.value);
+  const autocrlf = autocrlfOf(listing);
+  if (autocrlf === null) return unsupported("line-endings");
+  const ending = restoreEol(eol.value, autocrlf);
+  const bytes = reverseLines(read, sub, ending);
   if (bytes === "stale") return STALE;
   // Data-model §4 `expectedBlobId`: the working side of the comparison is the index blob with every hunk, and the partial patch goes from it reversed.
   const base = await indexBlob(ctx, indexEntry.oid);
@@ -585,7 +589,7 @@ async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, p
   if (proof.value !== expectedBlobId) return unsupported("line-endings");
 
   const file: FilePlan = { entryId: e.entryId, pathBytes: e.pathBytes, headEntry: entryAt(e, 0), indexEntry, newIndex: "keep", working, folders: [], source: null };
-  const line = { comparisonId: c.comparisonId, hunkId: hunk.hunkId, lines: p.lines ?? null, eol: eol.value, expectedBlobId, bytes: b64(bytes), sha256: sha256(bytes) };
+  const line = { comparisonId: c.comparisonId, hunkId: hunk.hunkId, lines: p.lines ?? null, eol: ending, expectedBlobId, bytes: b64(bytes), sha256: sha256(bytes) };
   return {
     bound: { action: "revert-lines", snapshotId: p.snapshotId, policyFingerprint, indexLock: "absent", index: null, files: [file], attributes: [{ working: work, index: cached }], line },
     plan: { scope: "unstaged", fileBytes: e.pathBytes, lines: p.lines?.length ?? null },
@@ -935,7 +939,16 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
   const firstCode = outcomes[0]!.code;
   const code: ErrorCode = failure ?? (firstCode === "stale" ? "STALE_REVIEW" : firstCode === "refused" ? "WORKBENCH_UNAVAILABLE" : deadlines.has(0) ? "DEADLINE" : "GIT_FAILED");
   // Contract Δ3: an index part that refused gives the value of its refusal, as the run start does: the LOCKED guidance, or the stale reason.
-  const refused = refusal?.code === "LOCKED" && refusal.path !== undefined && refusal.remedy !== undefined ? { path: refusal.path, remedy: { text: refusal.remedy.text } } : refusal?.code === "STALE_SELECTION" ? { action: bound.action, reason: "revert-changed" } : value;
+  // T059: a file result names `revert-changed` for STALE_REVIEW, or the eligibility reason of a refused index part with the remedy of the review refusal.
+  const named = refusal?.code === "UNSUPPORTED_HUNK_PROFILE" ? refusal.reason : undefined;
+  const profile = HUNK_REFUSAL_REASONS.find((r) => r === named);
+  const why = code === "STALE_REVIEW" ? { reason: "revert-changed" } : profile !== undefined ? { reason: profile, remedy: { text: PROFILE_TEXTS[profile] } } : {};
+  const refused =
+    refusal?.code === "LOCKED" && refusal.path !== undefined && refusal.remedy !== undefined
+      ? { path: refusal.path, remedy: { text: refusal.remedy.text } }
+      : refusal?.code === "STALE_SELECTION"
+        ? { action: bound.action, reason: "revert-changed" }
+        : { ...value, ...why };
   const reason = code === "OUTPUT_LIMIT" && refusal?.reason !== undefined ? { reason: refusal.reason } : {};
   r.finish({ type: "no-effects", observed: "failed", code, ...reason }, refused);
 }

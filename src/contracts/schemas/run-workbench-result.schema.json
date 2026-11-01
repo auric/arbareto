@@ -891,6 +891,33 @@
             "none",
             "refused"
           ]
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "revert-changed",
+            "sparse-index",
+            "split-index",
+            "index-change-hook",
+            "executable-monitor",
+            "unqualified-monitor",
+            "shared-repository"
+          ]
+        },
+        "remedy": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000]*$"
+            }
+          },
+          "required": [
+            "text"
+          ],
+          "additionalProperties": false,
+          "title": "WorkbenchRemedy"
         }
       },
       "required": [

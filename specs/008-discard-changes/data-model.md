@@ -46,7 +46,7 @@ Rules:
 - `comparisonId`, `hunkId`, `scope` (`unstaged` or `staged`), `selected` (ordinals or all).
 - `subHunk`: the partial patch from `subHunk` with the `unstage` rule (plan D3): an unselected `+` line becomes context, and an unselected `-` line drops.
 - `workingBytes`: the bound working bytes (at most 1 MiB), with their size and SHA-256.
-- `eol`: the `ls-files --eol` `w/` value of the path.
+- `eol`: the `restoreEol` value of the path (§6): the `ls-files --eol` `w/` value, or empty when Git converts no line ending for the path.
 - `newBytes`: `reverseLines(workingBytes, subHunk, eol)` (§6).
 - `expectedBlobId`: the blob ID of the expected check-in content: the working side of the comparison with `subHunk` reversed (unstaged), or the new index content (staged).
 - `proof`: the `hash-object --path=<path> --stdin` output for `newBytes`. It must equal `expectedBlobId`.
@@ -54,21 +54,29 @@ Rules:
 
 ## 5. Plan for the confirmation (service to renderer)
 
-| Kind | Fields |
+| Review `action` | Plan fields |
 | --- | --- |
-| `lines` | `scope`, `fileBytes` (the path), `lines` (the count of selected `+` and `-` lines) or null for a whole hunk. |
-| `files` | `count`, `paths` (first 20 in tree order), `newFiles` (staged new files that keep their working file), `staged` (files with a staged change), `unstaged`. |
-| `unstaged` | `count`, `paths` (first 20), `submodules` (entries left unchanged). |
+| `revert-lines` | `scope`, `fileBytes` (the path), `lines` (the count of selected `+` and `-` lines) or null for a whole hunk. |
+| `revert-files` | `count`, `paths` (first 20 in tree order), `newFiles` (staged new files that keep their working file), `staged` (files with a staged change), `unstaged`. |
+| `revert-unstaged` | `count`, `paths` (first 20), `submodules` (entries left unchanged). |
 
-- The renderer computes `hidden` for `unstaged`: the covered entries that Filter files hides in the shown snapshot. The service never sees the filter text (004 FR-101).
+- No plan has a `kind` field. The renderer keys on the `action` of the review result (contract Δ3).
+- The renderer computes `hidden` for `revert-unstaged`: the covered entries that Filter files hides in the shown snapshot. The service never sees the filter text (004 FR-101).
 - The renderer builds every text from these fields and `revert-text.ts`. It shows each path as plain text with the 001 path display rules.
 
 ## 6. Line-ending rule (`revert-bytes.ts`)
 
+`restoreEol(eol, autocrlf)` picks the `eol` value from the `ls-files --eol` record and `core.autocrlf` (Git `convert.c` `convert_attrs` and `output_eol`, v2.55.0 and v2.56.0):
+- The `attr/` value `-text` is CRLF_BINARY. The empty `attr/` value is CRLF_UNDEFINED, and `core.autocrlf=false` makes it CRLF_BINARY.
+- For CRLF_BINARY, `output_eol` gives EOL_UNSET. Git's checkout writes the blob bytes, and check-in keeps the working bytes. So `eol` is empty, and a restored line keeps its comparison bytes.
+- Every other action can map CRLF to LF at check-in. So `eol` is the `w/` value, and the working form picks the ending (spec FR-015).
+- `core.autocrlf` comes from the trust listing: the last entry wins, and `false` is the default (Git `environment.c` `git_default_core_config`). A cut listing or a value that Git cannot read refuses with `line-endings`.
+- `core.eol` never makes CRLF_BINARY, so the rule does not read it.
+
 `reverseLines(working, subHunk, eol)`:
 1. Split `working` into lines, each with its own ending (LF, CRLF, or none for the last line).
 2. Walk the reversed partial patch against the working lines: a context line must equal the working line after the removal of its CR before LF; a `+` line goes; a `-` line comes back at its place.
-3. A restored line ends with CRLF for `eol = crlf`, and with LF for `eol = lf`. For any other value, and for a line without an ending in the comparison, it keeps its comparison bytes.
+3. A restored line ends with CRLF for `eol = crlf`, and with LF for `eol = lf`. For any other value (also empty), and for a line without an ending in the comparison, it keeps its comparison bytes.
 4. Every other line keeps its raw bytes.
 5. A context mismatch in step 2 gives `stale`, because the working bytes no longer match the comparison.
 
@@ -81,7 +89,8 @@ Cases for the G5 probe and the unit vectors of `tests/git/revert-bytes.test.ts`:
 | CRLF | `core.autocrlf=true`, index LF | LF line + CR before LF | passes |
 | CRLF | `text eol=crlf` | as above | passes |
 | LF | `core.autocrlf=true`, index LF | LF; Git's `apply -R` gives CRLF for every line, so the plan D13 line oracle applies | passes |
-| CRLF | none, index LF (every line differs) | CRLF | fails: `line-endings` |
+| CRLF | none, index LF (every line differs) | comparison bytes (LF): Git's checkout writes the LF blob bytes | passes |
+| CRLF | `-text`, index LF | comparison bytes (LF), also with `core.autocrlf=true` | passes |
 | mixed | any | the 001 support refuses first (`line-endings`) | — |
 | any | `ident` set | the review refuses first (`ident`) | — |
 
@@ -137,7 +146,12 @@ A fresh read that fails gives the unknown outcome of the whole run (001 FR-023).
 
 ## 9. Result (service to renderer)
 
-`{action, files: [{entryId, outcome, code?, reason?}], foldersCreated: [pathBytes], index: "published" | "none" | "refused"}`. `foldersCreated` also holds the folders that a failed write created (contract Δ6 `folders` of a failure reply). The response state follows plan D10.
+`{action, files: [{entryId, outcome, code?, reason?}], foldersCreated: [pathBytes], index: "published" | "none" | "refused", reason?, remedy?}`. `foldersCreated` also holds the folders that a failed write created (contract Δ6 `folders` of a failure reply). The response state follows plan D10.
+
+- `reason` `revert-changed`: a `STALE_REVIEW` result in which no file changed. `index` is `none` or `refused`, never `published`. The renderer shows the plan D11 multi-file stale text.
+- `reason` with an eligibility value (`sparse-index`, `split-index`, `index-change-hook`, `executable-monitor`, `unqualified-monitor`, `shared-repository`): the index part refused with `UNSUPPORTED_HUNK_PROFILE`. `index` is `refused`, and `remedy: {text}` carries the text of the review refusal (`PROFILE_TEXTS`). Only these reasons carry `remedy`.
+- A stale index part keeps the 005 shape `{action, reason: "revert-changed"}`, and a lock refusal keeps `{path, remedy}` (contract Δ3).
+- The lock-time `file-id` refusal sends no `reason`. It is no eligibility reason, and `PROFILE_TEXTS` has no entry for it.
 
 ## 10. View state (renderer, not stored)
 

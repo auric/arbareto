@@ -11,6 +11,8 @@ import { linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync }
 import { join } from "node:path";
 import { Response, RunWorkbenchResult } from "../../src/contracts/envelope";
 import { MULTI_FILE_ACTION_FILES, PIPE_FRAME_BYTES } from "../../src/contracts/limits";
+import { RunnerRefusal } from "../../src/git-service/git-runner";
+import { PROFILE_TEXTS } from "../../src/git-service/hunk-publish";
 import { LOCKED_REMEDY } from "../../src/git-service/index-lock";
 import { OBJECT_MISSING_REMEDY } from "../../src/git-service/status";
 import type { RevertCheckpoint } from "../../src/git-service/workbench-review";
@@ -30,7 +32,7 @@ const LONG_TIMEOUT_MS = 600_000;
 const MIB = 1024 * 1024;
 
 type FileOutcome = { entryId: string; outcome: string; code?: string; reason?: string };
-type RevertRun = { action: string; files: FileOutcome[]; foldersCreated: string[]; index: string };
+type RevertRun = { action: string; files: FileOutcome[]; foldersCreated: string[]; index: string; reason?: string };
 type Reviewed = { action: string; plan: { count: number; paths: string[]; newFiles: number; staged: number; unstaged: number }; workbenchToken: string };
 type Category = "unstaged" | "staged" | "untracked";
 
@@ -364,9 +366,12 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
         const reviewed = await reviewOk(service, r, read, [idOf(read, "a.txt", "unstaged"), idOf(read, "sub/c.txt", "unstaged")]);
         const before = workingFileDigests(repo);
         const done = await run(service, r, reviewed.workbenchToken);
-        expect({ state: done.state, code: done.code, outcomes: done.result?.files.map((f) => [f.outcome, f.code]) }).toEqual({
+        // T059: the multi-file STALE_REVIEW result names revert-changed (contract Δ9), so the renderer shows the plan.md D11 multi-file stale text.
+        expect({ state: done.state, code: done.code, index: done.result?.index, reason: done.result?.reason, outcomes: done.result?.files.map((f) => [f.outcome, f.code]) }).toEqual({
           state: "failed",
           code: "STALE_REVIEW",
+          index: "none",
+          reason: "revert-changed",
           outcomes: [
             ["not-changed", "stale"],
             ["not-changed", "stale"],
@@ -462,6 +467,64 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
       },
     );
   }, TIMEOUT_MS);
+
+  // T059 (contract "Contract gaps"): the file result names the eligibility reason of a refused index part.
+  caseTest("T059", "an index part that a split index refuses names split-index and its remedy in the file result, and no file changes", SHELL, async () => {
+    let repo = "";
+    await withService(
+      {
+        name: "t059-split",
+        revertCheckpoint: (c: RevertCheckpoint) => {
+          if (c.step === "before-index") g(repo, ["update-index", "--split-index"]);
+        },
+      },
+      async (service) => {
+        repo = build("split", { "a.txt": "a\n", "keep.txt": "keep\n" }, (r) => {
+          write(r, "a.txt", "a2\n");
+          add(r, "a.txt");
+        });
+        const { r, read } = await open(service, repo);
+        const id = idOf(read, "a.txt", "staged");
+        const reviewed = await reviewOk(service, r, read, [id]);
+        const files = workingFileDigests(repo);
+        const done = await run(service, r, reviewed.workbenchToken);
+        expect(refusal(done)).toEqual({
+          state: "failed",
+          code: "UNSUPPORTED_HUNK_PROFILE",
+          result: { action: "revert-files", files: [{ entryId: id, outcome: "not-started" }], foldersCreated: [], index: "refused", reason: "split-index", remedy: { text: PROFILE_TEXTS["split-index"] } },
+        });
+        expect({ files: workingFileDigests(repo), writes: frames(service, "fileReplace").length }).toEqual({ files, writes: 0 });
+      },
+    );
+  }, TIMEOUT_MS);
+
+  // T062 (plan.md D10): a refused `tempRemove` frame leaves Git's temporary file, which is an effect, so the run never ends succeeded.
+  caseTest("T062", "a RunnerRefusal of tempRemove ends failed-with-effects and keeps Git's temporary file", SHELL, () =>
+    withService({ name: "t062-temp-refusal" }, async (service) => {
+      const repo = build("temp-refusal", TWO, changeTwo);
+      const { r, read } = await open(service, repo);
+      const reviewed = await reviewOk(service, r, read, [idOf(read, "a.txt", "unstaged"), idOf(read, "sub/c.txt", "unstaged")]);
+      service.runner.inject.replaceStep = (step, path) => (step === "renamed" && path.endsWith("a.txt") ? "keep-source" : undefined);
+      service.runner.inject.tempRemoveReply = () => {
+        throw new RunnerRefusal("INVALID_REQUEST", "test seam");
+      };
+      try {
+        const done = await run(service, r, reviewed.workbenchToken);
+        expect({ state: done.state, code: done.code, outcomes: done.result?.files.map((f) => f.outcome), removes: frames(service, "tempRemove").length }).toEqual({
+          state: "failed-with-effects",
+          code: "FAILED_WITH_EFFECTS",
+          outcomes: ["reverted", "reverted"],
+          removes: 1,
+        });
+      } finally {
+        service.runner.inject.replaceStep = null;
+        service.runner.inject.tempRemoveReply = null;
+      }
+      expect({ a: readFileSync(join(repo, "a.txt"), "utf8"), temps: gitTemps(repo).map((name) => readFileSync(join(repo, name), "utf8")) }).toEqual({ a: "a\n", temps: ["a\n"] });
+      for (const name of gitTemps(repo)) rmSync(join(repo, name));
+    }),
+    TIMEOUT_MS,
+  );
 
   caseTest(TASK, "a stop after checkout-index removes every unused Git temporary file through tempRemove", SHELL, async () => {
     let target: Service | null = null;

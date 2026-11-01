@@ -38,12 +38,14 @@ use windows::Win32::System::Threading::{
 };
 use windows::core::{HSTRING, PWSTR, w};
 
-use crate::file_facts::{is_component, is_wsl_path};
+use crate::file_facts::{Read as FactRead, is_component, is_wsl_path};
 use crate::file_replace::IGNORE_TARGET_BYTES;
 use crate::jobs::Supervisor;
-use crate::process_requests::{BOOTSTRAP_DEADLINE_MS, Code, Destination, is_identifier};
+use crate::process_requests::{
+    BOOTSTRAP_DEADLINE_MS, Code, Destination, encode_base64, is_identifier,
+};
 use crate::schema::process_reply::{
-    FileFactErrorCode, FileFactFileBound, FileFactLinkTag, FileFactLinkTarget,
+    FileFactErrorCode, FileFactFileBound, FileFactFileBytes, FileFactLinkTag, FileFactLinkTarget,
     FileFactsReplyFactsItem as Fact, IdentityRefusedReason, WslExit,
     WslFilesResultsResultsItem as FileResult, WslIndexPart, WslIndexResult,
 };
@@ -1038,13 +1040,17 @@ pub struct FactEntry {
     pub path: Vec<String>,
 }
 
-/// The Perl probe through the wrapper in `probe` mode. The arguments are `digest` and the three Linux roots.
-/// With `index`, they also hold the approved `sha256sum` and the shared index hash (contract §6 "Index digest in a read").
+/// The Perl probe through the wrapper in `probe` mode. The arguments are the read bits and the three Linux roots.
+/// The read bits are `digest` (1) and the feature 008 `detail` (2) and `stream` (4) of contract Δ6.
+/// A `stream` digest runs inside the distro, so the arguments then hold the approved `sha256sum`.
+/// With `index`, they hold the approved `sha256sum` and the shared index hash (contract §6 "Index digest in a read").
 /// Stdin holds each entry as its root index, its component count, and its components, each ended by NUL.
+#[allow(clippy::too_many_arguments)]
 pub fn file_facts_command(
     installation: &Installation,
     unit: &str,
     digest: bool,
+    read: FactRead,
     roots: &[String; 3],
     entries: &[FactEntry],
     index: Option<Option<&str>>,
@@ -1058,14 +1064,12 @@ pub fn file_facts_command(
             input.push(0);
         }
     }
-    let mut arguments = strings(&[
-        "-e",
-        &texts().file_facts,
-        "--",
-        if digest { "1" } else { "0" },
-    ]);
+    let bits = u8::from(digest) | u8::from(read.detail) << 1 | u8::from(read.stream) << 2;
+    let mut arguments = strings(&["-e", &texts().file_facts, "--", &bits.to_string()]);
     arguments.extend(roots.iter().cloned());
-    if let Some(shared) = index {
+    if read.stream {
+        arguments.push(installation.sha256sum.clone());
+    } else if let Some(shared) = index {
         arguments.push(installation.sha256sum.clone());
         arguments.extend(shared.map(str::to_string));
     }
@@ -1122,8 +1126,37 @@ impl<'a> Records<'a> {
     }
 }
 
+/// The feature 008 `detail` facts of a WSL file (data-model §3 `working`): the whole `st_mode`, `st_uid`, `st_gid`, `st_nlink`, and `xattr`.
+struct Detail {
+    mode: u32,
+    uid: u32,
+    gid: u32,
+    links: NonZeroU64,
+    xattr: bool,
+}
+
+fn detail_record(records: &mut Records) -> Option<Detail> {
+    Some(Detail {
+        mode: records.number()?,
+        uid: records.number()?,
+        gid: records.number()?,
+        links: records
+            .number::<u64>()
+            .filter(|&n| n < (1 << 53))
+            .and_then(NonZeroU64::new)?,
+        xattr: records.flag()?,
+    })
+}
+
 /// One fact of contract §6 "File facts" from one record. `total` counts the digested bytes of the request.
-fn fact(records: &mut Records, components: usize, digest: bool, total: &mut usize) -> Option<Fact> {
+/// With `read.stream`, the record carries the SHA-256 of the distro and no file bytes (contract Δ6, Δ11).
+fn fact(
+    records: &mut Records,
+    components: usize,
+    digest: bool,
+    read: FactRead,
+    total: &mut usize,
+) -> Option<Fact> {
     Some(match records.token()? {
         "absent" => Fact::Absent,
         "other" => Fact::Other,
@@ -1156,17 +1189,39 @@ fn fact(records: &mut Records, components: usize, digest: bool, total: &mut usiz
             let modified: i64 = records.number()?;
             let last_write = modified.checked_mul(1_000_000_000)?;
             let (owner, executable) = (records.flag()?, records.flag()?);
-            let (bound, digested) = match (records.token()?, digest) {
-                ("none", false) => (None, None),
-                ("file-bytes", true) => (Some(FileFactFileBound::FileBytes), None),
-                ("total-bytes", true) => (Some(FileFactFileBound::TotalBytes), None),
-                ("data", true) => {
+            let detail = if read.detail {
+                Some(detail_record(records)?)
+            } else {
+                None
+            };
+            let bounded = digest && !read.stream;
+            let (bound, digested, bytes) = match (records.token()?, digest) {
+                ("none", false) => (None, None, None),
+                ("sha256", true) if read.stream => {
+                    (None, Some(reply::digest(&hex64(records)?)), None)
+                }
+                ("file-bytes", true) if bounded => (Some(FileFactFileBound::FileBytes), None, None),
+                ("total-bytes", true) if bounded => {
+                    (Some(FileFactFileBound::TotalBytes), None, None)
+                }
+                ("data", true) if bounded => {
                     let length: usize = records.number().filter(|&n| n <= FACT_FILE_BYTES)?;
                     *total = total
                         .checked_add(length)
                         .filter(|&n| n <= FACT_TOTAL_BYTES)?;
-                    let sha256 = crate::settings::sha256(records.raw(length)?);
-                    (None, Some(reply::digest(&crate::settings::hex(&sha256))))
+                    let data = records.raw(length)?;
+                    let sha256 = crate::settings::sha256(data);
+                    // Feature 005 contract Δ6 `content`: the same bytes that the digest takes.
+                    let bytes = if read.content {
+                        Some(FileFactFileBytes::try_from(encode_base64(data)).ok()?)
+                    } else {
+                        None
+                    };
+                    (
+                        None,
+                        Some(reply::digest(&crate::settings::hex(&sha256))),
+                        bytes,
+                    )
                 }
                 _ => return None,
             };
@@ -1174,15 +1229,15 @@ fn fact(records: &mut Records, components: usize, digest: bool, total: &mut usiz
                 attributes: None,
                 creation_time: None,
                 dacl: None,
-                gid: None,
+                gid: detail.as_ref().map(|d| d.gid),
                 group: None,
-                links: None,
-                mode: None,
+                links: detail.as_ref().map(|d| d.links),
+                mode: detail.as_ref().map(|d| d.mode),
                 owner: None,
-                uid: None,
-                xattr: None,
+                uid: detail.as_ref().map(|d| d.uid),
+                xattr: detail.as_ref().map(|d| d.xattr),
                 bound,
-                bytes: None,
+                bytes,
                 digest: digested,
                 executable: Some(executable),
                 last_write: reply::last_write(last_write),
@@ -1207,6 +1262,7 @@ pub fn file_facts_reply(
     output: Option<Output>,
     entries: &[FactEntry],
     digest: bool,
+    read: FactRead,
     index: Option<bool>,
 ) -> (Vec<Fact>, Option<WslIndexResult>) {
     let parsed = output
@@ -1217,7 +1273,7 @@ pub fn file_facts_reply(
             let mut total = 0;
             let facts: Vec<Fact> = entries
                 .iter()
-                .map(|entry| fact(&mut records, entry.path.len(), digest, &mut total))
+                .map(|entry| fact(&mut records, entry.path.len(), digest, read, &mut total))
                 .collect::<Option<_>>()?;
             let found = match index {
                 Some(shared) => {
@@ -2578,7 +2634,17 @@ mod tests {
 
     /// The facts of `super::file_facts_reply` in their wire form.
     fn file_facts_reply(output: Option<Output>, entries: &[FactEntry], digest: bool) -> Vec<Value> {
-        let (facts, index) = super::file_facts_reply(output, entries, digest, None);
+        read_reply(output, entries, digest, FactRead::default())
+    }
+
+    /// The facts of `super::file_facts_reply` with the feature 008 `detail` and `stream` reads.
+    fn read_reply(
+        output: Option<Output>,
+        entries: &[FactEntry],
+        digest: bool,
+        read: FactRead,
+    ) -> Vec<Value> {
+        let (facts, index) = super::file_facts_reply(output, entries, digest, read, None);
         assert!(index.is_none());
         facts.iter().map(|fact| json!(fact)).collect()
     }
@@ -4714,6 +4780,7 @@ mod tests {
             &inst,
             "arbareto-x-3.scope",
             true,
+            FactRead::default(),
             &roots,
             &entries(&[(1, &["hooks", "pre-commit"]), (0, &["a b"])]),
             None,
@@ -4878,6 +4945,272 @@ mod tests {
             file_facts_reply(facts_output(&sum), &nine, true),
             vec![json!({ "kind": "error", "component": 0, "code": "other-error" }); 9]
         );
+    }
+
+    // ---- Feature 008 T055: `fileFacts` `detail` and `stream` on the WSL route (contract Δ6, data-model §3) ----
+
+    /// The first Perl argument holds `digest` (1), `detail` (2), and `stream` (4). A stream passes the approved `sha256sum`,
+    /// because the digest runs inside the distro.
+    #[test]
+    fn the_file_facts_command_sets_the_detail_and_stream_bits_and_a_stream_passes_sha256sum() {
+        let inst = installation();
+        let roots = [
+            "/home/u/r".to_string(),
+            "/home/u/r/.git".to_string(),
+            "/home/u/r/.git".to_string(),
+        ];
+        for (digest, detail, stream, flag) in [
+            (false, false, false, "0"),
+            (true, false, false, "1"),
+            (false, true, false, "2"),
+            (true, true, false, "3"),
+            (true, false, true, "5"),
+            (true, true, true, "7"),
+        ] {
+            let command = file_facts_command(
+                &inst,
+                "arbareto-x-3.scope",
+                digest,
+                FactRead {
+                    detail,
+                    stream,
+                    content: false,
+                },
+                &roots,
+                &entries(&[(0, &["a"])]),
+                None,
+                &base(),
+            );
+            let mut tail = strings(&["--", flag]);
+            tail.extend(roots.iter().cloned());
+            if stream {
+                tail.push(inst.sha256sum.clone());
+            }
+            assert!(
+                command.arguments.ends_with(&tail),
+                "{flag}: {:?}",
+                command.arguments
+            );
+        }
+    }
+
+    /// Data-model §3 `working` on WSL: `mode` is the whole `st_mode`, then `uid`, `gid`, `links`, and `xattr`.
+    /// A stream record carries the SHA-256 of the distro and no file bytes. Each other form gives `other-error`.
+    #[test]
+    fn a_detail_record_adds_the_wsl_facts_and_a_stream_record_carries_the_distro_digest() {
+        let one = entries(&[(0, &["a"])]);
+        let detail = FactRead {
+            detail: true,
+            stream: false,
+            content: false,
+        };
+        let stream = FactRead {
+            detail: false,
+            stream: true,
+            content: false,
+        };
+        let both = FactRead {
+            detail: true,
+            stream: true,
+            content: false,
+        };
+        let hex = "ab".repeat(32);
+        let file = json!({ "kind": "file", "size": 6, "lastWrite": "1000000000", "executable": false, "ownerExecute": false });
+        let with = |fields: Value| {
+            let mut fact = file.clone();
+            fact.as_object_mut()
+                .expect("fact")
+                .extend(fields.as_object().expect("fields").clone());
+            vec![fact]
+        };
+        let ids = json!({ "mode": 33188, "uid": 1000, "gid": 1000, "links": 2, "xattr": true });
+        assert_eq!(
+            read_reply(
+                facts_output(
+                    b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x002\x001\x00none\0"
+                ),
+                &one,
+                false,
+                detail
+            ),
+            with(ids.clone())
+        );
+        let digest = crate::settings::hex(&crate::settings::sha256(b"plain\n"));
+        assert_eq!(
+            read_reply(
+                facts_output(
+                    b"file\x006\x001\x000\x000\x0033261\x001000\x004\x001\x000\x00data\x006\0plain\n"
+                ),
+                &one,
+                true,
+                detail
+            ),
+            with(
+                json!({ "mode": 33261, "uid": 1000, "gid": 4, "links": 1, "xattr": false, "digest": digest })
+            )
+        );
+        let streamed = format!("file\x006\x001\x000\x000\x00sha256\x00{hex}\0");
+        assert_eq!(
+            read_reply(facts_output(streamed.as_bytes()), &one, true, stream),
+            with(json!({ "digest": hex }))
+        );
+        let all = format!(
+            "file\x006\x001\x000\x000\x0033188\x001000\x001000\x002\x001\x00sha256\x00{hex}\0"
+        );
+        let mut expected = ids.clone();
+        expected["digest"] = json!(hex);
+        assert_eq!(
+            read_reply(facts_output(all.as_bytes()), &one, true, both),
+            with(expected)
+        );
+        // A folder and a missing file get no detail.
+        assert_eq!(
+            read_reply(facts_output(b"directory\x001\0"), &one, true, both),
+            vec![json!({ "kind": "directory", "executable": true })]
+        );
+
+        let failed = vec![json!({ "kind": "error", "component": 0, "code": "other-error" })];
+        let upper = format!(
+            "file\x006\x001\x000\x000\x00sha256\x00{}\0",
+            hex.to_uppercase()
+        );
+        let short = format!("file\x006\x001\x000\x000\x00sha256\x00{}\0", &hex[1..]);
+        let plain = format!("file\x006\x001\x000\x000\x00sha256\x00{hex}\0");
+        for (output, digest, read) in [
+            // The detail tokens are missing.
+            (
+                b"file\x006\x001\x000\x000\x00none\0".to_vec(),
+                false,
+                detail,
+            ),
+            // A link count of 0.
+            (
+                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x000\x000\x00none\0".to_vec(),
+                false,
+                detail,
+            ),
+            // A negative uid.
+            (
+                b"file\x006\x001\x000\x000\x0033188\x00-1\x001000\x001\x000\x00none\0".to_vec(),
+                false,
+                detail,
+            ),
+            // A mode above 32 bits.
+            (
+                b"file\x006\x001\x000\x000\x004294967296\x001000\x001000\x001\x000\x00none\0"
+                    .to_vec(),
+                false,
+                detail,
+            ),
+            // `xattr` is no flag.
+            (
+                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x002\x00none\0".to_vec(),
+                false,
+                detail,
+            ),
+            // Detail tokens that the request did not ask for.
+            (
+                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00none\0".to_vec(),
+                false,
+                FactRead::default(),
+            ),
+            // A stream takes no file bytes.
+            (
+                b"file\x006\x001\x000\x000\x00data\x006\0plain\n".to_vec(),
+                true,
+                stream,
+            ),
+            // A bounded digest takes no distro digest.
+            (plain.into_bytes(), true, FactRead::default()),
+            (upper.into_bytes(), true, stream),
+            (short.into_bytes(), true, stream),
+            // A stream has no bound.
+            (
+                b"file\x006\x001\x000\x000\x00file-bytes\0".to_vec(),
+                true,
+                stream,
+            ),
+        ] {
+            assert_eq!(
+                read_reply(facts_output(&output), &one, digest, read),
+                failed,
+                "{}",
+                String::from_utf8_lossy(&output)
+            );
+        }
+    }
+
+    /// The record of one file with `data`, and with the detail tokens of a 0100644 file for `read.detail`.
+    fn data_record(data: &[u8], read: FactRead) -> Vec<u8> {
+        let mut out = format!("file\x00{}\x001\x000\x000\x00", data.len()).into_bytes();
+        if read.detail {
+            out.extend_from_slice(b"33188\x001000\x001000\x001\x000\x00");
+        }
+        out.extend_from_slice(format!("data\x00{}\0", data.len()).as_bytes());
+        out.extend_from_slice(data);
+        out
+    }
+
+    /// The decoded `bytes` and the `digest` of a fact.
+    fn content_of(fact: &Value) -> (Option<Vec<u8>>, Value) {
+        use base64::Engine;
+        let bytes = fact["bytes"].as_str().map(|text| {
+            base64::engine::general_purpose::STANDARD
+                .decode(text)
+                .expect("base64")
+        });
+        (bytes, fact["digest"].clone())
+    }
+
+    /// Feature 005 contract Δ6 `content`: the `file` fact adds the base64 of the same `data` bytes that the digest takes.
+    /// An empty file and a file at the 1 MiB bound carry their bytes, also with `detail` (the WSL `revert-lines` read).
+    /// A file above the bound carries none, and a read without `content` carries none.
+    #[test]
+    fn a_content_read_carries_the_data_bytes_that_the_digest_takes() {
+        let one = entries(&[(0, &["a"])]);
+        let content = FactRead {
+            content: true,
+            ..FactRead::default()
+        };
+        let lines = FactRead {
+            detail: true,
+            ..content
+        };
+        let full: Vec<u8> = (0..FACT_FILE_BYTES).map(|i| (i % 251) as u8).collect();
+        for (data, read) in [
+            (b"plain\n".to_vec(), content),
+            (Vec::new(), content),
+            (full, content),
+            ((0..=255u8).collect(), lines),
+        ] {
+            let fact = &read_reply(facts_output(&data_record(&data, read)), &one, true, read)[0];
+            let digest = crate::settings::hex(&crate::settings::sha256(&data));
+            assert_eq!(
+                content_of(fact),
+                (Some(data.clone()), json!(digest)),
+                "{} bytes",
+                data.len()
+            );
+        }
+        let above = read_reply(
+            facts_output(b"file\x001048577\x001\x000\x000\x00file-bytes\0"),
+            &one,
+            true,
+            content,
+        );
+        assert_eq!(
+            above,
+            vec![
+                json!({ "kind": "file", "size": 1048577, "lastWrite": "1000000000", "executable": false, "ownerExecute": false, "bound": "file-bytes" })
+            ]
+        );
+        let plain = read_reply(
+            facts_output(&data_record(b"plain\n", FactRead::default())),
+            &one,
+            true,
+            FactRead::default(),
+        );
+        assert_eq!(content_of(&plain[0]).0, None);
     }
 
     // ---- T205: the Git probe ----
@@ -5789,6 +6122,90 @@ mod tests {
             );
         }
         assert_eq!(shell(9, "rm -rf -- \"$1\""), Some(0));
+    }
+
+    /// Feature 005 contract Δ6 `content` through the real wrapper and Perl text: the reply bytes equal the bytes of the distro file.
+    /// An empty file, all 256 byte values, and a file at the 1 MiB bound carry their bytes. One byte more gives `file-bytes` and no bytes.
+    #[test]
+    fn the_real_content_read_gives_the_bytes_of_the_distro_file() {
+        let Some(reference) = reference() else {
+            return;
+        };
+        let Some(inst) = probed(&reference) else {
+            return;
+        };
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let operation = format!("0f0f0f0f-0000-4000-8117-{:012x}", std::process::id());
+        let host = reference.host();
+        let root = format!("/tmp/arbareto-content-{}", std::process::id());
+        let mut n = 0;
+        let mut unit = || {
+            n += 1;
+            unit_name(&operation, n).expect("unit")
+        };
+        let shell = |unit: &str, script: &str, input: Vec<u8>| {
+            let arguments = strings(&["-c", script, "sh", &root]);
+            let command = wrapped(
+                &inst,
+                Mode::Read,
+                unit,
+                None,
+                "/bin/sh",
+                &arguments,
+                &environment,
+                Stdin::Bytes(input),
+            );
+            host.run(&command).expect("shell").exit_code
+        };
+        let full: Vec<u8> = (0..FACT_FILE_BYTES).map(|i| (i % 251) as u8).collect();
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("empty", Vec::new()),
+            ("bytes", (0..=255u8).collect()),
+            ("full", full.clone()),
+            ("over", [full.as_slice(), b"x"].concat()),
+        ];
+        for (name, data) in &cases {
+            let script = format!("mkdir -p -- \"$1\" && cat > \"$1/{name}\"");
+            assert_eq!(shell(&unit(), &script, data.clone()), Some(0), "{name}");
+        }
+        let roots = [root.clone(), format!("{root}/.git"), format!("{root}/.git")];
+        let read = FactRead {
+            content: true,
+            ..FactRead::default()
+        };
+        let mut found = Vec::new();
+        for (name, _) in &cases {
+            let list = entries(&[(0, &[*name][..])]);
+            let command = file_facts_command(
+                &inst,
+                &unit(),
+                true,
+                read,
+                &roots,
+                &list,
+                None,
+                &environment,
+            );
+            let ended = host.run_until(&command, FACTS_OUTPUT_BYTES + 2, PROBE_DEADLINE);
+            found.push(read_reply(ended.output, &list, true, read).remove(0));
+        }
+        assert_eq!(shell(&unit(), "rm -rf -- \"$1\"", Vec::new()), Some(0));
+        for ((name, data), fact) in cases.iter().zip(&found) {
+            if data.len() > FACT_FILE_BYTES {
+                assert_eq!(
+                    (&fact["bound"], content_of(fact).0),
+                    (&json!("file-bytes"), None),
+                    "{name}"
+                );
+            } else {
+                let digest = crate::settings::hex(&crate::settings::sha256(data));
+                assert_eq!(
+                    content_of(fact),
+                    (Some(data.clone()), json!(digest)),
+                    "{name}"
+                );
+            }
+        }
     }
 
     /// Feature 005 contract Δ6, Δ11: the shadow commands make a repository with a work tree in `<shadow>/s`, check out an

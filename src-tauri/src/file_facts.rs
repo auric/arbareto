@@ -86,11 +86,12 @@ pub(crate) struct Request<'a> {
     pub(crate) read: Read,
 }
 
-/// Feature 008 contract Δ6: the `detail` and `stream` fields of a `fileFacts` request.
+/// Feature 008 contract Δ6: the `detail` and `stream` fields of a `fileFacts` request. Feature 005 contract Δ6: `content`, WSL only.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct Read {
     pub(crate) detail: bool,
     pub(crate) stream: bool,
+    pub(crate) content: bool,
 }
 
 /// The fields of a `fileFacts` frame. It reads no file.
@@ -117,6 +118,7 @@ pub(crate) fn parse(request: &FileFacts) -> Result<Request<'_>, Code> {
         read: Read {
             detail: request.detail == Some(true),
             stream: request.stream == Some(true),
+            content: request.content == Some(true),
         },
     })
 }
@@ -1325,6 +1327,7 @@ pub(crate) mod tests {
         let read = Read {
             detail: true,
             stream: false,
+            content: false,
         };
         let facts = |files: &[(usize, &[&str])]| {
             let files: Vec<(usize, Vec<String>)> = files
@@ -1373,6 +1376,7 @@ pub(crate) mod tests {
         let read = Read {
             detail: false,
             stream: true,
+            content: false,
         };
         let sizes = std::cell::RefCell::new(Vec::new());
         let files = vec![

@@ -90,6 +90,7 @@ import {
   wslFilesInput,
   wslFilesResults,
   type FactEntry,
+  type FactRead,
   type FactRecord,
 } from "../wsl/wsl-host";
 import type { InboundPipe } from "./win32";
@@ -393,12 +394,18 @@ function identityLine(guid: string, line: string | undefined): WslIdentityReply 
 const FILE_BOUND = 1_048_576n;
 const TOTAL_BOUND = 8_388_608n;
 const LINK_BYTES = 4_095;
-function mapFacts(records: FactRecord[] | null, entries: readonly FactEntry[], digest: boolean, content = false): FileFact[] {
-  return (records && checkFacts(records, entries, digest, content)) ?? entries.map(() => ({ kind: "error", component: 0, code: "other-error" }));
+// The read options of one WSL `fileFacts` request: feature 008 `detail` and `stream`, and feature 005 `content`.
+type WslFactRead = FactRead & { content?: boolean };
+// `wsl.rs` `detail_record`: `mode`, `uid`, and `gid` are 32-bit values, and `links` is from 1 to 2^53 - 1.
+const U32_MAX = 0xffff_ffffn;
+
+export function mapFacts(records: FactRecord[] | null, entries: readonly FactEntry[], digest: boolean, read: WslFactRead = {}): FileFact[] {
+  return (records && checkFacts(records, entries, digest, read)) ?? entries.map(() => ({ kind: "error", component: 0, code: "other-error" }));
 }
 
-// Null: a record breaks a check. `content`: feature 005 contract Δ6, a digested file also carries its bytes.
-function checkFacts(records: FactRecord[], entries: readonly FactEntry[], digest: boolean, content = false): FileFact[] | null {
+// Null: a record breaks a check. `read.content`: feature 005 contract Δ6, a digested file also carries its bytes.
+// `read.stream`: the digest comes from the distro (`sha256`), with no data bytes and no bound.
+function checkFacts(records: FactRecord[], entries: readonly FactEntry[], digest: boolean, read: WslFactRead = {}): FileFact[] | null {
   if (records.length !== entries.length) return null;
   let total = 0n;
   const facts: FileFact[] = [];
@@ -419,16 +426,26 @@ function checkFacts(records: FactRecord[], entries: readonly FactEntry[], digest
     } else {
       const lastWrite = record.mtime * 1_000_000_000n;
       if (record.size > BigInt(Number.MAX_SAFE_INTEGER) || BigInt.asIntN(64, lastWrite) !== lastWrite) return null;
-      const base = { kind: "file" as const, size: Number(record.size), lastWrite: String(lastWrite), ownerExecute: record.ownerExecute, executable: record.executable };
+      const d = record.detail;
+      if (Boolean(read.detail) !== (d !== undefined)) return null;
+      if (d && (d.mode < 0n || d.mode > U32_MAX || d.uid < 0n || d.uid > U32_MAX || d.gid < 0n || d.gid > U32_MAX || d.links < 1n || d.links > BigInt(Number.MAX_SAFE_INTEGER))) return null;
+      const detail = d ? { mode: Number(d.mode), uid: Number(d.uid), gid: Number(d.gid), links: Number(d.links), xattr: d.xattr } : {};
+      const base = { kind: "file" as const, size: Number(record.size), lastWrite: String(lastWrite), ownerExecute: record.ownerExecute, executable: record.executable, ...detail };
       if (record.content === "none") {
         if (digest) return null;
         facts.push(base);
       } else if (!digest) return null;
-      else if (typeof record.content === "string") facts.push({ ...base, bound: record.content });
-      else {
+      else if (record.content instanceof Uint8Array) {
+        if (read.stream) return null;
         total += BigInt(record.content.length);
         if (BigInt(record.content.length) > FILE_BOUND || total > TOTAL_BOUND) return null;
-        facts.push({ ...base, digest: new Bun.CryptoHasher("sha256").update(record.content).digest("hex"), ...(content ? { bytes: Buffer.from(record.content).toString("base64") } : {}) });
+        facts.push({ ...base, digest: new Bun.CryptoHasher("sha256").update(record.content).digest("hex"), ...(read.content ? { bytes: Buffer.from(record.content).toString("base64") } : {}) });
+      } else if (record.content === "sha256") {
+        if (!read.stream || record.sha256 === undefined) return null;
+        facts.push({ ...base, digest: record.sha256 });
+      } else {
+        if (read.stream) return null;
+        facts.push({ ...base, bound: record.content });
       }
     }
   }
@@ -1291,20 +1308,23 @@ export function createBunRunner(options: BunRunnerOptions) {
   }
 
   // gaps.md W3: the fixed Perl probe through the wrapper in `probe` mode. The three roots go as Linux paths.
+  // The first argument holds the read bits of `wsl.rs` `file_facts_command`: `digest` 1, `detail` 2, `stream` 4. A stream gets the sha256sum path.
   // With `index`, the probe also gets the sha256sum path and the shared hash, and gives the index result (contract §6 "Index digest in a read").
-  function wslFileFacts(operationId: string, inst: WslInstallation, roots: Roots, digest: boolean, files: FileFactsRequest["files"], index?: { sharedIndex?: string }, content = false): { facts: FileFact[]; index?: WslIndexResult } {
+  // The shell runs a size pass before a stream for the size-rule deadline. The double has no such deadline, so it runs the digest pass only.
+  function wslFileFacts(operationId: string, inst: WslInstallation, roots: Roots, digest: boolean, files: FileFactsRequest["files"], index?: { sharedIndex?: string }, read: WslFactRead = {}): { facts: FileFact[]; index?: WslIndexResult } {
     const entries: FactEntry[] = files.map(({ root, path }) => ({ root: ROOT_ORDER.indexOf(root) as 0 | 1 | 2, path: [...path] }));
     const failed = { kind: "error", component: 0, code: "other-error" } as const;
     const linux = linuxRoots(inst, roots);
     if (linux === null) return { facts: mapFacts(null, entries, digest), ...(index ? { index: failed } : {}) };
-    const extra = index ? [inst.sha256sum, ...(index.sharedIndex === undefined ? [] : [index.sharedIndex])] : [];
-    const args = ["-e", FACTS_TEXT, "--", digest ? "1" : "0", ...linux, ...extra];
+    const extra = read.stream ? [inst.sha256sum] : index ? [inst.sha256sum, ...(index.sharedIndex === undefined ? [] : [index.sharedIndex])] : [];
+    const bits = (digest ? 1 : 0) | (read.detail ? 2 : 0) | (read.stream ? 4 : 0);
+    const args = ["-e", FACTS_TEXT, "--", String(bits), ...linux, ...extra];
     const result = wslExec(wslWrapped(inst, operationId, "probe", "", WSL_PERL, args), { env: wslEnvironment(), input: factsInput(entries) });
     const out = result.exitCode === 0 ? started(result.bytes) : null;
-    if (!index) return { facts: mapFacts(out === null ? null : parseFactRecords(out), entries, digest, content) };
-    const parsed = out === null ? null : parseIndexedFacts(out, entries.length, index.sharedIndex !== undefined);
+    if (!index) return { facts: mapFacts(out === null ? null : parseFactRecords(out, read), entries, digest, read) };
+    const parsed = out === null ? null : parseIndexedFacts(out, entries.length, index.sharedIndex !== undefined, read);
     // A failed fact check fails the index too, as in the shell.
-    const facts = parsed === null ? null : checkFacts(parsed.records, entries, digest);
+    const facts = parsed === null ? null : checkFacts(parsed.records, entries, digest, read);
     return facts === null ? { facts: mapFacts(null, entries, digest), index: failed } : { facts, index: parsed!.index };
   }
 
@@ -1860,16 +1880,15 @@ export function createBunRunner(options: BunRunnerOptions) {
       const files = request.files.map(({ root, path }) => ({ root, path: [...path] }));
       // gaps.md W3: a WSL repository gets the Perl probe of its installation. The double records no read bytes for it.
       const wsl = wslGits.get(gitInstallationId);
-      if (request.content === true && !wsl) throw new RunnerRefusal("INVALID_REQUEST", "content outside WSL");
-      // Feature 008 contract Δ6: the WSL `detail` and `stream` facts come from the Perl probe of T016, which the double does not have yet.
-      if ((request.detail === true || request.stream === true) && wsl) throw new RunnerRefusal("INVALID_REQUEST", "WSL detail or stream");
-      // Contract Δ6: a `detail` request or a request under a revert marker may ask for `stream`.
+      // Contract Δ6: a `detail` request or a request under a revert marker may ask for `stream`, on both routes.
       if (request.stream === true && request.detail !== true && !revertMarked(operationId)) throw new RunnerRefusal("INVALID_REQUEST", "fileFacts stream");
+      if (request.content === true && !wsl) throw new RunnerRefusal("INVALID_REQUEST", "content outside WSL");
       return walk(
         signal,
         () => {
           if (wsl) {
-            const { facts } = wslFileFacts(operationId, wsl, roots, request.digest, request.files, undefined, request.content === true);
+            const read = { detail: request.detail === true, stream: request.stream === true, content: request.content === true };
+            const { facts } = wslFileFacts(operationId, wsl, roots, request.digest, request.files, undefined, read);
             fileFactCalls.push({ operationId, repositoryId, digest: request.digest, files, facts, bytesRead: facts.map(() => 0) });
             return facts;
           }
@@ -2321,7 +2340,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     return walk(
       signal,
       () => {
-        const { facts, index } = wslFileFacts(operationId, wsl, roots, request.digest, request.files, request.index);
+        const { facts, index } = wslFileFacts(operationId, wsl, roots, request.digest, request.files, request.index, { detail: request.detail === true });
         return { facts, index: index! };
       },
       "fileFacts",

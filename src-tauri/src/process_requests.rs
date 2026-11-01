@@ -1283,6 +1283,7 @@ impl ProcessRequests {
             &installation,
             &unit,
             false,
+            file_facts::Read::default(),
             &[linux.clone(), linux.clone(), linux],
             &entries,
             None,
@@ -1305,7 +1306,13 @@ impl ProcessRequests {
                     deadline,
                     stop.event.0,
                 );
-                let (facts, _) = wsl::file_facts_reply(ended.output, &entries, false, None);
+                let (facts, _) = wsl::file_facts_reply(
+                    ended.output,
+                    &entries,
+                    false,
+                    file_facts::Read::default(),
+                    None,
+                );
                 shown(facts.first())
             },
             || {},
@@ -3105,10 +3112,6 @@ impl ProcessRequests {
             repository.common_directory.clone(),
         ];
         if let Some((installation, _)) = target.wsl {
-            // The WSL `fileFacts` text gives no `detail` fact and no streamed digest (no task covers them).
-            if parsed.read.detail || parsed.read.stream {
-                return Err(INVALID);
-            }
             let n = Self::next_unit(&mut state, parsed.operation_id);
             return self.wsl_file_facts(
                 &mut state,
@@ -3120,8 +3123,11 @@ impl ProcessRequests {
                 read_at,
             );
         }
-        // A Windows Git never reads a WSL repository (contract §11 "Route"). The Windows shell refuses `index`.
-        if roots.iter().any(|root| file_facts::is_wsl_path(root)) || parsed.index.is_some() {
+        // A Windows Git never reads a WSL repository (contract §11 "Route"). The Windows shell refuses `index` and `content` (005 contract Δ6).
+        if roots.iter().any(|root| file_facts::is_wsl_path(root))
+            || parsed.index.is_some()
+            || parsed.read.content
+        {
             return Err(INVALID);
         }
         let (digest, read, files, call) = (
@@ -3963,25 +3969,51 @@ impl ProcessRequests {
                 path: path.iter().map(|component| component.to_string()).collect(),
             })
             .collect();
+        let base = &self.config.base_environment;
+        // Feature 008 contract Δ3 and Δ6: a stream first reads the sizes without a digest. They set the size-rule deadline of the digest pass.
+        let sizes = parsed.read.stream.then(|| {
+            let read = file_facts::Read::default();
+            wsl::file_facts_command(
+                installation,
+                &unit,
+                false,
+                read,
+                &roots,
+                &entries,
+                None,
+                base,
+            )
+        });
+        let unit = match sizes {
+            Some(_) => wsl::unit_name(
+                parsed.operation_id,
+                Self::next_unit(state, parsed.operation_id),
+            )?,
+            None => unit,
+        };
         let command = wsl::file_facts_command(
             installation,
             &unit,
             parsed.digest,
+            parsed.read,
             &roots,
             &entries,
             parsed.index,
-            &self.config.base_environment,
+            base,
         );
-        command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
+        for command in sizes.iter().chain([&command]) {
+            command_line(&command.program, &command.arguments).map_err(|_| INVALID)?;
+        }
         self.jobs.open(parsed.operation_id).map_err(|_| OWNERSHIP)?;
         let me = self.me.upgrade().ok_or(OWNERSHIP)?;
-        let (operation, call, digest) = (
+        let (operation, call, digest, read) = (
             parsed.operation_id.to_string(),
             call_id.to_string(),
             parsed.digest,
+            parsed.read,
         );
         let index = parsed.index.map(|shared| shared.is_some());
-        let deadline = self.walk_bound();
+        let bound = self.walk_bound();
         self.spawn_walk(
             state,
             Reply::Walk(reply::file_facts_deadline),
@@ -3990,6 +4022,23 @@ impl ProcessRequests {
             read_at,
             move |stop| {
                 let host = me.wsl_host(&operation);
+                let mut deadline = bound;
+                if let Some(sizes) = &sizes {
+                    let ended =
+                        host.run_walk(sizes, wsl::FACTS_OUTPUT_BYTES + 2, bound, stop.event.0);
+                    let none = file_facts::Read::default();
+                    let (facts, _) =
+                        wsl::file_facts_reply(ended.output, &entries, false, none, None);
+                    let total = facts.iter().fold(0u64, |sum, fact| match fact {
+                        FactItem::File { size, .. } => {
+                            sum.saturating_add(u64::try_from(*size).unwrap_or(0))
+                        }
+                        _ => sum,
+                    });
+                    let extra = file_replace::size_rule(total);
+                    stop.extend(extra);
+                    deadline += extra;
+                }
                 // The start byte comes before the cap. One byte above the cap shows output past it.
                 let ended = host.run_walk(
                     &command,
@@ -3997,7 +4046,8 @@ impl ProcessRequests {
                     deadline,
                     stop.event.0,
                 );
-                let (facts, index) = wsl::file_facts_reply(ended.output, &entries, digest, index);
+                let (facts, index) =
+                    wsl::file_facts_reply(ended.output, &entries, digest, read, index);
                 reply_with(reply::file_facts(&call, facts, index))
             },
             || {},
@@ -8154,6 +8204,8 @@ pub(crate) mod tests {
         child: Arc<Mutex<Option<ChildMode>>>,
         /// The operation of this host. `set_wsl_hosts` gives one host to each operation.
         operation: String,
+        /// The pause of each next process before its output, in order.
+        pauses: Arc<Mutex<VecDeque<Duration>>>,
     }
 
     impl ScriptHost {
@@ -8189,6 +8241,8 @@ pub(crate) mod tests {
                 .lock()
                 .expect("commands")
                 .push(command.clone());
+            let pause = self.pauses.lock().expect("pauses").pop_front();
+            std::thread::sleep(pause.unwrap_or_default());
             self.outputs
                 .lock()
                 .expect("outputs")
@@ -9854,6 +9908,228 @@ pub(crate) mod tests {
         assert_eq!(
             input.as_slice(),
             b"1\x002\x00hooks\x00pre-commit\x000\x001\x00run.sh\x00"
+        );
+    }
+
+    /// Sends one WSL `fileFacts` request with `digest` for `big.bin` and the `read` fields, and returns its reply.
+    fn wsl_read(wsl: &WslHarness, git: &str, repository: &str, read: Value) -> Value {
+        let call = uuid();
+        let mut body = wsl_facts_body(&call, &uuid(), git, repository);
+        body["digest"] = json!(true);
+        body["files"] = json!([{ "root": "worktreeRoot", "path": ["big.bin"] }]);
+        body.as_object_mut()
+            .expect("body")
+            .extend(read.as_object().expect("read").clone());
+        wsl.harness.send(body);
+        wsl.harness.reply(&call)
+    }
+
+    /// The Perl arguments after `--` of a `fileFacts` probe: the read bits, the three roots, and for a stream `sha256sum`.
+    fn facts_tail(flag: &str, sha256sum: bool) -> Vec<String> {
+        let mut tail: Vec<String> = [
+            "--",
+            flag,
+            "/home/u/repo",
+            "/home/u/repo/.git",
+            "/home/u/repo/.git",
+        ]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+        if sha256sum {
+            tail.push("/usr/bin/sha256sum".to_string());
+        }
+        tail
+    }
+
+    /// Feature 008 T055 (contract Δ6, data-model §3): a WSL `fileFacts` request with `detail` or `stream` reaches the distro.
+    /// `detail` adds the whole `st_mode`, `uid`, `gid`, `links`, and `xattr`. `stream` runs a size pass, then the digest inside the distro.
+    #[test]
+    fn a_wsl_file_facts_request_with_detail_or_stream_reaches_the_distro() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        let file = json!({ "kind": "file", "size": 6, "lastWrite": "1000000000", "executable": false, "ownerExecute": false });
+        let with = |fields: Value| {
+            let mut fact = file.clone();
+            fact.as_object_mut()
+                .expect("fact")
+                .extend(fields.as_object().expect("fields").clone());
+            json!([fact])
+        };
+
+        let before = wsl.host.commands().len();
+        wsl.host.push(
+            0,
+            b"Sfile\x006\x001\x000\x000\x0033188\x001000\x001000\x002\x001\x00data\x006\0plain\n",
+        );
+        let reply = wsl_read(&wsl, &git, &repository, json!({ "detail": true }));
+        let digest = crate::settings::hex(&crate::settings::sha256(b"plain\n"));
+        assert_eq!(
+            reply["facts"],
+            with(
+                json!({ "digest": digest, "mode": 33188, "uid": 1000, "gid": 1000, "links": 2, "xattr": true })
+            ),
+            "{reply}"
+        );
+        let commands = wsl.host.commands();
+        assert_eq!(commands.len(), before + 1, "one probe");
+        assert!(
+            commands[before]
+                .arguments
+                .ends_with(&facts_tail("3", false)),
+            "{:?}",
+            commands[before].arguments
+        );
+
+        let before = wsl.host.commands().len();
+        wsl.host.push(0, b"Sfile\x006\x001\x000\x000\x00none\0");
+        wsl.host.push(
+            0,
+            format!("Sfile\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00sha256\x00{HEX_A}\0")
+                .as_bytes(),
+        );
+        let reply = wsl_read(
+            &wsl,
+            &git,
+            &repository,
+            json!({ "detail": true, "stream": true }),
+        );
+        assert_eq!(
+            reply["facts"],
+            with(
+                json!({ "digest": HEX_A, "mode": 33188, "uid": 1000, "gid": 1000, "links": 1, "xattr": false })
+            ),
+            "{reply}"
+        );
+        let commands = wsl.host.commands();
+        assert_eq!(
+            commands.len(),
+            before + 2,
+            "a size pass, then the stream pass"
+        );
+        assert!(
+            commands[before]
+                .arguments
+                .ends_with(&facts_tail("0", false)),
+            "{:?}",
+            commands[before].arguments
+        );
+        assert!(
+            commands[before + 1]
+                .arguments
+                .ends_with(&facts_tail("7", true)),
+            "{:?}",
+            commands[before + 1].arguments
+        );
+        let scope = |command: &wsl::Command| {
+            command
+                .arguments
+                .iter()
+                .find(|argument| argument.ends_with(".scope"))
+                .cloned()
+        };
+        assert_ne!(
+            scope(&commands[before]),
+            scope(&commands[before + 1]),
+            "each process has its own unit"
+        );
+    }
+
+    /// Feature 008 contract Δ3 and Δ6: a WSL streamed digest gets the walk deadline plus 1 s for each started 64 MiB.
+    /// The size pass gives 192 MiB and 1 byte, so the deadline is 2 s + 4 s. The stream pass ends after 3 s, and the reply gives the facts.
+    #[test]
+    fn a_wsl_streamed_file_facts_walk_gets_the_size_rule_deadline_from_its_size_pass() {
+        let harness = Harness::new(
+            Fixture::new(),
+            CHILD_PREFIX.iter().map(|s| s.to_string()).collect(),
+            std::env::vars_os().collect(),
+            Duration::from_secs(2),
+        );
+        let wsl = wsl_harness_with(true, harness);
+        let (git, repository) = wsl_repository(&wsl);
+        let size = (192u64 << 20) + 1;
+        wsl.host.push(
+            0,
+            format!("Sfile\x00{size}\x001\x000\x000\x00none\0").as_bytes(),
+        );
+        wsl.host.push(
+            0,
+            format!("Sfile\x00{size}\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00sha256\x00{HEX_A}\0")
+                .as_bytes(),
+        );
+        *wsl.host.pauses.lock().expect("pauses") =
+            VecDeque::from([Duration::ZERO, Duration::from_secs(3)]);
+        let sent = Instant::now();
+        let reply = wsl_read(
+            &wsl,
+            &git,
+            &repository,
+            json!({ "detail": true, "stream": true }),
+        );
+        assert!(
+            sent.elapsed() > Duration::from_secs(2),
+            "the reply comes after the walk deadline"
+        );
+        assert_eq!(reply["facts"][0]["digest"], HEX_A, "{reply}");
+    }
+
+    /// Feature 005 contract Δ6 `content`: a WSL read gives the base64 of the probe data bytes beside their digest.
+    /// The `revert-lines` review asks for it with `detail` (plan D9).
+    #[test]
+    fn a_wsl_file_facts_content_request_carries_the_probe_bytes() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        wsl.host.push(
+            0,
+            b"Sfile\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00data\x006\0plain\n",
+        );
+        let reply = wsl_read(
+            &wsl,
+            &git,
+            &repository,
+            json!({ "detail": true, "content": true }),
+        );
+        let fact = &reply["facts"][0];
+        assert_eq!(fact["bytes"], STANDARD.encode(b"plain\n"), "{reply}");
+        assert_eq!(
+            fact["digest"],
+            crate::settings::hex(&crate::settings::sha256(b"plain\n")),
+            "{reply}"
+        );
+        let probe = wsl.host.commands().last().expect("Perl probe").clone();
+        assert!(
+            probe.arguments.ends_with(&facts_tail("3", false)),
+            "{:?}",
+            probe.arguments
+        );
+    }
+
+    /// Feature 005 contract Δ6: `content` is WSL only. A Windows request with `content` gives `INVALID_REQUEST`.
+    #[test]
+    fn a_windows_file_facts_request_with_content_is_refused() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        std::fs::write(workspace.worktree.join(".gitignore"), b"/x\n").expect("ignore file");
+        let send = |content: bool| {
+            let call = uuid();
+            let mut body = file_facts_body(
+                &call,
+                &workspace,
+                json!([{ "root": "worktreeRoot", "path": [".gitignore"] }]),
+            );
+            if content {
+                body["content"] = json!(true);
+            }
+            harness.send(body);
+            (call.clone(), harness.reply(&call))
+        };
+        let (call, reply) = send(true);
+        assert_eq!(reply, refused(&call, "INVALID_REQUEST"));
+        let (_, reply) = send(false);
+        assert_eq!(
+            reply["facts"][0]["digest"],
+            crate::settings::hex(&crate::settings::sha256(b"/x\n")),
+            "{reply}"
         );
     }
 
@@ -14596,6 +14872,7 @@ pub(crate) mod tests {
         let read = file_facts::Read {
             detail: true,
             stream: true,
+            content: false,
         };
         let facts = file_facts::walk_read(
             [root, root, root],

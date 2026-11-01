@@ -1314,6 +1314,7 @@ mod tests {
                 Read {
                     detail: true,
                     stream: true,
+                    content: false,
                 },
                 &[(0, names(path))],
                 &RUN,

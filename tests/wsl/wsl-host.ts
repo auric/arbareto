@@ -119,12 +119,26 @@ export function factsInput(entries: readonly FactEntry[]): Uint8Array {
   return new TextEncoder().encode(tokens.map((t) => `${t}\0`).join(""));
 }
 
+// Feature 008 contract Δ6: the `detail` and `stream` reads of `src-tauri/src/wsl.rs` `file_facts_command`, which change the record grammar.
+export interface FactRead {
+  detail?: boolean;
+  stream?: boolean;
+}
+// The `detail` tokens of a file: the whole `st_mode`, `st_uid`, `st_gid`, `st_nlink`, and the `xattr` flag.
+export interface FactDetail {
+  mode: bigint;
+  uid: bigint;
+  gid: bigint;
+  links: bigint;
+  xattr: boolean;
+}
+
 export type FactRecord =
   | { kind: "absent" }
   | { kind: "other" }
   | { kind: "directory"; executable: boolean }
   | { kind: "link"; component: number; target: Uint8Array }
-  | { kind: "file"; size: bigint; mtime: bigint; ownerExecute: boolean; executable: boolean; content: "none" | "file-bytes" | "total-bytes" | Uint8Array }
+  | { kind: "file"; size: bigint; mtime: bigint; ownerExecute: boolean; executable: boolean; detail?: FactDetail; content: "none" | "file-bytes" | "total-bytes" | "sha256" | Uint8Array; sha256?: string }
   | { kind: "error"; component: number; code: string };
 
 // The record grammar: NUL-ended ASCII tokens, and `N` raw bytes after a length token. Each read gives null when the output breaks it.
@@ -157,7 +171,7 @@ class Records {
   }
 }
 
-function factRecord(r: Records): FactRecord | null {
+function factRecord(r: Records, read: FactRead = {}): FactRecord | null {
   const kind = r.token();
   if (kind === "absent" || kind === "other") return { kind };
   if (kind === "directory") {
@@ -170,16 +184,29 @@ function factRecord(r: Records): FactRecord | null {
     return component === null || target === null ? null : { kind, component: Number(component), target };
   }
   if (kind === "file") {
-    const [size, mtime, ownerExecute, executable, form] = [r.number(), r.number(), r.flag(), r.flag(), r.token()];
+    const [size, mtime, ownerExecute, executable] = [r.number(), r.number(), r.flag(), r.flag()];
     if (size === null || mtime === null || ownerExecute === null || executable === null) return null;
-    let content: "none" | "file-bytes" | "total-bytes" | Uint8Array;
+    let detail: FactDetail | undefined;
+    if (read.detail) {
+      const [mode, uid, gid, links, xattr] = [r.number(), r.number(), r.number(), r.number(), r.flag()];
+      if (mode === null || uid === null || gid === null || links === null || xattr === null) return null;
+      detail = { mode, uid, gid, links, xattr };
+    }
+    const form = r.token();
+    let content: Extract<FactRecord, { kind: "file" }>["content"];
+    let sha256: string | undefined;
     if (form === "none" || form === "file-bytes" || form === "total-bytes") content = form;
     else if (form === "data") {
       const data = r.raw(r.number());
       if (data === null) return null;
       content = data;
+    } else if (form === "sha256" && read.stream) {
+      const hex = r.token();
+      if (hex === null || !/^[0-9a-f]{64}$/.test(hex)) return null;
+      content = form;
+      sha256 = hex;
     } else return null;
-    return { kind, size, mtime, ownerExecute, executable, content };
+    return { kind, size, mtime, ownerExecute, executable, ...(detail ? { detail } : {}), content, ...(sha256 === undefined ? {} : { sha256 }) };
   }
   if (kind === "error") {
     const component = r.number();
@@ -189,11 +216,11 @@ function factRecord(r: Records): FactRecord | null {
   return null;
 }
 
-export function parseFactRecords(bytes: Uint8Array): FactRecord[] | null {
+export function parseFactRecords(bytes: Uint8Array, read: FactRead = {}): FactRecord[] | null {
   const r = new Records(bytes);
   const records: FactRecord[] = [];
   while (!r.done) {
-    const record = factRecord(r);
+    const record = factRecord(r, read);
     if (record === null) return null;
     records.push(record);
   }
@@ -201,11 +228,11 @@ export function parseFactRecords(bytes: Uint8Array): FactRecord[] | null {
 }
 
 // A `fileFacts` output with `index` (contract §6 "Index digest in a read"): `count` fact records, then the index record.
-export function parseIndexedFacts(bytes: Uint8Array, count: number, shared: boolean): { records: FactRecord[]; index: WslIndexResult } | null {
+export function parseIndexedFacts(bytes: Uint8Array, count: number, shared: boolean, read: FactRead = {}): { records: FactRecord[]; index: WslIndexResult } | null {
   const r = new Records(bytes);
   const records: FactRecord[] = [];
   for (let i = 0; i < count; i++) {
-    const record = factRecord(r);
+    const record = factRecord(r, read);
     if (record === null) return null;
     records.push(record);
   }

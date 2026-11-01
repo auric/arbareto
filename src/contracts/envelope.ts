@@ -1915,6 +1915,7 @@ const RevertFileOutcome = z
 export type RevertFileOutcome = z.infer<typeof RevertFileOutcome>;
 // Contract Δ6: each `fileReplace` creates at most FILE_FACT_ENTRIES folders.
 // T059 (contract "Contract gaps"): `reason` is `revert-changed` of a STALE_REVIEW result before any index change, or the eligibility reason of a refused index part.
+// An eligibility reason carries its remedy, as the review refusal does (plan.md D11: the renderer holds no text for these reasons).
 const RevertRun = z
   .strictObject({
     action: z.enum(REVERT_ACTIONS),
@@ -1922,11 +1923,13 @@ const RevertRun = z
     foldersCreated: z.array(z.base64().min(1)).max(MULTI_FILE_ACTION_FILES * FILE_FACT_ENTRIES),
     index: z.enum(["published", "none", "refused"]),
     reason: z.enum(["revert-changed", ...INELIGIBLE_REASONS]).optional(),
+    remedy: WorkbenchRemedy.optional(),
   })
   .refine(
     (r) =>
       (r.action !== "revert-lines" || (Array.isArray(r.files) && r.files.length === 1)) &&
-      (r.reason === undefined || (r.reason === "revert-changed" ? r.index !== "published" : r.index === "refused")),
+      (r.reason === undefined || (r.reason === "revert-changed" ? r.index !== "published" : r.index === "refused")) &&
+      (r.remedy !== undefined) === (r.reason !== undefined && r.reason !== "revert-changed"),
   )
   .meta({ title: "RevertRun" });
 // Contract Δ3 `runWorkbench` "Results": the observed effects. A failed step adds its `outputTail`. An unknown outcome names the action only.

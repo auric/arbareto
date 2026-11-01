@@ -71,7 +71,8 @@ interface StatusRecord {
 const SPACE = 0x20;
 const NUL = 0x00;
 const SLASH = 0x2f;
-const GITLINK = "160000";
+// git-ls-files(1) and gitformat-index: the mode of a submodule entry.
+export const GITLINK = "160000";
 const SYMLINK = "120000";
 const ABSENT_MODE = "000000";
 

@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { Response, RunWorkbenchResult } from "../../src/contracts/envelope";
 import { MULTI_FILE_ACTION_FILES, PIPE_FRAME_BYTES } from "../../src/contracts/limits";
 import { RunnerRefusal } from "../../src/git-service/git-runner";
+import { PROFILE_TEXTS } from "../../src/git-service/hunk-publish";
 import { LOCKED_REMEDY } from "../../src/git-service/index-lock";
 import { OBJECT_MISSING_REMEDY } from "../../src/git-service/status";
 import type { RevertCheckpoint } from "../../src/git-service/workbench-review";
@@ -468,7 +469,7 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
   }, TIMEOUT_MS);
 
   // T059 (contract "Contract gaps"): the file result names the eligibility reason of a refused index part.
-  caseTest("T059", "an index part that a split index refuses names split-index in the file result, and no file changes", SHELL, async () => {
+  caseTest("T059", "an index part that a split index refuses names split-index and its remedy in the file result, and no file changes", SHELL, async () => {
     let repo = "";
     await withService(
       {
@@ -490,7 +491,7 @@ describe("revert files: the run steps and the seams (plan.md D5a, D7, D10, data-
         expect(refusal(done)).toEqual({
           state: "failed",
           code: "UNSUPPORTED_HUNK_PROFILE",
-          result: { action: "revert-files", files: [{ entryId: id, outcome: "not-started" }], foldersCreated: [], index: "refused", reason: "split-index" },
+          result: { action: "revert-files", files: [{ entryId: id, outcome: "not-started" }], foldersCreated: [], index: "refused", reason: "split-index", remedy: { text: PROFILE_TEXTS["split-index"] } },
         });
         expect({ files: workingFileDigests(repo), writes: frames(service, "fileReplace").length }).toEqual({ files, writes: 0 });
       },

@@ -42,6 +42,11 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - Run frame `limits` (001 §6): a `registeredOperation` `run` takes a `deadlineMs` above `REGISTERED_DEADLINE_CAP_MS` only with the exact array `--no-lazy-fetch checkout-index --temp --stdin -z`. The frame bound of that deadline is the safe integer range. Every other `run` keeps the cap.
 - Cancel stops the run before the next request. A started `fileReplace` runs to its end.
 - Response state and per-file outcomes: plan D10 and data-model §8. An `unstaged-only` outcome carries `code` and `reason` under the same rules as `not-changed`.
+- File result fields `reason` and `remedy` (data-model §9):
+  - `reason: "revert-changed"`: a `STALE_REVIEW` result in which no file changed. `index` is `none` or `refused`.
+  - An eligibility reason: the index part refused with `UNSUPPORTED_HUNK_PROFILE`. `index` is `refused`, and `remedy: {text}` holds the text of the review refusal.
+  - `remedy` comes exactly with an eligibility reason.
+  - The lock-time `file-id` refusal sends no `reason`. It is no eligibility reason, and `PROFILE_TEXTS` has no entry for it.
 - Deadline per `fileReplace`: the 001 walk deadline (30 s), plus the size rule above for `source` (Δ6).
 
 ## Δ5 Finite bounds (001 §5)
@@ -111,7 +116,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 
 ## Contract gaps
 
-- `RevertRun` (data-model §9) cannot carry the reason `revert-changed` or the reason of an index-part refusal. A multi-file `STALE_REVIEW` result therefore names no reason, and the renderer cannot show the plan D11 multi-file stale text. T059 adds both values (2026-11-01).
+- Closed by T059 (2026-11-01): `RevertRun` (data-model §9) carries `reason` and, with an eligibility reason, `remedy: {text}` (Δ3 `runWorkbench`). From `revert-changed`, the renderer shows the plan D11 multi-file stale text. For an eligibility reason, it shows the service remedy text.
 
 - The `fileReplace` target handle shares `DELETE`, so the rename can replace the target. Another program can rename a file over the target name between the check and the rename (005 gap). The fresh digest then names the outcome `changed-outside`.
 - WSL: the `replace` mode acts on the last name after its check. A write by another program inside that window gets replaced, because Linux offers no mandatory lock (spec FR-043).

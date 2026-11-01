@@ -241,17 +241,23 @@ describe("contract Δ3 run result (data-model §8, §9)", () => {
     expect(ok(R, { action: "delete", reason: "revert-changed" })).toBe(false);
   });
 
-  // T059, contract "Contract gaps": a multi-file STALE_REVIEW result names revert-changed, and a refused index part names its eligibility reason.
-  test("a file result names revert-changed without a published index part, and an eligibility reason only with a refused index part", () => {
+  // T059, contract "Contract gaps": a multi-file STALE_REVIEW result names revert-changed, and a refused index part names its eligibility reason with its remedy.
+  test("a file result names revert-changed without a published index part, and an eligibility reason with its remedy only with a refused index part", () => {
     const stale = { files: [{ entryId: id(), outcome: "not-changed", code: "stale" }], reason: "revert-changed" };
+    const remedy = { text: "Stage this change in a terminal." };
     for (const action of ACTIONS) expect(ok(R, run({ action, index: "none", ...stale }))).toBe(true);
     expect(ok(R, run({ index: "refused", ...stale }))).toBe(true);
     expect(ok(R, run({ index: "published", ...stale }))).toBe(false);
+    expect(ok(R, run({ index: "none", ...stale, remedy }))).toBe(false);
+    expect(ok(R, run({ remedy }))).toBe(false);
+    const notStarted = () => [{ entryId: id(), outcome: "not-started" }];
     for (const reason of ["sparse-index", "split-index", "index-change-hook", "executable-monitor", "unqualified-monitor", "shared-repository"]) {
-      expect({ reason, ok: ok(R, run({ index: "refused", files: [{ entryId: id(), outcome: "not-started" }], reason })) }).toEqual({ reason, ok: true });
-      expect({ reason, ok: ok(R, run({ index: "none", files: [{ entryId: id(), outcome: "not-started" }], reason })) }).toEqual({ reason, ok: false });
+      expect({ reason, ok: ok(R, run({ index: "refused", files: notStarted(), reason, remedy })) }).toEqual({ reason, ok: true });
+      expect({ reason, ok: ok(R, run({ index: "refused", files: notStarted(), reason })) }).toEqual({ reason, ok: false });
+      expect({ reason, ok: ok(R, run({ index: "refused", files: notStarted(), reason, remedy: { text: "" } })) }).toEqual({ reason, ok: false });
+      expect({ reason, ok: ok(R, run({ index: "none", files: notStarted(), reason, remedy })) }).toEqual({ reason, ok: false });
     }
-    for (const reason of ["files-changed", "ignore-changed", "limit", "file-id", "line-endings", ""]) expect({ reason, ok: ok(R, run({ index: "refused", reason })) }).toEqual({ reason, ok: false });
+    for (const reason of ["files-changed", "ignore-changed", "limit", "file-id", "line-endings", ""]) expect({ reason, ok: ok(R, run({ index: "refused", reason, remedy })) }).toEqual({ reason, ok: false });
   });
 });
 

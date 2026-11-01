@@ -151,7 +151,7 @@ Each step writes its tests first.
 - Review: the sub-hunk through `subHunk` with the `unstage` rule: an unselected `+` line becomes context, and an unselected `-` line drops. So the partial patch stands against the working side, the new side of the comparison, and the review applies it reversed (data-model §4). The comparison scope stays `index-to-worktree`. The revert calls `subHunk` directly, not through the `admit` direction check of `hunk-publish.ts:954`. Then the working bytes, at most 1 MiB (research R4, R11): the Windows service reads them through `workingOf` with the bound `COMPARED_RAW_VERSION_BYTES` (`hunk-publish.ts`), not through `wholeWorking`, whose bound is `WHOLE_FILE_STAGE_INPUT_BYTES`; WSL reads them through `fileFacts` with `content: true`. A larger working file refuses with `size`. Their size and SHA-256 must equal the comparison binding. Then `ls-files --eol -z` for the path, `check-attr` and `check-attr --cached` (research R7), and `ident` (research R6).
 - Bytes: `revert-bytes.ts` `reverseLines(working, hunk, ending)` removes the selected `+` lines, inserts the selected `-` lines with the R5 ending rule, and keeps every other raw line (data-model §6).
 - Proof: `hash-object --path=<path> --stdin` of the new bytes must print `blobId(expected)`, where `expected` is the check-in form of the working side with the hunk reversed. `revert-bytes.ts` computes both in memory. A difference refuses with `line-endings`.
-- Bound: the new SHA-256 and size. Plan: `{kind: "lines", scope: "unstaged", file, lines: n | null}`.
+- Bound: the new SHA-256 and size. Plan: `{scope: "unstaged", fileBytes, lines: n | null}`.
 - Run: D8 or D9 write with `expected` = the bound working size and SHA-256. No index part.
 
 ### D4 Revert lines, staged
@@ -166,7 +166,7 @@ Each step writes its tests first.
 - Payload: `{action: "revert-files", snapshotId, entryIds}` with 1 to 10,000 IDs of the Changes or Staged list of one snapshot. A folder row sends no request: the renderer shows the folder reason (spec FR-023).
 - Review per entry: the status record gives the HEAD, index, and worktree modes and object IDs. The index part is the 004 Unstage files candidate (`update-index -z --index-info` with the HEAD entries, `commands.ts:411`) for every entry whose index entry differs from HEAD. A staged new file loses its entry, and its working file stays (spec FR-021). The working part writes each entry that HEAD holds through D5a, after the index part. The review binds the HEAD entry and the current target facts (size and a streamed SHA-256), not the new bytes.
 - A deletion binds `absent` and the list of missing folders. A present working file at the same path refuses with `in-the-way`, also an ignored file. The file fact decides, not the status record (data-model §7).
-- Plan: `{kind: "files", count, paths (first 20 in tree order), newFiles, staged, unstaged}`.
+- Plan: `{count, paths (first 20 in tree order), newFiles, staged, unstaged}`.
 
 ### D5a Whole-file write through `checkout-index --temp`
 
@@ -189,7 +189,7 @@ Rules:
 - Payload: `{action: "revert-unstaged", snapshotId}`. The service takes every entry of the snapshot with a worktree letter other than `.` and a tracked status record, including the rows that Filter files hides. Submodule entries (`S…` or mode 160000) are counted and left out.
 - Review per entry: the source is the index entry. The run writes it through D5a. No index part.
 - A refusal of any entry makes the whole action unavailable, and the reason names the first 20 files in tree order with their reasons (Clarifications, 2026-10-27).
-- Plan: `{kind: "unstaged", count, paths, submodules}`. The renderer adds the hidden count from its filter (data-model §5).
+- Plan: `{count, paths, submodules}`. The plan has no `kind` field: the renderer keys on the review `action`. The renderer adds the hidden count from its filter (data-model §5).
 
 ### D7 Index part
 

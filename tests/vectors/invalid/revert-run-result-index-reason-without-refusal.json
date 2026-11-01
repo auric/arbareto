@@ -1,7 +1,7 @@
 {
   "schema": "run-workbench-result",
   "expected": "INVALID_REQUEST",
-  "text": "{\"action\":\"revert-files\",\"files\":[{\"entryId\":\"0f0f0f0f-0000-4000-8000-00000000000a\",\"outcome\":\"not-started\"}],\"foldersCreated\":[],\"index\":\"none\",\"reason\":\"split-index\"}",
+  "text": "{\"action\":\"revert-files\",\"files\":[{\"entryId\":\"0f0f0f0f-0000-4000-8000-00000000000a\",\"outcome\":\"not-started\"}],\"foldersCreated\":[],\"index\":\"none\",\"reason\":\"split-index\",\"remedy\":{\"text\":\"Git's split index is on for this repository. Arbareto stages hunks and files only with a full index. Stage this change in a terminal.\"}}",
   "repair": {
     "index": "refused"
   }

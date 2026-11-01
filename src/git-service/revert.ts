@@ -7,7 +7,7 @@
 
 import type { ChangeEntry } from "../contracts/envelope";
 import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors";
-import { filterReason } from "../contracts/file-action";
+import { filterReason, GITLINK } from "../contracts/file-action";
 import { COMPARED_RAW_VERSION_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, FILE_FACT_COMPONENT_UNITS, FILE_FACT_ENTRIES, MULTI_FILE_ACTION_FILES, MULTI_FILE_ATTRIBUTE_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { compareKeys, treeKey } from "../contracts/tree-order";
@@ -72,7 +72,6 @@ const SLASH = 0x2f;
 const REFUSED_FILES = 20;
 // Data-model §5: the first confirmation paths in tree order.
 const CONFIRMATION_PATHS = 20;
-const GITLINK = "160000";
 const SYMLINK = "120000";
 const ABSENT_MODE = "000000";
 // Research.md R8: the write keeps hidden, system, and not-content-indexed, and archive and normal are no compared fact.
@@ -83,7 +82,6 @@ const KEPT_ATTRIBUTES = READ_ONLY | 0x2 | 0x4 | 0x20 | 0x80 | 0x2000 | ENCRYPTED
 // Research.md R7: the six conversion values. `diff` changes no bytes.
 const CONVERSION: readonly (keyof SupportAttributes)[] = ["text", "eol", "crlf", "ident", "filter", "working-tree-encoding"];
 const SUPPORT: readonly string[] = SUPPORT_REASONS;
-const INELIGIBLE: readonly string[] = HUNK_REFUSAL_REASONS;
 // git-cat-file(1) BATCH OUTPUT: `<oid> SP <type> SP <size> LF`. A 64-digit object ID, a type of at most 6 letters, and a 64-bit size give 93 bytes.
 const CHECK_LINE_BYTES = 93;
 // Plan.md D5a step 2: `.merge_file_XXXXXX` of `mkstemp` (Git `entry.c`). A record holds the name, TAB, the path, and NUL.
@@ -941,14 +939,16 @@ async function runRevert(r: WorkbenchRun, _p: Payload, bound: RevertBound): Prom
   const firstCode = outcomes[0]!.code;
   const code: ErrorCode = failure ?? (firstCode === "stale" ? "STALE_REVIEW" : firstCode === "refused" ? "WORKBENCH_UNAVAILABLE" : deadlines.has(0) ? "DEADLINE" : "GIT_FAILED");
   // Contract Δ3: an index part that refused gives the value of its refusal, as the run start does: the LOCKED guidance, or the stale reason.
-  // T059: a file result names `revert-changed` for STALE_REVIEW, or the eligibility reason of a refused index part.
-  const why = code === "STALE_REVIEW" ? "revert-changed" : refusal?.code === "UNSUPPORTED_HUNK_PROFILE" && INELIGIBLE.includes(refusal.reason ?? "") ? refusal.reason! : null;
+  // T059: a file result names `revert-changed` for STALE_REVIEW, or the eligibility reason of a refused index part with the remedy of the review refusal.
+  const named = refusal?.code === "UNSUPPORTED_HUNK_PROFILE" ? refusal.reason : undefined;
+  const profile = HUNK_REFUSAL_REASONS.find((r) => r === named);
+  const why = code === "STALE_REVIEW" ? { reason: "revert-changed" } : profile !== undefined ? { reason: profile, remedy: { text: PROFILE_TEXTS[profile] } } : {};
   const refused =
     refusal?.code === "LOCKED" && refusal.path !== undefined && refusal.remedy !== undefined
       ? { path: refusal.path, remedy: { text: refusal.remedy.text } }
       : refusal?.code === "STALE_SELECTION"
         ? { action: bound.action, reason: "revert-changed" }
-        : { ...value, ...(why === null ? {} : { reason: why }) };
+        : { ...value, ...why };
   const reason = code === "OUTPUT_LIMIT" && refusal?.reason !== undefined ? { reason: refusal.reason } : {};
   r.finish({ type: "no-effects", observed: "failed", code, ...reason }, refused);
 }

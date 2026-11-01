@@ -446,10 +446,11 @@ wslTest("L8 replace_one without syscall.ph: the syscall.ph package, nrs(), a wor
     observations.push(obs("L8.xattr-check", safe, { typed: workingForm(xattr.tokens) !== null, written: content("xattr.txt").stdout !== "old\n", temps: temps() }));
   }
 
-  // An absent target binds no `xattr` fact. The `linkat` name still applies (plan.md D9, probes L1 and L2).
+  // An absent target binds no `xattr` fact. Without `linkat`, it takes the 005 named temporary file and `link`, which fails on an existing name
+  // (research.md R9, plan.md P0.3, orchestrator decision of 2026-11-01). So the file appears, and no temporary name stays.
   const absent = replace("absent.txt", ["absent", "100644"]);
   observations.push(obs("L8.working-absent.reply", "record", workingForm(absent.tokens) ?? `interrupted exit=${absent.exitCode}`, true));
-  observations.push(obs("L8.working-absent", safe, { typed: workingForm(absent.tokens) !== null, written: content("absent.txt").exitCode !== 3, temps: temps() }));
+  observations.push(obs("L8.working-absent", { typed: true, written: true, temps: [] }, { typed: workingForm(absent.tokens) !== null, written: content("absent.txt").exitCode !== 3, temps: temps() }));
 
   // `fileFacts` with `detail` (`wsl.rs` `file_facts_command` read bit 2): no `xattr` fact gives the typed `error` of the component.
   const detail = withoutSyscallPh(w, FACTS_TEXT, ["2", ...roots], factsInput([{ root: 0, path: ["plain.txt"] }]));

@@ -3123,8 +3123,11 @@ impl ProcessRequests {
                 read_at,
             );
         }
-        // A Windows Git never reads a WSL repository (contract §11 "Route"). The Windows shell refuses `index`.
-        if roots.iter().any(|root| file_facts::is_wsl_path(root)) || parsed.index.is_some() {
+        // A Windows Git never reads a WSL repository (contract §11 "Route"). The Windows shell refuses `index` and `content` (005 contract Δ6).
+        if roots.iter().any(|root| file_facts::is_wsl_path(root))
+            || parsed.index.is_some()
+            || parsed.read.content
+        {
             return Err(INVALID);
         }
         let (digest, read, files, call) = (
@@ -10070,6 +10073,66 @@ pub(crate) mod tests {
         assert_eq!(reply["facts"][0]["digest"], HEX_A, "{reply}");
     }
 
+    /// Feature 005 contract Δ6 `content`: a WSL read gives the base64 of the probe data bytes beside their digest.
+    /// The `revert-lines` review asks for it with `detail` (plan D9).
+    #[test]
+    fn a_wsl_file_facts_content_request_carries_the_probe_bytes() {
+        let wsl = wsl_harness(true);
+        let (git, repository) = wsl_repository(&wsl);
+        wsl.host.push(
+            0,
+            b"Sfile\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00data\x006\0plain\n",
+        );
+        let reply = wsl_read(
+            &wsl,
+            &git,
+            &repository,
+            json!({ "detail": true, "content": true }),
+        );
+        let fact = &reply["facts"][0];
+        assert_eq!(fact["bytes"], STANDARD.encode(b"plain\n"), "{reply}");
+        assert_eq!(
+            fact["digest"],
+            crate::settings::hex(&crate::settings::sha256(b"plain\n")),
+            "{reply}"
+        );
+        let probe = wsl.host.commands().last().expect("Perl probe").clone();
+        assert!(
+            probe.arguments.ends_with(&facts_tail("3", false)),
+            "{:?}",
+            probe.arguments
+        );
+    }
+
+    /// Feature 005 contract Δ6: `content` is WSL only. A Windows request with `content` gives `INVALID_REQUEST`.
+    #[test]
+    fn a_windows_file_facts_request_with_content_is_refused() {
+        let harness = Harness::child();
+        let workspace = harness.child_workspace("repo");
+        std::fs::write(workspace.worktree.join(".gitignore"), b"/x\n").expect("ignore file");
+        let send = |content: bool| {
+            let call = uuid();
+            let mut body = file_facts_body(
+                &call,
+                &workspace,
+                json!([{ "root": "worktreeRoot", "path": [".gitignore"] }]),
+            );
+            if content {
+                body["content"] = json!(true);
+            }
+            harness.send(body);
+            (call.clone(), harness.reply(&call))
+        };
+        let (call, reply) = send(true);
+        assert_eq!(reply, refused(&call, "INVALID_REQUEST"));
+        let (_, reply) = send(false);
+        assert_eq!(
+            reply["facts"][0]["digest"],
+            crate::settings::hex(&crate::settings::sha256(b"/x\n")),
+            "{reply}"
+        );
+    }
+
     #[test]
     fn wsl_distros_replies_only_the_path_of_a_windows_context_and_starts_no_process() {
         let harness = Harness::child();
@@ -14809,6 +14872,7 @@ pub(crate) mod tests {
         let read = file_facts::Read {
             detail: true,
             stream: true,
+            content: false,
         };
         let facts = file_facts::walk_read(
             [root, root, root],

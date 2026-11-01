@@ -41,9 +41,11 @@ use windows::core::{HSTRING, PWSTR, w};
 use crate::file_facts::{Read as FactRead, is_component, is_wsl_path};
 use crate::file_replace::IGNORE_TARGET_BYTES;
 use crate::jobs::Supervisor;
-use crate::process_requests::{BOOTSTRAP_DEADLINE_MS, Code, Destination, is_identifier};
+use crate::process_requests::{
+    BOOTSTRAP_DEADLINE_MS, Code, Destination, encode_base64, is_identifier,
+};
 use crate::schema::process_reply::{
-    FileFactErrorCode, FileFactFileBound, FileFactLinkTag, FileFactLinkTarget,
+    FileFactErrorCode, FileFactFileBound, FileFactFileBytes, FileFactLinkTag, FileFactLinkTarget,
     FileFactsReplyFactsItem as Fact, IdentityRefusedReason, WslExit,
     WslFilesResultsResultsItem as FileResult, WslIndexPart, WslIndexResult,
 };
@@ -1193,18 +1195,33 @@ fn fact(
                 None
             };
             let bounded = digest && !read.stream;
-            let (bound, digested) = match (records.token()?, digest) {
-                ("none", false) => (None, None),
-                ("sha256", true) if read.stream => (None, Some(reply::digest(&hex64(records)?))),
-                ("file-bytes", true) if bounded => (Some(FileFactFileBound::FileBytes), None),
-                ("total-bytes", true) if bounded => (Some(FileFactFileBound::TotalBytes), None),
+            let (bound, digested, bytes) = match (records.token()?, digest) {
+                ("none", false) => (None, None, None),
+                ("sha256", true) if read.stream => {
+                    (None, Some(reply::digest(&hex64(records)?)), None)
+                }
+                ("file-bytes", true) if bounded => (Some(FileFactFileBound::FileBytes), None, None),
+                ("total-bytes", true) if bounded => {
+                    (Some(FileFactFileBound::TotalBytes), None, None)
+                }
                 ("data", true) if bounded => {
                     let length: usize = records.number().filter(|&n| n <= FACT_FILE_BYTES)?;
                     *total = total
                         .checked_add(length)
                         .filter(|&n| n <= FACT_TOTAL_BYTES)?;
-                    let sha256 = crate::settings::sha256(records.raw(length)?);
-                    (None, Some(reply::digest(&crate::settings::hex(&sha256))))
+                    let data = records.raw(length)?;
+                    let sha256 = crate::settings::sha256(data);
+                    // Feature 005 contract Δ6 `content`: the same bytes that the digest takes.
+                    let bytes = if read.content {
+                        Some(FileFactFileBytes::try_from(encode_base64(data)).ok()?)
+                    } else {
+                        None
+                    };
+                    (
+                        None,
+                        Some(reply::digest(&crate::settings::hex(&sha256))),
+                        bytes,
+                    )
                 }
                 _ => return None,
             };
@@ -1220,7 +1237,7 @@ fn fact(
                 uid: detail.as_ref().map(|d| d.uid),
                 xattr: detail.as_ref().map(|d| d.xattr),
                 bound,
-                bytes: None,
+                bytes,
                 digest: digested,
                 executable: Some(executable),
                 last_write: reply::last_write(last_write),
@@ -4954,7 +4971,11 @@ mod tests {
                 &inst,
                 "arbareto-x-3.scope",
                 digest,
-                FactRead { detail, stream },
+                FactRead {
+                    detail,
+                    stream,
+                    content: false,
+                },
                 &roots,
                 &entries(&[(0, &["a"])]),
                 None,
@@ -4981,14 +5002,17 @@ mod tests {
         let detail = FactRead {
             detail: true,
             stream: false,
+            content: false,
         };
         let stream = FactRead {
             detail: false,
             stream: true,
+            content: false,
         };
         let both = FactRead {
             detail: true,
             stream: true,
+            content: false,
         };
         let hex = "ab".repeat(32);
         let file = json!({ "kind": "file", "size": 6, "lastWrite": "1000000000", "executable": false, "ownerExecute": false });
@@ -5114,6 +5138,79 @@ mod tests {
                 String::from_utf8_lossy(&output)
             );
         }
+    }
+
+    /// The record of one file with `data`, and with the detail tokens of a 0100644 file for `read.detail`.
+    fn data_record(data: &[u8], read: FactRead) -> Vec<u8> {
+        let mut out = format!("file\x00{}\x001\x000\x000\x00", data.len()).into_bytes();
+        if read.detail {
+            out.extend_from_slice(b"33188\x001000\x001000\x001\x000\x00");
+        }
+        out.extend_from_slice(format!("data\x00{}\0", data.len()).as_bytes());
+        out.extend_from_slice(data);
+        out
+    }
+
+    /// The decoded `bytes` and the `digest` of a fact.
+    fn content_of(fact: &Value) -> (Option<Vec<u8>>, Value) {
+        use base64::Engine;
+        let bytes = fact["bytes"].as_str().map(|text| {
+            base64::engine::general_purpose::STANDARD
+                .decode(text)
+                .expect("base64")
+        });
+        (bytes, fact["digest"].clone())
+    }
+
+    /// Feature 005 contract Δ6 `content`: the `file` fact adds the base64 of the same `data` bytes that the digest takes.
+    /// An empty file and a file at the 1 MiB bound carry their bytes, also with `detail` (the WSL `revert-lines` read).
+    /// A file above the bound carries none, and a read without `content` carries none.
+    #[test]
+    fn a_content_read_carries_the_data_bytes_that_the_digest_takes() {
+        let one = entries(&[(0, &["a"])]);
+        let content = FactRead {
+            content: true,
+            ..FactRead::default()
+        };
+        let lines = FactRead {
+            detail: true,
+            ..content
+        };
+        let full: Vec<u8> = (0..FACT_FILE_BYTES).map(|i| (i % 251) as u8).collect();
+        for (data, read) in [
+            (b"plain\n".to_vec(), content),
+            (Vec::new(), content),
+            (full, content),
+            ((0..=255u8).collect(), lines),
+        ] {
+            let fact = &read_reply(facts_output(&data_record(&data, read)), &one, true, read)[0];
+            let digest = crate::settings::hex(&crate::settings::sha256(&data));
+            assert_eq!(
+                content_of(fact),
+                (Some(data.clone()), json!(digest)),
+                "{} bytes",
+                data.len()
+            );
+        }
+        let above = read_reply(
+            facts_output(b"file\x001048577\x001\x000\x000\x00file-bytes\0"),
+            &one,
+            true,
+            content,
+        );
+        assert_eq!(
+            above,
+            vec![
+                json!({ "kind": "file", "size": 1048577, "lastWrite": "1000000000", "executable": false, "ownerExecute": false, "bound": "file-bytes" })
+            ]
+        );
+        let plain = read_reply(
+            facts_output(&data_record(b"plain\n", FactRead::default())),
+            &one,
+            true,
+            FactRead::default(),
+        );
+        assert_eq!(content_of(&plain[0]).0, None);
     }
 
     // ---- T205: the Git probe ----
@@ -6025,6 +6122,90 @@ mod tests {
             );
         }
         assert_eq!(shell(9, "rm -rf -- \"$1\""), Some(0));
+    }
+
+    /// Feature 005 contract Δ6 `content` through the real wrapper and Perl text: the reply bytes equal the bytes of the distro file.
+    /// An empty file, all 256 byte values, and a file at the 1 MiB bound carry their bytes. One byte more gives `file-bytes` and no bytes.
+    #[test]
+    fn the_real_content_read_gives_the_bytes_of_the_distro_file() {
+        let Some(reference) = reference() else {
+            return;
+        };
+        let Some(inst) = probed(&reference) else {
+            return;
+        };
+        let environment: Vec<(OsString, OsString)> = std::env::vars_os().collect();
+        let operation = format!("0f0f0f0f-0000-4000-8117-{:012x}", std::process::id());
+        let host = reference.host();
+        let root = format!("/tmp/arbareto-content-{}", std::process::id());
+        let mut n = 0;
+        let mut unit = || {
+            n += 1;
+            unit_name(&operation, n).expect("unit")
+        };
+        let shell = |unit: &str, script: &str, input: Vec<u8>| {
+            let arguments = strings(&["-c", script, "sh", &root]);
+            let command = wrapped(
+                &inst,
+                Mode::Read,
+                unit,
+                None,
+                "/bin/sh",
+                &arguments,
+                &environment,
+                Stdin::Bytes(input),
+            );
+            host.run(&command).expect("shell").exit_code
+        };
+        let full: Vec<u8> = (0..FACT_FILE_BYTES).map(|i| (i % 251) as u8).collect();
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("empty", Vec::new()),
+            ("bytes", (0..=255u8).collect()),
+            ("full", full.clone()),
+            ("over", [full.as_slice(), b"x"].concat()),
+        ];
+        for (name, data) in &cases {
+            let script = format!("mkdir -p -- \"$1\" && cat > \"$1/{name}\"");
+            assert_eq!(shell(&unit(), &script, data.clone()), Some(0), "{name}");
+        }
+        let roots = [root.clone(), format!("{root}/.git"), format!("{root}/.git")];
+        let read = FactRead {
+            content: true,
+            ..FactRead::default()
+        };
+        let mut found = Vec::new();
+        for (name, _) in &cases {
+            let list = entries(&[(0, &[*name][..])]);
+            let command = file_facts_command(
+                &inst,
+                &unit(),
+                true,
+                read,
+                &roots,
+                &list,
+                None,
+                &environment,
+            );
+            let ended = host.run_until(&command, FACTS_OUTPUT_BYTES + 2, PROBE_DEADLINE);
+            found.push(read_reply(ended.output, &list, true, read).remove(0));
+        }
+        assert_eq!(shell(&unit(), "rm -rf -- \"$1\"", Vec::new()), Some(0));
+        for ((name, data), fact) in cases.iter().zip(&found) {
+            if data.len() > FACT_FILE_BYTES {
+                assert_eq!(
+                    (&fact["bound"], content_of(fact).0),
+                    (&json!("file-bytes"), None),
+                    "{name}"
+                );
+            } else {
+                let digest = crate::settings::hex(&crate::settings::sha256(data));
+                assert_eq!(
+                    content_of(fact),
+                    (Some(data.clone()), json!(digest)),
+                    "{name}"
+                );
+            }
+        }
     }
 
     /// Feature 005 contract Δ6, Δ11: the shadow commands make a repository with a work tree in `<shadow>/s`, check out an

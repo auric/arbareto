@@ -467,7 +467,9 @@ OBSERVATION T004: G9-G10-G8.mode-100755 expected={"holds":22} observed={"holds":
 - `require 'syscall.ph'` loads in `Ubuntu-26.04`. `dpkg -S` names the package `libperl5.40`, so `perl-base` alone does not install the file.
 - The probe hides `syscall.ph` with a subroutine at the start of `@INC`. Then `nrs()` gives an empty table.
 - Without `syscall.ph`, a `working` replace of a present target replies `error other-error`, and the target keeps its bytes. The `xattr` check of a target with `user.test` gives the same reply. A `fileFacts` `detail` read replies `error` at component 1 with `other-error`.
-- Finding for T045: a `working` replace of an absent target writes the file without the `linkat` name. `temp_here` then creates the named file `.arbareto-<pid>-replace.tmp` and links it to the target. The reply is `replaced`.
+- A `working` replace of an absent target writes the file without the `linkat` name. `temp_here` then creates the named file `.arbareto-<pid>-replace.tmp` with `O_CREAT|O_EXCL|O_NOFOLLOW`, and `link` gives it the target name. The reply is `replaced`.
+- Decision (orchestrator, 2026-11-01): accept this 005 fallback, as R9 and plan.md P0.3 allow. `link` fails on an existing name, so the write never replaces a file. No shell change. The probe now expects the write, and the `match=false` line below is the run before the decision.
+- Known window: a stop after `link` and before `unlink` leaves the temporary name as a second link of the target. Until that file goes, each next revert of the target refuses with `hard-link`. A stop before `link` leaves the temporary name as an untracked file ("Contract gaps" of contracts/operations.md). The T045 safety case covers the window.
 
 ```text
 OBSERVATION T057: versions expected="record" observed={"distro":"Ubuntu-26.04","pretty":"Ubuntu 26.04.1 LTS","perl":"5.040001","git":"2.55.0"} match=true git=2.55.0@Ubuntu-26.04
@@ -480,4 +482,10 @@ OBSERVATION T057: L8.xattr-check expected={"typed":true,"written":false,"temps":
 OBSERVATION T057: L8.working-absent.reply expected="record" observed="replaced 0 none" match=true git=2.55.0@Ubuntu-26.04
 OBSERVATION T057: L8.working-absent expected={"typed":true,"written":false,"temps":[]} observed={"typed":true,"written":true,"temps":[]} match=false git=2.55.0@Ubuntu-26.04
 OBSERVATION T057: L8.detail-read expected=["error","1","other-error"] observed=["error","1","other-error"] match=true git=2.55.0@Ubuntu-26.04
+```
+
+The rerun after the decision gives the same lines, except:
+
+```text
+OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps":[]} observed={"typed":true,"written":true,"temps":[]} match=true git=2.55.0@Ubuntu-26.04
 ```

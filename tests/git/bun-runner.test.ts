@@ -8,7 +8,8 @@ import { printOrigin } from "../origin";
 import { FileFact as FileFactSchema, ProcessReply } from "../../src/contracts/channel";
 import { DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, REGISTERED_DEADLINE_CAP_MS, TRUST_DIGEST_FILE_BYTES } from "../../src/contracts/limits";
 import { createCollector, PROCESS_LIMITS, type FileFact, type GitCall, type ProcessContext, type WorkingReplaceRequest } from "../../src/git-service/git-runner";
-import { createBunRunner, createTrustStore, gitForm, HOST_SCRIPT, type BunRunner } from "./bun-runner";
+import { createBunRunner, createTrustStore, gitForm, HOST_SCRIPT, mapFacts, type BunRunner } from "./bun-runner";
+import { parseFactRecords } from "../wsl/wsl-host";
 import { fixtureDir, fixtureGit, fixturePath, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { describeGit } from "./git-binary";
 
@@ -40,6 +41,47 @@ test("gitForm folds . and .. and refuses a segment with a character in U+F000 to
   expect(gitForm("\\\\wsl.localhost\\Other\\home", wsl)).toBeNull();
   expect(gitForm("C:\\work\\..\\repo", undefined)).toBe("C:\\work\\..\\repo");
   expect(gitForm("\\\\wsl.localhost\\Ubuntu-26.04\\home", undefined)).toBeNull();
+});
+
+// Feature 008 contract Δ6 and feature 005 contract Δ6: the double maps the WSL `fileFacts` records of `detail`, `stream`, and `content`
+// as `wsl::file_facts_reply` does, with the records of the `src-tauri/src/wsl.rs` cargo tests. No process starts.
+test("the double maps the WSL detail, stream, and content records as the shell", () => {
+  type Read = { detail?: boolean; stream?: boolean; content?: boolean };
+  const one = [{ root: 0 as const, path: ["a"] }];
+  const bin = (text: string) => Buffer.from(text, "latin1");
+  const map = (bytes: Uint8Array, digest: boolean, read: Read) => mapFacts(parseFactRecords(bytes, read), one, digest, read);
+  const sha = (data: Uint8Array) => new Bun.CryptoHasher("sha256").update(data).digest("hex");
+  const file = { kind: "file" as const, size: 6, lastWrite: "1000000000", executable: false, ownerExecute: false };
+  const ids = { mode: 33188, uid: 1000, gid: 1000, links: 2, xattr: true };
+  const DETAIL = "33188\x001000\x001000\x002\x001\x00";
+  const hex = "ab".repeat(32);
+  expect(map(bin(`file\x006\x001\x000\x000\x00${DETAIL}none\0`), false, { detail: true })).toEqual([{ ...file, ...ids }]);
+  expect(map(bin(`file\x006\x001\x000\x000\x00${DETAIL}data\x006\0plain\n`), true, { detail: true })).toEqual([{ ...file, ...ids, digest: sha(bin("plain\n")) }]);
+  expect(map(bin(`file\x006\x001\x000\x000\x00sha256\x00${hex}\0`), true, { stream: true })).toEqual([{ ...file, digest: hex }]);
+  expect(map(bin(`file\x006\x001\x000\x000\x00${DETAIL}sha256\x00${hex}\0`), true, { detail: true, stream: true })).toEqual([{ ...file, ...ids, digest: hex }]);
+  // `content` carries the base64 of the data bytes, also for an empty file and a file at the 1 MiB bound.
+  for (const data of [bin("plain\n"), Buffer.alloc(0), Buffer.from(Array.from({ length: MIB }, (_, i) => i % 251))]) {
+    const record = Buffer.concat([bin(`file\x00${data.length}\x001\x000\x000\x00data\x00${data.length}\0`), data]);
+    expect(map(record, true, { content: true })).toEqual([{ ...file, size: data.length, digest: sha(data), bytes: data.toString("base64") }]);
+  }
+  expect(map(bin("file\x001048577\x001\x000\x000\x00file-bytes\0"), true, { content: true })).toEqual([{ ...file, size: 1048577, bound: "file-bytes" as const }]);
+  expect(map(bin("file\x006\x001\x000\x000\x00data\x006\0plain\n"), true, {})).toEqual([{ ...file, digest: sha(bin("plain\n")) }]);
+  const failed = [{ kind: "error" as const, component: 0, code: "other-error" as const }];
+  for (const [text, digest, read] of [
+    ["file\x006\x001\x000\x000\x00none\0", false, { detail: true }],
+    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x000\x000\x00none\0", false, { detail: true }],
+    ["file\x006\x001\x000\x000\x0033188\x00-1\x001000\x001\x000\x00none\0", false, { detail: true }],
+    ["file\x006\x001\x000\x000\x004294967296\x001000\x001000\x001\x000\x00none\0", false, { detail: true }],
+    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x002\x00none\0", false, { detail: true }],
+    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00none\0", false, {}],
+    ["file\x006\x001\x000\x000\x00data\x006\0plain\n", true, { stream: true }],
+    [`file\x006\x001\x000\x000\x00sha256\x00${hex}\0`, true, {}],
+    [`file\x006\x001\x000\x000\x00sha256\x00${hex.toUpperCase()}\0`, true, { stream: true }],
+    [`file\x006\x001\x000\x000\x00sha256\x00${hex.slice(1)}\0`, true, { stream: true }],
+    ["file\x006\x001\x000\x000\x00file-bytes\0", true, { stream: true }],
+  ] as [string, boolean, Read][]) {
+    expect([text, map(bin(text), digest, read)]).toEqual([text, failed]);
+  }
 });
 
 describeGit("bun runner", (git) => {

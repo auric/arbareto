@@ -74,6 +74,9 @@ const MORE_ACTIONS = "More actions";
 const REVERT_UNSTAGED_LABEL = "Revert all unstaged changes…";
 const UNAVAILABLE = " is unavailable.";
 const CHECKING = "Checking ";
+// src/frontend/app/Workbench.tsx `statusText`.
+const REFRESHING = "Refreshing…";
+const STATE_UNKNOWN = "State unknown";
 const NO_HUNK = "No hunk is selected.";
 // src/frontend/changes/PatchView.tsx annotation text.
 const SELECTED_HUNK = "Selected hunk";
@@ -477,6 +480,8 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   const diffBody = `document.querySelector('[data-section=comparison] [data-slot=diff-body]')`;
   const lineAction = `document.querySelector('[data-section=comparison] [data-slot=line-action]')`;
   const headerMore = `document.querySelector(${js(`[data-section=workingChanges] button[aria-label="${MORE_ACTIONS}"]`)})`;
+  // src/frontend/app/Workbench.tsx `statusText`: the first status cell of the footer shows these texts while a read runs or the state is blocked.
+  const settled = `![${js(REFRESHING)}, ${js(STATE_UNKNOWN)}].includes((${footer}?.querySelector('span[role=status]:not([tabindex])')?.textContent ?? '').trim())`;
   const menuItem = (label: string) => `[...document.querySelectorAll('[role=menu] [role=menuitem]')].find((e) => e.textContent.includes(${js(label)}))`;
   const fmt = new Intl.NumberFormat("en-US");
 
@@ -489,7 +494,8 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   // Waits for the reviewed state after an external restore. F5 reads the workspace again.
   async function refreshed(c: Cdp, what: string, expression: string): Promise<void> {
     await press(c, "F5");
-    await until<boolean>(c, what, expression, (v) => v);
+    // A reconcile read can end during the F5 read with `recoveryState: "refreshing"`. Then R refuses with BLOCKED_TEXT.unknown, so the wait also needs the settled status cell.
+    await until<boolean>(c, what, `(${expression}) && ${settled}`, (v) => v);
   }
   async function select(c: Cdp, path: string): Promise<void> {
     await focusOn(c, row(path), path);
@@ -655,12 +661,18 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
     caseTimeout(40, (RUNS + 3) * 3 * STEP_LIMIT_MS),
   );
 
+  // A disabled item ignores Enter. Base UI marks it with `aria-disabled` and `data-disabled` (action-menu.tsx `disabled={reason !== null}`).
+  async function enabledItem(c: Cdp): Promise<void> {
+    const item = menuItem(REVERT_UNSTAGED_LABEL);
+    await until<boolean>(c, `${REVERT_UNSTAGED_LABEL} enabled`, `!!(${item}) && !(${item}).hasAttribute('disabled') && !(${item}).hasAttribute('data-disabled') && (${item}).getAttribute('aria-disabled') !== 'true'`, (v) => v);
+    await focusOn(c, item, REVERT_UNSTAGED_LABEL);
+  }
   // The header item of the Changes list (plan.md D12 "Changes header"). It has no key, so the menu item gets Enter.
   async function revertAll(s: Session, probe: boolean, limit = STEP_LIMIT_MS): Promise<{ busy: number; confirm: number; end: number; reply: RunReply; confirmAt: number; endAt: number }> {
     const before = s.ipc.finished("run_workbench").length;
     await focusOn(s.c, headerMore, MORE_ACTIONS);
     await press(s.c, "Enter");
-    await focusOn(s.c, menuItem(REVERT_UNSTAGED_LABEL), REVERT_UNSTAGED_LABEL);
+    await enabledItem(s.c);
     let busyMs = 0;
     let confirmMs = 0;
     if (probe) await probing(s.c, "the review of all unstaged changes", messageProbe(s.c), () => press(s.c, "Enter"), () => until<boolean>(s.c, "the review", reviewed, (v) => v));
@@ -754,7 +766,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           const before = s.ipc.finished("run_workbench").length;
           await focusOn(s.c, headerMore, MORE_ACTIONS);
           await press(s.c, "Enter");
-          await focusOn(s.c, menuItem(REVERT_UNSTAGED_LABEL), REVERT_UNSTAGED_LABEL);
+          await enabledItem(s.c);
           await press(s.c, "Enter");
           await until<boolean>(s.c, "the review", reviewed, (v) => v);
           await focusOn(s.c, revertButton, "the revert button");

@@ -7,14 +7,15 @@
 
 import type { ChangeEntry } from "../contracts/envelope";
 import type { ErrorCode, WorkbenchUnavailableReason } from "../contracts/errors";
-import { filterReason, GITLINK } from "../contracts/file-action";
+import { filterReason } from "../contracts/file-action";
+import { GITLINK } from "../contracts/git-mode";
 import { COMPARED_RAW_VERSION_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, FILE_FACT_COMPONENT_UNITS, FILE_FACT_ENTRIES, MULTI_FILE_ACTION_FILES, MULTI_FILE_ATTRIBUTE_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { compareKeys, treeKey } from "../contracts/tree-order";
 import { attributeArgs, blobArgs, blobHashProofArgs, cachedAttributeArgs, checkoutTempArgs, indexPathArgs, lineEndingPathArgs, objectCheckArgs, OID_HEX, statusArgs } from "./commands";
 import { parsePatch, type PatchHunk } from "./diff-parser";
-import { HUNK_REFUSAL_REASONS, hunkEligibility, IndexFormatError } from "./eligibility";
-import { createCollector, RunnerRefusal, sizeDeadlineMs, stepUnits, type Collector, type FileFact, type TempRemoveReply, type WalkStop, type WorkingReplaceReply, type WorkingReplaceRequest } from "./git-runner";
+import { HUNK_REFUSAL_REASONS, hunkEligibility, IndexFormatError, rawIndexEntries, type RawIndexEntry } from "./eligibility";
+import { createCollector, RunnerRefusal, sizeDeadlineMs, stepUnits, type FileFact, type TempRemoveReply, type WalkStop, type WorkingReplaceReply, type WorkingReplaceRequest } from "./git-runner";
 import { applyToContent } from "./hunk-candidate";
 import { canonicalIndex, hunkApprovals, indexOf, indexSession, isStop, lingeringText, missingObject, prepareHunk, PROFILE_TEXTS, publishIndex, settled, stepOf, type Ending, type Fact, type Failure, type PrepareOptions, type PublicationSession, type Refusal, type Stop } from "./hunk-publish";
 import { LOCKED_REMEDY } from "./index-lock";
@@ -25,7 +26,7 @@ import type { Workspace } from "./registration";
 import { autocrlfOf, blobId, restoreEol, reverseLines } from "./revert-bytes";
 import type { LimitName } from "./snapshot";
 import { policyOf } from "./status";
-import { createStatusParser } from "./status-parser";
+import { createStatusParser, statusCollector } from "./status-parser";
 import { parseAttributes, parseEolListing, SUPPORT_REASONS, type EolInfo, type SupportAttributes } from "./support";
 import type { TrustListing } from "./trust";
 import { registerWorkbenchAction, unavailable, type Common, type Observation, type PayloadOf, type Refused, type StepEnd, type WorkbenchContext, type WorkbenchRun } from "./workbench-review";
@@ -516,21 +517,7 @@ async function sameRecord(ctx: WorkbenchContext, e: ChangeEntry, path: Uint8Arra
   const batch = pathBatches(ctx, [path], args)?.[0];
   if (batch === undefined) return unavailable("path");
   const parser = createStatusParser(ctx.workspace.objectFormat);
-  let size = 0;
-  const out: Collector = {
-    push(chunk) {
-      size += chunk.length;
-      parser.push(chunk);
-    },
-    get bytes() {
-      return size;
-    },
-    records: 0,
-    get limited() {
-      return parser.limited;
-    },
-  };
-  const step = await stepOf(ctx, args(batch), out);
+  const step = await stepOf(ctx, args(batch), statusCollector(parser));
   if (!("exit" in step)) return step;
   const parsed = parser.end();
   if (parsed.state === "limited") return { code: "OUTPUT_LIMIT", reason: parsed.reason as LimitName };
@@ -704,6 +691,20 @@ function tempRecords(raw: Uint8Array, batch: readonly Uint8Array[]): { temps: Ma
 // A revert run gives its own progress, so the staging phases of `prepareFiles` and `prepareHunk` stay silent.
 const SILENT: PrepareOptions = { registry: { progress: () => {} } };
 
+// Plan.md D4: the candidate entry of the path must be the bound new index entry, so the index gets exactly the reviewed lines.
+// The verified candidate bytes hold the entry, so no Git process runs. Another entry is a changed bound fact.
+function candidateRefusal(x: PublicationSession, path: Uint8Array, planned: Entry, w: Workspace): Refusal | null {
+  let entries: RawIndexEntry[];
+  try {
+    entries = rawIndexEntries(x.run.candidate!.bytes, w.objectFormat).entries;
+  } catch (error) {
+    if (error instanceof IndexFormatError) return { code: "MALFORMED_GIT_OUTPUT" };
+    throw error;
+  }
+  const own = entries.filter((e) => Buffer.compare(e.path, path) === 0);
+  return own.length === 1 && own[0]!.stage === 0 && own[0]!.mode === planned.mode && own[0]!.oid === planned.oid ? null : { code: "STALE_SELECTION" };
+}
+
 // Plan.md D7: the `prepare` of the index part, and the path of its first file. Null: the retained comparison or its hunk is gone.
 // A staged `revert-lines` takes the Unstage lines `prepare` of the bound sub-hunk (plan.md D4).
 // `revert-files` takes the Unstage files `prepare`: one candidate for every file with an index change, and one publication for the set.
@@ -714,7 +715,11 @@ function indexPartOf(ctx: WorkbenchContext, p: Payload, bound: RevertBound, s: S
     const target = p.action === "revert-lines" ? lineTarget(ctx.comparisons.get(line.comparisonId), p, w) : null;
     if (target === null || !("sub" in target)) return null;
     const approval = hunkApprovals(target.c, s, w).find((a) => a.hunkId === line.hunkId);
-    return approval === undefined ? null : { pathBytes: target.e.pathBytes, prepare: (x) => prepareHunk(SILENT, { approval, comparison: target.c, hunk: target.sub }, x) };
+    const planned = bound.files[0]!.newIndex;
+    // A staged line plan always holds an index entry (`lineReview`).
+    if (approval === undefined || typeof planned === "string") return null;
+    const prepare = async (x: PublicationSession) => (await prepareHunk(SILENT, { approval, comparison: target.c, hunk: target.sub }, x)) ?? candidateRefusal(x, target.path, planned, w);
+    return { pathBytes: target.e.pathBytes, prepare };
   }
   const byId = new Map(s.entries.map((e) => [e.entryId, e]));
   const items = bound.files.flatMap((f, i): FileItem[] => {

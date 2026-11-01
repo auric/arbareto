@@ -15,7 +15,7 @@ import type { ReplaceStep } from "./bun-runner";
 import { faGit, write } from "./file-actions-fixtures";
 import { fixtureDir, useFixtureRoot } from "./fixture-root";
 import { workingFileDigests } from "./git-oracle";
-import { compare, copyRepo, entryOf, gitPath, gitPathOf, outcome, readOk, subcommand, SUCCEEDED, TIMEOUT_MS, withService } from "./hunk-harness";
+import { candidateFiles, compare, copyRepo, entryOf, gitPath, gitPathOf, outcome, readOk, subcommand, SUCCEEDED, TIMEOUT_MS, withService } from "./hunk-harness";
 import { caseTest, type Capability, type ChangeEntry, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 for (const module of ["revert", "workbench-review", "hunk-publish", "multi-publish"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
@@ -371,6 +371,39 @@ describe("revert races: a working change after the status read gives a staged-li
       const before = state(repo);
       expect(refusal(await review(service, r, read, { action: "revert-lines", comparisonId: c.comparisonId, hunkId: c.hunkIds[0] }))).toEqual({ state: "failed", code: "STALE_SELECTION", result: undefined });
       expect(state(repo)).toEqual(before);
+    }),
+    TIMEOUT_MS,
+  );
+});
+
+// Batch 3 review S1 (plan.md D4): the run publishes only the index entry that the review bound.
+describe("revert races: the index candidate of a staged lines revert must hold the bound new index entry (plan.md D4)", () => {
+  // `inject.stdout` replaces the review reads `cat-file blob` and `hash-object --path`, so the review binds the expected blob of another index blob.
+  // The candidate reads the blob through `cat-file --batch-command`, so it builds the entry from the real index blob.
+  caseTest(TASK, "a candidate entry other than the bound entry gives STALE_REVIEW with revert-changed before publication, and nothing changes", SHELL, () =>
+    withService({ name: "t044-candidate" }, async (service) => {
+      const repo = fixture(variant("staged-lines"));
+      const r = await service.register(repo);
+      const read = await readOk(service, r.repositoryId);
+      const c = await compare(service, r.repositoryId, "f.txt", "staged", read);
+      const expected = `${F.new}z\n`;
+      const oid = new Bun.CryptoHasher("sha1").update(`blob ${expected.length}\0`).update(expected).digest("hex");
+      service.runner.inject.stdout = (call) => {
+        const a = call.arguments;
+        if (a.includes("cat-file") && a.includes("blob")) return Buffer.from(`${F.old}z\n`);
+        if (a.includes("hash-object") && a.some((arg) => arg.startsWith("--path="))) return Buffer.from(`${oid}\n`);
+        return undefined;
+      };
+      try {
+        const response = await review(service, r, read, { action: "revert-lines", comparisonId: c.comparisonId, hunkId: c.hunkIds[0] });
+        expect(outcome(response)).toEqual(SUCCEEDED);
+        const before = state(repo);
+        const done = await run(service, r, response.result!.workbenchToken);
+        expect(refusal(done)).toEqual({ state: "failed", code: "STALE_REVIEW", result: { action: "revert-lines", reason: "revert-changed" } });
+        expect({ state: state(repo), writes: writeFrames(service), candidates: candidateFiles(repo) }).toEqual({ state: before, writes: 0, candidates: [] });
+      } finally {
+        service.runner.inject.stdout = undefined;
+      }
     }),
     TIMEOUT_MS,
   );

@@ -945,6 +945,20 @@ describeGit("bun runner revert requests (T019)", (git) => {
     expect(await facts(await marked("revert-unstaged"), {})).toMatchObject([{ kind: "file", digest: sha("s5\n") }]);
   });
 
+  // src-tauri/src/file_facts.rs `parse`: `stream` takes `digest: true` and no `content`, and `content` takes `digest: true` and exactly one entry.
+  // `checkFileFacts` refuses both before the walk, as the shell does. Its detail `fileFacts` names that check.
+  test("stream without digest and content with two entries refuse with INVALID_REQUEST before the walk", async () => {
+    writeFileSync(join(repo, "s6.txt"), "s6\n");
+    const operationId = await marked("revert-unstaged");
+    const entry = (name: string) => ({ root: "worktreeRoot" as const, path: [name] });
+    const facts = (fields: { digest: boolean; stream?: boolean; content?: boolean }, names: string[]) => runner.fileFacts({ operationId, contextKind: "registeredOperation", gitInstallationId, repositoryId, ...fields, files: names.map(entry) }, signal());
+    const refused = { code: "INVALID_REQUEST", message: "INVALID_REQUEST: fileFacts" };
+    await expect(facts({ digest: false, stream: true }, ["s6.txt"])).rejects.toMatchObject(refused);
+    await expect(facts({ digest: true, content: true }, ["s5.txt", "s6.txt"])).rejects.toMatchObject(refused);
+    // The same frame with `digest: true` passes the request rules.
+    expect(await facts({ digest: true, stream: true }, ["s6.txt"])).toMatchObject([{ kind: "file", digest: sha("s6\n") }]);
+  });
+
   // Contract Δ6 `source`: `not-regular` keeps the source, because no digest matched (src-tauri/src/file_replace.rs `check_source`, WSL `replace_one`).
   test("a source that is a link or a folder refuses with not-regular and stays", async () => {
     const operationId = await marked();

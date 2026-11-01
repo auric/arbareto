@@ -4,6 +4,7 @@
 // Contract §4 "File staging" and data-model §5 "File-action decision". The decision reads no file and starts no process.
 
 import { isUtf8 } from "node:buffer";
+import { GITLINK } from "./git-mode";
 import { WHOLE_FILE_STAGE_INPUT_BYTES } from "./limits";
 
 // Feature 004 contract Δ4 and Δ9: the refusals of a line selection. Data-model §6: no file decision gives them.
@@ -71,8 +72,6 @@ interface StatusRecord {
 const SPACE = 0x20;
 const NUL = 0x00;
 const SLASH = 0x2f;
-// git-ls-files(1) and gitformat-index: the mode of a submodule entry.
-export const GITLINK = "160000";
 const SYMLINK = "120000";
 const ABSENT_MODE = "000000";
 

@@ -13,19 +13,23 @@ use serde_json::Value;
 
 use windows::Wdk::Foundation::OBJECT_ATTRIBUTES;
 use windows::Wdk::Storage::FileSystem::{
-    FILE_BASIC_INFORMATION, FILE_INFORMATION_CLASS, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
-    FILE_SYNCHRONOUS_IO_NONALERT, FileAttributeTagInformation, FileBasicInformation,
-    FileStandardInformation, NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS,
-    NtCreateFile, NtFsControlFile, NtQueryInformationFile, NtReadFile, SYMLINK_FLAG_RELATIVE,
+    FILE_BASIC_INFORMATION, FILE_ID_FULL_DIR_INFORMATION, FILE_INFORMATION_CLASS,
+    FILE_INTERNAL_INFORMATION, FILE_OPEN, FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    FileAttributeTagInformation, FileBasicInformation, FileIdFullDirectoryInformation,
+    FileInternalInformation, FileNormalizedNameInformation, FileStandardInformation,
+    NTCREATEFILE_CREATE_DISPOSITION, NTCREATEFILE_CREATE_OPTIONS, NtCreateFile, NtFsControlFile,
+    NtQueryDirectoryFile, NtQueryInformationFile, NtReadFile, SYMLINK_FLAG_RELATIVE,
 };
 use windows::Wdk::System::SystemServices::FILE_ATTRIBUTE_TAG_INFORMATION;
 use windows::Win32::Foundation::{
     ERROR_ACCESS_DENIED, ERROR_FILE_NOT_FOUND, ERROR_INVALID_DATA, ERROR_IO_DEVICE,
     ERROR_PATH_NOT_FOUND, ERROR_SHARING_VIOLATION, ERROR_WRITE_FAULT, HANDLE, HLOCAL, LocalFree,
     NTSTATUS, OBJ_CASE_INSENSITIVE, OBJ_DONT_REPARSE, STATUS_ACCESS_DENIED, STATUS_CANCELLED,
-    STATUS_END_OF_FILE, STATUS_IO_DEVICE_ERROR, STATUS_IO_REPARSE_TAG_NOT_HANDLED,
-    STATUS_OBJECT_NAME_NOT_FOUND, STATUS_OBJECT_PATH_NOT_FOUND, STATUS_REPARSE_POINT_ENCOUNTERED,
-    STATUS_SHARING_VIOLATION, STATUS_UNSUCCESSFUL, UNICODE_STRING, WIN32_ERROR,
+    STATUS_END_OF_FILE, STATUS_INVALID_DEVICE_REQUEST, STATUS_INVALID_INFO_CLASS,
+    STATUS_INVALID_PARAMETER, STATUS_IO_DEVICE_ERROR, STATUS_IO_REPARSE_TAG_NOT_HANDLED,
+    STATUS_NO_MORE_FILES, STATUS_NO_SUCH_FILE, STATUS_NOT_SUPPORTED, STATUS_OBJECT_NAME_NOT_FOUND,
+    STATUS_OBJECT_PATH_NOT_FOUND, STATUS_REPARSE_POINT_ENCOUNTERED, STATUS_SHARING_VIOLATION,
+    STATUS_UNSUCCESSFUL, UNICODE_STRING, WIN32_ERROR,
 };
 use windows::Win32::Security::Authorization::{
     ConvertSecurityDescriptorToStringSecurityDescriptorW, SDDL_REVISION_1,
@@ -41,8 +45,8 @@ use windows::Win32::Security::{
 use windows::Win32::Storage::FileSystem::{
     FILE_ACCESS_RIGHTS, FILE_ATTRIBUTE_NORMAL, FILE_DISPOSITION_FLAG_DELETE,
     FILE_DISPOSITION_FLAG_POSIX_SEMANTICS, FILE_DISPOSITION_INFO_EX,
-    FILE_DISPOSITION_INFO_EX_FLAGS, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE,
-    FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfoEx,
+    FILE_DISPOSITION_INFO_EX_FLAGS, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_READ_DATA,
+    FILE_SHARE_DELETE, FILE_SHARE_MODE, FILE_SHARE_READ, FILE_SHARE_WRITE, FileDispositionInfoEx,
     MAXIMUM_REPARSE_DATA_BUFFER_SIZE, READ_CONTROL, SYNCHRONIZE, SetFileInformationByHandle,
     WriteFile,
 };
@@ -480,27 +484,248 @@ struct Reads<'a> {
 fn fact(root: &Path, path: &[String], reads: &mut Reads, stop: &AtomicBool) -> Fact {
     let digest = reads.digest;
     let (last, middle) = path.split_last().expect("parse gives 1 or more components");
-    let mut parent = match open_root(root, stop) {
+    // The root and each opened component, for the on-disk name check of plan.md D8.
+    let mut held = vec![match open_root(root, stop) {
         Ok(handle) => handle,
         Err(status) => return not_opened(status, 0),
-    };
+    }];
     for (component, name) in (1..).zip(middle) {
-        parent = match open(&parent, name, false, false, stop) {
+        let parent = held.last().expect("the root");
+        let next = match open(parent, name, false, false, stop) {
             Ok(handle) => handle,
             Err(status) if is_reparse_point(status) => {
-                return reparse_point(&parent, name, component, None, stop);
+                return reparse_point(parent, name, component, None, stop);
             }
             Err(status) => return not_opened(status, component),
         };
+        held.push(next);
     }
     let component = path.len();
-    match open(&parent, last, false, false, stop) {
-        Ok(handle) => file_fact(&handle, component, reads, stop),
+    let parent = held.last().expect("the root");
+    match open(parent, last, false, false, stop) {
+        Ok(handle) => {
+            let mut fact = file_fact(&handle, component, reads, stop);
+            if let (true, Fact::File { exact_name, .. }) = (reads.read.detail, &mut fact) {
+                held.push(handle);
+                match exact(&held, path, stop) {
+                    Ok(exact) => *exact_name = Some(exact),
+                    Err(status) => return error(component, status),
+                }
+            }
+            fact
+        }
         Err(status) if is_reparse_point(status) => {
-            reparse_point(&parent, last, component, Some(digest), stop)
+            reparse_point(parent, last, component, Some(digest), stop)
         }
         Err(status) => not_opened(status, component),
     }
+}
+
+/// The status of a file system that does not implement `FileNormalizedNameInformation`.
+/// MS-FSA 2.1.5.12: `STATUS_INVALID_INFO_CLASS` for a class that the object store does not define.
+/// MS-FSCC 2.4: `STATUS_INVALID_PARAMETER` for a class that the file system does not support.
+/// MS-FSCC 2.4.35 and note 97: `STATUS_NOT_SUPPORTED`. MS-FSCC note 139: `STATUS_INVALID_DEVICE_REQUEST`.
+const NO_NORMALIZED_NAME: [NTSTATUS; 4] = [
+    STATUS_INVALID_INFO_CLASS,
+    STATUS_INVALID_PARAMETER,
+    STATUS_NOT_SUPPORTED,
+    STATUS_INVALID_DEVICE_REQUEST,
+];
+
+/// Plan.md D8: true when an OS fact proves that each component of `path` has its requested name on disk, unit for unit.
+/// `held` holds the root and the handle of each component. False when no route proves it. Only a stop gives an error.
+fn exact(held: &[OwnedHandle], path: &[String], stop: &AtomicBool) -> Result<bool, NTSTATUS> {
+    exact_from(
+        normalized_name(held.last().expect("the target"), stop),
+        held,
+        path,
+        stop,
+    )
+}
+
+/// `first` is the result of the first route. Tests give it a status to reach the second route.
+fn exact_from(
+    first: Result<Vec<u16>, NTSTATUS>,
+    held: &[OwnedHandle],
+    path: &[String],
+    stop: &AtomicBool,
+) -> Result<bool, NTSTATUS> {
+    match first {
+        Ok(units) => Ok(same_tail(&units, path)),
+        Err(STATUS_CANCELLED) => Err(STATUS_CANCELLED),
+        Err(status) if NO_NORMALIZED_NAME.contains(&status) => {
+            for (at, name) in path.iter().enumerate() {
+                if !entry_name(&held[at], name, &held[at + 1], stop)? {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+        Err(_) => Ok(false),
+    }
+}
+
+/// The first route: MS-FSCC 2.4.35 gives each component of the open as its long name, in the letter case stored on disk.
+/// MS-FSA 2.1.5.12.30 builds the name from the link chain of the open, so its last components are the entries that the walk opened.
+fn normalized_name(handle: &OwnedHandle, stop: &AtomicBool) -> Result<Vec<u16>, NTSTATUS> {
+    check(stop)?;
+    // `FILE_NAME_INFORMATION`: the name length in bytes, then the name. A path holds at most 32,767 UTF-16 units.
+    let mut buffer = vec![0u32; 1 + 32_767usize.div_ceil(2)];
+    let mut io = IO_STATUS_BLOCK::default();
+    // SAFETY: `handle` is open, and `buffer` is live with the passed size.
+    let status = unsafe {
+        NtQueryInformationFile(
+            raw(handle),
+            &raw mut io,
+            buffer.as_mut_ptr().cast(),
+            (buffer.len() * 4) as u32,
+            FileNormalizedNameInformation,
+        )
+    };
+    if status.is_err() {
+        return Err(status);
+    }
+    let length = buffer[0] as usize;
+    if !length.is_multiple_of(2) || length > (buffer.len() - 1) * 4 {
+        return Err(STATUS_UNSUCCESSFUL);
+    }
+    // SAFETY: the check above keeps `length / 2` units inside `buffer`, after its first 4 bytes.
+    let units =
+        unsafe { std::slice::from_raw_parts(buffer.as_ptr().add(1).cast::<u16>(), length / 2) };
+    Ok(units.to_vec())
+}
+
+/// True when the last components of the absolute name `units` equal `path`, unit for unit.
+fn same_tail(units: &[u16], path: &[String]) -> bool {
+    let disk: Vec<&[u16]> = units.split(|&unit| unit == u16::from(b'\\')).collect();
+    // The name starts with `\`, so the part before it is empty and never a requested component.
+    disk.len()
+        .checked_sub(path.len())
+        .filter(|&start| start > 0)
+        .is_some_and(|start| {
+            disk[start..]
+                .iter()
+                .zip(path)
+                .all(|(disk, name)| disk.iter().copied().eq(name.encode_utf16()))
+        })
+}
+
+/// The second route: the directory entries of `parent` that match `name`, bound to `child` by its 64-bit file ID.
+/// True only for exactly one entry, with the file ID of `child` and the stored name `name`, unit for unit.
+/// The component rule allows no wildcard, so the pattern matches by name (Microsoft Learn `NtQueryDirectoryFile`).
+/// Microsoft Learn `FILE_INTERNAL_INFORMATION`: `IndexNumber` equals `FileId` of `FILE_ID_FULL_DIR_INFORMATION`.
+/// MS-FSCC 2.1.9: a 64-bit file ID of 0 or all ones names no file.
+fn entry_name(
+    parent: &OwnedHandle,
+    name: &str,
+    child: &OwnedHandle,
+    stop: &AtomicBool,
+) -> Result<bool, NTSTATUS> {
+    let id = match query::<FILE_INTERNAL_INFORMATION>(child, FileInternalInformation, stop) {
+        Ok(info) => info.IndexNumber,
+        Err(STATUS_CANCELLED) => return Err(STATUS_CANCELLED),
+        Err(_) => return Ok(false),
+    };
+    if id == 0 || id == -1 {
+        return Ok(false);
+    }
+    // A new handle: the query keeps the pattern of its first call for the handle (Microsoft Learn `NtQueryDirectoryFile`).
+    let Ok(list) = create_relative(
+        raw(parent),
+        "",
+        FILE_LIST_DIRECTORY | SYNCHRONIZE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        FILE_OPEN,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    ) else {
+        return Ok(false);
+    };
+    let mut pattern_units: Vec<u16> = name.encode_utf16().collect();
+    // `is_component` keeps the name within 255 units, so the byte length fits a `u16`.
+    let length = (pattern_units.len() * 2) as u16;
+    let pattern = UNICODE_STRING {
+        Length: length,
+        MaximumLength: length,
+        Buffer: PWSTR(pattern_units.as_mut_ptr()),
+    };
+    let name_at = std::mem::offset_of!(FILE_ID_FULL_DIR_INFORMATION, FileName);
+    let mut entries: Vec<(i64, Vec<u16>)> = Vec::new();
+    for restart in std::iter::once(true).chain(std::iter::repeat(false)) {
+        check(stop)?;
+        // 4 KiB holds at least one entry of a name with 255 units.
+        let mut buffer = [0u64; 512];
+        let mut io = IO_STATUS_BLOCK::default();
+        // SAFETY: `list` is open for synchronous I/O, and `buffer`, `io`, and `pattern` are live locals.
+        let status = unsafe {
+            NtQueryDirectoryFile(
+                raw(&list),
+                None,
+                None,
+                None,
+                &raw mut io,
+                buffer.as_mut_ptr().cast(),
+                size_of_val(&buffer) as u32,
+                FileIdFullDirectoryInformation,
+                false,
+                Some(&raw const pattern),
+                restart,
+            )
+        };
+        // MS-FSA 2.1.5.6.3: no match gives `STATUS_NO_SUCH_FILE` on the first call and `STATUS_NO_MORE_FILES` after it.
+        if status == STATUS_NO_SUCH_FILE || status == STATUS_NO_MORE_FILES {
+            break;
+        }
+        if status.is_err() {
+            return Ok(false);
+        }
+        // SAFETY: `buffer` is live, and the length stays within it.
+        let bytes = unsafe {
+            std::slice::from_raw_parts(
+                buffer.as_ptr().cast::<u8>(),
+                io.Information.min(size_of_val(&buffer)),
+            )
+        };
+        let mut at = 0usize;
+        loop {
+            let field = |offset: usize, size: usize| bytes.get(at + offset..at + offset + size);
+            let (Some(next), Some(size), Some(file_id)) = (
+                field(0, 4),
+                field(
+                    std::mem::offset_of!(FILE_ID_FULL_DIR_INFORMATION, FileNameLength),
+                    4,
+                ),
+                field(
+                    std::mem::offset_of!(FILE_ID_FULL_DIR_INFORMATION, FileId),
+                    8,
+                ),
+            ) else {
+                return Ok(false);
+            };
+            let next = u32::from_le_bytes(next.try_into().expect("4 bytes")) as usize;
+            let size = u32::from_le_bytes(size.try_into().expect("4 bytes")) as usize;
+            let Some(stored) = field(name_at, size).filter(|_| size.is_multiple_of(2)) else {
+                return Ok(false);
+            };
+            entries.push((
+                i64::from_le_bytes(file_id.try_into().expect("8 bytes")),
+                stored
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|unit| u16::from_le_bytes(*unit))
+                    .collect(),
+            ));
+            if entries.len() > 1 {
+                return Ok(false);
+            }
+            if next == 0 {
+                break;
+            }
+            at += next;
+        }
+    }
+    Ok(matches!(entries.as_slice(), [(file_id, stored)]
+        if *file_id == id && stored.iter().copied().eq(name.encode_utf16())))
 }
 
 /// Contract §6 "Walks": a stopped walk opens, queries, and reads nothing more.
@@ -738,6 +963,7 @@ fn file_fact(handle: &OwnedHandle, component: usize, reads: &mut Reads, stop: &A
         attributes,
         creation_time,
         dacl,
+        exact_name: None,
         gid: None,
         group,
         links,
@@ -1365,6 +1591,140 @@ pub(crate) mod tests {
             facts(&[(GIT, &["hooks"]), (GIT, &["hooks", "missing"])]),
             vec![json!({ "kind": "directory" }), json!({ "kind": "absent" })]
         );
+    }
+
+    /// Feature 008 T066 (plan.md D8): `exactName` is true only when each component below the root has its requested name on disk.
+    /// The open ignores letter case, so a name in another case still gives a `file` fact. A read without `detail` has no `exactName`.
+    #[test]
+    fn a_detail_read_compares_the_on_disk_name_of_each_component() {
+        let repo = Repo::new();
+        let roots = [
+            repo.worktree.as_path(),
+            repo.git.as_path(),
+            repo.git.as_path(),
+        ];
+        let fact = |detail: bool, path: &[&str]| {
+            let read = Read {
+                detail,
+                stream: false,
+                content: false,
+            };
+            let files = vec![(GIT, path.iter().map(|name| name.to_string()).collect())];
+            let fact = json!(super::walk_read(roots, true, read, &files, &RUN, &|_| {})[0]);
+            (fact["kind"].clone(), fact.get("exactName").cloned())
+        };
+        let file = json!("file");
+        assert_eq!(
+            fact(true, &["hooks", "pre-commit"]),
+            (file.clone(), Some(json!(true)))
+        );
+        assert_eq!(
+            fact(true, &["hooks", "Pre-commit"]),
+            (file.clone(), Some(json!(false))),
+            "the last component"
+        );
+        assert_eq!(
+            fact(true, &["Hooks", "pre-commit"]),
+            (file.clone(), Some(json!(false))),
+            "a folder on the path"
+        );
+        assert_eq!(fact(false, &["hooks", "Pre-commit"]), (file, None));
+    }
+
+    /// The root handle and the handle of each component of `names` below the Git directory.
+    fn held(repo: &Repo, names: &[&str]) -> Vec<OwnedHandle> {
+        let mut held = vec![open_root(&repo.git, &RUN).expect("root")];
+        for name in names {
+            let next = open(held.last().expect("root"), name, false, false, &RUN).expect(name);
+            held.push(next);
+        }
+        held
+    }
+
+    fn names(names: &[&str]) -> Vec<String> {
+        names.iter().map(|name| name.to_string()).collect()
+    }
+
+    /// Feature 008 T066 (plan.md D8): each status of `NO_NORMALIZED_NAME` takes the second route, the directory entry under the held parent.
+    /// Another status of the first route proves nothing. A rename after the open leaves no entry or an entry of another file.
+    #[test]
+    fn the_directory_entry_decides_when_the_volume_has_no_normalized_name() {
+        let repo = Repo::new();
+        for status in NO_NORMALIZED_NAME {
+            for (path, expected) in [
+                (&["hooks", "pre-commit"], true),
+                (&["hooks", "Pre-commit"], false),
+                (&["Hooks", "pre-commit"], false),
+            ] {
+                assert_eq!(
+                    exact_from(Err(status), &held(&repo, path), &names(path), &RUN),
+                    Ok(expected),
+                    "{status:?} {path:?}"
+                );
+            }
+        }
+        let path = ["hooks", "pre-commit"];
+        assert_eq!(
+            exact_from(
+                Err(STATUS_ACCESS_DENIED),
+                &held(&repo, &path),
+                &names(&path),
+                &RUN
+            ),
+            Ok(false),
+            "another status of the first route"
+        );
+        let opened = held(&repo, &path);
+        assert_eq!(
+            exact(&opened, &names(&path), &RUN),
+            Ok(true),
+            "the first route"
+        );
+        // The walk shares delete access, so a rename succeeds while the handles stay open.
+        std::fs::rename(repo.hook("pre-commit"), repo.hook("moved")).expect("rename");
+        assert_eq!(
+            exact_from(Err(STATUS_NOT_SUPPORTED), &opened, &names(&path), &RUN),
+            Ok(false),
+            "no entry has the name"
+        );
+        std::fs::write(repo.hook("pre-commit"), "other").expect("other file");
+        assert_eq!(
+            exact_from(Err(STATUS_NOT_SUPPORTED), &opened, &names(&path), &RUN),
+            Ok(false),
+            "the entry of the name is another file"
+        );
+    }
+
+    /// Feature 008 T066 on a real FAT or exFAT volume. `ARBARETO_TEST_FAT_DIR` names an empty folder on that volume.
+    #[test]
+    fn a_fat_volume_gives_the_on_disk_name_of_a_file() {
+        let Some(dir) = std::env::var_os("ARBARETO_TEST_FAT_DIR").map(PathBuf::from) else {
+            println!("SKIP FAT on-disk name: missing capability fat-volume (unverified)");
+            return;
+        };
+        let file = dir.join("Login.ts");
+        std::fs::write(&file, "abc").expect("FAT file");
+        let read = Read {
+            detail: true,
+            stream: false,
+            content: false,
+        };
+        let exact = |name: &str| {
+            let fact = json!(
+                super::walk_read(
+                    [dir.as_path(), dir.as_path(), dir.as_path()],
+                    true,
+                    read,
+                    &[(WORKTREE, vec![name.to_string()])],
+                    &RUN,
+                    &|_| {}
+                )[0]
+            );
+            fact.get("exactName").cloned()
+        };
+        let facts = (exact("Login.ts"), exact("login.ts"));
+        std::fs::remove_file(&file).expect("remove FAT file");
+        assert_eq!(facts, (Some(json!(true)), Some(json!(false))));
     }
 
     /// Feature 008 T012 (contract Δ6 `stream`): the digest of a file above `FILE_BYTES` streams in chunks without a bound,

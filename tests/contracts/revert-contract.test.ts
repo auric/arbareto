@@ -401,7 +401,7 @@ describe("contract Δ6 replies", () => {
 
   test("a detail file fact adds links and the Windows or the WSL facts, never a part of them", () => {
     const file = { kind: "file", size: 12, lastWrite: "1", digest: DIGEST };
-    const windows = { links: 1, attributes: 0x20, owner: "S-1-5-32-544", group: "S-1-5-32-545", dacl: "D:(A;;FA;;;SY)", creationTime: "-5" };
+    const windows = { links: 1, attributes: 0x20, owner: "S-1-5-32-544", group: "S-1-5-32-545", dacl: "D:(A;;FA;;;SY)", creationTime: "-5", exactName: false };
     const wsl = { links: 2, mode: 0o100755, uid: 0, gid: 0, xattr: true, own: false };
     expect(ok(channel.FileFact, { ...file, ...windows })).toBe(true);
     expect(ok(channel.FileFact, { ...file, ...wsl })).toBe(true);
@@ -414,6 +414,10 @@ describe("contract Δ6 replies", () => {
     expect(ok(channel.FileFact, { ...file, ...noDacl })).toBe(false);
     const { group: _group, ...noGroup } = windows;
     expect(ok(channel.FileFact, { ...file, ...noGroup })).toBe(false);
+    // T066: `exactName` is a Windows detail field.
+    const { exactName: _exactName, ...noExactName } = windows;
+    expect(ok(channel.FileFact, { ...file, ...noExactName })).toBe(false);
+    expect(ok(channel.FileFact, { ...file, ...wsl, exactName: true })).toBe(false);
     const { xattr: _xattr, ...noXattr } = wsl;
     expect(ok(channel.FileFact, { ...file, ...noXattr })).toBe(false);
     const { own: _own, ...noOwn } = wsl;

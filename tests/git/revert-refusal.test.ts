@@ -7,7 +7,7 @@
 // `several-hunks` (the renderer only, contract Δ4), `encrypted` (needs an EFS key of the account), and `xattr` and `shared-repository` (WSL, `tests/wsl`).
 
 import { describe, expect } from "bun:test";
-import { chmodSync, linkSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, linkSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { userInfo } from "node:os";
 import { join } from "node:path";
 import { RunWorkbenchResult } from "../../src/contracts/envelope";
@@ -370,6 +370,24 @@ describe("revert refusals: the 001 support reasons (data-model §7, spec FR-038)
     after: (r) => g(r, ["update-index", "--index-info"], Buffer.concat([Buffer.from(`100644 ${blob(r, "x\n")}\t`), BAD, Buffer.from("\n")])),
     paths: { lines: BAD, "staged-lines": BAD, files: BAD, "staged-files": BAD, unstaged: BAD },
   });
+
+  // Spec Edge Cases "letter case": with `core.ignorecase`, Git and the volume give `login.ts` the working file `Login.ts`, and `src/stage.ts` the folder `Src`.
+  refusalCase({
+    name: "path-letter-case",
+    reason: "path",
+    code: "UNSUPPORTED_COMPARISON",
+    needs: ["windows-path-rules"],
+    files: { "login.ts": "a\nb\nc\n", "src/stage.ts": "a\nb\nc\n", ...KEEP },
+    after: (r) => {
+      write(r, "login.ts", "a\nB\nc\n");
+      write(r, "src/stage.ts", "a\nB\nc\n");
+      add(r, "src/stage.ts");
+      renameSync(join(r, "login.ts"), join(r, "Login.ts"));
+      renameSync(join(r, "src"), join(r, "Src"));
+    },
+    config: [["core.ignorecase", "true"]],
+    paths: ALL_FIVE("login.ts", "src/stage.ts"),
+  });
 });
 
 describe("revert refusals: the line reasons (data-model §6 and §7, spec FR-013)", () => {
@@ -619,17 +637,29 @@ describe("revert refusals: the file facts (plan.md D8, D9, data-model §7)", () 
     disarm: (r) => both(r, (p) => offline(p, false)),
   });
 
-  // A folder at the path of a tracked file. Status lists the file as deleted.
+  // Spec Edge Cases "The working file is a folder now": a folder at the path of a tracked file. Status lists the file as deleted.
+  // `b.txt` also has a staged change. A staged line revert needs a file without an unstaged change (plan.md D4), so this case leaves it out.
+  const folders = (r: string) => both(r, (p) => (rmSync(p), write(p, "inner.txt", "i\n")));
   refusalCase({
-    name: "not-regular-folder",
-    reason: "not-regular",
-    code: "WORKBENCH_UNAVAILABLE",
-    files: { "d.txt": "d\n", ...KEEP },
-    after: (r) => {
-      rmSync(join(r, "d.txt"));
-      write(r, "d.txt/inner.txt", "i\n");
-    },
-    paths: { files: "d.txt", unstaged: "d.txt" },
+    name: "type-folder",
+    reason: "type",
+    code: "UNSUPPORTED_COMPARISON",
+    files: AB,
+    after: (r) => (changeAB(r), folders(r)),
+    paths: { lines: "a.txt", files: "a.txt", "staged-files": "b.txt", unstaged: "a.txt" },
+    expect: { unstaged: { code: "UNSUPPORTED_COMPARISON", result: { reason: "type", files: [b64("a.txt"), b64("b.txt")].map((path) => ({ path, reason: "type" })), more: 0 } } },
+  });
+
+  // The folder replaces the file after the shown read, so the line actions reach the file fact of the review.
+  refusalCase({
+    name: "type-folder-after-read",
+    reason: "type",
+    code: "UNSUPPORTED_COMPARISON",
+    files: AB,
+    after: changeAB,
+    paths: ALL_FIVE("a.txt", "b.txt"),
+    arm: folders,
+    disarm: (r) => both(r, (p) => (rmSync(p, { recursive: true }), writeFileSync(p, "a\nB\nc\n"))),
   });
 
   // Git for Windows follows a junction as a folder, and the no-follow walk of the shell does not (contract Δ6 `facts`).

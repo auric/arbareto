@@ -1652,6 +1652,7 @@ mod tests {
                 attributes: None,
                 creation_time: None,
                 dacl: None,
+                exact_name: None,
                 gid: None,
                 group: None,
                 links: None,

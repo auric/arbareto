@@ -11,10 +11,10 @@ import { filterReason, GITLINK } from "../contracts/file-action";
 import { COMPARED_RAW_VERSION_BYTES, DIAGNOSTIC_RETAINED_BYTES_PER_STREAM, FILE_FACT_COMPONENT_UNITS, FILE_FACT_ENTRIES, MULTI_FILE_ACTION_FILES, MULTI_FILE_ATTRIBUTE_BYTES, WINDOWS_COMMAND_LINE_UNITS } from "../contracts/limits";
 import { NATIVE } from "../contracts/native-path";
 import { compareKeys, treeKey } from "../contracts/tree-order";
-import { attributeArgs, blobArgs, blobHashProofArgs, cachedAttributeArgs, checkoutTempArgs, indexPathArgs, lineEndingPathArgs, objectCheckArgs, OID_HEX } from "./commands";
+import { attributeArgs, blobArgs, blobHashProofArgs, cachedAttributeArgs, checkoutTempArgs, indexPathArgs, lineEndingPathArgs, objectCheckArgs, OID_HEX, statusArgs } from "./commands";
 import { parsePatch, type PatchHunk } from "./diff-parser";
 import { HUNK_REFUSAL_REASONS, hunkEligibility, IndexFormatError } from "./eligibility";
-import { createCollector, RunnerRefusal, sizeDeadlineMs, stepUnits, type FileFact, type TempRemoveReply, type WalkStop, type WorkingReplaceReply, type WorkingReplaceRequest } from "./git-runner";
+import { createCollector, RunnerRefusal, sizeDeadlineMs, stepUnits, type Collector, type FileFact, type TempRemoveReply, type WalkStop, type WorkingReplaceReply, type WorkingReplaceRequest } from "./git-runner";
 import { applyToContent } from "./hunk-candidate";
 import { canonicalIndex, hunkApprovals, indexOf, indexSession, isStop, lingeringText, missingObject, prepareHunk, PROFILE_TEXTS, publishIndex, settled, stepOf, type Ending, type Fact, type Failure, type PrepareOptions, type PublicationSession, type Refusal, type Stop } from "./hunk-publish";
 import { LOCKED_REMEDY } from "./index-lock";
@@ -23,7 +23,9 @@ import { prepareFiles, type Admitted, type FileItem } from "./multi-publish";
 import { contextOf, latin1, readBounded, strictUtf8 } from "./read-steps";
 import type { Workspace } from "./registration";
 import { autocrlfOf, blobId, restoreEol, reverseLines } from "./revert-bytes";
+import type { LimitName } from "./snapshot";
 import { policyOf } from "./status";
+import { createStatusParser } from "./status-parser";
 import { parseAttributes, parseEolListing, SUPPORT_REASONS, type EolInfo, type SupportAttributes } from "./support";
 import type { TrustListing } from "./trust";
 import { registerWorkbenchAction, unavailable, type Common, type Observation, type PayloadOf, type Refused, type StepEnd, type WorkbenchContext, type WorkbenchRun } from "./workbench-review";
@@ -319,8 +321,9 @@ async function wholeFiles(ctx: WorkbenchContext, common: Common, entries: readon
     const work = workingAttributes.value[i]!;
     const filter = filterReason(work);
     // Contract Δ3: the fresh index entry of the path must equal the shown read, or the shown read is stale.
+    // Status v2 gives an intent-to-add entry mode 000000, and `ls-files --stage` gives its entry. So a support reason refuses first.
     const fresh = indexed.value.get(latin1(c.path)) ?? "absent";
-    if (!sameEntry(fresh, snapshotIndex)) return STALE;
+    if (support === null && !sameEntry(fresh, snapshotIndex)) return STALE;
     // Spec FR-020: an entry that the index lacks and a name that the volume holds is in the way. Status lists no ignored file, so the OS fact decides.
     let reason = support ?? filter ?? (snapshotIndex === "absent" && fact.kind !== "absent" && fact.kind !== "error" ? "in-the-way" : null);
     if (reason === null) {
@@ -504,6 +507,39 @@ async function checkInId(ctx: WorkbenchContext, path: Uint8Array, bytes: Uint8Ar
   return out.limited || m === null ? { code: "MALFORMED_GIT_OUTPUT" } : { value: m[1]! };
 }
 
+// Plan.md D4: the status record of one path again, with the flags of the snapshot read, as `multi-publish.ts` `sameEntries` reads it.
+// True: the record equals the shown entry.
+async function sameRecord(ctx: WorkbenchContext, e: ChangeEntry, path: Uint8Array): Promise<Fact<boolean> | Refused> {
+  const args = (texts: string[]) => [...statusArgs(), "--", ...texts];
+  const batch = pathBatches(ctx, [path], args)?.[0];
+  if (batch === undefined) return unavailable("path");
+  const parser = createStatusParser(ctx.workspace.objectFormat);
+  let size = 0;
+  const out: Collector = {
+    push(chunk) {
+      size += chunk.length;
+      parser.push(chunk);
+    },
+    get bytes() {
+      return size;
+    },
+    records: 0,
+    get limited() {
+      return parser.limited;
+    },
+  };
+  const step = await stepOf(ctx, args(batch), out);
+  if (!("exit" in step)) return step;
+  const parsed = parser.end();
+  if (parsed.state === "limited") return { code: "OUTPUT_LIMIT", reason: parsed.reason as LimitName };
+  if (step.exit.exitCode !== 0) return { code: "GIT_FAILED" };
+  if (parsed.state === "failed") return { code: "MALFORMED_GIT_OUTPUT" };
+  // A literal pathspec also matches paths below a folder of that name, so only the exact path counts.
+  const records = parsed.records.filter((r) => Buffer.compare(r.path.bytes, path) === 0);
+  const r = records[0];
+  return { value: records.length === 1 && r!.kind === "ordinary" && JSON.stringify([r.xy, r.submodule, r.modes, r.oids]) === JSON.stringify([e.xy, e.submodule, e.modes, e.oids]) };
+}
+
 type Comparison = NonNullable<ReturnType<WorkbenchContext["comparisons"]["get"]>>;
 type LineTarget = { c: Comparison; e: ChangeEntry; path: Uint8Array; names: string[]; hunk: Comparison["hunks"][number]; sub: PatchHunk };
 
@@ -575,6 +611,12 @@ async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, p
   const read = w.wsl === undefined ? await readBounded(nativePath(w, names), COMPARED_RAW_VERSION_BYTES) : fact.bytes === undefined ? "unavailable" : bytesOf(fact.bytes);
   // A Windows read can follow a link, so its bytes count only with the size and SHA-256 of the no-follow fact.
   if (!(read instanceof Uint8Array) || read.length !== fact.size || sha256(read) !== fact.digest) return STALE;
+  // Plan.md D4: a staged comparison binds no working version. The record comes after the bytes read, so a change before that read shows in it.
+  if (staged) {
+    const same = await sameRecord(ctx, e, path);
+    if (!("value" in same)) return same;
+    if (!same.value) return STALE;
+  }
   const working = workingOf(fact);
   if (working === null) return { code: "MALFORMED_GIT_OUTPUT" };
 

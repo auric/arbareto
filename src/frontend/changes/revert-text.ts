@@ -2,7 +2,8 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 import type { z } from "zod";
-import type { ChangeEntry, RevertFileOutcome, RevertFilesPlan, ReviewWorkbenchResult } from "../../contracts/envelope";
+import type { ChangeEntry, RevertFileOutcome, RevertFilesPlan, RevertLinesPlan, ReviewWorkbenchResult } from "../../contracts/envelope";
+import { GITLINK } from "../../contracts/file-action";
 import { MULTI_FILE_ACTION_FILES } from "../../contracts/limits";
 import { compareKeys, treeKey } from "../../contracts/tree-order";
 import type { BridgeResponse } from "../bridge";
@@ -34,7 +35,7 @@ export const FOLDER_REASON = "Arbareto does not revert a folder. Select its file
 /** Feature 005 FR-026 form. */
 export const MORE_FILES = (m: number) => (m === 1 ? "and 1 more file." : `and ${formatCount(m)} more files.`);
 
-export type RevertLinesPlan = { scope: "unstaged" | "staged"; fileBytes: string; lines: number | null };
+export type { RevertLinesPlan };
 
 const BODY = {
   unstaged: "Arbareto removes the selected changes from the working file. The index does not change.",
@@ -74,8 +75,6 @@ export const REVERT_UNSTAGED_LABEL = "Revert all unstaged changes…";
 export const NO_UNSTAGED = "No unstaged changes.";
 export const ONLY_SUBMODULES = "Only submodules have unstaged changes. Arbareto does not change submodules.";
 export const UNSTAGED_LIMIT = `Arbareto reverts at most ${formatCount(MULTI_FILE_ACTION_FILES)} files at a time. Select fewer files, then use Revert file.`;
-// Plan D6 "mode 160000": the gitlink mode.
-const GITLINK = "160000";
 // The service rule of `revert-unstaged`: porcelain v2 `<sub>` starts with `S`, or a mode is a gitlink.
 const isSubmodule = (e: ChangeEntry) => e.submodule?.startsWith("S") === true || (e.modes ?? []).includes(GITLINK);
 /** Plan D6: the entries that Revert all unstaged changes writes. Submodule entries stay unchanged. */
@@ -207,15 +206,19 @@ function runRefusal(response: BridgeResponse, file: string | null, lines: boolea
   return file === null && NAMES_FILE.has(r.reason) ? undefined : revertReason(r.reason, file ?? "");
 }
 
+/** Spec FR-017 and plan D11 `REVERT_PARTIAL`: the index part stays, and `why` names the reason of the working part. */
+const revertPartial = (file: string, why: string) => `Arbareto removed the changes from the index. It did not change ${file}, because ${why.replace(/\.$/, "")}.`;
+// Spec US4 scenario 4.
+const FILE_CHANGED = "the file changed after the review";
+
 /** Spec FR-039 and FR-041: the line of a file that did not revert. */
 export function outcomeLine(file: string, o: FileOutcome, lines: boolean): string {
-  // Spec FR-017: the index part stays. Plan D11 `REVERT_PARTIAL` gives "another program has it open" for a sharing violation.
   if (o.outcome === "unstaged-only" && o.code !== undefined) {
     const why =
       o.code === "error" ? (o.reason === "sharing-violation" ? "another program has it open" : `the write failed: ${o.reason ?? "error"}`)
-      : o.code === "stale" ? revertReason("stale", file, lines)!
+      : o.code === "stale" ? FILE_CHANGED
       : ((o.reason === undefined ? undefined : revertReason(o.reason, file)) ?? o.code);
-    return `Arbareto removed the changes from the index. It did not change ${file}, because ${why.replace(/\.$/, "")}.`;
+    return revertPartial(file, why);
   }
   if (o.code === "error" && o.reason === "sharing-violation") return `Another program has ${file} open. Arbareto did not change it. Close the file, then try again.`;
   if (o.code === "error") return `${file}: Not changed: ${o.reason ?? "error"}`;
@@ -234,6 +237,8 @@ export function revertLinesOutcome(response: BridgeResponse, plan: RevertLinesPl
   const o = result.files[0]!;
   if (o.outcome === "reverted" && response.state === "succeeded") return plan.lines === null ? `Arbareto reverted a hunk in ${file}.` : `Arbareto reverted ${lineCount(plan.lines)} in ${file}.`;
   if (o.outcome === "reverted") return undefined;
+  // Data-model §8: a published index part with a working digest that is neither old nor new is the case of spec US4 scenario 4.
+  if (o.outcome === "changed-outside" && result.index === "published") return revertPartial(file, FILE_CHANGED);
   return outcomeLine(file, o, plan.lines !== null);
 }
 

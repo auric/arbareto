@@ -93,6 +93,27 @@ describe("revert confirmation (FR-008, FR-047)", () => {
     }
   });
 
+  // tasks.md T040 (feature 008, WP5). Story US4. Spec FR-009 (board Confirm-staged-lines).
+  test("the staged lines and staged hunk texts with their singular forms, each with You cannot undo this.", async () => {
+    const cases: [number | null, string, string][] = [
+      [2, "Revert 2 staged lines in login.ts?", "Revert lines"],
+      [1, "Revert 1 staged line in login.ts?", "Revert line"],
+      [null, "Revert this staged hunk in login.ts?", "Revert hunk"],
+    ];
+    for (const [lines, title, action] of cases) {
+      const { double } = await shownDiff(workbench, { category: "staged" });
+      if (lines === null) await selectFirstHunk();
+      else await selectLines({ start: 2, side: "additions", end: lines === 1 ? 2 : 3 });
+      await revertKey();
+      const dialog = await confirmFor(double, plan(lines, "staged"));
+      expect(text(document.getElementById(dialog.getAttribute("aria-labelledby")!)!)).toBe(title);
+      expect(describedBy(dialog)).toBe("Arbareto removes the selected changes from the index and from the working file.");
+      expect(text(dialog)).toContain("You cannot undo this.");
+      expect([...dialog.querySelectorAll("button")].map((b) => text(b))).toEqual(["Cancel", action]);
+      await unmountAll();
+    }
+  });
+
   test("the focus returns to the opener: the diff after R, the More actions button after its menu", async () => {
     const { dialog } = await linesModal();
     await click(button("Cancel", dialog));
@@ -189,7 +210,8 @@ describe("unstaged-only outcome lines (FR-017, FR-039)", () => {
     const line = (code: "stale" | "refused" | "error", reason?: string) => outcomeLine("login.ts", { entryId: id, outcome: "unstaged-only", code, ...(reason === undefined ? {} : { reason }) } as never, false);
     expect(line("error", "sharing-violation")).toBe("Arbareto removed the changes from the index. It did not change login.ts, because another program has it open.");
     expect(line("refused", "read-only")).toBe("Arbareto removed the changes from the index. It did not change login.ts, because login.ts is read-only. Arbareto does not change it.");
-    expect(line("stale")).toBe("Arbareto removed the changes from the index. It did not change login.ts, because login.ts changed after the review. Arbareto changed nothing. Check the changes, then try again.");
+    // Spec US4 scenario 4.
+    expect(line("stale")).toBe("Arbareto removed the changes from the index. It did not change login.ts, because the file changed after the review.");
     expect(line("error", "disk-full")).toBe("Arbareto removed the changes from the index. It did not change login.ts, because the write failed: disk-full.");
   });
 });

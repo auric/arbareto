@@ -459,4 +459,14 @@ OBSERVATION T004: G9-G10-G8.mode-100755 expected={"holds":22} observed={"holds":
 - UI, fixed in `16fad87e`: the result names the reason of an `unstaged-only` file (plan D11 `REVERT_PARTIAL`).
 - UI, fixed in `16fad87e`: a new snapshot or a new comparison patch closes an open confirmation, and a second R during a review opens nothing (data-model §10).
 - Open after the review, with their tasks: the `RevertRun` reason `revert-changed` and the index-part refusal reason (T059); the CRLF ending of `restored` without an active conversion (T060); the local `RevertLinesPlan` copy (T061); the `tempRemove` `RunnerRefusal` and `lineReview` scope tests (T062); the `git diff` header reads in `HunkControls.tsx` (T063, after v0.1.0).
-- The T033 verification runs separately. This block records no test result.
+- This block records no test result. The block "Batch 2 verification (T033)" records them.
+
+### Batch 2 verification (T033), 2026-11-01
+
+- Code under test: `35679983` in the 008 worktree. Every log begins with an `ORIGIN` line that names the checkout under test. Each run ran alone behind the test gate.
+- The batch 2 review ran before this verification. Commits `21d1c632` and `35679983` hold its fixes.
+- `bun install --frozen-lockfile` exit 0. `bun run typecheck` exit 0. `bun run build` exit 0.
+- `bun run test:contracts` 6,084 pass, 37 skip, 0 fail (6,121 tests in 129 files).
+- `bun run test:git` 2,570 pass, 13 skip, 0 fail (2,583 tests in 129 files, about 180 minutes).
+- `cargo test --locked --manifest-path src-tauri/Cargo.toml` 644 pass, 16 ignored, 0 fail.
+- Control mutation: the restore step of `revert-bytes.ts` gives the raw line text. Then 7 tests turn red: 4 in `tests/git/revert-bytes.test.ts` and 3 in `tests/git/revert-lines.test.ts`, the CRLF cases. After the restore, `git diff --exit-code` gives 0.

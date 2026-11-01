@@ -9,10 +9,10 @@ import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
 import { entry, item, pressKey, statusBar, tree } from "./commit-fake";
 import { createFake, oid, stubLayout, TARGET } from "./history-fake";
-import { alertDialog, COMPARISON, diffBody, filesPlan, filesReviewed, HUNKS, markRow, openFiles, PatchDouble, revertKey, rowKey, selectFirstHunk, selectLines, shownDiff } from "./revert-fake";
-import { answer, button, click, settle, succeeded, unmountAll } from "./sync-fake";
+import { alertDialog, COMPARISON, diffBody, filesPlan, filesReviewed, HUNKS, markRow, openFiles, PatchDouble, revertAllUnstaged, revertKey, rowKey, selectFirstHunk, selectLines, shownDiff, unstagedPlan, unstagedReviewed } from "./revert-fake";
+import { answer, button, click, settle, succeeded, text, unmountAll } from "./sync-fake";
 
-// tasks.md T027 and T031 (feature 008, WP5). Stories US1, US2. Spec FR-006, FR-012, FR-018, FR-042, FR-046. Plan D12 "Keys".
+// tasks.md T027, T031, T036, and T059 (feature 008). Stories US1, US2, US3. Spec FR-006, FR-012, FR-018, FR-042, FR-046. Plan D12 "Keys".
 
 printOrigin("../../src/frontend/changes/ComparisonView.tsx", import.meta.dir);
 printOrigin("../../src/frontend/changes/HunkControls.tsx", import.meta.dir);
@@ -211,5 +211,152 @@ describe("open revert dialogs follow the shown read (data-model §10) and one re
     expect(double.count("readWorkspace")).toBeGreaterThan(reads);
     expect(alertDialog()).toBeNull();
     expect(double.count("runWorkbench")).toBe(0);
+  });
+});
+
+// tasks.md T036 (feature 008, WP4). Story US3. Spec FR-007, FR-030, FR-039, FR-040. Plan D11 REVERT_CHECKING, REVERT_PROGRESS, REVERT_COUNTS, OUTCOME_LABEL, D12 "Busy and progress", "Result" (boards Progress-checking, Progress-reverting, Result-success, Result-mixed).
+const footer = () => document.querySelector("footer")!;
+const statusArea = () => document.querySelector('section[data-slot="status-area"]');
+const runResult = (files: unknown[], fields: Record<string, unknown> = {}) => ({ action: "revert-unstaged", files, foldersCreated: [], index: "none", ...fields });
+
+/** Revert all unstaged changes of `files` up to Revert unstaged changes in the confirmation. */
+async function runUnstaged(files: ReturnType<typeof entry>[]) {
+  const { double, world } = await openFiles(workbench, files);
+  await revertAllUnstaged();
+  const covered = files.filter((f) => f.category === "unstaged" && f.submodule === undefined);
+  await answer(double.pending("reviewWorkbench"), unstagedReviewed(unstagedPlan(covered.map((f) => f.path))));
+  await click(button("Revert unstaged changes", alertDialog()!));
+  return { double, world, runCall: double.pending("runWorkbench")! };
+}
+
+describe("Revert all unstaged changes: progress and result (FR-007, FR-030, FR-040)", () => {
+  test("the review shows Checking <n> files… with Cancel; the confirmation opens after it", async () => {
+    const { double } = await openFiles(workbench, [entry("unstaged", "a.ts"), entry("unstaged", "b.ts"), entry("unstaged", "lib", { submodule: "SC..", xy: ".M" }), entry("staged", "c.ts"), entry("untracked", "n.txt")]);
+    await revertAllUnstaged();
+    expect(statusBar()).toContain("Checking 2 files…");
+    expect(button("Cancel", footer())).toBeDefined();
+    expect(alertDialog()).toBeNull();
+    await answer(double.pending("reviewWorkbench"), unstagedReviewed(unstagedPlan(["a.ts", "b.ts"], { submodules: 1 })));
+    expect(alertDialog()).not.toBeNull();
+    expect(statusBar()).not.toContain("Checking");
+  });
+
+  for (const [reason, line] of [
+    ["nothing-to-revert", "No unstaged changes."],
+    ["limit", "Arbareto reverts at most 10,000 files at a time. Select fewer files, then use Revert file."],
+  ] as const) {
+    test(`a review refusal with reason ${reason} shows its text`, async () => {
+      const { double } = await openFiles(workbench, [entry("unstaged", "a.ts")]);
+      await revertAllUnstaged();
+      await answer(double.pending("reviewWorkbench"), succeeded({ reason }, { state: "rejected", code: "WORKBENCH_UNAVAILABLE" }));
+      expect(statusBar()).toContain("Revert all unstaged changes is unavailable.");
+      expect(text(statusArea()!)).toContain(line);
+      expect(text(statusArea()!)).not.toContain(reason);
+      expect(alertDialog()).toBeNull();
+    });
+  }
+
+  test("one file: Checking 1 file…", async () => {
+    await openFiles(workbench, [entry("unstaged", "a.ts")]);
+    await revertAllUnstaged();
+    expect(statusBar()).toContain("Checking 1 file…");
+  });
+
+  test("the run shows Reverting <i> of <n>… with Cancel", async () => {
+    const files = Array.from({ length: 12 }, (_, i) => entry("unstaged", `f${i}.ts`));
+    const { runCall } = await runUnstaged(files);
+    expect(runCall.args.slice(0, 2)).toEqual([{ repositoryId: fixtureId(1) }, { workbenchToken: fixtureId(0x8d0), start: true }]);
+    const onProgress = runCall.args[2] as (event: unknown) => void;
+    await act(async () => onProgress({ requestId: fixtureId(0x7d2), operationId: fixtureId(0x7d3), state: "running", phase: "revert-files", counters: { fileIndex: 4, fileCount: 12 }, stalled: false }));
+    await settle();
+    expect(statusBar()).toContain("Reverting 4 of 12…");
+    expect(button("Cancel", footer())).toBeDefined();
+  });
+
+  test("success: Arbareto reverted the unstaged changes of <n> files., and of 1 file.", async () => {
+    const files = [entry("unstaged", "a.ts"), entry("unstaged", "b.ts")];
+    const { runCall } = await runUnstaged(files);
+    await answer(runCall, succeeded(runResult(files.map((f) => ({ entryId: f.entryId, outcome: "reverted" })))));
+    expect(statusBar()).toContain("Arbareto reverted the unstaged changes of 2 files.");
+    expect(statusArea()).toBeNull();
+    await unmountAll();
+
+    const one = [entry("unstaged", "a.ts")];
+    const second = await runUnstaged(one);
+    await answer(second.runCall, succeeded(runResult([{ entryId: one[0]!.entryId, outcome: "reverted" }])));
+    expect(statusBar()).toContain("Arbareto reverted the unstaged changes of 1 file.");
+  });
+
+  test("a mixed result: the count of each outcome, the heading, the first 20 files that did not revert in tree order, and and <m> more files.", async () => {
+    const files = Array.from({ length: 25 }, (_, i) => entry("unstaged", `f${String(i).padStart(2, "0")}.ts`));
+    const { runCall } = await runUnstaged(files);
+    // f00 and f01 reverted; f02 not changed with a sharing violation; f03 not started; f04 to f24 changed outside Arbareto.
+    const outcomes = files.map((f, i) => ({ entryId: f.entryId, outcome: i < 2 ? "reverted" : i === 2 ? "not-changed" : i === 3 ? "not-started" : "changed-outside", ...(i === 2 ? { code: "error", reason: "sharing-violation" } : {}) }));
+    await answer(runCall, { ...succeeded(runResult([...outcomes].reverse())), state: "failed-with-effects", code: "FAILED_WITH_EFFECTS" });
+    const count = "2 files reverted. 1 file not changed. 21 files changed outside Arbareto. 1 file not started.";
+    expect(statusBar()).toContain(count);
+    const area = statusArea()!;
+    expect(area).not.toBeNull();
+    expect(text(area)).toContain("Revert all unstaged changes");
+    expect(text(area)).toContain(count);
+    expect(text(area)).toContain("Another program has f02.ts open. Arbareto did not change it. Close the file, then try again.");
+    expect(text(area)).toContain("f03.ts: Not started.");
+    expect(text(area)).toContain("f04.ts: Changed outside Arbareto.");
+    // 23 files did not revert: the first 20 (f02 to f21), then the rest.
+    expect(text(area)).toContain("f21.ts: Changed outside Arbareto.");
+    expect(text(area)).not.toContain("f22.ts");
+    expect(text(area)).toContain("and 3 more files.");
+    expect(text(area)).not.toContain("f00.ts");
+  });
+});
+
+// tasks.md T059 (feature 008, renderer part). Plan D11 multi-file STALE_REVIEW text, contract "Contract gaps" (RevertRun `reason`).
+describe("run refusals with a RevertRun reason (T059)", () => {
+  const notStarted = (files: ReturnType<typeof entry>[]) => files.map((f) => ({ entryId: f.entryId, outcome: "not-started" }));
+  async function runFiles(paths: string[]) {
+    const files = paths.map((p) => entry("unstaged", p));
+    const { double } = await openFiles(workbench, files);
+    if (files.length > 1) {
+      await click(item("Changes", paths[0]!));
+      await markRow(item("Changes", paths.at(-1)!), "range");
+    }
+    await rowKey(item("Changes", paths[0]!));
+    await answer(double.pending("reviewWorkbench"), filesReviewed(filesPlan(paths)));
+    await click(button(paths.length === 1 ? "Revert file" : "Revert files", alertDialog()!));
+    return { files, runCall: double.pending("runWorkbench")! };
+  }
+  const STALE = "The files changed after the review. Arbareto changed nothing. Check the changes, then try again.";
+  const filesRun = (files: ReturnType<typeof entry>[], fields: Record<string, unknown>) => ({ action: "revert-files", files: notStarted(files), foldersCreated: [], index: "none", ...fields });
+
+  test("a multi-file STALE_REVIEW with reason revert-changed shows the multi-file text", async () => {
+    const { files, runCall } = await runFiles(["a.ts", "b.ts"]);
+    await answer(runCall, { ...succeeded(filesRun(files, { reason: "revert-changed" })), state: "failed", code: "STALE_REVIEW" });
+    expect(statusBar()).toContain(STALE);
+  });
+
+  test("Revert all unstaged changes: a STALE_REVIEW with reason revert-changed shows the multi-file text", async () => {
+    const files = [entry("unstaged", "a.ts"), entry("unstaged", "b.ts")];
+    const { runCall } = await runUnstaged(files);
+    await answer(runCall, { ...succeeded(runResult(notStarted(files), { reason: "revert-changed" })), state: "failed", code: "STALE_REVIEW" });
+    expect(statusBar()).toContain(STALE);
+  });
+
+  test("a one-file STALE_REVIEW names its file", async () => {
+    const { files, runCall } = await runFiles(["a.ts"]);
+    await answer(runCall, { ...succeeded(filesRun(files, { reason: "revert-changed" })), state: "failed", code: "STALE_REVIEW" });
+    expect(statusBar()).toContain("a.ts changed after the review. Arbareto changed nothing. Check the changes, then try again.");
+  });
+
+  test("an index-part refusal shows its reason text; an eligibility reason shows the service remedy text", async () => {
+    const first = await runFiles(["a.ts"]);
+    await answer(first.runCall, { ...succeeded(filesRun(first.files, { index: "refused", reason: "read-only" })), state: "failed", code: "WORKBENCH_UNAVAILABLE" });
+    expect(statusBar()).toContain("a.ts is read-only. Arbareto does not change it.");
+    await unmountAll();
+
+    const second = await runFiles(["a.ts", "b.ts"]);
+    const remedy = "Sample remedy text of the service.";
+    await answer(second.runCall, { ...succeeded(filesRun(second.files, { index: "refused", reason: "shared-repository", remedy: { text: remedy } })), state: "failed", code: "UNSUPPORTED_HUNK_PROFILE" });
+    expect(statusBar()).toContain(remedy);
+    expect(statusBar()).not.toContain("2 files not started.");
   });
 });

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import { ArrowDown01Icon, ArrowRight01Icon, Copy01Icon, CubeIcon, Delete02Icon, Delete04Icon, File01Icon, Folder01Icon, FolderSearchIcon, ListIcon, ListTreeIcon, MinusSignIcon, PlusSignIcon, Search01Icon, Tick02Icon, Undo03Icon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
+import { ArrowDown01Icon, ArrowRight01Icon, Copy01Icon, CubeIcon, Delete02Icon, Delete04Icon, File01Icon, Folder01Icon, FolderSearchIcon, ListIcon, ListTreeIcon, MinusSignIcon, MoreHorizontalIcon, PlusSignIcon, Search01Icon, Tick02Icon, Undo03Icon, ViewOffSlashIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import { memo, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type Ref } from "react";
@@ -20,7 +20,7 @@ import { GIT_SEPARATORS, splitPath } from "../lib/path";
 import { DeleteConfirm, DeleteRefusal } from "./DeleteConfirm";
 import { CUT_REASON, deleteEntries, deleteReason, IGNORE_LABEL, IGNORE_LINE_REASON, LIMIT_TEXT, NO_HISTORY, type DeletePlan, type DeleteReview, type FileActions } from "./file-actions";
 import { RevertConfirm } from "./RevertConfirm";
-import { actionName, FOLDER_REASON, revertFilesLabel, revertReason, revertSetReason } from "./revert-text";
+import { actionName, FOLDER_REASON, MORE_ACTIONS, REVERT_UNSTAGED_LABEL, revertFilesLabel, revertReason, revertSetReason, unstagedFiles, unstagedReason, type RevertUnstagedPlan } from "./revert-text";
 import type { IgnoreTarget } from "../state/workbench";
 import { changesRows, derivedRequest, folderEntries, formatCount, overLimit, stagedRows, type FilesRequest, type Layout, type TreeRow } from "./file-tree";
 
@@ -73,10 +73,13 @@ export type FilesProps = {
   snapshotId?: string;
 };
 
-/** Feature 008 contract Δ3 `revert-files`. `review` gives null after a refusal, which the status shows. `run` gives true for `succeeded`. */
+/** Feature 008 contract Δ3 `revert-files` and `revert-unstaged`. A review gives null after a refusal, which the status shows. `run` gives true for `succeeded`. */
 export type RevertFiles = {
   review(entryIds: string[], label: string): Promise<{ token: string; plan: RevertFilesPlan } | null>;
-  run(token: string, label: string, entryIds: string[]): Promise<boolean>;
+  /** `files` is the count of the REVERT_CHECKING line. */
+  reviewUnstaged(label: string, files: number): Promise<{ token: string; plan: RevertUnstagedPlan } | null>;
+  /** `unstaged` selects the Revert all unstaged changes result texts. */
+  run(token: string, label: string, entryIds: string[], unstaged: boolean): Promise<boolean>;
 };
 
 export type ChangesPaneProps = {
@@ -162,7 +165,9 @@ export function ChangesPane(props: ChangesPaneProps) {
   const [menu, setMenu] = useState<{ key: string; list: ListName; anchor: HTMLElement; byKey: boolean } | null>(null);
   const closed = useRef<{ list: ListName; key: string; before: readonly TreeRow[] } | null>(null);
   const [confirm, setConfirm] = useState<{ review: DeleteReview; anchor: HTMLElement } | null>(null);
-  const [revertConfirm, setRevertConfirm] = useState<{ token: string; plan: RevertFilesPlan; label: string; entryIds: string[]; key: string | null; anchor: HTMLElement; snapshotId: string | undefined } | null>(null);
+  const [revertConfirm, setRevertConfirm] = useState<{ token: string; action: "revert-files" | "revert-unstaged"; plan: RevertFilesPlan | RevertUnstagedPlan; hidden: number; label: string; entryIds: string[]; key: string | null; anchor: HTMLElement; snapshotId: string | undefined } | null>(null);
+  const [headerMenu, setHeaderMenu] = useState(false);
+  const headerMore = useRef<HTMLButtonElement>(null);
   if (revertConfirm !== null && revertConfirm.snapshotId !== files?.snapshotId) setRevertConfirm(null);
   const reverting = useRef(false);
   // Spec FR-042: the row key of a confirmed revert. Its removal moves the selection as Stage file does.
@@ -433,7 +438,25 @@ export function ChangesPane(props: ChangesPaneProps) {
     reverting.current = true;
     try {
       const review = await revert.review(entryIds, label);
-      if (mounted.current && review !== null) setRevertConfirm({ ...review, label, entryIds, key: row.kind === "file" ? row.entry.pathBytes : null, anchor, snapshotId });
+      if (mounted.current && review !== null) setRevertConfirm({ ...review, action: "revert-files", hidden: 0, label, entryIds, key: row.kind === "file" ? row.entry.pathBytes : null, anchor, snapshotId });
+    } finally {
+      reverting.current = false;
+    }
+  }
+  // Feature 008 spec FR-026 and plan D6: Revert all unstaged changes covers the rows that Filter files hides.
+  const { covered, own } = useMemo(() => ({ covered: unstagedFiles(entries), own: unstagedReason(entries) }), [entries]);
+  const unstagedWhy = own ?? (files === undefined ? null : files.running ? files.reason : (files.deleteBlock ?? null));
+  async function startRevertUnstaged(anchor: HTMLElement) {
+    const revert = files?.revert;
+    if (files === undefined || revert === undefined || reverting.current) return;
+    if (unstagedWhy !== null) return void (files.running || status(unstagedWhy));
+    const label = actionName(REVERT_UNSTAGED_LABEL);
+    const hidden = query === "" ? 0 : covered.filter((e) => !matches(e.path, query)).length;
+    const snapshotId = files.snapshotId;
+    reverting.current = true;
+    try {
+      const review = await revert.reviewUnstaged(label, covered.length);
+      if (mounted.current && review !== null) setRevertConfirm({ ...review, action: "revert-unstaged", hidden, label, entryIds: covered.map((e) => e.entryId), key: null, anchor, snapshotId });
     } finally {
       reverting.current = false;
     }
@@ -441,7 +464,7 @@ export function ChangesPane(props: ChangesPaneProps) {
   async function confirmRevert(chosen: NonNullable<typeof revertConfirm>) {
     setRevertConfirm(null);
     revertMove.current = chosen.key;
-    const ok = (await files?.revert?.run(chosen.token, chosen.label, chosen.entryIds)) === true;
+    const ok = (await files?.revert?.run(chosen.token, chosen.label, chosen.entryIds, chosen.action === "revert-unstaged")) === true;
     if (!mounted.current) return;
     if (ok) setMarked(null);
     else revertMove.current = null;
@@ -653,6 +676,23 @@ export function ChangesPane(props: ChangesPaneProps) {
               <IconButton icon={ListTreeIcon} label="Tree layout" aria-pressed={layout === "tree"} onClick={() => setLayout("tree")} />
               <IconButton icon={ListIcon} label="Flat layout" aria-pressed={layout === "flat"} onClick={() => setLayout("flat")} />
             </span>
+            {/* Feature 008 plan.md D12 "Changes header" (board Menu-changes-header): the item has no key (spec FR-026). */}
+            {files?.revert === undefined ? null : (
+              <Tooltip>
+                <ActionMenu
+                  label={MORE_ACTIONS}
+                  groups={[[{ label: REVERT_UNSTAGED_LABEL, icon: Undo03Icon, danger: true, reason: unstagedWhy, running: unstagedWhy !== null && files.running && unstagedWhy === files.reason, onSelect: () => void (headerMore.current && startRevertUnstaged(headerMore.current)) }]]}
+                  open={headerMenu}
+                  onOpenChange={setHeaderMenu}
+                  trigger={
+                    <TooltipTrigger render={<Button ref={headerMore} variant="ghost" size="icon-sm" aria-label={MORE_ACTIONS} style={{ width: "var(--h-row-button)", height: "var(--h-row-button)" }} />}>
+                      <HugeiconsIcon icon={MoreHorizontalIcon} strokeWidth={2} aria-hidden="true" className="size-(--icon-size)" />
+                    </TooltipTrigger>
+                  }
+                />
+                <TooltipContent>{MORE_ACTIONS}</TooltipContent>
+              </Tooltip>
+            )}
           </ListHeading>
           {complete && working === 0 ? <p className="px-2 text-muted-text">Working tree clean</p> : null}
           {/* Plan D15 "Commit view texts": the sidebar shows no help line. The text stays the description of the Changes tree. */}
@@ -720,7 +760,7 @@ export function ChangesPane(props: ChangesPaneProps) {
         <DeleteRefusal text={confirm.review.text} finalFocus={() => (confirm.anchor.isConnected ? confirm.anchor : null)} onClose={() => setConfirm(null)} />
       )}
       {revertConfirm === null ? null : (
-        <RevertConfirm plan={revertConfirm.plan} finalFocus={() => (revertConfirm.anchor.isConnected ? revertConfirm.anchor : null)} onCancel={() => setRevertConfirm(null)} onConfirm={() => void confirmRevert(revertConfirm)} />
+        <RevertConfirm plan={revertConfirm.plan} hidden={revertConfirm.hidden} finalFocus={() => (revertConfirm.anchor.isConnected ? revertConfirm.anchor : null)} onCancel={() => setRevertConfirm(null)} onConfirm={() => void confirmRevert(revertConfirm)} />
       )}
     </div>
   );

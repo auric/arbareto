@@ -157,9 +157,11 @@ Each step writes its tests first.
 ### D4 Revert lines, staged
 
 - The comparison is a retained `head-to-index` comparison. The review refuses with `unstaged-changes` when the status record of the path has a worktree letter other than `.` (Clarifications, 2026-10-27).
+- Refusal order: the frame refusals of D2 come first. Then the memory-only line refusals of the retained comparison: `UNKNOWN_TARGET`, `INVALID_REQUEST`, `untracked`, the 001 support reasons, and the sub-hunk reasons. Then `unstaged-changes`. Then the Git and file reads of the path, with their refusals.
 - Index part: the existing Unstage lines candidate (`applyToContent` in `hunk-candidate.ts:104` through the `prepare` of `hunk-publish.ts:978`), bound to the same comparison and line selection.
 - Working part: because the file has no unstaged change, its check-in form equals the index blob. The review reads the raw working bytes with the D3 read and its 1 MiB bound, so a larger working file refuses with `size`. It applies the same reversed sub-hunk to them with the R5 rule. The proof compares `hash-object --path` of the new bytes with the blob ID of the new index content.
-- After the working bytes read, the review reads the status record of the path again (`status --porcelain=v2 -z` with the snapshot flags, as `multi-publish.ts` `sameEntries`). A record other than the shown entry gives `STALE_SELECTION`. So a proof failure gives `line-endings` only for a line-ending difference.
+- After the working bytes read, the review reads the status record of the path again (`revert.ts` `sameRecord`: a fresh `status --porcelain=v2 -z` of the path with the snapshot flags, as `multi-publish.ts` `sameEntries`). A record other than the shown entry gives `STALE_SELECTION`. So a proof failure gives `line-endings` only for a line-ending difference.
+- Candidate check (batch 3 review S1): before the publication, the run checks the candidate index entry of the path against the bound `newIndex`. The path must have exactly one entry, at stage 0, with the bound mode and object ID. The check reads the verified candidate bytes and starts no Git process. Another entry refuses the index part with `STALE_REVIEW` and the result `{action, reason: "revert-changed"}`, before any write.
 - Run order: the index part first, then the working write (spec FR-017, D10).
 
 ### D5 Revert file
@@ -214,10 +216,12 @@ Rules:
 ### D9 Working-file write on WSL
 
 - The same request reaches `wslFiles` mode `replace` with the root `worktree` and any path below it. The Perl `replace_one` (`wsl-process.json`) keeps its walk and its checks, and adds: the `st_uid` compare (`owner`), the `llistxattr` check (`xattr`), the `O_TMPFILE` create and the `linkat` name just before the rename (L1, L2), and `mkdir` of the missing folders (L7). The temporary file steps run in this order: the gid copy `fchown(-1, old gid)` (`EPERM` refuses with `owner`), the write, `fsync`, `fchmod` of the old `st_mode & 07777`, an `fstat` compare of those mode bits, then `linkat`. A write and an unprivileged `chown` each clear the set-user-ID and set-group-ID bits (chown(2), probe L4, research R15), so the mode copy comes after both. `fchmod` can drop the set-group-ID bit without an error (chmod(2)), so the `fstat` compare proves the bits, and a difference refuses with `owner` (spec FR-043).
-- A line revert: the bytes cross in hex on stdin, at most `REVERT_FILE_BYTES` (contract Δ11). The WSL read of the working bytes uses `fileFacts` with `content: true` (at most 1 MiB).
+- A line revert: the bytes cross in hex on stdin, at most `REVERT_FILE_BYTES` (contract Δ11). The WSL read of the working bytes uses `fileFacts` with `content: true` (at most 1 MiB). Each content read crosses at most 1 MiB. A line revert reads once at the review and once at the run.
 - A whole file: no content crosses. Git writes its temporary file inside the distro. The Perl `replace_one` opens it relative to the root with `O_NOFOLLOW`, checks its `fstat` against `lstat`, copies it into the `O_TMPFILE` file beside the target with a streamed SHA-256, and unlinks the source after the identity check. `tempRemove` runs the same identity check.
 - A staged part refuses with `shared-repository` (`eligibility.ts:225`) when any scope sets `core.sharedRepository`. An unstaged revert writes no repository file, so that reason does not apply to it.
-- Without `syscall.ph`, `replace_one` has no `linkat` and no `llistxattr` (research R15 "Probe L8 (T057)", decision of 2026-11-01). A present target gets `error`, and nothing changes. An absent target takes the 005 named temporary file (`O_CREAT|O_EXCL|O_NOFOLLOW`), then `link` and `unlink`, as research R9 and P0.3 allow. `link` fails on an existing name, so the write never replaces a file. A stop between `link` and `unlink` leaves a second link of the target, so the next revert refuses with `hard-link` (contract Δ11, T045).
+- Without `syscall.ph`, `replace_one` has no `linkat` and no `llistxattr` (research R15 "Probe L8 (T057)", decision of 2026-11-01). A present target gets `error`, and nothing changes. An absent target takes the 005 named temporary file `.arbareto-<pid>-replace.tmp` (`O_CREAT|O_EXCL|O_NOFOLLOW`), then `link` and `unlink`, as research R9 and P0.3 allow. `link` fails on an existing name, so the write never replaces a file. A stop between `link` and `unlink` leaves a second link of the target, so each later revert of that file refuses with `hard-link` (contract Δ11, T045).
+- Limit (batch 3 review S3): a WSL revert needs `syscall.ph`. On `Ubuntu-26.04` the package chain is `git` → `perl` → `libperl5.40`, and `libperl5.40` owns `syscall.ph` (research R15 "Probe L8 (T057)"). A Git built from source, or a distro whose `git` does not depend on the full `perl`, can lack it. Then the `detail` read of a present file gives an `error` fact, and the review refuses with `unreadable`. A present target that reaches the write gets `error` `other-error`. An absent target still takes the named temporary file above.
+- The `detail` read gives the flag `own` (`st_uid == $>`), the rule of the `replace` owner check. The review refuses with `owner` when `own` is false, before the `xattr` check (contract Δ6).
 - A stop, a deadline, or a broken output of `replace` gives `interrupted`. The reconcile waits for the process-end fact before the fresh read (`workbench-review.ts:360`).
 
 ### D10 Outcome and failure handling
@@ -254,14 +258,71 @@ Rules:
 - `REVERT_UNAVAILABLE` = "<action> is unavailable.", such as "Revert 3 files is unavailable." (the 004 "<action> is unavailable" form, board Refusal-files). `<action>` is the item label without the ellipsis. It is the status line and the status-area heading of a review refusal. The status area lists each refused file with its reason (spec FR-022, FR-029).
 - `REVERT_CHECKING` = "Checking <n> files…" ("Checking 1 file…", spec FR-007). `REVERT_PROGRESS` = "Reverting <i> of <n>…" (spec FR-030). Both end with "…", as the other running lines do. A lines run shows the generic "Reverting in <folder>…" line before the first progress event.
 - `REVERT_LIMIT` (spec FR-022): the payload schema caps `revert-files` at 10,000 IDs, so the renderer states the limit before a request: "Arbareto reverts at most 10,000 files at a time. Select fewer files."
-- Multi-file `STALE_REVIEW`: "The files changed after the review. Arbareto changed nothing. Check the changes, then try again." The result needs the `RevertRun` reason of T059.
+- Multi-file `STALE_REVIEW`: "The files changed after the review. Arbareto changed nothing. Check the changes, then try again." The renderer shows it for the `RevertRun` reason `revert-changed` (T059).
 - `REVERT_DONE` (spec FR-040, board Result-success).
 - `REVERT_COUNTS` (spec FR-040, board Result-mixed): the count line of a multi-file result with another outcome, such as "10 files reverted. 1 file not changed. 1 file changed outside Arbareto." Each outcome with a non-zero count adds one sentence in the FR-039 order: "<n> files reverted.", "<n> files unstaged only.", "<n> files not changed.", "<n> files changed outside Arbareto.", "<n> files not started." A count of 1 uses "1 file". The status line shows the count line. The status-area heading is the item label without the ellipsis, such as "Revert all unstaged changes".
 - `OUTCOME_LABEL` (spec FR-039, board Result-mixed): the status area lists the first 20 files that did not revert, each with its path and label: "Unstaged only.", "Not changed.", "Changed outside Arbareto.", "Not started." A `not-changed` file adds its reason after the label: the `stale` text, the refusal reason, or the `REVERT_FAILURE` text. An `unstaged-only` file without a code shows "<file>: Unstaged only."
-- `REVERT_PARTIAL` (spec FR-017, board Result-staged-partial). For `sharing-violation`, `<reason>` = "another program has it open". For another `error` code: "…It did not change <file>, because the write failed: <code>."
+- `REVERT_PARTIAL` (spec FR-017, board Result-staged-partial): "Arbareto removed the changes from the index. It did not change <file>, because <reason>." For `sharing-violation`, `<reason>` = "another program has it open". For another `error` code: "…It did not change <file>, because the write failed: <code>." For `stale`, and for a `changed-outside` outcome after a published index part: "Arbareto removed the changes from the index. It did not change <file>, because the file changed after the review." For a `refused` reply, `<reason>` is the FR-038 reason text without its final period.
 - `REVERT_FAILURE` (spec FR-041). `sharing-violation`: "Another program has <file> open. Arbareto did not change it. Close the file, then try again." `access-denied`, `disk-full`, `read-only-volume`, and every other code reuse the 005 Delete form (005 plan D15 "Delete run texts", "Not deleted: <code>"): the file row shows "Not changed: <code>" in place of the label and the reason.
 - `REVERT_EXPIRED` (spec FR-011) and `NO_HUNK` (the existing "No hunk is selected.") keep their texts. They have no board.
 - Item labels: "Revert hunk…", "Revert <n> lines…", "Revert file…", "Revert <n> files…", "Revert all unstaged changes…". `MORE_ACTIONS` = "More actions", the tooltip and the accessible name of both "More actions" buttons.
+
+The other texts of `revert-text.ts`, word for word (batch 3 converge, 2026-11-01). `<n>` uses "1 line", "1 file", or "1 submodule" for a count of 1.
+
+| Use | Text |
+| --- | --- |
+| `REVERT_EXPIRED` | "The review expired. Arbareto changed nothing. Select Revert again." |
+| Folder row reason | "Arbareto does not revert a folder. Select its files." |
+| `MORE_FILES` | "and 1 more file." / "and <m> more files." |
+| Lines title, unstaged | "Revert this hunk in <file>?" / "Revert <n> lines in <file>?" |
+| Lines title, staged | "Revert this staged hunk in <file>?" / "Revert 1 staged line in <file>?" / "Revert <n> staged lines in <file>?" |
+| Lines body, unstaged | "Arbareto removes the selected changes from the working file. The index does not change." |
+| Lines body, staged | "Arbareto removes the selected changes from the index and from the working file." |
+| Lines buttons | "Revert hunk" / "Revert line" / "Revert lines" |
+| Files title | "Revert <n> files?" |
+| Files body, one file | "Arbareto sets the file to its version in the last commit, in the index and in the working file. Its staged and unstaged changes are lost." |
+| Files body, several files | "Arbareto sets each file to its version in the last commit, in the index and in the working file. Their staged and unstaged changes are lost." |
+| Files buttons | "Revert file" / "Revert files" |
+| `NEW_FILES_LINE`, one file | "The last commit does not have 1 of these files. Arbareto unstages it and keeps the file. Git then shows it as untracked." |
+| `NEW_FILES_LINE`, several files | "The last commit does not have <k> of these files. Arbareto unstages them and keeps the files. Git then shows them as untracked." |
+| Unstaged title | "Revert all unstaged changes?" |
+| Unstaged body | "Arbareto sets <n> files to their version in the index. Staged changes stay. Untracked files stay." ("its version" for 1 file) |
+| Unstaged button | "Revert unstaged changes" |
+| `SUBMODULES_LINE` | "Submodule changes stay. Arbareto does not change <k> submodules." |
+| `HIDDEN_LINE` | "This covers <n> files that Filter files hides." |
+| Unstaged unavailable | "No unstaged changes." |
+| Unstaged unavailable, submodules only | "Only submodules have unstaged changes. Arbareto does not change submodules." |
+| Unstaged limit | "Arbareto reverts at most 10,000 files at a time. Select fewer files, then use Revert file." |
+| `context-only` | "The selection holds only context lines. Select added or removed lines." |
+| `several-hunks` | "The selection covers two hunks. Select lines of one hunk." |
+| `deleted-file` | "Arbareto does not revert lines or hunks of a deleted file. Use Revert file." |
+| `new-file` | "Arbareto does not revert lines or hunks of a staged new file. Use Revert file." |
+| `eof-newline` | "This hunk holds the Git marker "No newline at end of file". Revert the whole hunk." |
+| `untracked` | "Arbareto does not revert an untracked file. Use Delete." |
+| `attributes` | "Git reads other attributes for <file> from the working files than from the index. Commit or revert the .gitattributes change first." |
+| `not-regular` | "<file> or a folder on its path is a link or a junction. Arbareto does not follow it." |
+| `hard-link` | "<file> has more than one hard link. Arbareto does not change it." |
+| `read-only` | "<file> is read-only. Arbareto does not change it." |
+| `owner` | "Another user owns <file>. Arbareto does not change it." |
+| `in-the-way` | "A file that Git does not track exists at <file>. Delete it first, or keep the deletion." |
+| `unreadable` | "Arbareto cannot read one of these files, so Revert is unavailable." |
+| `encrypted` | "<file> is encrypted. Arbareto does not change it." |
+| `file-attributes` | "Arbareto cannot keep the file attributes of <file>. It did not change the file." |
+| `security` | "Arbareto cannot keep the permissions of <file>. It did not change the file." |
+| `xattr` | "<file> has extended attributes. Arbareto does not change it." |
+| `stale` | "<file> changed after the review. Arbareto changed nothing. Check the changes, then try again." ("then select the lines again" for a line selection) |
+| `ident` | "Arbareto does not revert part of a file with the ident attribute. Use Revert file." |
+| `unstaged-changes` | "This file also has unstaged changes. Revert or stage them first." |
+| `REVERT_DONE`, hunk | "Arbareto reverted a hunk in <file>." |
+| `REVERT_DONE`, lines | "Arbareto reverted <n> lines in <file>." |
+| `REVERT_DONE`, files | "Arbareto reverted <n> files." |
+| `REVERT_DONE`, all unstaged | "Arbareto reverted the unstaged changes of <n> files." |
+| `REVERT_FAILURE`, other code | "<file>: Not changed: <code>" |
+| `REVERT_PARTIAL` | "Arbareto removed the changes from the index. It did not change <file>, because <reason>." |
+| `REVERT_PARTIAL` `<reason>`, `error` `sharing-violation` | "another program has it open" |
+| `REVERT_PARTIAL` `<reason>`, other `error` code | "the write failed: <code>" ("the write failed: error" without a code) |
+| `REVERT_PARTIAL` `<reason>`, `stale`, or `changed-outside` after a published index part | "the file changed after the review" |
+| `REVERT_PARTIAL` `<reason>`, `refused` | the FR-038 text of the reason without its last period; the reply code (`refused`) when the reason has no text |
 
 ### D12 UI, keys, and menus
 
@@ -314,7 +375,7 @@ These lines stay unchanged: 001 FR-013 (`:404`), 001 FR-038 (`:447`), 004 FR-042
 - The DACL copy method is decided (research R15, user decision of 2026-10-27). T013 tests it, and T014 builds it.
 - The placement of "More actions" and the menu order follow the approved mockup (D12, user approval of 2026-10-31).
 - The labels "Unstaged only." and "Not started." and their count sentences in D11 follow the approved FR-039 naming rule. The mockup shows no board for them.
-- The FR-017 `<reason>` text is approved for `sharing-violation` only. The texts for the other codes are open.
+- The FR-017 `<reason>` texts are closed (orchestrator decision, 2026-11-01). They are the texts of `revert-text.ts` `outcomeLine`, as the D11 table records them.
 - `docs/project-brief.md:101` changes its label example (D14). The brief is not a spec.
 
 ## Phases

@@ -26,10 +26,10 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
   - `{action: "revert-unstaged", snapshotId}`.
 - Common refusals (004 Δ3) apply: `OPERATION_IN_PROGRESS`, `unknown-operation`, and `CONFLICTED`. A running mutation gives `BUSY`. No trust class (Δ7).
 - Reads of every action: the snapshot entries (no Git process); `ls-files --stage -z` and `ls-files --eol -z` for the paths, as literal pathspecs after `--`; `check-attr -z --stdin` and `check-attr --cached -z --stdin` for `text`, `eol`, `crlf`, `ident`, `filter`, `working-tree-encoding`, and `diff`; `fileFacts` with `digest: true` and `detail: true`, 64 entries per frame, with `stream: true` for the targets of `revert-files` and `revert-unstaged`.
-- `revert-lines` reads: the retained comparison; the working bytes (Windows: the service read of at most 1 MiB; WSL: `fileFacts` with `content: true`); then `hash-object --path=<path> --stdin` with the new bytes on stdin. `hash-object` runs without `-w` and writes no object.
+- `revert-lines` reads: the retained comparison; `cat-file blob <index oid>` for the index side, bounded at 1 MiB (`COMPARED_RAW_VERSION_BYTES`), to build the expected working side (a larger blob refuses with `size`); the working bytes (Windows: the service read of at most 1 MiB; WSL: `fileFacts` with `content: true`); then `hash-object --path=<path> --stdin` with the new bytes on stdin. `hash-object` runs without `-w` and writes no object.
 - `revert-files` and `revert-unstaged` reads: no content read. `cat-file --batch-check` gives the blob size of each source entry (for the batches and the deadlines of plan D5a).
-- Refusals before a token: `LOCKED` with the path and the 001 remedy when `index.lock` exists (plan D2); `WORKBENCH_UNAVAILABLE` with a reason of data-model §7; `UNSUPPORTED_COMPARISON` with the 001 support reason; `UNSUPPORTED_HUNK_PROFILE` with the eligibility reason; `INVALID_REQUEST` for an entry of another snapshot, a duplicate ID, or a comparison of another snapshot; `UNKNOWN_TARGET` for an unknown comparison or hunk.
-- Refusal value (data-model §7): `{reason}`; `{reason, remedy: {text}}` for an eligibility reason; `{path, remedy: {text}}` for `LOCKED`; `{reason, files: [{path, reason}], more}` for file reasons. `files` holds 1 to 20 refused files in tree order with base64 path bytes. `reason` equals the reason of the first file, and the response code is the code of that file. `more` counts the other refused files. The service gives no `several-hunks`, because only the renderer finds it.
+- Refusals before a token: `LOCKED` with the path and the 001 remedy when `index.lock` exists (plan D2); `WORKBENCH_UNAVAILABLE` with a reason of data-model §7; `UNSUPPORTED_COMPARISON` with the 001 support reason; `UNSUPPORTED_HUNK_PROFILE` with the eligibility reason; `INVALID_REQUEST` for an entry of another snapshot, a duplicate ID, or a comparison of another snapshot; `UNKNOWN_TARGET` for an unknown comparison or hunk; `OBJECT_MISSING` with the 001 remedy when `cat-file --batch-check` names a source blob of `revert-files` missing.
+- Refusal value (data-model §7): `{reason}`; `{reason, remedy: {text}}` for an eligibility reason; `{path, remedy: {text}}` for `LOCKED`, and the same shape for the `OBJECT_MISSING` refusal of `revert-files` (`path` names the file); `{reason, files: [{path, reason}], more}` for file reasons. `files` holds 1 to 20 refused files in tree order with base64 path bytes. `reason` equals the reason of the first file, and the response code is the code of that file. `more` counts the other refused files. The service gives no `several-hunks`, because only the renderer finds it.
 - Plans: data-model §5.
 
 ### `runWorkbench` (004 Δ3)
@@ -41,7 +41,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - `checkout-index` deadline: `GIT_PROCESS_DEADLINE_MS` plus 1 s for each started 64 MiB of the batch blob sizes (research R11). This size rule replaces `REGISTERED_DEADLINE_CAP_MS` for `checkout-index --temp`, for `fileReplace` with `source`, and for `fileFacts` with `stream`, so a large file gets a finite deadline and no size limit. Cancel stops each of them.
 - Run frame `limits` (001 §6): a `registeredOperation` `run` takes a `deadlineMs` above `REGISTERED_DEADLINE_CAP_MS` only with the exact array `--no-lazy-fetch checkout-index --temp --stdin -z`. The frame bound of that deadline is the safe integer range. Every other `run` keeps the cap.
 - Cancel stops the run before the next request. A started `fileReplace` runs to its end.
-- Response state and per-file outcomes: plan D10 and data-model §8.
+- Response state and per-file outcomes: plan D10 and data-model §8. An `unstaged-only` outcome carries `code` and `reason` under the same rules as `not-changed`.
 - Deadline per `fileReplace`: the 001 walk deadline (30 s), plus the size rule above for `source` (Δ6).
 
 ## Δ5 Finite bounds (001 §5)
@@ -110,6 +110,8 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - 005 Δ11 `wslFiles` `replace` keeps its ignore-file rules for the roots of `gitignore` and `exclude`.
 
 ## Contract gaps
+
+- `RevertRun` (data-model §9) cannot carry the reason `revert-changed` or the reason of an index-part refusal. A multi-file `STALE_REVIEW` result therefore names no reason, and the renderer cannot show the plan D11 multi-file stale text. T059 adds both values (2026-11-01).
 
 - The `fileReplace` target handle shares `DELETE`, so the rename can replace the target. Another program can rename a file over the target name between the check and the rename (005 gap). The fresh digest then names the outcome `changed-outside`.
 - WSL: the `replace` mode acts on the last name after its check. A write by another program inside that window gets replaced, because Linux offers no mandatory lock (spec FR-043).

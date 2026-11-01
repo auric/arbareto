@@ -447,3 +447,16 @@ OBSERVATION T004: G9-G10-G8.mode-100755 expected={"holds":22} observed={"holds":
 - Control mutation: the `working` target checks its digest in `held`, not in `check`. Without the SHA-256 compare in `check`, only the 005 test `a_target_that_differs_from_expected_is_stale` turns red. Without the SHA-256 compare in `held`, the T012 test `a_target_whose_facts_or_digest_differ_from_the_frame_is_stale` turns red at its `sha256` case. After the restore, `git diff --exit-code` gives 0, and the stale tests give 5 pass.
 - T054 (2026-10-31, on `6e29d554`): the test sets the old last write time to 2020-01-01 through `FileBasicInformation` and compares with that value. It passed 20 of 20 runs alone. `cargo test --locked --manifest-path src-tauri/Cargo.toml` gave 644 pass, 0 fail, 16 ignored. Control: an old value of 2100-01-01 turns the compare red.
 - T024 closes with T054 and the green cargo run. The `test:git` run printed no fail line in the 110 files that it reached before its limit. The T033 batch 2 verification runs the whole `test:git` again.
+
+### Batch 2 review (2026-11-01)
+
+- Code under review: the batch 2 merges `3b7635ba` (service, T029, T030) and `ea4ab8a2` (UI, T031, T032) on top of `44058426` (T025 to T028). The review fixes merged as `21d1c632` (service) and `35679983` (UI).
+- HIGH, service, fixed in `467cc457`: `in-the-way` came from an untracked status record, so an ignored file at a deleted path passed the review, and the run replaced it. Now the file fact decides: no index entry in the shown read and a present working file (data-model §7).
+- Service, fixed in `467cc457`: a `tempRemove` result other than `removed` or `absent` now ends the run `failed-with-effects`, because Git's temporary file can stay (plan D10).
+- Service, fixed in `467cc457`: an `unstaged-only` outcome now carries `code` and `reason` under the `not-changed` rules (data-model §8, contract Δ3).
+- Service, fixed in `467cc457`: a read end that throws now gives one `failed` response with `GIT_FAILED` (`read-scheduler.ts`).
+- UI, fixed in `16fad87e`: the renderer states the 10,000-file limit (spec FR-022, plan D11 `REVERT_LIMIT`).
+- UI, fixed in `16fad87e`: the result names the reason of an `unstaged-only` file (plan D11 `REVERT_PARTIAL`).
+- UI, fixed in `16fad87e`: a new snapshot or a new comparison patch closes an open confirmation, and a second R during a review opens nothing (data-model §10).
+- Open after the review, with their tasks: the `RevertRun` reason `revert-changed` and the index-part refusal reason (T059); the CRLF ending of `restored` without an active conversion (T060); the local `RevertLinesPlan` copy (T061); the `tempRemove` `RunnerRefusal` and `lineReview` scope tests (T062); the `git diff` header reads in `HunkControls.tsx` (T063, after v0.1.0).
+- The T033 verification runs separately. This block records no test result.

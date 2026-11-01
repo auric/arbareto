@@ -327,7 +327,7 @@ export function readFileFacts(roots: Record<FactRoot, string>, digest: boolean, 
         if (options.detail === true) {
           const names = Number(libc().listxattr(ptr(Buffer.from(`/proc/self/fd/${fd}\0`)), null, 0));
           if (names < 0) return { kind: "error", component, code: "other-error" };
-          fact = { ...fact, links: Number(stat.nlink), mode: Number(stat.mode), uid: Number(stat.uid), gid: Number(stat.gid), xattr: names > 0 };
+          fact = { ...fact, links: Number(stat.nlink), mode: Number(stat.mode), uid: Number(stat.uid), gid: Number(stat.gid), xattr: names > 0, own: Number(stat.uid) === process.geteuid?.() };
         }
         if (!digest) return fact;
         // Feature 008 contract Δ6 `stream`: the whole file in chunks, without the per-file bound and the request total.

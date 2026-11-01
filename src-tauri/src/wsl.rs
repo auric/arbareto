@@ -1127,12 +1127,14 @@ impl<'a> Records<'a> {
 }
 
 /// The feature 008 `detail` facts of a WSL file (data-model §3 `working`): the whole `st_mode`, `st_uid`, `st_gid`, `st_nlink`, and `xattr`.
+/// `own` is `st_uid == $>` in the distro, the rule of the `replace` owner check (plan.md D9).
 struct Detail {
     mode: u32,
     uid: u32,
     gid: u32,
     links: NonZeroU64,
     xattr: bool,
+    own: bool,
 }
 
 fn detail_record(records: &mut Records) -> Option<Detail> {
@@ -1145,6 +1147,7 @@ fn detail_record(records: &mut Records) -> Option<Detail> {
             .filter(|&n| n < (1 << 53))
             .and_then(NonZeroU64::new)?,
         xattr: records.flag()?,
+        own: records.flag()?,
     })
 }
 
@@ -1236,6 +1239,7 @@ fn fact(
                 owner: None,
                 uid: detail.as_ref().map(|d| d.uid),
                 xattr: detail.as_ref().map(|d| d.xattr),
+                own: detail.as_ref().map(|d| d.own),
                 bound,
                 bytes,
                 digest: digested,
@@ -4994,7 +4998,7 @@ mod tests {
         }
     }
 
-    /// Data-model §3 `working` on WSL: `mode` is the whole `st_mode`, then `uid`, `gid`, `links`, and `xattr`.
+    /// Data-model §3 `working` on WSL: `mode` is the whole `st_mode`, then `uid`, `gid`, `links`, `xattr`, and `own` (`st_uid` equals the effective uid).
     /// A stream record carries the SHA-256 of the distro and no file bytes. Each other form gives `other-error`.
     #[test]
     fn a_detail_record_adds_the_wsl_facts_and_a_stream_record_carries_the_distro_digest() {
@@ -5023,11 +5027,11 @@ mod tests {
                 .extend(fields.as_object().expect("fields").clone());
             vec![fact]
         };
-        let ids = json!({ "mode": 33188, "uid": 1000, "gid": 1000, "links": 2, "xattr": true });
+        let ids = json!({ "mode": 33188, "uid": 1000, "gid": 1000, "links": 2, "xattr": true, "own": true });
         assert_eq!(
             read_reply(
                 facts_output(
-                    b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x002\x001\x00none\0"
+                    b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x002\x001\x001\x00none\0"
                 ),
                 &one,
                 false,
@@ -5039,14 +5043,14 @@ mod tests {
         assert_eq!(
             read_reply(
                 facts_output(
-                    b"file\x006\x001\x000\x000\x0033261\x001000\x004\x001\x000\x00data\x006\0plain\n"
+                    b"file\x006\x001\x000\x000\x0033261\x000\x004\x001\x000\x000\x00data\x006\0plain\n"
                 ),
                 &one,
                 true,
                 detail
             ),
             with(
-                json!({ "mode": 33261, "uid": 1000, "gid": 4, "links": 1, "xattr": false, "digest": digest })
+                json!({ "mode": 33261, "uid": 0, "gid": 4, "links": 1, "xattr": false, "own": false, "digest": digest })
             )
         );
         let streamed = format!("file\x006\x001\x000\x000\x00sha256\x00{hex}\0");
@@ -5055,7 +5059,7 @@ mod tests {
             with(json!({ "digest": hex }))
         );
         let all = format!(
-            "file\x006\x001\x000\x000\x0033188\x001000\x001000\x002\x001\x00sha256\x00{hex}\0"
+            "file\x006\x001\x000\x000\x0033188\x001000\x001000\x002\x001\x001\x00sha256\x00{hex}\0"
         );
         let mut expected = ids.clone();
         expected["digest"] = json!(hex);
@@ -5104,13 +5108,25 @@ mod tests {
             ),
             // `xattr` is no flag.
             (
-                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x002\x00none\0".to_vec(),
+                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x002\x001\x00none\0".to_vec(),
+                false,
+                detail,
+            ),
+            // The `own` token is missing.
+            (
+                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00none\0".to_vec(),
+                false,
+                detail,
+            ),
+            // `own` is no flag.
+            (
+                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x002\x00none\0".to_vec(),
                 false,
                 detail,
             ),
             // Detail tokens that the request did not ask for.
             (
-                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00none\0".to_vec(),
+                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x001\x00none\0".to_vec(),
                 false,
                 FactRead::default(),
             ),
@@ -5144,7 +5160,7 @@ mod tests {
     fn data_record(data: &[u8], read: FactRead) -> Vec<u8> {
         let mut out = format!("file\x00{}\x001\x000\x000\x00", data.len()).into_bytes();
         if read.detail {
-            out.extend_from_slice(b"33188\x001000\x001000\x001\x000\x00");
+            out.extend_from_slice(b"33188\x001000\x001000\x001\x000\x001\x00");
         }
         out.extend_from_slice(format!("data\x00{}\0", data.len()).as_bytes());
         out.extend_from_slice(data);

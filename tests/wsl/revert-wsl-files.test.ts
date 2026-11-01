@@ -108,9 +108,9 @@ function readFacts(out: { exitCode: number | null; stdout: Uint8Array }, count: 
       if (size === null || mtime === null || owner === null || executable === null) return null;
       const fact: Record<string, unknown> = { kind, size };
       if (read & DETAIL) {
-        const [mode, uid, gid, links, xattr] = [number(), number(), number(), number(), flag()];
-        if (mode === null || uid === null || gid === null || links === null || links < 1 || xattr === null) return null;
-        Object.assign(fact, { mode, uid, gid, links, xattr });
+        const [mode, uid, gid, links, xattr, own] = [number(), number(), number(), number(), flag(), flag()];
+        if (mode === null || uid === null || gid === null || links === null || links < 1 || xattr === null || own === null) return null;
+        Object.assign(fact, { mode, uid, gid, links, xattr, own });
       }
       const form = token();
       const bounded = (read & DIGEST) !== 0 && (read & STREAM) === 0;
@@ -591,7 +591,7 @@ describe("T015 wslFiles replace working and tempRemove through the wrapper (cont
 });
 
 describe("T055 fileFacts detail and stream through the wrapper (contract Δ6, data-model §3)", () => {
-  W("a detail read gives the whole st_mode, uid, gid, links, and xattr; a second link shows in links; user.test gives xattr: true", async (w) => {
+  W("a detail read gives the whole st_mode, uid, gid, links, xattr, and own; a second link shows in links; user.test gives xattr: true; a root-owned file gives own: false", async (w) => {
     const dir = worktree(w, "detail");
     write(w, `${dir}/plain.txt`, "plain\n", "644");
     write(w, `${dir}/run.sh`, "#!/bin/sh\n", "2755");
@@ -600,7 +600,12 @@ describe("T055 fileFacts detail and stream through the wrapper (contract Δ6, da
     write(w, `${dir}/xattr.txt`, "x\n", "644");
     const xattr = setUserTest(w, `${dir}/xattr.txt`);
     if (!xattr) console.log("SKIP user-xattr: setxattr failed (unverified)");
-    const names = ["plain.txt", "run.sh", "linked.txt", "xattr.txt"];
+    // `own` is `st_uid == $>` inside the distro, the rule of the `replace` owner check. A root-owned file gives 0.
+    write(w, `${dir}/root.txt`, "r\n", "644");
+    const root = asRoot(w, ["/usr/bin/chown", "0", "--", `${dir}/root.txt`]);
+    if (!root) console.log("SKIP second-distro-user: no root access for a file of another distro user (unverified)");
+    const me = Number(sh(w, "id -u").stdout.trim());
+    const names = ["plain.txt", "run.sh", "linked.txt", "xattr.txt", "root.txt"];
     const entries: FactEntry[] = [...names.map((name) => ({ root: 0 as const, path: [name] })), { root: 0, path: ["sub"] }, { root: 0, path: ["missing"] }];
     sh(w, 'mkdir -- "$1"', [`${dir}/sub`]);
     for (const read of [DETAIL, DETAIL | DIGEST]) {
@@ -608,13 +613,14 @@ describe("T055 fileFacts detail and stream through the wrapper (contract Δ6, da
       const facts = readFacts(await finish(run), entries.length, read);
       const files = names.map((name) => {
         const s = stateOf(w, `${dir}/${name}`);
-        return { kind: "file", size: s.size, mode: s.mode, uid: s.uid, gid: s.gid, links: s.links, xattr: xattr && name === "xattr.txt", ...(read & DIGEST ? { digest: s.sha } : {}) };
+        return { kind: "file", size: s.size, mode: s.mode, uid: s.uid, gid: s.gid, links: s.links, xattr: xattr && name === "xattr.txt", own: s.uid === me, ...(read & DIGEST ? { digest: s.sha } : {}) };
       });
       expect([read, facts]).toEqual([read, [...files, { kind: "directory" }, { kind: "absent" }]]);
       await noneLeft(w, run.operation);
     }
     // `mode` is the whole `st_mode` with the file type bits. The second name raises the link count of both names.
     expect([stateOf(w, `${dir}/plain.txt`).mode, stateOf(w, `${dir}/run.sh`).mode, stateOf(w, `${dir}/linked.txt`).links]).toEqual([0o100644, 0o102755, 2]);
+    expect(stateOf(w, `${dir}/root.txt`).uid === me).toBe(!root);
   });
 
   W("a stream read gives the size and SHA-256 of a 40 MiB file from inside the distro, and no file content crosses the boundary", async (w) => {
@@ -627,7 +633,7 @@ describe("T055 fileFacts detail and stream through the wrapper (contract Δ6, da
       const out = await finish(run);
       // The output holds the record tokens only.
       expect([read, out.stdout.length < 256]).toEqual([read, true]);
-      const detail = read & DETAIL ? { mode: s.mode, uid: s.uid, gid: s.gid, links: 1, xattr: false } : {};
+      const detail = read & DETAIL ? { mode: s.mode, uid: s.uid, gid: s.gid, links: 1, xattr: false, own: true } : {};
       expect([read, readFacts(out, 1, read)]).toEqual([read, [{ kind: "file", size: s.size, digest: s.sha, ...detail }]]);
       await noneLeft(w, run.operation);
     }

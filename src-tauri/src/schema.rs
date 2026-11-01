@@ -1659,6 +1659,7 @@ mod tests {
                 owner: None,
                 uid: None,
                 xattr: None,
+                own: None,
                 bound: None,
                 bytes: None,
                 digest: Some(reply::digest(&"a".repeat(64))),

@@ -569,6 +569,9 @@
                       },
                       "xattr": {
                         "type": "boolean"
+                      },
+                      "own": {
+                        "type": "boolean"
                       }
                     },
                     "required": [

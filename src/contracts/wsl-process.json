@@ -278,7 +278,7 @@
     "    if ($detail) {",
     "      my $xattr = xattrs($fh);",
     "      defined $xattr or return put('error', $at, 'other-error');",
-    "      push @file, $fs[2], $fs[4], $fs[5], $fs[3], $xattr;",
+    "      push @file, $fs[2], $fs[4], $fs[5], $fs[3], $xattr, $fs[4] == $> ? 1 : 0;",
     "    }",
     "    return put(@file, 'none') unless $digest;",
     "    if ($stream) {",

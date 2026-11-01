@@ -9943,7 +9943,7 @@ pub(crate) mod tests {
     }
 
     /// Feature 008 T055 (contract Δ6, data-model §3): a WSL `fileFacts` request with `detail` or `stream` reaches the distro.
-    /// `detail` adds the whole `st_mode`, `uid`, `gid`, `links`, and `xattr`. `stream` runs a size pass, then the digest inside the distro.
+    /// `detail` adds the whole `st_mode`, `uid`, `gid`, `links`, `xattr`, and `own`. `stream` runs a size pass, then the digest inside the distro.
     #[test]
     fn a_wsl_file_facts_request_with_detail_or_stream_reaches_the_distro() {
         let wsl = wsl_harness(true);
@@ -9960,14 +9960,14 @@ pub(crate) mod tests {
         let before = wsl.host.commands().len();
         wsl.host.push(
             0,
-            b"Sfile\x006\x001\x000\x000\x0033188\x001000\x001000\x002\x001\x00data\x006\0plain\n",
+            b"Sfile\x006\x001\x000\x000\x0033188\x001000\x001000\x002\x001\x001\x00data\x006\0plain\n",
         );
         let reply = wsl_read(&wsl, &git, &repository, json!({ "detail": true }));
         let digest = crate::settings::hex(&crate::settings::sha256(b"plain\n"));
         assert_eq!(
             reply["facts"],
             with(
-                json!({ "digest": digest, "mode": 33188, "uid": 1000, "gid": 1000, "links": 2, "xattr": true })
+                json!({ "digest": digest, "mode": 33188, "uid": 1000, "gid": 1000, "links": 2, "xattr": true, "own": true })
             ),
             "{reply}"
         );
@@ -9985,7 +9985,7 @@ pub(crate) mod tests {
         wsl.host.push(0, b"Sfile\x006\x001\x000\x000\x00none\0");
         wsl.host.push(
             0,
-            format!("Sfile\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00sha256\x00{HEX_A}\0")
+            format!("Sfile\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x000\x00sha256\x00{HEX_A}\0")
                 .as_bytes(),
         );
         let reply = wsl_read(
@@ -9997,7 +9997,7 @@ pub(crate) mod tests {
         assert_eq!(
             reply["facts"],
             with(
-                json!({ "digest": HEX_A, "mode": 33188, "uid": 1000, "gid": 1000, "links": 1, "xattr": false })
+                json!({ "digest": HEX_A, "mode": 33188, "uid": 1000, "gid": 1000, "links": 1, "xattr": false, "own": false })
             ),
             "{reply}"
         );
@@ -10054,7 +10054,7 @@ pub(crate) mod tests {
         );
         wsl.host.push(
             0,
-            format!("Sfile\x00{size}\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00sha256\x00{HEX_A}\0")
+            format!("Sfile\x00{size}\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x001\x00sha256\x00{HEX_A}\0")
                 .as_bytes(),
         );
         *wsl.host.pauses.lock().expect("pauses") =
@@ -10081,7 +10081,7 @@ pub(crate) mod tests {
         let (git, repository) = wsl_repository(&wsl);
         wsl.host.push(
             0,
-            b"Sfile\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00data\x006\0plain\n",
+            b"Sfile\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x001\x00data\x006\0plain\n",
         );
         let reply = wsl_read(
             &wsl,

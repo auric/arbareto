@@ -52,10 +52,12 @@ test("the double maps the WSL detail, stream, and content records as the shell",
   const map = (bytes: Uint8Array, digest: boolean, read: Read) => mapFacts(parseFactRecords(bytes, read), one, digest, read);
   const sha = (data: Uint8Array) => new Bun.CryptoHasher("sha256").update(data).digest("hex");
   const file = { kind: "file" as const, size: 6, lastWrite: "1000000000", executable: false, ownerExecute: false };
-  const ids = { mode: 33188, uid: 1000, gid: 1000, links: 2, xattr: true };
-  const DETAIL = "33188\x001000\x001000\x002\x001\x00";
+  const ids = { mode: 33188, uid: 1000, gid: 1000, links: 2, xattr: true, own: true };
+  const DETAIL = "33188\x001000\x001000\x002\x001\x001\x00";
   const hex = "ab".repeat(32);
   expect(map(bin(`file\x006\x001\x000\x000\x00${DETAIL}none\0`), false, { detail: true })).toEqual([{ ...file, ...ids }]);
+  // `own` is 0 when `st_uid` differs from the effective uid of the probe.
+  expect(map(bin("file\x006\x001\x000\x000\x0033188\x000\x001000\x002\x001\x000\x00none\0"), false, { detail: true })).toEqual([{ ...file, ...ids, uid: 0, own: false }]);
   expect(map(bin(`file\x006\x001\x000\x000\x00${DETAIL}data\x006\0plain\n`), true, { detail: true })).toEqual([{ ...file, ...ids, digest: sha(bin("plain\n")) }]);
   expect(map(bin(`file\x006\x001\x000\x000\x00sha256\x00${hex}\0`), true, { stream: true })).toEqual([{ ...file, digest: hex }]);
   expect(map(bin(`file\x006\x001\x000\x000\x00${DETAIL}sha256\x00${hex}\0`), true, { detail: true, stream: true })).toEqual([{ ...file, ...ids, digest: hex }]);
@@ -72,8 +74,11 @@ test("the double maps the WSL detail, stream, and content records as the shell",
     ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x000\x000\x00none\0", false, { detail: true }],
     ["file\x006\x001\x000\x000\x0033188\x00-1\x001000\x001\x000\x00none\0", false, { detail: true }],
     ["file\x006\x001\x000\x000\x004294967296\x001000\x001000\x001\x000\x00none\0", false, { detail: true }],
-    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x002\x00none\0", false, { detail: true }],
-    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00none\0", false, {}],
+    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x002\x001\x00none\0", false, { detail: true }],
+    // The `own` token is missing, or it is no flag.
+    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x00none\0", false, { detail: true }],
+    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x002\x00none\0", false, { detail: true }],
+    ["file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x001\x00none\0", false, {}],
     ["file\x006\x001\x000\x000\x00data\x006\0plain\n", true, { stream: true }],
     [`file\x006\x001\x000\x000\x00sha256\x00${hex}\0`, true, {}],
     [`file\x006\x001\x000\x000\x00sha256\x00${hex.toUpperCase()}\0`, true, { stream: true }],
@@ -718,12 +723,12 @@ describeGit("bun runner revert requests (T019)", (git) => {
     expect(FileFactSchema.safeParse(streamed).success).toBe(true);
     expect(streamed).toMatchObject({ kind: "file", size: big.length, digest: sha(big), links: 1 });
     if (WINDOWS) expect(streamed).toMatchObject({ attributes: expect.any(Number), owner: expect.stringMatching(/^\S+$/), group: expect.stringMatching(/^\S+$/), dacl: expect.stringMatching(/^D:/), creationTime: expect.stringMatching(/^\d+$/) });
-    else expect(streamed).toMatchObject({ mode: expect.any(Number), uid: expect.any(Number), gid: expect.any(Number), xattr: false });
+    else expect(streamed).toMatchObject({ mode: expect.any(Number), uid: expect.any(Number), gid: expect.any(Number), xattr: false, own: true });
     // Without `stream`, the 001 per-file bound still applies, and without `detail` no detail field comes.
     const [plain] = await factsOf(operationId, ["big.bin"], {});
     expect(big.length).toBeGreaterThan(TRUST_DIGEST_FILE_BYTES);
     expect(plain).toMatchObject({ kind: "file", bound: "file-bytes" });
-    expect(Object.keys(plain!).filter((key) => ["links", "attributes", "owner", "group", "dacl", "creationTime", "mode", "uid", "gid", "xattr"].includes(key))).toEqual([]);
+    expect(Object.keys(plain!).filter((key) => ["links", "attributes", "owner", "group", "dacl", "creationTime", "mode", "uid", "gid", "xattr", "own"].includes(key))).toEqual([]);
     linkSync(join(repo, "big.bin"), join(repo, "big-link.bin"));
     const [linked] = await factsOf(operationId, ["big.bin"]);
     expect(linked).toMatchObject({ kind: "file", links: 2 });

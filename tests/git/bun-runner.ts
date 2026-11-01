@@ -281,6 +281,27 @@ function wslReplaceReply(out: WslOut): FileReplaceReply {
   return { result: "interrupted" };
 }
 
+// Mirrors `src-tauri/src/wsl.rs` `working_reply`: the result, the reason or code, the count of the created folders, and for `replaced` the source state.
+// The created folders are the first ones of `folders`. Another form gives `interrupted`, because the process can rename before it ends.
+const WORKING_REFUSALS: readonly string[] = ["not-regular", "hard-link", "owner", "xattr"];
+const decimal = (text: string | undefined) => (text !== undefined && /^(0|[1-9][0-9]*)$/.test(text) ? Number(text) : null);
+function wslWorkingReply(out: WslOut, folders: readonly string[]): WorkingReplaceReply | "invalid" {
+  const t = wslRecords(out, WSL_DELETE_OUTPUT_BYTES);
+  const interrupted = { result: "interrupted" } as const;
+  if (t === null || t.length < 2) return interrupted;
+  const [kind, ...rest] = t;
+  const coded = kind === "refused" || kind === "error";
+  const made = decimal(rest[coded ? 1 : 0]);
+  if (made === null || made > folders.length) return interrupted;
+  const created = made === 0 ? {} : { folders: folders.slice(0, made) };
+  if (kind === "replaced" && rest.length === 2 && made === folders.length && ["none", "removed", "kept"].includes(rest[1]!)) return { result: "replaced", ...created, ...(rest[1] === "kept" ? { source: "kept" as const } : {}) };
+  if (kind === "stale" && rest.length === 1) return { result: "stale", ...created };
+  if (kind === "invalid" && rest.length === 1 && made === 0) return "invalid";
+  if (kind === "refused" && rest.length === 2 && WORKING_REFUSALS.includes(rest[0]!)) return { result: "refused", reason: rest[0] as Extract<WorkingReplaceReply, { result: "refused" }>["reason"], ...created };
+  if (kind === "error" && rest.length === 2 && WSL_FACT_ERRORS.includes(rest[0]!)) return { result: "error", code: rest[0] as FileFactError, ...created };
+  return interrupted;
+}
+
 // Mirrors `src-tauri/src/wsl.rs` `DESTINATION_OUTPUT_BYTES` and `destination_reply`: one record of a kind, or `error 0 <code>`.
 // Another form, another exit, or no start byte gives `error other-error`.
 const WSL_DESTINATION_OUTPUT_BYTES = 64;
@@ -429,7 +450,7 @@ function checkFacts(records: FactRecord[], entries: readonly FactEntry[], digest
       const d = record.detail;
       if (Boolean(read.detail) !== (d !== undefined)) return null;
       if (d && (d.mode < 0n || d.mode > U32_MAX || d.uid < 0n || d.uid > U32_MAX || d.gid < 0n || d.gid > U32_MAX || d.links < 1n || d.links > BigInt(Number.MAX_SAFE_INTEGER))) return null;
-      const detail = d ? { mode: Number(d.mode), uid: Number(d.uid), gid: Number(d.gid), links: Number(d.links), xattr: d.xattr } : {};
+      const detail = d ? { mode: Number(d.mode), uid: Number(d.uid), gid: Number(d.gid), links: Number(d.links), xattr: d.xattr, own: d.own } : {};
       const base = { kind: "file" as const, size: Number(record.size), lastWrite: String(lastWrite), ownerExecute: record.ownerExecute, executable: record.executable, ...detail };
       if (record.content === "none") {
         if (digest) return null;
@@ -1342,7 +1363,7 @@ export function createBunRunner(options: BunRunnerOptions) {
 
   // Mirrors `src-tauri/src/wsl.rs:1805` `files_perl`: the `wslFiles` text in `mode` through the wrapper in mode `probe`, the three Linux roots,
   // the Git and `sha256sum` programs, and NUL-ended tokens on stdin. A request checks the command line (process_requests.rs:1407); an internal run does not.
-  function wslFilesCommand(inst: WslInstallation, operationId: string, mode: "delete" | "replace" | "scratch" | "destination", roots: readonly string[], tokens: readonly string[], request = true): { args: string[]; input: Uint8Array } {
+  function wslFilesCommand(inst: WslInstallation, operationId: string, mode: "delete" | "replace" | "scratch" | "destination" | "tempRemove", roots: readonly string[], tokens: readonly string[], request = true): { args: string[]; input: Uint8Array } {
     const args = wslWrapped(inst, operationId, "probe", "", WSL_PERL, ["-e", WSL_FILES_TEXT, "--", mode, ...roots, inst.git, inject.wslSha256sum ?? inst.sha256sum]);
     if (request && commandLineUnits(WSL_EXE, args) > WINDOWS_COMMAND_LINE_UNITS) throw new RunnerRefusal("INVALID_REQUEST", "command line");
     return { args, input: Buffer.from(tokens.map((token) => `${token}\0`).join("")) };
@@ -1415,6 +1436,45 @@ export function createBunRunner(options: BunRunnerOptions) {
     const shadowId = crypto.randomUUID();
     shadows.set(shadowId, { operationId, wsl: inst, name });
     return { shadowId };
+  }
+
+  // ---- Feature 008 WSL `fileReplace` `working` and `tempRemove` (contract Δ6, Δ11, plan.md D9) ----
+
+  // Mirrors `src-tauri/src/process_requests.rs` `file_replace_working` for a WSL Git: a first name `.git` in any ASCII case, a path below a Git root,
+  // other `folders` than the names before the last one, and Windows facts give INVALID_REQUEST. Then `wsl.rs` `working_command` runs in the walk.
+  // The process can rename inside the walk, so a stop or the deadline gives `interrupted`. The Perl reply `invalid` (a folder with a Git root identity) is INVALID_REQUEST.
+  async function wslWorking(inst: WslInstallation, repository: Repository, names: string[], request: WorkingReplaceRequest, signal: AbortSignal): Promise<WorkingReplaceReply | WalkStop> {
+    const { gitInstallationId: _git, ...roots } = repository;
+    if (asciiLower(names[0]!) === ".git" || [roots.gitDirectory, roots.commonDirectory].some((root) => below(root, request.path) !== null)) throw new RunnerRefusal("INVALID_REQUEST", "fileReplace Git directory");
+    const folders = request.folders ?? [];
+    if (folders.length >= names.length || !Bun.deepEquals(names.slice(names.length - 1 - folders.length, -1), folders)) throw new RunnerRefusal("INVALID_REQUEST", "fileReplace folders");
+    const linux = linuxRoots(inst, roots) ?? invalidRequest("WSL roots");
+    const f = request.facts;
+    let state: string[];
+    if (request.expected === "absent") state = ["absent", request.gitMode === "100755" ? "100755" : "100644"];
+    else if (f !== "absent" && "mode" in f) state = ["present", String(request.expected.size), request.expected.sha256, String(f.mode), String(f.uid), String(f.gid), String(f.links)];
+    else throw new RunnerRefusal("INVALID_REQUEST", "WSL facts");
+    const content = request.bytes !== undefined ? ["bytes", Buffer.from(request.bytes, "base64").toString("hex")] : ["source", request.source!.name, String(request.source!.size), request.source!.sha256];
+    const tokens = ["0", "0", String(names.length), ...names, "working", ...state, String(folders.length), ...folders, ...content];
+    const command = wslFilesCommand(inst, request.operationId, "replace", linux, tokens);
+    const ended = await walk(signal, (stopped) => wslRun(request.operationId, command, stopped, null), "fileReplace");
+    if (ended !== null && "stop" in ended) return { result: "interrupted" };
+    const reply = wslWorkingReply(ended, folders);
+    if (reply === "invalid") throw new RunnerRefusal("INVALID_REQUEST", "fileReplace Git directory identity");
+    return reply;
+  }
+
+  // Mirrors `process_requests.rs` `temp_remove` and `wsl.rs` `temp_remove_command` for a WSL Git. A stop or the deadline gives `interrupted`.
+  async function wslTempRemove(inst: WslInstallation, repository: Repository, request: TempRemoveRequest, signal: AbortSignal): Promise<TempRemoveReply | WalkStop> {
+    const { gitInstallationId: _git, ...roots } = repository;
+    const linux = linuxRoots(inst, roots) ?? invalidRequest("WSL roots");
+    const command = wslFilesCommand(inst, request.operationId, "tempRemove", linux, [request.name, String(request.expected.size), request.expected.sha256]);
+    const ended = await walk(signal, (stopped) => wslRun(request.operationId, command, stopped, null), "tempRemove");
+    if (ended !== null && "stop" in ended) return { result: "interrupted" };
+    const t = wslRecords(ended, WSL_DELETE_OUTPUT_BYTES);
+    if (t?.length === 1 && (t[0] === "removed" || t[0] === "stale" || t[0] === "absent")) return { result: t[0] };
+    if (t?.length === 2 && t[0] === "error" && WSL_FACT_ERRORS.includes(t[1]!)) return { result: "error", code: t[1] as FileFactError };
+    return { result: "interrupted" };
   }
 
   // Test end: ends every scope of an operation that this double started.
@@ -2192,7 +2252,7 @@ export function createBunRunner(options: BunRunnerOptions) {
     },
 
     // Feature 008 contract Δ6 `fileReplace` `working`: a `started` marker of a revert action, a path below the worktree root outside the Git directory,
-    // then the checks and the write of plan.md D8 on the host file system. The WSL route of T016 is not in the double yet, so a WSL repository refuses.
+    // then the checks and the write of plan.md D8 on the host file system, or for a WSL Git the `wslFiles` mode `replace` (contract Δ11).
     async fileReplaceWorking(request, signal): Promise<WorkingReplaceReply | WalkStop> {
       checkSyncRequest("fileReplace", request);
       frames.push({ type: "fileReplace", ...structuredClone(request) });
@@ -2202,8 +2262,11 @@ export function createBunRunner(options: BunRunnerOptions) {
       const repository = repositories.get(request.repositoryId);
       if (repository === undefined) throw unknownTarget();
       const names = below(repository.worktreeRoot, request.path) ?? invalidRequest("fileReplace path");
+      const wsl = wslGits.get(repository.gitInstallationId);
+      if (wsl !== undefined) return wslWorking(wsl, repository, names, request, signal);
       if (insideGit(repository, names)) throw new RunnerRefusal("INVALID_REQUEST", "fileReplace Git directory");
-      if (wslGits.has(repository.gitInstallationId) || ROOT_ORDER.some((name) => wslParts(repository[name]) !== null)) throw new RunnerRefusal("INVALID_REQUEST", "WSL working replace");
+      // process_requests.rs `file_replace_working`: a Windows Git never replaces a file when a root is a WSL path.
+      if (ROOT_ORDER.some((name) => wslParts(repository[name]) !== null)) throw new RunnerRefusal("INVALID_REQUEST", "Windows Git in a WSL repository");
       // A stop or a deadline before the write writes nothing.
       const write = walk(signal, () => inject.workingReply?.(request) ?? replaceWorking(repository, names, request), "fileReplace").then((reply): WorkingReplaceReply => ("stop" in reply ? { result: "stopped" } : reply));
       const wait = inject.cancelWaitMs;
@@ -2224,7 +2287,9 @@ export function createBunRunner(options: BunRunnerOptions) {
       if (!revertMarked(request.operationId)) throw new RunnerRefusal("INVALID_REQUEST", "tempRemove action");
       const repository = repositories.get(request.repositoryId);
       if (repository === undefined) throw unknownTarget();
-      if (wslGits.has(repository.gitInstallationId)) throw new RunnerRefusal("INVALID_REQUEST", "WSL tempRemove");
+      const wsl = wslGits.get(repository.gitInstallationId);
+      if (wsl !== undefined) return wslTempRemove(wsl, repository, request, signal);
+      if (wslParts(repository.worktreeRoot) !== null) throw new RunnerRefusal("INVALID_REQUEST", "Windows Git in a WSL repository");
       const reply = await walk(signal, () => inject.tempRemoveReply?.(request) ?? removeTemp(repository.worktreeRoot, request), "tempRemove");
       // Contract Δ6: a Windows stop or deadline before the delete removes nothing.
       return "stop" in reply ? { result: "stopped" } : reply;

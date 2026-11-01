@@ -647,7 +647,7 @@ export const ResolveGitReply = z.union([
 // Contract §6 "File facts": the codes of a component that exists but cannot be opened or read.
 export const FILE_FACT_ERRORS = ["access-denied", "sharing-violation", "io-error", "other-error"] as const;
 const WINDOWS_DETAIL = ["attributes", "owner", "group", "dacl", "creationTime"] as const;
-const WSL_DETAIL = ["mode", "uid", "gid", "xattr"] as const;
+const WSL_DETAIL = ["mode", "uid", "gid", "xattr", "own"] as const;
 // Feature 008 contract Δ6: `links` comes with all Windows or all WSL detail fields, and never with a part of them.
 const detailRule = (fact: Record<string, unknown>) => {
   const windows = WINDOWS_DETAIL.filter((key) => fact[key] !== undefined).length;
@@ -683,6 +683,8 @@ export const FileFact = z.union([
       uid: Uint32.optional(),
       gid: Uint32.optional(),
       xattr: z.boolean().optional(),
+      // WSL: `st_uid` equals the effective uid of the distro process, the rule of the `replace` owner check (plan.md D9).
+      own: z.boolean().optional(),
     })
     .refine((fact) => (fact.digest === undefined || fact.bound === undefined) && (fact.bytes === undefined || fact.digest !== undefined) && detailRule(fact))
     .meta({ title: "FileFactFile" }),

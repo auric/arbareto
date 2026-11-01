@@ -1232,6 +1232,7 @@ fn fact(
                 attributes: None,
                 creation_time: None,
                 dacl: None,
+                exact_name: None,
                 gid: detail.as_ref().map(|d| d.gid),
                 group: None,
                 links: detail.as_ref().map(|d| d.links),

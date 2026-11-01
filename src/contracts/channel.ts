@@ -646,7 +646,7 @@ export const ResolveGitReply = z.union([
 
 // Contract §6 "File facts": the codes of a component that exists but cannot be opened or read.
 export const FILE_FACT_ERRORS = ["access-denied", "sharing-violation", "io-error", "other-error"] as const;
-const WINDOWS_DETAIL = ["attributes", "owner", "group", "dacl", "creationTime"] as const;
+const WINDOWS_DETAIL = ["attributes", "owner", "group", "dacl", "creationTime", "exactName"] as const;
 const WSL_DETAIL = ["mode", "uid", "gid", "xattr", "own"] as const;
 // Feature 008 contract Δ6: `links` comes with all Windows or all WSL detail fields, and never with a part of them.
 const detailRule = (fact: Record<string, unknown>) => {
@@ -679,6 +679,8 @@ export const FileFact = z.union([
       group: Text.min(1).optional(),
       dacl: Text.min(1).optional(),
       creationTime: Stamp.optional(),
+      // Windows: true when an OS fact proves that each path component below the root has the requested name on disk, unit for unit (plan.md D8).
+      exactName: z.boolean().optional(),
       mode: Uint32.optional(),
       uid: Uint32.optional(),
       gid: Uint32.optional(),

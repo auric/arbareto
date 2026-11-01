@@ -99,7 +99,7 @@ Cases for the G5 probe and the unit vectors of `tests/git/revert-bytes.test.ts`:
 
 | Reason | Applies to | Source fact |
 | --- | --- | --- |
-| 001 support reasons (`rename`, `mode`, `type`, `symlink`, `submodule`, `LFS`, `filter`, `state`, `index-flag`, `path`) | all | `decideSupport` and the status record |
+| 001 support reasons (`rename`, `mode`, `type`, `symlink`, `submodule`, `LFS`, `filter`, `state`, `index-flag`, `path`) | all | `decideSupport` and the status record; also `type` for a `directory` fact of the target (spec Edge Cases "The working file is a folder now"), and `path` for a Windows `file` fact with `exactName: false` (plan D8) |
 | `binary`, `encoding`, `size`, `line-endings` | lines | `decideSupport`, `revert-bytes.ts` proof |
 | `ident` | lines | `check-attr` `ident` = `set` |
 | `context-only`, `several-hunks`, `deleted-file`, `new-file`, `eof-newline` | lines | `subHunk`, the renderer mapping |
@@ -108,7 +108,7 @@ Cases for the G5 probe and the unit vectors of `tests/git/revert-bytes.test.ts`:
 | `in-the-way` | files | the file fact: no index entry in the shown read and a present working file (any fact but `absent` or `error`), also for an ignored file; or a file that is not a folder at a folder name of that path. A file that appears between the review and the run ends `STALE_REVIEW` `revert-changed`. |
 | `unreadable` (005) | all | a `fileFacts` `error` fact of a target or of a folder on its path; on WSL also a `detail` read without `syscall.ph` (research R15 "Probe L8 (T057)") |
 | `attributes` | all | `check-attr` against `check-attr --cached` |
-| `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, `xattr` | all | `fileFacts` with `detail` (plan D8, D9) |
+| `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, `xattr` | all | `fileFacts` with `detail` (plan D8, D9). `not-regular`: a `link` fact at any component, or an `other` fact. |
 | `limit` | files, unstaged | `MULTI_FILE_ACTION_FILES` |
 | `nothing-to-revert` | unstaged | no covered entry |
 | `LOCKED` (001 code, with the lock path and remedy) | all | the `index.lock` fact at the review and at the run start |

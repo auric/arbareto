@@ -487,6 +487,9 @@ const FILE_OPEN_REPARSE_POINT = 0x0020_0000;
 const FILE_BASIC_INFORMATION = 4;
 const FILE_STANDARD_INFORMATION = 5;
 const FILE_ATTRIBUTE_TAG_INFORMATION = 35;
+const FILE_NORMALIZED_NAME_INFORMATION = 48;
+// `FILE_NAME_INFORMATION`: a 4-byte name length in bytes, then at most 32,767 UTF-16 units. The size equals the buffer of src-tauri/src/file_facts.rs `exact`.
+const NAME_INFORMATION_BYTES = 4 + 16_384 * 4;
 const FSCTL_GET_REPARSE_POINT = 0x0009_00a8;
 const MAXIMUM_REPARSE_DATA_BUFFER_SIZE = 16 * 1024;
 const IO_REPARSE_TAG_MOUNT_POINT = 0xa000_0003;
@@ -671,10 +674,30 @@ export function readFileFacts(
         return notOpened(result.status, component);
       }
       opened.push(result.handle);
-      if (last) return fileFact(result.handle, component, digest, opened, read);
+      if (last) {
+        const fact = fileFact(result.handle, component, digest, opened, read);
+        if (options.detail !== true || fact.kind !== "file") return fact;
+        return { ...fact, exactName: exactName(result.handle, path) };
+      }
       parent = result.handle;
     }
     throw new Error("a file-fact entry holds no component");
+  }
+
+  // The first route of src-tauri/src/file_facts.rs `exact`: MS-FSCC 2.4.35 gives each component of the open in the letter case stored on disk.
+  // shortcut: the double has no second route, so a failed query proves nothing and gives false. The fixture volumes are NTFS. Add the route for a test on another file system.
+  function exactName(handle: Pointer, path: readonly string[]): boolean {
+    const info = new Uint8Array(NAME_INFORMATION_BYTES);
+    if (failed(query(handle, info, FILE_NORMALIZED_NAME_INFORMATION))) return false;
+    const view = new DataView(info.buffer);
+    const length = view.getUint32(0, true);
+    if (length % 2 !== 0 || length > info.length - 4) return false;
+    let text = "";
+    for (let at = 4; at < 4 + length; at += 2) text += String.fromCharCode(view.getUint16(at, true));
+    const disk = text.split("\\");
+    // The name starts with `\`, so the part before it is empty and never a requested component.
+    const start = disk.length - path.length;
+    return start >= 1 && path.every((name, i) => disk[start + i] === name);
   }
 
   // The fact of a final component that the walk opened with attribute access only.

@@ -552,6 +552,9 @@
                         "type": "string",
                         "pattern": "^(?:0|-?[1-9][0-9]{0,18})$"
                       },
+                      "exactName": {
+                        "type": "boolean"
+                      },
                       "mode": {
                         "type": "integer",
                         "minimum": 0,

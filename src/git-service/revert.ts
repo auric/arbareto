@@ -255,10 +255,13 @@ function supportReason(c: Candidate, sourceMode: string | null): string | null {
   return null;
 }
 
-// Plan.md D8, D9: the reasons of the target facts. A link at any component is no regular file.
+// Plan.md D8, D9: the reasons of the target facts. A link at any component is no regular file. A folder gives the 001 support reason `type` (data-model §7).
 function factReason(fact: FileFact): string | null {
   if (fact.kind === "absent") return null;
+  if (fact.kind === "directory") return "type";
   if (fact.kind !== "file") return fact.kind === "error" ? "unreadable" : "not-regular";
+  // Spec Edge Cases "letter case": the 001 path rule. WSL names are case-sensitive, so a WSL fact has no `exactName`.
+  if (fact.exactName === false) return "path";
   if (fact.links !== 1) return "hard-link";
   if (fact.attributes !== undefined) {
     if ((fact.attributes & READ_ONLY) !== 0) return "read-only";
@@ -580,7 +583,7 @@ async function lineReview(ctx: WorkbenchContext, p: PayloadOf<"revert-lines">, p
   const fact = facts.value[0]!;
   if (fact.kind === "absent") return STALE;
   const reason = factReason(fact);
-  if (reason !== null) return unavailable(reason as WorkbenchUnavailableReason);
+  if (reason !== null) return SUPPORT.includes(reason) ? unsupported(reason) : unavailable(reason as WorkbenchUnavailableReason);
   if (fact.kind !== "file") return { code: "MALFORMED_GIT_OUTPUT" };
   const workingAttributes = await attributesOf(ctx, [path], attributeArgs());
   if (!("value" in workingAttributes)) return workingAttributes;

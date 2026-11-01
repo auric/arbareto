@@ -40,6 +40,7 @@ Rules:
 - Revert file: `newIndex` = `headEntry` when it differs from `indexEntry`, `remove` when `headEntry` is `absent`, else `keep`. `source` = `headEntry`, or none for a staged new file (spec FR-021).
 - Revert all unstaged changes: `newIndex` = `keep`. `source` = `indexEntry`.
 - An unstaged deletion and a staged deletion bind `working: absent`.
+- WSL: the `detail` read also gives `own` (`st_uid == $>`), the owner rule of the WSL `replace` write (`wsl-process.json`). The review refuses with `owner` when `own` is false, before the `xattr` check. `own` is no bound fact: the bound `uid` holds the owner.
 
 ## 4. Line plan
 
@@ -105,7 +106,7 @@ Cases for the G5 probe and the unit vectors of `tests/git/revert-bytes.test.ts`:
 | `unstaged-changes` | staged lines | the status worktree letter |
 | `untracked` | files, lines | the status record `?` |
 | `in-the-way` | files | the file fact: no index entry in the shown read and a present working file (any fact but `absent` or `error`), also for an ignored file; or a file that is not a folder at a folder name of that path. A file that appears between the review and the run ends `STALE_REVIEW` `revert-changed`. |
-| `unreadable` (005) | files, unstaged | a `fileFacts` `error` fact of a target or of a folder on its path |
+| `unreadable` (005) | all | a `fileFacts` `error` fact of a target or of a folder on its path; on WSL also a `detail` read without `syscall.ph` (research R15 "Probe L8 (T057)") |
 | `attributes` | all | `check-attr` against `check-attr --cached` |
 | `not-regular`, `hard-link`, `read-only`, `encrypted`, `owner`, `security`, `file-attributes`, `xattr` | all | `fileFacts` with `detail` (plan D8, D9) |
 | `limit` | files, unstaged | `MULTI_FILE_ACTION_FILES` |

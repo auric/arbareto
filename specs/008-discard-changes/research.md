@@ -481,6 +481,7 @@ OBSERVATION T004: G9-G10-G8.mode-100755 expected={"holds":22} observed={"holds":
 - Without `syscall.ph`, a `working` replace of a present target replies `error other-error`, and the target keeps its bytes. The `xattr` check of a target with `user.test` gives the same reply. A `fileFacts` `detail` read replies `error` at component 1 with `other-error`.
 - A `working` replace of an absent target writes the file without the `linkat` name. `temp_here` then creates the named file `.arbareto-<pid>-replace.tmp` with `O_CREAT|O_EXCL|O_NOFOLLOW`, and `link` gives it the target name. The reply is `replaced`.
 - Decision (orchestrator, 2026-11-01): accept this 005 fallback, as R9 and plan.md P0.3 allow. `link` fails on an existing name, so the write never replaces a file. No shell change. The probe now expects the write, and the `match=false` line below is the run before the decision.
+- Limit (batch 3 review S3): WSL reverts need `syscall.ph`. On `Ubuntu-26.04` the chain is `git` → `perl` → `libperl5.40`, and `libperl5.40` owns `syscall.ph`. A Git built from source, or a distro whose `git` does not depend on the full `perl`, can lack it. Then the `detail` read of a present file gives an `error` fact, and every revert of a present file refuses at the review with `unreadable` (`revert.ts` `factReason`). An absent target takes the named temporary file below.
 - Known window: a stop after `link` and before `unlink` leaves the temporary name as a second link of the target. Until that file goes, each next revert of the target refuses with `hard-link`. A stop before `link` leaves the temporary name as an untracked file ("Contract gaps" of contracts/operations.md). The T045 safety case covers the window.
 
 ```text
@@ -506,3 +507,17 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 
 - The T034 tests of `tests/git/revert-unstaged.test.ts` passed on the code before T035. T021 and T030 had already built the plan D6 path: the `revert-unstaged` review and the D5a writes from the index entries.
 - Control: a mutation that skips the write of the second file gives 4 failed T034 tests. So the tests can fail.
+
+### Batch 3 verification (T046), 2026-11-01
+
+- Code under test: the full run on `85898f82`, and the check after the review fixes on `93789a01`. Every `ORIGIN` line named the checkout under test: 386, 802, 59, and 26 lines in the full run, and 568 lines in the check. Each run ran alone behind the test gate.
+- Full run on `85898f82`: `bun run typecheck` exit 0. `bun run export:schemas --check` exit 0. `bun run build` exit 0.
+- `bun run test:contracts` 6,128 pass, 37 skip, 0 fail.
+- `bun run test:git` 2,679 pass, 13 skip, 1 fail (about 182 minutes). The failed test is `tests/git/portable-imports.test.ts`: the renderer took a runtime import of `contracts/file-action` for GITLINK (T061). The review fix P1 moved GITLINK to the leaf module `src/contracts/git-mode.ts`.
+- `cargo test --locked --manifest-path src-tauri/Cargo.toml` 652 pass, 16 ignored, 0 fail.
+- WSL, alone, `ARBARETO_WSL_DISTRO=Ubuntu-26.04`: `revert-wsl` 12 pass, 0 fail. `revert-wsl-files` 17 pass, 0 fail. `revert-facts` 21 pass, 1 skip. `file-facts` 14 pass, 0 fail. `index-gate` 2 pass, 0 fail. `inspection-wsl` 39 pass, 1 skip.
+- Control mutation: without `&& digest === intended` in the run check of `src/git-service/revert.ts`, 12 `revert-races` cases turn red. Among them are the three T044 cases "another writer at before-write and at renamed gives changed-outside" (lines, staged lines, and files). After the restore, the file is byte-equal, and the rerun gives 47 pass, 0 fail.
+- The batch 3 review ran before the check. The fix rounds merged as `93789a01`: S1 (the staged lines candidate check, plan D4), S2 (the WSL size pass, contract Δ6), L1 (the status collector), M1 (the double test), and P1 (the GITLINK leaf module).
+- Red before the fixes: S1 gave `failed-with-effects` with an index entry that the review never bound. S2 was red on the original code and on the first fix, then green, then red under a control mutation.
+- Check on `93789a01`: `bun run typecheck` and the schema check exit 0. `bun run test:contracts` 6,128 pass, 37 skip, 0 fail. `portable-imports` 25 pass, 0 fail. `revert-races` 48 pass, 0 fail. The revert refusal, staged, files, lines, and frame files 110 pass, 0 fail. `revert-unstaged` 7 pass, 0 fail. `bun-runner` 45 pass, 1 skip, 0 fail. `multi-stage` 14 pass, 0 fail. The trust and `workbench-busy` files 122 pass, 2 skip, 0 fail. The 005 files: delete 27 pass, 0 fail; `ignore-editor` 17 pass, 1 skip, 0 fail; `ignore-preview` 26 pass, 0 fail. Cargo 653 pass, 16 ignored, 0 fail. `bun run build` exit 0.
+- The batch 3 converge of 2026-11-01 added T064 (after v0.1.0), T065, and T066. T065 and T066 run after T046.

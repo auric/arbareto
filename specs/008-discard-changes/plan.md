@@ -216,6 +216,7 @@ Rules:
 - A line revert: the bytes cross in hex on stdin, at most `REVERT_FILE_BYTES` (contract Δ11). The WSL read of the working bytes uses `fileFacts` with `content: true` (at most 1 MiB).
 - A whole file: no content crosses. Git writes its temporary file inside the distro. The Perl `replace_one` opens it relative to the root with `O_NOFOLLOW`, checks its `fstat` against `lstat`, copies it into the `O_TMPFILE` file beside the target with a streamed SHA-256, and unlinks the source after the identity check. `tempRemove` runs the same identity check.
 - A staged part refuses with `shared-repository` (`eligibility.ts:225`) when any scope sets `core.sharedRepository`. An unstaged revert writes no repository file, so that reason does not apply to it.
+- Without `syscall.ph`, `replace_one` has no `linkat` and no `llistxattr` (research R15 "Probe L8 (T057)", decision of 2026-11-01). A present target gets `error`, and nothing changes. An absent target takes the 005 named temporary file (`O_CREAT|O_EXCL|O_NOFOLLOW`), then `link` and `unlink`, as research R9 and P0.3 allow. `link` fails on an existing name, so the write never replaces a file. A stop between `link` and `unlink` leaves a second link of the target, so the next revert refuses with `hard-link` (contract Δ11, T045).
 - A stop, a deadline, or a broken output of `replace` gives `interrupted`. The reconcile waits for the process-end fact before the fresh read (`workbench-review.ts:360`).
 
 ### D10 Outcome and failure handling

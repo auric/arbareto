@@ -1269,7 +1269,24 @@ pub fn file_facts_reply(
     read: FactRead,
     index: Option<bool>,
 ) -> (Vec<Fact>, Option<WslIndexResult>) {
-    let parsed = output
+    parse_file_facts(output, entries, digest, read, index).unwrap_or_else(|| {
+        let facts = entries
+            .iter()
+            .map(|_| reply::error_fact(0, FileFactErrorCode::OtherError))
+            .collect();
+        (facts, index.map(|_| reply::index_failed(0, "other-error")))
+    })
+}
+
+/// The facts of a full probe reply. `None`: a failed check, an exit status other than 0, no start byte, or output past the cap.
+pub fn parse_file_facts(
+    output: Option<Output>,
+    entries: &[FactEntry],
+    digest: bool,
+    read: FactRead,
+    index: Option<bool>,
+) -> Option<(Vec<Fact>, Option<WslIndexResult>)> {
+    output
         .filter(|out| out.exit_code == Some(0))
         .and_then(|out| {
             let bytes = started(&out.stdout).filter(|bytes| bytes.len() <= FACTS_OUTPUT_BYTES)?;
@@ -1287,14 +1304,7 @@ pub fn file_facts_reply(
                 None => None,
             };
             (records.at == bytes.len()).then_some((facts, found))
-        });
-    parsed.unwrap_or_else(|| {
-        let facts = entries
-            .iter()
-            .map(|_| reply::error_fact(0, FileFactErrorCode::OtherError))
-            .collect();
-        (facts, index.map(|_| reply::index_failed(0, "other-error")))
-    })
+        })
 }
 
 // ---- WSL `wslFiles` (contract §6 "WSL file work") ----
@@ -5108,7 +5118,8 @@ mod tests {
             ),
             // `xattr` is no flag.
             (
-                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x002\x001\x00none\0".to_vec(),
+                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x002\x001\x00none\0"
+                    .to_vec(),
                 false,
                 detail,
             ),
@@ -5120,13 +5131,15 @@ mod tests {
             ),
             // `own` is no flag.
             (
-                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x002\x00none\0".to_vec(),
+                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x002\x00none\0"
+                    .to_vec(),
                 false,
                 detail,
             ),
             // Detail tokens that the request did not ask for.
             (
-                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x001\x00none\0".to_vec(),
+                b"file\x006\x001\x000\x000\x0033188\x001000\x001000\x001\x000\x001\x00none\0"
+                    .to_vec(),
                 false,
                 FactRead::default(),
             ),

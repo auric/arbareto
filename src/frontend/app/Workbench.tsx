@@ -557,14 +557,15 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
   const [hunkNotice, setHunkNotice] = useState<{ comparisonId: string; text: string } | null>(null);
   const hunkNoticeId = useId();
   // Feature 008 plan.md D12: the reviewed plan of a revert, its token, and the control that opened the review.
-  const [revert, setRevert] = useState<{ token: string; plan: RevertLinesPlan; label: string; opener: HTMLElement | null; comparisonId: string; patch: string } | null>(null);
-  // Data-model §10: a new comparison or patch closes the open confirmation.
-  if (revert !== null && (revert.comparisonId !== comparison?.comparisonId || revert.patch !== comparison.patch)) setRevert(null);
+  const [revert, setRevert] = useState<{ token: string; plan: RevertLinesPlan; label: string; opener: HTMLElement | null; snapshotId: string; patch: string; ordinal: number; clearLines?: () => void } | null>(null);
+  // Data-model §10: only a new snapshot or a new patch closes the open confirmation. Each comparison read has a new comparisonId.
+  if (revert !== null && (revert.snapshotId !== comparison?.snapshotId || revert.patch !== comparison.patch)) setRevert(null);
   // Spec FR-016: porcelain v2 gives a file with a worktree letter other than `.` an unstaged entry.
   const unstagedToo = entry?.category === "staged" && state.entries.some((e) => e.category === "unstaged" && e.pathBytes === entry.pathBytes);
   const reviewing = useRef(false);
-  const reviewRevert = async ({ comparison, hunkId, lines, opener }: RevertRequest) => {
-    if (staging === undefined || entry === null || target === null || reviewing.current) return;
+  const reviewRevert = async ({ comparison, hunkId, lines, opener }: RevertRequest, lineState?: LineState) => {
+    const ordinal = comparison.hunks.find((h) => h.hunkId === hunkId)?.ordinal;
+    if (staging === undefined || entry === null || target === null || ordinal === undefined || reviewing.current) return;
     const label = actionName(lines === null ? REVERT_HUNK_LABEL : revertLinesLabel(lines.length));
     const payload = { action: "revert-lines" as const, snapshotId: comparison.snapshotId, comparisonId: comparison.comparisonId, hunkId, ...(lines === null ? {} : { lines }) };
     onStatus(null);
@@ -576,13 +577,22 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
       reviewing.current = false;
     }
     const result = response.result as { action?: unknown; workbenchToken?: unknown; plan?: RevertLinesPlan } | undefined;
-    if (response.state === "succeeded" && result?.action === "revert-lines" && typeof result.workbenchToken === "string" && result.plan !== undefined) setRevert({ token: result.workbenchToken, plan: result.plan, label, opener, comparisonId: comparison.comparisonId, patch: comparison.patch });
+    if (response.state === "succeeded" && result?.action === "revert-lines" && typeof result.workbenchToken === "string" && result.plan !== undefined) setRevert({ token: result.workbenchToken, plan: result.plan, label, opener, snapshotId: comparison.snapshotId, patch: comparison.patch, ordinal, clearLines: lineState?.clear });
   };
   const runRevert = async () => {
     if (revert === null || staging === undefined || target === null) return;
-    const { token, plan, label } = revert;
+    const { token, plan, label, patch, ordinal, clearLines } = revert;
     setRevert(null);
-    await trackRevertRun(staging, workbench.ended, target.repositoryId, token, label, (r) => {
+    const ended = (operation: "runWorkbench", response: BridgeResponse) => {
+      // plan.md "Task flow and command placement": a successful revert anchors the next patch, as a hunk action does.
+      // Data-model §14: a later patch with the same text must not bring the reverted line selection back.
+      if (response.state === "succeeded") {
+        clearLines?.();
+        staging.onHunkSucceeded(file!, ordinal, patch);
+      }
+      workbench.ended(operation, response);
+    };
+    await trackRevertRun(staging, ended, target.repositoryId, token, label, (r) => {
       const text = revertLinesOutcome(r, plan);
       return text === undefined ? undefined : { text, lines: [] };
     });
@@ -613,7 +623,7 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
             }}
             stepRef={staging.stepRef}
             lines={lines}
-            onRevert={(request) => void reviewRevert(request)}
+            onRevert={(request) => void reviewRevert(request, lines)}
             onRevertRefused={onStatus}
             unstagedToo={unstagedToo}
           />
@@ -643,7 +653,7 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
             }}
             index={index}
             lines={lines}
-            onRevert={(request) => void reviewRevert(request)}
+            onRevert={(request) => void reviewRevert(request, lines)}
             unstagedToo={unstagedToo}
           />
         );

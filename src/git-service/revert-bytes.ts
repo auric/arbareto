@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// Feature 008 data-model §6 and research.md R5: the new bytes of a line revert, and the blob ID of its proof.
-// Pure functions on bytes. The `hash-object --path` proof in `revert.ts` decides every result of the ending rule.
+// Feature 008 data-model §6 and research.md R5: the new bytes of a line revert, the ending rule, and the blob ID of its proof.
+// Pure functions. The `hash-object --path` proof in `revert.ts` decides every result of the ending rule.
 
 import type { ObjectFormat } from "./commands";
 import type { PatchHunk } from "./diff-parser";
+import type { TrustListing } from "./trust";
+import { configReading } from "./workbench-parsers";
 
 const LF = 0x0a;
 const CR = 0x0d;
@@ -36,8 +38,28 @@ function restored(text: Uint8Array, ended: boolean, eol: string): Uint8Array {
   return Buffer.concat([body, eol === "crlf" ? CRLF : LF_ONLY]);
 }
 
+export type Autocrlf = "true" | "false" | "input";
+
+// Git v2.55.0 and v2.56.0 `environment.c` `git_default_core_config`: the last `core.autocrlf` entry wins, and `false` is the default.
+// Null: a cut listing can lack the last entry, or `git_config_bool` cannot read the value, so Git stops.
+export function autocrlfOf(listing: Pick<TrustListing, "entries" | "inputLimited">): Autocrlf | null {
+  if (listing.inputLimited) return null;
+  const entry = listing.entries.findLast((e) => e.key === "core.autocrlf");
+  if (entry === undefined) return "false";
+  const value = entry.exact ? configReading("core.autocrlf", entry.value) : null;
+  return value === "true" || value === "false" || value === "input" ? value : null;
+}
+
+// Git v2.55.0 and v2.56.0 `convert.c` `convert_attrs`: the `ls-files --eol` `attr/` value names the attribute action.
+// "-text" is CRLF_BINARY. "" is CRLF_UNDEFINED, and `core.autocrlf=false` makes it CRLF_BINARY.
+// For CRLF_BINARY, `output_eol` gives EOL_UNSET. Checkout then writes the blob bytes, and check-in keeps the working bytes.
+// So a restored line keeps its comparison bytes (""). Any other action can map CRLF to LF at check-in, so `w/` picks the ending (spec FR-015).
+export function restoreEol(eol: { working: string; attr: string }, autocrlf: Autocrlf): string {
+  return eol.attr === "-text" || (eol.attr === "" && autocrlf === "false") ? "" : eol.working;
+}
+
 // Data-model §6: `hunk` is the partial patch of the `unstage` rule, so it stands against the working side, and the revert applies it reversed.
-// `eol` is the `ls-files --eol` `w/` value of the path. "stale": the working bytes no longer hold the context or the added lines of `hunk`.
+// `eol` is the `restoreEol` value of the path. "stale": the working bytes no longer hold the context or the added lines of `hunk`.
 export function reverseLines(working: Uint8Array, hunk: PatchHunk, eol: string): Uint8Array | "stale" {
   // `parsePatch` ends every hunk line with LF. A `\` line marks the line before it as one without a final LF (gitformat-diff).
   const body: { kind: number; text: Uint8Array; ended: boolean }[] = [];

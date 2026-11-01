@@ -245,6 +245,7 @@
     "tests/git/revert-files.test.ts",
     "tests/git/revert-frame.test.ts",
     "tests/git/revert-lines.test.ts",
+    "tests/git/revert-unstaged.test.ts",
     "tests/git/service-harness.test.ts",
     "tests/git/snapshot.test.ts",
     "tests/git/ssh-server.test.ts",

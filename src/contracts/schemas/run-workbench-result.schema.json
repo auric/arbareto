@@ -891,6 +891,18 @@
             "none",
             "refused"
           ]
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "revert-changed",
+            "sparse-index",
+            "split-index",
+            "index-change-hook",
+            "executable-monitor",
+            "unqualified-monitor",
+            "shared-repository"
+          ]
         }
       },
       "required": [

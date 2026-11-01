@@ -1914,14 +1914,20 @@ const RevertFileOutcome = z
   .meta({ title: "RevertFileOutcome" });
 export type RevertFileOutcome = z.infer<typeof RevertFileOutcome>;
 // Contract Δ6: each `fileReplace` creates at most FILE_FACT_ENTRIES folders.
+// T059 (contract "Contract gaps"): `reason` is `revert-changed` of a STALE_REVIEW result before any index change, or the eligibility reason of a refused index part.
 const RevertRun = z
   .strictObject({
     action: z.enum(REVERT_ACTIONS),
     files: z.array(RevertFileOutcome).min(1).max(MULTI_FILE_ACTION_FILES),
     foldersCreated: z.array(z.base64().min(1)).max(MULTI_FILE_ACTION_FILES * FILE_FACT_ENTRIES),
     index: z.enum(["published", "none", "refused"]),
+    reason: z.enum(["revert-changed", ...INELIGIBLE_REASONS]).optional(),
   })
-  .refine((r) => r.action !== "revert-lines" || (Array.isArray(r.files) && r.files.length === 1))
+  .refine(
+    (r) =>
+      (r.action !== "revert-lines" || (Array.isArray(r.files) && r.files.length === 1)) &&
+      (r.reason === undefined || (r.reason === "revert-changed" ? r.index !== "published" : r.index === "refused")),
+  )
   .meta({ title: "RevertRun" });
 // Contract Δ3 `runWorkbench` "Results": the observed effects. A failed step adds its `outputTail`. An unknown outcome names the action only.
 // A refusal before any step can carry the CONFLICTED count. A repeated request gets the `getOperation` result of its operation (contract §2).

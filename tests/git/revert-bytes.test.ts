@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-// Feature 008 T025: the pure functions of `src/git-service/revert-bytes.ts` (data-model §6, research.md R5, plan.md D3).
+// Feature 008 T025 and T060: the pure functions of `src/git-service/revert-bytes.ts` (data-model §6, research.md R5, plan.md D3).
 // The expected bytes come from the data-model §6 table. The expected blob IDs come from Git's own `hash-object` in owned repositories.
 
 import { describe, expect } from "bun:test";
@@ -37,24 +37,42 @@ function hunk(lines: string[]): PatchHunk {
 const NO_NEWLINE = "\\ No newline at end of file";
 
 describe("reverseLines: the data-model §6 cases", () => {
-  // Each row: the working bytes, the partial patch against the working side, the `ls-files --eol` `w/` value, and the restored bytes.
-  const rows: { name: string; working: string; patch: string[]; eol: string; out: string }[] = [
-    { name: "LF, no conversion: the restored line keeps its comparison bytes (LF)", working: "a\nB\nc\n", patch: ["@@ -2 +2 @@", "-b", "+B"], eol: "lf", out: "a\nb\nc\n" },
-    { name: "CRLF, no conversion, index CRLF: the restored line keeps its comparison bytes (CRLF)", working: "a\r\nB\r\nc\r\n", patch: ["@@ -2 +2 @@", "-b\r", "+B\r"], eol: "crlf", out: "a\r\nb\r\nc\r\n" },
-    { name: "CRLF, core.autocrlf=true, index LF: the LF line gets a CR before its LF", working: "a\r\nB\r\nc\r\n", patch: ["@@ -2 +2 @@", "-b", "+B"], eol: "crlf", out: "a\r\nb\r\nc\r\n" },
-    { name: "CRLF, text eol=crlf: the LF line gets a CR before its LF", working: "x\r\ny\r\nZ\r\n", patch: ["@@ -1,3 +1,3 @@", " x", " y", "-z", "+Z"], eol: "crlf", out: "x\r\ny\r\nz\r\n" },
-    { name: "LF, core.autocrlf=true, index LF: the restored line ends with LF", working: "a\nB\nc\n", patch: ["@@ -2 +2 @@", "-b", "+B"], eol: "lf", out: "a\nb\nc\n" },
-    // The proof refuses this row with `line-endings` (the case below shows the blob IDs differ).
-    { name: "CRLF, no conversion, index LF: every restored line ends with CRLF", working: "a\r\nB\r\nc\r\n", patch: ["@@ -1,3 +1,3 @@", "-a", "-b", "-c", "+a\r", "+B\r", "+c\r"], eol: "crlf", out: "a\r\nb\r\nc\r\n" },
-    { name: "mixed: any other value keeps the comparison bytes", working: "a\nB\r\nc\n", patch: ["@@ -2 +2 @@", "-b", "+B\r"], eol: "mixed", out: "a\nb\nc\n" },
-    { name: "an empty value keeps the comparison bytes", working: "a\r\nB\r\n", patch: ["@@ -2 +2 @@", "-b", "+B"], eol: "", out: "a\r\nb\n" },
+  // Each row: the working bytes, the partial patch against the working side, the `ls-files --eol` `w/` and `attr/` values, `core.autocrlf`, and the restored bytes.
+  // The `restoreEol` value of the facts is the `eol` argument, as `revert.ts` passes it (T060).
+  type Autocrlf = "true" | "false" | "input";
+  const rows: { task: string; name: string; working: string; patch: string[]; eol: { working: string; attr: string }; autocrlf: Autocrlf; out: string }[] = [
+    { task: TASK, name: "LF, no conversion: the restored line keeps its comparison bytes (LF)", working: "a\nB\nc\n", patch: ["@@ -2 +2 @@", "-b", "+B"], eol: { working: "lf", attr: "" }, autocrlf: "false", out: "a\nb\nc\n" },
+    { task: TASK, name: "CRLF, no conversion, index CRLF: the restored line keeps its comparison bytes (CRLF)", working: "a\r\nB\r\nc\r\n", patch: ["@@ -2 +2 @@", "-b\r", "+B\r"], eol: { working: "crlf", attr: "" }, autocrlf: "false", out: "a\r\nb\r\nc\r\n" },
+    { task: TASK, name: "CRLF, core.autocrlf=true, index LF: the LF line gets a CR before its LF", working: "a\r\nB\r\nc\r\n", patch: ["@@ -2 +2 @@", "-b", "+B"], eol: { working: "crlf", attr: "" }, autocrlf: "true", out: "a\r\nb\r\nc\r\n" },
+    { task: TASK, name: "CRLF, text eol=crlf: the LF line gets a CR before its LF", working: "x\r\ny\r\nZ\r\n", patch: ["@@ -1,3 +1,3 @@", " x", " y", "-z", "+Z"], eol: { working: "crlf", attr: "text eol=crlf" }, autocrlf: "false", out: "x\r\ny\r\nz\r\n" },
+    { task: TASK, name: "LF, core.autocrlf=true, index LF: the restored line ends with LF", working: "a\nB\nc\n", patch: ["@@ -2 +2 @@", "-b", "+B"], eol: { working: "lf", attr: "" }, autocrlf: "true", out: "a\nb\nc\n" },
+    // Git's checkout writes the LF blob bytes without a conversion, and check-in keeps CRLF, so the restored lines keep LF (T060).
+    { task: "T060", name: "CRLF, no conversion, index LF: every restored line keeps its comparison bytes (LF)", working: "a\r\nB\r\nc\r\n", patch: ["@@ -1,3 +1,3 @@", "-a", "-b", "-c", "+a\r", "+B\r", "+c\r"], eol: { working: "crlf", attr: "" }, autocrlf: "false", out: "a\nb\nc\n" },
+    { task: "T060", name: "CRLF, -text, index LF: the restored line keeps its comparison bytes (LF), also with core.autocrlf=true", working: "a\r\nB\r\n", patch: ["@@ -2 +2 @@", "-b", "+B\r"], eol: { working: "crlf", attr: "-text" }, autocrlf: "true", out: "a\r\nb\n" },
+    { task: TASK, name: "mixed: any other value keeps the comparison bytes", working: "a\nB\r\nc\n", patch: ["@@ -2 +2 @@", "-b", "+B\r"], eol: { working: "mixed", attr: "text" }, autocrlf: "false", out: "a\nb\nc\n" },
+    { task: TASK, name: "an empty value keeps the comparison bytes", working: "a\r\nB\r\n", patch: ["@@ -2 +2 @@", "-b", "+B"], eol: { working: "", attr: "text=auto" }, autocrlf: "false", out: "a\r\nb\n" },
   ];
   for (const row of rows) {
-    caseTest(TASK, row.name, [], async () => {
-      const { reverseLines } = await load();
-      expect(text(reverseLines(enc(row.working), hunk(row.patch), row.eol) as Uint8Array)).toBe(row.out);
+    caseTest(row.task, row.name, [], async () => {
+      const { restoreEol, reverseLines } = await load();
+      expect(text(reverseLines(enc(row.working), hunk(row.patch), restoreEol(row.eol, row.autocrlf)) as Uint8Array)).toBe(row.out);
     });
   }
+
+  // Git v2.56.0 `convert.c` `convert_attrs`, `get_convert_attr_ascii`, and `output_eol`: only CRLF_BINARY converts in neither direction.
+  caseTest("T060", "restoreEol: the attribute actions -text and, with core.autocrlf=false, the unset action keep the comparison bytes; every other action takes the w/ value", [], async () => {
+    const { restoreEol } = await load();
+    const attrs = ["", "-text", "text", "text eol=lf", "text eol=crlf", "text=auto", "text=auto eol=crlf", "text=auto eol=lf"];
+    const got = attrs.flatMap((attr) => (["true", "false", "input"] as const).map((autocrlf) => ({ attr, autocrlf, crlf: restoreEol({ working: "crlf", attr }, autocrlf), lf: restoreEol({ working: "lf", attr }, autocrlf) })));
+    const binary = (attr: string, autocrlf: string) => attr === "-text" || (attr === "" && autocrlf === "false");
+    expect(got).toEqual(got.map(({ attr, autocrlf }) => ({ attr, autocrlf, crlf: binary(attr, autocrlf) ? "" : "crlf", lf: binary(attr, autocrlf) ? "" : "lf" })));
+    expect(got.filter((g) => g.crlf === "").map((g) => [g.attr, g.autocrlf])).toEqual([
+      ["", "false"],
+      ["-text", "true"],
+      ["-text", "false"],
+      ["-text", "input"],
+    ]);
+  });
 
   caseTest(TASK, "a pure addition goes, a pure removal comes back at its place, and every other line keeps its raw bytes", [], async () => {
     const { reverseLines } = await load();
@@ -89,6 +107,35 @@ describe("reverseLines: the data-model §6 cases", () => {
   });
 });
 
+describe("autocrlfOf: core.autocrlf as Git reads it (T060)", () => {
+  // Git v2.56.0 `environment.c` `git_default_core_config`: "input" by `strcasecmp`, else `git_config_bool`. A key without `=` is true.
+  const entry = (value: string | null, exact = true) => ({ key: "core.autocrlf", value, exact });
+  const listing = (entries: { key: string; value: string | null; exact: boolean }[], inputLimited = false) => ({ entries, inputLimited }) as unknown as Parameters<Awaited<ReturnType<typeof load>>["autocrlfOf"]>[0];
+
+  caseTest("T060", "the last entry wins, false is the default, and a value that Git cannot read, a cut listing, or an inexact value gives null", [], async () => {
+    const { autocrlfOf } = await load();
+    const values: [string | null, string | null][] = [
+      ["true", "true"],
+      ["Yes", "true"],
+      ["1", "true"],
+      [null, "true"],
+      ["false", "false"],
+      ["off", "false"],
+      ["", "false"],
+      ["0", "false"],
+      ["input", "input"],
+      ["INPUT", "input"],
+      ["crlf", null],
+    ];
+    for (const [value, expected] of values) expect({ value, got: autocrlfOf(listing([entry(value)])) as string | null }).toEqual({ value, got: expected });
+    expect(autocrlfOf(listing([]))).toBe("false");
+    expect(autocrlfOf(listing([{ key: "core.eol", value: "crlf", exact: true }]))).toBe("false");
+    expect(autocrlfOf(listing([entry("true"), entry("false")]))).toBe("false");
+    expect(autocrlfOf(listing([entry("true", false)]))).toBe(null);
+    expect(autocrlfOf(listing([entry("true")], true))).toBe(null);
+  });
+});
+
 describe("blobId: the blob ID of the proof (research.md R5)", () => {
   const contents = ["", "a\nb\nc\n", "a\r\nb\r\nc\r\n", "x\u0000y"];
   for (const format of ["sha1", "sha256"] as const) {
@@ -104,7 +151,8 @@ describe("blobId: the blob ID of the proof (research.md R5)", () => {
     });
   }
 
-  caseTest(TASK, "the CRLF bytes of the `line-endings` row have another blob ID than the LF index content", [], async () => {
+  // Without a conversion, check-in keeps CR, so a CRLF restored line fails the proof (T060 keeps the LF comparison bytes).
+  caseTest(TASK, "CRLF bytes have another blob ID than the LF index content", [], async () => {
     const { blobId } = await load();
     expect(blobId(enc("a\r\nb\r\nc\r\n"), "sha1")).not.toBe(blobId(enc("a\nb\nc\n"), "sha1"));
   });

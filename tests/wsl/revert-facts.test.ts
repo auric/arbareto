@@ -2,21 +2,24 @@
 // Copyright (c) 2026 Ihor Lifanov
 
 // T004: the WSL facts L1 to L7 of research.md R14 with Perl snippets in the owned distro folder, and the G9 and G10 case list of `tests/git/revert-facts.ts` with the distro Git.
-// Each fact prints `OBSERVATION T004` lines. A `match=false` line is a finding for research.md R15, not a failure. Run this file alone on the host.
+// T057: the probe L8, the Perl texts of `src/contracts/wsl-process.json` without `syscall.ph`.
+// Each fact prints `OBSERVATION T004` or `OBSERVATION T057` lines. A `match=false` line is a finding for research.md R15, not a failure. Run this file alone on the host.
 
 import { expect, test } from "bun:test";
 import { obs, observationLine, type Observation } from "../git/fact-runner";
 import { gitRun } from "../git/remote-fixtures";
 import { factLines, REVERT_FACTS, revertGitVersion, type FileState, type RevertHost } from "../git/revert-facts";
 import { distroGitHost, sh } from "./fixtures";
-import { inDistro, useWslFolder, WSL_ENV, WSL_EXE, wslExec, wslHost, wslTest, type WslCapability, type WslHost } from "./wsl-host";
+import { FACTS_TEXT, factsInput, inDistro, useWslFolder, WSL_ENV, WSL_EXE, WSL_FILES_TEXT, wslExec, wslHost, wslTest, type WslCapability, type WslHost } from "./wsl-host";
 import { printOrigin } from "../origin";
 
 printOrigin("../git/revert-facts.ts", import.meta.dir);
 printOrigin("./revert-facts.test.ts", import.meta.dir);
+printOrigin("../../src/contracts/wsl-process.json", import.meta.dir);
 useWslFolder();
 
 const TASK = "T004";
+const L8_TASK = "T057";
 const NEEDS: WslCapability[] = ["distro-git-2.55", "wsl-fixture-fs-id", "perl"];
 const FACT_MS = 900_000;
 const STAGE_MS = 30_000;
@@ -364,6 +367,96 @@ wslTest("L7 mkdir of a missing folder chain against git restore on a copy", NEED
   const r = perl(w, folder(w, "l7"), L7);
   const expected = ((0o777 & ~Number.parseInt(r.umask, 8)) >>> 0).toString(8);
   print(w, [obs("L7.mkdir-mode", { restore: 0, git: [expected, expected], perl: [expected, expected] }, { restore: restored.exitCode, git: modes, perl: [r.p, r.q] }), obs("L7.umask", "record", r.umask, true)]);
+}, FACT_MS);
+
+// ---- T057: probe L8, the `replace_one` Perl without `syscall.ph` (research.md R14, tasks.md T057) ----
+
+// perlfunc `require`: a subroutine in @INC runs before the later entries, and its `die` ends the `require`.
+// So `require 'syscall.ph'` fails, as on a distro with only `perl-base`. Every other file loads as before.
+const HIDE_SYSCALL_PH = String.raw`BEGIN { unshift @INC, sub { die "probe L8 hides syscall.ph\n" if $_[1] eq 'syscall.ph'; return; } }`;
+// Runs before the main code of the text: the `nrs()` table and the `require` result under the hook.
+const L8_NRS = String.raw`my %nr = nrs(); my $hidden = eval { require 'syscall.ph'; 1 } ? 0 : 1; print join(' ', "hidden=$hidden", map { $_ . '=' . $nr{$_} } sort keys %nr), "\n"; exit 0;`;
+
+// One Perl text of `wsl-process.json` with `syscall.ph` hidden, without the wrapper. `tokens` is null unless the exit is 0 and the output ends with NUL.
+function withoutSyscallPh(w: WslHost, text: string, args: string[], input: Uint8Array, before: string[] = []): { exitCode: number | null; stdout: string; tokens: string[] | null } {
+  const program = [HIDE_SYSCALL_PH, ...before, text].flatMap((part) => ["-e", part]);
+  const r = wslExec(["--distribution", w.distro, "--cd", "/", "--exec", w.probe.paths.perl!, ...program, "--", ...args], { input, timeoutMs: 60_000 });
+  const body = Buffer.from(r.bytes);
+  const ended = r.exitCode === 0 && (body.length === 0 || body[body.length - 1] === 0);
+  return { exitCode: r.exitCode, stdout: r.stdout, tokens: ended ? (body.length === 0 ? [] : body.subarray(0, -1).toString("latin1").split(NUL)) : null };
+}
+
+// `wsl.rs` `working_reply`: a typed reply, or null for the unknown outcome `interrupted`.
+function workingForm(tokens: string[] | null): string | null {
+  if (tokens === null) return null;
+  const [kind, ...rest] = tokens;
+  const count = (text: string | undefined) => text !== undefined && /^(0|[1-9][0-9]*)$/.test(text);
+  if (kind === "replaced" && rest.length === 2 && count(rest[0]) && ["none", "removed", "kept"].includes(rest[1]!)) return tokens.join(" ");
+  if ((kind === "stale" || kind === "invalid") && rest.length === 1 && count(rest[0])) return tokens.join(" ");
+  if ((kind === "refused" || kind === "error") && rest.length === 2 && count(rest[1])) return tokens.join(" ");
+  return null;
+}
+
+wslTest("L8 replace_one without syscall.ph: the syscall.ph package, nrs(), a working replace, and the xattr check", NEEDS, (w) => {
+  const observations: Observation[] = [];
+  const release = inDistro(w.distro, ["/usr/bin/cat", "/etc/os-release"]);
+  const pretty = /^PRETTY_NAME="?([^"\n]*)"?$/m.exec(release)?.[1] ?? null;
+  const base = folder(w, "l8");
+  const found = perl(w, base, String.raw`out({ perl => "$]", loads => $NR_SRC eq 'syscall.ph' ? 1 : 0, path => $INC{'syscall.ph'} });`);
+  observations.push(obs("versions", "record", { distro: w.distro, pretty, perl: found.perl, git: revertGitVersion(hostOf(w)) }, true));
+  // dpkg-query(1) `-S` matches the path as the package lists it. The second form follows a folder link of the Perl version.
+  const owner = typeof found.path === "string" ? sh(w, 'dpkg -S "$1" 2>/dev/null || dpkg -S "$(realpath -- "$1")"', [found.path], { allowExit: [0, 1] }) : null;
+  observations.push(obs("L8.syscall-ph", "record", { loads: found.loads, path: found.path ?? null, dpkg: owner === null ? null : { exit: owner.exitCode, owner: owner.stdout.trim() } }, true));
+
+  const nrs = withoutSyscallPh(w, WSL_FILES_TEXT, [], new Uint8Array(), [L8_NRS]);
+  observations.push(obs("L8.nrs", { exit: 0, nrs: "hidden=1" }, { exit: nrs.exitCode, nrs: nrs.stdout.trim() }));
+
+  const dir = folder(w, "l8/wt");
+  inDistro(w.distro, ["/usr/bin/mkdir", "-p", "--", owned(w, `${dir}/.git`)]);
+  const roots = [dir, `${dir}/.git`, `${dir}/.git`];
+  const p = w.probe.paths;
+  const hex = Buffer.from("new\n").toString("hex");
+  const tokensOf = (tokens: string[]) => new TextEncoder().encode(tokens.map((t) => `${t}${NUL}`).join(""));
+  // GNU stat `%s %f %u %g %h` (`%f` is the raw `st_mode` in hex), then `sha256sum`: the data-model §3 `working` facts.
+  const facts = (name: string) => {
+    const r = sh(w, 'stat -c "%s %f %u %g %h" -- "$1" && sha256sum -- "$1"', [owned(w, `${dir}/${name}`)]);
+    const m = /^(\d+) ([0-9a-f]+) (\d+) (\d+) (\d+)\n([0-9a-f]{64}) /.exec(r.stdout);
+    if (m === null) throw new Error(`stat output refused: ${JSON.stringify(r.stdout)}`);
+    return [m[1]!, m[6]!, String(parseInt(m[2]!, 16)), m[3]!, m[4]!, m[5]!];
+  };
+  const content = (name: string) => sh(w, '[ -e "$1" ] || exit 3; cat -- "$1"', [owned(w, `${dir}/${name}`)], { allowExit: [0, 3] });
+  const temps = () => sh(w, 'find "$1" -maxdepth 1 -name ".arbareto-*" -printf "%f\\n"', [owned(w, dir)]).stdout.split("\n").filter((n) => n !== "");
+  // `wsl.rs` `working_command`: the bound, the path, `working`, the state, no folders, and the bytes.
+  const replace = (name: string, state: string[]) => withoutSyscallPh(w, WSL_FILES_TEXT, ["replace", ...roots, p.git!, p.sha256sum!], tokensOf(["0", "0", "1", name, "working", ...state, "0", "bytes", hex]));
+  // Plan.md D9: no write without the `linkat` name and the `xattr` check. So each reply is typed, and the target keeps its state.
+  const safe = { typed: true, written: false, temps: [] };
+
+  sh(w, 'printf "old\\n" > "$1"', [owned(w, `${dir}/plain.txt`)]);
+  const plain = replace("plain.txt", ["present", ...facts("plain.txt")]);
+  observations.push(obs("L8.working-present.reply", "record", workingForm(plain.tokens) ?? `interrupted exit=${plain.exitCode}`, true));
+  observations.push(obs("L8.working-present", safe, { typed: workingForm(plain.tokens) !== null, written: content("plain.txt").stdout !== "old\n", temps: temps() }));
+
+  sh(w, 'printf "old\\n" > "$1"', [owned(w, `${dir}/xattr.txt`)]);
+  const set = perl(w, dir, String.raw`my ($path, $attr, $value) = ('xattr.txt', 'user.test', 'v'); out({ set => ($NR{setxattr} && syscall($NR{setxattr}, $path, $attr, $value, 1, 0) == 0) ? 1 : 0 });`);
+  if (set.set !== 1) {
+    console.log(`SKIP ${L8_TASK} L8 xattr check: missing capability user-xattr (unverified)`);
+  } else {
+    const xattr = replace("xattr.txt", ["present", ...facts("xattr.txt")]);
+    observations.push(obs("L8.xattr-check.reply", "record", workingForm(xattr.tokens) ?? `interrupted exit=${xattr.exitCode}`, true));
+    observations.push(obs("L8.xattr-check", safe, { typed: workingForm(xattr.tokens) !== null, written: content("xattr.txt").stdout !== "old\n", temps: temps() }));
+  }
+
+  // An absent target binds no `xattr` fact. The `linkat` name still applies (plan.md D9, probes L1 and L2).
+  const absent = replace("absent.txt", ["absent", "100644"]);
+  observations.push(obs("L8.working-absent.reply", "record", workingForm(absent.tokens) ?? `interrupted exit=${absent.exitCode}`, true));
+  observations.push(obs("L8.working-absent", safe, { typed: workingForm(absent.tokens) !== null, written: content("absent.txt").exitCode !== 3, temps: temps() }));
+
+  // `fileFacts` with `detail` (`wsl.rs` `file_facts_command` read bit 2): no `xattr` fact gives the typed `error` of the component.
+  const detail = withoutSyscallPh(w, FACTS_TEXT, ["2", ...roots], factsInput([{ root: 0, path: ["plain.txt"] }]));
+  observations.push(obs("L8.detail-read", ["error", "1", "other-error"], detail.tokens));
+
+  expect(observations.length).toBeGreaterThan(0);
+  for (const o of observations) console.log(observationLine(L8_TASK, o, versionOf(w)));
 }, FACT_MS);
 
 // G9 and G10 inside the distro (tasks.md T004). The distro Git needs `git-lfs` for the LFS case.

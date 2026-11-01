@@ -5,13 +5,14 @@
 // (contract Δ11, plan.md D9, research.md R9, R15). `Local: WSL`, alone.
 // Each case runs the Perl text of `src/contracts/wsl-process.json` through the contract §11 wrapper, with the arguments of `src-tauri/src/wsl.rs`
 // `files_perl` and the stdin tokens of `working_command`, `replace_command`, and `temp_remove_command`. The operation IDs start with `0f0f0f0f-0000-4000-8015-`.
+// Feature 008 T055: the `fileFacts` text with `detail` and `stream` (contract Δ6, data-model §3), with the arguments of `wsl.rs` `file_facts_command`.
 
 import { describe, expect, test } from "bun:test";
 import wslProcess from "../../src/contracts/wsl-process.json";
 import { sha256 } from "../git/git-oracle";
 import { printOrigin } from "../origin";
 import { sh } from "./fixtures";
-import { inDistro, listScopes, OWN_SCOPE_OPERATIONS, pgrep, useWslFolder, WSL_ENV, WSL_EXE, WSL_FILES_TEXT, wslExec, wslTest, type WslCapability, type WslHost } from "./wsl-host";
+import { FACTS_TEXT, factsInput, inDistro, listScopes, OWN_SCOPE_OPERATIONS, pgrep, useWslFolder, WSL_ENV, WSL_EXE, WSL_FILES_TEXT, wslExec, wslTest, type FactEntry, type WslCapability, type WslHost } from "./wsl-host";
 
 printOrigin("../../src/contracts/wsl-process.json", import.meta.dir);
 useWslFolder();
@@ -42,16 +43,100 @@ interface FilesRun {
   proc: ReturnType<typeof Bun.spawn>;
 }
 
-// `wsl.rs` `files_perl`: the Perl text through the wrapper in mode `probe`, the three Linux roots, the Git and SHA-256 programs, and the stdin tokens.
-function startFiles(w: WslHost, mode: "replace" | "tempRemove", root: string, tokens: readonly string[], sha = w.probe.paths.sha256sum!, gitDir = `${root}/.git`): FilesRun {
+// `wsl.rs` `wrapped`: the Perl program through the wrapper in mode `probe`, with its arguments and stdin.
+function startWrapped(w: WslHost, perlArgs: readonly string[], input: Uint8Array): FilesRun {
   const operation = operationId();
   const p = w.probe.paths;
-  const roots = [root, gitDir, gitDir];
-  const argv = [WSL_EXE, "--distribution", w.distro, "--cd", "/", "--exec", "/bin/sh", "-c", WRAPPER, "sh", `arbareto-${operation}-1.scope`, "probe", "", p["systemd-run"]!, p.systemctl!, p.setsid!, w.probe.noexpand === "0" ? "1" : "", PERL, "-e", WSL_FILES_TEXT, "--", mode, ...roots, p.git!, sha];
+  const argv = [WSL_EXE, "--distribution", w.distro, "--cd", "/", "--exec", "/bin/sh", "-c", WRAPPER, "sh", `arbareto-${operation}-1.scope`, "probe", "", p["systemd-run"]!, p.systemctl!, p.setsid!, w.probe.noexpand === "0" ? "1" : "", PERL, ...perlArgs];
   const proc = Bun.spawn(argv, { env: WSL_ENV, stdin: "pipe", stdout: "pipe", stderr: "pipe" });
-  proc.stdin.write(Buffer.from(tokens.map((token) => `${token}${NUL}`).join("")));
+  proc.stdin.write(input);
   proc.stdin.end();
   return { operation, proc };
+}
+
+// `wsl.rs` `files_perl`: the three Linux roots, the Git and SHA-256 programs, and the stdin tokens.
+function startFiles(w: WslHost, mode: "replace" | "tempRemove", root: string, tokens: readonly string[], sha = w.probe.paths.sha256sum!, gitDir = `${root}/.git`): FilesRun {
+  const roots = [root, gitDir, gitDir];
+  return startWrapped(w, ["-e", WSL_FILES_TEXT, "--", mode, ...roots, w.probe.paths.git!, sha], Buffer.from(tokens.map((token) => `${token}${NUL}`).join("")));
+}
+
+// `wsl.rs` `file_facts_command`: the first Perl argument holds `digest` (1), `detail` (2), and `stream` (4).
+const DIGEST = 1;
+const DETAIL = 2;
+const STREAM = 4;
+
+// A stream also passes the approved `sha256sum` after the three roots.
+function startFacts(w: WslHost, root: string, read: number, entries: readonly FactEntry[]): FilesRun {
+  const roots = [root, `${root}/.git`, `${root}/.git`];
+  return startWrapped(w, ["-e", FACTS_TEXT, "--", String(read), ...roots, ...(read & STREAM ? [w.probe.paths.sha256sum!] : [])], factsInput(entries));
+}
+
+// `wsl.rs` `file_facts_reply` and `fact` with `detail` and `stream`: one record per entry, then the output end.
+// Null is the `other-error` of every entry. The shell computes the digest of `data` bytes. The facts keep the compared fields only.
+function readFacts(out: { exitCode: number | null; stdout: Uint8Array }, count: number, read: number): Record<string, unknown>[] | null {
+  if (out.exitCode !== 0 || out.stdout[0] !== STARTED) return null;
+  const body = Buffer.from(out.stdout.subarray(1));
+  let at = 0;
+  const token = (): string | null => {
+    const end = body.indexOf(0, at);
+    if (end < 0) return null;
+    const text = body.subarray(at, end).toString("latin1");
+    at = end + 1;
+    return /^[\x21-\x7e]+$/.test(text) ? text : null;
+  };
+  const number = (signed = false): number | null => {
+    const text = token();
+    return text !== null && (signed ? /^(0|-?[1-9][0-9]*)$/ : /^(0|[1-9][0-9]*)$/).test(text) ? Number(text) : null;
+  };
+  const flag = (): boolean | null => {
+    const text = token();
+    return text === "1" ? true : text === "0" ? false : null;
+  };
+  const facts: Record<string, unknown>[] = [];
+  for (let i = 0; i < count; i++) {
+    const kind = token();
+    if (kind === "absent" || kind === "other") facts.push({ kind });
+    else if (kind === "directory") {
+      if (flag() === null) return null;
+      facts.push({ kind });
+    } else if (kind === "error") {
+      const [component, code] = [number(), token()];
+      if (component === null || code === null) return null;
+      facts.push({ kind, component, code });
+    } else if (kind === "file") {
+      const [size, mtime, owner, executable] = [number(), number(true), flag(), flag()];
+      if (size === null || mtime === null || owner === null || executable === null) return null;
+      const fact: Record<string, unknown> = { kind, size };
+      if (read & DETAIL) {
+        const [mode, uid, gid, links, xattr] = [number(), number(), number(), number(), flag()];
+        if (mode === null || uid === null || gid === null || links === null || links < 1 || xattr === null) return null;
+        Object.assign(fact, { mode, uid, gid, links, xattr });
+      }
+      const form = token();
+      const bounded = (read & DIGEST) !== 0 && (read & STREAM) === 0;
+      if (form === "none" && (read & DIGEST) === 0) {
+        // No digest.
+      } else if (form === "sha256" && (read & STREAM) !== 0) {
+        const hex = token();
+        if (hex === null || !/^[0-9a-f]{64}$/.test(hex)) return null;
+        fact.digest = hex;
+      } else if (form === "data" && bounded) {
+        const length = number();
+        if (length === null || at + length > body.length) return null;
+        fact.digest = sha256(body.subarray(at, at + length));
+        at += length;
+      } else if ((form === "file-bytes" || form === "total-bytes") && bounded) fact.bound = form;
+      else return null;
+      facts.push(fact);
+    } else return null;
+  }
+  return at === body.length ? facts : null;
+}
+
+// `SYS_setxattr` from `syscall.ph`, as probe L6 sets `user.test` (research.md R15). False when the call fails.
+function setUserTest(w: WslHost, path: string): boolean {
+  const set = wslExec(["--distribution", w.distro, "--cd", "/", "--exec", PERL, "-e", 'require "syscall.ph"; my ($path, $name, $value) = (@ARGV, "user.test", "v"); syscall(main::SYS_setxattr(), $path, $name, $value, 1, 0) == 0 or exit 1', "--", owned(w, path)]);
+  return set.exitCode === 0;
 }
 
 async function finish(run: FilesRun, ms = RUN_MS): Promise<{ exitCode: number | null; stdout: Uint8Array }> {
@@ -502,5 +587,49 @@ describe("T015 wslFiles replace working and tempRemove through the wrapper (cont
     expect({ octal: stateOf(w, `${dir}/.gitignore`).octal, bytes: read(w, `${dir}/.gitignore`)?.toString() }).toEqual({ octal: "2755", bytes: "/new\n" });
     expect(temps(w, dir)).toEqual([]);
     await noneLeft(w, run.operation);
+  });
+});
+
+describe("T055 fileFacts detail and stream through the wrapper (contract Δ6, data-model §3)", () => {
+  W("a detail read gives the whole st_mode, uid, gid, links, and xattr; a second link shows in links; user.test gives xattr: true", async (w) => {
+    const dir = worktree(w, "detail");
+    write(w, `${dir}/plain.txt`, "plain\n", "644");
+    write(w, `${dir}/run.sh`, "#!/bin/sh\n", "2755");
+    write(w, `${dir}/linked.txt`, "old\n", "600");
+    sh(w, 'ln -- "$1" "$2"', [`${dir}/linked.txt`, `${dir}/second-name`]);
+    write(w, `${dir}/xattr.txt`, "x\n", "644");
+    const xattr = setUserTest(w, `${dir}/xattr.txt`);
+    if (!xattr) console.log("SKIP user-xattr: setxattr failed (unverified)");
+    const names = ["plain.txt", "run.sh", "linked.txt", "xattr.txt"];
+    const entries: FactEntry[] = [...names.map((name) => ({ root: 0 as const, path: [name] })), { root: 0, path: ["sub"] }, { root: 0, path: ["missing"] }];
+    sh(w, 'mkdir -- "$1"', [`${dir}/sub`]);
+    for (const read of [DETAIL, DETAIL | DIGEST]) {
+      const run = startFacts(w, dir, read, entries);
+      const facts = readFacts(await finish(run), entries.length, read);
+      const files = names.map((name) => {
+        const s = stateOf(w, `${dir}/${name}`);
+        return { kind: "file", size: s.size, mode: s.mode, uid: s.uid, gid: s.gid, links: s.links, xattr: xattr && name === "xattr.txt", ...(read & DIGEST ? { digest: s.sha } : {}) };
+      });
+      expect([read, facts]).toEqual([read, [...files, { kind: "directory" }, { kind: "absent" }]]);
+      await noneLeft(w, run.operation);
+    }
+    // `mode` is the whole `st_mode` with the file type bits. The second name raises the link count of both names.
+    expect([stateOf(w, `${dir}/plain.txt`).mode, stateOf(w, `${dir}/run.sh`).mode, stateOf(w, `${dir}/linked.txt`).links]).toEqual([0o100644, 0o102755, 2]);
+  });
+
+  W("a stream read gives the size and SHA-256 of a 40 MiB file from inside the distro, and no file content crosses the boundary", async (w) => {
+    const dir = worktree(w, "stream");
+    sh(w, 'head -c 41943040 /dev/urandom > "$1"', [owned(w, `${dir}/big.bin`)]);
+    const s = stateOf(w, `${dir}/big.bin`);
+    expect(s.size).toBe(40 << 20);
+    for (const read of [DIGEST | STREAM, DIGEST | DETAIL | STREAM]) {
+      const run = startFacts(w, dir, read, [{ root: 0, path: ["big.bin"] }]);
+      const out = await finish(run);
+      // The output holds the record tokens only.
+      expect([read, out.stdout.length < 256]).toEqual([read, true]);
+      const detail = read & DETAIL ? { mode: s.mode, uid: s.uid, gid: s.gid, links: 1, xattr: false } : {};
+      expect([read, readFacts(out, 1, read)]).toEqual([read, [{ kind: "file", size: s.size, digest: s.sha, ...detail }]]);
+      await noneLeft(w, run.operation);
+    }
   });
 });

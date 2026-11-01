@@ -460,3 +460,24 @@ OBSERVATION T004: G9-G10-G8.mode-100755 expected={"holds":22} observed={"holds":
 - UI, fixed in `16fad87e`: a new snapshot or a new comparison patch closes an open confirmation, and a second R during a review opens nothing (data-model §10).
 - Open after the review, with their tasks: the `RevertRun` reason `revert-changed` and the index-part refusal reason (T059); the CRLF ending of `restored` without an active conversion (T060); the local `RevertLinesPlan` copy (T061); the `tempRemove` `RunnerRefusal` and `lineReview` scope tests (T062); the `git diff` header reads in `HunkControls.tsx` (T063, after v0.1.0).
 - The T033 verification runs separately. This block records no test result.
+
+### Probe L8 (T057), 2026-11-01
+
+- Code under test: branch `f008-b3-wsl` from `4100255b` with the T055 to T057 changes. Every `ORIGIN` line names the checkout under test.
+- `require 'syscall.ph'` loads in `Ubuntu-26.04`. `dpkg -S` names the package `libperl5.40`, so `perl-base` alone does not install the file.
+- The probe hides `syscall.ph` with a subroutine at the start of `@INC`. Then `nrs()` gives an empty table.
+- Without `syscall.ph`, a `working` replace of a present target replies `error other-error`, and the target keeps its bytes. The `xattr` check of a target with `user.test` gives the same reply. A `fileFacts` `detail` read replies `error` at component 1 with `other-error`.
+- Finding for T045: a `working` replace of an absent target writes the file without the `linkat` name. `temp_here` then creates the named file `.arbareto-<pid>-replace.tmp` and links it to the target. The reply is `replaced`.
+
+```text
+OBSERVATION T057: versions expected="record" observed={"distro":"Ubuntu-26.04","pretty":"Ubuntu 26.04.1 LTS","perl":"5.040001","git":"2.55.0"} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T057: L8.syscall-ph expected="record" observed={"loads":1,"path":"/usr/lib/x86_64-linux-gnu/perl/5.40/syscall.ph","dpkg":{"exit":0,"owner":"libperl5.40:amd64: /usr/lib/x86_64-linux-gnu/perl/5.40.1/syscall.ph"}} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T057: L8.nrs expected={"exit":0,"nrs":"hidden=1"} observed={"exit":0,"nrs":"hidden=1"} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T057: L8.working-present.reply expected="record" observed="error other-error 0" match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T057: L8.working-present expected={"typed":true,"written":false,"temps":[]} observed={"typed":true,"written":false,"temps":[]} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T057: L8.xattr-check.reply expected="record" observed="error other-error 0" match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T057: L8.xattr-check expected={"typed":true,"written":false,"temps":[]} observed={"typed":true,"written":false,"temps":[]} match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T057: L8.working-absent.reply expected="record" observed="replaced 0 none" match=true git=2.55.0@Ubuntu-26.04
+OBSERVATION T057: L8.working-absent expected={"typed":true,"written":false,"temps":[]} observed={"typed":true,"written":true,"temps":[]} match=false git=2.55.0@Ubuntu-26.04
+OBSERVATION T057: L8.detail-read expected=["error","1","other-error"] observed=["error","1","other-error"] match=true git=2.55.0@Ubuntu-26.04
+```

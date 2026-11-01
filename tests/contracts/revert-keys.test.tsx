@@ -9,7 +9,7 @@ import { printOrigin } from "../origin";
 import { contractChecked, fixtureId } from "./bridge-contract";
 import { entry, item, pressKey, statusBar, tree } from "./commit-fake";
 import { createFake, oid, stubLayout, TARGET } from "./history-fake";
-import { alertDialog, COMPARISON, diffBody, filesPlan, filesReviewed, HUNKS, markRow, openFiles, PatchDouble, revertAllUnstaged, revertKey, rowKey, selectFirstHunk, selectLines, shownDiff, unstagedPlan, unstagedReviewed } from "./revert-fake";
+import { alertDialog, COMPARISON, confirmFor, diffBody, filesPlan, filesReviewed, HUNKS, markRow, openFiles, PatchDouble, plan, revertAllUnstaged, revertKey, rowKey, selectFirstHunk, selectLines, shownDiff, unstagedPlan, unstagedReviewed } from "./revert-fake";
 import { answer, button, click, settle, succeeded, text, unmountAll } from "./sync-fake";
 
 // tasks.md T027, T031, T036, and T059 (feature 008). Stories US1, US2, US3. Spec FR-006, FR-012, FR-018, FR-042, FR-046. Plan D12 "Keys".
@@ -73,6 +73,70 @@ describe("R in the Commit view diff (FR-012, FR-046)", () => {
     await pressKey(field, "r");
     field.remove();
     expect(reviews(double)).toHaveLength(0);
+  });
+});
+
+// tasks.md T040 (feature 008, WP5). Story US4. Spec FR-012, FR-016, FR-017, FR-040. Plan D4, D11 `REVERT_PARTIAL`, D12.
+describe("R in the staged diff (US4)", () => {
+  test("R opens the staged review of the selected lines, and of the selected hunk", async () => {
+    const { double } = await shownDiff(workbench, { category: "staged" });
+    await selectLines({ start: 2, side: "deletions", end: 3, endSide: "additions" });
+    await revertKey();
+    expect(reviews(double)).toHaveLength(1);
+    expect(reviews(double)[0]!.args[1]).toEqual({ action: "revert-lines", snapshotId: expect.any(String), comparisonId: COMPARISON, hunkId: HUNKS[0]!.hunkId, lines: [2, 3, 4] });
+    await unmountAll();
+
+    const second = await shownDiff(workbench, { category: "staged" });
+    await selectFirstHunk();
+    await revertKey();
+    expect(reviews(second.double)).toHaveLength(1);
+    expect(reviews(second.double)[0]!.args[1]).toEqual({ action: "revert-lines", snapshotId: expect.any(String), comparisonId: COMPARISON, hunkId: HUNKS[0]!.hunkId });
+  });
+
+  test("a file that also has unstaged changes: no modal opens, and the status names the reason", async () => {
+    const { double } = await shownDiff(workbench, { category: "staged" });
+    await selectLines({ start: 2, side: "deletions", end: 3, endSide: "additions" });
+    await revertKey();
+    await answer(double.pending("reviewWorkbench"), { ...succeeded({ reason: "unstaged-changes" }), state: "failed", code: "WORKBENCH_UNAVAILABLE" });
+    expect(alertDialog()).toBeNull();
+    expect(double.count("runWorkbench")).toBe(0);
+    expect(statusBar()).toContain("Revert 3 lines is unavailable.");
+    expect(text(statusArea()!)).toContain("This file also has unstaged changes. Revert or stage them first.");
+  });
+
+  /** R on 2 selected staged lines, Revert lines in the confirmation, then the pending run. */
+  async function runStaged() {
+    const { double, file } = await shownDiff(workbench, { category: "staged" });
+    await selectLines({ start: 2, side: "additions", end: 3 });
+    await revertKey();
+    const dialog = await confirmFor(double, plan(2, "staged"));
+    await click(button("Revert lines", dialog));
+    return { file, runCall: double.pending("runWorkbench")! };
+  }
+  const linesRun = (entryId: string, outcome: Record<string, unknown>) => ({ action: "revert-lines", files: [{ entryId, ...outcome }], foldersCreated: [], index: "published" });
+
+  test("success: Arbareto reverted 2 lines in login.ts.", async () => {
+    const { file, runCall } = await runStaged();
+    await answer(runCall, succeeded(linesRun(file.entryId, { outcome: "reverted" })));
+    expect(statusBar()).toContain("Arbareto reverted 2 lines in login.ts.");
+  });
+
+  // Spec US4 scenario 4: another program changed the file after the index part.
+  test("the index part stays and the file changed: the FR-017 partial result", async () => {
+    const PARTIAL = "Arbareto removed the changes from the index. It did not change login.ts, because the file changed after the review.";
+    for (const outcome of [{ outcome: "changed-outside" }, { outcome: "unstaged-only", code: "stale" }]) {
+      const { file, runCall } = await runStaged();
+      await answer(runCall, { ...succeeded(linesRun(file.entryId, outcome)), state: "failed-with-effects" });
+      expect({ outcome, status: statusBar() }).toEqual({ outcome, status: expect.stringContaining(PARTIAL) });
+      expect(statusBar()).not.toContain("Arbareto changed nothing");
+      await unmountAll();
+    }
+  });
+
+  test("the index part stays and the write failed: the FR-017 partial result names the reason", async () => {
+    const { file, runCall } = await runStaged();
+    await answer(runCall, { ...succeeded(linesRun(file.entryId, { outcome: "unstaged-only", code: "error", reason: "sharing-violation" })), state: "failed-with-effects" });
+    expect(statusBar()).toContain("Arbareto removed the changes from the index. It did not change login.ts, because another program has it open.");
   });
 });
 

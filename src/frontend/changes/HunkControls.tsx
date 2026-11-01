@@ -117,6 +117,8 @@ export type HunkControlsProps = {
   onRevert?(request: RevertRequest): void;
   /** Feature 008 spec FR-046: the reason of an R that changes nothing. */
   onRevertRefused?(text: string): void;
+  /** Feature 008 spec FR-016: the shown snapshot also has an unstaged entry with the path bytes of this staged entry. */
+  unstagedToo?: boolean;
 };
 
 /** Feature 008 contract Δ3 `revert-lines`: one hunk, with the line ordinals of a line selection or null. `opener` gets focus after the modal. */
@@ -201,6 +203,7 @@ function revertBlock(props: HunkControlsProps): string | null {
   return (
     (props.blocked === "running" ? RUNNING_REASON : props.blocked ? BLOCKED_TEXT[props.blocked] : null) ??
     (props.category === "untracked" ? revertReason("untracked", "")! : null) ??
+    (props.category === "staged" && props.unstagedToo ? revertReason("unstaged-changes", "")! : null) ??
     (comparison.support !== "supported" ? (comparison.support === null ? COMPARISON_INCOMPLETE : LIMITATION_TEXT[comparison.support]) : null) ??
     (comparison.completeness.state !== "complete" ? COMPARISON_INCOMPLETE : null) ??
     (props.displayFailed ? MAPPING_FAILED : null) ??

@@ -56,6 +56,7 @@ Every argument array starts with `--no-lazy-fetch`. Reads add `--no-optional-loc
 - `revert-lines` keeps `COMPARED_RAW_VERSION_BYTES`, `COMPARED_NORMALIZED_VERSION_BYTES`, and `CANONICAL_DIFF_LINES`.
 - `revert-files` and `revert-unstaged` keep `MULTI_FILE_ACTION_FILES` (10,000).
 - The token lifetime stays `APPROVAL_LIFETIME_MS` (60 s).
+- "Retained comparison data": a `readComparison` with the same facts as a retained comparison returns that comparison. It keeps its `comparisonId` and each `hunkId`, and it moves to the newest age slot. The facts are all retained values except the IDs: `repositoryId`, `snapshotId`, `generation`, the entry, `scope`, the raw patch bytes, the hunks, `support`, `fileAction`, the `working` binding, `attributes`, `workingVersion`, `sharedRepository`, the file `remedy`, and the completeness. The service compares each value exactly, with raw bytes byte for byte. The service never returns a comparison with a hunk or file approval that an accepted operation consumed. The 001 §2 repeat rule would answer each new attempt with that operation. Every other read gives a new comparison with new IDs. So the equal full read of each WSL poll keeps the shown comparison and its revert review (001 §8 "Equal full read").
 
 ## Δ6 Private native process requests (001 §6)
 

@@ -75,6 +75,8 @@ export interface RetainedComparison {
   sharedRepository: boolean;
   // The contract §4 remedy of a refused file action, which `applyFile` returns with the refusal.
   remedy: WholeFileRemedy | null;
+  // The completeness of the result value.
+  completeness: Completeness;
 }
 
 export interface ComparisonTarget {
@@ -231,7 +233,12 @@ export interface ComparisonReaderOptions {
   trust: Trust;
   // Gets the ID of each retained comparison that eviction or a release drops.
   onDrop?: (comparisonId: string) => void;
+  // True when an accepted operation consumed an approval of the comparison. Contract §2 then answers each repeat with that operation.
+  spent?: (comparisonId: string) => boolean;
 }
+
+// 008 contract Δ5: the facts of a comparison are all its retained values except the IDs.
+const factsOf = ({ comparisonId: _, hunks, ...rest }: RetainedComparison) => ({ ...rest, hunks: hunks.map(({ hunkId: _id, ...h }) => h) });
 
 // The contract §4 whole-file remedy of an entry. Null for a WSL root without a route, or without a selected Git path.
 export type WholeFileRemedy = { text: string; command: string | null };
@@ -276,8 +283,9 @@ export function wholeFileRemedy(t: Pick<ComparisonTarget, "entry" | "workspace" 
   return { text: `PowerShell cannot pass this value safely, so Arbareto offers no command: ${shown === undefined ? "" : text(shown)}`, command: null };
 }
 
-export function createComparisonReader({ runner, trust, onDrop }: ComparisonReaderOptions) {
+export function createComparisonReader({ runner, trust, onDrop, spent }: ComparisonReaderOptions) {
   // Contract §5 "Retained comparison data": insertion order is age order. An evicted comparison gives UNKNOWN_TARGET to every later request that names it.
+  // 008 contract Δ5: a read with the same facts keeps a retained comparison with its IDs, and the comparison moves to the newest age slot.
   const retained = new Map<string, RetainedComparison>();
   let retainedBytes = 0;
   const drop = (id: string) => {
@@ -288,6 +296,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
     onDrop?.(id);
   };
   const retain = (c: RetainedComparison) => {
+    if (retained.delete(c.comparisonId)) retainedBytes -= c.patch.length;
     retained.set(c.comparisonId, c);
     retainedBytes += c.patch.length;
     for (const id of retained.keys()) {
@@ -526,7 +535,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
       const kept = patch.ok ? rawPatch : new Uint8Array();
       const completeness: Completeness = !patch.ok && patch.completeness.state === "limited" ? patch.completeness : eolLimit !== null ? { state: "limited", code: "OUTPUT_LIMIT", reason: eolLimit } : { state: "complete" };
       const remedy = remedyOf(t, path, fileAction);
-      const comparison: RetainedComparison = {
+      const fresh: RetainedComparison = {
         comparisonId: crypto.randomUUID(),
         repositoryId: w.repositoryId,
         snapshotId: t.snapshot.snapshotId,
@@ -542,8 +551,11 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
         workingVersion,
         sharedRepository: w.wsl !== undefined && holdsSharedRepository(lst.entries),
         remedy,
+        completeness,
       };
       if (t.signal.aborted) return { result: "canceled" };
+      const facts = factsOf(fresh);
+      const comparison = [...retained.values()].find((c) => spent?.(c.comparisonId) !== true && Bun.deepEquals(factsOf(c), facts, true)) ?? fresh;
       retain(comparison);
       const value = {
         comparisonId: comparison.comparisonId,
@@ -553,7 +565,7 @@ export function createComparisonReader({ runner, trust, onDrop }: ComparisonRead
         completeness,
         // Contract §5: the canonical patch travels as base64 of its raw bytes.
         patch: b64(kept),
-        hunks: hunks.map(({ hunkId, ordinal, oldStart, oldCount, newStart, newCount, digest }) => ({ hunkId, ordinal, oldStart, oldCount, newStart, newCount, digest })),
+        hunks: comparison.hunks.map(({ hunkId, ordinal, oldStart, oldCount, newStart, newCount, digest }) => ({ hunkId, ordinal, oldStart, oldCount, newStart, newCount, digest })),
         support: decision === null ? null : decision.supported ? "supported" : (decision as { reason: string }).reason,
         fileAction: actionValue(fileAction),
         remedy,

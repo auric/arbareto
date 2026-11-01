@@ -139,6 +139,12 @@ export function createApprovals(now: () => number = () => performance.now()) {
       for (const [key, e] of entries) if (e.consumed === null && "comparisonId" in e.approval && e.approval.comparisonId === comparisonId) entries.delete(key);
     },
 
+    // True when an accepted operation consumed a hunk or file approval of the comparison.
+    spent(comparisonId: string): boolean {
+      for (const e of entries.values()) if (e.consumed !== null && "comparisonId" in e.approval && e.approval.comparisonId === comparisonId) return true;
+      return false;
+    },
+
     // Contract §6 "Registration reuse and release": a released `repositoryId` is never issued again, so no request reaches a consumed approval of it.
     release(repositoryId: string): void {
       for (const [key, e] of entries) if (e.approval.repositoryId === repositoryId) entries.delete(key);

@@ -3,7 +3,7 @@
 
 import type { z } from "zod";
 import type { ChangeEntry, RevertFileOutcome, RevertFilesPlan, RevertLinesPlan, ReviewWorkbenchResult } from "../../contracts/envelope";
-import { GITLINK } from "../../contracts/file-action";
+import { GITLINK } from "../../contracts/git-mode";
 import { MULTI_FILE_ACTION_FILES } from "../../contracts/limits";
 import { compareKeys, treeKey } from "../../contracts/tree-order";
 import type { BridgeResponse } from "../bridge";

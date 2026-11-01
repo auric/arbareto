@@ -25,7 +25,7 @@ import { localFacts, rawRecord, wholeFileRemedy, workingParts } from "./comparis
 import { createTailCollector } from "./discovery";
 import { hunkEligibility } from "./eligibility";
 import { blobProof, changedSet, indexInfoInput } from "./file-publish";
-import { createCollector, firstEnd, isDeadlineStop, RunnerRefusal, stepUnits, type Collector } from "./git-runner";
+import { createCollector, firstEnd, isDeadlineStop, RunnerRefusal, stepUnits } from "./git-runner";
 import { ownedCandidate } from "./hunk-candidate";
 import {
   besideIndex,
@@ -56,7 +56,7 @@ import { contextOf, latin1, objectCheckInput, objectCheckOutcome } from "./read-
 import type { Workspace } from "./registration";
 import type { ChangeSnapshot, ReadInstallation, WorkingVersion } from "./snapshot";
 import type { StatusCut, WorkspaceReader } from "./status";
-import { createStatusParser, type StatusRecord } from "./status-parser";
+import { createStatusParser, statusCollector, type StatusRecord } from "./status-parser";
 import { parseAttributes } from "./support";
 import type { TrustListing } from "./trust";
 import type { WslWhole } from "./wsl-files";
@@ -194,21 +194,7 @@ async function sameEntries(ctx: PublishContext, installation: ReadInstallation, 
   const fresh = new Set<string>();
   for (const batch of batches) {
     const parser = createStatusParser(w.objectFormat);
-    let size = 0;
-    const out: Collector = {
-      push(chunk) {
-        size += chunk.length;
-        parser.push(chunk);
-      },
-      get bytes() {
-        return size;
-      },
-      records: 0,
-      get limited() {
-        return parser.limited;
-      },
-    };
-    const step = await stepOf(ctx, args(batch), out, undefined, stepDeadline(batch.length));
+    const step = await stepOf(ctx, args(batch), statusCollector(parser), undefined, stepDeadline(batch.length));
     if (!("exit" in step)) return refusalOrStop(step);
     const parsed = parser.end();
     if (parsed.state === "limited") return { code: "OUTPUT_LIMIT", reason: parsed.reason };

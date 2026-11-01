@@ -30,6 +30,7 @@ const KEYS: Record<string, { key: string; code: string; vk: number; text?: strin
   F10: { key: "F10", code: "F10", vk: 0x79 },
   a: { key: "a", code: "KeyA", vk: 0x41 },
   s: { key: "s", code: "KeyS", vk: 0x53 },
+  r: { key: "r", code: "KeyR", vk: 0x52 },
 };
 const MODIFIER_KEYS = [
   { bit: MOD.Alt, key: "Alt", code: "AltLeft", vk: 0x12 },

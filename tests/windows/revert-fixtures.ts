@@ -21,8 +21,9 @@ export const rvSmallPath = (i: number) => `rv/u/f${String(i).padStart(4, "0")}.t
 export const rvBothPath = (i: number) => `rv/b/f${String(i).padStart(3, "0")}.txt`;
 const RV_LINE_BYTES = 64;
 const RV_SMALL_LINES = 64;
-// 16,384 lines of 64 bytes give exactly COMPARED_RAW_VERSION_BYTES (1 MiB), the largest size that the 001 support rule shows.
-const RV_TEXT_LINES = 16_384;
+// 16,368 lines of 64 bytes give 1,047,552 bytes, 1 KiB below COMPARED_RAW_VERSION_BYTES (1 MiB).
+// A lines revert that restores removed lines adds bytes. Above 1 MiB the comparison gives support `size` and no diff (support.ts `decideSupport`).
+const RV_TEXT_LINES = 16_368;
 // One hunk: 1,000 removed and 1,000 added lines give the 2,000-line diff of R12.
 const RV_TEXT_CHANGED = { from: 5_001, to: 6_000 };
 const RV_BINARY_BYTES = 8 * 1024 * 1024;
@@ -128,7 +129,8 @@ interface RevertManifest {
   reuse: PerfReuseState;
 }
 
-const NAME = `R-seed${PERF_SEED}`;
+// A new name for each fixture shape, so a changed builder never replaces an entry that another checkout reads.
+const NAME = `R2-seed${PERF_SEED}`;
 
 /** Builds R once per builder digest and M tip under the cache root. The lock and the temporary folder follow `ensurePerfFixture`. */
 export function ensureRevertFixture(git: string): { folder: string; repo: string; facts: RevertFacts; reused: boolean } {

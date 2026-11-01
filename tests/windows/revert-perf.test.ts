@@ -61,6 +61,8 @@ const EVENT_THRESHOLD_MS = 16;
 const PROBE_INTERVAL_MS = 100;
 // Spec SC-007 "the 004 multi-file limit": src/contracts/limits.ts `MULTI_FILE_ACTION_FILES`.
 const LIMIT_FILES = 10_000;
+// A bound of the test, not a budget. It holds a run at the limit, which has no SC-007 end time, and a WSL run, whose budget the record still checks.
+const LIMIT_RUN_MS = 15 * 60_000;
 const GIB = 1024 * MIB;
 
 // ---- App texts (the source of each value is named) ----
@@ -72,6 +74,12 @@ const MORE_ACTIONS = "More actions";
 const REVERT_UNSTAGED_LABEL = "Revert all unstaged changes…";
 const UNAVAILABLE = " is unavailable.";
 const CHECKING = "Checking ";
+// src/frontend/app/Workbench.tsx `statusText`.
+const REFRESHING = "Refreshing…";
+const STATE_UNKNOWN = "State unknown";
+const NO_HUNK = "No hunk is selected.";
+// src/frontend/changes/PatchView.tsx annotation text.
+const SELECTED_HUNK = "Selected hunk";
 const REVERTING = "Reverting ";
 // src/frontend/commit/CommitTray.tsx.
 const MESSAGE = "Commit message";
@@ -111,7 +119,7 @@ async function press(c: Cdp, name: string, modifiers = 0): Promise<void> {
 const js = (value: unknown) => JSON.stringify(value);
 async function until<T>(c: Cdp, what: string, expression: string, done: (value: T) => boolean, ms = STEP_LIMIT_MS): Promise<T> {
   const value = await c.poll<T>(expression, done, ms);
-  if (!done(value)) throw new Error(`${what} did not happen within ${ms} ms: ${js(value)}`);
+  if (!done(value)) throw new Error(`${what} did not happen within ${ms} ms: ${js(value)} ${js(await c.evaluate<unknown>(FACTS).catch((e) => String(e)))}`);
   return value;
 }
 async function focusOn(c: Cdp, expression: string, what: string): Promise<void> {
@@ -164,12 +172,38 @@ const PAGE = `(() => {
   return true;
 })()`;
 
-async function timed(c: Cdp, checks: string[], act: () => Promise<void>): Promise<number[]> {
-  await c.evaluate(`window.__t048.arm([${checks.map((check) => `() => (${check})`).join(", ")}], ${STEP_LIMIT_MS})`);
+// The DOM facts that a failed step prints, so the failure names its cause.
+const FACTS = `(() => {
+  const text = (e) => (e?.textContent ?? '').trim().slice(0, 300);
+  const active = document.activeElement;
+  return {
+    active: active === null ? null : (active.getAttribute('aria-label') ?? active.tagName + ' ' + text(active).slice(0, 60)),
+    footer: text(document.querySelector('[data-slot=status-region] footer')),
+    statusLine: text(document.querySelector('[data-slot=status-region] footer span[role=status][tabindex="-1"]')),
+    footerButtons: [...(document.querySelector('[data-slot=status-region] footer')?.querySelectorAll('button') ?? [])].map(text),
+    footers: document.querySelectorAll('[data-slot=status-region] footer').length,
+    statuses: [...document.querySelectorAll('[role=status]')].map(text).filter((t) => t !== ''),
+    dialogs: [...document.querySelectorAll('[role=alertdialog],[role=dialog]')].map(text),
+    menus: [...document.querySelectorAll('[role=menu]')].map(text),
+    changes: text(document.querySelector('[data-list-heading=Changes] .num')),
+    staged: text(document.querySelector('[data-list-heading=Staged] .num')),
+    heading: document.querySelector('[data-section=comparison] h2')?.getAttribute('aria-label') ?? null,
+    lineAction: [...document.querySelectorAll('[data-section=comparison] [data-slot=line-action]')].map((b) => text(b) + (b.disabled ? ' (disabled)' : '')),
+    rows: [...document.querySelectorAll('[data-file-tree=changes] [role=treeitem]')].slice(0, 4).map((r) => r.getAttribute('aria-label') + (r.getAttribute('aria-selected') === 'true' ? ' (selected)' : '')),
+  };
+})()`;
+async function facts(c: Cdp, checks: string[]): Promise<string> {
+  const values = await c.evaluate<unknown[]>(`[${checks.map((check) => `(() => { try { return !!(${check}); } catch (e) { return String(e); } })()`).join(", ")}]`);
+  return js({ checks: values, dom: await c.evaluate<unknown>(FACTS) });
+}
+
+// `limit` bounds the wait for the checks. A check past it fails the step.
+async function timed(c: Cdp, checks: string[], act: () => Promise<void>, limit = STEP_LIMIT_MS): Promise<number[]> {
+  await c.evaluate(`window.__t048.arm([${checks.map((check) => `() => (${check})`).join(", ")}], ${limit})`);
   await act();
-  // `cdp.ts` ends one call after 10 s, so the page sets `value` and the test polls it up to the step limit.
-  const r = (await until<{ ok: boolean; why: string | null; armed: number; start: number | null; times: (number | null)[] } | null>(c, "the timed step", "window.__t048.value", (v) => v !== null, STEP_LIMIT_MS + 5_000))!;
-  if (!r.ok || r.start === null || r.start < r.armed || !r.times.every((t) => t !== null && t >= 0)) throw new Error(`a timed step is not valid: ${js(r)}`);
+  // `cdp.ts` ends one call after 10 s, so the page sets `value` and the test polls it up to the limit.
+  const r = (await until<{ ok: boolean; why: string | null; armed: number; start: number | null; times: (number | null)[] } | null>(c, "the timed step", "window.__t048.value", (v) => v !== null, limit + 5_000))!;
+  if (!r.ok || r.start === null || r.start < r.armed || !r.times.every((t) => t !== null && t >= 0)) throw new Error(`a timed step is not valid: ${js(r)} ${await facts(c, checks)}`);
   return r.times as number[];
 }
 
@@ -376,7 +410,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
 
   type Session = { app: OwnedProcess; c: Cdp; ipc: IpcLog };
   // `folder` is the path that the folder dialog gets. `shown` is the switcher label of the open repository.
-  async function session(label: string, folder: string, shown: (label: string | null) => boolean): Promise<Session> {
+  async function session(label: string, folder: string, shown: (label: string | null) => boolean, wslGit = false): Promise<Session> {
     // Each start has a new profile folder (appEnv sets ARBARETO_PROFILE_ROOT below it).
     const env = appEnv(fixtureDir(`${label}-app`), false);
     const port = freePort();
@@ -386,15 +420,26 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
     console.log(`STARTED ${TASK}: ${app.pid} ${label} port=${port}`);
     await uia(app.pid, "Select Git", ControlType.Button, invoke);
     await uia(app.pid, "Use this Git", undefined, invoke);
+    // The IPC record starts before the folder choice, so a refused open names its reply.
+    const c = await connectPage(port, MAX_WAIT_MS);
+    sockets.add(c);
+    const ipc = await watchIpc(c);
+    // CDP `Network.enable` keeps response bodies in a bounded inspector buffer. The reply of a 10,000-file run outgrew the default, so the case raises the bounds.
+    await c.send("Network.enable", { maxTotalBufferSize: 512 * MIB, maxResourceBufferSize: 256 * MIB });
     await uia(app.pid, OPEN_FOLDER, undefined, invoke);
     await uia(app.pid, "Folder:", ControlType.Edit, (field) => setValue(field, folder));
     await uia(app.pid, "Select Folder", ControlType.Button, invoke);
-    const c = await connectPage(port, MAX_WAIT_MS);
-    sockets.add(c);
-    await until<string | null>(c, "the open repository", `document.querySelector('button[aria-keyshortcuts="Control+R"]')?.getAttribute('aria-label') ?? null`, shown, OPEN_WAIT_MS);
+    // A WSL folder asks for its distro Git in a native confirmation with Use this Git and Cancel (src-tauri/src/dialogs.rs `wsl_git_confirmation`).
+    if (wslGit) await uia(app.pid, "Use this Git", undefined, invoke);
+    try {
+      await until<string | null>(c, "the open repository", `document.querySelector('button[aria-keyshortcuts="Control+R"]')?.getAttribute('aria-label') ?? null`, shown, OPEN_WAIT_MS);
+    } catch (e) {
+      const replies = await Promise.all(["choose_repository", "read_workspace"].flatMap((command) => ipc.finished(command).map(async (call) => ({ command, reply: await ipc.body<unknown>(call) }))));
+      const tree = descendants(app.pid).map((r) => `${r.pid} ${r.name} ${(r.commandLine ?? "").slice(0, 160)}`);
+      throw new Error(`${(e as Error).message} replies=${js(replies).slice(0, 4000)} pending=${js(["choose_repository", "read_workspace"].map((command) => ipc.pending(command).length))} tree=${js(tree)}`);
+    }
     expect(await c.evaluate<string>("document.visibilityState")).toBe("visible");
     expect(await c.evaluate<boolean>(PAGE)).toBe(true);
-    const ipc = await watchIpc(c);
     await uia(app.pid, COMMIT_VIEW, ControlType.Button, invoke);
     // Each new profile starts in the tree layout. The flat layout puts the revert files at fixed row positions (folders first, tree-order.ts).
     await focusOn(c, `document.querySelector('button[aria-label=${js(FLAT_LAYOUT)}]')`, FLAT_LAYOUT);
@@ -423,7 +468,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   const cancelButton = `[...(${footer}?.querySelectorAll('button') ?? [])].find((b) => b.textContent.trim() === 'Cancel')`;
   const dialog = `[...document.querySelectorAll('[role=alertdialog],[role=dialog]')].find((d) => d.textContent.includes(${js(NO_UNDO)}))`;
   const revertButton = `(${dialog})?.querySelector('button[data-danger=true]')`;
-  const refused = `[...(${footer}?.querySelectorAll('[role=status]') ?? [])].some((s) => s.textContent.includes(${js(UNAVAILABLE)}))`;
+  const refused = `[...(${footer}?.querySelectorAll('[role=status]') ?? [])].some((s) => s.textContent.includes(${js(UNAVAILABLE)}) || s.textContent.trim() === ${js(NO_HUNK)})`;
   // Spec SC-007 busy state: the REVERT_CHECKING line, or the review result when it renders in the same frame.
   const busy = `${statusText}.startsWith(${js(CHECKING)}) || !!(${dialog}) || ${refused}`;
   const reviewed = `!!(${dialog}) || ${refused}`;
@@ -435,6 +480,8 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   const diffBody = `document.querySelector('[data-section=comparison] [data-slot=diff-body]')`;
   const lineAction = `document.querySelector('[data-section=comparison] [data-slot=line-action]')`;
   const headerMore = `document.querySelector(${js(`[data-section=workingChanges] button[aria-label="${MORE_ACTIONS}"]`)})`;
+  // src/frontend/app/Workbench.tsx `statusText`: the first status cell of the footer shows these texts while a read runs or the state is blocked.
+  const settled = `![${js(REFRESHING)}, ${js(STATE_UNKNOWN)}].includes((${footer}?.querySelector('span[role=status]:not([tabindex])')?.textContent ?? '').trim())`;
   const menuItem = (label: string) => `[...document.querySelectorAll('[role=menu] [role=menuitem]')].find((e) => e.textContent.includes(${js(label)}))`;
   const fmt = new Intl.NumberFormat("en-US");
 
@@ -447,26 +494,47 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   // Waits for the reviewed state after an external restore. F5 reads the workspace again.
   async function refreshed(c: Cdp, what: string, expression: string): Promise<void> {
     await press(c, "F5");
-    await until<boolean>(c, what, expression, (v) => v);
+    // A reconcile read can end during the F5 read with `recoveryState: "refreshing"`. Then R refuses with BLOCKED_TEXT.unknown, so the wait also needs the settled status cell.
+    await until<boolean>(c, what, `(${expression}) && ${settled}`, (v) => v);
   }
   async function select(c: Cdp, path: string): Promise<void> {
     await focusOn(c, row(path), path);
     await press(c, "Enter");
     await until<string>(c, `the diff of ${path}`, heading, (v) => v.startsWith(path));
   }
+  // A new diff has no selected hunk, and R then gives NO_HUNK. Alt+Down selects the next hunk (shortcuts.ts `selectHunk`).
+  async function selectHunk(c: Cdp): Promise<void> {
+    await focusOn(c, diffBody, "the diff");
+    await press(c, "ArrowDown", MOD.Alt);
+    await until<boolean>(c, "the selected hunk", `(document.querySelector('[data-section=comparison]')?.textContent ?? '').includes(${js(SELECTED_HUNK)})`, (v) => v);
+  }
   // R, then the revert button. `shownCheck` holds when the refreshed state shows. The probed run measures SC-011 only.
-  async function revertRun(s: Session, opener: string, shownCheck: string, probe: boolean): Promise<{ busy: number; confirm: number; shown: number; reply: RunReply }> {
+  // `title` is the expected dialog title (revert-text.ts `revertFilesTexts`), or undefined for no check.
+  async function revertRun(s: Session, opener: string, shownCheck: string, probe: boolean, title?: string): Promise<{ busy: number; confirm: number; shown: number; reply: RunReply }> {
     const reviews = s.ipc.finished("run_workbench").length;
     await focusOn(s.c, opener, "the revert opener");
     let busyMs = 0;
     let confirmMs = 0;
     if (probe) await probing(s.c, "a review", messageProbe(s.c), () => press(s.c, "r"), () => until<boolean>(s.c, "the review", reviewed, (v) => v));
     else [busyMs, confirmMs] = await timed(s.c, [busy, reviewed], () => press(s.c, "r"));
-    if (!(await s.c.evaluate<boolean>(`!!(${dialog})`))) throw new Error(`the review refused: ${await s.c.evaluate<string>(statusText)}`);
+    if (!(await s.c.evaluate<boolean>(`!!(${dialog})`))) throw new Error(`the review refused: ${await facts(s.c, [])}`);
+    if (title !== undefined && !(await s.c.evaluate<boolean>(`(${dialog}).textContent.includes(${js(title)})`))) throw new Error(`the dialog does not hold ${js(title)}: ${await facts(s.c, [])}`);
     await focusOn(s.c, revertButton, "the revert button");
     let shownMs = 0;
     if (probe) await probing(s.c, "a run", messageProbe(s.c), () => press(s.c, "Enter"), () => until<boolean>(s.c, "the run", `${ended} && (${shownCheck})`, (v) => v));
-    else [shownMs] = await timed(s.c, [`${ended} && (${shownCheck})`], () => press(s.c, "Enter"));
+    else {
+      const reads = s.ipc.finished("read_comparison").length;
+      try {
+        [shownMs] = await timed(s.c, [`${ended} && (${shownCheck})`], () => press(s.c, "Enter"));
+      } catch (e) {
+        // The comparison reads after the confirmation tell a missing refresh from a missing render.
+        type Read = { state?: string; result?: { comparisonId?: string; patch?: string } };
+        const after = s.ipc.finished("read_comparison");
+        const bodies = await Promise.all(after.slice(Math.max(0, reads - 1)).map((call) => s.ipc.body<Read>(call)));
+        const brief = bodies.map((b) => ({ ...b, result: b.result === undefined ? undefined : { ...b.result, patch: b.result.patch?.length } }));
+        throw new Error(`${(e as Error).message} parts ended, shown: ${await facts(s.c, [ended, shownCheck, ...shownCheck.split(" && ")])} shown=${shownCheck} read_comparison before=${reads} after=${after.length} ${js(brief).slice(0, 4000)}`);
+      }
+    }
     return { busy: busyMs!, confirm: confirmMs!, shown: shownMs!, reply: await runReply(s.ipc, reviews) };
   }
   // A copy of the cached R fixture under the fixture root. `update-index --refresh` restores the stat data of a fresh checkout.
@@ -510,25 +578,39 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
             await restoreText();
             // Hunk: R without a line selection reverts the selected hunk, the only hunk of the file.
             await select(s.c, RV_TEXT);
+            await selectHunk(s.c);
             const hunk = await revertRun(s, diffBody, textGone, probe);
             if (counted("hunk", hunk.reply, winRead(repo), textOld) && !probe && run > 0) add("hunk", hunk);
-            await restoreText();
-            // Lines: Shift+Down from the selected hunk selects rows of the one hunk. A new patch clears the line selection (data-model §14).
-            await select(s.c, RV_TEXT);
-            await focusOn(s.c, diffBody, "the diff");
-            for (let i = 0; i < 10; i++) await press(s.c, "ArrowDown", MOD.Shift);
-            await until<boolean>(s.c, "the line selection", `!!${lineAction}`, (v) => v);
-            const lines = await revertRun(s, diffBody, `!${lineAction} && ${heading}.startsWith(${js(RV_TEXT)})`, probe);
-            if (counted("lines", lines.reply, winRead(repo), textOld) && !probe && run > 0) add("lines", lines);
-            // The text row stays after a lines revert. The HEAD bytes remove it, so the restore wait stays definitive.
-            writeFileSync(join(repo, RV_TEXT), rvText(false));
-            await refreshed(s.c, "the clean text file", `!${row(RV_TEXT)}`);
             await restoreText();
             // Revert file of the 8 MiB binary file. Its refreshed state is the row removal.
             const binary = await revertRun(s, row(RV_BINARY), `!${row(RV_BINARY)} && !${heading}.startsWith(${js(RV_BINARY)})`, probe);
             if (counted("binary file", binary.reply, winRead(repo), binaryOld) && !probe && run > 0) add("binary file", binary);
             writeFileSync(join(repo, RV_BINARY), rvBinary(true));
             await refreshed(s.c, "the restored binary file", `!!${row(RV_BINARY)}`);
+          }
+        }
+        // Lines run after the other kinds: a restore gives the same patch text, and the view keeps a line selection of an equal patch (ComparisonView.tsx `lines`).
+        // A failed lines step stays a case failure. The case records it and stops the lines runs, so the other kinds keep their values.
+        let linesFailure: string | null = null;
+        for (const probe of [false, true]) {
+          for (let run = 0; run <= (probe ? 0 : RUNS) && linesFailure === null; run++) {
+            try {
+              // Shift+Down from the selected hunk selects rows of the one hunk. A new patch clears the line selection (data-model §14).
+              await select(s.c, RV_TEXT);
+              await selectHunk(s.c);
+              for (let i = 0; i < 10; i++) await press(s.c, "ArrowDown", MOD.Shift);
+              await until<boolean>(s.c, "the line selection", `!!${lineAction}`, (v) => v);
+              const lines = await revertRun(s, diffBody, `!${lineAction} && ${heading}.startsWith(${js(RV_TEXT)})`, probe);
+              if (counted("lines", lines.reply, winRead(repo), textOld) && !probe && run > 0) add("lines", lines);
+            } catch (e) {
+              linesFailure = `run ${run}${probe ? " (probed)" : ""}: ${(e as Error).message} git diff --numstat: ${git(repo, ["diff", "--numstat", "--", RV_TEXT]).toString("utf8").trim()}`;
+              console.log(`OBSERVATION ${TASK}: lines step failed, the lines runs stop: ${linesFailure}`);
+              if (await s.c.evaluate<boolean>(`!!(${dialog})`)) await press(s.c, "Escape");
+            }
+            // The text row stays after a lines revert. The HEAD bytes remove it, so the restore wait stays definitive.
+            writeFileSync(join(repo, RV_TEXT), rvText(false));
+            await refreshed(s.c, "the clean text file", `!${row(RV_TEXT)}`);
+            await restoreText();
           }
         }
         const verdict: Record<string, boolean> = {};
@@ -539,7 +621,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           if (kind !== "binary file") verdict[`${kind} confirm`] = confirm <= CONFIRM_MS;
           verdict[`${kind} refreshed`] = record(`SC-007 ${kind}: the revert button to the refreshed diff`, x.shown, REFRESH_MS) <= REFRESH_MS;
         }
-        expect(verdict).toEqual(Object.fromEntries(Object.keys(verdict).map((k) => [k, true])));
+        expect({ verdict, linesFailure }).toEqual({ verdict: Object.fromEntries(Object.keys(verdict).map((k) => [k, true])), linesFailure: null });
       } finally {
         await end(s);
       }
@@ -559,13 +641,17 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         const ends: number[] = [];
         for (let run = 0; run <= RUNS + 1; run++) {
           const probe = run === RUNS + 1;
-          // Plan.md D15 "Multi-select": Shift+Down from the first row marks the 100 rows.
-          await focusOn(s.c, first, paths[0]!);
+          // Plan.md D15 "Multi-select": Shift+Down marks the range from the selected row (ChangesPane.tsx `onMark` "range"), so Enter selects the first row.
+          // The list is virtual, so Home brings the first row back into the DOM after a scroll.
+          await focusOn(s.c, `document.querySelector('[data-file-tree=changes] [role=treeitem]')`, "a Changes row");
+          await press(s.c, "Home");
+          await select(s.c, paths[0]!);
           for (let i = 1; i < RV_BOTH; i++) await press(s.c, "ArrowDown", MOD.Shift);
-          const r = await revertRun(s, `document.activeElement?.getAttribute('aria-label') === ${js(paths.at(-1)!)} ? document.activeElement : null`, `!${first} && ${count("Staged")} === '0'`, probe);
+          const r = await revertRun(s, `document.activeElement?.getAttribute('aria-label') === ${js(paths.at(-1)!)} ? document.activeElement : null`, `!${first} && ${count("Staged")} === '0'`, probe, `Revert ${fmt.format(RV_BOTH)} files?`);
           if (counted("100 files", r.reply, winRead(repo), targets) && !probe && run > 0) ends.push(r.shown);
           applyRevertChanges(GIT!, FIXTURE_ROOT, repo, { both: true });
-          await refreshed(s.c, "the restored 100 files", `!!${first} && ${count("Staged")} === ${js(fmt.format(RV_BOTH))}`);
+          // The run left 0 staged files, so 100 staged files prove the new read.
+          await refreshed(s.c, "the restored 100 files", `${count("Staged")} === ${js(fmt.format(RV_BOTH))}`);
         }
         expect(record("SC-007 Revert file of 100 files: the revert button to the end", ends, FILES_100_MS)).toBeLessThanOrEqual(FILES_100_MS);
       } finally {
@@ -575,12 +661,18 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
     caseTimeout(40, (RUNS + 3) * 3 * STEP_LIMIT_MS),
   );
 
+  // A disabled item ignores Enter. Base UI marks it with `aria-disabled` and `data-disabled` (action-menu.tsx `disabled={reason !== null}`).
+  async function enabledItem(c: Cdp): Promise<void> {
+    const item = menuItem(REVERT_UNSTAGED_LABEL);
+    await until<boolean>(c, `${REVERT_UNSTAGED_LABEL} enabled`, `!!(${item}) && !(${item}).hasAttribute('disabled') && !(${item}).hasAttribute('data-disabled') && (${item}).getAttribute('aria-disabled') !== 'true'`, (v) => v);
+    await focusOn(c, item, REVERT_UNSTAGED_LABEL);
+  }
   // The header item of the Changes list (plan.md D12 "Changes header"). It has no key, so the menu item gets Enter.
-  async function revertAll(s: Session, probe: boolean): Promise<{ busy: number; confirm: number; end: number; reply: RunReply; confirmAt: number; endAt: number }> {
+  async function revertAll(s: Session, probe: boolean, limit = STEP_LIMIT_MS): Promise<{ busy: number; confirm: number; end: number; reply: RunReply; confirmAt: number; endAt: number }> {
     const before = s.ipc.finished("run_workbench").length;
     await focusOn(s.c, headerMore, MORE_ACTIONS);
     await press(s.c, "Enter");
-    await focusOn(s.c, menuItem(REVERT_UNSTAGED_LABEL), REVERT_UNSTAGED_LABEL);
+    await enabledItem(s.c);
     let busyMs = 0;
     let confirmMs = 0;
     if (probe) await probing(s.c, "the review of all unstaged changes", messageProbe(s.c), () => press(s.c, "Enter"), () => until<boolean>(s.c, "the review", reviewed, (v) => v));
@@ -589,8 +681,8 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
     await focusOn(s.c, revertButton, "the revert button");
     const confirmAt = Date.now();
     let endMs = 0;
-    if (probe) await probing(s.c, "the run of all unstaged changes", messageProbe(s.c), () => press(s.c, "Enter"), () => until<boolean>(s.c, "the run", ended, (v) => v));
-    else [endMs] = await timed(s.c, [ended], () => press(s.c, "Enter"));
+    if (probe) await probing(s.c, "the run of all unstaged changes", messageProbe(s.c), () => press(s.c, "Enter"), () => until<boolean>(s.c, "the run", ended, (v) => v, limit));
+    else [endMs] = await timed(s.c, [ended], () => press(s.c, "Enter"), limit);
     const endAt = Date.now();
     return { busy: busyMs!, confirm: confirmMs!, end: endMs!, reply: await runReply(s.ipc, before), confirmAt, endAt };
   }
@@ -649,13 +741,15 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
       const n = fmt.format(LIMIT_FILES);
       const s = await windowsSession("limit", repo);
       const sampler = startSampler(s.app.pid);
+      // PowerShell starts in about a second. A run needs one sample before its start.
+      await sampleAfter(sampler, 0);
       try {
         await until<string>(s.c, "10,000 unstaged files", count("Changes"), (v) => v === n);
         const grown: number[] = [];
         const ends: number[] = [];
         for (let run = 0; run <= RUNS + 1; run++) {
           const probe = run === RUNS + 1;
-          const r = await revertAll(s, probe);
+          const r = await revertAll(s, probe, LIMIT_RUN_MS);
           const g = await growth(sampler, r.confirmAt, r.endAt);
           console.log(`OBSERVATION ${TASK}: SC-007 limit run ${run}: process tree private bytes before ${g.before}, peak ${g.peak}, growth ${(g.growth / MIB).toFixed(1)} MiB, budget 64 MiB`);
           if (counted("10,000 unstaged files", r.reply, winRead(repo), targets) && !probe && run > 0) {
@@ -672,7 +766,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           const before = s.ipc.finished("run_workbench").length;
           await focusOn(s.c, headerMore, MORE_ACTIONS);
           await press(s.c, "Enter");
-          await focusOn(s.c, menuItem(REVERT_UNSTAGED_LABEL), REVERT_UNSTAGED_LABEL);
+          await enabledItem(s.c);
           await press(s.c, "Enter");
           await until<boolean>(s.c, "the review", reviewed, (v) => v);
           await focusOn(s.c, revertButton, "the revert button");
@@ -694,7 +788,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         await end(s);
       }
     },
-    caseTimeout(120, (2 * RUNS + 4) * 3 * STEP_LIMIT_MS),
+    caseTimeout(120, (RUNS + 2) * LIMIT_RUN_MS + (2 * RUNS + 4) * 3 * STEP_LIMIT_MS),
   );
 
   test.skipIf(reason !== null)(
@@ -736,6 +830,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         const services = descendants(s.app.pid).filter((r) => r.name.toLowerCase() === SERVICE_EXE);
         if (services.length !== 1) throw new Error(`the app has ${services.length} ${SERVICE_EXE} processes`);
         const sampler = startSampler(services[0]!.pid);
+        await sampleAfter(sampler, 0);
         try {
           const ends: number[] = [];
           const grown: number[] = [];
@@ -800,14 +895,15 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
       const distroRead = (path: string) => Buffer.from(inDistro(host!.distro, ["/usr/bin/cat", "--", `${linuxRepo}/${path}`]), "utf8");
       const folder = uncPath(host!, linuxRepo);
       // The switcher label of a distro repository is not fixed by a 001 text. The case waits for a label that names the folder.
-      const s = await session("wsl", folder, (v) => v !== null && v.startsWith("repo, "));
+      const s = await session("wsl", folder, (v) => v !== null && v.startsWith("repo, "), true);
       try {
         const n = fmt.format(RV_SMALL);
         await until<string>(s.c, "1,000 unstaged files", count("Changes"), (v) => v === n);
         const ends: number[] = [];
         for (let run = 0; run <= RUNS + 1; run++) {
           const probe = run === RUNS + 1;
-          const r = await revertAll(s, probe);
+          // Run 7 reached 155 of 1,000 files in 60 s, so the step bound is the test bound of the limit case. A miss stays a budget failure.
+          const r = await revertAll(s, probe, LIMIT_RUN_MS);
           if (counted("WSL 1,000 unstaged files", r.reply, distroRead, smallTargets()) && !probe && run > 0) ends.push(r.end);
           toDistro(restoreRoot, "rv", linuxRepo);
           await refreshed(s.c, "the restored 1,000 files", `${count("Changes")} === ${js(n)}`);
@@ -817,6 +913,6 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         await end(s);
       }
     },
-    caseTimeout(60, (RUNS + 3) * 3 * STEP_LIMIT_MS + 10 * 60_000),
+    caseTimeout(60, (RUNS + 2) * LIMIT_RUN_MS + (RUNS + 3) * 3 * STEP_LIMIT_MS + 10 * 60_000),
   );
 });

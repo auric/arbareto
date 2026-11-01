@@ -29,7 +29,7 @@ export type Eligibility = WorkspaceSnapshot["hunkEligibility"];
  * A workspace state that blocks hunk and file actions. `busy` is a running file action, `running` any other mutation.
  * `operation` is a merge or a rebase in progress, which the notice band conflict row finishes (feature 003 FR-030). `conflicted` is every other state that is not `normal`.
  */
-export type Blocked = "conflicted" | "operation" | "loading" | "incomplete" | "stale" | "expired" | "busy" | "running" | "unknown" | null;
+export type Blocked = "conflicted" | "operation" | "loading" | "incomplete" | "stale" | "expired" | "busy" | "running" | "refreshing" | "unknown" | null;
 
 export const BLOCKED_TEXT: Record<NonNullable<Blocked>, string> = {
   conflicted: "Arbareto blocks changes until the Git operation ends outside Arbareto. Then select Refresh (F5).",
@@ -40,6 +40,8 @@ export const BLOCKED_TEXT: Record<NonNullable<Blocked>, string> = {
   expired: "The approval expired. Arbareto reads the comparison again.",
   busy: BUSY_REASON,
   running: "A Git operation is running. Wait for its result, or select Cancel.",
+  // plan.md 001 "Loading": the Refreshing marker.
+  refreshing: "Refreshing…",
   unknown: "State unknown. Select Refresh (F5) first.",
 };
 /** The block of an operation state that is not `normal`. Only `merging` and `rebasing` have the conflict row. */

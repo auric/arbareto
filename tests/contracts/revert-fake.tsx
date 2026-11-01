@@ -11,13 +11,13 @@ import { answer, button, click, createWorld, settle, succeeded } from "./sync-fa
 
 type WorkbenchModule = typeof import("../../src/frontend/app/Workbench");
 
-// Pierre needs the Vite build (T160). The double renders each hunk annotation and keeps the line-selection callback.
+// Pierre needs the Vite build (T160). The double renders each hunk annotation, the new start line of the anchor hunk, and whether a line selection shows, and keeps the line-selection callback.
 export const pierre: { onLines: ((range: unknown) => void) | null } = { onLines: null };
-export function PatchDouble({ patch, hunkAction, onLines }: { patch: string; hunkAction?: (index: number) => ReactNode; onLines?: (range: unknown) => void }) {
+export function PatchDouble({ patch, hunkAction, onLines, anchor, lines }: { patch: string; hunkAction?: (index: number) => ReactNode; onLines?: (range: unknown) => void; anchor?: { additionStart: number } | null; lines?: unknown }) {
   pierre.onLines = onLines ?? null;
   const count = patch.split("\n").filter((l) => l.startsWith("@@")).length;
   return (
-    <div data-slot="patch-double">
+    <div data-slot="patch-double" data-anchor={anchor?.additionStart} data-lines={lines == null ? undefined : "selected"}>
       <pre>{patch}</pre>
       {Array.from({ length: count }, (_, i) => (
         <div key={i} data-hunk={i}>
@@ -41,14 +41,15 @@ export const diffBody = () => commitView().querySelector<HTMLElement>('[data-slo
 export const alertDialog = () => document.querySelector<HTMLElement>('[role="alertdialog"]');
 export const hunkRow = (index: number) => commitView().querySelector<HTMLElement>(`[data-hunk="${index}"]`)!;
 
-/** Opens the Commit view with one file and shows its diff. */
-export async function shownDiff(module: WorkbenchModule, { category = "unstaged", path = "login.ts", patch = PATCH, hunks = HUNKS, others = [] }: { category?: ChangeEntry["category"]; path?: string; patch?: string; hunks?: unknown[]; others?: ChangeEntry[] } = {}) {
+/** Opens the Commit view with one file and shows its diff. With `freshIds`, each comparison read has a new `comparisonId`, as in the service. */
+export async function shownDiff(module: WorkbenchModule, { category = "unstaged", path = "login.ts", patch = PATCH, hunks = HUNKS, others = [], freshIds = false }: { category?: ChangeEntry["category"]; path?: string; patch?: string; hunks?: unknown[]; others?: ChangeEntry[]; freshIds?: boolean } = {}) {
   const file = entry(category, path);
   const world = createWorld({ entries: [file, ...others] });
   const scope = category === "staged" ? "head-to-index" : category === "untracked" ? "empty-to-untracked" : "index-to-worktree";
+  let reads = 0;
   world.answers.readComparison = (args) => {
     const payload = args[1] as { snapshotId: string; entryId: string };
-    return succeeded({ comparisonId: COMPARISON, snapshotId: payload.snapshotId, entryId: payload.entryId, scope, completeness: { state: "complete" }, patch: Buffer.from(patch).toString("base64"), hunks, support: "supported", fileAction: category === "staged" ? "unstage" : "stage", remedy: null });
+    return succeeded({ comparisonId: freshIds ? fixtureId(0x900 + reads++) : COMPARISON, snapshotId: payload.snapshotId, entryId: payload.entryId, scope, completeness: { state: "complete" }, patch: Buffer.from(patch).toString("base64"), hunks, support: "supported", fileAction: category === "staged" ? "unstage" : "stage", remedy: null });
   };
   const double = await openCommitView(module, world);
   const tree = category === "staged" ? "Staged" : "Changes";
@@ -92,9 +93,9 @@ export const filesPlan = (paths: string[], fields: Partial<{ count: number; newF
 export const filesReviewed = (p: ReturnType<typeof filesPlan>) => succeeded({ action: "revert-files", plan: p, workbenchToken: TOKEN });
 
 /** Opens the Commit view with `entries`. */
-export async function openFiles(module: WorkbenchModule, entries: ChangeEntry[]) {
+export async function openFiles(module: WorkbenchModule, entries: ChangeEntry[], props: Parameters<typeof openCommitView>[2] = {}) {
   const world = createWorld({ entries });
-  const double = await openCommitView(module, world);
+  const double = await openCommitView(module, world, props);
   return { world, double };
 }
 

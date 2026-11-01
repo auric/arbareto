@@ -20,6 +20,7 @@ import { fixtureDir, fixtureEnv, serviceEnv, useFixtureRoot } from "./fixture-ro
 import { buildF01, buildF02, buildF03, buildF04, buildF04Stage, buildF05, buildF10, buildF16Comparison, buildF17, buildFileAccepted, put, run, type F04Variant, type Repo } from "./fixtures";
 import { indexEntries } from "./git-oracle";
 import {
+  applyHunk,
   approve,
   blobBytes,
   blobOf,
@@ -28,6 +29,7 @@ import {
   entryOf,
   git,
   gitPath,
+  gitPathOf,
   gitText,
   hunksOf,
   newSide,
@@ -39,6 +41,7 @@ import {
   repoOf,
   repoState,
   resultOf,
+  selectHunks,
   SUCCEEDED,
   TIMEOUT_MS,
   underTest,
@@ -779,4 +782,94 @@ describe("retained comparison binding (T110)", () => {
       expect(dropped.toSorted()).toEqual([idOf(unstaged), idOf(staged)].toSorted());
       expect(issued.map((a) => approvals.accept(a))).toEqual(issued.map(() => ({ ok: false, code: "UNKNOWN_TARGET" })));
     }), TIMEOUT_MS);
+});
+
+// 008 contract Δ5, which amends 001 contract §5 "Retained comparison data": a read with the same facts keeps the retained comparison and its IDs.
+describe("comparison identity (008 contract Δ5)", () => {
+  const ids = (c: Comparison) => ({ comparisonId: c.comparisonId, hunkIds: c.hunkIds });
+
+  caseTest(TASK, `two reads of an unchanged file give the same comparisonId and hunkId values, also after an equal full read`, SHELL, () =>
+    withService({ name: "t093-same-id" }, async (service) => {
+      const repo = repoOf(buildF02(gitPath(), "t093-same-id"));
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const first = await selectHunks(service, repositoryId, "multi.txt", "unstaged", read);
+      const second = await selectHunks(service, repositoryId, "multi.txt", "unstaged", read);
+      // 001 contract §8 "Equal full read": the snapshot stays, as on each WSL poll.
+      const again = await readOk(service, repositoryId);
+      expect(again.snapshotId).toBe(read.snapshotId);
+      const third = await selectHunks(service, repositoryId, "multi.txt", "unstaged", again);
+      expect([ids(second), ids(third)]).toEqual([ids(first), ids(first)]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(TASK, `after 5 equal reads the first comparison still resolves: an equal read takes the newest age slot, and its hunk stages`, SHELL, () =>
+    withService({ name: "t093-same-id-age" }, async (service) => {
+      const repo = repoOf(buildF02(gitPath(), "t093-same-id-age"));
+      put(repo, "new.txt", "new\n");
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const first = await selectHunks(service, repositoryId, "multi.txt", "unstaged", read);
+      for (let i = 0; i < 5; i++) expect(ids(await selectHunks(service, repositoryId, "multi.txt", "unstaged", read))).toEqual(ids(first));
+      // 001 contract §5 keeps 4 comparisons. After the equal read, the next comparison drops "multi.txt" staged, the oldest.
+      for (const [path, category] of [["multi.txt", "staged"], ["other-a.txt", "staged"], ["other-b.txt", "staged"]] as const) {
+        expect(outcome((await compare(service, repositoryId, path, category, read)).response)).toEqual(SUCCEEDED);
+      }
+      expect(ids(await selectHunks(service, repositoryId, "multi.txt", "unstaged", read))).toEqual(ids(first));
+      expect(outcome((await compare(service, repositoryId, "new.txt", "untracked", read)).response)).toEqual(SUCCEEDED);
+      expect(outcome(await applyHunk(service, repositoryId, first, first.hunkIds[0]!, "stage"))).toEqual(SUCCEEDED);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest(TASK, `a changed working file, a new snapshot, or another scope gives a new comparisonId and new hunkId values`, SHELL, () =>
+    withService({ name: "t093-new-id" }, async (service) => {
+      const repo = repoOf(buildF02(gitPath(), "t093-new-id"));
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const first = await selectHunks(service, repositoryId, "multi.txt", "unstaged", read);
+      const staged = await selectHunks(service, repositoryId, "multi.txt", "staged", read);
+      const file = join(repo, "multi.txt");
+      const bytes = readFileSync(file);
+      writeFileSync(file, Buffer.concat([bytes, Buffer.from("added line\n")]));
+      const changed = await selectHunks(service, repositoryId, "multi.txt", "unstaged", read);
+      writeFileSync(file, bytes);
+      put(repo, "new.txt", "new\n");
+      const next = await readOk(service, repositoryId);
+      expect(next.snapshotId).not.toBe(read.snapshotId);
+      const renewed = await selectHunks(service, repositoryId, "multi.txt", "unstaged", next);
+      // Only the snapshot differs from the first read.
+      expect(patchOf(renewed.response.result)).toEqual(patchOf(first.response.result));
+      const all = [first, staged, changed, renewed];
+      expect(new Set(all.map((c) => c.comparisonId)).size).toBe(all.length);
+      expect(new Set(all.flatMap((c) => c.hunkIds)).size).toBe(all.flatMap((c) => c.hunkIds).length);
+    }),
+    TIMEOUT_MS,
+  );
+
+  // 001 contract §2: a consumed approval answers a repeat with its operation. So a read after a consumed approval gives new IDs.
+  caseTest(TASK, `after a LOCKED refusal consumed the hunk approval, an equal read gives a new comparisonId, and its hunk stages`, SHELL, () =>
+    withService({ name: "t093-consumed-id" }, async (service) => {
+      const repo = repoOf(buildF02(gitPath(), "t093-consumed-id"));
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const first = await selectHunks(service, repositoryId, "multi.txt", "unstaged", read);
+      const lock = gitPathOf(repo, "index.lock");
+      writeFileSync(lock, "foreign lock\n");
+      const locked = await applyHunk(service, repositoryId, first, first.hunkIds[0]!, "stage");
+      rmSync(lock);
+      expect(outcome(locked)).toEqual({ state: "failed", code: "LOCKED" });
+      const again = await readOk(service, repositoryId);
+      expect(again.snapshotId).toBe(read.snapshotId);
+      const fresh = await selectHunks(service, repositoryId, "multi.txt", "unstaged", again);
+      expect(fresh.comparisonId).not.toBe(first.comparisonId);
+      expect(outcome(await applyHunk(service, repositoryId, fresh, fresh.hunkIds[0]!, "stage"))).toEqual(SUCCEEDED);
+    }),
+    TIMEOUT_MS,
+  );
 });

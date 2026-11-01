@@ -354,6 +354,7 @@ The other texts of `revert-text.ts`, word for word (batch 3 converge, 2026-11-01
 
 The doc pass (WP8, after the full run of WP7) appends one sentence "Amended by feature 008 (2026-10-27): …" to each line below, as feature 005 amended 004 FR-045:
 - `specs/001-desktop-qualification/spec.md:424` (FR-027): the revert actions are allowed behind their confirmations.
+- `specs/001-desktop-qualification/contracts/operations.md:430` (§5 "Retained comparison data"): a read with the same facts keeps the retained comparison, its `comparisonId`, and its `hunkId` values (contract Δ5).
 - `specs/001-desktop-qualification/contracts/operations.md:1608` (§11): the bytes of one file of a line revert, at most 1 MiB out and at most `REVERT_FILE_BYTES` (2,117,152 bytes) in, cross the distro boundary. A whole-file revert crosses no content.
 - `specs/004-workbench-ux/spec.md:303` (Scope Boundaries): the discard exclusion goes.
 - `specs/004-workbench-ux/spec.md:322` (the 001 FR-027 change): the revert actions join the allowed list.

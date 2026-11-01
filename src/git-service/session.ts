@@ -218,8 +218,8 @@ export function createSession({ writer, runner, fail, startupDeadlineMs = GIT_PR
     onRelease: (viewId) => commitChanges.dropView(viewId),
   });
   const approvals = createApprovals(approvalClock);
-  // Contract §5: comparison eviction invalidates its approvals.
-  const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId) });
+  // Contract §5: comparison eviction invalidates its approvals. 008 contract Δ5: a comparison with a consumed approval is never kept.
+  const comparisons = createComparisonReader({ runner, trust, onDrop: (comparisonId) => approvals.forget(comparisonId), spent: (comparisonId) => approvals.spent(comparisonId) });
   const reviews = createCommitReviewer({ runner, trust, approvals, now: approvalClock });
   const submoduleReviews = createSubmoduleReviewer({ runner, trust, approvals, environment, listingTuple: reader.listingTuple, ...(approvalClock === undefined ? {} : { now: approvalClock }) });
   // The registry sends `ended` or `closeJob` at the terminal response (operations.ts), so the exclusion sends neither.

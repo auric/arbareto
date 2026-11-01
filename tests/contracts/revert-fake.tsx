@@ -42,9 +42,9 @@ export const alertDialog = () => document.querySelector<HTMLElement>('[role="ale
 export const hunkRow = (index: number) => commitView().querySelector<HTMLElement>(`[data-hunk="${index}"]`)!;
 
 /** Opens the Commit view with one file and shows its diff. */
-export async function shownDiff(module: WorkbenchModule, { category = "unstaged", path = "login.ts", patch = PATCH, hunks = HUNKS }: { category?: ChangeEntry["category"]; path?: string; patch?: string; hunks?: unknown[] } = {}) {
+export async function shownDiff(module: WorkbenchModule, { category = "unstaged", path = "login.ts", patch = PATCH, hunks = HUNKS, others = [] }: { category?: ChangeEntry["category"]; path?: string; patch?: string; hunks?: unknown[]; others?: ChangeEntry[] } = {}) {
   const file = entry(category, path);
-  const world = createWorld({ entries: [file] });
+  const world = createWorld({ entries: [file, ...others] });
   const scope = category === "staged" ? "head-to-index" : category === "untracked" ? "empty-to-untracked" : "index-to-worktree";
   world.answers.readComparison = (args) => {
     const payload = args[1] as { snapshotId: string; entryId: string };

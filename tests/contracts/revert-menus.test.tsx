@@ -8,7 +8,7 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contextMenu, describedBy, entry, item, menuItem, menuItems, menuLabels, pressKey, statusBar } from "./commit-fake";
 import { stubLayout } from "./history-fake";
-import { changesHeader, COMPARISON, DELETED, hunk, hunkRow, HUNKS, markRow, openFiles, PatchDouble, rowKey, selectLines, shownDiff } from "./revert-fake";
+import { changesHeader, COMPARISON, DELETED, hunk, hunkRow, HUNKS, markRow, openFiles, PatchDouble, revertKey, rowKey, selectLines, shownDiff } from "./revert-fake";
 import { button, buttons, click, text, unmountAll } from "./sync-fake";
 
 // tasks.md T027, T031, and T036 (feature 008, WP5). Stories US1, US2, US3. Spec FR-012, FR-013, FR-018, FR-023, FR-038, FR-045. Plan D11 item labels and BLOCKED_BY, D12 "Diff", "Changes list row menu", "Staged list row menu" (boards Menu-hunk, Menu-changes-row, Menu-changes-row-unavailable, Menu-staged-row).
@@ -112,6 +112,35 @@ describe("hunk More actions menu (FR-012, FR-045, board Menu-hunk)", () => {
     await openMore(0);
     expect(describedBy(menuItem("Revert hunk…"))).toBe("Arbareto does not revert lines or hunks of a deleted file. Use Revert file.");
     expect(menuItems()).toHaveLength(1);
+  });
+});
+
+// tasks.md T040 (feature 008, WP5). Story US4. Spec FR-016: the status record of the shown snapshot decides.
+describe("staged diff of a file that also has unstaged changes (FR-016)", () => {
+  const REASON = "This file also has unstaged changes. Revert or stage them first.";
+  // Porcelain v2 `MM`: the record gives a Staged entry and a Changes entry with the same path bytes.
+  const both = { xy: "MM" } as const;
+  test("Revert hunk… and Revert <n> lines… are unavailable with the reason; R and the items send no review", async () => {
+    const { double } = await shownDiff(workbench, { category: "staged", others: [entry("unstaged", "login.ts", both)] });
+    await selectLines({ start: 2, side: "deletions", end: 3, endSide: "additions" });
+    await openMore(0);
+    for (const label of ["Revert hunk…", "Revert 3 lines…"]) {
+      expect(menuItem(label).getAttribute("aria-disabled")).toBe("true");
+      expect(describedBy(menuItem(label))).toBe(REASON);
+    }
+    await click(menuItem("Revert 3 lines…"));
+    if (document.querySelector('[role="menu"]') !== null) await click(button("More actions", hunkRow(0)));
+    await revertKey();
+    expect(double.count("reviewWorkbench")).toBe(0);
+    expect(statusBar()).toContain(`Revert 3 lines is unavailable. ${REASON}`);
+  });
+
+  test("another file with unstaged changes does not block the staged revert", async () => {
+    const { double } = await shownDiff(workbench, { category: "staged", others: [entry("unstaged", "other.ts")] });
+    await openMore(0);
+    expect(menuItem("Revert hunk…").getAttribute("aria-disabled")).not.toBe("true");
+    await click(menuItem("Revert hunk…"));
+    expect(double.count("reviewWorkbench")).toBe(1);
   });
 });
 

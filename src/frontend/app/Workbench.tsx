@@ -560,6 +560,8 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
   const [revert, setRevert] = useState<{ token: string; plan: RevertLinesPlan; label: string; opener: HTMLElement | null; comparisonId: string; patch: string } | null>(null);
   // Data-model §10: a new comparison or patch closes the open confirmation.
   if (revert !== null && (revert.comparisonId !== comparison?.comparisonId || revert.patch !== comparison.patch)) setRevert(null);
+  // Spec FR-016: porcelain v2 gives a file with a worktree letter other than `.` an unstaged entry.
+  const unstagedToo = entry?.category === "staged" && state.entries.some((e) => e.category === "unstaged" && e.pathBytes === entry.pathBytes);
   const reviewing = useRef(false);
   const reviewRevert = async ({ comparison, hunkId, lines, opener }: RevertRequest) => {
     if (staging === undefined || entry === null || target === null || reviewing.current) return;
@@ -613,6 +615,7 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
             lines={lines}
             onRevert={(request) => void reviewRevert(request)}
             onRevertRefused={onStatus}
+            unstagedToo={unstagedToo}
           />
         );
   // Spec FR-037: the Stage hunk or Unstage hunk button on each hunk.
@@ -641,6 +644,7 @@ export function ComparisonViewMount({ state, requests, staging, workbench, onSta
             index={index}
             lines={lines}
             onRevert={(request) => void reviewRevert(request)}
+            unstagedToo={unstagedToo}
           />
         );
   const failed = staging?.fileFailure?.file === file ? staging.fileFailure.response : null;

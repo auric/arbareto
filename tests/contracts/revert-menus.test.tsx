@@ -8,10 +8,10 @@ import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
 import { contextMenu, describedBy, entry, item, menuItem, menuItems, menuLabels, pressKey, statusBar } from "./commit-fake";
 import { stubLayout } from "./history-fake";
-import { COMPARISON, DELETED, hunk, hunkRow, HUNKS, markRow, openFiles, PatchDouble, rowKey, selectLines, shownDiff } from "./revert-fake";
+import { changesHeader, COMPARISON, DELETED, hunk, hunkRow, HUNKS, markRow, openFiles, PatchDouble, rowKey, selectLines, shownDiff } from "./revert-fake";
 import { button, buttons, click, text, unmountAll } from "./sync-fake";
 
-// tasks.md T027 and T031 (feature 008, WP5). Stories US1, US2. Spec FR-012, FR-013, FR-018, FR-023, FR-038, FR-045. Plan D11 item labels and BLOCKED_BY, D12 "Diff", "Changes list row menu", "Staged list row menu" (boards Menu-hunk, Menu-changes-row, Menu-changes-row-unavailable, Menu-staged-row).
+// tasks.md T027, T031, and T036 (feature 008, WP5). Stories US1, US2, US3. Spec FR-012, FR-013, FR-018, FR-023, FR-038, FR-045. Plan D11 item labels and BLOCKED_BY, D12 "Diff", "Changes list row menu", "Staged list row menu" (boards Menu-hunk, Menu-changes-row, Menu-changes-row-unavailable, Menu-staged-row).
 
 printOrigin("../../src/frontend/changes/HunkControls.tsx", import.meta.dir);
 printOrigin("../../src/frontend/changes/ChangesPane.tsx", import.meta.dir);
@@ -23,7 +23,7 @@ mock.module("../../src/frontend/changes/PatchPool", () => ({ default: ({ childre
 mock.module("../../src/frontend/changes/PatchView", () => ({ default: PatchDouble }));
 registerDom();
 const workbench = await import("../../src/frontend/app/Workbench");
-const { revertSetReason } = await import("../../src/frontend/changes/revert-text");
+const { revertSetReason, unstagedReason } = await import("../../src/frontend/changes/revert-text");
 
 let restoreLayout: () => void = () => {};
 beforeAll(() => void (restoreLayout = stubLayout(800)));
@@ -206,6 +206,63 @@ describe("Revert file in the row menus (FR-018, FR-023, FR-045, boards Menu-chan
   });
 });
 
+// tasks.md T036 (feature 008, WP4). Story US3. Spec FR-026. Plan D11 item labels, D12 "Changes header" (board Menu-changes-header).
+
+describe("Changes header More actions menu (FR-026, board Menu-changes-header)", () => {
+  test("a More actions icon button sits last in the Changes header, after the layout buttons; its menu holds one destructive group without a key", async () => {
+    await openFiles(workbench, [entry("unstaged", "a.ts"), entry("staged", "b.ts")]);
+    const labels = [...changesHeader().querySelectorAll("button")].map((b) => b.getAttribute("aria-label") ?? text(b));
+    expect(labels.slice(-3)).toEqual(["Tree layout", "Flat layout", "More actions"]);
+    const more = button("More actions", changesHeader());
+    expect(more.getAttribute("aria-haspopup")).toBe("menu");
+    await click(more);
+    expect(document.querySelector('[role="menu"]')!.getAttribute("aria-label")).toBe("More actions");
+    expect(menuGroups()).toEqual([{ label: null, items: ["Revert all unstaged changes…"] }]);
+    const revert = menuItem("Revert all unstaged changes…");
+    expect(revert.getAttribute("aria-keyshortcuts")).toBeNull();
+    expect(revert.querySelector('[data-slot="dropdown-menu-shortcut"]')).toBeNull();
+    expect(revert.getAttribute("data-danger")).toBe("true");
+    expect(revert.getAttribute("aria-disabled")).not.toBe("true");
+    expect(shownPaths(revert.querySelector('[data-slot="menu-icon"]'))).toEqual(iconPaths(Undo03Icon));
+  });
+
+  test("the item sends the revert-unstaged review of the shown snapshot, with no entry, path, or count", async () => {
+    const { double } = await openFiles(workbench, [entry("unstaged", "a.ts"), entry("unstaged", "b.ts"), entry("untracked", "n.txt")]);
+    await click(button("More actions", changesHeader()));
+    await click(menuItem("Revert all unstaged changes…"));
+    expect(double.count("reviewWorkbench")).toBe(1);
+    expect(double.pending("reviewWorkbench")!.args[1]).toEqual({ action: "revert-unstaged", snapshotId: expect.any(String) });
+  });
+
+  test("a gitlink row (mode 160000) without an S submodule field is no covered file (plan D6)", async () => {
+    const { double } = await openFiles(workbench, [entry("unstaged", "a.ts"), entry("unstaged", "vendor", { xy: ".M", modes: ["160000", "160000", "160000"] })]);
+    await click(button("More actions", changesHeader()));
+    await click(menuItem("Revert all unstaged changes…"));
+    expect(double.count("reviewWorkbench")).toBe(1);
+    expect(statusBar()).toContain("Checking 1 file…");
+  });
+
+  test("with only submodule changes, the item is unavailable with the submodules reason and sends nothing", async () => {
+    const { double } = await openFiles(workbench, [entry("unstaged", "lib", { submodule: "SC..", xy: ".M" }), entry("staged", "b.ts")]);
+    await click(button("More actions", changesHeader()));
+    const revert = menuItem("Revert all unstaged changes…");
+    expect(revert.getAttribute("aria-disabled")).toBe("true");
+    expect(describedBy(revert)).toBe("Only submodules have unstaged changes. Arbareto does not change submodules.");
+    await click(revert);
+    expect(double.count("reviewWorkbench")).toBe(0);
+  });
+
+  test("without unstaged changes, the item is unavailable with No unstaged changes. and sends nothing", async () => {
+    const { double } = await openFiles(workbench, [entry("staged", "b.ts"), entry("untracked", "n.txt")]);
+    await click(button("More actions", changesHeader()));
+    const revert = menuItem("Revert all unstaged changes…");
+    expect(revert.getAttribute("aria-disabled")).toBe("true");
+    expect(describedBy(revert)).toBe("No unstaged changes.");
+    await click(revert);
+    expect(double.count("reviewWorkbench")).toBe(0);
+  });
+});
+
 describe("Revert file limit (FR-022)", () => {
   test("above 10,000 files, Revert file is unavailable with the limit stated; 10,000 files have no reason", () => {
     const many = Array.from({ length: 10_001 }, (_, i) => entry("unstaged", `f${i}.ts`));
@@ -213,5 +270,11 @@ describe("Revert file limit (FR-022)", () => {
     expect(revertSetReason(many.slice(0, 10_000))).toBeNull();
     // The limit comes before a file reason.
     expect(revertSetReason([...many, entry("untracked", "a.txt")])).toBe("Arbareto reverts at most 10,000 files at a time. Select fewer files.");
+  });
+
+  test("above 10,000 covered files, Revert all unstaged changes is unavailable with the limit stated; 10,000 files have no reason", () => {
+    const many = Array.from({ length: 10_001 }, (_, i) => entry("unstaged", `f${i}.ts`));
+    expect(unstagedReason(many)).toBe("Arbareto reverts at most 10,000 files at a time. Select fewer files, then use Revert file.");
+    expect(unstagedReason(many.slice(0, 10_000))).toBeNull();
   });
 });

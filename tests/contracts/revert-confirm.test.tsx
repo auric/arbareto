@@ -5,12 +5,12 @@ import { afterAll, afterEach, beforeAll, describe, expect, mock, test } from "bu
 import type { ReactNode } from "react";
 import { registerDom } from "../dom";
 import { printOrigin } from "../origin";
-import { describedBy, entry, expectChromiumFocus, item, pressKey } from "./commit-fake";
+import { describedBy, entry, expectChromiumFocus, item, pressKey, typeInto } from "./commit-fake";
 import { stubLayout } from "./history-fake";
-import { alertDialog, confirmFor, diffBody, filesPlan, filesReviewed, markRow, openFiles, PatchDouble, plan, revertKey, rowKey, selectFirstHunk, selectLines, shownDiff } from "./revert-fake";
+import { alertDialog, changesHeader, confirmFor, diffBody, filesPlan, filesReviewed, filterField, markRow, openFiles, PatchDouble, plan, revertAllUnstaged, revertKey, rowKey, selectFirstHunk, selectLines, shownDiff, unstagedPlan, unstagedReviewed } from "./revert-fake";
 import { answer, button, click, text, unmountAll } from "./sync-fake";
 
-// tasks.md T027 and T031 (feature 008, WP5). Stories US1, US2. Spec FR-008 to FR-010, FR-042, FR-047. Plan D11, D12 "Modal" (boards Confirm-lines, Confirm-hunk, Confirm-files).
+// tasks.md T027, T031, and T036 (feature 008, WP5). Stories US1, US2, US3. Spec FR-008 to FR-010, FR-042, FR-047. Plan D11, D12 "Modal" (boards Confirm-lines, Confirm-hunk, Confirm-files).
 
 printOrigin("../../src/frontend/changes/RevertConfirm.tsx", import.meta.dir);
 printOrigin("../../src/frontend/changes/revert-text.ts", import.meta.dir);
@@ -191,5 +191,88 @@ describe("unstaged-only outcome lines (FR-017, FR-039)", () => {
     expect(line("refused", "read-only")).toBe("Arbareto removed the changes from the index. It did not change login.ts, because login.ts is read-only. Arbareto does not change it.");
     expect(line("stale")).toBe("Arbareto removed the changes from the index. It did not change login.ts, because login.ts changed after the review. Arbareto changed nothing. Check the changes, then try again.");
     expect(line("error", "disk-full")).toBe("Arbareto removed the changes from the index. It did not change login.ts, because the write failed: disk-full.");
+  });
+});
+
+// tasks.md T036 (feature 008, WP4). Story US3. Spec FR-009, FR-010. Plan D11, D12 "Modal" (board Confirm-unstaged), data-model §5 `hidden`.
+/** Opens the Commit view with `entries`, types `filter`, selects Revert all unstaged changes…, then answers the review with `p`. */
+async function unstagedModal(entries: ReturnType<typeof entry>[], p: ReturnType<typeof unstagedPlan>, filter = "") {
+  const { double } = await openFiles(workbench, entries);
+  if (filter !== "") await typeInto(filterField(), filter);
+  await revertAllUnstaged();
+  await answer(double.pending("reviewWorkbench"), unstagedReviewed(p));
+  return { double, dialog: alertDialog()! };
+}
+const SUBMODULES = /Submodule changes stay\./;
+const HIDDEN = /Filter files hides\./;
+
+describe("all-unstaged confirmation (FR-009, FR-010, board Confirm-unstaged)", () => {
+  test("the texts: title, text, the paths, You cannot undo this., Cancel first with the focus, and Revert unstaged changes", async () => {
+    const paths = ["a.ts", "b.ts", "c.ts"];
+    const { double, dialog } = await unstagedModal(paths.map((p) => entry("unstaged", p)), unstagedPlan(paths));
+    expect(title(dialog)).toBe("Revert all unstaged changes?");
+    expect(describedBy(dialog)).toBe("Arbareto sets 3 files to their version in the index. Staged changes stay. Untracked files stay.");
+    expect(listed(dialog)).toEqual(paths);
+    expect(text(dialog)).toContain("You cannot undo this.");
+    expect(text(dialog)).not.toMatch(SUBMODULES);
+    expect(text(dialog)).not.toMatch(HIDDEN);
+    expect([...dialog.querySelectorAll("button")].map((b) => text(b))).toEqual(["Cancel", "Revert unstaged changes"]);
+    expect(button("Revert unstaged changes", dialog).getAttribute("data-danger")).toBe("true");
+    expect(text(document.activeElement!)).toBe("Cancel");
+    await pressKey(dialog, "r");
+    expect(double.count("runWorkbench")).toBe(0);
+  });
+
+  test("one file uses the singular text", async () => {
+    const { dialog } = await unstagedModal([entry("unstaged", "a.ts")], unstagedPlan(["a.ts"]));
+    expect(describedBy(dialog)).toBe("Arbareto sets 1 file to its version in the index. Staged changes stay. Untracked files stay.");
+  });
+
+  test("the submodules line, plural and singular", async () => {
+    const files = [entry("unstaged", "a.ts"), entry("unstaged", "lib", { submodule: "SC..", xy: ".M" }), entry("unstaged", "vendor", { submodule: "SC..", xy: ".M" })];
+    const { dialog } = await unstagedModal(files, unstagedPlan(["a.ts"], { submodules: 2 }));
+    expect(text(dialog)).toContain("Submodule changes stay. Arbareto does not change 2 submodules.");
+    await unmountAll();
+
+    const one = await unstagedModal(files.slice(0, 2), unstagedPlan(["a.ts"], { submodules: 1 }));
+    expect(text(one.dialog)).toContain("Submodule changes stay. Arbareto does not change 1 submodule.");
+  });
+
+  test("the hidden line counts the covered files that Filter files hides, plural and singular", async () => {
+    // Staged, untracked, and submodule rows that the filter hides are not covered files.
+    const files = [entry("unstaged", "src/a.ts"), entry("unstaged", "src/b.ts"), entry("unstaged", "docs/c.md"), entry("unstaged", "docs/d.md"), entry("staged", "docs/e.md"), entry("untracked", "docs/f.txt"), entry("unstaged", "docs/lib", { submodule: "SC..", xy: ".M" })];
+    const p = unstagedPlan(["docs/c.md", "docs/d.md", "src/a.ts", "src/b.ts"], { submodules: 1 });
+    const { dialog } = await unstagedModal(files, p, "src");
+    expect(text(dialog)).toContain("This covers 2 files that Filter files hides.");
+    // The list keeps every covered path of the plan.
+    expect(listed(dialog)).toEqual(["docs/c.md", "docs/d.md", "src/a.ts", "src/b.ts"]);
+    await unmountAll();
+
+    const other = await unstagedModal(files, p, "c.md");
+    expect(text(other.dialog)).toContain("This covers 3 files that Filter files hides.");
+    await unmountAll();
+
+    const single = await unstagedModal(files.slice(0, 3), unstagedPlan(["docs/c.md", "src/a.ts", "src/b.ts"]), "src");
+    expect(text(single.dialog)).toContain("This covers 1 file that Filter files hides.");
+  });
+
+  test("the first 20 paths in the plan order, then and <m> more files. or and 1 more file.", async () => {
+    const paths = Array.from({ length: 23 }, (_, i) => `f${String(i).padStart(2, "0")}.ts`);
+    const order = [...paths].reverse();
+    const { dialog } = await unstagedModal(paths.map((p) => entry("unstaged", p)), unstagedPlan(order));
+    expect(listed(dialog)).toEqual(order.slice(0, 20));
+    expect(text(dialog)).toContain("and 3 more files.");
+    await unmountAll();
+
+    const one = await unstagedModal(paths.slice(0, 21).map((p) => entry("unstaged", p)), unstagedPlan(paths.slice(0, 21)));
+    expect(listed(one.dialog)).toHaveLength(20);
+    expect(text(one.dialog)).toContain("and 1 more file.");
+  });
+
+  test("Cancel returns the focus to the More actions button", async () => {
+    const { dialog } = await unstagedModal([entry("unstaged", "a.ts")], unstagedPlan(["a.ts"]));
+    await click(button("Cancel", dialog));
+    expect(alertDialog()).toBeNull();
+    expect(document.activeElement).toBe(button("More actions", changesHeader()));
   });
 });

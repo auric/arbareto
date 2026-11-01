@@ -14,7 +14,7 @@ import { countsText } from "../changes/file-tree";
 import { FileControls, FileFailure, runFileAction } from "../changes/FileControls";
 import { BLOCKED_TEXT, HunkButton, HunkControls, operationBlock, STALE_TEXT, type Blocked, type Eligibility, type ReasonPart, type RevertRequest, type StagingTarget } from "../changes/HunkControls";
 import { RevertConfirm } from "../changes/RevertConfirm";
-import { actionName, REVERT_CHECKING, REVERT_HUNK_LABEL, REVERT_PROGRESS, REVERT_UNAVAILABLE, revertFilesOutcome, revertFilesRefusal, revertLinesLabel, revertLinesOutcome, reviewRefusal, type RevertLinesPlan } from "../changes/revert-text";
+import { actionName, REVERT_CHECKING, REVERT_HUNK_LABEL, REVERT_PROGRESS, REVERT_UNAVAILABLE, revertFilesOutcome, revertFilesRefusal, revertLinesLabel, revertLinesOutcome, revertUnstagedRefusal, reviewRefusal, type RevertLinesPlan, type RevertUnstagedPlan } from "../changes/revert-text";
 import { CommitTray } from "../commit/CommitTray";
 import { WorkingSummary } from "../commit/WorkingSummary";
 import { IconButton } from "../components/icon-button";
@@ -476,10 +476,19 @@ export function ChangesPaneMount({ state, requests, profile, density, textScale,
               const result = response.result as { action?: unknown; workbenchToken?: unknown; plan?: RevertFilesPlan } | undefined;
               return response.state === "succeeded" && result?.action === "revert-files" && typeof result.workbenchToken === "string" && result.plan !== undefined ? { token: result.workbenchToken, plan: result.plan } : null;
             },
-            run: async (token: string, label: string, entryIds: string[]) => {
+            // Contract Δ3 `revert-unstaged`: the service takes the entries from the snapshot.
+            reviewUnstaged: async (label: string, count: number) => {
+              if (repository === null) return null;
+              onStatus(null);
+              const payload = { action: "revert-unstaged" as const, snapshotId: workspace.snapshotId };
+              const response = await trackRevertReview(staging, label, count, (onProgress) => staging.bridge.reviewWorkbench(repository, payload, onProgress), revertUnstagedRefusal);
+              const result = response.result as { action?: unknown; workbenchToken?: unknown; plan?: RevertUnstagedPlan } | undefined;
+              return response.state === "succeeded" && result?.action === "revert-unstaged" && typeof result.workbenchToken === "string" && result.plan !== undefined ? { token: result.workbenchToken, plan: result.plan } : null;
+            },
+            run: async (token: string, label: string, entryIds: string[], unstaged: boolean) => {
               if (repository === null) return false;
               const byId = new Map(state.entries.map((e) => [e.entryId, e]));
-              const response = await trackRevertRun(staging, workbench.ended, repository.repositoryId, token, label, (r) => revertFilesOutcome(r, byId, entryIds));
+              const response = await trackRevertRun(staging, workbench.ended, repository.repositoryId, token, label, (r) => revertFilesOutcome(r, byId, entryIds, unstaged));
               return response.state === "succeeded";
             },
           },

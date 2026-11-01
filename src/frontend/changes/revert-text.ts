@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 // Copyright (c) 2026 Ihor Lifanov
 
-import type { ChangeEntry, RevertFileOutcome, RevertFilesPlan } from "../../contracts/envelope";
+import type { z } from "zod";
+import type { ChangeEntry, RevertFileOutcome, RevertFilesPlan, ReviewWorkbenchResult } from "../../contracts/envelope";
 import { MULTI_FILE_ACTION_FILES } from "../../contracts/limits";
 import { compareKeys, treeKey } from "../../contracts/tree-order";
 import type { BridgeResponse } from "../bridge";
@@ -62,6 +63,50 @@ export function revertFilesTexts(plan: RevertFilesPlan): { title: string; body: 
       k === 0 ? null
       : k === 1 ? "The last commit does not have 1 of these files. Arbareto unstages it and keeps the file. Git then shows it as untracked."
       : `The last commit does not have ${formatCount(k)} of these files. Arbareto unstages them and keeps the files. Git then shows them as untracked.`,
+    more: plan.count - plan.paths.length,
+  };
+}
+
+/** Contract `RevertUnstagedPlan` (data-model §5). */
+export type RevertUnstagedPlan = Extract<z.infer<typeof ReviewWorkbenchResult>, { action: "revert-unstaged" }>["plan"];
+export const REVERT_UNSTAGED_LABEL = "Revert all unstaged changes…";
+// Spec FR-026, and the orchestrator texts of 2026-11-01 for the submodule-only state and the limit.
+export const NO_UNSTAGED = "No unstaged changes.";
+export const ONLY_SUBMODULES = "Only submodules have unstaged changes. Arbareto does not change submodules.";
+export const UNSTAGED_LIMIT = `Arbareto reverts at most ${formatCount(MULTI_FILE_ACTION_FILES)} files at a time. Select fewer files, then use Revert file.`;
+// Plan D6 "mode 160000": the gitlink mode.
+const GITLINK = "160000";
+// The service rule of `revert-unstaged`: porcelain v2 `<sub>` starts with `S`, or a mode is a gitlink.
+const isSubmodule = (e: ChangeEntry) => e.submodule?.startsWith("S") === true || (e.modes ?? []).includes(GITLINK);
+/** Plan D6: the entries that Revert all unstaged changes writes. Submodule entries stay unchanged. */
+export const unstagedFiles = (entries: readonly ChangeEntry[]) => entries.filter((e) => e.category === "unstaged" && !isSubmodule(e));
+/** Spec FR-026 and FR-029: the reason of Revert all unstaged changes from the status read, or null. */
+export function unstagedReason(entries: readonly ChangeEntry[]): string | null {
+  const covered = unstagedFiles(entries).length;
+  if (covered > MULTI_FILE_ACTION_FILES) return UNSTAGED_LIMIT;
+  if (covered > 0) return null;
+  return entries.some((e) => e.category === "unstaged") ? ONLY_SUBMODULES : NO_UNSTAGED;
+}
+/** Plan D11 `REVERT_UNAVAILABLE`: the status-area lines of a refused `revert-unstaged` review. */
+export function revertUnstagedRefusal(response: BridgeResponse): string[] {
+  const reason = (response.result as { reason?: unknown } | undefined)?.reason;
+  if (reason === "nothing-to-revert") return [NO_UNSTAGED];
+  if (reason === "limit") return [UNSTAGED_LIMIT];
+  return revertFilesRefusal(response);
+}
+
+/** Spec FR-009 and FR-010: the texts of an all-unstaged plan. `hidden` is the count of covered files that Filter files hides (data-model §5). */
+export function revertUnstagedTexts(plan: RevertUnstagedPlan, hidden: number): { title: string; body: string; button: string; notices: string[]; more: number } {
+  const k = plan.submodules;
+  const notices = [
+    ...(k === 0 ? [] : [`Submodule changes stay. Arbareto does not change ${k === 1 ? "1 submodule" : `${formatCount(k)} submodules`}.`]),
+    ...(hidden === 0 ? [] : [`This covers ${fileCount(hidden)} that Filter files hides.`]),
+  ];
+  return {
+    title: "Revert all unstaged changes?",
+    body: `Arbareto sets ${fileCount(plan.count)} to ${plan.count === 1 ? "its" : "their"} version in the index. Staged changes stay. Untracked files stay.`,
+    button: "Revert unstaged changes",
+    notices,
     more: plan.count - plan.paths.length,
   };
 }
@@ -150,6 +195,18 @@ const isRun = (result: unknown): result is RevertRun => typeof result === "objec
 // Spec FR-039 labels (board Result-mixed).
 const OUTCOME_LABEL: Record<string, string> = { "unstaged-only": "Unstaged only.", "not-changed": "Not changed.", "changed-outside": "Changed outside Arbareto.", "not-started": "Not started." };
 
+// Plan D11 multi-file STALE_REVIEW text.
+export const FILES_STALE = "The files changed after the review. Arbareto changed nothing. Check the changes, then try again.";
+/** T059: the reason line of a run that refused before any write. `file` names the only file, or null for several files. Undefined keeps the 001 coded line. */
+function runRefusal(response: BridgeResponse, file: string | null, lines: boolean): string | undefined {
+  const r = (response.result ?? {}) as { reason?: unknown; index?: unknown; remedy?: { text?: unknown } };
+  if (r.reason === "revert-changed" && (response.code === "STALE_REVIEW" || r.index === "refused")) return file === null ? FILES_STALE : revertReason("stale", file, lines);
+  if (r.index !== "refused" || typeof r.reason !== "string") return undefined;
+  // Plan D11: an eligibility reason shows the service remedy text. The renderer holds no table for it.
+  if (typeof r.remedy?.text === "string") return r.remedy.text;
+  return file === null && NAMES_FILE.has(r.reason) ? undefined : revertReason(r.reason, file ?? "");
+}
+
 /** Spec FR-039 and FR-041: the line of a file that did not revert. */
 export function outcomeLine(file: string, o: FileOutcome, lines: boolean): string {
   // Spec FR-017: the index part stays. Plan D11 `REVERT_PARTIAL` gives "another program has it open" for a sharing violation.
@@ -169,9 +226,9 @@ export function outcomeLine(file: string, o: FileOutcome, lines: boolean): strin
 /** The status line of a lines or hunk run (spec FR-011, FR-017, FR-040). Undefined keeps the 001 coded line. */
 export function revertLinesOutcome(response: BridgeResponse, plan: RevertLinesPlan): string | undefined {
   const file = pathText(plan.fileBytes);
-  const reason = (response.result as { reason?: unknown } | undefined)?.reason;
   if (response.code === "APPROVAL_EXPIRED") return REVERT_EXPIRED;
-  if (response.code === "STALE_REVIEW" && reason === "revert-changed") return revertReason("stale", file, plan.lines !== null);
+  const refused = runRefusal(response, file, plan.lines !== null);
+  if (refused !== undefined) return refused;
   const result = response.result;
   if (!isRun(result) || result.files.length !== 1) return undefined;
   const o = result.files[0]!;
@@ -196,17 +253,17 @@ const COUNT_PART: [RevertFileOutcome["outcome"], string][] = [
   ["changed-outside", "changed outside Arbareto"],
   ["not-started", "not started"],
 ];
-/** Spec FR-040: the status line and the status-area lines of a files run. Undefined keeps the 001 coded line. */
-export function revertFilesOutcome(response: BridgeResponse, entries: ReadonlyMap<string, ChangeEntry>, entryIds: readonly string[]): { text: string; lines: string[] } | undefined {
-  const reason = (response.result as { reason?: unknown } | undefined)?.reason;
+/** Spec FR-040: the status line and the status-area lines of a files run. `unstaged` selects the Revert all unstaged changes success text. Undefined keeps the 001 coded line. */
+export function revertFilesOutcome(response: BridgeResponse, entries: ReadonlyMap<string, ChangeEntry>, entryIds: readonly string[], unstaged = false): { text: string; lines: string[] } | undefined {
   if (response.code === "APPROVAL_EXPIRED") return { text: REVERT_EXPIRED, lines: [] };
-  // The STALE_REVIEW value names no file, so only a one-file run can name it.
+  // The refusal value names no file, so only a one-file run can name it.
   const only = entryIds.length === 1 ? entries.get(entryIds[0]!) : undefined;
-  if (response.code === "STALE_REVIEW" && reason === "revert-changed") return only === undefined ? undefined : { text: revertReason("stale", only.path)!, lines: [] };
+  const refused = runRefusal(response, only === undefined ? null : only.path, false);
+  if (refused !== undefined) return { text: refused, lines: [] };
   const result = response.result;
   if (!isRun(result)) return undefined;
   const all = result.files;
-  if (response.state === "succeeded" && all.every((o) => o.outcome === "reverted")) return { text: `Arbareto reverted ${fileCount(all.length)}.`, lines: [] };
+  if (response.state === "succeeded" && all.every((o) => o.outcome === "reverted")) return { text: unstaged ? `Arbareto reverted the unstaged changes of ${fileCount(all.length)}.` : `Arbareto reverted ${fileCount(all.length)}.`, lines: [] };
   const text = COUNT_PART.flatMap(([outcome, word]) => {
     const n = all.filter((o) => o.outcome === outcome).length;
     return n === 0 ? [] : [`${fileCount(n)} ${word}.`];

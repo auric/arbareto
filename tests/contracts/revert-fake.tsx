@@ -104,6 +104,20 @@ export async function markRow(row: HTMLElement, mode: "toggle" | "range" = "togg
   await settle();
 }
 
+// Feature 008 T036: the Revert all unstaged changes helpers.
+
+/** Contract `RevertUnstagedPlan`: `paths` holds the first 20 paths in the given order. */
+export const unstagedPlan = (paths: string[], fields: Partial<{ count: number; submodules: number }> = {}) => ({ count: fields.count ?? paths.length, paths: paths.slice(0, 20).map(b64), submodules: fields.submodules ?? 0 });
+export const unstagedReviewed = (p: ReturnType<typeof unstagedPlan>) => succeeded({ action: "revert-unstaged", plan: p, workbenchToken: TOKEN });
+export const changesHeader = () => document.querySelector('[role="tree"][aria-label="Changes"]')!.closest("section")!.querySelector('[data-list-heading="Changes"]')!.parentElement!;
+export const filterField = () => document.querySelector<HTMLInputElement>('input[aria-label="Filter files"]')!;
+
+/** Opens the Changes header menu and selects Revert all unstaged changes…. */
+export async function revertAllUnstaged() {
+  await click(button("More actions", changesHeader()));
+  await click([...document.querySelectorAll<HTMLElement>('[role="menuitem"]')].find((i) => i.textContent?.startsWith("Revert all unstaged changes…"))!);
+}
+
 /** R on a list row. */
 export async function rowKey(row: HTMLElement, init: KeyboardEventInit = {}) {
   await act(async () => row.focus());

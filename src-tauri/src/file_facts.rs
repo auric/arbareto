@@ -745,6 +745,7 @@ fn file_fact(handle: &OwnedHandle, component: usize, reads: &mut Reads, stop: &A
         owner,
         uid: None,
         xattr: None,
+        own: None,
         bound,
         bytes: None,
         digest,

@@ -264,6 +264,8 @@ function factReason(fact: FileFact): string | null {
     if ((fact.attributes & ENCRYPTED) !== 0) return "encrypted";
     if ((fact.attributes & ~KEPT_ATTRIBUTES) !== 0) return "file-attributes";
   }
+  // WSL: the `detail` read takes the owner rule of the `replace` write (`st_uid == $>`), so both refuse the same file.
+  if (fact.own === false) return "owner";
   return fact.xattr === true ? "xattr" : null;
 }
 

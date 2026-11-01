@@ -124,13 +124,14 @@ export interface FactRead {
   detail?: boolean;
   stream?: boolean;
 }
-// The `detail` tokens of a file: the whole `st_mode`, `st_uid`, `st_gid`, `st_nlink`, and the `xattr` flag.
+// The `detail` tokens of a file: the whole `st_mode`, `st_uid`, `st_gid`, `st_nlink`, the `xattr` flag, and the `own` flag (`st_uid == $>`).
 export interface FactDetail {
   mode: bigint;
   uid: bigint;
   gid: bigint;
   links: bigint;
   xattr: boolean;
+  own: boolean;
 }
 
 export type FactRecord =
@@ -188,9 +189,9 @@ function factRecord(r: Records, read: FactRead = {}): FactRecord | null {
     if (size === null || mtime === null || ownerExecute === null || executable === null) return null;
     let detail: FactDetail | undefined;
     if (read.detail) {
-      const [mode, uid, gid, links, xattr] = [r.number(), r.number(), r.number(), r.number(), r.flag()];
-      if (mode === null || uid === null || gid === null || links === null || xattr === null) return null;
-      detail = { mode, uid, gid, links, xattr };
+      const [mode, uid, gid, links, xattr, own] = [r.number(), r.number(), r.number(), r.number(), r.flag(), r.flag()];
+      if (mode === null || uid === null || gid === null || links === null || xattr === null || own === null) return null;
+      detail = { mode, uid, gid, links, xattr, own };
     }
     const form = r.token();
     let content: Extract<FactRecord, { kind: "file" }>["content"];

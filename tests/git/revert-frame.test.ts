@@ -16,7 +16,7 @@ import { printOrigin } from "../origin";
 import { faGit, write } from "./file-actions-fixtures";
 import { fixtureDir, useFixtureRoot } from "./fixture-root";
 import { workingFileDigests } from "./git-oracle";
-import { copyRepo, gitPath, gitPathOf, outcome, readOk, SUCCEEDED, TIMEOUT_MS, until, withService } from "./hunk-harness";
+import { copyRepo, gitPath, gitPathOf, outcome, readOk, shortDeadline, subcommand, SUCCEEDED, TIMEOUT_MS, until, withService } from "./hunk-harness";
 import { caseTest, type Capability, type RegistrationResult, type Service, type ServiceResponse, type WorkspaceResult } from "./service-harness";
 
 for (const module of ["revert", "workbench-review", "hunk-publish", "session"]) printOrigin(`../../src/git-service/${module}.ts`, import.meta.dir);
@@ -506,6 +506,25 @@ describe("revert frame: per-file outcomes and response states (data-model §8, p
       }
       expect([...service.runner.markers.values()].filter((m) => m.kind === "workbench").map((m) => m.action)).toEqual(["revert-unstaged"]);
       for (const name of gitTemps(repo)) rmSync(join(repo, name));
+    }),
+    TIMEOUT_MS,
+  );
+
+  // Plan.md D10: the run starts no status read. A deadline of the fresh `ls-files` leaves the outcome unknown, and the marker stays.
+  caseTest(TASK, "the run starts no status read, and a reconcile read past its deadline leaves the outcome unknown", SHELL, () =>
+    serviced("t020-reconcile-deadline", async (service) => {
+      const repo = build();
+      const { r, read } = await open(service, repo);
+      const reviewed = await reviewOk(service, r, read);
+      const oracle = restored(repo);
+      const writes = () => service.runner.frames.filter((f) => f.type === "fileReplace").length;
+      shortDeadline(service, (call) => subcommand(call.arguments) === "ls-files" && writes() === 2).arm();
+      const from = service.runner.calls.length;
+      const done = await run(service, r, reviewed.workbenchToken);
+      expect({ state: done.state, code: done.code }).toEqual({ state: "unknown", code: "STATE_UNKNOWN" });
+      expect(service.runner.calls.slice(from).filter((c) => subcommand(c.arguments) === "status")).toEqual([]);
+      expect([...service.runner.markers.values()].filter((m) => m.kind === "workbench").map((m) => m.action)).toEqual(["revert-unstaged"]);
+      expect(workingFileDigests(repo)).toEqual(oracle);
     }),
     TIMEOUT_MS,
   );

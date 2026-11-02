@@ -230,7 +230,7 @@ Rules:
 
 ### D10 Outcome and failure handling
 
-- Reconcile reads after every run, also after Cancel and failure: the index entries of every path (`ls-files --stage -z` with the bound object format), `fileFacts` with `digest: true` for every path, and `readWorkspace`.
+- Reconcile reads after every run, also after Cancel and failure: the index entries of every path (`ls-files --stage -z` with the bound object format), `fileFacts` with `digest: true` for every path. The run does no status read. The renderer's reconcile read after the run (contract §3) is the status read of spec FR-039. A deadline of a reconcile read gives the unknown outcome, as a failed read does.
 - Per-file outcome (data-model §8): `reverted` (the index entry and the digest equal the plan), `unstaged-only` (the index entry equals the plan, the digest equals the old file), `not-changed` (both equal the old state), `changed-outside` (the digest equals neither), `not-started` (no request reached the file). A `not-changed` file carries the reply code `stale`, `refused` with its reason, or `error` with its code. This is the "failed with its code" outcome of spec FR-039. A `not-changed` file without a code got `stopped` or `interrupted`.
 - Response state. Each row needs the fresh read. A Cancel never turns an effect into `canceled`, and it never reports an undo (spec FR-039, constitution I). The Cancel rows follow 005 plan D6 "Response state".
 

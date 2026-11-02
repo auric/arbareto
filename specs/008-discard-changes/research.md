@@ -530,4 +530,6 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - Three points stay open: the WSL 1,000-file budget, the 500 ms step to the refreshed diff, and the 64 MiB bound at the 10,000-file limit. Each is PENDING (batch 4 RCA) at its current number.
 - Windows cost shape: the first Windows Defender open costs about 4 to 6 ms per file. The sequential shell replace costs about 10.4 ms per file. A run starts about 52 Git processes at about 50 ms each.
 - WSL cost shape: a run starts about 1.15 `wsl.exe` processes per file at about 170 ms each. The replace takes about 83% of the time.
+- The run does no status read after the writes. Each full read cost about 440 to 620 ms on the perf fixture (packaged build e70c2185). A single-file revert took about 1.6 s to the refreshed diff, and about 1.1 s without the duplicate read.
+- Consumed workbench tokens kept their review plan until the repository release, about 19 MiB per 10,000-file cycle. The service now drops the plan at consumption and the payload when the run ends.
 - After v0.1.0, not a v0.1.0 gate: Windows speed items in T067, WSL speed items in T068. T069 (two index paths of one file), T070 (exact name check in the run), and T071 (`reconciling` status text) are also after v0.1.0.

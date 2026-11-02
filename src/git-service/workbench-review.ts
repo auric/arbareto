@@ -231,7 +231,8 @@ registerWorkbenchAction<"ignore-save", IgnoreSaveBound>("ignore-save", {
 interface Issued {
   repositoryId: string;
   generation: number;
-  payload: WorkbenchPayload;
+  // Null after the run that consumed the token ends. Only a repeat run reads a consumed token, and it needs `repositoryId` and `consumed` alone.
+  payload: WorkbenchPayload | null;
   head: Head;
   operationState: OperationState;
   trust: { fingerprint: string; required: boolean };
@@ -308,9 +309,8 @@ export function createWorkbench(o: WorkbenchOptions) {
 
   // Data-model §2: a trust difference gives TRUST_REQUIRED or TRUST_CHANGED, and any other difference STALE_REVIEW. A trust code keeps its gate (plan.md O-20).
   // Feature 005 contract Δ3: a bound fact of `delete` or `ignore-save` that changed gives STALE_REVIEW with the reason of its action.
-  function staleOf(e: Issued, again: Full | Refused | Failure | Stop, generation: number): { code: ErrorCode; result?: unknown } | Stop | null {
+  function staleOf(e: Issued, action: WorkbenchPayload["action"], again: Full | Refused | Failure | Stop, generation: number): { code: ErrorCode; result?: unknown } | Stop | null {
     if (isStop(again) || "code" in again) return again;
-    const action = e.payload.action;
     const factsChanged = Object.hasOwn(STALE_REASONS, action) ? { code: "STALE_REVIEW" as const, result: { action, reason: STALE_REASONS[action] } } : { code: "STALE_REVIEW" as const };
     if ("refused" in again) {
       if (again.refused === "TRUST_REQUIRED" || again.refused === "TRUST_CHANGED") return { code: again.refused, result: again.result };
@@ -325,10 +325,10 @@ export function createWorkbench(o: WorkbenchOptions) {
     return Bun.deepEquals(e.bound, again.bound, true) ? null : factsChanged;
   }
 
-  async function execute(w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, token: string, e: Issued): Promise<void> {
-    const handler = handlers.get(e.payload.action)!;
+  async function execute(w: Workspace, installation: ReadInstallation, operationId: string, signal: AbortSignal, token: string, e: Issued, payload: WorkbenchPayload): Promise<void> {
+    const handler = handlers.get(payload.action)!;
     const context: WorkbenchContext = { runner: o.runner, trust: o.trust, ...sources, operationId, signal, workspace: w, installation };
-    await runMarked(o, { operationId, kind: "workbench", action: handler.started(e.payload), workspace: w }, context, async ({ ctx, q, refuse, resolved }) => {
+    await runMarked(o, { operationId, kind: "workbench", action: handler.started(payload), workspace: w }, context, async ({ ctx, q, refuse, resolved }) => {
       let lastDescendants = 0;
       const remedy = (template: string, values: Record<string, RemedyValue>): string | null => {
         const git = installation.selectedPath;
@@ -347,7 +347,7 @@ export function createWorkbench(o: WorkbenchOptions) {
         q,
         common,
         get before(): Observed {
-          if (before === null) throw new Error(`${e.payload.action} reads no observation before its run`);
+          if (before === null) throw new Error(`${payload.action} reads no observation before its run`);
           return before;
         },
         // Plan.md D2: each step runs under the policy `integrate` with the 003 limits and the 15 s stall notice.
@@ -396,17 +396,19 @@ export function createWorkbench(o: WorkbenchOptions) {
       });
 
       // Contract Δ3 `runWorkbench` step 2: every bound value again, from an own trust listing.
-      const again = await observeAll(ctx, e.payload, () => o.trust.listTrust({ operationId, signal, workspace: w }));
-      const stale = staleOf(e, again, w.generation);
+      const again = await observeAll(ctx, payload, () => o.trust.listTrust({ operationId, signal, workspace: w }));
+      const stale = staleOf(e, payload.action, again, w.generation);
       if (stale !== null) return refuse(stale);
       const later = accept(token, operationId);
       if (!later.ok) return refuse({ code: "code" in later ? later.code : "UNKNOWN_TARGET" });
       e.consumed = operationId;
+      // The run uses its own observation. A consumed token keeps no bound facts (up to MULTI_FILE_ACTION_FILES file plans).
+      e.bound = null;
       const full = again as Full;
-      if (handler.observeBefore === false) return void (await handler.run(runOf(full.common, null), e.payload, full.bound));
+      if (handler.observeBefore === false) return void (await handler.run(runOf(full.common, null), payload, full.bound));
       const before = await observe(ctx, false);
       if (!("value" in before)) return refuse(before);
-      await handler.run(runOf(full.common, before.value), e.payload, full.bound);
+      await handler.run(runOf(full.common, before.value), payload, full.bound);
     });
   }
 
@@ -464,15 +466,18 @@ export function createWorkbench(o: WorkbenchOptions) {
       const accepted = accept(token);
       if (!accepted.ok) return void registry.apply(operationId, { type: "invalid-approval", code: "code" in accepted ? accepted.code : "UNKNOWN_TARGET" });
       const e = accepted.entry;
+      // An accepted token is neither consumed nor running, so it keeps its payload.
+      const payload = e.payload!;
       if (e.repositoryId !== request.repositoryId) return void registry.apply(operationId, { type: "invalid-approval", code: "UNKNOWN_TARGET" });
       // Contract Δ7 "Mutation trust": the reviewed listing decides before any process.
-      const cls = classOf(e.payload.action);
+      const cls = classOf(payload.action);
       const gate = cls === null ? null : o.trust.gate(w, { approvalRequired: { [cls]: e.trust.required }, inputLimited: false }, installation, cls);
       if (gate !== null) return void registry.apply(operationId, { type: "invalid-approval", code: gate }, REPOSITORY_GATE);
       // Contract §2: the token is in use before the first await. A run that ends before the consumption leaves it to a later run (data-model §2).
       e.running = operationId;
-      void execute(w, installation, operationId, signal, token, e).finally(() => {
+      void execute(w, installation, operationId, signal, token, e, payload).finally(() => {
         if (e.consumed === null) e.running = null;
+        else e.payload = null;
       });
     },
   };

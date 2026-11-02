@@ -5,6 +5,7 @@
 // Oracle (plan.md D13): Git's own `restore .` on a copy of the fixture. Tests compare index bytes through `ls-files --stage -z` and working bytes by SHA-256.
 
 import { describe, expect } from "bun:test";
+import { heapStats } from "bun:jsc";
 import { linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { RunWorkbenchResult } from "../../src/contracts/envelope";
@@ -306,6 +307,33 @@ describe("revert all unstaged changes: refusals (data-model §7, spec FR-026, FR
       expect(refusal(await review(service, r, read))).toEqual({ state: "failed", code: "WORKBENCH_UNAVAILABLE", result: { reason: "limit" } });
       // Data-model §7 `limit`: the count of the snapshot decides, so the review reads the fact of no target.
       expect(service.runner.fileFactCalls.slice(facts).some((c) => c.files.some((f) => f.path[0] === "many"))).toBe(false);
+    }),
+    LONG_TIMEOUT_MS,
+  );
+
+  // Data-model §2: a consumed token answers only a repeat run, so it keeps no bound facts. Each bound file plan holds one `folders` Array.
+  caseTest(TASK, "a consumed token keeps no bound file plans: the JS Array count stays flat from the second to the third review and run", SHELL, () =>
+    withService({ name: "t034-consumed" }, async (service) => {
+      const count = 2_000;
+      const name = (i: number) => `many/f${String(i).padStart(5, "0")}.txt`;
+      const repo = init(join(fixtureDir(`t034-consumed-${++builds}`), "repo"));
+      mkdirSync(join(repo, "many"));
+      for (let i = 0; i < count; i++) writeFileSync(join(repo, ...name(i).split("/")), "x\n");
+      commitAll(repo, "base");
+      const r = await service.register(repo);
+      const arrays: number[] = [];
+      for (let cycle = 0; cycle < 3; cycle++) {
+        for (let i = 0; i < count; i++) writeFileSync(join(repo, ...name(i).split("/")), `y${cycle}\n`);
+        const read = (await service.readWorkspace(r.repositoryId, { refresh: true, check: "full" })).result!;
+        const reviewed = await reviewOk(service, r, read);
+        expect(reviewed.plan.count).toBe(count);
+        expect(outcome(await run(service, r, reviewed.workbenchToken))).toEqual(SUCCEEDED);
+        // The double runner records every frame and call. Production keeps no such record.
+        for (const value of Object.values(service.runner)) if (Array.isArray(value)) value.length = 0;
+        for (let i = 0; i < 3; i++) Bun.gc(true);
+        arrays.push(heapStats().objectTypeCounts.Array ?? 0);
+      }
+      expect(arrays[2]! - arrays[1]!).toBeLessThan(count / 2);
     }),
     LONG_TIMEOUT_MS,
   );

@@ -521,3 +521,13 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - Red before the fixes: S1 gave `failed-with-effects` with an index entry that the review never bound. S2 was red on the original code and on the first fix, then green, then red under a control mutation.
 - Check on `93789a01`: `bun run typecheck` and the schema check exit 0. `bun run test:contracts` 6,128 pass, 37 skip, 0 fail. `portable-imports` 25 pass, 0 fail. `revert-races` 48 pass, 0 fail. The revert refusal, staged, files, lines, and frame files 110 pass, 0 fail. `revert-unstaged` 7 pass, 0 fail. `bun-runner` 45 pass, 1 skip, 0 fail. `multi-stage` 14 pass, 0 fail. The trust and `workbench-busy` files 122 pass, 2 skip, 0 fail. The 005 files: delete 27 pass, 0 fail; `ignore-editor` 17 pass, 1 skip, 0 fail; `ignore-preview` 26 pass, 0 fail. Cargo 653 pass, 16 ignored, 0 fail. `bun run build` exit 0.
 - The batch 3 converge of 2026-11-01 added T064 (after v0.1.0), T065, and T066. T065 and T066 run after T046.
+
+### Batch 4 budget decisions, 2026-11-02
+
+- SC-007 Windows rule: a multi-file revert (Revert file of several files, Revert all unstaged changes) ends within 2 s + 28 ms per file. So 100 files end within 4.8 s, and 1,000 files within 30 s. `tests/windows/revert-perf.test.ts` uses `FILES_100_MS` 4,800 and `UNSTAGED_1000_MS` 30,000.
+- Measured on packaged builds: 100 files 3,747.9 to 4,442 ms; 1,000 files 19,529.8 to 23,902.5 ms. The shape is about 2.5 s fixed + 21.4 ms per file.
+- The 1 GiB single-file case keeps 30 s and 64 MiB.
+- Three points stay open: the WSL 1,000-file budget, the 500 ms step to the refreshed diff, and the 64 MiB bound at the 10,000-file limit. Each is PENDING (batch 4 RCA) at its current number.
+- Windows cost shape: the first Windows Defender open costs about 4 to 6 ms per file. The sequential shell replace costs about 10.4 ms per file. A run starts about 52 Git processes at about 50 ms each.
+- WSL cost shape: a run starts about 1.15 `wsl.exe` processes per file at about 170 ms each. The replace takes about 83% of the time.
+- After v0.1.0, not a v0.1.0 gate: Windows speed items in T067, WSL speed items in T068. T069 (two index paths of one file), T070 (exact name check in the run), and T071 (`reconciling` status text) are also after v0.1.0.

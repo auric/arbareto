@@ -112,9 +112,9 @@ The 005 `wslFiles` mode `replace` (`src/contracts/wsl-process.json` `replace_one
 
 ## R12 Performance budgets and the measurement method
 
-- Budgets: spec SC-007, fixed before the measurement.
+- Budgets: spec SC-007. The busy, confirmation, 1 GiB, and Cancel budgets were fixed before the measurement. The refreshed-diff, multi-file, and 10,000-file memory budgets come from the batch 4 measurements, as a product trade-off under constitution VII. R15 "Batch 4 budget decisions" holds their approval state.
 - Fixture: the 001 moderate fixture plus a generated revert fixture: 1,000 tracked files of 4 KiB with unstaged changes, 100 files with staged and unstaged changes, one 1 MiB text file with a 2,000-line diff, and one 8 MiB binary file. `tests/windows/perf-fixtures.ts` builds it into the fixture cache.
-- Method: the packaged build, warm, median of 10 runs on the reference PC with Windows Defender on, as 005 SC-001 measured. The times run from the key or click input to the visible state through UI Automation events and the CDP marks of `tests/windows/inspection-perf.test.ts`. Memory: the process-tree private working set through `scripts/windows/measure-ram.ps1 -Json`.
+- Method: the packaged build, warm, median of 10 runs on the reference PC with Windows Defender on, as 005 SC-001 measured. The times run from the key or click input to the visible state through UI Automation events and the CDP marks of `tests/windows/inspection-perf.test.ts`. Memory: the `PrivateMemorySize64` sum through `scripts/windows/measure-ram.ps1 -Json`. The 1 GiB case measures the service process subtree (`arbareto-git.exe` and its children). The limit case at 10,000 files measures the whole `arbareto.exe` tree.
 - WSL: the same fixture copied into the owned distro folder, measured from the Windows package.
 
 ## R13 Texts
@@ -527,9 +527,16 @@ OBSERVATION T057: L8.working-absent expected={"typed":true,"written":true,"temps
 - SC-007 Windows rule: a multi-file revert (Revert file of several files, Revert all unstaged changes) ends within 2 s + 28 ms per file. So 100 files end within 4.8 s, and 1,000 files within 30 s. `tests/windows/revert-perf.test.ts` uses `FILES_100_MS` 4,800 and `UNSTAGED_1000_MS` 30,000.
 - Measured on packaged builds: 100 files 3,747.9 to 4,442 ms; 1,000 files 19,529.8 to 23,902.5 ms. The shape is about 2.5 s fixed + 21.4 ms per file.
 - The 1 GiB single-file case keeps 30 s and 64 MiB.
-- Three points stay open: the WSL 1,000-file budget, the 500 ms step to the refreshed diff, and the 64 MiB bound at the 10,000-file limit. Each is PENDING (batch 4 RCA) at its current number.
+- Constitution VII: each changed target below is an explicit product trade-off. A missed budget stays a failure.
+- Approval: the user approved these targets on 2026-11-02 as an explicit product trade-off under constitution VII.
+- Packaged session 3 (build d477194f, no host sleep, medians of 10 unless noted) decided three more budgets.
+- Refreshed diff: a line, hunk, or single-file revert shows the refreshed diff within 1.5 s after the confirmation. Measured: text 1,148.6 ms, hunk 1,184.8 ms, binary 1,320.0 ms. Before the read removal, the same steps took 1,500.6 to 1,719.5 ms. 500 ms cannot hold on the R12 fixture: each full status read costs about 440 to 620 ms, and 001 contract §3 requires one reconcile read after each run.
+- WSL multi-file revert: it ends within 2 s + 320 ms per file, so 1,000 files end within 322 s. Measured: 263,418.4 ms (d477194f) and 313,715 ms (an earlier build). T068 holds the WSL speed work.
+- Memory at the 004 multi-file limit: the `PrivateMemorySize64` sum over the `arbareto.exe` process tree rises by at most 320 MiB at the peak, and by at most 32 MiB 30 s after the run end. Measured peak growth: at most 291.1 MiB over 12 runs. The WebView2 renderer gave 133 to 232 MiB of it in the early runs. Retained growth 30 s after the end: −120.3 to +25.0 MiB.
+- Known limit: over 12 back-to-back 10,000-file cycles, the idle process-tree memory before each run rose from 841 to 1,317 MiB, about 43 MiB per cycle. Each cycle is a run, an external restore, and F5. Before the token fix, the rise was about 83 MiB per cycle. The cause is open. T072 finds it after v0.1.0. The T048 output prints a "before" value per process kind.
+- R to the confirmation stays at 500 ms. The step is bimodal on this PC: a slow mode of +100 to 150 ms shows in 20 to 60% of runs, on both builds. The test presses R only when no workspace, comparison, refs, or entries read is pending, so the app is warm and idle.
 - Windows cost shape: the first Windows Defender open costs about 4 to 6 ms per file. The sequential shell replace costs about 10.4 ms per file. A run starts about 52 Git processes at about 50 ms each.
 - WSL cost shape: a run starts about 1.15 `wsl.exe` processes per file at about 170 ms each. The replace takes about 83% of the time.
 - The run does no status read after the writes. Each full read cost about 440 to 620 ms on the perf fixture (packaged build e70c2185). A single-file revert took about 1.6 s to the refreshed diff, and about 1.1 s without the duplicate read.
 - Consumed workbench tokens kept their review plan until the repository release, about 19 MiB per 10,000-file cycle. The service now drops the plan at consumption and the payload when the run ends.
-- After v0.1.0, not a v0.1.0 gate: Windows speed items in T067, WSL speed items in T068. T069 (two index paths of one file), T070 (exact name check in the run), and T071 (`reconciling` status text) are also after v0.1.0.
+- After v0.1.0, not a v0.1.0 gate: Windows speed items in T067, WSL speed items in T068. T069 (two index paths of one file), T070 (exact name check in the run), T071 (`reconciling` status text), and T072 (idle memory per cycle) are also after v0.1.0.

@@ -62,6 +62,9 @@ const MEMORY_BYTES = 64 * MIB;
 // SC-007 (session 3 decision) at the 10,000-file limit: the process-tree peak growth and the growth RETAIN_MS after the run end.
 const LIMIT_PEAK_BYTES = 320 * MIB;
 const LIMIT_RETAINED_BYTES = 32 * MIB;
+// SC-007 (approved 2026-11-02): the first revert after the app start (run 0) has its own bounds at the limit.
+const LIMIT_FIRST_PEAK_BYTES = 400 * MIB;
+const LIMIT_FIRST_RETAINED_BYTES = 80 * MIB;
 const INPUT_P95_MS = 100;
 const INPUT_MAX_MS = 500;
 // Research.md R11: the deadline rule of whole files assumes at least 64 MiB/s of local disk throughput.
@@ -70,9 +73,13 @@ const DISK_MIBPS = 64;
 const EVENT_THRESHOLD_MS = 16;
 // The 001 probe interval during a workload (001 plan.md "Responsiveness metrics").
 const PROBE_INTERVAL_MS = 100;
+// The lines case selects the hunk and then this many rows with Shift+Down.
+const LINE_ROWS = 10;
 // Spec SC-007 "the 004 multi-file limit": src/contracts/limits.ts `MULTI_FILE_ACTION_FILES`.
 const LIMIT_FILES = 10_000;
-// A bound of the test, not a budget. It holds a run at the limit, which has no SC-007 end time, and a WSL run, whose budget the record still checks.
+// Spec SC-007 (approved 2026-11-02): a Windows revert of more than 1,000 files, up to the 10,000-file limit, ends within 330 s.
+const LIMIT_END_MS = 330_000;
+// A bound of the test step, not a budget. It is above the SC-007 end times of a run at the limit and of a WSL run.
 const LIMIT_RUN_MS = 15 * 60_000;
 const GIB = 1024 * MIB;
 
@@ -336,6 +343,8 @@ async function growth(s: Sampler, from: number, to: number): Promise<{ before: n
   return { before: before.totalPrivateBytes, beforeSplit: Object.fromEntries(KINDS.map((k) => [k, before[k]])) as Record<Kind, number>, peak: peakSample.totalPrivateBytes, growth: peakSample.totalPrivateBytes - before.totalPrivateBytes, split: split(peakSample), retained: later.totalPrivateBytes - before.totalPrivateBytes, retainedSplit: split(later) };
 }
 const mib = (n: number) => (n / MIB).toFixed(1);
+// 001 spec.md "warm-up" rule: a bound for every run includes the warm-up run 0. A median never includes it.
+const runsText = (runs: number[]) => `runs ${js(runs)}`;
 const splitText = (x: Record<Kind, number>) => KINDS.map((k) => `${k} ${mib(x[k])}`).join(", ");
 // The memory line of one run: the counted peak growth, its split by process kind, and the retained growth.
 const memoryLine = (what: string, run: number, g: Awaited<ReturnType<typeof growth>>, peakBudget: number, retainedBudget?: number) =>
@@ -610,12 +619,13 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         const textOld = [{ path: RV_TEXT, old: sha256(Buffer.from(rvText(true))) }];
         const binaryOld = [{ path: RV_BINARY, old: sha256(Buffer.from(rvBinary(true))) }];
         const textGone = `!${row(RV_TEXT)} && !${heading}.startsWith(${js(RV_TEXT)})`;
-        // Proof of the new comparison after a lines revert: the first changed line is a removed row before the revert and a context row after it.
-        // The selection starts at that row, so the revert restores it. Pierre renders the rows in an open shadow root with `data-line-type` (@pierre/diffs FileDiff).
+        // Proof of the new comparison after a lines revert: the revert restores the first LINE_ROWS removed lines (HEAD lines 5,001 to 5,010).
+        // Only the last restored line is sure to be a context row after the revert, because Git shows 3 context lines. Before the revert it is a removed row.
+        // Pierre renders the rows in an open shadow root with `data-line-type` (@pierre/diffs FileDiff).
         const headLines = rvText(false).split("\n");
         const changedLines = rvText(true).split("\n");
-        const firstChanged = headLines[headLines.findIndex((l, k) => l !== changedLines[k])]!;
-        const restoredContext = `[...document.querySelectorAll('[data-section=comparison] *')].some((h) => h.shadowRoot !== null && [...h.shadowRoot.querySelectorAll('[data-line-type=context]')].some((r) => (r.textContent ?? '').includes(${js(firstChanged)})))`;
+        const lastRestored = headLines[headLines.findIndex((l, k) => l !== changedLines[k]) + LINE_ROWS - 1]!;
+        const restoredContext = `[...document.querySelectorAll('[data-section=comparison] *')].some((h) => h.shadowRoot !== null && [...h.shadowRoot.querySelectorAll('[data-line-type=context]')].some((r) => (r.textContent ?? '').includes(${js(lastRestored)})))`;
         // Each restore starts from a state without the text row, so the wait for the row proves the new read.
         const restoreText = () => {
           writeFileSync(join(repo, RV_TEXT), rvText(true));
@@ -658,7 +668,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
               // Shift+Down from the selected hunk selects rows of the one hunk. A new patch clears the line selection (data-model §14).
               await select(s.c, RV_TEXT);
               await selectHunk(s.c);
-              for (let i = 0; i < 10; i++) await press(s.c, "ArrowDown", MOD.Shift);
+              for (let i = 0; i < LINE_ROWS; i++) await press(s.c, "ArrowDown", MOD.Shift);
               await until<boolean>(s.c, "the line selection", `!!${lineAction}`, (v) => v);
               const lines = await revertRun(s, diffBody, [`!${lineAction}`, `${heading}.startsWith(${js(RV_TEXT)})`, restoredContext], probe, undefined, `lines run ${run}`);
               if (counted("lines", lines.reply, winRead(repo), textOld) && !probe && run > 0) add("lines", lines);
@@ -785,7 +795,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   );
 
   test.skipIf(reason !== null)(
-    "SC-007, SC-011: at the 004 multi-file limit of 10,000 files the process tree rises by at most 320 MiB during a run and keeps at most 32 MiB 30 s after it, and Cancel stops a run within 1 s (median of 10)",
+    "SC-007, SC-011: at the 004 multi-file limit of 10,000 files a run ends within 330 s, the process tree rises by at most 400 MiB in the first run and 320 MiB in each later run and keeps at most 80 MiB and 32 MiB 30 s after it, and Cancel stops a run within 1 s (median of 10)",
     async () => {
       const repo = revertCopy("t048-limit");
       onlySmall(repo);
@@ -807,24 +817,24 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
       await sampleAfter(sampler, 0);
       try {
         await until<string>(s.c, "10,000 unstaged files", count("Changes"), (v) => v === n);
-        const grown: number[] = [];
-        const retained: number[] = [];
+        // Every-run bounds cover the warm-up run 0. The SC-011 probe run RUNS + 1 stays out, because its memory holds the probe typing.
+        const bounded: { run: number; peak: number; retained: number }[] = [];
         const ends: number[] = [];
         for (let run = 0; run <= RUNS + 1; run++) {
           step(`limit-10000-run-${run}`);
           const probe = run === RUNS + 1;
           const r = await revertAll(s, probe, LIMIT_RUN_MS);
           const g = await growth(sampler, r.confirmAt, r.endAt);
-          console.log(memoryLine("SC-007 limit, process tree", run, g, LIMIT_PEAK_BYTES, LIMIT_RETAINED_BYTES));
-          if (counted("10,000 unstaged files", r.reply, winRead(repo), targets) && !probe && run > 0) {
-            grown.push(g.growth);
-            retained.push(g.retained);
-            ends.push(r.end);
+          const first = run === 0;
+          console.log(memoryLine("SC-007 limit, process tree", run, g, first ? LIMIT_FIRST_PEAK_BYTES : LIMIT_PEAK_BYTES, first ? LIMIT_FIRST_RETAINED_BYTES : LIMIT_RETAINED_BYTES));
+          if (counted("10,000 unstaged files", r.reply, winRead(repo), targets) && !probe) {
+            bounded.push({ run, peak: g.growth, retained: g.retained });
+            if (run > 0) ends.push(r.end);
           }
           restore();
           await refreshed(s.c, "the restored 10,000 files", `${count("Changes")} === ${js(n)}`);
         }
-        record("SC-007 Revert all unstaged changes of 10,000 files: the revert button to the end", ends);
+        const limitEnd = record("SC-007 Revert all unstaged changes of 10,000 files: the revert button to the end", ends, LIMIT_END_MS);
         // Cancel after the first REVERT_PROGRESS line. A run that ends before the Cancel measures nothing and fails the case.
         const cancels: number[] = [];
         for (let run = 0; run <= RUNS; run++) {
@@ -847,8 +857,18 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           await refreshed(s.c, "the restored 10,000 files", `${count("Changes")} === ${js(n)}`);
         }
         const cancel = record("SC-007 Cancel of a 10,000-file run: Cancel to the end", cancels, CANCEL_MS);
-        console.log(`OBSERVATION ${TASK}: SC-007 limit growth: ${grown.length} counted runs, peak max ${mib(Math.max(...grown))} MiB, budget ${mib(LIMIT_PEAK_BYTES)} MiB; retained max ${mib(Math.max(...retained))} MiB, budget ${mib(LIMIT_RETAINED_BYTES)} MiB`);
-        expect({ peak: grown.length > 0 && grown.every((x) => x <= LIMIT_PEAK_BYTES), retained: retained.length > 0 && retained.every((x) => x <= LIMIT_RETAINED_BYTES), cancel: cancel <= CANCEL_MS }).toEqual({ peak: true, retained: true, cancel: true });
+        // Run 0 is the first revert after the app start. It has the first-run bounds; runs 1 to RUNS have the later-run bounds. A W9 run leaves its series.
+        const firstRuns = bounded.filter((b) => b.run === 0);
+        const laterRuns = bounded.filter((b) => b.run > 0);
+        const maxOf = (xs: number[]) => (xs.length === 0 ? "-" : mib(Math.max(...xs)));
+        console.log(`OBSERVATION ${TASK}: SC-007 limit growth, first run: ${runsText(firstRuns.map((b) => b.run))}, peak max ${maxOf(firstRuns.map((b) => b.peak))} MiB, budget ${mib(LIMIT_FIRST_PEAK_BYTES)} MiB; retained max ${maxOf(firstRuns.map((b) => b.retained))} MiB, budget ${mib(LIMIT_FIRST_RETAINED_BYTES)} MiB`);
+        console.log(`OBSERVATION ${TASK}: SC-007 limit growth, later runs: ${runsText(laterRuns.map((b) => b.run))}, peak max ${maxOf(laterRuns.map((b) => b.peak))} MiB, budget ${mib(LIMIT_PEAK_BYTES)} MiB; retained max ${maxOf(laterRuns.map((b) => b.retained))} MiB, budget ${mib(LIMIT_RETAINED_BYTES)} MiB`);
+        expect({
+          first: firstRuns.every((b) => b.peak <= LIMIT_FIRST_PEAK_BYTES && b.retained <= LIMIT_FIRST_RETAINED_BYTES),
+          later: laterRuns.length > 0 && laterRuns.every((b) => b.peak <= LIMIT_PEAK_BYTES && b.retained <= LIMIT_RETAINED_BYTES),
+          end: limitEnd <= LIMIT_END_MS,
+          cancel: cancel <= CANCEL_MS,
+        }).toEqual({ first: true, later: true, end: true, cancel: true });
       } finally {
         await sampler.stop();
         await end(s);
@@ -898,8 +918,9 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         const sampler = startSampler(services[0]!.pid);
         await sampleAfter(sampler, 0);
         try {
+          // The 64 MiB bound covers every run, the warm-up run 0 included. The SC-011 probe run RUNS + 1 stays out, because its memory holds the probe typing.
           const ends: number[] = [];
-          const grown: number[] = [];
+          const grown: { run: number; growth: number }[] = [];
           for (let run = 0; run <= RUNS + 1; run++) {
             step(`gib-run-${run}`);
             const probe = run === RUNS + 1;
@@ -908,15 +929,16 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
             const g = await growth(sampler, from, Date.now());
             console.log(memoryLine("SC-007 1 GiB, service tree", run, g, MEMORY_BYTES));
             if (!probe) console.log(`OBSERVATION ${TASK}: SC-007 1 GiB run ${run}: ${(1024 / (r.shown / 1000)).toFixed(1)} MiB/s from the revert button to the end`);
-            if (counted("1 GiB file", r.reply, winRead(repo), old) && !probe && run > 0) {
-              ends.push(r.shown);
-              grown.push(g.growth);
+            if (counted("1 GiB file", r.reply, winRead(repo), old) && !probe) {
+              if (run > 0) ends.push(r.shown);
+              grown.push({ run, growth: g.growth });
             }
             write(true);
             await refreshed(s.c, "the restored 1 GiB file", `!!${row(path)}`);
           }
           const m = record("SC-007 Revert file of one 1 GiB binary file: the revert button to the end", ends, GIB_MS);
-          expect({ end: m <= GIB_MS, memory: grown.length > 0 && grown.every((x) => x <= MEMORY_BYTES), disk: disk.mibps >= DISK_MIBPS }).toEqual({ end: true, memory: true, disk: true });
+          console.log(`OBSERVATION ${TASK}: SC-007 1 GiB service growth: ${runsText(grown.map((x) => x.run))}, max ${mib(Math.max(...grown.map((x) => x.growth)))} MiB, budget ${mib(MEMORY_BYTES)} MiB`);
+          expect({ end: m <= GIB_MS, memory: grown.length > 0 && grown.every((x) => x.growth <= MEMORY_BYTES), disk: disk.mibps >= DISK_MIBPS }).toEqual({ end: true, memory: true, disk: true });
         } finally {
           await sampler.stop();
         }

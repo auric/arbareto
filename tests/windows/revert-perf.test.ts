@@ -38,6 +38,8 @@ const STEP_LIMIT_MS = 60_000;
 const OPEN_WAIT_MS = 120_000;
 // The sampler interval of scripts/windows/measure-ram.ps1 `-IntervalMs`.
 const SAMPLE_MS = 250;
+// The poll interval of the wait for pending reads before R.
+const IDLE_POLL_MS = 10;
 // The retained growth is read this long after the run end (T048 RCA request of 2026-11-02).
 const RETAIN_MS = 30_000;
 const MIB = 1024 * 1024;
@@ -47,14 +49,19 @@ const MIB = 1024 * 1024;
 const BUSY_MS = 100;
 const CONFIRM_MS = 500;
 const CONFIRM_1000_MS = 3_000;
-const REFRESH_MS = 500;
+// SC-007 (session 3 decision): a line, hunk, or single-file revert shows the refreshed diff within 1.5 s after the confirmation.
+const REFRESH_MS = 1_500;
 // Spec SC-007: a multi-file revert on Windows ends within 2 s + 28 ms per file.
 const FILES_100_MS = 4_800;
 const UNSTAGED_1000_MS = 30_000;
-const UNSTAGED_1000_WSL_MS = 30_000;
+// SC-007 (session 3 decision): on WSL a multi-file revert ends within 2 s plus 320 ms per file.
+const UNSTAGED_1000_WSL_MS = 2_000 + 320 * 1_000;
 const GIB_MS = 30_000;
 const CANCEL_MS = 1_000;
 const MEMORY_BYTES = 64 * MIB;
+// SC-007 (session 3 decision) at the 10,000-file limit: the process-tree peak growth and the growth RETAIN_MS after the run end.
+const LIMIT_PEAK_BYTES = 320 * MIB;
+const LIMIT_RETAINED_BYTES = 32 * MIB;
 const INPUT_P95_MS = 100;
 const INPUT_MAX_MS = 500;
 // Research.md R11: the deadline rule of whole files assumes at least 64 MiB/s of local disk throughput.
@@ -196,8 +203,18 @@ const FACTS = `(() => {
     rows: [...document.querySelectorAll('[data-file-tree=changes] [role=treeitem]')].slice(0, 4).map((r) => r.getAttribute('aria-label') + (r.getAttribute('aria-selected') === 'true' ? ' (selected)' : '')),
   };
 })()`;
+// A check is one JavaScript expression. A fragment that does not parse fails the whole CDP evaluate, so each check parses in Bun first.
+function parses(check: string): string {
+  try {
+    new Function(`return (${check});`);
+  } catch (e) {
+    throw new Error(`a page check does not parse (${(e as Error).message}): ${check}`);
+  }
+  return check;
+}
 async function facts(c: Cdp, checks: string[]): Promise<string> {
-  const values = await c.evaluate<unknown[]>(`[${checks.map((check) => `(() => { try { return !!(${check}); } catch (e) { return String(e); } })()`).join(", ")}]`);
+  // `new Function` in the page turns a parse error of one check into its value, so the other checks and the DOM facts still print.
+  const values = await c.evaluate<unknown[]>(`[${checks.map((check) => `(() => { try { return !!new Function(${js(`return (${check});`)})(); } catch (e) { return String(e); } })()`).join(", ")}]`);
   return js({ checks: values, dom: await c.evaluate<unknown>(FACTS) });
 }
 
@@ -207,6 +224,7 @@ const step = (name: string) => console.log(`STEP ${name} ${new Date().toISOStrin
 // `limit` bounds the wait for the checks. A check past it fails the step.
 async function timed(c: Cdp, name: string, checks: string[], act: () => Promise<void>, limit = STEP_LIMIT_MS): Promise<number[]> {
   step(name);
+  checks.forEach(parses);
   await c.evaluate(`window.__t048.arm([${checks.map((check) => `() => (${check})`).join(", ")}], ${limit})`);
   await act();
   // `cdp.ts` ends one call after 10 s, so the page sets `value` and the test polls it up to the limit.
@@ -308,20 +326,20 @@ async function sampleAfter(s: Sampler, timeMs: number): Promise<Sample> {
 }
 // The growth from the last sample before `from` to the peak sample up to the first sample after `to`.
 // `split` is the growth of each kind at that peak sample. `retained` is the growth at the first sample RETAIN_MS after `to`.
-async function growth(s: Sampler, from: number, to: number): Promise<{ before: number; peak: number; growth: number; split: Record<Kind, number>; retained: number; retainedSplit: Record<Kind, number> }> {
+async function growth(s: Sampler, from: number, to: number): Promise<{ before: number; beforeSplit: Record<Kind, number>; peak: number; growth: number; split: Record<Kind, number>; retained: number; retainedSplit: Record<Kind, number> }> {
   const after = await sampleAfter(s, to);
   const before = s.samples.filter((x) => x.timeMs <= from).at(-1);
   if (before === undefined) throw new Error("no memory sample before the run");
   const peakSample = s.samples.filter((x) => x.timeMs > from && x.timeMs <= after.timeMs).reduce((a, b) => (b.totalPrivateBytes > a.totalPrivateBytes ? b : a));
   const later = await sampleAfter(s, to + RETAIN_MS);
   const split = (x: Sample) => Object.fromEntries(KINDS.map((k) => [k, x[k] - before[k]])) as Record<Kind, number>;
-  return { before: before.totalPrivateBytes, peak: peakSample.totalPrivateBytes, growth: peakSample.totalPrivateBytes - before.totalPrivateBytes, split: split(peakSample), retained: later.totalPrivateBytes - before.totalPrivateBytes, retainedSplit: split(later) };
+  return { before: before.totalPrivateBytes, beforeSplit: Object.fromEntries(KINDS.map((k) => [k, before[k]])) as Record<Kind, number>, peak: peakSample.totalPrivateBytes, growth: peakSample.totalPrivateBytes - before.totalPrivateBytes, split: split(peakSample), retained: later.totalPrivateBytes - before.totalPrivateBytes, retainedSplit: split(later) };
 }
 const mib = (n: number) => (n / MIB).toFixed(1);
 const splitText = (x: Record<Kind, number>) => KINDS.map((k) => `${k} ${mib(x[k])}`).join(", ");
 // The memory line of one run: the counted peak growth, its split by process kind, and the retained growth.
-const memoryLine = (what: string, run: number, g: Awaited<ReturnType<typeof growth>>) =>
-  `OBSERVATION ${TASK}: ${what} run ${run}: private bytes before ${g.before}, peak ${g.peak}, growth ${mib(g.growth)} MiB, budget 64 MiB; peak split MiB: ${splitText(g.split)}; retained ${RETAIN_MS / 1000} s after the end ${mib(g.retained)} MiB: ${splitText(g.retainedSplit)}`;
+const memoryLine = (what: string, run: number, g: Awaited<ReturnType<typeof growth>>, peakBudget: number, retainedBudget?: number) =>
+  `OBSERVATION ${TASK}: ${what} run ${run}: private bytes before ${g.before} (MiB: ${splitText(g.beforeSplit)}), peak ${g.peak}, growth ${mib(g.growth)} MiB, budget ${mib(peakBudget)} MiB; peak split MiB: ${splitText(g.split)}; retained ${RETAIN_MS / 1000} s after the end ${mib(g.retained)} MiB${retainedBudget === undefined ? "" : `, budget ${mib(retainedBudget)} MiB`}: ${splitText(g.retainedSplit)}`;
 
 // ---- Host facts ----
 
@@ -526,11 +544,15 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
     await press(c, "ArrowDown", MOD.Alt);
     await until<boolean>(c, "the selected hunk", `(document.querySelector('[data-section=comparison]')?.textContent ?? '').includes(${js(SELECTED_HUNK)})`, (v) => v);
   }
-  // R, then the revert button. `shownCheck` holds when the refreshed state shows. The probed run measures SC-011 only.
+  // R, then the revert button. Each part of `shown` holds when the refreshed state shows. The probed run measures SC-011 only.
   // `title` is the expected dialog title (revert-text.ts `revertFilesTexts`), or undefined for no check.
-  async function revertRun(s: Session, opener: string, shownCheck: string, probe: boolean, title?: string): Promise<{ busy: number; confirm: number; shown: number; reply: RunReply }> {
+  // `idle` names the kind and run of a single-file case. Then R waits until no read of IDLE_READS is pending, and the counts print before and after the wait.
+  async function revertRun(s: Session, opener: string, shown: string | string[], probe: boolean, title?: string, idle?: string): Promise<{ busy: number; confirm: number; shown: number; reply: RunReply }> {
+    const parts = (typeof shown === "string" ? [shown] : shown).map(parses);
+    const shownCheck = parses(parts.map((part) => `(${part})`).join(" && "));
     const reviews = s.ipc.finished("run_workbench").length;
     await focusOn(s.c, opener, "the revert opener");
+    if (idle !== undefined) await idleReads(s, idle);
     let busyMs = 0;
     let confirmMs = 0;
     if (probe) await probing(s.c, "a review", messageProbe(s.c), () => press(s.c, "r"), () => until<boolean>(s.c, "the review", reviewed, (v) => v));
@@ -550,10 +572,22 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         const after = s.ipc.finished("read_comparison");
         const bodies = await Promise.all(after.slice(Math.max(0, reads - 1)).map((call) => s.ipc.body<Read>(call)));
         const brief = bodies.map((b) => ({ ...b, result: b.result === undefined ? undefined : { ...b.result, patch: b.result.patch?.length } }));
-        throw new Error(`${(e as Error).message} parts ended, shown: ${await facts(s.c, [ended, shownCheck, ...shownCheck.split(" && ")])} shown=${shownCheck} read_comparison before=${reads} after=${after.length} ${js(brief).slice(0, 4000)}`);
+        throw new Error(`${(e as Error).message} parts ended, shown: ${await facts(s.c, [ended, ...parts])} read_comparison before=${reads} after=${after.length} ${js(brief).slice(0, 4000)}`);
       }
     }
     return { busy: busyMs!, confirm: confirmMs!, shown: shownMs!, reply: await runReply(s.ipc, reviews) };
+  }
+  // SC-007 "warm": the reads that follow an F5 read (requests.ts, the refs read and the comparison of the selected row) end before R.
+  const IDLE_READS = ["read_workspace", "read_comparison", "read_refs", "read_entries"] as const;
+  const pendingText = (s: Session) => IDLE_READS.map((command) => `${command}=${s.ipc.pending(command).length}`).join(", ");
+  async function idleReads(s: Session, label: string): Promise<void> {
+    console.log(`PENDING_AT_R ${label} before the wait: ${pendingText(s)}`);
+    const end = Date.now() + STEP_LIMIT_MS;
+    while (IDLE_READS.some((command) => s.ipc.pending(command).length > 0)) {
+      if (Date.now() >= end) throw new Error(`reads still pending after ${STEP_LIMIT_MS} ms: ${pendingText(s)}`);
+      await Bun.sleep(IDLE_POLL_MS);
+    }
+    console.log(`PENDING_AT_R ${label} after the wait: ${pendingText(s)}`);
   }
   // A copy of the cached R fixture under the fixture root. `update-index --refresh` restores the stat data of a fresh checkout.
   function revertCopy(name: string): string {
@@ -567,7 +601,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   const smallTargets = () => Array.from({ length: RV_SMALL }, (_, i) => ({ path: rvSmallPath(i), old: sha256(Buffer.from(rvSmall(rvSmallPath(i), "unstaged"))) }));
 
   test.skipIf(reason !== null)(
-    "SC-007, SC-011: on the 1 MiB file with a 2,000-line diff, R shows a busy state within 100 ms, the confirmation within 500 ms, and lines, hunk, and file reverts the refreshed diff within 500 ms; the 8 MiB binary Revert file too (median of 10)",
+    "SC-007, SC-011: on the 1 MiB file with a 2,000-line diff, R shows a busy state within 100 ms, the confirmation within 500 ms, and lines, hunk, and file reverts the refreshed diff within 1.5 s; the 8 MiB binary Revert file too (median of 10)",
     async () => {
       const repo = revertCopy("t048-single");
       const s = await windowsSession("single", repo);
@@ -598,17 +632,17 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           for (let run = 0; run <= (probe ? 0 : RUNS); run++) {
             step(`single-run-${run}${probe ? "-probed" : ""}`);
             // Revert file of the text file from its row.
-            const file = await revertRun(s, row(RV_TEXT), textGone, probe);
+            const file = await revertRun(s, row(RV_TEXT), textGone, probe, undefined, `text run ${run}`);
             if (counted("text file", file.reply, winRead(repo), textOld) && !probe && run > 0) add("text file", file);
             await restoreText();
             // Hunk: R without a line selection reverts the selected hunk, the only hunk of the file.
             await select(s.c, RV_TEXT);
             await selectHunk(s.c);
-            const hunk = await revertRun(s, diffBody, textGone, probe);
+            const hunk = await revertRun(s, diffBody, textGone, probe, undefined, `hunk run ${run}`);
             if (counted("hunk", hunk.reply, winRead(repo), textOld) && !probe && run > 0) add("hunk", hunk);
             await restoreText();
             // Revert file of the 8 MiB binary file. Its refreshed state is the row removal.
-            const binary = await revertRun(s, row(RV_BINARY), `!${row(RV_BINARY)} && !${heading}.startsWith(${js(RV_BINARY)})`, probe);
+            const binary = await revertRun(s, row(RV_BINARY), `!${row(RV_BINARY)} && !${heading}.startsWith(${js(RV_BINARY)})`, probe, undefined, `binary run ${run}`);
             if (counted("binary file", binary.reply, winRead(repo), binaryOld) && !probe && run > 0) add("binary file", binary);
             writeFileSync(join(repo, RV_BINARY), rvBinary(true));
             await refreshed(s.c, "the restored binary file", `!!${row(RV_BINARY)}`);
@@ -626,7 +660,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
               await selectHunk(s.c);
               for (let i = 0; i < 10; i++) await press(s.c, "ArrowDown", MOD.Shift);
               await until<boolean>(s.c, "the line selection", `!!${lineAction}`, (v) => v);
-              const lines = await revertRun(s, diffBody, `!${lineAction} && ${heading}.startsWith(${js(RV_TEXT)}) && ${restoredContext}`, probe);
+              const lines = await revertRun(s, diffBody, [`!${lineAction}`, `${heading}.startsWith(${js(RV_TEXT)})`, restoredContext], probe, undefined, `lines run ${run}`);
               if (counted("lines", lines.reply, winRead(repo), textOld) && !probe && run > 0) add("lines", lines);
             } catch (e) {
               linesFailure = `run ${run}${probe ? " (probed)" : ""}: ${(e as Error).message} git diff --numstat: ${git(repo, ["diff", "--numstat", "--", RV_TEXT]).toString("utf8").trim()}`;
@@ -751,7 +785,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   );
 
   test.skipIf(reason !== null)(
-    "SC-007, SC-011: at the 004 multi-file limit of 10,000 files the process tree rises by at most 64 MiB during a run, and Cancel stops a run within 1 s (median of 10)",
+    "SC-007, SC-011: at the 004 multi-file limit of 10,000 files the process tree rises by at most 320 MiB during a run and keeps at most 32 MiB 30 s after it, and Cancel stops a run within 1 s (median of 10)",
     async () => {
       const repo = revertCopy("t048-limit");
       onlySmall(repo);
@@ -774,15 +808,17 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
       try {
         await until<string>(s.c, "10,000 unstaged files", count("Changes"), (v) => v === n);
         const grown: number[] = [];
+        const retained: number[] = [];
         const ends: number[] = [];
         for (let run = 0; run <= RUNS + 1; run++) {
           step(`limit-10000-run-${run}`);
           const probe = run === RUNS + 1;
           const r = await revertAll(s, probe, LIMIT_RUN_MS);
           const g = await growth(sampler, r.confirmAt, r.endAt);
-          console.log(memoryLine("SC-007 limit, process tree", run, g));
+          console.log(memoryLine("SC-007 limit, process tree", run, g, LIMIT_PEAK_BYTES, LIMIT_RETAINED_BYTES));
           if (counted("10,000 unstaged files", r.reply, winRead(repo), targets) && !probe && run > 0) {
             grown.push(g.growth);
+            retained.push(g.retained);
             ends.push(r.end);
           }
           restore();
@@ -811,8 +847,8 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           await refreshed(s.c, "the restored 10,000 files", `${count("Changes")} === ${js(n)}`);
         }
         const cancel = record("SC-007 Cancel of a 10,000-file run: Cancel to the end", cancels, CANCEL_MS);
-        console.log(`OBSERVATION ${TASK}: SC-007 limit growth: ${grown.length} counted runs, max ${(Math.max(...grown) / MIB).toFixed(1)} MiB, budget 64 MiB`);
-        expect({ memory: grown.length > 0 && grown.every((x) => x <= MEMORY_BYTES), cancel: cancel <= CANCEL_MS }).toEqual({ memory: true, cancel: true });
+        console.log(`OBSERVATION ${TASK}: SC-007 limit growth: ${grown.length} counted runs, peak max ${mib(Math.max(...grown))} MiB, budget ${mib(LIMIT_PEAK_BYTES)} MiB; retained max ${mib(Math.max(...retained))} MiB, budget ${mib(LIMIT_RETAINED_BYTES)} MiB`);
+        expect({ peak: grown.length > 0 && grown.every((x) => x <= LIMIT_PEAK_BYTES), retained: retained.length > 0 && retained.every((x) => x <= LIMIT_RETAINED_BYTES), cancel: cancel <= CANCEL_MS }).toEqual({ peak: true, retained: true, cancel: true });
       } finally {
         await sampler.stop();
         await end(s);
@@ -870,7 +906,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
             const from = Date.now();
             const r = await revertRun(s, row(path), `!${row(path)}`, probe);
             const g = await growth(sampler, from, Date.now());
-            console.log(memoryLine("SC-007 1 GiB, service tree", run, g));
+            console.log(memoryLine("SC-007 1 GiB, service tree", run, g, MEMORY_BYTES));
             if (!probe) console.log(`OBSERVATION ${TASK}: SC-007 1 GiB run ${run}: ${(1024 / (r.shown / 1000)).toFixed(1)} MiB/s from the revert button to the end`);
             if (counted("1 GiB file", r.reply, winRead(repo), old) && !probe && run > 0) {
               ends.push(r.shown);
@@ -908,7 +944,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   }
 
   test.skipIf(wslReason !== null)(
-    "SC-007, SC-011: Revert all unstaged changes of 1,000 files in the owned Ubuntu-26.04 folder ends within 30 s from the Windows package (median of 10)",
+    "SC-007, SC-011: Revert all unstaged changes of 1,000 files in the owned Ubuntu-26.04 folder ends within 322 s (2 s + 320 ms per file) from the Windows package (median of 10)",
     async () => {
       const winRepo = revertCopy("t048-wsl");
       onlySmall(winRepo);

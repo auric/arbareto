@@ -8,13 +8,14 @@ import { mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync,
 import { basename, join } from "node:path";
 import { COMPARED_RAW_VERSION_BYTES, NATIVE_CHUNK_BYTES, STATUS_LISTING_BYTES, STATUS_LISTING_RECORDS } from "../../src/contracts/limits";
 import { createApprovals } from "../../src/git-service/approvals";
-import { attributeArgs, lineEndingArgs, unstagedNumstatArgs, unstagedPatchArgs } from "../../src/git-service/commands";
+import { attributeArgs, lineEndingArgs, lineEndingPathArgs, unstagedNumstatArgs, unstagedPatchArgs } from "../../src/git-service/commands";
 import { createComparisonReader, type ComparisonTarget } from "../../src/git-service/comparison";
 import { probeGit } from "../../src/git-service/git-installation";
 import { hunkApprovals } from "../../src/git-service/hunk-publish";
 import { createRegistrations } from "../../src/git-service/registration";
 import { readWorkingVersion } from "../../src/git-service/snapshot";
 import { createWorkspaceReader } from "../../src/git-service/status";
+import { parseEolListing } from "../../src/git-service/support";
 import { createTrust } from "../../src/git-service/trust";
 import { fixtureDir, fixtureEnv, serviceEnv, useFixtureRoot } from "./fixture-root";
 import { buildF01, buildF02, buildF03, buildF04, buildF04Stage, buildF05, buildF10, buildF16Comparison, buildF17, buildFileAccepted, put, run, type F04Variant, type Repo } from "./fixtures";
@@ -205,7 +206,7 @@ describe("comparison scopes and tracked hunks (contract §4, data-model §5)", (
 describe("parallel comparison steps (T399)", () => {
   const isArgs = (args: readonly string[]) => (call: { arguments: readonly string[] }) => call.arguments.length === args.length && call.arguments.every((a, i) => a === args[i]);
   const cases = [
-    { tag: "eol", name: "the line-ending listing expires and the Job close ends the attribute step first", target: lineEndingArgs(), sibling: attributeArgs() },
+    { tag: "eol", name: "the line-ending listing expires and the Job close ends the attribute step first", target: lineEndingPathArgs(["multi.txt"]), sibling: attributeArgs() },
     // A guard: the patch step gives no code of its own for a null exit, so the deadline already wins.
     { tag: "numstat", name: "the numstat step expires and the Job close ends the patch step first", target: unstagedNumstatArgs("multi.txt"), sibling: unstagedPatchArgs("multi.txt") },
   ];
@@ -225,6 +226,97 @@ describe("parallel comparison steps (T399)", () => {
       }),
       SIBLING_TIMEOUT_MS,
     );
+});
+
+// T073: the comparison lists the line endings only of the keys that `decideSupport` reads.
+describe("line-ending listing paths (T073)", () => {
+  // The `.gitattributes` key of each folder of `path`, from the deepest folder to the worktree root.
+  const attributeKeys = (path: string) => {
+    const parts = path.split("/").slice(0, -1);
+    return [...parts.map((_, i) => `${parts.slice(0, parts.length - i).join("/")}/`), ""].map((folder) => `${folder}.gitattributes`);
+  };
+  const eolCalls = (service: Service, from: number) => service.runner.calls.slice(from).filter((call) => call.arguments.includes("--eol")).map((call) => [...call.arguments]);
+  // The records of each key in the whole-index listing and in the listing of the keys alone.
+  const listings = (repo: string, keys: string[]) => ({ whole: parseEolListing(git(repo, lineEndingArgs()))!, part: parseEolListing(git(repo, lineEndingPathArgs(keys)))! });
+  const sameRecords = (repo: string, keys: string[]) => {
+    const { whole, part } = listings(repo, keys);
+    expect(keys.map((key) => [key, part.get(key) ?? null])).toEqual(keys.map((key) => [key, whole.get(key) ?? null]));
+    return { whole, part };
+  };
+  const eolRepo = (name: string): Repo => {
+    const dir = fixtureDir(name);
+    mkdirSync(dir, { recursive: true });
+    const r: Repo = { git: gitPath(), dir, pre: [] };
+    run(r, ["init", "-q", "-b", "main"]);
+    for (const [key, value] of [["core.autocrlf", "false"], ["core.eol", "lf"], ["core.safecrlf", "false"], ["core.filemode", "false"], ["core.ignorecase", "true"]]) run(r, ["config", key!, value!]);
+    return r;
+  };
+
+  caseTest("T073", `the ls-files --eol call names only the tracked path, or the .gitattributes key of each folder of an untracked path, after --`, SHELL, () =>
+    withService({ name: "t073-spy" }, async (service) => {
+      const repo = repoOf(buildF02(gitPath(), "t073-spy"));
+      put(repo, "a/b/new.txt", "new\n");
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      let before = service.runner.calls.length;
+      expect(outcome((await compare(service, repositoryId, "multi.txt", "unstaged", read)).response)).toEqual(SUCCEEDED);
+      expect(eolCalls(service, before)).toEqual([[...lineEndingArgs(), "--", "multi.txt"]]);
+      before = service.runner.calls.length;
+      expect(outcome((await compare(service, repositoryId, "a/b/new.txt", "untracked", read)).response)).toEqual(SUCCEEDED);
+      expect(eolCalls(service, before)).toEqual([[...lineEndingArgs(), "--", "a/b/.gitattributes", "a/.gitattributes", ".gitattributes"]]);
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T073", `each key gives the records of the whole-index listing, and the support reason equals the whole-index decision`, [...SHELL, "windows-path-rules"], () =>
+    withService({ name: "t073-equal" }, async (service) => {
+      const r = eolRepo("t073-equal");
+      const repo = r.dir;
+      // c: committed and on disk. s: staged and on disk. i and Q: committed, then removed from disk. n: none. w1: a glob match of `w[1]`.
+      for (const file of ["t.txt", "c/.gitattributes", "i/.gitattributes", "Q/.gitattributes", "w1/.gitattributes"]) put(repo, file, file === "t.txt" ? "one\n" : "*.txt text\n");
+      run(r, ["--literal-pathspecs", "add", "--", "t.txt", "c/.gitattributes", "i/.gitattributes", "Q/.gitattributes", "w1/.gitattributes"]);
+      run(r, ["commit", "-q", "--no-verify", "-m", "base"]);
+      put(repo, "s/d/.gitattributes", "*.txt text\n");
+      run(r, ["--literal-pathspecs", "add", "--", "s/d/.gitattributes"]);
+      for (const folder of ["i", "Q", "w1"]) rmSync(join(repo, folder), { recursive: true });
+      put(repo, "t.txt", "two\n");
+      const untracked = ["c/d/u.txt", "s/d/u.txt", "i/d/u.txt", "n/d/u.txt", "w[1]/u.txt", "q/u.txt"];
+      for (const path of untracked) put(repo, path, "new\n");
+      await underTest("comparison");
+      const { repositoryId } = await service.register(repo);
+      const read = await readOk(service, repositoryId);
+      const listed = read.entries.filter((e) => e.category === "untracked").map((e) => e.path);
+      console.log(`OBSERVATION T073: status lists the untracked paths ${JSON.stringify(listed)} under core.ignorecase=true`);
+      const cases = [{ path: "t.txt", category: "unstaged" as const, keys: ["t.txt"] }, ...listed.map((path) => ({ path, category: "untracked" as const, keys: attributeKeys(path) }))];
+      const reasons: Record<string, string> = {};
+      for (const { path, category, keys } of cases) {
+        const { whole, part } = sameRecords(repo, keys);
+        if (path.toLowerCase() === "q/u.txt") console.log(`OBSERVATION T073: ls-files --eol -- ${keys[0]} gives the keys ${JSON.stringify([...part.keys()])}`);
+        // `decideSupport`: a tracked record with `mixed`, or an index-only `.gitattributes` key of an untracked path, refuses.
+        const refused = category === "untracked" ? keys.some((key) => whole.get(key)?.some((x) => x.working === "")) : whole.get(path)!.some((x) => x.index === "mixed" || x.working === "mixed");
+        const before = service.runner.calls.length;
+        const c = await compare(service, repositoryId, path, category, read);
+        expect({ path, ...outcome(c.response), reason: support(c) }).toEqual({ path, ...SUCCEEDED, reason: refused ? "line-endings" : "supported" });
+        expect({ path, calls: eolCalls(service, before) }).toEqual({ path, calls: [lineEndingPathArgs(keys)] });
+        reasons[path] = support(c);
+      }
+      expect(reasons).toMatchObject({ "t.txt": "supported", "c/d/u.txt": "supported", "s/d/u.txt": "supported", "i/d/u.txt": "line-endings", "n/d/u.txt": "supported", "w[1]/u.txt": "supported", "q/u.txt": "supported" });
+    }),
+    TIMEOUT_MS,
+  );
+
+  caseTest("T073", `a key with pathspec magic characters lists only its own records`, [...SHELL, "windows-path-rules"], () => {
+    const r = eolRepo("t073-magic");
+    const oid = gitText(r.dir, ["hash-object", "-w", "--stdin"], { input: Buffer.from("*.txt text\n") }).trim();
+    const keys = ["m*/.gitattributes", "m?/.gitattributes", "m[a]/.gitattributes", ":/.gitattributes", ":(top)m/.gitattributes"];
+    // Each decoy matches a key read as a glob or as magic.
+    const decoys = [".gitattributes", "ma/.gitattributes", "mx/.gitattributes", "m/.gitattributes"];
+    // Git for Windows refuses `*`, `?`, and `:` in index paths unless core.protectNTFS is false.
+    run(r, ["-c", "core.protectNTFS=false", "update-index", "-z", "--index-info"], { input: Buffer.from([...keys, ...decoys].map((p) => `100644 ${oid} 0\t${p}\0`).join("")) });
+    const { part } = sameRecords(r.dir, keys);
+    expect([...part.keys()].toSorted()).toEqual(keys.toSorted());
+  });
 });
 
 describe("support decisions (data-model §5)", () => {

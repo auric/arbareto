@@ -358,6 +358,7 @@ export function attributeArgs(): string[] {
 }
 
 // Contract §4: `mixed` on the index or working side refuses hunks. `i/none` does not mean a missing object.
+// This array has no pathspec, so Git lists the whole index. The comparison names its keys with `lineEndingPathArgs` (T073).
 export function lineEndingArgs(): string[] {
   return read("ls-files", "--eol", "-z");
 }

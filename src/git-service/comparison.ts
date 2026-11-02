@@ -16,6 +16,7 @@ import {
   STATUS_LISTING_BYTES,
   STATUS_LISTING_RECORDS,
   WHOLE_FILE_STAGE_INPUT_BYTES,
+  WINDOWS_COMMAND_LINE_UNITS,
 } from "../contracts/limits";
 import { NATIVE, PATH_RULES } from "../contracts/native-path";
 import { buildRemedyCommand, type RemedyCommand, type RemedyValue } from "../contracts/remedy-command";
@@ -24,7 +25,7 @@ import {
   attributeArgs,
   emptyTreeArgs,
   isObjectId,
-  lineEndingArgs,
+  lineEndingPathArgs,
   objectCheckArgs,
   stagedNumstatArgs,
   stagedPatchArgs,
@@ -35,14 +36,14 @@ import {
 } from "./commands";
 import { parseNumstat, parsePatch, type NumstatResult, type PatchHunk, type PatchResult } from "./diff-parser";
 import { holdsSharedRepository } from "./eligibility";
-import { createCollector, exitKind, RunnerRefusal, settleSteps, type Collector, type GitExit, type GitRunner, type WslRunner } from "./git-runner";
+import { createCollector, exitKind, RunnerRefusal, settleSteps, stepUnits, type Collector, type GitExit, type GitRunner, type WslRunner } from "./git-runner";
 import { noFileId } from "./index-lock";
 import { contextOf, isMissing, objectCheckInput, runRead, type ReadStep } from "./read-steps";
 import type { Workspace } from "./registration";
 import { readWorkingVersion, type ChangeSnapshot, type Checked, type Completeness, type LimitName, type ReadInstallation, type WorkingVersion } from "./snapshot";
 import { hasPromisor, OBJECT_MISSING_REMEDY } from "./status";
 import type { StatusRecord } from "./status-parser";
-import { decideSupport, parseAttributes, parseEolListing, type SupportDecision } from "./support";
+import { decideSupport, eolPaths, parseAttributes, parseEolListing, type SupportDecision } from "./support";
 import { parseMaybeBool, type ConfigEntry, type Trust } from "./trust";
 
 export type ComparisonScope = "head-to-index" | "index-to-worktree" | "empty-to-untracked";
@@ -412,14 +413,25 @@ export function createComparisonReader({ runner, trust, onDrop, spent }: Compari
           if (parsed === null) throw fail(exit.exitCode === 0 ? "MALFORMED_GIT_OUTPUT" : "GIT_FAILED");
           attributes = parsed[0]!;
         };
-        // `lineEndingArgs` has no pathspec, so it lists the whole index once per comparison.
+        // T073: only the keys that `decideSupport` reads, in batches within the command-line bound of contract §6. The batches share one collector, so they run in series.
         const eol = async () => {
+          const batches: string[][] = [];
+          for (const key of eolPaths(path, scope === "empty-to-untracked").map((k) => decode(k)!)) {
+            const last = batches.at(-1);
+            if (last !== undefined && stepUnits(t, "read", lineEndingPathArgs([...last, key])) <= WINDOWS_COMMAND_LINE_UNITS) last.push(key);
+            else batches.push([key]);
+          }
           const out = createCollector({ maxBytes: STATUS_LISTING_BYTES, maxRecords: STATUS_LISTING_RECORDS, separator: NUL });
-          const exit = await step(t, lineEndingArgs(), out);
-          // `out.records` also counts the separators after the cut.
-          if (out.limited) eolLimit = out.take().reduce((n, b) => n + (b === NUL ? 1 : 0), 0) >= STATUS_LISTING_RECORDS ? "STATUS_LISTING_RECORDS" : "STATUS_LISTING_BYTES";
-          else if (exit.exitCode !== 0) failedStep = true;
-          else eolOut = out.take();
+          for (const batch of batches) {
+            const exit = await step(t, lineEndingPathArgs(batch), out);
+            if (out.limited || exit.exitCode !== 0) {
+              // `out.records` also counts the separators after the cut.
+              if (out.limited) eolLimit = out.take().reduce((n, b) => n + (b === NUL ? 1 : 0), 0) >= STATUS_LISTING_RECORDS ? "STATUS_LISTING_RECORDS" : "STATUS_LISTING_BYTES";
+              else failedStep = true;
+              return;
+            }
+          }
+          eolOut = out.take();
         };
         const blobsRead = async () => {
           if (oids.length === 0) return;

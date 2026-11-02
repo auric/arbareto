@@ -195,8 +195,18 @@ const FACTS = `(() => {
     rows: [...document.querySelectorAll('[data-file-tree=changes] [role=treeitem]')].slice(0, 4).map((r) => r.getAttribute('aria-label') + (r.getAttribute('aria-selected') === 'true' ? ' (selected)' : '')),
   };
 })()`;
+// A check is one JavaScript expression. A fragment that does not parse fails the whole CDP evaluate, so each check parses in Bun first.
+function parses(check: string): string {
+  try {
+    new Function(`return (${check});`);
+  } catch (e) {
+    throw new Error(`a page check does not parse (${(e as Error).message}): ${check}`);
+  }
+  return check;
+}
 async function facts(c: Cdp, checks: string[]): Promise<string> {
-  const values = await c.evaluate<unknown[]>(`[${checks.map((check) => `(() => { try { return !!(${check}); } catch (e) { return String(e); } })()`).join(", ")}]`);
+  // `new Function` in the page turns a parse error of one check into its value, so the other checks and the DOM facts still print.
+  const values = await c.evaluate<unknown[]>(`[${checks.map((check) => `(() => { try { return !!new Function(${js(`return (${check});`)})(); } catch (e) { return String(e); } })()`).join(", ")}]`);
   return js({ checks: values, dom: await c.evaluate<unknown>(FACTS) });
 }
 
@@ -206,6 +216,7 @@ const step = (name: string) => console.log(`STEP ${name} ${new Date().toISOStrin
 // `limit` bounds the wait for the checks. A check past it fails the step.
 async function timed(c: Cdp, name: string, checks: string[], act: () => Promise<void>, limit = STEP_LIMIT_MS): Promise<number[]> {
   step(name);
+  checks.forEach(parses);
   await c.evaluate(`window.__t048.arm([${checks.map((check) => `() => (${check})`).join(", ")}], ${limit})`);
   await act();
   // `cdp.ts` ends one call after 10 s, so the page sets `value` and the test polls it up to the limit.
@@ -307,20 +318,20 @@ async function sampleAfter(s: Sampler, timeMs: number): Promise<Sample> {
 }
 // The growth from the last sample before `from` to the peak sample up to the first sample after `to`.
 // `split` is the growth of each kind at that peak sample. `retained` is the growth at the first sample RETAIN_MS after `to`.
-async function growth(s: Sampler, from: number, to: number): Promise<{ before: number; peak: number; growth: number; split: Record<Kind, number>; retained: number; retainedSplit: Record<Kind, number> }> {
+async function growth(s: Sampler, from: number, to: number): Promise<{ before: number; beforeSplit: Record<Kind, number>; peak: number; growth: number; split: Record<Kind, number>; retained: number; retainedSplit: Record<Kind, number> }> {
   const after = await sampleAfter(s, to);
   const before = s.samples.filter((x) => x.timeMs <= from).at(-1);
   if (before === undefined) throw new Error("no memory sample before the run");
   const peakSample = s.samples.filter((x) => x.timeMs > from && x.timeMs <= after.timeMs).reduce((a, b) => (b.totalPrivateBytes > a.totalPrivateBytes ? b : a));
   const later = await sampleAfter(s, to + RETAIN_MS);
   const split = (x: Sample) => Object.fromEntries(KINDS.map((k) => [k, x[k] - before[k]])) as Record<Kind, number>;
-  return { before: before.totalPrivateBytes, peak: peakSample.totalPrivateBytes, growth: peakSample.totalPrivateBytes - before.totalPrivateBytes, split: split(peakSample), retained: later.totalPrivateBytes - before.totalPrivateBytes, retainedSplit: split(later) };
+  return { before: before.totalPrivateBytes, beforeSplit: Object.fromEntries(KINDS.map((k) => [k, before[k]])) as Record<Kind, number>, peak: peakSample.totalPrivateBytes, growth: peakSample.totalPrivateBytes - before.totalPrivateBytes, split: split(peakSample), retained: later.totalPrivateBytes - before.totalPrivateBytes, retainedSplit: split(later) };
 }
 const mib = (n: number) => (n / MIB).toFixed(1);
 const splitText = (x: Record<Kind, number>) => KINDS.map((k) => `${k} ${mib(x[k])}`).join(", ");
 // The memory line of one run: the counted peak growth, its split by process kind, and the retained growth.
 const memoryLine = (what: string, run: number, g: Awaited<ReturnType<typeof growth>>) =>
-  `OBSERVATION ${TASK}: ${what} run ${run}: private bytes before ${g.before}, peak ${g.peak}, growth ${mib(g.growth)} MiB, budget 64 MiB; peak split MiB: ${splitText(g.split)}; retained ${RETAIN_MS / 1000} s after the end ${mib(g.retained)} MiB: ${splitText(g.retainedSplit)}`;
+  `OBSERVATION ${TASK}: ${what} run ${run}: private bytes before ${g.before} (MiB: ${splitText(g.beforeSplit)}), peak ${g.peak}, growth ${mib(g.growth)} MiB, budget 64 MiB; peak split MiB: ${splitText(g.split)}; retained ${RETAIN_MS / 1000} s after the end ${mib(g.retained)} MiB: ${splitText(g.retainedSplit)}`;
 
 // ---- Host facts ----
 
@@ -525,9 +536,11 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
     await press(c, "ArrowDown", MOD.Alt);
     await until<boolean>(c, "the selected hunk", `(document.querySelector('[data-section=comparison]')?.textContent ?? '').includes(${js(SELECTED_HUNK)})`, (v) => v);
   }
-  // R, then the revert button. `shownCheck` holds when the refreshed state shows. The probed run measures SC-011 only.
+  // R, then the revert button. Each part of `shown` holds when the refreshed state shows. The probed run measures SC-011 only.
   // `title` is the expected dialog title (revert-text.ts `revertFilesTexts`), or undefined for no check.
-  async function revertRun(s: Session, opener: string, shownCheck: string, probe: boolean, title?: string): Promise<{ busy: number; confirm: number; shown: number; reply: RunReply }> {
+  async function revertRun(s: Session, opener: string, shown: string | string[], probe: boolean, title?: string): Promise<{ busy: number; confirm: number; shown: number; reply: RunReply }> {
+    const parts = (typeof shown === "string" ? [shown] : shown).map(parses);
+    const shownCheck = parses(parts.map((part) => `(${part})`).join(" && "));
     const reviews = s.ipc.finished("run_workbench").length;
     await focusOn(s.c, opener, "the revert opener");
     let busyMs = 0;
@@ -549,7 +562,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         const after = s.ipc.finished("read_comparison");
         const bodies = await Promise.all(after.slice(Math.max(0, reads - 1)).map((call) => s.ipc.body<Read>(call)));
         const brief = bodies.map((b) => ({ ...b, result: b.result === undefined ? undefined : { ...b.result, patch: b.result.patch?.length } }));
-        throw new Error(`${(e as Error).message} parts ended, shown: ${await facts(s.c, [ended, shownCheck, ...shownCheck.split(" && ")])} shown=${shownCheck} read_comparison before=${reads} after=${after.length} ${js(brief).slice(0, 4000)}`);
+        throw new Error(`${(e as Error).message} parts ended, shown: ${await facts(s.c, [ended, ...parts])} read_comparison before=${reads} after=${after.length} ${js(brief).slice(0, 4000)}`);
       }
     }
     return { busy: busyMs!, confirm: confirmMs!, shown: shownMs!, reply: await runReply(s.ipc, reviews) };
@@ -625,7 +638,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
               await selectHunk(s.c);
               for (let i = 0; i < 10; i++) await press(s.c, "ArrowDown", MOD.Shift);
               await until<boolean>(s.c, "the line selection", `!!${lineAction}`, (v) => v);
-              const lines = await revertRun(s, diffBody, `!${lineAction} && ${heading}.startsWith(${js(RV_TEXT)}) && ${restoredContext}`, probe);
+              const lines = await revertRun(s, diffBody, [`!${lineAction}`, `${heading}.startsWith(${js(RV_TEXT)})`, restoredContext], probe);
               if (counted("lines", lines.reply, winRead(repo), textOld) && !probe && run > 0) add("lines", lines);
             } catch (e) {
               linesFailure = `run ${run}${probe ? " (probed)" : ""}: ${(e as Error).message} git diff --numstat: ${git(repo, ["diff", "--numstat", "--", RV_TEXT]).toString("utf8").trim()}`;

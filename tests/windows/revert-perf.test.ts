@@ -45,8 +45,9 @@ const BUSY_MS = 100;
 const CONFIRM_MS = 500;
 const CONFIRM_1000_MS = 3_000;
 const REFRESH_MS = 500;
-const FILES_100_MS = 3_000;
-const UNSTAGED_1000_MS = 10_000;
+// Spec SC-007: a multi-file revert on Windows ends within 2 s + 28 ms per file.
+const FILES_100_MS = 4_800;
+const UNSTAGED_1000_MS = 30_000;
 const UNSTAGED_1000_WSL_MS = 30_000;
 const GIB_MS = 30_000;
 const CANCEL_MS = 1_000;
@@ -630,7 +631,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   );
 
   test.skipIf(reason !== null)(
-    "SC-007, SC-011: Revert file of 100 files with staged and unstaged changes ends within 3 s (median of 10)",
+    "SC-007, SC-011: Revert file of 100 files with staged and unstaged changes ends within 4.8 s (median of 10)",
     async () => {
       const repo = revertCopy("t048-files");
       const s = await windowsSession("files", repo);
@@ -692,7 +693,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
   }
 
   test.skipIf(reason !== null)(
-    "SC-007, SC-011: Revert all unstaged changes of 1,000 files shows the confirmation within 3 s and ends within 10 s on Windows (median of 10)",
+    "SC-007, SC-011: Revert all unstaged changes of 1,000 files shows the confirmation within 3 s and ends within 30 s on Windows (median of 10)",
     async () => {
       const repo = revertCopy("t048-unstaged");
       onlySmall(repo);

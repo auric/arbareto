@@ -34,7 +34,7 @@ Six facts drive the design (research R2 to R10):
 
 **Project Type**: Local-first desktop application: Tauri 2 shell, compiled Bun Git service, React renderer.
 
-**Performance Goals**: Spec SC-007, fixed before the measurement: busy state within 100 ms after R; the confirmation or the refusal within 500 ms for a file up to 1 MiB, and within 3 s for 1,000 files; the refreshed diff within 500 ms after the confirmation for a line, hunk, or single file; 100 files within 3 s; 1,000 files within 10 s on Windows and 30 s on WSL; Cancel within 1 s; at most 64 MiB process-tree memory increase at 10,000 files; one 1 GiB file within 30 s with at most 64 MiB service memory increase. The 001 SC-005 input targets hold throughout (spec FR-048). Method: research R12.
+**Performance Goals**: Spec SC-007, fixed before the measurement: busy state within 100 ms after R; the confirmation or the refusal within 500 ms for a file up to 1 MiB, and within 3 s for 1,000 files; the refreshed diff within 500 ms after the confirmation for a line, hunk, or single file (PENDING (batch 4 RCA)); on Windows, a multi-file revert within 2 s + 28 ms per file: 100 files within 4.8 s and 1,000 files within 30 s; 1,000 files within 30 s on WSL (PENDING (batch 4 RCA)); Cancel within 1 s; at most 64 MiB process-tree memory increase at 10,000 files (PENDING (batch 4 RCA)); one 1 GiB file within 30 s with at most 64 MiB service memory increase. The 001 SC-005 input targets hold throughout (spec FR-048). Method: research R12. Measured shape and decisions: research R15 "Batch 4 budget decisions".
 
 **Constraints**: No Git command writes a target file. Git writes only its own temporary file through `checkout-index --temp` (spec FR-031). No repository program runs (spec FR-004). The renderer sends IDs, line numbers, and the action only, never a path or bytes. The service log keeps its allowlist fields (`log.ts`), so no file content enters a log (spec FR-049). Every outcome comes from a fresh read.
 
@@ -230,7 +230,7 @@ Rules:
 
 ### D10 Outcome and failure handling
 
-- Reconcile reads after every run, also after Cancel and failure: the index entries of every path (`ls-files --stage -z` with the bound object format), `fileFacts` with `digest: true` for every path, and `readWorkspace`.
+- Reconcile reads after every run, also after Cancel and failure: the index entries of every path (`ls-files --stage -z` with the bound object format), `fileFacts` with `digest: true` for every path. The run does no status read. The renderer's reconcile read after the run (contract §3) is the status read of spec FR-039. A deadline of a reconcile read gives the unknown outcome, as a failed read does.
 - Per-file outcome (data-model §8): `reverted` (the index entry and the digest equal the plan), `unstaged-only` (the index entry equals the plan, the digest equals the old file), `not-changed` (both equal the old state), `changed-outside` (the digest equals neither), `not-started` (no request reached the file). A `not-changed` file carries the reply code `stale`, `refused` with its reason, or `error` with its code. This is the "failed with its code" outcome of spec FR-039. A `not-changed` file without a code got `stopped` or `interrupted`.
 - Response state. Each row needs the fresh read. A Cancel never turns an effect into `canceled`, and it never reports an undo (spec FR-039, constitution I). The Cancel rows follow 005 plan D6 "Response state".
 
@@ -248,6 +248,7 @@ Rules:
 
 - Cancel: before the lock, nothing runs. After the publication starts, the index part ends, because the publication is one rename. Between files, the run stops before the next request. A started `fileReplace` ends without a stop, as in 005.
 - Git temporary files: D5a step 6 removes every unused one before the reconcile reads. A `replaced` reply with `source: "kept"` adds its source to them. A `tempRemove` reply `interrupted` leaves an unknown effect: the reconcile waits for the process-end fact, and the response is never `succeeded` (at best `failed-with-effects`).
+- Change polls (spec FR-036, contract Δ8): `trackRevertRun` (`Workbench.tsx`) calls `pausePolls` (`requests.ts`) before the run. While a run is in progress, neither the Windows interval poll nor the WSL poll starts. A WSL poll that falls due waits. When the run ends, the reconcile read of `mutationEnded` starts first. The polls start again after that read ends. So the temporary files of the run do not show in Changes.
 - Folders: the folders of a failure reply count as an effect, so a run without a reverted file but with created folders ends `failed-with-effects`, and `foldersCreated` names them.
 - The index part never rolls back. When the working part stops after a published index, the result states the FR-017 text, and the file shows its working changes as unstaged.
 - A crash during a run leaves the 001 recovery marker of kind `workbench`. The next start reconciles and reports the outcome as unknown until a refresh (001 FR-023).

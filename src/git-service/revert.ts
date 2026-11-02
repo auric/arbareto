@@ -984,13 +984,11 @@ async function runRevert(r: WorkbenchRun, p: Payload, bound: RevertBound): Promi
   // Plan.md D10 "unknown": a lost reply leaves the outcome unknown, and the recovery marker stays (001 FR-023).
   // Contract gap: RevertRun has no `foreign` field, so an owned index file that stays also leaves the outcome unknown.
   if (settled_ === null || lost || indexUnknown) return r.unknown({ code: "GIT_FAILED" }, result);
-  // Plan.md D10: the fresh index entries, the fresh digests, and the status read.
+  // Plan.md D10: the fresh index entries and the fresh digests. The renderer's contract §3 reconcile read is the status read.
   const freshIndex = await indexEntriesOf(q, paths);
   const freshFacts = await factsOf(q, names.map((path) => ({ root: "worktreeRoot", path })), { digest: true, stream: true });
-  const status = await q.reader.readWorkspace({ operationId: q.operationId, signal: q.signal, installation: q.installation, workspace: q.workspace, refresh: false });
   if (!("value" in freshIndex)) return r.unknown("code" in freshIndex ? { code: freshIndex.code } : freshIndex, result);
   if (!("value" in freshFacts)) return r.unknown("code" in freshFacts ? { code: freshFacts.code } : freshFacts, result);
-  if (status.result === "deadline") return r.unknown({ stop: "deadline" }, result);
   // A fresh `error` fact cannot tell the old bytes from the new bytes, so the outcome stays unknown (contract §8).
   if (freshFacts.value.some((f) => f.kind === "error")) return r.unknown({ code: "GIT_FAILED" }, result);
 

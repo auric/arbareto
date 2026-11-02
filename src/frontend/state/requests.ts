@@ -59,8 +59,6 @@ export type RequestState = {
   blocked: boolean;
   /** The Refreshing marker. Only a user Refresh sets it. */
   refreshing: boolean;
-  /** Operation completion notices. A discarded display result never removes one. */
-  outcomes: readonly BridgeResponse[];
   /** Each repository open and user Refresh adds 1. The History-ready mark counts it. */
   historyEpoch: number;
   /** The `nextRequestSeq()` value when the request of `refs` was sent. */
@@ -91,7 +89,6 @@ const INITIAL: RequestState = {
   capability: null,
   blocked: false,
   refreshing: false,
-  outcomes: [],
   historyEpoch: 0,
   refsSeq: 0,
   headRead: null,
@@ -470,7 +467,7 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
       reset();
       latestSelectionId = null;
       sessionBlocked = false;
-      state = { ...INITIAL, outcomes: state.outcomes, historyEpoch: state.historyEpoch + 1 };
+      state = { ...INITIAL, historyEpoch: state.historyEpoch + 1 };
       set({ repository: registration });
       start(registration, true);
     },
@@ -517,9 +514,8 @@ export function createRequests({ bridge, clock = browserClock, focus = browserFo
       };
     },
 
-    /** Records the completion notice, then reads the workspace in full to reconcile (contract §3). Resolves when the reconcile read ends. */
+    /** Reads the workspace in full to reconcile after a mutation (contract §3). Resolves when the reconcile read ends. The caller shows the completion notice. */
     mutationEnded(operation: string, response: BridgeResponse): Promise<void> {
-      set({ outcomes: [...state.outcomes, response] });
       if (APPROVAL_OPERATIONS.has(operation) && response.code !== undefined && APPROVAL_ENDED.has(response.code) && state.selection) requestComparison(state.selection.entryId);
       // Contract §9: an expired submodule token starts no Git process. The Submodules group answers it with a new `reviewSubmodules`, which a read would race.
       if (operation === "updateSubmodules" && response.state === "rejected" && response.code === "APPROVAL_EXPIRED") return Promise.resolve(update({}));

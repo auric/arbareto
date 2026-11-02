@@ -24,7 +24,8 @@ import { appEnv, COMMIT_VIEW, descendants, findInstalledApp, PROBE_TIMEOUT_MS, p
 import { applyRevertChanges, ensureRevertFixture, RV_BINARY, RV_BOTH, RV_SMALL, RV_TEXT, rvBinary, rvBothPath, rvSmall, rvSmallPath, rvText } from "./revert-fixtures";
 import { close, ControlType, find, invoke, MAX_CALL_MS, MAX_WAIT_MS, setValue, type Element } from "./uia";
 
-const SAMPLER = printOrigin("../../scripts/windows/measure-ram.ps1", import.meta.dir);
+// tests/windows/measure-ram-split.ps1 gives the total of scripts/windows/measure-ram.ps1 -Json and the bytes of each process kind.
+const SAMPLER = printOrigin("./measure-ram-split.ps1", import.meta.dir);
 for (const helper of ["./cdp.ts", "./installed-app.ts", "./uia.ts", "./revert-fixtures.ts", "./perf-fixtures.ts", "../wsl/wsl-host.ts", "../git/file-actions-fixtures.ts", "../../src/git-service/git-runner.ts"]) printOrigin(helper, import.meta.dir);
 
 const TASK = "T048";
@@ -37,6 +38,8 @@ const STEP_LIMIT_MS = 60_000;
 const OPEN_WAIT_MS = 120_000;
 // The sampler interval of scripts/windows/measure-ram.ps1 `-IntervalMs`.
 const SAMPLE_MS = 250;
+// The retained growth is read this long after the run end (T048 RCA request of 2026-11-02).
+const RETAIN_MS = 30_000;
 const MIB = 1024 * 1024;
 
 // ---- Budgets (spec SC-007, SC-011; research.md R11) ----
@@ -197,8 +200,12 @@ async function facts(c: Cdp, checks: string[]): Promise<string> {
   return js({ checks: values, dom: await c.evaluate<unknown>(FACTS) });
 }
 
+// One line per timed step and per run, so a later check of host sleep can place the events.
+const step = (name: string) => console.log(`STEP ${name} ${new Date().toISOString()}`);
+
 // `limit` bounds the wait for the checks. A check past it fails the step.
-async function timed(c: Cdp, checks: string[], act: () => Promise<void>, limit = STEP_LIMIT_MS): Promise<number[]> {
+async function timed(c: Cdp, name: string, checks: string[], act: () => Promise<void>, limit = STEP_LIMIT_MS): Promise<number[]> {
+  step(name);
   await c.evaluate(`window.__t048.arm([${checks.map((check) => `() => (${check})`).join(", ")}], ${limit})`);
   await act();
   // `cdp.ts` ends one call after 10 s, so the page sets `value` and the test polls it up to the limit.
@@ -253,9 +260,11 @@ async function probing<T>(c: Cdp, label: string, probe: () => Promise<void>, tri
   return value;
 }
 
-// ---- Memory (scripts/windows/measure-ram.ps1 -Json, as tests/windows/spelling-perf.test.ts T042) ----
+// ---- Memory (the scripts/windows/measure-ram.ps1 -Json counter with a split by process kind, as tests/windows/spelling-perf.test.ts T042) ----
 
-type Sample = { timeMs: number; rootPid: number; processes: number; webView2PrivateBytes: number; totalPrivateBytes: number };
+const KINDS = ["shell", "service", "git", "wvBrowser", "wvRenderer", "wvGpu", "wvOther", "other"] as const;
+type Kind = (typeof KINDS)[number];
+type Sample = { timeMs: number; rootPid: number; processes: number; webView2PrivateBytes: number; totalPrivateBytes: number; gitCount: number } & Record<Kind, number>;
 interface Sampler {
   samples: Sample[];
   stop(): Promise<void>;
@@ -263,7 +272,7 @@ interface Sampler {
 // One JSON line per sample on stdout. The sampler is a child of this process, so `kill` ends it by its own handle.
 function startSampler(rootPid: number): Sampler {
   const ps = join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-  const proc = Bun.spawn([ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", SAMPLER, "-RootPid", String(rootPid), "-Json", "-IntervalMs", String(SAMPLE_MS)], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawn([ps, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", SAMPLER, "-RootPid", String(rootPid), "-IntervalMs", String(SAMPLE_MS)], { stdin: "ignore", stdout: "pipe", stderr: "pipe" });
   const samples: Sample[] = [];
   const reading = (async () => {
     const decoder = new TextDecoder();
@@ -297,13 +306,21 @@ async function sampleAfter(s: Sampler, timeMs: number): Promise<Sample> {
   throw new Error(`no memory sample after ${timeMs} within ${STEP_LIMIT_MS} ms`);
 }
 // The growth from the last sample before `from` to the peak sample up to the first sample after `to`.
-async function growth(s: Sampler, from: number, to: number): Promise<{ before: number; peak: number; growth: number }> {
+// `split` is the growth of each kind at that peak sample. `retained` is the growth at the first sample RETAIN_MS after `to`.
+async function growth(s: Sampler, from: number, to: number): Promise<{ before: number; peak: number; growth: number; split: Record<Kind, number>; retained: number; retainedSplit: Record<Kind, number> }> {
   const after = await sampleAfter(s, to);
   const before = s.samples.filter((x) => x.timeMs <= from).at(-1);
   if (before === undefined) throw new Error("no memory sample before the run");
-  const peak = Math.max(...s.samples.filter((x) => x.timeMs > from && x.timeMs <= after.timeMs).map((x) => x.totalPrivateBytes));
-  return { before: before.totalPrivateBytes, peak, growth: peak - before.totalPrivateBytes };
+  const peakSample = s.samples.filter((x) => x.timeMs > from && x.timeMs <= after.timeMs).reduce((a, b) => (b.totalPrivateBytes > a.totalPrivateBytes ? b : a));
+  const later = await sampleAfter(s, to + RETAIN_MS);
+  const split = (x: Sample) => Object.fromEntries(KINDS.map((k) => [k, x[k] - before[k]])) as Record<Kind, number>;
+  return { before: before.totalPrivateBytes, peak: peakSample.totalPrivateBytes, growth: peakSample.totalPrivateBytes - before.totalPrivateBytes, split: split(peakSample), retained: later.totalPrivateBytes - before.totalPrivateBytes, retainedSplit: split(later) };
 }
+const mib = (n: number) => (n / MIB).toFixed(1);
+const splitText = (x: Record<Kind, number>) => KINDS.map((k) => `${k} ${mib(x[k])}`).join(", ");
+// The memory line of one run: the counted peak growth, its split by process kind, and the retained growth.
+const memoryLine = (what: string, run: number, g: Awaited<ReturnType<typeof growth>>) =>
+  `OBSERVATION ${TASK}: ${what} run ${run}: private bytes before ${g.before}, peak ${g.peak}, growth ${mib(g.growth)} MiB, budget 64 MiB; peak split MiB: ${splitText(g.split)}; retained ${RETAIN_MS / 1000} s after the end ${mib(g.retained)} MiB: ${splitText(g.retainedSplit)}`;
 
 // ---- Host facts ----
 
@@ -516,7 +533,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
     let busyMs = 0;
     let confirmMs = 0;
     if (probe) await probing(s.c, "a review", messageProbe(s.c), () => press(s.c, "r"), () => until<boolean>(s.c, "the review", reviewed, (v) => v));
-    else [busyMs, confirmMs] = await timed(s.c, [busy, reviewed], () => press(s.c, "r"));
+    else [busyMs, confirmMs] = await timed(s.c, "r-to-review", [busy, reviewed], () => press(s.c, "r"));
     if (!(await s.c.evaluate<boolean>(`!!(${dialog})`))) throw new Error(`the review refused: ${await facts(s.c, [])}`);
     if (title !== undefined && !(await s.c.evaluate<boolean>(`(${dialog}).textContent.includes(${js(title)})`))) throw new Error(`the dialog does not hold ${js(title)}: ${await facts(s.c, [])}`);
     await focusOn(s.c, revertButton, "the revert button");
@@ -525,7 +542,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
     else {
       const reads = s.ipc.finished("read_comparison").length;
       try {
-        [shownMs] = await timed(s.c, [`${ended} && (${shownCheck})`], () => press(s.c, "Enter"));
+        [shownMs] = await timed(s.c, "revert-to-shown", [`${ended} && (${shownCheck})`], () => press(s.c, "Enter"));
       } catch (e) {
         // The comparison reads after the confirmation tell a missing refresh from a missing render.
         type Read = { state?: string; result?: { comparisonId?: string; patch?: string } };
@@ -558,6 +575,12 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         const textOld = [{ path: RV_TEXT, old: sha256(Buffer.from(rvText(true))) }];
         const binaryOld = [{ path: RV_BINARY, old: sha256(Buffer.from(rvBinary(true))) }];
         const textGone = `!${row(RV_TEXT)} && !${heading}.startsWith(${js(RV_TEXT)})`;
+        // Proof of the new comparison after a lines revert: the first changed line is a removed row before the revert and a context row after it.
+        // The selection starts at that row, so the revert restores it. Pierre renders the rows in an open shadow root with `data-line-type` (@pierre/diffs FileDiff).
+        const headLines = rvText(false).split("\n");
+        const changedLines = rvText(true).split("\n");
+        const firstChanged = headLines[headLines.findIndex((l, k) => l !== changedLines[k])]!;
+        const restoredContext = `[...document.querySelectorAll('[data-section=comparison] *')].some((h) => h.shadowRoot !== null && [...h.shadowRoot.querySelectorAll('[data-line-type=context]')].some((r) => (r.textContent ?? '').includes(${js(firstChanged)})))`;
         // Each restore starts from a state without the text row, so the wait for the row proves the new read.
         const restoreText = () => {
           writeFileSync(join(repo, RV_TEXT), rvText(true));
@@ -572,6 +595,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         };
         for (const probe of [false, true]) {
           for (let run = 0; run <= (probe ? 0 : RUNS); run++) {
+            step(`single-run-${run}${probe ? "-probed" : ""}`);
             // Revert file of the text file from its row.
             const file = await revertRun(s, row(RV_TEXT), textGone, probe);
             if (counted("text file", file.reply, winRead(repo), textOld) && !probe && run > 0) add("text file", file);
@@ -594,13 +618,14 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         let linesFailure: string | null = null;
         for (const probe of [false, true]) {
           for (let run = 0; run <= (probe ? 0 : RUNS) && linesFailure === null; run++) {
+            step(`single-lines-run-${run}${probe ? "-probed" : ""}`);
             try {
               // Shift+Down from the selected hunk selects rows of the one hunk. A new patch clears the line selection (data-model §14).
               await select(s.c, RV_TEXT);
               await selectHunk(s.c);
               for (let i = 0; i < 10; i++) await press(s.c, "ArrowDown", MOD.Shift);
               await until<boolean>(s.c, "the line selection", `!!${lineAction}`, (v) => v);
-              const lines = await revertRun(s, diffBody, `!${lineAction} && ${heading}.startsWith(${js(RV_TEXT)})`, probe);
+              const lines = await revertRun(s, diffBody, `!${lineAction} && ${heading}.startsWith(${js(RV_TEXT)}) && ${restoredContext}`, probe);
               if (counted("lines", lines.reply, winRead(repo), textOld) && !probe && run > 0) add("lines", lines);
             } catch (e) {
               linesFailure = `run ${run}${probe ? " (probed)" : ""}: ${(e as Error).message} git diff --numstat: ${git(repo, ["diff", "--numstat", "--", RV_TEXT]).toString("utf8").trim()}`;
@@ -640,6 +665,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         const first = row(paths[0]!);
         const ends: number[] = [];
         for (let run = 0; run <= RUNS + 1; run++) {
+          step(`files-100-run-${run}`);
           const probe = run === RUNS + 1;
           // Plan.md D15 "Multi-select": Shift+Down marks the range from the selected row (ChangesPane.tsx `onMark` "range"), so Enter selects the first row.
           // The list is virtual, so Home brings the first row back into the DOM after a scroll.
@@ -676,13 +702,13 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
     let busyMs = 0;
     let confirmMs = 0;
     if (probe) await probing(s.c, "the review of all unstaged changes", messageProbe(s.c), () => press(s.c, "Enter"), () => until<boolean>(s.c, "the review", reviewed, (v) => v));
-    else [busyMs, confirmMs] = await timed(s.c, [busy, reviewed], () => press(s.c, "Enter"));
+    else [busyMs, confirmMs] = await timed(s.c, "menu-to-review", [busy, reviewed], () => press(s.c, "Enter"));
     if (!(await s.c.evaluate<boolean>(`!!(${dialog})`))) throw new Error(`the review refused: ${await s.c.evaluate<string>(statusText)}`);
     await focusOn(s.c, revertButton, "the revert button");
     const confirmAt = Date.now();
     let endMs = 0;
     if (probe) await probing(s.c, "the run of all unstaged changes", messageProbe(s.c), () => press(s.c, "Enter"), () => until<boolean>(s.c, "the run", ended, (v) => v, limit));
-    else [endMs] = await timed(s.c, [ended], () => press(s.c, "Enter"), limit);
+    else [endMs] = await timed(s.c, "revert-to-end", [ended], () => press(s.c, "Enter"), limit);
     const endAt = Date.now();
     return { busy: busyMs!, confirm: confirmMs!, end: endMs!, reply: await runReply(s.ipc, before), confirmAt, endAt };
   }
@@ -702,6 +728,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         await until<string>(s.c, "1,000 unstaged files", count("Changes"), (v) => v === n);
         const series = { busy: [] as number[], confirm: [] as number[], end: [] as number[] };
         for (let run = 0; run <= RUNS + 1; run++) {
+          step(`unstaged-1000-run-${run}`);
           const probe = run === RUNS + 1;
           const r = await revertAll(s, probe);
           if (counted("1,000 unstaged files", r.reply, winRead(repo), smallTargets()) && !probe && run > 0) {
@@ -748,10 +775,11 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         const grown: number[] = [];
         const ends: number[] = [];
         for (let run = 0; run <= RUNS + 1; run++) {
+          step(`limit-10000-run-${run}`);
           const probe = run === RUNS + 1;
           const r = await revertAll(s, probe, LIMIT_RUN_MS);
           const g = await growth(sampler, r.confirmAt, r.endAt);
-          console.log(`OBSERVATION ${TASK}: SC-007 limit run ${run}: process tree private bytes before ${g.before}, peak ${g.peak}, growth ${(g.growth / MIB).toFixed(1)} MiB, budget 64 MiB`);
+          console.log(memoryLine("SC-007 limit, process tree", run, g));
           if (counted("10,000 unstaged files", r.reply, winRead(repo), targets) && !probe && run > 0) {
             grown.push(g.growth);
             ends.push(r.end);
@@ -763,6 +791,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         // Cancel after the first REVERT_PROGRESS line. A run that ends before the Cancel measures nothing and fails the case.
         const cancels: number[] = [];
         for (let run = 0; run <= RUNS; run++) {
+          step(`limit-cancel-run-${run}`);
           const before = s.ipc.finished("run_workbench").length;
           await focusOn(s.c, headerMore, MORE_ACTIONS);
           await press(s.c, "Enter");
@@ -773,7 +802,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           await press(s.c, "Enter");
           await until<boolean>(s.c, "the first progress", `${statusText}.startsWith(${js(REVERTING)})`, (v) => v);
           await focusOn(s.c, cancelButton, "Cancel");
-          const [stopped] = await timed(s.c, [ended], () => press(s.c, "Enter"));
+          const [stopped] = await timed(s.c, "cancel-to-end", [ended], () => press(s.c, "Enter"));
           const reply = await runReply(s.ipc, before);
           if (reply.state !== "canceled") throw new Error(`the Cancel run gave ${reply.state}`);
           if (run > 0) cancels.push(stopped!);
@@ -835,11 +864,13 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
           const ends: number[] = [];
           const grown: number[] = [];
           for (let run = 0; run <= RUNS + 1; run++) {
+            step(`gib-run-${run}`);
             const probe = run === RUNS + 1;
             const from = Date.now();
             const r = await revertRun(s, row(path), `!${row(path)}`, probe);
             const g = await growth(sampler, from, Date.now());
-            console.log(`OBSERVATION ${TASK}: SC-007 1 GiB run ${run}: service tree private bytes before ${g.before}, peak ${g.peak}, growth ${(g.growth / MIB).toFixed(1)} MiB, budget 64 MiB${probe ? "" : `; ${(1024 / (r.shown / 1000)).toFixed(1)} MiB/s from the revert button to the end`}`);
+            console.log(memoryLine("SC-007 1 GiB, service tree", run, g));
+            if (!probe) console.log(`OBSERVATION ${TASK}: SC-007 1 GiB run ${run}: ${(1024 / (r.shown / 1000)).toFixed(1)} MiB/s from the revert button to the end`);
             if (counted("1 GiB file", r.reply, winRead(repo), old) && !probe && run > 0) {
               ends.push(r.shown);
               grown.push(g.growth);
@@ -901,6 +932,7 @@ describe.skipIf(process.platform !== "win32")("T048 packaged revert budgets", ()
         await until<string>(s.c, "1,000 unstaged files", count("Changes"), (v) => v === n);
         const ends: number[] = [];
         for (let run = 0; run <= RUNS + 1; run++) {
+          step(`wsl-1000-run-${run}`);
           const probe = run === RUNS + 1;
           // Run 7 reached 155 of 1,000 files in 60 s, so the step bound is the test bound of the limit case. A miss stays a budget failure.
           const r = await revertAll(s, probe, LIMIT_RUN_MS);

@@ -595,6 +595,8 @@ export function useWslFolder(): void {
   const host = wslHost();
   if (host === null || fixtureFileSystem() !== "ef53") return;
   beforeAll(() => {
+    // A cleanup hook that timed out leaves its folder. The list names such folders and deletes nothing.
+    for (const name of inDistro(host.distro, ["/usr/bin/find", host.home, "-mindepth", "1", "-maxdepth", "1", "-type", "d", "-name", "arbareto-fixtures-*", "-printf", "%f\\n"]).split("\n").filter((n) => n !== "")) console.log(`WSL_STALE_FIXTURE ${name}`);
     createOwnedFolder(host);
     if (fileSystemType(host, host.folder) !== "ef53") throw new Error("the folder type changed");
   });
